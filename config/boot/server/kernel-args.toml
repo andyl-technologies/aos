@@ -1,0 +1,2 @@
+# Server kernel arg overrides: SELinux enforcing + kernel lockdown.
+extra = ["enforcing=1", "lockdown=integrity", "modules_disabled=1"]

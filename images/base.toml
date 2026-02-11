@@ -1,0 +1,6 @@
+# ANDYL OS -- Base Image
+# Minimal bootable image. Root of the image hierarchy.
+
+[image]
+name = "andyl-os-base"
+imports = ["boot"]
