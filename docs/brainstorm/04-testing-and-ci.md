@@ -1106,10 +1106,9 @@ GitLab CI artifacts, etc.) and retain them for at least 7 days.
 # syntax=docker/dockerfile:1.6
 # CI Build Environment for ANDYL OS
 #
-# This image is based on the project's own hex0-bootstrapped builder
-# (see docker/Dockerfile and RFC-0002). No binary tarball is downloaded;
-# the entire Guix toolchain was bootstrapped from the ~357-byte hex0 seed
-# via the multi-stage build in the main Dockerfile.
+# This image is based on the project's Guix builder image
+# (see docker/Dockerfile). Guix is installed via the standard binary
+# tarball from ftp.gnu.org/gnu/guix/.
 #
 # Pin by digest for reproducibility.
 # Update this digest intentionally, not automatically.
@@ -2130,8 +2129,8 @@ bootstrap:
     @echo "Building Guix builder image..."
     {{DOCKER_RUNTIME}} build \
         -t {{BUILDER_IMAGE}} \
-        -f docker/Dockerfile.builder \
-        docker/
+        -f docker/Dockerfile \
+        .
     @echo "Creating persistent volumes..."
     {{DOCKER_RUNTIME}} volume create guix-store || true
     {{DOCKER_RUNTIME}} volume create guix-var || true

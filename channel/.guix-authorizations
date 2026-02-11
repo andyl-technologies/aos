@@ -1,0 +1,5 @@
+(authorizations
+  (version 0)
+  ;; TODO: Replace with actual GPG fingerprints
+  (("PLACEHOLDER_GPG_FINGERPRINT"
+    (name "ANDYL OS Maintainer"))))

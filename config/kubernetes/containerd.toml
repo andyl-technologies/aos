@@ -1,0 +1,11 @@
+# containerd container runtime configuration.
+snapshotter = "overlayfs"
+pause-image = "registry.k8s.io/pause:3.10"
+oom-score = -999
+max-container-log-line-size = 16384
+cni-bin-dir = "/opt/cni/bin"
+cni-conf-dir = "/etc/cni/net.d"
+root = "/var/lib/containerd"
+state = "/run/containerd"
+socket = "/run/containerd/containerd.sock"
+metrics-address = "127.0.0.1:1338"
