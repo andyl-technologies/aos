@@ -5,8 +5,12 @@
 This document describes how ANDYL OS bootstraps a complete Linux distribution
 using GNU Guix's build infrastructure, without relying on any upstream Guix
 packages or binary substitutes. Everything is built from source through our own
-Guix channel, starting from the minimal binary seed (hex0, ~357 bytes) and
-culminating in a full server-oriented Linux distribution.
+Guix channel, using a Guix build environment installed via the standard binary
+tarball.
+
+The hex0 full-source bootstrap chain is documented in Section 2 as a
+theoretical/educational reference. The actual Docker build environment uses
+the Guix binary tarball for a fast, practical setup.
 
 We develop on macOS, so the entire build pipeline runs inside Docker containers
 with a persistent `/gnu/store`.
@@ -22,7 +26,7 @@ with a persistent `/gnu/store`.
  |    |                                                               |
  |    v                                                               |
  |  +-------------------------------------------------------------+  |
- |  |  Guix Build Container (hex0 full-source bootstrap)           |  |
+ |  |  Guix Build Container (binary tarball installation)           |  |
  |  |                                                              |  |
  |  |  guix-daemon  <--- builds derivations                        |  |
  |  |    |                                                         |  |
@@ -79,199 +83,35 @@ docker info --format '{{.OSType}}'  # Should output: linux
 docker info --format 'CPUs: {{.NCPU}}, Memory: {{.MemTotal}}'
 ```
 
-### 1.3 Dockerfile: Hex0 Full-Source Bootstrap from `scratch`
+### 1.3 Dockerfile: Guix Binary Tarball Installation
 
-The Dockerfile bootstraps everything from `hex0` onwards -- the complete Guix
-source bootstrap chain running inside Docker:
+The Dockerfile installs GNU Guix using the standard binary tarball from
+`ftp.gnu.org/gnu/guix/`. This provides a pre-built `/gnu/store` and
+`/var/guix` with a working `guix-daemon` and CLI tool.
 
-```
-hex0 -> hex1 -> hex2 -> M0 -> M1 -> M2-Planet -> Mes -> MesCC
-  -> TinyCC -> GCC 4.6.4 -> GCC 7.x -> GCC 13.x -> glibc -> Guix
-```
-
-There is no binary tarball download. The only pre-compiled binary entering the
-system is the ~357-byte `hex0` seed, which is small enough to audit by hand.
-The complete provenance of every binary in the final image traces back to this
-auditable seed.
-
-Each major compilation step is structured as its own Docker stage (separate
-`FROM ... AS <name>` blocks) and each compilation step within a stage is a
-separate `RUN` instruction. This gives two levels of Docker layer caching:
-
-- **Stage-level caching**: If `gcc7-build` fails, Docker does not rebuild
-  `gcc4-build`, `tinycc-build`, or earlier stages.
-- **Step-level caching**: Source downloads and compilations are separate `RUN`
-  steps, so changing a build flag does not force re-downloading the source.
-
-Since this build takes many hours on first run, Docker layer caching is
-critical. See section 1.6 for details on the caching strategy.
+> **Note:** The full hex0 source bootstrap chain (hex0 -> hex1 -> hex2 -> M0 ->
+> M1 -> M2-Planet -> Mes -> MesCC -> TinyCC -> GCC -> glibc -> Guix) is
+> documented in Section 2 below as a theoretical/educational reference. It is
+> not implemented in the Docker build due to its multi-hour build time (4-8+
+> hours). The binary tarball approach provides a working Guix environment in
+> minutes.
 
 ```dockerfile
 # =============================================================================
 # docker/Dockerfile
-# Full-source bootstrap from hex0 seeds -- everything built from scratch
+# ANDYL OS -- Guix build environment via binary tarball installation
 # =============================================================================
 
-# ---------------------------------------------------------------------------
-# Stage 1: Obtain bootstrap seeds (hex0, kaem)
-# Uses a minimal Debian image only for wget/tar to fetch source archives.
-# No Debian artifacts survive past this stage.
-# ---------------------------------------------------------------------------
-FROM debian:bookworm-slim@sha256:<pinned-digest> AS hex0-seeds
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget ca-certificates xz-utils patch make gcc libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-ARG SEEDS_VERSION=1.0.0
-RUN wget -q "https://github.com/oriansj/bootstrap-seeds/archive/refs/tags/${SEEDS_VERSION}.tar.gz" \
-    -O /tmp/seeds.tar.gz && \
-    mkdir -p /bootstrap && \
-    tar xf /tmp/seeds.tar.gz -C /bootstrap --strip-components=1
-
-# ---------------------------------------------------------------------------
-# Stage 2: Build mescc-tools (hex0 -> hex1 -> hex2 -> M0 -> M1 -> M2-Planet)
-# Each step is a separate RUN for Docker layer caching.
-# ---------------------------------------------------------------------------
-FROM hex0-seeds AS mescc-tools
-
-# hex0 -> hex1
-RUN cd /bootstrap && \
-    ./NATIVE/x86/hex0 NATIVE/x86/hex1_x86.hex0 /bootstrap/bin/hex1
-
-# hex1 -> hex2
-RUN cd /bootstrap && \
-    ./bin/hex1 NATIVE/x86/hex2_x86.hex1 /bootstrap/bin/hex2
-
-# hex2 -> M0
-RUN cd /bootstrap && \
-    ./bin/hex2 NATIVE/x86/M0_x86.hex2 /bootstrap/bin/M0
-
-# M0 -> M1 macro assembler
-RUN cd /bootstrap && \
-    ./bin/M0 NATIVE/x86/M1_x86.M0 /bootstrap/bin/M1
-
-# M1 -> M2-Planet (simple C compiler)
-# (Actual commands depend on mescc-tools build scripts; simplified here)
-RUN cd /bootstrap && \
-    echo "M2-Planet build from M1 -- see mescc-tools kaem.run for details" && \
-    mkdir -p /bootstrap/bin
-
-# ---------------------------------------------------------------------------
-# Stage 3: GNU Mes (Scheme interpreter + MesCC C compiler)
-# ---------------------------------------------------------------------------
-FROM mescc-tools AS mes-build
-
-ARG MES_VERSION=0.27
-RUN wget -q "https://ftp.gnu.org/gnu/mes/mes-${MES_VERSION}.tar.gz" \
-    -O /tmp/mes.tar.gz && \
-    tar xf /tmp/mes.tar.gz -C /tmp
-
-# M2-Planet compiles mes.c
-RUN cd /tmp/mes-${MES_VERSION} && \
-    echo "Building Mes with M2-Planet -- see Mes build scripts for details"
-
-# ---------------------------------------------------------------------------
-# Stage 4: TinyCC (compiled by MesCC)
-# ---------------------------------------------------------------------------
-FROM mes-build AS tinycc-build
-
-ARG TCC_VERSION=0.9.27
-RUN wget -q "https://download.savannah.gnu.org/releases/tinycc/tcc-${TCC_VERSION}.tar.bz2" \
-    -O /tmp/tcc.tar.bz2 && \
-    tar xf /tmp/tcc.tar.bz2 -C /tmp
-
-# MesCC compiles TinyCC
-RUN cd /tmp/tcc-${TCC_VERSION} && \
-    echo "Building TinyCC with MesCC -- see bootstrap scripts for details"
-
-# ---------------------------------------------------------------------------
-# Stage 5: GCC 4.6.4 (compiled by TinyCC)
-# ---------------------------------------------------------------------------
-FROM tinycc-build AS gcc4-build
-
-ARG GCC4_VERSION=4.6.4
-RUN wget -q "https://ftp.gnu.org/gnu/gcc/gcc-${GCC4_VERSION}/gcc-core-${GCC4_VERSION}.tar.gz" \
-    -O /tmp/gcc4.tar.gz && \
-    tar xf /tmp/gcc4.tar.gz -C /tmp
-
-# TinyCC compiles GCC 4.6.4
-RUN cd /tmp/gcc-${GCC4_VERSION} && \
-    echo "Building GCC 4.6.4 with TinyCC -- C-only, no C++/Fortran"
-
-# ---------------------------------------------------------------------------
-# Stage 6: GCC 7.x (compiled by GCC 4.6.4)
-# ---------------------------------------------------------------------------
-FROM gcc4-build AS gcc7-build
-
-ARG GCC7_VERSION=7.5.0
-RUN wget -q "https://ftp.gnu.org/gnu/gcc/gcc-${GCC7_VERSION}/gcc-${GCC7_VERSION}.tar.xz" \
-    -O /tmp/gcc7.tar.xz && \
-    tar xf /tmp/gcc7.tar.xz -C /tmp
-
-RUN cd /tmp/gcc-${GCC7_VERSION} && \
-    echo "Building GCC 7.5 with GCC 4.6.4 -- enables C and C++"
-
-# ---------------------------------------------------------------------------
-# Stage 7: Modern GCC 13.x (compiled by GCC 7.x)
-# ---------------------------------------------------------------------------
-FROM gcc7-build AS gcc13-build
-
-ARG GCC13_VERSION=13.3.0
-RUN wget -q "https://ftp.gnu.org/gnu/gcc/gcc-${GCC13_VERSION}/gcc-${GCC13_VERSION}.tar.xz" \
-    -O /tmp/gcc13.tar.xz && \
-    tar xf /tmp/gcc13.tar.xz -C /tmp
-
-RUN cd /tmp/gcc-${GCC13_VERSION} && \
-    echo "Building GCC 13.3 with GCC 7.5 -- production compiler"
-
-# ---------------------------------------------------------------------------
-# Stage 8: glibc (compiled by modern GCC)
-# ---------------------------------------------------------------------------
-FROM gcc13-build AS glibc-build
-
-ARG GLIBC_VERSION=2.39
-RUN wget -q "https://ftp.gnu.org/gnu/glibc/glibc-${GLIBC_VERSION}.tar.xz" \
-    -O /tmp/glibc.tar.xz && \
-    tar xf /tmp/glibc.tar.xz -C /tmp
-
-RUN cd /tmp/glibc-${GLIBC_VERSION} && \
-    echo "Building glibc with modern GCC -- server hardening flags"
-
-# ---------------------------------------------------------------------------
-# Stage 9: Build Guix itself from source
-# ---------------------------------------------------------------------------
-FROM glibc-build AS guix-from-source
-
-RUN echo "Build Guix daemon and CLI from source using the bootstrapped toolchain"
-
-# ---------------------------------------------------------------------------
-# Stage 10: Clean image FROM scratch -- only bootstrapped artifacts survive
-# ---------------------------------------------------------------------------
-FROM scratch AS guix-clean
-
-# Copy only the built /gnu/store and /var/guix from the bootstrap chain.
-# No Debian packages, no download artifacts, no intermediate build files.
-COPY --from=guix-from-source /gnu /gnu
-COPY --from=guix-from-source /var/guix /var/guix
-
-# ---------------------------------------------------------------------------
-# Stage 11: Runtime environment with guix-daemon
-# ---------------------------------------------------------------------------
 FROM debian:bookworm-slim@sha256:<pinned-digest> AS guix-builder
 
+# Pin the Guix binary tarball version
+ARG GUIX_VERSION=1.4.0
+ARG GUIX_ARCH=x86_64-linux
+
 # Install runtime dependencies for guix-daemon
-# guix-daemon needs: bash, coreutils, and a few build isolation tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash \
-    coreutils \
-    curl \
-    git \
-    gnupg \
-    less \
-    locales \
-    nscd \
-    xz-utils \
+    bash ca-certificates coreutils curl git gnupg \
+    less locales nscd wget xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Generate a UTF-8 locale (Guix needs this)
@@ -279,14 +119,19 @@ RUN sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
-# Copy ONLY the bootstrapped Guix artifacts from the scratch stage
-COPY --from=guix-clean /gnu /gnu
-COPY --from=guix-clean /var/guix /var/guix
+# Download and extract the Guix binary tarball
+RUN cd /tmp \
+    && wget -q "https://ftp.gnu.org/gnu/guix/guix-binary-${GUIX_VERSION}.${GUIX_ARCH}.tar.xz" \
+        -O guix-binary.tar.xz \
+    && tar --warning=no-timestamp -xf guix-binary.tar.xz -C / \
+    && rm guix-binary.tar.xz
 
 # Create guix profile symlinks
-RUN ln -sf /var/guix/profiles/per-user/root/current-guix/bin/guix /usr/local/bin/guix && \
-    ln -sf /var/guix/profiles/per-user/root/current-guix/lib/systemd/system/guix-daemon.service \
-           /etc/systemd/system/ || true
+RUN mkdir -p ~root/.config/guix \
+    && ln -sf /var/guix/profiles/per-user/root/current-guix/bin/guix \
+        /usr/local/bin/guix \
+    && ln -sf /var/guix/profiles/per-user/root/current-guix/bin/guix-daemon \
+        /usr/local/bin/guix-daemon
 
 # Create build users (guix-daemon runs builds as these unprivileged users)
 RUN groupadd --system guixbuild && \
@@ -297,13 +142,12 @@ RUN groupadd --system guixbuild && \
                 "guixbuilder$i"; \
     done
 
-# Authorize our own key (NOT the upstream Guix key -- we don't use substitutes)
-# We'll mount our signing key at build time
-# IMPORTANT: We do NOT run:
-#   guix archive --authorize < /path/to/ci.guix.gnu.org.pub
-# because we explicitly refuse upstream substitutes.
+# Ensure the store and var directories have correct permissions
+RUN mkdir -p /gnu/store /var/guix/db \
+    && chmod 1775 /gnu/store
 
-# Configure guix-daemon to refuse all substitutes
+# IMPORTANT: We do NOT authorize the upstream Guix substitute server key.
+# We explicitly refuse upstream substitutes.
 ENV GUIX_DAEMON_OPTS="--no-substitutes --max-jobs=4 --cores=0"
 
 # Copy entrypoint script
@@ -317,33 +161,15 @@ CMD ["guix", "repl"]
 **Build the image:**
 
 ```bash
-# Full build (all stages from hex0 to guix-builder)
-docker build -f docker/Dockerfile \
-    -t andyl-os/guix-builder .
-
-# Build up to the scratch stage (just the bootstrapped artifacts)
-docker build -f docker/Dockerfile \
-    --target guix-clean \
-    -t andyl-os/guix-clean .
-
-# Build a specific intermediate stage to inspect it
-docker build -f docker/Dockerfile \
-    --target gcc4-build \
-    -t andyl-os/gcc4-from-tinycc .
+docker build -f docker/Dockerfile -t andyl-os/guix-builder .
 ```
 
-**justfile targets:**
+**justfile target:**
 
 ```makefile
-# Build the Guix build container (full hex0 bootstrap)
+# Build the Guix build container
 docker-build:
     docker compose -f docker/docker-compose.yml build
-
-# Build a specific intermediate bootstrap stage for debugging
-docker-build-stage STAGE:
-    docker build -f docker/Dockerfile \
-        --target "{{STAGE}}" \
-        -t "andyl-os/{{STAGE}}" .
 ```
 
 ### 1.4 Entrypoint Script
@@ -611,7 +437,7 @@ store-overlay-reset:
     docker volume rm store-upper
 ```
 
-### 1.6 Deterministic Docker Layers and Layer Caching Strategy
+### 1.6 Deterministic Docker Layers and Caching Strategy
 
 Docker layer caching is not content-addressed in the Guix sense, but we can
 maximize determinism and leverage Docker's layer cache to avoid redundant work:
@@ -621,60 +447,24 @@ maximize determinism and leverage Docker's layer cache to avoid redundant work:
    FROM debian:bookworm-slim@sha256:<specific-digest>
    ```
 
-2. **Pin package versions in apt:**
-   ```dockerfile
-   RUN apt-get install -y package=1.2.3-4
-   ```
+2. **Pin the Guix binary tarball version** via `ARG GUIX_VERSION`
 
-3. **Pin bootstrap seed versions and source tarball hashes** (shown in the
-   Dockerfile above via `ARG SEEDS_VERSION`, `ARG MES_VERSION`, etc.)
-
-4. **The real determinism comes from Guix itself:** Once guix-daemon is running,
+3. **The real determinism comes from Guix itself:** Once guix-daemon is running,
    every build output is content-addressed. Two builds of the same derivation
    with the same inputs will produce byte-identical outputs. The Docker
    container is just the host for the daemon; reproducibility lives in the Guix
    store.
 
-**Docker layer caching for bootstrap compilation stages:**
-
-In the Dockerfile (`docker/Dockerfile`), each major compilation stage is
-structured as a separate Docker multi-stage target **and** each compilation
-step within a stage is a separate `RUN` instruction. This gives us two levels
-of caching:
-
-- **Stage-level caching**: Each `FROM ... AS <stage>` block is independently
-  cacheable. If the `gcc7-build` stage fails, Docker does not rebuild
-  `gcc4-build`, `tinycc-build`, or earlier stages.
-
-- **Step-level caching**: Within each stage, each `RUN` instruction is its own
-  layer. The source download and the compilation are separate `RUN` steps, so
-  changing a build flag does not force re-downloading the source.
-
-```
- Docker Layer Cache Structure:
- ==============================
-
- Layer 1:  [hex0-seeds]       Seeds download          ~5 MB    (cached)
- Layer 2:  [mescc-tools]      hex0 -> hex1            ~1 MB    (cached)
- Layer 3:  [mescc-tools]      hex1 -> hex2            ~1 MB    (cached)
- Layer 4:  [mescc-tools]      hex2 -> M0 -> M1        ~2 MB    (cached)
- Layer 5:  [mescc-tools]      M1 -> M2-Planet         ~3 MB    (cached)
- Layer 6:  [mes-build]        Mes download            ~10 MB   (cached)
- Layer 7:  [mes-build]        Mes compilation         ~50 MB   (cached)
- Layer 8:  [tinycc-build]     TinyCC download         ~5 MB    (cached)
- Layer 9:  [tinycc-build]     TinyCC compilation      ~20 MB   (cached)
- Layer 10: [gcc4-build]       GCC 4.6.4 download      ~100 MB  (cached)
- Layer 11: [gcc4-build]       GCC 4.6.4 compilation   ~500 MB  <-- rebuilding
- ...
-```
+Since the Dockerfile uses a single-stage binary tarball installation, Docker
+layer caching is straightforward: the tarball download and extraction are
+cached as long as `GUIX_VERSION` and the base image digest remain unchanged.
+Rebuilds complete in seconds.
 
 To verify layer caching is working:
 
 ```bash
 # Build with --progress=plain to see cache hit/miss for each step
-docker build -f docker/Dockerfile \
-    --progress=plain \
-    --target guix-clean .
+docker build -f docker/Dockerfile --progress=plain .
 
 # Lines starting with "CACHED" indicate a cache hit
 ```
@@ -2154,22 +1944,19 @@ Guix handles this by pre-fetching all sources:
 ;; Or define each dependency as a separate origin
 ```
 
-### 8.4 Bootstrapping Time Estimates
+### 8.4 Build Time Estimates
 
-The full bootstrap (Stage 0 through Stage 6) on a modern machine:
+**Docker image build** (binary tarball installation): 2-5 minutes. This
+downloads and extracts the pre-built Guix tarball. Subsequent rebuilds with
+Docker layer caching complete in seconds.
 
-| Stage | Duration (approx) | Notes |
-|---|---|---|
-| Seeds + MesCC-Tools | 5-10 minutes | Small, fast |
-| Mes + TinyCC | 15-30 minutes | MesCC is slow |
-| GCC 4.6.4 | 30-60 minutes | TinyCC is slow at compiling GCC |
-| GCC 7.x | 1-2 hours | Building a real compiler |
-| GCC 13.x | 1-2 hours | Final compiler |
-| glibc | 30-60 minutes | Complex build |
-| Full toolchain | 1-2 hours | All remaining tools |
-| **Total** | **4-8 hours** | First time only |
-
+**Package builds** inside the container depend on the package complexity.
+Initial builds of large packages (GCC, glibc) take 1-2 hours each.
 Subsequent builds only rebuild what changed. The store caches everything.
+
+> **Note:** The full hex0 source bootstrap (Stage 0 through Stage 6) described
+> in Section 2 takes 4-8 hours on a modern machine. This is documented as a
+> theoretical reference but is not part of the Docker build.
 
 ### 8.5 Store Size Management
 
@@ -2227,7 +2014,7 @@ guix build --log-file andyl-problematic-package
  +-------------------------------------------------------------------+
  |                     FROM GUIX (borrowed)                           |
  +-------------------------------------------------------------------+
- |  - guix-daemon binary (built from source in the bootstrap chain)   |
+ |  - guix-daemon binary (installed via binary tarball)               |
  |  - guix CLI tool                                                   |
  |  - Build system infrastructure (gnu-build-system, etc.)            |
  |  - Package DSL (define-public, package record, etc.)               |
@@ -2240,7 +2027,6 @@ guix build --log-file andyl-problematic-package
  |                     FROM US (built from scratch)                    |
  +-------------------------------------------------------------------+
  |  - Every package definition (our own Scheme files)                 |
- |  - Bootstrap chain (our own seeds, commencement module)            |
  |  - Channel (our own .guix-channel, authenticated)                  |
  |  - Binary cache (our own signing key, our own server)              |
  |  - Build flags, patches, configurations                            |
@@ -2252,9 +2038,10 @@ guix build --log-file andyl-problematic-package
 ```
 
 The distinction is: we use Guix as a **build tool** (like using `make` or
-`cmake`), but we provide ALL the **build definitions** ourselves. Guix itself
-is built from source through the hex0 bootstrap chain. No upstream Guix
-package, binary tarball, or binary substitute enters our system.
+`cmake`), but we provide ALL the **build definitions** ourselves. The Guix
+daemon and CLI are installed via the standard binary tarball. No upstream Guix
+package definitions or binary substitutes are used -- all packages are built
+from source through our own channel.
 
 ---
 

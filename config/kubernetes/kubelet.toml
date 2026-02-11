@@ -1,0 +1,9 @@
+# kubelet node agent configuration.
+root-dir = "/var/lib/kubelet"
+config-path = "/var/lib/kubelet/config.yaml"
+kubeconfig-path = "/var/lib/kubelet/kubeconfig"
+bootstrap-kubeconfig-path = "/var/lib/kubelet/bootstrap-kubeconfig"
+cert-dir = "/var/lib/kubelet/pki"
+cri-endpoint = "unix:///run/containerd/containerd.sock"
+static-pod-path = "/etc/kubernetes/manifests"
+verbosity = 2

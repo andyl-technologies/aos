@@ -1,0 +1,139 @@
+{
+  "ignition": {
+    "version": "3.4.0"
+  },
+  "storage": {
+    "disks": [
+      {
+        "device": "/dev/sda",
+        "wipeTable": false,
+        "partitions": [
+          {
+            "label": "ANDYL-ZFS",
+            "number": 3,
+            "sizeMiB": 0,
+            "startMiB": 0,
+            "typeGuid": "6A898CC3-1DD2-11B2-99A6-080020736631"
+          }
+        ]
+      }
+    ],
+    "files": [
+      {
+        "path": "/etc/hostname",
+        "mode": 420,
+        "contents": {
+          "inline": "k8s-worker-01.dc1.andyl.internal"
+        }
+      },
+      {
+        "path": "/etc/andyl-os/role",
+        "mode": 420,
+        "contents": {
+          "inline": "k8s-worker"
+        }
+      },
+      {
+        "path": "/etc/andyl-os/zone.json",
+        "mode": 420,
+        "contents": {
+          "inline": "{\n  \"region\": \"us-east-1\",\n  \"zone\": \"us-east-1a\",\n  \"datacenter\": \"dc1\",\n  \"rack\": \"rack-07\",\n  \"chassis\": \"blade-3\"\n}"
+        }
+      },
+      {
+        "path": "/etc/andyl-os/update.conf",
+        "mode": 420,
+        "contents": {
+          "inline": "[update]\nserver = https://update.andyl-os.internal\nchannel = stable\ncheck_interval = 3600\n"
+        }
+      },
+      {
+        "path": "/etc/ssl/andyl-os/ca.pem",
+        "mode": 292,
+        "contents": {
+          "inline": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALTRFsXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\nREPLACE-WITH-ACTUAL-CA-CERTIFICATE\n-----END CERTIFICATE-----\n"
+        }
+      },
+      {
+        "path": "/etc/ssl/andyl-os/node.pem",
+        "mode": 256,
+        "contents": {
+          "inline": "-----BEGIN CERTIFICATE-----\nMIICpTCCAYkCFHXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\nREPLACE-WITH-ACTUAL-NODE-CERTIFICATE\n-----END CERTIFICATE-----\n"
+        }
+      },
+      {
+        "path": "/etc/ssl/andyl-os/node-key.pem",
+        "mode": 256,
+        "contents": {
+          "inline": "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIKzXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\nREPLACE-WITH-ACTUAL-NODE-PRIVATE-KEY\n-----END EC PRIVATE KEY-----\n"
+        }
+      },
+      {
+        "path": "/etc/systemd/network/10-eno1.network",
+        "mode": 420,
+        "contents": {
+          "inline": "[Match]\nName=eno1\n\n[Network]\nAddress=10.0.7.42/24\nGateway=10.0.7.1\nDNS=10.0.0.53\nDNS=10.0.0.54\nDomains=andyl.internal\nNTP=10.0.0.123\n\n[Link]\nMTUBytes=9000\n"
+        }
+      }
+    ],
+    "directories": [
+      {
+        "path": "/etc/kubernetes/manifests",
+        "mode": 493
+      },
+      {
+        "path": "/var/lib/containerd",
+        "mode": 456
+      },
+      {
+        "path": "/etc/andyl-os",
+        "mode": 493
+      },
+      {
+        "path": "/etc/ssl/andyl-os",
+        "mode": 448
+      }
+    ]
+  },
+  "passwd": {
+    "users": [
+      {
+        "name": "core",
+        "sshAuthorizedKeys": [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAEXAMPLEKEY1 ops-team-key",
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAEXAMPLEKEY2 deploy-bot-key"
+        ],
+        "groups": [
+          "sudo",
+          "systemd-journal",
+          "docker"
+        ],
+        "shell": "/bin/bash"
+      }
+    ]
+  },
+  "systemd": {
+    "units": [
+      {
+        "name": "andyl-os-zfs-setup.service",
+        "enabled": true
+      },
+      {
+        "name": "andyl-os-ignition-postsetup.service",
+        "enabled": true
+      },
+      {
+        "name": "andyl-os-ignition-hostname.service",
+        "enabled": true
+      },
+      {
+        "name": "andyl-os-ignition-network.service",
+        "enabled": true
+      },
+      {
+        "name": "andyl-os-ignition-sshd-keygen.service",
+        "enabled": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+# ANDYL OS -- Kubernetes Worker Image
+# Worker node with containerd, kubelet, CNI, larger root partition.
+
+[image]
+name = "andyl-os-k8s-worker"
+imports = ["boot/server", "security/server", "deployment/k8s", "kubernetes"]

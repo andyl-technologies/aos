@@ -1,0 +1,208 @@
+# ANDYL OS -- Base Butane Configuration
+#
+# This is the base Butane template common to ALL machine roles.
+# It defines:
+#   - Disk partitioning (ANDYL-ZFS partition on remaining disk space)
+#   - Core /etc files (hostname, role, zone metadata, update config)
+#   - TLS CA certificate
+#   - Admin user (core) with SSH authorized keys
+#   - Static network configuration via systemd-networkd
+#   - First-boot systemd units (ZFS setup, post-setup, SSH keygen)
+#
+# Role-specific templates (worker.bu, control-plane.bu) extend this
+# base with additional files and services.
+#
+# Variables (replace with actual values per machine):
+#   HOSTNAME          -- fully qualified domain name
+#   ROLE              -- machine role (k8s-worker, k8s-control-plane, database, edge)
+#   REGION            -- cloud/datacenter region
+#   ZONE              -- availability zone
+#   DATACENTER        -- datacenter identifier
+#   RACK              -- rack identifier
+#   IP_ADDRESS        -- static IP with CIDR (e.g., 10.0.7.42/24)
+#   GATEWAY           -- default gateway IP
+#   DNS_1, DNS_2      -- DNS server IPs
+#   NTP_SERVER        -- NTP server IP
+#   INTERFACE         -- primary network interface name (e.g., eno1)
+#   SSH_KEY_1, ...    -- SSH authorized keys for admin user
+#   CA_CERT           -- TLS CA certificate (PEM)
+#   NODE_CERT         -- Node TLS certificate (PEM)
+#   NODE_KEY          -- Node TLS private key (PEM)
+#
+# Usage:
+#   butane --strict base.bu > base.ign
+#
+# See:
+#   RFC-0006 (First-Boot Configuration with CoreOS Ignition)
+#   Phase 6 section 6.6 (Base Butane Template)
+
+variant: fcos
+version: "1.5.0"
+
+# ---------------------------------------------------------------------------
+# Disk Partitioning
+# ---------------------------------------------------------------------------
+# Partition the remaining disk space for the ZFS data pool.
+# The golden image ships with:
+#   Partition 1: ESP (EFI System Partition, FAT32, ~512 MiB)
+#   Partition 2: Root filesystem (ext4, read-only, ~4-8 GiB)
+# This config creates:
+#   Partition 3: ANDYL-ZFS (remaining space, for ZFS datapool)
+#
+# wipe_table: false preserves the existing ESP and root partitions.
+
+storage:
+  disks:
+    - device: /dev/sda
+      wipe_table: false
+      partitions:
+        - label: ANDYL-ZFS
+          number: 3
+          size_mib: 0
+          start_mib: 0
+          type_guid: 6A898CC3-1DD2-11B2-99A6-080020736631
+
+  # ---------------------------------------------------------------------------
+  # Configuration Files
+  # ---------------------------------------------------------------------------
+
+  directories:
+    - path: /etc/andyl-os
+      mode: 0755
+    - path: /etc/ssl/andyl-os
+      mode: 0700
+    - path: /etc/systemd/network
+      mode: 0755
+
+  files:
+    # Machine hostname
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: HOSTNAME
+
+    # Machine role (used by ZFS setup for role-specific datasets)
+    - path: /etc/andyl-os/role
+      mode: 0644
+      contents:
+        inline: ROLE
+
+    # Zone/region/rack metadata (used by Kubernetes node labels,
+    # monitoring, and the update agent for staged rollouts)
+    - path: /etc/andyl-os/zone.json
+      mode: 0644
+      contents:
+        inline: |
+          {
+            "region": "REGION",
+            "zone": "ZONE",
+            "datacenter": "DATACENTER",
+            "rack": "RACK"
+          }
+
+    # Update agent configuration
+    - path: /etc/andyl-os/update.conf
+      mode: 0644
+      contents:
+        inline: |
+          [update]
+          server = https://update.andyl-os.internal
+          channel = stable
+          check_interval = 3600
+
+    # TLS CA certificate (shared across all machines)
+    - path: /etc/ssl/andyl-os/ca.pem
+      mode: 0444
+      contents:
+        inline: |
+          CA_CERT
+
+    # Per-node TLS certificate
+    - path: /etc/ssl/andyl-os/node.pem
+      mode: 0400
+      contents:
+        inline: |
+          NODE_CERT
+
+    # Per-node TLS private key (restricted permissions)
+    - path: /etc/ssl/andyl-os/node-key.pem
+      mode: 0400
+      contents:
+        inline: |
+          NODE_KEY
+
+    # ---------------------------------------------------------------------------
+    # Network Configuration (systemd-networkd)
+    # ---------------------------------------------------------------------------
+    # Static IP configuration for the primary network interface.
+    # Jumbo frames (MTU 9000) enabled for datacenter use.
+
+    - path: /etc/systemd/network/10-INTERFACE.network
+      mode: 0644
+      contents:
+        inline: |
+          [Match]
+          Name=INTERFACE
+
+          [Network]
+          Address=IP_ADDRESS
+          Gateway=GATEWAY
+          DNS=DNS_1
+          DNS=DNS_2
+          Domains=andyl.internal
+          NTP=NTP_SERVER
+
+          [Link]
+          MTUBytes=9000
+
+# ---------------------------------------------------------------------------
+# Admin User
+# ---------------------------------------------------------------------------
+# The 'core' user is the primary admin account.  SSH key-based
+# authentication only (PAM/password disabled in OpenSSH config).
+# This user is added to sudo and systemd-journal groups for
+# administrative access.
+
+passwd:
+  users:
+    - name: core
+      groups:
+        - sudo
+        - systemd-journal
+        - docker
+      shell: /bin/bash
+      ssh_authorized_keys:
+        - "SSH_KEY_1"
+
+# ---------------------------------------------------------------------------
+# systemd Units (First Boot)
+# ---------------------------------------------------------------------------
+# These units are enabled by Ignition and run on first boot.
+# They are defined in services/zfs-setup.scm, services/ignition.scm,
+# and services/selinux-relabel.scm.
+
+systemd:
+  units:
+    # ZFS pool and dataset creation (first boot only)
+    - name: andyl-os-zfs-setup.service
+      enabled: true
+
+    # Post-ZFS setup (admin user home, journal dir, etc.)
+    - name: andyl-os-ignition-postsetup.service
+      enabled: true
+
+    # Apply hostname from Ignition config
+    - name: andyl-os-ignition-hostname.service
+      enabled: true
+
+    # Reload networkd with Ignition-written config
+    - name: andyl-os-ignition-network.service
+      enabled: true
+
+    # Generate SSH host keys
+    - name: andyl-os-ignition-sshd-keygen.service
+      enabled: true
+
+    # SELinux relabeling after Ignition + ZFS setup
+    - name: andyl-selinux-relabel.service
+      enabled: true

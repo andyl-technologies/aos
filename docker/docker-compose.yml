@@ -1,0 +1,29 @@
+services:
+  guix-builder:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - gnu-store:/gnu/store
+      - guix-var:/var/guix
+      - ../channel:/andyl-channel:ro
+    environment:
+      - GUIX_MAX_JOBS=${GUIX_MAX_JOBS:-4}
+      - GUIX_CORES=${GUIX_CORES:-0}
+    # Guix needs these capabilities for build isolation and OverlayFS
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 16G
+
+volumes:
+  gnu-store:
+    driver: local
+  guix-var:
+    driver: local

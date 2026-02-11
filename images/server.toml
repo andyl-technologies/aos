@@ -1,0 +1,6 @@
+# ANDYL OS -- Server Image
+# Production server with SELinux enforcing, SSH hardening, firewall.
+
+[image]
+name = "andyl-os-server"
+imports = ["boot/server", "security/server", "deployment"]

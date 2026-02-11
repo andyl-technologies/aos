@@ -1,0 +1,16 @@
+# Kernel command line arguments applied to all images.
+base = [
+  "root=LABEL=ANDYL-ROOT",
+  "ro",
+  "quiet",
+  "console=ttyS0,115200n8",
+  "console=tty0",
+  "security=selinux",
+  "selinux=1",
+  "enforcing=0",
+  "systemd.unified_cgroup_hierarchy=1",
+  "init=/gnu/store/placeholder-systemd/lib/systemd/systemd",
+]
+
+# Extra args added by image-level overrides (empty for base).
+extra = []

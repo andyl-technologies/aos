@@ -1,0 +1,28 @@
+services:
+  guix-builder:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - store-upper:/gnu/store-upper
+      - guix-var:/var/guix
+      - ../channel:/andyl-channel:ro
+    environment:
+      - GUIX_MAX_JOBS=${GUIX_MAX_JOBS:-4}
+      - GUIX_CORES=${GUIX_CORES:-0}
+      - GUIX_STORE_OVERLAY=1
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 16G
+
+volumes:
+  store-upper:
+    driver: local
+  guix-var:
+    driver: local

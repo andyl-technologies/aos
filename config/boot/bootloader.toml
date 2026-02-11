@@ -1,0 +1,5 @@
+# systemd-boot configuration.
+type = "systemd-boot"
+timeout = 3
+editor = false
+console-mode = "max"
