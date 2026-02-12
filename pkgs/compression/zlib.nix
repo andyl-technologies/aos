@@ -1,7 +1,13 @@
 # zlib — Lossless data compression library
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "1.3.1"; in
+let
+  version = "1.3.1";
+in
 mkDerivation {
   pname = "zlib";
   inherit version;
@@ -14,27 +20,31 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd zlib-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure --prefix=$out
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

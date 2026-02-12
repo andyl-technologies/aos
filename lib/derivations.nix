@@ -115,51 +115,79 @@ let
 
   # replacePhase :: [phase] -> string -> phase -> [phase]
   # Replace a phase by name. Throws if the phase is not found.
-  replacePhase = phases: name: newPhase:
+  replacePhase =
+    phases: name: newPhase:
     let
       found = builtins.any (p: p.name == name) phases;
-    in if !found
-       then throw "replacePhase: phase '${name}' not found in phases list"
-       else builtins.map (p: if p.name == name then newPhase else p) phases;
+    in
+    if !found then
+      throw "replacePhase: phase '${name}' not found in phases list"
+    else
+      builtins.map (p: if p.name == name then newPhase else p) phases;
 
   # addPhaseAfter :: [phase] -> string -> phase -> [phase]
   # Insert a new phase after the named phase.
-  addPhaseAfter = phases: afterName: newPhase:
+  addPhaseAfter =
+    phases: afterName: newPhase:
     let
       found = builtins.any (p: p.name == afterName) phases;
-    in if !found
-       then throw "addPhaseAfter: phase '${afterName}' not found in phases list"
-       else builtins.concatLists (builtins.map (p:
-         if p.name == afterName then [ p newPhase ] else [ p ]
-       ) phases);
+    in
+    if !found then
+      throw "addPhaseAfter: phase '${afterName}' not found in phases list"
+    else
+      builtins.concatLists (
+        builtins.map (
+          p:
+          if p.name == afterName then
+            [
+              p
+              newPhase
+            ]
+          else
+            [ p ]
+        ) phases
+      );
 
   # addPhaseBefore :: [phase] -> string -> phase -> [phase]
   # Insert a new phase before the named phase.
-  addPhaseBefore = phases: beforeName: newPhase:
+  addPhaseBefore =
+    phases: beforeName: newPhase:
     let
       found = builtins.any (p: p.name == beforeName) phases;
-    in if !found
-       then throw "addPhaseBefore: phase '${beforeName}' not found in phases list"
-       else builtins.concatLists (builtins.map (p:
-         if p.name == beforeName then [ newPhase p ] else [ p ]
-       ) phases);
+    in
+    if !found then
+      throw "addPhaseBefore: phase '${beforeName}' not found in phases list"
+    else
+      builtins.concatLists (
+        builtins.map (
+          p:
+          if p.name == beforeName then
+            [
+              newPhase
+              p
+            ]
+          else
+            [ p ]
+        ) phases
+      );
 
   # removePhase :: [phase] -> string -> [phase]
   # Remove a phase by name.
-  removePhase = phases: name:
-    builtins.filter (p: p.name != name) phases;
+  removePhase = phases: name: builtins.filter (p: p.name != name) phases;
 
   # ---------------------------------------------------------------------------
   # Internal: generate the build script from a list of phases
   # ---------------------------------------------------------------------------
-  phasesToScript = phases: shell:
+  phasesToScript =
+    phases: shell:
     let
       phaseScripts = builtins.map (phase: ''
         echo ">>> Phase: ${phase.name}"
         ${phase.script}
         echo "<<< Phase: ${phase.name} complete"
       '') phases;
-    in ''
+    in
+    ''
       #!${shell}
       set -euo pipefail
 
@@ -174,28 +202,32 @@ let
   # ---------------------------------------------------------------------------
   # Internal: build the PATH from dependency lists
   # ---------------------------------------------------------------------------
-  makePath = deps:
+  makePath =
+    deps:
     builtins.concatStringsSep ":" (
-      builtins.concatLists (builtins.map (d:
-        let p = builtins.toString d;
-        in [ "${p}/bin" "${p}/sbin" ]
-      ) deps)
+      builtins.concatLists (
+        builtins.map (
+          d:
+          let
+            p = builtins.toString d;
+          in
+          [
+            "${p}/bin"
+            "${p}/sbin"
+          ]
+        ) deps
+      )
     );
 
-  makeLibPath = deps:
-    builtins.concatStringsSep ":" (
-      builtins.map (d: "${builtins.toString d}/lib") deps
-    );
+  makeLibPath =
+    deps: builtins.concatStringsSep ":" (builtins.map (d: "${builtins.toString d}/lib") deps);
 
-  makeIncPath = deps:
-    builtins.concatStringsSep ":" (
-      builtins.map (d: "${builtins.toString d}/include") deps
-    );
+  makeIncPath =
+    deps: builtins.concatStringsSep ":" (builtins.map (d: "${builtins.toString d}/include") deps);
 
-  makeRpathFlags = deps:
-    builtins.concatStringsSep " " (
-      builtins.map (d: "-Wl,-rpath,${builtins.toString d}/lib") deps
-    );
+  makeRpathFlags =
+    deps:
+    builtins.concatStringsSep " " (builtins.map (d: "-Wl,-rpath,${builtins.toString d}/lib") deps);
 
   # ---------------------------------------------------------------------------
   # mkDerivation
@@ -212,39 +244,43 @@ let
   #   storeDir;        — store directory (default: /nix/store)
   #   ...              — additional attributes passed to builtins.derivation
   # }
-  mkDerivation = args @ {
-    pname ? null,
-    version ? "0",
-    src ? null,
-    buildDeps ? [],
-    runtimeDeps ? [],
-    propagatedDeps ? [],
-    phases ? defaultPhases,
-    meta ? {},
-    storeDir ? "/nix/store",
-    system ? defaultSystem,
-    shell ? "/bin/sh",
-    outputs ? [ "out" ],
-    configureFlags ? "",
-    makeFlags ? "",
-    installFlags ? "",
-    cmakeFlags ? "",
-    mesonFlags ? "",
-    patches ? [],
-    postPatch ? "",
-    preBuild ? "",
-    postBuild ? "",
-    preInstall ? "",
-    postInstall ? "",
-    passthru ? {},
-    ...
-  }:
+  mkDerivation =
+    args@{
+      pname ? null,
+      version ? "0",
+      src ? null,
+      buildDeps ? [ ],
+      runtimeDeps ? [ ],
+      propagatedDeps ? [ ],
+      phases ? defaultPhases,
+      meta ? { },
+      storeDir ? "/nix/store",
+      system ? defaultSystem,
+      shell ? "/bin/sh",
+      outputs ? [ "out" ],
+      configureFlags ? "",
+      makeFlags ? "",
+      installFlags ? "",
+      cmakeFlags ? "",
+      mesonFlags ? "",
+      patches ? [ ],
+      postPatch ? "",
+      preBuild ? "",
+      postBuild ? "",
+      preInstall ? "",
+      postInstall ? "",
+      passthru ? { },
+      ...
+    }:
     let
       # Accept either `name` (direct) or `pname` (computed as pname-version).
-      name = args.name or (
-        if pname != null then "${pname}-${version}"
-        else throw "mkDerivation: either 'pname' or 'name' must be provided"
-      );
+      name =
+        args.name or (
+          if pname != null then
+            "${pname}-${version}"
+          else
+            throw "mkDerivation: either 'pname' or 'name' must be provided"
+        );
       effectivePname = if pname != null then pname else name;
 
       # Collect all dependencies for PATH
@@ -261,70 +297,102 @@ let
       };
 
       effectivePhases =
-        if patches != [] || postPatch != ""
-        then addPhaseAfter phases "unpack" patchPhase
-        else phases;
+        if patches != [ ] || postPatch != "" then addPhaseAfter phases "unpack" patchPhase else phases;
 
       # Inject pre/post hooks into phases
-      finalPhases = builtins.map (phase:
-        if phase.name == "build" && (preBuild != "" || postBuild != "")
-        then phase // { script = preBuild + "\n" + phase.script + "\n" + postBuild; }
-        else if phase.name == "install" && (preInstall != "" || postInstall != "")
-        then phase // { script = preInstall + "\n" + phase.script + "\n" + postInstall; }
-        else phase
+      finalPhases = builtins.map (
+        phase:
+        if phase.name == "build" && (preBuild != "" || postBuild != "") then
+          phase // { script = preBuild + "\n" + phase.script + "\n" + postBuild; }
+        else if phase.name == "install" && (preInstall != "" || postInstall != "") then
+          phase // { script = preInstall + "\n" + phase.script + "\n" + postInstall; }
+        else
+          phase
       ) effectivePhases;
 
       builder = phasesToScript finalPhases shell;
 
       # Extra args to pass through to builtins.derivation
       extraArgs = builtins.removeAttrs args [
-        "name" "pname" "version" "src" "buildDeps" "runtimeDeps" "propagatedDeps"
-        "phases" "meta" "storeDir" "system" "shell" "outputs"
-        "configureFlags" "makeFlags" "installFlags" "cmakeFlags" "mesonFlags"
-        "patches" "postPatch" "preBuild" "postBuild" "preInstall" "postInstall"
+        "name"
+        "pname"
+        "version"
+        "src"
+        "buildDeps"
+        "runtimeDeps"
+        "propagatedDeps"
+        "phases"
+        "meta"
+        "storeDir"
+        "system"
+        "shell"
+        "outputs"
+        "configureFlags"
+        "makeFlags"
+        "installFlags"
+        "cmakeFlags"
+        "mesonFlags"
+        "patches"
+        "postPatch"
+        "preBuild"
+        "postBuild"
+        "preInstall"
+        "postInstall"
         "passthru"
       ];
 
-      drv = builtins.derivation ({
-        inherit name system;
-        builder = shell;
-        args = [ "-c" builder ];
-        inherit outputs;
+      drv = builtins.derivation (
+        {
+          inherit name system;
+          builder = shell;
+          args = [
+            "-c"
+            builder
+          ];
+          inherit outputs;
 
-        # Source
-        src = if src != null then builtins.toString src else "";
+          # Source
+          src = if src != null then builtins.toString src else "";
 
-        # Environment variables for the build
-        PATH = makePath allBuildDeps;
-        NIX_BUILD_CORES = "4";
+          # Environment variables for the build
+          PATH = makePath allBuildDeps;
+          NIX_BUILD_CORES = "4";
 
-        # Configuration flags
-        inherit configureFlags makeFlags installFlags cmakeFlags mesonFlags;
+          # Configuration flags
+          inherit
+            configureFlags
+            makeFlags
+            installFlags
+            cmakeFlags
+            mesonFlags
+            ;
 
-        # Dependency search paths — include buildDeps so build-time
-        # libraries (e.g. elfutils for the kernel's objtool) are found.
-        C_INCLUDE_PATH = makeIncPath allBuildDeps;
-        CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
-        LIBRARY_PATH = makeLibPath allBuildDeps;
-        LD_LIBRARY_PATH = makeLibPath allBuildDeps;
+          # Dependency search paths — include buildDeps so build-time
+          # libraries (e.g. elfutils for the kernel's objtool) are found.
+          C_INCLUDE_PATH = makeIncPath allBuildDeps;
+          CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
+          LIBRARY_PATH = makeLibPath allBuildDeps;
+          LD_LIBRARY_PATH = makeLibPath allBuildDeps;
 
-        # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
-        # shared libraries at runtime without LD_LIBRARY_PATH.
-        # Only runtimeDeps + propagatedDeps — NOT buildDeps — to avoid
-        # dragging the compiler toolchain into the runtime closure.
-        NIX_LDFLAGS = makeRpathFlags (runtimeDeps ++ propagatedDeps);
-        PKG_CONFIG_PATH = builtins.concatStringsSep ":" (
-          builtins.map (d: "${builtins.toString d}/lib/pkgconfig") allBuildDeps
-        );
+          # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
+          # shared libraries at runtime without LD_LIBRARY_PATH.
+          # Only runtimeDeps + propagatedDeps — NOT buildDeps — to avoid
+          # dragging the compiler toolchain into the runtime closure.
+          NIX_LDFLAGS = makeRpathFlags (runtimeDeps ++ propagatedDeps);
+          PKG_CONFIG_PATH = builtins.concatStringsSep ":" (
+            builtins.map (d: "${builtins.toString d}/lib/pkgconfig") allBuildDeps
+          );
 
-        # Store the dependencies for runtime reference
-        buildInputs = builtins.map builtins.toString runtimeDeps;
-        nativeBuildInputs = builtins.map builtins.toString buildDeps;
-        propagatedBuildInputs = builtins.map builtins.toString propagatedDeps;
+          # Store the dependencies for runtime reference
+          buildInputs = builtins.map builtins.toString runtimeDeps;
+          nativeBuildInputs = builtins.map builtins.toString buildDeps;
+          propagatedBuildInputs = builtins.map builtins.toString propagatedDeps;
 
-        # Prefer store dir parameter
-        NIX_STORE_DIR = storeDir;
-      } // extraArgs);
+          # Prefer store dir parameter
+          NIX_STORE_DIR = storeDir;
+        }
+        // extraArgs
+      );
 
       # Attach metadata and override mechanism
       result = drv // {
@@ -332,10 +400,12 @@ let
         pname = effectivePname;
 
         # Override mechanism
-        override = overrideArgs:
-          if builtins.isFunction overrideArgs
-          then mkDerivation (overrideArgs args)
-          else mkDerivation (args // overrideArgs);
+        override =
+          overrideArgs:
+          if builtins.isFunction overrideArgs then
+            mkDerivation (overrideArgs args)
+          else
+            mkDerivation (args // overrideArgs);
 
         # overrideAttrs for modifying the derivation attributes
         overrideAttrs = f: mkDerivation (args // (f args));
@@ -345,7 +415,8 @@ let
           inherit phases;
         };
       };
-    in result;
+    in
+    result;
 
   # ---------------------------------------------------------------------------
   # mkShell
@@ -354,41 +425,55 @@ let
   #
   # Creates a development shell environment. Not meant to produce an installable
   # package; just sets up the environment for interactive development.
-  mkShell = args @ {
-    buildDeps ? [],
-    runtimeDeps ? [],
-    shellHook ? "",
-    name ? "aos-dev-shell",
-    system ? defaultSystem,
-    shell ? "/bin/sh",
-    ...
-  }:
+  mkShell =
+    args@{
+      buildDeps ? [ ],
+      runtimeDeps ? [ ],
+      shellHook ? "",
+      name ? "aos-dev-shell",
+      system ? defaultSystem,
+      shell ? "/bin/sh",
+      ...
+    }:
     let
       allDeps = buildDeps ++ runtimeDeps;
       extraArgs = builtins.removeAttrs args [
-        "buildDeps" "runtimeDeps" "shellHook" "name" "system" "shell"
+        "buildDeps"
+        "runtimeDeps"
+        "shellHook"
+        "name"
+        "system"
+        "shell"
       ];
-    in builtins.derivation ({
-      inherit name system;
-      builder = shell;
-      args = [ "-c" ''
-        echo "This derivation is a shell environment and is not meant to be built."
-        echo "Use 'nix-shell' or 'nix develop' to enter this environment."
-        exit 1
-      '' ];
+    in
+    builtins.derivation (
+      {
+        inherit name system;
+        builder = shell;
+        args = [
+          "-c"
+          ''
+            echo "This derivation is a shell environment and is not meant to be built."
+            echo "Use 'nix-shell' or 'nix develop' to enter this environment."
+            exit 1
+          ''
+        ];
 
-      # Environment setup
-      PATH = makePath allDeps;
-      C_INCLUDE_PATH = makeIncPath runtimeDeps;
-      LIBRARY_PATH = makeLibPath runtimeDeps;
-      inherit shellHook;
+        # Environment setup
+        PATH = makePath allDeps;
+        C_INCLUDE_PATH = makeIncPath runtimeDeps;
+        LIBRARY_PATH = makeLibPath runtimeDeps;
+        inherit shellHook;
 
-      # Mark as a shell environment
-      _isShell = true;
+        # Mark as a shell environment
+        _isShell = true;
 
-      buildInputs = builtins.map builtins.toString runtimeDeps;
-      nativeBuildInputs = builtins.map builtins.toString buildDeps;
-    } // extraArgs) // {
+        buildInputs = builtins.map builtins.toString runtimeDeps;
+        nativeBuildInputs = builtins.map builtins.toString buildDeps;
+      }
+      // extraArgs
+    )
+    // {
       # For nix-shell compatibility, expose the input derivation
       inherit buildDeps runtimeDeps shellHook;
     };
@@ -405,20 +490,25 @@ let
   # Accepts either `url` (string) or `urls` (list), following the nixpkgs
   # pattern.  Exactly one must be provided.  The full mirror list is exposed
   # as `.urls` on the result for CLI discovery.
-  fetchurl = { url ? ""
-             , urls ? []
-             , hash ? ""
-             , sha256 ? hash
-             , name ? builtins.baseNameOf (if url != "" then url else builtins.head urls)
-             , executable ? false
-             , system ? defaultSystem
-             , storeDir ? "/nix/store"
-             }:
+  fetchurl =
+    {
+      url ? "",
+      urls ? [ ],
+      hash ? "",
+      sha256 ? hash,
+      name ? builtins.baseNameOf (if url != "" then url else builtins.head urls),
+      executable ? false,
+      system ? defaultSystem,
+      storeDir ? "/nix/store",
+    }:
     let
       resolvedUrls =
-        if urls != [] && url == "" then urls
-        else if urls == [] && url != "" then [ url ]
-        else throw "fetchurl requires either 'url' or 'urls' to be set, not both";
+        if urls != [ ] && url == "" then
+          urls
+        else if urls == [ ] && url != "" then
+          [ url ]
+        else
+          throw "fetchurl requires either 'url' or 'urls' to be set, not both";
     in
     builtins.derivation {
       inherit name system;
@@ -431,13 +521,16 @@ let
       outputHashAlgo = "sha256";
 
       # Nix needs network access for this derivation
-      __impure = false;  # Still a pure derivation (hash-verified)
+      __impure = false; # Still a pure derivation (hash-verified)
 
       preferLocalBuild = true;
 
       # Make executable if requested
       inherit executable;
-    } // { urls = resolvedUrls; };
+    }
+    // {
+      urls = resolvedUrls;
+    };
 
   # ---------------------------------------------------------------------------
   # fetchgit
@@ -445,34 +538,39 @@ let
   # fetchgit { url; rev; hash; }
   #
   # Fixed-output derivation that clones a Git repository at a specific revision.
-  fetchgit = { url
-             , rev
-             , hash ? ""
-             , sha256 ? hash
-             , name ? "source"
-             , fetchSubmodules ? false
-             , system ? defaultSystem
-             , storeDir ? "/nix/store"
-             , deepClone ? false
-             , leaveDotGit ? false
-             }:
+  fetchgit =
+    {
+      url,
+      rev,
+      hash ? "",
+      sha256 ? hash,
+      name ? "source",
+      fetchSubmodules ? false,
+      system ? defaultSystem,
+      storeDir ? "/nix/store",
+      deepClone ? false,
+      leaveDotGit ? false,
+    }:
     builtins.derivation {
       inherit name system;
       builder = "/bin/sh";
-      args = [ "-c" ''
-        set -euo pipefail
-        export PATH="${storeDir}/git-minimal/bin:$PATH"
-        export GIT_SSL_CAINFO="${storeDir}/cacert/etc/ssl/certs/ca-bundle.crt"
+      args = [
+        "-c"
+        ''
+          set -euo pipefail
+          export PATH="${storeDir}/git-minimal/bin:$PATH"
+          export GIT_SSL_CAINFO="${storeDir}/cacert/etc/ssl/certs/ca-bundle.crt"
 
-        git clone ${if deepClone then "" else "--depth 1"} \
-          ${if fetchSubmodules then "--recurse-submodules" else ""} \
-          "${url}" "$out"
+          git clone ${if deepClone then "" else "--depth 1"} \
+            ${if fetchSubmodules then "--recurse-submodules" else ""} \
+            "${url}" "$out"
 
-        cd "$out"
-        git checkout "${rev}"
-        ${if fetchSubmodules then "git submodule update --init --recursive" else ""}
-        ${if !leaveDotGit then "rm -rf .git" else ""}
-      '' ];
+          cd "$out"
+          git checkout "${rev}"
+          ${if fetchSubmodules then "git submodule update --init --recursive" else ""}
+          ${if !leaveDotGit then "rm -rf .git" else ""}
+        ''
+      ];
 
       # Fixed-output derivation attributes
       outputHash = sha256;
@@ -483,13 +581,29 @@ let
       inherit url rev;
     };
 
-in {
-  inherit mkDerivation mkShell fetchurl fetchgit;
-  inherit replacePhase addPhaseAfter addPhaseBefore removePhase;
+in
+{
+  inherit
+    mkDerivation
+    mkShell
+    fetchurl
+    fetchgit
+    ;
+  inherit
+    replacePhase
+    addPhaseAfter
+    addPhaseBefore
+    removePhase
+    ;
 
   # Export default phases for use in stdenv/phases.nix
   inherit defaultPhases;
   phases = {
-    inherit defaultUnpackPhase defaultConfigurePhase defaultBuildPhase defaultInstallPhase;
+    inherit
+      defaultUnpackPhase
+      defaultConfigurePhase
+      defaultBuildPhase
+      defaultInstallPhase
+      ;
   };
 }

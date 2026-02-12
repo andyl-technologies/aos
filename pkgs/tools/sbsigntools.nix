@@ -1,7 +1,14 @@
 # sbsigntools — UEFI Secure Boot signing tools
-{ mkDerivation, fetchurl, make, openssl }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  openssl,
+}:
 
-let version = "0.9.5"; in
+let
+  version = "0.9.5";
+in
 mkDerivation {
   pname = "sbsigntools";
   inherit version;
@@ -15,27 +22,31 @@ mkDerivation {
 
   buildDeps = [ make ];
   runtimeDeps = [ openssl ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd sbsigntools-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

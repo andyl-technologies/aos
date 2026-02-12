@@ -1,7 +1,15 @@
 # rsync — Fast incremental file transfer
-{ mkDerivation, fetchurl, make, zlib, openssl }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  zlib,
+  openssl,
+}:
 
-let version = "3.3.0"; in
+let
+  version = "3.3.0";
+in
 mkDerivation {
   pname = "rsync";
   inherit version;
@@ -14,17 +22,22 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [ zlib openssl ];
-  propagatedDeps = [];
+  runtimeDeps = [
+    zlib
+    openssl
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd rsync-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -36,12 +49,14 @@ mkDerivation {
           --disable-md2man
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

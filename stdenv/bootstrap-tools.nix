@@ -14,28 +14,31 @@
 # The bootstrap files are the same ones used by nixpkgs' stdenv, hosted at
 # tarballs.nixos.org.  They are content-addressed (verified by hash).
 
-{ system ? "aarch64-linux" }:
+{
+  system ? "aarch64-linux",
+}:
 
 let
   # Per-architecture download URLs and hashes.
   # Source: nixpkgs pkgs/stdenv/linux/bootstrap-files/*.nix
   archFiles = {
     "aarch64-linux" = {
-      busyboxUrl  = "http://tarballs.nixos.org/stdenv-linux/aarch64/21ec906463ea8f11abf3f9091ddd4c3276516e58/busybox";
+      busyboxUrl = "http://tarballs.nixos.org/stdenv-linux/aarch64/21ec906463ea8f11abf3f9091ddd4c3276516e58/busybox";
       busyboxHash = "sha256-0MuIeQlBUaeisqoFSu8y+8oB6K4ZG5Lhq8RcS9JqkFQ=";
-      toolsUrl    = "http://tarballs.nixos.org/stdenv-linux/aarch64/21ec906463ea8f11abf3f9091ddd4c3276516e58/bootstrap-tools.tar.xz";
-      toolsHash   = "sha256-aJvtsWeuQHbb14BGZ2EiOKzjQn46h3x3duuPEawG0eE=";
+      toolsUrl = "http://tarballs.nixos.org/stdenv-linux/aarch64/21ec906463ea8f11abf3f9091ddd4c3276516e58/bootstrap-tools.tar.xz";
+      toolsHash = "sha256-aJvtsWeuQHbb14BGZ2EiOKzjQn46h3x3duuPEawG0eE=";
     };
     "x86_64-linux" = {
-      busyboxUrl  = "http://tarballs.nixos.org/stdenv/x86_64-unknown-linux-gnu/82b583ba2ba2e5706b35dbe23f31362e62be2a9d/busybox";
+      busyboxUrl = "http://tarballs.nixos.org/stdenv/x86_64-unknown-linux-gnu/82b583ba2ba2e5706b35dbe23f31362e62be2a9d/busybox";
       busyboxHash = "sha256-QrTEnQTBM1Y/qV9odq8irZkQSD9uOMbs2Q5NgCvKCNQ=";
-      toolsUrl    = "http://tarballs.nixos.org/stdenv/x86_64-unknown-linux-gnu/82b583ba2ba2e5706b35dbe23f31362e62be2a9d/bootstrap-tools.tar.xz";
-      toolsHash   = "sha256-YQlr088HPoVWBU2jpPhpIMyOyoEDZYDw1y60SGGbUM0=";
+      toolsUrl = "http://tarballs.nixos.org/stdenv/x86_64-unknown-linux-gnu/82b583ba2ba2e5706b35dbe23f31362e62be2a9d/bootstrap-tools.tar.xz";
+      toolsHash = "sha256-YQlr088HPoVWBU2jpPhpIMyOyoEDZYDw1y60SGGbUM0=";
     };
   };
 
-  files = archFiles.${system}
-    or (throw "bootstrap-tools: unsupported system '${system}' (expected aarch64-linux or x86_64-linux)");
+  files =
+    archFiles.${system}
+      or (throw "bootstrap-tools: unsupported system '${system}' (expected aarch64-linux or x86_64-linux)");
 
   # ---------------------------------------------------------------------------
   # Step 1: Fetch the static busybox binary.
@@ -51,7 +54,7 @@ let
     url = files.busyboxUrl;
     executable = true;
     outputHash = files.busyboxHash;
-    outputHashMode = "recursive";  # executable files need NAR hash
+    outputHashMode = "recursive"; # executable files need NAR hash
     outputHashAlgo = "sha256";
     preferLocalBuild = true;
   };
@@ -81,7 +84,12 @@ let
     name = "bootstrap-tools";
     inherit system tarball;
     builder = busybox;
-    args = [ "ash" "-e" ./bootstrap-tools/unpack.sh ];
+    args = [
+      "ash"
+      "-e"
+      ./bootstrap-tools/unpack.sh
+    ];
   };
 
-in bootstrapTools
+in
+bootstrapTools

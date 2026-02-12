@@ -1,7 +1,14 @@
 # libsepol — SELinux binary policy manipulation library
-{ mkDerivation, fetchurl, make, flex }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  flex,
+}:
 
-let version = "3.7"; in
+let
+  version = "3.7";
+in
 mkDerivation {
   pname = "libsepol";
   inherit version;
@@ -13,23 +20,29 @@ mkDerivation {
     hash = "sha256-pZdVqeMfrvEKaNOscWmlx6ubI742J7Z1pcOECgXYKS4=";
   };
 
-  buildDeps = [ make flex ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    flex
+  ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd selinux-${version}/libsepol
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make PREFIX=$out SHLIBDIR=$out/lib -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install PREFIX=$out SHLIBDIR=$out/lib
       '';

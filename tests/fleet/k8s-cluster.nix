@@ -7,7 +7,11 @@
 # Usage:
 #   nix-build -A checks.fleet.k8s-cluster
 
-{ pkgs, lib, systems }:
+{
+  pkgs,
+  lib,
+  systems,
+}:
 
 let
   fleetLib = import ./lib.nix { inherit pkgs lib; };

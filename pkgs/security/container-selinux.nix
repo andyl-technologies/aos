@@ -1,7 +1,14 @@
 # container-selinux — SELinux policy for container runtimes
-{ mkDerivation, fetchurl, make, policycoreutils }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  policycoreutils,
+}:
 
-let version = "2.232.1"; in
+let
+  version = "2.232.1";
+in
 mkDerivation {
   pname = "container-selinux";
   inherit version;
@@ -13,24 +20,30 @@ mkDerivation {
     hash = "sha256-puK6O4twbnNP3Y3r8NW/HZuDkvTCGtJg0US0yE4I48o=";
   };
 
-  buildDeps = [ make policycoreutils ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    policycoreutils
+  ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd container-selinux-${version}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -f /usr/share/selinux/devel/Makefile container.pp 2>/dev/null || \
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/share/selinux/packages
         mkdir -p $out/share/containers

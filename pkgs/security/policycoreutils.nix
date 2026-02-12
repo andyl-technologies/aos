@@ -1,8 +1,18 @@
 # policycoreutils — SELinux core policy utilities
-{ mkDerivation, fetchurl, make, pkg-config,
-  libsepol, libselinux, libsemanage, audit }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  libsepol,
+  libselinux,
+  libsemanage,
+  audit,
+}:
 
-let version = "3.7"; in
+let
+  version = "3.7";
+in
 mkDerivation {
   pname = "policycoreutils";
   inherit version;
@@ -14,18 +24,28 @@ mkDerivation {
     hash = "sha256-pZdVqeMfrvEKaNOscWmlx6ubI742J7Z1pcOECgXYKS4=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ libsepol libselinux libsemanage audit ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    libsepol
+    libselinux
+    libsemanage
+    audit
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd selinux-${version}/policycoreutils
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make PREFIX=$out SBINDIR=$out/sbin \
           CFLAGS="-I${libsepol}/include -I${libselinux}/include -I${libsemanage}/include -I${audit}/include" \
@@ -33,7 +53,8 @@ mkDerivation {
           -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install PREFIX=$out SBINDIR=$out/sbin
       '';

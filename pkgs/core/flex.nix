@@ -1,7 +1,14 @@
 # flex — Fast lexical analyzer generator
-{ mkDerivation, fetchurl, make, m4 }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  m4,
+}:
 
-let version = "2.6.4"; in
+let
+  version = "2.6.4";
+in
 mkDerivation {
   pname = "flex";
   inherit version;
@@ -13,29 +20,36 @@ mkDerivation {
     hash = "sha256-6HquAyvwfCb4WsDtMlCZjDdiHZX4vXSLMfFbM8Re6ZU=";
   };
 
-  buildDeps = [ make m4 ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    m4
+  ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd flex-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

@@ -1,7 +1,9 @@
 # CA Certificates — Mozilla CA certificate bundle
 { mkDerivation, fetchurl }:
 
-let version = "2024-07-02"; in
+let
+  version = "2024-07-02";
+in
 mkDerivation {
   pname = "ca-certificates";
   inherit version;
@@ -13,12 +15,13 @@ mkDerivation {
     hash = "sha256-G/RYQSVo4TSkUU9eFwoyjREJHgcccRCVXJiE7YeXKsk=";
   };
 
-  buildDeps = [];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  buildDeps = [ ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/etc/ssl/certs
         cp $src $out/etc/ssl/certs/ca-certificates.crt

@@ -1,22 +1,29 @@
 # kubectl — Kubernetes command-line tool
-{ mkDerivation, fetchurl, make, kubeSource }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  kubeSource,
+}:
 
 mkDerivation {
   pname = "kubectl";
   inherit (kubeSource) version src;
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd kubernetes-${kubeSource.version}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         export GOPATH=$TMPDIR/go
         export CGO_ENABLED=0
@@ -27,7 +34,8 @@ mkDerivation {
           ./cmd/kubectl
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/bin
         install -m 755 kubectl $out/bin/kubectl

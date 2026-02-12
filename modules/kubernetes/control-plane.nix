@@ -9,7 +9,12 @@
 #   [kubernetes.control_plane] enable, advertise_address, api_server_port
 #   [kubernetes.control_plane] etcd_data_dir
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.kubernetes.controlPlane;
@@ -128,13 +133,13 @@ in
     # Open control plane ports in the firewall.
     # These are additional to the base kubelet port (10250).
     aos.firewall.allowedTCP = [
-      22                 # SSH
-      cfg.apiServerPort  # kube-apiserver
-      2379               # etcd client
-      2380               # etcd peer
-      10250              # kubelet API
-      10257              # kube-controller-manager
-      10259              # kube-scheduler
+      22 # SSH
+      cfg.apiServerPort # kube-apiserver
+      2379 # etcd client
+      2380 # etcd peer
+      10250 # kubelet API
+      10257 # kube-controller-manager
+      10259 # kube-scheduler
     ];
   };
 }

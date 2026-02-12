@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use ignore::WalkBuilder;
 
 use crate::nix::NixRunner;
 use crate::output::Printer;
@@ -11,13 +12,27 @@ pub fn run(
 ) -> Result<()> {
     // Determine which files to format
     let nix_files: Vec<String> = if files.is_empty() {
-        // Find all .nix files under the project root
-        let pattern = format!("{}/**/*.nix", nix.root().display());
-        glob::glob(&pattern)
-            .context("failed to glob for .nix files")?
-            .filter_map(|entry| entry.ok())
-            .map(|path| path.to_string_lossy().to_string())
-            .collect()
+        // Walk project tree respecting .gitignore (skips symlinks into /nix/store)
+        let mut found = Vec::new();
+        for entry in WalkBuilder::new(nix.root())
+            .hidden(false)         // include dotfiles like .envrc
+            .git_ignore(true)      // respect .gitignore
+            .git_global(false)
+            .git_exclude(true)
+            .follow_links(false)   // never follow symlinks
+            .build()
+        {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "nix") && path.is_file() {
+                found.push(path.to_string_lossy().to_string());
+            }
+        }
+        found.sort();
+        found
     } else {
         files.to_vec()
     };
@@ -37,25 +52,33 @@ pub fn run(
     // Try to find nixfmt binary
     let nixfmt = find_nixfmt()?;
 
-    let mut cmd = std::process::Command::new(&nixfmt);
-    if check {
-        cmd.arg("--check");
-    }
-    cmd.args(&nix_files);
-    cmd.current_dir(nix.root());
-
-    let status = cmd.status().with_context(|| format!("failed to run {nixfmt}"))?;
-
-    if !status.success() {
+    // Run nixfmt in batches to avoid "argument list too long"
+    let batch_size = 200;
+    for chunk in nix_files.chunks(batch_size) {
+        let mut cmd = std::process::Command::new(&nixfmt);
         if check {
-            anyhow::bail!("formatting check failed — run 'aos fmt' to fix");
-        } else {
-            anyhow::bail!("nixfmt exited with status {status}");
+            cmd.arg("--check");
+        }
+        cmd.args(chunk);
+        cmd.current_dir(nix.root());
+
+        let status = cmd.status().with_context(|| format!("failed to run {nixfmt}"))?;
+
+        if !status.success() {
+            if check {
+                anyhow::bail!("formatting check failed — run 'aos fmt' to fix");
+            } else {
+                anyhow::bail!("nixfmt exited with status {status}");
+            }
         }
     }
 
     if !check {
-        printer.success(&format!("Formatted {} file{}", nix_files.len(), if nix_files.len() == 1 { "" } else { "s" }));
+        printer.success(&format!(
+            "Formatted {} file{}",
+            nix_files.len(),
+            if nix_files.len() == 1 { "" } else { "s" }
+        ));
     }
 
     Ok(())
@@ -70,7 +93,7 @@ fn find_nixfmt() -> Result<String> {
     }
 
     anyhow::bail!(
-        "nixfmt not found in PATH. Install it with: nix profile install nixpkgs#nixfmt-rfc-style"
+        "nixfmt not found in PATH. Install it with: nix profile install nixpkgs#nixfmt"
     )
 }
 
