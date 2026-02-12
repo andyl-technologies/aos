@@ -12,13 +12,19 @@
 #   nix-build -A checks.vm.boot       Run VM boot test
 #   nix-build -A checks.fleet.k8s     Run k8s cluster fleet test
 
-{ pkgs, lib, testTools }:
+{
+  pkgs,
+  lib,
+  testTools,
+}:
 
 let
-  mkSystem = modules: lib.evalModules {
-    modules = modules;
-    inherit pkgs lib;
-  };
+  mkSystem =
+    modules:
+    lib.evalModules {
+      modules = modules;
+      inherit pkgs lib;
+    };
 
   systems = {
     base = mkSystem [ ../systems/base.nix ];
@@ -26,9 +32,17 @@ let
     k8s-worker = mkSystem [ ../systems/k8s-worker.nix ];
     k8s-control-plane = mkSystem [ ../systems/k8s-control-plane.nix ];
   };
-in {
+in
+{
   eval = import ./eval.nix { inherit pkgs lib systems; };
   build = import ./build.nix { inherit pkgs lib; };
-  vm = import ./vm { inherit pkgs lib systems testTools; };
+  vm = import ./vm {
+    inherit
+      pkgs
+      lib
+      systems
+      testTools
+      ;
+  };
   fleet = import ./fleet { inherit pkgs lib systems; };
 }

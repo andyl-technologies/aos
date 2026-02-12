@@ -11,13 +11,60 @@
 #   kubernetes   — containerd, kubelet, CNI, kernel modules
 #   update       — Update mechanism, health checks, rollback
 
-{ pkgs, lib, systems, testTools }:
+{
+  pkgs,
+  lib,
+  systems,
+  testTools,
+}:
 
 {
-  boot = import ./boot.nix { inherit pkgs lib systems testTools; };
-  immutability = import ./immutability.nix { inherit pkgs lib systems testTools; };
-  security = import ./security.nix { inherit pkgs lib systems testTools; };
-  networking = import ./networking.nix { inherit pkgs lib systems testTools; };
-  kubernetes = import ./kubernetes.nix { inherit pkgs lib systems testTools; };
-  update = import ./update.nix { inherit pkgs lib systems testTools; };
+  boot = import ./boot.nix {
+    inherit
+      pkgs
+      lib
+      systems
+      testTools
+      ;
+  };
+  immutability = import ./immutability.nix {
+    inherit
+      pkgs
+      lib
+      systems
+      testTools
+      ;
+  };
+  security = import ./security.nix {
+    inherit
+      pkgs
+      lib
+      systems
+      testTools
+      ;
+  };
+  networking = import ./networking.nix {
+    inherit
+      pkgs
+      lib
+      systems
+      testTools
+      ;
+  };
+  kubernetes = import ./kubernetes.nix {
+    inherit
+      pkgs
+      lib
+      systems
+      testTools
+      ;
+  };
+  update = import ./update.nix {
+    inherit
+      pkgs
+      lib
+      systems
+      testTools
+      ;
+  };
 }

@@ -11,7 +11,12 @@
 #   [update] max_retries, retry_delay, boot_tries, signing_key_path
 #   [update.gc] schedule, keep_generations, min_age_hours
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.update;

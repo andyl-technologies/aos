@@ -6,25 +6,42 @@
     crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, crane }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      crane,
+      ...
+    }:
     let
-      supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      supportedSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
 
-      aosCliFor = system:
+      aosCliFor =
+        system:
         let
           pkgs = import nixpkgs { inherit system; };
           craneLib = crane.mkLib pkgs;
-        in import ./pkgs/tools/aos.nix { inherit craneLib pkgs; };
-    in {
+        in
+        import ./pkgs/tools/aos.nix { inherit craneLib pkgs; };
+    in
+    {
       packages = forAllSystems (system: {
         aos = aosCliFor system;
         default = aosCliFor system;
       });
 
-      devShells = forAllSystems (system:
-        let pkgs = import nixpkgs { inherit system; };
-        in {
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
           default = import ./dev/shell.nix {
             inherit pkgs;
             aos = aosCliFor system;
@@ -36,8 +53,6 @@
         aos = aosCliFor system;
       });
 
-      formatter = forAllSystems (system:
-        (import nixpkgs { inherit system; }).nixfmt-rfc-style
-      );
+      formatter = forAllSystems (system: (import nixpkgs { inherit system; }).nixfmt);
     };
 }

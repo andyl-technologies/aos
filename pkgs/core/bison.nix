@@ -1,7 +1,14 @@
 # GNU Bison — Parser generator
-{ mkDerivation, fetchurl, make, m4 }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  m4,
+}:
 
-let version = "3.8.2"; in
+let
+  version = "3.8.2";
+in
 mkDerivation {
   pname = "bison";
   inherit version;
@@ -15,30 +22,37 @@ mkDerivation {
     hash = "sha256-m7oCFMz38QecXVkhAEUie89hlRmEDr+oDNOEnP9aW/I=";
   };
 
-  buildDeps = [ make m4 ];
-  runtimeDeps = [];
+  buildDeps = [
+    make
+    m4
+  ];
+  runtimeDeps = [ ];
   propagatedDeps = [ m4 ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd bison-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
           --disable-nls
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

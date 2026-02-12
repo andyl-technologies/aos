@@ -1,7 +1,14 @@
 # SELinux Reference Policy
-{ mkDerivation, fetchurl, make, policycoreutils }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  policycoreutils,
+}:
 
-let version = "2.20240916"; in
+let
+  version = "2.20240916";
+in
 mkDerivation {
   pname = "refpolicy";
   inherit version;
@@ -13,18 +20,23 @@ mkDerivation {
     hash = "sha256-pOOQcqyRvwkqCGYLJGpJ8+mGyiwWQCpbH60643To10c=";
   };
 
-  buildDeps = [ make policycoreutils ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    policycoreutils
+  ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd refpolicy-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         # Set policy build options
         sed -i \
@@ -36,12 +48,14 @@ mkDerivation {
           build.conf
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install PREFIX=$out
       '';

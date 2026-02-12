@@ -23,7 +23,8 @@ let
 
   # Check that a package's closure does not exceed a size limit.
   # This is a derivation that queries the store at build time.
-  checkClosureSize = pkg: maxMB:
+  checkClosureSize =
+    pkg: maxMB:
     let
       nameStr = pkg.pname or pkg.name or "unknown";
     in

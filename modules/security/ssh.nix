@@ -9,7 +9,12 @@
 #   [services.ssh] kbd_interactive_auth, x11_forwarding, max_auth_tries
 #   [services.ssh] ciphers, kex_algorithms, macs, authorized_keys_file
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.services.ssh;
@@ -192,7 +197,10 @@ in
     systemd.services."sshd" = {
       description = "OpenSSH Daemon";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" "sshd-keygen.target" ];
+      after = [
+        "network.target"
+        "sshd-keygen.target"
+      ];
       wants = [ "sshd-keygen.target" ];
       serviceConfig = {
         Type = "notify";

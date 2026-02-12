@@ -1,8 +1,16 @@
 # SETools — SELinux policy analysis tools
-{ mkDerivation, fetchurl, make, pkg-config,
-  libsepol, libselinux }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  libsepol,
+  libselinux,
+}:
 
-let version = "4.5.1"; in
+let
+  version = "4.5.1";
+in
 mkDerivation {
   pname = "setools";
   inherit version;
@@ -14,18 +22,26 @@ mkDerivation {
     hash = "sha256-JeR9ALv/1gRvVUCcm6OwjZsdV4jMFZ6iR9ngztjkguc=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ libsepol libselinux ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    libsepol
+    libselinux
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd setools-${version}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         # setools uses a Python/Cython build system
         export CFLAGS="-I${libsepol}/include -I${libselinux}/include"
@@ -33,7 +49,8 @@ mkDerivation {
         python3 setup.py build
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         python3 setup.py install --prefix=$out --optimize=1
       '';

@@ -1,7 +1,14 @@
 # containerd — Container runtime
-{ mkDerivation, fetchurl, make, runc }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  runc,
+}:
 
-let version = "1.7.24"; in
+let
+  version = "1.7.24";
+in
 mkDerivation {
   pname = "containerd";
   inherit version;
@@ -15,23 +22,26 @@ mkDerivation {
 
   buildDeps = [ make ];
   runtimeDeps = [ runc ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd containerd-${version}
       '';
     }
-    { name = "setup-gopath";
+    {
+      name = "setup-gopath";
       script = ''
         export GOPATH=$TMPDIR/go
         mkdir -p $GOPATH/src/github.com/containerd
         ln -sf $PWD $GOPATH/src/github.com/containerd/containerd
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         export GOPATH=$TMPDIR/go
         export CGO_ENABLED=0
@@ -40,7 +50,8 @@ mkDerivation {
           binaries
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/bin
         install -m 755 bin/* $out/bin/

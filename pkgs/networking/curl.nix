@@ -1,8 +1,18 @@
 # curl — Command-line URL transfer tool
-{ mkDerivation, fetchurl, make, pkg-config, perl,
-  openssl, zlib, ca-certificates }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  perl,
+  openssl,
+  zlib,
+  ca-certificates,
+}:
 
-let version = "8.10.1"; in
+let
+  version = "8.10.1";
+in
 mkDerivation {
   pname = "curl";
   inherit version;
@@ -14,18 +24,28 @@ mkDerivation {
     hash = "sha256-c6Sw6ZWWoJ+lkkpPt+S5lahf2g0YosAquc8TS+vOBO4=";
   };
 
-  buildDeps = [ make pkg-config perl ];
-  runtimeDeps = [ openssl zlib ca-certificates ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+    perl
+  ];
+  runtimeDeps = [
+    openssl
+    zlib
+    ca-certificates
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd curl-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -45,12 +65,14 @@ mkDerivation {
           --disable-manual
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

@@ -1,7 +1,15 @@
 # e2fsprogs — Utilities for ext2/ext3/ext4 filesystems
-{ mkDerivation, fetchurl, make, pkg-config, util-linux }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  util-linux,
+}:
 
-let version = "1.47.1"; in
+let
+  version = "1.47.1";
+in
 mkDerivation {
   pname = "e2fsprogs";
   inherit version;
@@ -13,18 +21,23 @@ mkDerivation {
     hash = "sha256-mvzSAfOUKdLbJJKusT26XnXWzFBoK3MtyjVkO9XwkuM=";
   };
 
-  buildDeps = [ make pkg-config ];
+  buildDeps = [
+    make
+    pkg-config
+  ];
   runtimeDeps = [ util-linux ];
   propagatedDeps = [ util-linux ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd e2fsprogs-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -35,12 +48,14 @@ mkDerivation {
           --disable-fsck
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
         make install-libs
