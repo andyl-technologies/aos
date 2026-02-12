@@ -16,7 +16,7 @@
 
 let
   mkSystem = modules: lib.evalModules {
-    modules = modules ++ import ../modules/module-list.nix;
+    modules = modules;
     inherit pkgs lib;
   };
 
