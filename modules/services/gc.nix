@@ -7,7 +7,12 @@
 # Absorbed TOML config values:
 #   [gc] enable, schedule, keep_generations, older_than
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.gc;

@@ -1,7 +1,15 @@
 # util-linux — Miscellaneous system utilities
-{ mkDerivation, fetchurl, make, pkg-config, zlib }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  zlib,
+}:
 
-let version = "2.40.2"; in
+let
+  version = "2.40.2";
+in
 mkDerivation {
   pname = "util-linux";
   inherit version;
@@ -13,12 +21,16 @@ mkDerivation {
     hash = "sha256-14s3pm9ZItcO3zvfsBprM9NO08PK/WYoIDsqK2fI6LM=";
   };
 
-  buildDeps = [ make pkg-config ];
+  buildDeps = [
+    make
+    pkg-config
+  ];
   runtimeDeps = [ zlib ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd util-linux-${version}
@@ -31,7 +43,8 @@ mkDerivation {
         done
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -83,12 +96,14 @@ mkDerivation {
           --disable-makeinstall-setuid
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

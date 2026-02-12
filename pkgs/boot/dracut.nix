@@ -1,8 +1,19 @@
 # dracut — initramfs infrastructure
-{ mkDerivation, fetchurl, make, pkg-config,
-  bash, coreutils, kmod, util-linux, systemd }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  bash,
+  coreutils,
+  kmod,
+  util-linux,
+  systemd,
+}:
 
-let version = "103"; in
+let
+  version = "103";
+in
 mkDerivation {
   pname = "dracut";
   inherit version;
@@ -14,18 +25,29 @@ mkDerivation {
     hash = "sha256-mpK08GQ5JqZRYhcdaLlSX8k+boL0VaSzk42zhahBvag=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ bash coreutils kmod util-linux systemd ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    bash
+    coreutils
+    kmod
+    util-linux
+    systemd
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd dracut-ng-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         # Fix shebangs for sandbox
         for f in $(find . -type f -name '*.sh' -o -name 'configure'); do
@@ -44,12 +66,14 @@ mkDerivation {
           --disable-documentation
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install DESTDIR=$out
       '';

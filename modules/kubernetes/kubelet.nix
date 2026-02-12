@@ -10,7 +10,12 @@
 #   [kubernetes.kubelet] max_pods, serialize_image_pulls
 #   [kubernetes.kubelet] node_labels, node_taints
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.kubernetes.kubelet;
@@ -55,23 +60,31 @@ let
 
   # Build kubelet command-line flags.
   nodeLabelsFlag =
-    if cfg.nodeLabels == {} then ""
-    else "--node-labels=${builtins.concatStringsSep "," (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.nodeLabels)}";
+    if cfg.nodeLabels == { } then
+      ""
+    else
+      "--node-labels=${
+        builtins.concatStringsSep "," (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.nodeLabels)
+      }";
 
   nodeTaintsFlag =
-    if cfg.nodeTaints == [] then ""
-    else "--register-with-taints=${builtins.concatStringsSep "," cfg.nodeTaints}";
+    if cfg.nodeTaints == [ ] then
+      ""
+    else
+      "--register-with-taints=${builtins.concatStringsSep "," cfg.nodeTaints}";
 
-  kubeletFlags = builtins.concatStringsSep " " (builtins.filter (s: s != "") [
-    "--config=/var/lib/kubelet/config.yaml"
-    "--kubeconfig=/etc/kubernetes/kubelet.conf"
-    "--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf"
-    "--container-runtime-endpoint=${cfg.containerRuntimeEndpoint}"
-    "--hostname-override=${config.aos.networking.hostName}"
-    "--v=2"
-    nodeLabelsFlag
-    nodeTaintsFlag
-  ]);
+  kubeletFlags = builtins.concatStringsSep " " (
+    builtins.filter (s: s != "") [
+      "--config=/var/lib/kubelet/config.yaml"
+      "--kubeconfig=/etc/kubernetes/kubelet.conf"
+      "--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf"
+      "--container-runtime-endpoint=${cfg.containerRuntimeEndpoint}"
+      "--hostname-override=${config.aos.networking.hostName}"
+      "--v=2"
+      nodeLabelsFlag
+      nodeTaintsFlag
+    ]
+  );
 
 in
 {
@@ -141,7 +154,7 @@ in
 
     nodeLabels = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = {};
+      default = { };
       description = ''
         Labels to apply to this node on registration. Example:
         { "topology.kubernetes.io/zone" = "us-east-1a"; }
@@ -150,7 +163,7 @@ in
 
     nodeTaints = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = ''
         Taints to apply to this node on registration. Format:
         "key=value:effect" (e.g. "node-role.kubernetes.io/control-plane:NoSchedule").
@@ -159,7 +172,10 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ pkgs.kubelet pkgs.crictl ];
+    environment.systemPackages = [
+      pkgs.kubelet
+      pkgs.crictl
+    ];
 
     # /var/lib/kubelet/config.yaml — KubeletConfiguration.
     environment.etc."kubernetes/kubelet-config.yaml" = {
@@ -170,7 +186,10 @@ in
     systemd.services."kubelet" = {
       description = "Kubernetes Kubelet";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" "containerd.service" ];
+      after = [
+        "network-online.target"
+        "containerd.service"
+      ];
       wants = [ "network-online.target" ];
       requires = [ "containerd.service" ];
       serviceConfig = {
@@ -206,6 +225,9 @@ in
     aos.kubernetes.containerd.enable = true;
 
     # Open kubelet API port in the firewall.
-    aos.firewall.allowedTCP = [ 22 10250 ];
+    aos.firewall.allowedTCP = [
+      22
+      10250
+    ];
   };
 }

@@ -1,7 +1,17 @@
 # iproute2 — Linux networking utilities
-{ mkDerivation, fetchurl, make, pkg-config, libmnl, bison, flex }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  libmnl,
+  bison,
+  flex,
+}:
 
-let version = "6.11.0"; in
+let
+  version = "6.11.0";
+in
 mkDerivation {
   pname = "iproute2";
   inherit version;
@@ -13,28 +23,37 @@ mkDerivation {
     hash = "sha256-H3lTmKBK6qzQao9qziz9kTwz+llTypnaroO7XFNGEcM=";
   };
 
-  buildDeps = [ make pkg-config bison flex ];
+  buildDeps = [
+    make
+    pkg-config
+    bison
+    flex
+  ];
   runtimeDeps = [ libmnl ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd iproute2-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure --prefix=$out
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make PREFIX=$out SBINDIR=$out/sbin -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install PREFIX=$out SBINDIR=$out/sbin
       '';

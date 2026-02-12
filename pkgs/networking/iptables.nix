@@ -1,7 +1,16 @@
 # iptables — Linux packet filtering framework
-{ mkDerivation, fetchurl, make, pkg-config, libmnl, libnftnl }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  libmnl,
+  libnftnl,
+}:
 
-let version = "1.8.10"; in
+let
+  version = "1.8.10";
+in
 mkDerivation {
   pname = "iptables";
   inherit version;
@@ -13,18 +22,26 @@ mkDerivation {
     hash = "sha256-XMJVwYk1bjF9BwdVzpNx62Oht4PDRJj7jDAmTzzFnJw=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ libmnl libnftnl ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    libmnl
+    libnftnl
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd iptables-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -36,12 +53,14 @@ mkDerivation {
           --enable-nftables
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

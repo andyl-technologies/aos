@@ -9,7 +9,12 @@
 #   [kubernetes.containerd] enable, snapshotter, runtime_type
 #   [kubernetes.containerd] cgroup_driver, sandbox_image, registry_mirrors
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.kubernetes.containerd;
@@ -48,9 +53,9 @@ let
         [plugins."io.containerd.grpc.v1.cri".cni]
           bin_dir = "/opt/cni/bin"
           conf_dir = "/etc/cni/net.d"
-    ${lib.optionalString (cfg.registryMirrors != {}) ''
-        [plugins."io.containerd.grpc.v1.cri".registry]
-    ${registryMirrorConfig}
+    ${lib.optionalString (cfg.registryMirrors != { }) ''
+          [plugins."io.containerd.grpc.v1.cri".registry]
+      ${registryMirrorConfig}
     ''}
   '';
 
@@ -103,7 +108,7 @@ in
 
     registryMirrors = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = {};
+      default = { };
       description = ''
         Registry mirror mappings. Each key is the original registry
         (e.g. "docker.io") and the value is the mirror URL
@@ -113,7 +118,10 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ pkgs.containerd pkgs.runc ];
+    environment.systemPackages = [
+      pkgs.containerd
+      pkgs.runc
+    ];
 
     # /etc/containerd/config.toml — containerd configuration.
     environment.etc."containerd/config.toml" = {
@@ -124,7 +132,10 @@ in
     systemd.services."containerd" = {
       description = "containerd Container Runtime";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" "local-fs.target" ];
+      after = [
+        "network.target"
+        "local-fs.target"
+      ];
       serviceConfig = {
         Type = "notify";
         ExecStart = "/usr/bin/containerd --config /etc/containerd/config.toml";

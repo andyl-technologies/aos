@@ -4,7 +4,11 @@
 # larger root partition accommodates etcd data and control plane binaries.
 # Layout: 1G ESP + 12G root + 19G unpartitioned (for ZFS at runtime).
 
-{ pkgs, lib, system }:
+{
+  pkgs,
+  lib,
+  system,
+}:
 
 import ./builder.nix {
   inherit pkgs lib system;

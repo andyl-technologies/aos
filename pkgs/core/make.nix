@@ -1,7 +1,9 @@
 # GNU Make — Build automation tool
 { mkDerivation, fetchurl }:
 
-let version = "4.4.1"; in
+let
+  version = "4.4.1";
+in
 mkDerivation {
   pname = "make";
   inherit version;
@@ -15,30 +17,34 @@ mkDerivation {
     hash = "sha256-3Rb7HWe/q3mnL16DkHNcSePo5wtJRaFasfgd23hlj7M=";
   };
 
-  buildDeps = [];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  buildDeps = [ ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd make-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
           --disable-nls
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

@@ -1,8 +1,24 @@
 # Linux Kernel
-{ mkDerivation, fetchurl, make, perl, bash,
-  gawk, openssl, kmod, bison, flex, rsync, elfutils, bc, binutils }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  perl,
+  bash,
+  gawk,
+  openssl,
+  kmod,
+  bison,
+  flex,
+  rsync,
+  elfutils,
+  bc,
+  binutils,
+}:
 
-let version = "6.12.11"; in
+let
+  version = "6.12.11";
+in
 mkDerivation {
   pname = "linux";
   inherit version;
@@ -14,21 +30,35 @@ mkDerivation {
     hash = "sha256-R1Fy/b2HoVPxI6V5Umcudzvbba9bWKQX0aXkGfz+7Ek=";
   };
 
-  buildDeps = [ make perl bash gawk openssl bison flex rsync elfutils bc binutils ];
+  buildDeps = [
+    make
+    perl
+    bash
+    gawk
+    openssl
+    bison
+    flex
+    rsync
+    elfutils
+    bc
+    binutils
+  ];
   runtimeDeps = [ kmod ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   # Path to kernel config fragments — these are merged before building.
   configDir = ./config;
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd linux-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         # Start with a default x86_64 config
         make defconfig ARCH=x86_64
@@ -42,12 +72,14 @@ mkDerivation {
         make olddefconfig ARCH=x86_64
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES ARCH=x86_64 bzImage modules
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/boot $out/lib/modules
 

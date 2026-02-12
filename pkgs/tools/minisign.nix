@@ -1,7 +1,13 @@
 # minisign — Dead simple signing tool
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "0.11"; in
+let
+  version = "0.11";
+in
 mkDerivation {
   pname = "minisign";
   inherit version;
@@ -14,17 +20,19 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd minisign-${version}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         mkdir -p build && cd build
         cmake .. \
@@ -33,7 +41,8 @@ mkDerivation {
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         cd build
         make install

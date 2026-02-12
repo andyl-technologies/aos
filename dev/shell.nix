@@ -6,20 +6,19 @@ pkgs.mkShellNoCC {
 
   packages = [
     aos
-    pkgs.nixfmt-rfc-style
     pkgs.just
   ];
 
   shellHook = ''
-    export AOS_ROOT="$(pwd)"
+        export AOS_ROOT="$(pwd)"
 
-    # Install pre-commit hook
-    if [ -d .git ]; then
-      cat > .git/hooks/pre-commit << 'HOOK'
-#!/usr/bin/env bash
-exec aos fmt --check
-HOOK
-      chmod +x .git/hooks/pre-commit
-    fi
+        # Install pre-commit hook
+        if [ -d .git ]; then
+          cat > .git/hooks/pre-commit << 'HOOK'
+    #!/usr/bin/env bash
+    exec aos fmt --check
+    HOOK
+          chmod +x .git/hooks/pre-commit
+        fi
   '';
 }

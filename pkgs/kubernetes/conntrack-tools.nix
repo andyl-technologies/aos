@@ -1,7 +1,16 @@
 # conntrack-tools — Connection tracking userspace tools
-{ mkDerivation, fetchurl, make, pkg-config, libmnl, libnftnl }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  libmnl,
+  libnftnl,
+}:
 
-let version = "1.4.8"; in
+let
+  version = "1.4.8";
+in
 mkDerivation {
   pname = "conntrack-tools";
   inherit version;
@@ -13,30 +22,40 @@ mkDerivation {
     hash = "sha256-BnZ39MX2VkgZ547TqdSomAk16pJz86uyKkIOowq13tY=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ libmnl libnftnl ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    libmnl
+    libnftnl
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd conntrack-tools-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
           --sbindir=$out/sbin
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

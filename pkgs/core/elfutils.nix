@@ -1,7 +1,16 @@
 # elfutils — ELF utilities and libelf
-{ mkDerivation, fetchurl, make, pkg-config, zlib, m4 }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  zlib,
+  m4,
+}:
 
-let version = "0.191"; in
+let
+  version = "0.191";
+in
 mkDerivation {
   pname = "elfutils";
   inherit version;
@@ -13,18 +22,24 @@ mkDerivation {
     hash = "sha256-33bbcTZtHXCDZfx6bGDKSDmPFDZ+sriVTvyIlxR62HE=";
   };
 
-  buildDeps = [ make pkg-config m4 ];
+  buildDeps = [
+    make
+    pkg-config
+    m4
+  ];
   runtimeDeps = [ zlib ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd elfutils-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -37,12 +52,14 @@ mkDerivation {
           --without-zstd
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

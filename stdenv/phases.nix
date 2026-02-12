@@ -63,7 +63,8 @@ let
     '';
   };
 
-in rec {
+in
+rec {
   # ---------------------------------------------------------------------------
   # GNU Autoconf (configure / make / make install)
   # ---------------------------------------------------------------------------
@@ -210,21 +211,21 @@ in rec {
     {
       name = "configure";
       script = ''
-        # Set up Cargo environment
-        export CARGO_HOME="$TMPDIR/cargo"
-        mkdir -p "$CARGO_HOME"
+                # Set up Cargo environment
+                export CARGO_HOME="$TMPDIR/cargo"
+                mkdir -p "$CARGO_HOME"
 
-        # Use vendored dependencies if available
-        if [ -d vendor ]; then
-          mkdir -p .cargo
-          cat > .cargo/config.toml << 'CARGO_CONF'
-[source.crates-io]
-replace-with = "vendored-sources"
+                # Use vendored dependencies if available
+                if [ -d vendor ]; then
+                  mkdir -p .cargo
+                  cat > .cargo/config.toml << 'CARGO_CONF'
+        [source.crates-io]
+        replace-with = "vendored-sources"
 
-[source.vendored-sources]
-directory = "vendor"
-CARGO_CONF
-        fi
+        [source.vendored-sources]
+        directory = "vendor"
+        CARGO_CONF
+                fi
       '';
     }
     {

@@ -1,7 +1,13 @@
 # ipvsadm — IPVS administration utility
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "1.31"; in
+let
+  version = "1.31";
+in
 mkDerivation {
   pname = "ipvsadm";
   inherit version;
@@ -14,22 +20,25 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd ipvsadm-${version}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make PREFIX=$out SBIN=$out/sbin -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/sbin $out/share/man/man8
         make install PREFIX=$out SBIN=$out/sbin

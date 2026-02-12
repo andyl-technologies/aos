@@ -17,8 +17,9 @@
 #   images/   — Disk image builders
 #   tests/    — Multi-layer test suite (eval, build, vm, fleet)
 
-{ system ? "x86_64-linux"
-, nixpkgs ? import <nixpkgs> { inherit system; }
+{
+  system ? "x86_64-linux",
+  nixpkgs ? import <nixpkgs> { inherit system; },
 }:
 
 let
@@ -36,10 +37,12 @@ let
   };
 
   # Helper: evaluate a system variant from a module path list.
-  mkSystem = modules: lib.evalModules {
-    modules = modules;
-    inherit pkgs lib;
-  };
+  mkSystem =
+    modules:
+    lib.evalModules {
+      modules = modules;
+      inherit pkgs lib;
+    };
 
   systems = {
     base = mkSystem [ ./systems/base.nix ];
@@ -48,7 +51,8 @@ let
     k8s-control-plane = mkSystem [ ./systems/k8s-control-plane.nix ];
   };
 
-in {
+in
+{
   inherit pkgs lib systems;
 
   images = {

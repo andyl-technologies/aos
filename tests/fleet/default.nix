@@ -7,7 +7,11 @@
 #   k8s-cluster    — Boot control-plane + worker, kubeadm init/join
 #   rolling-update — Rolling update with health checks across servers
 
-{ pkgs, lib, systems }:
+{
+  pkgs,
+  lib,
+  systems,
+}:
 
 {
   k8s-cluster = import ./k8s-cluster.nix { inherit pkgs lib systems; };

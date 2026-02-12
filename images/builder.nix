@@ -22,7 +22,15 @@
 # build. It will not evaluate in a pure Nix sandbox without
 # requiredSystemFeatures = ["kvm"].
 
-{ pkgs, lib, system, name, diskSize ? "16G", espSize ? "1G", rootSize ? "8G" }:
+{
+  pkgs,
+  lib,
+  system,
+  name,
+  diskSize ? "16G",
+  espSize ? "1G",
+  rootSize ? "8G",
+}:
 
 let
   # Compute the Nix store closure of the system toplevel. Every store
@@ -32,7 +40,10 @@ let
     name = "${name}-closure-info";
     src = null;
 
-    buildDeps = [ pkgs.coreutils pkgs.bash ];
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
 
     phases = [
       {
@@ -66,18 +77,19 @@ let
   variant = system.config.aos.system.variant;
   version = system.config.aos.system.version;
 
-in pkgs.mkDerivation {
+in
+pkgs.mkDerivation {
   name = "aos-image-${name}";
 
   # No source — this is a pure assembly step.
   src = null;
 
   buildDeps = [
-    pkgs.util-linux    # losetup, sgdisk (via sfdisk), partx
-    pkgs.dosfstools    # mkfs.fat
-    pkgs.e2fsprogs     # mkfs.ext4
-    pkgs.coreutils     # truncate, cp, mkdir, ln, cat
-    pkgs.gzip          # boot payload compression
+    pkgs.util-linux # losetup, sgdisk (via sfdisk), partx
+    pkgs.dosfstools # mkfs.fat
+    pkgs.e2fsprogs # mkfs.ext4
+    pkgs.coreutils # truncate, cp, mkdir, ln, cat
+    pkgs.gzip # boot payload compression
   ];
 
   phases = [

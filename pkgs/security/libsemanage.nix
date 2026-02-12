@@ -1,8 +1,17 @@
 # libsemanage — SELinux policy management library
-{ mkDerivation, fetchurl, make, pkg-config,
-  libsepol, libselinux, audit }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  libsepol,
+  libselinux,
+  audit,
+}:
 
-let version = "3.7"; in
+let
+  version = "3.7";
+in
 mkDerivation {
   pname = "libsemanage";
   inherit version;
@@ -14,18 +23,27 @@ mkDerivation {
     hash = "sha256-pZdVqeMfrvEKaNOscWmlx6ubI742J7Z1pcOECgXYKS4=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ libsepol libselinux audit ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    libsepol
+    libselinux
+    audit
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd selinux-${version}/libsemanage
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make PREFIX=$out SHLIBDIR=$out/lib \
           CFLAGS="-I${libsepol}/include -I${libselinux}/include -I${audit}/include" \
@@ -33,7 +51,8 @@ mkDerivation {
           -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install PREFIX=$out SHLIBDIR=$out/lib
       '';

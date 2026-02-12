@@ -1,7 +1,14 @@
 # socat — Multipurpose relay for bidirectional data transfer
-{ mkDerivation, fetchurl, make, openssl }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  openssl,
+}:
 
-let version = "1.8.0.1"; in
+let
+  version = "1.8.0.1";
+in
 mkDerivation {
   pname = "socat";
   inherit version;
@@ -15,16 +22,18 @@ mkDerivation {
 
   buildDeps = [ make ];
   runtimeDeps = [ openssl ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd socat-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -32,12 +41,14 @@ mkDerivation {
           --with-openssl=${openssl}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

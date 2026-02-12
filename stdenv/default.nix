@@ -18,26 +18,27 @@
 #   in stdenv.mkDerivation { ... }
 #
 
-{ # Bootstrap toolchain outputs from pkgs/bootstrap or stdenv/bootstrap
-  bootstrap ? import ./bootstrap/seeds.nix {}
+{
+  # Bootstrap toolchain outputs from pkgs/bootstrap or stdenv/bootstrap
+  bootstrap ? import ./bootstrap/seeds.nix { },
   # Specific toolchain components (override for testing or cross-compilation)
-, gcc ? null
-, glibc ? null
-, binutils ? null
-, coreutils ? null
-, bash ? null
-, gnumake ? null
-, findutils ? null
-, gawk ? null
-, grep ? null
-, sed ? null
-, tar ? null
-, gzip ? null
-, diffutils ? null
-, patch ? null
+  gcc ? null,
+  glibc ? null,
+  binutils ? null,
+  coreutils ? null,
+  bash ? null,
+  gnumake ? null,
+  findutils ? null,
+  gawk ? null,
+  grep ? null,
+  sed ? null,
+  tar ? null,
+  gzip ? null,
+  diffutils ? null,
+  patch ? null,
   # System parameters
-, system ? "x86_64-linux"
-, storeDir ? "/nix/store"
+  system ? "x86_64-linux",
+  storeDir ? "/nix/store",
 }:
 
 let
@@ -45,9 +46,7 @@ let
 
   # The shell used for building. In a bootstrapped system, this is the
   # bash built by the bootstrap chain.
-  shellPath =
-    if bash != null then "${bash}/bin/bash"
-    else "/bin/sh";
+  shellPath = if bash != null then "${bash}/bin/bash" else "/bin/sh";
 
   # CC wrapper that sets up include paths, library paths, and rpaths
   ccWrapper = import ./cc-wrapper.nix {
@@ -83,37 +82,41 @@ let
     name = "aos-stdenv";
     inherit system;
     builder = shellPath;
-    args = [ "-c" ''
-      mkdir -p $out
-      cp ${./setup.sh} $out/setup.sh
-      chmod 644 $out/setup.sh
+    args = [
+      "-c"
+      ''
+        mkdir -p $out
+        cp ${./setup.sh} $out/setup.sh
+        chmod 644 $out/setup.sh
 
-      # Record the toolchain paths
-      cat > $out/setup-vars.sh << 'SETUP_EOF'
-      export CC="${ccWrapper}/bin/gcc"
-      export CXX="${ccWrapper}/bin/g++"
-      export LD="${ccWrapper}/bin/ld"
-      export AR="${ccWrapper}/bin/ar"
-      export RANLIB="${ccWrapper}/bin/ranlib"
-      export STRIP="${ccWrapper}/bin/strip"
-      export NM="${ccWrapper}/bin/nm"
-      export OBJDUMP="${ccWrapper}/bin/objdump"
-      export SIZE="${ccWrapper}/bin/size"
-      export STRINGS="${ccWrapper}/bin/strings"
-      SETUP_EOF
+        # Record the toolchain paths
+        cat > $out/setup-vars.sh << 'SETUP_EOF'
+        export CC="${ccWrapper}/bin/gcc"
+        export CXX="${ccWrapper}/bin/g++"
+        export LD="${ccWrapper}/bin/ld"
+        export AR="${ccWrapper}/bin/ar"
+        export RANLIB="${ccWrapper}/bin/ranlib"
+        export STRIP="${ccWrapper}/bin/strip"
+        export NM="${ccWrapper}/bin/nm"
+        export OBJDUMP="${ccWrapper}/bin/objdump"
+        export SIZE="${ccWrapper}/bin/size"
+        export STRINGS="${ccWrapper}/bin/strings"
+        SETUP_EOF
 
-      echo "${shellPath}" > $out/shell-path
-      echo "${system}" > $out/system
-    '' ];
+        echo "${shellPath}" > $out/shell-path
+        echo "${system}" > $out/system
+      ''
+    ];
   };
 
   # ---------------------------------------------------------------------------
   # mkDerivation — wrapped version with stdenv defaults
   # ---------------------------------------------------------------------------
-  mkDerivation = args:
+  mkDerivation =
+    args:
     let
       # Inject stdenv tools into buildDeps unless already present
-      stdenvBuildDeps = (args.buildDeps or []) ++ initialPath;
+      stdenvBuildDeps = (args.buildDeps or [ ]) ++ initialPath;
       effectiveArgs = args // {
         buildDeps = stdenvBuildDeps;
         system = args.system or system;
@@ -129,37 +132,54 @@ let
         RANLIB = "${ccWrapper}/bin/ranlib";
         STRIP = "${ccWrapper}/bin/strip";
       };
-    in lib.mkDerivation effectiveArgs;
+    in
+    lib.mkDerivation effectiveArgs;
 
   # ---------------------------------------------------------------------------
   # mkShell — wrapped version with stdenv defaults
   # ---------------------------------------------------------------------------
-  mkShell = args:
+  mkShell =
+    args:
     let
       effectiveArgs = args // {
-        buildDeps = (args.buildDeps or []) ++ initialPath;
+        buildDeps = (args.buildDeps or [ ]) ++ initialPath;
         system = args.system or system;
         shell = args.shell or shellPath;
       };
-    in lib.mkShell effectiveArgs;
+    in
+    lib.mkShell effectiveArgs;
 
   # ---------------------------------------------------------------------------
   # fetchurl / fetchgit — pass through from lib with defaults
   # ---------------------------------------------------------------------------
-  fetchurl = args:
-    lib.fetchurl (args // {
-      system = args.system or system;
-      storeDir = args.storeDir or storeDir;
-    });
+  fetchurl =
+    args:
+    lib.fetchurl (
+      args
+      // {
+        system = args.system or system;
+        storeDir = args.storeDir or storeDir;
+      }
+    );
 
-  fetchgit = args:
-    lib.fetchgit (args // {
-      system = args.system or system;
-      storeDir = args.storeDir or storeDir;
-    });
+  fetchgit =
+    args:
+    lib.fetchgit (
+      args
+      // {
+        system = args.system or system;
+        storeDir = args.storeDir or storeDir;
+      }
+    );
 
-in {
-  inherit mkDerivation mkShell fetchurl fetchgit;
+in
+{
+  inherit
+    mkDerivation
+    mkShell
+    fetchurl
+    fetchgit
+    ;
   inherit system storeDir;
   inherit lib;
 
@@ -177,7 +197,12 @@ in {
   inherit bootstrap;
 
   # Phase helpers re-exported for convenience
-  inherit (lib) replacePhase addPhaseAfter addPhaseBefore removePhase;
+  inherit (lib)
+    replacePhase
+    addPhaseAfter
+    addPhaseBefore
+    removePhase
+    ;
 
   # Is this a cross-compilation stdenv?
   isCross = false;
@@ -189,9 +214,16 @@ in {
     isx86_64 = system == "x86_64-linux";
     isAarch64 = system == "aarch64-linux";
     parsed = {
-      cpu = { name = "x86_64"; bits = 64; };
-      kernel = { name = "linux"; };
-      abi = { name = "gnu"; };
+      cpu = {
+        name = "x86_64";
+        bits = 64;
+      };
+      kernel = {
+        name = "linux";
+      };
+      abi = {
+        name = "gnu";
+      };
     };
   };
   buildPlatform = {

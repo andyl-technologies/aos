@@ -17,21 +17,24 @@ let
   cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
   runtimeDeps = [
-    pkgs.nix
     pkgs.git
-    pkgs.nixfmt-rfc-style
+    pkgs.nix
+    pkgs.nixfmt
   ];
 in
-craneLib.buildPackage (commonArgs // {
-  inherit cargoArtifacts;
+craneLib.buildPackage (
+  commonArgs
+  // {
+    inherit cargoArtifacts;
 
-  nativeBuildInputs = [ pkgs.makeWrapper ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
 
-  postInstall = ''
-    wrapProgram $out/bin/aos \
-      --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
-  '';
+    postInstall = ''
+      wrapProgram $out/bin/aos \
+        --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
+    '';
 
-  meta.description = "AOS build tool";
-  meta.mainProgram = "aos";
-})
+    meta.description = "AOS build tool";
+    meta.mainProgram = "aos";
+  }
+)

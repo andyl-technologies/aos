@@ -1,7 +1,13 @@
 # CNI Plugins — Container Networking Interface reference plugins
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "1.6.1"; in
+let
+  version = "1.6.1";
+in
 mkDerivation {
   pname = "cni-plugins";
   inherit version;
@@ -14,17 +20,19 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd plugins-${version}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         export GOPATH=$TMPDIR/go
         export CGO_ENABLED=0
@@ -45,7 +53,8 @@ mkDerivation {
         done
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/bin
         install -m 755 bin/* $out/bin/

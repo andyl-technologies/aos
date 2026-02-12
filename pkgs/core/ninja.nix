@@ -1,7 +1,13 @@
 # ninja — Small build system with a focus on speed
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "1.12.1"; in
+let
+  version = "1.12.1";
+in
 mkDerivation {
   pname = "ninja";
   inherit version;
@@ -14,23 +20,26 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd ninja-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         # No configure step — ninja is bootstrapped directly from C++ sources
         true
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         # Remove bundled getopt (conflicts with glibc's C++ declarations)
         # and browse.cc (needs generated browse_py.h).
@@ -52,7 +61,8 @@ mkDerivation {
         $CXX ''${CXXFLAGS:-} -Isrc -o ninja $srcs -lpthread
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/bin
         install -m 755 ninja $out/bin/ninja

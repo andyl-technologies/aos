@@ -1,7 +1,16 @@
 # kmod — Linux kernel module handling
-{ mkDerivation, fetchurl, make, pkg-config, zlib, xz }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  zlib,
+  xz,
+}:
 
-let version = "33"; in
+let
+  version = "33";
+in
 mkDerivation {
   pname = "kmod";
   inherit version;
@@ -13,18 +22,26 @@ mkDerivation {
     hash = "sha256-3HaLMVUXIJH1bcaUMLVIHy127NnMtU6tjCVA289eqbw=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ zlib xz ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    zlib
+    xz
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd kmod-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -36,12 +53,14 @@ mkDerivation {
           --disable-test-modules
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
         # Create compatibility symlinks

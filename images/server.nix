@@ -4,7 +4,11 @@
 # Includes SELinux policy, SSH, audit, and update tooling.
 # Layout: 1G ESP + 8G root + 7G unpartitioned (for ZFS at runtime).
 
-{ pkgs, lib, system }:
+{
+  pkgs,
+  lib,
+  system,
+}:
 
 import ./builder.nix {
   inherit pkgs lib system;

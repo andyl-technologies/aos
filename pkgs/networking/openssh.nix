@@ -1,7 +1,15 @@
 # OpenSSH — Secure shell client and server
-{ mkDerivation, fetchurl, make, openssl, zlib }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  openssl,
+  zlib,
+}:
 
-let version = "9.9p1"; in
+let
+  version = "9.9p1";
+in
 mkDerivation {
   pname = "openssh";
   inherit version;
@@ -14,17 +22,22 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [ openssl zlib ];
-  propagatedDeps = [];
+  runtimeDeps = [
+    openssl
+    zlib
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd openssh-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -37,12 +50,14 @@ mkDerivation {
           --disable-strip
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

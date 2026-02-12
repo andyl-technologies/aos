@@ -1,7 +1,13 @@
 # Butane — Translates Butane configs to Ignition configs
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "0.21.0"; in
+let
+  version = "0.21.0";
+in
 mkDerivation {
   pname = "butane";
   inherit version;
@@ -14,17 +20,19 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd butane-${version}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         export GOPATH=$TMPDIR/go
         export CGO_ENABLED=0
@@ -34,7 +42,8 @@ mkDerivation {
           ./internal
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/bin
         install -m 755 butane $out/bin/butane

@@ -15,17 +15,46 @@ let
   attrsets = import ./attrsets.nix;
   strings = import ./strings.nix;
   types = import ./types.nix;
-  modules = import ./modules.nix { inherit trivial lists attrsets strings types; };
+  modules = import ./modules.nix {
+    inherit
+      trivial
+      lists
+      attrsets
+      strings
+      types
+      ;
+  };
   derivations = import ./derivations.nix { inherit system; };
 in
-  trivial // lists // attrsets // strings // {
-    inherit types system;
-    inherit (modules) evalModules mkOption mkIf;
-    inherit (derivations) mkDerivation mkShell fetchurl fetchgit;
+trivial
+// lists
+// attrsets
+// strings
+// {
+  inherit types system;
+  inherit (modules) evalModules mkOption mkIf;
+  inherit (derivations)
+    mkDerivation
+    mkShell
+    fetchurl
+    fetchgit
+    ;
 
-    # Phase manipulation helpers from derivations module
-    inherit (derivations) replacePhase addPhaseAfter addPhaseBefore removePhase;
+  # Phase manipulation helpers from derivations module
+  inherit (derivations)
+    replacePhase
+    addPhaseAfter
+    addPhaseBefore
+    removePhase
+    ;
 
-    # Re-export submodules for direct access when needed
-    inherit trivial lists attrsets strings modules derivations;
-  }
+  # Re-export submodules for direct access when needed
+  inherit
+    trivial
+    lists
+    attrsets
+    strings
+    modules
+    derivations
+    ;
+}

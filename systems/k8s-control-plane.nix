@@ -19,7 +19,12 @@
 #   10259 — kube-scheduler (HTTPS)
 #   30000-32767 — NodePort service range
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 {
   imports = [
@@ -35,13 +40,14 @@
   # --- Firewall ---
   # Control plane needs all worker ports plus etcd and API server ports.
   aos.firewall.allowedTCP = [
-    22      # SSH
-    2379    # etcd client
-    2380    # etcd peer
-    6443    # kube-apiserver
-    10250   # kubelet API
-    10256   # kube-proxy health
-    10257   # kube-controller-manager
-    10259   # kube-scheduler
-  ] ++ (lib.range 30000 32767);
+    22 # SSH
+    2379 # etcd client
+    2380 # etcd peer
+    6443 # kube-apiserver
+    10250 # kubelet API
+    10256 # kube-proxy health
+    10257 # kube-controller-manager
+    10259 # kube-scheduler
+  ]
+  ++ (lib.range 30000 32767);
 }

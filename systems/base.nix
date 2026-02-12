@@ -14,7 +14,12 @@
 # This variant is suitable for minimal VMs, test environments, and as the
 # base layer that server and Kubernetes variants extend.
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 {
   imports = [

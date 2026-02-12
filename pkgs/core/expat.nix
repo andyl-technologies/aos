@@ -1,30 +1,40 @@
 # Expat — XML parsing library
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "2.6.4"; in
+let
+  version = "2.6.4";
+in
 mkDerivation {
   pname = "expat";
   inherit version;
 
   src = fetchurl {
     urls = [
-      "https://github.com/libexpat/libexpat/releases/download/R_${builtins.replaceStrings ["."] ["_"] version}/expat-${version}.tar.xz"
+      "https://github.com/libexpat/libexpat/releases/download/R_${
+        builtins.replaceStrings [ "." ] [ "_" ] version
+      }/expat-${version}.tar.xz"
     ];
     hash = "sha256-ppVina4EcFWzfVCg/0d20dRdCkyELPTM7hWEQfVf9+4=";
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd expat-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -33,12 +43,14 @@ mkDerivation {
           --without-docbook
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

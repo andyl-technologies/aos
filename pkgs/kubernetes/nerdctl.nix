@@ -1,7 +1,13 @@
 # nerdctl — Docker-compatible CLI for containerd
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "1.7.7"; in
+let
+  version = "1.7.7";
+in
 mkDerivation {
   pname = "nerdctl";
   inherit version;
@@ -14,17 +20,19 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd nerdctl-${version}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         export GOPATH=$TMPDIR/go
         export CGO_ENABLED=0
@@ -34,7 +42,8 @@ mkDerivation {
           ./cmd/nerdctl
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/bin
         install -m 755 nerdctl $out/bin/nerdctl

@@ -12,7 +12,11 @@
 #     VIRTIO_CONSOLE, DEVTMPFS, DEVTMPFS_MOUNT
 #   - requiredSystemFeatures = [ "kvm" ] on the builder
 
-{ pkgs, lib, testTools }:
+{
+  pkgs,
+  lib,
+  testTools,
+}:
 
 let
   # Test infrastructure from nixpkgs — runs on the HOST, not in the AOS image.
@@ -26,7 +30,8 @@ let
   # Uses exportReferencesGraph to discover the Nix store closure, then
   # creates an ext4 image populated via mkfs.ext4 -d (no mount needed).
 
-  mkTestRootfs = { system, name }:
+  mkTestRootfs =
+    { system, name }:
     let
       toplevel = system.config.system.build.toplevel;
       systemdPkg = pkgs.systemd;
@@ -38,14 +43,21 @@ let
       version = "0";
       src = null;
 
-      buildDeps = [ pkgs.e2fsprogs pkgs.coreutils ];
+      buildDeps = [
+        pkgs.e2fsprogs
+        pkgs.coreutils
+      ];
 
       # Nix writes the transitive closure graphs before running the builder
       exportReferencesGraph = [
-        "closure-toplevel" toplevel
-        "closure-systemd" systemdPkg
-        "closure-coreutils" coreutilsPkg
-        "closure-bash" bashPkg
+        "closure-toplevel"
+        toplevel
+        "closure-systemd"
+        systemdPkg
+        "closure-coreutils"
+        coreutilsPkg
+        "closure-bash"
+        bashPkg
       ];
 
       TOPLEVEL = builtins.toString toplevel;
@@ -57,212 +69,212 @@ let
         {
           name = "build-rootfs";
           script = ''
-            mkdir -p rootfs/nix/store
-            mkdir -p rootfs/sbin rootfs/bin rootfs/etc rootfs/dev
-            mkdir -p rootfs/proc rootfs/sys rootfs/tmp rootfs/run
-            mkdir -p rootfs/var/log rootfs/var/lib rootfs/var/tmp
-            mkdir -p rootfs/opt/aos-test/bin
+                        mkdir -p rootfs/nix/store
+                        mkdir -p rootfs/sbin rootfs/bin rootfs/etc rootfs/dev
+                        mkdir -p rootfs/proc rootfs/sys rootfs/tmp rootfs/run
+                        mkdir -p rootfs/var/log rootfs/var/lib rootfs/var/tmp
+                        mkdir -p rootfs/opt/aos-test/bin
 
-            # Collect all unique store paths from the closure graphs
-            cat closure-toplevel closure-systemd closure-coreutils closure-bash \
-              | grep '^/nix/store/' | sort -u > all-paths
+                        # Collect all unique store paths from the closure graphs
+                        cat closure-toplevel closure-systemd closure-coreutils closure-bash \
+                          | grep '^/nix/store/' | sort -u > all-paths
 
-            echo "==> Copying $(wc -l < all-paths) store paths to rootfs"
+                        echo "==> Copying $(wc -l < all-paths) store paths to rootfs"
 
-            count=0
-            total=$(wc -l < all-paths)
-            while IFS= read -r p; do
-              count=$((count + 1))
-              if [ -e "$p" ]; then
-                cp -a "$p" rootfs/nix/store/
+                        count=0
+                        total=$(wc -l < all-paths)
+                        while IFS= read -r p; do
+                          count=$((count + 1))
+                          if [ -e "$p" ]; then
+                            cp -a "$p" rootfs/nix/store/
+                          fi
+                          if [ $((count % 10)) -eq 0 ]; then
+                            printf '\r    [%d/%d]' "$count" "$total"
+                          fi
+                        done < all-paths
+                        echo ""
+
+                        # /sbin/init -> systemd
+                        ln -sfn $SYSTEMD/lib/systemd/systemd rootfs/sbin/init
+
+                        # systemd was built with --prefix=/ so it looks for helpers,
+                        # unit files, and udev rules at /lib/systemd/, /lib/udev/, etc.
+                        # Symlink all of systemd's lib subdirectories to /lib/
+                        mkdir -p rootfs/lib
+                        for d in $SYSTEMD/lib/*; do
+                          ln -sfn "$d" "rootfs/lib/$(basename $d)"
+                        done
+
+                        # Populate /usr/bin, /usr/sbin, /bin, /sbin with essential binaries
+                        # systemd's default PATH for services is /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+                        mkdir -p rootfs/usr/bin rootfs/usr/sbin
+                        # /bin/sh -> bash
+                        ln -sfn $BASH/bin/bash rootfs/bin/sh
+                        # coreutils (sleep, cat, echo, tr, sed, etc.)
+                        for bin in $COREUTILS/bin/*; do
+                          name=$(basename "$bin")
+                          ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
+                        done
+                        # systemd binaries (systemctl, journalctl, loginctl, etc.)
+                        for bin in $SYSTEMD/bin/*; do
+                          name=$(basename "$bin")
+                          ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
+                        done
+                        for bin in $SYSTEMD/sbin/*; do
+                          name=$(basename "$bin")
+                          ln -sfn "$bin" "rootfs/usr/sbin/$name" 2>/dev/null || true
+                        done
+                        # Also populate /bin and /sbin for convenience
+                        for bin in $COREUTILS/bin/*; do
+                          name=$(basename "$bin")
+                          if [ ! -e "rootfs/bin/$name" ]; then
+                            ln -sfn "$bin" "rootfs/bin/$name" 2>/dev/null || true
+                          fi
+                        done
+
+                        # /run/current-system -> toplevel
+                        ln -sfn $TOPLEVEL rootfs/run/current-system
+
+                        # Basic /etc for systemd
+                        echo "aos-test" > rootfs/etc/hostname
+                        touch rootfs/etc/machine-id
+
+                        cat > rootfs/etc/os-release << 'OSREL'
+            ID=aos
+            NAME="ANDYL OS"
+            PRETTY_NAME="ANDYL OS (test)"
+            VERSION_ID=0.1
+            OSREL
+
+                        cat > rootfs/etc/passwd << 'PASSWD'
+            root:x:0:0:root:/root:/bin/sh
+            nobody:x:65534:65534:Nobody:/:/sbin/nologin
+            systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin
+            systemd-network:x:102:102:systemd Network:/:/sbin/nologin
+            PASSWD
+
+                        cat > rootfs/etc/group << 'GROUP'
+            root:x:0:
+            nobody:x:65534:
+            utmp:x:22:
+            systemd-journal:x:101:
+            systemd-network:x:102:
+            GROUP
+
+                        cat > rootfs/etc/shadow << 'SHADOW'
+            root:!:1::::::
+            nobody:!:1::::::
+            SHADOW
+                        chmod 640 rootfs/etc/shadow
+
+                        # Minimal nsswitch.conf for systemd
+                        cat > rootfs/etc/nsswitch.conf << 'NSS'
+            passwd: files
+            group:  files
+            shadow: files
+            hosts:  files dns
+            NSS
+
+                        # Guest agent script
+                        cat > rootfs/opt/aos-test/bin/aos-test-agent << 'AGENT'
+            #!/bin/sh
+            set -u
+            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            # Try udev symlink first, fall back to raw virtio device
+            AGENT_PORT=""
+            echo "aos-test-agent: waiting for virtio port..." >&2
+            TRIES=0
+            while [ -z "$AGENT_PORT" ]; do
+              if [ -e "/dev/virtio-ports/aos.test.agent" ]; then
+                AGENT_PORT="/dev/virtio-ports/aos.test.agent"
+              elif [ -e "/dev/vport0p1" ]; then
+                AGENT_PORT="/dev/vport0p1"
+              else
+                TRIES=$((TRIES + 1))
+                if [ $((TRIES % 50)) -eq 0 ]; then
+                  echo "aos-test-agent: still waiting ($TRIES attempts)..." >&2
+                  ls /dev/vport* 2>&1 >&2 || true
+                  ls /dev/virtio-ports/ 2>&1 >&2 || true
+                fi
+                sleep 0.1
               fi
-              if [ $((count % 10)) -eq 0 ]; then
-                printf '\r    [%d/%d]' "$count" "$total"
+            done
+            echo "aos-test-agent: using port $AGENT_PORT" >&2
+
+            # Process commands — each command is a fresh open/close of the port.
+            # The host sends a command, agent reads it, processes it, writes response.
+            while true; do
+              # Read one command (opens port, reads one line, closes)
+              cmd=$(head -1 "$AGENT_PORT" 2>/dev/null) || true
+              if [ -z "$cmd" ]; then
+                sleep 0.1
+                continue
               fi
-            done < all-paths
-            echo ""
-
-            # /sbin/init -> systemd
-            ln -sfn $SYSTEMD/lib/systemd/systemd rootfs/sbin/init
-
-            # systemd was built with --prefix=/ so it looks for helpers,
-            # unit files, and udev rules at /lib/systemd/, /lib/udev/, etc.
-            # Symlink all of systemd's lib subdirectories to /lib/
-            mkdir -p rootfs/lib
-            for d in $SYSTEMD/lib/*; do
-              ln -sfn "$d" "rootfs/lib/$(basename $d)"
-            done
-
-            # Populate /usr/bin, /usr/sbin, /bin, /sbin with essential binaries
-            # systemd's default PATH for services is /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-            mkdir -p rootfs/usr/bin rootfs/usr/sbin
-            # /bin/sh -> bash
-            ln -sfn $BASH/bin/bash rootfs/bin/sh
-            # coreutils (sleep, cat, echo, tr, sed, etc.)
-            for bin in $COREUTILS/bin/*; do
-              name=$(basename "$bin")
-              ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
-            done
-            # systemd binaries (systemctl, journalctl, loginctl, etc.)
-            for bin in $SYSTEMD/bin/*; do
-              name=$(basename "$bin")
-              ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
-            done
-            for bin in $SYSTEMD/sbin/*; do
-              name=$(basename "$bin")
-              ln -sfn "$bin" "rootfs/usr/sbin/$name" 2>/dev/null || true
-            done
-            # Also populate /bin and /sbin for convenience
-            for bin in $COREUTILS/bin/*; do
-              name=$(basename "$bin")
-              if [ ! -e "rootfs/bin/$name" ]; then
-                ln -sfn "$bin" "rootfs/bin/$name" 2>/dev/null || true
+              echo "aos-test-agent: received: $cmd" >&2
+              if [ "$cmd" = "PING" ]; then
+                printf '{"status":"ready"}\n' > "$AGENT_PORT"
+                continue
               fi
+              if [ "$cmd" = "SHUTDOWN" ]; then
+                printf '{"status":"shutdown"}\n' > "$AGENT_PORT"
+                poweroff -f
+                exit 0
+              fi
+              eval "$cmd" > /tmp/agent-stdout 2>/tmp/agent-stderr
+              exit_code=$?
+              stdout=$(cat /tmp/agent-stdout 2>/dev/null || true)
+              stderr=$(cat /tmp/agent-stderr 2>/dev/null || true)
+              # JSON-escape using bash builtins only (sed is not in the guest)
+              NL='
+            '
+              escape_json() {
+                local s="$1"
+                s="''${s//\\/\\\\}"
+                s="''${s//\"/\\\"}"
+                s="''${s//$NL/\\n}"
+                printf '%s' "$s"
+              }
+              stdout_escaped=$(escape_json "$stdout")
+              stderr_escaped=$(escape_json "$stderr")
+              printf '{"exit_code":%d,"stdout":"%s","stderr":"%s"}\n' \
+                "$exit_code" "$stdout_escaped" "$stderr_escaped" > "$AGENT_PORT"
             done
+            AGENT
+                        chmod +x rootfs/opt/aos-test/bin/aos-test-agent
 
-            # /run/current-system -> toplevel
-            ln -sfn $TOPLEVEL rootfs/run/current-system
+                        # Mask serial-getty@ttyS0 — we use -serial file: in QEMU so there's
+                        # no real tty, and waiting for the device wastes 90 seconds.
+                        mkdir -p rootfs/etc/systemd/system/multi-user.target.wants
+                        ln -sfn /dev/null rootfs/etc/systemd/system/serial-getty@ttyS0.service
 
-            # Basic /etc for systemd
-            echo "aos-test" > rootfs/etc/hostname
-            touch rootfs/etc/machine-id
+                        # Guest agent systemd service
+                        cat > rootfs/etc/systemd/system/aos-test-agent.service << 'UNIT'
+            [Unit]
+            Description=AOS VM Test Guest Agent
+            After=systemd-udevd.service
+            Wants=systemd-udevd.service
 
-            cat > rootfs/etc/os-release << 'OSREL'
-ID=aos
-NAME="ANDYL OS"
-PRETTY_NAME="ANDYL OS (test)"
-VERSION_ID=0.1
-OSREL
+            [Service]
+            Type=simple
+            ExecStart=/opt/aos-test/bin/aos-test-agent
+            Restart=on-failure
+            RestartSec=1
 
-            cat > rootfs/etc/passwd << 'PASSWD'
-root:x:0:0:root:/root:/bin/sh
-nobody:x:65534:65534:Nobody:/:/sbin/nologin
-systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin
-systemd-network:x:102:102:systemd Network:/:/sbin/nologin
-PASSWD
+            [Install]
+            WantedBy=multi-user.target
+            UNIT
+                        ln -sfn ../aos-test-agent.service \
+                          rootfs/etc/systemd/system/multi-user.target.wants/aos-test-agent.service
 
-            cat > rootfs/etc/group << 'GROUP'
-root:x:0:
-nobody:x:65534:
-utmp:x:22:
-systemd-journal:x:101:
-systemd-network:x:102:
-GROUP
+                        # Calculate image size with overhead
+                        # Use du -sk (kilobytes) for portability, then convert to MB
+                        SIZE_KB=$(du -sk rootfs | cut -f1)
+                        SIZE_MB=$(( SIZE_KB / 1024 ))
+                        # Triple the size for ext4 metadata, journal, inode tables
+                        IMAGE_MB=$(( SIZE_MB * 3 + 512 ))
 
-            cat > rootfs/etc/shadow << 'SHADOW'
-root:!:1::::::
-nobody:!:1::::::
-SHADOW
-            chmod 640 rootfs/etc/shadow
-
-            # Minimal nsswitch.conf for systemd
-            cat > rootfs/etc/nsswitch.conf << 'NSS'
-passwd: files
-group:  files
-shadow: files
-hosts:  files dns
-NSS
-
-            # Guest agent script
-            cat > rootfs/opt/aos-test/bin/aos-test-agent << 'AGENT'
-#!/bin/sh
-set -u
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-# Try udev symlink first, fall back to raw virtio device
-AGENT_PORT=""
-echo "aos-test-agent: waiting for virtio port..." >&2
-TRIES=0
-while [ -z "$AGENT_PORT" ]; do
-  if [ -e "/dev/virtio-ports/aos.test.agent" ]; then
-    AGENT_PORT="/dev/virtio-ports/aos.test.agent"
-  elif [ -e "/dev/vport0p1" ]; then
-    AGENT_PORT="/dev/vport0p1"
-  else
-    TRIES=$((TRIES + 1))
-    if [ $((TRIES % 50)) -eq 0 ]; then
-      echo "aos-test-agent: still waiting ($TRIES attempts)..." >&2
-      ls /dev/vport* 2>&1 >&2 || true
-      ls /dev/virtio-ports/ 2>&1 >&2 || true
-    fi
-    sleep 0.1
-  fi
-done
-echo "aos-test-agent: using port $AGENT_PORT" >&2
-
-# Process commands — each command is a fresh open/close of the port.
-# The host sends a command, agent reads it, processes it, writes response.
-while true; do
-  # Read one command (opens port, reads one line, closes)
-  cmd=$(head -1 "$AGENT_PORT" 2>/dev/null) || true
-  if [ -z "$cmd" ]; then
-    sleep 0.1
-    continue
-  fi
-  echo "aos-test-agent: received: $cmd" >&2
-  if [ "$cmd" = "PING" ]; then
-    printf '{"status":"ready"}\n' > "$AGENT_PORT"
-    continue
-  fi
-  if [ "$cmd" = "SHUTDOWN" ]; then
-    printf '{"status":"shutdown"}\n' > "$AGENT_PORT"
-    poweroff -f
-    exit 0
-  fi
-  eval "$cmd" > /tmp/agent-stdout 2>/tmp/agent-stderr
-  exit_code=$?
-  stdout=$(cat /tmp/agent-stdout 2>/dev/null || true)
-  stderr=$(cat /tmp/agent-stderr 2>/dev/null || true)
-  # JSON-escape using bash builtins only (sed is not in the guest)
-  NL='
-'
-  escape_json() {
-    local s="$1"
-    s="''${s//\\/\\\\}"
-    s="''${s//\"/\\\"}"
-    s="''${s//$NL/\\n}"
-    printf '%s' "$s"
-  }
-  stdout_escaped=$(escape_json "$stdout")
-  stderr_escaped=$(escape_json "$stderr")
-  printf '{"exit_code":%d,"stdout":"%s","stderr":"%s"}\n' \
-    "$exit_code" "$stdout_escaped" "$stderr_escaped" > "$AGENT_PORT"
-done
-AGENT
-            chmod +x rootfs/opt/aos-test/bin/aos-test-agent
-
-            # Mask serial-getty@ttyS0 — we use -serial file: in QEMU so there's
-            # no real tty, and waiting for the device wastes 90 seconds.
-            mkdir -p rootfs/etc/systemd/system/multi-user.target.wants
-            ln -sfn /dev/null rootfs/etc/systemd/system/serial-getty@ttyS0.service
-
-            # Guest agent systemd service
-            cat > rootfs/etc/systemd/system/aos-test-agent.service << 'UNIT'
-[Unit]
-Description=AOS VM Test Guest Agent
-After=systemd-udevd.service
-Wants=systemd-udevd.service
-
-[Service]
-Type=simple
-ExecStart=/opt/aos-test/bin/aos-test-agent
-Restart=on-failure
-RestartSec=1
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-            ln -sfn ../aos-test-agent.service \
-              rootfs/etc/systemd/system/multi-user.target.wants/aos-test-agent.service
-
-            # Calculate image size with overhead
-            # Use du -sk (kilobytes) for portability, then convert to MB
-            SIZE_KB=$(du -sk rootfs | cut -f1)
-            SIZE_MB=$(( SIZE_KB / 1024 ))
-            # Triple the size for ext4 metadata, journal, inode tables
-            IMAGE_MB=$(( SIZE_MB * 3 + 512 ))
-
-            echo "==> Rootfs data: ''${SIZE_MB}MB, image: ''${IMAGE_MB}MB"
-            mkfs.ext4 -d rootfs -L rootfs -m 1 -q $out ''${IMAGE_MB}M
+                        echo "==> Rootfs data: ''${SIZE_MB}MB, image: ''${IMAGE_MB}MB"
+                        mkfs.ext4 -d rootfs -L rootfs -m 1 -q $out ''${IMAGE_MB}M
           '';
         }
       ];
@@ -271,7 +283,13 @@ UNIT
   # ---------------------------------------------------------------------------
   # Create a VM test derivation
   # ---------------------------------------------------------------------------
-  mkVMTest = { name, system, testScript, timeout ? 120 }:
+  mkVMTest =
+    {
+      name,
+      system,
+      testScript,
+      timeout ? 120,
+    }:
     let
       rootfs = mkTestRootfs { inherit system name; };
       kernel = system.config.system.build.kernel;
@@ -281,7 +299,12 @@ UNIT
       version = "0";
       src = null;
 
-      buildDeps = [ pkgs.coreutils hostSocat hostJq qemu ];
+      buildDeps = [
+        pkgs.coreutils
+        hostSocat
+        hostJq
+        qemu
+      ];
 
       ROOTFS = builtins.toString rootfs;
       KERNEL = builtins.toString kernel;
@@ -436,6 +459,7 @@ UNIT
       requiredSystemFeatures = [ "kvm" ];
     };
 
-in {
+in
+{
   inherit mkVMTest mkTestRootfs;
 }

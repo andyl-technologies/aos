@@ -5,27 +5,30 @@
 # For now, install a shell-script stub that logs and exits.
 { mkDerivation, fetchurl }:
 
-let version = "2.19.0"; in
+let
+  version = "2.19.0";
+in
 mkDerivation {
   pname = "ignition";
   inherit version;
 
   src = null;
 
-  buildDeps = [];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  buildDeps = [ ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "install";
+    {
+      name = "install";
       script = ''
-        mkdir -p $out/bin
-        cat > $out/bin/ignition << 'STUB'
-#!/bin/sh
-echo "ignition: stub — Go bootstrap not yet implemented" >&2
-exit 1
-STUB
-        chmod +x $out/bin/ignition
+                mkdir -p $out/bin
+                cat > $out/bin/ignition << 'STUB'
+        #!/bin/sh
+        echo "ignition: stub — Go bootstrap not yet implemented" >&2
+        exit 1
+        STUB
+                chmod +x $out/bin/ignition
       '';
     }
   ];

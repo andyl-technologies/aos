@@ -1,7 +1,13 @@
 # Binutils — GNU Binary Utilities
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "2.42"; in
+let
+  version = "2.42";
+in
 mkDerivation {
   pname = "binutils";
   inherit version;
@@ -16,17 +22,19 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd binutils-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         mkdir -p build && cd build
         ../configure \
@@ -40,12 +48,14 @@ mkDerivation {
           --enable-default-hash-style=gnu
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES MAKEINFO=true
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install MAKEINFO=true
       '';

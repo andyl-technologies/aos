@@ -1,5 +1,13 @@
 # python3 — Python 3 interpreter
-{ mkDerivation, fetchurl, make, pkg-config, zlib, openssl, xz }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  zlib,
+  openssl,
+  xz,
+}:
 
 let
   version = "3.12.7";
@@ -29,18 +37,27 @@ mkDerivation {
     hash = "sha256-JIh7kuKv1KKsYCQZrUtZY3L2esmwdxkPRZq6OQ+vVVA=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ zlib openssl xz ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    zlib
+    openssl
+    xz
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd Python-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         LDFLAGS="$LDFLAGS -Wl,-rpath,$out/lib" \
         ./configure \
@@ -54,12 +71,14 @@ mkDerivation {
           --with-openssl=${openssl}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
         # Ensure 'python' symlink exists alongside 'python3'

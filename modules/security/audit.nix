@@ -8,7 +8,12 @@
 # Absorbed TOML config values:
 #   [security.audit] enable, rules, backlog_limit, failure_mode
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.security.audit;
@@ -144,7 +149,10 @@ in
     systemd.services."auditd" = {
       description = "Linux Audit Daemon";
       wantedBy = [ "multi-user.target" ];
-      after = [ "local-fs.target" "systemd-tmpfiles-setup.service" ];
+      after = [
+        "local-fs.target"
+        "systemd-tmpfiles-setup.service"
+      ];
       serviceConfig = {
         Type = "forking";
         ExecStart = "/usr/sbin/auditd -n";

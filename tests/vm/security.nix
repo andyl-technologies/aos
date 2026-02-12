@@ -6,7 +6,12 @@
 # Usage:
 #   nix-build -A checks.vm.security
 
-{ pkgs, lib, systems, testTools }:
+{
+  pkgs,
+  lib,
+  systems,
+  testTools,
+}:
 
 let
   harness = import ./lib.nix { inherit pkgs lib testTools; };

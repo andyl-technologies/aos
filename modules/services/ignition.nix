@@ -10,18 +10,23 @@
 #   [services.ignition] enable, config_source
 #   [services.ignition.zfs] create_pool, pool_name, pool_disks, datasets
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.services.ignition;
 
   # Build the list of ZFS dataset creation commands.
-  datasetCmds = lib.mapAttrsToList (name: props:
+  datasetCmds = lib.mapAttrsToList (
+    name: props:
     let
-      propFlags = builtins.concatStringsSep " " (
-        lib.mapAttrsToList (k: v: "-o ${k}=${v}") props
-      );
-    in "/usr/sbin/zfs create ${propFlags} ${cfg.poolName}/${name}"
+      propFlags = builtins.concatStringsSep " " (lib.mapAttrsToList (k: v: "-o ${k}=${v}") props);
+    in
+    "/usr/sbin/zfs create ${propFlags} ${cfg.poolName}/${name}"
   ) cfg.datasets;
 
 in
@@ -67,7 +72,7 @@ in
 
     poolDisks = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = ''
         Block devices to include in the ZFS pool. Example:
         [ "/dev/vdb" ] for a single disk or
@@ -125,7 +130,10 @@ in
       description = "Ignition First-Boot Provisioning";
       wantedBy = [ "initrd.target" ];
       before = [ "initrd-root-fs.target" ];
-      after = [ "systemd-udevd.service" "dracut-initqueue.service" ];
+      after = [
+        "systemd-udevd.service"
+        "dracut-initqueue.service"
+      ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -138,29 +146,35 @@ in
 
     # ZFS pool creation service — creates the pool from raw disks.
     # Only runs on first boot when the pool does not yet exist.
-    systemd.services."ignition-zfs-pool" = lib.mkIf (cfg.createZfsPool && cfg.poolDisks != []) {
+    systemd.services."ignition-zfs-pool" = lib.mkIf (cfg.createZfsPool && cfg.poolDisks != [ ]) {
       description = "Ignition: Create ZFS Pool";
       wantedBy = [ "initrd.target" ];
       before = [ "ignition-zfs-datasets.service" ];
-      after = [ "ignition-apply.service" "systemd-udevd.service" ];
+      after = [
+        "ignition-apply.service"
+        "systemd-udevd.service"
+      ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
         ExecCondition = "/usr/bin/sh -c '! /usr/sbin/zpool list ${cfg.poolName} 2>/dev/null'";
-        ExecStart = builtins.concatStringsSep " " ([
-          "/usr/sbin/zpool create"
-          "-f"
-          "-o ashift=12"
-          "-O compression=zstd-3"
-          "-O acltype=posixacl"
-          "-O xattr=sa"
-          "-O dnodesize=auto"
-          "-O normalization=formD"
-          "-O relatime=on"
-          "-O canmount=off"
-          "-O mountpoint=none"
-          cfg.poolName
-        ] ++ cfg.poolDisks);
+        ExecStart = builtins.concatStringsSep " " (
+          [
+            "/usr/sbin/zpool create"
+            "-f"
+            "-o ashift=12"
+            "-O compression=zstd-3"
+            "-O acltype=posixacl"
+            "-O xattr=sa"
+            "-O dnodesize=auto"
+            "-O normalization=formD"
+            "-O relatime=on"
+            "-O canmount=off"
+            "-O mountpoint=none"
+            cfg.poolName
+          ]
+          ++ cfg.poolDisks
+        );
       };
     };
 

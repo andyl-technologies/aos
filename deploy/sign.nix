@@ -25,18 +25,23 @@
 #   - The trusted comment includes the version and timestamp for
 #     auditability.
 
-{ pkgs, lib, bundle, signingKey, comment ? null }:
+{
+  pkgs,
+  lib,
+  bundle,
+  signingKey,
+  comment ? null,
+}:
 
 let
   # Derive the bundle filename from its path.
   bundleName = builtins.baseNameOf bundle;
 
   # Default trusted comment includes the bundle name and build time.
-  trustedComment =
-    if comment != null then comment
-    else "AOS update bundle: ${bundleName}";
+  trustedComment = if comment != null then comment else "AOS update bundle: ${bundleName}";
 
-in pkgs.mkDerivation {
+in
+pkgs.mkDerivation {
   name = "aos-signed-${bundleName}";
 
   src = null;

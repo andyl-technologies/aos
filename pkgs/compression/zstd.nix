@@ -1,7 +1,14 @@
 # Zstandard — Fast real-time compression algorithm
-{ mkDerivation, fetchurl, make, zlib }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  zlib,
+}:
 
-let version = "1.5.6"; in
+let
+  version = "1.5.6";
+in
 mkDerivation {
   pname = "zstd";
   inherit version;
@@ -15,21 +22,24 @@ mkDerivation {
 
   buildDeps = [ make ];
   runtimeDeps = [ zlib ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd zstd-${version}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make PREFIX=$out -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install PREFIX=$out
       '';

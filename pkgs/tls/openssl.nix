@@ -1,7 +1,15 @@
 # OpenSSL — TLS and cryptography library
-{ mkDerivation, fetchurl, make, zlib, perl }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  zlib,
+  perl,
+}:
 
-let version = "3.3.2"; in
+let
+  version = "3.3.2";
+in
 mkDerivation {
   pname = "openssl";
   inherit version;
@@ -13,18 +21,23 @@ mkDerivation {
     hash = "sha256-LopAsBl5r+i+C7+z3l3BxnCf7bRtbInBDaEUq1/D0oE=";
   };
 
-  buildDeps = [ make perl ];
+  buildDeps = [
+    make
+    perl
+  ];
   runtimeDeps = [ zlib ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd openssl-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         perl ./Configure \
           --prefix=$out \
@@ -42,12 +55,14 @@ mkDerivation {
           -Wl,-rpath,$out/lib
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install_sw install_ssldirs
       '';

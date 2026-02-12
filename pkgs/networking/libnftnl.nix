@@ -1,7 +1,15 @@
 # libnftnl — Netfilter nf_tables userspace library
-{ mkDerivation, fetchurl, make, pkg-config, libmnl }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  libmnl,
+}:
 
-let version = "1.2.8"; in
+let
+  version = "1.2.8";
+in
 mkDerivation {
   pname = "libnftnl";
   inherit version;
@@ -13,18 +21,23 @@ mkDerivation {
     hash = "sha256-N/6l1rXJsI3nkg0pjePNyULnrmSxo+i4gLLTkK5nrZU=";
   };
 
-  buildDeps = [ make pkg-config ];
+  buildDeps = [
+    make
+    pkg-config
+  ];
   runtimeDeps = [ libmnl ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd libnftnl-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -32,12 +45,14 @@ mkDerivation {
           --enable-shared
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

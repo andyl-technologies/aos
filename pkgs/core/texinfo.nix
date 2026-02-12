@@ -1,7 +1,14 @@
 # GNU Texinfo — Documentation system
-{ mkDerivation, fetchurl, make, perl }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  perl,
+}:
 
-let version = "7.1"; in
+let
+  version = "7.1";
+in
 mkDerivation {
   pname = "texinfo";
   inherit version;
@@ -15,30 +22,37 @@ mkDerivation {
     hash = "sha256-3u7J8Z8VngRv34rSIjGYGAbawzLMNy8cdjUErYKzCVM=";
   };
 
-  buildDeps = [ make perl ];
+  buildDeps = [
+    make
+    perl
+  ];
   runtimeDeps = [ perl ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd texinfo-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
           --disable-nls
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

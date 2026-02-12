@@ -1,7 +1,16 @@
 # GCC — GNU Compiler Collection
-{ mkDerivation, fetchurl, make, gawk, linux-headers, zlib }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  gawk,
+  linux-headers,
+  zlib,
+}:
 
-let version = "13.3.0"; in
+let
+  version = "13.3.0";
+in
 mkDerivation {
   pname = "gcc";
   inherit version;
@@ -15,18 +24,23 @@ mkDerivation {
     hash = "sha256-CEXpYhyVQ6E/SE6UWEpJ/8ASmXDpkUYkI1/B0GGgwIM=";
   };
 
-  buildDeps = [ make gawk ];
+  buildDeps = [
+    make
+    gawk
+  ];
   runtimeDeps = [ linux-headers ];
   propagatedDeps = [ zlib ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd gcc-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         mkdir -p build && cd build
         ../configure \
@@ -42,13 +56,15 @@ mkDerivation {
           --enable-default-ssp
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         cd build
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         cd build
         make install

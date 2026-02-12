@@ -14,7 +14,12 @@
 #   - Nix store garbage collection (aos-gc.timer)
 #   - Chrony NTP time synchronization
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 {
   imports = [

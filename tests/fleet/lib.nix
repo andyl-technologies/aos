@@ -19,7 +19,13 @@
 let
   vmLib = import ../vm/lib.nix { inherit pkgs lib; };
 
-  mkFleetTest = { name, machines, testScript, timeout ? 300 }:
+  mkFleetTest =
+    {
+      name,
+      machines,
+      testScript,
+      timeout ? 300,
+    }:
     let
       machineNames = builtins.attrNames machines;
       machineCount = builtins.length machineNames;
@@ -54,40 +60,44 @@ let
             # ----------------------------------------------------------
             # Launch each machine
             # ----------------------------------------------------------
-            ${lib.concatStringsSep "\n" (builtins.map (machineName:
-              let
-                machine = machines.${machineName};
-                image = vmLib.mkTestImage {
-                  system = machine.system;
-                  name = machineName;
-                };
-                netPort = builtins.toString (machine.netPort or 10000);
-                mac = machine.mac or "52:54:00:00:00:01";
-              in ''
-                echo "Starting machine: ${machineName} (role: ${machine.role or "worker"})"
+            ${lib.concatStringsSep "\n" (
+              builtins.map (
+                machineName:
+                let
+                  machine = machines.${machineName};
+                  image = vmLib.mkTestImage {
+                    system = machine.system;
+                    name = machineName;
+                  };
+                  netPort = builtins.toString (machine.netPort or 10000);
+                  mac = machine.mac or "52:54:00:00:00:01";
+                in
+                ''
+                  echo "Starting machine: ${machineName} (role: ${machine.role or "worker"})"
 
-                AGENT_SOCK_${machineName}="$FLEET_DIR/${machineName}-agent.sock"
-                MONITOR_SOCK_${machineName}="$FLEET_DIR/${machineName}-monitor.sock"
-                SERIAL_LOG_${machineName}="$FLEET_DIR/${machineName}-serial.log"
+                  AGENT_SOCK_${machineName}="$FLEET_DIR/${machineName}-agent.sock"
+                  MONITOR_SOCK_${machineName}="$FLEET_DIR/${machineName}-monitor.sock"
+                  SERIAL_LOG_${machineName}="$FLEET_DIR/${machineName}-serial.log"
 
-                qemu-system-x86_64 \
-                  -machine q35,accel=kvm \
-                  -cpu host \
-                  -m 2048 \
-                  -smp 2 \
-                  -nographic \
-                  -drive file="${image}",format=raw,if=virtio,readonly=on \
-                  -device virtio-serial \
-                  -device virtserialport,chardev=agent,name=aos.test.agent \
-                  -chardev socket,id=agent,path="$AGENT_SOCK_${machineName}",server=on,wait=off \
-                  -monitor unix:"$MONITOR_SOCK_${machineName}",server,nowait \
-                  -serial file:"$SERIAL_LOG_${machineName}" \
-                  -netdev socket,id=net0,listen=:${netPort} \
-                  -device virtio-net-pci,netdev=net0,mac=${mac} \
-                  -no-reboot &
-                PIDS="$PIDS $!"
-              ''
-            ) machineNames)}
+                  qemu-system-x86_64 \
+                    -machine q35,accel=kvm \
+                    -cpu host \
+                    -m 2048 \
+                    -smp 2 \
+                    -nographic \
+                    -drive file="${image}",format=raw,if=virtio,readonly=on \
+                    -device virtio-serial \
+                    -device virtserialport,chardev=agent,name=aos.test.agent \
+                    -chardev socket,id=agent,path="$AGENT_SOCK_${machineName}",server=on,wait=off \
+                    -monitor unix:"$MONITOR_SOCK_${machineName}",server,nowait \
+                    -serial file:"$SERIAL_LOG_${machineName}" \
+                    -netdev socket,id=net0,listen=:${netPort} \
+                    -device virtio-net-pci,netdev=net0,mac=${mac} \
+                    -no-reboot &
+                  PIDS="$PIDS $!"
+                ''
+              ) machineNames
+            )}
 
             # ----------------------------------------------------------
             # Wait for all agents to become ready
@@ -165,9 +175,11 @@ let
             echo "==> Fleet test passed: ${name}"
             mkdir -p $out
             echo "PASS" > $out/result
-            ${lib.concatStringsSep "\n" (builtins.map (m: ''
-              cp "$FLEET_DIR/${m}-serial.log" "$out/${m}-serial.log" 2>/dev/null || true
-            '') machineNames)}
+            ${lib.concatStringsSep "\n" (
+              builtins.map (m: ''
+                cp "$FLEET_DIR/${m}-serial.log" "$out/${m}-serial.log" 2>/dev/null || true
+              '') machineNames
+            )}
           '';
         }
       ];
@@ -175,6 +187,7 @@ let
       requiredSystemFeatures = [ "kvm" ];
     };
 
-in {
+in
+{
   inherit mkFleetTest;
 }

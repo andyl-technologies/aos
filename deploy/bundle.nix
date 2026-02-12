@@ -18,14 +18,21 @@
 #
 # Output: $out/aos-update-<version>.tar containing manifest + store paths
 
-{ pkgs, lib, oldSystem, newSystem, version }:
+{
+  pkgs,
+  lib,
+  oldSystem,
+  newSystem,
+  version,
+}:
 
 let
   # Resolve the toplevel derivation paths.
   oldToplevel = oldSystem.config.system.build.toplevel;
   newToplevel = newSystem.config.system.build.toplevel;
 
-in pkgs.mkDerivation {
+in
+pkgs.mkDerivation {
   name = "aos-bundle-${version}";
 
   src = null;

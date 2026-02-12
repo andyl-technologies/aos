@@ -1,7 +1,13 @@
 # Linux Headers — Kernel headers for userspace compilation
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "6.12.11"; in
+let
+  version = "6.12.11";
+in
 mkDerivation {
   pname = "linux-headers";
   inherit version;
@@ -14,17 +20,19 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd linux-${version}
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         # Use 'make headers' to sanitize headers in-tree, then copy manually.
         # This avoids 'make headers_install' which requires rsync, a tool not

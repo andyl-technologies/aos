@@ -1,7 +1,10 @@
 # Shared Kubernetes source — used by kubelet, kubeadm, kubectl
 { fetchurl }:
 
-let version = "1.31.4"; in {
+let
+  version = "1.31.4";
+in
+{
   inherit version;
   src = fetchurl {
     urls = [
