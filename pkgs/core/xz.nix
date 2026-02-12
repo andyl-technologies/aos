@@ -1,12 +1,16 @@
 # XZ Utils — LZMA compression utilities
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "5.6.4"; in
 mkDerivation {
-  name = "xz-${versions.core.xz}";
-  version = versions.core.xz;
+  pname = "xz";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.xz) url hash;
+    urls = [
+      "https://github.com/tukaani-project/xz/releases/download/v${version}/xz-${version}.tar.xz"
+    ];
+    hash = "sha256-gpzP5512l0j3VX56RCmmTQaFjifh42LiXQGre5MdnJU=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd xz-${versions.core.xz}
+        cd xz-${version}
       '';
     }
     { name = "configure";

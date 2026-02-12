@@ -1,12 +1,16 @@
 # ipvsadm — IPVS administration utility
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "1.31"; in
 mkDerivation {
-  name = "ipvsadm-${versions.kubernetes.ipvsadm}";
-  version = versions.kubernetes.ipvsadm;
+  pname = "ipvsadm";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.ipvsadm) url hash;
+    urls = [
+      "https://mirrors.kernel.org/pub/linux/utils/kernel/ipvsadm/ipvsadm-${version}.tar.xz"
+    ];
+    hash = "sha256-GgpeJbWhImQ10vt2NBZW+DpxAYOuuw0gTbOcDsO+39s=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd ipvsadm-${versions.kubernetes.ipvsadm}
+        cd ipvsadm-${version}
       '';
     }
     { name = "build";

@@ -1,12 +1,16 @@
 # Helm — Kubernetes package manager
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "3.16.4"; in
 mkDerivation {
-  name = "helm-${versions.kubernetes.helm}";
-  version = versions.kubernetes.helm;
+  pname = "helm";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.helm) url hash;
+    urls = [
+      "https://github.com/helm/helm/archive/v${version}/helm-${version}.tar.gz"
+    ];
+    hash = "sha256-QooO0GE2zCAY/+KD9eT3+6TSo3vFZs0M9apVDEmF9bs=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd helm-${versions.kubernetes.helm}
+        cd helm-${version}
       '';
     }
     { name = "build";
@@ -27,7 +31,7 @@ mkDerivation {
         export GOFLAGS="-trimpath"
         go build -o helm \
           -ldflags "-s -w \
-            -X helm.sh/helm/v3/internal/version.version=v${versions.kubernetes.helm} \
+            -X helm.sh/helm/v3/internal/version.version=v${version} \
             -X helm.sh/helm/v3/internal/version.gitTreeState=clean" \
           ./cmd/helm
       '';

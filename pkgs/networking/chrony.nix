@@ -1,12 +1,16 @@
 # Chrony — NTP client and server
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "4.6.1"; in
 mkDerivation {
-  name = "chrony-${versions.networking.chrony}";
-  version = versions.networking.chrony;
+  pname = "chrony";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.chrony) url hash;
+    urls = [
+      "https://chrony-project.org/releases/chrony-${version}.tar.gz"
+    ];
+    hash = "sha256-Vx/3P78K4wl/BgTsouALHYuy6Rr/4aNJR4X/IdYZnFw=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd chrony-${versions.networking.chrony}
+        cd chrony-${version}
       '';
     }
     { name = "configure";

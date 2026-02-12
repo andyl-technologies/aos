@@ -1,12 +1,16 @@
 # OpenSSL — TLS and cryptography library
-{ mkDerivation, fetchurl, sources, versions, make, zlib, perl }:
+{ mkDerivation, fetchurl, make, zlib, perl }:
 
+let version = "3.3.2"; in
 mkDerivation {
-  name = "openssl-${versions.tls.openssl}";
-  version = versions.tls.openssl;
+  pname = "openssl";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.openssl) url hash;
+    urls = [
+      "https://www.openssl.org/source/openssl-${version}.tar.gz"
+    ];
+    hash = "sha256-LopAsBl5r+i+C7+z3l3BxnCf7bRtbInBDaEUq1/D0oE=";
   };
 
   buildDeps = [ make perl ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd openssl-${versions.tls.openssl}
+        cd openssl-${version}
       '';
     }
     { name = "configure";

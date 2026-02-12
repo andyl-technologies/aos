@@ -1,12 +1,16 @@
 # crictl — CLI for CRI-compatible container runtimes
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "1.31.1"; in
 mkDerivation {
-  name = "crictl-${versions.kubernetes.crictl}";
-  version = versions.kubernetes.crictl;
+  pname = "crictl";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.crictl) url hash;
+    urls = [
+      "https://github.com/kubernetes-sigs/cri-tools/archive/v${version}/cri-tools-${version}.tar.gz"
+    ];
+    hash = "sha256-RlvRR2ioangsbksVs2g8Sl79A2PWiyQdV1enutqbzSE=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd cri-tools-${versions.kubernetes.crictl}
+        cd cri-tools-${version}
       '';
     }
     { name = "build";
@@ -26,7 +30,7 @@ mkDerivation {
         export CGO_ENABLED=0
         export GOFLAGS="-trimpath"
         go build -o crictl \
-          -ldflags "-s -w -X github.com/kubernetes-sigs/cri-tools/pkg/version.Version=v${versions.kubernetes.crictl}" \
+          -ldflags "-s -w -X github.com/kubernetes-sigs/cri-tools/pkg/version.Version=v${version}" \
           ./cmd/crictl
       '';
     }

@@ -1,12 +1,16 @@
 # SELinux Reference Policy
-{ mkDerivation, fetchurl, sources, versions, make, policycoreutils }:
+{ mkDerivation, fetchurl, make, policycoreutils }:
 
+let version = "2.20240916"; in
 mkDerivation {
-  name = "refpolicy-${versions.security.refpolicy}";
-  version = versions.security.refpolicy;
+  pname = "refpolicy";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.refpolicy) url hash;
+    urls = [
+      "https://github.com/SELinuxProject/refpolicy/releases/download/RELEASE_2_20240916/refpolicy-${version}.tar.bz2"
+    ];
+    hash = "sha256-pOOQcqyRvwkqCGYLJGpJ8+mGyiwWQCpbH60643To10c=";
   };
 
   buildDeps = [ make policycoreutils ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd refpolicy-${versions.security.refpolicy}
+        cd refpolicy-${version}
       '';
     }
     { name = "configure";

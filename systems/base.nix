@@ -18,6 +18,7 @@
 
 {
   imports = [
+    ../modules/base/build.nix
     ../modules/base/system.nix
     ../modules/base/boot.nix
     ../modules/base/filesystems.nix

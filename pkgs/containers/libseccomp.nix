@@ -1,12 +1,16 @@
 # libseccomp — Seccomp (secure computing) userspace library
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "2.5.5"; in
 mkDerivation {
-  name = "libseccomp-2.5.5";
-  version = "2.5.5";
+  pname = "libseccomp";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.libseccomp) url hash;
+    urls = [
+      "https://github.com/seccomp/libseccomp/releases/download/v${version}/libseccomp-${version}.tar.gz"
+    ];
+    hash = "sha256-JIosik2bmFiqa69ScSw0r+/PnJ6Ut23OAsHJqiX7M3U=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd libseccomp-2.5.5
+        cd libseccomp-${version}
       '';
     }
     { name = "configure";

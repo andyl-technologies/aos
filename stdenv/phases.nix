@@ -18,9 +18,6 @@
 #
 
 let
-  # Import phase helpers from lib
-  lib = import ../lib;
-
   # Shared unpack phase used by all build systems
   unpackPhase = {
     name = "unpack";

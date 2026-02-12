@@ -1,13 +1,17 @@
 # ZFS — OpenZFS filesystem and volume manager
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config,
+{ mkDerivation, fetchurl, make, pkg-config,
   util-linux, openssl, zlib, linux-headers }:
 
+let version = "2.3.0"; in
 mkDerivation {
-  name = "zfs-${versions.storage.zfs}";
-  version = versions.storage.zfs;
+  pname = "zfs";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.zfs) url hash;
+    urls = [
+      "https://github.com/openzfs/zfs/releases/download/zfs-${version}/zfs-${version}.tar.gz"
+    ];
+    hash = "sha256-boeH6rVfJMa5wxfz/psNqaZl6zTDHfiP82jZqS6TVqY=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -18,7 +22,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd zfs-${versions.storage.zfs}
+        cd zfs-${version}
       '';
     }
     { name = "configure";

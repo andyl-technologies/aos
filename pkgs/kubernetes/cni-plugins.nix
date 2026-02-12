@@ -1,12 +1,16 @@
 # CNI Plugins — Container Networking Interface reference plugins
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "1.6.1"; in
 mkDerivation {
-  name = "cni-plugins-${versions.kubernetes.cni-plugins}";
-  version = versions.kubernetes.cni-plugins;
+  pname = "cni-plugins";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.cni-plugins) url hash;
+    urls = [
+      "https://github.com/containernetworking/plugins/archive/v${version}/cni-plugins-${version}.tar.gz"
+    ];
+    hash = "sha256-Xi6mm8oIv7kpIfIvosweaTku4Tmlh4Bo37wcdWjjewE=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd plugins-${versions.kubernetes.cni-plugins}
+        cd plugins-${version}
       '';
     }
     { name = "build";
@@ -25,7 +29,7 @@ mkDerivation {
         export GOPATH=$TMPDIR/go
         export CGO_ENABLED=0
         export GOFLAGS="-trimpath"
-        export LDFLAGS="-s -w -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=v${versions.kubernetes.cni-plugins}"
+        export LDFLAGS="-s -w -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=v${version}"
 
         mkdir -p bin
         for plugin in bandwidth bridge dhcp dummy firewall host-device host-local \

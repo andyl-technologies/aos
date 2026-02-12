@@ -21,7 +21,8 @@
 #   tests/    — Multi-layer test suite (eval, build, vm, fleet)
 
 let
-  lib = import ./lib;
+  system = "aarch64-linux";
+  lib = import ./lib { inherit system; };
   pkgs = import ./pkgs { inherit lib; };
 
   # Helper: evaluate a system variant from a module path list.

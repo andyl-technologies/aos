@@ -1,13 +1,17 @@
 # curl — Command-line URL transfer tool
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config,
+{ mkDerivation, fetchurl, make, pkg-config,
   openssl, zlib, ca-certificates }:
 
+let version = "8.10.1"; in
 mkDerivation {
-  name = "curl-${versions.networking.curl}";
-  version = versions.networking.curl;
+  pname = "curl";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.curl) url hash;
+    urls = [
+      "https://curl.se/download/curl-${version}.tar.xz"
+    ];
+    hash = "sha256-c6Sw6ZWWoJ+lkkpPt+S5lahf2g0YosAquc8TS+vOBO4=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -18,7 +22,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd curl-${versions.networking.curl}
+        cd curl-${version}
       '';
     }
     { name = "configure";

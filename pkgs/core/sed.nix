@@ -1,12 +1,18 @@
 # GNU Sed — Stream editor
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "4.9"; in
 mkDerivation {
-  name = "sed-${versions.core.sed}";
-  version = versions.core.sed;
+  pname = "sed";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.sed) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/sed/sed-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/sed/sed-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/sed/sed-${version}.tar.xz"
+    ];
+    hash = "sha256-biJrcy4c1zlGStaGK9Ghq6QteYKSLaelNRljHSSXUYE=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd sed-${versions.core.sed}
+        cd sed-${version}
       '';
     }
     { name = "configure";

@@ -97,6 +97,8 @@ in
   };
 
   config = {
+    environment.systemPackages = [ pkgs.dracut ];
+
     # systemd-boot loader entry for the current generation.
     # Written to /boot/loader/entries/aos.conf
     environment.etc."boot/loader/entries/aos.conf" = {

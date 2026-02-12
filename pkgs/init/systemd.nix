@@ -1,14 +1,18 @@
 # systemd — System and service manager
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config, gawk,
+{ mkDerivation, fetchurl, make, pkg-config, gawk,
   linux-headers, util-linux, kmod, dbus, zlib, xz, lz4, openssl, audit,
   libselinux, perl }:
 
+let version = "256.9"; in
 mkDerivation {
-  name = "systemd-${versions.init.systemd}";
-  version = versions.init.systemd;
+  pname = "systemd";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.systemd) url hash;
+    urls = [
+      "https://github.com/systemd/systemd-stable/archive/refs/tags/v${version}.tar.gz"
+    ];
+    hash = "sha256-1VWM1BnI1GvclYBky5f5Y9HqeThmQUwCWQbsFQM1Eu0=";
   };
 
   buildDeps = [ make pkg-config gawk perl ];
@@ -20,7 +24,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd systemd-stable-${versions.init.systemd}
+        cd systemd-stable-${version}
       '';
     }
     { name = "configure";
