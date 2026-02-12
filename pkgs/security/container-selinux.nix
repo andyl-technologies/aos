@@ -1,12 +1,16 @@
 # container-selinux — SELinux policy for container runtimes
-{ mkDerivation, fetchurl, sources, versions, make, policycoreutils }:
+{ mkDerivation, fetchurl, make, policycoreutils }:
 
+let version = "2.232.1"; in
 mkDerivation {
-  name = "container-selinux-${versions.security.container-selinux}";
-  version = versions.security.container-selinux;
+  pname = "container-selinux";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.container-selinux) url hash;
+    urls = [
+      "https://github.com/containers/container-selinux/archive/v${version}/container-selinux-${version}.tar.gz"
+    ];
+    hash = "sha256-puK6O4twbnNP3Y3r8NW/HZuDkvTCGtJg0US0yE4I48o=";
   };
 
   buildDeps = [ make policycoreutils ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd container-selinux-${versions.security.container-selinux}
+        cd container-selinux-${version}
       '';
     }
     { name = "build";

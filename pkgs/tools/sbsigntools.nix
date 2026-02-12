@@ -1,12 +1,16 @@
 # sbsigntools — UEFI Secure Boot signing tools
-{ mkDerivation, fetchurl, sources, versions, make, openssl }:
+{ mkDerivation, fetchurl, make, openssl }:
 
+let version = "0.9.5"; in
 mkDerivation {
-  name = "sbsigntools-${versions.image-tools.sbsigntools}";
-  version = versions.image-tools.sbsigntools;
+  pname = "sbsigntools";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.sbsigntools) url hash;
+    urls = [
+      "https://git.kernel.org/pub/scm/linux/kernel/git/jejb/sbsigntools.git/snapshot/sbsigntools-${version}.tar.gz"
+    ];
+    hash = "sha256-ojI+VL5tF/UM6zJTym7QYxcaW8tweb+llACM0q63/eo=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd sbsigntools-${versions.image-tools.sbsigntools}
+        cd sbsigntools-${version}
       '';
     }
     { name = "configure";

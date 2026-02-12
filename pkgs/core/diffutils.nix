@@ -1,12 +1,18 @@
 # GNU Diffutils — File comparison utilities
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "3.10"; in
 mkDerivation {
-  name = "diffutils-${versions.core.diffutils}";
-  version = versions.core.diffutils;
+  pname = "diffutils";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.diffutils) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/diffutils/diffutils-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/diffutils/diffutils-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/diffutils/diffutils-${version}.tar.xz"
+    ];
+    hash = "sha256-kOXpPMck5OvhLt6A3xY0Bjx6hVaSaFkZv+YLVWyb0J4=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd diffutils-${versions.core.diffutils}
+        cd diffutils-${version}
       '';
     }
     { name = "configure";

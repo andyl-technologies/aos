@@ -1,12 +1,16 @@
 # OpenSSH — Secure shell client and server
-{ mkDerivation, fetchurl, sources, versions, make, openssl, zlib }:
+{ mkDerivation, fetchurl, make, openssl, zlib }:
 
+let version = "9.9p1"; in
 mkDerivation {
-  name = "openssh-${versions.networking.openssh}";
-  version = versions.networking.openssh;
+  pname = "openssh";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.openssh) url hash;
+    urls = [
+      "https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${version}.tar.gz"
+    ];
+    hash = "sha256-s0P7zb/4fxWxmG5uFdbU/Jp9NgZr5rf7UHCHuo+WbAI=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd openssh-${versions.networking.openssh}
+        cd openssh-${version}
       '';
     }
     { name = "configure";

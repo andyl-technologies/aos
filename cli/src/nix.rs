@@ -109,6 +109,24 @@ impl NixRunner {
         Ok(value)
     }
 
+    /// Evaluate an arbitrary Nix expression to JSON.
+    pub fn eval_expr_json(&self, expr: &str) -> Result<serde_json::Value> {
+        let args: Vec<String> = vec![
+            "--eval".to_string(),
+            "--strict".to_string(),
+            "--json".to_string(),
+            "-E".to_string(),
+            expr.to_string(),
+        ];
+
+        let output = self.run_nix("nix-instantiate", &args)?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let value: serde_json::Value = serde_json::from_str(stdout.trim())
+            .with_context(|| format!("failed to parse JSON from nix-instantiate expression"))?;
+
+        Ok(value)
+    }
+
     /// Evaluate a Nix expression to a string.
     pub fn eval_str(&self, attr: &str) -> Result<String> {
         let args: Vec<String> = vec![

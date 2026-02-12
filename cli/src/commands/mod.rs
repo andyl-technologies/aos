@@ -1,9 +1,11 @@
 pub mod build;
 pub mod completions;
 pub mod describe;
+pub mod fmt;
 pub mod gc;
 pub mod graph;
 pub mod lint;
+pub mod prefetch;
 pub mod repl;
 pub mod shell;
 pub mod show;

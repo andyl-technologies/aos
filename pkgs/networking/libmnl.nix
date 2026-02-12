@@ -1,12 +1,16 @@
 # libmnl — Minimalistic Netlink library
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "1.0.5"; in
 mkDerivation {
-  name = "libmnl-${versions.networking.libmnl}";
-  version = versions.networking.libmnl;
+  pname = "libmnl";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.libmnl) url hash;
+    urls = [
+      "https://www.netfilter.org/projects/libmnl/files/libmnl-${version}.tar.bz2"
+    ];
+    hash = "sha256-J0ubkZ7zFSv7PaOhPJUN1g1uK81UIw/+yimNA7QNBSU=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd libmnl-${versions.networking.libmnl}
+        cd libmnl-${version}
       '';
     }
     { name = "configure";

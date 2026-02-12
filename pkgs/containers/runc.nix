@@ -1,13 +1,17 @@
 # runc — OCI container runtime
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config,
+{ mkDerivation, fetchurl, make, pkg-config,
   libseccomp, libselinux }:
 
+let version = "1.2.4"; in
 mkDerivation {
-  name = "runc-${versions.kubernetes.runc}";
-  version = versions.kubernetes.runc;
+  pname = "runc";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.runc) url hash;
+    urls = [
+      "https://github.com/opencontainers/runc/archive/v${version}/runc-${version}.tar.gz"
+    ];
+    hash = "sha256-l4XBRMl5dLUrYJG3p5FotzaB/1dLyEOLRPP1+MES8XE=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -18,7 +22,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd runc-${versions.kubernetes.runc}
+        cd runc-${version}
       '';
     }
     { name = "setup-gopath";
@@ -36,7 +40,7 @@ mkDerivation {
         export CGO_CFLAGS="-I${libseccomp}/include -I${libselinux}/include"
         export CGO_LDFLAGS="-L${libseccomp}/lib -L${libselinux}/lib"
         make BUILDTAGS="$BUILDTAGS" \
-          COMMIT=v${versions.kubernetes.runc} \
+          COMMIT=v${version} \
           static
       '';
     }

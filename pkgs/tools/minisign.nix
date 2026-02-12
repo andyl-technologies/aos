@@ -1,12 +1,16 @@
 # minisign — Dead simple signing tool
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "0.11"; in
 mkDerivation {
-  name = "minisign-${versions.image-tools.minisign}";
-  version = versions.image-tools.minisign;
+  pname = "minisign";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.minisign) url hash;
+    urls = [
+      "https://github.com/jedisct1/minisign/archive/${version}/minisign-${version}.tar.gz"
+    ];
+    hash = "sha256-dMLHihzVGkOmyY9GpOq++8hmgHTKmqFBFVRCdrZj/FU=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd minisign-${versions.image-tools.minisign}
+        cd minisign-${version}
       '';
     }
     { name = "build";

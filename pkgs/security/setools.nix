@@ -1,13 +1,17 @@
 # SETools — SELinux policy analysis tools
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config,
+{ mkDerivation, fetchurl, make, pkg-config,
   libsepol, libselinux }:
 
+let version = "4.5.1"; in
 mkDerivation {
-  name = "setools-${versions.security.setools}";
-  version = versions.security.setools;
+  pname = "setools";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.setools) url hash;
+    urls = [
+      "https://github.com/SELinuxProject/setools/releases/download/${version}/setools-${version}.tar.bz2"
+    ];
+    hash = "sha256-JeR9ALv/1gRvVUCcm6OwjZsdV4jMFZ6iR9ngztjkguc=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -18,7 +22,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd setools-${versions.security.setools}
+        cd setools-${version}
       '';
     }
     { name = "build";

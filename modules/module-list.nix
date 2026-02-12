@@ -8,6 +8,7 @@
 # To add a new module: append its path here and create the file.
 
 [
+  ./base/build.nix
   ./base/system.nix
   ./base/boot.nix
   ./base/filesystems.nix

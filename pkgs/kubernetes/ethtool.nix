@@ -1,12 +1,16 @@
 # ethtool — Utility for querying/controlling network device driver and hardware
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "6.11"; in
 mkDerivation {
-  name = "ethtool-${versions.kubernetes.ethtool}";
-  version = versions.kubernetes.ethtool;
+  pname = "ethtool";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.ethtool) url hash;
+    urls = [
+      "https://mirrors.kernel.org/pub/software/network/ethtool/ethtool-${version}.tar.xz"
+    ];
+    hash = "sha256-jZH1xyrj8lt+iNR4EnncsyD3HjAFiRQ3CxxXTJazEgI=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd ethtool-${versions.kubernetes.ethtool}
+        cd ethtool-${version}
       '';
     }
     { name = "configure";

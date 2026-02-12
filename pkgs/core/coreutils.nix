@@ -1,12 +1,18 @@
 # GNU Coreutils — Basic file, shell, and text utilities
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "9.5"; in
 mkDerivation {
-  name = "coreutils-${versions.core.coreutils}";
-  version = versions.core.coreutils;
+  pname = "coreutils";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.coreutils) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/coreutils/coreutils-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/coreutils/coreutils-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/coreutils/coreutils-${version}.tar.xz"
+    ];
+    hash = "sha256-zTKO3qyS9qZl3p8yPJO3Eq8YWLwuDYjz9xAEaUcKG4o=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd coreutils-${versions.core.coreutils}
+        cd coreutils-${version}
       '';
     }
     { name = "configure";

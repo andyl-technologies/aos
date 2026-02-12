@@ -1,12 +1,16 @@
 # conntrack-tools — Connection tracking userspace tools
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config, libmnl, libnftnl }:
+{ mkDerivation, fetchurl, make, pkg-config, libmnl, libnftnl }:
 
+let version = "1.4.8"; in
 mkDerivation {
-  name = "conntrack-tools-${versions.kubernetes.conntrack-tools}";
-  version = versions.kubernetes.conntrack-tools;
+  pname = "conntrack-tools";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.conntrack-tools) url hash;
+    urls = [
+      "https://www.netfilter.org/projects/conntrack-tools/files/conntrack-tools-${version}.tar.xz"
+    ];
+    hash = "sha256-BnZ39MX2VkgZ547TqdSomAk16pJz86uyKkIOowq13tY=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd conntrack-tools-${versions.kubernetes.conntrack-tools}
+        cd conntrack-tools-${version}
       '';
     }
     { name = "configure";

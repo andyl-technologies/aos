@@ -1,12 +1,18 @@
 # Binutils — GNU Binary Utilities
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "2.42"; in
 mkDerivation {
-  name = "binutils-${versions.toolchain.binutils}";
-  version = versions.toolchain.binutils;
+  pname = "binutils";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.binutils) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/binutils/binutils-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/binutils/binutils-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/binutils/binutils-${version}.tar.xz"
+    ];
+    hash = "sha256-9uTUH9X8d4sGt4kUV7NiDaXs6hAGxqSkGumYEJ+FqAA=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd binutils-${versions.toolchain.binutils}
+        cd binutils-${version}
       '';
     }
     { name = "configure";

@@ -76,6 +76,24 @@ fn run(cli: &Cli) -> Result<()> {
             dependency,
         } => commands::why_depends::run(&nix, &printer, package, dependency),
         Commands::Describe => commands::describe::run(&nix, &printer),
+        Commands::Prefetch {
+            package,
+            all,
+            update,
+            jobs,
+            connect_timeout,
+            min_speed,
+        } => commands::prefetch::run(
+            &nix,
+            &printer,
+            package,
+            *all,
+            *update,
+            *jobs,
+            *connect_timeout,
+            *min_speed,
+        ),
+        Commands::Fmt { check, files } => commands::fmt::run(&nix, &printer, *check, files),
         // Already handled above, but the match must be exhaustive.
         Commands::Completions { .. } => unreachable!(),
     }
