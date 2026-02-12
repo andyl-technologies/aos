@@ -170,6 +170,7 @@ pub fn create_spinner(msg: &str) -> ProgressBar {
 }
 
 /// Create a determinate progress bar for multi-item operations.
+#[allow(dead_code)]
 pub fn create_progress_bar(len: u64, msg: &str) -> ProgressBar {
     let pb = ProgressBar::new(len);
     pb.set_style(

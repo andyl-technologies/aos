@@ -26,7 +26,7 @@ let
 
   # Helper: evaluate a system variant from a module path list.
   mkSystem = modules: lib.evalModules {
-    modules = modules ++ import ./modules/module-list.nix;
+    modules = modules;
     inherit pkgs lib;
   };
 
