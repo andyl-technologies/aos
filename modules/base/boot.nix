@@ -10,7 +10,12 @@
 #   [boot.uki] enable
 #   [boot.secure_boot] enable
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.boot;

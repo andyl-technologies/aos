@@ -9,7 +9,12 @@
 # Absorbed TOML config values:
 #   [services.chrony] enable, servers, allowed_subnets, makestep
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.services.chrony;
@@ -88,7 +93,7 @@ in
 
     allowedSubnets = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = ''
         Subnets allowed to use this host as an NTP server. Empty means
         this host is a client only. Example: [ "10.0.0.0/8" ] to serve
@@ -156,7 +161,7 @@ in
       home = "/var/lib/chrony";
       shell = "/sbin/nologin";
       description = "chrony NTP daemon";
-      extraGroups = [];
+      extraGroups = [ ];
     };
 
     aos.users.groups.chrony = {

@@ -1,7 +1,13 @@
 # linux-firmware — Firmware files for Linux kernel drivers
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "20241210"; in
+let
+  version = "20241210";
+in
 mkDerivation {
   pname = "firmware";
   inherit version;
@@ -14,17 +20,19 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd linux-firmware-${version}
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/lib/firmware
 

@@ -1,8 +1,18 @@
 # ZFS — OpenZFS filesystem and volume manager
-{ mkDerivation, fetchurl, make, pkg-config,
-  util-linux, openssl, zlib, linux-headers }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  util-linux,
+  openssl,
+  zlib,
+  linux-headers,
+}:
 
-let version = "2.3.0"; in
+let
+  version = "2.3.0";
+in
 mkDerivation {
   pname = "zfs";
   inherit version;
@@ -14,18 +24,27 @@ mkDerivation {
     hash = "sha256-boeH6rVfJMa5wxfz/psNqaZl6zTDHfiP82jZqS6TVqY=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ util-linux openssl zlib ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    util-linux
+    openssl
+    zlib
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd zfs-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -40,12 +59,14 @@ mkDerivation {
           --disable-static
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

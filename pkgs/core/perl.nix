@@ -1,7 +1,13 @@
 # Perl — Practical Extraction and Reporting Language
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "5.38.2"; in
+let
+  version = "5.38.2";
+in
 mkDerivation {
   pname = "perl";
   inherit version;
@@ -14,17 +20,19 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd perl-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./Configure \
           -des \
@@ -40,12 +48,14 @@ mkDerivation {
           -Duseshrplib
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

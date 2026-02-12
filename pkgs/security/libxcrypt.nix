@@ -1,7 +1,14 @@
 # libxcrypt — Extended crypt library for DES/MD5/SHA/Blowfish password hashing
-{ mkDerivation, fetchurl, make, perl }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  perl,
+}:
 
-let version = "4.4.36"; in
+let
+  version = "4.4.36";
+in
 mkDerivation {
   pname = "libxcrypt";
   inherit version;
@@ -13,18 +20,23 @@ mkDerivation {
     hash = "sha256-5eH0yu4KAd4q7ibjE4gH1tPKK45nKHlm0f79ZeH9iUM=";
   };
 
-  buildDeps = [ make perl ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    perl
+  ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd libxcrypt-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -34,12 +46,14 @@ mkDerivation {
           --disable-static
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

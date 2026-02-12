@@ -9,25 +9,28 @@
 #   [firewall] forward_policy, trusted_interfaces
 #   [firewall.kubernetes] worker_tcp, worker_udp, control_plane_tcp, cilium_tcp
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.firewall;
 
   # Format a list of ports as an nftables set expression: { 22, 80, 443 }
-  portSet = ports:
-    if ports == [] then ""
-    else "{ ${builtins.concatStringsSep ", " (builtins.map toString ports)} }";
+  portSet =
+    ports:
+    if ports == [ ] then "" else "{ ${builtins.concatStringsSep ", " (builtins.map toString ports)} }";
 
   # Build nftables rules for allowed TCP ports.
   tcpInputRules =
-    if cfg.allowedTCP == [] then ""
-    else "    tcp dport ${portSet cfg.allowedTCP} accept\n";
+    if cfg.allowedTCP == [ ] then "" else "    tcp dport ${portSet cfg.allowedTCP} accept\n";
 
   # Build nftables rules for allowed UDP ports.
   udpInputRules =
-    if cfg.allowedUDP == [] then ""
-    else "    udp dport ${portSet cfg.allowedUDP} accept\n";
+    if cfg.allowedUDP == [ ] then "" else "    udp dport ${portSet cfg.allowedUDP} accept\n";
 
   # Trusted interface rules — accept all traffic on lo, etc.
   trustedIfaceRules = builtins.concatStringsSep "\n" (
@@ -36,20 +39,28 @@ let
 
   # Kubernetes-specific rules (only included when K8s ports are defined).
   k8sWorkerTcpRules =
-    if cfg.kubernetes.workerTCP == [] then ""
-    else "    tcp dport ${portSet cfg.kubernetes.workerTCP} accept comment \"K8s worker ports\"\n";
+    if cfg.kubernetes.workerTCP == [ ] then
+      ""
+    else
+      "    tcp dport ${portSet cfg.kubernetes.workerTCP} accept comment \"K8s worker ports\"\n";
 
   k8sWorkerUdpRules =
-    if cfg.kubernetes.workerUDP == [] then ""
-    else "    udp dport ${portSet cfg.kubernetes.workerUDP} accept comment \"K8s overlay (VXLAN)\"\n";
+    if cfg.kubernetes.workerUDP == [ ] then
+      ""
+    else
+      "    udp dport ${portSet cfg.kubernetes.workerUDP} accept comment \"K8s overlay (VXLAN)\"\n";
 
   k8sControlPlaneTcpRules =
-    if cfg.kubernetes.controlPlaneTCP == [] then ""
-    else "    tcp dport ${portSet cfg.kubernetes.controlPlaneTCP} accept comment \"K8s control plane\"\n";
+    if cfg.kubernetes.controlPlaneTCP == [ ] then
+      ""
+    else
+      "    tcp dport ${portSet cfg.kubernetes.controlPlaneTCP} accept comment \"K8s control plane\"\n";
 
   k8sCiliumTcpRules =
-    if cfg.kubernetes.ciliumTCP == [] then ""
-    else "    tcp dport ${portSet cfg.kubernetes.ciliumTCP} accept comment \"Cilium health/Hubble\"\n";
+    if cfg.kubernetes.ciliumTCP == [ ] then
+      ""
+    else
+      "    tcp dport ${portSet cfg.kubernetes.ciliumTCP} accept comment \"Cilium health/Hubble\"\n";
 
   # Full nftables ruleset.
   nftablesConf = ''
@@ -133,7 +144,7 @@ in
 
     allowedUDP = lib.mkOption {
       type = lib.types.listOf lib.types.port;
-      default = [];
+      default = [ ];
       description = "UDP ports to allow inbound.";
     };
 
@@ -158,7 +169,11 @@ in
     kubernetes = {
       workerTCP = lib.mkOption {
         type = lib.types.listOf lib.types.port;
-        default = [ 10250 10256 30000 ];
+        default = [
+          10250
+          10256
+          30000
+        ];
         description = ''
           TCP ports for Kubernetes worker nodes:
           - 10250: kubelet API
@@ -178,7 +193,13 @@ in
 
       controlPlaneTCP = lib.mkOption {
         type = lib.types.listOf lib.types.port;
-        default = [ 6443 2379 2380 10257 10259 ];
+        default = [
+          6443
+          2379
+          2380
+          10257
+          10259
+        ];
         description = ''
           TCP ports for Kubernetes control plane:
           - 6443: kube-apiserver
@@ -190,7 +211,10 @@ in
 
       ciliumTCP = lib.mkOption {
         type = lib.types.listOf lib.types.port;
-        default = [ 4240 4244 ];
+        default = [
+          4240
+          4244
+        ];
         description = ''
           TCP ports for Cilium CNI:
           - 4240: Cilium health checks
@@ -201,7 +225,10 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ pkgs.nftables pkgs.iptables ];
+    environment.systemPackages = [
+      pkgs.nftables
+      pkgs.iptables
+    ];
 
     # /etc/nftables.conf — complete nftables ruleset.
     environment.etc."nftables.conf" = {

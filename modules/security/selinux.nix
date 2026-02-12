@@ -8,7 +8,12 @@
 # Absorbed TOML config values:
 #   [security.selinux] enable, mode, policy, autorelabel
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.security.selinux;
@@ -26,7 +31,11 @@ in
     };
 
     mode = lib.mkOption {
-      type = lib.types.enum [ "enforcing" "permissive" "disabled" ];
+      type = lib.types.enum [
+        "enforcing"
+        "permissive"
+        "disabled"
+      ];
       default = "enforcing";
       description = ''
         SELinux operating mode:
@@ -57,7 +66,10 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ pkgs.policycoreutils pkgs.libselinux ];
+    environment.systemPackages = [
+      pkgs.policycoreutils
+      pkgs.libselinux
+    ];
 
     # /etc/selinux/config — main SELinux configuration file.
     # Read by libselinux at boot and by selinux-policy-load.service.
@@ -78,7 +90,10 @@ in
       "selinux-policy-load" = {
         description = "Load SELinux Policy";
         wantedBy = [ "sysinit.target" ];
-        before = [ "sysinit.target" "systemd-tmpfiles-setup.service" ];
+        before = [
+          "sysinit.target"
+          "systemd-tmpfiles-setup.service"
+        ];
         after = [ "local-fs.target" ];
         serviceConfig = {
           Type = "oneshot";
@@ -93,7 +108,10 @@ in
         description = "SELinux Filesystem Relabeling";
         wantedBy = [ "sysinit.target" ];
         before = [ "sysinit.target" ];
-        after = [ "selinux-policy-load.service" "local-fs.target" ];
+        after = [
+          "selinux-policy-load.service"
+          "local-fs.target"
+        ];
         requires = [ "selinux-policy-load.service" ];
         serviceConfig = {
           Type = "oneshot";

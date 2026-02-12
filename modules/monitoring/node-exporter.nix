@@ -9,7 +9,12 @@
 #   [monitoring.node_exporter] enable, port, listen_address
 #   [monitoring.node_exporter] enabled_collectors, disabled_collectors
 
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   cfg = config.aos.monitoring.nodeExporter;
@@ -19,12 +24,16 @@ let
   disabledFlags = builtins.map (c: "--no-collector.${c}") cfg.disabledCollectors;
 
   # Complete command-line flags.
-  nodeExporterFlags = builtins.concatStringsSep " " ([
-    "--web.listen-address=${cfg.listenAddress}:${toString cfg.port}"
-    "--path.procfs=/proc"
-    "--path.sysfs=/sys"
-    "--path.rootfs=/"
-  ] ++ enabledFlags ++ disabledFlags);
+  nodeExporterFlags = builtins.concatStringsSep " " (
+    [
+      "--web.listen-address=${cfg.listenAddress}:${toString cfg.port}"
+      "--path.procfs=/proc"
+      "--path.sysfs=/sys"
+      "--path.rootfs=/"
+    ]
+    ++ enabledFlags
+    ++ disabledFlags
+  );
 
 in
 {
@@ -69,7 +78,7 @@ in
 
     disabledCollectors = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = ''
         List of node_exporter collectors to explicitly disable. Use this
         to suppress collectors that produce excessive cardinality or are
@@ -122,6 +131,9 @@ in
     };
 
     # Open the node exporter port in the firewall.
-    aos.firewall.allowedTCP = [ 22 cfg.port ];
+    aos.firewall.allowedTCP = [
+      22
+      cfg.port
+    ];
   };
 }

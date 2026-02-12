@@ -1,7 +1,16 @@
 # libselinux — SELinux userspace library
-{ mkDerivation, fetchurl, make, pkg-config, libsepol, pcre2 }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  libsepol,
+  pcre2,
+}:
 
-let version = "3.7"; in
+let
+  version = "3.7";
+in
 mkDerivation {
   pname = "libselinux";
   inherit version;
@@ -13,18 +22,29 @@ mkDerivation {
     hash = "sha256-pZdVqeMfrvEKaNOscWmlx6ubI742J7Z1pcOECgXYKS4=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ libsepol pcre2 ];
-  propagatedDeps = [ pcre2 libsepol ];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    libsepol
+    pcre2
+  ];
+  propagatedDeps = [
+    pcre2
+    libsepol
+  ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd selinux-${version}/libselinux
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make PREFIX=$out SHLIBDIR=$out/lib \
           CFLAGS="-I${libsepol}/include" \
@@ -33,7 +53,8 @@ mkDerivation {
           -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install PREFIX=$out SHLIBDIR=$out/lib
       '';

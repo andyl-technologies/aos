@@ -1,7 +1,13 @@
 # GNU Diffutils — File comparison utilities
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "3.10"; in
+let
+  version = "3.10";
+in
 mkDerivation {
   pname = "diffutils";
   inherit version;
@@ -16,29 +22,33 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd diffutils-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
           --disable-nls
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

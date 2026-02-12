@@ -1,7 +1,13 @@
 # jq — Lightweight command-line JSON processor
-{ mkDerivation, fetchurl, make }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+}:
 
-let version = "1.7.1"; in
+let
+  version = "1.7.1";
+in
 mkDerivation {
   pname = "jq";
   inherit version;
@@ -14,17 +20,19 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [];
-  propagatedDeps = [];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd jq-${version}
       '';
     }
-    { name = "configure";
+    {
+      name = "configure";
       script = ''
         ./configure \
           --prefix=$out \
@@ -32,12 +40,14 @@ mkDerivation {
           --without-oniguruma
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         make -j$NIX_BUILD_CORES
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install
       '';

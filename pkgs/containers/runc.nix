@@ -1,8 +1,16 @@
 # runc — OCI container runtime
-{ mkDerivation, fetchurl, make, pkg-config,
-  libseccomp, libselinux }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  pkg-config,
+  libseccomp,
+  libselinux,
+}:
 
-let version = "1.2.4"; in
+let
+  version = "1.2.4";
+in
 mkDerivation {
   pname = "runc";
   inherit version;
@@ -14,25 +22,34 @@ mkDerivation {
     hash = "sha256-l4XBRMl5dLUrYJG3p5FotzaB/1dLyEOLRPP1+MES8XE=";
   };
 
-  buildDeps = [ make pkg-config ];
-  runtimeDeps = [ libseccomp libselinux ];
-  propagatedDeps = [];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    libseccomp
+    libselinux
+  ];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd runc-${version}
       '';
     }
-    { name = "setup-gopath";
+    {
+      name = "setup-gopath";
       script = ''
         export GOPATH=$TMPDIR/go
         mkdir -p $GOPATH/src/github.com/opencontainers
         ln -sf $PWD $GOPATH/src/github.com/opencontainers/runc
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         export GOPATH=$TMPDIR/go
         export CGO_ENABLED=1
@@ -44,7 +61,8 @@ mkDerivation {
           static
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         mkdir -p $out/sbin
         install -m 755 runc $out/sbin/runc

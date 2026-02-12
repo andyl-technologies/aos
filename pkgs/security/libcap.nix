@@ -1,7 +1,16 @@
 # libcap — POSIX capabilities library
-{ mkDerivation, fetchurl, make, perl, linux-headers, binutils }:
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  perl,
+  linux-headers,
+  binutils,
+}:
 
-let version = "2.70"; in
+let
+  version = "2.70";
+in
 mkDerivation {
   pname = "libcap";
   inherit version;
@@ -14,18 +23,24 @@ mkDerivation {
     hash = "sha256-I6bviq2vHj6HX2M7stEWz++JUtunvHxWmxNFjhlSsw8=";
   };
 
-  buildDeps = [ make perl binutils ];
+  buildDeps = [
+    make
+    perl
+    binutils
+  ];
   runtimeDeps = [ linux-headers ];
-  propagatedDeps = [];
+  propagatedDeps = [ ];
 
   phases = [
-    { name = "unpack";
+    {
+      name = "unpack";
       script = ''
         tar xf $src
         cd libcap-${version}
       '';
     }
-    { name = "build";
+    {
+      name = "build";
       script = ''
         # Fix shebangs: scripts reference /bin/bash which doesn't exist
         # in the Nix sandbox. Replace with $CONFIG_SHELL (bootstrap bash).
@@ -46,7 +61,8 @@ mkDerivation {
           DYNAMIC=yes
       '';
     }
-    { name = "install";
+    {
+      name = "install";
       script = ''
         make install \
           prefix=$out \
