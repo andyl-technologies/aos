@@ -1,288 +1,230 @@
-# Phase 8: QEMU Test Framework, CI Pipeline, and Binary Cache
+# Phase 8: Multi-Layer Test Suite
 
-**Phase Number:** 8
+**Plan Phase:** 9 (Tests)
 
 ## Objective
 
-Build a comprehensive integration test framework using QEMU and pytest, set up the CI/CD pipeline (GitHub Actions or equivalent), establish the binary cache infrastructure for build acceleration, and create the full test suite covering boot, services, ZFS, Kubernetes, Ignition, updates, and rollback.
+Build a comprehensive, Nix-native test suite (`tests/`) with four layers: eval checks, build checks, VM integration tests, and fleet integration tests. The test harness uses QEMU with a custom virtio-serial guest agent for structured communication -- inspired by Guix's marionette but simpler (shell-based, not Guile). All tests are Nix derivations built via `nix-build -A checks` or `aos test`.
 
 ## Prerequisites
 
-- Phase 4 complete: Bootable images that can be tested
-- Phase 5 complete (or nearly): Update/rollback mechanisms to test
-- Phase 6 complete: Ignition configs to validate
-- Phase 7 complete: Kubernetes functionality to test
-- QEMU installed on development machines and CI runners
-- Python 3.10+ with pytest available
+- Phase 1-4 complete: Packages build, systems evaluate, images boot
+- Phase 6-7 complete: Modules produce system configs, K8s images are functional
+- QEMU available on build machines
+- Understanding of virtio-serial guest communication
 
 ## Deliverables
 
-- `tests/conftest.py` -- pytest fixtures for QEMU VM lifecycle management
-- `tests/lib/vm.py` -- QEMUInstance class (start, stop, SSH exec, monitor commands, snapshot)
-- `tests/test_boot.py` -- Boot success and systemd health tests
-- `tests/test_services.py` -- Critical service verification tests
-- `tests/test_zfs.py` -- ZFS pool, snapshot, and rollback tests
-- `tests/test_k8s.py` -- Kubernetes readiness and pod scheduling tests
-- `tests/test_ignition.py` -- First-boot configuration verification tests
-- `tests/test_update.py` -- Update and rollback end-to-end tests
-- `tests/test_gc.py` -- Garbage collection tests
-- `tests/test_security.py` -- Security hardening verification tests
-- `tests/fixtures/` -- Test Ignition configs, SSH keys, certificates
-- `.github/workflows/ci.yml` -- CI pipeline (lint -> build -> test -> publish)
-- Binary cache infrastructure (guix publish + nginx)
-- `pytest.ini` or `pyproject.toml` -- pytest configuration with timeouts and markers
+### Test Infrastructure
+
+- `tests/default.nix` -- Test entry point (composes all layers)
+- `tests/eval.nix` -- Layer 1: all configs evaluate without error
+- `tests/build.nix` -- Layer 2: key packages build successfully, closure size bounds
+- `tests/vm/lib.nix` -- QEMU test harness with virtio-serial guest agent
+- `tests/fleet/lib.nix` -- Multi-VM orchestrator with socket networking
+
+### VM Test Suites (`tests/vm/`)
+
+- `tests/vm/default.nix` -- VM test entry point
+- `tests/vm/boot.nix` -- Boot to multi-user, systemd healthy, no failed units
+- `tests/vm/immutability.nix` -- Read-only root, ZFS /var writable, overlay /etc, tmpfs
+- `tests/vm/security.nix` -- SELinux enforcing, audit rules, nftables, sysctl hardening
+- `tests/vm/networking.nix` -- systemd-networkd, DNS, chrony, SSH
+- `tests/vm/kubernetes.nix` -- containerd, kubelet, CNI plugins, crictl
+- `tests/vm/update.nix` -- Update agent, health check, boot counting, rollback
+
+### Fleet Test Suites (`tests/fleet/`)
+
+- `tests/fleet/default.nix` -- Fleet test entry point
+- `tests/fleet/lib.nix` -- Multi-VM orchestrator
+- `tests/fleet/k8s-cluster.nix` -- Boot control-plane + worker, kubeadm join, pod scheduling
+- `tests/fleet/rolling-update.nix` -- Simulate fleet update with health checks + rollback
 
 ## Detailed Task Checklist
 
-### 8.1 QEMUInstance Class
+### 8.1 Eval Checks (Layer 1)
 
-- [ ] Create `tests/lib/vm.py` with `QEMUInstance` class:
-  - [ ] Constructor: image_path, ignition_path, memory (4096), cpus (2), ssh_port
-  - [ ] `start()`: launch QEMU process with correct acceleration:
-    - [ ] Auto-detect: KVM (Linux CI), HVF (macOS Intel), TCG (fallback)
-    - [ ] Virtio disk, virtio-net with port forwarding
-    - [ ] Serial console to file
-    - [ ] QEMU monitor on Unix socket
-    - [ ] Ignition config via fw_cfg (if provided)
+Pure Nix evaluation, no VM needed. Runs in <1 second.
+
+- [ ] Write `tests/eval.nix`:
+  - [ ] All four system variants evaluate without error (base, server, k8s-worker, k8s-control-plane)
+  - [ ] All options have valid types and satisfy constraints
+  - [ ] No undefined references, no infinite recursion
+  - [ ] Option types are correctly checked (bool, int, str, listOf, etc.)
+- [ ] Accessible via: `aos test eval` / `nix-build -A checks.eval`
+
+### 8.2 Build Checks (Layer 2)
+
+Verify key packages build. Standard `nix-build` derivations.
+
+- [ ] Write `tests/build.nix`:
+  - [ ] Spot-check critical packages: kernel, systemd, kubelet, containerd
+  - [ ] Verify store closure sizes are within bounds (catch accidental bloat)
+  - [ ] Verify no runtime references to build-only deps (e.g., GCC not in runtime closure of coreutils)
+- [ ] Accessible via: `aos test build` / `nix-build -A checks.build`
+
+### 8.3 VM Test Harness (`tests/vm/lib.nix`)
+
+Custom Nix-native test harness -- ~500 lines of Nix + shell + a tiny guest agent.
+
+- [ ] Write `tests/vm/lib.nix` defining `mkVMTest`:
+  - [ ] Input: `{ name; image; testScript; timeout; }`
+  - [ ] Output: Nix derivation (test passes = derivation succeeds)
+  - [ ] Build the AOS image with the guest agent injected
+  - [ ] Boot in QEMU with:
+    - [ ] `-device virtio-serial -device virtserialport,chardev=agent,name=aos.test.agent`
+    - [ ] QEMU monitor socket for VM control
     - [ ] OVMF UEFI firmware
-  - [ ] `wait_for_ssh(timeout=120)`: poll SSH until available
-  - [ ] `ssh_exec(command)`: execute command via SSH, return (stdout, stderr, exit_code)
-  - [ ] `monitor_cmd(command)`: send command to QEMU monitor socket
-  - [ ] `snapshot_save(name)`: save VM snapshot via monitor
-  - [ ] `snapshot_load(name)`: restore VM snapshot
-  - [ ] `stop()`: graceful shutdown via monitor `quit`
-  - [ ] `cleanup()`: remove temp files, sockets, logs
-- [ ] Add qcow2 overlay support for per-test isolation:
-  - [ ] `create_overlay()`: `qemu-img create -f qcow2 -b <base> -F qcow2 <overlay>`
-  - [ ] Each test gets a fresh overlay (copy-on-write, doesn't modify base)
+    - [ ] KVM acceleration
+  - [ ] Wait for guest agent to send `ready` over virtio-serial
+  - [ ] Run test commands via the agent
+  - [ ] Agent returns structured JSON: `{"exit_code": 0, "stdout": "...", "stderr": "..."}`
+  - [ ] Each assertion: shell command + expected result
+  - [ ] Capture serial log + agent transcript as build output for debugging
+  - [ ] Timeout kills hung VMs (default 120s)
 
-### 8.2 pytest Fixtures
+### 8.4 Guest Agent
 
-- [ ] Create `tests/conftest.py`:
-  - [ ] `vm` fixture (session-scoped): boots VM once, shared across all tests in a session
-  - [ ] `fresh_vm` fixture (function-scoped): per-test VM with qcow2 overlay
-  - [ ] `vm_pool` fixture: manage multiple VMs for multi-node tests
-  - [ ] `test_ssh_key` fixture (session-scoped, autouse): generate ephemeral Ed25519 SSH key
-  - [ ] Artifact collection on failure: serial log, journal dump, screenshot
-  - [ ] Worker-aware port allocation for pytest-xdist parallel execution
+The guest agent is a lightweight shell script injected into the test image:
 
-### 8.3 pytest Configuration
+- [ ] Opens `/dev/virtio-ports/aos.test.agent`
+- [ ] Reads newline-delimited shell commands from the virtio serial port
+- [ ] Executes each command
+- [ ] Returns JSON result: `{"exit_code": N, "stdout": "...", "stderr": "..."}`
+- [ ] No Guile dependency (unlike Guix marionette) -- pure shell
+- [ ] No SSH/network needed -- works before networking is configured
+- [ ] Deterministic: no network timing variability
 
-- [ ] Create `pyproject.toml` or `pytest.ini`:
-  - [ ] Default timeout: 300 seconds (5 minutes)
-  - [ ] Timeout method: signal
-  - [ ] Markers: `slow` (>5 min), `flaky` (known intermittent)
-  - [ ] JUnit XML output
-  - [ ] HTML report output
-- [ ] Create `requirements-test.txt`:
-  - [ ] pytest, paramiko, pexpect, pytest-timeout, pytest-html
-  - [ ] pytest-xdist (parallel execution)
-  - [ ] pytest-rerunfailures (flaky test retry)
+### 8.5 VM Test Suites
 
-### 8.4 Boot Tests
+- [ ] `tests/vm/boot.nix`:
+  - [ ] `systemctl is-system-running` returns `running` (not `degraded`)
+  - [ ] No failed systemd units
+  - [ ] Correct kernel version via `uname -r`
+  - [ ] `/etc/os-release` shows correct ANDYL OS fields
+  - [ ] cgroups v2 unified hierarchy is active
+- [ ] `tests/vm/immutability.nix`:
+  - [ ] `/nix/store` is mounted read-only (write attempt fails)
+  - [ ] `/var` is writable (write + read-back succeeds)
+  - [ ] `/etc` is an overlay mount
+  - [ ] `/tmp` and `/run` are tmpfs
+  - [ ] Changes to `/etc` persist across reboot
+  - [ ] Changes to `/var/lib` persist across reboot
+- [ ] `tests/vm/security.nix`:
+  - [ ] SELinux is loaded and in enforcing (or permissive) mode
+  - [ ] Audit rules are active
+  - [ ] nftables rules are applied (default deny inbound)
+  - [ ] sysctl hardening values set (kptr_restrict, dmesg_restrict, etc.)
+- [ ] `tests/vm/networking.nix`:
+  - [ ] systemd-networkd is up, interfaces have addresses
+  - [ ] DNS resolves (`getent hosts`)
+  - [ ] chrony is syncing (or attempting to sync)
+  - [ ] SSH accepts connections with only allowed ciphers
+- [ ] `tests/vm/kubernetes.nix`:
+  - [ ] containerd socket present (`/run/containerd/containerd.sock`)
+  - [ ] kubelet is running
+  - [ ] `crictl info` succeeds
+  - [ ] CNI plugins installed at `/opt/cni/bin/`
+  - [ ] Kernel modules loaded: overlay, br_netfilter
+- [ ] `tests/vm/update.nix`:
+  - [ ] update-check timer is active
+  - [ ] health-check service runs successfully
+  - [ ] Boot counting works (systemd-bless-boot)
 
-- [ ] Create `tests/test_boot.py`:
-  - [ ] `test_system_running`: `systemctl is-system-running` returns `running` or `degraded`
-  - [ ] `test_no_failed_units`: no systemd units in failed state
-  - [ ] `test_kernel_version`: correct kernel version reported by `uname -r`
-  - [ ] `test_os_release`: `/etc/os-release` contains correct ANDYL OS fields
-  - [ ] `test_boot_time`: system boots within 60 seconds (configurable)
-  - [ ] `test_serial_console`: kernel messages appear on serial console
-  - [ ] `test_cgroup_v2`: cgroups v2 unified hierarchy is active
+### 8.6 Fleet Test Harness (`tests/fleet/lib.nix`)
 
-### 8.5 Service Tests
+Multi-VM orchestrator inspired by NixOS VLan abstraction.
 
-- [ ] Create `tests/test_services.py`:
-  - [ ] Parameterized test for critical services:
-    - [ ] sshd.service, systemd-journald.service, systemd-networkd.service
-    - [ ] systemd-resolved.service, systemd-timesyncd.service
-    - [ ] (role-dependent: containerd.service, kubelet.service, etc.)
-  - [ ] `test_service_active(service)`: service is `active`
-  - [ ] `test_service_no_restarts(service)`: NRestarts == 0
-  - [ ] `test_service_no_errors(service)`: no ERROR lines in last 50 journal entries
+- [ ] Write `tests/fleet/lib.nix` defining `mkFleetTest`:
+  - [ ] Input: `{ name; machines; testScript; }`
+  - [ ] `machines`: attrset of `{ role; image; }` definitions
+  - [ ] Boot multiple QEMU VMs connected via QEMU socket networking (`-netdev socket,listen/connect`)
+  - [ ] Each machine has its own virtio-serial agent
+  - [ ] Machines can communicate over the virtual network
+  - [ ] Assertions run against individual machines and the cluster as a whole
 
-### 8.6 Filesystem Tests
+### 8.7 Fleet Test Suites
 
-- [ ] Create `tests/test_filesystem.py`:
-  - [ ] `test_store_readonly`: `/gnu/store` is mounted read-only
-  - [ ] `test_var_writable`: `/var` is writable
-  - [ ] `test_etc_overlay`: `/etc` is an overlay mount
-  - [ ] `test_tmp_tmpfs`: `/tmp` is tmpfs
-  - [ ] `test_run_tmpfs`: `/run` is tmpfs
-  - [ ] `test_etc_persistence`: write to `/etc`, reboot, verify change persists
-  - [ ] `test_var_persistence`: write to `/var/lib`, reboot, verify data persists
+- [ ] `tests/fleet/k8s-cluster.nix`:
+  - [ ] Boot 1 control-plane + 1 worker
+  - [ ] `kubeadm init` on control plane
+  - [ ] `kubeadm join` on worker
+  - [ ] Both nodes reach Ready state (after CNI deployment)
+  - [ ] Schedule a test pod; verify it reaches Running
+- [ ] `tests/fleet/rolling-update.nix`:
+  - [ ] Simulate a fleet update: new image, health check pass
+  - [ ] Old generation cleaned up
+  - [ ] Simulate failure: health check fails -> automatic rollback
 
-### 8.7 Network Tests
+### 8.8 Test CLI Integration
 
-- [ ] Create `tests/test_network.py`:
-  - [ ] `test_dns_resolution`: `getent hosts` resolves public domains
-  - [ ] `test_outbound_https`: `curl -sf https://httpbin.org/get` succeeds
-  - [ ] `test_networkd_online`: `networkctl status` shows online interfaces
-  - [ ] `test_ntp_sync`: NTP synchronized (may need timeout for initial sync)
-  - [ ] `test_ssh_access`: SSH connection to VM works
+```
+aos test                       Run all test layers (eval -> build -> vm -> fleet)
+aos test eval                  Run eval checks only
+aos test build                 Run build checks only
+aos test vm [suite]            Run VM tests (all or specific suite)
+aos test fleet [suite]         Run fleet tests (all or specific suite)
+```
 
-### 8.8 ZFS Tests
+All test layers are accessible as:
+- `nix-build -A checks` (all)
+- `nix-build -A checks.eval` (eval only)
+- `nix-build -A checks.vm.boot` (specific VM test)
+- `nix-build -A checks.fleet.k8s-cluster` (specific fleet test)
 
-- [ ] Create `tests/test_zfs.py`:
-  - [ ] `test_zfs_pool_online`: `zpool status` shows ONLINE
-  - [ ] `test_zfs_read_write`: write file, sync, read back, verify
-  - [ ] `test_zfs_snapshot_create`: create snapshot, verify exists
-  - [ ] `test_zfs_snapshot_rollback`: write, snapshot, modify, rollback, verify original
-  - [ ] `test_zfs_compression`: verify zstd compression is active
-  - [ ] `test_zfs_checksumming`: verify checksum policy is sha256 or fletcher4
-  - [ ] Note: ZFS tests require a second virtio disk passed to QEMU
+### 8.9 Verification
 
-### 8.9 Kubernetes Tests
-
-- [ ] Create `tests/test_k8s.py`:
-  - [ ] `test_containerd_active`: containerd service is active
-  - [ ] `test_containerd_responsive`: `crictl info` succeeds
-  - [ ] `test_kubelet_active`: kubelet service is active
-  - [ ] `test_node_ready`: node reaches Ready state (poll with 60s timeout)
-  - [ ] `test_pod_scheduling`: run a busybox pod, verify it reaches Running
-  - [ ] `test_pod_dns`: pod can resolve DNS
-  - [ ] `test_cni_plugins_exist`: `/opt/cni/bin/` contains expected plugins
-  - [ ] `test_kubelet_healthz`: `curl localhost:10248/healthz` returns ok
-
-### 8.10 Ignition Tests
-
-- [ ] Create `tests/test_ignition.py`:
-  - [ ] `test_hostname_set`: `/etc/hostname` matches Ignition config
-  - [ ] `test_role_set`: `/etc/andyl-os/role` matches expected role
-  - [ ] `test_ssh_keys_installed`: authorized_keys contains expected public key
-  - [ ] `test_network_config_applied`: networkd config files present
-  - [ ] `test_tls_certs_installed`: CA and node certificates at correct paths with correct permissions
-  - [ ] `test_ignition_first_boot_only`: Ignition marker consumed after first boot
-  - [ ] `test_custom_units_enabled`: Ignition-created systemd units are enabled
-
-### 8.11 Update and Rollback Tests
-
-- [ ] Create `tests/test_update.py`:
-  - [ ] `test_update_check`: agent reports update available
-  - [ ] `test_update_download`: agent downloads bundle
-  - [ ] `test_update_verify`: agent verifies signature and NAR hashes
-  - [ ] `test_update_apply`: agent installs new generation
-  - [ ] `test_update_reboot`: system boots into new generation
-  - [ ] `test_boot_counting`: boot entry shows correct count
-  - [ ] `test_boot_verified`: after health check, boot entry marked good
-  - [ ] `test_rollback_manual`: `andyl-os-agent rollback` switches to previous generation
-  - [ ] `test_rollback_automatic`: simulate health check failure, verify automatic rollback after 3 attempts
-  - [ ] Use QEMU snapshots for efficient rollback testing
-
-### 8.12 Garbage Collection Tests
-
-- [ ] Create `tests/test_gc.py`:
-  - [ ] `test_gc_removes_old_paths`: GC deletes store paths from removed generations
-  - [ ] `test_gc_preserves_current`: current generation's paths are not deleted
-  - [ ] `test_gc_dry_run`: dry-run mode reports but doesn't delete
-  - [ ] `test_gc_process_safety`: paths used by running processes are not deleted
-  - [ ] `test_gc_esp_cleanup`: old kernel/initrd images removed from ESP
-  - [ ] `test_gc_locking`: GC and update agent don't run concurrently
-
-### 8.13 Security Tests
-
-- [ ] Create `tests/test_security.py`:
-  - [ ] `test_store_readonly`: cannot write to `/gnu/store`
-  - [ ] `test_no_root_login_password`: root has no password (SSH key only)
-  - [ ] `test_selinux_loaded`: SELinux is active and in enforcing (or permissive) mode
-  - [ ] `test_seccomp_available`: seccomp filter is available
-  - [ ] `test_kernel_hardening`: stack protector, RELRO, etc.
-  - [ ] `test_no_unnecessary_services`: no unexpected listening ports
-  - [ ] `test_boot_editor_disabled`: systemd-boot editor is disabled
-
-### 8.14 CI Pipeline
-
-- [ ] Create `.github/workflows/ci.yml`:
-  - [ ] **Stage 1: Lint**
-    - [ ] Validate Guile Scheme syntax for all package definitions
-    - [ ] Run `guix lint` on all ANDYL packages
-    - [ ] Validate system configurations with `guix system -n build`
-  - [ ] **Stage 2: Build Packages**
-    - [ ] Run on self-hosted runner with persistent `/gnu/store` volume
-    - [ ] Build all ANDYL packages
-    - [ ] Push to binary cache
-  - [ ] **Stage 3: Build Images**
-    - [ ] Matrix: [k8s-worker, k8s-control, storage, gateway]
-    - [ ] Build qcow2 image for each role
-    - [ ] Record SHA256 hash
-    - [ ] Upload as build artifact
-  - [ ] **Stage 4: Integration Tests**
-    - [ ] Download image artifact
-    - [ ] Verify SHA256
-    - [ ] Run pytest suite with QEMU (requires KVM on Linux runner)
-    - [ ] Upload test results (JUnit XML, HTML report, serial logs)
-    - [ ] Fail-fast disabled: run all role tests even if one fails
-  - [ ] **Stage 5: Publish** (main branch and tags only)
-    - [ ] Upload images to artifact storage (S3/MinIO)
-    - [ ] Generate release manifest
-  - [ ] **Stage 6: Release** (tags only)
-    - [ ] Create GitHub Release with release notes
-    - [ ] Attach SHA256 checksums
-- [ ] Configure pipeline triggers: push to main, pull requests, tags, nightly schedule, manual dispatch
-- [ ] Set up self-hosted runner with:
-  - [ ] KVM access (`/dev/kvm`)
-  - [ ] Persistent Docker volumes for Guix store
-  - [ ] OVMF UEFI firmware installed
-
-### 8.15 Binary Cache Infrastructure
-
-- [ ] Set up `guix publish` server:
-  - [ ] Generate signing key pair: `guix archive --generate-key`
-  - [ ] Store private key securely (CI secrets manager)
-  - [ ] Configure `guix publish --port=8080 --compression=zstd:6 --cache=/var/cache/guix/publish --ttl=30d`
-- [ ] Set up nginx reverse proxy:
-  - [ ] TLS termination
-  - [ ] Cache headers for narinfo (1 hour) and NAR (1 day)
-  - [ ] `nix-cache-info` endpoint
-- [ ] Distribute public key to all build machines:
-  - [ ] `guix archive --authorize < andyl-cache.pub`
-- [ ] Configure CI to push build results: `guix copy --to=ssh://cache@cache.andyl.internal`
-- [ ] Configure CI to pull from cache: `guix build --substitute-urls=https://cache.andyl.internal`
-- [ ] Set up cache cleanup: delete entries older than 90 days
-- [ ] Document cache population workflow
-
-### 8.16 Test Reporting
-
-- [ ] JUnit XML output for CI integration
-- [ ] HTML reports for human review
-- [ ] Artifact retention: test results for 14 days, images for 7 days
-- [ ] CI status badges in README
-- [ ] Failure notifications to Slack/email (optional)
-
-### 8.17 justfile Targets
-
-- [ ] Update `test ROLE` target: run pytest against specified role image
-- [ ] Update `test-all` target: test all roles
-- [ ] Add `test-smoke ROLE` target: quick boot-only test
-- [ ] Add `lint` target: validate package definitions
-- [ ] Add `check-reproducibility` target: build twice and compare hashes
-- [ ] Add `cache-push` target: push builds to binary cache
-- [ ] Add `cache-serve` target: start local cache for development
+- [ ] `aos test eval` passes in <1 second
+- [ ] `aos test build` verifies critical packages build and closure sizes
+- [ ] `aos test vm` runs all six VM test suites
+- [ ] `aos test fleet` runs both fleet test suites
+- [ ] `aos test` runs all four layers end-to-end
+- [ ] Test failures produce detailed logs (serial output, agent transcript)
+- [ ] Tests run with KVM acceleration on Linux
 
 ## Acceptance Criteria
 
-1. All test suites pass: boot, services, filesystem, network, ZFS, k8s, ignition, update, rollback, GC, security
-2. CI pipeline runs end-to-end: lint -> build -> image -> test -> publish
-3. Binary cache accelerates builds (cache hit rate >80% for unchanged packages)
-4. Test results are accessible as CI artifacts (JUnit XML, HTML, serial logs)
-5. Tests run in QEMU with KVM acceleration on CI runners
-6. Tests complete within 30 minutes per role
-7. Flaky test rate is below 5%
-8. Test framework supports parallel execution across roles (CI matrix)
+1. Eval checks verify all system variants evaluate without error
+2. Build checks verify key packages build and closure sizes are within bounds
+3. VM tests boot actual AOS images and verify system behavior via virtio-serial agent
+4. Fleet tests boot multiple VMs and verify multi-machine scenarios (k8s cluster, rolling update)
+5. Guest agent returns structured JSON responses (not raw serial output parsing)
+6. Tests complete within 30 minutes total (eval <1s, build <5min, vm <15min, fleet <10min)
+7. Test failures produce actionable debug output (serial log, agent transcript)
+8. All tests are Nix derivations accessible via `nix-build -A checks`
+
+## Key Design Decisions
+
+### Why Custom, Not Adopting Existing Frameworks
+
+- **NixOS VM tests**: Tightly coupled to nixpkgs module system internals
+- **Guix marionette**: Requires Guile in the guest (we use shell)
+- **Kola** (CoreOS): Tightly coupled to CoreOS internals (Ignition v3, coreos-assembler)
+- All three would be heavy dependencies contradicting the "no nixpkgs" principle
+
+### Virtio-Serial Guest Agent (from Guix Marionette)
+
+The key insight: communicate with the guest via virtio-serial, not SSH:
+- Works before networking is configured (during early boot)
+- No authentication overhead (no SSH keys, no TLS)
+- Deterministic: no network timing variability
+- Works even if firewall blocks all ports
+
+Our implementation is simpler than Guix's: a shell script instead of a Guile REPL, returning structured JSON instead of Scheme expressions.
+
+### Tests Are Nix Derivations
+
+Every test is a standard Nix derivation. Test success = derivation builds. This means:
+- Tests are cached by Nix (unchanged tests aren't re-run)
+- Tests run in the Nix sandbox (reproducible environment)
+- CI just runs `nix-build -A checks`
 
 ## Risks and Mitigations
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| KVM not available on CI runners | Medium | Tests fall back to TCG (10-20x slower) | Require self-hosted runners with KVM; GCP instances with nested virt |
-| QEMU tests are inherently slow | High | Long CI feedback loop | Session-scoped VM fixture (boot once per role); parallel role testing in CI matrix |
-| Flaky tests due to timing (k8s readiness, NTP sync) | High | False failures erode CI trust | Polling with generous timeouts; pytest-rerunfailures for known flaky tests |
-| Binary cache storage grows unbounded | Medium | Disk full | Cache cleanup cron (90-day TTL); content-addressing prevents true duplication |
-| Test SSH key management | Low | Security leak | Generate ephemeral keys per test session; never commit real keys |
-| QEMU + OVMF firmware availability | Medium | Tests can't boot UEFI | Package OVMF as a test dependency; document installation |
-
-## Estimated Complexity
-
-**XL (Extra Large)**
-
-This phase encompasses the entire testing and CI infrastructure. The QEMU test framework requires deep integration with VM lifecycle management, SSH automation, and QEMU monitor control. The test suite must cover every major system function. The CI pipeline ties all previous phases together. The binary cache adds infrastructure complexity. The sheer number of tests and the need for reliability make this a large effort.
+| VM tests are inherently slow | High | Long feedback loop | Cache test results via Nix; parallel execution |
+| Flaky tests due to timing (K8s readiness, NTP sync) | High | False failures | Polling with generous timeouts; structured JSON responses avoid parsing errors |
+| Guest agent has bugs | Medium | Tests report wrong results | Keep agent minimal (~50 lines of shell); test the agent itself |
+| QEMU + OVMF firmware availability | Medium | Tests can't boot UEFI | Package OVMF as a test dependency |
+| Fleet tests are complex (multi-VM networking) | High | Hard to debug | Capture per-machine serial logs; test simple scenarios first |

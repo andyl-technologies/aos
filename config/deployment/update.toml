@@ -1,9 +1,0 @@
-# Update system configuration.
-server = "https://update.andyl-os.internal"
-channel = "stable"
-check-interval = 3600
-auto-update = false
-max-retries = 3
-retry-delay = 300
-boot-tries = 3
-signing-key = "/etc/andyl-os/update-signing-key.pub"
