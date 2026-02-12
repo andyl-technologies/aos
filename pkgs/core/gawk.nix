@@ -1,12 +1,18 @@
 # GNU Awk — Pattern scanning and processing language
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "5.3.1"; in
 mkDerivation {
-  name = "gawk-${versions.core.gawk}";
-  version = versions.core.gawk;
+  pname = "gawk";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.gawk) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/gawk/gawk-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/gawk/gawk-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/gawk/gawk-${version}.tar.xz"
+    ];
+    hash = "sha256-aU23ZIEqYjZCPU/0DOt7bExEEwG3KtUCu1wn4AzVb3g=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd gawk-${versions.core.gawk}
+        cd gawk-${version}
       '';
     }
     { name = "configure";

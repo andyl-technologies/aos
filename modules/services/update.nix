@@ -110,6 +110,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ pkgs.zstd ];
+
     # Update agent configuration file.
     environment.etc."aos/update.conf" = {
       text = ''

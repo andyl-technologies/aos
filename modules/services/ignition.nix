@@ -117,6 +117,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ pkgs.ignition ];
+
     # Ignition service — runs in the initrd before sysroot mount.
     # This is the core first-boot provisioning unit.
     systemd.services."ignition-apply" = {

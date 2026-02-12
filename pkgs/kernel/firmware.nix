@@ -1,12 +1,16 @@
 # linux-firmware — Firmware files for Linux kernel drivers
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "20241210"; in
 mkDerivation {
-  name = "firmware-${versions.kernel.firmware}";
-  version = versions.kernel.firmware;
+  pname = "firmware";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.firmware) url hash;
+    urls = [
+      "https://cdn.kernel.org/pub/linux/kernel/firmware/linux-firmware-${version}.tar.xz"
+    ];
+    hash = "sha256-K7A1cIV20Hb5fUGWocIuCk0z+7AhDQVCjQv08kPpmvU=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd linux-firmware-${versions.kernel.firmware}
+        cd linux-firmware-${version}
       '';
     }
     { name = "install";

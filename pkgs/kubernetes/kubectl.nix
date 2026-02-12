@@ -1,13 +1,9 @@
 # kubectl — Kubernetes command-line tool
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make, kubeSource }:
 
 mkDerivation {
-  name = "kubectl-${versions.kubernetes.kubectl}";
-  version = versions.kubernetes.kubectl;
-
-  src = fetchurl {
-    inherit (sources.kubernetes) url hash;
-  };
+  pname = "kubectl";
+  inherit (kubeSource) version src;
 
   buildDeps = [ make ];
   runtimeDeps = [];
@@ -17,7 +13,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd kubernetes-${versions.kubernetes.kubectl}
+        cd kubernetes-${kubeSource.version}
       '';
     }
     { name = "build";
@@ -25,7 +21,7 @@ mkDerivation {
         export GOPATH=$TMPDIR/go
         export CGO_ENABLED=0
         export GOFLAGS="-trimpath"
-        export GOLDFLAGS="-s -w -X k8s.io/component-base/version.gitVersion=v${versions.kubernetes.kubectl}"
+        export GOLDFLAGS="-s -w -X k8s.io/component-base/version.gitVersion=v${kubeSource.version}"
         go build -o kubectl \
           -ldflags "$GOLDFLAGS" \
           ./cmd/kubectl

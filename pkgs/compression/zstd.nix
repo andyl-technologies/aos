@@ -1,12 +1,16 @@
 # Zstandard — Fast real-time compression algorithm
-{ mkDerivation, fetchurl, sources, versions, make, zlib }:
+{ mkDerivation, fetchurl, make, zlib }:
 
+let version = "1.5.6"; in
 mkDerivation {
-  name = "zstd-${versions.compression.zstd}";
-  version = versions.compression.zstd;
+  pname = "zstd";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.zstd) url hash;
+    urls = [
+      "https://github.com/facebook/zstd/releases/download/v${version}/zstd-${version}.tar.gz"
+    ];
+    hash = "sha256-jCngbPQqrMHq/EB3ri7Gxvy5amJhV+BZPV6Co0/UA8E=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd zstd-${versions.compression.zstd}
+        cd zstd-${version}
       '';
     }
     { name = "build";

@@ -1,12 +1,16 @@
 # nftables — Netfilter tables userspace tools
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config, libmnl, libnftnl }:
+{ mkDerivation, fetchurl, make, pkg-config, libmnl, libnftnl }:
 
+let version = "1.1.0"; in
 mkDerivation {
-  name = "nftables-${versions.networking.nftables}";
-  version = versions.networking.nftables;
+  pname = "nftables";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.nftables) url hash;
+    urls = [
+      "https://www.netfilter.org/projects/nftables/files/nftables-${version}.tar.xz"
+    ];
+    hash = "sha256-7zNzKUiGxbYH7nvoLFaiW8BOdfgC+OitzVWqyR6wqiQ=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd nftables-${versions.networking.nftables}
+        cd nftables-${version}
       '';
     }
     { name = "configure";

@@ -109,6 +109,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ pkgs.chrony ];
+
     # /etc/chrony.conf — chronyd configuration.
     environment.etc."chrony.conf" = {
       text = chronyConf;

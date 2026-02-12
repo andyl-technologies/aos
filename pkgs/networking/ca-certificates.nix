@@ -1,12 +1,16 @@
 # CA Certificates — Mozilla CA certificate bundle
-{ mkDerivation, fetchurl, sources, versions }:
+{ mkDerivation, fetchurl }:
 
+let version = "2024-07-02"; in
 mkDerivation {
-  name = "ca-certificates-${versions.networking.ca-certificates}";
-  version = versions.networking.ca-certificates;
+  pname = "ca-certificates";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.ca-certificates) url hash;
+    urls = [
+      "https://curl.se/ca/cacert-${version}.pem"
+    ];
+    hash = "sha256-G/RYQSVo4TSkUU9eFwoyjREJHgcccRCVXJiE7YeXKsk=";
   };
 
   buildDeps = [];

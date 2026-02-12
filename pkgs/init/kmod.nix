@@ -1,12 +1,16 @@
 # kmod — Linux kernel module handling
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config, zlib, xz }:
+{ mkDerivation, fetchurl, make, pkg-config, zlib, xz }:
 
+let version = "33"; in
 mkDerivation {
-  name = "kmod-${versions.init.kmod}";
-  version = versions.init.kmod;
+  pname = "kmod";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.kmod) url hash;
+    urls = [
+      "https://mirrors.kernel.org/pub/linux/utils/kernel/kmod/kmod-${version}.tar.xz"
+    ];
+    hash = "sha256-3HaLMVUXIJH1bcaUMLVIHy127NnMtU6tjCVA289eqbw=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd kmod-${versions.init.kmod}
+        cd kmod-${version}
       '';
     }
     { name = "configure";

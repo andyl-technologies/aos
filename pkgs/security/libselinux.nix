@@ -1,12 +1,16 @@
 # libselinux — SELinux userspace library
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config, libsepol }:
+{ mkDerivation, fetchurl, make, pkg-config, libsepol }:
 
+let version = "3.7"; in
 mkDerivation {
-  name = "libselinux-${versions.security.selinux-userspace}";
-  version = versions.security.selinux-userspace;
+  pname = "libselinux";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.selinux-userspace) url hash;
+    urls = [
+      "https://github.com/SELinuxProject/selinux/releases/download/${version}/selinux-${version}.tar.gz"
+    ];
+    hash = "sha256-pZdVqeMfrvEKaNOscWmlx6ubI742J7Z1pcOECgXYKS4=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd selinux-${versions.security.selinux-userspace}/libselinux
+        cd selinux-${version}/libselinux
       '';
     }
     { name = "build";

@@ -1,12 +1,16 @@
 # iptables — Linux packet filtering framework
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config, libmnl, libnftnl }:
+{ mkDerivation, fetchurl, make, pkg-config, libmnl, libnftnl }:
 
+let version = "1.8.10"; in
 mkDerivation {
-  name = "iptables-${versions.networking.iptables}";
-  version = versions.networking.iptables;
+  pname = "iptables";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.iptables) url hash;
+    urls = [
+      "https://www.netfilter.org/projects/iptables/files/iptables-${version}.tar.xz"
+    ];
+    hash = "sha256-XMJVwYk1bjF9BwdVzpNx62Oht4PDRJj7jDAmTzzFnJw=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd iptables-${versions.networking.iptables}
+        cd iptables-${version}
       '';
     }
     { name = "configure";

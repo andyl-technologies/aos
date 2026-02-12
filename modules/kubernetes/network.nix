@@ -88,6 +88,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ pkgs.cni-plugins ];
+
     # /etc/modules-load.d/k8s.conf — kernel modules to load at boot.
     environment.etc."modules-load.d/k8s.conf" = {
       text = ''

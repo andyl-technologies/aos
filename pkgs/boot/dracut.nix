@@ -1,13 +1,17 @@
 # dracut — initramfs infrastructure
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config,
+{ mkDerivation, fetchurl, make, pkg-config,
   bash, coreutils, kmod, util-linux, systemd }:
 
+let version = "103"; in
 mkDerivation {
-  name = "dracut-${versions.init.dracut}";
-  version = versions.init.dracut;
+  pname = "dracut";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.dracut) url hash;
+    urls = [
+      "https://github.com/dracut-ng/dracut-ng/archive/${version}/dracut-${version}.tar.gz"
+    ];
+    hash = "sha256-mpK08GQ5JqZRYhcdaLlSX8k+boL0VaSzk42zhahBvag=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -18,7 +22,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd dracut-ng-${versions.init.dracut}
+        cd dracut-ng-${version}
       '';
     }
     { name = "configure";

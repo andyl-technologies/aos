@@ -1,12 +1,16 @@
 # util-linux — Miscellaneous system utilities
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config }:
+{ mkDerivation, fetchurl, make, pkg-config }:
 
+let version = "2.40.2"; in
 mkDerivation {
-  name = "util-linux-${versions.init.util-linux}";
-  version = versions.init.util-linux;
+  pname = "util-linux";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.util-linux) url hash;
+    urls = [
+      "https://mirrors.kernel.org/pub/linux/utils/util-linux/v2.40/util-linux-${version}.tar.xz"
+    ];
+    hash = "sha256-14s3pm9ZItcO3zvfsBprM9NO08PK/WYoIDsqK2fI6LM=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd util-linux-${versions.init.util-linux}
+        cd util-linux-${version}
       '';
     }
     { name = "configure";

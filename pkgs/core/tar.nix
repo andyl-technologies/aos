@@ -1,12 +1,18 @@
 # GNU Tar — Archiving utility
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "1.35"; in
 mkDerivation {
-  name = "tar-${versions.core.tar}";
-  version = versions.core.tar;
+  pname = "tar";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.tar) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/tar/tar-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/tar/tar-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/tar/tar-${version}.tar.xz"
+    ];
+    hash = "sha256-TWL/NzQux67XSFNTI5MMfPlKz3HDWRiCsmp+pQ8+3BY=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd tar-${versions.core.tar}
+        cd tar-${version}
       '';
     }
     { name = "configure";

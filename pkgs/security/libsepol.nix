@@ -1,12 +1,16 @@
 # libsepol — SELinux binary policy manipulation library
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "3.7"; in
 mkDerivation {
-  name = "libsepol-${versions.security.selinux-userspace}";
-  version = versions.security.selinux-userspace;
+  pname = "libsepol";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.selinux-userspace) url hash;
+    urls = [
+      "https://github.com/SELinuxProject/selinux/releases/download/${version}/selinux-${version}.tar.gz"
+    ];
+    hash = "sha256-pZdVqeMfrvEKaNOscWmlx6ubI742J7Z1pcOECgXYKS4=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd selinux-${versions.security.selinux-userspace}/libsepol
+        cd selinux-${version}/libsepol
       '';
     }
     { name = "build";
