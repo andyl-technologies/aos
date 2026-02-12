@@ -51,9 +51,9 @@ let
         if [ -d source ]; then
           cd source
         else
-          dirs=( */ )
-          if [ "''${#dirs[@]}" -eq 1 ]; then
-            cd "''${dirs[0]}"
+          ndirs=$(ls -d */ 2>/dev/null | wc -l)
+          if [ "$ndirs" -eq 1 ]; then
+            cd "$(ls -d */)"
           fi
         fi
       fi
@@ -176,7 +176,10 @@ let
   # ---------------------------------------------------------------------------
   makePath = deps:
     builtins.concatStringsSep ":" (
-      builtins.map (d: "${builtins.toString d}/bin") deps
+      builtins.concatLists (builtins.map (d:
+        let p = builtins.toString d;
+        in [ "${p}/bin" "${p}/sbin" ]
+      ) deps)
     );
 
   makeLibPath = deps:
@@ -187,6 +190,11 @@ let
   makeIncPath = deps:
     builtins.concatStringsSep ":" (
       builtins.map (d: "${builtins.toString d}/include") deps
+    );
+
+  makeRpathFlags = deps:
+    builtins.concatStringsSep " " (
+      builtins.map (d: "-Wl,-rpath,${builtins.toString d}/lib") deps
     );
 
   # ---------------------------------------------------------------------------
@@ -293,12 +301,20 @@ let
         # Configuration flags
         inherit configureFlags makeFlags installFlags cmakeFlags mesonFlags;
 
-        # Dependency search paths
-        C_INCLUDE_PATH = makeIncPath (runtimeDeps ++ propagatedDeps);
-        LIBRARY_PATH = makeLibPath (runtimeDeps ++ propagatedDeps);
-        LD_LIBRARY_PATH = makeLibPath (runtimeDeps ++ propagatedDeps);
+        # Dependency search paths — include buildDeps so build-time
+        # libraries (e.g. elfutils for the kernel's objtool) are found.
+        C_INCLUDE_PATH = makeIncPath allBuildDeps;
+        CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
+        LIBRARY_PATH = makeLibPath allBuildDeps;
+        LD_LIBRARY_PATH = makeLibPath allBuildDeps;
+
+        # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
+        # shared libraries at runtime without LD_LIBRARY_PATH.
+        # Only runtimeDeps + propagatedDeps — NOT buildDeps — to avoid
+        # dragging the compiler toolchain into the runtime closure.
+        NIX_LDFLAGS = makeRpathFlags (runtimeDeps ++ propagatedDeps);
         PKG_CONFIG_PATH = builtins.concatStringsSep ":" (
-          builtins.map (d: "${builtins.toString d}/lib/pkgconfig") (runtimeDeps ++ propagatedDeps)
+          builtins.map (d: "${builtins.toString d}/lib/pkgconfig") allBuildDeps
         );
 
         # Store the dependencies for runtime reference
@@ -393,7 +409,7 @@ let
              , urls ? []
              , hash ? ""
              , sha256 ? hash
-             , name ? builtins.baseNameOf (builtins.head resolvedUrls)
+             , name ? builtins.baseNameOf (if url != "" then url else builtins.head urls)
              , executable ? false
              , system ? defaultSystem
              , storeDir ? "/nix/store"

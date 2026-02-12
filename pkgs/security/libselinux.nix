@@ -1,5 +1,5 @@
 # libselinux — SELinux userspace library
-{ mkDerivation, fetchurl, make, pkg-config, libsepol }:
+{ mkDerivation, fetchurl, make, pkg-config, libsepol, pcre2 }:
 
 let version = "3.7"; in
 mkDerivation {
@@ -14,8 +14,8 @@ mkDerivation {
   };
 
   buildDeps = [ make pkg-config ];
-  runtimeDeps = [ libsepol ];
-  propagatedDeps = [];
+  runtimeDeps = [ libsepol pcre2 ];
+  propagatedDeps = [ pcre2 libsepol ];
 
   phases = [
     { name = "unpack";
@@ -29,7 +29,7 @@ mkDerivation {
         make PREFIX=$out SHLIBDIR=$out/lib \
           CFLAGS="-I${libsepol}/include" \
           LDFLAGS="-L${libsepol}/lib" \
-          USE_PCRE2=n \
+          USE_PCRE2=y \
           -j$NIX_BUILD_CORES
       '';
     }

@@ -1,5 +1,5 @@
 # libsepol — SELinux binary policy manipulation library
-{ mkDerivation, fetchurl, make }:
+{ mkDerivation, fetchurl, make, flex }:
 
 let version = "3.7"; in
 mkDerivation {
@@ -13,7 +13,7 @@ mkDerivation {
     hash = "sha256-pZdVqeMfrvEKaNOscWmlx6ubI742J7Z1pcOECgXYKS4=";
   };
 
-  buildDeps = [ make ];
+  buildDeps = [ make flex ];
   runtimeDeps = [];
   propagatedDeps = [];
 

@@ -42,14 +42,12 @@ mkDerivation {
     }
     { name = "build";
       script = ''
-        cd build
-        make -j$NIX_BUILD_CORES
+        make -j$NIX_BUILD_CORES MAKEINFO=true
       '';
     }
     { name = "install";
       script = ''
-        cd build
-        make install
+        make install MAKEINFO=true
       '';
     }
   ];
