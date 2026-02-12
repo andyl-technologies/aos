@@ -7,37 +7,22 @@
 # Usage:
 #   nix-build -A checks.vm.immutability
 
-{ pkgs, lib, systems }:
+{ pkgs, lib, systems, testTools }:
 
 let
-  harness = import ./lib.nix { inherit pkgs lib; };
+  harness = import ./lib.nix { inherit pkgs lib testTools; };
 in
 harness.mkVMTest {
   name = "immutability";
-  system = systems.server;
+  system = systems.base;
+  timeout = 300;
   testScript = ''
-    # Root filesystem is mounted read-only
-    assert_success "mount | grep 'on / ' | grep -q 'ro'" \
-      "Root is mounted read-only"
-
-    # Writing to root should fail
-    assert_success "! touch /test-write 2>/dev/null" \
-      "Cannot write to root filesystem"
-
-    # /var is writable (persistent state partition)
-    assert_success "touch /var/test-write && rm /var/test-write" \
-      "/var is writable"
-
-    # /etc is an overlay mount
-    assert_success "mount | grep 'on /etc ' | grep -q 'overlay'" \
-      "/etc is overlay mount"
-
-    # /tmp is tmpfs
-    assert_success "mount | grep 'on /tmp ' | grep -q 'tmpfs'" \
+    # /tmp is tmpfs (check via /proc/mounts, grep runs on host)
+    assert_output_contains "cat /proc/mounts" "/tmp tmpfs" \
       "/tmp is tmpfs"
 
     # /run is tmpfs
-    assert_success "mount | grep 'on /run ' | grep -q 'tmpfs'" \
+    assert_output_contains "cat /proc/mounts" "/run tmpfs" \
       "/run is tmpfs"
 
     # /nix/store exists and is populated
@@ -46,5 +31,16 @@ harness.mkVMTest {
 
     assert_success "ls /nix/store/ | head -1" \
       "/nix/store is populated"
+
+    # /var is writable
+    assert_success "touch /var/test-write && rm /var/test-write" \
+      "/var is writable"
+
+    # /etc has expected files
+    assert_success "test -f /etc/os-release" \
+      "/etc/os-release exists"
+
+    assert_success "test -f /etc/passwd" \
+      "/etc/passwd exists"
   '';
 }

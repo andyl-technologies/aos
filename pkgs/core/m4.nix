@@ -1,16 +1,16 @@
-# dosfstools — Utilities for making and checking FAT filesystems
+# GNU m4 — Macro processor
 { mkDerivation, fetchurl, make }:
 
-let version = "4.2"; in
+let version = "1.4.19"; in
 mkDerivation {
-  pname = "dosfstools";
+  pname = "m4";
   inherit version;
 
   src = fetchurl {
     urls = [
-      "https://github.com/dosfstools/dosfstools/releases/download/v${version}/dosfstools-${version}.tar.gz"
+      "https://ftp.gnu.org/gnu/m4/m4-${version}.tar.xz"
     ];
-    hash = "sha256-ZJJu6/kAktyiGxQlmlMBt7mOexlD6KIBx9cmCEgJtSc=";
+    hash = "sha256-Y67eXG0zttmxNRHNC+LKwEby5w/QoHqpVzoEqCeDr5Y=";
   };
 
   buildDeps = [ make ];
@@ -21,14 +21,13 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd dosfstools-${version}
+        cd m4-${version}
       '';
     }
     { name = "configure";
       script = ''
         ./configure \
-          --prefix=$out \
-          --enable-compat-symlinks
+          --prefix=$out
       '';
     }
     { name = "build";
@@ -44,8 +43,8 @@ mkDerivation {
   ];
 
   meta = {
-    description = "Utilities for making and checking FAT filesystems";
-    homepage = "https://github.com/dosfstools/dosfstools";
+    description = "GNU m4 — macro processor";
+    homepage = "https://www.gnu.org/software/m4/";
     license = "GPL-3.0-or-later";
   };
 }

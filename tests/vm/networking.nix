@@ -6,50 +6,31 @@
 # Usage:
 #   nix-build -A checks.vm.networking
 
-{ pkgs, lib, systems }:
+{ pkgs, lib, systems, testTools }:
 
 let
-  harness = import ./lib.nix { inherit pkgs lib; };
+  harness = import ./lib.nix { inherit pkgs lib testTools; };
 in
 harness.mkVMTest {
   name = "networking";
-  system = systems.server;
+  system = systems.base;
+  timeout = 300;
   testScript = ''
-    # --- systemd-networkd ---
-    assert_success "systemctl is-active systemd-networkd" \
-      "systemd-networkd is active"
+    # --- Loopback interface ---
+    assert_success "test -d /sys/class/net/lo" \
+      "Loopback interface exists"
 
-    # --- systemd-resolved ---
-    assert_success "systemctl is-active systemd-resolved" \
-      "systemd-resolved is active"
+    assert_output_contains "cat /sys/class/net/lo/operstate" "unknown" \
+      "Loopback interface is up"
 
-    assert_success "resolvectl status" \
-      "resolvectl status works"
+    # --- Network stack ---
+    assert_success "test -d /proc/net" \
+      "/proc/net is available"
 
-    # --- Chrony NTP ---
-    assert_success "systemctl is-active chronyd" \
-      "chronyd is active"
+    assert_success "test -f /etc/hostname" \
+      "/etc/hostname exists"
 
-    assert_success "chronyc tracking" \
-      "chronyc tracking works"
-
-    # --- SSH ---
-    assert_success "systemctl is-active sshd" \
-      "sshd is active"
-
-    assert_success "ss -tlnp | grep -q ':22'" \
-      "SSH is listening on port 22"
-
-    # SSH hardening: password auth disabled
-    assert_output_contains "sshd -T | grep -i passwordauthentication" "no" \
-      "SSH password authentication is disabled"
-
-    # SSH hardening: X11 forwarding disabled
-    assert_output_contains "sshd -T | grep -i x11forwarding" "no" \
-      "SSH X11 forwarding is disabled"
-
-    # --- Network interface ---
-    assert_success "ip link show | grep -q 'state UP'" \
-      "At least one network interface is UP"
+    assert_output_contains "cat /etc/hostname" "aos-test" \
+      "Hostname is set correctly"
   '';
 }

@@ -1,16 +1,16 @@
-# dosfstools — Utilities for making and checking FAT filesystems
+# gperf — GNU perfect hash function generator
 { mkDerivation, fetchurl, make }:
 
-let version = "4.2"; in
+let version = "3.1"; in
 mkDerivation {
-  pname = "dosfstools";
+  pname = "gperf";
   inherit version;
 
   src = fetchurl {
     urls = [
-      "https://github.com/dosfstools/dosfstools/releases/download/v${version}/dosfstools-${version}.tar.gz"
+      "https://ftp.gnu.org/gnu/gperf/gperf-${version}.tar.gz"
     ];
-    hash = "sha256-ZJJu6/kAktyiGxQlmlMBt7mOexlD6KIBx9cmCEgJtSc=";
+    hash = "sha256-WIVGuUW7pLcLajphboC0q0ZuPzMCSjUvwhmBEs27OuI=";
   };
 
   buildDeps = [ make ];
@@ -21,14 +21,13 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd dosfstools-${version}
+        cd gperf-${version}
       '';
     }
     { name = "configure";
       script = ''
         ./configure \
-          --prefix=$out \
-          --enable-compat-symlinks
+          --prefix=$out
       '';
     }
     { name = "build";
@@ -44,8 +43,8 @@ mkDerivation {
   ];
 
   meta = {
-    description = "Utilities for making and checking FAT filesystems";
-    homepage = "https://github.com/dosfstools/dosfstools";
+    description = "gperf — GNU perfect hash function generator";
+    homepage = "https://www.gnu.org/software/gperf/";
     license = "GPL-3.0-or-later";
   };
 }

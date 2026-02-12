@@ -1,5 +1,5 @@
 # curl — Command-line URL transfer tool
-{ mkDerivation, fetchurl, make, pkg-config,
+{ mkDerivation, fetchurl, make, pkg-config, perl,
   openssl, zlib, ca-certificates }:
 
 let version = "8.10.1"; in
@@ -14,7 +14,7 @@ mkDerivation {
     hash = "sha256-c6Sw6ZWWoJ+lkkpPt+S5lahf2g0YosAquc8TS+vOBO4=";
   };
 
-  buildDeps = [ make pkg-config ];
+  buildDeps = [ make pkg-config perl ];
   runtimeDeps = [ openssl zlib ca-certificates ];
   propagatedDeps = [];
 
@@ -40,7 +40,9 @@ mkDerivation {
           --without-libpsl \
           --without-libidn2 \
           --enable-threaded-resolver \
-          --enable-ipv6
+          --enable-ipv6 \
+          --disable-docs \
+          --disable-manual
       '';
     }
     { name = "build";

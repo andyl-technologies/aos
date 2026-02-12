@@ -27,11 +27,21 @@ mkDerivation {
     }
     { name = "configure";
       script = ''
-        ./configure \
-          --prefix=$out \
-          --sysconfdir=$out/etc \
-          --systemdsystemunitdir=$out/lib/systemd/system \
-          --bashcompletiondir=$out/share/bash-completion/completions
+        # Fix shebangs for sandbox
+        for f in $(find . -type f -name '*.sh' -o -name 'configure'); do
+          if head -1 "$f" | grep -q '^#!'; then
+            sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
+            sed -i "1s|#!/usr/bin/env bash|#!$CONFIG_SHELL|" "$f"
+            sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
+          fi
+        done
+
+        $CONFIG_SHELL ./configure \
+          --prefix=/ \
+          --sysconfdir=/etc \
+          --systemdsystemunitdir=/lib/systemd/system \
+          --bashcompletiondir=/share/bash-completion/completions \
+          --disable-documentation
       '';
     }
     { name = "build";
@@ -41,7 +51,7 @@ mkDerivation {
     }
     { name = "install";
       script = ''
-        make install
+        make install DESTDIR=$out
       '';
     }
   ];

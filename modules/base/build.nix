@@ -124,7 +124,7 @@ in
         {
           name = "build-toplevel";
           script = ''
-            mkdir -p $out/etc $out/bin $out/sbin
+            mkdir -p $out/etc/aos $out/bin $out/sbin
 
             # Render /etc files
             ${etcScript}

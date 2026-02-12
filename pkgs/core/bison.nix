@@ -1,5 +1,5 @@
 # GNU Bison — Parser generator
-{ mkDerivation, fetchurl, make }:
+{ mkDerivation, fetchurl, make, m4 }:
 
 let version = "3.8.2"; in
 mkDerivation {
@@ -15,9 +15,9 @@ mkDerivation {
     hash = "sha256-m7oCFMz38QecXVkhAEUie89hlRmEDr+oDNOEnP9aW/I=";
   };
 
-  buildDeps = [ make ];
+  buildDeps = [ make m4 ];
   runtimeDeps = [];
-  propagatedDeps = [];
+  propagatedDeps = [ m4 ];
 
   phases = [
     { name = "unpack";

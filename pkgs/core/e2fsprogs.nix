@@ -1,5 +1,5 @@
 # e2fsprogs — Utilities for ext2/ext3/ext4 filesystems
-{ mkDerivation, fetchurl, gcc, coreutils, make, pkg-config, util-linux }:
+{ mkDerivation, fetchurl, make, pkg-config, util-linux }:
 
 let version = "1.47.1"; in
 mkDerivation {
@@ -13,9 +13,9 @@ mkDerivation {
     hash = "sha256-mvzSAfOUKdLbJJKusT26XnXWzFBoK3MtyjVkO9XwkuM=";
   };
 
-  buildDeps = [ gcc coreutils make pkg-config ];
+  buildDeps = [ make pkg-config ];
   runtimeDeps = [ util-linux ];
-  propagatedDeps = [];
+  propagatedDeps = [ util-linux ];
 
   phases = [
     { name = "unpack";

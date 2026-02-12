@@ -1,7 +1,5 @@
 # default.nix — the entire AOS system
 #
-# No flakes. No experimental features. Pure, stable Nix.
-#
 # Usage:
 #   nix-build -A pkgs.coreutils           Build a package
 #   nix-build -A systems.server.config     Evaluate a system config
@@ -10,7 +8,6 @@
 #   nix-build -A checks.eval              Run evaluation checks only
 #   nix-build -A checks.vm.boot           Run VM boot test
 #   nix-build -A checks.fleet.k8s-cluster Run k8s cluster fleet test
-#   nix-shell                              Enter dev shell
 #
 # Structure:
 #   pkgs/     — Package definitions (toolchain, core, init, kernel, etc.)
@@ -20,10 +17,23 @@
 #   images/   — Disk image builders
 #   tests/    — Multi-layer test suite (eval, build, vm, fleet)
 
+{ system ? "x86_64-linux"
+, nixpkgs ? import <nixpkgs> { inherit system; }
+}:
+
 let
-  system = "aarch64-linux";
   lib = import ./lib { inherit system; };
+
+  # All packages are built hermetically from source using only bootstrap
+  # tools and previously-built AOS packages.  No nixpkgs in the build closure.
   pkgs = import ./pkgs { inherit lib; };
+
+  # Test infrastructure from nixpkgs — QEMU, socat, jq run on the HOST
+  # during testing.  They are NOT part of the AOS image or build closure.
+  testTools = {
+    inherit (nixpkgs) socat jq;
+    qemu = nixpkgs.qemu_kvm;
+  };
 
   # Helper: evaluate a system variant from a module path list.
   mkSystem = modules: lib.evalModules {
@@ -60,7 +70,5 @@ in {
     };
   };
 
-  checks = import ./tests { inherit pkgs lib; };
-
-  shell = import ./shell.nix { inherit pkgs; };
+  checks = import ./tests { inherit pkgs lib testTools; };
 }

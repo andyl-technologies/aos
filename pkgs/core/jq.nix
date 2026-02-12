@@ -1,5 +1,5 @@
 # jq — Lightweight command-line JSON processor
-{ mkDerivation, fetchurl, gcc, coreutils, make }:
+{ mkDerivation, fetchurl, make }:
 
 let version = "1.7.1"; in
 mkDerivation {
@@ -13,7 +13,7 @@ mkDerivation {
     hash = "sha256-R4ycoSn9LjRD/icxS0VeIR4NjGC8j/ffcDhz3u7lgMI=";
   };
 
-  buildDeps = [ gcc coreutils make ];
+  buildDeps = [ make ];
   runtimeDeps = [];
   propagatedDeps = [];
 

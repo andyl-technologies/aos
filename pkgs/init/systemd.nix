@@ -1,7 +1,8 @@
 # systemd — System and service manager
 { mkDerivation, fetchurl, make, pkg-config, gawk,
-  linux-headers, util-linux, kmod, dbus, zlib, xz, lz4, openssl, audit,
-  libselinux, perl }:
+  linux-headers, util-linux, kmod, dbus, zlib, xz, lz4, openssl,
+  perl, meson, ninja, python3, gperf, libcap, libxcrypt, pcre2,
+  audit, libselinux, libsepol }:
 
 let version = "256.9"; in
 mkDerivation {
@@ -10,32 +11,92 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://github.com/systemd/systemd-stable/archive/refs/tags/v${version}.tar.gz"
+      "https://github.com/systemd/systemd/archive/refs/tags/v${version}.tar.gz"
     ];
-    hash = "sha256-1VWM1BnI1GvclYBky5f5Y9HqeThmQUwCWQbsFQM1Eu0=";
+    hash = "sha256-nyvalnow7EYC5+qT1WXrQ2cMod/7uAjHJ1jV8CE1CMg=";
   };
 
-  buildDeps = [ make pkg-config gawk perl ];
+  buildDeps = [
+    make pkg-config gawk perl
+    meson ninja python3 gperf
+  ];
   runtimeDeps = [ util-linux kmod dbus linux-headers zlib xz lz4 openssl
-                  audit libselinux ];
+                   libcap libxcrypt audit libselinux libsepol pcre2 ];
   propagatedDeps = [];
 
   phases = [
     { name = "unpack";
       script = ''
         tar xf $src
-        cd systemd-stable-${version}
+        cd systemd-${version}
+      '';
+    }
+    { name = "patch-shebangs";
+      script = ''
+        # Fix shebangs: /usr/bin/env and /bin/bash don't exist in the sandbox
+        for f in $(find . -type f \( -name '*.sh' -o -name '*.py' \)); do
+          if head -1 "$f" | grep -q '^#!'; then
+            sed -i "1s|#!/usr/bin/env bash|#!$CONFIG_SHELL|" "$f"
+            sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
+            sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
+            sed -i "1s|#!/usr/bin/env python3|#!${python3}/bin/python3|" "$f"
+            sed -i "1s|#!/usr/bin/python3|#!${python3}/bin/python3|" "$f"
+          fi
+        done
       '';
     }
     { name = "configure";
       script = ''
+        # Create getent shim — systemd's meson.build uses getent to look up
+        # system users/groups (nobody, systemd-journal, etc.) during configure.
+        # In the Nix sandbox there's no NSS, so we provide a shim that returns
+        # the expected entries for standard system accounts.
+        mkdir -p .shim-bin
+        cat > .shim-bin/getent << 'GETENT'
+#!/bin/sh
+db="$1"; key="$2"
+case "$db" in
+  passwd)
+    case "$key" in
+      root)              echo "root:x:0:0:root:/root:/bin/sh" ;;
+      nobody)            echo "nobody:x:65534:65534:Nobody:/:/sbin/nologin" ;;
+      systemd-journal)   echo "systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin" ;;
+      systemd-network)   echo "systemd-network:x:102:102:systemd Network:/:/sbin/nologin" ;;
+      systemd-resolve)   echo "systemd-resolve:x:103:103:systemd Resolver:/:/sbin/nologin" ;;
+      systemd-timesync)  echo "systemd-timesync:x:104:104:systemd Time Sync:/:/sbin/nologin" ;;
+      *)                 exit 2 ;;
+    esac ;;
+  group)
+    case "$key" in
+      root)              echo "root:x:0:" ;;
+      nobody)            echo "nobody:x:65534:" ;;
+      utmp)              echo "utmp:x:22:" ;;
+      systemd-journal)   echo "systemd-journal:x:101:" ;;
+      systemd-network)   echo "systemd-network:x:102:" ;;
+      *)                 exit 2 ;;
+    esac ;;
+  *)                     exit 2 ;;
+esac
+GETENT
+        chmod +x .shim-bin/getent
+        export PATH="$(pwd)/.shim-bin:$PATH"
+
+        # Ensure meson's Python module is findable during build
+        # (ninja invokes python3 -m mesonbuild.mesonmain directly)
+        export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+
+        # Set RPATH so systemd binaries can find their own shared libs
+        # (meson uses --prefix=/ with DESTDIR=$out, so RPATH would point
+        # to /lib instead of $out/lib without this)
+        export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib -Wl,-rpath,$out/lib/systemd"
+
         mkdir -p build && cd build
         meson setup .. \
-          --prefix=$out \
+          --prefix=/ \
           --sysconfdir=/etc \
           --buildtype=release \
           -Dmode=release \
-          -Drootprefix=$out \
+          -Drootprefix=/ \
           -Dsysvinit-path="" \
           -Dsysvrcnd-path="" \
           -Dutmp=false \
@@ -46,7 +107,7 @@ mkDerivation {
           -Dtpm=false \
           -Denvironment-d=false \
           -Dbinfmt=false \
-          -Drepart=false \
+          -Drepart=disabled \
           -Dcoredump=false \
           -Dpstore=false \
           -Doomd=false \
@@ -57,14 +118,14 @@ mkDerivation {
           -Dportabled=false \
           -Dsysext=false \
           -Duserdb=false \
-          -Dhomed=false \
+          -Dhomed=disabled \
           -Dnetworkd=true \
           -Dtimedated=false \
           -Dtimesyncd=false \
-          -Dremote=false \
+          -Dremote=disabled \
           -Dnss-myhostname=true \
-          -Dnss-mymachines=false \
-          -Dnss-resolve=false \
+          -Dnss-mymachines=disabled \
+          -Dnss-resolve=disabled \
           -Dnss-systemd=true \
           -Dfirstboot=false \
           -Drandomseed=true \
@@ -73,12 +134,12 @@ mkDerivation {
           -Dquotacheck=false \
           -Dsysusers=true \
           -Dtmpfiles=true \
-          -Dimportd=false \
+          -Dimportd=disabled \
           -Dhwdb=true \
           -Drfkill=false \
           -Dxdg-autostart=false \
-          -Dman=false \
-          -Dhtml=false \
+          -Dman=disabled \
+          -Dhtml=disabled \
           -Dtranslations=false \
           -Dinstall-sysconfdir=false \
           -Dseccomp=disabled \
@@ -93,8 +154,7 @@ mkDerivation {
           -Dp11kit=disabled \
           -Dlibfido2=disabled \
           -Dtpm2=disabled \
-          -Dcurl=disabled \
-          -Didn=disabled \
+          -Dlibcurl=disabled \
           -Dlibidn2=disabled \
           -Dlibidn=disabled \
           -Dlibiptc=disabled \
@@ -106,19 +166,21 @@ mkDerivation {
           -Dzstd=disabled \
           -Ddefault-dnssec=no \
           -Ddefault-mdns=no \
-          -Ddefault-llmnr=no
+          -Ddefault-llmnr=no \
+          -Ddbuspolicydir=$out/share/dbus-1/system.d \
+          -Ddbussessionservicedir=$out/share/dbus-1/services \
+          -Ddbussystemservicedir=$out/share/dbus-1/system-services \
+          -Ddbus-interfaces-dir=$out/share/dbus-1/interfaces
       '';
     }
     { name = "build";
       script = ''
-        cd build
         ninja -j$NIX_BUILD_CORES
       '';
     }
     { name = "install";
       script = ''
-        cd build
-        DESTDIR="" ninja install
+        DESTDIR=$out ninja install
       '';
     }
   ];

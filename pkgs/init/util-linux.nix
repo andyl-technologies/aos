@@ -1,5 +1,5 @@
 # util-linux — Miscellaneous system utilities
-{ mkDerivation, fetchurl, make, pkg-config }:
+{ mkDerivation, fetchurl, make, pkg-config, zlib }:
 
 let version = "2.40.2"; in
 mkDerivation {
@@ -14,7 +14,7 @@ mkDerivation {
   };
 
   buildDeps = [ make pkg-config ];
-  runtimeDeps = [];
+  runtimeDeps = [ zlib ];
   propagatedDeps = [];
 
   phases = [
@@ -22,6 +22,13 @@ mkDerivation {
       script = ''
         tar xf $src
         cd util-linux-${version}
+        # Fix shebangs: /bin/bash doesn't exist in Nix sandbox
+        for f in tools/all_syscalls tools/config-gen tools/git-tp-sync tools/*.sh; do
+          if [ -f "$f" ]; then
+            sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
+            sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
+          fi
+        done
       '';
     }
     { name = "configure";
@@ -43,6 +50,11 @@ mkDerivation {
           --without-btrfs \
           --without-selinux \
           --without-audit \
+          --without-udev \
+          --without-cryptsetup \
+          --without-econf \
+          --disable-liblastlog2 \
+          --disable-pylibmount \
           --disable-wall \
           --disable-login \
           --disable-su \
@@ -66,7 +78,9 @@ mkDerivation {
           --enable-blkid \
           --enable-lsblk \
           --enable-nsenter \
-          --enable-unshare
+          --enable-unshare \
+          --disable-makeinstall-chown \
+          --disable-makeinstall-setuid
       '';
     }
     { name = "build";

@@ -26,8 +26,9 @@ mkDerivation {
     }
     { name = "configure";
       script = ''
-        ./Configure \
+        perl ./Configure \
           --prefix=$out \
+          --libdir=lib \
           --openssldir=$out/etc/ssl \
           linux-x86_64 \
           no-ssl2 \

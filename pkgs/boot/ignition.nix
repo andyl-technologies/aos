@@ -1,54 +1,37 @@
 # Ignition — First-boot provisioning utility
-{ mkDerivation, fetchurl, make }:
+#
+# TODO: Build from source once Go is bootstrapped as an AOS package.
+# Go requires a multi-stage bootstrap (Go 1.4 from C, then modern Go).
+# For now, install a shell-script stub that logs and exits.
+{ mkDerivation, fetchurl }:
 
 let version = "2.19.0"; in
 mkDerivation {
   pname = "ignition";
   inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/coreos/ignition/archive/v${version}/ignition-${version}.tar.gz"
-    ];
-    hash = "sha256-OxlA9JfybOied5wFh/AAy25e3DnvhJru6ZhU0roSXcU=";
-  };
+  src = null;
 
-  buildDeps = [ make ];
+  buildDeps = [];
   runtimeDeps = [];
   propagatedDeps = [];
 
   phases = [
-    { name = "unpack";
-      script = ''
-        tar xf $src
-        cd ignition-${version}
-      '';
-    }
-    { name = "build";
-      script = ''
-        export GOPATH=$TMPDIR/go
-        export CGO_ENABLED=0
-        export GOFLAGS="-trimpath"
-        go build -o ignition \
-          -ldflags "-s -w -X github.com/coreos/ignition/v2/internal/version.Raw=v${version}" \
-          ./internal
-      '';
-    }
     { name = "install";
       script = ''
-        mkdir -p $out/bin $out/lib/dracut/modules.d
-        install -m 755 ignition $out/bin/ignition
-
-        # Install dracut module for initramfs integration
-        if [ -d dracut ]; then
-          cp -a dracut/* $out/lib/dracut/modules.d/
-        fi
+        mkdir -p $out/bin
+        cat > $out/bin/ignition << 'STUB'
+#!/bin/sh
+echo "ignition: stub — Go bootstrap not yet implemented" >&2
+exit 1
+STUB
+        chmod +x $out/bin/ignition
       '';
     }
   ];
 
   meta = {
-    description = "Ignition — machine provisioning utility for first boot";
+    description = "Ignition — machine provisioning utility (stub)";
     homepage = "https://github.com/coreos/ignition";
     license = "Apache-2.0";
   };
