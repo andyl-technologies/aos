@@ -137,6 +137,7 @@ impl NixRunner {
     }
 
     /// Instantiate (but do not build) a derivation, returning the .drv path.
+    #[allow(dead_code)]
     pub fn instantiate(&self, attr: &str) -> Result<PathBuf> {
         let args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
@@ -281,7 +282,7 @@ impl NixRunner {
             Stdio::piped()
         };
 
-        let mut child = Command::new(cmd)
+        let child = Command::new(cmd)
             .args(args)
             .current_dir(&self.root)
             .stdout(Stdio::piped())
