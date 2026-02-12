@@ -1,5 +1,0 @@
-# Default image dimensions.
-total-mib = 16384
-esp-mib = 1024
-root-mib = 8192
-format = "raw"

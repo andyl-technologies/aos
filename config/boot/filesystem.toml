@@ -1,5 +1,0 @@
-# Filesystem labels and types.
-root-label = "ANDYL-ROOT"
-esp-label = "ESP"
-zfs-label = "ANDYL-DATA"
-root-type = "ext4"

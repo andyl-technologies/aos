@@ -1,203 +1,188 @@
-# Phase 2: Full Bootstrap Toolchain
+# Phase 2: Production Stdenv and Core Packages
 
-**Phase Number:** 2
+**Plan Phase:** 3 (Production Stdenv + Core Packages)
 
 ## Objective
 
-Implement the complete bootstrap chain from binary seeds (hex0) through to a modern GCC, glibc, and full toolchain, entirely defined in the ANDYL channel with no dependency on upstream Guix packages or binary substitutes.
+Build the production standard environment (`stdenv/`) and all core packages (`pkgs/toolchain/`, `pkgs/core/`, `pkgs/compression/`, `pkgs/tls/`) using the bootstrap glibc and GCC from Phase 1. This establishes the production toolchain (GCC 13.3.0 + glibc 2.39) and the base utilities every AOS system needs.
 
 ## Prerequisites
 
-- Phase 1 complete: Docker environment running, `guix-daemon` operational, channel skeleton in place
-- Understanding of Guix `(gnu packages commencement)` module structure
-- Familiarity with the Guix full-source bootstrap (Mes, TinyCC, GCC chain)
+- Phase 1 complete: `lib/` evaluates correctly, bootstrap chain builds through glibc 2.39
+- `pkgs/versions.nix` and `pkgs/sources.nix` defined with all version pins and source hashes
+- Understanding of the `mkDerivation` API from `lib/derivations.nix`
 
 ## Deliverables
 
-- `channel/andyl/packages/bootstrap.scm` -- Bootstrap seeds package (hex0, kaem)
-- `channel/andyl/packages/commencement.scm` -- Complete bootstrap chain (Stages 0-6)
-- `channel/andyl/packages/gcc.scm` -- Production GCC package
-- `channel/andyl/packages/glibc.scm` -- Production glibc with server hardening flags
-- `channel/andyl/packages/base.scm` -- Core toolchain packages (binutils, make, coreutils, bash, etc.)
-- `channel/andyl/packages/linux.scm` -- Linux kernel headers package
-- `channel/andyl/packages/compression.scm` -- zlib, xz, zstd, lz4
-- `channel/andyl/packages/tls.scm` -- OpenSSL/LibreSSL
-- Successfully built full toolchain stored in `/gnu/store/`
+### Production Stdenv (`stdenv/`)
+
+- `stdenv/default.nix` -- Production stdenv (GCC 13.3 + glibc 2.39)
+- `stdenv/cc-wrapper.nix` -- Compiler/linker wrapper (sets RPATH, search paths)
+- `stdenv/setup.sh` -- Standard build environment setup script
+- `stdenv/phases.nix` -- Default build phase definitions (list-of-steps, not strings)
+
+### Package Infrastructure (`pkgs/`)
+
+- `pkgs/default.nix` -- Package set composition (single entry point for all packages)
+- `pkgs/versions.nix` -- Single source of truth for all package versions
+- `pkgs/sources.nix` -- All source fetchers with pinned SHA-256 hashes
+
+### Toolchain Packages (`pkgs/toolchain/`)
+
+- `pkgs/toolchain/gcc.nix` -- GCC 13.3.0 (production compiler)
+- `pkgs/toolchain/binutils.nix` -- Binutils 2.42
+- `pkgs/toolchain/linux-headers.nix` -- Linux headers 6.12.11
+
+### Core Packages (`pkgs/core/`)
+
+- `pkgs/core/coreutils.nix`, `bash.nix`, `make.nix`, `grep.nix`, `sed.nix`, `gawk.nix`
+- `pkgs/core/findutils.nix`, `tar.nix`, `gzip.nix`, `xz.nix`, `diffutils.nix`, `patch.nix`
+- `pkgs/core/pkg-config.nix`, `perl.nix`, `bison.nix`, `texinfo.nix`
+
+### Compression Libraries (`pkgs/compression/`)
+
+- `pkgs/compression/zlib.nix` -- zlib 1.3.1
+- `pkgs/compression/zstd.nix` -- zstd 1.5.6
+- `pkgs/compression/lz4.nix` -- lz4 1.9.4
+
+### TLS (`pkgs/tls/`)
+
+- `pkgs/tls/openssl.nix` -- OpenSSL 3.3.2 (TLS 1.2/1.3 only, server-hardened)
 
 ## Detailed Task Checklist
 
-### 2.1 Study Upstream Commencement Module
+### 2.1 Package Infrastructure
 
-- [ ] Read and annotate `(gnu packages commencement)` from Guix source (hundreds of package definitions)
-- [ ] Map the complete dependency graph: hex0 -> hex1 -> hex2 -> M0 -> M1 -> M2-Planet -> kaem -> Mes -> MesCC -> TinyCC -> GCC 4.6.4 -> GCC 7.x -> GCC 10.x/13.x
-- [ ] Identify the `%boot0-inputs` through `%final-inputs` input sets
-- [ ] Document which packages use `trivial-build-system` vs. `gnu-build-system`
-- [ ] Identify all intermediate packages (bootstrap-glibc, bootstrap-binutils, etc.)
+- [ ] Write `pkgs/versions.nix` containing all package versions as a structured Nix attrset:
+  - [ ] `toolchain = { gcc = "13.3.0"; glibc = "2.39"; binutils = "2.42"; linux-headers = "6.12.11"; };`
+  - [ ] `core = { make = "4.4.1"; coreutils = "9.5"; bash = "5.2.32"; ... };`
+  - [ ] All version sections: toolchain, core, kernel, security, storage, networking, init, kubernetes, compression, tls, monitoring, bootstrap, image-tools, update
+- [ ] Write `pkgs/sources.nix` containing all source URLs and SHA-256 hashes:
+  - [ ] One entry per upstream source: `{ url = "mirror://gnu/..."; hash = "sha256-..."; }`
+  - [ ] Single auditable file for all external inputs (no lock file needed)
+- [ ] Write `pkgs/default.nix` composing the full package set:
+  - [ ] Import each package file, passing `{ mkDerivation, sources, versions, ... }` as arguments
+  - [ ] Wire up inter-package dependencies
+  - [ ] Expose as a flat attrset accessible via `nix-build -A pkgs.<name>`
 
-### 2.2 Stage 0: Bootstrap Seeds
+### 2.2 Production Stdenv
 
-- [ ] Create `channel/andyl/packages/bootstrap.scm`
-- [ ] Define `andyl-bootstrap-seeds` package
-- [ ] Source: `bootstrap-seeds` repository from GitHub (oriansj/bootstrap-seeds)
-- [ ] Pin version and verify sha256 hash
-- [ ] Use `trivial-build-system` to extract and install architecture-specific seed binaries (hex0, kaem)
-- [ ] Target x86_64 seeds (or aarch64 if building for ARM)
-- [ ] Build and verify: `guix build andyl-bootstrap-seeds`
+- [ ] Write `stdenv/default.nix`:
+  - [ ] Build production GCC 13.3.0 using bootstrap GCC 7.5.0 + bootstrap glibc
+  - [ ] Build final glibc 2.39 using production GCC 13.3.0
+  - [ ] Compose the production stdenv wrapping GCC 13.3 + glibc 2.39
+- [ ] Write `stdenv/cc-wrapper.nix`:
+  - [ ] Wrapper script that sets `-rpath` for all linked binaries
+  - [ ] Sets include and library search paths from `runtimeDeps`
+  - [ ] Propagates `propagatedDeps` to downstream packages
+- [ ] Write `stdenv/setup.sh`:
+  - [ ] Standard environment variables (`PATH`, `C_INCLUDE_PATH`, `LIBRARY_PATH`, etc.)
+  - [ ] Phase execution engine that iterates over the structured phase list
+  - [ ] Default phase implementations (unpack, configure, build, install)
+- [ ] Write `stdenv/phases.nix`:
+  - [ ] Default phase list: `[ unpack configure build install ]`
+  - [ ] Each phase: `{ name = "configure"; script = "./configure --prefix=$out"; }`
+  - [ ] Helpers: `lib.replacePhase`, `lib.addPhaseAfter`, `lib.addPhaseBefore`
 
-### 2.3 Stage 1: MesCC-Tools
+### 2.3 Toolchain Packages
 
-- [ ] Define `andyl-mescc-tools` package in `commencement.scm`
-- [ ] Source: mescc-tools repository (oriansj/mescc-tools), pinned version
-- [ ] Build with `trivial-build-system` using only `andyl-bootstrap-seeds` as native input
-- [ ] Implement the kaem.run build script that chains: hex0 -> hex1 -> hex2 -> M0 -> M1
-- [ ] Define `andyl-mescc-tools-extra` for M2-Planet and additional tools
-- [ ] Build and verify both packages
+- [ ] Write `pkgs/toolchain/gcc.nix` (GCC 13.3.0):
+  - [ ] Source referenced from `sources.gcc`
+  - [ ] Configure: `--enable-languages=c,c++`, `--disable-multilib`, `--disable-bootstrap`, `--with-system-zlib`
+  - [ ] `buildDeps`: bootstrap GCC, bootstrap binutils
+  - [ ] `runtimeDeps`: glibc, linux-headers
+- [ ] Write `pkgs/toolchain/binutils.nix` (Binutils 2.42):
+  - [ ] Standard autoconf build
+  - [ ] `--enable-deterministic-archives`, `--enable-gold`
+- [ ] Write `pkgs/toolchain/linux-headers.nix` (Linux headers 6.12.11):
+  - [ ] `make headers`, `make headers_install`
+  - [ ] Handle architecture detection (`ARCH=x86` for x86_64)
+  - [ ] Remove `.install` files from output
 
-### 2.4 Stage 2: GNU Mes and TinyCC
+### 2.4 Core Packages
 
-- [ ] Define `andyl-mes` package (version 0.27)
-- [ ] Source: GNU Mes tarball from ftp.gnu.org
-- [ ] Build with `trivial-build-system`, using `andyl-mescc-tools` (M2-Planet compiles mes.c)
-- [ ] Verify Mes can interpret Scheme and compile C via MesCC
-- [ ] Define `andyl-tinycc-mescc` package (TinyCC 0.9.27)
-- [ ] Source: TinyCC tarball from savannah.gnu.org
-- [ ] Build with `trivial-build-system`, using `andyl-mes` (MesCC compiles tcc)
-- [ ] Verify TinyCC can compile simple C programs
-- [ ] Build and verify both packages
+Each package follows the same pattern -- a function taking `{ mkDerivation, sources, versions, ... }` and returning a derivation using `mkDerivation`:
 
-### 2.5 Stage 3: GCC 4.x from TinyCC
+- [ ] `coreutils.nix` -- GNU Coreutils 9.5
+- [ ] `bash.nix` -- Bash 5.2.32
+- [ ] `make.nix` -- GNU Make 4.4.1
+- [ ] `grep.nix` -- GNU Grep 3.11
+- [ ] `sed.nix` -- GNU Sed 4.9
+- [ ] `gawk.nix` -- GNU Gawk 5.3.1
+- [ ] `findutils.nix` -- GNU Findutils 4.10.0
+- [ ] `tar.nix` -- GNU Tar 1.35
+- [ ] `gzip.nix` -- Gzip 1.13
+- [ ] `xz.nix` -- XZ Utils 5.6.0
+- [ ] `diffutils.nix` -- GNU Diffutils 3.10
+- [ ] `patch.nix` -- GNU Patch 2.7.6
+- [ ] `pkg-config.nix` -- pkg-config 0.29.2
+- [ ] `perl.nix` -- Perl 5.38.2 (needed for building other packages)
+- [ ] `bison.nix` -- GNU Bison 3.8.2
+- [ ] `texinfo.nix` -- GNU Texinfo 7.1
 
-- [ ] Define `andyl-gcc-core-mesboot` package (GCC 4.6.4)
-- [ ] Source: GCC 4.6.4 tarball from mirror://gnu/gcc/
-- [ ] Build with `trivial-build-system`, using `andyl-tinycc-mescc` and `andyl-mescc-tools`
-- [ ] Include a bootstrap glibc as input (define `andyl-bootstrap-glibc` -- minimal libc)
-- [ ] Configure: C-only, no C++, no Fortran
-- [ ] Verify GCC 4.6.4 can compile a "hello world" program
-- [ ] Build and verify
+### 2.5 Compression Libraries
 
-### 2.6 Stage 3-4: Intermediate GCC (7.x)
+- [ ] `pkgs/compression/zlib.nix` -- zlib 1.3.1 (non-autoconf configure)
+- [ ] `pkgs/compression/zstd.nix` -- zstd 1.5.6 (CMake or make-based build)
+- [ ] `pkgs/compression/lz4.nix` -- lz4 1.9.4
 
-- [ ] Define `andyl-gcc-mesboot` package (GCC 7.5.0)
-- [ ] Source: GCC 7.5.0 tarball from mirror://gnu/gcc/
-- [ ] Build with `gnu-build-system`, using `andyl-gcc-core-mesboot`
-- [ ] Configure: `--enable-languages=c,c++`, `--disable-multilib`
-- [ ] Verify GCC 7.5 can compile C and C++ programs
-- [ ] Build and verify
+### 2.6 TLS
 
-### 2.7 Stage 4: Modern GCC (13.x)
+- [ ] `pkgs/tls/openssl.nix` -- OpenSSL 3.3.2:
+  - [ ] Server-hardened build: TLS 1.2/1.3 only, modern cipher suites
+  - [ ] `buildDeps`: perl (for Configure script)
+  - [ ] `runtimeDeps`: zlib
 
-- [ ] Create `channel/andyl/packages/gcc.scm`
-- [ ] Define `andyl-gcc` package (GCC 13.3.0)
-- [ ] Source: GCC 13.3.0 tarball from mirror://gnu/gcc/
-- [ ] Build with `gnu-build-system`, using `andyl-gcc-mesboot` (GCC 7.x)
-- [ ] Configure flags: `--enable-languages=c,c++`, `--disable-multilib`, `--disable-bootstrap`, `--with-system-zlib`
-- [ ] Verify GCC 13.3 compilation of complex C/C++ code
-- [ ] Build and verify
-
-### 2.8 Linux Kernel Headers
-
-- [ ] Create `channel/andyl/packages/linux.scm`
-- [ ] Define `andyl-linux-headers` package (version 6.12.x LTS)
-- [ ] Source: kernel.org tarball
-- [ ] Build phases: skip configure, run `make headers`, install with `make headers_install`
-- [ ] Handle architecture detection (x86_64 -> `ARCH=x86`, aarch64 -> `ARCH=arm64`)
-- [ ] Remove `.install` files from output
-- [ ] Build and verify headers install correctly
-
-### 2.9 Stage 5: glibc
-
-- [ ] Create `channel/andyl/packages/glibc.scm`
-- [ ] Define `andyl-glibc` package (version 2.39)
-- [ ] Source: glibc tarball from mirror://gnu/glibc/
-- [ ] Build out-of-tree (`#:out-of-source? #t`)
-- [ ] Configure flags for server hardening:
-  - [ ] `--enable-kernel=5.15` (minimum kernel version)
-  - [ ] `--enable-stack-protector=strong`
-  - [ ] `--enable-bind-now` (full RELRO)
-  - [ ] `--enable-static-nss`
-  - [ ] `--enable-cet` (Control-flow Enforcement)
-  - [ ] `--disable-werror`
-  - [ ] `--with-headers=` pointing to `andyl-linux-headers`
-- [ ] Add phase: set SHELL and CONFIG_SHELL environment variables
-- [ ] Add phase: install UTF-8 locales (en_US.UTF-8, C.UTF-8)
-- [ ] Add phase: remove unnecessary static libraries (keep libc.a, libpthread.a, libm.a, libdl.a, librt.a)
-- [ ] Native inputs: `andyl-gcc`, `andyl-binutils`, `andyl-make`, `andyl-perl`, `andyl-bison`, `andyl-texinfo`
-- [ ] Propagated inputs: `andyl-linux-headers`
-- [ ] Build and verify libc.so exists and is functional
-- [ ] Verify locale generation succeeded
-
-### 2.10 Stage 6: Full Toolchain Packages
-
-- [ ] Create `channel/andyl/packages/base.scm`
-- [ ] Define `andyl-binutils` package (binutils 2.42+)
-- [ ] Define `andyl-make` package (GNU Make 4.4+)
-- [ ] Define `andyl-coreutils` package (coreutils 9.x)
-- [ ] Define `andyl-bash` package (bash 5.2+)
-- [ ] Define `andyl-findutils` package
-- [ ] Define `andyl-gawk` package
-- [ ] Define `andyl-grep` package
-- [ ] Define `andyl-sed` package
-- [ ] Define `andyl-tar` package
-- [ ] Define `andyl-gzip` package
-- [ ] Define `andyl-xz` package
-- [ ] Define `andyl-diffutils` package
-- [ ] Define `andyl-patch` package
-- [ ] Define `andyl-pkg-config` package
-- [ ] Build each package individually, then build all together
-- [ ] Verify that the complete toolchain can build a non-trivial package (e.g., zlib)
-
-### 2.11 Essential Library Packages
-
-- [ ] Create `channel/andyl/packages/compression.scm`
-- [ ] Define `andyl-zlib` package (with custom configure phase for non-autoconf build)
-- [ ] Define `andyl-xz-utils` package (for xz/lzma compression)
-- [ ] Define `andyl-zstd` package (for zstd compression)
-- [ ] Define `andyl-lz4` package
-- [ ] Create `channel/andyl/packages/tls.scm`
-- [ ] Define `andyl-openssl` package (OpenSSL 3.x) with server-hardened build flags
-- [ ] Build and verify all library packages
-
-### 2.12 Toolchain Validation
+### 2.7 Toolchain Validation
 
 - [ ] Build a complex package (e.g., curl) that exercises the full toolchain (GCC, glibc, zlib, OpenSSL)
-- [ ] Run `guix build --check andyl-zlib` to verify build reproducibility
-- [ ] Generate and inspect the dependency graph: `guix graph andyl-gcc`
-- [ ] Verify no references to upstream Guix packages exist in any store path
-- [ ] Document the complete DAG of bootstrap stages
-
-### 2.13 justfile Targets
-
-- [ ] Add `bootstrap` target: builds the full chain from seeds to final toolchain
-- [ ] Add `bootstrap-toolchain` target: builds just GCC + glibc + binutils (assumes earlier stages cached)
-- [ ] Add `build PACKAGE` target: builds a single specified package
-- [ ] Add `build-all` target: builds all packages
-- [ ] Add `graph PACKAGE` target: generates DOT dependency graph
-- [ ] Add `lint PACKAGE` target: runs `guix lint`
-- [ ] Add `show PACKAGE` target: runs `guix show`
+- [ ] Verify no references to bootstrap or upstream Nix packages in final package closures
+- [ ] Inspect dependency graph: `aos graph coreutils`
+- [ ] Verify `.override` mechanism works for customizing packages
+- [ ] Verify structured phases can be replaced by downstream packages
 
 ## Acceptance Criteria
 
-1. All bootstrap stages (0-6) build successfully from source with `--no-substitutes`
-2. The final GCC (13.x) can compile C and C++ programs
-3. The final glibc includes server hardening flags (stack protector, RELRO, CET)
-4. All core toolchain packages (binutils, make, coreutils, bash, etc.) build and are functional
-5. `guix build --check` confirms reproducibility for at least 3 key packages (zlib, openssl, bash)
-6. No upstream Guix packages are referenced (only our channel's packages)
-7. The full bootstrap chain completes in under 8 hours on the recommended hardware
+1. Production stdenv (GCC 13.3.0 + glibc 2.39) builds successfully from the bootstrap chain
+2. All 16 core packages build and produce functional binaries
+3. Compression libraries (zlib, zstd, lz4) build and are linkable
+4. OpenSSL 3.3.2 builds with server-hardened configuration
+5. `pkgs/default.nix` composes the full package set: `nix-build -A pkgs.coreutils` works
+6. `pkgs/versions.nix` is the single source of truth for all version strings
+7. `pkgs/sources.nix` is the single source of truth for all source URLs and hashes
+8. `.override` works for customizing any package
+9. Package dependency graph has no references to bootstrap-only packages
+10. `aos build coreutils` succeeds end-to-end
+
+## Key Design Decisions
+
+### Sources Separated from Package Logic
+
+Unlike nixpkgs where source URLs and hashes are inline in each package file, AOS keeps all sources in `pkgs/sources.nix`. This means:
+- All external inputs are auditable in a single file
+- Source mirroring and caching can be done independently of package logic
+- Version bumps touch `pkgs/versions.nix` + `pkgs/sources.nix`, not the package definition
+
+### Clean Input Naming
+
+AOS replaces nixpkgs's confusing input names:
+- `nativeBuildInputs` -> `buildDeps` (tools needed at build time, not in runtime closure)
+- `buildInputs` -> `runtimeDeps` (libraries needed at runtime)
+- `propagatedBuildInputs` -> `propagatedDeps` (propagate to downstream dependents)
+
+### Structured Phases
+
+Build phases are an ordered list of `{ name; script; }` records, not string concatenation. This allows:
+- Inspection: list a package's phases to see exactly what runs
+- Selective replacement: `lib.replacePhase "configure" { ... }`
+- Insertion: `lib.addPhaseAfter "install" { name = "fixup-certs"; script = "..."; }`
 
 ## Risks and Mitigations
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| Bootstrap stage failure (obscure build error in early stages) | High | Blocks all progress | Study upstream commencement.scm carefully; start with exact copies before customizing |
-| Full bootstrap takes too long (>12 hours) | Medium | Slow iteration | Cache intermediate results in Docker volume; only rebuild changed stages |
-| glibc build complexity (many dependencies, edge cases) | High | Time-consuming debugging | Mirror upstream Guix glibc recipe closely; deviate only for hardening flags |
-| GCC version incompatibility during stage transitions | Medium | Build failures | Use the exact version chain proven by upstream Guix (4.6.4 -> 7.5 -> 13.x) |
-| Source tarball hash mismatches | Low | Blocks package definition | Download and compute hashes manually; verify against upstream |
-| Circular dependencies in package definitions | Medium | guix errors | Map the full DAG before coding; use explicit stage numbering |
-
-## Estimated Complexity
-
-**XL (Extra Large)**
-
-This is the single most complex phase of the project. The bootstrap chain involves dozens of carefully-ordered package definitions, many with custom build phases. The commencement module in upstream Guix is over 2000 lines of meticulously crafted Scheme. Debugging bootstrap failures requires deep understanding of compilers, linkers, and libc internals. Plan for significant iteration time.
+| GCC 13.3.0 build fails with bootstrap GCC 7.5.0 | Medium | Blocks production stdenv | The version chain (7.5 -> 13.3) is well-tested; match upstream configure flags |
+| cc-wrapper RPATH handling breaks packages | Medium | Binaries can't find libraries | Test with several packages; inspect with `ldd` and `patchelf --print-rpath` |
+| Some packages need custom phases | Low | Minor per-package work | The structured phase model supports full replacement; zlib already needs custom configure |
+| Source hashes change upstream | Low | Build failures | All hashes are pinned; use content-addressed mirrors where possible |
+| Circular dependency between packages | Medium | Nix evaluation fails | Map the full dependency graph before coding; use explicit build stages |

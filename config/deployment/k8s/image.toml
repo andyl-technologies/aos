@@ -1,3 +1,0 @@
-# Kubernetes images need larger root partitions.
-total-mib = 32768
-root-mib = 12288

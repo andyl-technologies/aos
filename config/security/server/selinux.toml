@@ -1,3 +1,0 @@
-# Server SELinux override: enforcing mode with kernel lockdown.
-enforcing = true
-lockdown = "integrity"

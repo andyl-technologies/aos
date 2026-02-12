@@ -1,6 +1,0 @@
-# ANDYL OS -- Kubernetes Control Plane Image
-# Control plane node (API server, etcd, scheduler, controller-manager).
-
-[image]
-name = "andyl-os-k8s-control-plane"
-imports = ["boot/server", "security/server", "deployment/k8s", "kubernetes"]

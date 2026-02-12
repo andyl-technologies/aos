@@ -1,4 +1,0 @@
-# Update bundle settings.
-dir = "/var/lib/andyl-os/bundles"
-ssh-user = "deploy"
-remote-dir = "/var/www/updates"

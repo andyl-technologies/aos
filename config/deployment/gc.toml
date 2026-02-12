@@ -1,6 +1,0 @@
-# Garbage collection schedule.
-schedule = "weekly"
-keep-generations = 5
-min-age-hours = 168
-randomized-delay-sec = 3600
-timeout-sec = 3600

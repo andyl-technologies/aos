@@ -1,2 +1,0 @@
-# Code signing configuration.
-key-path = "/etc/andyl-os/deploy/signing-key.sec"

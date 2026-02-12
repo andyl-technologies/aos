@@ -1,3 +1,0 @@
-# SELinux defaults (base images use permissive).
-enforcing = false
-lockdown = "none"

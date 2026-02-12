@@ -1,329 +1,233 @@
-# Phase 6: CoreOS Ignition Integration
+# Phase 6: NixOS-Style Modules
 
-**Phase Number:** 6
+**Plan Phase:** 6 (Modules)
 
 ## Objective
 
-Integrate CoreOS Ignition as the first-boot provisioning system. Create Butane template infrastructure for fleet-wide configuration generation, implement per-machine config delivery, and verify Ignition works correctly with the immutable root and `/etc` overlay architecture.
+Create the NixOS-style module hierarchy (`modules/`) that absorbs all configuration values from the original TOML/Scheme files into typed Nix option defaults. Each module defines options, generates systemd units, config files, and tmpfiles rules. The Ignition first-boot provisioning module is the centerpiece, handling ZFS pool creation, /etc overlay seeding, and per-machine configuration.
 
 ## Prerequisites
 
-- Phase 4 complete: Base image boots with systemd, ext4 read-only root, `/etc` overlay
-- Phase 5 in progress or complete: update agent infrastructure (Ignition writes update config)
-- Understanding of Ignition specification v3.4.0
-- Understanding of Butane YAML format and transpilation
-- ZFS kernel modules available (included in initrd or loadable at boot)
+- Phase 1 complete: `lib/modules.nix` provides the module evaluation engine (`evalModules`)
+- Phase 3 complete: All system packages available (systemd, kernel, ZFS, SELinux, networking, etc.)
+- Understanding of the module contract: `{ config, pkgs, lib, ... }: { options = {...}; config = {...}; }`
 
 ## Deliverables
 
-- `channel/andyl/packages/ignition.scm` -- Ignition binary package for Guix
-- `channel/andyl/packages/butane.scm` -- Butane transpiler package
-- Ignition systemd units integrated into the initrd
-- ZFS pool and dataset creation via `andyl-os-zfs-setup.service` (first-boot oneshot)
-- `templates/base.bu.j2` -- Base Butane template (common to all roles, includes ZFS partitioning)
-- `templates/k8s-worker.bu.j2` -- K8s worker role template
-- `templates/k8s-control-plane.bu.j2` -- K8s control plane role template
-- `templates/database.bu.j2` -- Database role template
-- `templates/edge.bu.j2` -- Edge/gateway role template
-- `inventory/hosts.yaml` -- Machine inventory format
-- `inventory/secrets.yaml` -- Encrypted secrets template (sops/age)
-- `tools/generate-ignition-configs.py` -- Config generation script
-- Ignition config delivery mechanism (HTTP server for bare metal, user-data for cloud)
-- cloud-init fallback configuration for environments without Ignition support
-- Verified first-boot provisioning in QEMU (including ZFS dataset creation)
+### Module Registry
+
+- `modules/module-list.nix` -- List of all module paths (explicit, no auto-discovery)
+
+### Base Modules (`modules/base/`)
+
+- `modules/base/system.nix` -- Core system identity, os-release, locale
+- `modules/base/boot.nix` -- systemd-boot, kernel args
+- `modules/base/filesystems.nix` -- Immutable root, ZFS /var, overlay /etc, tmpfs
+- `modules/base/networking.nix` -- systemd-networkd, systemd-resolved
+- `modules/base/users.nix` -- System users and groups
+
+### Security Modules (`modules/security/`)
+
+- `modules/security/selinux.nix` -- Policy loading, relabeling, enforcement mode
+- `modules/security/audit.nix` -- auditd configuration and rules
+- `modules/security/hardening.nix` -- sysctl, kernel lockdown, systemd service hardening
+- `modules/security/firewall.nix` -- nftables rule generation from option values
+- `modules/security/ssh.nix` -- sshd hardened configuration
+
+### Service Modules (`modules/services/`)
+
+- `modules/services/ignition.nix` -- First-boot: ZFS pool, datasets, hostname, SSH keys, /etc overlay
+- `modules/services/update.nix` -- Update agent, health check, rollback, boot counting
+- `modules/services/gc.nix` -- Store garbage collection timer
+- `modules/services/chrony.nix` -- NTP time sync
+
+### Kubernetes Modules (`modules/kubernetes/`)
+
+- `modules/kubernetes/containerd.nix` -- Container runtime + config generation
+- `modules/kubernetes/kubelet.nix` -- Node agent + config generation
+- `modules/kubernetes/network.nix` -- K8s sysctl, kernel modules, firewall rules
+- `modules/kubernetes/control-plane.nix` -- kubeadm, static pod manifests, etcd firewall
+
+### Monitoring Modules (`modules/monitoring/`)
+
+- `modules/monitoring/node-exporter.nix` -- Prometheus node exporter
+
+### System Variants (`systems/`)
+
+- `systems/base.nix` -- Minimal bootable system
+- `systems/server.nix` -- + SSH, firewall, chrony, SELinux enforcing
+- `systems/k8s-worker.nix` -- + containerd, kubelet, CNI
+- `systems/k8s-control-plane.nix` -- + kubeadm, static pods
 
 ## Detailed Task Checklist
 
-### 6.1 Ignition Package
+### 6.1 Module List Registry
 
-- [ ] Create `channel/andyl/packages/ignition.scm`
-- [ ] Define `andyl-ignition` package
-- [ ] Source: Ignition GitHub release (coreos/ignition)
-- [ ] Build with Go build system (or download pre-built binary and wrap)
-- [ ] Install `ignition` binary and dracut module
-- [ ] Build and verify: `ignition --version`
+- [ ] Write `modules/module-list.nix`:
+  - [ ] Explicit list of all module file paths
+  - [ ] No auto-discovery (prevents evaluation of unused modules)
+  - [ ] ~20 module paths total
 
-### 6.2 Butane Package
+### 6.2 Base Modules
 
-- [ ] Create `channel/andyl/packages/butane.scm`
-- [ ] Define `andyl-butane` package
-- [ ] Source: Butane GitHub release (coreos/butane)
-- [ ] Build or wrap the Go binary
-- [ ] Install `butane` CLI tool
-- [ ] Build and verify: `butane --version`
+- [ ] `modules/base/system.nix`:
+  - [ ] `options.aos.system.name` -- OS name (default: "ANDYL OS")
+  - [ ] `options.aos.system.version` -- version string
+  - [ ] `options.aos.system.hostname` -- machine hostname
+  - [ ] `config`: generate `/usr/lib/os-release`, locale settings
+- [ ] `modules/base/boot.nix`:
+  - [ ] `options.aos.boot.loader` -- boot loader (default: systemd-boot)
+  - [ ] `options.aos.boot.kernelParams` -- kernel command line parameters
+  - [ ] `config`: systemd-boot installation, boot entry management
+- [ ] `modules/base/filesystems.nix`:
+  - [ ] `options.aos.filesystems.rootDevice` -- root partition label
+  - [ ] `options.aos.filesystems.zfsPool` -- ZFS pool name (default: "datapool")
+  - [ ] `config`: mount units for root (ro), /var (ZFS), /etc (overlay), /tmp (tmpfs), /run (tmpfs)
+- [ ] `modules/base/networking.nix`:
+  - [ ] `options.aos.networking.useDHCP` -- enable DHCP (default: true)
+  - [ ] `options.aos.networking.nameservers` -- DNS servers
+  - [ ] `config`: systemd-networkd units, resolved configuration
+- [ ] `modules/base/users.nix`:
+  - [ ] `options.aos.users.sshAuthorizedKeys` -- SSH keys for the admin user
+  - [ ] `config`: system users (root, nobody), groups (wheel, systemd-journal, etc.)
 
-### 6.3 Ignition in initrd
+### 6.3 Security Modules
 
-- [ ] Add Ignition dracut module to the initrd build:
-  - [ ] Include `ignition` binary in initrd
-  - [ ] Include Ignition systemd units for initrd:
-    - [ ] `ignition-disks.service`
-    - [ ] `ignition-mount.service`
-    - [ ] `ignition-files.service`
-    - [ ] `ignition-fetch.service`
-    - [ ] `ignition-complete.service`
-  - [ ] Order Ignition before `initrd-switch-root.target`
-- [ ] Configure Ignition to read config from:
-  - [ ] QEMU fw_cfg: `opt/com.coreos/config` (for testing)
-  - [ ] Cloud provider metadata (user-data endpoint)
-  - [ ] USB drive labeled `ignition`
-  - [ ] HTTP endpoint (for bare-metal provisioning)
-- [ ] Add first-boot detection: Ignition runs only if `/boot/ignition/first-boot` marker exists (or equivalent)
-- [ ] Rebuild initrd with Ignition support
-- [ ] Verify Ignition modules are present in initrd
+- [ ] `modules/security/selinux.nix`:
+  - [ ] `options.aos.selinux.enable` (default: true)
+  - [ ] `options.aos.selinux.mode` -- "enforcing" or "permissive" (default: "enforcing")
+  - [ ] `options.aos.selinux.type` -- policy type (default: "targeted")
+  - [ ] `config`: SELinux config file, kernel cmdline args, first-boot relabeling service
+- [ ] `modules/security/audit.nix`:
+  - [ ] `options.aos.audit.enable` (default: true)
+  - [ ] `options.aos.audit.rules` -- list of audit rules
+  - [ ] `config`: auditd service, audit rule loading
+- [ ] `modules/security/hardening.nix`:
+  - [ ] `options.aos.hardening.enable` (default: true)
+  - [ ] `config`: sysctl settings (kernel.kptr_restrict, dmesg_restrict, ptrace_scope, etc.), systemd service hardening defaults, kernel boot parameters (slab_nomerge, init_on_alloc, lockdown=integrity)
+- [ ] `modules/security/firewall.nix`:
+  - [ ] `options.aos.firewall.enable` (default: true)
+  - [ ] `options.aos.firewall.defaultPolicy` (default: "drop")
+  - [ ] `options.aos.firewall.allowedTCP` (default: [22])
+  - [ ] `options.aos.firewall.allowedUDP` (default: [])
+  - [ ] `options.aos.firewall.kubernetes.workerTCP`, `controlPlaneTCP`, etc.
+  - [ ] `config`: nftables service, generated ruleset from option values
+- [ ] `modules/security/ssh.nix`:
+  - [ ] `options.aos.ssh.enable` (default: true)
+  - [ ] `options.aos.ssh.permitRootLogin` (default: "prohibit-password")
+  - [ ] `options.aos.ssh.passwordAuthentication` (default: false)
+  - [ ] `config`: sshd service, hardened config (key-only auth, modern ciphers, restricted forwarding)
 
-### 6.4 ZFS Pool and Dataset Setup (First Boot)
+### 6.4 Service Modules
 
-- [ ] Create `andyl-os-zfs-setup.service` systemd unit (enabled by Ignition):
-  - [ ] `ConditionPathExists=!/var/lib/andyl-os/zfs-setup-complete` (runs only on first boot)
-  - [ ] `Before=local-fs.target var.mount`, `After=systemd-udevd.service`
-  - [ ] Load ZFS kernel module: `modprobe zfs`
-  - [ ] Create ZFS pool on the ANDYL-ZFS partition:
-    ```
-    zpool create -f -o ashift=12 -o autotrim=on \
-      -O compression=zstd-3 -O atime=off -O xattr=sa \
-      -O acltype=posixacl -O dnodesize=auto \
-      datapool /dev/disk/by-partlabel/ANDYL-ZFS
-    ```
-  - [ ] Create core datasets:
-    - [ ] `datapool/var` (mountpoint=/var)
-    - [ ] `datapool/var/lib` (mountpoint=/var/lib)
-    - [ ] `datapool/var/log` (mountpoint=/var/log, quota=2G)
-    - [ ] `datapool/var/tmp` (mountpoint=/var/tmp)
-    - [ ] `datapool/etc-overlay` (for /etc overlay upper layer)
-  - [ ] Create role-specific datasets:
-    - [ ] `datapool/var/lib/containerd` (recordsize=128K, for container images)
-    - [ ] `datapool/var/lib/postgresql` (recordsize=8K, for database roles)
-    - [ ] `datapool/var/lib/etcd` (recordsize=4K, for control plane roles)
-  - [ ] Write completion marker: `touch /var/lib/andyl-os/zfs-setup-complete`
-- [ ] Add Ignition disk config to base Butane template:
-  - [ ] Partition remaining disk space as partition 3, label ANDYL-ZFS
-  - [ ] Use `wipe_table: false` to preserve existing ESP + root partitions
-- [ ] Verify ZFS pool imports correctly on subsequent boots via `zfs-import-cache.service`
-- [ ] Test ZFS dataset creation with different disk sizes (small VM, large bare metal)
+- [ ] `modules/services/ignition.nix` -- the centerpiece first-boot module:
+  - [ ] `options.aos.ignition.enable` (default: true)
+  - [ ] `config`:
+    - [ ] ZFS pool creation: `zpool create -f -o ashift=12 -o autotrim=on ...`
+    - [ ] Core datasets: `datapool/var`, `datapool/var-lib`, `datapool/var-log`, `datapool/etc-overlay`
+    - [ ] Role-specific datasets: `datapool/var-lib-containerd` (recordsize=128K), `datapool/var-lib-etcd` (recordsize=4K)
+    - [ ] Completion marker: `/var/lib/andyl-os/zfs-setup-complete`
+    - [ ] `ConditionPathExists=!/var/lib/andyl-os/zfs-setup-complete` (runs only once)
+    - [ ] /etc overlay seeding, hostname setting, SSH key installation
+    - [ ] First-boot SELinux relabeling for Ignition-created files
+  - [ ] Config delivery: QEMU fw_cfg, cloud metadata, HTTP server, USB drive
+- [ ] `modules/services/update.nix`:
+  - [ ] `options.aos.update.enable` (default: true)
+  - [ ] `options.aos.update.server` (default: "https://update.aos.internal")
+  - [ ] `options.aos.update.channel` (default: "stable")
+  - [ ] `options.aos.update.checkInterval` (default: 3600)
+  - [ ] `options.aos.update.autoUpdate` (default: false)
+  - [ ] `options.aos.update.bootTries` (default: 3)
+  - [ ] `options.aos.update.gc.schedule` (default: "weekly")
+  - [ ] `options.aos.update.gc.keepGenerations` (default: 5)
+  - [ ] `config`: update-check.timer, update-check.service, health-check.service, rollback.service, systemd-bless-boot integration
+- [ ] `modules/services/gc.nix`:
+  - [ ] `options.aos.gc.enable` (default: true)
+  - [ ] `options.aos.gc.schedule` (default: "weekly")
+  - [ ] `options.aos.gc.keepGenerations` (default: 5)
+  - [ ] `config`: gc.timer, gc.service (IOSchedulingClass=idle, Nice=19)
+- [ ] `modules/services/chrony.nix`:
+  - [ ] `options.aos.chrony.enable` (default: true)
+  - [ ] `options.aos.chrony.servers` -- NTP server list
+  - [ ] `config`: chronyd service, chrony.conf
 
-### 6.4a cloud-init Fallback
+### 6.5 Kubernetes Modules
 
-- [ ] Create cloud-init fallback config for environments without Ignition support:
-  - [ ] `bootcmd` stage: partition remaining disk, create ZFS pool and datasets
-  - [ ] `write_files`: machine-specific config files (hostname, role, certs)
-  - [ ] `runcmd`: post-boot setup (node labels, service configuration)
-- [ ] Document limitations vs. Ignition:
-  - [ ] No all-or-nothing atomicity
-  - [ ] Runs after boot, not in initrd
-  - [ ] ZFS setup in `bootcmd` may race with services depending on `/var`
-- [ ] Test cloud-init fallback in a cloud VM environment
+- [ ] `modules/kubernetes/containerd.nix`:
+  - [ ] `options.aos.kubernetes.containerd.enable` (default: false)
+  - [ ] `options.aos.kubernetes.containerd.snapshotter` (default: "overlayfs")
+  - [ ] `config`: containerd.service, config.toml (gRPC socket, sandbox image, SystemdCgroup=true, CNI paths)
+- [ ] `modules/kubernetes/kubelet.nix`:
+  - [ ] `options.aos.kubernetes.kubelet.enable` (default: false)
+  - [ ] `options.aos.kubernetes.kubelet.clusterDNS`, `clusterDomain`, resource reservations, eviction thresholds
+  - [ ] `config`: kubelet.service (After=containerd, Requires=containerd), kubelet config.yaml
+- [ ] `modules/kubernetes/network.nix`:
+  - [ ] `options.aos.kubernetes.network.enable` (default: false)
+  - [ ] `config`: sysctl (net.bridge.bridge-nf-call-iptables, net.ipv4.ip_forward), kernel module loading (overlay, br_netfilter), firewall rule extensions
+- [ ] `modules/kubernetes/control-plane.nix`:
+  - [ ] `options.aos.kubernetes.controlPlane.enable` (default: false)
+  - [ ] `config`: kubeadm config, static pod manifest directory, extra firewall rules (6443, 2379-2380)
 
-### 6.5 Ignition + /etc Overlay Interaction
+### 6.6 Monitoring Module
 
-- [ ] Ensure Ignition writes to the `/etc` overlay upper directory:
-  - [ ] Ignition runs in initrd before switch-root
-  - [ ] At this point, the overlay is not yet mounted
-  - [ ] Ignition writes directly to `/sysroot/var/etc-overlay/` (the upper dir)
-  - [ ] After switch-root, systemd mounts the overlay, merging Ignition changes with base /etc
-  - [ ] The upper layer (`/var/etc-overlay`) lives on ZFS dataset `datapool/etc-overlay`
-- [ ] Verify ordering: ZFS setup must complete before overlay mount:
-  - [ ] `andyl-os-zfs-setup.service` creates `datapool/etc-overlay` dataset
-  - [ ] The `/etc` overlay mount unit depends on ZFS dataset availability
-- [ ] Alternative: Ignition writes to `/sysroot/etc/` which becomes the lower or upper layer depending on timing
-- [ ] Test both approaches; select the one that works reliably
-- [ ] Verify files written by Ignition appear correctly in the merged `/etc` after boot
-- [ ] Verify /etc overlay persists correctly across reboots (ZFS dataset survives reboot)
+- [ ] `modules/monitoring/node-exporter.nix`:
+  - [ ] `options.aos.monitoring.nodeExporter.enable` (default: false)
+  - [ ] `options.aos.monitoring.nodeExporter.port` (default: 9100)
+  - [ ] `config`: node-exporter.service with collector config, custom AOS textfile collectors (generation, boot status, update status)
 
-### 6.6 Base Butane Template
+### 6.7 System Variant Compositions
 
-- [ ] Create `templates/` directory
-- [ ] Write `templates/base.bu.j2` with Jinja2 templating:
-  - [ ] Ignition spec version: `1.5.0`
-  - [ ] Storage files:
-    - [ ] `/etc/hostname` -- from `{{ machine.hostname }}`
-    - [ ] `/etc/andyl-os/role` -- from `{{ machine.role }}`
-    - [ ] `/etc/andyl-os/zone.json` -- region, zone, datacenter, rack metadata
-    - [ ] `/etc/andyl-os/update.conf` -- update server endpoint and channel
-    - [ ] `/etc/ssl/andyl-os/ca.pem` -- CA certificate
-    - [ ] `/etc/ssl/andyl-os/node.pem` -- node TLS certificate
-    - [ ] `/etc/ssl/andyl-os/node-key.pem` -- node TLS private key (mode 0400)
-  - [ ] Passwd:
-    - [ ] `core` user with SSH authorized keys from `{{ secrets.ssh_keys }}`
-  - [ ] systemd units:
-    - [ ] Network configuration (static IP or DHCP based on machine config)
+- [ ] `systems/base.nix`: enables system, boot, filesystems, networking, users, ignition
+- [ ] `systems/server.nix`: imports base + enables SELinux enforcing, hardening, firewall, SSH, chrony, audit, update, gc
+- [ ] `systems/k8s-worker.nix`: imports server + enables containerd, kubelet, K8s network, node-exporter
+- [ ] `systems/k8s-control-plane.nix`: imports worker + enables control-plane (kubeadm, extra firewall rules)
 
-### 6.7 Role-Specific Templates
+The hierarchy (base -> server -> k8s-worker -> k8s-control-plane) uses module imports. Each level enables more modules and overrides options as needed -- later modules override earlier ones, no `mkForce` required.
 
-- [ ] Write `templates/k8s-worker.bu.j2`:
-  - [ ] `/var/lib/kubelet/config.yaml` -- kubelet configuration
-  - [ ] `/var/lib/kubelet/bootstrap-kubeconfig` -- bootstrap token for cluster join
-  - [ ] `/etc/containerd/config.toml` drop-in (if needed)
-  - [ ] `kubelet-node-labels.service` -- systemd unit to set k8s node labels
-  - [ ] Create `/etc/kubernetes/manifests/` directory
-  - [ ] Create `/var/lib/containerd/` directory with mode 0710
-- [ ] Write `templates/k8s-control-plane.bu.j2`:
-  - [ ] Everything from k8s-worker plus:
-  - [ ] etcd configuration
-  - [ ] kube-apiserver static pod manifest (or systemd unit)
-  - [ ] Control plane certificates
-- [ ] Write `templates/database.bu.j2`:
-  - [ ] PostgreSQL configuration (`/var/lib/postgresql/`)
-  - [ ] pgbouncer configuration
-  - [ ] Database-specific TLS certificates
-- [ ] Write `templates/edge.bu.j2`:
-  - [ ] Envoy/HAProxy configuration
-  - [ ] TLS certificates for external endpoints
-  - [ ] certbot timer configuration
+### 6.8 Verification
 
-### 6.8 Network Configuration Templates
-
-- [ ] Static IP template:
-  - [ ] `10-<interface>.network` systemd-networkd unit with Address, Gateway, DNS, NTP
-  - [ ] Support for jumbo frames (MTUBytes=9000)
-- [ ] DHCP template:
-  - [ ] Match on `Type=ether`, `Name=en* eth*`
-  - [ ] DHCP=yes, IPv6AcceptRA=yes
-- [ ] VLAN template:
-  - [ ] `.netdev` file for VLAN interface
-  - [ ] `.network` file for VLAN network config
-- [ ] Bond template:
-  - [ ] `.netdev` file for bond interface (802.3ad)
-  - [ ] `.network` files for member interfaces
-- [ ] Select template based on machine inventory configuration
-
-### 6.9 Machine Inventory
-
-- [ ] Create `inventory/hosts.yaml` format:
-  ```yaml
-  machines:
-    - hostname: <fqdn>
-      role: <k8s-worker|k8s-control-plane|database|edge>
-      mac: "<mac-address>"
-      ip: <ip>/<cidr>
-      gateway: <ip>
-      dns: [<ip>, ...]
-      ntp: [<ip>, ...]
-      region: <string>
-      zone: <string>
-      datacenter: <string>
-      rack: <string>
-  ```
-- [ ] Create sample inventory with 3+ machines per role
-- [ ] Create `inventory/secrets.yaml` template (encrypted with sops/age):
-  - [ ] SSH authorized keys
-  - [ ] TLS CA certificate and key
-  - [ ] Per-machine TLS certificates (or certificate generation script)
-  - [ ] Kubernetes bootstrap tokens
-
-### 6.10 Config Generation Script
-
-- [ ] Create `tools/generate-ignition-configs.py`:
-  - [ ] Load Jinja2 templates from `templates/`
-  - [ ] Load machine inventory from `inventory/hosts.yaml`
-  - [ ] Decrypt secrets using sops: `sops -d inventory/secrets.yaml`
-  - [ ] For each machine:
-    - [ ] Render base template with machine and secrets context
-    - [ ] Render role-specific template
-    - [ ] Merge templates (role extends base)
-    - [ ] Write Butane YAML to `generated/ignition/<hostname>.bu`
-    - [ ] Transpile to Ignition JSON: `butane --strict < input.bu > output.ign`
-    - [ ] Validate with `ignition-validate`
-  - [ ] Generate summary report: machines processed, any errors
-- [ ] Add error handling: clear error messages for missing fields, invalid YAML, transpilation failures
-- [ ] Test with the sample inventory
-
-### 6.11 Config Delivery Mechanisms
-
-- [ ] QEMU (development/testing):
-  - [ ] Pass config via fw_cfg: `-fw_cfg name=opt/com.coreos/config,file=<path>.ign`
-  - [ ] Verify Ignition reads from fw_cfg in initrd
-- [ ] Bare metal (production):
-  - [ ] Set up HTTP config server at a known URL
-  - [ ] Server looks up MAC address and returns machine-specific config:
-    ```
-    GET /config?mac=aa:bb:cc:dd:ee:ff -> <hostname>.ign
-    ```
-  - [ ] Configure Ignition to fetch from this URL (via kernel cmdline or initrd config)
-- [ ] Cloud (VMs):
-  - [ ] Pass Ignition config as instance user-data
-  - [ ] Configure Ignition provider for each cloud:
-    - [ ] AWS: IMDSv2 user-data endpoint
-    - [ ] GCP: metadata server
-    - [ ] Azure: custom-data
-- [ ] Air-gapped (USB):
-  - [ ] Place config on FAT32 USB drive labeled `ignition`
-  - [ ] Ignition reads from the mounted USB drive
-
-### 6.12 Certificate Generation Tooling
-
-- [ ] Create `tools/generate-certs.sh` or integrate with cert-manager:
-  - [ ] Generate project CA (Ed25519 or ECDSA P-256)
-  - [ ] Generate per-machine node certificates signed by the CA
-  - [ ] Store certificates in `inventory/secrets.yaml` (encrypted)
-  - [ ] Support certificate rotation workflow
-- [ ] Document certificate lifecycle and rotation procedure
-
-### 6.13 Integration Testing
-
-- [ ] Create test Ignition configs for each role
-- [ ] Boot base image in QEMU with Ignition config via fw_cfg
-- [ ] Verify first-boot behavior:
-  - [ ] ext4 root partition mounted read-only
-  - [ ] ANDYL-ZFS partition created on remaining disk space
-  - [ ] ZFS pool `datapool` created successfully
-  - [ ] ZFS datasets created: `datapool/var`, `datapool/var/lib`, `datapool/var/log`, `datapool/etc-overlay`
-  - [ ] `/var` is mounted from ZFS dataset (verify with `mount | grep datapool`)
-  - [ ] `/etc/hostname` set correctly
-  - [ ] `/etc/andyl-os/role` set correctly
-  - [ ] SSH access works with authorized key
-  - [ ] Network configuration applied (static IP or DHCP)
-  - [ ] TLS certificates installed at correct paths with correct permissions
-  - [ ] Role-specific files created
-  - [ ] systemd units from Ignition are enabled and started
-  - [ ] ZFS setup completion marker exists: `/var/lib/andyl-os/zfs-setup-complete`
-- [ ] Verify second-boot behavior:
-  - [ ] Ignition does NOT run again (first-boot only)
-  - [ ] `andyl-os-zfs-setup.service` does NOT run again (completion marker exists)
-  - [ ] ZFS pool imported normally via `zfs-import-cache.service`
-  - [ ] All first-boot configuration persists (on ZFS datasets)
-- [ ] Test with deliberately invalid config:
-  - [ ] Verify Ignition fails cleanly (all-or-nothing)
-  - [ ] Verify the machine does not boot to an inconsistent state
-
-### 6.14 justfile Targets
-
-- [ ] Add `ignition-generate` target: generates all Ignition configs from inventory
-- [ ] Add `ignition-validate` target: validates all generated configs
-- [ ] Add `ignition-serve port` target: starts HTTP config server for bare-metal provisioning
-- [ ] Add `certs-generate` target: generates TLS certificates
+- [ ] `aos system eval server` succeeds and produces a complete system configuration
+- [ ] `aos system eval k8s-control-plane` evaluates all four variants
+- [ ] All options have valid types and defaults
+- [ ] No undefined references or infinite recursion
+- [ ] `aos test eval` passes all evaluation checks in <1 second
 
 ## Acceptance Criteria
 
-1. Ignition runs during first boot in initrd and applies all configuration
-2. ZFS pool and datasets are created on first boot via `andyl-os-zfs-setup.service`
-3. Machine hostname, role, network config, SSH keys, and TLS certificates are correctly applied
-4. Ignition writes persist through the `/etc` overlay mechanism (upper layer on ZFS)
-5. Ignition runs only once (first-boot marker consumed)
-6. ZFS setup runs only once (completion marker prevents re-execution)
-7. Config generation script produces valid Ignition JSON for all machines in inventory
-8. Each role template produces a valid, complete configuration (including ZFS partition config)
-9. Config delivery works via QEMU fw_cfg (development) and HTTP server (production)
-10. Invalid Ignition configs fail cleanly without partially configuring the machine
-11. Second boot does not re-run Ignition; ZFS pool imports normally; all changes persist
-12. cloud-init fallback produces equivalent results to Ignition for environments that require it
+1. All modules evaluate correctly via `lib.evalModules`
+2. Every option has a type, default, and description
+3. No `mkDefault` / `mkForce` / `mkOverride` anywhere -- later modules simply override
+4. `lib.mkIf` conditional config works for enable/disable patterns
+5. All four system variants (base, server, k8s-worker, k8s-control-plane) evaluate without error
+6. Security options (firewall, SSH, sysctl) generate correct systemd units and config files
+7. Ignition module generates complete first-boot provisioning logic (ZFS pool, datasets, /etc, relabeling)
+8. Update module generates health check, boot counting, and GC services
+9. Kubernetes modules generate containerd and kubelet configs matching the original TOML values
+10. Module evaluation completes in <1 second (10 modules, not 1500)
+
+## Key Design Decisions
+
+### TOML Values Absorbed Into Module Defaults
+
+The original design used TOML config files (`config/security/firewall.toml`, `config/kubernetes/kubelet.toml`, etc.) parsed by a Guile TOML library. In the Nix architecture, these values become typed option defaults directly in the module. No config format translation layer needed -- the Nix language is the config language.
+
+### Explicit Module List
+
+`modules/module-list.nix` is a hand-maintained list of module paths. This prevents:
+- Auto-discovery scanning (which evaluates unused modules)
+- Accidental inclusion of work-in-progress modules
+- Import ordering surprises
+
+### Variant Hierarchy via Imports
+
+System variants form a hierarchy: `base -> server -> k8s-worker -> k8s-control-plane`. Each level imports its parent and enables additional modules. This is a standard Nix import pattern -- no special inheritance mechanism needed.
 
 ## Risks and Mitigations
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| Ignition + /etc overlay interaction is fragile | High | Files not visible after boot | Test both write strategies (upper dir vs. sysroot); pick the working one |
-| Ignition dracut module incompatible with our custom initrd | Medium | Ignition doesn't run | Study Ignition's dracut module requirements; may need custom dracut module |
-| Secrets leak in generated configs | Medium | Security breach | Use sops/age encryption; generate configs in memory where possible; restrict access |
-| Certificate rotation requires re-running Ignition (but it's first-boot only) | High | Can't rotate certs | Plan secondary config management for post-first-boot changes (systemd drop-ins, etc.) |
-| Butane/Ignition version incompatibility | Low | Transpilation errors | Pin Butane and Ignition versions; test with specific Ignition spec version |
-| Cloud provider metadata endpoint format differences | Medium | Ignition can't fetch config on some clouds | Test each cloud provider; use provider-specific Ignition platform IDs |
-| ZFS pool creation fails on first boot (disk layout mismatch) | Medium | No writable /var, system unusable | Test with multiple disk sizes/types; use by-partlabel for stable device naming |
-| ZFS kernel module not available in initrd/early boot | Medium | ZFS setup service fails | Ensure ZFS modules are in initrd; test module loading in andyl-os-zfs-setup.service |
-| cloud-init ZFS setup races with services needing /var | Medium | Services fail on first boot | Use bootcmd stage; add systemd ordering dependencies; document limitations |
-
-## Estimated Complexity
-
-**L (Large)**
-
-Ignition integration touches the initrd, the boot flow, the `/etc` overlay, and fleet management tooling. The Butane templating system with Jinja2 adds a code-generation layer. Testing requires QEMU with multiple config variants. The interaction between Ignition's write timing and the overlay filesystem is the most technically challenging aspect.
+| Module evaluation engine bugs cause subtle config errors | Medium | Incorrect system configs | Comprehensive eval tests check all option types and merging behavior |
+| Ignition + /etc overlay interaction is fragile | High | Files not visible after boot | Test both Ignition write strategies; pick the working one |
+| Firewall rules block legitimate traffic | Medium | Service outage | Test rules in VM; include health check ports; log before enforcing |
+| Kubernetes module option defaults don't match production requirements | Low | kubelet misconfigured | Defaults match the original TOML values; documented and overridable |
+| Module count grows beyond ~20 | Low | Evaluation performance degrades | Keep modules coarse-grained; audit additions |

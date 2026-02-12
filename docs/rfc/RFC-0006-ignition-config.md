@@ -7,7 +7,7 @@
 
 ## Abstract
 
-ANDYL OS uses CoreOS Ignition (not cloud-init) for one-shot, first-boot machine configuration. Ignition runs in the initrd before the real root is mounted, applying machine-specific configuration atomically. Configuration is authored in Butane YAML and transpiled to Ignition JSON. A fleet templating system generates per-machine configs from per-role templates and a machine inventory, with secrets managed via sops/age encryption.
+ANDYL OS uses CoreOS Ignition (not cloud-init) for one-shot, first-boot machine configuration. Ignition runs in the initrd before the real root is mounted, applying machine-specific configuration atomically. Configuration is authored in Butane YAML and transpiled to Ignition JSON. The Ignition module (`modules/services/ignition.nix`) configures ZFS pool and dataset creation on first boot.
 
 ## Motivation
 
@@ -28,25 +28,6 @@ Ignition is purpose-built for immutable operating systems. It runs once in the i
 | Atomicity | All-or-nothing (failure = no boot) | Partial application possible |
 | Complexity | Simple, declarative | Complex, imperative stages |
 | Suitable for immutable OS | Yes (designed for Fedora CoreOS/Flatcar) | Not ideal |
-
-**cloud-init fallback:** For environments that do not support Ignition
-(some cloud providers, legacy provisioning systems), cloud-init can serve
-as a fallback. The same logical operations (partition creation, ZFS setup,
-file writes) are expressed as cloud-init modules and `runcmd` directives.
-However, cloud-init lacks Ignition's all-or-nothing atomicity and runs
-after boot rather than in the initrd. When using cloud-init as a fallback,
-the ZFS setup should be placed in `bootcmd` to run before services that
-depend on `/var`:
-
-```yaml
-# cloud-init fallback example (simplified)
-bootcmd:
-  - parted /dev/sda mkpart primary 16GiB 100%
-  - zpool create -f -o ashift=12 -O compression=zstd-3 datapool /dev/sda3
-  - zfs create -o mountpoint=/var datapool/var
-  - zfs create -o mountpoint=/var/lib datapool/var/lib
-  - zfs create -o mountpoint=/var/log datapool/var/log
-```
 
 ### 2. Butane YAML to Ignition JSON Transpilation
 
@@ -70,7 +51,7 @@ version: "1.5.0"
 storage:
   files:
     # Role assignment
-    - path: /etc/andyl-os/role
+    - path: /etc/aos/role
       mode: 0644
       contents:
         inline: k8s-worker
@@ -82,7 +63,7 @@ storage:
         inline: k8s-worker-42.dc1.andyl.internal
 
     # Zone/region metadata
-    - path: /etc/andyl-os/zone.json
+    - path: /etc/aos/zone.json
       mode: 0644
       contents:
         inline: |
@@ -95,17 +76,17 @@ storage:
           }
 
     # Update server endpoint
-    - path: /etc/andyl-os/update.conf
+    - path: /etc/aos/update.conf
       mode: 0644
       contents:
         inline: |
           [update]
-          server = https://update.andyl-os.internal
+          server = https://update.aos.internal
           channel = stable
           check_interval = 3600
 
     # TLS certificates
-    - path: /etc/ssl/andyl-os/ca.pem
+    - path: /etc/ssl/aos/ca.pem
       mode: 0444
       contents:
         inline: |
@@ -113,7 +94,7 @@ storage:
           MIIBkTCB+wIJALTRFs... (CA certificate)
           -----END CERTIFICATE-----
 
-    - path: /etc/ssl/andyl-os/node.pem
+    - path: /etc/ssl/aos/node.pem
       mode: 0400
       contents:
         inline: |
@@ -121,7 +102,7 @@ storage:
           MIICpTCCAYkCFH... (node certificate)
           -----END CERTIFICATE-----
 
-    - path: /etc/ssl/andyl-os/node-key.pem
+    - path: /etc/ssl/aos/node-key.pem
       mode: 0400
       contents:
         inline: |
@@ -144,7 +125,7 @@ storage:
           cgroupDriver: systemd
           authentication:
             x509:
-              clientCAFile: /etc/ssl/andyl-os/ca.pem
+              clientCAFile: /etc/ssl/aos/ca.pem
 
   directories:
     - path: /etc/kubernetes/manifests
@@ -220,84 +201,82 @@ systemd:
 A key Ignition responsibility is **creating the ZFS pool and datasets**
 that hold all mutable runtime state. The golden image ships with an ext4
 root partition and unpartitioned free space. On first boot, Ignition
-partitions the remaining disk, and a systemd oneshot unit creates the ZFS
+partitions the remaining disk, and systemd oneshot units create the ZFS
 pool and datasets before other services start.
 
-**Ignition disk config (partitions the remaining space for ZFS):**
+The Ignition module (`modules/services/ignition.nix`) provides typed options for ZFS configuration:
 
-```yaml
-storage:
-  disks:
-    - device: /dev/sda
-      wipe_table: false          # preserve existing partitions (ESP + root)
-      partitions:
-        - label: ANDYL-ZFS
-          number: 3
-          size_mib: 0            # 0 = fill remaining space
-          start_mib: 0           # 0 = start after last existing partition
-          type_guid: 6A898CC3-1DD2-11B2-99A6-080020736631  # Solaris /usr (ZFS convention)
+```nix
+# From modules/services/ignition.nix — key options
+aos.services.ignition = {
+  enable = true;
+  configSource = "/dev/disk/by-label/ignition";
+  createZfsPool = true;
+  poolName = "aos-pool";
+  poolDisks = [];  # e.g., [ "/dev/vdb" ]
+  datasets = {
+    "var"               = { mountpoint = "/var"; compression = "zstd-3"; atime = "off"; };
+    "var/log"           = { mountpoint = "/var/log"; compression = "zstd-3"; logbias = "throughput"; };
+    "var/lib"           = { mountpoint = "/var/lib"; compression = "zstd-3"; };
+    "var/lib/containerd" = { mountpoint = "/var/lib/containerd"; recordsize = "128K"; };
+    "var/lib/etcd"      = { mountpoint = "/var/lib/etcd"; recordsize = "4K"; sync = "always"; };
+  };
+};
 ```
 
-**ZFS setup systemd unit (enabled by Ignition, runs once on first boot):**
+**ZFS pool creation systemd unit (generated by the module):**
 
-```ini
-[Unit]
-Description=Create ZFS pool and datasets (first boot)
-ConditionPathExists=!/var/lib/andyl-os/zfs-setup-complete
-DefaultDependencies=no
-Before=local-fs.target var.mount
-After=systemd-udevd.service
-Requires=systemd-udevd.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/bin/bash -c '\
-  set -euo pipefail; \
-  modprobe zfs; \
-  zpool create -f \
-    -o ashift=12 \
-    -o autotrim=on \
-    -O compression=zstd-3 \
-    -O atime=off \
-    -O xattr=sa \
-    -O acltype=posixacl \
-    -O dnodesize=auto \
-    datapool /dev/disk/by-partlabel/ANDYL-ZFS; \
-  zfs create -o mountpoint=/var datapool/var; \
-  zfs create -o mountpoint=/var/lib datapool/var/lib; \
-  zfs create -o mountpoint=/var/log datapool/var/log; \
-  zfs create -o mountpoint=/var/tmp datapool/var/tmp; \
-  zfs create -o mountpoint=/var/lib/containerd \
-    -o recordsize=128K datapool/var/lib/containerd; \
-  zfs create datapool/etc-overlay; \
-  zfs set quota=2G datapool/var/log; \
-  mkdir -p /var/lib/andyl-os; \
-  touch /var/lib/andyl-os/zfs-setup-complete'
-
-[Install]
-WantedBy=local-fs.target
+```nix
+# From modules/services/ignition.nix — pool creation service
+systemd.services."ignition-zfs-pool" = {
+  description = "Ignition: Create ZFS Pool";
+  wantedBy = [ "initrd.target" ];
+  before = [ "ignition-zfs-datasets.service" ];
+  after = [ "ignition-apply.service" "systemd-udevd.service" ];
+  serviceConfig = {
+    Type = "oneshot";
+    RemainAfterExit = true;
+    ExecCondition = "/usr/bin/sh -c '! /usr/sbin/zpool list ${cfg.poolName} 2>/dev/null'";
+    ExecStart = "/usr/sbin/zpool create -f -o ashift=12 -O compression=zstd-3 "
+              + "-O acltype=posixacl -O xattr=sa -O dnodesize=auto "
+              + "-O normalization=formD -O relatime=on "
+              + "-O canmount=off -O mountpoint=none "
+              + "${cfg.poolName} ${poolDisks}";
+  };
+};
 ```
 
-The `ConditionPathExists` guard ensures this unit runs only on first boot.
-On subsequent boots, `zfs-import-cache.service` imports the pool normally.
+**ZFS dataset creation (generated dynamically from the `datasets` option):**
+
+The module builds dataset creation commands from the typed `datasets` attrset:
+
+```nix
+# From modules/services/ignition.nix — dataset command generation
+datasetCmds = lib.mapAttrsToList (name: props:
+  let
+    propFlags = builtins.concatStringsSep " " (
+      lib.mapAttrsToList (k: v: "-o ${k}=${v}") props
+    );
+  in "/usr/sbin/zfs create ${propFlags} ${cfg.poolName}/${name}"
+) cfg.datasets;
+```
 
 **ZFS dataset layout created by Ignition:**
 
 ```
-datapool                              # ZFS pool on remaining disk space
-  datapool/var                        # /var (persistent mutable state)
-    datapool/var/lib                  # /var/lib (databases, containers)
-      datapool/var/lib/containerd     # Container images and layers
-    datapool/var/log                  # /var/log (logs, quota=2G)
-    datapool/var/tmp                  # /var/tmp
-  datapool/etc-overlay                # /etc overlay upper layer
+aos-pool                              # ZFS pool on remaining disk space
+  aos-pool/var                        # /var (persistent mutable state)
+    aos-pool/var/lib                  # /var/lib (databases, containers)
+      aos-pool/var/lib/containerd     # Container images and layers (recordsize=128K)
+      aos-pool/var/lib/etcd           # etcd data (recordsize=4K, sync=always)
+    aos-pool/var/log                  # /var/log (logs, logbias=throughput)
+    aos-pool/var/tmp                  # /var/tmp
 ```
 
 ### 4. Per-Machine vs. Per-Role Configuration Split
 
-**Per-role (baked into the golden image):**
-- Package set and service definitions
+**Per-role (baked into the golden image via Nix modules):**
+- Package set and service definitions (`systems/*.nix`, `modules/*.nix`)
 - Service configurations (containerd config, kubelet base config)
 - systemd unit files
 - Kernel and initrd
@@ -324,23 +303,23 @@ All writable state lives on ZFS datasets created during first boot
 **Strategy: Ignition writes to ZFS-backed `/var` and the /etc overlay upper layer.**
 
 The `/etc` directory uses an OverlayFS:
-- **Lower layer:** `/gnu/store/...-system/etc` (read-only, from the system profile, on ext4 root)
-- **Upper layer:** `/var/etc-overlay` (writable, ZFS: `datapool/etc-overlay`, persists across reboots)
+- **Lower layer:** `/nix/store/...-aos-system/etc` (read-only, from the system profile, on ext4 root)
+- **Upper layer:** `/var/etc-overlay` (writable, ZFS: `aos-pool/etc-overlay`, persists across reboots)
 
 Ignition runs in the initrd before the overlay is mounted. It writes files to what will become the upper layer, seeding it with machine-specific configuration. The upper layer lives on a ZFS dataset, providing checksumming and compression for all machine-specific configuration.
 
 ```
-Immutable base (from /gnu/store/...-system, on ext4 root):
+Immutable base (from /nix/store/...-aos-system, on ext4 root):
   /etc/systemd/system/kubelet.service           <- from generation profile
 
-Ignition writes (to upper layer, on ZFS datapool/etc-overlay):
+Ignition writes (to upper layer, on ZFS aos-pool/etc-overlay):
   /etc/systemd/system/kubelet.service.d/        <- drop-in directory
     10-node-config.conf                         <- Ignition-generated drop-in
   /etc/hostname                                 <- machine-specific
-  /etc/andyl-os/role                            <- role assignment
-  /etc/ssl/andyl-os/                            <- TLS certificates
+  /etc/aos/role                                 <- role assignment
+  /etc/ssl/aos/                                 <- TLS certificates
 
-Ignition writes (to /var, on ZFS datapool/var):
+Ignition writes (to /var, on ZFS aos-pool/var):
   /var/lib/kubelet/config.yaml                  <- kubelet config
   /var/lib/kubelet/bootstrap-kubeconfig         <- bootstrap credentials
 ```
@@ -349,14 +328,14 @@ The resulting merged `/etc` on the running system contains the base configuratio
 
 ### 6. Ignition Config Delivery
 
-Ignition configs are delivered to machines via one of three mechanisms:
+Ignition configs are delivered to machines via one of these mechanisms:
 
 **1. HTTP server (bare metal):**
 
 The machine's firmware or iPXE fetches the config from a known URL, keyed by MAC address:
 
 ```
-https://ignition.andyl-os.internal/config?mac=aa:bb:cc:dd:ee:ff
+https://ignition.aos.internal/config?mac=aa:bb:cc:dd:ee:ff
 ```
 
 The server looks up the MAC address in the machine inventory and returns the machine-specific Ignition JSON.
@@ -378,7 +357,7 @@ gcloud compute instances create k8s-worker-42 \
 
 **3. USB/local disk (air-gapped):**
 
-The Ignition config is placed on a FAT32 USB drive labeled `ignition`. The initrd reads the config from the USB device.
+The Ignition config is placed on a FAT32 USB drive labeled `ignition`. The initrd reads the config from the USB device. The config source is configurable via `aos.services.ignition.configSource`.
 
 **4. QEMU fw_cfg (testing):**
 
@@ -390,150 +369,11 @@ qemu-system-x86_64 \
   ...
 ```
 
-### 7. Fleet Templating System
-
-For fleet management, per-machine configs are generated from per-role templates and a machine inventory.
-
-**Template structure:**
-
-```
-templates/
-  base.bu.j2              Common to all roles (SSH keys, update config, CA cert)
-  k8s-worker.bu.j2        K8s worker additions (kubelet config, node labels)
-  k8s-control-plane.bu.j2
-  database.bu.j2
-  edge.bu.j2
-
-inventory/
-  hosts.yaml              Machine inventory (hostnames, IPs, MACs, metadata)
-  secrets.yaml            Encrypted secrets (sops/age)
-```
-
-**Machine inventory:**
-
-```yaml
-# inventory/hosts.yaml
-machines:
-  - hostname: k8s-worker-01.dc1
-    role: k8s-worker
-    mac: "aa:bb:cc:dd:ee:01"
-    ip: 10.0.7.1/24
-    gateway: 10.0.7.254
-    region: us-east-1
-    zone: us-east-1a
-    rack: rack-01
-
-  - hostname: k8s-worker-02.dc1
-    role: k8s-worker
-    mac: "aa:bb:cc:dd:ee:02"
-    ip: 10.0.7.2/24
-    gateway: 10.0.7.254
-    region: us-east-1
-    zone: us-east-1a
-    rack: rack-01
-
-  - hostname: db-primary-01.dc1
-    role: database
-    mac: "aa:bb:cc:dd:ee:10"
-    ip: 10.0.8.1/24
-    gateway: 10.0.8.254
-    region: us-east-1
-    zone: us-east-1a
-    rack: rack-03
-```
-
-**Secrets management:**
-
-Secrets (TLS private keys, bootstrap tokens) are stored encrypted with sops/age:
-
-```yaml
-# inventory/secrets.yaml (encrypted with sops)
-ssh_authorized_keys:
-  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... ops-team"
-k8s_bootstrap_token: "abcdef.0123456789abcdef"
-tls:
-  ca_cert: |
-    -----BEGIN CERTIFICATE-----
-    ...
-  nodes:
-    k8s-worker-01.dc1:
-      cert: |
-        -----BEGIN CERTIFICATE-----
-        ...
-      key: |
-        -----BEGIN EC PRIVATE KEY-----
-        ...
-```
-
-**Generation script:**
-
-```python
-#!/usr/bin/env python3
-# tools/generate-ignition-configs.py
-
-import yaml, json, subprocess
-from jinja2 import Environment, FileSystemLoader
-from pathlib import Path
-
-def generate_configs():
-    env = Environment(loader=FileSystemLoader("templates"))
-    inventory = yaml.safe_load(Path("inventory/hosts.yaml").read_text())
-    secrets = yaml.safe_load(
-        subprocess.check_output(["sops", "-d", "inventory/secrets.yaml"])
-    )
-
-    output_dir = Path("generated/ignition")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    for machine in inventory["machines"]:
-        # Render base + role-specific templates
-        base = env.get_template("base.bu.j2").render(
-            machine=machine, secrets=secrets
-        )
-        role = env.get_template(f"{machine['role']}.bu.j2").render(
-            machine=machine, secrets=secrets
-        )
-        butane_config = merge_butane(base, role)
-
-        # Write Butane YAML
-        bu_path = output_dir / f"{machine['hostname']}.bu"
-        bu_path.write_text(butane_config)
-
-        # Transpile to Ignition JSON
-        ign_path = output_dir / f"{machine['hostname']}.ign"
-        result = subprocess.run(
-            ["butane", "--strict"],
-            input=butane_config.encode(),
-            capture_output=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Butane failed for {machine['hostname']}")
-        ign_path.write_bytes(result.stdout)
-```
-
-**justfile integration:**
-
-```makefile
-# Generate all Ignition configs from templates + inventory
-generate-ignition:
-    python3 tools/generate-ignition-configs.py
-
-# Generate config for a single machine
-generate-ignition-single HOSTNAME:
-    python3 tools/generate-ignition-configs.py --host={{HOSTNAME}}
-
-# Validate all generated Ignition configs
-validate-ignition:
-    for f in generated/ignition/*.ign; do
-        ignition-validate "$f" || exit 1
-    done
-```
-
-### 8. Ignition Execution Timeline
+### 7. Ignition Execution Timeline
 
 ```
 UEFI firmware boots
-  -> systemd-boot loads UKI
+  -> systemd-boot loads kernel + initrd
     -> Linux kernel starts
       -> systemd in initrd (PID 1)
         -> udevd enumerates devices
@@ -543,29 +383,30 @@ UEFI firmware boots
            2. Writes files to /sysroot/var/etc-overlay/
            3. Writes files to /sysroot/var/lib/
            4. Creates users/groups
-           5. Enables/disables systemd units (including andyl-os-zfs-setup.service)
-        -> Ignition marks first-boot complete (writes flag file)
+           5. Enables/disables systemd units
+        -> Ignition marks first-boot complete (/sysroot/boot/ignition.complete)
         -> switch-root to /sysroot (ext4 root, read-only)
           -> systemd on real root (PID 1)
-            -> andyl-os-zfs-setup.service runs (first boot only):
+            -> ignition-zfs-pool.service runs (first boot only):
                - Creates ZFS pool on ANDYL-ZFS partition
-               - Creates datasets: datapool/var, datapool/var/lib,
-                 datapool/var/log, datapool/etc-overlay, etc.
-               - Writes completion marker
+               - Pool properties: ashift=12, compression=zstd-3, acltype=posixacl
+            -> ignition-zfs-datasets.service runs (first boot only):
+               - Creates datasets from aos.services.ignition.datasets
+               - Each dataset gets specified properties (mountpoint, recordsize, etc.)
             -> ZFS datasets mounted (/var, /var/lib, /var/log)
-            -> /etc overlay mounted (lower=profile/etc, upper=datapool/etc-overlay)
+            -> /etc overlay mounted (lower=profile/etc, upper=aos-pool/etc-overlay)
             -> Services start with machine-specific configuration
 ```
 
 Ignition runs exactly once. On subsequent boots, it detects the first-boot
-flag and skips. ZFS pools are imported normally by `zfs-import-cache.service`
-on all subsequent boots.
+flag (`/boot/ignition.complete`) and skips. ZFS pools are imported normally by
+`zfs-import-cache.service` on all subsequent boots.
 
-### 9. Post-First-Boot Configuration Changes
+### 8. Post-First-Boot Configuration Changes
 
 Ignition runs once. For configuration changes after first boot:
 
-**Certificate rotation:** A systemd timer periodically fetches new certificates from a CA and writes them to `/etc/ssl/andyl-os/`. This uses the writable `/etc` overlay.
+**Certificate rotation:** A systemd timer periodically fetches new certificates from a CA and writes them to `/etc/ssl/aos/`. This uses the writable `/etc` overlay.
 
 **IP address changes:** Modify the networkd configuration files in `/etc/systemd/network/` (writable via overlay) and restart `systemd-networkd`.
 
@@ -587,9 +428,8 @@ Ignition runs once. For configuration changes after first boot:
 
 - **Ignition configs contain secrets** (TLS private keys, bootstrap tokens). They must be delivered over secure channels (HTTPS, encrypted user-data).
 - **The Ignition HTTP server** must authenticate requests (e.g., by MAC address or machine certificate) to prevent unauthorized config retrieval.
-- **sops/age encryption** protects secrets at rest in the inventory repository. Only the CI/CD pipeline and the Ignition config generation tool have decryption keys.
 - **Ignition runs in the initrd** with full root privileges. The config must be validated (`butane --strict`, `ignition-validate`) before deployment.
-- **Ignition configs should not be stored unencrypted** in version control if they contain secrets. Use sops or similar encryption.
+- **Ignition configs should not be stored unencrypted** in version control if they contain secrets.
 
 ## Compatibility
 
@@ -602,15 +442,11 @@ Ignition runs once. For configuration changes after first boot:
 ## Open Questions
 
 1. **Ignition re-provisioning:** Ignition runs once. What if we need to change machine-specific config (e.g., IP change, certificate rotation) after first boot? Do we need a secondary config management layer, or is a "re-provision by reflashing" approach acceptable?
-2. **Config validation in CI:** Should we add a CI step that validates all generated Ignition configs against the current image (checking that referenced paths exist)?
-3. **Secret rotation automation:** Should certificate and key rotation be handled by a dedicated agent, or by periodically re-running Ignition?
-4. **Ignition config size limits:** Cloud provider user-data has size limits (e.g., 16 KiB on AWS). For large configs, should we use a URL reference to an HTTP-served config?
+2. **Ignition config size limits:** Cloud provider user-data has size limits (e.g., 16 KiB on AWS). For large configs, should we use a URL reference to an HTTP-served config?
 
 ## References
 
 - CoreOS Ignition: https://coreos.github.io/ignition/
 - Butane Config Transpiler: https://coreos.github.io/butane/
 - Ignition Configuration Specification: https://coreos.github.io/ignition/configuration-v3_4/
-- sops (Secrets OPerationS): https://github.com/getsops/sops
-- age encryption: https://github.com/FiloSottile/age
 - Fedora CoreOS Documentation: https://docs.fedoraproject.org/en-US/fedora-coreos/
