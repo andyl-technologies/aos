@@ -195,7 +195,7 @@ let
   #   ...              — additional attributes passed to builtins.derivation
   # }
   mkDerivation = args @ {
-    pname,
+    pname ? null,
     version ? "0",
     src ? null,
     buildDeps ? [],
@@ -222,7 +222,12 @@ let
     ...
   }:
     let
-      name = "${pname}-${version}";
+      # Accept either `name` (direct) or `pname` (computed as pname-version).
+      name = args.name or (
+        if pname != null then "${pname}-${version}"
+        else throw "mkDerivation: either 'pname' or 'name' must be provided"
+      );
+      effectivePname = if pname != null then pname else name;
 
       # Collect all dependencies for PATH
       allBuildDeps = buildDeps ++ runtimeDeps ++ propagatedDeps;
@@ -255,7 +260,7 @@ let
 
       # Extra args to pass through to builtins.derivation
       extraArgs = builtins.removeAttrs args [
-        "pname" "version" "src" "buildDeps" "runtimeDeps" "propagatedDeps"
+        "name" "pname" "version" "src" "buildDeps" "runtimeDeps" "propagatedDeps"
         "phases" "meta" "storeDir" "system" "shell" "outputs"
         "configureFlags" "makeFlags" "installFlags" "cmakeFlags" "mesonFlags"
         "patches" "postPatch" "preBuild" "postBuild" "preInstall" "postInstall"
@@ -297,7 +302,8 @@ let
 
       # Attach metadata and override mechanism
       result = drv // {
-        inherit meta pname version;
+        inherit meta version;
+        pname = effectivePname;
 
         # Override mechanism
         override = overrideArgs:

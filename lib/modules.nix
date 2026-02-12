@@ -119,6 +119,32 @@ let
        else go 0;
 
   # ---------------------------------------------------------------------------
+  # Internal: collect definitions at a path, traversing through mkIf nodes
+  # ---------------------------------------------------------------------------
+  # Returns a list of { file; value; condition?; } records.
+  # mkIf nodes are not resolved eagerly; instead the condition is attached
+  # to each definition and evaluated lazily during the merge phase.
+  collectDefsAtPath = path: config: file:
+    if isMkIf config then
+      # Wrap inner defs with the condition (AND with any existing condition)
+      builtins.map (d: d // {
+        condition =
+          if d ? condition then d.condition && config._condition
+          else config._condition;
+      }) (collectDefsAtPath path config._value file)
+    else if builtins.length path == 0 then
+      [{ inherit file; value = config; }]
+    else if builtins.isAttrs config then
+      let
+        key = builtins.head path;
+        rest = builtins.genList (i: builtins.elemAt path (i + 1))
+                 (builtins.length path - 1);
+      in if builtins.hasAttr key config
+         then collectDefsAtPath rest config.${key} file
+         else []
+    else [];
+
+  # ---------------------------------------------------------------------------
   # Internal: deep merge two attrsets (for building the final config tree)
   # ---------------------------------------------------------------------------
   deepMerge = lhs: rhs:
@@ -194,12 +220,10 @@ let
       # Normalize: ensure options and config keys exist
       result = {
         options = evaluated.options or {};
-        config = let
-          rawConfig = evaluated.config or (
-            # If there is no explicit `config` key, treat all non-special keys as config
-            builtins.removeAttrs evaluated [ "options" "imports" "require" "_file" "_type" ]
-          );
-        in resolveIfs rawConfig;
+        config = evaluated.config or (
+          # If there is no explicit `config` key, treat all non-special keys as config
+          builtins.removeAttrs evaluated [ "options" "imports" "require" "_file" "_type" ]
+        );
         _file = file;
         imports = evaluated.imports or [];
       };
@@ -247,7 +271,10 @@ let
                 lib = moduleLib;
                 inherit extraArgs;
               } mod;
-            in [ evaled ] ++ collectModules evaled.imports
+            # Imports are processed first so that the importing module's
+            # config values come later in the list and win with
+            # last-writer-wins merge semantics.
+            in collectModules evaled.imports ++ [ evaled ]
           ) mods);
 
         evaluatedModules = collectModules modules;
@@ -266,13 +293,11 @@ let
 
         # --- Phase 3: Collect config definitions for each option ---
         # For each declared option, find all config values at that path
-        # from all modules.
+        # from all modules, traversing through mkIf nodes without forcing
+        # their conditions (conditions are evaluated lazily during merge).
         configForOption = decl:
           builtins.concatLists (builtins.map (m:
-            let
-              val = getPath decl.path m.config;
-            in if val == null then []
-               else [{ file = m._file; value = val; }]
+            collectDefsAtPath decl.path m.config m._file
           ) evaluatedModules);
 
         # --- Phase 4: Merge config values for each option ---
@@ -283,15 +308,20 @@ let
             optType = decl.option.type;
             pathStr = builtins.concatStringsSep "." decl.path;
 
+            # Filter out conditional definitions whose condition is false
+            activeDefs = builtins.filter (d:
+              !(d ? condition) || d.condition
+            ) defs;
+
             # Determine the merged value
             mergedValue =
-              if defs == [] then
+              if activeDefs == [] then
                 # No definitions: use default if available
                 if decl.option.default != null then decl.option.default
                 else throw "The option '${pathStr}' is used but has no definition and no default value."
               else
-                # Merge all definitions using the type's merge function
-                let rawMerged = optType.merge decl.path defs;
+                # Merge all active definitions using the type's merge function
+                let rawMerged = optType.merge decl.path activeDefs;
                 in rawMerged;
 
             # Apply the apply function if present
@@ -324,8 +354,11 @@ let
 
         # Also merge in any config values that do not correspond to declared options.
         # This allows "freeform" config for extensibility.
+        # resolveIfs is applied here; this is safe because values are accessed
+        # lazily through the fixpoint — by the time a condition like
+        # config.aos.firewall.enable is accessed, the fixpoint is established.
         allConfigMerged = builtins.foldl' (acc: m:
-          deepMerge acc m.config
+          deepMerge acc (resolveIfs m.config)
         ) {} evaluatedModules;
 
         # The final config is the declared options merged with freeform config,
