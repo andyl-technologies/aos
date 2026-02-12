@@ -1,6 +1,6 @@
 # Linux Kernel
 { mkDerivation, fetchurl, make, perl, bash,
-  bison, gawk, openssl, kmod }:
+  gawk, openssl, kmod, bison, flex, rsync, elfutils, bc, binutils }:
 
 let version = "6.12.11"; in
 mkDerivation {
@@ -14,7 +14,7 @@ mkDerivation {
     hash = "sha256-R1Fy/b2HoVPxI6V5Umcudzvbba9bWKQX0aXkGfz+7Ek=";
   };
 
-  buildDeps = [ make perl bash bison gawk openssl ];
+  buildDeps = [ make perl bash gawk openssl bison flex rsync elfutils bc binutils ];
   runtimeDeps = [ kmod ];
   propagatedDeps = [];
 

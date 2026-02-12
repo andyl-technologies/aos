@@ -26,10 +26,18 @@ mkDerivation {
     }
     { name = "install";
       script = ''
-        make headers_install INSTALL_HDR_PATH=$out ARCH=x86
-        # Remove extraneous files
+        # Use 'make headers' to sanitize headers in-tree, then copy manually.
+        # This avoids 'make headers_install' which requires rsync, a tool not
+        # present in the bootstrap toolchain.
+        make headers ARCH=x86
+
+        mkdir -p $out/include
+        cp -r usr/include/* $out/include/
+
+        # Remove extraneous files left by the kernel build system
         find $out/include -name '*.install.cmd' -delete
         find $out/include -name '..install.cmd' -delete
+        find $out/include -name '.install' -delete
       '';
     }
   ];

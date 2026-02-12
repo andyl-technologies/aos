@@ -1,5 +1,5 @@
 # iproute2 — Linux networking utilities
-{ mkDerivation, fetchurl, make, pkg-config, libmnl }:
+{ mkDerivation, fetchurl, make, pkg-config, libmnl, bison, flex }:
 
 let version = "6.11.0"; in
 mkDerivation {
@@ -13,7 +13,7 @@ mkDerivation {
     hash = "sha256-H3lTmKBK6qzQao9qziz9kTwz+llTypnaroO7XFNGEcM=";
   };
 
-  buildDeps = [ make pkg-config ];
+  buildDeps = [ make pkg-config bison flex ];
   runtimeDeps = [ libmnl ];
   propagatedDeps = [];
 
