@@ -1,13 +1,17 @@
 # Linux Kernel
-{ mkDerivation, fetchurl, sources, versions, make, perl, bash,
+{ mkDerivation, fetchurl, make, perl, bash,
   bison, gawk, openssl, kmod }:
 
+let version = "6.12.11"; in
 mkDerivation {
-  name = "linux-${versions.kernel.linux}";
-  version = versions.kernel.linux;
+  pname = "linux";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.linux) url hash;
+    urls = [
+      "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${version}.tar.xz"
+    ];
+    hash = "sha256-R1Fy/b2HoVPxI6V5Umcudzvbba9bWKQX0aXkGfz+7Ek=";
   };
 
   buildDeps = [ make perl bash bison gawk openssl ];
@@ -21,7 +25,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd linux-${versions.kernel.linux}
+        cd linux-${version}
       '';
     }
     { name = "configure";
@@ -48,9 +52,9 @@ mkDerivation {
         mkdir -p $out/boot $out/lib/modules
 
         # Install kernel image
-        cp arch/x86/boot/bzImage $out/boot/vmlinuz-${versions.kernel.linux}
-        cp System.map $out/boot/System.map-${versions.kernel.linux}
-        cp .config $out/boot/config-${versions.kernel.linux}
+        cp arch/x86/boot/bzImage $out/boot/vmlinuz-${version}
+        cp System.map $out/boot/System.map-${version}
+        cp .config $out/boot/config-${version}
 
         # Install modules
         make modules_install \

@@ -4,29 +4,29 @@
 { lib }:
 
 let
-  versions = import ./versions.nix;
-  sources = import ./sources.nix;
-
   fetchurl = lib.fetchurl;
   mkDerivation = lib.mkDerivation;
 
   # callPackage: import a package file and auto-fill its arguments from `self`.
   # The package file is a function whose formals are introspected via
   # builtins.functionArgs, then satisfied from the package set plus the
-  # always-available helpers (mkDerivation, fetchurl, sources, versions).
+  # always-available helpers (mkDerivation, fetchurl).
   callPackage = path: overrides:
     let
       fn = import path;
       auto = builtins.intersectAttrs
         (builtins.functionArgs fn)
         (self // {
-          inherit mkDerivation fetchurl sources versions;
+          inherit mkDerivation fetchurl;
         });
     in fn (auto // overrides);
 
+  # Shared Kubernetes source (single tarball for kubelet, kubeadm, kubectl)
+  kubeSource = import ./kubernetes/source.nix { inherit fetchurl; };
+
   self = {
     # --- Plumbing ---
-    inherit mkDerivation fetchurl versions sources lib;
+    inherit mkDerivation fetchurl lib;
 
     # --- Toolchain ---
     gcc          = callPackage ./toolchain/gcc.nix {};
@@ -50,6 +50,9 @@ let
     perl         = callPackage ./core/perl.nix {};
     bison        = callPackage ./core/bison.nix {};
     texinfo      = callPackage ./core/texinfo.nix {};
+    dosfstools   = callPackage ./core/dosfstools.nix {};
+    e2fsprogs    = callPackage ./core/e2fsprogs.nix {};
+    jq           = callPackage ./core/jq.nix {};
 
     # --- Compression ---
     zlib         = callPackage ./compression/zlib.nix {};
@@ -99,9 +102,9 @@ let
     containerd   = callPackage ./containers/containerd.nix {};
 
     # --- Kubernetes ---
-    kubelet      = callPackage ./kubernetes/kubelet.nix {};
-    kubeadm      = callPackage ./kubernetes/kubeadm.nix {};
-    kubectl      = callPackage ./kubernetes/kubectl.nix {};
+    kubelet      = callPackage ./kubernetes/kubelet.nix { inherit kubeSource; };
+    kubeadm      = callPackage ./kubernetes/kubeadm.nix { inherit kubeSource; };
+    kubectl      = callPackage ./kubernetes/kubectl.nix { inherit kubeSource; };
     crictl       = callPackage ./kubernetes/crictl.nix {};
     cni-plugins  = callPackage ./kubernetes/cni-plugins.nix {};
     helm         = callPackage ./kubernetes/helm.nix {};
@@ -122,7 +125,6 @@ let
     # --- Tools ---
     minisign     = callPackage ./tools/minisign.nix {};
     sbsigntools  = callPackage ./tools/sbsigntools.nix {};
-    update-tool  = callPackage ./tools/update-tool.nix {};
-  };
+};
 
 in self

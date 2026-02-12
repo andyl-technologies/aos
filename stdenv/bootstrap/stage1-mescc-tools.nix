@@ -10,7 +10,7 @@
 #
 
 { seeds       # Output of seeds.nix (provides hex0 and kaem)
-, sources     # Attrset of source tarballs/paths for mescc-tools
+, stage0-posix-src  # Source path/derivation for stage0-posix
 , system ? "x86_64-linux"
 }:
 
@@ -41,7 +41,7 @@ let
     inherit system;
     builder = "${seeds}/bin/hex0";
     args = [
-      "${sources.stage0-posix}/stage0-posix/${archParams.archDir}/hex1_${archParams.archDir}.hex0"
+      "${stage0-posix-src}/stage0-posix/${archParams.archDir}/hex1_${archParams.archDir}.hex0"
       "/dev/stdout"
     ];
     # hex0 reads hex pairs and writes bytes. The output is the hex1 binary.
@@ -58,7 +58,7 @@ let
     builder = "/bin/sh";
     args = [ "-c" ''
       ${seeds}/bin/hex0 \
-        ${sources.stage0-posix}/${archParams.archDir}/hex1_${archParams.archDir}.hex0 \
+        ${stage0-posix-src}/${archParams.archDir}/hex1_${archParams.archDir}.hex0 \
         $out/bin/hex1
       mkdir -p $out/bin
       chmod +x $out/bin/hex1
@@ -86,7 +86,7 @@ let
       cd "$WORK"
 
       # Extract stage0-posix source
-      cp -r ${sources.stage0-posix}/* .
+      cp -r ${stage0-posix-src}/* .
       chmod -R u+w .
 
       PREFIX="$out"

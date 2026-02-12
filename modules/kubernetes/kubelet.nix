@@ -159,6 +159,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ pkgs.kubelet pkgs.crictl ];
+
     # /var/lib/kubelet/config.yaml — KubeletConfiguration.
     environment.etc."kubernetes/kubelet-config.yaml" = {
       text = kubeletConfigYaml;

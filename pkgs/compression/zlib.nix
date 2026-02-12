@@ -1,12 +1,16 @@
 # zlib — Lossless data compression library
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "1.3.1"; in
 mkDerivation {
-  name = "zlib-${versions.compression.zlib}";
-  version = versions.compression.zlib;
+  pname = "zlib";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.zlib) url hash;
+    urls = [
+      "https://zlib.net/zlib-${version}.tar.xz"
+    ];
+    hash = "sha256-OO+WuN/lENQnB9nHgYd5FHklQRM+GHCEFGO/pz+IPjI=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd zlib-${versions.compression.zlib}
+        cd zlib-${version}
       '';
     }
     { name = "configure";

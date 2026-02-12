@@ -88,6 +88,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ pkgs.node-exporter ];
+
     # node-exporter.service — Prometheus node metrics exporter.
     systemd.services."node-exporter" = {
       description = "Prometheus Node Exporter";

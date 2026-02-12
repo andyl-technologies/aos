@@ -1,13 +1,17 @@
 # libsemanage — SELinux policy management library
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config,
+{ mkDerivation, fetchurl, make, pkg-config,
   libsepol, libselinux, audit }:
 
+let version = "3.7"; in
 mkDerivation {
-  name = "libsemanage-${versions.security.selinux-userspace}";
-  version = versions.security.selinux-userspace;
+  pname = "libsemanage";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.selinux-userspace) url hash;
+    urls = [
+      "https://github.com/SELinuxProject/selinux/releases/download/${version}/selinux-${version}.tar.gz"
+    ];
+    hash = "sha256-pZdVqeMfrvEKaNOscWmlx6ubI742J7Z1pcOECgXYKS4=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -18,7 +22,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd selinux-${versions.security.selinux-userspace}/libsemanage
+        cd selinux-${version}/libsemanage
       '';
     }
     { name = "build";

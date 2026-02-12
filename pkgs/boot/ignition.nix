@@ -1,12 +1,16 @@
 # Ignition — First-boot provisioning utility
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "2.19.0"; in
 mkDerivation {
-  name = "ignition-${versions.image-tools.ignition}";
-  version = versions.image-tools.ignition;
+  pname = "ignition";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.ignition) url hash;
+    urls = [
+      "https://github.com/coreos/ignition/archive/v${version}/ignition-${version}.tar.gz"
+    ];
+    hash = "sha256-OxlA9JfybOied5wFh/AAy25e3DnvhJru6ZhU0roSXcU=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd ignition-${versions.image-tools.ignition}
+        cd ignition-${version}
       '';
     }
     { name = "build";
@@ -26,7 +30,7 @@ mkDerivation {
         export CGO_ENABLED=0
         export GOFLAGS="-trimpath"
         go build -o ignition \
-          -ldflags "-s -w -X github.com/coreos/ignition/v2/internal/version.Raw=v${versions.image-tools.ignition}" \
+          -ldflags "-s -w -X github.com/coreos/ignition/v2/internal/version.Raw=v${version}" \
           ./internal
       '';
     }

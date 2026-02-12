@@ -10,8 +10,14 @@
 #   addPhaseBefore — insert a phase before a named phase
 #   removePhase    — remove a phase by name
 #
+# The `system` parameter must be provided by the caller (lib/default.nix)
+# and is used as the default for all derivation builders.
+
+{ system }:
 
 let
+  defaultSystem = system;
+
   # ---------------------------------------------------------------------------
   # Default phase definitions
   # ---------------------------------------------------------------------------
@@ -19,8 +25,10 @@ let
   defaultUnpackPhase = {
     name = "unpack";
     script = ''
+      if [ -z "$src" ]; then
+        echo ">>> No source to unpack (src is empty)"
       # Unpack source archive
-      if [ -d "$src" ]; then
+      elif [ -d "$src" ]; then
         cp -r "$src" source
         chmod -R u+w source
       elif [ -f "$src" ]; then
@@ -39,12 +47,14 @@ let
       fi
 
       # Enter the source directory (handle single top-level directory)
-      if [ -d source ]; then
-        cd source
-      else
-        dirs=( */ )
-        if [ "''${#dirs[@]}" -eq 1 ]; then
-          cd "''${dirs[0]}"
+      if [ -n "$src" ]; then
+        if [ -d source ]; then
+          cd source
+        else
+          dirs=( */ )
+          if [ "''${#dirs[@]}" -eq 1 ]; then
+            cd "''${dirs[0]}"
+          fi
         fi
       fi
     '';
@@ -154,7 +164,7 @@ let
       set -euo pipefail
 
       # Source the stdenv setup if available
-      if [ -f "$stdenv/setup.sh" ]; then
+      if [ -n "''${stdenv:-}" ] && [ -f "$stdenv/setup.sh" ]; then
         source "$stdenv/setup.sh"
       fi
 
@@ -204,7 +214,7 @@ let
     phases ? defaultPhases,
     meta ? {},
     storeDir ? "/nix/store",
-    system ? "x86_64-linux",
+    system ? defaultSystem,
     shell ? "/bin/sh",
     outputs ? [ "out" ],
     configureFlags ? "",
@@ -333,7 +343,7 @@ let
     runtimeDeps ? [],
     shellHook ? "",
     name ? "aos-dev-shell",
-    system ? "x86_64-linux",
+    system ? defaultSystem,
     shell ? "/bin/sh",
     ...
   }:
@@ -370,22 +380,34 @@ let
   # ---------------------------------------------------------------------------
   # fetchurl
   # ---------------------------------------------------------------------------
-  # fetchurl { url; hash; name; }
+  # fetchurl { url; hash; name; }   — single URL (backwards compatible)
+  # fetchurl { urls; hash; name; }  — mirror list (preferred)
   #
   # Fixed-output derivation that downloads a file from a URL.
   # The hash ensures the download is reproducible.
-  fetchurl = { url
+  #
+  # Accepts either `url` (string) or `urls` (list), following the nixpkgs
+  # pattern.  Exactly one must be provided.  The full mirror list is exposed
+  # as `.urls` on the result for CLI discovery.
+  fetchurl = { url ? ""
+             , urls ? []
              , hash ? ""
              , sha256 ? hash
-             , name ? builtins.baseNameOf url
+             , name ? builtins.baseNameOf (builtins.head resolvedUrls)
              , executable ? false
-             , system ? "x86_64-linux"
+             , system ? defaultSystem
              , storeDir ? "/nix/store"
              }:
+    let
+      resolvedUrls =
+        if urls != [] && url == "" then urls
+        else if urls == [] && url != "" then [ url ]
+        else throw "fetchurl requires either 'url' or 'urls' to be set, not both";
+    in
     builtins.derivation {
       inherit name system;
       builder = "builtin:fetchurl";
-      inherit url;
+      url = builtins.head resolvedUrls;
 
       # Fixed-output derivation attributes
       outputHash = sha256;
@@ -399,7 +421,7 @@ let
 
       # Make executable if requested
       inherit executable;
-    };
+    } // { urls = resolvedUrls; };
 
   # ---------------------------------------------------------------------------
   # fetchgit
@@ -413,7 +435,7 @@ let
              , sha256 ? hash
              , name ? "source"
              , fetchSubmodules ? false
-             , system ? "x86_64-linux"
+             , system ? defaultSystem
              , storeDir ? "/nix/store"
              , deepClone ? false
              , leaveDotGit ? false

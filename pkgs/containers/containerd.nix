@@ -1,12 +1,16 @@
 # containerd — Container runtime
-{ mkDerivation, fetchurl, sources, versions, make, runc }:
+{ mkDerivation, fetchurl, make, runc }:
 
+let version = "1.7.24"; in
 mkDerivation {
-  name = "containerd-${versions.kubernetes.containerd}";
-  version = versions.kubernetes.containerd;
+  pname = "containerd";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.containerd) url hash;
+    urls = [
+      "https://github.com/containerd/containerd/archive/v${version}/containerd-${version}.tar.gz"
+    ];
+    hash = "sha256-h2FPjIy80gOIEotK9PEMJF7SYNK/04NayfA6y2RQid0=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd containerd-${versions.kubernetes.containerd}
+        cd containerd-${version}
       '';
     }
     { name = "setup-gopath";
@@ -31,8 +35,8 @@ mkDerivation {
       script = ''
         export GOPATH=$TMPDIR/go
         export CGO_ENABLED=0
-        make VERSION=v${versions.kubernetes.containerd} \
-          REVISION=v${versions.kubernetes.containerd} \
+        make VERSION=v${version} \
+          REVISION=v${version} \
           binaries
       '';
     }

@@ -1,12 +1,16 @@
 # iproute2 — Linux networking utilities
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config, libmnl }:
+{ mkDerivation, fetchurl, make, pkg-config, libmnl }:
 
+let version = "6.11.0"; in
 mkDerivation {
-  name = "iproute2-${versions.networking.iproute2}";
-  version = versions.networking.iproute2;
+  pname = "iproute2";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.iproute2) url hash;
+    urls = [
+      "https://mirrors.kernel.org/pub/linux/utils/net/iproute2/iproute2-${version}.tar.xz"
+    ];
+    hash = "sha256-H3lTmKBK6qzQao9qziz9kTwz+llTypnaroO7XFNGEcM=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd iproute2-${versions.networking.iproute2}
+        cd iproute2-${version}
       '';
     }
     { name = "configure";

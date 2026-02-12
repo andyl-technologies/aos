@@ -181,6 +181,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ pkgs.openssh ];
+
     # /etc/ssh/sshd_config — OpenSSH server configuration.
     environment.etc."ssh/sshd_config" = {
       text = sshdConfig;

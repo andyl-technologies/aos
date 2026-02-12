@@ -148,6 +148,8 @@ in
   };
 
   config = {
+    environment.systemPackages = [ pkgs.iproute2 pkgs.curl pkgs.ca-certificates ];
+
     # Per-interface network files.
     environment.etc = let
       interfaceFiles = lib.mapAttrs' (name: ifCfg:

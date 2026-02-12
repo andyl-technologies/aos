@@ -57,6 +57,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ pkgs.policycoreutils pkgs.libselinux ];
+
     # /etc/selinux/config — main SELinux configuration file.
     # Read by libselinux at boot and by selinux-policy-load.service.
     environment.etc."selinux/config" = {

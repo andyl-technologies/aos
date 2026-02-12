@@ -1,12 +1,18 @@
 # GNU Bash — Bourne-Again SHell
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "5.2.32"; in
 mkDerivation {
-  name = "bash-${versions.core.bash}";
-  version = versions.core.bash;
+  pname = "bash";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.bash) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/bash/bash-${version}.tar.gz"
+      "https://mirrors.kernel.org/gnu/bash/bash-${version}.tar.gz"
+      "https://ftp.gnu.org/gnu/bash/bash-${version}.tar.gz"
+    ];
+    hash = "sha256-0++A0rZ9jLvk0yZcY6csRvmyeOrW4OBtYYAbWPI/ULU=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd bash-${versions.core.bash}
+        cd bash-${version}
       '';
     }
     { name = "configure";

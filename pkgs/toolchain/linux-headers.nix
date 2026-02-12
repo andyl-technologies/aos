@@ -1,12 +1,16 @@
 # Linux Headers — Kernel headers for userspace compilation
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "6.12.11"; in
 mkDerivation {
-  name = "linux-headers-${versions.toolchain.linux-headers}";
-  version = versions.toolchain.linux-headers;
+  pname = "linux-headers";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.linux-headers) url hash;
+    urls = [
+      "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${version}.tar.xz"
+    ];
+    hash = "sha256-R1Fy/b2HoVPxI6V5Umcudzvbba9bWKQX0aXkGfz+7Ek=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd linux-${versions.toolchain.linux-headers}
+        cd linux-${version}
       '';
     }
     { name = "install";

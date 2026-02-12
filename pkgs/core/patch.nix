@@ -1,12 +1,18 @@
 # GNU Patch — Apply diff files to originals
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "2.7.6"; in
 mkDerivation {
-  name = "patch-${versions.core.patch}";
-  version = versions.core.patch;
+  pname = "patch";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.patch) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/patch/patch-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/patch/patch-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/patch/patch-${version}.tar.xz"
+    ];
+    hash = "sha256-rGEL2per4Nn2t8ljJVoR3LGWwl4zfGH5Tkd41jLx2P0=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd patch-${versions.core.patch}
+        cd patch-${version}
       '';
     }
     { name = "configure";

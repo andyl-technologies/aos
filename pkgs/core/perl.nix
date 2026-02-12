@@ -1,12 +1,16 @@
 # Perl — Practical Extraction and Reporting Language
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "5.38.2"; in
 mkDerivation {
-  name = "perl-${versions.core.perl}";
-  version = versions.core.perl;
+  pname = "perl";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.perl) url hash;
+    urls = [
+      "https://www.cpan.org/src/5.0/perl-${version}.tar.xz"
+    ];
+    hash = "sha256-2REV6QuJZSDoPU3mtS+CVO8rcKjVRf+rMyAOqfHPKeg=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd perl-${versions.core.perl}
+        cd perl-${version}
       '';
     }
     { name = "configure";
@@ -26,10 +30,10 @@ mkDerivation {
           -des \
           -Dprefix=$out \
           -Dvendorprefix=$out \
-          -Dprivlib=$out/lib/perl5/${versions.core.perl} \
-          -Darchlib=$out/lib/perl5/${versions.core.perl}/x86_64-linux \
-          -Dvendorlib=$out/lib/perl5/${versions.core.perl} \
-          -Dvendorarch=$out/lib/perl5/${versions.core.perl}/x86_64-linux \
+          -Dprivlib=$out/lib/perl5/${version} \
+          -Darchlib=$out/lib/perl5/${version}/x86_64-linux \
+          -Dvendorlib=$out/lib/perl5/${version} \
+          -Dvendorarch=$out/lib/perl5/${version}/x86_64-linux \
           -Dman1dir=$out/share/man/man1 \
           -Dman3dir=$out/share/man/man3 \
           -Dusethreads \

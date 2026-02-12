@@ -1,12 +1,16 @@
 # Butane — Translates Butane configs to Ignition configs
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "0.21.0"; in
 mkDerivation {
-  name = "butane-${versions.image-tools.butane}";
-  version = versions.image-tools.butane;
+  pname = "butane";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.butane) url hash;
+    urls = [
+      "https://github.com/coreos/butane/archive/v${version}/butane-${version}.tar.gz"
+    ];
+    hash = "sha256-RMH/E8AbTdirgxD9RwPD5+xBGxWSXOy0NK1fWV+dF9Y=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd butane-${versions.image-tools.butane}
+        cd butane-${version}
       '';
     }
     { name = "build";
@@ -26,7 +30,7 @@ mkDerivation {
         export CGO_ENABLED=0
         export GOFLAGS="-trimpath"
         go build -o butane \
-          -ldflags "-s -w -X github.com/coreos/butane/internal/version.Raw=v${versions.image-tools.butane}" \
+          -ldflags "-s -w -X github.com/coreos/butane/internal/version.Raw=v${version}" \
           ./internal
       '';
     }

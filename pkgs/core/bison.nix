@@ -1,12 +1,18 @@
 # GNU Bison — Parser generator
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "3.8.2"; in
 mkDerivation {
-  name = "bison-${versions.core.bison}";
-  version = versions.core.bison;
+  pname = "bison";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.bison) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/bison/bison-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/bison/bison-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/bison/bison-${version}.tar.xz"
+    ];
+    hash = "sha256-m7oCFMz38QecXVkhAEUie89hlRmEDr+oDNOEnP9aW/I=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd bison-${versions.core.bison}
+        cd bison-${version}
       '';
     }
     { name = "configure";

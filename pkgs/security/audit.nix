@@ -1,12 +1,16 @@
 # Audit — Linux auditing framework
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "4.0.2"; in
 mkDerivation {
-  name = "audit-${versions.security.audit}";
-  version = versions.security.audit;
+  pname = "audit";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.audit) url hash;
+    urls = [
+      "https://people.redhat.com/sgrubb/audit/audit-${version}.tar.gz"
+    ];
+    hash = "sha256-1dG11Q7kotDReHW8aua9an1bNNlVfqhHo5+uxTH6qgo=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd audit-${versions.security.audit}
+        cd audit-${version}
       '';
     }
     { name = "configure";

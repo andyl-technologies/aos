@@ -76,6 +76,35 @@ pub enum Commands {
     },
     /// Show repository info
     Describe,
+    /// Prefetch source hashes (parallel downloads with mirror failover)
+    Prefetch {
+        /// Only prefetch specific packages (repeatable)
+        #[arg(short, long)]
+        package: Vec<String>,
+        /// Prefetch all packages, not just placeholders
+        #[arg(long)]
+        all: bool,
+        /// Write computed hashes back into package .nix files
+        #[arg(short, long)]
+        update: bool,
+        /// Number of parallel downloads
+        #[arg(short, long, default_value_t = 8)]
+        jobs: usize,
+        /// Per-mirror connect timeout in seconds
+        #[arg(long, default_value_t = 10)]
+        connect_timeout: u64,
+        /// Minimum download speed in bytes/sec (0 to disable)
+        #[arg(long, default_value_t = 10240)]
+        min_speed: u64,
+    },
+    /// Format Nix files with nixfmt
+    Fmt {
+        /// Check formatting without modifying files
+        #[arg(long)]
+        check: bool,
+        /// Specific files to format (default: all .nix files)
+        files: Vec<String>,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for

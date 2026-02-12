@@ -1,12 +1,16 @@
 # LZ4 — Extremely fast compression algorithm
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "1.9.4"; in
 mkDerivation {
-  name = "lz4-${versions.compression.lz4}";
-  version = versions.compression.lz4;
+  pname = "lz4";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.lz4) url hash;
+    urls = [
+      "https://github.com/lz4/lz4/releases/download/v${version}/lz4-${version}.tar.gz"
+    ];
+    hash = "sha256-Cw46oHyMBj3fQLCCvffjehVivaQKD/UnKVfz6Yfg5Us=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd lz4-${versions.compression.lz4}
+        cd lz4-${version}
       '';
     }
     { name = "build";

@@ -113,6 +113,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ pkgs.containerd pkgs.runc ];
+
     # /etc/containerd/config.toml — containerd configuration.
     environment.etc."containerd/config.toml" = {
       text = containerdConfig;

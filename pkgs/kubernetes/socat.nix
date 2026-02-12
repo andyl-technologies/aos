@@ -1,12 +1,16 @@
 # socat — Multipurpose relay for bidirectional data transfer
-{ mkDerivation, fetchurl, sources, versions, make, openssl }:
+{ mkDerivation, fetchurl, make, openssl }:
 
+let version = "1.8.0.1"; in
 mkDerivation {
-  name = "socat-${versions.kubernetes.socat}";
-  version = versions.kubernetes.socat;
+  pname = "socat";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.socat) url hash;
+    urls = [
+      "http://www.dest-unreach.org/socat/download/socat-${version}.tar.bz2"
+    ];
+    hash = "sha256-aig1Zdt8+GKSxvcFBMWKuwPimIit7tWmxfNFfoA8G4E=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd socat-${versions.kubernetes.socat}
+        cd socat-${version}
       '';
     }
     { name = "configure";

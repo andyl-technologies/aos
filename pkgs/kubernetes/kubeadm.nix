@@ -1,13 +1,9 @@
 # kubeadm — Kubernetes cluster bootstrapping tool
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make, kubeSource }:
 
 mkDerivation {
-  name = "kubeadm-${versions.kubernetes.kubeadm}";
-  version = versions.kubernetes.kubeadm;
-
-  src = fetchurl {
-    inherit (sources.kubernetes) url hash;
-  };
+  pname = "kubeadm";
+  inherit (kubeSource) version src;
 
   buildDeps = [ make ];
   runtimeDeps = [];
@@ -17,7 +13,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd kubernetes-${versions.kubernetes.kubeadm}
+        cd kubernetes-${kubeSource.version}
       '';
     }
     { name = "build";
@@ -25,7 +21,7 @@ mkDerivation {
         export GOPATH=$TMPDIR/go
         export CGO_ENABLED=0
         export GOFLAGS="-trimpath"
-        export GOLDFLAGS="-s -w -X k8s.io/component-base/version.gitVersion=v${versions.kubernetes.kubeadm}"
+        export GOLDFLAGS="-s -w -X k8s.io/component-base/version.gitVersion=v${kubeSource.version}"
         go build -o kubeadm \
           -ldflags "$GOLDFLAGS" \
           ./cmd/kubeadm

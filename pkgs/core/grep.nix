@@ -1,12 +1,18 @@
 # GNU Grep — Pattern matching utility
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "3.11"; in
 mkDerivation {
-  name = "grep-${versions.core.grep}";
-  version = versions.core.grep;
+  pname = "grep";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.grep) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/grep/grep-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/grep/grep-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/grep/grep-${version}.tar.xz"
+    ];
+    hash = "sha256-HbKu3eidDepCsW2VKPiUyNFdrk4ZC1muzHj1qVEnbqs=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd grep-${versions.core.grep}
+        cd grep-${version}
       '';
     }
     { name = "configure";

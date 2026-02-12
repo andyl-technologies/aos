@@ -1,12 +1,18 @@
 # GCC — GNU Compiler Collection
-{ mkDerivation, fetchurl, sources, versions, make, gawk, linux-headers, zlib }:
+{ mkDerivation, fetchurl, make, gawk, linux-headers, zlib }:
 
+let version = "13.3.0"; in
 mkDerivation {
-  name = "gcc-${versions.toolchain.gcc}";
-  version = versions.toolchain.gcc;
+  pname = "gcc";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.gcc) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/gcc/gcc-${version}/gcc-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/gcc/gcc-${version}/gcc-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/gcc/gcc-${version}/gcc-${version}.tar.xz"
+    ];
+    hash = "sha256-CEXpYhyVQ6E/SE6UWEpJ/8ASmXDpkUYkI1/B0GGgwIM=";
   };
 
   buildDeps = [ make gawk ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd gcc-${versions.toolchain.gcc}
+        cd gcc-${version}
       '';
     }
     { name = "configure";

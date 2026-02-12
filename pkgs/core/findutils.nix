@@ -1,12 +1,18 @@
 # GNU Findutils — find, xargs, and locate
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "4.10.0"; in
 mkDerivation {
-  name = "findutils-${versions.core.findutils}";
-  version = versions.core.findutils;
+  pname = "findutils";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.findutils) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/findutils/findutils-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/findutils/findutils-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/findutils/findutils-${version}.tar.xz"
+    ];
+    hash = "sha256-E4fgtn/yR9Kr3pmPkN+/cMFJE5Glnd/suK5ph4nwpPU=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd findutils-${versions.core.findutils}
+        cd findutils-${version}
       '';
     }
     { name = "configure";

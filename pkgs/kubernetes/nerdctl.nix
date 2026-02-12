@@ -1,12 +1,16 @@
 # nerdctl — Docker-compatible CLI for containerd
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "1.7.7"; in
 mkDerivation {
-  name = "nerdctl-${versions.kubernetes.nerdctl}";
-  version = versions.kubernetes.nerdctl;
+  pname = "nerdctl";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.nerdctl) url hash;
+    urls = [
+      "https://github.com/containerd/nerdctl/archive/v${version}/nerdctl-${version}.tar.gz"
+    ];
+    hash = "sha256-vN3y7jrSvIStxeIH+XFXmY/pc5EsfR3ZVAvUu0oHaY0=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd nerdctl-${versions.kubernetes.nerdctl}
+        cd nerdctl-${version}
       '';
     }
     { name = "build";
@@ -26,7 +30,7 @@ mkDerivation {
         export CGO_ENABLED=0
         export GOFLAGS="-trimpath"
         go build -o nerdctl \
-          -ldflags "-s -w -X github.com/containerd/nerdctl/pkg/version.Version=v${versions.kubernetes.nerdctl}" \
+          -ldflags "-s -w -X github.com/containerd/nerdctl/pkg/version.Version=v${version}" \
           ./cmd/nerdctl
       '';
     }

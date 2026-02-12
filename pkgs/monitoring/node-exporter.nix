@@ -1,12 +1,16 @@
 # Prometheus Node Exporter — Hardware and OS metrics exporter
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "1.8.2"; in
 mkDerivation {
-  name = "node-exporter-${versions.monitoring.node-exporter}";
-  version = versions.monitoring.node-exporter;
+  pname = "node-exporter";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.node-exporter) url hash;
+    urls = [
+      "https://github.com/prometheus/node_exporter/archive/v${version}/node_exporter-${version}.tar.gz"
+    ];
+    hash = "sha256-9hXHC+gWVQSY3WpQU5Hb7RqJZwXv+EJijeE6H6dlTo8=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd node_exporter-${versions.monitoring.node-exporter}
+        cd node_exporter-${version}
       '';
     }
     { name = "build";
@@ -27,7 +31,7 @@ mkDerivation {
         export GOFLAGS="-trimpath"
         go build -o node_exporter \
           -ldflags "-s -w \
-            -X github.com/prometheus/common/version.Version=${versions.monitoring.node-exporter} \
+            -X github.com/prometheus/common/version.Version=${version} \
             -X github.com/prometheus/common/version.Branch=release \
             -X github.com/prometheus/common/version.BuildUser=andyl-os" \
           .

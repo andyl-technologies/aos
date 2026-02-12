@@ -1,12 +1,18 @@
 # GNU Gzip — Compression utility
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "1.13"; in
 mkDerivation {
-  name = "gzip-${versions.core.gzip}";
-  version = versions.core.gzip;
+  pname = "gzip";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.gzip) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/gzip/gzip-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/gzip/gzip-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/gzip/gzip-${version}.tar.xz"
+    ];
+    hash = "sha256-dFTraTXbF8ZlVXbC4bD6vv04tNCTbg+H9IzQYs6RoFc=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd gzip-${versions.core.gzip}
+        cd gzip-${version}
       '';
     }
     { name = "configure";

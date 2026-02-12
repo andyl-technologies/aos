@@ -1,12 +1,16 @@
 # libnftnl — Netfilter nf_tables userspace library
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config, libmnl }:
+{ mkDerivation, fetchurl, make, pkg-config, libmnl }:
 
+let version = "1.2.8"; in
 mkDerivation {
-  name = "libnftnl-${versions.networking.libnftnl}";
-  version = versions.networking.libnftnl;
+  pname = "libnftnl";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.libnftnl) url hash;
+    urls = [
+      "https://www.netfilter.org/projects/libnftnl/files/libnftnl-${version}.tar.xz"
+    ];
+    hash = "sha256-N/6l1rXJsI3nkg0pjePNyULnrmSxo+i4gLLTkK5nrZU=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd libnftnl-${versions.networking.libnftnl}
+        cd libnftnl-${version}
       '';
     }
     { name = "configure";

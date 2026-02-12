@@ -136,7 +136,7 @@ UNIT
       version = "0";
       src = null;
 
-      buildDeps = [ pkgs.socat ];
+      buildDeps = [ pkgs.socat pkgs.jq ];
 
       phases = [
         {

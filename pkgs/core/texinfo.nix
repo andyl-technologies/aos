@@ -1,12 +1,18 @@
 # GNU Texinfo — Documentation system
-{ mkDerivation, fetchurl, sources, versions, make, perl }:
+{ mkDerivation, fetchurl, make, perl }:
 
+let version = "7.1"; in
 mkDerivation {
-  name = "texinfo-${versions.core.texinfo}";
-  version = versions.core.texinfo;
+  pname = "texinfo";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.texinfo) url hash;
+    urls = [
+      "https://gnu.mirror.constant.com/texinfo/texinfo-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/texinfo/texinfo-${version}.tar.xz"
+      "https://ftp.gnu.org/gnu/texinfo/texinfo-${version}.tar.xz"
+    ];
+    hash = "sha256-3u7J8Z8VngRv34rSIjGYGAbawzLMNy8cdjUErYKzCVM=";
   };
 
   buildDeps = [ make perl ];
@@ -17,7 +23,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd texinfo-${versions.core.texinfo}
+        cd texinfo-${version}
       '';
     }
     { name = "configure";

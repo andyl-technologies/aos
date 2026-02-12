@@ -1,12 +1,16 @@
 # pkg-config — Helper tool for compiling applications and libraries
-{ mkDerivation, fetchurl, sources, versions, make }:
+{ mkDerivation, fetchurl, make }:
 
+let version = "0.29.2"; in
 mkDerivation {
-  name = "pkg-config-${versions.core.pkg-config}";
-  version = versions.core.pkg-config;
+  pname = "pkg-config";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.pkg-config) url hash;
+    urls = [
+      "https://pkgconfig.freedesktop.org/releases/pkg-config-${version}.tar.gz"
+    ];
+    hash = "sha256-b8acAWiMlFilfrmhZkyaujcszaQgoCv0Qp/mEOfn1ZE=";
   };
 
   buildDeps = [ make ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd pkg-config-${versions.core.pkg-config}
+        cd pkg-config-${version}
       '';
     }
     { name = "configure";

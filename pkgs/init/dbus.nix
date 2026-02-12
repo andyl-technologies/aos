@@ -1,12 +1,16 @@
 # D-Bus — Message bus system
-{ mkDerivation, fetchurl, sources, versions, make, pkg-config }:
+{ mkDerivation, fetchurl, make, pkg-config }:
 
+let version = "1.14.10"; in
 mkDerivation {
-  name = "dbus-${versions.init.dbus}";
-  version = versions.init.dbus;
+  pname = "dbus";
+  inherit version;
 
   src = fetchurl {
-    inherit (sources.dbus) url hash;
+    urls = [
+      "https://dbus.freedesktop.org/releases/dbus/dbus-${version}.tar.xz"
+    ];
+    hash = "sha256-uh8h0r2dM52i1KqHgMCd8y/qh5mLc9ok9Jq53x42pQ8=";
   };
 
   buildDeps = [ make pkg-config ];
@@ -17,7 +21,7 @@ mkDerivation {
     { name = "unpack";
       script = ''
         tar xf $src
-        cd dbus-${versions.init.dbus}
+        cd dbus-${version}
       '';
     }
     { name = "configure";

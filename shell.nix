@@ -7,7 +7,9 @@
 #   nix-shell              Enter the dev shell
 #   nix-shell --pure       Enter with only AOS tools in PATH
 
-{ pkgs ? import ./pkgs { lib = import ./lib; } }:
+{ system ? "aarch64-linux"
+, pkgs ? import ./pkgs { lib = import ./lib { inherit system; }; }
+}:
 
 pkgs.mkShell {
   name = "aos-dev";
@@ -29,5 +31,10 @@ pkgs.mkShell {
     echo "  nix-build -A checks.fleet.k8s-cluster  Run k8s fleet test"
     echo ""
     export AOS_ROOT="$(pwd)"
+
+    # Install pre-commit hook
+    if [ -d .git ]; then
+      ln -sf ../../dev/pre-commit .git/hooks/pre-commit
+    fi
   '';
 }
