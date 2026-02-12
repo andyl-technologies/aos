@@ -1,4 +1,16 @@
 /.claude
-.env
 __pycache__/
 *.pyc
+
+# Built images and QEMU artifacts
+output/
+
+# Cached source tarballs
+mirror/
+
+# Rust build artifacts
+cli/target/
+
+# Nix build results
+result
+result-*

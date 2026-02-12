@@ -1,3 +1,0 @@
-# Disk partition sizes (MiB).
-esp-mib = 1024
-root-mib = 8192
