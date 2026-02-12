@@ -14,3 +14,6 @@ cli/target/
 # Nix build results
 result
 result-*
+
+# Direnv
+.direnv/

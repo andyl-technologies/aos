@@ -1,5 +1,6 @@
 # D-Bus — Message bus system
-{ mkDerivation, fetchurl, make, pkg-config }:
+# Note: dbus 1.14.x uses autotools, not meson (meson is 1.15.x+)
+{ mkDerivation, fetchurl, make, pkg-config, expat }:
 
 let version = "1.14.10"; in
 mkDerivation {
@@ -14,7 +15,7 @@ mkDerivation {
   };
 
   buildDeps = [ make pkg-config ];
-  runtimeDeps = [];
+  runtimeDeps = [ expat ];
   propagatedDeps = [];
 
   phases = [
@@ -26,30 +27,29 @@ mkDerivation {
     }
     { name = "configure";
       script = ''
-        mkdir -p build && cd build
-        meson setup .. \
+        ./configure \
           --prefix=$out \
-          --buildtype=release \
-          -Dmodular_tests=disabled \
-          -Ddoxygen_docs=disabled \
-          -Dxml_docs=disabled \
-          -Dsystemd=disabled \
-          -Duser_session=false \
-          -Dapparmor=disabled \
-          -Dselinux=disabled \
-          -Dlibaudit=disabled
+          --sysconfdir=$out/etc \
+          --localstatedir=$out/var \
+          --disable-tests \
+          --disable-doxygen-docs \
+          --disable-xml-docs \
+          --disable-systemd \
+          --disable-user-session \
+          --disable-apparmor \
+          --disable-selinux \
+          --disable-libaudit \
+          --without-x
       '';
     }
     { name = "build";
       script = ''
-        cd build
-        ninja -j$NIX_BUILD_CORES
+        make -j$NIX_BUILD_CORES
       '';
     }
     { name = "install";
       script = ''
-        cd build
-        ninja install
+        make install DESTDIR=""
       '';
     }
   ];

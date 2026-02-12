@@ -29,6 +29,8 @@ mkDerivation {
         ./configure \
           --prefix=$out \
           --sysconfdir=$out/etc \
+          --localstatedir=$out/var \
+          --with-pidfile=$out/run/chronyd.pid \
           --without-editline \
           --without-readline \
           --disable-sechash \
@@ -42,7 +44,7 @@ mkDerivation {
     }
     { name = "install";
       script = ''
-        make install
+        make install DESTDIR=""
       '';
     }
   ];
