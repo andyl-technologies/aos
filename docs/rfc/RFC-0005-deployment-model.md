@@ -7,20 +7,20 @@
 
 ## Abstract
 
-ANDYL OS uses a generational deployment model where each system update produces a new numbered generation backed by content-addressed store paths in `/gnu/store`. Updates are delivered as NAR-based diffs containing only new store paths, applied atomically via rename operations. systemd-boot's boot counting protocol provides automatic rollback after 3 failed boots. A health check service validates new generations before marking them as good. Mark-and-sweep garbage collection with `/proc` scanning reclaims disk space from old generations.
+ANDYL OS uses a generational deployment model where each system update produces a new numbered generation backed by content-addressed store paths in `/nix/store`. Updates are delivered as delta bundles (built by `deploy/bundle.nix`) containing only new store paths, compressed with zstd and signed with minisign (via `deploy/sign.nix`). Generations are applied atomically via rename operations. systemd-boot's boot counting protocol provides automatic rollback after failed boots (configurable via `aos.update.bootTries`, default 3). A health check service validates new generations before marking them as good. Mark-and-sweep garbage collection (configured via `modules/services/gc.nix`) reclaims disk space from old generations.
 
 ## Motivation
 
-Traditional server updates modify the system in place, creating partial-update failure modes, configuration drift, and difficult rollback scenarios. The generational model treats each system state as an immutable, numbered snapshot. Switching between generations is an atomic symlink swap, making upgrades instant and rollbacks trivial. Content-addressed store paths enable deduplication across generations (unchanged packages are shared), and NAR-based diff updates minimize network transfer. Boot counting provides a hardware-level safety net: if a new generation cannot boot successfully three times, the boot loader automatically falls back to the previous known-good generation.
+Traditional server updates modify the system in place, creating partial-update failure modes, configuration drift, and difficult rollback scenarios. The generational model treats each system state as an immutable, numbered snapshot. Switching between generations is an atomic symlink swap, making upgrades instant and rollbacks trivial. Content-addressed store paths enable deduplication across generations (unchanged packages are shared), and delta bundle updates minimize network transfer. Boot counting provides a hardware-level safety net: if a new generation cannot boot successfully, the boot loader automatically falls back to the previous known-good generation.
 
 ## Design
 
 ### 1. Core Concepts
 
-- **Store path:** An immutable, content-addressed directory under `/gnu/store`. Example: `/gnu/store/abc123...-bash-5.2`. The hash is derived from all build inputs.
-- **System profile:** A store path containing a directory tree that references all packages, services, and configuration for a complete system. Example: `/gnu/store/xyz789...-andyl-os-system`.
-- **Generation:** A numbered symlink pointing to a system profile. Example: `/var/guix/profiles/system-42` -> `/gnu/store/xyz789...-andyl-os-system`.
-- **Current generation:** The active generation, indicated by `/var/guix/profiles/system` -> `system-42`.
+- **Store path:** An immutable, content-addressed directory under `/nix/store`. Example: `/nix/store/abc123...-bash-5.2`. The hash is derived from all build inputs.
+- **System profile:** A store path containing a directory tree that references all packages, services, and configuration for a complete system. Example: `/nix/store/xyz789...-aos-system`.
+- **Generation:** A numbered symlink pointing to a system profile. Example: `/var/lib/aos/generations/system-42` -> `/nix/store/xyz789...-aos-system`.
+- **Current generation:** The active generation, indicated by `/var/lib/aos/generations/system` -> `system-42`.
 
 ### 2. Content-Addressed Store Paths Shared Across Versions
 
@@ -28,12 +28,12 @@ When two generations share the same version of a package (e.g., both use bash-5.
 
 ```
 Generation 41 profile:
-  bin/bash -> /gnu/store/abc123...-bash-5.2/bin/bash     (shared)
-  bin/nginx -> /gnu/store/old111...-nginx-1.25.3/bin/nginx
+  bin/bash -> /nix/store/abc123...-bash-5.2/bin/bash     (shared)
+  bin/nginx -> /nix/store/old111...-nginx-1.25.3/bin/nginx
 
 Generation 42 profile:
-  bin/bash -> /gnu/store/abc123...-bash-5.2/bin/bash     (shared)
-  bin/nginx -> /gnu/store/new222...-nginx-1.25.4/bin/nginx
+  bin/bash -> /nix/store/abc123...-bash-5.2/bin/bash     (shared)
+  bin/nginx -> /nix/store/new222...-nginx-1.25.4/bin/nginx
 ```
 
 In this example, bash is shared (same store path in both generations) while nginx differs (different store paths because the version changed). This deduplication means a typical update that changes a few packages adds only the new store paths to disk, not a complete copy of the system.
@@ -46,25 +46,26 @@ Generations are managed on the ext4 root; all writable data lives on ZFS.
 
 ```
 /                                     ext4: ANDYL-ROOT (read-only at runtime)
-  gnu/
+  nix/
     store/                            Read-only, on ext4 root partition
       abc123...-bash-5.2/
-      def456...-linux-6.12.10/
-      ghi789...-andyl-os-system/      Generation 41 system profile
-      xyz789...-andyl-os-system/      Generation 42 system profile
+      def456...-linux-6.12.11/
+      ghi789...-aos-system/           Generation 41 system profile
+      xyz789...-aos-system/           Generation 42 system profile
       ...                            (thousands of store paths)
 
-  var/                                ZFS: datapool/var (writable, created by Ignition)
-    guix/
-      profiles/
-        system -> system-42           Current generation (symlink)
-        system-41 -> /gnu/store/ghi789...-andyl-os-system
-        system-41.meta                Generation 41 metadata
-        system-42 -> /gnu/store/xyz789...-andyl-os-system
-        system-42.meta                Generation 42 metadata
-    lib/                              ZFS: datapool/var/lib (persistent state)
-      containerd/                     ZFS: datapool/var/lib/containerd
-    log/                              ZFS: datapool/var/log (persistent logs)
+  var/                                ZFS: aos-pool/var (writable, created by Ignition)
+    lib/
+      aos/
+        generations/
+          system -> system-42         Current generation (symlink)
+          system-41 -> /nix/store/ghi789...-aos-system
+          system-41.meta              Generation 41 metadata
+          system-42 -> /nix/store/xyz789...-aos-system
+          system-42.meta              Generation 42 metadata
+        updates/                      Staged update bundles
+      containerd/                     ZFS: aos-pool/var/lib/containerd
+    log/                              ZFS: aos-pool/var/log (persistent logs)
 
   etc/                                OverlayFS: base from profile + upper on ZFS
   boot/
@@ -90,20 +91,20 @@ Each generation has an associated metadata file:
 ```json
 {
   "generation": 42,
-  "profile": "/gnu/store/xyz789...-andyl-os-system",
+  "profile": "/nix/store/xyz789...-aos-system",
   "timestamp": "2026-01-15T14:30:00Z",
-  "guix_commit": "a1b2c3d4e5f6...",
+  "git_commit": "a1b2c3d4e5f6...",
   "andyl_os_version": "0.3.1",
   "role": "k8s-worker",
-  "changelog": "Updated containerd 1.7.23 -> 1.7.24, kernel 6.12.0 -> 6.12.10",
+  "changelog": "Updated containerd 1.7.23 -> 1.7.24, kernel 6.12.10 -> 6.12.11",
   "manifest_hash": "sha256:aabbccdd...",
   "previous_generation": 41
 }
 ```
 
-### 5. NAR-Based Diff Updates
+### 5. Delta Update Bundles
 
-Updates are delivered as NAR archives containing only store paths not present on the target.
+Updates are delivered as delta bundles built by `deploy/bundle.nix`. The bundle builder computes the store closure diff between old and new system toplevels, compresses each new store path with zstd, and packages them with a manifest.
 
 **Update flow:**
 
@@ -111,91 +112,101 @@ Updates are delivered as NAR archives containing only store paths not present on
 Build Server              Update Server         Target Machine
                           (HTTPS/CDN)           (ANDYL OS)
 
-guix system build
-  (new profile)
+nix-build -A bundle
+  (deploy/bundle.nix)
        |
-compute diff vs.
-  current manifest
+compute diff:
+  nix-store --query
+  --requisites (old/new)
        |
-export NAR archives
-  for new store paths
+compress with zstd-15
        |
-compress with zstd
-       |
-sign bundle (minisign)
+sign bundle
+  (deploy/sign.nix,
+   minisign Ed25519)
        |
 upload to update ------> serves via HTTPS
   server                       |
-                               +---------> andyl-os-agent
-                                            1. polls for update
+                               +---------> aos-update agent
+                                            1. polls for update (timer)
                                             2. downloads manifest
                                             3. computes local diff
-                                            4. downloads NAR bundle
+                                            4. downloads bundle
                                             5. verifies signature
-                                            6. verifies NAR hashes
+                                            6. verifies store path hashes
                                             7. unpacks store paths
                                             8. creates generation symlink
                                             9. installs boot entry
                                             10. reboots
 ```
 
-**Diff computation on the build server:**
+**Bundle building with `deploy/bundle.nix`:**
 
-```bash
-# Get manifest of currently deployed generation
-current_manifest=$(curl -s https://target/api/v1/manifest)
+The bundle builder is a Nix derivation that takes the old and new system toplevels as inputs:
 
-# Build new generation
-new_profile=$(guix system build andyl-os/systems/k8s-worker.scm)
+```nix
+# From deploy/bundle.nix
+{ pkgs, lib, oldSystem, newSystem, version }:
 
-# Compute store closures
-new_closure=$(guix gc --references --recursive $new_profile)
-current_closure=$(cat current_manifest | jq -r '.store_paths[].path')
+# 1. Compute store closures
+nix-store --query --requisites ${oldToplevel} | sort > old-paths
+nix-store --query --requisites ${newToplevel} | sort > new-paths
 
-# Diff: paths in new but not in current
-new_paths=$(comm -23 \
-  <(echo "$new_closure" | sort) \
-  <(echo "$current_closure" | sort))
+# 2. Compute delta (paths in new but not in old)
+comm -13 old-paths new-paths > delta-paths
 
-# Export only new paths as NAR archives
-for path in $new_paths; do
-  guix archive --export $path > nars/$(basename $path).nar
-done
+# 3. Compress each delta path with zstd
+tar -cf - -C / "$storePath" | zstd -15 -T0 -q > store/${basename}.tar.zst
 
-# Compress and bundle
-zstd --ultra -22 nars/*.nar
-tar cf update-gen42.tar nars/*.nar.zst manifest-42.json boot/
+# 4. Write manifest.json with path list, hashes, sizes
+
+# 5. Create final tarball
+tar -cf aos-update-${version}.tar manifest.json store/
+```
+
+**Bundle signing with `deploy/sign.nix`:**
+
+The signing derivation produces a minisign (Ed25519) detached signature and a verification receipt:
+
+```nix
+# From deploy/sign.nix
+{ pkgs, lib, bundle, signingKey, comment ? null }:
+
+# Sign with minisign
+minisign -S -s "${signingKey}" -m "${bundleName}" -t "${trustedComment}"
+
+# Self-verify if public key is available
+minisign -V -p "${signingKey}.pub" -m "${bundleName}"
+
+# Write signing receipt (JSON: bundle name, algorithm, SHA-256)
 ```
 
 **Update bundle contents:**
-- NAR archives for every store path not present on the target
-- New kernel image and initrd (if changed)
-- New generation manifest (JSON)
-- Boot loader entry file
-- Digital signature covering all of the above
+- `manifest.json` -- version metadata, path list with hashes and sizes
+- `store/` -- zstd-compressed store path archives (one per new store path)
 
-**Transport model:** Pull-based HTTPS. Machines poll the update server on their own schedule. For urgent patches, a push trigger via SSH initiates an immediate pull:
+**Transport model:** Pull-based HTTPS. Machines poll the update server on their own schedule (configurable via `aos.update.checkInterval`, default 3600 seconds). For urgent patches, a push trigger via SSH initiates an immediate check:
 
 ```bash
-ssh root@target andyl-os-agent update --now
+ssh root@target aos-update check --now
 ```
 
 ### 6. Atomic Store Path Installation
 
-Unpacking new store paths into `/gnu/store` uses a temp-then-rename strategy for atomicity:
+Unpacking new store paths into `/nix/store` uses a temp-then-rename strategy for atomicity:
 
 ```bash
-install_nar() {
-    nar_file=$1
-    target_path=$2   # e.g., /gnu/store/abc123...-bash-5.2
+install_store_path() {
+    archive=$1
+    target_path=$2   # e.g., /nix/store/abc123...-bash-5.2
 
     # Check if path already exists (idempotent)
     if [ -d "$target_path" ]; then return 0; fi
 
     # Unpack to temporary location (same filesystem for atomic rename)
-    temp_path="/gnu/store/.tmp-$(basename $target_path)-$$"
+    temp_path="/nix/store/.tmp-$(basename $target_path)-$$"
     mkdir -p "$temp_path"
-    guix archive --import < "$nar_file" --target="$temp_path"
+    zstd -d < "$archive" | tar -xf - -C "$temp_path"
 
     # Atomic rename into final location
     mv "$temp_path" "$target_path"
@@ -215,19 +226,19 @@ register_generation() {
     profile_path=$2
 
     # Create generation symlink atomically (create temp, rename)
-    ln -sf "$profile_path" "/var/guix/profiles/system-${gen_num}.tmp"
-    mv -T "/var/guix/profiles/system-${gen_num}.tmp" \
-          "/var/guix/profiles/system-${gen_num}"
+    ln -sf "$profile_path" "/var/lib/aos/generations/system-${gen_num}.tmp"
+    mv -T "/var/lib/aos/generations/system-${gen_num}.tmp" \
+          "/var/lib/aos/generations/system-${gen_num}"
 
     # Update "current" symlink
-    ln -sf "system-${gen_num}" "/var/guix/profiles/system.tmp"
-    mv -T "/var/guix/profiles/system.tmp" "/var/guix/profiles/system"
+    ln -sf "system-${gen_num}" "/var/lib/aos/generations/system.tmp"
+    mv -T "/var/lib/aos/generations/system.tmp" "/var/lib/aos/generations/system"
 }
 ```
 
 ### 7. systemd-boot Boot Counting Protocol
 
-systemd-boot implements automatic boot assessment through filename-based counting.
+systemd-boot implements automatic boot assessment through filename-based counting. The boot tries count is configured via `aos.update.bootTries` (default: 3) in `modules/services/update.nix`.
 
 **Boot entry with counting:**
 
@@ -236,7 +247,7 @@ systemd-boot implements automatic boot assessment through filename-based countin
 title   ANDYL OS Generation 42
 linux   /andyl-os/<hash>-vmlinuz
 initrd  /andyl-os/<hash>-initrd.cpio.zst
-options root=LABEL=ANDYL-ROOT rw init=/gnu/store/xyz789...-andyl-os-system/boot/init \
+options root=LABEL=ANDYL-ROOT rw init=/nix/store/xyz789...-aos-system/boot/init \
         andyl.generation=42
 ```
 
@@ -257,14 +268,14 @@ Step 4: If all 3 attempts fail:
   systemd-boot automatically selects previous entry on next boot
 ```
 
-### 8. Automatic Rollback After 3 Failed Boots
+### 8. Automatic Rollback After Failed Boots
 
 The automatic rollback sequence:
 
 1. New generation boots, health check fails or system crashes.
 2. System reboots (via watchdog, panic, or manual).
 3. systemd-boot decrements the counter in the filename.
-4. After 3 failures (counter reaches +0), systemd-boot boots the previous generation (which has no counter suffix, meaning it is verified good).
+4. After exhausting all tries (counter reaches +0), systemd-boot boots the previous generation (which has no counter suffix, meaning it is verified good).
 5. Previous generation's health check passes.
 6. System is stable on the old generation.
 7. Alert sent to monitoring system.
@@ -273,30 +284,28 @@ No human intervention is required. The boot loader handles rollback at the firmw
 
 ### 9. Health Check Service
 
-The health check runs after every boot of a new (unverified) generation:
+The health check is configured by `modules/services/update.nix`. After every boot of a new (unverified) generation, the `aos-health-check` service runs:
 
-```ini
-# /etc/systemd/system/andyl-os-health-check.service
-[Unit]
-Description=ANDYL OS Post-Boot Health Check
-After=multi-user.target
-ConditionPathExists=/boot/efi/loader/entries/andyl-os-*+*.conf
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/andyl-os-health-check
-ExecStartPost=/usr/bin/systemctl start boot-complete.target
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
+```nix
+# From modules/services/update.nix
+systemd.services."aos-health-check" = {
+  description = "AOS Boot Health Check";
+  wantedBy = [ "multi-user.target" ];
+  after = [ "multi-user.target" ];
+  serviceConfig = {
+    Type = "oneshot";
+    RemainAfterExit = true;
+    ExecStart = "/usr/bin/aos-update health-check";
+    # If healthy, bless this boot so the counter stops.
+    ExecStartPost = "/usr/bin/systemd-bless-boot good";
+  };
+};
 ```
 
 **Health check script:**
 
 ```bash
 #!/usr/bin/env bash
-# /usr/bin/andyl-os-health-check
 set -euo pipefail
 
 CHECKS_PASSED=0
@@ -315,26 +324,18 @@ check() {
 # Core system checks
 check "systemd running"        systemctl is-system-running --quiet
 check "networkd online"        networkctl status --no-pager
-check "DNS resolution"         getent hosts update.andyl-os.internal
+check "DNS resolution"         getent hosts update.aos.internal
 check "NTP synchronized"       timedatectl show -p NTPSynchronized --value | grep -q yes
-check "store mount read-only"  mount | grep '/gnu/store' | grep -q 'ro,'
+check "store mount read-only"  mount | grep '/nix/store' | grep -q 'ro,'
 check "journal healthy"        journalctl --verify --quiet 2>/dev/null
 
 # Role-specific checks
-ROLE=$(cat /etc/andyl-os/role 2>/dev/null || echo "base")
+ROLE=$(cat /etc/aos/role 2>/dev/null || echo "base")
 case "$ROLE" in
     k8s-worker|k8s-control-plane)
         check "containerd running"  systemctl is-active --quiet containerd
         check "kubelet running"     systemctl is-active --quiet kubelet
         check "kubelet healthz"     curl -sf http://localhost:10248/healthz
-        ;;
-    database)
-        check "postgresql running"  systemctl is-active --quiet postgresql
-        check "pg accepting conns"  pg_isready -q
-        ;;
-    edge)
-        check "envoy running"       systemctl is-active --quiet envoy
-        check "envoy admin ready"   curl -sf http://localhost:9901/ready
         ;;
 esac
 
@@ -342,9 +343,19 @@ esac
 [ "$CHECKS_PASSED" -eq "$CHECKS_TOTAL" ]
 ```
 
-### 10. Mark-and-Sweep Garbage Collection
+### 10. Garbage Collection
 
-Over time, `/gnu/store` accumulates store paths from old generations. The garbage collector reclaims disk space.
+Over time, `/nix/store` accumulates store paths from old generations. Garbage collection is configured by `modules/services/gc.nix`:
+
+```nix
+# From modules/services/gc.nix
+options.aos.gc = {
+  enable = lib.mkOption { default = true; };
+  schedule = lib.mkOption { default = "weekly"; };
+  keepGenerations = lib.mkOption { default = 5; };
+  olderThan = lib.mkOption { default = "7d"; };
+};
+```
 
 **Algorithm:**
 
@@ -357,7 +368,7 @@ Phase 2: Mark (compute reachable set via BFS)
   reachable = transitive_closure(roots, reference_graph)
 
 Phase 3: Sweep (delete unreachable paths)
-  for each path in /gnu/store:
+  for each path in /nix/store:
     if path not in reachable:
       delete(path)
 
@@ -365,6 +376,20 @@ Phase 4: Clean up old generation symlinks and boot entries
 ```
 
 **Reference graph:** Store paths reference other store paths (e.g., bash references glibc). These references are recorded in the generation manifest. The GC agent loads reference data from all kept generations' manifests and computes the transitive closure.
+
+The GC runs at low priority (`IOSchedulingClass=idle`, `Nice=19`, `CPUSchedulingPolicy=idle`) to minimize impact on running workloads. It is implemented as a systemd timer:
+
+```nix
+# From modules/services/gc.nix
+systemd.timers."aos-gc" = {
+  wantedBy = [ "timers.target" ];
+  timerConfig = {
+    OnCalendar = cfg.schedule;
+    RandomizedDelaySec = "1h";
+    Persistent = true;
+  };
+};
+```
 
 ### 11. /proc Scanning for Safety
 
@@ -378,8 +403,8 @@ The GC scans `/proc` to prevent deleting store paths that are currently in use b
 # Scan /proc/*/maps for store path references
 for maps_file in /proc/[0-9]*/maps; do
     while IFS= read -r line; do
-        if [[ "$line" =~ /gnu/store/([a-z0-9]{32}-[^/[:space:]]+) ]]; then
-            store_path="/gnu/store/${BASH_REMATCH[1]}"
+        if [[ "$line" =~ /nix/store/([a-z0-9]{32}-[^/[:space:]]+) ]]; then
+            store_path="/nix/store/${BASH_REMATCH[1]}"
             roots["$store_path"]=1
         fi
     done < "$maps_file" 2>/dev/null
@@ -401,56 +426,53 @@ The GC must not run concurrently with updates. Both use a shared lock file:
 - **Update agent:** Acquires shared lock during store path installation. If GC is running, update waits.
 
 ```bash
-exec 9>"/var/lock/andyl-os-gc.lock"
+exec 9>"/var/lock/aos-gc.lock"
 flock -n 9 || { echo "GC already running or update in progress"; exit 1; }
 ```
 
-### 13. Retention Policy
+### 13. Update Agent Configuration
 
-```ini
-# /etc/andyl-os/gc.conf
-[gc]
-keep_generations = 5        # Number of generations to keep
-min_age_hours = 24          # Minimum age before GC eligible
-schedule = weekly            # systemd timer schedule
-low_space_threshold_percent = 15   # Trigger GC on low space
-dry_run = false
-timeout_minutes = 60
+The update agent is fully configurable via `modules/services/update.nix`:
+
+```nix
+# From modules/services/update.nix — key options
+aos.update = {
+  enable = true;              # Enable update agent
+  server = "https://update.aos.internal";
+  channel = "stable";         # stable, testing, unstable
+  checkInterval = 3600;       # seconds between checks
+  autoUpdate = false;         # stage only, or auto-apply
+  maxRetries = 3;
+  retryDelay = 300;           # seconds between retries
+  bootTries = 3;              # boot counting attempts
+  signingKeyPath = "/etc/aos/update-signing-key.pub";
+  gc = {
+    schedule = "weekly";
+    keepGenerations = 5;
+    minAgeHours = 168;        # 7 days
+  };
+};
 ```
 
-```ini
-# /etc/systemd/system/andyl-os-gc.timer
-[Timer]
-OnCalendar=weekly
-RandomizedDelaySec=3600
-Persistent=true
-```
-
-The GC service temporarily remounts the ext4 root read-write so store
-paths can be deleted:
-
-```ini
-# /etc/systemd/system/andyl-os-gc.service
-[Service]
-Type=oneshot
-ExecStartPre=/bin/mount -o remount,rw /gnu/store
-ExecStart=/usr/bin/andyl-os-gc
-ExecStopPost=/bin/mount -o remount,ro /gnu/store
-IOSchedulingClass=idle
-Nice=19
-```
+The module generates:
+- `/etc/aos/update.conf` -- configuration file consumed by the update agent
+- `aos-update-check.timer` -- periodic timer for update polling
+- `aos-update-check.service` -- downloads and verifies update bundles
+- `aos-update-apply.service` -- applies staged updates
+- `aos-health-check.service` -- post-boot health validation
+- `aos-rollback.service` -- emergency rollback to previous generation
 
 ### 14. Manual Rollback
 
 ```bash
 # List available generations
-andyl-os-agent generations list
+aos-update generations list
 # Generation 42 (current, FAILED)
 # Generation 41 (verified)
 # Generation 40 (verified)
 
 # Roll back to generation 41
-andyl-os-agent rollback --to=41
+aos-update rollback --to=41
 # Sets generation 41 as default boot entry, reboots
 ```
 
@@ -464,17 +486,17 @@ andyl-os-agent rollback --to=41
 
 | Scenario | Effect | Recovery |
 |----------|--------|----------|
-| Download failure | Incomplete bundle on disk | Agent retries with HTTP range requests. No store paths modified. |
+| Download failure | Incomplete bundle on disk | Agent retries. No store paths modified. |
 | Signature verification failure | Agent rejects update | Alert sent. No changes applied. |
 | Store path unpacking failure (disk full) | Some paths installed, some not | Agent deletes partially-installed paths. Temp-then-rename ensures no partial store paths exist. |
-| Health check failure (post-boot) | Boot counting decrements | After 3 failures, automatic rollback to previous generation. Alert sent. |
-| ESP corruption (power loss during write) | Unbootable system | Boot from USB rescue image. Regenerate boot entries from `/var/guix/profiles`. |
+| Health check failure (post-boot) | Boot counting decrements | After exhausting boot tries, automatic rollback to previous generation. Alert sent. |
+| ESP corruption (power loss during write) | Unbootable system | Boot from USB rescue image. Regenerate boot entries from `/var/lib/aos/generations`. |
 
 ## Alternatives Considered
 
-**A/B partition scheme:** Rejected because it wastes 50% of disk space and limits rollback to a single previous version. Guix generations can keep N previous versions with shared store paths.
+**A/B partition scheme:** Rejected because it wastes 50% of disk space and limits rollback to a single previous version. Nix generations can keep N previous versions with shared store paths.
 
-**Container-based updates (like CoreOS rpm-ostree):** Rejected because rpm-ostree uses RPM packages internally, losing the content-addressing and reproducibility benefits of Guix store paths.
+**Container-based updates (like CoreOS rpm-ostree):** Rejected because rpm-ostree uses RPM packages internally, losing the content-addressing and reproducibility benefits of Nix store paths.
 
 **ZFS as the root filesystem:** Considered but rejected for the golden image. ZFS adds complexity to image generation, requires ZFS kernel modules at imaging time, and is less portable across deployment targets (bare metal, VMs, cloud). Instead, ANDYL OS uses ext4 for the immutable root (simple, portable, works everywhere) and ZFS for mutable runtime data only (`/var`, container storage, logs). ZFS datasets are created by Ignition on first boot from unpartitioned disk space.
 
@@ -484,10 +506,10 @@ andyl-os-agent rollback --to=41
 
 ## Security Considerations
 
-- **Signed update bundles** prevent unauthorized or tampered updates from being installed.
-- **NAR hash verification** ensures each store path matches its manifest entry.
+- **Signed update bundles** (minisign Ed25519 via `deploy/sign.nix`) prevent unauthorized or tampered updates from being installed.
+- **Store path hash verification** ensures each store path matches its manifest entry.
 - **Atomic store path installation** (temp-then-rename) prevents partial updates from corrupting the store.
-- **Read-only `/gnu/store`** at runtime prevents modification of installed software.
+- **Read-only `/nix/store`** at runtime prevents modification of installed software.
 - **Boot counting** at the firmware level ensures a bad update cannot permanently brick the system.
 - **GC locking** prevents race conditions between garbage collection and update installation.
 - **`/proc` scanning** prevents the GC from deleting store paths in active use.
@@ -495,20 +517,19 @@ andyl-os-agent rollback --to=41
 ## Compatibility
 
 - **systemd-boot:** Required for boot counting protocol. UEFI firmware required.
-- **NAR format:** Compatible with both Guix and Nix ecosystems. Well-tested in production.
+- **NAR format:** Standard Nix archive format. Well-tested in production.
 - **Existing monitoring:** The health check service integrates with standard monitoring via exit codes and systemd unit status.
+- **Nix store:** The deployment model uses standard `/nix/store` content-addressed paths. No experimental Nix features are required.
 
 ## Open Questions
 
 1. **Delta updates:** Should we support binary delta compression (casync, zchunk) for large store paths that changed slightly (e.g., kernel rebuild with a single config change)?
-2. **Fleet coordination:** How do we orchestrate fleet-wide updates? Rolling update strategy? Canary deployments? This likely requires a separate fleet management document.
-3. **Store deduplication across machines:** If many machines share the same role, they have identical stores. Can we use BitTorrent-style peer distribution?
-4. **GC during active workloads:** Should GC be restricted to maintenance windows, or is the `IOSchedulingClass=idle` + `Nice=19` approach sufficient?
+2. **GC during active workloads:** Should GC be restricted to maintenance windows, or is the `IOSchedulingClass=idle` + `Nice=19` approach sufficient?
 
 ## References
 
 - systemd Boot Counting: https://systemd.io/AUTOMATIC_BOOT_ASSESSMENT/
 - NAR Archive Format: https://nixos.org/guides/nix-pills/nix-store-paths.html
-- Guix Garbage Collection: https://guix.gnu.org/manual/en/html_node/Invoking-guix-gc.html
 - systemd-bless-boot: https://www.freedesktop.org/software/systemd/man/systemd-bless-boot.service.html
 - Boot Loader Specification: https://systemd.io/BOOT_LOADER_SPECIFICATION/
+- minisign: https://jedisct1.github.io/minisign/

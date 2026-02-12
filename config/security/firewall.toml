@@ -1,5 +1,0 @@
-# Base nftables firewall rules.
-default-policy = "drop"
-allowed-tcp = [22]
-allowed-udp = []
-forward-policy = "drop"
