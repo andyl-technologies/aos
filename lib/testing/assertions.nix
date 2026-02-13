@@ -21,7 +21,7 @@ rec {
     # Send a command to the guest agent and read one JSON response line.
     run_in_guest() {
       local cmd="$1"
-      (printf '%s\n' "$cmd"; sleep 300) | socat - UNIX-CONNECT:"$AGENT_SOCK" 2>/dev/null | head -1
+      (printf '%s\n' "$cmd"; sleep 30) | socat - UNIX-CONNECT:"$AGENT_SOCK" 2>/dev/null | head -1
     }
 
     # Assert that a command exits 0 in the guest.
