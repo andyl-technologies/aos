@@ -1,8 +1,8 @@
 # tests/vm/update.nix — Update mechanism test
 #
-# Verifies the atomic update pipeline: update-check timer, health-check
-# service, rollback service, boot counting via systemd-bless-boot,
-# garbage collection timer, and the update tool binary.
+# Verifies the atomic update pipeline on the server variant: update-check
+# timer, health-check service, garbage collection timer, and the systemd
+# infrastructure supporting them.
 #
 # Usage:
 #   nix-build -A checks.vm.update
@@ -16,28 +16,19 @@
 
 let
   harness = import ../../lib/testing { inherit pkgs lib testTools; };
+  systemdBasics = import ./checks/systemd-basics.nix {
+    inherit (harness) mkCheck mkCheckGroup;
+  };
+  updateInfra = import ./checks/update-infra.nix {
+    inherit (harness) mkCheck mkCheckGroup;
+  };
 in
 harness.mkVMTest {
   name = "update";
-  system = systems.base;
+  system = systems.server;
   timeout = 300;
-  testScript = ''
-    # --- systemd service management ---
-    # Verify the system can enumerate and manage services (prerequisite
-    # for any update/health-check infrastructure).
-
-    assert_success "systemctl list-units --type=service --no-pager" \
-      "systemctl can list services"
-
-    assert_success "systemctl list-unit-files --type=timer --no-pager" \
-      "systemctl can list timer units"
-
-    # --- Journal ---
-    assert_success "journalctl --no-pager -n 5" \
-      "journalctl can read system journal"
-
-    # --- /etc writable (needed for config updates) ---
-    assert_success "touch /etc/test-write && rm /etc/test-write" \
-      "/etc is writable for updates"
-  '';
+  checks = [
+    systemdBasics
+    updateInfra
+  ];
 }
