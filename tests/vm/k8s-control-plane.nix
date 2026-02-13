@@ -1,10 +1,11 @@
-# tests/vm/kubernetes.nix — Kubernetes component test
+# tests/vm/k8s-control-plane.nix — Kubernetes control plane config test
 #
-# Verifies containerd, kubelet, CNI plugins, required kernel features,
-# and Kubernetes-specific sysctl values on a k8s-worker image.
+# Verifies control plane components: containerd, kubelet, k8s networking,
+# plus control-plane-specific config (kubeadm, etcd directory).
+# Uses the k8s-control-plane variant.
 #
 # Usage:
-#   nix-build -A checks.vm.kubernetes
+#   nix-build -A checks.vm.k8s-control-plane
 
 {
   pkgs,
@@ -29,8 +30,8 @@ let
   };
 in
 harness.mkVMTest {
-  name = "kubernetes";
-  system = systems.k8s-worker;
+  name = "k8s-control-plane";
+  system = systems.k8s-control-plane;
   timeout = 300;
   checks = [
     containerSupport
@@ -38,4 +39,11 @@ harness.mkVMTest {
     kubelet
     k8sNetworking
   ];
+  testScript = ''
+    # Control-plane-specific checks (kubeadm config, etcd dir)
+    assert_success "test -d /etc/kubernetes" \
+      "/etc/kubernetes directory exists"
+    assert_success "test -d /var/lib/etcd" \
+      "/var/lib/etcd directory exists"
+  '';
 }

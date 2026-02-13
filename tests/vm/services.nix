@@ -1,8 +1,8 @@
-# tests/vm/services.nix — Services smoke test
+# tests/vm/services.nix — Services test
 #
-# Verifies that the systemd service infrastructure is functional,
-# including runtime directories, timers, and accessible kernel
-# tunables that services depend on.
+# Verifies that the systemd service infrastructure is functional on the
+# server variant, including runtime directories, timers, chrony NTP,
+# and SSH daemon.
 #
 # Usage:
 #   nix-build -A checks.vm.services
@@ -16,19 +16,23 @@
 
 let
   harness = import ../../lib/testing { inherit pkgs lib testTools; };
+  systemdBasics = import ./checks/systemd-basics.nix {
+    inherit (harness) mkCheck mkCheckGroup;
+  };
+  chrony = import ./checks/chrony.nix {
+    inherit (harness) mkCheck mkCheckGroup;
+  };
+  ssh = import ./checks/ssh.nix {
+    inherit (harness) mkCheck mkCheckGroup;
+  };
 in
 harness.mkVMTest {
   name = "services";
-  system = systems.base;
+  system = systems.server;
   timeout = 300;
-  testScript = ''
-    assert_success "test -d /run/systemd/system" \
-      "systemd runtime directory exists"
-
-    assert_success "systemctl list-timers --no-pager" \
-      "systemd timers are functional"
-
-    assert_output_contains "cat /proc/sys/vm/swappiness" "60" \
-      "vm.swappiness sysctl is accessible"
-  '';
+  checks = [
+    systemdBasics
+    chrony
+    ssh
+  ];
 }
