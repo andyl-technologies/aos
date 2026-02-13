@@ -17,7 +17,7 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://mirrors.kernel.org/pub/linux/utils/kernel/kmod/kmod-${version}.tar.xz"
+      "https://cdn.kernel.org/pub/linux/utils/kernel/kmod/kmod-${version}.tar.xz"
     ];
     hash = "sha256-3HaLMVUXIJH1bcaUMLVIHy127NnMtU6tjCVA289eqbw=";
   };
