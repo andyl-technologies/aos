@@ -1,4 +1,4 @@
-# tests/vm/lib.nix — QEMU test harness with virtio-serial guest agent
+# lib/testing/vm.nix — QEMU test harness with virtio-serial guest agent
 #
 # Architecture:
 #   1. Build a rootfs ext4 image from the system's Nix store closure
@@ -15,14 +15,18 @@
 {
   pkgs,
   lib,
-  testTools,
+  testTools ? { },
 }:
 
 let
-  # Test infrastructure from nixpkgs — runs on the HOST, not in the AOS image.
+  # QEMU is the sole host-tool exception (CLAUDE.md) — too complex to bootstrap.
+  # socat and jq are AOS packages built from source.
   qemu = testTools.qemu;
-  hostSocat = testTools.socat;
-  hostJq = testTools.jq;
+  hostSocat = pkgs.socat;
+  hostJq = pkgs.jq;
+
+  # Shared shell assertion helpers
+  assertions = import ./assertions.nix;
 
   # ---------------------------------------------------------------------------
   # Build a rootfs ext4 image for VM testing
@@ -331,8 +335,8 @@ let
             echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
             ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
 
-            # Clear LD_LIBRARY_PATH — AOS build libs can conflict with nixpkgs binaries
-            # (QEMU, socat, jq are from nixpkgs and have their own RPATH)
+            # Clear LD_LIBRARY_PATH — AOS build libs can conflict with QEMU
+            # (QEMU is the sole nixpkgs binary; socat/jq are AOS packages)
             unset LD_LIBRARY_PATH
 
             qemu-system-x86_64 --version || echo "QEMU version check failed"
@@ -368,14 +372,8 @@ let
             }
             trap cleanup EXIT
 
-            # Test helper: send command to guest, read one response line.
-            # Keep stdin open with sleep so socat doesn't close the connection
-            # before the agent responds. head -1 reads exactly one response line,
-            # then exits, triggering SIGPIPE cascade that kills sleep+socat.
-            run_in_guest() {
-              local cmd="$1"
-              (printf '%s\n' "$cmd"; sleep 300) | socat - UNIX-CONNECT:"$AGENT_SOCK" 2>/dev/null | head -1
-            }
+            # Import shared test helpers (run_in_guest, assert_success, assert_output_contains)
+            ${assertions.vmHelpers}
 
             # Wait for guest agent using PING/PONG
             echo "Waiting for guest agent..."
@@ -402,37 +400,6 @@ let
               cat "$SERIAL_LOG" 2>/dev/null || true
               exit 1
             fi
-
-            assert_success() {
-              local cmd="$1"
-              local desc="''${2:-$cmd}"
-              RESULT=$(run_in_guest "$cmd")
-              EXIT_CODE=$(echo "$RESULT" | jq -r '.exit_code')
-              if [ "$EXIT_CODE" != "0" ]; then
-                echo "FAIL: $desc"
-                echo "  command: $cmd"
-                echo "  exit_code: $EXIT_CODE"
-                echo "  stdout: $(echo "$RESULT" | jq -r '.stdout')"
-                echo "  stderr: $(echo "$RESULT" | jq -r '.stderr')"
-                return 1
-              fi
-              echo "PASS: $desc"
-            }
-
-            assert_output_contains() {
-              local cmd="$1"
-              local expected="$2"
-              local desc="''${3:-$cmd contains $expected}"
-              RESULT=$(run_in_guest "$cmd")
-              STDOUT=$(echo "$RESULT" | jq -r '.stdout')
-              if ! echo "$STDOUT" | grep -q "$expected"; then
-                echo "FAIL: $desc"
-                echo "  expected to contain: $expected"
-                echo "  actual output: $STDOUT"
-                return 1
-              fi
-              echo "PASS: $desc"
-            }
 
             echo ""
             echo "==> Running test: ${name}"

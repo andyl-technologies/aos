@@ -33,6 +33,7 @@
     ../modules/base/kernel.nix
     ../modules/base/swap.nix
     ../modules/services/ignition.nix
+    ../modules/image/default.nix
   ];
 
   aos.system.variant = "base";
