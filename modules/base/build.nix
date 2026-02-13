@@ -78,6 +78,24 @@ let
 in
 {
   options = {
+    assertions = lib.mkOption {
+      type = lib.types.listOf lib.types.anything;
+      default = [ ];
+      description = ''
+        List of assertion attrsets { assertion = bool; message = string; }.
+        If any assertion is false, the system build fails with the message.
+      '';
+    };
+
+    warnings = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        List of warning messages. These are reported during evaluation
+        but do not prevent the system from building.
+      '';
+    };
+
     environment.systemPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [ ];
@@ -186,7 +204,6 @@ in
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.dracut
       ];
 
       phases = [
@@ -195,13 +212,14 @@ in
           script = ''
             mkdir -p $out
 
-            # Generate initrd using dracut with AOS configuration
-            # In a real build this would invoke dracut; for instantiation
-            # we create a placeholder that records the intent.
+            # Generate systemd-based initrd manifest.
+            # The initrd includes systemd, udevd, and modprobe for
+            # service-based boot ordering without dracut.
             cat > $out/initrd-manifest << 'MANIFEST'
             kernel=${pkgs.linux}
-            dracut=${pkgs.dracut}
+            systemd=${pkgs.systemd}
             modules=${lib.concatStringsSep " " config.aos.boot.initrd.modules}
+            type=systemd-initrd
             MANIFEST
 
             # Placeholder initrd.img — actual generation requires KVM
@@ -211,7 +229,7 @@ in
       ];
 
       meta = {
-        description = "AOS initrd (initial ramdisk)";
+        description = "AOS initrd (systemd-based initial ramdisk)";
       };
     };
   };

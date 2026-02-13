@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   make,
+  cmake,
 }:
 
 let
@@ -19,7 +20,10 @@ mkDerivation {
     hash = "sha256-dMLHihzVGkOmyY9GpOq++8hmgHTKmqFBFVRCdrZj/FU=";
   };
 
-  buildDeps = [ make ];
+  buildDeps = [
+    make
+    cmake
+  ];
   runtimeDeps = [ ];
   propagatedDeps = [ ];
 

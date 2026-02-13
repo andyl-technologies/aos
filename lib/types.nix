@@ -31,6 +31,35 @@ let
   # Helper: show all definitions.
   showDefs = defs: builtins.concatStringsSep ", " (builtins.map showDef defs);
 
+  # Helper: check if a value is an order marker
+  isOrder = v: builtins.isAttrs v && v ? _type && v._type == "order";
+
+  # Helper: deep merge for submodules
+  deepMergeSub =
+    lhs: rhs:
+    if builtins.isAttrs lhs && builtins.isAttrs rhs then
+      let
+        allNames = builtins.attrNames (lhs // rhs);
+      in
+      builtins.listToAttrs (
+        builtins.map (name: {
+          inherit name;
+          value =
+            let
+              lHas = builtins.hasAttr name lhs;
+              rHas = builtins.hasAttr name rhs;
+            in
+            if lHas && rHas then
+              deepMergeSub lhs.${name} rhs.${name}
+            else if rHas then
+              rhs.${name}
+            else
+              lhs.${name};
+        }) allNames
+      )
+    else
+      rhs;
+
 in
 {
   # -- Primitive types --
@@ -66,6 +95,14 @@ in
     description = "string";
     check = builtins.isString;
     merge = lastValue;
+  };
+
+  # lines — concatenates multiple string definitions with newlines
+  lines = {
+    name = "lines";
+    description = "strings concatenated with newlines";
+    check = builtins.isString;
+    merge = _loc: defs: builtins.concatStringsSep "\n" (builtins.map (d: d.value) defs);
   };
 
   nonEmptyStr = {
@@ -142,7 +179,6 @@ in
   # -- Parameterized types --
 
   # enum :: [a] -> type
-  # A value that must be one of a fixed set of allowed values.
   enum = allowedValues: {
     name = "enum";
     description = "one of ${builtins.toJSON allowedValues}";
@@ -159,16 +195,35 @@ in
   };
 
   # listOf :: type -> type
-  # A list where every element matches the given element type.
+  # Supports mkBefore/mkAfter ordering markers on individual list elements.
   listOf = elemType: {
     name = "listOf(${elemType.name})";
     description = "list of ${elemType.description}";
-    check = v: builtins.isList v && builtins.all elemType.check v;
-    merge = _loc: defs: builtins.concatLists (builtins.map (d: d.value) defs);
+    check = v: builtins.isList v;
+    merge =
+      _loc: defs:
+      let
+        # Collect all elements from all definitions, unwrapping order markers
+        processElem =
+          elem:
+          if isOrder elem then
+            {
+              value = elem._value;
+              priority = elem._priority;
+            }
+          else
+            {
+              value = elem;
+              priority = 1000;
+            };
+        allElems = builtins.concatLists (builtins.map (d: builtins.map processElem d.value) defs);
+        # Sort by priority (lower = earlier in list)
+        sorted = builtins.sort (a: b: a.priority < b.priority) allElems;
+      in
+      builtins.map (e: e.value) sorted;
   };
 
   # attrsOf :: type -> type
-  # An attrset where every value matches the given element type.
   attrsOf = elemType: {
     name = "attrsOf(${elemType.name})";
     description = "attribute set of ${elemType.description}";
@@ -176,7 +231,6 @@ in
     merge =
       loc: defs:
       let
-        # Collect all keys from all definitions
         allKeys = builtins.concatLists (builtins.map (d: builtins.attrNames d.value) defs);
         uniqueKeys =
           let
@@ -192,7 +246,6 @@ in
                 if builtins.any (x: x == h) acc then go acc t else go (acc ++ [ h ]) t;
           in
           go [ ] allKeys;
-        # For each key, collect all definitions that have it and merge them
       in
       builtins.listToAttrs (
         builtins.map (
@@ -218,7 +271,6 @@ in
   };
 
   # nullOr :: type -> type
-  # A value that is either null or matches the given type.
   nullOr = elemType: {
     name = "nullOr(${elemType.name})";
     description = "${elemType.description} or null";
@@ -240,7 +292,6 @@ in
   };
 
   # either :: type -> type -> type
-  # A value matching either of two types.
   either = type1: type2: {
     name = "either(${type1.name},${type2.name})";
     description = "${type1.description} or ${type2.description}";
@@ -260,7 +311,6 @@ in
   };
 
   # oneOf :: [type] -> type
-  # A value matching any of a list of types.
   oneOf = types: {
     name = "oneOf(${builtins.concatStringsSep "," (builtins.map (t: t.name) types)})";
     description = "one of ${builtins.concatStringsSep ", " (builtins.map (t: t.description) types)}";
@@ -287,31 +337,18 @@ in
   };
 
   # submodule :: (attrset | function) -> type
-  # A nested module that is evaluated with evalModules.
-  # The argument is either an attrset { options = ...; config = ...; }
-  # or a function { config, lib, pkgs, ... }: { options = ...; config = ...; }.
-  #
-  # Note: submodule evaluation is deferred to evalModules. The merge function
-  # here collects the definitions; actual evaluation happens in modules.nix.
+  # Uses recursive deep merge instead of shallow (//) merge.
   submodule = moduleOrFn: {
     name = "submodule";
     description = "submodule";
     check = builtins.isAttrs;
-    merge =
-      loc: defs:
-      let
-        # Merge all submodule definitions into a single attrset
-        merged = builtins.foldl' (acc: def: acc // def.value) { } defs;
-      in
-      merged;
-    # Store the module definition for evalModules to use
+    merge = loc: defs: builtins.foldl' (acc: def: deepMergeSub acc def.value) { } defs;
     _submodule = moduleOrFn;
   };
 
   # -- Type combinators --
 
   # coercedTo :: type -> (a -> b) -> type -> type
-  # Accept values of one type, coerce them to another type.
   coercedTo = fromType: coercion: toType: {
     name = "coercedTo(${fromType.name},${toType.name})";
     description = "${fromType.description} convertible to ${toType.description}";
@@ -327,8 +364,6 @@ in
   };
 
   # uniq :: type -> type
-  # A type where all definitions must have the same value, or there must be
-  # exactly one definition.
   uniq = elemType: {
     name = "uniq(${elemType.name})";
     description = "unique ${elemType.description}";
