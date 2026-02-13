@@ -74,7 +74,7 @@ correctly. Stubbing is acceptable only for truly complex bootstrapping problems
 
 ## The `aos` CLI tool
 
-The `aos` CLI is a Rust tool (`cli/`) for working with this repo. Run it via
+The `aos` CLI is a Rust tool (`pkgs/tools/aos/cli/`) for working with this repo. Run it via
 the Nix flake — do NOT use `cargo run` directly (it needs nixfmt in PATH):
 
 ```sh
