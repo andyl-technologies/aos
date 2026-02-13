@@ -35,7 +35,10 @@ let
   # creates an ext4 image populated via mkfs.ext4 -d (no mount needed).
 
   mkTestRootfs =
-    { system, name }:
+    {
+      system,
+      name ? system.config.aos.system.variant,
+    }:
     let
       toplevel = system.config.system.build.toplevel;
       systemdPkg = pkgs.systemd;
@@ -295,7 +298,7 @@ let
       timeout ? 120,
     }:
     let
-      rootfs = mkTestRootfs { inherit system name; };
+      rootfs = mkTestRootfs { inherit system; };
       kernel = system.config.system.build.kernel;
     in
     pkgs.mkDerivation {
@@ -389,7 +392,7 @@ let
                   break
                 fi
               fi
-              sleep 2
+              sleep 0.5
             done
 
             if [ "$AGENT_READY" -ne 1 ]; then

@@ -16,7 +16,7 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://mirrors.kernel.org/pub/linux/utils/util-linux/v2.40/util-linux-${version}.tar.xz"
+      "https://cdn.kernel.org/pub/linux/utils/util-linux/v2.40/util-linux-${version}.tar.xz"
     ];
     hash = "sha256-14s3pm9ZItcO3zvfsBprM9NO08PK/WYoIDsqK2fI6LM=";
   };
