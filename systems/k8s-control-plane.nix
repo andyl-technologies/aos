@@ -34,6 +34,11 @@
 
   aos.system.variant = "k8s-control-plane";
 
+  # --- Disk image sizing ---
+  # Control plane needs space for etcd data and control plane binaries.
+  aos.image.diskSize = "32G";
+  aos.image.rootSize = "12G";
+
   # --- Control plane ---
   aos.kubernetes.controlPlane.enable = true;
 

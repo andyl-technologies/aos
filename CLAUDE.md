@@ -12,9 +12,13 @@ previously-built AOS packages. **No host tools. No upstream nixpkgs.**
   must be built as an AOS package from source, using only bootstrap tools and
   other AOS packages as build dependencies.
 - The `hostTools` pattern is **not used**. Do not import or reference nixpkgs
-  packages in any build derivation.
-- Test infrastructure (QEMU, socat, etc.) is the only exception — these run on
-  the host and are not part of the AOS image or build closure.
+  packages in any build or test derivation.
+- If a tool exists as an AOS package (e.g. socat, jq), **always use the AOS
+  package** (`pkgs.socat`, `pkgs.jq`) — even in test harnesses that run on the
+  host. Never pull a nixpkgs version of something we already build from source.
+- The sole nixpkgs exception is **QEMU** (`testTools.qemu`), which is too
+  complex to bootstrap and runs only on the host during VM/fleet tests. No
+  other nixpkgs packages should appear in `testTools` or build/test closures.
 
 ## Package structure
 

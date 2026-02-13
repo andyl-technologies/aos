@@ -28,7 +28,7 @@
           pkgs = import nixpkgs { inherit system; };
           craneLib = crane.mkLib pkgs;
         in
-        import ./pkgs/tools/aos.nix { inherit craneLib pkgs; };
+        import ./pkgs/tools/_aos.nix { inherit craneLib pkgs; };
     in
     {
       packages = forAllSystems (system: {

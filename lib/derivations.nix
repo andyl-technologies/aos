@@ -265,6 +265,8 @@ let
       mesonFlags ? "",
       patches ? [ ],
       postPatch ? "",
+      preConfigure ? "",
+      postConfigure ? "",
       preBuild ? "",
       postBuild ? "",
       preInstall ? "",
@@ -302,7 +304,9 @@ let
       # Inject pre/post hooks into phases
       finalPhases = builtins.map (
         phase:
-        if phase.name == "build" && (preBuild != "" || postBuild != "") then
+        if phase.name == "configure" && (preConfigure != "" || postConfigure != "") then
+          phase // { script = preConfigure + "\n" + phase.script + "\n" + postConfigure; }
+        else if phase.name == "build" && (preBuild != "" || postBuild != "") then
           phase // { script = preBuild + "\n" + phase.script + "\n" + postBuild; }
         else if phase.name == "install" && (preInstall != "" || postInstall != "") then
           phase // { script = preInstall + "\n" + phase.script + "\n" + postInstall; }
@@ -334,6 +338,8 @@ let
         "mesonFlags"
         "patches"
         "postPatch"
+        "preConfigure"
+        "postConfigure"
         "preBuild"
         "postBuild"
         "preInstall"
