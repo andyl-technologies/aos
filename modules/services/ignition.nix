@@ -132,7 +132,7 @@ in
       before = [ "initrd-root-fs.target" ];
       after = [
         "systemd-udevd.service"
-        "dracut-initqueue.service"
+        "initrd-root-device.target"
       ];
       serviceConfig = {
         Type = "oneshot";

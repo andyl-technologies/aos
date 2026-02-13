@@ -22,7 +22,7 @@ in
   options.aos.security.selinux = {
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = false;
+      default = true;
       description = ''
         Enable SELinux mandatory access control. When enabled, the kernel
         enforces the configured policy on all processes. Requires kernel

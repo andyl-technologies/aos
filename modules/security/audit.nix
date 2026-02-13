@@ -41,11 +41,12 @@ in
   options.aos.security.audit = {
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = false;
+      default = true;
       description = ''
         Enable the Linux audit framework (auditd). When enabled, the kernel
         records system calls and events matching the configured rules.
         Required for CIS compliance and security monitoring.
+        Enabled by default for production security.
       '';
     };
 

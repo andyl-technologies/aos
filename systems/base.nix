@@ -29,6 +29,9 @@
     ../modules/base/filesystems.nix
     ../modules/base/networking.nix
     ../modules/base/users.nix
+    ../modules/base/journald.nix
+    ../modules/base/kernel.nix
+    ../modules/base/swap.nix
     ../modules/services/ignition.nix
   ];
 

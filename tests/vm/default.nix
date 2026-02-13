@@ -67,4 +67,12 @@
       testTools
       ;
   };
+  services = import ./services.nix {
+    inherit
+      pkgs
+      lib
+      systems
+      testTools
+      ;
+  };
 }

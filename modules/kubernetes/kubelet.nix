@@ -56,6 +56,35 @@ let
     eventRecordQPS: 5
     shutdownGracePeriod: "30s"
     shutdownGracePeriodCriticalPods: "10s"
+    systemReserved:
+      cpu: "${cfg.systemReserved.cpu}"
+      memory: "${cfg.systemReserved.memory}"
+      ephemeral-storage: "${cfg.systemReserved.ephemeralStorage}"
+    kubeReserved:
+      cpu: "${cfg.kubeReserved.cpu}"
+      memory: "${cfg.kubeReserved.memory}"
+      ephemeral-storage: "${cfg.kubeReserved.ephemeralStorage}"
+    evictionHard:
+      memory.available: "${cfg.evictionHard.memoryAvailable}"
+      nodefs.available: "${cfg.evictionHard.nodefsAvailable}"
+      imagefs.available: "${cfg.evictionHard.imagefsAvailable}"
+    evictionSoft:
+      memory.available: "${cfg.evictionSoft.memoryAvailable}"
+      nodefs.available: "${cfg.evictionSoft.nodefsAvailable}"
+    evictionSoftGracePeriod:
+      memory.available: "1m30s"
+      nodefs.available: "1m30s"
+    imageGCHighThresholdPercent: ${toString cfg.imageGCHighThreshold}
+    imageGCLowThresholdPercent: ${toString cfg.imageGCLowThreshold}
+    containerLogMaxSize: "${cfg.containerLogMaxSize}"
+    containerLogMaxFiles: ${toString cfg.containerLogMaxFiles}
+    topologyManagerPolicy: "${cfg.topologyManagerPolicy}"
+    ${lib.optionalString (cfg.featureGates != { }) ''
+      featureGates:
+      ${builtins.concatStringsSep "\n" (
+        lib.mapAttrsToList (k: v: "  ${k}: ${if v then "true" else "false"}") cfg.featureGates
+      )}
+    ''}
   '';
 
   # Build kubelet command-line flags.
@@ -167,6 +196,115 @@ in
       description = ''
         Taints to apply to this node on registration. Format:
         "key=value:effect" (e.g. "node-role.kubernetes.io/control-plane:NoSchedule").
+      '';
+    };
+
+    systemReserved = {
+      cpu = lib.mkOption {
+        type = lib.types.str;
+        default = "100m";
+        description = "CPU reserved for system daemons (e.g. systemd, journald).";
+      };
+      memory = lib.mkOption {
+        type = lib.types.str;
+        default = "256Mi";
+        description = "Memory reserved for system daemons.";
+      };
+      ephemeralStorage = lib.mkOption {
+        type = lib.types.str;
+        default = "1Gi";
+        description = "Ephemeral storage reserved for system daemons.";
+      };
+    };
+
+    kubeReserved = {
+      cpu = lib.mkOption {
+        type = lib.types.str;
+        default = "100m";
+        description = "CPU reserved for Kubernetes components (kubelet, container runtime).";
+      };
+      memory = lib.mkOption {
+        type = lib.types.str;
+        default = "256Mi";
+        description = "Memory reserved for Kubernetes components.";
+      };
+      ephemeralStorage = lib.mkOption {
+        type = lib.types.str;
+        default = "1Gi";
+        description = "Ephemeral storage reserved for Kubernetes components.";
+      };
+    };
+
+    evictionHard = {
+      memoryAvailable = lib.mkOption {
+        type = lib.types.str;
+        default = "100Mi";
+        description = "Hard eviction threshold for available memory.";
+      };
+      nodefsAvailable = lib.mkOption {
+        type = lib.types.str;
+        default = "10%";
+        description = "Hard eviction threshold for node filesystem available space.";
+      };
+      imagefsAvailable = lib.mkOption {
+        type = lib.types.str;
+        default = "15%";
+        description = "Hard eviction threshold for image filesystem available space.";
+      };
+    };
+
+    evictionSoft = {
+      memoryAvailable = lib.mkOption {
+        type = lib.types.str;
+        default = "200Mi";
+        description = "Soft eviction threshold for available memory.";
+      };
+      nodefsAvailable = lib.mkOption {
+        type = lib.types.str;
+        default = "15%";
+        description = "Soft eviction threshold for node filesystem available space.";
+      };
+    };
+
+    imageGCHighThreshold = lib.mkOption {
+      type = lib.types.int;
+      default = 85;
+      description = "Image GC is triggered when disk usage exceeds this percentage.";
+    };
+
+    imageGCLowThreshold = lib.mkOption {
+      type = lib.types.int;
+      default = 80;
+      description = "Image GC attempts to free disk until usage drops below this percentage.";
+    };
+
+    containerLogMaxSize = lib.mkOption {
+      type = lib.types.str;
+      default = "10Mi";
+      description = "Maximum size of a container log file before rotation.";
+    };
+
+    containerLogMaxFiles = lib.mkOption {
+      type = lib.types.int;
+      default = 5;
+      description = "Maximum number of rotated container log files to retain.";
+    };
+
+    topologyManagerPolicy = lib.mkOption {
+      type = lib.types.str;
+      default = "none";
+      description = ''
+        Topology Manager policy for NUMA-aware resource alignment.
+        Options: "none", "best-effort", "restricted", "single-numa-node".
+      '';
+    };
+
+    featureGates = lib.mkOption {
+      type = lib.types.attrsOf lib.types.bool;
+      default = { };
+      description = ''
+        Kubernetes feature gates to enable or disable. Example:
+        { "GracefulNodeShutdown" = true; "TopologyManager" = true; }
       '';
     };
   };

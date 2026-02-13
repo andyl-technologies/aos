@@ -168,6 +168,11 @@ let
     gcc = callPackage ./toolchain/gcc.nix { };
     binutils = callPackage ./toolchain/binutils.nix { };
     linux-headers = callPackage ./toolchain/linux-headers.nix { };
+    go-bootstrap = callPackage ./toolchain/go-bootstrap.nix { };
+    go = callPackage ./toolchain/go.nix { };
+    llvm = callPackage ./toolchain/llvm.nix { };
+    rust-bootstrap = callPackage ./toolchain/rust-bootstrap.nix { };
+    rust = callPackage ./toolchain/rust.nix { };
 
     # --- Core ---
     make = callPackage ./core/make.nix { };
@@ -200,6 +205,7 @@ let
     rsync = callPackage ./core/rsync.nix { };
     pcre2 = callPackage ./core/pcre2.nix { };
     bc = callPackage ./core/bc.nix { };
+    cmake = callPackage ./core/cmake.nix { };
 
     # --- Compression ---
     zlib = callPackage ./compression/zlib.nix { };
@@ -267,7 +273,6 @@ let
     node-exporter = callPackage ./monitoring/node-exporter.nix { };
 
     # --- Boot ---
-    dracut = callPackage ./boot/dracut.nix { };
     ignition = callPackage ./boot/ignition.nix { };
     butane = callPackage ./boot/butane.nix { };
 

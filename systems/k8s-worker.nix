@@ -24,7 +24,9 @@
     ../modules/kubernetes/containerd.nix
     ../modules/kubernetes/kubelet.nix
     ../modules/kubernetes/network.nix
+    ../modules/kubernetes/node-problem-detector.nix
     ../modules/monitoring/node-exporter.nix
+    ../modules/monitoring/hardware.nix
   ];
 
   aos.system.variant = "k8s-worker";

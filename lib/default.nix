@@ -32,7 +32,18 @@ trivial
 // strings
 // {
   inherit types system;
-  inherit (modules) evalModules mkOption mkIf;
+  inherit (modules)
+    evalModules
+    mkOption
+    mkIf
+    mkMerge
+    mkOverride
+    mkDefault
+    mkForce
+    mkOrder
+    mkBefore
+    mkAfter
+    ;
   inherit (derivations)
     mkDerivation
     mkShell
