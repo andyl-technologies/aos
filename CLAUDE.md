@@ -68,6 +68,45 @@ work of implementing packages and potentially large dependency chains in Nix
 correctly. Stubbing is acceptable only for truly complex bootstrapping problems
 (e.g. Go from-scratch bootstrap) and must be explicitly marked as TODO.
 
+## The `aos` CLI tool
+
+The `aos` CLI is a Rust tool (`cli/`) for working with this repo. Run it via
+the Nix flake — do NOT use `cargo run` directly (it needs nixfmt in PATH):
+
+```sh
+# Enter the dev shell (provides aos + nixfmt in PATH, installs pre-commit hook):
+nix develop
+
+# Or run a one-off command without entering the shell:
+nix run . -- <subcommand>
+```
+
+### Subcommands
+
+| Command       | Description                                             |
+|---------------|---------------------------------------------------------|
+| `aos fmt`     | Auto-format all `.nix` files with nixfmt                |
+| `aos fmt --check` | Check formatting without modifying files           |
+| `aos build`   | Build a system variant or package                       |
+| `aos test`    | Run tests (eval, VM)                                    |
+| `aos show`    | Show package/module information                         |
+| `aos graph`   | Print the dependency graph                              |
+| `aos lint`    | Lint Nix files for common issues                        |
+| `aos gc`      | Garbage-collect old Nix store paths                     |
+| `aos prefetch`| Prefetch a URL and print its hash                       |
+| `aos describe`| Describe a package or module                            |
+| `aos system`  | System variant operations                               |
+| `aos shell`   | Enter a dev shell with a package's deps                 |
+| `aos repl`    | Open a Nix REPL with the AOS package set loaded         |
+| `aos why-depends` | Explain why one derivation depends on another      |
+| `aos completions` | Generate shell completions                         |
+
+### Pre-commit hook
+
+The dev shell installs a pre-commit hook that auto-formats `.nix` files and
+re-stages them before committing. The hook is defined in `dev/shell.nix` and
+written to `.git/hooks/pre-commit` on `nix develop`.
+
 ## Testing
 
 - `nix-build -A checks.eval` — pure evaluation checks

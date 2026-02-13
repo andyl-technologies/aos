@@ -29,6 +29,7 @@
     ../modules/security/hardening.nix
     ../modules/security/firewall.nix
     ../modules/security/ssh.nix
+    ../modules/security/fail2ban.nix
     ../modules/services/update.nix
     ../modules/services/gc.nix
     ../modules/services/chrony.nix
