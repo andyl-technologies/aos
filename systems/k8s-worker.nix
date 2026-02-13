@@ -31,6 +31,11 @@
 
   aos.system.variant = "k8s-worker";
 
+  # --- Disk image sizing ---
+  # Workers need more space for container images and ephemeral pod storage.
+  aos.image.diskSize = "32G";
+  aos.image.rootSize = "12G";
+
   # --- Container runtime ---
   aos.kubernetes.containerd.enable = true;
 

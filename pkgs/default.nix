@@ -158,127 +158,54 @@ let
     fn (auto // overrides);
 
   # Shared Kubernetes source (single tarball for kubelet, kubeadm, kubectl)
-  kubeSource = import ./kubernetes/source.nix { inherit fetchurl; };
+  kubeSource = import ./kubernetes/_source.nix { inherit fetchurl; };
+
+  # Auto-discover packages from subdirectories.
+  # Recursively scans for .nix files, skipping default.nix and _-prefixed
+  # files/directories (used for shared resources like _source.nix).
+  discoverPackages =
+    dir:
+    let
+      entries = builtins.readDir dir;
+      names = builtins.attrNames entries;
+
+      # .nix files → packages (skip default.nix and _-prefixed)
+      nixFiles = builtins.filter (
+        name:
+        entries.${name} == "regular"
+        && lib.hasSuffix ".nix" name
+        && name != "default.nix"
+        && builtins.substring 0 1 name != "_"
+      ) names;
+
+      # Subdirectories to recurse into (skip _-prefixed)
+      subdirs = builtins.filter (
+        name: entries.${name} == "directory" && builtins.substring 0 1 name != "_"
+      ) names;
+
+      filePackages = builtins.listToAttrs (
+        builtins.map (name: {
+          name = lib.removeSuffix ".nix" name;
+          value = callPackage (dir + "/${name}") { };
+        }) nixFiles
+      );
+
+      subdirPackages = builtins.foldl' (
+        acc: subdir: acc // discoverPackages (dir + "/${subdir}")
+      ) { } subdirs;
+    in
+    filePackages // subdirPackages;
 
   self = {
     # --- Plumbing ---
     inherit mkDerivation fetchurl lib;
-
-    # --- Toolchain ---
-    gcc = callPackage ./toolchain/gcc.nix { };
-    binutils = callPackage ./toolchain/binutils.nix { };
-    linux-headers = callPackage ./toolchain/linux-headers.nix { };
-    go-bootstrap = callPackage ./toolchain/go-bootstrap.nix { };
-    go = callPackage ./toolchain/go.nix { };
-    llvm = callPackage ./toolchain/llvm.nix { };
-    rust-bootstrap = callPackage ./toolchain/rust-bootstrap.nix { };
-    rust = callPackage ./toolchain/rust.nix { };
-
-    # --- Core ---
-    make = callPackage ./core/make.nix { };
-    coreutils = callPackage ./core/coreutils.nix { };
-    bash = callPackage ./core/bash.nix { };
-    findutils = callPackage ./core/findutils.nix { };
-    gawk = callPackage ./core/gawk.nix { };
-    grep = callPackage ./core/grep.nix { };
-    sed = callPackage ./core/sed.nix { };
-    tar = callPackage ./core/tar.nix { };
-    gzip = callPackage ./core/gzip.nix { };
-    xz = callPackage ./core/xz.nix { };
-    diffutils = callPackage ./core/diffutils.nix { };
-    patch = callPackage ./core/patch.nix { };
-    pkg-config = callPackage ./core/pkg-config.nix { };
-    perl = callPackage ./core/perl.nix { };
-    bison = callPackage ./core/bison.nix { };
-    texinfo = callPackage ./core/texinfo.nix { };
-    dosfstools = callPackage ./core/dosfstools.nix { };
-    e2fsprogs = callPackage ./core/e2fsprogs.nix { };
-    jq = callPackage ./core/jq.nix { };
-    expat = callPackage ./core/expat.nix { };
-    m4 = callPackage ./core/m4.nix { };
-    flex = callPackage ./core/flex.nix { };
-    gperf = callPackage ./core/gperf.nix { };
-    elfutils = callPackage ./core/elfutils.nix { };
-    ninja = callPackage ./core/ninja.nix { };
-    python3 = callPackage ./core/python3.nix { };
-    meson = callPackage ./core/meson.nix { };
-    rsync = callPackage ./core/rsync.nix { };
-    pcre2 = callPackage ./core/pcre2.nix { };
-    bc = callPackage ./core/bc.nix { };
-    cmake = callPackage ./core/cmake.nix { };
-
-    # --- Compression ---
-    zlib = callPackage ./compression/zlib.nix { };
-    zstd = callPackage ./compression/zstd.nix { };
-    lz4 = callPackage ./compression/lz4.nix { };
-
-    # --- TLS ---
-    openssl = callPackage ./tls/openssl.nix { };
-
-    # --- Init ---
-    dbus = callPackage ./init/dbus.nix { };
-    util-linux = callPackage ./init/util-linux.nix { };
-    kmod = callPackage ./init/kmod.nix { };
-    systemd = callPackage ./init/systemd.nix { };
-
-    # --- Kernel ---
-    linux = callPackage ./kernel/linux.nix { };
-    firmware = callPackage ./kernel/firmware.nix { };
-
-    # --- Security ---
-    libcap = callPackage ./security/libcap.nix { };
-    libxcrypt = callPackage ./security/libxcrypt.nix { };
-    audit = callPackage ./security/audit.nix { };
-    libsepol = callPackage ./security/libsepol.nix { };
-    libselinux = callPackage ./security/libselinux.nix { };
-    libsemanage = callPackage ./security/libsemanage.nix { };
-    policycoreutils = callPackage ./security/policycoreutils.nix { };
-    setools = callPackage ./security/setools.nix { };
-    refpolicy = callPackage ./security/refpolicy.nix { };
-    container-selinux = callPackage ./security/container-selinux.nix { };
-
-    # --- Storage ---
-    zfs = callPackage ./storage/zfs.nix { };
-
-    # --- Networking ---
-    libmnl = callPackage ./networking/libmnl.nix { };
-    libnftnl = callPackage ./networking/libnftnl.nix { };
-    iproute2 = callPackage ./networking/iproute2.nix { };
-    iptables = callPackage ./networking/iptables.nix { };
-    nftables = callPackage ./networking/nftables.nix { };
-    curl = callPackage ./networking/curl.nix { };
-    openssh = callPackage ./networking/openssh.nix { };
-    chrony = callPackage ./networking/chrony.nix { };
-    ca-certificates = callPackage ./networking/ca-certificates.nix { };
-
-    # --- Containers ---
-    libseccomp = callPackage ./containers/libseccomp.nix { };
-    runc = callPackage ./containers/runc.nix { };
-    containerd = callPackage ./containers/containerd.nix { };
-
-    # --- Kubernetes ---
+  }
+  // discoverPackages ./.
+  // {
+    # --- Explicit overrides for packages needing non-standard arguments ---
     kubelet = callPackage ./kubernetes/kubelet.nix { inherit kubeSource; };
     kubeadm = callPackage ./kubernetes/kubeadm.nix { inherit kubeSource; };
     kubectl = callPackage ./kubernetes/kubectl.nix { inherit kubeSource; };
-    crictl = callPackage ./kubernetes/crictl.nix { };
-    cni-plugins = callPackage ./kubernetes/cni-plugins.nix { };
-    helm = callPackage ./kubernetes/helm.nix { };
-    nerdctl = callPackage ./kubernetes/nerdctl.nix { };
-    ethtool = callPackage ./kubernetes/ethtool.nix { };
-    socat = callPackage ./kubernetes/socat.nix { };
-    conntrack-tools = callPackage ./kubernetes/conntrack-tools.nix { };
-    ipvsadm = callPackage ./kubernetes/ipvsadm.nix { };
-
-    # --- Monitoring ---
-    node-exporter = callPackage ./monitoring/node-exporter.nix { };
-
-    # --- Boot ---
-    ignition = callPackage ./boot/ignition.nix { };
-    butane = callPackage ./boot/butane.nix { };
-
-    # --- Tools ---
-    minisign = callPackage ./tools/minisign.nix { };
-    sbsigntools = callPackage ./tools/sbsigntools.nix { };
   };
 
 in

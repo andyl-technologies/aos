@@ -14,7 +14,7 @@
 #   lib/      — Library functions (derivations, modules, types, etc.)
 #   modules/  — NixOS-style configuration modules
 #   systems/  — System variant compositions (base, server, k8s-*)
-#   images/   — Disk image builders
+#   modules/image/ — Disk image builder module
 #   tests/    — Multi-layer test suite (eval, build, vm, fleet)
 
 {
@@ -29,10 +29,9 @@ let
   # tools and previously-built AOS packages.  No nixpkgs in the build closure.
   pkgs = import ./pkgs { inherit lib; };
 
-  # Test infrastructure from nixpkgs — QEMU, socat, jq run on the HOST
-  # during testing.  They are NOT part of the AOS image or build closure.
+  # QEMU is the sole nixpkgs dependency in the test closure (too complex to
+  # bootstrap).  socat and jq are AOS packages built from source.
   testTools = {
-    inherit (nixpkgs) socat jq;
     qemu = nixpkgs.qemu_kvm;
   };
 
@@ -55,24 +54,7 @@ in
 {
   inherit pkgs lib systems;
 
-  images = {
-    base = import ./images/base.nix {
-      inherit pkgs lib;
-      system = systems.base;
-    };
-    server = import ./images/server.nix {
-      inherit pkgs lib;
-      system = systems.server;
-    };
-    k8s-worker = import ./images/k8s-worker.nix {
-      inherit pkgs lib;
-      system = systems.k8s-worker;
-    };
-    k8s-control-plane = import ./images/k8s-control-plane.nix {
-      inherit pkgs lib;
-      system = systems.k8s-control-plane;
-    };
-  };
+  images = lib.mapAttrs (name: system: system.config.system.build.image) systems;
 
   checks = import ./tests { inherit pkgs lib testTools; };
 }

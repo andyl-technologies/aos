@@ -1,4 +1,4 @@
-# tests/fleet/lib.nix — Multi-VM test orchestrator
+# lib/testing/fleet.nix — Multi-VM test orchestrator
 #
 # Boots multiple QEMU VMs connected via socket networking. Each machine
 # has its own virtio-serial agent for independent control. The test script
@@ -14,10 +14,14 @@
 #   Each machine is assigned a unique MAC address and port for socket
 #   networking. The first machine listens, subsequent machines connect.
 
-{ pkgs, lib }:
+{
+  pkgs,
+  lib,
+}:
 
 let
-  vmLib = import ../vm/lib.nix { inherit pkgs lib; };
+  vmLib = import ./vm.nix { inherit pkgs lib; };
+  assertions = import ./assertions.nix;
 
   mkFleetTest =
     {
@@ -65,7 +69,7 @@ let
                 machineName:
                 let
                   machine = machines.${machineName};
-                  image = vmLib.mkTestImage {
+                  image = vmLib.mkTestRootfs {
                     system = machine.system;
                     name = machineName;
                   };
@@ -123,33 +127,8 @@ let
               exit 1
             fi
 
-            # ----------------------------------------------------------
-            # Fleet test helper functions
-            # ----------------------------------------------------------
-
-            # Run a command on a specific machine
-            run_on() {
-              local machine="$1"
-              local cmd="$2"
-              local sock_var="AGENT_SOCK_$machine"
-              echo "$cmd" | ${pkgs.socat}/bin/socat - UNIX-CONNECT:"''${!sock_var}"
-            }
-
-            # Assert a command succeeds on a specific machine
-            assert_on() {
-              local machine="$1"
-              local cmd="$2"
-              local desc="''${3:-[$machine] $cmd}"
-              RESULT=$(run_on "$machine" "$cmd")
-              EXIT_CODE=$(echo "$RESULT" | jq -r '.exit_code')
-              if [ "$EXIT_CODE" != "0" ]; then
-                echo "FAIL: $desc"
-                echo "  stdout: $(echo "$RESULT" | jq -r '.stdout')"
-                echo "  stderr: $(echo "$RESULT" | jq -r '.stderr')"
-                return 1
-              fi
-              echo "PASS: $desc"
-            }
+            # Import shared fleet test helpers (run_on, assert_on)
+            ${assertions.mkFleetHelpers "${pkgs.socat}/bin/socat"}
 
             # ----------------------------------------------------------
             # Run fleet test script

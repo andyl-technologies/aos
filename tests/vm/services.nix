@@ -15,7 +15,7 @@
 }:
 
 let
-  harness = import ./lib.nix { inherit pkgs lib testTools; };
+  harness = import ../../lib/testing { inherit pkgs lib testTools; };
 in
 harness.mkVMTest {
   name = "services";

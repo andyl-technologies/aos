@@ -16,6 +16,14 @@
 #     ...
 #   };
 #
+# Available pre/post hooks (set in mkDerivation):
+#   preConfigure  — runs before the configure phase
+#   postConfigure — runs after the configure phase
+#   preBuild      — runs before the build phase
+#   postBuild     — runs after the build phase
+#   preInstall    — runs before the install phase
+#   postInstall   — runs after the install phase
+#
 
 let
   # Shared unpack phase used by all build systems
