@@ -44,5 +44,12 @@ in
       testTools
       ;
   };
-  fleet = import ./fleet { inherit pkgs lib systems; };
+  fleet = import ./fleet {
+    inherit
+      pkgs
+      lib
+      systems
+      testTools
+      ;
+  };
 }

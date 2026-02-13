@@ -1,10 +1,10 @@
-# tests/vm/kubernetes.nix — Kubernetes component test
+# tests/vm/k8s-services.nix — Kubernetes services depth test
 #
-# Verifies containerd, kubelet, CNI plugins, required kernel features,
-# and Kubernetes-specific sysctl values on a k8s-worker image.
+# Verifies the full k8s worker stack: containerd, kubelet, k8s networking
+# prerequisites, and node-exporter. Uses the k8s-worker variant.
 #
 # Usage:
-#   nix-build -A checks.vm.kubernetes
+#   nix-build -A checks.vm.k8s-services
 
 {
   pkgs,
@@ -27,9 +27,12 @@ let
   k8sNetworking = import ./checks/k8s-networking.nix {
     inherit (harness) mkCheck mkCheckGroup;
   };
+  nodeExporter = import ./checks/node-exporter.nix {
+    inherit (harness) mkCheck mkCheckGroup;
+  };
 in
 harness.mkVMTest {
-  name = "kubernetes";
+  name = "k8s-services";
   system = systems.k8s-worker;
   timeout = 300;
   checks = [
@@ -37,5 +40,6 @@ harness.mkVMTest {
     containerd
     kubelet
     k8sNetworking
+    nodeExporter
   ];
 }
