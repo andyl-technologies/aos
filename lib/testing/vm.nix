@@ -38,6 +38,9 @@ let
     {
       system,
       name ? system.config.aos.system.variant,
+      hostname ? "aos-test",
+      networkConfig ? null,
+      hostsEntries ? null,
     }:
     let
       toplevel = system.config.system.build.toplevel;
@@ -143,8 +146,30 @@ let
                         ln -sfn $TOPLEVEL rootfs/run/current-system
 
                         # Basic /etc for systemd
-                        echo "aos-test" > rootfs/etc/hostname
+                        echo "${hostname}" > rootfs/etc/hostname
                         touch rootfs/etc/machine-id
+                        ${
+                          if hostsEntries != null then
+                            ''
+                              cat > rootfs/etc/hosts << 'HOSTS'
+                              127.0.0.1 localhost
+                              ${hostsEntries}
+                              HOSTS
+                            ''
+                          else
+                            ""
+                        }
+                        ${
+                          if networkConfig != null then
+                            ''
+                              mkdir -p rootfs/etc/systemd/network
+                              cat > rootfs/etc/systemd/network/10-eth0.network << 'NETCFG'
+                              ${networkConfig}
+                              NETCFG
+                            ''
+                          else
+                            ""
+                        }
 
                         cat > rootfs/etc/os-release << 'OSREL'
             ID=aos
@@ -290,16 +315,30 @@ let
   # ---------------------------------------------------------------------------
   # Create a VM test derivation
   # ---------------------------------------------------------------------------
+  checksLib = import ./checks.nix;
+
   mkVMTest =
     {
       name,
       system,
-      testScript,
+      testScript ? null,
+      checks ? [ ],
       timeout ? 120,
     }:
     let
       rootfs = mkTestRootfs { inherit system; };
       kernel = system.config.system.build.kernel;
+      # Compose checks into script, then append testScript if provided
+      checksScript = if checks != [ ] then checksLib.composeChecks checks else "";
+      composedScript =
+        if checksScript != "" && testScript != null then
+          checksScript + "\n" + testScript
+        else if checksScript != "" then
+          checksScript
+        else if testScript != null then
+          testScript
+        else
+          throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
     in
     pkgs.mkDerivation {
       pname = "aos-vm-test-${name}";
@@ -408,7 +447,7 @@ let
             echo "==> Running test: ${name}"
             echo ""
 
-            ${testScript}
+            ${composedScript}
 
             echo ""
             echo "Shutting down guest..."

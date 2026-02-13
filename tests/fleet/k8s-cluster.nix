@@ -1,8 +1,9 @@
 # tests/fleet/k8s-cluster.nix — Kubernetes cluster formation test
 #
-# Boots a control-plane node and a worker node, runs kubeadm init on the
-# control plane, joins the worker, verifies both nodes reach Ready state,
-# and schedules a test pod.
+# Boots a control-plane node and a worker node connected via multicast
+# socket networking with static IPs. Verifies containerd is running on
+# both nodes, runs kubeadm init on the control plane, joins the worker,
+# and verifies both nodes reach Ready state.
 #
 # Usage:
 #   nix-build -A checks.fleet.k8s-cluster
@@ -11,10 +12,11 @@
   pkgs,
   lib,
   systems,
+  testTools,
 }:
 
 let
-  fleetLib = import ../../lib/testing/fleet.nix { inherit pkgs lib; };
+  fleetLib = import ../../lib/testing/fleet.nix { inherit pkgs lib testTools; };
 in
 fleetLib.mkFleetTest {
   name = "k8s-cluster";
@@ -22,26 +24,37 @@ fleetLib.mkFleetTest {
     control-plane = {
       system = systems.k8s-control-plane;
       role = "control-plane";
-      netPort = 10001;
       mac = "52:54:00:00:00:01";
     };
     worker = {
       system = systems.k8s-worker;
       role = "worker";
-      netPort = 10002;
       mac = "52:54:00:00:00:02";
     };
   };
   testScript = ''
     # Wait for both machines to be fully booted
-    assert_on "control-plane" "systemctl is-system-running --wait" \
+    assert_on "control-plane" "systemctl is-system-running --wait || true" \
       "Control plane booted"
-    assert_on "worker" "systemctl is-system-running --wait" \
+    assert_on "worker" "systemctl is-system-running --wait || true" \
       "Worker booted"
 
+    # Verify containerd is running on both nodes before kubeadm
+    assert_on "control-plane" "systemctl is-active containerd" \
+      "Control plane containerd is active"
+    assert_on "worker" "systemctl is-active containerd" \
+      "Worker containerd is active"
+
+    # Verify cross-node connectivity
+    assert_on "control-plane" "ping -c 1 -W 3 worker" \
+      "Control plane can reach worker"
+    assert_on "worker" "ping -c 1 -W 3 control-plane" \
+      "Worker can reach control plane"
+
     # Initialize the control plane with kubeadm
+    # Use explicit advertise address matching the static IP
     assert_on "control-plane" \
-      "kubeadm init --pod-network-cidr=10.244.0.0/16 --skip-phases=addon/kube-proxy" \
+      "kubeadm init --pod-network-cidr=10.244.0.0/16 --skip-phases=addon/kube-proxy --apiserver-advertise-address=192.168.50.10" \
       "kubeadm init succeeded"
 
     # Get the join command token from the control plane

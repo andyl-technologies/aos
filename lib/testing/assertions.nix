@@ -85,5 +85,22 @@ rec {
       fi
       echo "PASS: $desc"
     }
+
+    # Assert a command's stdout contains a substring on a specific machine.
+    assert_output_on() {
+      local machine="$1"
+      local cmd="$2"
+      local expected="$3"
+      local desc="''${4:-[$machine] $cmd contains $expected}"
+      RESULT=$(run_on "$machine" "$cmd")
+      STDOUT=$(echo "$RESULT" | jq -r '.stdout')
+      if ! echo "$STDOUT" | grep -q "$expected"; then
+        echo "FAIL: $desc"
+        echo "  expected to contain: $expected"
+        echo "  actual output: $STDOUT"
+        return 1
+      fi
+      echo "PASS: $desc"
+    }
   '';
 }
