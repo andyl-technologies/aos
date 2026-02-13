@@ -14,7 +14,7 @@
 }:
 
 let
-  fleetLib = import ./lib.nix { inherit pkgs lib; };
+  fleetLib = import ../../lib/testing/fleet.nix { inherit pkgs lib; };
 in
 fleetLib.mkFleetTest {
   name = "rolling-update";
