@@ -107,28 +107,13 @@ in
 
       datasets = lib.mkOption {
         type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
-        default = {
-          "var" = {
-            mountpoint = "/var";
-            compression = "zstd-3";
-            atime = "off";
-          };
-          "var/log" = {
-            mountpoint = "/var/log";
-            compression = "zstd-3";
-            atime = "off";
-          };
-          "var/lib" = {
-            mountpoint = "/var/lib";
-            compression = "zstd-3";
-            atime = "off";
-          };
-        };
+        default = { };
         description = ''
-          ZFS datasets to create and mount. Each key is the dataset name
-          (relative to the pool), and the value is an attrset of ZFS
-          properties. The "mountpoint" property determines where the dataset
-          is mounted.
+          ZFS datasets to create and mount. Modules add entries; Ignition
+          creates them at first boot, filesystems mounts them at runtime.
+          Each key is the dataset name (relative to the pool), and the value
+          is an attrset of ZFS properties. The "mountpoint" property
+          determines where the dataset is mounted.
         '';
       };
     };
@@ -146,6 +131,26 @@ in
   };
 
   config = {
+    # Base ZFS datasets — other modules add entries via the same option.
+    aos.filesystems.zfs.datasets = {
+      "var" = {
+        mountpoint = "/var";
+        compression = "zstd-3";
+        atime = "off";
+      };
+      "var/log" = {
+        mountpoint = "/var/log";
+        compression = "zstd-3";
+        atime = "off";
+        logbias = "throughput";
+      };
+      "var/lib" = {
+        mountpoint = "/var/lib";
+        compression = "zstd-3";
+        atime = "off";
+      };
+    };
+
     # /etc/fstab — filesystem table read by mount(8) and systemd generators.
     environment.etc."fstab" = {
       text = fstabEntries + "\n";
