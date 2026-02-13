@@ -18,7 +18,7 @@ pkgs.mkShellNoCC {
     #!/usr/bin/env bash
     set -euo pipefail
     aos fmt
-    git diff --name-only | grep '\.nix$' | while IFS= read -r f; do git add "$f"; done
+    git diff --name-only | grep '\.nix$' | while IFS= read -r f; do git add "$f"; done || true
     exec aos fmt --check
     HOOK
           chmod +x .git/hooks/pre-commit

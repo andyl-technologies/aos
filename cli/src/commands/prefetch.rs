@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
 use crate::nix::NixRunner;
-use crate::output::Printer;
+use crate::output::{OutputMode, Printer};
 
 // -----------------------------------------------------------------------
 // Nix-evaluated source metadata
@@ -179,8 +179,15 @@ async fn fetch_hash(
 // -----------------------------------------------------------------------
 
 /// Find the .nix file for a package by globbing `pkgs/**/<name>.nix` and
-/// replace the `hash = "..."` value in-place.
-fn update_package_hash(nix: &NixRunner, name: &str, new_hash: &str) -> Result<bool> {
+/// replace the `hash = "..."` value in-place.  When `old_hash` is provided,
+/// matches that specific value (important for files with multiple hash fields,
+/// e.g. per-architecture sources).
+fn update_package_hash(
+    nix: &NixRunner,
+    name: &str,
+    old_hash: Option<&str>,
+    new_hash: &str,
+) -> Result<bool> {
     let pattern = format!("{}/pkgs/**/{}.nix", nix.root().display(), name);
     let matches: Vec<_> = glob(&pattern)
         .with_context(|| format!("invalid glob pattern for package '{name}'"))?
@@ -191,21 +198,36 @@ fn update_package_hash(nix: &NixRunner, name: &str, new_hash: &str) -> Result<bo
         return Ok(false);
     }
 
-    let hash_re = Regex::new(r#"hash\s*=\s*"[^"]*""#).expect("valid regex");
-
     let mut updated_any = false;
     for path in &matches {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
 
-        if hash_re.is_match(&content) {
-            let replacement = format!(r#"hash = "{new_hash}""#);
-            let new_content = hash_re.replace(&content, replacement.as_str()).to_string();
-            if new_content != content {
-                std::fs::write(path, &new_content)
-                    .with_context(|| format!("writing {}", path.display()))?;
-                updated_any = true;
+        // When the old hash is known, match it specifically to avoid updating
+        // the wrong field in files with multiple hashes (e.g. per-arch).
+        let new_content = if let Some(old) = old_hash {
+            let old_pattern = format!(r#"hash\s*=\s*"{}""#, regex::escape(old));
+            let re = Regex::new(&old_pattern).expect("valid regex");
+            if re.is_match(&content) {
+                let replacement = format!(r#"hash = "{new_hash}""#);
+                re.replace(&content, replacement.as_str()).to_string()
+            } else {
+                continue;
             }
+        } else {
+            let re = Regex::new(r#"hash\s*=\s*"[^"]*""#).expect("valid regex");
+            if re.is_match(&content) {
+                let replacement = format!(r#"hash = "{new_hash}""#);
+                re.replace(&content, replacement.as_str()).to_string()
+            } else {
+                continue;
+            }
+        };
+
+        if new_content != content {
+            std::fs::write(path, &new_content)
+                .with_context(|| format!("writing {}", path.display()))?;
+            updated_any = true;
         }
     }
 
@@ -226,8 +248,15 @@ pub fn run(
     connect_timeout: u64,
     min_speed: u64,
 ) -> Result<()> {
+    let eval_start = Instant::now();
     printer.info("Querying Nix for package source metadata...");
     let all_sources = discover_sources(nix)?;
+    if printer.mode() == OutputMode::Verbose {
+        printer.info(&format!(
+            "Nix evaluation took {:.1}s",
+            eval_start.elapsed().as_secs_f64(),
+        ));
+    }
 
     // Filter to only packages that have source info (non-null).
     let mut sources: BTreeMap<String, SourceInfo> = all_sources
@@ -392,9 +421,16 @@ pub fn run(
     // ---- update individual package .nix files ----------------------------
 
     if update && !hashes.is_empty() {
+        // Build map of old hashes for precise matching in multi-hash files.
+        let old_hashes: BTreeMap<&str, &str> = entries
+            .iter()
+            .map(|(name, info)| (name.as_str(), info.hash.as_str()))
+            .collect();
+
         let mut update_count = 0;
         for (name, hash) in &hashes {
-            match update_package_hash(nix, name, hash) {
+            let old_hash = old_hashes.get(name.as_str()).copied();
+            match update_package_hash(nix, name, old_hash, hash) {
                 Ok(true) => update_count += 1,
                 Ok(false) => {
                     printer.warning(&format!(
