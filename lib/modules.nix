@@ -1,7 +1,8 @@
 # lib/modules.nix — Module evaluation engine
 #
 # Takes { trivial, lists, attrsets, strings, types } and returns
-# { evalModules, mkOption, mkIf }.
+# { evalModules, mkOption, mkIf, mkMerge, mkOverride, mkDefault, mkForce,
+#   mkOrder, mkBefore, mkAfter }.
 #
 # Module format:
 #   { config, pkgs, lib, ... }: {
@@ -14,6 +15,16 @@
 # Later modules override earlier ones (last-writer-wins for scalar types,
 # concatenation for list types, recursive merge for attrset types).
 #
+# Priority system:
+#   mkDefault value       — priority 1000 (lowest precedence)
+#   (normal value)        — priority 100
+#   mkForce value         — priority 50 (highest precedence)
+#   mkOverride N value    — explicit priority N (lower = higher precedence)
+#
+# Ordering system (for listOf types):
+#   mkBefore value        — order 500 (sorts earlier)
+#   (normal value)        — order 1000
+#   mkAfter value         — order 1500 (sorts later)
 
 {
   trivial,
@@ -27,9 +38,6 @@ let
   # ---------------------------------------------------------------------------
   # mkOption — declare a module option
   # ---------------------------------------------------------------------------
-  # mkOption { type; default; description; }
-  #
-  # Returns a marker attrset that evalModules recognizes as an option declaration.
   mkOption =
     {
       type ? types.anything,
@@ -56,10 +64,6 @@ let
   # ---------------------------------------------------------------------------
   # mkIf — conditional configuration
   # ---------------------------------------------------------------------------
-  # mkIf condition attrset
-  #
-  # Returns a marker that evalModules will process: if the condition is true,
-  # the attrset is merged into config; if false, it is ignored.
   mkIf = condition: value: {
     _type = "if";
     _condition = condition;
@@ -67,23 +71,59 @@ let
   };
 
   # ---------------------------------------------------------------------------
-  # Internal: check if a value is an mkIf marker
+  # mkMerge — merge multiple config attrsets
+  # ---------------------------------------------------------------------------
+  mkMerge = values: {
+    _type = "merge";
+    _values = values;
+  };
+
+  # ---------------------------------------------------------------------------
+  # mkOverride — set a value with explicit priority
+  # ---------------------------------------------------------------------------
+  # Lower priority number = higher precedence.
+  # Normal values have priority 100.
+  mkOverride = priority: value: {
+    _type = "override";
+    _priority = priority;
+    _value = value;
+  };
+
+  mkDefault = value: mkOverride 1000 value;
+  mkForce = value: mkOverride 50 value;
+
+  # ---------------------------------------------------------------------------
+  # mkOrder — set ordering priority for list elements
+  # ---------------------------------------------------------------------------
+  mkOrder = priority: value: {
+    _type = "order";
+    _priority = priority;
+    _value = value;
+  };
+
+  mkBefore = value: mkOrder 500 value;
+  mkAfter = value: mkOrder 1500 value;
+
+  # ---------------------------------------------------------------------------
+  # Internal: type predicates
   # ---------------------------------------------------------------------------
   isMkIf = v: builtins.isAttrs v && v ? _type && v._type == "if";
-
-  # ---------------------------------------------------------------------------
-  # Internal: check if a value is an option declaration
-  # ---------------------------------------------------------------------------
+  isMkMerge = v: builtins.isAttrs v && v ? _type && v._type == "merge";
+  isOverride = v: builtins.isAttrs v && v ? _type && v._type == "override";
   isOption = v: builtins.isAttrs v && v ? _type && v._type == "option";
+  isOrder = v: builtins.isAttrs v && v ? _type && v._type == "order";
 
   # ---------------------------------------------------------------------------
-  # Internal: resolve mkIf markers in a config attrset
+  # Internal: resolve mkIf and mkMerge markers in a config attrset
   # ---------------------------------------------------------------------------
-  # Returns the attrset with all mkIf nodes resolved (kept or dropped).
   resolveIfs =
     value:
     if isMkIf value then
       if value._condition then resolveIfs value._value else { }
+    else if isMkMerge value then
+      builtins.foldl' deepMerge { } (builtins.map resolveIfs value._values)
+    else if isOverride value then
+      resolveIfs value._value
     else if builtins.isAttrs value then
       let
         names = builtins.attrNames value;
@@ -122,8 +162,6 @@ let
   # ---------------------------------------------------------------------------
   # Internal: collect option declarations from a module result
   # ---------------------------------------------------------------------------
-  # Walks the `options` attrset and builds a flat map of option paths to
-  # their declarations.
   collectOptions =
     prefix: optionTree:
     if isOption optionTree then
@@ -163,15 +201,13 @@ let
     if len == 0 then value else go 0;
 
   # ---------------------------------------------------------------------------
-  # Internal: collect definitions at a path, traversing through mkIf nodes
+  # Internal: collect definitions at a path, traversing mkIf and mkMerge nodes
   # ---------------------------------------------------------------------------
-  # Returns a list of { file; value; condition?; } records.
-  # mkIf nodes are not resolved eagerly; instead the condition is attached
-  # to each definition and evaluated lazily during the merge phase.
   collectDefsAtPath =
     path: config: file:
-    if isMkIf config then
-      # Wrap inner defs with the condition (AND with any existing condition)
+    if isMkMerge config then
+      builtins.concatLists (builtins.map (v: collectDefsAtPath path v file) config._values)
+    else if isMkIf config then
       builtins.map (
         d:
         d
@@ -242,12 +278,6 @@ let
   # ---------------------------------------------------------------------------
   # Internal: import and evaluate a single module
   # ---------------------------------------------------------------------------
-  # A module can be:
-  #   1. A path to a .nix file containing a function or attrset
-  #   2. A function { config, pkgs, lib, ... }: { options = ...; config = ...; }
-  #   3. An attrset { options = ...; config = ...; }
-  #
-  # Returns { options :: attrset; config :: attrset; _file :: string; }
   evalModule =
     {
       config,
@@ -257,7 +287,6 @@ let
     }:
     mod:
     let
-      # Determine the file path for error messages
       file =
         if builtins.isPath mod then
           builtins.toString mod
@@ -268,14 +297,12 @@ let
         else
           "<anonymous module>";
 
-      # Load the module if it is a path
       loaded =
         if builtins.isPath mod || (builtins.isString mod && builtins.pathExists mod) then
           import mod
         else
           mod;
 
-      # Evaluate the module (call it if it is a function)
       args = {
         inherit config pkgs lib;
       }
@@ -284,36 +311,22 @@ let
         if builtins.isFunction loaded then
           let
             fArgs = builtins.functionArgs loaded;
-            # Build the argument set, including only what the function accepts
-            callArgs =
-              if fArgs == { } then
-                args # No formals, pass everything (variadic)
-              else
-                builtins.intersectAttrs fArgs args
-                // (
-                  # If the function accepts `...`, pass everything
-                  # functionArgs returns {} for both no-args and ...-args
-                  # A function with `...` will accept extra args fine
-                  { });
+            callArgs = if fArgs == { } then args else builtins.intersectAttrs fArgs args // ({ });
           in
           loaded (args // { _file = file; })
         else
           loaded;
 
-      # Normalize: ensure options and config keys exist
       result = {
         options = evaluated.options or { };
         config =
-          evaluated.config or (
-            # If there is no explicit `config` key, treat all non-special keys as config
-            builtins.removeAttrs evaluated [
-              "options"
-              "imports"
-              "require"
-              "_file"
-              "_type"
-            ]
-          );
+          evaluated.config or (builtins.removeAttrs evaluated [
+            "options"
+            "imports"
+            "require"
+            "_file"
+            "_type"
+          ]);
         _file = file;
         imports = evaluated.imports or [ ];
       };
@@ -323,16 +336,6 @@ let
   # ---------------------------------------------------------------------------
   # evalModules — the main entry point
   # ---------------------------------------------------------------------------
-  # evalModules { modules; pkgs; lib; extraArgs; }
-  #
-  # Evaluates a list of modules:
-  #   1. Import each module, passing { config, pkgs, lib }
-  #   2. Collect all option declarations
-  #   3. Collect all config definitions
-  #   4. Merge config values according to type merge functions
-  #   5. Process mkIf conditionals
-  #   6. Return the final merged config attrset
-  #
   evalModules =
     {
       modules,
@@ -341,7 +344,6 @@ let
       extraArgs ? { },
     }:
     let
-      # Build the lib to pass to modules (self-referential with config)
       moduleLib =
         if lib == { } then
           trivial
@@ -350,18 +352,21 @@ let
           // strings
           // {
             inherit types;
-            inherit mkOption mkIf;
+            inherit
+              mkOption
+              mkIf
+              mkMerge
+              mkOverride
+              mkDefault
+              mkForce
+              ;
+            inherit mkOrder mkBefore mkAfter;
           }
         else
           lib;
 
-      # --- Phase 1: Evaluate all modules ---
-      # Use a fixed-point to allow modules to reference the final config.
-      # The config is computed lazily, so modules can use `config.foo` in their
-      # config section and it will resolve to the merged value.
       result =
         let
-          # Collect all modules including imports (recursive)
           collectModules =
             mods:
             builtins.concatLists (
@@ -374,9 +379,6 @@ let
                     lib = moduleLib;
                     inherit extraArgs;
                   } mod;
-                  # Imports are processed first so that the importing module's
-                  # config values come later in the list and win with
-                  # last-writer-wins merge semantics.
                 in
                 collectModules evaled.imports ++ [ evaled ]
               ) mods
@@ -389,8 +391,6 @@ let
             builtins.map (m: collectOptions [ ] m.options) evaluatedModules
           );
 
-          # Build a map from option path (as string) to the option declaration.
-          # Later declarations override earlier ones.
           optionMap = builtins.foldl' (
             acc: decl:
             let
@@ -400,9 +400,6 @@ let
           ) { } allOptionDecls;
 
           # --- Phase 3: Collect config definitions for each option ---
-          # For each declared option, find all config values at that path
-          # from all modules, traversing through mkIf nodes without forcing
-          # their conditions (conditions are evaluated lazily during merge).
           configForOption =
             decl:
             builtins.concatLists (
@@ -422,18 +419,37 @@ let
                 # Filter out conditional definitions whose condition is false
                 activeDefs = builtins.filter (d: !(d ? condition) || d.condition) defs;
 
+                # Unwrap override markers and assign priorities
+                unwrappedDefs = builtins.map (
+                  d:
+                  if isOverride d.value then
+                    d
+                    // {
+                      value = d.value._value;
+                      _priority = d.value._priority;
+                    }
+                  else
+                    d // { _priority = 100; }
+                ) activeDefs;
+
+                # Find the lowest (winning) priority
+                minPriority = builtins.foldl' (
+                  acc: d: if d._priority < acc then d._priority else acc
+                ) 9999 unwrappedDefs;
+
+                # Keep only definitions at the winning priority
+                priorityFilteredDefs = builtins.filter (d: d._priority == minPriority) unwrappedDefs;
+
                 # Determine the merged value
                 mergedValue =
-                  if activeDefs == [ ] then
-                    # No definitions: use default if available
+                  if priorityFilteredDefs == [ ] then
                     if decl.option.default != null then
                       decl.option.default
                     else
                       throw "The option '${pathStr}' is used but has no definition and no default value."
                   else
-                    # Merge all active definitions using the type's merge function
                     let
-                      rawMerged = optType.merge decl.path activeDefs;
+                      rawMerged = optType.merge decl.path priorityFilteredDefs;
                     in
                     rawMerged;
 
@@ -453,7 +469,6 @@ let
           );
 
           # --- Phase 5: Build the final config attrset ---
-          # Convert the flat merged options back into a nested attrset.
           finalConfig =
             builtins.foldl' (
               acc: key:
@@ -463,23 +478,15 @@ let
               deepMerge acc (setPath entry.path entry.finalValue)
             ) { } (builtins.attrNames mergedOptions)
             // {
-              # Include _module.args for passing extra arguments to modules
               _module = {
                 args = extraArgs;
               };
             };
 
-          # Also merge in any config values that do not correspond to declared options.
-          # This allows "freeform" config for extensibility.
-          # resolveIfs is applied here; this is safe because values are accessed
-          # lazily through the fixpoint — by the time a condition like
-          # config.aos.firewall.enable is accessed, the fixpoint is established.
           allConfigMerged = builtins.foldl' (
             acc: m: deepMerge acc (resolveIfs m.config)
           ) { } evaluatedModules;
 
-          # The final config is the declared options merged with freeform config,
-          # where declared options take precedence (they have proper merge semantics).
           configWithFreeform = deepMerge allConfigMerged finalConfig;
 
         in
@@ -487,10 +494,11 @@ let
           config = configWithFreeform;
           options = optionMap;
           _modules = evaluatedModules;
-
-          # Convenience accessor: get the type-checked config
-          # (same as config, but provided for API clarity)
           _type = "evaluatedModules";
+
+          # Assertions and warnings from modules
+          assertions = configWithFreeform.assertions or [ ];
+          warnings = configWithFreeform.warnings or [ ];
         };
 
     in
@@ -498,5 +506,12 @@ let
 
 in
 {
-  inherit evalModules mkOption mkIf;
+  inherit
+    evalModules
+    mkOption
+    mkIf
+    mkMerge
+    ;
+  inherit mkOverride mkDefault mkForce;
+  inherit mkOrder mkBefore mkAfter;
 }
