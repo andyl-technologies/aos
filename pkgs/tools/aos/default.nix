@@ -1,4 +1,4 @@
-# pkgs/tools/aos.nix — AOS build tool (crane-built)
+# pkgs/tools/aos — AOS build tool (crane-built)
 #
 # Built with the host Rust toolchain via crane, not the AOS
 # self-bootstrapping stdenv. This is a dev tool, not an OS component.
@@ -7,7 +7,7 @@
 { craneLib, pkgs }:
 
 let
-  src = craneLib.cleanCargoSource ../../cli;
+  src = craneLib.cleanCargoSource ./cli;
   commonArgs = {
     inherit src;
     pname = "aos";
