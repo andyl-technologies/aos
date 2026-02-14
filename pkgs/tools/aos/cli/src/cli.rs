@@ -81,6 +81,9 @@ pub enum Commands {
         /// View on the remote server
         #[arg(long, env = "AOS_VIEW")]
         view: Option<String>,
+        /// Provisioning token for the remote server
+        #[arg(long, env = "AOS_TOKEN")]
+        token: Option<String>,
         /// Also run nix-store --gc after removing roots
         #[arg(long)]
         collect: bool,
@@ -90,6 +93,9 @@ pub enum Commands {
         /// Remove all roots for a view (decommission)
         #[arg(long)]
         all: bool,
+        /// Pin a store path permanently (no TTL expiry); requires --view
+        #[arg(long)]
+        pin: Option<String>,
     },
     /// Debug dependency chains
     WhyDepends {

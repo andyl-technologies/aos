@@ -4,8 +4,8 @@
 # Usage: let lib = import ./lib { system = "aarch64-linux"; }; in ...
 #
 # The `system` parameter is threaded through to all derivation builders
-# (mkDerivation, mkShell, fetchurl, fetchgit) so that every package
-# targets the correct platform.
+# (mkDerivation, mkShell, fetchurl, fetchgit, fetchCargoDeps, fetchGoModules)
+# so that every package targets the correct platform.
 
 { system }:
 
@@ -49,6 +49,9 @@ trivial
     mkShell
     fetchurl
     fetchgit
+    fetchCargoDeps
+    fetchGoModules
+    fakeHash
     ;
 
   # Phase manipulation helpers from derivations module
