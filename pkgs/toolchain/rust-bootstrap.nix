@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   lib,
+  bash,
+  which,
 }:
 
 let
@@ -33,7 +35,10 @@ mkDerivation {
     hash = files.hash;
   };
 
-  buildDeps = [ ];
+  buildDeps = [
+    bash
+    which
+  ];
   runtimeDeps = [ ];
 
   phases = [

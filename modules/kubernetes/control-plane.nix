@@ -60,6 +60,15 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # ZFS dataset for etcd data — tuned for small-record transactional writes.
+    aos.filesystems.zfs.datasets."var/lib/etcd" = {
+      mountpoint = "/var/lib/etcd";
+      compression = "zstd-3";
+      atime = "off";
+      recordsize = "4K";
+      sync = "always";
+    };
+
     # kubeadm configuration for control plane initialization.
     # This file is consumed by `kubeadm init --config <path>`.
     environment.etc."kubernetes/kubeadm-config.yaml" = {

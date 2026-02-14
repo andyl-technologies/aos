@@ -46,6 +46,7 @@ let
   systems = {
     base = mkSystem [ ./systems/base.nix ];
     server = mkSystem [ ./systems/server.nix ];
+    seed = mkSystem [ ./systems/seed.nix ];
     k8s-worker = mkSystem [ ./systems/k8s-worker.nix ];
     k8s-control-plane = mkSystem [ ./systems/k8s-control-plane.nix ];
   };

@@ -14,6 +14,7 @@
 #   server-security    — Deep security: SSH, firewall, SELinux, audit (systems.server)
 #   k8s-services       — Deep k8s: containerd, kubelet, networking, exporter (systems.k8s-worker)
 #   k8s-control-plane  — Control plane config: kubeadm, etcd (systems.k8s-control-plane)
+#   seed               — Seed server: nginx, nix-daemon, build orchestration (systems.seed)
 #   validate           — Pre-flight syntax check of all check scripts (no QEMU)
 
 {
@@ -49,6 +50,9 @@ let
       (import ./checks/kubelet.nix mkC)
       (import ./checks/k8s-networking.nix mkC)
       (import ./checks/node-exporter.nix mkC)
+      (import ./checks/nginx.nix mkC)
+      (import ./checks/nix-daemon.nix mkC)
+      (import ./checks/seed.nix mkC)
     ];
 
   args = {
@@ -71,6 +75,9 @@ in
   services = import ./services.nix args;
   update = import ./update.nix args;
   server-security = import ./server-security.nix args;
+
+  # --- Seed variant tests ---
+  seed = import ./seed.nix args;
 
   # --- Kubernetes variant tests ---
   kubernetes = import ./kubernetes.nix args;

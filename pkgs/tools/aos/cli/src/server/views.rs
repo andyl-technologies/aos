@@ -1,0 +1,151 @@
+use std::collections::HashMap;
+use std::fs;
+use std::os::unix;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result};
+
+use crate::server::config::ViewConfig;
+
+/// Manages views and their GC root directories.
+pub struct ViewManager {
+    root: PathBuf,
+    views: HashMap<String, ViewConfig>,
+}
+
+impl ViewManager {
+    pub fn new(root: PathBuf, views: Vec<ViewConfig>) -> Self {
+        let map = views.into_iter().map(|v| (v.name.clone(), v)).collect();
+        Self { root, views: map }
+    }
+
+    /// Create the directory tree for all configured views.
+    pub fn init_directories(&self) -> Result<()> {
+        for name in self.views.keys() {
+            for ns in &["bin", "src"] {
+                let gcroot_dir = self.root.join("gcroots").join(name).join(ns);
+                fs::create_dir_all(&gcroot_dir)
+                    .with_context(|| format!("creating {}", gcroot_dir.display()))?;
+
+                let meta_dir = self.root.join("meta").join(name).join(ns);
+                fs::create_dir_all(&meta_dir)
+                    .with_context(|| format!("creating {}", meta_dir.display()))?;
+            }
+        }
+
+        // Also create the views state directory.
+        let views_dir = self.root.join("views");
+        fs::create_dir_all(&views_dir)
+            .with_context(|| format!("creating {}", views_dir.display()))?;
+
+        Ok(())
+    }
+
+    /// Check if a hash is visible in a view by checking GC root symlinks.
+    /// Returns the store path target if found, None otherwise.
+    /// Checks bin/ first, then src/.
+    pub fn check_visibility(&self, view: &str, hash: &str) -> Result<Option<String>> {
+        for ns in &["bin", "src"] {
+            let link = self.root.join("gcroots").join(view).join(ns).join(hash);
+            if link.is_symlink() {
+                let target = fs::read_link(&link)
+                    .with_context(|| format!("reading symlink {}", link.display()))?;
+                return Ok(Some(target.to_string_lossy().to_string()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Look up a view by name.
+    pub fn get_view(&self, name: &str) -> Option<&ViewConfig> {
+        self.views.get(name)
+    }
+
+    /// Return the AOS root path.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Create an atomic GC root symlink: `gcroots/{view}/{ns}/{hash} -> store_path`.
+    ///
+    /// Uses a temp symlink + rename to avoid races.
+    pub fn create_gc_root(
+        &self,
+        view: &str,
+        ns: &str,
+        hash: &str,
+        store_path: &str,
+    ) -> Result<()> {
+        let link_dir = self.root.join("gcroots").join(view).join(ns);
+        let link = link_dir.join(hash);
+        let tmp = link_dir.join(format!(".{hash}.tmp"));
+
+        // Remove stale temp symlink if it exists.
+        let _ = fs::remove_file(&tmp);
+
+        unix::fs::symlink(store_path, &tmp)
+            .with_context(|| format!("creating symlink {}", tmp.display()))?;
+        fs::rename(&tmp, &link)
+            .with_context(|| format!("renaming {} -> {}", tmp.display(), link.display()))?;
+
+        Ok(())
+    }
+
+    /// Write metadata JSON atomically to `meta/{view}/{ns}/{hash}.json`.
+    pub fn write_metadata(
+        &self,
+        view: &str,
+        ns: &str,
+        hash: &str,
+        meta: &serde_json::Value,
+    ) -> Result<()> {
+        let meta_dir = self.root.join("meta").join(view).join(ns);
+        let path = meta_dir.join(format!("{hash}.json"));
+        let tmp = meta_dir.join(format!(".{hash}.json.tmp"));
+
+        let data = serde_json::to_string_pretty(meta)
+            .context("serializing metadata")?;
+        fs::write(&tmp, &data)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        fs::rename(&tmp, &path)
+            .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
+
+        Ok(())
+    }
+
+    /// Extract the hash portion from a store path (e.g., "/var/lib/aos/store/abc123-foo" → "abc123").
+    pub fn store_path_hash(store_path: &str) -> Option<&str> {
+        let basename = store_path.rsplit('/').next()?;
+        basename.split('-').next()
+    }
+
+    /// Create GC roots for all paths in a closure within the given view/namespace.
+    pub fn create_roots_for_closure(
+        &self,
+        view: &str,
+        ns: &str,
+        paths: &[String],
+    ) -> Result<()> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        for path in paths {
+            let hash = Self::store_path_hash(path)
+                .with_context(|| format!("extracting hash from {path}"))?;
+
+            self.create_gc_root(view, ns, hash, path)?;
+
+            let meta = serde_json::json!({
+                "store_path": path,
+                "pushed_at": now,
+                "access_count": 0,
+            });
+            self.write_metadata(view, ns, hash, &meta)?;
+        }
+
+        Ok(())
+    }
+}
