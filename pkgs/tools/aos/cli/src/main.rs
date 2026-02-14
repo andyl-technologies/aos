@@ -1,8 +1,10 @@
 mod cli;
+mod client;
 mod commands;
 mod error;
 mod nix;
 mod output;
+mod server;
 
 use std::process;
 
@@ -14,7 +16,8 @@ use error::AosError;
 use nix::NixRunner;
 use output::Printer;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Set up a human-friendly panic handler that suppresses the default
     // backtrace noise and instead prints a short, actionable message.
     std::panic::set_hook(Box::new(|info| {
@@ -37,7 +40,7 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let exit_code = match run(&cli) {
+    let exit_code = match run(&cli).await {
         Ok(()) => 0,
         Err(err) => handle_error(&cli, err),
     };
@@ -45,7 +48,7 @@ fn main() {
     process::exit(exit_code);
 }
 
-fn run(cli: &Cli) -> Result<()> {
+async fn run(cli: &Cli) -> Result<()> {
     let printer = Printer::new(cli.verbose, cli.quiet, cli.json);
 
     // Shell completions can be generated without a Nix installation or
@@ -55,10 +58,38 @@ fn run(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
+    // The server command doesn't need NixRunner, handle it before construction.
+    if let Commands::Serve { config } = &cli.command {
+        return commands::serve::run(&printer, config).await;
+    }
+
+    // Token management connects to the bootstrap socket — no NixRunner needed.
+    if let Commands::Token { command } = &cli.command {
+        let socket_path = server::aos_root().join("run/bootstrap.sock");
+        return commands::token::run(&printer, command, &socket_path).await;
+    }
+
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
 
     match &cli.command {
-        Commands::Build { package, all } => {
+        Commands::Build {
+            package,
+            all,
+            remote,
+            view,
+            token,
+        } => {
+            if let Some(url) = remote {
+                return commands::build::run_remote(
+                    &nix,
+                    &printer,
+                    package.as_deref(),
+                    url,
+                    view,
+                    token.as_deref(),
+                )
+                .await;
+            }
             commands::build::run(&nix, &printer, package.as_deref(), *all)
         }
         Commands::System { command } => commands::system::run(&nix, &printer, command),
@@ -70,7 +101,14 @@ fn run(cli: &Cli) -> Result<()> {
         Commands::Repl => commands::repl::run(&nix, &printer),
         Commands::Gc {
             list_generations,
-        } => commands::gc::run(&nix, &printer, *list_generations),
+            remote: _,
+            view: _,
+            collect: _,
+            dry_run: _,
+            all: _,
+        } => {
+            commands::gc::run(&nix, &printer, *list_generations)
+        }
         Commands::WhyDepends {
             package,
             dependency,
@@ -96,6 +134,8 @@ fn run(cli: &Cli) -> Result<()> {
         Commands::Fmt { check, files } => commands::fmt::run(&nix, &printer, *check, files),
         // Already handled above, but the match must be exhaustive.
         Commands::Completions { .. } => unreachable!(),
+        Commands::Serve { .. } => unreachable!(),
+        Commands::Token { .. } => unreachable!(),
     }
 }
 

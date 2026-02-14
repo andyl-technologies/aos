@@ -1,5 +1,7 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
+use crate::client::remote::RemoteClient;
+use crate::client::sse::SseStream;
 use crate::error::AosError;
 use crate::nix::NixRunner;
 use crate::output::{create_spinner, Printer};
@@ -35,6 +37,111 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>, all: bool)
         "Built {package} -> {}",
         store_path.display()
     ));
+
+    Ok(())
+}
+
+/// `aos build <package> --remote URL` — evaluate locally, upload, build remotely.
+pub async fn run_remote(
+    nix: &NixRunner,
+    printer: &Printer,
+    package: Option<&str>,
+    remote_url: &str,
+    view: &str,
+    token: Option<&str>,
+) -> Result<()> {
+    let package = package.ok_or_else(|| AosError::InvalidArgument {
+        message: "provide a package name for remote builds".to_string(),
+    })?;
+
+    let token = token.ok_or_else(|| AosError::InvalidArgument {
+        message: "provide --token or set AOS_TOKEN for remote builds".to_string(),
+    })?;
+
+    printer.info(&format!("Remote build: {package} on {remote_url} (view: {view})"));
+
+    // Step 1: Evaluate locally to get the .drv path.
+    let spinner = create_spinner(&format!("evaluating {package}"));
+    let attr = format!("pkgs.{package}");
+    let drv_path = nix
+        .instantiate(&attr)
+        .with_context(|| format!("evaluating package '{package}'"))?;
+    spinner.finish_and_clear();
+    let drv_str = drv_path.to_string_lossy().to_string();
+    printer.info(&format!("Derivation: {drv_str}"));
+
+    // Step 2: Authenticate with the remote server.
+    let mut client = RemoteClient::new(remote_url, view, token)?;
+    let spinner = create_spinner("authenticating");
+    client.authenticate().await.context("authenticating with remote server")?;
+    spinner.finish_and_clear();
+
+    // Step 3: Query runtime closure and find missing paths.
+    let spinner = create_spinner("querying closure");
+    let closure_output = nix.store_query(&drv_path, &["-qR"])?;
+    let closure: Vec<String> = closure_output
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .collect();
+    spinner.finish_and_clear();
+    printer.info(&format!("Closure: {} paths", closure.len()));
+
+    let spinner = create_spinner("querying missing paths");
+    let missing = client.query_missing(&closure).await?;
+    spinner.finish_and_clear();
+
+    if missing.is_empty() {
+        printer.info("All paths present on server");
+    } else {
+        printer.info(&format!("Missing: {} paths to upload", missing.len()));
+
+        // Step 4: Upload missing paths.
+        let spinner = create_spinner(&format!("uploading {} paths", missing.len()));
+        for path in &missing {
+            // Export NAR via nix-store --dump.
+            let output = std::process::Command::new("nix-store")
+                .args(["--export", path])
+                .output()
+                .with_context(|| format!("exporting {path}"))?;
+
+            if !output.status.success() {
+                bail!("nix-store --export failed for {path}");
+            }
+
+            let hash = path
+                .rsplit('/')
+                .next()
+                .and_then(|b| b.split('-').next())
+                .unwrap_or("unknown");
+            client.upload_path(hash, &output.stdout).await
+                .with_context(|| format!("uploading {path}"))?;
+        }
+        spinner.finish_and_clear();
+    }
+
+    // Step 5: Request remote build and stream logs.
+    printer.info("Starting remote build...");
+    let build_url = client.build_url(&drv_str);
+    let reqwest_client = reqwest::Client::new();
+    let events = SseStream::connect(&reqwest_client, &build_url, token, None).await?;
+
+    for event in &events {
+        match event.event.as_deref() {
+            Some("log") => printer.plain(&event.data),
+            Some("status") => printer.info(&format!("[status] {}", event.data)),
+            Some("complete") => {
+                printer.success(&format!("Build complete: {}", event.data));
+            }
+            Some("error") => {
+                printer.error(&format!("Build error: {}", event.data));
+            }
+            Some("drain") => {
+                printer.info("[server] shutting down");
+            }
+            _ => {}
+        }
+    }
 
     Ok(())
 }
