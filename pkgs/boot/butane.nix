@@ -1,14 +1,9 @@
-# Butane — Translates Butane configs to Ignition configs
-{
-  mkDerivation,
-  fetchurl,
-  make,
-}:
+{ mkGoPackage, fetchurl }:
 
 let
   version = "0.21.0";
 in
-mkDerivation {
+mkGoPackage {
   pname = "butane";
   inherit version;
 
@@ -19,37 +14,10 @@ mkDerivation {
     hash = "sha256-RMH/E8AbTdirgxD9RwPD5+xBGxWSXOy0NK1fWV+dF9Y=";
   };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd butane-${version}
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        export GOPATH=$TMPDIR/go
-        export CGO_ENABLED=0
-        export GOFLAGS="-trimpath"
-        go build -o butane \
-          -ldflags "-s -w -X github.com/coreos/butane/internal/version.Raw=v${version}" \
-          ./internal
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        mkdir -p $out/bin
-        install -m 755 butane $out/bin/butane
-      '';
-    }
-  ];
+  goPackage = "./internal";
+  goOutput = "butane";
+  ldflags = "-s -w -X github.com/coreos/butane/internal/version.Raw=v${version}";
+  doCheck = false;
 
   meta = {
     description = "Butane — human-readable config transpiler for Ignition";

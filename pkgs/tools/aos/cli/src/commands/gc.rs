@@ -89,6 +89,13 @@ async fn run_remote(
         }
     }
 
+    if let Some(collected) = &resp.collected {
+        if let Some(freed) = collected.get("freed_bytes").and_then(|v| v.as_u64()) {
+            let freed_mb = freed as f64 / (1024.0 * 1024.0);
+            printer.info(&format!("Collected: {freed_mb:.1} MB freed by nix-store --gc"));
+        }
+    }
+
     printer.success("Remote GC complete");
     Ok(())
 }
