@@ -1,3 +1,4 @@
+pub mod access;
 pub mod auth;
 pub mod bootstrap;
 pub mod build;
@@ -8,6 +9,7 @@ pub mod evict;
 pub mod narinfo;
 pub mod pack;
 pub mod routes;
+pub mod sign;
 pub mod store;
 pub mod tokens;
 pub mod views;
