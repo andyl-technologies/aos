@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -107,7 +107,7 @@ impl BuildEvent {
 /// Ring buffer for replay of build events to late joiners.
 /// Caps at `MAX_EVENTS`; oldest events are dropped when full.
 pub struct LogBuffer {
-    events: RwLock<Vec<BuildEvent>>,
+    events: RwLock<VecDeque<BuildEvent>>,
 }
 
 const MAX_EVENTS: usize = 100_000;
@@ -115,29 +115,35 @@ const MAX_EVENTS: usize = 100_000;
 impl LogBuffer {
     fn new() -> Self {
         Self {
-            events: RwLock::new(Vec::with_capacity(1024)),
+            events: RwLock::new(VecDeque::with_capacity(1024)),
         }
     }
 
     fn append(&self, event: BuildEvent) {
         let mut events = self.events.write().unwrap();
         if events.len() >= MAX_EVENTS {
-            events.remove(0);
+            events.pop_front();
         }
-        events.push(event);
+        events.push_back(event);
     }
 
     /// Get all events from `start_id` onward.
     pub fn events_from(&self, start_id: u64) -> Vec<BuildEvent> {
         let events = self.events.read().unwrap();
-        // Binary search since IDs are monotonically increasing.
-        let start = events.partition_point(|e| e.id < start_id);
-        events[start..].to_vec()
+        // Binary search on the contiguous slices since IDs are monotonically increasing.
+        let (front, back) = events.as_slices();
+        let skip_front = front.partition_point(|e| e.id < start_id);
+        if skip_front < front.len() {
+            front[skip_front..].iter().chain(back.iter()).cloned().collect()
+        } else {
+            let skip_back = back.partition_point(|e| e.id < start_id);
+            back[skip_back..].to_vec()
+        }
     }
 
     /// Get all events.
     pub fn all_events(&self) -> Vec<BuildEvent> {
-        self.events.read().unwrap().clone()
+        self.events.read().unwrap().iter().cloned().collect()
     }
 }
 

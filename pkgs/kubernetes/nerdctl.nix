@@ -1,14 +1,9 @@
-# nerdctl — Docker-compatible CLI for containerd
-{
-  mkDerivation,
-  fetchurl,
-  make,
-}:
+{ mkGoPackage, fetchurl }:
 
 let
   version = "1.7.7";
 in
-mkDerivation {
+mkGoPackage {
   pname = "nerdctl";
   inherit version;
 
@@ -19,37 +14,10 @@ mkDerivation {
     hash = "sha256-vN3y7jrSvIStxeIH+XFXmY/pc5EsfR3ZVAvUu0oHaY0=";
   };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd nerdctl-${version}
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        export GOPATH=$TMPDIR/go
-        export CGO_ENABLED=0
-        export GOFLAGS="-trimpath"
-        go build -o nerdctl \
-          -ldflags "-s -w -X github.com/containerd/nerdctl/pkg/version.Version=v${version}" \
-          ./cmd/nerdctl
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        mkdir -p $out/bin
-        install -m 755 nerdctl $out/bin/nerdctl
-      '';
-    }
-  ];
+  goPackage = "./cmd/nerdctl";
+  goOutput = "nerdctl";
+  ldflags = "-s -w -X github.com/containerd/nerdctl/pkg/version.Version=v${version}";
+  doCheck = false;
 
   meta = {
     description = "nerdctl — Docker-compatible CLI for containerd";
