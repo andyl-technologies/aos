@@ -245,6 +245,72 @@ pub fn score_candidates(
     Ok(results)
 }
 
+/// Evict least-recently-accessed source roots when they exceed a count limit.
+/// Returns the list of evicted source hashes.
+pub fn evict_source_lru(
+    views: &ViewManager,
+    view: &str,
+    max_sources: usize,
+    dry_run: bool,
+) -> Result<Vec<String>> {
+    let gcroot_dir = views.root().join("gcroots").join(view).join("src");
+    let meta_dir = views.root().join("meta").join(view).join("src");
+
+    if !gcroot_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    // Collect source roots with their last_accessed timestamps.
+    let mut sources: Vec<(String, i64)> = Vec::new();
+
+    let entries = fs::read_dir(&gcroot_dir)
+        .with_context(|| format!("reading {}", gcroot_dir.display()))?;
+
+    for entry in entries {
+        let entry = entry?;
+        let hash = entry.file_name().to_string_lossy().to_string();
+        if hash.starts_with('.') {
+            continue;
+        }
+
+        let meta_path = meta_dir.join(format!("{hash}.json"));
+        let last_accessed = if meta_path.exists() {
+            let meta_str = fs::read_to_string(&meta_path)?;
+            let meta: serde_json::Value = serde_json::from_str(&meta_str)?;
+            meta.get("last_accessed")
+                .or_else(|| meta.get("pushed_at"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        sources.push((hash, last_accessed));
+    }
+
+    if sources.len() <= max_sources {
+        return Ok(Vec::new());
+    }
+
+    // Sort by last_accessed ascending (oldest first).
+    sources.sort_by_key(|&(_, ts)| ts);
+
+    let to_evict = sources.len() - max_sources;
+    let mut evicted = Vec::new();
+
+    for (hash, _) in sources.into_iter().take(to_evict) {
+        if !dry_run {
+            let link = gcroot_dir.join(&hash);
+            let meta_path = meta_dir.join(format!("{hash}.json"));
+            let _ = fs::remove_file(&link);
+            let _ = fs::remove_file(&meta_path);
+        }
+        evicted.push(hash);
+    }
+
+    Ok(evicted)
+}
+
 /// Evict roots until the view is under the given max size (bytes).
 /// Returns the list of evicted root hashes.
 pub fn evict_until_budget(
