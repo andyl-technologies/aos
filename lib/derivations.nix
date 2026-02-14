@@ -5,6 +5,9 @@
 #   mkShell        — development shell environment
 #   fetchurl       — fetch a file by URL (fixed-output derivation)
 #   fetchgit       — fetch a Git repository (fixed-output derivation)
+#   fetchCargoDeps — vendor Cargo dependencies (fixed-output derivation)
+#   fetchGoModules — download Go module dependencies (fixed-output derivation)
+#   fakeHash       — placeholder hash for iterating on FODs
 #   replacePhase   — replace a phase by name
 #   addPhaseAfter  — insert a phase after a named phase
 #   addPhaseBefore — insert a phase before a named phase
@@ -587,6 +590,103 @@ let
       inherit url rev;
     };
 
+  # ---------------------------------------------------------------------------
+  # fakeHash — placeholder hash for iterating on fixed-output derivations
+  # ---------------------------------------------------------------------------
+  fakeHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+  # ---------------------------------------------------------------------------
+  # fetchCargoDeps
+  # ---------------------------------------------------------------------------
+  # fetchCargoDeps { cargo; bootstrapTools; src; hash; sourceRoot?; cargoPatches?; }
+  #
+  # Fixed-output derivation that vendors Cargo dependencies via `cargo vendor`.
+  fetchCargoDeps =
+    {
+      cargo,
+      bootstrapTools,
+      src,
+      hash,
+      sourceRoot ? null,
+      cargoPatches ? [ ],
+      name ? "cargo-deps",
+      system ? defaultSystem,
+    }:
+    builtins.derivation {
+      inherit name system;
+      builder = "/bin/sh";
+      args = [
+        "-c"
+        ''
+          set -eu
+          export PATH="${cargo}/bin:${bootstrapTools}/bin"
+          export CARGO_HOME="$TMPDIR/cargo-home"
+          mkdir -p "$CARGO_HOME"
+
+          # Extract source
+          tar xf "${src}" || cp -r "${src}" source
+          cd ${if sourceRoot != null then sourceRoot else "$(ls -d */)"}
+
+          # Apply cargo patches if any
+          ${builtins.concatStringsSep "\n" (builtins.map (p: "patch -p1 < ${p}") cargoPatches)}
+
+          # Vendor all dependencies
+          cargo vendor --locked "$out"
+        ''
+      ];
+
+      # Fixed-output derivation attributes
+      outputHash = hash;
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+
+      preferLocalBuild = true;
+    };
+
+  # ---------------------------------------------------------------------------
+  # fetchGoModules
+  # ---------------------------------------------------------------------------
+  # fetchGoModules { go; bootstrapTools; src; hash; sourceRoot?; }
+  #
+  # Fixed-output derivation that downloads Go module dependencies.
+  fetchGoModules =
+    {
+      go,
+      bootstrapTools,
+      src,
+      hash,
+      sourceRoot ? null,
+      name ? "go-modules",
+      system ? defaultSystem,
+    }:
+    builtins.derivation {
+      inherit name system;
+      builder = "/bin/sh";
+      args = [
+        "-c"
+        ''
+          set -eu
+          export PATH="${go}/bin:${bootstrapTools}/bin"
+          export GOPATH="$out"
+          export GOCACHE="$TMPDIR/go-cache"
+          export GOFLAGS="-mod=mod"
+          mkdir -p "$GOCACHE"
+
+          tar xf "${src}" || cp -r "${src}" source
+          cd ${if sourceRoot != null then sourceRoot else "$(ls -d */)"}
+
+          go mod download -x
+        ''
+      ];
+
+      # Fixed-output derivation attributes
+      outputHash = hash;
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+
+      preferLocalBuild = true;
+    };
+
 in
 {
   inherit
@@ -594,6 +694,9 @@ in
     mkShell
     fetchurl
     fetchgit
+    fetchCargoDeps
+    fetchGoModules
+    fakeHash
     ;
   inherit
     replacePhase

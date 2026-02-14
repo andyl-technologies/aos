@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 
 use crate::client::remote::RemoteClient;
-use crate::client::sse::SseStream;
+use crate::client::sse::{EventAction, SseStream};
 use crate::error::AosError;
 use crate::nix::NixRunner;
 use crate::output::{create_spinner, Printer};
@@ -96,10 +96,14 @@ pub async fn run_remote(
     } else {
         printer.info(&format!("Missing: {} paths to upload", missing.len()));
 
-        // Step 4: Upload missing paths.
-        let spinner = create_spinner(&format!("uploading {} paths", missing.len()));
+        // Step 4: Upload missing paths. Partition into small .drv files
+        // (pack together) and large sources (upload individually).
+        const PACK_SIZE_LIMIT: usize = 1024 * 1024; // 1MB threshold
+
+        let mut pack_paths = Vec::new();
+        let mut large_paths = Vec::new();
+
         for path in &missing {
-            // Export NAR via nix-store --dump.
             let output = std::process::Command::new("nix-store")
                 .args(["--export", path])
                 .output()
@@ -113,35 +117,66 @@ pub async fn run_remote(
                 .rsplit('/')
                 .next()
                 .and_then(|b| b.split('-').next())
-                .unwrap_or("unknown");
-            client.upload_path(hash, &output.stdout).await
-                .with_context(|| format!("uploading {path}"))?;
+                .unwrap_or("unknown")
+                .to_string();
+
+            if path.ends_with(".drv") && output.stdout.len() < PACK_SIZE_LIMIT {
+                pack_paths.push(crate::client::pack::PackPath {
+                    hash,
+                    nar_data: output.stdout,
+                });
+            } else {
+                large_paths.push((hash, output.stdout));
+            }
         }
-        spinner.finish_and_clear();
+
+        // Upload small .drv files as a pack.
+        if !pack_paths.is_empty() {
+            let spinner = create_spinner(&format!("uploading {} small paths as pack", pack_paths.len()));
+            let pack_data = crate::client::pack::create_pack(&pack_paths);
+            client.upload_pack(&pack_data).await
+                .context("uploading path pack")?;
+            spinner.finish_and_clear();
+        }
+
+        // Upload large sources individually.
+        if !large_paths.is_empty() {
+            let spinner = create_spinner(&format!("uploading {} large paths", large_paths.len()));
+            for (hash, data) in &large_paths {
+                client.upload_path(hash, data).await
+                    .with_context(|| format!("uploading {hash}"))?;
+            }
+            spinner.finish_and_clear();
+        }
     }
 
-    // Step 5: Request remote build and stream logs.
+    // Step 5: Request remote build and stream logs via SSE with reconnection.
     printer.info("Starting remote build...");
     let build_url = client.build_url(&drv_str);
     let reqwest_client = reqwest::Client::new();
-    let events = SseStream::connect(&reqwest_client, &build_url, token, None).await?;
 
-    for event in &events {
+    SseStream::connect_with_reconnect(&reqwest_client, &build_url, token, 5, |event| {
         match event.event.as_deref() {
             Some("log") => printer.plain(&event.data),
             Some("status") => printer.info(&format!("[status] {}", event.data)),
             Some("complete") => {
                 printer.success(&format!("Build complete: {}", event.data));
+                return EventAction::Stop;
             }
             Some("error") => {
                 printer.error(&format!("Build error: {}", event.data));
+                return EventAction::Stop;
+            }
+            Some("daemon-unavailable") => {
+                printer.warning(&format!("[daemon] {}", event.data));
             }
             Some("drain") => {
-                printer.info("[server] shutting down");
+                printer.warning("Server is draining; will reconnect if disconnected");
             }
             _ => {}
         }
-    }
+        EventAction::Continue
+    }).await?;
 
     Ok(())
 }

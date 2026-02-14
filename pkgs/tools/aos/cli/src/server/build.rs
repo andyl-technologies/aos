@@ -38,6 +38,11 @@ pub enum BuildEventKind {
         exit_code: Option<i32>,
         log_tail: String,
     },
+    DaemonUnavailable {
+        attempt: u32,
+        max_attempts: u32,
+        message: String,
+    },
     Drain {
         message: String,
     },
@@ -79,6 +84,19 @@ impl BuildEvent {
                 })
                 .to_string(),
             ),
+            BuildEventKind::DaemonUnavailable {
+                attempt,
+                max_attempts,
+                message,
+            } => (
+                "daemon-unavailable",
+                serde_json::json!({
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "message": message,
+                })
+                .to_string(),
+            ),
             BuildEventKind::Drain { message } => ("drain", message.clone()),
         };
 
@@ -86,10 +104,13 @@ impl BuildEvent {
     }
 }
 
-/// Append-only buffer for replay of build events to late joiners.
+/// Ring buffer for replay of build events to late joiners.
+/// Caps at `MAX_EVENTS`; oldest events are dropped when full.
 pub struct LogBuffer {
     events: RwLock<Vec<BuildEvent>>,
 }
+
+const MAX_EVENTS: usize = 100_000;
 
 impl LogBuffer {
     fn new() -> Self {
@@ -100,17 +121,18 @@ impl LogBuffer {
 
     fn append(&self, event: BuildEvent) {
         let mut events = self.events.write().unwrap();
+        if events.len() >= MAX_EVENTS {
+            events.remove(0);
+        }
         events.push(event);
     }
 
     /// Get all events from `start_id` onward.
     pub fn events_from(&self, start_id: u64) -> Vec<BuildEvent> {
         let events = self.events.read().unwrap();
-        events
-            .iter()
-            .filter(|e| e.id >= start_id)
-            .cloned()
-            .collect()
+        // Binary search since IDs are monotonically increasing.
+        let start = events.partition_point(|e| e.id < start_id);
+        events[start..].to_vec()
     }
 
     /// Get all events.
@@ -299,51 +321,90 @@ async fn run_build(
 
     let start = Instant::now();
 
-    // Spawn nix-store --realise.
-    let mut child = match Command::new("nix-store")
-        .args(["--realise", drv_path])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            handle.emit(BuildEventKind::Error {
-                drv: drv_path.to_string(),
-                exit_code: None,
-                log_tail: format!("failed to spawn nix-store: {e}"),
-            });
-            build_cleanup!(build_state, &root, mgr, state, "failed");
-            handle.done.notify_waiters();
-            schedule_cleanup(mgr, drv_path);
-            return;
-        }
-    };
-
-    // Stream stderr lines as log events.
-    let stderr = child.stderr.take().unwrap();
-    let mut lines = BufReader::new(stderr).lines();
+    // Spawn nix-store --realise with retry on daemon connection errors.
+    const MAX_DAEMON_RETRIES: u32 = 3;
     let mut log_lines = Vec::new();
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        log_lines.push(line.clone());
-        handle.emit(BuildEventKind::Log { line });
-    }
+    let status = 'build: {
+        for attempt in 1..=MAX_DAEMON_RETRIES {
+            let mut child = match Command::new("nix-store")
+                .args(["--realise", drv_path])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) if attempt < MAX_DAEMON_RETRIES => {
+                    handle.emit(BuildEventKind::DaemonUnavailable {
+                        attempt,
+                        max_attempts: MAX_DAEMON_RETRIES,
+                        message: format!("failed to spawn nix-store: {e}"),
+                    });
+                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+                    continue;
+                }
+                Err(e) => {
+                    handle.emit(BuildEventKind::Error {
+                        drv: drv_path.to_string(),
+                        exit_code: None,
+                        log_tail: format!("failed to spawn nix-store after {MAX_DAEMON_RETRIES} attempts: {e}"),
+                    });
+                    build_cleanup!(build_state, &root, mgr, state, "failed");
+                    handle.done.notify_waiters();
+                    schedule_cleanup(mgr, drv_path);
+                    return;
+                }
+            };
 
-    // Wait for the process to finish.
-    let status = match child.wait().await {
-        Ok(s) => s,
-        Err(e) => {
-            handle.emit(BuildEventKind::Error {
-                drv: drv_path.to_string(),
-                exit_code: None,
-                log_tail: format!("waiting for nix-store: {e}"),
-            });
-            build_cleanup!(build_state, &root, mgr, state, "failed");
-            handle.done.notify_waiters();
-            schedule_cleanup(mgr, drv_path);
-            return;
+            // Stream stderr lines as log events.
+            let stderr = child.stderr.take().unwrap();
+            let mut lines = BufReader::new(stderr).lines();
+            log_lines.clear();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                log_lines.push(line.clone());
+                handle.emit(BuildEventKind::Log { line });
+            }
+
+            let exit = match child.wait().await {
+                Ok(s) => s,
+                Err(e) => {
+                    handle.emit(BuildEventKind::Error {
+                        drv: drv_path.to_string(),
+                        exit_code: None,
+                        log_tail: format!("waiting for nix-store: {e}"),
+                    });
+                    build_cleanup!(build_state, &root, mgr, state, "failed");
+                    handle.done.notify_waiters();
+                    schedule_cleanup(mgr, drv_path);
+                    return;
+                }
+            };
+
+            // Check for daemon connection errors (exit code 1 + stderr mentions connection).
+            if !exit.success() {
+                let stderr_text = log_lines.join("\n");
+                let is_daemon_error = stderr_text.contains("error connecting to daemon")
+                    || stderr_text.contains("Connection refused")
+                    || stderr_text.contains("No such file or directory")
+                        && stderr_text.contains("daemon-socket");
+
+                if is_daemon_error && attempt < MAX_DAEMON_RETRIES {
+                    handle.emit(BuildEventKind::DaemonUnavailable {
+                        attempt,
+                        max_attempts: MAX_DAEMON_RETRIES,
+                        message: format!("daemon unavailable, retrying in {}s", 2u64.pow(attempt)),
+                    });
+                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+                    continue;
+                }
+            }
+
+            break 'build exit;
         }
+
+        // Should not reach here, but satisfy the type system.
+        unreachable!()
     };
 
     let duration_secs = start.elapsed().as_secs();
