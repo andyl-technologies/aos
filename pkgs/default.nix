@@ -140,6 +140,98 @@ let
       }
     );
 
+  # Import phase generators from stdenv/phases.nix
+  phases = import ../stdenv/phases.nix;
+
+  # Wire fetchers with AOS toolchains (using lazy self-reference)
+  fetchCargoDeps =
+    args:
+    lib.fetchCargoDeps (
+      args
+      // {
+        cargo = self.rust;
+        inherit bootstrapTools;
+      }
+    );
+
+  fetchGoModules =
+    args:
+    lib.fetchGoModules (
+      args
+      // {
+        go = self.go;
+        inherit bootstrapTools;
+      }
+    );
+
+  # Attrs that mkCargoPackage consumes (not passed to mkDerivation)
+  cargoSpecificAttrs = [
+    "cargoDeps"
+    "cargoFlags"
+    "buildType"
+    "checkType"
+    "cargoTestFlags"
+    "buildFeatures"
+    "buildNoDefaultFeatures"
+    "installBins"
+    "installLibs"
+    "doCheck"
+    "doParallelCheck"
+  ];
+
+  # Attrs that mkGoPackage consumes (not passed to mkDerivation)
+  goSpecificAttrs = [
+    "goModules"
+    "goPackage"
+    "goOutput"
+    "cgoEnabled"
+    "ldflags"
+    "tags"
+    "doCheck"
+    "goTestFlags"
+    "doParallelCheck"
+  ];
+
+  mkCargoPackage =
+    args:
+    let
+      # Extract cargo-specific attrs for the phase generator
+      cargoArgs = builtins.intersectAttrs (builtins.listToAttrs (
+        builtins.map (n: {
+          name = n;
+          value = true;
+        }) cargoSpecificAttrs
+      )) args;
+      # Remove cargo-specific attrs before passing to mkDerivation
+      restArgs = builtins.removeAttrs args cargoSpecificAttrs;
+    in
+    mkDerivation (
+      restArgs
+      // {
+        buildDeps = [ self.rust ] ++ (args.buildDeps or [ ]);
+        phases = phases.cargoPhases cargoArgs;
+      }
+    );
+
+  mkGoPackage =
+    args:
+    let
+      goArgs = builtins.intersectAttrs (builtins.listToAttrs (
+        builtins.map (n: {
+          name = n;
+          value = true;
+        }) goSpecificAttrs
+      )) args;
+      restArgs = builtins.removeAttrs args goSpecificAttrs;
+    in
+    mkDerivation (
+      restArgs
+      // {
+        buildDeps = [ self.go ] ++ (args.buildDeps or [ ]);
+        phases = phases.goPhases goArgs;
+      }
+    );
+
   # callPackage: import a package file and auto-fill its arguments from `self`.
   # The package file is a function whose formals are introspected via
   # builtins.functionArgs, then satisfied from the package set plus the
@@ -199,6 +291,9 @@ let
   self = {
     # --- Plumbing ---
     inherit mkDerivation fetchurl lib;
+    inherit mkCargoPackage mkGoPackage;
+    inherit fetchCargoDeps fetchGoModules;
+    fakeHash = lib.fakeHash;
   }
   // discoverPackages ./.
   // {

@@ -87,16 +87,27 @@ pub async fn run_bootstrap_listener(state: Arc<AppState>, socket_path: &Path) ->
         };
 
         let uid = cred.uid();
-        let allowed_gid = cred.gid();
+        let peer_gid = cred.gid();
 
-        // Authorization: uid == 0 (root) or gid matches configured group.
-        // For simplicity we check GID directly — in production you'd resolve
-        // the group name to a GID. For now, root is always allowed.
+        // Authorization: uid == 0 (root) or primary GID matches configured group.
         if uid != 0 {
-            // TODO: resolve state.config.bootstrap.socket_group to GID and
-            // check against allowed_gid. For now, allow any local connection
-            // (the socket file permissions provide the access control).
-            let _ = allowed_gid;
+            let required_gid = match resolve_group_gid(&state.config.bootstrap.socket_group) {
+                Some(gid) => gid,
+                None => {
+                    eprintln!(
+                        "bootstrap: cannot resolve group '{}', rejecting uid={uid}",
+                        state.config.bootstrap.socket_group
+                    );
+                    continue;
+                }
+            };
+            if peer_gid != required_gid {
+                eprintln!(
+                    "bootstrap: uid={uid} gid={peer_gid} not in group '{}' (gid={required_gid}), rejecting",
+                    state.config.bootstrap.socket_group
+                );
+                continue;
+            }
         }
 
         let state = Arc::clone(&state);
@@ -204,4 +215,17 @@ async fn handle_request(
             Err(e) => BootstrapResponse::error(format!("rotating token: {e}")),
         },
     }
+}
+
+/// Resolve a Unix group name to its GID by reading `/etc/group`.
+fn resolve_group_gid(group_name: &str) -> Option<u32> {
+    let contents = std::fs::read_to_string("/etc/group").ok()?;
+    for line in contents.lines() {
+        // Format: group_name:password:GID:user_list
+        let fields: Vec<&str> = line.splitn(4, ':').collect();
+        if fields.len() >= 3 && fields[0] == group_name {
+            return fields[2].parse().ok();
+        }
+    }
+    None
 }
