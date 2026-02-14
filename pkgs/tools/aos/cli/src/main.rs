@@ -101,13 +101,13 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Repl => commands::repl::run(&nix, &printer),
         Commands::Gc {
             list_generations,
-            remote: _,
-            view: _,
-            collect: _,
-            dry_run: _,
-            all: _,
+            remote,
+            view,
+            collect,
+            dry_run,
+            all,
         } => {
-            commands::gc::run(&nix, &printer, *list_generations)
+            commands::gc::run(&nix, &printer, *list_generations, remote.as_deref(), view.as_deref(), *collect, *dry_run, *all)
         }
         Commands::WhyDepends {
             package,
