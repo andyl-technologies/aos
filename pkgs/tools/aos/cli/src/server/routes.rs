@@ -584,131 +584,6 @@ struct BuildClosureRequest {
     drvs: Vec<String>,
 }
 
-/// `POST /:view/build-closure` — trigger builds for multiple derivations,
-/// return a multiplexed SSE stream with events tagged by drv.
-async fn build_closure_handler(
-    Path(view): Path<String>,
-    State(state): State<Arc<AppState>>,
-    AuthClaims(claims): AuthClaims,
-    Json(body): Json<BuildClosureRequest>,
-) -> Response {
-    if state.views.get_view(&view).is_none() {
-        return (StatusCode::NOT_FOUND, "unknown view").into_response();
-    }
-
-    if !claims.views.contains(&view) && !claims.views.contains(&"*".to_string()) {
-        return (StatusCode::FORBIDDEN, "view not authorized").into_response();
-    }
-
-    if !claims.permissions.contains(&"build".to_string()) {
-        return (StatusCode::FORBIDDEN, "build permission required").into_response();
-    }
-
-    if state.drain.is_draining() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down").into_response();
-    }
-
-    if body.drvs.is_empty() {
-        return (StatusCode::BAD_REQUEST, "drvs array must not be empty").into_response();
-    }
-
-    // Verify all drvs exist and start builds.
-    let mut handles = Vec::new();
-    for drv_path in &body.drvs {
-        match state.store.is_valid_path(drv_path) {
-            Ok(true) => {}
-            Ok(false) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("derivation not found: {drv_path}"),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("store query: {e}"),
-                )
-                    .into_response();
-            }
-        }
-
-        let handle = state.build_mgr.get_or_start(&state, &view, drv_path);
-        handles.push((drv_path.clone(), handle));
-    }
-
-    // Create a merged SSE stream that tags each event with its drv path.
-    let streams: Vec<_> = handles
-        .into_iter()
-        .map(|(drv, handle)| {
-            let replay_events = handle.log_buffer.events_from(0);
-            let rx = handle.tx.subscribe();
-
-            let highest_replayed = handle
-                .log_buffer
-                .all_events()
-                .last()
-                .map(|e| e.id);
-
-            let drv_replay = drv.clone();
-            let replay_stream = tokio_stream::iter(
-                replay_events
-                    .into_iter()
-                    .map(move |e| {
-                        Ok::<_, Infallible>(format!(
-                            "event: build\ndata: {{\"drv\":{},\"event\":{}}}\n\n",
-                            serde_json::json!(drv_replay),
-                            e.to_sse().trim(),
-                        ))
-                    }),
-            );
-
-            let drv_live = drv;
-            let live_stream = BroadcastStream::new(rx)
-                .filter_map(move |result| match result {
-                    Ok(event) => {
-                        if let Some(max_id) = highest_replayed {
-                            if event.id <= max_id {
-                                return None;
-                            }
-                        }
-                        Some(Ok::<_, Infallible>(format!(
-                            "event: build\ndata: {{\"drv\":{},\"event\":{}}}\n\n",
-                            serde_json::json!(drv_live),
-                            event.to_sse().trim(),
-                        )))
-                    }
-                    Err(_) => None,
-                });
-
-            replay_stream.chain(live_stream)
-        })
-        .collect();
-
-    // Merge all streams using select_all for fair interleaving.
-    let merged = tokio_stream::StreamExt::map(
-        futures_util::stream::select_all(streams),
-        |item| item,
-    );
-
-    let body = Body::from_stream(merged);
-
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "text/event-stream"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        body,
-    )
-        .into_response()
-}
-
-#[derive(Deserialize)]
-struct BuildClosureRequest {
-    drvs: Vec<String>,
-}
-
 /// `POST /:view/build-closure` — build multiple derivations and return a
 /// multiplexed SSE stream with events tagged by derivation.
 async fn build_closure_handler(
@@ -952,11 +827,62 @@ async fn gc_handler(
         }
     }
 
+    // Step 3: Run `nix-store --gc` when collect is true and not a dry run.
+    let collected = if body.collect && !body.dry_run {
+        match Command::new("nix-store")
+            .arg("--gc")
+            .arg("--print-freed")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => match child.wait_with_output().await {
+                Ok(output) if output.status.success() => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    // nix-store --gc --print-freed outputs freed bytes on the last line.
+                    let freed_bytes: u64 = stdout
+                        .lines()
+                        .last()
+                        .and_then(|line| line.trim().parse().ok())
+                        .unwrap_or(0);
+                    Some(serde_json::json!({
+                        "freed_bytes": freed_bytes,
+                    }))
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("nix-store --gc failed: {stderr}"),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("waiting for nix-store --gc: {e}"),
+                    )
+                        .into_response();
+                }
+            },
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("spawning nix-store --gc: {e}"),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+
     Json(serde_json::json!({
         "expired": expired.len(),
         "evicted": evicted.len(),
         "eviction_candidates": evicted,
         "dry_run": body.dry_run,
+        "collected": collected,
     }))
     .into_response()
 }

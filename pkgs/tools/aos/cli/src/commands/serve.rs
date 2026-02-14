@@ -42,12 +42,24 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
     // Recover any builds that were in-flight when the server last crashed.
     let incomplete = drain::BuildState::scan_incomplete(&root);
     if !incomplete.is_empty() {
-        printer.info(&format!("Recovering {} incomplete builds from previous run", incomplete.len()));
+        printer.info(&format!(
+            "Recovering {} incomplete build(s) from previous run",
+            incomplete.len()
+        ));
         for build_state in &incomplete {
-            printer.info(&format!("  {} ({}): marking as failed", build_state.drv, build_state.status));
-            let mut failed = drain::BuildState::new(&build_state.drv, &build_state.view);
-            failed.status = "failed".to_string();
-            let _ = failed.save(&root);
+            let outputs_exist = check_store_outputs(&build_state.drv);
+            if outputs_exist {
+                printer.info(&format!(
+                    "  {}: outputs already in store, cleaning up",
+                    build_state.drv
+                ));
+            } else {
+                printer.warning(&format!(
+                    "  {} ({}): outputs missing, cleaning up stale state",
+                    build_state.drv, build_state.status
+                ));
+            }
+            build_state.remove(&root);
         }
     }
 
@@ -126,4 +138,30 @@ fn load_jwt_secret(cfg: &config::ServerConfig) -> Result<Vec<u8>> {
             Ok(secret.to_vec())
         }
     }
+}
+
+/// Check whether a derivation's outputs are valid in the Nix store.
+/// Runs `nix-store -q --outputs <drv>` to get output paths, then
+/// `nix-store --check-validity` to see if they actually exist.
+fn check_store_outputs(drv: &str) -> bool {
+    let output = match std::process::Command::new("nix-store")
+        .args(["-q", "--outputs", drv])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return false,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let paths: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    if paths.is_empty() {
+        return false;
+    }
+
+    let mut cmd = std::process::Command::new("nix-store");
+    cmd.arg("--check-validity");
+    for p in &paths {
+        cmd.arg(p);
+    }
+    cmd.status().map(|s| s.success()).unwrap_or(false)
 }

@@ -37,6 +37,8 @@ pub struct GcResponse {
     pub evicted: u64,
     pub eviction_candidates: Vec<serde_json::Value>,
     pub dry_run: bool,
+    /// Present when `collect: true` was requested and the server ran `nix-store --gc`.
+    pub collected: Option<serde_json::Value>,
 }
 
 impl RemoteClient {
