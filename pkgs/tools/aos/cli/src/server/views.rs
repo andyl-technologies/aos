@@ -120,6 +120,64 @@ impl ViewManager {
         basename.split('-').next()
     }
 
+    /// Create GC roots for fixed-output source inputs of a derivation.
+    /// These are stored in the `src/` namespace with source_ttl metadata.
+    pub fn create_source_roots(
+        &self,
+        view: &str,
+        drv_path: &str,
+        source_ttl: Option<std::time::Duration>,
+    ) -> Result<()> {
+        // Query the derivation's own references (not build outputs).
+        let output = std::process::Command::new("nix-store")
+            .args(["-qR", drv_path])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .with_context(|| format!("querying references of {drv_path}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("nix-store -qR failed for {drv_path}: {stderr}");
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let expires_at = source_ttl.map(|d| now + d.as_secs() as i64);
+
+        let paths: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .filter(|l| !l.ends_with(".drv")) // Skip .drv files, keep sources
+            .map(String::from)
+            .collect();
+
+        for path in &paths {
+            let hash = Self::store_path_hash(path)
+                .with_context(|| format!("extracting hash from {path}"))?;
+
+            self.create_gc_root(view, "src", hash, path)?;
+
+            let mut meta = serde_json::json!({
+                "store_path": path,
+                "pushed_at": now,
+                "access_count": 0,
+                "source_of": [drv_path],
+            });
+
+            if let Some(exp) = expires_at {
+                meta["expires_at"] = serde_json::json!(exp);
+            }
+
+            self.write_metadata(view, "src", hash, &meta)?;
+        }
+
+        Ok(())
+    }
+
     /// Create GC roots for all paths in a closure within the given view/namespace.
     pub fn create_roots_for_closure(
         &self,

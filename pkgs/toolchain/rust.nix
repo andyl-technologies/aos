@@ -5,7 +5,10 @@
   make,
   cmake,
   ninja,
+  pkg-config,
   python3,
+  bash,
+  which,
   llvm,
   rust-bootstrap,
   openssl,
@@ -30,9 +33,13 @@ mkDerivation {
     make
     cmake
     ninja
+    pkg-config
     python3
+    bash
+    which
     rust-bootstrap
     llvm
+    openssl
   ];
   runtimeDeps = [
     llvm
@@ -50,9 +57,17 @@ mkDerivation {
     {
       name = "configure";
       script = ''
+        # Create a fake git wrapper so x.py doesn't panic when running git commands
+        mkdir -p .fake-bin
+        printf '#!/bin/sh\nexit 0\n' > .fake-bin/git
+        chmod +x .fake-bin/git
+        export PATH="$PWD/.fake-bin:$PATH"
         cat > config.toml << TOML
+        change-id = 133207
+
         [llvm]
         link-shared = true
+        download-ci-llvm = false
 
         [build]
         docs = false
@@ -70,6 +85,8 @@ mkDerivation {
         channel = "stable"
         codegen-units = 0
         rpath = true
+        omit-git-hash = true
+        download-rustc = false
 
         [target.x86_64-unknown-linux-gnu]
         llvm-config = "${llvm}/bin/llvm-config"
@@ -82,12 +99,14 @@ mkDerivation {
     {
       name = "build";
       script = ''
+        export PATH="$PWD/.fake-bin:$PATH"
         python3 x.py build -j $NIX_BUILD_CORES
       '';
     }
     {
       name = "install";
       script = ''
+        export PATH="$PWD/.fake-bin:$PATH"
         python3 x.py install
 
         # Patch ELF binaries

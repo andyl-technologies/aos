@@ -132,6 +132,52 @@ pub fn create_pack(entries: &[PackEntry]) -> Vec<u8> {
     buf
 }
 
+/// Validate that an imported store path is safe to accept.
+/// Returns Ok(()) if the path is a .drv or content-addressed (fixed-output) path.
+/// Returns Err with a reason string if the path should be rejected.
+pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
+    // .drv files are always safe (they're build recipes, not binaries)
+    if store_path.ends_with(".drv") {
+        return Ok(());
+    }
+
+    // Check if the path is content-addressed by querying nix path-info.
+    // Content-addressed paths have a "ca" field in their narinfo.
+    let output = std::process::Command::new("nix")
+        .args(["path-info", "--json", store_path])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to query path info: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!("path not found in store: {store_path}"));
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    // nix path-info --json returns an array of objects or {path: {info}} format
+    let parsed: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| format!("failed to parse path info: {e}"))?;
+
+    // Check for "ca" field which indicates content-addressed / fixed-output
+    let has_ca = if let Some(arr) = parsed.as_array() {
+        arr.first().and_then(|obj| obj.get("ca")).is_some()
+    } else if let Some(obj) = parsed.as_object() {
+        // Some versions return {path: {info}} format
+        obj.values().next().and_then(|v| v.get("ca")).is_some()
+    } else {
+        false
+    };
+
+    if has_ca {
+        Ok(())
+    } else {
+        Err(format!(
+            "rejected: {store_path} is neither a .drv nor a content-addressed path"
+        ))
+    }
+}
+
 /// Import pack entries into the Nix store via `nix-store --import`.
 pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
     let mut paths = Vec::with_capacity(entries.len());
@@ -173,6 +219,13 @@ pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
         for line in stdout.lines() {
             let trimmed = line.trim();
             if !trimmed.is_empty() {
+                // Validate the imported path
+                if let Err(reason) = validate_imported_path(trimmed) {
+                    // TODO: ideally we'd delete the imported path, but nix-store
+                    // doesn't support targeted deletion. The path will be GC'd
+                    // if not rooted.
+                    return Err(format!("entry {i} ({}): {reason}", entry.hash));
+                }
                 paths.push(trimmed.to_string());
             }
         }

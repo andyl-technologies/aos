@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result};
 pub enum Compression {
     None,
     Zstd { level: i32 },
+    Xz { level: i32 },
 }
 
 impl Compression {
@@ -18,6 +19,7 @@ impl Compression {
         match self {
             Compression::None => "nar",
             Compression::Zstd { .. } => "nar.zst",
+            Compression::Xz { .. } => "nar.xz",
         }
     }
 
@@ -31,6 +33,7 @@ impl Compression {
         match self {
             Compression::None => "none",
             Compression::Zstd { .. } => "zstd",
+            Compression::Xz { .. } => "xz",
         }
     }
 }
@@ -74,6 +77,29 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
 
             let zstd_stdout = zstd_child.stdout.take().context("no stdout from zstd")?;
             let stream = ReaderStream::new(zstd_stdout);
+            Ok(Body::from_stream(stream))
+        }
+        Compression::Xz { level } => {
+            let mut dump = std::process::Command::new("nix-store")
+                .args(["--dump", store_path])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("spawning nix-store --dump")?;
+
+            let dump_stdout: Stdio = dump.stdout.take().context("no stdout")?.into();
+
+            let level_arg = format!("-{level}");
+            let mut xz_child = Command::new("xz")
+                .args(["-c", "-T0", &level_arg])
+                .stdin(dump_stdout)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("spawning xz compressor")?;
+
+            let xz_stdout = xz_child.stdout.take().context("no stdout from xz")?;
+            let stream = ReaderStream::new(xz_stdout);
             Ok(Body::from_stream(stream))
         }
     }
