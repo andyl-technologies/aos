@@ -51,8 +51,6 @@ mkDerivation {
       name = "configure";
       script = ''
         cat > config.toml << TOML
-        changelog-seen = 2
-
         [llvm]
         link-shared = true
 

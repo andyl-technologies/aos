@@ -20,14 +20,15 @@
 let
   cfg = config.aos.services.ignition;
 
-  # Build the list of ZFS dataset creation commands.
+  # Build the list of ZFS dataset creation commands from the unified
+  # dataset config (aos.filesystems.zfs.datasets).
   datasetCmds = lib.mapAttrsToList (
     name: props:
     let
       propFlags = builtins.concatStringsSep " " (lib.mapAttrsToList (k: v: "-o ${k}=${v}") props);
     in
     "/usr/sbin/zfs create ${propFlags} ${cfg.poolName}/${name}"
-  ) cfg.datasets;
+  ) config.aos.filesystems.zfs.datasets;
 
 in
 {
@@ -80,45 +81,9 @@ in
       '';
     };
 
-    datasets = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
-      default = {
-        "var" = {
-          mountpoint = "/var";
-          compression = "zstd-3";
-          atime = "off";
-        };
-        "var/log" = {
-          mountpoint = "/var/log";
-          compression = "zstd-3";
-          atime = "off";
-          "logbias" = "throughput";
-        };
-        "var/lib" = {
-          mountpoint = "/var/lib";
-          compression = "zstd-3";
-          atime = "off";
-        };
-        "var/lib/containerd" = {
-          mountpoint = "/var/lib/containerd";
-          compression = "zstd-3";
-          atime = "off";
-          recordsize = "128K";
-        };
-        "var/lib/etcd" = {
-          mountpoint = "/var/lib/etcd";
-          compression = "zstd-3";
-          atime = "off";
-          recordsize = "4K";
-          sync = "always";
-        };
-      };
-      description = ''
-        ZFS datasets to create during first-boot provisioning. Each key
-        is the dataset name (relative to the pool), and the value is an
-        attrset of ZFS properties including mountpoint.
-      '';
-    };
+    # Datasets are now sourced from config.aos.filesystems.zfs.datasets
+    # (the unified dataset option). Modules add their datasets there
+    # and Ignition creates them all at first boot.
   };
 
   config = lib.mkIf cfg.enable {
