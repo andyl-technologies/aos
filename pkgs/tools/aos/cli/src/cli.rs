@@ -28,6 +28,15 @@ pub enum Commands {
         /// Build all packages
         #[arg(long)]
         all: bool,
+        /// Remote build server URL (enables remote mode)
+        #[arg(long, env = "AOS_REMOTE")]
+        remote: Option<String>,
+        /// View on the remote server
+        #[arg(long, env = "AOS_VIEW", default_value = "default")]
+        view: String,
+        /// Provisioning token for the remote server
+        #[arg(long, env = "AOS_TOKEN")]
+        token: Option<String>,
     },
     /// System operations (build, image, eval)
     System {
@@ -66,6 +75,21 @@ pub enum Commands {
         /// List system generations instead of collecting garbage
         #[arg(long)]
         list_generations: bool,
+        /// Remote server URL (enables remote GC mode)
+        #[arg(long, env = "AOS_REMOTE")]
+        remote: Option<String>,
+        /// View on the remote server
+        #[arg(long, env = "AOS_VIEW")]
+        view: Option<String>,
+        /// Also run nix-store --gc after removing roots
+        #[arg(long)]
+        collect: bool,
+        /// Show what would be removed without acting
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove all roots for a view (decommission)
+        #[arg(long)]
+        all: bool,
     },
     /// Debug dependency chains
     WhyDepends {
@@ -109,6 +133,50 @@ pub enum Commands {
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
+    },
+    /// Start the HTTP binary cache server
+    Serve {
+        /// Path to server configuration file
+        #[arg(long, default_value = "/etc/aos/serve.toml")]
+        config: std::path::PathBuf,
+    },
+    /// Manage provisioning tokens
+    Token {
+        #[command(subcommand)]
+        command: TokenCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TokenCmd {
+    /// Create a new provisioning token
+    Create {
+        /// Views this token can access (repeatable)
+        #[arg(short, long, required = true)]
+        view: Vec<String>,
+        /// Comma-separated permissions (e.g., "read,build")
+        #[arg(short, long, default_value = "read")]
+        permissions: String,
+        /// Token expiry duration (e.g., "90d", "24h")
+        #[arg(short, long)]
+        expires: Option<String>,
+        /// Optional comment / description
+        #[arg(long)]
+        comment: Option<String>,
+    },
+    /// List active provisioning tokens
+    List,
+    /// Revoke a provisioning token
+    Revoke {
+        /// Token ID to revoke
+        #[arg(long)]
+        token_id: String,
+    },
+    /// Rotate a provisioning token (revoke old + create new)
+    Rotate {
+        /// Token ID to rotate
+        #[arg(long)]
+        token_id: String,
     },
 }
 

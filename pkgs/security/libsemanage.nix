@@ -4,6 +4,9 @@
   fetchurl,
   make,
   pkg-config,
+  bison,
+  flex,
+  bzip2,
   libsepol,
   libselinux,
   audit,
@@ -26,8 +29,11 @@ mkDerivation {
   buildDeps = [
     make
     pkg-config
+    bison
+    flex
   ];
   runtimeDeps = [
+    bzip2
     libsepol
     libselinux
     audit
@@ -46,15 +52,15 @@ mkDerivation {
       name = "build";
       script = ''
         make PREFIX=$out SHLIBDIR=$out/lib \
-          CFLAGS="-I${libsepol}/include -I${libselinux}/include -I${audit}/include" \
-          LDFLAGS="-L${libsepol}/lib -L${libselinux}/lib -L${audit}/lib" \
+          CFLAGS="-I${libsepol}/include -I${libselinux}/include -I${audit}/include -I${bzip2}/include" \
+          LDFLAGS="-L${libsepol}/lib -L${libselinux}/lib -L${audit}/lib -L${bzip2}/lib" \
           -j$NIX_BUILD_CORES
       '';
     }
     {
       name = "install";
       script = ''
-        make install PREFIX=$out SHLIBDIR=$out/lib
+        make install PREFIX=$out SHLIBDIR=$out/lib SYSCONFDIR=$out/etc
       '';
     }
   ];

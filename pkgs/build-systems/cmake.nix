@@ -43,7 +43,13 @@ mkDerivation {
           --parallel=$NIX_BUILD_CORES \
           --system-zlib \
           -- \
-          -DCMAKE_USE_OPENSSL=ON
+          -DCMAKE_USE_OPENSSL=ON \
+          -DZLIB_LIBRARY=${zlib}/lib/libz.so \
+          -DZLIB_INCLUDE_DIR=${zlib}/include \
+          -DOPENSSL_ROOT_DIR=${openssl} \
+          -DOPENSSL_CRYPTO_LIBRARY=${openssl}/lib/libcrypto.so \
+          -DOPENSSL_SSL_LIBRARY=${openssl}/lib/libssl.so \
+          -DOPENSSL_INCLUDE_DIR=${openssl}/include
       '';
     }
     {

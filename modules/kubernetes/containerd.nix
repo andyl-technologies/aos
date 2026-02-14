@@ -137,6 +137,14 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # ZFS dataset for containerd state (container images, snapshots).
+    aos.filesystems.zfs.datasets."var/lib/containerd" = {
+      mountpoint = "/var/lib/containerd";
+      compression = "zstd-3";
+      atime = "off";
+      recordsize = "128K";
+    };
+
     environment.systemPackages = [
       pkgs.containerd
       pkgs.runc

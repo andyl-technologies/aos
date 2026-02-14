@@ -44,7 +44,7 @@ mkDerivation {
           --sysconfdir=$out/etc/ssh \
           --with-ssl-dir=${openssl} \
           --with-zlib=${zlib} \
-          --with-privsep-path=/var/empty/sshd \
+          --with-privsep-path=$out/var/empty/sshd \
           --with-privsep-user=sshd \
           --without-pam \
           --disable-strip
@@ -59,6 +59,8 @@ mkDerivation {
     {
       name = "install";
       script = ''
+        # Strip setuid bits from install (not available in Nix sandbox)
+        sed -i 's/-m 4711/-m 0755/g' Makefile
         make install
       '';
     }
