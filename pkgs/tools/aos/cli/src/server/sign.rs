@@ -40,6 +40,19 @@ impl NarInfoSigner {
         self.key_data.is_some()
     }
 
+    /// Sign a narinfo fingerprint. Returns `name:base64_sig` or None if no key.
+    pub fn sign(&self, fingerprint: &str) -> Option<String> {
+        let (name, secret) = self.key_data.as_ref()?;
+        // The Nix key format stores 64 bytes: first 32 = ed25519 secret, last 32 = public
+        // ed25519_dalek::SigningKey takes the 32-byte secret seed
+        use ed25519_dalek::{Signer, SigningKey};
+        let key_bytes: [u8; 32] = secret[..32].try_into().ok()?;
+        let signing_key = SigningKey::from_bytes(&key_bytes);
+        let signature = signing_key.sign(fingerprint.as_bytes());
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+        Some(format!("{name}:{sig_b64}"))
+    }
+
     /// Compute the narinfo fingerprint for signing.
     pub fn fingerprint(store_path: &str, nar_hash: &str, nar_size: i64, refs: &[String]) -> String {
         let refs_str = refs.join(",");

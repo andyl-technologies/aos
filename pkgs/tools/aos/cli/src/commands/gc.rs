@@ -1,27 +1,38 @@
 use anyhow::{bail, Context, Result};
 
+use crate::client::remote::RemoteClient;
 use crate::nix::NixRunner;
 use crate::output::{create_spinner, Printer};
 use crate::server;
 
 /// `aos gc` — garbage collection with local, view-based, or remote modes.
-pub fn run(
+pub async fn run(
     nix: &NixRunner,
     printer: &Printer,
     list_generations: bool,
     remote: Option<&str>,
     view: Option<&str>,
+    token: Option<&str>,
     collect: bool,
     dry_run: bool,
     all: bool,
+    pin: Option<&str>,
 ) -> Result<()> {
     if list_generations {
         return show_generations(nix, printer);
     }
 
+    // Pin mode: create a permanent GC root (requires --view)
+    if let Some(pin_path) = pin {
+        if let Some(view_name) = view {
+            return pin_root(nix, printer, view_name, pin_path);
+        }
+        bail!("--pin requires --view");
+    }
+
     // Remote mode: delegate to server via HTTP
     if let Some(url) = remote {
-        return run_remote(printer, url, view, collect, dry_run, all);
+        return run_remote(printer, url, view, token, collect, dry_run, all).await;
     }
 
     // View-local mode: TTL expiry + eviction on local views
@@ -34,19 +45,52 @@ pub fn run(
 }
 
 /// Remote GC: call the server's GC endpoint.
-fn run_remote(
+async fn run_remote(
     printer: &Printer,
-    _url: &str,
+    url: &str,
     view: Option<&str>,
-    _collect: bool,
-    _dry_run: bool,
+    token: Option<&str>,
+    collect: bool,
+    dry_run: bool,
     _all: bool,
 ) -> Result<()> {
     let view_name = view.unwrap_or("default");
-    printer.info(&format!("Remote GC not yet fully wired (view: {view_name})"));
-    // TODO: HTTP client calls to server GC endpoint
-    // This will be implemented when the GC HTTP endpoint is added to routes.rs
-    bail!("remote GC is not yet implemented — use local view GC or basic GC")
+    let token = token.context("--token (or AOS_TOKEN) is required for remote GC")?;
+
+    let spinner = create_spinner("authenticating with remote server");
+    let mut client = RemoteClient::new(url, view_name, token)?;
+    client.authenticate().await?;
+    spinner.finish_and_clear();
+
+    let spinner = create_spinner(&format!("running GC on view '{view_name}'"));
+    let resp = client.gc(dry_run, collect, None).await?;
+    spinner.finish_and_clear();
+
+    if resp.dry_run {
+        printer.info("[dry run]");
+    }
+
+    printer.info(&format!("Expired {} TTL roots", resp.expired));
+
+    if resp.eviction_candidates.is_empty() {
+        printer.info("No eviction candidates");
+    } else {
+        printer.header(&format!("Eviction candidates ({} total):", resp.evicted));
+        for c in &resp.eviction_candidates {
+            let hash = c.get("hash").and_then(|v| v.as_str()).unwrap_or("?");
+            let path = c.get("store_path").and_then(|v| v.as_str()).unwrap_or("?");
+            let score = c.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let age = c.get("age_days").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let size = c.get("unique_size").and_then(|v| v.as_u64()).unwrap_or(0);
+            let size_mb = size as f64 / (1024.0 * 1024.0);
+            printer.plain(&format!(
+                "  {hash}: score={score:.0} age={age:.1}d unique={size_mb:.1}MB {path}"
+            ));
+        }
+    }
+
+    printer.success("Remote GC complete");
+    Ok(())
 }
 
 /// View-local GC: expire TTL roots, run eviction if needed.
@@ -167,6 +211,54 @@ fn collect_default(nix: &NixRunner, printer: &Printer) -> Result<()> {
 
     printer.success("Garbage collection complete");
 
+    Ok(())
+}
+
+/// Pin a store path as a permanent GC root (no TTL expiry) in a view.
+fn pin_root(
+    _nix: &NixRunner,
+    printer: &Printer,
+    view: &str,
+    store_path: &str,
+) -> Result<()> {
+    use crate::server::views::ViewManager;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let root = server::aos_root();
+
+    let view_config = crate::server::config::ViewConfig {
+        name: view.to_string(),
+        ttl: None,
+        source_ttl: None,
+        source_mirror: true,
+        anonymous_read: false,
+        max_concurrent_builds: 4,
+        max_store_size: None,
+        max_paths: None,
+    };
+    let view_mgr = ViewManager::new(root.clone(), vec![view_config]);
+
+    let hash = ViewManager::store_path_hash(store_path)
+        .context("extracting hash from store path")?;
+
+    // Create the GC root symlink.
+    view_mgr.create_gc_root(view, "bin", hash, store_path)?;
+
+    // Write metadata with no expires_at (permanent).
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let meta = serde_json::json!({
+        "store_path": store_path,
+        "pushed_at": now,
+        "access_count": 0,
+        "pinned": true,
+    });
+    view_mgr.write_metadata(view, "bin", hash, &meta)?;
+
+    printer.success(&format!("Pinned {store_path} in view '{view}' (permanent, no TTL)"));
     Ok(())
 }
 

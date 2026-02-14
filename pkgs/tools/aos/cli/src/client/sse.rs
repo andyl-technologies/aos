@@ -9,6 +9,14 @@ pub struct SseEvent {
     pub data: String,
 }
 
+/// Action to take after processing an SSE event.
+pub enum EventAction {
+    /// Continue processing events.
+    Continue,
+    /// Stop the event loop (used for terminal events like "complete" or "error").
+    Stop,
+}
+
 /// Parser and consumer for SSE event streams.
 pub struct SseStream {
     lines: Vec<String>,
@@ -50,6 +58,54 @@ impl SseStream {
         let body = resp.text().await.context("failed to read SSE response body")?;
 
         Ok(Self::parse(&body))
+    }
+
+    /// Connect to an SSE endpoint with automatic reconnection on disconnect.
+    /// Calls the provided callback for each event. Retries up to `max_retries`
+    /// times on connection failure, using Last-Event-ID for replay.
+    pub async fn connect_with_reconnect(
+        client: &Client,
+        url: &str,
+        token: &str,
+        max_retries: u32,
+        mut on_event: impl FnMut(&SseEvent) -> EventAction,
+    ) -> Result<()> {
+        let mut last_event_id: Option<String> = None;
+        let mut retries = 0;
+
+        loop {
+            let result = Self::connect(
+                client,
+                url,
+                token,
+                last_event_id.as_deref(),
+            ).await;
+
+            match result {
+                Ok(events) => {
+                    retries = 0; // reset on successful connection
+                    for event in &events {
+                        if let Some(ref id) = event.id {
+                            last_event_id = Some(id.clone());
+                        }
+                        match on_event(event) {
+                            EventAction::Continue => {}
+                            EventAction::Stop => return Ok(()),
+                        }
+                    }
+                    // Stream ended normally (server closed connection)
+                    return Ok(());
+                }
+                Err(e) => {
+                    retries += 1;
+                    if retries > max_retries {
+                        return Err(e).context("max SSE reconnection retries exceeded");
+                    }
+                    let delay = std::cmp::min(1000 * 2u64.pow(retries - 1), 5000);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+            }
+        }
     }
 
     /// Parse raw SSE text into a list of events.

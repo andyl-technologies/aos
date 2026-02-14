@@ -1,4 +1,5 @@
 use crate::server::config::CompressionConfig;
+use crate::server::sign::NarInfoSigner;
 use crate::server::store::PathInfo;
 
 /// Extract the basename (everything after the last `/`) from a store path.
@@ -23,7 +24,7 @@ fn compression_parts(config: &CompressionConfig) -> (&str, &str) {
 }
 
 /// Format a PathInfo as a Nix narinfo response.
-pub fn format_narinfo(info: &PathInfo, store_dir: &str, compression: &CompressionConfig) -> String {
+pub fn format_narinfo(info: &PathInfo, store_dir: &str, compression: &CompressionConfig, signer: Option<&NarInfoSigner>) -> String {
     let path_basename = basename(&info.path);
     let path_hash = store_hash(&info.path);
 
@@ -57,9 +58,18 @@ pub fn format_narinfo(info: &PathInfo, store_dir: &str, compression: &Compressio
         out.push_str(&format!("Deriver: {}\n", basename(deriver)));
     }
 
-    // Signatures
+    // Signatures from DB
     for sig in &info.sigs {
         out.push_str(&format!("Sig: {sig}\n"));
+    }
+
+    // Live signing with ed25519 key
+    if let Some(signer) = signer {
+        let store_path = format!("{store_dir}/{}", basename(&info.path));
+        let fingerprint = NarInfoSigner::fingerprint(&store_path, &info.nar_hash, info.nar_size, &info.refs);
+        if let Some(sig) = signer.sign(&fingerprint) {
+            out.push_str(&format!("Sig: {sig}\n"));
+        }
     }
 
     out

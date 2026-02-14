@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::output::Printer;
-use crate::server::{self, bootstrap, build, config, drain, routes, store, tokens, views};
+use crate::server::{self, bootstrap, build, config, drain, routes, sign, store, tokens, views};
 
 /// `aos serve` — start the HTTP binary cache server.
 pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
@@ -51,6 +51,12 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
         }
     }
 
+    // Load narinfo signing key (if configured).
+    let signer = sign::NarInfoSigner::load(cfg.signing.secret_key_file.as_deref())?;
+    if signer.is_configured() {
+        printer.info(&format!("Signing narinfo with key: {}", signer.key_name().unwrap()));
+    }
+
     let build_mgr = Arc::new(build::BuildManager::new());
     let drain_state = Arc::new(drain::DrainState::new());
 
@@ -63,6 +69,7 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
         tokens: token_store,
         build_mgr,
         drain: Arc::clone(&drain_state),
+        signer,
     });
 
     let app = routes::router(Arc::clone(&state));
