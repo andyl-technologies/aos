@@ -16,7 +16,8 @@ use tokio::process::Command;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
-use crate::server::auth::{self, AuthClaims};
+use crate::server::access;
+use crate::server::auth::{self, AuthClaims, AuthResult};
 use crate::server::build::BuildManager;
 use crate::server::compress::{self, Compression};
 use crate::server::config::ServerConfig;
@@ -49,20 +50,34 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/{view}/store/{hash}", put(upload_path_handler))
         .route("/{view}/build", post(build_handler))
         .route("/{view}/upload-pack", post(upload_pack_handler))
+        .route("/{view}/gc", post(gc_handler))
         .route("/oauth2/token", post(auth::oauth2_token_handler))
         .with_state(state)
 }
 
+// ---------------------------------------------------------------------------
+// Read-only endpoints (respect anonymous_read)
+// ---------------------------------------------------------------------------
+
 async fn cache_info_handler(
     Path(view): Path<String>,
     State(state): State<Arc<AppState>>,
+    auth: AuthResult,
 ) -> Response {
-    if state.views.get_view(&view).is_none() {
-        return (StatusCode::NOT_FOUND, "unknown view").into_response();
+    let view_config = match state.views.get_view(&view) {
+        Some(v) => v,
+        None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
+    };
+
+    // Enforce auth unless anonymous_read is enabled.
+    if !view_config.anonymous_read {
+        if let AuthResult::Anonymous = auth {
+            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
+        }
     }
 
     let body = format!(
-        "StoreDir: {}\nWantMassQuery: 1\nPriority: 30\nCapabilities: pack-upload query-missing sse-logs content-range zstd\n",
+        "StoreDir: {}\nWantMassQuery: 1\nPriority: 30\nCapabilities: pack-upload query-missing sse-logs zstd xz\n",
         state.store_dir
     );
 
@@ -77,9 +92,17 @@ async fn cache_info_handler(
 async fn narinfo_handler(
     Path((view, hash_narinfo)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
+    auth: AuthResult,
 ) -> Response {
-    if state.views.get_view(&view).is_none() {
-        return (StatusCode::NOT_FOUND, "unknown view").into_response();
+    let view_config = match state.views.get_view(&view) {
+        Some(v) => v,
+        None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
+    };
+
+    if !view_config.anonymous_read {
+        if let AuthResult::Anonymous = auth {
+            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
+        }
     }
 
     let hash = match hash_narinfo.strip_suffix(".narinfo") {
@@ -111,6 +134,9 @@ async fn narinfo_handler(
         }
     };
 
+    // Update access metadata (best-effort, don't fail the request).
+    let _ = access::update_access(&state.views, &view, hash);
+
     let body = narinfo::format_narinfo(&info, &state.store_dir, &state.config.compression);
 
     (
@@ -124,18 +150,28 @@ async fn narinfo_handler(
 async fn nar_handler(
     Path((view, filename)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
+    auth: AuthResult,
 ) -> Response {
-    if state.views.get_view(&view).is_none() {
-        return (StatusCode::NOT_FOUND, "unknown view").into_response();
+    let view_config = match state.views.get_view(&view) {
+        Some(v) => v,
+        None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
+    };
+
+    if !view_config.anonymous_read {
+        if let AuthResult::Anonymous = auth {
+            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
+        }
     }
 
     let zstd_level = state.config.compression.level;
     let (name, compression) = if let Some(name) = filename.strip_suffix(".nar.zst") {
         (name, Compression::Zstd { level: zstd_level })
+    } else if let Some(name) = filename.strip_suffix(".nar.xz") {
+        (name, Compression::Xz { level: zstd_level })
     } else if let Some(name) = filename.strip_suffix(".nar") {
         (name, Compression::None)
     } else {
-        return (StatusCode::BAD_REQUEST, "expected .nar or .nar.zst suffix").into_response();
+        return (StatusCode::BAD_REQUEST, "expected .nar, .nar.zst, or .nar.xz suffix").into_response();
     };
 
     let store_hash = match name.split('-').next() {
@@ -171,7 +207,7 @@ async fn nar_handler(
 }
 
 // ---------------------------------------------------------------------------
-// Build endpoints
+// Build endpoints (require auth)
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -278,6 +314,11 @@ async fn upload_path_handler(
     }
 
     let imported = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // Validate that the imported path is a .drv or content-addressed path.
+    if let Err(reason) = pack::validate_imported_path(&imported) {
+        return (StatusCode::BAD_REQUEST, reason).into_response();
+    }
 
     Json(serde_json::json!({ "path": imported })).into_response()
 }
@@ -432,4 +473,86 @@ async fn upload_pack_handler(
         .into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, format!("pack import failed: {e}")).into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// GC endpoint
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct GcRequest {
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    collect: bool,
+    /// Maximum budget in bytes; evict until under this size.
+    max_size: Option<u64>,
+}
+
+/// `POST /:view/gc` — trigger garbage collection for a view.
+async fn gc_handler(
+    Path(view): Path<String>,
+    State(state): State<Arc<AppState>>,
+    AuthClaims(claims): AuthClaims,
+    Json(body): Json<GcRequest>,
+) -> Response {
+    if state.views.get_view(&view).is_none() {
+        return (StatusCode::NOT_FOUND, "unknown view").into_response();
+    }
+
+    if !claims.views.contains(&view) && !claims.views.contains(&"*".to_string()) {
+        return (StatusCode::FORBIDDEN, "view not authorized").into_response();
+    }
+
+    if !claims.permissions.contains(&"build".to_string()) {
+        return (StatusCode::FORBIDDEN, "build permission required").into_response();
+    }
+
+    use crate::server::evict;
+
+    // Step 1: Expire TTL roots.
+    let expired = match evict::expire_ttl_roots(&state.views, &view) {
+        Ok(e) => e,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("TTL expiry: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    // Step 2: Budget-based eviction if max_size is specified.
+    let mut evicted = Vec::new();
+    if let Some(max_size) = body.max_size {
+        match evict::evict_until_budget(&state.store, &state.views, &view, max_size, body.dry_run) {
+            Ok(candidates) => {
+                evicted = candidates
+                    .iter()
+                    .map(|c| serde_json::json!({
+                        "hash": c.hash,
+                        "store_path": c.store_path,
+                        "unique_size": c.unique_size,
+                        "age_days": c.age_days,
+                        "score": c.score,
+                    }))
+                    .collect();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("eviction: {e}"),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    Json(serde_json::json!({
+        "expired": expired.len(),
+        "evicted": evicted.len(),
+        "eviction_candidates": evicted,
+        "dry_run": body.dry_run,
+    }))
+    .into_response()
 }

@@ -88,6 +88,7 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
             drain::wait_for_shutdown_signal().await;
             eprintln!("Shutdown signal received, draining...");
             drain_state.start_drain();
+            state.build_mgr.broadcast_drain();
             // Wait up to 75s for in-flight builds.
             let completed = drain_state.wait_for_completion(Duration::from_secs(75)).await;
             if completed {

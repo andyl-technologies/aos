@@ -8,6 +8,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{broadcast, Notify, Semaphore};
 
+use crate::server;
+use crate::server::drain::BuildState;
 use crate::server::routes::AppState;
 
 /// A single SSE event for a build.
@@ -35,6 +37,9 @@ pub enum BuildEventKind {
         drv: String,
         exit_code: Option<i32>,
         log_tail: String,
+    },
+    Drain {
+        message: String,
     },
 }
 
@@ -74,6 +79,7 @@ impl BuildEvent {
                 })
                 .to_string(),
             ),
+            BuildEventKind::Drain { message } => ("drain", message.clone()),
         };
 
         format!("id: {}\nevent: {event_type}\ndata: {data}\n\n", self.id)
@@ -154,6 +160,8 @@ pub struct BuildManager {
     builds: RwLock<HashMap<String, Arc<BuildHandle>>>,
     /// Per-view build concurrency semaphore.
     semaphores: RwLock<HashMap<String, Arc<Semaphore>>>,
+    /// Number of in-flight builds (for drain coordination).
+    active_count: AtomicU64,
 }
 
 impl BuildManager {
@@ -161,6 +169,7 @@ impl BuildManager {
         Self {
             builds: RwLock::new(HashMap::new()),
             semaphores: RwLock::new(HashMap::new()),
+            active_count: AtomicU64::new(0),
         }
     }
 
@@ -227,6 +236,16 @@ impl BuildManager {
         let mut builds = self.builds.write().unwrap();
         builds.remove(drv_path);
     }
+
+    /// Broadcast a drain event to all active builds.
+    pub fn broadcast_drain(&self) {
+        let builds = self.builds.read().unwrap();
+        for handle in builds.values() {
+            handle.emit(BuildEventKind::Drain {
+                message: "server shutting down".to_string(),
+            });
+        }
+    }
 }
 
 /// Execute a build: acquire semaphore, run nix-store --realise, emit events,
@@ -250,6 +269,23 @@ async fn run_build(
         drv: drv_path.to_string(),
     });
 
+    let root = server::aos_root();
+    let mut build_state = BuildState::new(drv_path, view);
+    let _ = build_state.save(&root);
+    mgr.active_count.fetch_add(1, Ordering::Relaxed);
+
+    /// Helper macro: clean up build state, decrement counter, signal drain if needed.
+    macro_rules! build_cleanup {
+        ($build_state:expr, $root:expr, $mgr:expr, $state:expr, $status:expr) => {{
+            $build_state.status = $status.to_string();
+            $build_state.remove($root);
+            let remaining = $mgr.active_count.fetch_sub(1, Ordering::Relaxed) - 1;
+            if $state.drain.is_draining() && remaining == 0 {
+                $state.drain.signal_complete();
+            }
+        }};
+    }
+
     // Acquire the per-view semaphore.
     let _permit = sem.acquire().await.expect("semaphore closed");
 
@@ -257,6 +293,9 @@ async fn run_build(
         phase: "building".to_string(),
         drv: drv_path.to_string(),
     });
+
+    build_state.status = "building".to_string();
+    let _ = build_state.save(&root);
 
     let start = Instant::now();
 
@@ -274,6 +313,7 @@ async fn run_build(
                 exit_code: None,
                 log_tail: format!("failed to spawn nix-store: {e}"),
             });
+            build_cleanup!(build_state, &root, mgr, state, "failed");
             handle.done.notify_waiters();
             schedule_cleanup(mgr, drv_path);
             return;
@@ -299,6 +339,7 @@ async fn run_build(
                 exit_code: None,
                 log_tail: format!("waiting for nix-store: {e}"),
             });
+            build_cleanup!(build_state, &root, mgr, state, "failed");
             handle.done.notify_waiters();
             schedule_cleanup(mgr, drv_path);
             return;
@@ -324,6 +365,7 @@ async fn run_build(
             exit_code: status.code(),
             log_tail: tail,
         });
+        build_cleanup!(build_state, &root, mgr, state, "failed");
         handle.done.notify_waiters();
         schedule_cleanup(mgr, drv_path);
         return;
@@ -340,6 +382,7 @@ async fn run_build(
                 exit_code: None,
                 log_tail: format!("querying outputs: {e}"),
             });
+            build_cleanup!(build_state, &root, mgr, state, "failed");
             handle.done.notify_waiters();
             schedule_cleanup(mgr, drv_path);
             return;
@@ -357,6 +400,7 @@ async fn run_build(
                     exit_code: None,
                     log_tail: format!("querying closure: {e}"),
                 });
+                build_cleanup!(build_state, &root, mgr, state, "failed");
                 handle.done.notify_waiters();
                 schedule_cleanup(mgr, drv_path);
                 return;
@@ -376,9 +420,21 @@ async fn run_build(
             exit_code: None,
             log_tail: format!("creating GC roots: {e}"),
         });
+        build_cleanup!(build_state, &root, mgr, state, "failed");
         handle.done.notify_waiters();
         schedule_cleanup(mgr, drv_path);
         return;
+    }
+
+    // Create source roots if source_mirror is enabled for this view.
+    if view_config.map(|v| v.source_mirror).unwrap_or(true) {
+        let source_ttl = view_config.and_then(|v| v.source_ttl);
+        if let Err(e) = state.views.create_source_roots(view, drv_path, source_ttl) {
+            // Non-fatal: log but don't fail the build.
+            handle.emit(BuildEventKind::Log {
+                line: format!("warning: failed to create source roots: {e}"),
+            });
+        }
     }
 
     handle.emit(BuildEventKind::Complete {
@@ -387,6 +443,7 @@ async fn run_build(
         duration_secs,
     });
 
+    build_cleanup!(build_state, &root, mgr, state, "complete");
     handle.done.notify_waiters();
     schedule_cleanup(mgr, drv_path);
 }

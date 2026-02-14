@@ -39,6 +39,10 @@ pub fn format_narinfo(info: &PathInfo, store_dir: &str, compression: &Compressio
     out.push_str(&format!("StorePath: {store_dir}/{path_basename}\n"));
     out.push_str(&format!("URL: {url}\n"));
     out.push_str(&format!("Compression: {comp_name}\n"));
+    if comp_name == "none" {
+        out.push_str(&format!("FileHash: {nar_hash}\n"));
+        out.push_str(&format!("FileSize: {}\n", info.nar_size));
+    }
     out.push_str(&format!("NarHash: {nar_hash}\n"));
     out.push_str(&format!("NarSize: {}\n", info.nar_size));
 
