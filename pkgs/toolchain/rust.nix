@@ -114,7 +114,7 @@ mkDerivation {
         BT_LIB=$(dirname "$INTERP")
         for f in $out/bin/*; do
           if [ -f "$f" ] && [ ! -L "$f" ]; then
-            patchelf --set-interpreter "$INTERP" --set-rpath "$out/lib:${llvm}/lib:$BT_LIB" "$f" 2>/dev/null || true
+            patchelf --set-interpreter "$INTERP" --set-rpath "$out/lib:${llvm}/lib:${openssl}/lib:${zlib}/lib:$BT_LIB" "$f" 2>/dev/null || true
           fi
         done
       '';

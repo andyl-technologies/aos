@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   make,
+  go,
   runc,
 }:
 
@@ -20,7 +21,10 @@ mkDerivation {
     hash = "sha256-h2FPjIy80gOIEotK9PEMJF7SYNK/04NayfA6y2RQid0=";
   };
 
-  buildDeps = [ make ];
+  buildDeps = [
+    make
+    go
+  ];
   runtimeDeps = [ runc ];
   propagatedDeps = [ ];
 
@@ -44,8 +48,11 @@ mkDerivation {
       name = "build";
       script = ''
         export GOPATH=$TMPDIR/go
+        export GOCACHE=$TMPDIR/go-cache
         export CGO_ENABLED=0
-        make VERSION=v${version} \
+        export GOPROXY=off
+        mkdir -p "$GOCACHE"
+        make SHELL="$CONFIG_SHELL" VERSION=v${version} \
           REVISION=v${version} \
           binaries
       '';
@@ -55,9 +62,6 @@ mkDerivation {
       script = ''
         mkdir -p $out/bin
         install -m 755 bin/* $out/bin/
-        # Install default configuration
-        mkdir -p $out/etc/containerd
-        $out/bin/containerd config default > $out/etc/containerd/config.toml
       '';
     }
   ];

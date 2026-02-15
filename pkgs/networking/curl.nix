@@ -36,7 +36,11 @@ mkDerivation {
     nghttp2
     ca-certificates
   ];
-  propagatedDeps = [ ];
+  propagatedDeps = [
+    openssl
+    zlib
+    nghttp2
+  ];
 
   phases = [
     {
@@ -78,6 +82,8 @@ mkDerivation {
       name = "install";
       script = ''
         make install
+        # Create curl.pc symlink (some consumers look for "curl" not "libcurl")
+        ln -sf libcurl.pc $out/lib/pkgconfig/curl.pc
       '';
     }
   ];

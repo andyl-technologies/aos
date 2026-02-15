@@ -4,6 +4,7 @@
   fetchurl,
   make,
   gawk,
+  bootstrapTools,
   linux-headers,
   zlib,
   gmp,
@@ -48,7 +49,24 @@ mkDerivation {
     {
       name = "configure";
       script = ''
+        # Skip fixincludes — AOS uses the ccWrapper for include paths,
+        # and /include doesn't exist in the sandbox (headers come from
+        # linux-headers via -isystem flags).
+        sed -i 's|STMP_FIXINC = @STMP_FIXINC@|STMP_FIXINC =|' gcc/Makefile.in
+
         mkdir -p objdir && cd objdir
+
+        # Target library configure scripts try to run compiled programs;
+        # they need the dynamic linker and library paths from bootstrap tools.
+        export LDFLAGS_FOR_TARGET="$LDFLAGS"
+
+        # xgcc (the just-built compiler) doesn't use C_INCLUDE_PATH or the
+        # ccWrapper, so it can't find system headers.  Explicitly pass
+        # glibc and kernel header paths so target libraries (libgcc,
+        # libstdc++) can find stdio.h, stdint.h, linux/futex.h, etc.
+        export CFLAGS_FOR_TARGET="-O2 -isystem ${bootstrapTools}/include-glibc -isystem ${linux-headers}/include"
+        export CXXFLAGS_FOR_TARGET="-O2 -isystem ${bootstrapTools}/include-glibc -isystem ${linux-headers}/include"
+
         ../configure \
           --prefix=$out \
           --enable-languages=c,c++ \
@@ -59,8 +77,9 @@ mkDerivation {
           --disable-multilib \
           --disable-bootstrap \
           --disable-nls \
+          --disable-libsanitizer \
           --with-sysroot=/ \
-          --with-native-system-header-dir=/include \
+          --with-native-system-header-dir=${linux-headers}/include \
           --enable-default-pie \
           --enable-default-ssp
       '';
@@ -68,11 +87,6 @@ mkDerivation {
     {
       name = "build";
       script = ''
-        # Skip fixincludes — AOS uses the ccWrapper for include paths,
-        # and /include doesn't exist in the sandbox (headers come from
-        # linux-headers via -isystem flags).
-        mkdir -p gcc
-        touch gcc/stmp-fixinc
         make -j$NIX_BUILD_CORES
       '';
     }
