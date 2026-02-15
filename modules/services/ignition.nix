@@ -1,14 +1,14 @@
-# modules/services/ignition.nix — First-boot provisioning via Ignition
-#
-# Configures the Ignition first-boot provisioning system. Ignition runs in
-# the initrd before the real root is mounted, applying machine-specific
-# configuration atomically: hostname, SSH keys, ZFS pool creation, dataset
-# setup, and custom file writes. It runs exactly once — the presence of
-# /boot/ignition.complete prevents re-execution.
-#
-# Absorbed TOML config values:
-#   [services.ignition] enable, config_source
-#   [services.ignition.zfs] create_pool, pool_name, pool_disks, datasets
+##! modules/services/ignition.nix — First-boot provisioning via Ignition
+##!
+##! Configures the Ignition first-boot provisioning system. Ignition runs in
+##! the initrd before the real root is mounted, applying machine-specific
+##! configuration atomically: hostname, SSH keys, ZFS pool creation, dataset
+##! setup, and custom file writes. It runs exactly once — the presence of
+##! /boot/ignition.complete prevents re-execution.
+##!
+##! Absorbed TOML config values:
+##!   [services.ignition] enable, config_source
+##!   [services.ignition.zfs] create_pool, pool_name, pool_disks, datasets
 
 {
   config,
@@ -27,12 +27,16 @@ let
     let
       propFlags = builtins.concatStringsSep " " (lib.mapAttrsToList (k: v: "-o ${k}=${v}") props);
     in
-    "/usr/sbin/zfs create ${propFlags} ${cfg.poolName}/${name}"
+    "${pkgs.zfs}/sbin/zfs create ${propFlags} ${cfg.poolName}/${name}"
   ) config.aos.filesystems.zfs.datasets;
 
 in
 {
   options.aos.services.ignition = {
+    ## Enable Ignition first-boot provisioning.
+    ##
+    ## # See Also
+    ## - `aos.services.ignition.configSource`, `aos.services.ignition.createZfsPool`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -44,6 +48,7 @@ in
       '';
     };
 
+    ## Source for the Ignition configuration (device path, URL, or file).
     configSource = lib.mkOption {
       type = lib.types.str;
       default = "/dev/disk/by-label/ignition";
@@ -55,6 +60,10 @@ in
       '';
     };
 
+    ## Create the ZFS pool during first-boot provisioning.
+    ##
+    ## # See Also
+    ## - `aos.services.ignition.poolName`, `aos.services.ignition.poolDisks`
     createZfsPool = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -65,12 +74,14 @@ in
       '';
     };
 
+    ## Name of the ZFS pool to create during first boot.
     poolName = lib.mkOption {
       type = lib.types.str;
       default = "aos-pool";
       description = "Name of the ZFS pool to create during first boot.";
     };
 
+    ## Block devices to include in the ZFS pool.
     poolDisks = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -103,9 +114,9 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
         # Only run on first boot (marker file absent).
-        ExecCondition = "/usr/bin/test ! -f /sysroot/boot/ignition.complete";
-        ExecStart = "/usr/bin/ignition --platform=file --config-cache=${cfg.configSource} --root=/sysroot --log-to-stdout";
-        ExecStartPost = "/usr/bin/touch /sysroot/boot/ignition.complete";
+        ExecCondition = "${pkgs.coreutils}/bin/test ! -f /sysroot/boot/ignition.complete";
+        ExecStart = "${pkgs.ignition}/bin/ignition --platform=file --config-cache=${cfg.configSource} --root=/sysroot --log-to-stdout";
+        ExecStartPost = "${pkgs.coreutils}/bin/touch /sysroot/boot/ignition.complete";
       };
     };
 
@@ -122,10 +133,10 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecCondition = "/usr/bin/sh -c '! /usr/sbin/zpool list ${cfg.poolName} 2>/dev/null'";
+        ExecCondition = "${pkgs.bash}/bin/sh -c '! ${pkgs.zfs}/sbin/zpool list ${cfg.poolName} 2>/dev/null'";
         ExecStart = builtins.concatStringsSep " " (
           [
-            "/usr/sbin/zpool create"
+            "${pkgs.zfs}/sbin/zpool create"
             "-f"
             "-o ashift=12"
             "-O compression=zstd-3"
@@ -153,7 +164,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecCondition = "/usr/bin/test ! -f /sysroot/boot/ignition.complete";
+        ExecCondition = "${pkgs.coreutils}/bin/test ! -f /sysroot/boot/ignition.complete";
         ExecStart = datasetCmds;
       };
     };

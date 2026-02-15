@@ -1,4 +1,4 @@
-# pcre2 — Perl Compatible Regular Expressions (version 2)
+##! pcre2 — Perl Compatible Regular Expressions (version 2)
 {
   mkDerivation,
   fetchurl,
@@ -41,7 +41,9 @@ mkDerivation {
           --enable-unicode \
           --enable-pcre2-8 \
           --enable-pcre2-16 \
-          --enable-pcre2-32
+          --enable-pcre2-32 \
+          --enable-jit=auto \
+          --enable-jit-sealloc
       '';
     }
     {

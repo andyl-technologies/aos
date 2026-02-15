@@ -1,12 +1,12 @@
-# modules/security/encryption.nix — Encryption at rest module
-#
-# Configures LUKS-based disk encryption for block devices. Generates the
-# /etc/crypttab entry for the encrypted device and provides configuration
-# for the encryption cipher, key size, and key file. This module integrates
-# with systemd-cryptsetup to unlock encrypted volumes during boot.
-#
-# Options under aos.security.encryption:
-#   enable, device, keyFile, cipher, keySize
+##! modules/security/encryption.nix — Encryption at rest module
+##!
+##! Configures LUKS-based disk encryption for block devices. Generates the
+##! /etc/crypttab entry for the encrypted device and provides configuration
+##! for the encryption cipher, key size, and key file. This module integrates
+##! with systemd-cryptsetup to unlock encrypted volumes during boot.
+##!
+##! Options under aos.security.encryption:
+##!   enable, device, keyFile, cipher, keySize
 
 {
   config,
@@ -39,6 +39,18 @@ let
 in
 {
   options.aos.security.encryption = {
+    ## Enable disk encryption at rest using LUKS.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.security.encryption = {
+    ##   enable = true;
+    ##   device = "/dev/vda2";
+    ## };
+    ## ```
+    ##
+    ## # See Also
+    ## - `aos.security.encryption.device`, `aos.security.encryption.keyFile`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -49,6 +61,7 @@ in
       '';
     };
 
+    ## Block device path for the LUKS-encrypted volume.
     device = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -59,6 +72,7 @@ in
       '';
     };
 
+    ## Path to the LUKS key file for automatic unlocking.
     keyFile = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -70,6 +84,7 @@ in
       '';
     };
 
+    ## Encryption cipher specification for LUKS.
     cipher = lib.mkOption {
       type = lib.types.str;
       default = "aes-xts-plain64";
@@ -81,6 +96,7 @@ in
       '';
     };
 
+    ## Encryption key size in bits (512 for AES-256-XTS).
     keySize = lib.mkOption {
       type = lib.types.int;
       default = 512;

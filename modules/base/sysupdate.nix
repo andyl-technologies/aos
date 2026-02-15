@@ -1,13 +1,13 @@
-# modules/base/sysupdate.nix — systemd-sysupdate configuration module
-#
-# Configures systemd-sysupdate for atomic A/B OS image updates. sysupdate
-# downloads update artifacts from a transfer URL, verifies signatures, and
-# installs them to the inactive partition or ESP. Transfer definitions in
-# /etc/sysupdate.d/ describe what to fetch and where to install it.
-#
-# This integrates with the A/B partition scheme from modules/base/repart.nix:
-# updates are written to the inactive root partition, and the boot loader
-# entry is updated to point to the new partition on the next boot.
+##! modules/base/sysupdate.nix — systemd-sysupdate configuration module
+##!
+##! Configures systemd-sysupdate for atomic A/B OS image updates. sysupdate
+##! downloads update artifacts from a transfer URL, verifies signatures, and
+##! installs them to the inactive partition or ESP. Transfer definitions in
+##! /etc/sysupdate.d/ describe what to fetch and where to install it.
+##!
+##! This integrates with the A/B partition scheme from modules/base/repart.nix:
+##! updates are written to the inactive root partition, and the boot loader
+##! entry is updated to point to the new partition on the next boot.
 
 {
   config,
@@ -45,6 +45,10 @@ let
 in
 {
   options.aos.sysupdate = {
+    ## Enable systemd-sysupdate for atomic OS image updates.
+    ##
+    ## # See Also
+    ## - `aos.sysupdate.definitions`, `aos.repart`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -56,6 +60,7 @@ in
       '';
     };
 
+    ## Base URL for update artifacts.
     transferUrl = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -66,6 +71,7 @@ in
       '';
     };
 
+    ## Transfer definitions for systemd-sysupdate.
     definitions = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
@@ -123,7 +129,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         ExecStart =
-          "/usr/bin/systemd-sysupdate update"
+          "${pkgs.systemd}/bin/systemd-sysupdate update"
           + lib.optionalString (cfg.transferUrl != "") " --transfer-source=${cfg.transferUrl}";
         # sysupdate needs access to block devices to write partition images.
         ProtectSystem = false;

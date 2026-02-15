@@ -1,4 +1,4 @@
-# libsepol — SELinux binary policy manipulation library
+##! libsepol — SELinux binary policy manipulation library
 {
   mkDerivation,
   fetchurl,

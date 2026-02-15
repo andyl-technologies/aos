@@ -1,13 +1,13 @@
-# modules/services/chrony.nix — NTP time synchronization module
-#
-# Configures chronyd for accurate time synchronization. Chrony is preferred
-# over systemd-timesyncd for server workloads because it handles network
-# disruptions better, supports hardware timestamping, and provides faster
-# initial synchronization. Accurate time is critical for Kubernetes
-# certificate validation, log correlation, and distributed consensus.
-#
-# Absorbed TOML config values:
-#   [services.chrony] enable, servers, allowed_subnets, makestep
+##! modules/services/chrony.nix — NTP time synchronization module
+##!
+##! Configures chronyd for accurate time synchronization. Chrony is preferred
+##! over systemd-timesyncd for server workloads because it handles network
+##! disruptions better, supports hardware timestamping, and provides faster
+##! initial synchronization. Accurate time is critical for Kubernetes
+##! certificate validation, log correlation, and distributed consensus.
+##!
+##! Absorbed TOML config values:
+##!   [services.chrony] enable, servers, allowed_subnets, makestep
 
 {
   config,
@@ -66,6 +66,10 @@ let
 in
 {
   options.aos.services.chrony = {
+    ## Enable chronyd NTP time synchronization.
+    ##
+    ## # See Also
+    ## - `aos.services.chrony.servers`, `aos.services.chrony.makestep`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -76,6 +80,12 @@ in
       '';
     };
 
+    ## NTP server hostnames or IP addresses.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.services.chrony.servers = [ "ntp1.internal" "ntp2.internal" ];
+    ## ```
     servers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -91,6 +101,7 @@ in
       '';
     };
 
+    ## Subnets allowed to use this host as an NTP server.
     allowedSubnets = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -101,6 +112,7 @@ in
       '';
     };
 
+    ## Step correction threshold for initial synchronization.
     makestep = lib.mkOption {
       type = lib.types.str;
       default = "1.0 3";
@@ -129,8 +141,8 @@ in
       wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "forking";
-        ExecStart = "/usr/sbin/chronyd -u chrony";
-        ExecReload = "/bin/kill -HUP $MAINPID";
+        ExecStart = "${pkgs.chrony}/sbin/chronyd -u chrony";
+        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
         RestartSec = "5s";
         PIDFile = "/run/chrony/chronyd.pid";

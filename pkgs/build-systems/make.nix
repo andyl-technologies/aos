@@ -1,4 +1,4 @@
-# GNU Make — Build automation tool
+##! GNU Make — Build automation tool
 { mkDerivation, fetchurl }:
 
 let

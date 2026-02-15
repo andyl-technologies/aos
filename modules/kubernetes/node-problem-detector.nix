@@ -1,14 +1,14 @@
-# modules/kubernetes/node-problem-detector.nix — Node Problem Detector module
-#
-# Configures the Kubernetes Node Problem Detector (NPD), a daemon that
-# monitors node health and reports conditions to the Kubernetes API server.
-# NPD detects hardware issues, kernel deadlocks, container runtime problems,
-# and other node-level failures that kubelet alone cannot detect. It exposes
-# a health endpoint for monitoring and integrates with Kubernetes node
-# conditions and events.
-#
-# Options:
-#   [kubernetes.nodeProblemDetector] enable, port
+##! modules/kubernetes/node-problem-detector.nix — Node Problem Detector module
+##!
+##! Configures the Kubernetes Node Problem Detector (NPD), a daemon that
+##! monitors node health and reports conditions to the Kubernetes API server.
+##! NPD detects hardware issues, kernel deadlocks, container runtime problems,
+##! and other node-level failures that kubelet alone cannot detect. It exposes
+##! a health endpoint for monitoring and integrates with Kubernetes node
+##! conditions and events.
+##!
+##! Options:
+##!   [kubernetes.nodeProblemDetector] enable, port
 
 {
   config,
@@ -23,6 +23,7 @@ let
 in
 {
   options.aos.kubernetes.nodeProblemDetector = {
+    ## Enable the Kubernetes Node Problem Detector (NPD).
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -34,6 +35,7 @@ in
       '';
     };
 
+    ## TCP port for the NPD health and metrics endpoint.
     port = lib.mkOption {
       type = lib.types.port;
       default = 20256;
@@ -60,7 +62,7 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStart = builtins.concatStringsSep " " [
-          "/usr/bin/node-problem-detector"
+          "${pkgs.node-problem-detector}/bin/node-problem-detector"
           "--port=${toString cfg.port}"
           "--logtostderr"
           "--system-log-monitors=/etc/node-problem-detector.d/kernel-monitor.json"
@@ -145,7 +147,7 @@ in
             type = "permanent";
             condition = "ContainerRuntimeUnhealthy";
             reason = "ContainerdUnhealthy";
-            path = "/bin/sh";
+            path = "${pkgs.bash}/bin/sh";
             args = [
               "-c"
               "test -S /run/containerd/containerd.sock"

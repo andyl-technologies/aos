@@ -1,4 +1,4 @@
-# kubelet — Kubernetes node agent
+##! kubelet — Kubernetes node agent
 { mkGoPackage, kubeSource }:
 
 mkGoPackage {

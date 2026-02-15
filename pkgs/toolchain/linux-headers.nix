@@ -1,4 +1,4 @@
-# Linux Headers — Kernel headers for userspace compilation
+##! Linux Headers — Kernel headers for userspace compilation
 {
   mkDerivation,
   fetchurl,

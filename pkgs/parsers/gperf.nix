@@ -1,4 +1,4 @@
-# gperf — GNU perfect hash function generator
+##! gperf — GNU perfect hash function generator
 {
   mkDerivation,
   fetchurl,

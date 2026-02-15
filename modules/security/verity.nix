@@ -1,12 +1,12 @@
-# modules/security/verity.nix — dm-verity integrity verification module
-#
-# Configures dm-verity for transparent block-level integrity verification
-# of the root filesystem. dm-verity provides tamper-evident protection by
-# computing a Merkle hash tree over the data device and verifying each
-# block on read against the hash device.
-#
-# Options under aos.security.verity:
-#   enable, dataDevice, hashDevice, rootHash
+##! modules/security/verity.nix — dm-verity integrity verification module
+##!
+##! Configures dm-verity for transparent block-level integrity verification
+##! of the root filesystem. dm-verity provides tamper-evident protection by
+##! computing a Merkle hash tree over the data device and verifying each
+##! block on read against the hash device.
+##!
+##! Options under aos.security.verity:
+##!   enable, dataDevice, hashDevice, rootHash
 
 {
   config,
@@ -21,6 +21,10 @@ let
 in
 {
   options.aos.security.verity = {
+    ## Enable dm-verity for root filesystem integrity verification.
+    ##
+    ## # See Also
+    ## - `aos.security.verity.dataDevice`, `aos.security.verity.rootHash`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -32,6 +36,7 @@ in
       '';
     };
 
+    ## Block device containing the read-only root filesystem data.
     dataDevice = lib.mkOption {
       type = lib.types.str;
       default = "/dev/vda2";
@@ -41,6 +46,7 @@ in
       '';
     };
 
+    ## Block device containing the dm-verity Merkle hash tree.
     hashDevice = lib.mkOption {
       type = lib.types.str;
       default = "/dev/vda3";
@@ -52,6 +58,7 @@ in
       '';
     };
 
+    ## Root hash of the dm-verity Merkle tree.
     rootHash = lib.mkOption {
       type = lib.types.str;
       default = "";

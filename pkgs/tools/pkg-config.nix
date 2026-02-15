@@ -1,4 +1,4 @@
-# pkg-config — Helper tool for compiling applications and libraries
+##! pkg-config — Helper tool for compiling applications and libraries
 {
   mkDerivation,
   fetchurl,

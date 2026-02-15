@@ -1,7 +1,7 @@
-# ANDYL OS — Package set composition.
-# Imports all package definitions and wires dependencies together.
-# Bootstrap tools (gcc, coreutils, tar, etc.) are injected into every build.
-# All other tools are built hermetically from source — no nixpkgs, no host tools.
+##! ANDYL OS — Package set composition.
+##! Imports all package definitions and wires dependencies together.
+##! Bootstrap tools (gcc, coreutils, tar, etc.) are injected into every build.
+##! All other tools are built hermetically from source — no nixpkgs, no host tools.
 { lib }:
 
 let
@@ -222,13 +222,17 @@ let
           value = true;
         }) goSpecificAttrs
       )) args;
+      # Default goOutput to pname when not explicitly set
+      goArgsWithDefaults = goArgs // {
+        goOutput = args.goOutput or args.pname or (throw "mkGoPackage: goOutput or pname required");
+      };
       restArgs = builtins.removeAttrs args goSpecificAttrs;
     in
     mkDerivation (
       restArgs
       // {
         buildDeps = [ self.go ] ++ (args.buildDeps or [ ]);
-        phases = phases.goPhases goArgs;
+        phases = phases.goPhases goArgsWithDefaults;
       }
     );
 

@@ -1,4 +1,4 @@
-# libcap — POSIX capabilities library
+##! libcap — POSIX capabilities library
 {
   mkDerivation,
   fetchurl,

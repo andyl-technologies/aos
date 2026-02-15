@@ -1,20 +1,21 @@
-# lib/derivations.nix — Clean derivation builder
-#
-# Provides:
-#   mkDerivation   — build a package from source
-#   mkShell        — development shell environment
-#   fetchurl       — fetch a file by URL (fixed-output derivation)
-#   fetchgit       — fetch a Git repository (fixed-output derivation)
-#   fetchCargoDeps — vendor Cargo dependencies (fixed-output derivation)
-#   fetchGoModules — download Go module dependencies (fixed-output derivation)
-#   fakeHash       — placeholder hash for iterating on FODs
-#   replacePhase   — replace a phase by name
-#   addPhaseAfter  — insert a phase after a named phase
-#   addPhaseBefore — insert a phase before a named phase
-#   removePhase    — remove a phase by name
-#
-# The `system` parameter must be provided by the caller (lib/default.nix)
-# and is used as the default for all derivation builders.
+##! lib/derivations.nix — Clean derivation builder
+##!
+##! Provides:
+##!
+##!     mkDerivation   — build a package from source
+##!     mkShell        — development shell environment
+##!     fetchurl       — fetch a file by URL (fixed-output derivation)
+##!     fetchgit       — fetch a Git repository (fixed-output derivation)
+##!     fetchCargoDeps — vendor Cargo dependencies (fixed-output derivation)
+##!     fetchGoModules — download Go module dependencies (fixed-output derivation)
+##!     fakeHash       — placeholder hash for iterating on FODs
+##!     replacePhase   — replace a phase by name
+##!     addPhaseAfter  — insert a phase after a named phase
+##!     addPhaseBefore — insert a phase before a named phase
+##!     removePhase    — remove a phase by name
+##!
+##! The `system` parameter must be provided by the caller (lib/default.nix)
+##! and is used as the default for all derivation builders.
 
 { system }:
 
@@ -116,8 +117,9 @@ let
   # Phase manipulation helpers
   # ---------------------------------------------------------------------------
 
-  # replacePhase :: [phase] -> string -> phase -> [phase]
-  # Replace a phase by name. Throws if the phase is not found.
+  ## Replace a phase by name. Throws if the phase is not found.
+  ## # Type
+  ## `[phase] -> string -> phase -> [phase]`
   replacePhase =
     phases: name: newPhase:
     let
@@ -128,8 +130,9 @@ let
     else
       builtins.map (p: if p.name == name then newPhase else p) phases;
 
-  # addPhaseAfter :: [phase] -> string -> phase -> [phase]
-  # Insert a new phase after the named phase.
+  ## Insert a new phase after the named phase.
+  ## # Type
+  ## `[phase] -> string -> phase -> [phase]`
   addPhaseAfter =
     phases: afterName: newPhase:
     let
@@ -151,8 +154,9 @@ let
         ) phases
       );
 
-  # addPhaseBefore :: [phase] -> string -> phase -> [phase]
-  # Insert a new phase before the named phase.
+  ## Insert a new phase before the named phase.
+  ## # Type
+  ## `[phase] -> string -> phase -> [phase]`
   addPhaseBefore =
     phases: beforeName: newPhase:
     let
@@ -174,8 +178,9 @@ let
         ) phases
       );
 
-  # removePhase :: [phase] -> string -> [phase]
-  # Remove a phase by name.
+  ## Remove a phase by name.
+  ## # Type
+  ## `[phase] -> string -> [phase]`
   removePhase = phases: name: builtins.filter (p: p.name != name) phases;
 
   # ---------------------------------------------------------------------------
@@ -233,6 +238,19 @@ let
     builtins.concatStringsSep " " (builtins.map (d: "-Wl,-rpath,${builtins.toString d}/lib") deps);
 
   # ---------------------------------------------------------------------------
+  # Internal: collect transitive propagated deps
+  # ---------------------------------------------------------------------------
+  # Given a list of direct deps, recursively collects their propagatedDeps
+  # so that PKG_CONFIG_PATH, C_INCLUDE_PATH, etc. include transitive deps.
+  collectPropagated =
+    deps: seen:
+    let
+      newPropagated = builtins.concatLists (builtins.map (d: d.propagatedDeps or [ ]) deps);
+      unseen = builtins.filter (d: !(builtins.elem d seen)) newPropagated;
+    in
+    if unseen == [ ] then seen else collectPropagated unseen (seen ++ unseen);
+
+  # ---------------------------------------------------------------------------
   # mkDerivation
   # ---------------------------------------------------------------------------
   # mkDerivation {
@@ -288,8 +306,11 @@ let
         );
       effectivePname = if pname != null then pname else name;
 
-      # Collect all dependencies for PATH
-      allBuildDeps = buildDeps ++ runtimeDeps ++ propagatedDeps;
+      # Collect all dependencies for PATH, including transitive propagated deps.
+      # e.g. if dbus depends on libselinux and libselinux propagates pcre2,
+      # then pcre2 will be on dbus's PKG_CONFIG_PATH automatically.
+      directDeps = buildDeps ++ runtimeDeps ++ propagatedDeps;
+      allBuildDeps = collectPropagated directDeps directDeps;
 
       # Prepend patch phase if patches are provided
       patchPhase = {
@@ -385,9 +406,11 @@ let
 
           # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
           # shared libraries at runtime without LD_LIBRARY_PATH.
-          # Only runtimeDeps + propagatedDeps — NOT buildDeps — to avoid
+          # Includes transitive propagated deps but NOT buildDeps to avoid
           # dragging the compiler toolchain into the runtime closure.
-          NIX_LDFLAGS = makeRpathFlags (runtimeDeps ++ propagatedDeps);
+          NIX_LDFLAGS = makeRpathFlags (
+            collectPropagated (runtimeDeps ++ propagatedDeps) (runtimeDeps ++ propagatedDeps)
+          );
           PKG_CONFIG_PATH = builtins.concatStringsSep ":" (
             builtins.map (d: "${builtins.toString d}/lib/pkgconfig") allBuildDeps
           );
@@ -405,7 +428,7 @@ let
 
       # Attach metadata and override mechanism
       result = drv // {
-        inherit meta version;
+        inherit meta version propagatedDeps;
         pname = effectivePname;
 
         # Override mechanism

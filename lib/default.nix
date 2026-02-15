@@ -1,11 +1,11 @@
-# lib/default.nix — AOS library entry point
-#
-# Composes all library modules into a single attribute set.
-# Usage: let lib = import ./lib { system = "aarch64-linux"; }; in ...
-#
-# The `system` parameter is threaded through to all derivation builders
-# (mkDerivation, mkShell, fetchurl, fetchgit, fetchCargoDeps, fetchGoModules)
-# so that every package targets the correct platform.
+##! lib/default.nix — AOS library entry point
+##!
+##! Composes all library modules into a single attribute set.
+##! Usage: `let lib = import ./lib { system = "aarch64-linux"; }; in ...`
+##!
+##! The `system` parameter is threaded through to all derivation builders
+##! (mkDerivation, mkShell, fetchurl, fetchgit, fetchCargoDeps, fetchGoModules)
+##! so that every package targets the correct platform.
 
 { system }:
 
