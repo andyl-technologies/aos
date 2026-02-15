@@ -350,6 +350,8 @@ rec {
           export GOCACHE="$TMPDIR/go-cache"
           export GOFLAGS="-trimpath"
           export CGO_ENABLED=${if cgoEnabled then "1" else "0"}
+          export GONOSUMDB="*"
+          export GONOSUMCHECK="*"
           mkdir -p "$GOPATH" "$GOCACHE"
 
         ''
@@ -359,12 +361,16 @@ rec {
               # Use pre-fetched modules
               export GOPATH="${goModules}"
               export GOFLAGS="$GOFLAGS -mod=readonly"
+              export GOPROXY=off
             ''
           else
             ''
-              # Use vendored deps from source
+              # Use vendored deps from source if available
               if [ -d vendor ]; then
                 export GOFLAGS="$GOFLAGS -mod=vendor"
+                export GOPROXY=off
+              else
+                export GOPROXY="https://proxy.golang.org,direct"
               fi
             ''
         );

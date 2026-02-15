@@ -151,6 +151,11 @@ let
       // {
         cargo = self.rust;
         inherit bootstrapTools;
+        extraLibPaths = [
+          self.openssl
+          self.zlib
+        ]
+        ++ (args.extraLibPaths or [ ]);
       }
     );
 
@@ -297,6 +302,7 @@ let
     inherit mkDerivation fetchurl lib;
     inherit mkCargoPackage mkGoPackage;
     inherit fetchCargoDeps fetchGoModules;
+    inherit bootstrapTools;
     fakeHash = lib.fakeHash;
   }
   // discoverPackages ./.
