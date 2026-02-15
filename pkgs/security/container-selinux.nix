@@ -3,7 +3,9 @@
   mkDerivation,
   fetchurl,
   make,
-  policycoreutils,
+  m4,
+  checkpolicy,
+  semodule-utils,
   refpolicy,
 }:
 
@@ -23,7 +25,9 @@ mkDerivation {
 
   buildDeps = [
     make
-    policycoreutils
+    m4
+    checkpolicy
+    semodule-utils
     refpolicy
   ];
   runtimeDeps = [ ];
@@ -40,18 +44,19 @@ mkDerivation {
     {
       name = "build";
       script = ''
-        make -f ${refpolicy}/share/selinux/devel/Makefile container.pp 2>/dev/null || \
-        make -j$NIX_BUILD_CORES
+        # Use the patched refpolicy devel Makefile for module compilation
+        make -f ${refpolicy}/usr/share/selinux/refpolicy/include/Makefile \
+          container.pp
       '';
     }
     {
       name = "install";
       script = ''
         mkdir -p $out/share/selinux/packages
-        mkdir -p $out/share/containers
-        cp -a *.pp $out/share/selinux/packages/ 2>/dev/null || true
-        cp -a container.if $out/share/selinux/packages/ 2>/dev/null || true
-        cp -a container.te $out/share/selinux/packages/ 2>/dev/null || true
+        install -m 644 container.pp $out/share/selinux/packages/
+        install -m 644 container.if $out/share/selinux/packages/ 2>/dev/null || true
+        install -m 644 container.te $out/share/selinux/packages/ 2>/dev/null || true
+        install -m 644 container.fc $out/share/selinux/packages/ 2>/dev/null || true
       '';
     }
   ];
