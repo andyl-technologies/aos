@@ -1,13 +1,13 @@
-# modules/base/journald.nix — Journald configuration module
-#
-# Configures systemd-journald logging behavior: storage backend (persistent
-# to disk vs volatile in memory), retention policy, size limits, and rate
-# limiting. Generates /etc/systemd/journald.conf with a [Journal] section
-# containing all configured options.
-#
-# Persistent storage (the default) writes journal files to /var/log/journal,
-# which survives reboots. Volatile storage uses tmpfs at /run/log/journal and
-# is lost on reboot but avoids disk I/O.
+##! modules/base/journald.nix — Journald configuration module
+##!
+##! Configures systemd-journald logging behavior: storage backend (persistent
+##! to disk vs volatile in memory), retention policy, size limits, and rate
+##! limiting. Generates /etc/systemd/journald.conf with a [Journal] section
+##! containing all configured options.
+##!
+##! Persistent storage (the default) writes journal files to /var/log/journal,
+##! which survives reboots. Volatile storage uses tmpfs at /run/log/journal and
+##! is lost on reboot but avoids disk I/O.
 
 {
   config,
@@ -21,6 +21,7 @@ let
 in
 {
   options.aos.journald = {
+    ## Journal storage mode (persistent, volatile, auto).
     storage = lib.mkOption {
       type = lib.types.enum [
         "persistent"
@@ -36,6 +37,7 @@ in
       '';
     };
 
+    ## Maximum time to keep journal entries.
     maxRetentionSec = lib.mkOption {
       type = lib.types.str;
       default = "1month";
@@ -46,6 +48,7 @@ in
       '';
     };
 
+    ## Maximum disk space the journal may use.
     maxUse = lib.mkOption {
       type = lib.types.str;
       default = "500M";
@@ -55,6 +58,7 @@ in
       '';
     };
 
+    ## Maximum size of individual journal files.
     systemMaxFileSize = lib.mkOption {
       type = lib.types.str;
       default = "50M";
@@ -64,6 +68,7 @@ in
       '';
     };
 
+    ## Time interval for rate limiting.
     rateLimitInterval = lib.mkOption {
       type = lib.types.str;
       default = "30s";
@@ -74,6 +79,7 @@ in
       '';
     };
 
+    ## Maximum messages per service within rateLimitInterval.
     rateLimitBurst = lib.mkOption {
       type = lib.types.int;
       default = 10000;
@@ -84,6 +90,7 @@ in
       '';
     };
 
+    ## Forward journal messages to a traditional syslog daemon.
     forwardToSyslog = lib.mkOption {
       type = lib.types.bool;
       default = false;

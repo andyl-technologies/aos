@@ -1,4 +1,4 @@
-# GNU Texinfo — Documentation system
+##! GNU Texinfo — Documentation system
 {
   mkDerivation,
   fetchurl,
@@ -35,6 +35,16 @@ mkDerivation {
       script = ''
         tar xf $src
         cd texinfo-${version}
+        # Fix Perl shebangs — /usr/bin/perl doesn't exist in the sandbox.
+        # Preserve mtimes so make doesn't trigger automake regeneration.
+        for f in maintain/*.pl tp/maintain/*.pl; do
+          if [ -f "$f" ]; then
+            ref_time=$(stat -c %Y "$f")
+            sed -i "1s|#!.*/usr/bin/perl|#!${perl}/bin/perl|" "$f"
+            sed -i "1s|#!.*/usr/bin/env perl|#!${perl}/bin/perl|" "$f"
+            touch -d "@$ref_time" "$f"
+          fi
+        done
       '';
     }
     {
@@ -48,7 +58,9 @@ mkDerivation {
     {
       name = "build";
       script = ''
-        make -j$NIX_BUILD_CORES
+        # Prevent automake/autoconf regeneration if any generated file
+        # becomes out of date (e.g. from regenerate_file_lists.pl runs)
+        make -j$NIX_BUILD_CORES AUTOMAKE=true AUTOCONF=true ACLOCAL=true AUTOHEADER=true
       '';
     }
     {

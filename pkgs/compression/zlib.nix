@@ -1,4 +1,4 @@
-# zlib — Lossless data compression library
+##! zlib — Lossless data compression library
 {
   mkDerivation,
   fetchurl,

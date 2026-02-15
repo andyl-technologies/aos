@@ -1,13 +1,13 @@
-# modules/kubernetes/network.nix — Kubernetes networking prerequisites module
-#
-# Configures the kernel modules, sysctl parameters, and firewall rules
-# required for Kubernetes pod networking. This module handles the
-# prerequisites — the actual CNI plugin (Cilium, Flannel, etc.) is deployed
-# as a DaemonSet and not part of the OS image.
-#
-# Absorbed TOML config values:
-#   [kubernetes.network] enable, pod_cidr, service_cidr
-#   [kubernetes.network] kernel_modules, sysctl
+##! modules/kubernetes/network.nix — Kubernetes networking prerequisites module
+##!
+##! Configures the kernel modules, sysctl parameters, and firewall rules
+##! required for Kubernetes pod networking. This module handles the
+##! prerequisites — the actual CNI plugin (Cilium, Flannel, etc.) is deployed
+##! as a DaemonSet and not part of the OS image.
+##!
+##! Absorbed TOML config values:
+##!   [kubernetes.network] enable, pod_cidr, service_cidr
+##!   [kubernetes.network] kernel_modules, sysctl
 
 {
   config,
@@ -27,6 +27,10 @@ let
 in
 {
   options.aos.kubernetes.network = {
+    ## Enable Kubernetes networking prerequisites.
+    ##
+    ## # See Also
+    ## - `aos.kubernetes.network.podCIDR`, `aos.kubernetes.network.serviceCIDR`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -37,6 +41,7 @@ in
       '';
     };
 
+    ## CIDR range for Kubernetes pod IP addresses.
     podCIDR = lib.mkOption {
       type = lib.types.str;
       default = "10.244.0.0/16";
@@ -47,6 +52,7 @@ in
       '';
     };
 
+    ## CIDR range for Kubernetes service ClusterIPs.
     serviceCIDR = lib.mkOption {
       type = lib.types.str;
       default = "10.96.0.0/12";
@@ -56,6 +62,7 @@ in
       '';
     };
 
+    ## Kernel modules required for Kubernetes networking.
     kernelModules = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -76,6 +83,7 @@ in
       '';
     };
 
+    ## Sysctl parameters required for Kubernetes networking.
     sysctl = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = {
@@ -126,7 +134,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = builtins.map (mod: "/usr/sbin/modprobe ${mod}") cfg.kernelModules;
+        ExecStart = builtins.map (mod: "${pkgs.kmod}/sbin/modprobe ${mod}") cfg.kernelModules;
       };
     };
 

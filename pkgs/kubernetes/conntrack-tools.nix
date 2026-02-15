@@ -1,11 +1,18 @@
-# conntrack-tools — Connection tracking userspace tools
+##! conntrack-tools — Connection tracking userspace tools
 {
   mkDerivation,
   fetchurl,
   make,
   pkg-config,
+  flex,
+  bison,
   libmnl,
-  libnftnl,
+  libnfnetlink,
+  libnetfilter_conntrack,
+  libnetfilter_queue,
+  libnetfilter_cttimeout,
+  libnetfilter_cthelper,
+  systemd,
 }:
 
 let
@@ -25,10 +32,17 @@ mkDerivation {
   buildDeps = [
     make
     pkg-config
+    flex
+    bison
   ];
   runtimeDeps = [
     libmnl
-    libnftnl
+    libnfnetlink
+    libnetfilter_conntrack
+    libnetfilter_queue
+    libnetfilter_cttimeout
+    libnetfilter_cthelper
+    systemd
   ];
   propagatedDeps = [ ];
 
@@ -45,7 +59,8 @@ mkDerivation {
       script = ''
         ./configure \
           --prefix=$out \
-          --sbindir=$out/sbin
+          --sbindir=$out/sbin \
+          --enable-systemd
       '';
     }
     {

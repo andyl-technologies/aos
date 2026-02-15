@@ -1,4 +1,4 @@
-# SETools — SELinux policy analysis tools
+##! SETools — SELinux policy analysis tools
 {
   mkDerivation,
   fetchurl,

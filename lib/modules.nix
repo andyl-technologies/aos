@@ -1,30 +1,33 @@
-# lib/modules.nix — Module evaluation engine
-#
-# Takes { trivial, lists, attrsets, strings, types } and returns
-# { evalModules, mkOption, mkIf, mkMerge, mkOverride, mkDefault, mkForce,
-#   mkOrder, mkBefore, mkAfter }.
-#
-# Module format:
-#   { config, pkgs, lib, ... }: {
-#     options = { ... };   # Option declarations with mkOption
-#     config  = { ... };   # Option definitions (values)
-#   }
-#
-# evalModules evaluates a list of modules, merging their option declarations
-# and config definitions according to type-specific merge functions.
-# Later modules override earlier ones (last-writer-wins for scalar types,
-# concatenation for list types, recursive merge for attrset types).
-#
-# Priority system:
-#   mkDefault value       — priority 1000 (lowest precedence)
-#   (normal value)        — priority 100
-#   mkForce value         — priority 50 (highest precedence)
-#   mkOverride N value    — explicit priority N (lower = higher precedence)
-#
-# Ordering system (for listOf types):
-#   mkBefore value        — order 500 (sorts earlier)
-#   (normal value)        — order 1000
-#   mkAfter value         — order 1500 (sorts later)
+##! lib/modules.nix — Module evaluation engine
+##!
+##! Takes `{ trivial, lists, attrsets, strings, types }` and returns
+##! `{ evalModules, mkOption, mkIf, mkMerge, mkOverride, mkDefault, mkForce,
+##!   mkOrder, mkBefore, mkAfter }`.
+##!
+##! Module format:
+##!
+##!     { config, pkgs, lib, ... }: {
+##!       options = { ... };   # Option declarations with mkOption
+##!       config  = { ... };   # Option definitions (values)
+##!     }
+##!
+##! evalModules evaluates a list of modules, merging their option declarations
+##! and config definitions according to type-specific merge functions.
+##! Later modules override earlier ones (last-writer-wins for scalar types,
+##! concatenation for list types, recursive merge for attrset types).
+##!
+##! Priority system:
+##!
+##!     mkDefault value       — priority 1000 (lowest precedence)
+##!     (normal value)        — priority 100
+##!     mkForce value         — priority 50 (highest precedence)
+##!     mkOverride N value    — explicit priority N (lower = higher precedence)
+##!
+##! Ordering system (for listOf types):
+##!
+##!     mkBefore value        — order 500 (sorts earlier)
+##!     (normal value)        — order 1000
+##!     mkAfter value         — order 1500 (sorts later)
 
 {
   trivial,

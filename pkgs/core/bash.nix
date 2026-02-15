@@ -1,4 +1,4 @@
-# GNU Bash — Bourne-Again SHell
+##! GNU Bash — Bourne-Again SHell
 {
   mkDerivation,
   fetchurl,

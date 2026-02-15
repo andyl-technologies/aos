@@ -1,12 +1,12 @@
-# modules/security/fail2ban.nix — Fail2ban intrusion prevention module
-#
-# Configures fail2ban to monitor log files for authentication failures and
-# ban offending IP addresses. Generates the jail configuration file and the
-# fail2ban systemd service unit. The default configuration includes an SSH
-# jail that monitors sshd authentication failures.
-#
-# Options under aos.security.fail2ban:
-#   enable, maxRetry, banTime, findTime, ignoreIPs, jails
+##! modules/security/fail2ban.nix — Fail2ban intrusion prevention module
+##!
+##! Configures fail2ban to monitor log files for authentication failures and
+##! ban offending IP addresses. Generates the jail configuration file and the
+##! fail2ban systemd service unit. The default configuration includes an SSH
+##! jail that monitors sshd authentication failures.
+##!
+##! Options under aos.security.fail2ban:
+##!   enable, maxRetry, banTime, findTime, ignoreIPs, jails
 
 {
   config,
@@ -53,6 +53,15 @@ let
 in
 {
   options.aos.security.fail2ban = {
+    ## Enable the fail2ban intrusion prevention system.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.security.fail2ban.enable = true;
+    ## ```
+    ##
+    ## # See Also
+    ## - `aos.security.fail2ban.maxRetry`, `aos.security.fail2ban.banTime`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -63,6 +72,7 @@ in
       '';
     };
 
+    ## Number of authentication failures before an IP is banned.
     maxRetry = lib.mkOption {
       type = lib.types.int;
       default = 5;
@@ -72,6 +82,7 @@ in
       '';
     };
 
+    ## Duration for which an offending IP address is banned.
     banTime = lib.mkOption {
       type = lib.types.str;
       default = "1h";
@@ -81,6 +92,7 @@ in
       '';
     };
 
+    ## Time window in which maxRetry failures trigger a ban.
     findTime = lib.mkOption {
       type = lib.types.str;
       default = "10m";
@@ -90,6 +102,7 @@ in
       '';
     };
 
+    ## IP addresses or CIDR ranges that are never banned.
     ignoreIPs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "127.0.0.1/8" ];
@@ -100,6 +113,12 @@ in
       '';
     };
 
+    ## Fail2ban jail definitions.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.security.fail2ban.jails.sshd = { enabled = true; };
+    ## ```
     jails = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = {
@@ -137,9 +156,9 @@ in
       ];
       serviceConfig = {
         Type = "forking";
-        ExecStart = "/usr/bin/fail2ban-server -xf start";
-        ExecStop = "/usr/bin/fail2ban-server stop";
-        ExecReload = "/usr/bin/fail2ban-server reload";
+        ExecStart = "${pkgs.fail2ban}/bin/fail2ban-server -xf start";
+        ExecStop = "${pkgs.fail2ban}/bin/fail2ban-server stop";
+        ExecReload = "${pkgs.fail2ban}/bin/fail2ban-server reload";
         Restart = "on-failure";
         RestartSec = "5s";
         # Security hardening for the fail2ban process itself.

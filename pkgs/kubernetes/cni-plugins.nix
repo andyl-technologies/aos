@@ -1,4 +1,4 @@
-# CNI Plugins — Container Networking Interface reference plugins
+##! CNI Plugins — Container Networking Interface reference plugins
 {
   mkDerivation,
   fetchurl,
@@ -35,9 +35,11 @@ mkDerivation {
       name = "build";
       script = ''
         export GOPATH=$TMPDIR/go
+        export GOCACHE=$TMPDIR/go-cache
         export CGO_ENABLED=0
-        export GOFLAGS="-trimpath"
+        export GOFLAGS="-trimpath -mod=vendor"
         export LDFLAGS="-s -w -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=v${version}"
+        mkdir -p "$GOCACHE"
 
         mkdir -p bin
         for plugin in bandwidth bridge dhcp dummy firewall host-device host-local \

@@ -1,14 +1,14 @@
-# modules/base/kdump.nix — Kernel crash dump module
-#
-# Configures kdump for capturing kernel crash dumps. When the kernel panics,
-# kexec boots a secondary "crash kernel" that has been pre-loaded into a
-# reserved memory region. The crash kernel writes the contents of the
-# panicked kernel's memory to the target directory for later analysis.
-#
-# The crashkernel= boot parameter reserves memory for the crash kernel.
-# The kdump service pre-loads the crash kernel image so it is ready to
-# execute immediately on panic without requiring disk I/O from the
-# panicked system.
+##! modules/base/kdump.nix — Kernel crash dump module
+##!
+##! Configures kdump for capturing kernel crash dumps. When the kernel panics,
+##! kexec boots a secondary "crash kernel" that has been pre-loaded into a
+##! reserved memory region. The crash kernel writes the contents of the
+##! panicked kernel's memory to the target directory for later analysis.
+##!
+##! The crashkernel= boot parameter reserves memory for the crash kernel.
+##! The kdump service pre-loads the crash kernel image so it is ready to
+##! execute immediately on panic without requiring disk I/O from the
+##! panicked system.
 
 {
   config,
@@ -22,6 +22,12 @@ let
 in
 {
   options.aos.kdump = {
+    ## Enable kdump kernel crash dump capture.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.kdump.enable = true;
+    ## ```
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -33,6 +39,7 @@ in
       '';
     };
 
+    ## Memory to reserve for the crash kernel.
     crashKernelSize = lib.mkOption {
       type = lib.types.str;
       default = "256M";
@@ -44,6 +51,7 @@ in
       '';
     };
 
+    ## Directory where crash dumps are written.
     target = lib.mkOption {
       type = lib.types.str;
       default = "/var/crash";
@@ -72,8 +80,8 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "/usr/sbin/kexec -p /boot/vmlinuz --initrd=/boot/initramfs-kdump.img --append=\"root=${config.aos.filesystems.rootDevice} irqpoll nr_cpus=1 reset_devices panic=10 systemd.unit=kdump-save.target\"";
-        ExecStop = "/usr/sbin/kexec -p -u";
+        ExecStart = "${pkgs.kexec-tools}/sbin/kexec -p /boot/vmlinuz --initrd=/boot/initramfs-kdump.img --append=\"root=${config.aos.filesystems.rootDevice} irqpoll nr_cpus=1 reset_devices panic=10 systemd.unit=kdump-save.target\"";
+        ExecStop = "${pkgs.kexec-tools}/sbin/kexec -p -u";
       };
     };
 
@@ -85,8 +93,8 @@ in
       after = [ "local-fs.target" ];
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "/usr/bin/makedumpfile -l --message-level 1 -d 31 /proc/vmcore ${cfg.target}/vmcore-$(date +%Y%m%d-%H%M%S)";
-        ExecStartPost = "/usr/bin/systemctl reboot";
+        ExecStart = "${pkgs.makedumpfile}/bin/makedumpfile -l --message-level 1 -d 31 /proc/vmcore ${cfg.target}/vmcore-$(date +%Y%m%d-%H%M%S)";
+        ExecStartPost = "${pkgs.systemd}/bin/systemctl reboot";
         StandardOutput = "journal+console";
       };
     };

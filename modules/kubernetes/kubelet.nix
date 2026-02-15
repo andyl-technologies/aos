@@ -1,14 +1,14 @@
-# modules/kubernetes/kubelet.nix — Kubernetes node agent module
-#
-# Configures the kubelet, the primary Kubernetes agent that runs on every
-# node. Generates /var/lib/kubelet/config.yaml (KubeletConfiguration) and
-# the kubelet systemd service with appropriate flags.
-#
-# Absorbed TOML config values:
-#   [kubernetes.kubelet] enable, cluster_dns, cluster_domain, cgroup_driver
-#   [kubernetes.kubelet] container_runtime, container_runtime_endpoint
-#   [kubernetes.kubelet] max_pods, serialize_image_pulls
-#   [kubernetes.kubelet] node_labels, node_taints
+##! modules/kubernetes/kubelet.nix — Kubernetes node agent module
+##!
+##! Configures the kubelet, the primary Kubernetes agent that runs on every
+##! node. Generates /var/lib/kubelet/config.yaml (KubeletConfiguration) and
+##! the kubelet systemd service with appropriate flags.
+##!
+##! Absorbed TOML config values:
+##!   [kubernetes.kubelet] enable, cluster_dns, cluster_domain, cgroup_driver
+##!   [kubernetes.kubelet] container_runtime, container_runtime_endpoint
+##!   [kubernetes.kubelet] max_pods, serialize_image_pulls
+##!   [kubernetes.kubelet] node_labels, node_taints
 
 {
   config,
@@ -118,6 +118,10 @@ let
 in
 {
   options.aos.kubernetes.kubelet = {
+    ## Enable the kubelet Kubernetes node agent.
+    ##
+    ## # See Also
+    ## - `aos.kubernetes.containerd`, `aos.kubernetes.network`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -127,6 +131,7 @@ in
       '';
     };
 
+    ## Cluster DNS server IP addresses (typically CoreDNS).
     clusterDNS = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "10.96.0.10" ];
@@ -136,12 +141,14 @@ in
       '';
     };
 
+    ## DNS domain for cluster-internal service resolution.
     clusterDomain = lib.mkOption {
       type = lib.types.str;
       default = "cluster.local";
       description = "DNS domain for cluster-internal service resolution.";
     };
 
+    ## Cgroup driver (must match containerd). "systemd" required for cgroup v2.
     cgroupDriver = lib.mkOption {
       type = lib.types.str;
       default = "systemd";
@@ -151,6 +158,7 @@ in
       '';
     };
 
+    ## Container runtime type ("remote" for CRI over Unix socket).
     containerRuntime = lib.mkOption {
       type = lib.types.str;
       default = "remote";
@@ -160,18 +168,21 @@ in
       '';
     };
 
+    ## CRI endpoint socket path for the container runtime.
     containerRuntimeEndpoint = lib.mkOption {
       type = lib.types.str;
       default = "unix:///run/containerd/containerd.sock";
       description = "CRI endpoint socket path for the container runtime.";
     };
 
+    ## Maximum number of pods that can run on this node.
     maxPods = lib.mkOption {
       type = lib.types.int;
       default = 110;
       description = "Maximum number of pods that can run on this node.";
     };
 
+    ## Whether to pull images one at a time.
     serializeImagePulls = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -181,6 +192,14 @@ in
       '';
     };
 
+    ## Labels to apply to this node on registration.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.kubernetes.kubelet.nodeLabels = {
+    ##   "topology.kubernetes.io/zone" = "us-east-1a";
+    ## };
+    ## ```
     nodeLabels = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
@@ -190,6 +209,7 @@ in
       '';
     };
 
+    ## Taints to apply to this node on registration.
     nodeTaints = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -200,16 +220,19 @@ in
     };
 
     systemReserved = {
+      ## CPU reserved for system daemons (e.g. systemd, journald).
       cpu = lib.mkOption {
         type = lib.types.str;
         default = "100m";
         description = "CPU reserved for system daemons (e.g. systemd, journald).";
       };
+      ## Memory reserved for system daemons.
       memory = lib.mkOption {
         type = lib.types.str;
         default = "256Mi";
         description = "Memory reserved for system daemons.";
       };
+      ## Ephemeral storage reserved for system daemons.
       ephemeralStorage = lib.mkOption {
         type = lib.types.str;
         default = "1Gi";
@@ -218,16 +241,19 @@ in
     };
 
     kubeReserved = {
+      ## CPU reserved for Kubernetes components (kubelet, container runtime).
       cpu = lib.mkOption {
         type = lib.types.str;
         default = "100m";
         description = "CPU reserved for Kubernetes components (kubelet, container runtime).";
       };
+      ## Memory reserved for Kubernetes components.
       memory = lib.mkOption {
         type = lib.types.str;
         default = "256Mi";
         description = "Memory reserved for Kubernetes components.";
       };
+      ## Ephemeral storage reserved for Kubernetes components.
       ephemeralStorage = lib.mkOption {
         type = lib.types.str;
         default = "1Gi";
@@ -236,16 +262,19 @@ in
     };
 
     evictionHard = {
+      ## Hard eviction threshold for available memory.
       memoryAvailable = lib.mkOption {
         type = lib.types.str;
         default = "100Mi";
         description = "Hard eviction threshold for available memory.";
       };
+      ## Hard eviction threshold for node filesystem available space.
       nodefsAvailable = lib.mkOption {
         type = lib.types.str;
         default = "10%";
         description = "Hard eviction threshold for node filesystem available space.";
       };
+      ## Hard eviction threshold for image filesystem available space.
       imagefsAvailable = lib.mkOption {
         type = lib.types.str;
         default = "15%";
@@ -254,11 +283,13 @@ in
     };
 
     evictionSoft = {
+      ## Soft eviction threshold for available memory.
       memoryAvailable = lib.mkOption {
         type = lib.types.str;
         default = "200Mi";
         description = "Soft eviction threshold for available memory.";
       };
+      ## Soft eviction threshold for node filesystem available space.
       nodefsAvailable = lib.mkOption {
         type = lib.types.str;
         default = "15%";
@@ -266,30 +297,35 @@ in
       };
     };
 
+    ## Image GC is triggered when disk usage exceeds this percentage.
     imageGCHighThreshold = lib.mkOption {
       type = lib.types.int;
       default = 85;
       description = "Image GC is triggered when disk usage exceeds this percentage.";
     };
 
+    ## Image GC frees disk until usage drops below this percentage.
     imageGCLowThreshold = lib.mkOption {
       type = lib.types.int;
       default = 80;
       description = "Image GC attempts to free disk until usage drops below this percentage.";
     };
 
+    ## Maximum size of a container log file before rotation.
     containerLogMaxSize = lib.mkOption {
       type = lib.types.str;
       default = "10Mi";
       description = "Maximum size of a container log file before rotation.";
     };
 
+    ## Maximum number of rotated container log files to retain.
     containerLogMaxFiles = lib.mkOption {
       type = lib.types.int;
       default = 5;
       description = "Maximum number of rotated container log files to retain.";
     };
 
+    ## Topology Manager policy for NUMA-aware resource alignment.
     topologyManagerPolicy = lib.mkOption {
       type = lib.types.str;
       default = "none";
@@ -299,6 +335,7 @@ in
       '';
     };
 
+    ## Kubernetes feature gates to enable or disable.
     featureGates = lib.mkOption {
       type = lib.types.attrsOf lib.types.bool;
       default = { };
@@ -332,7 +369,7 @@ in
       requires = [ "containerd.service" ];
       serviceConfig = {
         Type = "notify";
-        ExecStart = "/usr/bin/kubelet ${kubeletFlags}";
+        ExecStart = "${pkgs.kubelet}/bin/kubelet ${kubeletFlags}";
         Restart = "always";
         RestartSec = "10s";
         # kubelet needs broad privileges for pod management.

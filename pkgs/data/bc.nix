@@ -1,4 +1,4 @@
-# GNU bc — Arbitrary precision calculator language
+##! GNU bc — Arbitrary precision calculator language
 {
   mkDerivation,
   fetchurl,

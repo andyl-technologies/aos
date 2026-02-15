@@ -1,4 +1,4 @@
-# Expat — XML parsing library
+##! Expat — XML parsing library
 {
   mkDerivation,
   fetchurl,

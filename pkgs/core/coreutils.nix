@@ -1,8 +1,9 @@
-# GNU Coreutils — Basic file, shell, and text utilities
+##! GNU Coreutils — Basic file, shell, and text utilities
 {
   mkDerivation,
   fetchurl,
   make,
+  openssl,
 }:
 
 let
@@ -22,7 +23,7 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [ ];
+  runtimeDeps = [ openssl ];
   propagatedDeps = [ ];
 
   phases = [
@@ -39,6 +40,7 @@ mkDerivation {
         ./configure \
           --prefix=$out \
           --without-gmp \
+          --with-openssl \
           --disable-nls \
           --enable-no-install-program=groups,hostname,kill,uptime
       '';

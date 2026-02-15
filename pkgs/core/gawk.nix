@@ -1,4 +1,4 @@
-# GNU Awk — Pattern scanning and processing language
+##! GNU Awk — Pattern scanning and processing language
 {
   mkDerivation,
   fetchurl,

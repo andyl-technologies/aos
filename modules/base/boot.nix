@@ -1,14 +1,14 @@
-# modules/base/boot.nix — Boot configuration module
-#
-# Configures the boot loader (systemd-boot), kernel command line parameters,
-# systemd-based initrd, Unified Kernel Image (UKI), and Secure Boot support.
-# The initrd uses systemd for service-based boot ordering (no dracut).
-#
-# Absorbed TOML config values:
-#   [boot] loader, kernel_params
-#   [boot.initrd] enable, modules
-#   [boot.uki] enable
-#   [boot.secure_boot] enable
+##! modules/base/boot.nix — Boot configuration module
+##!
+##! Configures the boot loader (systemd-boot), kernel command line parameters,
+##! systemd-based initrd, Unified Kernel Image (UKI), and Secure Boot support.
+##! The initrd uses systemd for service-based boot ordering (no dracut).
+##!
+##! Absorbed TOML config values:
+##!   [boot] loader, kernel_params
+##!   [boot.initrd] enable, modules
+##!   [boot.uki] enable
+##!   [boot.secure_boot] enable
 
 {
   config,
@@ -26,6 +26,7 @@ let
 in
 {
   options.aos.boot = {
+    ## Boot loader to use (currently systemd-boot only).
     loader = lib.mkOption {
       type = lib.types.str;
       default = "systemd-boot";
@@ -35,6 +36,14 @@ in
       '';
     };
 
+    ## Kernel command line parameters.
+    ##
+    ## Other modules (e.g. SELinux, hardening, kdump) append to this list.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.boot.kernelParams = [ "console=ttyS0,115200" "selinux=1" ];
+    ## ```
     kernelParams = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -52,12 +61,14 @@ in
     };
 
     initrd = {
+      ## Whether to generate a systemd-based initrd.
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
         description = "Whether to generate a systemd-based initrd (initial ramdisk).";
       };
 
+      ## Kernel modules to include in the initrd.
       modules = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [
@@ -75,6 +86,10 @@ in
     };
 
     uki = {
+      ## Build a Unified Kernel Image (UKI).
+      ##
+      ## # See Also
+      ## - `aos.boot.secureBoot.enable`
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -87,6 +102,10 @@ in
     };
 
     secureBoot = {
+      ## Enable UEFI Secure Boot support.
+      ##
+      ## # See Also
+      ## - `aos.boot.uki.enable`
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -142,7 +161,7 @@ in
         Initrd=/boot/initramfs.img
         Cmdline=${kernelCmdline}
         OSRelease=@/etc/os-release
-        ${lib.optionalString cfg.secureBoot.enable "SecureBootSigningTool=/usr/bin/sbsign"}
+        ${lib.optionalString cfg.secureBoot.enable "SecureBootSigningTool=${pkgs.sbsigntools}/bin/sbsign"}
       '';
     };
   };

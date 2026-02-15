@@ -1,10 +1,12 @@
-# rsync — Fast incremental file transfer
+##! rsync — Fast incremental file transfer
 {
   mkDerivation,
   fetchurl,
   make,
   zlib,
   openssl,
+  zstd,
+  lz4,
 }:
 
 let
@@ -25,6 +27,8 @@ mkDerivation {
   runtimeDeps = [
     zlib
     openssl
+    zstd
+    lz4
   ];
   propagatedDeps = [ ];
 
@@ -44,8 +48,8 @@ mkDerivation {
           --with-included-popt \
           --with-included-zlib=no \
           --disable-xxhash \
-          --disable-zstd \
-          --disable-lz4 \
+          --enable-zstd \
+          --enable-lz4 \
           --disable-md2man
       '';
     }

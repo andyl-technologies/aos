@@ -1,4 +1,4 @@
-# runc — OCI container runtime
+##! runc — OCI container runtime
 {
   mkDerivation,
   fetchurl,
@@ -56,7 +56,7 @@ mkDerivation {
         export BUILDTAGS="seccomp selinux"
         export CGO_CFLAGS="-I${libseccomp}/include -I${libselinux}/include"
         export CGO_LDFLAGS="-L${libseccomp}/lib -L${libselinux}/lib"
-        make BUILDTAGS="$BUILDTAGS" \
+        make SHELL="$CONFIG_SHELL" BUILDTAGS="$BUILDTAGS" \
           COMMIT=v${version} \
           static
       '';

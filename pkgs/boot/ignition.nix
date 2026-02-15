@@ -1,8 +1,8 @@
-# Ignition — First-boot provisioning utility
-#
-# TODO: Build from source once Go is bootstrapped as an AOS package.
-# Go requires a multi-stage bootstrap (Go 1.4 from C, then modern Go).
-# For now, install a shell-script stub that logs and exits.
+##! Ignition — First-boot provisioning utility
+##!
+##! TODO: Build from source once Go is bootstrapped as an AOS package.
+##! Go requires a multi-stage bootstrap (Go 1.4 from C, then modern Go).
+##! For now, install a shell-script stub that logs and exits.
 { mkDerivation, fetchurl }:
 
 let

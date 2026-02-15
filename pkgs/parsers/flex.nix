@@ -1,4 +1,4 @@
-# flex — Fast lexical analyzer generator
+##! flex — Fast lexical analyzer generator
 {
   mkDerivation,
   fetchurl,

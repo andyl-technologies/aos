@@ -1,4 +1,4 @@
-# sbsigntools — UEFI Secure Boot signing tools
+##! sbsigntools — UEFI Secure Boot signing tools
 {
   mkDerivation,
   fetchurl,

@@ -1,4 +1,4 @@
-# ninja — Small build system with a focus on speed
+##! ninja — Small build system with a focus on speed
 {
   mkDerivation,
   fetchurl,

@@ -1,4 +1,4 @@
-# socat — Multipurpose relay for bidirectional data transfer
+##! socat — Multipurpose relay for bidirectional data transfer
 {
   mkDerivation,
   fetchurl,

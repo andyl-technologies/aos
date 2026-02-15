@@ -1,4 +1,4 @@
-# curl — Command-line URL transfer tool
+##! curl — Command-line URL transfer tool
 {
   mkDerivation,
   fetchurl,
@@ -7,6 +7,7 @@
   perl,
   openssl,
   zlib,
+  nghttp2,
   ca-certificates,
 }:
 
@@ -32,6 +33,7 @@ mkDerivation {
   runtimeDeps = [
     openssl
     zlib
+    nghttp2
     ca-certificates
   ];
   propagatedDeps = [ ];
@@ -51,6 +53,7 @@ mkDerivation {
           --prefix=$out \
           --with-openssl=${openssl} \
           --with-zlib=${zlib} \
+          --with-nghttp2=${nghttp2} \
           --with-ca-bundle=${ca-certificates}/etc/ssl/certs/ca-certificates.crt \
           --enable-shared \
           --disable-static \

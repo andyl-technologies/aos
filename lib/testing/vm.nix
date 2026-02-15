@@ -47,6 +47,7 @@ let
       systemdPkg = pkgs.systemd;
       coreutilsPkg = pkgs.coreutils;
       bashPkg = pkgs.bash;
+      systemPackages = system.config.environment.systemPackages;
     in
     pkgs.mkDerivation {
       pname = "vm-rootfs-${name}";
@@ -74,6 +75,7 @@ let
       SYSTEMD = builtins.toString systemdPkg;
       COREUTILS = builtins.toString coreutilsPkg;
       BASH = builtins.toString bashPkg;
+      SYSTEM_PACKAGES = builtins.concatStringsSep " " (builtins.map builtins.toString systemPackages);
 
       phases = [
         {
@@ -142,12 +144,70 @@ let
                           fi
                         done
 
+                        # Symlink binaries from all environment.systemPackages
+                        # so services can find them at /usr/bin and /usr/sbin
+                        for pkg in $SYSTEM_PACKAGES; do
+                          if [ -d "$pkg/bin" ]; then
+                            for bin in "$pkg/bin/"*; do
+                              name=$(basename "$bin")
+                              if [ ! -e "rootfs/usr/bin/$name" ]; then
+                                ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
+                              fi
+                            done
+                          fi
+                          if [ -d "$pkg/sbin" ]; then
+                            for bin in "$pkg/sbin/"*; do
+                              name=$(basename "$bin")
+                              if [ ! -e "rootfs/usr/sbin/$name" ]; then
+                                ln -sfn "$bin" "rootfs/usr/sbin/$name" 2>/dev/null || true
+                              fi
+                            done
+                          fi
+                          if [ -d "$pkg/libexec" ]; then
+                            mkdir -p rootfs/usr/libexec
+                            for bin in "$pkg/libexec/"*; do
+                              name=$(basename "$bin")
+                              if [ ! -e "rootfs/usr/libexec/$name" ]; then
+                                ln -sfn "$bin" "rootfs/usr/libexec/$name" 2>/dev/null || true
+                              fi
+                            done
+                          fi
+                        done
+
                         # /run/current-system -> toplevel
                         ln -sfn $TOPLEVEL rootfs/run/current-system
 
+                        # Merge toplevel's /etc into rootfs (service units, configs, etc.)
+                        # This copies unit files, .wants symlinks, and module-generated configs.
+                        # Files created below (hostname, passwd, etc.) will overwrite as needed.
+                        if [ -d "$TOPLEVEL/etc" ]; then
+                          echo "==> Merging toplevel /etc into rootfs"
+                          # Use tar pipe to copy without preserving store permissions.
+                          # tar extract applies umask, making files writable.
+                          (cd "$TOPLEVEL/etc" && tar cf - .) | (cd rootfs/etc && tar xf -)
+                          # tar may preserve read-only store permissions; fix them
+                          chmod -R u+w rootfs/etc
+                          echo "    toplevel /etc merged"
+                          # Override SELinux to permissive for VM testing — the rootfs
+                          # has no policy files, and enforcing mode causes systemd to
+                          # freeze when it can't load the policy.
+                          echo "    checking selinux config..."
+                          if [ -f rootfs/etc/selinux/config ]; then
+                            echo "    overriding selinux to permissive"
+                            cat > rootfs/etc/selinux/config << 'SELINUXCFG'
+            SELINUX=disabled
+            SELINUXTYPE=targeted
+            SELINUXCFG
+                            echo "    selinux override done"
+                          fi
+                        fi
+
+                        echo "==> Writing basic /etc files"
                         # Basic /etc for systemd
                         echo "${hostname}" > rootfs/etc/hostname
                         touch rootfs/etc/machine-id
+                        # fstab so systemd-remount-fs mounts root read-write
+                        printf '/dev/vda / ext4 defaults 0 1\n' > rootfs/etc/fstab
                         ${
                           if hostsEntries != null then
                             ''
@@ -178,25 +238,32 @@ let
             VERSION_ID=0.1
             OSREL
 
-                        cat > rootfs/etc/passwd << 'PASSWD'
+                        # Only write fallback passwd/group/shadow if the toplevel
+                        # etc merge didn't already provide them (the users module
+                        # generates these with all module-defined users like chrony, sshd).
+                        if [ ! -s rootfs/etc/passwd ]; then
+                          cat > rootfs/etc/passwd << 'PASSWD'
             root:x:0:0:root:/root:/bin/sh
             nobody:x:65534:65534:Nobody:/:/sbin/nologin
             systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin
             systemd-network:x:102:102:systemd Network:/:/sbin/nologin
             PASSWD
-
-                        cat > rootfs/etc/group << 'GROUP'
+                        fi
+                        if [ ! -s rootfs/etc/group ]; then
+                          cat > rootfs/etc/group << 'GROUP'
             root:x:0:
             nobody:x:65534:
             utmp:x:22:
             systemd-journal:x:101:
             systemd-network:x:102:
             GROUP
-
-                        cat > rootfs/etc/shadow << 'SHADOW'
+                        fi
+                        if [ ! -s rootfs/etc/shadow ]; then
+                          cat > rootfs/etc/shadow << 'SHADOW'
             root:!:1::::::
             nobody:!:1::::::
             SHADOW
+                        fi
                         chmod 640 rootfs/etc/shadow
 
                         # Minimal nsswitch.conf for systemd
@@ -391,7 +458,7 @@ let
               -smp 2 \
               -nographic \
               -kernel "$VMLINUZ" \
-              -append "root=/dev/vda rw console=ttyS0 init=/sbin/init panic=1 systemd.journald.forward_to_console=1" \
+              -append "root=/dev/vda rw console=ttyS0 init=/sbin/init panic=1 systemd.journald.forward_to_console=1 enforcing=0" \
               -drive file=rootfs.img,format=raw,if=virtio \
               -device virtio-serial \
               -device virtserialport,chardev=agent,name=aos.test.agent \
