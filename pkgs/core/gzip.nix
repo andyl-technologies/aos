@@ -1,4 +1,4 @@
-# GNU Gzip — Compression utility
+##! GNU Gzip — Compression utility
 {
   mkDerivation,
   fetchurl,

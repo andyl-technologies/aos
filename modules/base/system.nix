@@ -1,12 +1,12 @@
-# modules/base/system.nix — Core system identity module
-#
-# Defines the fundamental identity of the AOS installation: name, version,
-# variant, locale, and timezone. Generates /etc/os-release and configures
-# systemd locale and timezone settings.
-#
-# Absorbed TOML config values:
-#   [system] name, version, variant, state_version
-#   [locale] lang, timezone
+##! modules/base/system.nix — Core system identity module
+##!
+##! Defines the fundamental identity of the AOS installation: name, version,
+##! variant, locale, and timezone. Generates /etc/os-release and configures
+##! systemd locale and timezone settings.
+##!
+##! Absorbed TOML config values:
+##!   [system] name, version, variant, state_version
+##!   [locale] lang, timezone
 
 {
   config,
@@ -20,18 +20,24 @@ let
 in
 {
   options.aos.system = {
+    ## Operating system name used in os-release and branding.
     name = lib.mkOption {
       type = lib.types.str;
       default = "aos";
       description = "Operating system name used in os-release and branding.";
     };
 
+    ## AOS release version string.
     version = lib.mkOption {
       type = lib.types.str;
       default = "0.1.0";
       description = "AOS release version string.";
     };
 
+    ## System variant name (base, k8s-worker, k8s-control-plane, server).
+    ##
+    ## # See Also
+    ## - `aos.system.version`
     variant = lib.mkOption {
       type = lib.types.str;
       default = "base";
@@ -41,6 +47,7 @@ in
       '';
     };
 
+    ## State version for forward-compatible migrations.
     stateVersion = lib.mkOption {
       type = lib.types.str;
       default = "1";
@@ -52,12 +59,24 @@ in
       '';
     };
 
+    ## System locale (LANG environment variable).
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.system.locale = "en_US.UTF-8";
+    ## ```
     locale = lib.mkOption {
       type = lib.types.str;
       default = "C.UTF-8";
       description = "System locale (LANG environment variable).";
     };
 
+    ## System timezone (e.g. UTC, America/New_York).
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.system.timezone = "America/New_York";
+    ## ```
     timezone = lib.mkOption {
       type = lib.types.str;
       default = "UTC";

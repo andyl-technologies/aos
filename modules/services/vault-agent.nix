@@ -1,13 +1,13 @@
-# modules/services/vault-agent.nix — HashiCorp Vault agent module
-#
-# Configures a Vault agent sidecar that handles automatic authentication
-# and secret templating. The agent authenticates to a Vault server using
-# the configured auth method (e.g., Kubernetes service account) and
-# renders secret templates to local files. This eliminates the need for
-# applications to implement Vault client logic directly.
-#
-# Options:
-#   [services.vaultAgent] enable, address, role, authPath, templates, autoAuth
+##! modules/services/vault-agent.nix — HashiCorp Vault agent module
+##!
+##! Configures a Vault agent sidecar that handles automatic authentication
+##! and secret templating. The agent authenticates to a Vault server using
+##! the configured auth method (e.g., Kubernetes service account) and
+##! renders secret templates to local files. This eliminates the need for
+##! applications to implement Vault client logic directly.
+##!
+##! Options:
+##!   [services.vaultAgent] enable, address, role, authPath, templates, autoAuth
 
 {
   config,
@@ -70,6 +70,10 @@ let
 in
 {
   options.aos.services.vaultAgent = {
+    ## Enable the HashiCorp Vault agent for automatic secret management.
+    ##
+    ## # See Also
+    ## - `aos.services.vaultAgent.address`, `aos.services.vaultAgent.templates`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -81,6 +85,7 @@ in
       '';
     };
 
+    ## Address of the Vault server.
     address = lib.mkOption {
       type = lib.types.str;
       default = "https://vault.internal:8200";
@@ -91,6 +96,7 @@ in
       '';
     };
 
+    ## Vault role name for authentication.
     role = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -101,6 +107,7 @@ in
       '';
     };
 
+    ## Mount path for the Vault auth method.
     authPath = lib.mkOption {
       type = lib.types.str;
       default = "auth/kubernetes/login";
@@ -110,6 +117,16 @@ in
       '';
     };
 
+    ## Secret templates for rendering Vault secrets to files.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.services.vaultAgent.templates.db-password = {
+    ##   destination = "/run/secrets/db-password";
+    ##   contents = ''{{ with secret "database/creds/myapp" }}{{ .Data.password }}{{ end }}'';
+    ##   perms = "0400";
+    ## };
+    ## ```
     templates = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
@@ -123,6 +140,7 @@ in
       '';
     };
 
+    ## Additional auto-auth configuration.
     autoAuth = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
@@ -150,7 +168,7 @@ in
       wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = "/usr/bin/vault agent -config=/etc/vault-agent.d/config.hcl";
+        ExecStart = "${pkgs.vault}/bin/vault agent -config=/etc/vault-agent.d/config.hcl";
         Restart = "on-failure";
         RestartSec = "5s";
         # Run as a dedicated user with minimal privileges.

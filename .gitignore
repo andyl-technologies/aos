@@ -17,3 +17,6 @@ result-*
 
 # Direnv
 .direnv/
+
+# Doc index cache
+.aos-doc-cache.json

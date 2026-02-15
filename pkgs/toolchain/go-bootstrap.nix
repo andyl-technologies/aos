@@ -1,4 +1,4 @@
-# Go bootstrap — pre-built binary for bootstrapping the Go compiler
+##! Go bootstrap — pre-built binary for bootstrapping the Go compiler
 {
   mkDerivation,
   fetchurl,
@@ -47,7 +47,7 @@ mkDerivation {
         cp -a go/* $out/
 
         # Patch ELF binaries to use the AOS sandbox dynamic linker
-        INTERP=$(patchelf --print-interpreter $(which bash))
+        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
         for f in $out/bin/* $out/pkg/tool/*/*; do
           if [ -f "$f" ] && [ ! -L "$f" ]; then
             patchelf --set-interpreter "$INTERP" "$f" 2>/dev/null || true

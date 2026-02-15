@@ -1,4 +1,4 @@
-# kubeadm — Kubernetes cluster bootstrapping tool
+##! kubeadm — Kubernetes cluster bootstrapping tool
 { mkGoPackage, kubeSource }:
 
 mkGoPackage {

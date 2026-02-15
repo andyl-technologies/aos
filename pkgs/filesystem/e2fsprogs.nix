@@ -1,4 +1,4 @@
-# e2fsprogs — Utilities for ext2/ext3/ext4 filesystems
+##! e2fsprogs — Utilities for ext2/ext3/ext4 filesystems
 {
   mkDerivation,
   fetchurl,

@@ -1,8 +1,12 @@
-# Chrony — NTP client and server
+##! Chrony — NTP client and server
 {
   mkDerivation,
   fetchurl,
   make,
+  openssl,
+  libcap,
+  libseccomp,
+  pkg-config,
 }:
 
 let
@@ -19,8 +23,15 @@ mkDerivation {
     hash = "sha256-Vx/3P78K4wl/BgTsouALHYuy6Rr/4aNJR4X/IdYZnFw=";
   };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [
+    openssl
+    libcap
+    libseccomp
+  ];
   propagatedDeps = [ ];
 
   phases = [
@@ -41,7 +52,6 @@ mkDerivation {
           --with-pidfile=$out/run/chronyd.pid \
           --without-editline \
           --without-readline \
-          --disable-sechash \
           --disable-nts
       '';
     }

@@ -1,4 +1,4 @@
-# CA Certificates — Mozilla CA certificate bundle
+##! CA Certificates — Mozilla CA certificate bundle
 { mkDerivation, fetchurl }:
 
 let

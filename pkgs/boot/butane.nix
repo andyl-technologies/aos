@@ -1,3 +1,4 @@
+##! Butane — human-readable config transpiler for Ignition
 { mkGoPackage, fetchurl }:
 
 let

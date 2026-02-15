@@ -1,8 +1,9 @@
-# libseccomp — Seccomp (secure computing) userspace library
+##! libseccomp — Seccomp (secure computing) userspace library
 {
   mkDerivation,
   fetchurl,
   make,
+  gperf,
 }:
 
 let
@@ -19,7 +20,10 @@ mkDerivation {
     hash = "sha256-JIosik2bmFiqa69ScSw0r+/PnJ6Ut23OAsHJqiX7M3U=";
   };
 
-  buildDeps = [ make ];
+  buildDeps = [
+    make
+    gperf
+  ];
   runtimeDeps = [ ];
   propagatedDeps = [ ];
 

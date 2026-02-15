@@ -1,4 +1,4 @@
-# XZ Utils — LZMA compression utilities
+##! XZ Utils — LZMA compression utilities
 {
   mkDerivation,
   fetchurl,

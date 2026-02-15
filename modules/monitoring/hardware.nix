@@ -1,13 +1,13 @@
-# modules/monitoring/hardware.nix — Hardware monitoring module
-#
-# Configures hardware health monitoring including systemd watchdog
-# timers, S.M.A.R.T. disk health checks (via smartd), and thermal
-# throttling detection. The watchdog ensures the system reboots if
-# the kernel or systemd becomes unresponsive. SMART monitoring
-# provides early warning of disk failures.
-#
-# Options:
-#   [monitoring.hardware] enable, watchdog, watchdogTimeout, smartd, thermalThrottling
+##! modules/monitoring/hardware.nix — Hardware monitoring module
+##!
+##! Configures hardware health monitoring including systemd watchdog
+##! timers, S.M.A.R.T. disk health checks (via smartd), and thermal
+##! throttling detection. The watchdog ensures the system reboots if
+##! the kernel or systemd becomes unresponsive. SMART monitoring
+##! provides early warning of disk failures.
+##!
+##! Options:
+##!   [monitoring.hardware] enable, watchdog, watchdogTimeout, smartd, thermalThrottling
 
 {
   config,
@@ -54,6 +54,7 @@ let
 in
 {
   options.aos.monitoring.hardware = {
+    ## Enable hardware health monitoring (watchdog, SMART, thermal).
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -63,6 +64,10 @@ in
       '';
     };
 
+    ## Enable the systemd hardware watchdog.
+    ##
+    ## # See Also
+    ## - `aos.monitoring.hardware.watchdogTimeout`
     watchdog = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -74,6 +79,7 @@ in
       '';
     };
 
+    ## Watchdog timeout in seconds before triggering a reboot.
     watchdogTimeout = lib.mkOption {
       type = lib.types.int;
       default = 30;
@@ -84,6 +90,7 @@ in
       '';
     };
 
+    ## Enable S.M.A.R.T. disk health monitoring via smartd.
     smartd = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -94,6 +101,7 @@ in
       '';
     };
 
+    ## Enable thermal throttling detection.
     thermalThrottling = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -121,7 +129,7 @@ in
       after = [ "local-fs.target" ];
       serviceConfig = {
         Type = "forking";
-        ExecStart = "/usr/sbin/smartd -c /etc/smartd.conf";
+        ExecStart = "${pkgs.smartmontools}/sbin/smartd -c /etc/smartd.conf";
         Restart = "on-failure";
         RestartSec = "30s";
         PIDFile = "/run/smartd.pid";
@@ -137,7 +145,7 @@ in
       description = "Thermal Throttling Detection";
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "/bin/sh -c 'if test -f /sys/devices/system/cpu/cpu0/thermal_throttle/core_throttle_count; then count=$(cat /sys/devices/system/cpu/cpu0/thermal_throttle/core_throttle_count); if test \"$count\" -gt 0; then echo \"WARNING: CPU thermal throttling detected ($count events)\"; fi; fi'";
+        ExecStart = "${pkgs.bash}/bin/sh -c 'if test -f /sys/devices/system/cpu/cpu0/thermal_throttle/core_throttle_count; then count=$(cat /sys/devices/system/cpu/cpu0/thermal_throttle/core_throttle_count); if test \"$count\" -gt 0; then echo \"WARNING: CPU thermal throttling detected ($count events)\"; fi; fi'";
         # No privileges needed — reads sysfs only.
         ProtectSystem = "full";
         ProtectHome = true;

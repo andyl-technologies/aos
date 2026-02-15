@@ -1,4 +1,4 @@
-# elfutils — ELF utilities and libelf
+##! elfutils — ELF utilities and libelf
 {
   mkDerivation,
   fetchurl,
@@ -6,6 +6,9 @@
   pkg-config,
   zlib,
   m4,
+  xz,
+  bzip2,
+  zstd,
 }:
 
 let
@@ -27,7 +30,12 @@ mkDerivation {
     pkg-config
     m4
   ];
-  runtimeDeps = [ zlib ];
+  runtimeDeps = [
+    zlib
+    xz
+    bzip2
+    zstd
+  ];
   propagatedDeps = [ ];
 
   phases = [
@@ -47,9 +55,9 @@ mkDerivation {
           --disable-debuginfod \
           --disable-libdebuginfod \
           --disable-demangler \
-          --without-lzma \
-          --without-bzlib \
-          --without-zstd
+          --with-lzma \
+          --with-bzlib \
+          --with-zstd
       '';
     }
     {

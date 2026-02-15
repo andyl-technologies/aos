@@ -1,8 +1,9 @@
-# jq — Lightweight command-line JSON processor
+##! jq — Lightweight command-line JSON processor
 {
   mkDerivation,
   fetchurl,
   make,
+  oniguruma,
 }:
 
 let
@@ -20,7 +21,7 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [ ];
+  runtimeDeps = [ oniguruma ];
   propagatedDeps = [ ];
 
   phases = [
@@ -37,7 +38,7 @@ mkDerivation {
         ./configure \
           --prefix=$out \
           --disable-maintainer-mode \
-          --without-oniguruma
+          --with-oniguruma
       '';
     }
     {

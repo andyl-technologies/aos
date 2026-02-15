@@ -134,6 +134,15 @@ async fn run(cli: &Cli) -> Result<()> {
             *min_speed,
         ),
         Commands::Fmt { check, files } => commands::fmt::run(&nix, &printer, *check, files),
+        Commands::Doc {
+            source,
+            path,
+            search,
+            list,
+            rebuild,
+        } => {
+            commands::doc::run(&nix, &printer, source, path, search, list, *rebuild).await
+        }
         // Already handled above, but the match must be exhaustive.
         Commands::Completions { .. } => unreachable!(),
         Commands::Serve { .. } => unreachable!(),
