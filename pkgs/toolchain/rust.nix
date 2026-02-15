@@ -1,4 +1,4 @@
-# Rust — the Rust programming language, built from source
+##! Rust — the Rust programming language, built from source
 {
   mkDerivation,
   fetchurl,

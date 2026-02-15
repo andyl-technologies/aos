@@ -1,4 +1,4 @@
-# kubectl — Kubernetes command-line tool
+##! kubectl — Kubernetes command-line tool
 { mkGoPackage, kubeSource }:
 
 mkGoPackage {

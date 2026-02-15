@@ -1,14 +1,14 @@
-# modules/base/filesystems.nix — Immutable filesystem layout module
-#
-# Defines the AOS filesystem hierarchy: read-only root (ext4), FAT32 ESP,
-# ZFS datasets for persistent state, overlay /etc, and tmpfs for /tmp and
-# /run. This is the core of the immutable OS design — the root filesystem
-# is mounted read-only and all mutable state lives on ZFS or tmpfs.
-#
-# Absorbed TOML config values:
-#   [filesystems] root_read_only, root_device, root_fstype, esp_device
-#   [filesystems.zfs] enable, pool_name, datasets
-#   [filesystems.overlay] etc_overlay
+##! modules/base/filesystems.nix — Immutable filesystem layout module
+##!
+##! Defines the AOS filesystem hierarchy: read-only root (ext4), FAT32 ESP,
+##! ZFS datasets for persistent state, overlay /etc, and tmpfs for /tmp and
+##! /run. This is the core of the immutable OS design — the root filesystem
+##! is mounted read-only and all mutable state lives on ZFS or tmpfs.
+##!
+##! Absorbed TOML config values:
+##!   [filesystems] root_read_only, root_device, root_fstype, esp_device
+##!   [filesystems.zfs] enable, pool_name, datasets
+##!   [filesystems.overlay] etc_overlay
 
 {
   config,
@@ -61,6 +61,10 @@ let
 in
 {
   options.aos.filesystems = {
+    ## Mount the root filesystem read-only (immutable OS foundation).
+    ##
+    ## # See Also
+    ## - `aos.filesystems.overlayEtc`, `aos.filesystems.zfs.enable`
     rootReadOnly = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -71,18 +75,21 @@ in
       '';
     };
 
+    ## Block device for the root filesystem.
     rootDevice = lib.mkOption {
       type = lib.types.str;
       default = "/dev/vda2";
       description = "Block device for the root filesystem.";
     };
 
+    ## Filesystem type for the root partition.
     rootFsType = lib.mkOption {
       type = lib.types.str;
       default = "ext4";
       description = "Filesystem type for the root partition.";
     };
 
+    ## Block device for the EFI System Partition.
     espDevice = lib.mkOption {
       type = lib.types.str;
       default = "/dev/vda1";
@@ -90,6 +97,7 @@ in
     };
 
     zfs = {
+      ## Use ZFS for persistent mutable state under /var.
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -99,12 +107,16 @@ in
         '';
       };
 
+      ## Name of the ZFS pool for persistent data.
       poolName = lib.mkOption {
         type = lib.types.str;
         default = "aos-pool";
         description = "Name of the ZFS pool for persistent data.";
       };
 
+      ## ZFS datasets to create and mount.
+      ##
+      ## Modules add entries here; Ignition creates them at first boot.
       datasets = lib.mkOption {
         type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
         default = { };
@@ -118,6 +130,7 @@ in
       };
     };
 
+    ## Use an overlayfs mount for /etc (runtime-writable over read-only base).
     overlayEtc = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -184,8 +197,8 @@ in
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "/usr/sbin/zpool import -N -f ${cfg.zfs.poolName}";
-          ExecStop = "/usr/sbin/zpool export ${cfg.zfs.poolName}";
+          ExecStart = "${pkgs.zfs}/sbin/zpool import -N -f ${cfg.zfs.poolName}";
+          ExecStop = "${pkgs.zfs}/sbin/zpool export ${cfg.zfs.poolName}";
         };
       };
 
@@ -198,7 +211,7 @@ in
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "/usr/sbin/zfs mount -a -l";
+          ExecStart = "${pkgs.zfs}/sbin/zfs mount -a -l";
         };
       };
     };

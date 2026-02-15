@@ -1,4 +1,4 @@
-# LZ4 — Extremely fast compression algorithm
+##! LZ4 — Extremely fast compression algorithm
 {
   mkDerivation,
   fetchurl,

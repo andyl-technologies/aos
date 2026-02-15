@@ -1,3 +1,4 @@
+##! Helm — Kubernetes package manager
 { mkGoPackage, fetchurl }:
 
 let

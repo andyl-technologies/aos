@@ -1,13 +1,13 @@
-# modules/base/networking.nix — Network configuration module
-#
-# Configures networking via systemd-networkd and systemd-resolved.
-# Generates .network files for each interface, resolved.conf for DNS,
-# and manages the hostname.
-#
-# Absorbed TOML config values:
-#   [network] hostname, use_dhcp, nameservers, search_domains
-#   [network.interfaces.*] address, gateway, dns
-#   [network.resolved] enable, dnssec
+##! modules/base/networking.nix — Network configuration module
+##!
+##! Configures networking via systemd-networkd and systemd-resolved.
+##! Generates .network files for each interface, resolved.conf for DNS,
+##! and manages the hostname.
+##!
+##! Absorbed TOML config values:
+##!   [network] hostname, use_dhcp, nameservers, search_domains
+##!   [network.interfaces.*] address, gateway, dns
+##!   [network.resolved] enable, dnssec
 
 {
   config,
@@ -85,12 +85,14 @@ let
 in
 {
   options.aos.networking = {
+    ## System hostname.
     hostName = lib.mkOption {
       type = lib.types.str;
       default = "aos";
       description = "System hostname. Written to /etc/hostname and set via hostnamectl.";
     };
 
+    ## Use DHCP for all Ethernet interfaces by default.
     useDHCP = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -101,6 +103,15 @@ in
       '';
     };
 
+    ## Per-interface network configuration.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.networking.interfaces.eth0 = {
+    ##   address = "10.0.0.5/24";
+    ##   gateway = "10.0.0.1";
+    ## };
+    ## ```
     interfaces = lib.mkOption {
       type = lib.types.attrsOf (
         lib.types.submodule {
@@ -131,18 +142,21 @@ in
       '';
     };
 
+    ## Global DNS servers for systemd-resolved.
     nameservers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
       description = "Global DNS servers for systemd-resolved.";
     };
 
+    ## DNS search domains.
     search = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
       description = "DNS search domains.";
     };
 
+    ## Default MTU for network interfaces (0 = kernel default).
     mtu = lib.mkOption {
       type = lib.types.int;
       default = 0;
@@ -152,6 +166,7 @@ in
       '';
     };
 
+    ## VLAN interface definitions.
     vlans = lib.mkOption {
       type = lib.types.attrsOf (
         lib.types.submodule {
@@ -180,6 +195,7 @@ in
       '';
     };
 
+    ## Bond interface definitions.
     bonds = lib.mkOption {
       type = lib.types.attrsOf (
         lib.types.submodule {
@@ -209,6 +225,7 @@ in
       '';
     };
 
+    ## Network tuning sysctl parameters.
     tuning = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
@@ -220,12 +237,14 @@ in
     };
 
     resolved = {
+      ## Enable systemd-resolved for DNS resolution.
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
         description = "Enable systemd-resolved for DNS resolution.";
       };
 
+      ## DNSSEC validation mode.
       dnssec = lib.mkOption {
         type = lib.types.str;
         default = "allow-downgrade";

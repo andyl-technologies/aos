@@ -1,13 +1,13 @@
-# modules/monitoring/node-exporter.nix — Prometheus node exporter module
-#
-# Configures the Prometheus node_exporter for hardware and OS metrics.
-# Generates a systemd service with the appropriate collector flags.
-# The node exporter exposes metrics at http://<host>:<port>/metrics in
-# Prometheus exposition format.
-#
-# Absorbed TOML config values:
-#   [monitoring.node_exporter] enable, port, listen_address
-#   [monitoring.node_exporter] enabled_collectors, disabled_collectors
+##! modules/monitoring/node-exporter.nix — Prometheus node exporter module
+##!
+##! Configures the Prometheus node_exporter for hardware and OS metrics.
+##! Generates a systemd service with the appropriate collector flags.
+##! The node exporter exposes metrics at http://<host>:<port>/metrics in
+##! Prometheus exposition format.
+##!
+##! Absorbed TOML config values:
+##!   [monitoring.node_exporter] enable, port, listen_address
+##!   [monitoring.node_exporter] enabled_collectors, disabled_collectors
 
 {
   config,
@@ -38,6 +38,7 @@ let
 in
 {
   options.aos.monitoring.nodeExporter = {
+    ## Enable the Prometheus node_exporter for hardware and OS metrics.
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -48,12 +49,14 @@ in
       '';
     };
 
+    ## TCP port for the node exporter metrics endpoint.
     port = lib.mkOption {
       type = lib.types.port;
       default = 9100;
       description = "TCP port for the node exporter metrics endpoint.";
     };
 
+    ## List of node_exporter collectors to enable.
     enabledCollectors = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -76,6 +79,7 @@ in
       '';
     };
 
+    ## List of node_exporter collectors to explicitly disable.
     disabledCollectors = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -86,6 +90,7 @@ in
       '';
     };
 
+    ## Address to listen on for the metrics endpoint.
     listenAddress = lib.mkOption {
       type = lib.types.str;
       default = "0.0.0.0";
@@ -107,7 +112,7 @@ in
       wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = "/usr/bin/node_exporter ${nodeExporterFlags}";
+        ExecStart = "${pkgs.node-exporter}/bin/node_exporter ${nodeExporterFlags}";
         Restart = "on-failure";
         RestartSec = "5s";
         # Run as a dedicated unprivileged user.

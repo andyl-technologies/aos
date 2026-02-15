@@ -1,45 +1,52 @@
-# lib/strings.nix — String utility functions
-#
-# Functions for manipulating and constructing strings.
-#
+##! lib/strings.nix — String utility functions
+##!
+##! Functions for manipulating and constructing strings.
 
 rec {
-  # -- Concatenation --
+  ## # Concatenation
 
-  # concatStrings :: [string] -> string
-  # Concatenate a list of strings with no separator.
+  ## Concatenate a list of strings with no separator.
+  ## # Type
+  ## `[string] -> string`
   concatStrings = builtins.concatStringsSep "";
 
-  # concatStringsSep :: string -> [string] -> string
-  # Concatenate a list of strings with a separator.
+  ## Concatenate a list of strings with a separator.
+  ## # Type
+  ## `string -> [string] -> string`
   concatStringsSep = builtins.concatStringsSep;
 
-  # concatMapStrings :: (a -> string) -> [a] -> string
-  # Map a function over a list and concatenate the resulting strings.
+  ## Map a function over a list and concatenate the resulting strings.
+  ## # Type
+  ## `(a -> string) -> [a] -> string`
   concatMapStrings = f: list: concatStrings (builtins.map f list);
 
-  # concatMapStringsSep :: string -> (a -> string) -> [a] -> string
-  # Map a function over a list and concatenate with a separator.
+  ## Map a function over a list and concatenate with a separator.
+  ## # Type
+  ## `string -> (a -> string) -> [a] -> string`
   concatMapStringsSep =
     sep: f: list:
     builtins.concatStringsSep sep (builtins.map f list);
 
-  # concatLines :: [string] -> string
-  # Concatenate strings separated by newlines, with a trailing newline.
+  ## Concatenate strings separated by newlines, with a trailing newline.
+  ## # Type
+  ## `[string] -> string`
   concatLines = list: builtins.concatStringsSep "\n" list + "\n";
 
-  # -- Measurement --
+  ## # Measurement
 
-  # stringLength :: string -> int
+  ## # Type
+  ## `string -> int`
   stringLength = builtins.stringLength;
 
-  # isString :: a -> bool
+  ## # Type
+  ## `a -> bool`
   isString = builtins.isString;
 
-  # -- Prefix/suffix operations --
+  ## # Prefix/suffix operations
 
-  # hasPrefix :: string -> string -> bool
-  # Test whether a string starts with a given prefix.
+  ## Test whether a string starts with a given prefix.
+  ## # Type
+  ## `string -> string -> bool`
   hasPrefix =
     prefix: str:
     let
@@ -48,8 +55,9 @@ rec {
     in
     pLen <= sLen && builtins.substring 0 pLen str == prefix;
 
-  # hasSuffix :: string -> string -> bool
-  # Test whether a string ends with a given suffix.
+  ## Test whether a string ends with a given suffix.
+  ## # Type
+  ## `string -> string -> bool`
   hasSuffix =
     suffix: str:
     let
@@ -58,8 +66,9 @@ rec {
     in
     sufLen <= strLen && builtins.substring (strLen - sufLen) sufLen str == suffix;
 
-  # removePrefix :: string -> string -> string
-  # Remove a prefix from a string if present, otherwise return unchanged.
+  ## Remove a prefix from a string if present, otherwise return unchanged.
+  ## # Type
+  ## `string -> string -> string`
   removePrefix =
     prefix: str:
     let
@@ -70,8 +79,9 @@ rec {
     else
       str;
 
-  # removeSuffix :: string -> string -> string
-  # Remove a suffix from a string if present, otherwise return unchanged.
+  ## Remove a suffix from a string if present, otherwise return unchanged.
+  ## # Type
+  ## `string -> string -> string`
   removeSuffix =
     suffix: str:
     let
@@ -80,14 +90,16 @@ rec {
     in
     if hasSuffix suffix str then builtins.substring 0 (strLen - sufLen) str else str;
 
-  # -- Replacement --
+  ## # Replacement
 
-  # replaceStrings :: [string] -> [string] -> string -> string
+  ## # Type
+  ## `[string] -> [string] -> string -> string`
   replaceStrings = builtins.replaceStrings;
 
-  # -- Case conversion --
+  ## # Case conversion
 
-  # toLower :: string -> string
+  ## # Type
+  ## `string -> string`
   toLower =
     str:
     builtins.replaceStrings
@@ -149,7 +161,8 @@ rec {
       ]
       str;
 
-  # toUpper :: string -> string
+  ## # Type
+  ## `string -> string`
   toUpper =
     str:
     builtins.replaceStrings
@@ -211,11 +224,13 @@ rec {
       ]
       str;
 
-  # -- Splitting --
+  ## # Splitting
 
-  # splitString :: string -> string -> [string]
-  # Split a string by a separator.
-  # splitString "." "a.b.c" == ["a" "b" "c"]
+  ## Split a string by a separator.
+  ##
+  ## `splitString "." "a.b.c" == ["a" "b" "c"]`
+  ## # Type
+  ## `string -> string -> [string]`
   splitString =
     sep: str:
     let
@@ -225,17 +240,20 @@ rec {
     in
     builtins.filter builtins.isString parts;
 
-  # -- Conditional --
+  ## # Conditional
 
-  # optionalString :: bool -> string -> string
-  # Return the string if condition is true, otherwise empty string.
+  ## Return the string if condition is true, otherwise empty string.
+  ## # Type
+  ## `bool -> string -> string`
   optionalString = cond: str: if cond then str else "";
 
-  # -- Formatting --
+  ## # Formatting
 
-  # fixedWidthString :: int -> string -> string -> string
-  # Pad a string to a fixed width using a fill character (on the left).
-  # fixedWidthString 5 "0" "42" == "00042"
+  ## Pad a string to a fixed width using a fill character (on the left).
+  ##
+  ## `fixedWidthString 5 "0" "42" == "00042"`
+  ## # Type
+  ## `int -> string -> string -> string`
   fixedWidthString =
     width: fill: str:
     let
@@ -251,61 +269,75 @@ rec {
       in
       builtins.substring (builtins.stringLength padding - needed) needed padding + str;
 
-  # fixedWidthNumber :: int -> int -> string
-  # Format an integer with zero-padding to a fixed width.
-  # fixedWidthNumber 3 7 == "007"
+  ## Format an integer with zero-padding to a fixed width.
+  ##
+  ## `fixedWidthNumber 3 7 == "007"`
+  ## # Type
+  ## `int -> int -> string`
   fixedWidthNumber = width: n: fixedWidthString width "0" (builtins.toString n);
 
-  # -- Shell escaping --
+  ## # Shell escaping
 
-  # escapeShellArg :: string -> string
-  # Escape a string for safe use as a shell argument.
+  ## Escape a string for safe use as a shell argument.
+  ## # Type
+  ## `string -> string`
   escapeShellArg = arg: "'${builtins.replaceStrings [ "'" ] [ "'\\''" ] (builtins.toString arg)}'";
 
-  # escapeShellArgs :: [string] -> string
-  # Escape and join a list of strings as shell arguments.
+  ## Escape and join a list of strings as shell arguments.
+  ## # Type
+  ## `[string] -> string`
   escapeShellArgs = args: builtins.concatStringsSep " " (builtins.map escapeShellArg args);
 
-  # toShellVar :: string -> string -> string
-  # Create a shell variable assignment.
-  # toShellVar "FOO" "bar baz" == "FOO='bar baz'"
+  ## Create a shell variable assignment.
+  ##
+  ## `toShellVar "FOO" "bar baz" == "FOO='bar baz'"`
+  ## # Type
+  ## `string -> string -> string`
   toShellVar = name: value: "${name}=${escapeShellArg value}";
 
-  # toShellVars :: attrset -> string
-  # Create shell variable assignments from an attrset, one per line.
+  ## Create shell variable assignments from an attrset, one per line.
+  ## # Type
+  ## `attrset -> string`
   toShellVars =
     vars:
     builtins.concatStringsSep "\n" (
       builtins.map (name: toShellVar name (builtins.toString vars.${name})) (builtins.attrNames vars)
     );
 
-  # -- Path construction --
+  ## # Path construction
 
-  # makeBinPath :: [derivation | string] -> string
-  # Construct a colon-separated PATH from a list of derivations or store paths.
+  ## Construct a colon-separated PATH from a list of derivations or store paths.
+  ## # Type
+  ## `[derivation | string] -> string`
   makeBinPath =
     paths: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") paths);
 
-  # makeSearchPath :: string -> [derivation | string] -> string
-  # Like makeBinPath but for an arbitrary subdirectory.
-  # makeSearchPath "lib" [pkg1 pkg2] == "/nix/store/...-pkg1/lib:/nix/store/...-pkg2/lib"
+  ## Like makeBinPath but for an arbitrary subdirectory.
+  ##
+  ## `makeSearchPath "lib" [pkg1 pkg2] == "/nix/store/...-pkg1/lib:/nix/store/...-pkg2/lib"`
+  ## # Type
+  ## `string -> [derivation | string] -> string`
   makeSearchPath =
     subDir: paths:
     builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/${subDir}") paths);
 
-  # makeLibraryPath :: [derivation | string] -> string
+  ## # Type
+  ## `[derivation | string] -> string`
   makeLibraryPath = makeSearchPath "lib";
 
-  # makeIncludePath :: [derivation | string] -> string
+  ## # Type
+  ## `[derivation | string] -> string`
   makeIncludePath = makeSearchPath "include";
 
-  # makePkgConfigPath :: [derivation | string] -> string
+  ## # Type
+  ## `[derivation | string] -> string`
   makePkgConfigPath = makeSearchPath "lib/pkgconfig";
 
-  # -- Regex --
+  ## # Regex
 
-  # escapeRegex :: string -> string
-  # Escape special regex characters in a string for use with builtins.match/split.
+  ## Escape special regex characters in a string for use with builtins.match/split.
+  ## # Type
+  ## `string -> string`
   escapeRegex =
     str:
     builtins.replaceStrings
@@ -343,14 +375,16 @@ rec {
       ]
       str;
 
-  # match :: string -> string -> [string] | null
-  # Test if a string matches a regex, returning captured groups or null.
+  ## Test if a string matches a regex, returning captured groups or null.
+  ## # Type
+  ## `string -> string -> [string] | null`
   match = builtins.match;
 
-  # -- Normalization --
+  ## # Normalization
 
-  # trim :: string -> string
-  # Remove leading and trailing whitespace.
+  ## Remove leading and trailing whitespace.
+  ## # Type
+  ## `string -> string`
   trim =
     str:
     let
@@ -359,8 +393,9 @@ rec {
     in
     if m == null then "" else builtins.elemAt m 0;
 
-  # normalizePath :: string -> string
-  # Remove trailing slashes and collapse double slashes in a path string.
+  ## Remove trailing slashes and collapse double slashes in a path string.
+  ## # Type
+  ## `string -> string`
   normalizePath =
     path:
     let
@@ -370,18 +405,21 @@ rec {
     in
     result;
 
-  # fileContents :: path -> string
-  # Read a file and strip trailing newline.
+  ## Read a file and strip trailing newline.
+  ## # Type
+  ## `path -> string`
   fileContents = file: removeSuffix "\n" (builtins.readFile file);
 
-  # -- Conversion --
+  ## # Conversion
 
-  # toString :: a -> string
-  # Convert a value to string using builtins.toString.
+  ## Convert a value to string using builtins.toString.
+  ## # Type
+  ## `a -> string`
   toString = builtins.toString;
 
-  # toInt :: string -> int
-  # Parse a string as an integer. Throws on invalid input.
+  ## Parse a string as an integer. Throws on invalid input.
+  ## # Type
+  ## `string -> int`
   toInt =
     str:
     let
@@ -389,13 +427,15 @@ rec {
     in
     if builtins.isInt parsed then parsed else throw "toInt: '${str}' is not a valid integer";
 
-  # floatToString :: float -> string
+  ## # Type
+  ## `float -> string`
   floatToString = builtins.toString;
 
-  # -- Multi-line --
+  ## # Multi-line
 
-  # indent :: int -> string -> string
-  # Indent each line of a multi-line string by n spaces.
+  ## Indent each line of a multi-line string by n spaces.
+  ## # Type
+  ## `int -> string -> string`
   indent =
     n: str:
     let

@@ -1,4 +1,4 @@
-# Shared Kubernetes source — used by kubelet, kubeadm, kubectl
+##! Shared Kubernetes source — used by kubelet, kubeadm, kubectl
 { fetchurl }:
 
 let

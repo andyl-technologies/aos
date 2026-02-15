@@ -1,14 +1,14 @@
-# modules/base/repart.nix — A/B root partition management module
-#
-# Configures systemd-repart for declarative disk partitioning with support
-# for A/B root partition layouts. systemd-repart reads partition definitions
-# from /etc/repart.d/*.conf and creates, grows, or modifies GPT partitions
-# to match the declared state.
-#
-# This enables the A/B update scheme: two root partitions (root-a, root-b)
-# are maintained so that updates are written to the inactive partition while
-# the active one continues serving. On successful boot, the new partition
-# becomes active. On failure, the boot loader falls back to the previous one.
+##! modules/base/repart.nix — A/B root partition management module
+##!
+##! Configures systemd-repart for declarative disk partitioning with support
+##! for A/B root partition layouts. systemd-repart reads partition definitions
+##! from /etc/repart.d/*.conf and creates, grows, or modifies GPT partitions
+##! to match the declared state.
+##!
+##! This enables the A/B update scheme: two root partitions (root-a, root-b)
+##! are maintained so that updates are written to the inactive partition while
+##! the active one continues serving. On successful boot, the new partition
+##! becomes active. On failure, the boot loader falls back to the previous one.
 
 {
   config,
@@ -37,6 +37,10 @@ let
 in
 {
   options.aos.repart = {
+    ## Enable systemd-repart for declarative GPT partition management.
+    ##
+    ## # See Also
+    ## - `aos.repart.definitions`, `aos.sysupdate`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -48,6 +52,16 @@ in
       '';
     };
 
+    ## Partition definitions for systemd-repart.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.repart.definitions."10-root-a" = {
+    ##   Type = "root";
+    ##   Label = "root-a";
+    ##   SizeMinBytes = "2G";
+    ## };
+    ## ```
     definitions = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
@@ -85,7 +99,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "/usr/bin/systemd-repart --dry-run=no";
+        ExecStart = "${pkgs.systemd}/bin/systemd-repart --dry-run=no";
         # systemd-repart needs access to block devices and GPT headers.
         ProtectSystem = false;
       };

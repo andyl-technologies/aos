@@ -1,4 +1,4 @@
-# GNU Diffutils — File comparison utilities
+##! GNU Diffutils — File comparison utilities
 {
   mkDerivation,
   fetchurl,

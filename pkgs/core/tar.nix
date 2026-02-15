@@ -1,4 +1,4 @@
-# GNU Tar — Archiving utility
+##! GNU Tar — Archiving utility
 {
   mkDerivation,
   fetchurl,

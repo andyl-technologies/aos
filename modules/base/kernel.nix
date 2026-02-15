@@ -1,13 +1,13 @@
-# modules/base/kernel.nix — Kernel configuration module
-#
-# Configures kernel tunables via sysctl, kernel module loading, and optional
-# TCP BBR congestion control. Generates /etc/sysctl.d/10-aos-kernel.conf for
-# performance-oriented sysctl settings and /etc/modules-load.d/aos-kernel.conf
-# for modules to load at boot. When BBR is enabled, the necessary kernel
-# parameters are appended to the boot command line.
-#
-# These are performance/functionality sysctls — security-focused sysctls
-# belong in modules/security/hardening.nix.
+##! modules/base/kernel.nix — Kernel configuration module
+##!
+##! Configures kernel tunables via sysctl, kernel module loading, and optional
+##! TCP BBR congestion control. Generates /etc/sysctl.d/10-aos-kernel.conf for
+##! performance-oriented sysctl settings and /etc/modules-load.d/aos-kernel.conf
+##! for modules to load at boot. When BBR is enabled, the necessary kernel
+##! parameters are appended to the boot command line.
+##!
+##! These are performance/functionality sysctls — security-focused sysctls
+##! belong in modules/security/hardening.nix.
 
 {
   config,
@@ -26,6 +26,7 @@ let
 in
 {
   options.aos.kernel = {
+    ## Enable TCP BBR congestion control.
     bbr = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -37,6 +38,7 @@ in
       '';
     };
 
+    ## Enable the kernel hardware watchdog.
     watchdog = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -48,6 +50,10 @@ in
       '';
     };
 
+    ## Performance-oriented sysctl parameters.
+    ##
+    ## # See Also
+    ## - `aos.security.hardening.sysctl` (security sysctls)
     sysctl = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = {
@@ -73,6 +79,7 @@ in
       '';
     };
 
+    ## Kernel modules to load at boot.
     modules = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];

@@ -1,4 +1,4 @@
-# Zstandard — Fast real-time compression algorithm
+##! Zstandard — Fast real-time compression algorithm
 {
   mkDerivation,
   fetchurl,

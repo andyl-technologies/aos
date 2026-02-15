@@ -1,4 +1,4 @@
-# ZFS — OpenZFS filesystem and volume manager
+##! ZFS — OpenZFS filesystem and volume manager
 {
   mkDerivation,
   fetchurl,

@@ -1,4 +1,4 @@
-# meson — Build system designed for speed
+##! meson — Build system designed for speed
 {
   mkDerivation,
   fetchurl,

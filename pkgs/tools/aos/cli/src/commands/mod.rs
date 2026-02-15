@@ -1,6 +1,7 @@
 pub mod build;
 pub mod completions;
 pub mod describe;
+pub mod doc;
 pub mod fmt;
 pub mod gc;
 pub mod graph;

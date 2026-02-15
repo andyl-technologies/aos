@@ -1,4 +1,4 @@
-# python3 — Python 3 interpreter
+##! python3 — Python 3 interpreter
 {
   mkDerivation,
   fetchurl,

@@ -1,4 +1,4 @@
-# kmod — Linux kernel module handling
+##! kmod — Linux kernel module handling
 {
   mkDerivation,
   fetchurl,
@@ -6,6 +6,7 @@
   pkg-config,
   zlib,
   xz,
+  zstd,
 }:
 
 let
@@ -29,6 +30,7 @@ mkDerivation {
   runtimeDeps = [
     zlib
     xz
+    zstd
   ];
   propagatedDeps = [ ];
 
@@ -48,7 +50,7 @@ mkDerivation {
           --sysconfdir=/etc \
           --with-xz \
           --with-zlib \
-          --with-zstd=no \
+          --with-zstd \
           --disable-manpages \
           --disable-test-modules
       '';

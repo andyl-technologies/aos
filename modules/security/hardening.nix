@@ -1,11 +1,11 @@
-# modules/security/hardening.nix — System hardening via sysctl and kernel params
-#
-# Applies security-focused sysctl settings and kernel parameters. The defaults
-# follow CIS benchmarks and DISA STIG guidance: ASLR, pointer restriction,
-# dmesg access control, network hardening, and filesystem protections.
-#
-# Absorbed TOML config values:
-#   [security.hardening] enable, sysctl, kernel_lockdown, core_dump
+##! modules/security/hardening.nix — System hardening via sysctl and kernel params
+##!
+##! Applies security-focused sysctl settings and kernel parameters. The defaults
+##! follow CIS benchmarks and DISA STIG guidance: ASLR, pointer restriction,
+##! dmesg access control, network hardening, and filesystem protections.
+##!
+##! Absorbed TOML config values:
+##!   [security.hardening] enable, sysctl, kernel_lockdown, core_dump
 
 {
   config,
@@ -25,6 +25,10 @@ let
 in
 {
   options.aos.security.hardening = {
+    ## Enable system hardening (sysctl, lockdown, core dump restrictions).
+    ##
+    ## # See Also
+    ## - `aos.security.hardening.sysctl`, `aos.security.hardening.kernelLockdown`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -35,6 +39,12 @@ in
       '';
     };
 
+    ## Security-focused sysctl parameters (CIS benchmarks).
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.security.hardening.sysctl."kernel.kptr_restrict" = "2";
+    ## ```
     sysctl = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = {
@@ -72,6 +82,12 @@ in
       '';
     };
 
+    ## Kernel lockdown mode (none, integrity, confidentiality).
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.security.hardening.kernelLockdown = "confidentiality";
+    ## ```
     kernelLockdown = lib.mkOption {
       type = lib.types.enum [
         "none"
@@ -90,6 +106,7 @@ in
     };
 
     coreDump = {
+      ## Allow core dumps (disabled by default for security).
       enable = lib.mkOption {
         type = lib.types.bool;
         default = false;

@@ -1,26 +1,26 @@
-# images/builder.nix — AOS disk image builder
-#
-# Produces a bootable GPT disk image from an evaluated AOS system
-# configuration. The image contains:
-#
-#   Partition 1 (ESP)  — FAT32, systemd-boot + kernel + initrd + boot entries
-#   Partition 2 (Root) — ext4, Nix store closure + system symlinks
-#   Remaining space    — unpartitioned (reserved for ZFS data pool at runtime)
-#
-# Arguments:
-#   pkgs     — AOS package set (provides util-linux, dosfstools, etc.)
-#   lib      — AOS library
-#   system   — evaluated system configuration (from evalModules)
-#   name     — image name slug (used in derivation name and boot entry)
-#   diskSize — total raw image size (e.g. "16G")
-#   espSize  — ESP partition size (e.g. "1G")
-#   rootSize — root partition size (e.g. "8G")
-#
-# Output: a single raw disk image file at $out
-#
-# NOTE: This derivation requires KVM for loop device access during the
-# build. It will not evaluate in a pure Nix sandbox without
-# requiredSystemFeatures = ["kvm"].
+##! images/builder.nix — AOS disk image builder
+##!
+##! Produces a bootable GPT disk image from an evaluated AOS system
+##! configuration. The image contains:
+##!
+##!   Partition 1 (ESP)  — FAT32, systemd-boot + kernel + initrd + boot entries
+##!   Partition 2 (Root) — ext4, Nix store closure + system symlinks
+##!   Remaining space    — unpartitioned (reserved for ZFS data pool at runtime)
+##!
+##! Arguments:
+##!   pkgs     — AOS package set (provides util-linux, dosfstools, etc.)
+##!   lib      — AOS library
+##!   system   — evaluated system configuration (from evalModules)
+##!   name     — image name slug (used in derivation name and boot entry)
+##!   diskSize — total raw image size (e.g. "16G")
+##!   espSize  — ESP partition size (e.g. "1G")
+##!   rootSize — root partition size (e.g. "8G")
+##!
+##! Output: a single raw disk image file at $out
+##!
+##! NOTE: This derivation requires KVM for loop device access during the
+##! build. It will not evaluate in a pure Nix sandbox without
+##! requiredSystemFeatures = ["kvm"].
 
 {
   pkgs,

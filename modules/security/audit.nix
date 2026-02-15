@@ -1,12 +1,12 @@
-# modules/security/audit.nix — Linux audit framework module
-#
-# Configures auditd for system call auditing. Generates the audit rules
-# file and the auditd systemd service. The default rules cover the CIS
-# benchmark requirements: execve logging, module loading, mount operations,
-# user/group modifications, SELinux policy changes, and sensitive file access.
-#
-# Absorbed TOML config values:
-#   [security.audit] enable, rules, backlog_limit, failure_mode
+##! modules/security/audit.nix — Linux audit framework module
+##!
+##! Configures auditd for system call auditing. Generates the audit rules
+##! file and the auditd systemd service. The default rules cover the CIS
+##! benchmark requirements: execve logging, module loading, mount operations,
+##! user/group modifications, SELinux policy changes, and sensitive file access.
+##!
+##! Absorbed TOML config values:
+##!   [security.audit] enable, rules, backlog_limit, failure_mode
 
 {
   config,
@@ -39,6 +39,12 @@ let
 in
 {
   options.aos.security.audit = {
+    ## Enable the Linux audit framework (auditd).
+    ##
+    ## Required for CIS compliance and security monitoring.
+    ##
+    ## # See Also
+    ## - `aos.security.audit.rules`, `aos.security.audit.backlogLimit`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -50,6 +56,17 @@ in
       '';
     };
 
+    ## Audit rules in auditctl(8) format.
+    ##
+    ## The defaults cover CIS benchmark recommendations for system call
+    ## auditing, file integrity monitoring, and security event logging.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.security.audit.rules = [
+    ##   "-a always,exit -F arch=b64 -S execve -k exec"
+    ## ];
+    ## ```
     rules = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -93,6 +110,7 @@ in
       '';
     };
 
+    ## Kernel audit backlog buffer size.
     backlogLimit = lib.mkOption {
       type = lib.types.int;
       default = 8192;
@@ -103,6 +121,7 @@ in
       '';
     };
 
+    ## Action when the audit system fails (0=silent, 1=printk, 2=panic).
     failureMode = lib.mkOption {
       type = lib.types.int;
       default = 1;
@@ -156,12 +175,12 @@ in
       ];
       serviceConfig = {
         Type = "forking";
-        ExecStart = "/usr/sbin/auditd -n";
-        ExecReload = "/usr/bin/kill -HUP $MAINPID";
+        ExecStart = "${pkgs.audit}/sbin/auditd -n";
+        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
         RestartSec = "5s";
         # Load audit rules after the daemon starts.
-        ExecStartPost = "/usr/sbin/auditctl -R /etc/audit/audit.rules";
+        ExecStartPost = "${pkgs.audit}/sbin/auditctl -R /etc/audit/audit.rules";
       };
     };
 

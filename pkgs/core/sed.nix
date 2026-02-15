@@ -1,4 +1,4 @@
-# GNU Sed — Stream editor
+##! GNU Sed — Stream editor
 {
   mkDerivation,
   fetchurl,

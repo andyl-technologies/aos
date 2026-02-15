@@ -1,13 +1,13 @@
-# modules/base/swap.nix — Swap and OOM strategy module
-#
-# Configures compressed swap via zram and systemd-oomd for out-of-memory
-# handling. zram creates a compressed block device in RAM that acts as swap,
-# providing better memory utilization without disk I/O. systemd-oomd monitors
-# memory pressure via PSI and kills cgroup subtrees before the kernel OOM
-# killer fires, giving more predictable behavior under memory pressure.
-#
-# The defaults are tuned for server workloads: 50% of RAM as zstd-compressed
-# zram swap, with oomd killing at 60% memory pressure or 90% swap usage.
+##! modules/base/swap.nix — Swap and OOM strategy module
+##!
+##! Configures compressed swap via zram and systemd-oomd for out-of-memory
+##! handling. zram creates a compressed block device in RAM that acts as swap,
+##! providing better memory utilization without disk I/O. systemd-oomd monitors
+##! memory pressure via PSI and kills cgroup subtrees before the kernel OOM
+##! killer fires, giving more predictable behavior under memory pressure.
+##!
+##! The defaults are tuned for server workloads: 50% of RAM as zstd-compressed
+##! zram swap, with oomd killing at 60% memory pressure or 90% swap usage.
 
 {
   config,
@@ -22,6 +22,7 @@ in
 {
   options.aos.swap = {
     zram = {
+      ## Enable zram compressed swap.
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -32,6 +33,7 @@ in
         '';
       };
 
+      ## Size of the zram device (percentage or absolute).
       size = lib.mkOption {
         type = lib.types.str;
         default = "50%";
@@ -43,6 +45,7 @@ in
         '';
       };
 
+      ## Compression algorithm for zram (zstd, lz4, lzo).
       algorithm = lib.mkOption {
         type = lib.types.str;
         default = "zstd";
@@ -56,6 +59,7 @@ in
     };
 
     oomd = {
+      ## Enable systemd-oomd for userspace OOM handling.
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -67,6 +71,7 @@ in
         '';
       };
 
+      ## Swap usage threshold for oomd process killing.
       swapUsedLimit = lib.mkOption {
         type = lib.types.str;
         default = "90%";
@@ -77,6 +82,7 @@ in
         '';
       };
 
+      ## Memory pressure threshold for oomd action.
       defaultMemoryPressureLimit = lib.mkOption {
         type = lib.types.str;
         default = "60%";
@@ -100,8 +106,8 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "/usr/bin/zram-setup start ${cfg.zram.size} ${cfg.zram.algorithm}";
-        ExecStop = "/usr/bin/zram-setup stop";
+        ExecStart = "${pkgs.zram-setup}/bin/zram-setup start ${cfg.zram.size} ${cfg.zram.algorithm}";
+        ExecStop = "${pkgs.zram-setup}/bin/zram-setup stop";
       };
     };
 

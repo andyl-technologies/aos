@@ -1,17 +1,18 @@
-# lib/types.nix — Module option type definitions
-#
-# Each type is an attribute set with:
-#   name        :: string         — human-readable type name
-#   description :: string         — longer description for docs
-#   check       :: a -> bool      — predicate testing if a value has this type
-#   merge       :: loc -> [def] -> a  — combine multiple option definitions
-#
-# Where:
-#   loc  = [string]    — option path for error messages (e.g. ["services" "ssh" "port"])
-#   def  = { file :: string; value :: a; }  — a single definition with its source file
-#
-# Parameterized types (listOf, attrsOf, etc.) are functions returning a type.
-#
+##! lib/types.nix — Module option type definitions
+##!
+##! Each type is an attribute set with:
+##!
+##!     name        :: string         — human-readable type name
+##!     description :: string         — longer description for docs
+##!     check       :: a -> bool      — predicate testing if a value has this type
+##!     merge       :: loc -> [def] -> a  — combine multiple option definitions
+##!
+##! Where:
+##!
+##!     loc  = [string]    — option path for error messages (e.g. ["services" "ssh" "port"])
+##!     def  = { file :: string; value :: a; }  — a single definition with its source file
+##!
+##! Parameterized types (listOf, attrsOf, etc.) are functions returning a type.
 
 let
   # Helper: take the last definition's value (last-writer-wins semantics).
@@ -62,7 +63,7 @@ let
 
 in
 {
-  # -- Primitive types --
+  ## # Primitive types
 
   bool = {
     name = "bool";
@@ -159,7 +160,7 @@ in
         last.value;
   };
 
-  # -- Network types --
+  ## # Network types
 
   port = {
     name = "port";
@@ -176,9 +177,10 @@ in
         val;
   };
 
-  # -- Parameterized types --
+  ## # Parameterized types
 
-  # enum :: [a] -> type
+  ## # Type
+  ## `[a] -> type`
   enum = allowedValues: {
     name = "enum";
     description = "one of ${builtins.toJSON allowedValues}";
@@ -194,8 +196,9 @@ in
         throw "The option '${showLoc loc}' must be one of ${builtins.toJSON allowedValues}, but is '${builtins.toJSON val}'.";
   };
 
-  # listOf :: type -> type
-  # Supports mkBefore/mkAfter ordering markers on individual list elements.
+  ## Supports mkBefore/mkAfter ordering markers on individual list elements.
+  ## # Type
+  ## `type -> type`
   listOf = elemType: {
     name = "listOf(${elemType.name})";
     description = "list of ${elemType.description}";
@@ -223,7 +226,8 @@ in
       builtins.map (e: e.value) sorted;
   };
 
-  # attrsOf :: type -> type
+  ## # Type
+  ## `type -> type`
   attrsOf = elemType: {
     name = "attrsOf(${elemType.name})";
     description = "attribute set of ${elemType.description}";
@@ -270,7 +274,8 @@ in
       );
   };
 
-  # nullOr :: type -> type
+  ## # Type
+  ## `type -> type`
   nullOr = elemType: {
     name = "nullOr(${elemType.name})";
     description = "${elemType.description} or null";
@@ -291,7 +296,8 @@ in
         ];
   };
 
-  # either :: type -> type -> type
+  ## # Type
+  ## `type -> type -> type`
   either = type1: type2: {
     name = "either(${type1.name},${type2.name})";
     description = "${type1.description} or ${type2.description}";
@@ -310,7 +316,8 @@ in
         throw "The option '${showLoc loc}' does not match either ${type1.name} or ${type2.name}.";
   };
 
-  # oneOf :: [type] -> type
+  ## # Type
+  ## `[type] -> type`
   oneOf = types: {
     name = "oneOf(${builtins.concatStringsSep "," (builtins.map (t: t.name) types)})";
     description = "one of ${builtins.concatStringsSep ", " (builtins.map (t: t.description) types)}";
@@ -336,8 +343,9 @@ in
         throw "The option '${showLoc loc}' does not match any of the expected types.";
   };
 
-  # submodule :: (attrset | function) -> type
-  # Uses recursive deep merge instead of shallow (//) merge.
+  ## Uses recursive deep merge instead of shallow (//) merge.
+  ## # Type
+  ## `(attrset | function) -> type`
   submodule = moduleOrFn: {
     name = "submodule";
     description = "submodule";
@@ -346,9 +354,10 @@ in
     _submodule = moduleOrFn;
   };
 
-  # -- Type combinators --
+  ## # Type combinators
 
-  # coercedTo :: type -> (a -> b) -> type -> type
+  ## # Type
+  ## `type -> (a -> b) -> type -> type`
   coercedTo = fromType: coercion: toType: {
     name = "coercedTo(${fromType.name},${toType.name})";
     description = "${fromType.description} convertible to ${toType.description}";
@@ -363,7 +372,8 @@ in
       toType.merge loc coerced;
   };
 
-  # uniq :: type -> type
+  ## # Type
+  ## `type -> type`
   uniq = elemType: {
     name = "uniq(${elemType.name})";
     description = "unique ${elemType.description}";

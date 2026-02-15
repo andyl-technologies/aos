@@ -1,4 +1,4 @@
-# systemd — System and service manager
+##! systemd — System and service manager
 {
   mkDerivation,
   fetchurl,
@@ -24,6 +24,7 @@
   audit,
   libselinux,
   libsepol,
+  libseccomp,
 }:
 
 let
@@ -65,6 +66,7 @@ mkDerivation {
     libselinux
     libsepol
     pcre2
+    libseccomp
   ];
   propagatedDeps = [ ];
 
@@ -189,7 +191,7 @@ mkDerivation {
                   -Dhtml=disabled \
                   -Dtranslations=false \
                   -Dinstall-sysconfdir=false \
-                  -Dseccomp=disabled \
+                  -Dseccomp=enabled \
                   -Dselinux=enabled \
                   -Dapparmor=disabled \
                   -Daudit=enabled \

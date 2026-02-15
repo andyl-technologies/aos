@@ -1,4 +1,4 @@
-# libselinux — SELinux userspace library
+##! libselinux — SELinux userspace library
 {
   mkDerivation,
   fetchurl,

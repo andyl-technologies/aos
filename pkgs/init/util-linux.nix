@@ -1,10 +1,13 @@
-# util-linux — Miscellaneous system utilities
+##! util-linux — Miscellaneous system utilities
 {
   mkDerivation,
   fetchurl,
   make,
   pkg-config,
   zlib,
+  ncurses,
+  libselinux,
+  audit,
 }:
 
 let
@@ -25,7 +28,12 @@ mkDerivation {
     make
     pkg-config
   ];
-  runtimeDeps = [ zlib ];
+  runtimeDeps = [
+    zlib
+    ncurses
+    libselinux
+    audit
+  ];
   propagatedDeps = [ ];
 
   phases = [
@@ -54,15 +62,15 @@ mkDerivation {
           --without-python \
           --without-systemd \
           --without-ncurses \
-          --without-ncursesw \
+          --with-ncursesw \
           --without-readline \
           --without-tinfo \
           --without-slang \
           --without-utempter \
           --without-cap-ng \
           --without-btrfs \
-          --without-selinux \
-          --without-audit \
+          --with-selinux \
+          --with-audit \
           --without-udev \
           --without-cryptsetup \
           --without-econf \

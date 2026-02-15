@@ -1,4 +1,4 @@
-# GNU Patch — Apply diff files to originals
+##! GNU Patch — Apply diff files to originals
 {
   mkDerivation,
   fetchurl,

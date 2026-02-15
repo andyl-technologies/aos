@@ -1,12 +1,12 @@
-# modules/base/build.nix — System build outputs module
-#
-# Declares the core options that the image builder and deploy bundle depend on:
-#   - environment.systemPackages  — runtime packages accumulated by all modules
-#   - environment.etc             — files to install in /etc
-#   - systemd.services            — systemd unit definitions
-#   - system.build.toplevel       — the top-level system derivation
-#   - system.build.kernel         — the kernel derivation
-#   - system.build.initrd         — the initrd derivation
+##! modules/base/build.nix — System build outputs module
+##!
+##! Declares the core options that the image builder and deploy bundle depend on:
+##!   - environment.systemPackages  — runtime packages accumulated by all modules
+##!   - environment.etc             — files to install in /etc
+##!   - systemd.services            — systemd unit definitions
+##!   - system.build.toplevel       — the top-level system derivation
+##!   - system.build.kernel         — the kernel derivation
+##!   - system.build.initrd         — the initrd derivation
 
 {
   config,
@@ -66,9 +66,68 @@ let
           ${renderUnit name unit}
           UNITEOF
         ''
+        + (
+          if unit ? wantedBy then
+            lib.concatStringsSep "\n" (
+              builtins.map (target: ''
+                mkdir -p $out/etc/systemd/system/${target}.wants
+                ln -sfn ../${name}.service $out/etc/systemd/system/${target}.wants/${name}.service
+              '') unit.wantedBy
+            )
+          else
+            ""
+        )
       else
         "# skipping unit ${name} (incomplete definition)"
     ) config.systemd.services
+  );
+
+  # --- Render systemd timers ---
+  renderTimer =
+    name: timer:
+    let
+      timerSection = lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (
+          k: v: if builtins.isBool v then (if v then "${k}=yes" else "${k}=no") else "${k}=${toString v}"
+        ) timer.timerConfig
+      );
+      installSection =
+        if timer ? wantedBy then "[Install]\nWantedBy=${lib.concatStringsSep " " timer.wantedBy}" else "";
+    in
+    ''
+      [Unit]
+      Description=${timer.description}
+
+      [Timer]
+      ${timerSection}
+
+      ${installSection}
+    '';
+
+  timerScripts = lib.concatStringsSep "\n" (
+    lib.mapAttrsToList (
+      name: timer:
+      if timer ? description && timer ? timerConfig then
+        ''
+          mkdir -p $out/etc/systemd/system
+          cat > $out/etc/systemd/system/${name}.timer << 'TIMEREOF'
+          ${renderTimer name timer}
+          TIMEREOF
+        ''
+        + (
+          if timer ? wantedBy then
+            lib.concatStringsSep "\n" (
+              builtins.map (target: ''
+                mkdir -p $out/etc/systemd/system/${target}.wants
+                ln -sfn ../${name}.timer $out/etc/systemd/system/${target}.wants/${name}.timer
+              '') timer.wantedBy
+            )
+          else
+            ""
+        )
+      else
+        "# skipping timer ${name} (incomplete definition)"
+    ) config.systemd.timers
   );
 
   # --- Build the system PATH from systemPackages ---
@@ -78,6 +137,7 @@ let
 in
 {
   options = {
+    ## Assertions checked during system evaluation.
     assertions = lib.mkOption {
       type = lib.types.listOf lib.types.anything;
       default = [ ];
@@ -87,6 +147,7 @@ in
       '';
     };
 
+    ## Warning messages reported during evaluation.
     warnings = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -96,6 +157,7 @@ in
       '';
     };
 
+    ## Packages that appear in the system profile PATH.
     environment.systemPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [ ];
@@ -106,6 +168,7 @@ in
       '';
     };
 
+    ## Files to install in /etc (text or source symlink).
     environment.etc = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
@@ -116,6 +179,7 @@ in
       '';
     };
 
+    ## Systemd service unit definitions.
     systemd.services = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
@@ -125,6 +189,7 @@ in
       '';
     };
 
+    ## Systemd timer unit definitions.
     systemd.timers = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
@@ -132,6 +197,7 @@ in
     };
 
     system.build = {
+      ## The top-level system derivation (image builder entry point).
       toplevel = lib.mkOption {
         type = lib.types.package;
         description = ''
@@ -141,11 +207,13 @@ in
         '';
       };
 
+      ## The kernel derivation providing bzImage.
       kernel = lib.mkOption {
         type = lib.types.package;
         description = "The kernel derivation providing bzImage.";
       };
 
+      ## The initrd derivation providing initrd.img.
       initrd = lib.mkOption {
         type = lib.types.package;
         description = "The initrd derivation providing initrd.img.";
@@ -171,6 +239,9 @@ in
 
             # Render systemd units
             ${unitScripts}
+
+            # Render systemd timers
+            ${timerScripts}
 
             # Create system PATH manifest
             cat > $out/etc/aos/system-path << 'PATHEOF'

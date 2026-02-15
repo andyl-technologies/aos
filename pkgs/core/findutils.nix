@@ -1,4 +1,4 @@
-# GNU Findutils — find, xargs, and locate
+##! GNU Findutils — find, xargs, and locate
 {
   mkDerivation,
   fetchurl,

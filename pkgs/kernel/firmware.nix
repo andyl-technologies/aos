@@ -1,4 +1,4 @@
-# linux-firmware — Firmware files for Linux kernel drivers
+##! linux-firmware — Firmware files for Linux kernel drivers
 {
   mkDerivation,
   fetchurl,

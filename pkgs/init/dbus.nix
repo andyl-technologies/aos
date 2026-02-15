@@ -1,11 +1,13 @@
-# D-Bus — Message bus system
-# Note: dbus 1.14.x uses autotools, not meson (meson is 1.15.x+)
+##! D-Bus — Message bus system
+##! Note: dbus 1.14.x uses autotools, not meson (meson is 1.15.x+)
 {
   mkDerivation,
   fetchurl,
   make,
   pkg-config,
   expat,
+  libselinux,
+  audit,
 }:
 
 let
@@ -26,7 +28,11 @@ mkDerivation {
     make
     pkg-config
   ];
-  runtimeDeps = [ expat ];
+  runtimeDeps = [
+    expat
+    libselinux
+    audit
+  ];
   propagatedDeps = [ ];
 
   phases = [
@@ -48,10 +54,10 @@ mkDerivation {
           --disable-doxygen-docs \
           --disable-xml-docs \
           --disable-systemd \
-          --disable-user-session \
+          --enable-user-session \
           --disable-apparmor \
-          --disable-selinux \
-          --disable-libaudit \
+          --enable-selinux \
+          --enable-libaudit \
           --without-x
       '';
     }

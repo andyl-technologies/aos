@@ -7,7 +7,7 @@ mkCheckGroup {
       name = "update-timer";
       description = "Update timer is enabled";
       script = ''
-        assert_success "systemctl is-enabled update-check.timer" \
+        assert_success "systemctl is-enabled aos-update-check.timer" \
           "Update check timer is enabled"
       '';
     })
@@ -15,7 +15,7 @@ mkCheckGroup {
       name = "gc-timer";
       description = "GC timer is enabled";
       script = ''
-        assert_success "systemctl is-enabled gc.timer" \
+        assert_success "systemctl is-enabled aos-gc.timer" \
           "GC timer is enabled"
       '';
     })
@@ -23,7 +23,7 @@ mkCheckGroup {
       name = "health-check";
       description = "Health check service unit exists";
       script = ''
-        assert_success "systemctl cat health-check.service" \
+        assert_success "systemctl cat aos-health-check.service" \
           "Health check service unit exists"
       '';
     })

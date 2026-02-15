@@ -1,4 +1,4 @@
-# Rust bootstrap — pre-built binary for bootstrapping the Rust compiler
+##! Rust bootstrap — pre-built binary for bootstrapping the Rust compiler
 {
   mkDerivation,
   fetchurl,

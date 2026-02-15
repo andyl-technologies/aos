@@ -1,11 +1,11 @@
-# modules/services/aos-serve.nix — AOS binary cache server module
-#
-# Runs the `aos serve` HTTP binary cache server as a long-lived systemd
-# service, with optional periodic garbage collection of cache views.
-#
-# Absorbed TOML config values:
-#   [serve] enable, config_file, user, group
-#   [serve.gc] schedule, views
+##! modules/services/aos-serve.nix — AOS binary cache server module
+##!
+##! Runs the `aos serve` HTTP binary cache server as a long-lived systemd
+##! service, with optional periodic garbage collection of cache views.
+##!
+##! Absorbed TOML config values:
+##!   [serve] enable, config_file, user, group
+##!   [serve.gc] schedule, views
 
 {
   config,
@@ -19,24 +19,28 @@ let
 in
 {
   options.aos.serve = {
+    ## Enable the AOS binary cache server.
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = "Enable the AOS binary cache server.";
     };
 
+    ## Path to the aos serve configuration file.
     configFile = lib.mkOption {
       type = lib.types.path;
       default = "/etc/aos/serve.toml";
       description = "Path to the aos serve configuration file.";
     };
 
+    ## User account under which the cache server runs.
     user = lib.mkOption {
       type = lib.types.str;
       default = "aos-serve";
       description = "User account under which the cache server runs.";
     };
 
+    ## Primary group for the cache server process.
     group = lib.mkOption {
       type = lib.types.str;
       default = "nix-daemon";
@@ -46,6 +50,7 @@ in
       '';
     };
 
+    ## systemd calendar expression for cache garbage collection.
     gcSchedule = lib.mkOption {
       type = lib.types.str;
       default = "weekly";
@@ -55,6 +60,7 @@ in
       '';
     };
 
+    ## Cache views to garbage-collect on the timer schedule.
     gcViews = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];

@@ -1,11 +1,16 @@
-# iptables — Linux packet filtering framework
+##! iptables — Linux packet filtering framework
 {
   mkDerivation,
   fetchurl,
   make,
   pkg-config,
+  flex,
+  bison,
   libmnl,
+  libnfnetlink,
+  libnetfilter_conntrack,
   libnftnl,
+  libpcap,
 }:
 
 let
@@ -25,10 +30,15 @@ mkDerivation {
   buildDeps = [
     make
     pkg-config
+    flex
+    bison
   ];
   runtimeDeps = [
     libmnl
+    libnfnetlink
+    libnetfilter_conntrack
     libnftnl
+    libpcap
   ];
   propagatedDeps = [ ];
 
@@ -50,6 +60,8 @@ mkDerivation {
           --disable-static \
           --enable-devel \
           --enable-libipq \
+          --enable-bpf-compiler \
+          --enable-nfsynproxy \
           --enable-nftables
       '';
     }

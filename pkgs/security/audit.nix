@@ -1,8 +1,9 @@
-# Audit — Linux auditing framework
+##! Audit — Linux auditing framework
 {
   mkDerivation,
   fetchurl,
   make,
+  libcap,
 }:
 
 let
@@ -20,7 +21,7 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [ ];
+  runtimeDeps = [ libcap ];
   propagatedDeps = [ ];
 
   phases = [
@@ -38,6 +39,7 @@ mkDerivation {
           --prefix=$out \
           --sysconfdir=$out/etc \
           --sbindir=$out/sbin \
+          --runstatedir=/run \
           --disable-zos-remote \
           --without-python \
           --without-python3 \

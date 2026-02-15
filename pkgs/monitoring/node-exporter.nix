@@ -1,3 +1,4 @@
+##! Prometheus Node Exporter — hardware and OS metrics for *nix kernels
 { mkGoPackage, fetchurl }:
 
 let

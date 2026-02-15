@@ -1,8 +1,10 @@
-# ethtool — Utility for querying/controlling network device driver and hardware
+##! ethtool — Utility for querying/controlling network device driver and hardware
 {
   mkDerivation,
   fetchurl,
   make,
+  pkg-config,
+  libmnl,
 }:
 
 let
@@ -19,8 +21,11 @@ mkDerivation {
     hash = "sha256-jZH1xyrj8lt+iNR4EnncsyD3HjAFiRQ3CxxXTJazEgI=";
   };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ];
+  buildDeps = [
+    make
+    pkg-config
+  ];
+  runtimeDeps = [ libmnl ];
   propagatedDeps = [ ];
 
   phases = [

@@ -1,4 +1,4 @@
-# GNU m4 — Macro processor
+##! GNU m4 — Macro processor
 {
   mkDerivation,
   fetchurl,

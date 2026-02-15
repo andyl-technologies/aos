@@ -1,4 +1,4 @@
-# OpenSSL — TLS and cryptography library
+##! OpenSSL — TLS and cryptography library
 {
   mkDerivation,
   fetchurl,

@@ -151,6 +151,22 @@ pub enum Commands {
         #[command(subcommand)]
         command: TokenCmd,
     },
+    /// Browse documentation
+    Doc {
+        /// Source path or flake URI (default: current directory)
+        source: Option<String>,
+        /// Look up a specific doc path
+        path: Option<String>,
+        /// Search all entries
+        #[arg(long)]
+        search: Option<String>,
+        /// List entries under a prefix
+        #[arg(long)]
+        list: Option<String>,
+        /// Force rebuild index
+        #[arg(long)]
+        rebuild: bool,
+    },
 }
 
 #[derive(Subcommand)]

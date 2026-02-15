@@ -1,4 +1,4 @@
-# libxcrypt — Extended crypt library for DES/MD5/SHA/Blowfish password hashing
+##! libxcrypt — Extended crypt library for DES/MD5/SHA/Blowfish password hashing
 {
   mkDerivation,
   fetchurl,

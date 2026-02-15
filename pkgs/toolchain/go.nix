@@ -1,4 +1,4 @@
-# Go — the Go programming language, built from source
+##! Go — the Go programming language, built from source
 {
   mkDerivation,
   fetchurl,
@@ -56,7 +56,7 @@ mkDerivation {
         cp -a misc $out/ 2>/dev/null || true
 
         # Patch ELF binaries
-        INTERP=$(patchelf --print-interpreter $(which bash))
+        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
         for f in $out/bin/* $out/pkg/tool/*/*; do
           if [ -f "$f" ] && [ ! -L "$f" ]; then
             patchelf --set-interpreter "$INTERP" "$f" 2>/dev/null || true

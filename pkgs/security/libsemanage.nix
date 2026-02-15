@@ -1,4 +1,4 @@
-# libsemanage — SELinux policy management library
+##! libsemanage — SELinux policy management library
 {
   mkDerivation,
   fetchurl,

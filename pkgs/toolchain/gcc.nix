@@ -1,4 +1,4 @@
-# GCC — GNU Compiler Collection
+##! GCC — GNU Compiler Collection
 {
   mkDerivation,
   fetchurl,
@@ -6,6 +6,9 @@
   gawk,
   linux-headers,
   zlib,
+  gmp,
+  mpfr,
+  libmpc,
 }:
 
 let
@@ -27,6 +30,9 @@ mkDerivation {
   buildDeps = [
     make
     gawk
+    gmp
+    mpfr
+    libmpc
   ];
   runtimeDeps = [ linux-headers ];
   propagatedDeps = [ zlib ];
@@ -42,11 +48,14 @@ mkDerivation {
     {
       name = "configure";
       script = ''
-        mkdir -p build && cd build
+        mkdir -p objdir && cd objdir
         ../configure \
           --prefix=$out \
           --enable-languages=c,c++ \
           --with-system-zlib \
+          --with-gmp=${gmp} \
+          --with-mpfr=${mpfr} \
+          --with-mpc=${libmpc} \
           --disable-multilib \
           --disable-bootstrap \
           --disable-nls \
@@ -59,14 +68,17 @@ mkDerivation {
     {
       name = "build";
       script = ''
-        cd build
+        # Skip fixincludes — AOS uses the ccWrapper for include paths,
+        # and /include doesn't exist in the sandbox (headers come from
+        # linux-headers via -isystem flags).
+        mkdir -p gcc
+        touch gcc/stmp-fixinc
         make -j$NIX_BUILD_CORES
       '';
     }
     {
       name = "install";
       script = ''
-        cd build
         make install
         # Create cc symlink
         ln -sf gcc $out/bin/cc

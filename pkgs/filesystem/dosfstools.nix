@@ -1,4 +1,4 @@
-# dosfstools — Utilities for making and checking FAT filesystems
+##! dosfstools — Utilities for making and checking FAT filesystems
 {
   mkDerivation,
   fetchurl,

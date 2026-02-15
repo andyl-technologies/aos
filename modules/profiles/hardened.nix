@@ -1,10 +1,10 @@
-# modules/profiles/hardened.nix — Hardened security profile
-#
-# Activates the maximum security posture for production deployments.
-# Enables SELinux in enforcing mode, kernel lockdown at confidentiality
-# level, audit logging, system hardening, core dump suppression, and
-# the nftables firewall. This profile is intended for nodes handling
-# sensitive workloads where security takes precedence over debuggability.
+##! modules/profiles/hardened.nix — Hardened security profile
+##!
+##! Activates the maximum security posture for production deployments.
+##! Enables SELinux in enforcing mode, kernel lockdown at confidentiality
+##! level, audit logging, system hardening, core dump suppression, and
+##! the nftables firewall. This profile is intended for nodes handling
+##! sensitive workloads where security takes precedence over debuggability.
 
 {
   config,

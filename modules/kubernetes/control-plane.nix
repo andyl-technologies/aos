@@ -1,13 +1,13 @@
-# modules/kubernetes/control-plane.nix — Kubernetes control plane module
-#
-# Configures the Kubernetes control plane components (API server, etcd,
-# controller manager, scheduler). Generates a kubeadm configuration file
-# and adds firewall rules for control plane ports. The actual control plane
-# pods run as static pods managed by kubelet from /etc/kubernetes/manifests/.
-#
-# Absorbed TOML config values:
-#   [kubernetes.control_plane] enable, advertise_address, api_server_port
-#   [kubernetes.control_plane] etcd_data_dir
+##! modules/kubernetes/control-plane.nix — Kubernetes control plane module
+##!
+##! Configures the Kubernetes control plane components (API server, etcd,
+##! controller manager, scheduler). Generates a kubeadm configuration file
+##! and adds firewall rules for control plane ports. The actual control plane
+##! pods run as static pods managed by kubelet from /etc/kubernetes/manifests/.
+##!
+##! Absorbed TOML config values:
+##!   [kubernetes.control_plane] enable, advertise_address, api_server_port
+##!   [kubernetes.control_plane] etcd_data_dir
 
 {
   config,
@@ -22,6 +22,10 @@ let
 in
 {
   options.aos.kubernetes.controlPlane = {
+    ## Enable this node as a Kubernetes control plane node.
+    ##
+    ## # See Also
+    ## - `aos.kubernetes.kubelet`, `aos.kubernetes.network`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -33,6 +37,7 @@ in
       '';
     };
 
+    ## IP address the API server will advertise to cluster members.
     advertiseAddress = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -42,12 +47,14 @@ in
       '';
     };
 
+    ## TCP port for the Kubernetes API server.
     apiServerPort = lib.mkOption {
       type = lib.types.port;
       default = 6443;
       description = "TCP port for the Kubernetes API server.";
     };
 
+    ## Data directory for the etcd key-value store.
     etcdDataDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/etcd";

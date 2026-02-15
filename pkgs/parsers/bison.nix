@@ -1,4 +1,4 @@
-# GNU Bison — Parser generator
+##! GNU Bison — Parser generator
 {
   mkDerivation,
   fetchurl,

@@ -1,11 +1,11 @@
-# modules/services/gc.nix — Store garbage collection module
-#
-# Periodically removes old OS generations and unused store paths to reclaim
-# disk space. Runs on a systemd timer and keeps a configurable number of
-# generations for rollback safety.
-#
-# Absorbed TOML config values:
-#   [gc] enable, schedule, keep_generations, older_than
+##! modules/services/gc.nix — Store garbage collection module
+##!
+##! Periodically removes old OS generations and unused store paths to reclaim
+##! disk space. Runs on a systemd timer and keeps a configurable number of
+##! generations for rollback safety.
+##!
+##! Absorbed TOML config values:
+##!   [gc] enable, schedule, keep_generations, older_than
 
 {
   config,
@@ -19,12 +19,14 @@ let
 in
 {
   options.aos.gc = {
+    ## Enable periodic garbage collection of old OS generations.
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
       description = "Enable periodic garbage collection of old OS generations.";
     };
 
+    ## systemd calendar expression for when garbage collection runs.
     schedule = lib.mkOption {
       type = lib.types.str;
       default = "weekly";
@@ -34,6 +36,7 @@ in
       '';
     };
 
+    ## Number of recent OS generations to keep for rollback.
     keepGenerations = lib.mkOption {
       type = lib.types.int;
       default = 5;
@@ -44,6 +47,7 @@ in
       '';
     };
 
+    ## Minimum age for a generation to be eligible for garbage collection.
     olderThan = lib.mkOption {
       type = lib.types.str;
       default = "7d";
@@ -77,7 +81,7 @@ in
         # Remove generations older than the threshold, keeping at least
         # keepGenerations for rollback. Then collect unreferenced store paths.
         ExecStart = builtins.concatStringsSep " " [
-          "/usr/bin/aos-gc"
+          "${pkgs.aos-gc}/bin/aos-gc"
           "--keep=${toString cfg.keepGenerations}"
           "--older-than=${cfg.olderThan}"
         ];

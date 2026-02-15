@@ -1,13 +1,13 @@
-# modules/security/ssh.nix — Hardened SSH configuration module
-#
-# Generates /etc/ssh/sshd_config with security-hardened defaults:
-# key-only authentication, restricted ciphers/KEX/MACs, no root password
-# login. Follows Mozilla "Modern" SSH configuration guidelines.
-#
-# Absorbed TOML config values:
-#   [services.ssh] enable, port, permit_root_login, password_auth
-#   [services.ssh] kbd_interactive_auth, x11_forwarding, max_auth_tries
-#   [services.ssh] ciphers, kex_algorithms, macs, authorized_keys_file
+##! modules/security/ssh.nix — Hardened SSH configuration module
+##!
+##! Generates /etc/ssh/sshd_config with security-hardened defaults:
+##! key-only authentication, restricted ciphers/KEX/MACs, no root password
+##! login. Follows Mozilla "Modern" SSH configuration guidelines.
+##!
+##! Absorbed TOML config values:
+##!   [services.ssh] enable, port, permit_root_login, password_auth
+##!   [services.ssh] kbd_interactive_auth, x11_forwarding, max_auth_tries
+##!   [services.ssh] ciphers, kex_algorithms, macs, authorized_keys_file
 
 {
   config,
@@ -74,7 +74,7 @@ let
     LogLevel VERBOSE
 
     # Use the internal SFTP server.
-    Subsystem sftp /usr/libexec/sftp-server
+    Subsystem sftp ${pkgs.openssh}/libexec/sftp-server
 
     # Client keepalive to detect dead connections.
     ClientAliveInterval 300
@@ -84,18 +84,48 @@ let
 in
 {
   options.aos.services.ssh = {
+    ## Enable the OpenSSH server (sshd).
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.services.ssh.enable = false;
+    ## ```
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
       description = "Enable the OpenSSH server (sshd).";
     };
 
+    ## TCP port for the SSH server to listen on.
+    ##
+    ## Changing this from the default (22) requires corresponding firewall
+    ## rule updates.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.services.ssh.port = 2222;
+    ## ```
+    ##
+    ## # See Also
+    ## - `aos.firewall.allowedTCP`
     port = lib.mkOption {
       type = lib.types.port;
       default = 22;
       description = "TCP port for the SSH server to listen on.";
     };
 
+    ## Root login policy.
+    ##
+    ## Controls whether and how root can log in via SSH. The default
+    ## "prohibit-password" allows root login with SSH keys only.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.services.ssh.permitRootLogin = "no";
+    ## ```
+    ##
+    ## # See Also
+    ## - `aos.services.ssh.passwordAuthentication`
     permitRootLogin = lib.mkOption {
       type = lib.types.str;
       default = "prohibit-password";
@@ -108,6 +138,13 @@ in
       '';
     };
 
+    ## Allow password-based authentication.
+    ##
+    ## Disabled by default because SSH key authentication is more secure.
+    ##
+    ## # See Also
+    ## - `aos.services.ssh.kbdInteractiveAuthentication`
+    ## - `aos.services.ssh.permitRootLogin`
     passwordAuthentication = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -118,24 +155,33 @@ in
       '';
     };
 
+    ## Allow keyboard-interactive authentication (PAM prompts).
     kbdInteractiveAuthentication = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = "Allow keyboard-interactive authentication (PAM prompts).";
     };
 
+    ## Allow X11 forwarding.
     x11Forwarding = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = "Allow X11 forwarding. Disabled by default on headless servers.";
     };
 
+    ## Maximum authentication attempts per connection.
     maxAuthTries = lib.mkOption {
       type = lib.types.int;
       default = 3;
       description = "Maximum authentication attempts per connection.";
     };
 
+    ## Allowed symmetric ciphers (AEAD only, Mozilla "Modern").
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.services.ssh.allowedCiphers = [ "aes256-gcm@openssh.com" ];
+    ## ```
     allowedCiphers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -149,6 +195,7 @@ in
       '';
     };
 
+    ## Allowed key exchange algorithms (Curve25519 only by default).
     allowedKexAlgorithms = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -161,6 +208,7 @@ in
       '';
     };
 
+    ## Allowed MAC algorithms (Encrypt-then-MAC SHA-2 variants only).
     allowedMACs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -173,6 +221,10 @@ in
       '';
     };
 
+    ## Path pattern for authorized_keys files.
+    ##
+    ## Uses a system-wide directory instead of ~/.ssh/authorized_keys
+    ## because home directories may not exist on immutable systems.
     authorizedKeysFile = lib.mkOption {
       type = lib.types.str;
       default = "/etc/ssh/authorized_keys/%u";
@@ -204,8 +256,8 @@ in
       wants = [ "sshd-keygen.target" ];
       serviceConfig = {
         Type = "notify";
-        ExecStart = "/usr/sbin/sshd -D -f /etc/ssh/sshd_config";
-        ExecReload = "/bin/kill -HUP $MAINPID";
+        ExecStart = "${pkgs.openssh}/sbin/sshd -D -f /etc/ssh/sshd_config";
+        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
         RestartSec = "5s";
         KillMode = "process";
@@ -224,9 +276,9 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = [
-          "/usr/bin/ssh-keygen -A"
+          "${pkgs.openssh}/bin/ssh-keygen -A"
         ];
-        ExecCondition = "/usr/bin/test ! -f /etc/ssh/ssh_host_ed25519_key";
+        ExecCondition = "${pkgs.coreutils}/bin/test ! -f /etc/ssh/ssh_host_ed25519_key";
       };
     };
 

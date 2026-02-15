@@ -1,15 +1,15 @@
-# modules/services/update.nix — Update agent configuration module
-#
-# Configures the AOS update system: periodic check timer, update download
-# and apply service, health check after update, and automatic rollback on
-# failure. Uses systemd-bless-boot for boot counting — if the system fails
-# to mark the boot as successful within bootTries attempts, the boot loader
-# falls back to the previous generation.
-#
-# Absorbed TOML config values:
-#   [update] enable, server, channel, check_interval, auto_update
-#   [update] max_retries, retry_delay, boot_tries, signing_key_path
-#   [update.gc] schedule, keep_generations, min_age_hours
+##! modules/services/update.nix — Update agent configuration module
+##!
+##! Configures the AOS update system: periodic check timer, update download
+##! and apply service, health check after update, and automatic rollback on
+##! failure. Uses systemd-bless-boot for boot counting — if the system fails
+##! to mark the boot as successful within bootTries attempts, the boot loader
+##! falls back to the previous generation.
+##!
+##! Absorbed TOML config values:
+##!   [update] enable, server, channel, check_interval, auto_update
+##!   [update] max_retries, retry_delay, boot_tries, signing_key_path
+##!   [update.gc] schedule, keep_generations, min_age_hours
 
 {
   config,
@@ -23,18 +23,21 @@ let
 in
 {
   options.aos.update = {
+    ## Enable the AOS update agent.
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
       description = "Enable the AOS update agent.";
     };
 
+    ## Update server URL for checking and downloading OS updates.
     server = lib.mkOption {
       type = lib.types.str;
       default = "https://update.aos.internal";
       description = "Update server URL for checking and downloading OS updates.";
     };
 
+    ## Update channel to subscribe to (stable, testing, unstable).
     channel = lib.mkOption {
       type = lib.types.str;
       default = "stable";
@@ -44,12 +47,14 @@ in
       '';
     };
 
+    ## Interval in seconds between update checks.
     checkInterval = lib.mkOption {
       type = lib.types.int;
       default = 3600;
       description = "Interval in seconds between update checks.";
     };
 
+    ## Automatically apply updates when available.
     autoUpdate = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -59,18 +64,24 @@ in
       '';
     };
 
+    ## Maximum number of retry attempts for failed update operations.
     maxRetries = lib.mkOption {
       type = lib.types.int;
       default = 3;
       description = "Maximum number of retry attempts for failed update operations.";
     };
 
+    ## Delay in seconds between retry attempts.
     retryDelay = lib.mkOption {
       type = lib.types.int;
       default = 300;
       description = "Delay in seconds between retry attempts.";
     };
 
+    ## Number of boot attempts before rolling back to previous generation.
+    ##
+    ## # See Also
+    ## - `aos.update.signingKeyPath`, `aos.update.autoUpdate`
     bootTries = lib.mkOption {
       type = lib.types.int;
       default = 3;
@@ -81,6 +92,7 @@ in
       '';
     };
 
+    ## Path to Ed25519 public key for verifying update signatures.
     signingKeyPath = lib.mkOption {
       type = lib.types.str;
       default = "/etc/aos/update-signing-key.pub";
@@ -91,18 +103,21 @@ in
     };
 
     gc = {
+      ## systemd calendar expression for garbage collection of old generations.
       schedule = lib.mkOption {
         type = lib.types.str;
         default = "weekly";
         description = "systemd calendar expression for garbage collection of old generations.";
       };
 
+      ## Number of old OS generations to keep after garbage collection.
       keepGenerations = lib.mkOption {
         type = lib.types.int;
         default = 5;
         description = "Number of old OS generations to keep after garbage collection.";
       };
 
+      ## Minimum age in hours before a generation can be garbage collected.
       minAgeHours = lib.mkOption {
         type = lib.types.int;
         default = 168;
@@ -155,7 +170,7 @@ in
       wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "/usr/bin/aos-update check --server=${cfg.server} --channel=${cfg.channel} --signing-key=${cfg.signingKeyPath}";
+        ExecStart = "${pkgs.aos-update}/bin/aos-update check --server=${cfg.server} --channel=${cfg.channel} --signing-key=${cfg.signingKeyPath}";
         # Run as a dedicated system user for privilege separation.
         DynamicUser = true;
         User = "aos-update";
@@ -175,7 +190,7 @@ in
       after = [ "aos-update-check.service" ];
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "/usr/bin/aos-update apply --boot-tries=${toString cfg.bootTries}";
+        ExecStart = "${pkgs.aos-update}/bin/aos-update apply --boot-tries=${toString cfg.bootTries}";
         # Needs root to write boot entries and manage generations.
       };
     };
@@ -191,9 +206,9 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
         # Check system health: are critical services running?
-        ExecStart = "/usr/bin/aos-update health-check";
+        ExecStart = "${pkgs.aos-update}/bin/aos-update health-check";
         # If healthy, bless this boot so the counter stops.
-        ExecStartPost = "/usr/bin/systemd-bless-boot good";
+        ExecStartPost = "${pkgs.systemd}/bin/systemd-bless-boot good";
       };
     };
 
@@ -203,7 +218,7 @@ in
       description = "AOS Emergency Rollback";
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "/usr/bin/aos-update rollback";
+        ExecStart = "${pkgs.aos-update}/bin/aos-update rollback";
       };
     };
 

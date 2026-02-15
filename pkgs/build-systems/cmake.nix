@@ -1,4 +1,4 @@
-# cmake — cross-platform build system generator
+##! cmake — cross-platform build system generator
 {
   mkDerivation,
   fetchurl,

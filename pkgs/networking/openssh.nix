@@ -1,4 +1,4 @@
-# OpenSSH — Secure shell client and server
+##! OpenSSH — Secure shell client and server
 {
   mkDerivation,
   fetchurl,

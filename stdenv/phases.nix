@@ -330,7 +330,7 @@ rec {
     {
       goModules ? null,
       goPackage ? ".",
-      goOutput ? null,
+      goOutput,
       cgoEnabled ? false,
       ldflags ? "-s -w",
       tags ? [ ],
@@ -375,7 +375,7 @@ rec {
           go build \
             -ldflags "${ldflags}" \
             ${tagsFlag} \
-            -o "''${goOutput:-$pname}" \
+            -o "${goOutput}" \
             ${goPackage}
         '';
       }
@@ -403,7 +403,7 @@ rec {
         name = "install";
         script = ''
           mkdir -p "$out/bin"
-          install -m 755 "''${goOutput:-$pname}" "$out/bin/"
+          install -m 755 "${goOutput}" "$out/bin/"
         '';
       }
       fixupPhase

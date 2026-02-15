@@ -1,12 +1,12 @@
-# modules/security/selinux.nix — SELinux configuration module
-#
-# Configures SELinux mode, policy, and generates the config file, policy
-# loading service, and optional auto-relabeling service. SELinux is a
-# mandatory access control (MAC) system that confines processes to the
-# minimum privileges they need.
-#
-# Absorbed TOML config values:
-#   [security.selinux] enable, mode, policy, autorelabel
+##! modules/security/selinux.nix — SELinux configuration module
+##!
+##! Configures SELinux mode, policy, and generates the config file, policy
+##! loading service, and optional auto-relabeling service. SELinux is a
+##! mandatory access control (MAC) system that confines processes to the
+##! minimum privileges they need.
+##!
+##! Absorbed TOML config values:
+##!   [security.selinux] enable, mode, policy, autorelabel
 
 {
   config,
@@ -20,6 +20,15 @@ let
 in
 {
   options.aos.security.selinux = {
+    ## Enable SELinux mandatory access control.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.security.selinux.enable = true;
+    ## ```
+    ##
+    ## # See Also
+    ## - `aos.security.selinux.mode`, `aos.security.selinux.policy`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -30,6 +39,12 @@ in
       '';
     };
 
+    ## SELinux operating mode (enforcing, permissive, disabled).
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.security.selinux.mode = "permissive";
+    ## ```
     mode = lib.mkOption {
       type = lib.types.enum [
         "enforcing"
@@ -45,6 +60,7 @@ in
       '';
     };
 
+    ## SELinux policy to load ("targeted" or "strict").
     policy = lib.mkOption {
       type = lib.types.str;
       default = "targeted";
@@ -54,6 +70,7 @@ in
       '';
     };
 
+    ## Automatically relabel the filesystem on first boot or policy change.
     autorelabel = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -98,7 +115,7 @@ in
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "/usr/sbin/load_policy";
+          ExecStart = "${pkgs.policycoreutils}/sbin/load_policy";
         };
       };
 
@@ -117,9 +134,9 @@ in
           Type = "oneshot";
           RemainAfterExit = true;
           # Only relabel if the marker file exists.
-          ExecCondition = "/usr/bin/test -f /.autorelabel";
-          ExecStart = "/usr/sbin/fixfiles -f -F relabel";
-          ExecStartPost = "/usr/bin/rm -f /.autorelabel";
+          ExecCondition = "${pkgs.coreutils}/bin/test -f /.autorelabel";
+          ExecStart = "${pkgs.policycoreutils}/sbin/fixfiles -f -F relabel";
+          ExecStartPost = "${pkgs.coreutils}/bin/rm -f /.autorelabel";
         };
       };
     };

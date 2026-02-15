@@ -1,13 +1,13 @@
-# modules/services/sssd.nix — SSSD identity and authentication module
-#
-# Configures the System Security Services Daemon (SSSD) for centralized
-# identity and authentication. SSSD provides NSS and PAM integration with
-# LDAP, Active Directory, FreeIPA, and other identity backends. It caches
-# credentials locally for offline authentication and reduces load on
-# directory servers.
-#
-# Options:
-#   [services.sssd] enable, domains, services, config
+##! modules/services/sssd.nix — SSSD identity and authentication module
+##!
+##! Configures the System Security Services Daemon (SSSD) for centralized
+##! identity and authentication. SSSD provides NSS and PAM integration with
+##! LDAP, Active Directory, FreeIPA, and other identity backends. It caches
+##! credentials locally for offline authentication and reduces load on
+##! directory servers.
+##!
+##! Options:
+##!   [services.sssd] enable, domains, services, config
 
 {
   config,
@@ -35,6 +35,7 @@ let
 in
 {
   options.aos.services.sssd = {
+    ## Enable SSSD for centralized identity and authentication.
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -45,6 +46,12 @@ in
       '';
     };
 
+    ## SSSD domain names to enable.
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.services.sssd.domains = [ "example.com" ];
+    ## ```
     domains = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -55,6 +62,7 @@ in
       '';
     };
 
+    ## SSSD services to enable (nss, pam, sudo, ssh).
     services = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -70,6 +78,7 @@ in
       '';
     };
 
+    ## Additional SSSD configuration appended to sssd.conf.
     config = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -98,7 +107,7 @@ in
       wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "notify";
-        ExecStart = "/usr/sbin/sssd -i --logger=files";
+        ExecStart = "${pkgs.sssd}/sbin/sssd -i --logger=files";
         Restart = "on-failure";
         RestartSec = "5s";
         PIDFile = "/run/sssd.pid";

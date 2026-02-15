@@ -1,76 +1,92 @@
-# lib/trivial.nix — Basic utility functions
-#
-# Pure functions with no dependencies on other library modules.
-#
+##! lib/trivial.nix — Basic utility functions
+##!
+##! Pure functions with no dependencies on other library modules.
 
 {
-  # id :: a -> a
-  # Identity function. Returns its argument unchanged.
+  ## Identity function. Returns its argument unchanged.
+  ## # Type
+  ## `a -> a`
   id = x: x;
 
-  # const :: a -> b -> a
-  # Returns a function that always returns its first argument.
+  ## Returns a function that always returns its first argument.
+  ## # Type
+  ## `a -> b -> a`
   const = x: _: x;
 
-  # flip :: (a -> b -> c) -> b -> a -> c
-  # Swap the order of arguments to a binary function.
+  ## Swap the order of arguments to a binary function.
+  ## # Type
+  ## `(a -> b -> c) -> b -> a -> c`
   flip =
     f: a: b:
     f b a;
 
-  # pipe :: [a -> a] -> a -> a
-  # Compose a list of functions, applying left to right.
-  # pipe [f g h] x == h (g (f x))
+  ## Compose a list of functions, applying left to right.
+  ##
+  ## `pipe [f g h] x == h (g (f x))`
+  ## # Type
+  ## `[a -> a] -> a -> a`
   pipe = fns: x: builtins.foldl' (acc: f: f acc) x fns;
 
-  # compose :: (b -> c) -> (a -> b) -> a -> c
-  # Function composition, right to left.
-  # compose f g x == f (g x)
+  ## Function composition, right to left.
+  ##
+  ## `compose f g x == f (g x)`
+  ## # Type
+  ## `(b -> c) -> (a -> b) -> a -> c`
   compose =
     f: g: x:
     f (g x);
 
-  # mapNullable :: (a -> b) -> a | null -> b | null
-  # Apply a function if the value is not null, otherwise return null.
+  ## Apply a function if the value is not null, otherwise return null.
+  ## # Type
+  ## `(a -> b) -> a | null -> b | null`
   mapNullable = f: v: if v == null then null else f v;
 
-  # throwIf :: bool -> string -> a -> a
-  # Throw an error if condition is true, otherwise return the value.
+  ## Throw an error if condition is true, otherwise return the value.
+  ## # Type
+  ## `bool -> string -> a -> a`
   throwIf =
     cond: msg: val:
     if cond then throw msg else val;
 
-  # throwIfNot :: bool -> string -> a -> a
-  # Throw an error if condition is false, otherwise return the value.
+  ## Throw an error if condition is false, otherwise return the value.
+  ## # Type
+  ## `bool -> string -> a -> a`
   throwIfNot =
     cond: msg: val:
     if cond then val else throw msg;
 
-  # warn :: string -> a -> a
-  # Print a warning message to stderr and return the value.
-  # In Nix, builtins.trace writes to stderr during evaluation.
+  ## Print a warning message to stderr and return the value.
+  ## In Nix, builtins.trace writes to stderr during evaluation.
+  ## # Type
+  ## `string -> a -> a`
   warn = msg: builtins.trace "warning: ${msg}";
 
-  # info :: string -> a -> a
-  # Print an informational message to stderr and return the value.
+  ## Print an informational message to stderr and return the value.
+  ## # Type
+  ## `string -> a -> a`
   info = msg: builtins.trace "info: ${msg}";
 
-  # traceVal :: a -> a
-  # Trace the value and return it. Useful for debugging.
+  ## Trace the value and return it. Useful for debugging.
+  ## # Type
+  ## `a -> a`
   traceVal = v: builtins.trace v v;
 
-  # traceValFn :: (a -> b) -> a -> a
-  # Trace the result of applying a function to the value, return the original.
+  ## Trace the result of applying a function to the value, return the original.
+  ## # Type
+  ## `(a -> b) -> a -> a`
   traceValFn = f: v: builtins.trace (f v) v;
 
-  # min :: int -> int -> int
+  ## # Type
+  ## `int -> int -> int`
   min = a: b: if a < b then a else b;
 
-  # max :: int -> int -> int
+  ## # Type
+  ## `int -> int -> int`
   max = a: b: if a > b then a else b;
 
-  # clamp :: int -> int -> int -> int
-  # Clamp a value between a lower and upper bound.
+  ## Clamp a value between a lower and upper bound.
+  ## # Type
+  ## `int -> int -> int -> int`
   clamp =
     lower: upper: v:
     if v < lower then
@@ -80,17 +96,21 @@
     else
       v;
 
-  # bitAnd :: int -> int -> int
+  ## # Type
+  ## `int -> int -> int`
   bitAnd = builtins.bitAnd;
 
-  # bitOr :: int -> int -> int
+  ## # Type
+  ## `int -> int -> int`
   bitOr = builtins.bitOr;
 
-  # bitXor :: int -> int -> int
+  ## # Type
+  ## `int -> int -> int`
   bitXor = builtins.bitXor;
 
-  # toHexString :: int -> string
-  # Convert a non-negative integer to a lowercase hex string.
+  ## Convert a non-negative integer to a lowercase hex string.
+  ## # Type
+  ## `int -> string`
   toHexString =
     let
       hexDigit =
@@ -99,33 +119,40 @@
     in
     n: if n == 0 then "0" else go n;
 
-  # importJSON :: path -> value
-  # Read and parse a JSON file.
+  ## Read and parse a JSON file.
+  ## # Type
+  ## `path -> value`
   importJSON = path: builtins.fromJSON (builtins.readFile path);
 
-  # importTOML :: path -> value
-  # Read and parse a TOML file (requires Nix >= 2.15).
+  ## Read and parse a TOML file (requires Nix >= 2.15).
+  ## # Type
+  ## `path -> value`
   importTOML = path: builtins.fromTOML (builtins.readFile path);
 
-  # functionArgs :: (attrset -> a) -> attrset
-  # Get the expected argument attribute names of a function.
+  ## Get the expected argument attribute names of a function.
+  ## # Type
+  ## `(attrset -> a) -> attrset`
   functionArgs = builtins.functionArgs;
 
-  # isFunction :: a -> bool
+  ## # Type
+  ## `a -> bool`
   isFunction = f: builtins.isFunction f || (builtins.isAttrs f && f ? __functor);
 
-  # setFunctionArgs :: (a -> b) -> attrset -> (a -> b)
-  # Attach argument metadata to a function for introspection.
+  ## Attach argument metadata to a function for introspection.
+  ## # Type
+  ## `(a -> b) -> attrset -> (a -> b)`
   setFunctionArgs = f: args: {
     __functor = self: f;
     __functionArgs = args;
   };
 
-  # version :: string
-  # AOS library version.
+  ## AOS library version.
+  ## # Type
+  ## `string`
   version = "0.1.0";
 
-  # release :: string
-  # AOS release codename.
+  ## AOS release codename.
+  ## # Type
+  ## `string`
   release = "bootstrap";
 }

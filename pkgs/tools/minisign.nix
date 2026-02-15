@@ -1,9 +1,11 @@
-# minisign — Dead simple signing tool
+##! minisign — Dead simple signing tool
 {
   mkDerivation,
   fetchurl,
   make,
   cmake,
+  pkg-config,
+  libsodium,
 }:
 
 let
@@ -23,8 +25,9 @@ mkDerivation {
   buildDeps = [
     make
     cmake
+    pkg-config
   ];
-  runtimeDeps = [ ];
+  runtimeDeps = [ libsodium ];
   propagatedDeps = [ ];
 
   phases = [
@@ -48,7 +51,6 @@ mkDerivation {
     {
       name = "install";
       script = ''
-        cd build
         make install
       '';
     }

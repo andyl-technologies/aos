@@ -1,38 +1,46 @@
-# lib/attrsets.nix — Attribute set utility functions
-#
-# Functions for manipulating Nix attribute sets (dictionaries).
-#
+##! lib/attrsets.nix — Attribute set utility functions
+##!
+##! Functions for manipulating Nix attribute sets (dictionaries).
 
 rec {
-  # -- Accessors --
+  ## # Accessors
 
-  # attrNames :: attrset -> [string]
+  ## # Type
+  ## `attrset -> [string]`
   attrNames = builtins.attrNames;
 
-  # attrValues :: attrset -> [a]
+  ## # Type
+  ## `attrset -> [a]`
   attrValues = builtins.attrValues;
 
-  # hasAttr :: string -> attrset -> bool
+  ## # Type
+  ## `string -> attrset -> bool`
   hasAttr = builtins.hasAttr;
 
-  # getAttr :: string -> attrset -> a
+  ## # Type
+  ## `string -> attrset -> a`
   getAttr = builtins.getAttr;
 
-  # isAttrs :: a -> bool
+  ## # Type
+  ## `a -> bool`
   isAttrs = builtins.isAttrs;
 
-  # -- Construction --
+  ## # Construction
 
-  # nameValuePair :: string -> a -> { name :: string; value :: a; }
-  # Create a name-value pair suitable for listToAttrs.
+  ## Create a name-value pair suitable for listToAttrs.
+  ## # Type
+  ## `string -> a -> { name :: string; value :: a; }`
   nameValuePair = name: value: { inherit name value; };
 
-  # listToAttrs :: [{ name :: string; value :: a; }] -> attrset
+  ## # Type
+  ## `[{ name :: string; value :: a; }] -> attrset`
   listToAttrs = builtins.listToAttrs;
 
-  # genAttrs :: [string] -> (string -> a) -> attrset
-  # Generate an attrset from a list of names and a function.
-  # genAttrs ["a" "b"] (n: n + "!") == { a = "a!"; b = "b!"; }
+  ## Generate an attrset from a list of names and a function.
+  ##
+  ## `genAttrs ["a" "b"] (n: n + "!") == { a = "a!"; b = "b!"; }`
+  ## # Type
+  ## `[string] -> (string -> a) -> attrset`
   genAttrs =
     names: f:
     builtins.listToAttrs (
@@ -42,26 +50,31 @@ rec {
       }) names
     );
 
-  # optionalAttrs :: bool -> attrset -> attrset
-  # Return the attrset if condition is true, otherwise empty.
+  ## Return the attrset if condition is true, otherwise empty.
+  ## # Type
+  ## `bool -> attrset -> attrset`
   optionalAttrs = cond: attrs: if cond then attrs else { };
 
-  # -- Mapping --
+  ## # Mapping
 
-  # mapAttrs :: (string -> a -> b) -> attrset -> attrset
+  ## # Type
+  ## `(string -> a -> b) -> attrset -> attrset`
   mapAttrs = builtins.mapAttrs;
 
-  # mapAttrsToList :: (string -> a -> b) -> attrset -> [b]
-  # Map over an attrset and collect results into a list.
+  ## Map over an attrset and collect results into a list.
+  ## # Type
+  ## `(string -> a -> b) -> attrset -> [b]`
   mapAttrsToList = f: attrs: builtins.map (name: f name attrs.${name}) (builtins.attrNames attrs);
 
-  # mapAttrs' :: (string -> a -> { name :: string; value :: b; }) -> attrset -> attrset
-  # Map over attrs, allowing renaming of keys.
+  ## Map over attrs, allowing renaming of keys.
+  ## # Type
+  ## `(string -> a -> { name :: string; value :: b; }) -> attrset -> attrset`
   mapAttrs' = f: attrs: builtins.listToAttrs (mapAttrsToList f attrs);
 
-  # mapAttrsRecursive :: ([string] -> a -> b) -> attrset -> attrset
-  # Recursively map over leaf values in a nested attrset.
-  # The function receives the path (list of attribute names) and the leaf value.
+  ## Recursively map over leaf values in a nested attrset.
+  ## The function receives the path (list of attribute names) and the leaf value.
+  ## # Type
+  ## `([string] -> a -> b) -> attrset -> attrset`
   mapAttrsRecursive =
     f: attrs:
     let
@@ -77,8 +90,9 @@ rec {
     in
     go [ ] attrs;
 
-  # mapAttrsRecursiveCond :: (attrset -> bool) -> ([string] -> a -> b) -> attrset -> attrset
-  # Like mapAttrsRecursive but only recurse into attrsets satisfying a predicate.
+  ## Like mapAttrsRecursive but only recurse into attrsets satisfying a predicate.
+  ## # Type
+  ## `(attrset -> bool) -> ([string] -> a -> b) -> attrset -> attrset`
   mapAttrsRecursiveCond =
     cond: f: attrs:
     let
@@ -94,18 +108,20 @@ rec {
     in
     go [ ] attrs;
 
-  # -- Filtering --
+  ## # Filtering
 
-  # filterAttrs :: (string -> a -> bool) -> attrset -> attrset
-  # Keep only attributes satisfying the predicate.
+  ## Keep only attributes satisfying the predicate.
+  ## # Type
+  ## `(string -> a -> bool) -> attrset -> attrset`
   filterAttrs =
     pred: attrs:
     builtins.listToAttrs (
       builtins.filter (pair: pred pair.name pair.value) (mapAttrsToList nameValuePair attrs)
     );
 
-  # filterAttrsRecursive :: (string -> a -> bool) -> attrset -> attrset
-  # Recursively filter attributes.
+  ## Recursively filter attributes.
+  ## # Type
+  ## `(string -> a -> bool) -> attrset -> attrset`
   filterAttrsRecursive =
     pred: attrs:
     builtins.listToAttrs (
@@ -125,10 +141,11 @@ rec {
       )
     );
 
-  # -- Folding --
+  ## # Folding
 
-  # foldAttrs :: (a -> b -> b) -> b -> [attrset] -> attrset
-  # Fold a list of attrsets, combining values for the same key.
+  ## Fold a list of attrsets, combining values for the same key.
+  ## # Type
+  ## `(a -> b -> b) -> b -> [attrset] -> attrset`
   foldAttrs =
     f: init: listOfAttrs:
     let
@@ -157,17 +174,19 @@ rec {
       }) uniqueNames
     );
 
-  # foldlAttrs :: (b -> string -> a -> b) -> b -> attrset -> b
-  # Left fold over an attrset's key-value pairs.
+  ## Left fold over an attrset's key-value pairs.
+  ## # Type
+  ## `(b -> string -> a -> b) -> b -> attrset -> b`
   foldlAttrs =
     f: init: attrs:
     builtins.foldl' (acc: name: f acc name attrs.${name}) init (builtins.attrNames attrs);
 
-  # -- Merging --
+  ## # Merging
 
-  # recursiveUpdate :: attrset -> attrset -> attrset
-  # Deep merge two attrsets. Values in the second override the first.
-  # Recursion occurs only when both sides are attrsets (and not derivations).
+  ## Deep merge two attrsets. Values in the second override the first.
+  ## Recursion occurs only when both sides are attrsets (and not derivations).
+  ## # Type
+  ## `attrset -> attrset -> attrset`
   recursiveUpdate =
     lhs: rhs:
     let
@@ -216,8 +235,9 @@ rec {
       ) allNames
     );
 
-  # recursiveUpdateUntil :: ([string] -> attrset -> attrset -> bool) -> attrset -> attrset -> attrset
-  # Like recursiveUpdate but stop recursing when the predicate returns true.
+  ## Like recursiveUpdate but stop recursing when the predicate returns true.
+  ## # Type
+  ## `([string] -> attrset -> attrset -> bool) -> attrset -> attrset -> attrset`
   recursiveUpdateUntil =
     pred: lhs: rhs:
     let
@@ -270,14 +290,16 @@ rec {
     in
     go [ ] lhs rhs;
 
-  # -- Extraction --
+  ## # Extraction
 
-  # catAttrs :: string -> [attrset] -> [a]
-  # Collect attribute values from a list of attrsets (skipping those without the key).
+  ## Collect attribute values from a list of attrsets (skipping those without the key).
+  ## # Type
+  ## `string -> [attrset] -> [a]`
   catAttrs = builtins.catAttrs;
 
-  # collect :: (a -> bool) -> attrset -> [a]
-  # Recursively collect leaf values satisfying a predicate from a nested attrset.
+  ## Recursively collect leaf values satisfying a predicate from a nested attrset.
+  ## # Type
+  ## `(a -> bool) -> attrset -> [a]`
   collect =
     pred: attrs:
     if pred attrs then
@@ -287,8 +309,9 @@ rec {
     else
       [ ];
 
-  # collectLeaves :: attrset -> [a]
-  # Recursively collect all leaf (non-attrset) values from a nested attrset.
+  ## Recursively collect all leaf (non-attrset) values from a nested attrset.
+  ## # Type
+  ## `attrset -> [a]`
   collectLeaves =
     attrs:
     if !builtins.isAttrs attrs then
@@ -296,11 +319,13 @@ rec {
     else
       builtins.concatLists (builtins.map (name: collectLeaves attrs.${name}) (builtins.attrNames attrs));
 
-  # -- Zipping --
+  ## # Zipping
 
-  # zipAttrs :: [attrset] -> attrset
-  # Merge a list of attrsets, collecting values for duplicate keys into lists.
-  # zipAttrs [{ a = 1; } { a = 2; b = 3; }] == { a = [1 2]; b = [3]; }
+  ## Merge a list of attrsets, collecting values for duplicate keys into lists.
+  ##
+  ## `zipAttrs [{ a = 1; } { a = 2; b = 3; }] == { a = [1 2]; b = [3]; }`
+  ## # Type
+  ## `[attrset] -> attrset`
   zipAttrs =
     listOfAttrs:
     let
@@ -329,14 +354,16 @@ rec {
       }) uniqueNames
     );
 
-  # zipAttrsWith :: (string -> [a] -> b) -> [attrset] -> attrset
-  # Like zipAttrs but apply a combining function to the collected values.
+  ## Like zipAttrs but apply a combining function to the collected values.
+  ## # Type
+  ## `(string -> [a] -> b) -> [attrset] -> attrset`
   zipAttrsWith = f: listOfAttrs: builtins.mapAttrs f (zipAttrs listOfAttrs);
 
-  # -- Lookup --
+  ## # Lookup
 
-  # attrByPath :: [string] -> a -> attrset -> a
-  # Look up a nested attribute by a path of key names, with a default.
+  ## Look up a nested attribute by a path of key names, with a default.
+  ## # Type
+  ## `[string] -> a -> attrset -> a`
   attrByPath =
     path: default: attrs:
     let
@@ -353,8 +380,9 @@ rec {
     in
     go path attrs;
 
-  # hasAttrByPath :: [string] -> attrset -> bool
-  # Test whether a nested attribute path exists.
+  ## Test whether a nested attribute path exists.
+  ## # Type
+  ## `[string] -> attrset -> bool`
   hasAttrByPath =
     path: attrs:
     let
@@ -371,9 +399,11 @@ rec {
     in
     go path attrs;
 
-  # setAttrByPath :: [string] -> a -> attrset
-  # Create a nested attrset with a single leaf value at the given path.
-  # setAttrByPath ["a" "b" "c"] 42 == { a = { b = { c = 42; }; }; }
+  ## Create a nested attrset with a single leaf value at the given path.
+  ##
+  ## `setAttrByPath ["a" "b" "c"] 42 == { a = { b = { c = 42; }; }; }`
+  ## # Type
+  ## `[string] -> a -> attrset`
   setAttrByPath =
     path: value:
     let
@@ -382,13 +412,15 @@ rec {
     in
     if len == 0 then value else go 0;
 
-  # getOutput :: string -> derivation -> derivation
-  # Get a specific output of a multi-output derivation.
+  ## Get a specific output of a multi-output derivation.
+  ## # Type
+  ## `string -> derivation -> derivation`
   getOutput = output: drv: if drv ? outputSpecified && drv ? ${output} then drv.${output} else drv;
 
-  # -- Conversion --
+  ## # Conversion
 
-  # attrsToList :: attrset -> [{ name :: string; value :: a; }]
+  ## # Type
+  ## `attrset -> [{ name :: string; value :: a; }]`
   attrsToList =
     attrs:
     builtins.map (name: {
@@ -396,13 +428,16 @@ rec {
       value = attrs.${name};
     }) (builtins.attrNames attrs);
 
-  # removeAttrs :: attrset -> [string] -> attrset
+  ## # Type
+  ## `attrset -> [string] -> attrset`
   removeAttrs = builtins.removeAttrs;
 
-  # intersectAttrs :: attrset -> attrset -> attrset
+  ## # Type
+  ## `attrset -> attrset -> attrset`
   intersectAttrs = builtins.intersectAttrs;
 
-  # overrideExisting :: attrset -> attrset -> attrset
-  # Update only attributes that already exist in the original.
+  ## Update only attributes that already exist in the original.
+  ## # Type
+  ## `attrset -> attrset -> attrset`
   overrideExisting = old: new: builtins.mapAttrs (name: value: new.${name} or value) old;
 }

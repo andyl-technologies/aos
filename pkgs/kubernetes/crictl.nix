@@ -1,3 +1,4 @@
+##! crictl — CLI for CRI-compatible container runtimes
 { mkGoPackage, fetchurl }:
 
 let

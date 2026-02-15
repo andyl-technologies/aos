@@ -1,13 +1,13 @@
-# modules/kubernetes/containerd.nix — Container runtime module
-#
-# Configures containerd as the CRI-compatible container runtime for
-# Kubernetes. Generates /etc/containerd/config.toml in TOML format and
-# the containerd systemd service. Uses the systemd cgroup driver for
-# proper cgroup v2 integration.
-#
-# Absorbed TOML config values:
-#   [kubernetes.containerd] enable, snapshotter, runtime_type
-#   [kubernetes.containerd] cgroup_driver, sandbox_image, registry_mirrors
+##! modules/kubernetes/containerd.nix — Container runtime module
+##!
+##! Configures containerd as the CRI-compatible container runtime for
+##! Kubernetes. Generates /etc/containerd/config.toml in TOML format and
+##! the containerd systemd service. Uses the systemd cgroup driver for
+##! proper cgroup v2 integration.
+##!
+##! Absorbed TOML config values:
+##!   [kubernetes.containerd] enable, snapshotter, runtime_type
+##!   [kubernetes.containerd] cgroup_driver, sandbox_image, registry_mirrors
 
 {
   config,
@@ -66,6 +66,10 @@ let
 in
 {
   options.aos.kubernetes.containerd = {
+    ## Enable the containerd container runtime.
+    ##
+    ## # See Also
+    ## - `aos.kubernetes.kubelet`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -75,6 +79,7 @@ in
       '';
     };
 
+    ## Containerd snapshotter backend (overlayfs, native, devmapper).
     snapshotter = lib.mkOption {
       type = lib.types.str;
       default = "overlayfs";
@@ -84,12 +89,14 @@ in
       '';
     };
 
+    ## OCI runtime type (v2 shim is the current standard).
     runtimeType = lib.mkOption {
       type = lib.types.str;
       default = "io.containerd.runc.v2";
       description = "OCI runtime type. The v2 shim is the current standard.";
     };
 
+    ## Cgroup driver for container management (must match kubelet).
     cgroupDriver = lib.mkOption {
       type = lib.types.str;
       default = "systemd";
@@ -100,6 +107,7 @@ in
       '';
     };
 
+    ## Container image for the pod sandbox (pause container).
     sandboxImage = lib.mkOption {
       type = lib.types.str;
       default = "registry.k8s.io/pause:3.10";
@@ -110,6 +118,14 @@ in
       '';
     };
 
+    ## Registry mirror mappings (original registry to mirror URL).
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.kubernetes.containerd.registryMirrors = {
+    ##   "docker.io" = "https://mirror.internal/v2";
+    ## };
+    ## ```
     registryMirrors = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
@@ -120,12 +136,14 @@ in
       '';
     };
 
+    ## Maximum number of concurrent image layer downloads.
     maxConcurrentDownloads = lib.mkOption {
       type = lib.types.int;
       default = 3;
       description = "Maximum number of concurrent image layer downloads.";
     };
 
+    ## Discard unpacked image layers after extraction to save disk.
     discardUnpackedLayers = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -165,8 +183,8 @@ in
       ];
       serviceConfig = {
         Type = "notify";
-        ExecStart = "/usr/bin/containerd --config /etc/containerd/config.toml";
-        ExecReload = "/bin/kill -HUP $MAINPID";
+        ExecStart = "${pkgs.containerd}/bin/containerd --config /etc/containerd/config.toml";
+        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "always";
         RestartSec = "5s";
         # containerd needs broad capabilities for container management.

@@ -1,4 +1,4 @@
-# policycoreutils — SELinux core policy utilities
+##! policycoreutils — SELinux core policy utilities
 {
   mkDerivation,
   fetchurl,

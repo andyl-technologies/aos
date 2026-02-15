@@ -1,4 +1,4 @@
-# nftables — Netfilter tables userspace tools
+##! nftables — Netfilter tables userspace tools
 {
   mkDerivation,
   fetchurl,
@@ -6,6 +6,8 @@
   pkg-config,
   libmnl,
   libnftnl,
+  readline,
+  jansson,
 }:
 
 let
@@ -29,6 +31,8 @@ mkDerivation {
   runtimeDeps = [
     libmnl
     libnftnl
+    readline
+    jansson
   ];
   propagatedDeps = [ ];
 
@@ -49,7 +53,8 @@ mkDerivation {
           --disable-static \
           --disable-man-doc \
           --with-mini-gmp \
-          --without-cli
+          --with-cli=readline \
+          --with-json
       '';
     }
     {

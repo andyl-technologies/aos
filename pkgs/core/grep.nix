@@ -1,8 +1,9 @@
-# GNU Grep — Pattern matching utility
+##! GNU Grep — Pattern matching utility
 {
   mkDerivation,
   fetchurl,
   make,
+  pcre2,
 }:
 
 let
@@ -22,7 +23,7 @@ mkDerivation {
   };
 
   buildDeps = [ make ];
-  runtimeDeps = [ ];
+  runtimeDeps = [ pcre2 ];
   propagatedDeps = [ ];
 
   phases = [
@@ -38,7 +39,8 @@ mkDerivation {
       script = ''
         ./configure \
           --prefix=$out \
-          --disable-nls
+          --disable-nls \
+          --enable-perl-regexp
       '';
     }
     {

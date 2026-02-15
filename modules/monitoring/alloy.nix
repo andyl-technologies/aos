@@ -1,13 +1,13 @@
-# modules/monitoring/alloy.nix — Grafana Alloy observability agent module
-#
-# Configures Grafana Alloy (formerly Grafana Agent) as a unified
-# observability pipeline. Alloy collects metrics, logs, and traces
-# and ships them to Grafana Cloud, Prometheus, Loki, Tempo, or other
-# compatible backends. It uses the River configuration language for
-# defining pipelines, components, and destinations.
-#
-# Options:
-#   [monitoring.alloy] enable, configFile, extraArgs
+##! modules/monitoring/alloy.nix — Grafana Alloy observability agent module
+##!
+##! Configures Grafana Alloy (formerly Grafana Agent) as a unified
+##! observability pipeline. Alloy collects metrics, logs, and traces
+##! and ships them to Grafana Cloud, Prometheus, Loki, Tempo, or other
+##! compatible backends. It uses the River configuration language for
+##! defining pipelines, components, and destinations.
+##!
+##! Options:
+##!   [monitoring.alloy] enable, configFile, extraArgs
 
 {
   config,
@@ -27,6 +27,7 @@ let
 in
 {
   options.aos.monitoring.alloy = {
+    ## Enable the Grafana Alloy observability agent.
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -37,6 +38,7 @@ in
       '';
     };
 
+    ## Grafana Alloy configuration in River format.
     configFile = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -47,6 +49,7 @@ in
       '';
     };
 
+    ## Additional command-line arguments for the Alloy binary.
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -82,8 +85,8 @@ in
       wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = "/usr/bin/alloy run ${alloyFlags}";
-        ExecReload = "/bin/kill -HUP $MAINPID";
+        ExecStart = "${pkgs.alloy}/bin/alloy run ${alloyFlags}";
+        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
         RestartSec = "5s";
         # Run as a dedicated user.

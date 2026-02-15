@@ -1,9 +1,9 @@
-# pkgs/tools/aos — AOS build tool (crane-built)
-#
-# Built with the host Rust toolchain via crane, not the AOS
-# self-bootstrapping stdenv. This is a dev tool, not an OS component.
-#
-# Build: nix build .#aos
+##! pkgs/tools/aos — AOS build tool (crane-built)
+##!
+##! Built with the host Rust toolchain via crane, not the AOS
+##! self-bootstrapping stdenv. This is a dev tool, not an OS component.
+##!
+##! Build: nix build .#aos
 { craneLib, pkgs }:
 
 let
