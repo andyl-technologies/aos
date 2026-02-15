@@ -1,5 +1,9 @@
 ##! Helm — Kubernetes package manager
-{ mkGoPackage, fetchurl }:
+{
+  mkGoPackage,
+  fetchurl,
+  fetchGoModules,
+}:
 
 let
   version = "3.16.4";
@@ -13,6 +17,16 @@ mkGoPackage {
       "https://github.com/helm/helm/archive/v${version}/helm-${version}.tar.gz"
     ];
     hash = "sha256-QooO0GE2zCAY/+KD9eT3+6TSo3vFZs0M9apVDEmF9bs=";
+  };
+
+  goModules = fetchGoModules {
+    src = fetchurl {
+      urls = [
+        "https://github.com/helm/helm/archive/v${version}/helm-${version}.tar.gz"
+      ];
+      hash = "sha256-QooO0GE2zCAY/+KD9eT3+6TSo3vFZs0M9apVDEmF9bs=";
+    };
+    hash = "sha256-KgKhLwxTHBC4MxN+BPK8WIENLvHug3CqmE+Ykx3w8eg=";
   };
 
   goPackage = "./cmd/helm";

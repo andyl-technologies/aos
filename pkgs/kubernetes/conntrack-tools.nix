@@ -12,6 +12,7 @@
   libnetfilter_queue,
   libnetfilter_cttimeout,
   libnetfilter_cthelper,
+  libtirpc,
   systemd,
 }:
 
@@ -42,6 +43,7 @@ mkDerivation {
     libnetfilter_queue
     libnetfilter_cttimeout
     libnetfilter_cthelper
+    libtirpc
     systemd
   ];
   propagatedDeps = [ ];

@@ -194,11 +194,20 @@ fn is_section_heading(content: &str) -> bool {
 }
 
 /// Try to extract a binding name from a line like `name = ...` or `  name = ...`.
+/// Also handles `name =` at end of line (value on next line).
 fn extract_binding_name(line: &str) -> Option<String> {
     let trimmed = line.trim();
 
-    // Must contain ` = ` (with spaces around the equals sign).
-    let eq_pos = trimmed.find(" = ")?;
+    // Try ` = ` first (inline value), then ` =` at end of line (multiline value).
+    let eq_pos = trimmed
+        .find(" = ")
+        .or_else(|| {
+            if trimmed.ends_with(" =") {
+                Some(trimmed.len() - 2)
+            } else {
+                None
+            }
+        })?;
     let candidate = &trimmed[..eq_pos];
 
     // The identifier must be a valid Nix identifier: [a-zA-Z_][a-zA-Z0-9_'-]*

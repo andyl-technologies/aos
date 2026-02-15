@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   make,
+  go,
 }:
 
 let
@@ -19,7 +20,10 @@ mkDerivation {
     hash = "sha256-Xi6mm8oIv7kpIfIvosweaTku4Tmlh4Bo37wcdWjjewE=";
   };
 
-  buildDeps = [ make ];
+  buildDeps = [
+    make
+    go
+  ];
   runtimeDeps = [ ];
   propagatedDeps = [ ];
 
@@ -38,7 +42,8 @@ mkDerivation {
         export GOCACHE=$TMPDIR/go-cache
         export CGO_ENABLED=0
         export GOFLAGS="-trimpath -mod=vendor"
-        export LDFLAGS="-s -w -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=v${version}"
+        export GOPROXY=off
+        GO_LDFLAGS="-s -w -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=v${version}"
         mkdir -p "$GOCACHE"
 
         mkdir -p bin
@@ -46,12 +51,13 @@ mkDerivation {
                       ipvlan loopback macvlan portmap ptp sbr static tap tuning \
                       vlan vrf; do
           echo "Building $plugin..."
-          go build -o bin/$plugin \
-            -ldflags "$LDFLAGS" \
-            ./plugins/*/''${plugin} 2>/dev/null || \
-          go build -o bin/$plugin \
-            -ldflags "$LDFLAGS" \
-            ./plugins/*/*/''${plugin} 2>/dev/null || true
+          # Find the plugin directory and build it
+          plugindir=$(find ./plugins -type d -name "$plugin" | head -1)
+          if [ -n "$plugindir" ]; then
+            go build -o bin/$plugin -ldflags "$GO_LDFLAGS" "$plugindir"
+          else
+            echo "WARNING: plugin $plugin not found, skipping"
+          fi
         done
       '';
     }

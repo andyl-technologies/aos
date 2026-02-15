@@ -37,7 +37,14 @@ mkDerivation {
       name = "unpack";
       script = ''
         tar xf $src
-        cd setools-${version}
+        # The release tarball may extract to just "setools" or "setools-${version}"
+        if [ -d setools-${version} ]; then
+          cd setools-${version}
+        elif [ -d setools ]; then
+          cd setools
+        else
+          cd "$(ls -d */ | head -1)"
+        fi
       '';
     }
     {

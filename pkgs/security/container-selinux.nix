@@ -4,6 +4,7 @@
   fetchurl,
   make,
   policycoreutils,
+  refpolicy,
 }:
 
 let
@@ -23,6 +24,7 @@ mkDerivation {
   buildDeps = [
     make
     policycoreutils
+    refpolicy
   ];
   runtimeDeps = [ ];
   propagatedDeps = [ ];
@@ -38,7 +40,7 @@ mkDerivation {
     {
       name = "build";
       script = ''
-        make -f /usr/share/selinux/devel/Makefile container.pp 2>/dev/null || \
+        make -f ${refpolicy}/share/selinux/devel/Makefile container.pp 2>/dev/null || \
         make -j$NIX_BUILD_CORES
       '';
     }

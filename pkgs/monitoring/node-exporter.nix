@@ -1,5 +1,9 @@
 ##! Prometheus Node Exporter — hardware and OS metrics for *nix kernels
-{ mkGoPackage, fetchurl }:
+{
+  mkGoPackage,
+  fetchurl,
+  fetchGoModules,
+}:
 
 let
   version = "1.8.2";
@@ -13,6 +17,16 @@ mkGoPackage {
       "https://github.com/prometheus/node_exporter/archive/v${version}/node_exporter-${version}.tar.gz"
     ];
     hash = "sha256-9hXHC+gWVQSY3WpQU5Hb7RqJZwXv+EJijeE6H6dlTo8=";
+  };
+
+  goModules = fetchGoModules {
+    src = fetchurl {
+      urls = [
+        "https://github.com/prometheus/node_exporter/archive/v${version}/node_exporter-${version}.tar.gz"
+      ];
+      hash = "sha256-9hXHC+gWVQSY3WpQU5Hb7RqJZwXv+EJijeE6H6dlTo8=";
+    };
+    hash = "sha256-dgbHjLjQnOlegoIUfMWu8nx2VJjT3e7cmgDrfQI2tQE=";
   };
 
   goPackage = ".";

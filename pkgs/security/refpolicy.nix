@@ -3,6 +3,11 @@
   mkDerivation,
   fetchurl,
   make,
+  m4,
+  python3,
+  util-linux,
+  checkpolicy,
+  semodule-utils,
   policycoreutils,
 }:
 
@@ -22,6 +27,11 @@ mkDerivation {
 
   buildDeps = [
     make
+    m4
+    python3
+    util-linux
+    checkpolicy
+    semodule-utils
     policycoreutils
   ];
   runtimeDeps = [ ];
@@ -32,7 +42,14 @@ mkDerivation {
       name = "unpack";
       script = ''
         tar xf $src
-        cd refpolicy-${version}
+        # The release tarball may extract as "refpolicy" or "refpolicy-${version}"
+        if [ -d refpolicy-${version} ]; then
+          cd refpolicy-${version}
+        elif [ -d refpolicy ]; then
+          cd refpolicy
+        else
+          cd "$(ls -d */ | head -1)"
+        fi
       '';
     }
     {
@@ -46,18 +63,36 @@ mkDerivation {
           -e 's/^#\?MONOLITHIC.*/MONOLITHIC = n/' \
           -e 's|^#\?PREFIX.*|PREFIX = '"$out"'|' \
           build.conf
+
+        # Override individual tool paths in the Makefile.
+        # checkmodule/checkpolicy come from the checkpolicy package,
+        # semodule_package/semodule_link/semodule_expand from semodule-utils,
+        # and semodule/load_policy/setfiles/sefcontext_compile from policycoreutils.
+        sed -i \
+          -e 's|^CHECKPOLICY ?=.*|CHECKPOLICY := ${checkpolicy}/bin/checkpolicy|' \
+          -e 's|^CHECKMODULE ?=.*|CHECKMODULE := ${checkpolicy}/bin/checkmodule|' \
+          -e 's|^SEMOD_PKG ?=.*|SEMOD_PKG := ${semodule-utils}/bin/semodule_package|' \
+          -e 's|^SEMOD_LNK ?=.*|SEMOD_LNK := ${semodule-utils}/bin/semodule_link|' \
+          -e 's|^SEMOD_EXP ?=.*|SEMOD_EXP := ${semodule-utils}/bin/semodule_expand|' \
+          -e 's|^SEMODULE ?=.*|SEMODULE := ${policycoreutils}/sbin/semodule|' \
+          -e 's|^LOADPOLICY ?=.*|LOADPOLICY := ${policycoreutils}/sbin/load_policy|' \
+          -e 's|^SETFILES ?=.*|SETFILES := ${policycoreutils}/sbin/setfiles|' \
+          -e 's|^SEFCONTEXT_COMPILE ?=.*|SEFCONTEXT_COMPILE := ${policycoreutils}/sbin/sefcontext_compile|' \
+          Makefile
       '';
     }
     {
       name = "build";
       script = ''
+        # Generate modules.conf with all modules enabled
+        make conf
         make -j$NIX_BUILD_CORES
       '';
     }
     {
       name = "install";
       script = ''
-        make install PREFIX=$out
+        make install DESTDIR=$out
       '';
     }
   ];

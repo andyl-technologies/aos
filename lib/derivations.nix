@@ -632,9 +632,15 @@ let
       hash,
       sourceRoot ? null,
       cargoPatches ? [ ],
+      extraLibPaths ? [ ],
       name ? "cargo-deps",
       system ? defaultSystem,
     }:
+    let
+      ldLibPath = builtins.concatStringsSep ":" (
+        builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
+      );
+    in
     builtins.derivation {
       inherit name system;
       builder = "/bin/sh";
@@ -643,12 +649,17 @@ let
         ''
           set -eu
           export PATH="${cargo}/bin:${bootstrapTools}/bin"
-          export CARGO_HOME="$TMPDIR/cargo-home"
-          mkdir -p "$CARGO_HOME"
+          ${if extraLibPaths != [ ] then "export LD_LIBRARY_PATH=\"${ldLibPath}\"" else ""}
 
-          # Extract source
+          # Extract source into a clean subdirectory so ls -d */ works
+          mkdir -p "$TMPDIR/src"
+          cd "$TMPDIR/src"
           tar xf "${src}" || cp -r "${src}" source
           cd ${if sourceRoot != null then sourceRoot else "$(ls -d */)"}
+
+          # Set up Cargo home (after extraction so dir doesn't interfere)
+          export CARGO_HOME="$TMPDIR/cargo-home"
+          mkdir -p "$CARGO_HOME"
 
           # Apply cargo patches if any
           ${builtins.concatStringsSep "\n" (builtins.map (p: "patch -p1 < ${p}") cargoPatches)}
@@ -690,15 +701,28 @@ let
         ''
           set -eu
           export PATH="${go}/bin:${bootstrapTools}/bin"
-          export GOPATH="$out"
-          export GOCACHE="$TMPDIR/go-cache"
-          export GOFLAGS="-mod=mod"
-          mkdir -p "$GOCACHE"
+          export GOPROXY="https://proxy.golang.org,direct"
+          export GONOSUMDB="*"
+          export GONOSUMCHECK="*"
 
+          # Extract source into a clean subdirectory so ls -d */ works
+          mkdir -p "$TMPDIR/src"
+          cd "$TMPDIR/src"
           tar xf "${src}" || cp -r "${src}" source
-          cd ${if sourceRoot != null then sourceRoot else "$(ls -d */)"}
+          srcdir="${if sourceRoot != null then sourceRoot else "$(ls -d */ 2>/dev/null | head -1)"}"
+          cd "$srcdir"
 
-          go mod download -x
+          # Set up Go environment (after extraction so dirs don't interfere)
+          export GOPATH="$TMPDIR/gopath"
+          export GOCACHE="$TMPDIR/go-cache"
+          mkdir -p "$GOPATH" "$GOCACHE"
+
+          # Download all Go module dependencies
+          go mod download -x all
+
+          # Copy downloaded modules to output
+          mkdir -p "$out"
+          cp -r "$GOPATH"/* "$out/" 2>/dev/null || true
         ''
       ];
 

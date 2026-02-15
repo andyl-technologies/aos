@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   make,
+  go,
   pkg-config,
   libseccomp,
   libselinux,
@@ -24,6 +25,7 @@ mkDerivation {
 
   buildDeps = [
     make
+    go
     pkg-config
   ];
   runtimeDeps = [
@@ -52,13 +54,16 @@ mkDerivation {
       name = "build";
       script = ''
         export GOPATH=$TMPDIR/go
+        export GOCACHE=$TMPDIR/go-cache
         export CGO_ENABLED=1
+        export GOPROXY=off
         export BUILDTAGS="seccomp selinux"
         export CGO_CFLAGS="-I${libseccomp}/include -I${libselinux}/include"
         export CGO_LDFLAGS="-L${libseccomp}/lib -L${libselinux}/lib"
+        mkdir -p "$GOCACHE"
         make SHELL="$CONFIG_SHELL" BUILDTAGS="$BUILDTAGS" \
           COMMIT=v${version} \
-          static
+          runc
       '';
     }
     {
