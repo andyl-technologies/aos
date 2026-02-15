@@ -43,7 +43,7 @@ pub async fn run(
     let root = resolve_source(nix, &effective_source)?;
 
     // Load or rebuild the index.
-    let index = load_or_build_index(&root, rebuild, printer)?;
+    let index = load_or_build_index(&root, rebuild, printer, nix)?;
 
     // Dispatch based on flags.
     if let Some(doc_path) = effective_path {
@@ -92,7 +92,12 @@ fn resolve_source(nix: &NixRunner, source: &Option<String>) -> Result<PathBuf> {
 }
 
 /// Load the doc index from cache or build it fresh.
-fn load_or_build_index(root: &Path, force_rebuild: bool, printer: &Printer) -> Result<DocIndex> {
+fn load_or_build_index(
+    root: &Path,
+    force_rebuild: bool,
+    printer: &Printer,
+    nix: &NixRunner,
+) -> Result<DocIndex> {
     let cache_file = cache::cache_path_for_local(root);
 
     if !force_rebuild {
@@ -106,7 +111,7 @@ fn load_or_build_index(root: &Path, force_rebuild: bool, printer: &Printer) -> R
         printer.info("rebuilding doc index...");
     }
 
-    let index = extract::build_index(root).context("building doc index")?;
+    let index = extract::build_index(root, Some(nix)).context("building doc index")?;
     if let Err(e) = cache::save_cache(&cache_file, &index) {
         printer.warning(&format!("could not write doc cache: {e}"));
     }
@@ -253,22 +258,30 @@ fn print_entry_full(printer: &Printer, entry: &model::DocEntry) {
         println!("{}", entry.summary);
     }
 
-    if !entry.parameters.is_empty() {
-        printer.plain("\nParameters:");
-        for (name, desc) in &entry.parameters {
-            println!("  {name} — {desc}");
-        }
-    }
+    // Only print structured fields if the body doesn't already contain them
+    // (they were parsed from the body's markdown sections).
+    let body_has_sections = entry.body.contains("# Parameters")
+        || entry.body.contains("# Examples")
+        || entry.body.contains("# See Also");
 
-    if !entry.examples.is_empty() {
-        printer.plain("\nExamples:");
-        for ex in &entry.examples {
-            println!("  {ex}");
+    if !body_has_sections {
+        if !entry.parameters.is_empty() {
+            printer.plain("\nParameters:");
+            for (name, desc) in &entry.parameters {
+                println!("  {name} — {desc}");
+            }
         }
-    }
 
-    if !entry.see_also.is_empty() {
-        printer.kv("See Also", &entry.see_also.join(", "));
+        if !entry.examples.is_empty() {
+            printer.plain("\nExamples:");
+            for ex in &entry.examples {
+                println!("  {ex}");
+            }
+        }
+
+        if !entry.see_also.is_empty() {
+            printer.kv("See Also", &entry.see_also.join(", "));
+        }
     }
 
     for (k, v) in &entry.extra {
