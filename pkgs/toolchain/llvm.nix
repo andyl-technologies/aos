@@ -45,7 +45,7 @@ mkDerivation {
         cmake -S llvm -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_INSTALL_PREFIX=$out \
-          -DLLVM_ENABLE_PROJECTS="lld" \
+          -DLLVM_ENABLE_PROJECTS="clang;lld" \
           -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
           -DLLVM_LINK_LLVM_DYLIB=ON \
           -DLLVM_INSTALL_UTILS=ON \

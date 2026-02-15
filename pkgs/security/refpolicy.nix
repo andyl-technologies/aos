@@ -93,6 +93,21 @@ mkDerivation {
       name = "install";
       script = ''
         make install DESTDIR=$out
+        make install-headers DESTDIR=$out
+
+        # Patch the installed devel Makefile to use store paths instead
+        # of hardcoded /usr and /etc paths
+        DEVMK=$out/usr/share/selinux/refpolicy/include/Makefile
+        sed -i \
+          -e 's|^NAME ?=.*|NAME := refpolicy|' \
+          -e 's|^SHAREDIR ?=.*|SHAREDIR := '"$out"'/usr/share/selinux|' \
+          -e 's|^PREFIX :=.*|PREFIX := '"$out"'/usr|' \
+          -e 's|^BINDIR :=.*|BINDIR := ${checkpolicy}/bin|' \
+          -e 's|^SBINDIR :=.*|SBINDIR := ${policycoreutils}/sbin|' \
+          -e 's|^CHECKMODULE :=.*|CHECKMODULE := ${checkpolicy}/bin/checkmodule|' \
+          -e 's|^SEMODULE :=.*|SEMODULE := ${policycoreutils}/sbin/semodule|' \
+          -e 's|^SEMOD_PKG :=.*|SEMOD_PKG := ${semodule-utils}/bin/semodule_package|' \
+          "$DEVMK"
       '';
     }
   ];
