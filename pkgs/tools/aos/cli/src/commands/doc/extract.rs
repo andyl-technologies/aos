@@ -7,6 +7,7 @@ use super::builtins_data;
 use super::language_data;
 use super::model::{DocCategory, DocEntry, DocIndex};
 use super::nix_parser;
+use crate::nix::NixRunner;
 
 /// Build a complete `DocIndex` by scanning all source files in the repo root.
 ///
@@ -17,7 +18,10 @@ use super::nix_parser;
 /// - `pkgs/**/*.nix` — package docs (category Package)
 /// - Builtin data — static builtin function docs (category Function)
 /// - Language data — static language reference entries (category LanguageRef)
-pub fn build_index(root: &Path) -> Result<DocIndex> {
+///
+/// If a `NixRunner` is provided, module options are enriched with type and
+/// default metadata obtained by evaluating the module system.
+pub fn build_index(root: &Path, nix: Option<&NixRunner>) -> Result<DocIndex> {
     let mut entries = Vec::new();
 
     // 1. Parse lib/*.nix for function docs.
@@ -37,6 +41,11 @@ pub fn build_index(root: &Path) -> Result<DocIndex> {
 
     // 6. Add language reference entries.
     extract_language_ref(&mut entries);
+
+    // 7. Enrich module options with evaluated type/default metadata.
+    if let Some(nix) = nix {
+        enrich_options_from_eval(nix, &mut entries);
+    }
 
     let built_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -367,6 +376,154 @@ fn walk_nix_files(dir: &Path, f: &mut dyn FnMut(&Path)) {
     }
 }
 
+/// Enrich module option entries with type and default metadata obtained by
+/// evaluating the Nix module system.
+///
+/// Evaluates `systems.base.options` and merges the resulting type names and
+/// default values into the comment-parsed `DocEntry` records.  If evaluation
+/// fails (e.g. the user hasn't built yet), the entries are left unchanged.
+fn enrich_options_from_eval(nix: &NixRunner, entries: &mut [DocEntry]) {
+    // Nix expression that serializes option metadata for all options across
+    // all system variants to a JSON-safe attrset.
+    let expr = format!(
+        r#"
+        let
+          aos = import {root}/default.nix {{}};
+          options = builtins.foldl' (acc: sys: acc // sys.options) {{}}
+            (builtins.attrValues aos.systems);
+          safeVal = v:
+            if v == null then null
+            else if builtins.isString v then v
+            else if builtins.isBool v then v
+            else if builtins.isInt v then v
+            else if builtins.isFloat v then v
+            else if builtins.isList v then
+              let tried = builtins.tryEval (builtins.map safeVal v);
+              in if tried.success then tried.value else null
+            else if builtins.isAttrs v then
+              if v ? _type then "<${{v._type}}>"
+              else if v ? outPath then "<derivation>"
+              else let tried = builtins.tryEval (builtins.mapAttrs (_: safeVal) v);
+              in if tried.success then tried.value else null
+            else let tried = builtins.tryEval (builtins.toString v);
+              in if tried.success then tried.value else null;
+        in builtins.mapAttrs (key: entry:
+          let
+            typeName = (builtins.tryEval (entry.option.type.name or "unknown")).value or "unknown";
+            typeDesc = (builtins.tryEval (entry.option.type.description or typeName)).value or typeName;
+          in {{
+            type = typeName;
+            typeDescription = typeDesc;
+            description = entry.option.description or "";
+            default = safeVal (entry.option.default or null);
+            readOnly = entry.option.readOnly or false;
+          }}) options
+        "#,
+        root = nix.root().to_string_lossy()
+    );
+
+    let eval_result = match nix.eval_expr_json(&expr) {
+        Ok(v) => v,
+        Err(_) => return, // Eval failed — leave entries unchanged.
+    };
+
+    let option_map = match eval_result.as_object() {
+        Some(m) => m,
+        None => return,
+    };
+
+    // Build a lookup from Nix option name (last dotted component) to its
+    // metadata.  Nix keys are like "aos.services.ssh.port" while our entries
+    // use "options.security.ssh.port" (derived from file paths).  We build a
+    // multimap on the option leaf name for efficient matching.
+    let mut by_leaf: std::collections::HashMap<String, Vec<(&str, &serde_json::Value)>> =
+        std::collections::HashMap::new();
+    for (nix_key, meta) in option_map {
+        if let Some(leaf) = nix_key.rsplit('.').next() {
+            by_leaf
+                .entry(leaf.to_string())
+                .or_default()
+                .push((nix_key.as_str(), meta));
+        }
+    }
+
+    for entry in entries.iter_mut() {
+        if entry.category != DocCategory::ModuleOption {
+            continue;
+        }
+
+        // Our entry path is "options.<module>.<name>". The leaf is the last
+        // component — the actual option name.
+        let entry_leaf = match entry.path.rsplit('.').next() {
+            Some(l) => l,
+            None => continue,
+        };
+
+        let candidates = match by_leaf.get(entry_leaf) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        // If there's exactly one candidate with this leaf name, use it.
+        // If multiple, try to match more components.
+        let meta = if candidates.len() == 1 {
+            candidates[0].1
+        } else {
+            // Try matching the last two components (e.g. "ssh.port").
+            let entry_parts: Vec<&str> = entry.path.rsplitn(3, '.').collect();
+            let entry_tail2 = if entry_parts.len() >= 2 {
+                format!("{}.{}", entry_parts[1], entry_parts[0])
+            } else {
+                entry_leaf.to_string()
+            };
+
+            let matched = candidates
+                .iter()
+                .find(|(nix_key, _)| nix_key.ends_with(&entry_tail2));
+            match matched {
+                Some((_, m)) => m,
+                None => continue,
+            }
+        };
+
+        // Merge evaluated metadata into the entry.
+        if let Some(type_name) = meta.get("type").and_then(|v| v.as_str()) {
+            if entry.type_sig.is_none() && type_name != "unknown" {
+                entry.type_sig = Some(type_name.to_string());
+            }
+        }
+
+        if entry.default.is_none() {
+            if let Some(default_val) = meta.get("default") {
+                if !default_val.is_null() {
+                    entry.default = Some(format_json_value(default_val));
+                }
+            }
+        }
+    }
+}
+
+/// Format a JSON value into a human-readable string for display.
+fn format_json_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => format!("\"{}\"", s),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(format_json_value).collect();
+            format!("[ {} ]", items.join(" "))
+        }
+        serde_json::Value::Object(obj) => {
+            let items: Vec<String> = obj
+                .iter()
+                .map(|(k, v)| format!("{} = {}", k, format_json_value(v)))
+                .collect();
+            format!("{{ {} }}", items.join("; "))
+        }
+    }
+}
+
 /// Try to extract a version string from a Nix file's content.
 /// Looks for patterns like `version = "1.2.3";` or `let version = "1.2.3";`.
 fn extract_version_from_content(content: &str) -> Option<String> {
@@ -458,7 +615,7 @@ mkDerivation {
         // Write a minimal default.nix so NixRunner would find root (not needed here).
         fs::write(tmp.join("default.nix"), "{}").unwrap();
 
-        let index = build_index(&tmp).unwrap();
+        let index = build_index(&tmp, None).unwrap();
         assert!(index.entries.iter().any(|e| e.path == "functions.lists.head"));
 
         let _ = fs::remove_dir_all(&tmp);
