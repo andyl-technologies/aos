@@ -69,4 +69,29 @@ mkDerivation {
     homepage = "https://libssh2.org";
     license = "BSD-3-Clause";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-libssh2";
+        library = self;
+        libs = [ "-lssh2" ];
+        extraDeps = [ pkgs.openssl ];
+        testSource = ''
+          #include <libssh2.h>
+          #include <stdio.h>
+          int main() {
+            const char *ver = libssh2_version(0);
+            if (!ver) return 1;
+            printf("libssh2 version: %s\n", ver);
+            return 0;
+          }
+        '';
+      };
+    };
 }

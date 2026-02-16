@@ -431,6 +431,7 @@ rec {
       installLibs ? false,
       doCheck ? true,
       doParallelCheck ? true,
+      gitDeps ? [ ],
     }:
     let
       featuresFlag =
@@ -438,6 +439,14 @@ rec {
       noDefaultFlag = if buildNoDefaultFeatures then "--no-default-features" else "";
       profileFlag = if buildType == "release" then "--release" else "";
       checkProfileFlag = if checkType == "release" then "--release" else "";
+
+      # Generate printf args for git source replacements in .cargo/config.toml
+      gitSourceLines = builtins.concatStringsSep "" (
+        builtins.map (
+          dep:
+          "printf '[source.\"git+${dep.url}\"]\\ngit = \"${dep.url}\"\\nreplace-with = \"vendored-sources\"\\n\\n' >> .cargo/config.toml\n"
+        ) gitDeps
+      );
     in
     [
       unpackPhase
@@ -449,13 +458,8 @@ rec {
 
           # Point cargo at vendored deps
           mkdir -p .cargo
-          cat > .cargo/config.toml << 'EOF'
-          [source.crates-io]
-          replace-with = "vendored-sources"
-
-          [source.vendored-sources]
-          directory = "${cargoDeps}"
-          EOF
+          printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' > .cargo/config.toml
+          ${gitSourceLines}
         '';
       }
       {
@@ -499,8 +503,8 @@ rec {
               ''
                 mkdir -p "$out/bin"
                 find target/${buildType} -maxdepth 1 -type f -executable \
-                  ! -name '*.d' | while read bin; do
-                  file "$bin" 2>/dev/null | grep -q ELF && install -m 755 "$bin" "$out/bin/" || true
+                  ! -name '*.d' ! -name '*.so' ! -name '*.dylib' | while read bin; do
+                  install -m 755 "$bin" "$out/bin/"
                 done
               ''
             else

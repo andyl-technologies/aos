@@ -10,8 +10,6 @@
 #   - Kernel and userspace hardening (sysctl, ASLR, dmesg restriction)
 #   - nftables firewall (default-deny inbound)
 #   - OpenSSH server (key-only, no root password login)
-#   - Automatic OS updates (aos-update.timer)
-#   - Nix store garbage collection (aos-gc.timer)
 #   - Chrony NTP time synchronization
 
 {
@@ -30,8 +28,6 @@
     ../modules/security/firewall.nix
     ../modules/security/ssh.nix
     ../modules/security/fail2ban.nix
-    ../modules/services/update.nix
-    ../modules/services/gc.nix
     ../modules/services/chrony.nix
   ];
 
@@ -51,7 +47,4 @@
   aos.services.ssh.enable = true;
   aos.services.chrony.enable = true;
 
-  # --- Maintenance ---
-  aos.update.enable = true;
-  aos.gc.enable = true;
 }

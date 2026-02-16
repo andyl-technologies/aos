@@ -65,4 +65,28 @@ mkDerivation {
     homepage = "https://nghttp2.org/";
     license = "MIT";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-nghttp2";
+        library = self;
+        libs = [ "-lnghttp2" ];
+        testSource = ''
+          #include <nghttp2/nghttp2.h>
+          #include <stdio.h>
+          int main() {
+            nghttp2_info *info = nghttp2_version(0);
+            if (!info) return 1;
+            printf("nghttp2 version: %s\n", info->version_str);
+            return 0;
+          }
+        '';
+      };
+    };
 }

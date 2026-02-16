@@ -84,4 +84,18 @@ mkDerivation {
     homepage = "https://www.netfilter.org/projects/iptables/";
     license = "GPL-2.0-or-later";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-iptables";
+        tool = self;
+        command = "iptables --version";
+      };
+    };
 }

@@ -75,6 +75,39 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      calc = testing.mkFirecrackerTest {
+        pname = "tool-bc-calc";
+        rootfsDeps = [
+          self
+          pkgs.coreutils
+        ];
+        testScript = ''
+          RESULT=$(echo "2+3" | bc)
+          if [ "$RESULT" != "5" ]; then
+            echo "FAIL: expected 5, got '$RESULT'" >&2
+            exit 1
+          fi
+
+          # Test exponentiation
+          RESULT2=$(echo "2^10" | bc)
+          test "$RESULT2" = "1024"
+
+          # Test scale/decimals
+          RESULT3=$(echo "scale=2; 100/3" | bc)
+          test "$RESULT3" = "33.33"
+
+          echo "==> bc calc: passed"
+        '';
+      };
+    };
+
   meta = {
     description = "GNU bc — arbitrary precision calculator language";
     homepage = "https://www.gnu.org/software/bc/";

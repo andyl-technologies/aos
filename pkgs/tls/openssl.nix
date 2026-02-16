@@ -74,4 +74,175 @@ mkDerivation {
     homepage = "https://www.openssl.org";
     license = "Apache-2.0";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-openssl";
+        library = self;
+        libs = [
+          "-lssl"
+          "-lcrypto"
+        ];
+        testSource = ''
+          #include <openssl/opensslv.h>
+          #include <openssl/crypto.h>
+          #include <stdio.h>
+          int main() {
+            printf("OpenSSL version: %s\n", OpenSSL_version(OPENSSL_VERSION));
+            return 0;
+          }
+        '';
+      };
+
+      evp = testing.mkLinkCheck {
+        pname = "lib-openssl-evp";
+        library = self;
+        libs = [ "-lcrypto" ];
+        testSource = ''
+          #include <openssl/evp.h>
+          #include <stdio.h>
+          int main() {
+            EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+            if (!ctx) return 1;
+            if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1) return 1;
+            const char *msg = "hello AOS";
+            if (EVP_DigestUpdate(ctx, msg, 9) != 1) return 1;
+            unsigned char hash[EVP_MAX_MD_SIZE];
+            unsigned int len;
+            if (EVP_DigestFinal_ex(ctx, hash, &len) != 1) return 1;
+            EVP_MD_CTX_free(ctx);
+            printf("openssl EVP SHA256 digest length: %u\n", len);
+            return 0;
+          }
+        '';
+      };
+
+      rand = testing.mkLinkCheck {
+        pname = "lib-openssl-rand";
+        library = self;
+        libs = [ "-lcrypto" ];
+        testSource = ''
+          #include <openssl/rand.h>
+          #include <stdio.h>
+          int main() {
+            unsigned char buf[32];
+            if (RAND_bytes(buf, sizeof(buf)) != 1) return 1;
+            printf("openssl RAND_bytes: generated 32 bytes\n");
+            return 0;
+          }
+        '';
+      };
+
+      cli-version = testing.mkToolCheck {
+        pname = "lib-openssl-cli-version";
+        tool = self;
+        command = "openssl version";
+      };
+
+      cli-dgst = testing.mkFirecrackerTest {
+        pname = "lib-openssl-cli-dgst";
+        rootfsDeps = [ self ];
+        testScript = ''
+          echo "test" > /tmp/input.txt
+          OUTPUT=$(openssl dgst -sha256 /tmp/input.txt)
+          echo "$OUTPUT"
+          # Verify output contains a hex hash (at least 64 hex chars for SHA256)
+          case "$OUTPUT" in
+            *[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+              echo "==> SHA256 digest output contains hex hash"
+              ;;
+            *)
+              echo "==> ERROR: no hex hash found in output" >&2
+              exit 1
+              ;;
+          esac
+        '';
+      };
+
+      header-version = testing.mkLinkCheck {
+        pname = "lib-openssl-header-version";
+        library = self;
+        libs = [ "-lcrypto" ];
+        testSource = ''
+          #include <openssl/opensslv.h>
+          #include <openssl/crypto.h>
+          #include <stdio.h>
+          #include <string.h>
+          int main(void) {
+              const char *hdr = OPENSSL_VERSION_TEXT;
+              const char *lib = OpenSSL_version(OPENSSL_VERSION);
+              printf("header:  %s\n", hdr);
+              printf("runtime: %s\n", lib);
+              if (strcmp(hdr, lib) != 0) {
+                  fprintf(stderr, "MISMATCH: header and runtime versions differ\n");
+                  return 1;
+              }
+              printf("openssl-header-version: PASS\n");
+              return 0;
+          }
+        '';
+      };
+
+      consumers = testing.mkFirecrackerTest {
+        pname = "lib-openssl-consumers";
+        rootfsDeps = [
+          pkgs.curl
+          pkgs.openssh
+          pkgs.libssh2
+          pkgs.python3
+          pkgs.nix
+          pkgs.elfutils
+          self
+        ];
+        testScript = ''
+          FAIL=0
+          for bin in \
+            ${pkgs.curl}/bin/curl \
+            ${pkgs.openssh}/bin/ssh \
+            ${pkgs.nix}/bin/nix; do
+            echo "==> Checking $bin"
+            OUTPUT=$(readelf -d "$bin" 2>&1) || true
+            case "$OUTPUT" in
+              *libssl* | *libcrypto*)
+                echo "    OK: links against openssl"
+                ;;
+              *)
+                echo "    FAIL: no openssl linkage found" >&2
+                FAIL=1
+                ;;
+            esac
+          done
+          for lib in \
+            ${pkgs.libssh2}/lib/libssh2.so \
+            ${pkgs.python3}/lib/libpython*.so*; do
+            echo "==> Checking $lib"
+            if [ ! -e "$lib" ]; then
+              echo "    SKIP: $lib not found"
+              continue
+            fi
+            OUTPUT=$(readelf -d "$lib" 2>&1) || true
+            case "$OUTPUT" in
+              *libssl* | *libcrypto*)
+                echo "    OK: links against openssl"
+                ;;
+              *)
+                echo "    FAIL: no openssl linkage found" >&2
+                FAIL=1
+                ;;
+            esac
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo "==> ERROR: some consumers missing openssl linkage" >&2
+            exit 1
+          fi
+          echo "==> openssl-consumers: PASS"
+        '';
+      };
+    };
 }

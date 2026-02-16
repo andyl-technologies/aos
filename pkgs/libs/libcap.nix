@@ -76,6 +76,32 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-libcap";
+        library = self;
+        libs = [ "-lcap" ];
+        testSource = ''
+          #include <sys/capability.h>
+          #include <stdio.h>
+          int main() {
+            cap_t caps = cap_get_proc();
+            if (caps) {
+              cap_free(caps);
+            }
+            printf("libcap: PASS\n");
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "libcap — POSIX capabilities library";
     homepage = "https://sites.google.com/site/fullaborern8/home";

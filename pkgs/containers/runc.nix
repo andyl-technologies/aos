@@ -75,6 +75,20 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-runc";
+        tool = self;
+        command = "runc --version";
+      };
+    };
+
   meta = {
     description = "runc — CLI tool for spawning and running OCI containers";
     homepage = "https://github.com/opencontainers/runc";

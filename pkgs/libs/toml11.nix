@@ -62,6 +62,32 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      compile = testing.mkCxxCompileCheck {
+        pname = "lib-toml11";
+        deps = [ self ];
+        testSource = ''
+          #include <toml.hpp>
+          #include <iostream>
+          #include <sstream>
+          int main() {
+            std::istringstream ss("[package]\nname = \"test\"\n");
+            auto data = toml::parse(ss);
+            auto name = toml::find<std::string>(data, "package", "name");
+            if (name != "test") return 1;
+            std::cout << "toml11: PASS" << std::endl;
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "toml11 — TOML for Modern C++ (header-only)";
     homepage = "https://github.com/ToruNiina/toml11";

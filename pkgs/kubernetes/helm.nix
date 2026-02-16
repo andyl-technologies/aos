@@ -34,6 +34,20 @@ mkGoPackage {
   ldflags = "-s -w -X helm.sh/helm/v3/internal/version.version=v${version} -X helm.sh/helm/v3/internal/version.gitTreeState=clean";
   doCheck = false;
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-helm";
+        tool = self;
+        command = "helm version";
+      };
+    };
+
   meta = {
     description = "Helm — the Kubernetes package manager";
     homepage = "https://helm.sh";

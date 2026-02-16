@@ -115,6 +115,83 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      stack = testing.mkFirecrackerTest {
+        pname = "cross-cutting-nix-stack";
+        rootfsDeps = [ self ];
+        memory = 512;
+        testScript = ''
+          export PATH="${self}/bin:$PATH"
+          export LD_LIBRARY_PATH="${self}/lib:$LD_LIBRARY_PATH"
+          # nix needs a /tmp and writable home
+          export HOME=/tmp
+          export NIX_CONF_DIR=/tmp/nix-conf
+          mkdir -p /tmp/nix-conf
+
+          # Disable features that need network/daemon
+          cat > /tmp/nix-conf/nix.conf << 'NIXCONF'
+          sandbox = false
+          experimental-features = nix-command
+          NIXCONF
+
+          echo "==> Testing nix --version"
+          nix --version
+
+          echo "==> Testing nix eval"
+          RESULT=$(nix eval --expr '1 + 1')
+          echo "    nix eval '1 + 1' = $RESULT"
+          if [ "$RESULT" != "2" ]; then
+            echo "ERROR: expected 2, got $RESULT"
+            exit 1
+          fi
+
+          echo "Nix stack: PASS"
+        '';
+      };
+
+      store-ops = testing.mkFirecrackerTest {
+        pname = "cross-cutting-nix-store-ops";
+        rootfsDeps = [ self ];
+        memory = 512;
+        testScript = ''
+          export PATH="${self}/bin:$PATH"
+          export LD_LIBRARY_PATH="${self}/lib:$LD_LIBRARY_PATH"
+          export HOME=/tmp
+          export NIX_CONF_DIR=/tmp/nix-conf
+          mkdir -p /tmp/nix-conf /nix/var/nix/db
+
+          cat > /tmp/nix-conf/nix.conf << 'NIXCONF'
+          sandbox = false
+          experimental-features = nix-command
+          NIXCONF
+
+          echo "==> Testing nix-store --init"
+          nix-store --init
+          echo "    Store initialized"
+
+          echo "==> Testing nix-instantiate --eval"
+          RESULT=$(nix-instantiate --eval --expr '1 + 1')
+          echo "    nix-instantiate --eval '1 + 1' = $RESULT"
+          if [ "$RESULT" != "2" ]; then
+            echo "ERROR: expected 2, got $RESULT"
+            exit 1
+          fi
+
+          echo "==> Testing nix eval --expr"
+          RESULT2=$(nix eval --expr 'builtins.currentSystem')
+          echo "    builtins.currentSystem = $RESULT2"
+
+          echo "Nix store ops: PASS"
+        '';
+      };
+    };
+
   meta = {
     description = "Nix — the purely functional package manager";
     homepage = "https://nixos.org/nix";

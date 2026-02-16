@@ -62,4 +62,44 @@ mkDerivation {
     homepage = "https://sourceware.org/bzip2/";
     license = "bzip2-1.0.6";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-bzip2";
+        library = self;
+        libs = [ "-lbz2" ];
+        testSource = ''
+          #include <bzlib.h>
+          #include <stdio.h>
+          int main() {
+            printf("bzip2 version: %s\n", BZ2_bzlibVersion());
+            return 0;
+          }
+        '';
+      };
+
+      cli-roundtrip = testing.mkFirecrackerTest {
+        pname = "lib-bzip2-cli-roundtrip";
+        rootfsDeps = [ self ];
+        testScript = ''
+          echo "bzip2 round-trip test data 1234567890" > /tmp/original.txt
+          cp /tmp/original.txt /tmp/tocompress.txt
+          bzip2 /tmp/tocompress.txt
+          bunzip2 /tmp/tocompress.txt.bz2
+          ORIG=$(cat /tmp/original.txt)
+          RESULT=$(cat /tmp/tocompress.txt)
+          if [ "$ORIG" != "$RESULT" ]; then
+            echo "==> ERROR: decompressed data does not match original" >&2
+            exit 1
+          fi
+          echo "==> bzip2 CLI round-trip: PASS"
+        '';
+      };
+    };
 }

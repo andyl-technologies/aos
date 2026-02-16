@@ -57,6 +57,28 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-expat";
+        library = self;
+        libs = [ "-lexpat" ];
+        testSource = ''
+          #include <expat.h>
+          #include <stdio.h>
+          int main() {
+            printf("expat version: %s\n", XML_ExpatVersion());
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "Expat — XML parsing C library";
     homepage = "https://libexpat.github.io/";

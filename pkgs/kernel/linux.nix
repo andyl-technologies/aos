@@ -85,6 +85,7 @@ mkDerivation {
 
         # Install kernel image
         cp arch/x86/boot/bzImage $out/boot/vmlinuz-${version}
+        cp vmlinux $out/boot/vmlinux-${version}
         cp System.map $out/boot/System.map-${version}
         cp .config $out/boot/config-${version}
 

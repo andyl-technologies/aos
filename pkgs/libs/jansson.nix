@@ -62,6 +62,31 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-jansson";
+        library = self;
+        libs = [ "-ljansson" ];
+        testSource = ''
+          #include <jansson.h>
+          #include <stdio.h>
+          int main() {
+            json_t *obj = json_object();
+            if (!obj) return 1;
+            json_decref(obj);
+            printf("jansson version: %s\n", JANSSON_VERSION);
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "jansson — C library for encoding, decoding and manipulating JSON data";
     homepage = "https://github.com/akheron/jansson";

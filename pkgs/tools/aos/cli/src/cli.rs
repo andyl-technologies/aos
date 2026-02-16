@@ -65,6 +65,9 @@ pub enum Commands {
     Test {
         #[command(subcommand)]
         command: Option<TestCmd>,
+        /// Nix store URL for remote builds (e.g., ssh-ng://user@host)
+        #[arg(long, env = "AOS_STORE", global = true)]
+        store: Option<String>,
     },
     /// Enter development shell
     Shell,
@@ -229,8 +232,13 @@ pub enum TestCmd {
     Build,
     /// Run VM integration tests
     Vm {
-        /// Test suite name
+        /// Test suite name (e.g., boot, ssh, services, server-security)
         suite: Option<String>,
+    },
+    /// Run headless Firecracker integration tests
+    Integration {
+        /// Test group (e.g., toolchain, libraries, tools, build-systems)
+        group: Option<String>,
     },
     /// Run fleet tests
     Fleet {

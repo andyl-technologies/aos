@@ -60,4 +60,18 @@ mkDerivation {
     homepage = "http://www.dest-unreach.org/socat/";
     license = "GPL-2.0-only";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-socat";
+        tool = self;
+        command = "socat -V";
+      };
+    };
 }

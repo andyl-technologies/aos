@@ -54,6 +54,39 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      apply = testing.mkFirecrackerTest {
+        pname = "tool-patch-apply";
+        rootfsDeps = [
+          self
+          pkgs.diffutils
+          pkgs.coreutils
+        ];
+        testScript = ''
+          printf 'line1\nold line\nline3\n' > /tmp/original.txt
+          printf 'line1\nnew line\nline3\n' > /tmp/modified.txt
+          diff -u /tmp/original.txt /tmp/modified.txt > /tmp/fix.patch || true
+
+          cp /tmp/original.txt /tmp/target.txt
+          patch /tmp/target.txt /tmp/fix.patch
+
+          RESULT=$(cat /tmp/target.txt)
+          EXPECTED=$(cat /tmp/modified.txt)
+          if [ "$RESULT" != "$EXPECTED" ]; then
+            echo "FAIL: patched file does not match expected" >&2
+            exit 1
+          fi
+          echo "==> patch apply: passed"
+        '';
+      };
+    };
+
   meta = {
     description = "GNU Patch — apply diff files to originals";
     homepage = "https://www.gnu.org/software/patch/";

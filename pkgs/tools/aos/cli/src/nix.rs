@@ -14,6 +14,9 @@ pub struct NixRunner {
     root: PathBuf,
     verbose: u8,
     quiet: bool,
+    /// Optional remote store URL (e.g., `ssh-ng://user@host`).
+    /// When set, `nix-build` invocations include `--store <url> --eval-store auto`.
+    store: Option<String>,
 }
 
 impl NixRunner {
@@ -29,12 +32,20 @@ impl NixRunner {
             root,
             verbose,
             quiet,
+            store: None,
         })
     }
 
     /// Return the project root path.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Set a remote store URL.  When set, `build` and `build_all` append
+    /// `--store <url> --eval-store auto` so evaluation stays local while
+    /// the actual build runs on the remote machine.
+    pub fn set_store(&mut self, store: Option<String>) {
+        self.store = store;
     }
 
     // ------------------------------------------------------------------
@@ -58,6 +69,13 @@ impl NixRunner {
             args.push("--no-out-link".to_string());
         }
 
+        if let Some(ref store) = self.store {
+            args.push("--store".to_string());
+            args.push(store.clone());
+            args.push("--eval-store".to_string());
+            args.push("auto".to_string());
+        }
+
         let output = self.run_nix("nix-build", &args)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let path = stdout
@@ -72,12 +90,19 @@ impl NixRunner {
     /// Build an attribute that evaluates to a set / list and return all
     /// resulting store paths.
     pub fn build_all(&self, attr: &str) -> Result<Vec<PathBuf>> {
-        let args: Vec<String> = vec![
+        let mut args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
             "-A".to_string(),
             attr.to_string(),
             "--no-out-link".to_string(),
         ];
+
+        if let Some(ref store) = self.store {
+            args.push("--store".to_string());
+            args.push(store.clone());
+            args.push("--eval-store".to_string());
+            args.push("auto".to_string());
+        }
 
         let output = self.run_nix("nix-build", &args)?;
         let stdout = String::from_utf8_lossy(&output.stdout);

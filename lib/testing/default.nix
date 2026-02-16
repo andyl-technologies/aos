@@ -1,27 +1,44 @@
 # lib/testing/default.nix — AOS test infrastructure library
 #
-# Provides test harness builders for VM and fleet tests, plus the
+# Provides test harness builders for VM and fleet tests, Firecracker-based
+# headless microVM tests, higher-level integration check wrappers, plus the
 # composable check module system for reusable test assertions.
 #
 # Usage:
 #   let testing = import ./lib/testing { inherit pkgs lib testTools; };
 #   in testing.mkVMTest { ... }
+#
+# For headless Firecracker tests (no testTools needed):
+#   let testing = import ./lib/testing { inherit pkgs lib; testTools = {}; };
+#   in testing.mkFirecrackerTest { ... }
 
 {
   pkgs,
   lib,
-  testTools,
+  testTools ? { },
 }:
 
 let
   vm = import ./vm.nix { inherit pkgs lib testTools; };
   fleet = import ./fleet.nix { inherit pkgs lib testTools; };
+  firecracker = import ./firecracker.nix { inherit pkgs lib; };
+  integration = import ./integration.nix {
+    inherit pkgs lib;
+    inherit (firecracker) mkFirecrackerTest;
+  };
   assertions = import ./assertions.nix;
   checks = import ./checks.nix;
 in
 {
   inherit (vm) mkVMTest mkTestRootfs;
   inherit (fleet) mkFleetTest;
+  inherit (firecracker) mkFirecrackerTest mkFirecrackerRootfs;
+  inherit (integration)
+    mkLinkCheck
+    mkToolCheck
+    mkCompileCheck
+    mkCxxCompileCheck
+    ;
   inherit assertions;
   inherit (checks)
     mkCheck

@@ -59,6 +59,35 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-libnftnl";
+        library = self;
+        libs = [
+          "-lnftnl"
+          "-lmnl"
+        ];
+        extraDeps = [ pkgs.libmnl ];
+        testSource = ''
+          #include <libnftnl/table.h>
+          #include <stdio.h>
+          int main() {
+            struct nftnl_table *t = nftnl_table_alloc();
+            if (!t) return 1;
+            nftnl_table_free(t);
+            printf("libnftnl: PASS\n");
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "libnftnl — userspace library for nf_tables Netlink communication";
     homepage = "https://www.netfilter.org/projects/libnftnl/";

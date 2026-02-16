@@ -54,6 +54,31 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      roundtrip = testing.mkFirecrackerTest {
+        pname = "tool-gzip-roundtrip";
+        rootfsDeps = [
+          self
+          pkgs.coreutils
+        ];
+        testScript = ''
+          echo "compress me" > /tmp/gz-test.txt
+          gzip /tmp/gz-test.txt
+          test -f /tmp/gz-test.txt.gz
+          test ! -f /tmp/gz-test.txt
+          gzip -d /tmp/gz-test.txt.gz
+          test "$(cat /tmp/gz-test.txt)" = "compress me"
+          echo "==> gzip roundtrip: passed"
+        '';
+      };
+    };
+
   meta = {
     description = "GNU Gzip — data compression program";
     homepage = "https://www.gnu.org/software/gzip/";

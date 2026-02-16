@@ -93,4 +93,63 @@ mkDerivation {
     homepage = "https://curl.se";
     license = "curl";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-curl";
+        tool = self;
+        command = "curl --version";
+        extraDeps = [
+          pkgs.openssl
+          pkgs.zlib
+        ];
+      };
+
+      link = testing.mkLinkCheck {
+        pname = "lib-curl";
+        library = self;
+        libs = [ "-lcurl" ];
+        extraDeps = [
+          pkgs.openssl
+          pkgs.zlib
+        ];
+        testSource = ''
+          #include <curl/curl.h>
+          #include <stdio.h>
+          int main() {
+            printf("curl version: %s\n", curl_version());
+            return 0;
+          }
+        '';
+      };
+
+      easy = testing.mkLinkCheck {
+        pname = "lib-curl-easy";
+        library = self;
+        libs = [ "-lcurl" ];
+        extraDeps = [
+          pkgs.openssl
+          pkgs.zlib
+        ];
+        testSource = ''
+          #include <curl/curl.h>
+          #include <stdio.h>
+          int main() {
+            curl_global_init(CURL_GLOBAL_DEFAULT);
+            CURL *c = curl_easy_init();
+            if (!c) return 1;
+            curl_easy_cleanup(c);
+            curl_global_cleanup();
+            printf("curl easy init/cleanup: PASS\n");
+            return 0;
+          }
+        '';
+      };
+    };
 }

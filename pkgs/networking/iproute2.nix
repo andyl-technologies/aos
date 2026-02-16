@@ -65,4 +65,18 @@ mkDerivation {
     homepage = "https://wiki.linuxfoundation.org/networking/iproute2";
     license = "GPL-2.0-or-later";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-iproute2";
+        tool = self;
+        command = "ip -V 2>&1";
+      };
+    };
 }

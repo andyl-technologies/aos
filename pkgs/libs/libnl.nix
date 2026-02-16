@@ -65,6 +65,33 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-libnl";
+        library = self;
+        includes = [ "${self}/include/libnl3" ];
+        libs = [ "-lnl-3" ];
+        testSource = ''
+          #include <netlink/netlink.h>
+          #include <netlink/socket.h>
+          #include <stdio.h>
+          int main() {
+            struct nl_sock *sk = nl_socket_alloc();
+            if (!sk) return 1;
+            nl_socket_free(sk);
+            printf("libnl: PASS\n");
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "libnl — Linux Netlink protocol library suite";
     homepage = "https://github.com/thom311/libnl";
