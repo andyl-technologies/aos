@@ -9,7 +9,7 @@ output/
 mirror/
 
 # Rust build artifacts
-pkgs/tools/aos/cli/target/
+cli/target/
 
 # Nix build results
 result
