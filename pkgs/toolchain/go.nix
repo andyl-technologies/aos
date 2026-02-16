@@ -100,7 +100,9 @@ mkDerivation {
           }
           EOF
 
-          go build -o /tmp/testbin /tmp/testpkg/
+          cd /tmp/testpkg
+          go mod init testpkg
+          go build -o /tmp/testbin .
           /tmp/testbin
         '';
       };
@@ -135,7 +137,9 @@ mkDerivation {
           }
           GOEOF
 
-          go build -o /tmp/cgobin /tmp/cgopkg/
+          cd /tmp/cgopkg
+          go mod init cgopkg
+          go build -o /tmp/cgobin .
           /tmp/cgobin
         '';
       };
@@ -205,7 +209,9 @@ mkDerivation {
           }
           EOF
 
-          go build -o /tmp/staticbin /tmp/staticpkg/
+          cd /tmp/staticpkg
+          go mod init staticpkg
+          go build -o /tmp/staticbin .
           /tmp/staticbin
 
           # Verify the binary does not depend on dynamic linker
@@ -258,7 +264,9 @@ mkDerivation {
           }
           GOEOF
 
-          go build -o /tmp/sslbin /tmp/sslpkg/
+          cd /tmp/sslpkg
+          go mod init sslpkg
+          go build -o /tmp/sslbin .
           /tmp/sslbin
         '';
       };
@@ -297,7 +305,9 @@ mkDerivation {
           }
           GOEOF
 
-          go build -o /tmp/zbin /tmp/zpkg/
+          cd /tmp/zpkg
+          go mod init zpkg
+          go build -o /tmp/zbin .
           /tmp/zbin
         '';
       };
@@ -405,7 +415,6 @@ mkDerivation {
         rootfsDeps = [ self ];
         memory = 512;
         testScript = ''
-          export GOROOT="${self}/share/go"
           export GOPATH="/tmp/gopath"
           export GOCACHE="/tmp/gocache"
           export PATH="${self}/bin:$PATH"
@@ -451,12 +460,13 @@ mkDerivation {
         ];
         memory = 512;
         testScript = ''
-          export GOROOT="${self}/share/go"
           export GOPATH="/tmp/gopath"
           export GOCACHE="/tmp/gocache"
           export HOME="/tmp"
           export PATH="${self}/bin:$PATH"
           export CGO_ENABLED=1
+          export CGO_CFLAGS="-I${pkgs.zlib}/include"
+          export CGO_LDFLAGS="-L${pkgs.zlib}/lib -lz"
           export C_INCLUDE_PATH="${pkgs.zlib}/include:$C_INCLUDE_PATH"
           export LIBRARY_PATH="${pkgs.zlib}/lib:$LIBRARY_PATH"
           export LD_LIBRARY_PATH="${pkgs.zlib}/lib:$LD_LIBRARY_PATH"
@@ -527,6 +537,7 @@ mkDerivation {
 
           echo "==> Building Go CGO program with zlib"
           cd /tmp/cgotest
+          go mod init cgotest
           go build -o /tmp/cgotest/cgotest .
           echo "==> Running Go CGO program"
           /tmp/cgotest/cgotest
