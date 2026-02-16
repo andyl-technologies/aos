@@ -19,20 +19,18 @@
 
 {
   system ? "x86_64-linux",
-  nixpkgs ? import <nixpkgs> { inherit system; },
 }:
 
 let
   lib = import ./lib { inherit system; };
 
   # All packages are built hermetically from source using only bootstrap
-  # tools and previously-built AOS packages.  No nixpkgs in the build closure.
+  # tools and previously-built AOS packages.  No nixpkgs anywhere.
   pkgs = import ./pkgs { inherit lib; };
 
-  # QEMU is the sole nixpkgs dependency in the test closure (too complex to
-  # bootstrap).  socat and jq are AOS packages built from source.
+  # All test tools are AOS packages built from source.
   testTools = {
-    qemu = nixpkgs.qemu_kvm;
+    qemu = pkgs.qemu;
   };
 
   # Helper: evaluate a system variant from a module path list.

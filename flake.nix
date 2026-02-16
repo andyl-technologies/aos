@@ -1,58 +1,70 @@
 {
   description = "ANDYL OS — immutable, minimal Linux distribution built from source";
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    crane.url = "github:ipetkov/crane";
-  };
+  inputs = { };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      crane,
-      ...
-    }:
+    { self }:
     let
-      supportedSystems = [
+      buildSystems = [
         "x86_64-linux"
         "aarch64-linux"
+      ];
+      devSystems = buildSystems ++ [
         "x86_64-darwin"
         "aarch64-darwin"
       ];
-      forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
 
-      aosCliFor =
+      genAttrs =
+        names: f:
+        builtins.listToAttrs (
+          map (n: {
+            name = n;
+            value = f n;
+          }) names
+        );
+
+      aosFor =
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
-          craneLib = crane.mkLib pkgs;
+          lib = import ./lib { inherit system; };
+          pkgs = import ./pkgs { inherit lib; };
         in
-        import ./pkgs/tools/aos { inherit craneLib pkgs; };
+        {
+          inherit lib pkgs;
+        };
     in
     {
-      packages = forAllSystems (system: {
-        aos = aosCliFor system;
-        default = aosCliFor system;
-      });
-
-      devShells = forAllSystems (
+      packages = genAttrs buildSystems (
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          env = aosFor system;
+        in
+        {
+          aos = env.pkgs.aos;
+          default = env.pkgs.aos;
+        }
+      );
+
+      devShells = genAttrs devSystems (
+        system:
+        let
+          isLinux = builtins.elem system buildSystems;
+          env = if isLinux then aosFor system else null;
         in
         {
           default = import ./dev/shell.nix {
-            inherit pkgs;
-            aos = aosCliFor system;
+            inherit system;
+            aos = if isLinux then env.pkgs.aos else null;
+            just = if isLinux then env.pkgs.just else null;
           };
         }
       );
 
-      checks = forAllSystems (system: {
-        aos = aosCliFor system;
-      });
+      formatter = genAttrs buildSystems (system: (aosFor system).pkgs.alejandra);
 
-      formatter = forAllSystems (system: (import nixpkgs { inherit system; }).nixfmt);
+      checks = genAttrs buildSystems (system: {
+        aos = (aosFor system).pkgs.aos;
+      });
     };
 }
