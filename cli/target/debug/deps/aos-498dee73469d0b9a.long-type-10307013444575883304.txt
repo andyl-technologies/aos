@@ -1,2 +1,0 @@
-fn(axum::extract::Path<std::string::String>, axum::extract::State<Arc<AppState>>) -> impl Future<Output = impl IntoResponse> {cache_info_handler}
-fn(axum::extract::Path<std::string::String>, axum::extract::State<Arc<AppState>>) -> impl Future<Output = impl IntoResponse> {cache_info_handler}: Handler<_, _>

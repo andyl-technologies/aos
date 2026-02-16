@@ -1,2 +1,0 @@
-fn(axum::extract::Path<(std::string::String, std::string::String)>, axum::extract::State<Arc<AppState>>) -> impl Future<Output = impl IntoResponse> {narinfo_handler}
-fn(axum::extract::Path<(std::string::String, std::string::String)>, axum::extract::State<Arc<AppState>>) -> impl Future<Output = impl IntoResponse> {narinfo_handler}: Handler<_, _>
