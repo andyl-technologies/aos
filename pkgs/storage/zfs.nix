@@ -7,7 +7,7 @@
   util-linux,
   openssl,
   zlib,
-  linux-headers,
+  libtirpc,
 }:
 
 let
@@ -32,6 +32,7 @@ mkDerivation {
     util-linux
     openssl
     zlib
+    libtirpc
   ];
   propagatedDeps = [ ];
 
@@ -49,12 +50,11 @@ mkDerivation {
         ./configure \
           --prefix=$out \
           --sysconfdir=$out/etc \
-          --with-linux-headers=${linux-headers}/include \
+          --with-config=user \
           --with-mounthelperdir=$out/sbin \
           --with-udevdir=$out/lib/udev \
           --with-systemdunitdir=$out/lib/systemd/system \
           --with-systemdpresetdir=$out/lib/systemd/system-preset \
-          --enable-linux-builtin=no \
           --enable-sysvinit=no \
           --disable-static
       '';
@@ -68,7 +68,12 @@ mkDerivation {
     {
       name = "install";
       script = ''
-        make install
+        # Override hardcoded paths that would install outside the store
+        make install \
+          i_tdir=$out/share/initramfs-tools \
+          initconfdir=$out/etc/default \
+          dracutdir=$out/lib/dracut \
+          bashcompletiondir=$out/share/bash-completion/completions
       '';
     }
   ];

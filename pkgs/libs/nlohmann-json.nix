@@ -1,0 +1,73 @@
+##! nlohmann-json — JSON for Modern C++ (header-only)
+{
+  mkDerivation,
+  fetchurl,
+  make,
+  cmake,
+  ninja,
+}:
+
+let
+  version = "3.11.3";
+in
+mkDerivation {
+  pname = "nlohmann-json";
+  inherit version;
+
+  src = fetchurl {
+    urls = [
+      "https://github.com/nlohmann/json/archive/refs/tags/v${version}.tar.gz"
+    ];
+    hash = "sha256-DY71r3+XlOMmNIAZPEkVSbK6bMdLsBiQYgKtpJinlAY=";
+  };
+
+  buildDeps = [
+    make
+    cmake
+    ninja
+  ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
+
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd json-${version}
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=$out \
+          -DCMAKE_INSTALL_LIBDIR=lib \
+          -DJSON_BuildTests=OFF \
+          -DJSON_MultipleHeaders=ON
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        ninja -C build -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        ninja -C build install
+        # pkgconfig file installed to share/pkgconfig — symlink to lib/pkgconfig
+        mkdir -p $out/lib/pkgconfig
+        ln -sf ../../share/pkgconfig/nlohmann_json.pc $out/lib/pkgconfig/nlohmann_json.pc
+      '';
+    }
+  ];
+
+  meta = {
+    description = "nlohmann-json — JSON for Modern C++ (header-only)";
+    homepage = "https://github.com/nlohmann/json";
+    license = "MIT";
+  };
+}
