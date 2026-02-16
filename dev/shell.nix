@@ -19,7 +19,7 @@ in
 builtins.derivation {
   name = "aos-dev";
   inherit system;
-  builder = "/bin/sh";
+  builder = "/bin/bash";
   args = [
     "-c"
     "echo 'Use nix develop, not nix build'; exit 1"
