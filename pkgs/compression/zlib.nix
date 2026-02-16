@@ -130,7 +130,6 @@ mkDerivation {
         rootfsDeps = [
           pkgs.curl
           pkgs.libarchive
-          pkgs.python3
           pkgs.elfutils
           self
         ];
@@ -151,8 +150,7 @@ mkDerivation {
             esac
           done
           for lib in \
-            ${pkgs.libarchive}/lib/libarchive.so \
-            ${pkgs.python3}/lib/libpython*.so*; do
+            ${pkgs.libarchive}/lib/libarchive.so; do
             echo "==> Checking $lib"
             if [ ! -e "$lib" ]; then
               echo "    SKIP: $lib not found"

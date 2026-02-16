@@ -299,8 +299,8 @@ let
                           fi
                         done < all-paths
                         STORE_MB=$(( STORE_KB / 1024 ))
-                        # 2x for ext4 overhead (journal, inodes, superblocks) + 256MB headroom
-                        IMAGE_MB=$(( STORE_MB * 2 + 256 ))
+                        # 3x for ext4 overhead (journal, inodes, superblocks) + 512MB headroom
+                        IMAGE_MB=$(( STORE_MB * 3 + 512 ))
                         # Minimum 512MB to avoid tiny filesystem issues
                         if [ "$IMAGE_MB" -lt 512 ]; then IMAGE_MB=512; fi
 

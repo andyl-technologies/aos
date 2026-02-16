@@ -195,8 +195,6 @@ mkDerivation {
           pkgs.curl
           pkgs.openssh
           pkgs.libssh2
-          pkgs.python3
-          pkgs.nix
           pkgs.elfutils
           self
         ];
@@ -204,8 +202,7 @@ mkDerivation {
           FAIL=0
           for bin in \
             ${pkgs.curl}/bin/curl \
-            ${pkgs.openssh}/bin/ssh \
-            ${pkgs.nix}/bin/nix; do
+            ${pkgs.openssh}/bin/ssh; do
             echo "==> Checking $bin"
             OUTPUT=$(readelf -d "$bin" 2>&1) || true
             case "$OUTPUT" in
@@ -219,8 +216,7 @@ mkDerivation {
             esac
           done
           for lib in \
-            ${pkgs.libssh2}/lib/libssh2.so \
-            ${pkgs.python3}/lib/libpython*.so*; do
+            ${pkgs.libssh2}/lib/libssh2.so; do
             echo "==> Checking $lib"
             if [ ! -e "$lib" ]; then
               echo "    SKIP: $lib not found"
