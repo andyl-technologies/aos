@@ -124,11 +124,25 @@ mkDerivation {
     {
       stack = testing.mkFirecrackerTest {
         pname = "cross-cutting-nix-stack";
-        rootfsDeps = [ self ];
+        rootfsDeps = [
+          self
+          pkgs.brotli
+          pkgs.curl
+          pkgs.openssl
+          pkgs.sqlite
+          pkgs.boost
+          pkgs.editline
+          pkgs.libsodium
+          pkgs.libarchive
+          pkgs.gc
+          pkgs.lowdown
+          pkgs.bzip2
+          pkgs.zlib
+        ];
         memory = 512;
         testScript = ''
           export PATH="${self}/bin:$PATH"
-          export LD_LIBRARY_PATH="${self}/lib:$LD_LIBRARY_PATH"
+          export LD_LIBRARY_PATH="${self}/lib:${pkgs.brotli}/lib:${pkgs.curl}/lib:${pkgs.openssl}/lib:${pkgs.sqlite}/lib:${pkgs.boost}/lib:${pkgs.editline}/lib:${pkgs.libsodium}/lib:${pkgs.libarchive}/lib:${pkgs.gc}/lib:${pkgs.lowdown}/lib:${pkgs.bzip2}/lib:${pkgs.zlib}/lib:$LD_LIBRARY_PATH"
           # nix needs a /tmp and writable home
           export HOME=/tmp
           export NIX_CONF_DIR=/tmp/nix-conf
@@ -157,11 +171,25 @@ mkDerivation {
 
       store-ops = testing.mkFirecrackerTest {
         pname = "cross-cutting-nix-store-ops";
-        rootfsDeps = [ self ];
+        rootfsDeps = [
+          self
+          pkgs.brotli
+          pkgs.curl
+          pkgs.openssl
+          pkgs.sqlite
+          pkgs.boost
+          pkgs.editline
+          pkgs.libsodium
+          pkgs.libarchive
+          pkgs.gc
+          pkgs.lowdown
+          pkgs.bzip2
+          pkgs.zlib
+        ];
         memory = 512;
         testScript = ''
           export PATH="${self}/bin:$PATH"
-          export LD_LIBRARY_PATH="${self}/lib:$LD_LIBRARY_PATH"
+          export LD_LIBRARY_PATH="${self}/lib:${pkgs.brotli}/lib:${pkgs.curl}/lib:${pkgs.openssl}/lib:${pkgs.sqlite}/lib:${pkgs.boost}/lib:${pkgs.editline}/lib:${pkgs.libsodium}/lib:${pkgs.libarchive}/lib:${pkgs.gc}/lib:${pkgs.lowdown}/lib:${pkgs.bzip2}/lib:${pkgs.zlib}/lib:$LD_LIBRARY_PATH"
           export HOME=/tmp
           export NIX_CONF_DIR=/tmp/nix-conf
           mkdir -p /tmp/nix-conf /nix/var/nix/db
@@ -171,19 +199,19 @@ mkDerivation {
           experimental-features = nix-command
           NIXCONF
 
-          echo "==> Testing nix-store --init"
-          nix-store --init
+          echo "==> Testing nix store init"
+          nix store init
           echo "    Store initialized"
 
-          echo "==> Testing nix-instantiate --eval"
-          RESULT=$(nix-instantiate --eval --expr '1 + 1')
-          echo "    nix-instantiate --eval '1 + 1' = $RESULT"
+          echo "==> Testing nix eval --expr"
+          RESULT=$(nix eval --expr '1 + 1')
+          echo "    nix eval '1 + 1' = $RESULT"
           if [ "$RESULT" != "2" ]; then
             echo "ERROR: expected 2, got $RESULT"
             exit 1
           fi
 
-          echo "==> Testing nix eval --expr"
+          echo "==> Testing nix eval builtins.currentSystem"
           RESULT2=$(nix eval --expr 'builtins.currentSystem')
           echo "    builtins.currentSystem = $RESULT2"
 

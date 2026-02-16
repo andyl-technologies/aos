@@ -94,9 +94,11 @@ mkDerivation {
 
           BT="${builtins.toString pkgs.bootstrapTools}"
           DL=$(ls $BT/lib/ld-linux-*.so.* | head -1)
+          GCC_VER=$(ls "$BT/lib/gcc/x86_64-unknown-linux-gnu/")
           clang \
             --sysroot=/ \
             -B$BT/lib \
+            -B$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER \
             -isystem $BT/include-glibc \
             -L$BT/lib \
             -Wl,-dynamic-linker=$DL \
@@ -133,6 +135,7 @@ mkDerivation {
             -isystem "$BT_ROOT/include/c++/$CXX_VER/x86_64-unknown-linux-gnu" \
             -isystem $BT/include-glibc \
             -B$BT/lib \
+            -B$BT/lib/gcc/x86_64-unknown-linux-gnu/$CXX_VER \
             -L$BT/lib \
             -L$BT/lib/gcc/x86_64-unknown-linux-gnu/$CXX_VER/ \
             -Wl,-dynamic-linker=$DL \
@@ -223,12 +226,14 @@ mkDerivation {
           BT="${builtins.toString pkgs.bootstrapTools}"
           OPENSSL="${builtins.toString pkgs.openssl}"
           DL=$(ls $BT/lib/ld-linux-*.so.* | head -1)
+          GCC_VER=$(ls "$BT/lib/gcc/x86_64-unknown-linux-gnu/")
 
           clang \
             --sysroot=/ \
             -isystem $OPENSSL/include \
             -isystem $BT/include-glibc \
             -B$BT/lib \
+            -B$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER \
             -L$BT/lib \
             -L$OPENSSL/lib \
             -Wl,-dynamic-linker=$DL \
