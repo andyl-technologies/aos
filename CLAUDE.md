@@ -16,9 +16,9 @@ previously-built AOS packages. **No host tools. No upstream nixpkgs.**
 - If a tool exists as an AOS package (e.g. socat, jq), **always use the AOS
   package** (`pkgs.socat`, `pkgs.jq`) — even in test harnesses that run on the
   host. Never pull a nixpkgs version of something we already build from source.
-- The sole nixpkgs exception is **QEMU** (`testTools.qemu`), which is too
-  complex to bootstrap and runs only on the host during VM/fleet tests. No
-  other nixpkgs packages should appear in `testTools` or build/test closures.
+- The entire build system is fully self-hosted. **No nixpkgs dependencies
+  exist** — not in packages, not in test tools (QEMU is built from source),
+  not in the flake, and not in the dev shell.
 
 ## Package structure
 
@@ -74,11 +74,11 @@ correctly. Stubbing is acceptable only for truly complex bootstrapping problems
 
 ## The `aos` CLI tool
 
-The `aos` CLI is a Rust tool (`pkgs/tools/aos/cli/`) for working with this repo. Run it via
-the Nix flake — do NOT use `cargo run` directly (it needs nixfmt in PATH):
+The `aos` CLI is a Rust tool (`cli/`) for working with this repo. Run it via
+the Nix flake — do NOT use `cargo run` directly (it needs alejandra in PATH):
 
 ```sh
-# Enter the dev shell (provides aos + nixfmt in PATH, installs pre-commit hook):
+# Enter the dev shell (provides aos + just in PATH, installs pre-commit hook):
 nix develop
 
 # Or run a one-off command without entering the shell:
@@ -89,7 +89,7 @@ nix run . -- <subcommand>
 
 | Command       | Description                                             |
 |---------------|---------------------------------------------------------|
-| `aos fmt`     | Auto-format all `.nix` files with nixfmt                |
+| `aos fmt`     | Auto-format all `.nix` files with alejandra              |
 | `aos fmt --check` | Check formatting without modifying files           |
 | `aos build`   | Build a system variant or package                       |
 | `aos test`    | Run tests (eval, VM)                                    |
