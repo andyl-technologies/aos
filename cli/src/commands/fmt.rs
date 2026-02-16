@@ -49,26 +49,26 @@ pub fn run(
         if nix_files.len() == 1 { "" } else { "s" },
     ));
 
-    // Try to find nixfmt binary
-    let nixfmt = find_nixfmt()?;
+    // Try to find a Nix formatter binary
+    let formatter = find_formatter()?;
 
-    // Run nixfmt in batches to avoid "argument list too long"
+    // Run formatter in batches to avoid "argument list too long"
     let batch_size = 200;
     for chunk in nix_files.chunks(batch_size) {
-        let mut cmd = std::process::Command::new(&nixfmt);
+        let mut cmd = std::process::Command::new(&formatter);
         if check {
             cmd.arg("--check");
         }
         cmd.args(chunk);
         cmd.current_dir(nix.root());
 
-        let status = cmd.status().with_context(|| format!("failed to run {nixfmt}"))?;
+        let status = cmd.status().with_context(|| format!("failed to run {formatter}"))?;
 
         if !status.success() {
             if check {
                 anyhow::bail!("formatting check failed — run 'aos fmt' to fix");
             } else {
-                anyhow::bail!("nixfmt exited with status {status}");
+                anyhow::bail!("{formatter} exited with status {status}");
             }
         }
     }
@@ -84,16 +84,16 @@ pub fn run(
     Ok(())
 }
 
-fn find_nixfmt() -> Result<String> {
-    // Check PATH for nixfmt variants
-    for name in &["nixfmt", "nixfmt-rfc-style"] {
+fn find_formatter() -> Result<String> {
+    // Prefer alejandra, fall back to nixfmt
+    for name in &["alejandra", "nixfmt", "nixfmt-rfc-style"] {
         if which(name).is_ok() {
             return Ok(name.to_string());
         }
     }
 
     anyhow::bail!(
-        "nixfmt not found in PATH. Install it with: nix profile install nixpkgs#nixfmt"
+        "No Nix formatter found in PATH. Install alejandra or nixfmt."
     )
 }
 
