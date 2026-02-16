@@ -141,7 +141,7 @@ in
       wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "forking";
-        ExecStart = "${pkgs.chrony}/sbin/chronyd -u chrony";
+        ExecStart = "${pkgs.chrony}/sbin/chronyd -f /etc/chrony.conf -u chrony";
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
         RestartSec = "5s";

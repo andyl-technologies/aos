@@ -55,6 +55,66 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      find = testing.mkFirecrackerTest {
+        pname = "tool-findutils-find";
+        rootfsDeps = [
+          self
+          pkgs.coreutils
+        ];
+        testScript = ''
+          mkdir -p /tmp/find-test/sub
+          touch /tmp/find-test/a.txt /tmp/find-test/b.log /tmp/find-test/sub/c.txt
+
+          COUNT=$(find /tmp/find-test -name '*.txt' | wc -l | tr -d ' ')
+          if [ "$COUNT" != "2" ]; then
+            echo "FAIL: expected 2 .txt files, got $COUNT" >&2
+            exit 1
+          fi
+
+          # Test -type
+          DIRS=$(find /tmp/find-test -type d | wc -l | tr -d ' ')
+          test "$DIRS" = "2"
+
+          echo "==> findutils find: passed"
+        '';
+      };
+
+      xargs = testing.mkFirecrackerTest {
+        pname = "tool-xargs-basic";
+        rootfsDeps = [
+          self
+          pkgs.coreutils
+        ];
+        testScript = ''
+          # echo items | xargs echo
+          RESULT=$(printf 'a\nb\nc\n' | xargs echo)
+          if [ "$RESULT" != "a b c" ]; then
+            echo "FAIL: expected 'a b c', got '$RESULT'" >&2
+            exit 1
+          fi
+
+          # find + xargs: count lines in .txt files
+          mkdir -p /tmp/xargs-test
+          printf 'line1\nline2\n' > /tmp/xargs-test/a.txt
+          printf 'line1\nline2\nline3\n' > /tmp/xargs-test/b.txt
+          TOTAL=$(find /tmp/xargs-test -name '*.txt' | xargs wc -l | tail -1 | tr -s ' ' | cut -d' ' -f2)
+          if [ "$TOTAL" != "5" ]; then
+            echo "FAIL: expected total 5 lines, got '$TOTAL'" >&2
+            exit 1
+          fi
+
+          echo "==> xargs basic: passed"
+        '';
+      };
+    };
+
   meta = {
     description = "GNU Findutils — find, xargs, and locate utilities";
     homepage = "https://www.gnu.org/software/findutils/";

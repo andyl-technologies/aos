@@ -55,6 +55,37 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      diff = testing.mkFirecrackerTest {
+        pname = "tool-diffutils-diff";
+        rootfsDeps = [
+          self
+          pkgs.coreutils
+        ];
+        testScript = ''
+          printf 'line1\nline2\nline3\n' > /tmp/diff-a.txt
+          printf 'line1\nchanged\nline3\n' > /tmp/diff-b.txt
+
+          # diff exits 1 when files differ
+          diff /tmp/diff-a.txt /tmp/diff-b.txt > /tmp/diff-out.txt || true
+          test -s /tmp/diff-out.txt
+
+          # cmp on identical files should succeed
+          echo "same" > /tmp/cmp-a.txt
+          echo "same" > /tmp/cmp-b.txt
+          cmp /tmp/cmp-a.txt /tmp/cmp-b.txt
+
+          echo "==> diffutils diff: passed"
+        '';
+      };
+    };
+
   meta = {
     description = "GNU Diffutils — file comparison utilities (diff, cmp, sdiff, diff3)";
     homepage = "https://www.gnu.org/software/diffutils/";

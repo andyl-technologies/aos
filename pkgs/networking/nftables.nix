@@ -76,4 +76,18 @@ mkDerivation {
     homepage = "https://www.netfilter.org/projects/nftables/";
     license = "GPL-2.0-or-later";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-nftables";
+        tool = self;
+        command = "nft --version";
+      };
+    };
 }

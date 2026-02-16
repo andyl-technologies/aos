@@ -50,4 +50,43 @@ mkDerivation {
     homepage = "https://lz4.org";
     license = "BSD-2-Clause";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-lz4";
+        library = self;
+        libs = [ "-llz4" ];
+        testSource = ''
+          #include <lz4.h>
+          #include <stdio.h>
+          int main() {
+            printf("lz4 version: %s\n", LZ4_versionString());
+            return 0;
+          }
+        '';
+      };
+
+      cli-roundtrip = testing.mkFirecrackerTest {
+        pname = "lib-lz4-cli-roundtrip";
+        rootfsDeps = [ self ];
+        testScript = ''
+          echo "lz4 round-trip test data 1234567890" > /tmp/original.txt
+          lz4 /tmp/original.txt /tmp/compressed.lz4
+          lz4 -d /tmp/compressed.lz4 /tmp/decompressed.txt
+          ORIG=$(cat /tmp/original.txt)
+          RESULT=$(cat /tmp/decompressed.txt)
+          if [ "$ORIG" != "$RESULT" ]; then
+            echo "==> ERROR: decompressed data does not match original" >&2
+            exit 1
+          fi
+          echo "==> lz4 CLI round-trip: PASS"
+        '';
+      };
+    };
 }

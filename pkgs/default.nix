@@ -182,6 +182,7 @@ let
     "installLibs"
     "doCheck"
     "doParallelCheck"
+    "gitDeps"
   ];
 
   # Attrs that mkGoPackage consumes (not passed to mkDerivation)

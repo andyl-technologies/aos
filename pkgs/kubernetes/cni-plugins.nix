@@ -70,6 +70,27 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      binaries = testing.mkFirecrackerTest {
+        pname = "tool-cni-plugins";
+        rootfsDeps = [ self ];
+        testScript = ''
+          echo "==> Verifying CNI plugin binaries exist"
+          test -x ${self}/bin/bridge
+          test -x ${self}/bin/loopback
+          test -x ${self}/bin/host-local
+          test -x ${self}/bin/portmap
+          echo "==> CNI plugin binaries verified"
+        '';
+      };
+    };
+
   meta = {
     description = "CNI Plugins — Container Networking Interface reference plugins";
     homepage = "https://github.com/containernetworking/plugins";

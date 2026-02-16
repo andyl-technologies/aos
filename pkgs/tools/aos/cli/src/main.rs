@@ -69,7 +69,12 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::token::run(&printer, command, &socket_path).await;
     }
 
-    let nix = NixRunner::new(cli.verbose, cli.quiet)?;
+    let mut nix = NixRunner::new(cli.verbose, cli.quiet)?;
+
+    // If the test command specifies a store, configure NixRunner to use it.
+    if let Commands::Test { store, .. } = &cli.command {
+        nix.set_store(store.clone());
+    }
 
     match &cli.command {
         Commands::Build {
@@ -96,7 +101,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Show { package } => commands::show::run(&nix, &printer, package),
         Commands::Graph { package, dot } => commands::graph::run(&nix, &printer, package, *dot),
         Commands::Lint { package } => commands::lint::run(&nix, &printer, package.as_deref()),
-        Commands::Test { command } => commands::test::run(&nix, &printer, command),
+        Commands::Test { command, .. } => commands::test::run(&nix, &printer, command),
         Commands::Shell => commands::shell::run(&nix, &printer),
         Commands::Repl => commands::repl::run(&nix, &printer),
         Commands::Gc {

@@ -74,6 +74,29 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-elfutils";
+        library = self;
+        libs = [ "-lelf" ];
+        testSource = ''
+          #include <libelf.h>
+          #include <stdio.h>
+          int main() {
+            if (elf_version(EV_CURRENT) == EV_NONE) return 1;
+            printf("elfutils libelf: PASS\n");
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "elfutils — ELF utilities and libelf library";
     homepage = "https://sourceware.org/elfutils/";

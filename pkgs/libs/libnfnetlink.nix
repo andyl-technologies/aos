@@ -54,6 +54,31 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-libnfnetlink";
+        library = self;
+        libs = [ "-lnfnetlink" ];
+        testSource = ''
+          #include <libnfnetlink/libnfnetlink.h>
+          #include <stdio.h>
+          int main() {
+            /* nfnl_open may fail in sandbox; we test symbol resolution */
+            struct nfnl_handle *h = nfnl_open();
+            if (h) nfnl_close(h);
+            printf("libnfnetlink: PASS\n");
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "libnfnetlink — low-level library for netfilter kernel/userspace communication";
     homepage = "https://www.netfilter.org/projects/libnfnetlink/";

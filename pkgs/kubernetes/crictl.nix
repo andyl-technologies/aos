@@ -20,6 +20,20 @@ mkGoPackage {
   ldflags = "-s -w -X github.com/kubernetes-sigs/cri-tools/pkg/version.Version=v${version}";
   doCheck = false;
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-crictl";
+        tool = self;
+        command = "crictl --version";
+      };
+    };
+
   meta = {
     description = "crictl — CLI for CRI-compatible container runtimes";
     homepage = "https://github.com/kubernetes-sigs/cri-tools";

@@ -65,6 +65,32 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      compile = testing.mkCxxCompileCheck {
+        pname = "lib-nlohmann-json";
+        deps = [ self ];
+        testSource = ''
+          #include <nlohmann/json.hpp>
+          #include <iostream>
+          int main() {
+            nlohmann::json j;
+            j["key"] = 42;
+            std::string s = j.dump();
+            auto parsed = nlohmann::json::parse(s);
+            if (parsed["key"] != 42) return 1;
+            std::cout << "nlohmann-json: PASS" << std::endl;
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "nlohmann-json — JSON for Modern C++ (header-only)";
     homepage = "https://github.com/nlohmann/json";

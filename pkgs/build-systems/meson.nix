@@ -64,6 +64,46 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "build-meson";
+        tool = self;
+        command = "meson --version";
+        extraDeps = [ pkgs.ninja ];
+      };
+
+      build = testing.mkFirecrackerTest {
+        pname = "build-meson-build";
+        rootfsDeps = [
+          self
+          pkgs.ninja
+        ];
+        testScript = ''
+          mkdir -p /tmp/proj
+          cat > /tmp/proj/meson.build << 'EOF'
+          project('test', 'c')
+          executable('test_app', 'main.c')
+          EOF
+          cat > /tmp/proj/main.c << 'EOF'
+          #include <stdio.h>
+          int main() { printf("meson works\n"); return 0; }
+          EOF
+          cd /tmp/proj
+          meson setup build
+          ninja -C build
+          result=$(./build/test_app)
+          test "$result" = "meson works"
+          echo "==> meson-build passed"
+        '';
+      };
+    };
+
   meta = {
     description = "Build system designed for speed";
     homepage = "https://mesonbuild.com/";

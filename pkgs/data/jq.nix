@@ -55,6 +55,34 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-jq";
+        tool = self;
+        command = "jq --version";
+      };
+
+      query = testing.mkFirecrackerTest {
+        pname = "tool-jq-query";
+        rootfsDeps = [ self ];
+        testScript = ''
+          echo '{"a":1}' > /tmp/input.json
+          RESULT=$(jq '.a' /tmp/input.json)
+          if [ "$RESULT" != "1" ]; then
+            echo "FAIL: expected 1, got $RESULT" >&2
+            exit 1
+          fi
+          echo "==> jq query: passed"
+        '';
+      };
+    };
+
   meta = {
     description = "Lightweight command-line JSON processor";
     homepage = "https://jqlang.github.io/jq/";
