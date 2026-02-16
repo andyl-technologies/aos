@@ -293,6 +293,7 @@ let
       preInstall ? "",
       postInstall ? "",
       passthru ? { },
+      checks ? null,
       ...
     }:
     let
@@ -369,6 +370,7 @@ let
         "preInstall"
         "postInstall"
         "passthru"
+        "checks"
       ];
 
       drv = builtins.derivation (
@@ -386,7 +388,6 @@ let
 
           # Environment variables for the build
           PATH = makePath allBuildDeps;
-          NIX_BUILD_CORES = "4";
 
           # Configuration flags
           inherit
@@ -427,26 +428,29 @@ let
       );
 
       # Attach metadata and override mechanism
-      result = drv // {
-        inherit meta version propagatedDeps;
-        pname = effectivePname;
+      result =
+        drv
+        // {
+          inherit meta version propagatedDeps;
+          pname = effectivePname;
 
-        # Override mechanism
-        override =
-          overrideArgs:
-          if builtins.isFunction overrideArgs then
-            mkDerivation (overrideArgs args)
-          else
-            mkDerivation (args // overrideArgs);
+          # Override mechanism
+          override =
+            overrideArgs:
+            if builtins.isFunction overrideArgs then
+              mkDerivation (overrideArgs args)
+            else
+              mkDerivation (args // overrideArgs);
 
-        # overrideAttrs for modifying the derivation attributes
-        overrideAttrs = f: mkDerivation (args // (f args));
+          # overrideAttrs for modifying the derivation attributes
+          overrideAttrs = f: mkDerivation (args // (f args));
 
-        # passthru attributes (available without building the derivation)
-        passthru = passthru // {
-          inherit phases;
-        };
-      };
+          # passthru attributes (available without building the derivation)
+          passthru = passthru // {
+            inherit phases;
+          };
+        }
+        // (if checks != null then { inherit checks; } else { });
     in
     result;
 
@@ -624,6 +628,10 @@ let
   # fetchCargoDeps { cargo; bootstrapTools; src; hash; sourceRoot?; cargoPatches?; }
   #
   # Fixed-output derivation that vendors Cargo dependencies via `cargo vendor`.
+  #
+  # gitDeps: list of { url, rev, crate } for git-sourced crates.
+  #   Each is fetched via builtins.fetchGit (no git binary needed in sandbox)
+  #   and copied into the vendor directory alongside crates-io deps.
   fetchCargoDeps =
     {
       cargo,
@@ -633,6 +641,7 @@ let
       sourceRoot ? null,
       cargoPatches ? [ ],
       extraLibPaths ? [ ],
+      gitDeps ? [ ],
       name ? "cargo-deps",
       system ? defaultSystem,
     }:
@@ -640,6 +649,49 @@ let
       ldLibPath = builtins.concatStringsSep ":" (
         builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
       );
+
+      # Fetch each git dependency via builtins.fetchGit (Nix builtin, no git binary)
+      fetchedGitDeps = builtins.map (
+        dep:
+        dep
+        // {
+          fetched = builtins.fetchGit {
+            inherit (dep) url rev;
+          };
+        }
+      ) gitDeps;
+
+      # Shell commands to patch Cargo.toml so cargo vendor ignores git deps,
+      # then copy git deps into the vendor output with .cargo-checksum.json
+      gitPatchScript =
+        if fetchedGitDeps == [ ] then
+          ""
+        else
+          builtins.concatStringsSep "\n" (
+            [
+              ''
+                # Patch Cargo.toml to replace git deps with path deps (so cargo vendor succeeds)
+                printf '\n' >> Cargo.toml
+              ''
+            ]
+            ++ builtins.map (dep: ''
+              printf '[patch."${dep.url}"]\n${dep.crate} = { path = "${dep.fetched}" }\n' >> Cargo.toml
+            '') fetchedGitDeps
+          );
+
+      # Shell commands to copy git deps into vendor output after cargo vendor
+      gitCopyScript =
+        if fetchedGitDeps == [ ] then
+          ""
+        else
+          builtins.concatStringsSep "\n" (
+            builtins.map (dep: ''
+              # Copy ${dep.crate} from builtins.fetchGit into vendor dir
+              cp -r "${dep.fetched}" "$out/${dep.crate}"
+              chmod -R u+w "$out/${dep.crate}"
+              printf '{"files":{},"package":null}' > "$out/${dep.crate}/.cargo-checksum.json"
+            '') fetchedGitDeps
+          );
     in
     builtins.derivation {
       inherit name system;
@@ -664,8 +716,12 @@ let
           # Apply cargo patches if any
           ${builtins.concatStringsSep "\n" (builtins.map (p: "patch -p1 < ${p}") cargoPatches)}
 
-          # Vendor all dependencies
-          cargo vendor --locked "$out"
+          ${gitPatchScript}
+
+          # Vendor crates-io dependencies
+          cargo vendor ${if fetchedGitDeps == [ ] then "--locked " else ""}"$out"
+
+          ${gitCopyScript}
         ''
       ];
 

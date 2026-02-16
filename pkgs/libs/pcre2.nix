@@ -60,6 +60,31 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-pcre2";
+        library = self;
+        libs = [ "-lpcre2-8" ];
+        testSource = ''
+          #define PCRE2_CODE_UNIT_WIDTH 8
+          #include <pcre2.h>
+          #include <stdio.h>
+          int main() {
+            int major = PCRE2_MAJOR;
+            int minor = PCRE2_MINOR;
+            printf("pcre2 version: %d.%d\n", major, minor);
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "pcre2 — Perl Compatible Regular Expressions (version 2)";
     homepage = "https://www.pcre.org/";

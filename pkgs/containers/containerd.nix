@@ -66,6 +66,20 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-containerd";
+        tool = self;
+        command = "containerd --version";
+      };
+    };
+
   meta = {
     description = "containerd — industry-standard container runtime";
     homepage = "https://containerd.io";

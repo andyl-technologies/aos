@@ -1,21 +1,20 @@
-# tests/vm/default.nix — VM integration test suite
+# tests/vm/default.nix — VM integration test suite (per-check-group derivations)
 #
-# Single-VM tests that boot an AOS image in QEMU and verify system
-# properties via virtio-serial guest agent.
+# Each check group gets its own VM test derivation, independently cacheable
+# by Nix. Aggregate targets provide backwards-compatible groupings.
 #
-# Tests use the correct system variant for what they're testing:
-#   boot               — Base boot fundamentals (systems.base)
-#   immutability       — Filesystem layout (systems.base)
-#   security           — Kernel sysctl hardening (systems.server)
-#   networking         — Network interface/hostname (systems.server)
-#   kubernetes         — k8s components: containerd, kubelet, CNI (systems.k8s-worker)
-#   update             — Update mechanism, timers, health checks (systems.server)
-#   services           — systemd, chrony, SSH (systems.server)
-#   server-security    — Deep security: SSH, firewall, SELinux, audit (systems.server)
-#   k8s-services       — Deep k8s: containerd, kubelet, networking, exporter (systems.k8s-worker)
-#   k8s-control-plane  — Control plane config: kubeadm, etcd (systems.k8s-control-plane)
-#   seed               — Seed server: nginx, nix-daemon, build orchestration (systems.seed)
-#   validate           — Pre-flight syntax check of all check scripts (no QEMU)
+# Individual tests:
+#   nix-build -A checks.vm.boot-basics
+#   nix-build -A checks.vm.ssh
+#   nix-build -A checks.vm.nginx
+#
+# Aggregate (backwards-compatible) targets:
+#   nix-build -A checks.vm.boot              (alias for boot-basics)
+#   nix-build -A checks.vm.services          (systemd-basics + chrony + ssh)
+#   nix-build -A checks.vm.server-security   (kernel-security + ssh + firewall + ...)
+#
+# Validation (no VM, instant):
+#   nix-build -A checks.vm.validate
 
 {
   pkgs,
@@ -27,64 +26,169 @@
 let
   harness = import ../../lib/testing { inherit pkgs lib testTools; };
 
-  # Collect all check modules for validation gate
+  # ---------------------------------------------------------------------------
+  # Declarative mapping: check group name -> system variant
+  # ---------------------------------------------------------------------------
+  moduleTests = {
+    boot-basics = {
+      variant = "base";
+    };
+    filesystem = {
+      variant = "base";
+    };
+    kernel-security = {
+      variant = "server";
+    };
+    networking-base = {
+      variant = "server";
+    };
+    systemd-basics = {
+      variant = "server";
+    };
+    ssh = {
+      variant = "server";
+    };
+    firewall = {
+      variant = "server";
+    };
+    hardening = {
+      variant = "server";
+    };
+    selinux = {
+      variant = "server";
+    };
+    audit = {
+      variant = "server";
+    };
+    chrony = {
+      variant = "server";
+    };
+    container-support = {
+      variant = "k8s-worker";
+    };
+    containerd = {
+      variant = "k8s-worker";
+    };
+    kubelet = {
+      variant = "k8s-worker";
+    };
+    k8s-networking = {
+      variant = "k8s-worker";
+    };
+    node-exporter = {
+      variant = "k8s-worker";
+    };
+    k8s-control-plane = {
+      variant = "k8s-control-plane";
+    };
+    nginx = {
+      variant = "seed";
+    };
+    nix-daemon = {
+      variant = "seed";
+    };
+    seed = {
+      variant = "seed";
+    };
+  };
+
+  # ---------------------------------------------------------------------------
+  # Auto-generate per-check-group VM test derivations
+  # ---------------------------------------------------------------------------
+  perCheckTests = builtins.mapAttrs (
+    name: spec:
+    let
+      checkModule = import ./checks/${name}.nix {
+        inherit (harness) mkCheck mkCheckGroup;
+      };
+    in
+    harness.mkVMTest {
+      inherit name;
+      system = systems.${spec.variant};
+      checks = [ checkModule ];
+    }
+  ) moduleTests;
+
+  # ---------------------------------------------------------------------------
+  # Aggregate helper: trivial derivation that depends on constituent tests
+  # ---------------------------------------------------------------------------
+  mkAggregate =
+    name: testNames:
+    pkgs.mkDerivation {
+      pname = "aos-vm-aggregate-${name}";
+      version = "0";
+      src = null;
+      buildDeps = builtins.map (n: perCheckTests.${n}) testNames;
+      phases = [
+        {
+          name = "aggregate";
+          script = ''
+            mkdir -p $out
+            echo "All tests passed: ${builtins.concatStringsSep ", " testNames}" > $out/result
+          '';
+        }
+      ];
+    };
+
+  # ---------------------------------------------------------------------------
+  # Backwards-compatible aggregate / alias targets
+  # ---------------------------------------------------------------------------
+  aggregates = {
+    # Simple aliases (single check group -> old name)
+    boot = perCheckTests.boot-basics;
+    immutability = perCheckTests.filesystem;
+    security = perCheckTests.kernel-security;
+    networking = perCheckTests.networking-base;
+
+    # Multi-check aggregates
+    services = mkAggregate "services" [
+      "systemd-basics"
+      "chrony"
+      "ssh"
+    ];
+    server-security = mkAggregate "server-security" [
+      "kernel-security"
+      "ssh"
+      "firewall"
+      "hardening"
+      "selinux"
+      "audit"
+    ];
+    seed-all = mkAggregate "seed-all" [
+      "nginx"
+      "nix-daemon"
+      "seed"
+    ];
+    kubernetes = mkAggregate "kubernetes" [
+      "container-support"
+      "containerd"
+      "kubelet"
+      "k8s-networking"
+    ];
+    k8s-services = mkAggregate "k8s-services" [
+      "containerd"
+      "kubelet"
+      "k8s-networking"
+      "node-exporter"
+    ];
+  };
+
+  # ---------------------------------------------------------------------------
+  # Collect all check modules for the validation gate
+  # ---------------------------------------------------------------------------
   allChecks =
     let
-      mkC = { inherit (harness) mkCheck mkCheckGroup; };
+      mkC = {
+        inherit (harness) mkCheck mkCheckGroup;
+      };
     in
-    [
-      (import ./checks/boot-basics.nix mkC)
-      (import ./checks/kernel-security.nix mkC)
-      (import ./checks/filesystem.nix mkC)
-      (import ./checks/networking-base.nix mkC)
-      (import ./checks/container-support.nix mkC)
-      (import ./checks/systemd-basics.nix mkC)
-      (import ./checks/ssh.nix mkC)
-      (import ./checks/firewall.nix mkC)
-      (import ./checks/hardening.nix mkC)
-      (import ./checks/selinux.nix mkC)
-      (import ./checks/audit.nix mkC)
-      (import ./checks/chrony.nix mkC)
-      (import ./checks/update-infra.nix mkC)
-      (import ./checks/containerd.nix mkC)
-      (import ./checks/kubelet.nix mkC)
-      (import ./checks/k8s-networking.nix mkC)
-      (import ./checks/node-exporter.nix mkC)
-      (import ./checks/nginx.nix mkC)
-      (import ./checks/nix-daemon.nix mkC)
-      (import ./checks/seed.nix mkC)
-    ];
-
-  args = {
-    inherit
-      pkgs
-      lib
-      systems
-      testTools
-      ;
-  };
+    builtins.map (name: import ./checks/${name}.nix mkC) (builtins.attrNames moduleTests);
 in
-{
-  # --- Base variant tests ---
-  boot = import ./boot.nix args;
-  immutability = import ./immutability.nix args;
-
-  # --- Server variant tests ---
-  security = import ./security.nix args;
-  networking = import ./networking.nix args;
-  services = import ./services.nix args;
-  update = import ./update.nix args;
-  server-security = import ./server-security.nix args;
-
-  # --- Seed variant tests ---
-  seed = import ./seed.nix args;
-
-  # --- Kubernetes variant tests ---
-  kubernetes = import ./kubernetes.nix args;
-  k8s-services = import ./k8s-services.nix args;
-  k8s-control-plane = import ./k8s-control-plane.nix args;
-
-  # --- Pre-flight validation (no QEMU, instant) ---
+# Merge: individual tests + aggregates/aliases + validate
+perCheckTests
+// aggregates
+// {
+  # Pre-flight syntax validation (no VM, instant)
   validate = harness.validateChecks {
     inherit pkgs;
     checks = allChecks;

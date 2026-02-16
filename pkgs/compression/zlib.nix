@@ -56,4 +56,125 @@ mkDerivation {
     homepage = "https://zlib.net";
     license = "Zlib";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-zlib";
+        library = self;
+        libs = [ "-lz" ];
+        testSource = ''
+          #include <zlib.h>
+          #include <stdio.h>
+          int main() {
+            printf("zlib version: %s\n", zlibVersion());
+            return 0;
+          }
+        '';
+      };
+
+      compress = testing.mkLinkCheck {
+        pname = "lib-zlib-compress";
+        library = self;
+        libs = [ "-lz" ];
+        testSource = ''
+          #include <zlib.h>
+          #include <string.h>
+          #include <stdio.h>
+          int main() {
+            const char *src = "hello zlib compression test data";
+            uLong srcLen = strlen(src);
+            uLong dstLen = compressBound(srcLen);
+            Bytef dst[4096];
+            if (compress(dst, &dstLen, (const Bytef *)src, srcLen) != Z_OK) return 1;
+            char result[256];
+            uLong resLen = sizeof(result);
+            if (uncompress((Bytef *)result, &resLen, dst, dstLen) != Z_OK) return 1;
+            if (memcmp(result, src, srcLen) != 0) return 1;
+            printf("zlib compress/uncompress round-trip: PASS\n");
+            return 0;
+          }
+        '';
+      };
+
+      header-version = testing.mkLinkCheck {
+        pname = "lib-zlib-header-version";
+        library = self;
+        libs = [ "-lz" ];
+        testSource = ''
+          #include <zlib.h>
+          #include <stdio.h>
+          #include <string.h>
+          int main(void) {
+              const char *hdr = ZLIB_VERSION;
+              const char *lib = zlibVersion();
+              printf("header:  %s\n", hdr);
+              printf("runtime: %s\n", lib);
+              if (strcmp(hdr, lib) != 0) {
+                  fprintf(stderr, "MISMATCH: header and runtime versions differ\n");
+                  return 1;
+              }
+              printf("zlib-header-version: PASS\n");
+              return 0;
+          }
+        '';
+      };
+
+      consumers = testing.mkFirecrackerTest {
+        pname = "lib-zlib-consumers";
+        rootfsDeps = [
+          pkgs.curl
+          pkgs.libarchive
+          pkgs.python3
+          pkgs.elfutils
+          self
+        ];
+        testScript = ''
+          FAIL=0
+          for bin in \
+            ${pkgs.curl}/bin/curl; do
+            echo "==> Checking $bin"
+            OUTPUT=$(readelf -d "$bin" 2>&1) || true
+            case "$OUTPUT" in
+              *libz*)
+                echo "    OK: links against zlib"
+                ;;
+              *)
+                echo "    FAIL: no zlib linkage found" >&2
+                FAIL=1
+                ;;
+            esac
+          done
+          for lib in \
+            ${pkgs.libarchive}/lib/libarchive.so \
+            ${pkgs.python3}/lib/libpython*.so*; do
+            echo "==> Checking $lib"
+            if [ ! -e "$lib" ]; then
+              echo "    SKIP: $lib not found"
+              continue
+            fi
+            OUTPUT=$(readelf -d "$lib" 2>&1) || true
+            case "$OUTPUT" in
+              *libz*)
+                echo "    OK: links against zlib"
+                ;;
+              *)
+                echo "    FAIL: no zlib linkage found" >&2
+                FAIL=1
+                ;;
+            esac
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo "==> ERROR: some consumers missing zlib linkage" >&2
+            exit 1
+          fi
+          echo "==> zlib-consumers: PASS"
+        '';
+      };
+    };
 }

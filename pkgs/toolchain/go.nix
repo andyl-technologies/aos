@@ -66,6 +66,474 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      hello = testing.mkFirecrackerTest {
+        pname = "toolchain-go-hello";
+        rootfsDeps = [ self ];
+        memory = 512;
+        testScript = ''
+          export GOPATH="/tmp/go"
+          export GOCACHE="/tmp/go-cache"
+          export CGO_ENABLED=0
+          mkdir -p "$GOPATH" "$GOCACHE"
+
+          mkdir -p /tmp/testpkg
+          cat > /tmp/testpkg/main.go << 'EOF'
+          package main
+
+          import (
+              "fmt"
+              "sort"
+              "strings"
+          )
+
+          func main() {
+              words := []string{"gamma", "alpha", "beta"}
+              sort.Strings(words)
+              fmt.Println(strings.Join(words, ","))
+          }
+          EOF
+
+          go build -o /tmp/testbin /tmp/testpkg/
+          /tmp/testbin
+        '';
+      };
+
+      cgo = testing.mkFirecrackerTest {
+        pname = "toolchain-go-cgo";
+        rootfsDeps = [ self ];
+        memory = 512;
+        testScript = ''
+          export GOPATH="/tmp/go"
+          export GOCACHE="/tmp/go-cache"
+          export CGO_ENABLED=1
+          mkdir -p "$GOPATH" "$GOCACHE"
+
+          mkdir -p /tmp/cgopkg
+          cat > /tmp/cgopkg/main.go << 'GOEOF'
+          package main
+
+          /*
+          #include <stdlib.h>
+
+          static int c_add(int a, int b) {
+              return a + b;
+          }
+          */
+          import "C"
+          import "fmt"
+
+          func main() {
+              result := C.c_add(C.int(17), C.int(25))
+              fmt.Printf("cgo-result=%d\n", int(result))
+          }
+          GOEOF
+
+          go build -o /tmp/cgobin /tmp/cgopkg/
+          /tmp/cgobin
+        '';
+      };
+
+      test = testing.mkFirecrackerTest {
+        pname = "toolchain-go-test";
+        rootfsDeps = [ self ];
+        memory = 512;
+        testScript = ''
+          export GOPATH="/tmp/go"
+          export GOCACHE="/tmp/go-cache"
+          export CGO_ENABLED=0
+          mkdir -p "$GOPATH" "$GOCACHE"
+
+          mkdir -p /tmp/testpkg
+          cat > /tmp/testpkg/go.mod << 'EOF'
+          module testpkg
+          go 1.23
+          EOF
+
+          cat > /tmp/testpkg/math.go << 'EOF'
+          package testpkg
+          func Add(a, b int) int { return a + b }
+          EOF
+
+          cat > /tmp/testpkg/math_test.go << 'EOF'
+          package testpkg
+
+          import "testing"
+
+          func TestAdd(t *testing.T) {
+              if Add(2, 3) != 5 {
+                  t.Fatal("2+3 != 5")
+              }
+          }
+
+          func TestAddNegative(t *testing.T) {
+              if Add(-1, 1) != 0 {
+                  t.Fatal("-1+1 != 0")
+              }
+          }
+          EOF
+
+          cd /tmp/testpkg
+          go test -v ./...
+        '';
+      };
+
+      static = testing.mkFirecrackerTest {
+        pname = "toolchain-go-static";
+        rootfsDeps = [ self ];
+        memory = 512;
+        testScript = ''
+          export GOPATH="/tmp/go"
+          export GOCACHE="/tmp/go-cache"
+          export CGO_ENABLED=0
+          mkdir -p "$GOPATH" "$GOCACHE"
+
+          mkdir -p /tmp/staticpkg
+          cat > /tmp/staticpkg/main.go << 'EOF'
+          package main
+
+          import "fmt"
+
+          func main() {
+              fmt.Println("go-static-ok")
+          }
+          EOF
+
+          go build -o /tmp/staticbin /tmp/staticpkg/
+          /tmp/staticbin
+
+          # Verify the binary does not depend on dynamic linker
+          readelf -l /tmp/staticbin > /tmp/readelf-out 2>&1 || true
+          found_interp=0
+          while IFS= read -r line; do
+            case "$line" in
+              *INTERP*) found_interp=1 ;;
+            esac
+          done < /tmp/readelf-out
+          if [ "$found_interp" = "0" ]; then
+            echo "==> Binary is statically linked (no INTERP)"
+          else
+            echo "==> Binary has INTERP (expected for pure Go with external linker)"
+          fi
+        '';
+      };
+
+      cgo-openssl = testing.mkFirecrackerTest {
+        pname = "toolchain-go-cgo-openssl";
+        rootfsDeps = [
+          self
+          pkgs.openssl
+        ];
+        memory = 512;
+        testScript = ''
+          export GOPATH="/tmp/go"
+          export GOCACHE="/tmp/go-cache"
+          export CGO_ENABLED=1
+          mkdir -p "$GOPATH" "$GOCACHE"
+
+          OPENSSL="${builtins.toString pkgs.openssl}"
+          export CGO_CFLAGS="-I$OPENSSL/include"
+          export CGO_LDFLAGS="-L$OPENSSL/lib -lssl -lcrypto"
+          export LD_LIBRARY_PATH="$OPENSSL/lib:$LD_LIBRARY_PATH"
+
+          mkdir -p /tmp/sslpkg
+          cat > /tmp/sslpkg/main.go << 'GOEOF'
+          package main
+
+          /*
+          #include <openssl/crypto.h>
+          */
+          import "C"
+          import "fmt"
+
+          func main() {
+              ver := C.GoString(C.OpenSSL_version(C.OPENSSL_VERSION))
+              fmt.Printf("go-openssl: %s\n", ver)
+          }
+          GOEOF
+
+          go build -o /tmp/sslbin /tmp/sslpkg/
+          /tmp/sslbin
+        '';
+      };
+
+      cgo-zlib = testing.mkFirecrackerTest {
+        pname = "toolchain-go-cgo-zlib";
+        rootfsDeps = [
+          self
+          pkgs.zlib
+        ];
+        memory = 512;
+        testScript = ''
+          export GOPATH="/tmp/go"
+          export GOCACHE="/tmp/go-cache"
+          export CGO_ENABLED=1
+          mkdir -p "$GOPATH" "$GOCACHE"
+
+          ZLIB="${builtins.toString pkgs.zlib}"
+          export CGO_CFLAGS="-I$ZLIB/include"
+          export CGO_LDFLAGS="-L$ZLIB/lib -lz"
+          export LD_LIBRARY_PATH="$ZLIB/lib:$LD_LIBRARY_PATH"
+
+          mkdir -p /tmp/zpkg
+          cat > /tmp/zpkg/main.go << 'GOEOF'
+          package main
+
+          /*
+          #include <zlib.h>
+          */
+          import "C"
+          import "fmt"
+
+          func main() {
+              ver := C.GoString(C.zlibVersion())
+              fmt.Printf("go-zlib: %s\n", ver)
+          }
+          GOEOF
+
+          go build -o /tmp/zbin /tmp/zpkg/
+          /tmp/zbin
+        '';
+      };
+
+      vet = testing.mkFirecrackerTest {
+        pname = "toolchain-go-vet";
+        rootfsDeps = [ self ];
+        memory = 512;
+        testScript = ''
+          export GOPATH="/tmp/go"
+          export GOCACHE="/tmp/go-cache"
+          export CGO_ENABLED=0
+          mkdir -p "$GOPATH" "$GOCACHE"
+
+          # First: clean code should pass vet
+          mkdir -p /tmp/cleanpkg
+          cat > /tmp/cleanpkg/go.mod << 'EOF'
+          module cleanpkg
+          go 1.23
+          EOF
+
+          cat > /tmp/cleanpkg/main.go << 'EOF'
+          package main
+          import "fmt"
+          func main() { fmt.Println("clean") }
+          EOF
+
+          cd /tmp/cleanpkg
+          go vet ./...
+          echo "==> Clean code passed go vet"
+
+          # Second: buggy code should fail vet
+          mkdir -p /tmp/buggypkg
+          cat > /tmp/buggypkg/go.mod << 'EOF'
+          module buggypkg
+          go 1.23
+          EOF
+
+          cat > /tmp/buggypkg/main.go << 'EOF'
+          package main
+          import "fmt"
+          func main() {
+              x := "hello"
+              fmt.Printf("%d\n", x)
+          }
+          EOF
+
+          cd /tmp/buggypkg
+          vet_exit=0
+          go vet ./... 2>/tmp/vet-output || vet_exit=$?
+          if [ "$vet_exit" -eq 0 ]; then
+            echo "FAIL: go vet did not catch the printf format bug"
+            exit 1
+          fi
+          echo "==> go vet correctly caught the format bug (exit=$vet_exit)"
+        '';
+      };
+
+      fmt = testing.mkFirecrackerTest {
+        pname = "toolchain-go-fmt";
+        rootfsDeps = [ self ];
+        memory = 512;
+        testScript = ''
+          export GOPATH="/tmp/go"
+          export GOCACHE="/tmp/go-cache"
+          export CGO_ENABLED=0
+          mkdir -p "$GOPATH" "$GOCACHE"
+
+          # Write unformatted Go code
+          cat > /tmp/ugly.go << 'EOF'
+          package main
+          import    "fmt"
+          func main(  ){
+          fmt.Println("hello")
+          }
+          EOF
+
+          # gofmt -l should report the file as needing formatting
+          OUTPUT=$(gofmt -l /tmp/ugly.go)
+          if [ -z "$OUTPUT" ]; then
+            echo "FAIL: gofmt -l did not report the unformatted file"
+            exit 1
+          fi
+          echo "==> gofmt correctly identified unformatted file: $OUTPUT"
+
+          # Verify gofmt produces valid, compilable output
+          gofmt /tmp/ugly.go > /tmp/formatted.go
+
+          mkdir -p /tmp/fmtpkg
+          cp /tmp/formatted.go /tmp/fmtpkg/main.go
+          cat > /tmp/fmtpkg/go.mod << 'EOF'
+          module fmtpkg
+          go 1.23
+          EOF
+
+          cd /tmp/fmtpkg
+          go build -o /tmp/fmtbin .
+          /tmp/fmtbin
+          echo "==> Formatted code compiles and runs"
+        '';
+      };
+
+      build = testing.mkFirecrackerTest {
+        pname = "cross-cutting-go-build";
+        rootfsDeps = [ self ];
+        memory = 512;
+        testScript = ''
+          export GOROOT="${self}/share/go"
+          export GOPATH="/tmp/gopath"
+          export GOCACHE="/tmp/gocache"
+          export PATH="${self}/bin:$PATH"
+          mkdir -p /tmp/gopath /tmp/gocache
+
+          cat > /tmp/hello.go << 'EOF'
+          package main
+
+          import (
+              "fmt"
+              "runtime"
+          )
+
+          func main() {
+              fmt.Printf("Hello from Go %s on %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+              // Test basic computation
+              result := fibonacci(10)
+              if result != 55 {
+                  panic("fibonacci(10) != 55")
+              }
+              fmt.Printf("fibonacci(10) = %d\n", result)
+          }
+
+          func fibonacci(n int) int {
+              if n <= 1 { return n }
+              return fibonacci(n-1) + fibonacci(n-2)
+          }
+          EOF
+
+          echo "==> Building Go program"
+          go build -o /tmp/hello /tmp/hello.go
+          echo "==> Running Go program"
+          /tmp/hello
+          echo "Go build integration: PASS"
+        '';
+      };
+
+      cgo-full = testing.mkFirecrackerTest {
+        pname = "cross-cutting-go-cgo-full";
+        rootfsDeps = [
+          self
+          pkgs.zlib
+        ];
+        memory = 512;
+        testScript = ''
+          export GOROOT="${self}/share/go"
+          export GOPATH="/tmp/gopath"
+          export GOCACHE="/tmp/gocache"
+          export HOME="/tmp"
+          export PATH="${self}/bin:$PATH"
+          export CGO_ENABLED=1
+          export C_INCLUDE_PATH="${pkgs.zlib}/include:$C_INCLUDE_PATH"
+          export LIBRARY_PATH="${pkgs.zlib}/lib:$LIBRARY_PATH"
+          export LD_LIBRARY_PATH="${pkgs.zlib}/lib:$LD_LIBRARY_PATH"
+          mkdir -p /tmp/gopath /tmp/gocache /tmp/cgotest
+
+          cat > /tmp/cgotest/main.go << 'EOF'
+          package main
+
+          /*
+          #include <zlib.h>
+          #include <stdlib.h>
+          #include <string.h>
+
+          int do_compress(const char *src, int srcLen, char *dst, int *dstLen) {
+              uLong dl = (uLong)*dstLen;
+              int ret = compress((Bytef *)dst, &dl, (const Bytef *)src, (uLong)srcLen);
+              *dstLen = (int)dl;
+              return ret;
+          }
+
+          int do_uncompress(const char *src, int srcLen, char *dst, int *dstLen) {
+              uLong dl = (uLong)*dstLen;
+              int ret = uncompress((Bytef *)dst, &dl, (const Bytef *)src, (uLong)srcLen);
+              *dstLen = (int)dl;
+              return ret;
+          }
+          */
+          import "C"
+          import (
+              "fmt"
+              "unsafe"
+          )
+
+          func main() {
+              src := "Hello from Go CGO with zlib compression!"
+              srcC := C.CString(src)
+              defer C.free(unsafe.Pointer(srcC))
+
+              // Compress
+              dstLen := C.int(256)
+              dst := (*C.char)(C.malloc(256))
+              defer C.free(unsafe.Pointer(dst))
+
+              ret := C.do_compress(srcC, C.int(len(src)), dst, &dstLen)
+              if ret != 0 {
+                  panic(fmt.Sprintf("compress failed: %d", ret))
+              }
+              fmt.Printf("Compressed %d -> %d bytes\n", len(src), dstLen)
+
+              // Uncompress
+              outLen := C.int(256)
+              out := (*C.char)(C.malloc(256))
+              defer C.free(unsafe.Pointer(out))
+
+              ret = C.do_uncompress(dst, dstLen, out, &outLen)
+              if ret != 0 {
+                  panic(fmt.Sprintf("uncompress failed: %d", ret))
+              }
+
+              result := C.GoStringN(out, outLen)
+              if result != src {
+                  panic(fmt.Sprintf("round-trip mismatch: got %q", result))
+              }
+              fmt.Printf("Round-trip OK: %q\n", result)
+              fmt.Println("Go CGO full: PASS")
+          }
+          EOF
+
+          echo "==> Building Go CGO program with zlib"
+          cd /tmp/cgotest
+          go build -o /tmp/cgotest/cgotest .
+          echo "==> Running Go CGO program"
+          /tmp/cgotest/cgotest
+        '';
+      };
+    };
+
   meta = {
     description = "Go programming language";
     homepage = "https://go.dev";

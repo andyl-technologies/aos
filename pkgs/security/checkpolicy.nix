@@ -57,6 +57,41 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      policy = testing.mkFirecrackerTest {
+        pname = "cross-cutting-selinux-policy";
+        rootfsDeps = [
+          self
+          pkgs.libsepol
+          pkgs.libselinux
+        ];
+        testScript = ''
+          export PATH="${self}/bin:$PATH"
+          export LD_LIBRARY_PATH="${self}/lib:${pkgs.libsepol}/lib:${pkgs.libselinux}/lib:$LD_LIBRARY_PATH"
+
+          # Create a minimal SELinux type enforcement file
+          cat > /tmp/test_module.te << 'EOF'
+          policy_module(test_module, 1.0.0)
+
+          type test_t;
+          EOF
+
+          echo "==> Compiling SELinux policy module with checkpolicy"
+          # checkmodule compiles .te to .mod
+          checkmodule -M -m -o /tmp/test_module.mod /tmp/test_module.te
+          echo "    Module compiled: $(ls -l /tmp/test_module.mod | cut -d' ' -f5) bytes"
+
+          echo "SELinux policy: PASS"
+        '';
+      };
+    };
+
   meta = {
     description = "checkpolicy — SELinux policy compiler (checkpolicy, checkmodule)";
     homepage = "https://github.com/SELinuxProject/selinux";

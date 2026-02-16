@@ -51,6 +51,38 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "build-make";
+        tool = self;
+        command = "make --version";
+      };
+
+      build = testing.mkFirecrackerTest {
+        pname = "build-make-build";
+        rootfsDeps = [ self ];
+        testScript = ''
+          mkdir -p /tmp/proj
+          cat > /tmp/proj/main.c << 'EOF'
+          #include <stdio.h>
+          int main() { printf("make works\n"); return 0; }
+          EOF
+          printf 'CC ?= gcc\ntest_app: main.c\n\t$(CC) -o test_app main.c\n' > /tmp/proj/Makefile
+          cd /tmp/proj
+          make
+          result=$(./test_app)
+          test "$result" = "make works"
+          echo "==> make-build passed"
+        '';
+      };
+    };
+
   meta = {
     description = "GNU Make — a tool to control the generation of executables";
     homepage = "https://www.gnu.org/software/make/";

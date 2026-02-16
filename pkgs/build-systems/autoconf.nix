@@ -57,6 +57,48 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      build = testing.mkFirecrackerTest {
+        pname = "build-autotools-build";
+        rootfsDeps = [
+          self
+          pkgs.automake
+          pkgs.make
+          pkgs.m4
+        ];
+        testScript = ''
+          mkdir -p /tmp/proj
+          cat > /tmp/proj/configure.ac << 'EOF'
+          AC_INIT([test], [1.0])
+          AM_INIT_AUTOMAKE([foreign])
+          AC_PROG_CC
+          AC_OUTPUT([Makefile])
+          EOF
+          cat > /tmp/proj/Makefile.am << 'EOF'
+          bin_PROGRAMS = test_app
+          test_app_SOURCES = main.c
+          EOF
+          cat > /tmp/proj/main.c << 'EOF'
+          #include <stdio.h>
+          int main() { printf("autotools works\n"); return 0; }
+          EOF
+          cd /tmp/proj
+          autoreconf -i
+          ./configure
+          make
+          result=$(./test_app)
+          test "$result" = "autotools works"
+          echo "==> autotools-build passed"
+        '';
+      };
+    };
+
   meta = {
     description = "GNU Autoconf — generates configure scripts from templates";
     homepage = "https://www.gnu.org/software/autoconf/";

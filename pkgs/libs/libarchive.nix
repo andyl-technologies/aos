@@ -78,6 +78,36 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-libarchive";
+        library = self;
+        libs = [ "-larchive" ];
+        extraDeps = [
+          pkgs.zlib
+          pkgs.zstd
+          pkgs.bzip2
+          pkgs.lz4
+          pkgs.openssl
+          pkgs.xz
+        ];
+        testSource = ''
+          #include <archive.h>
+          #include <stdio.h>
+          int main() {
+            printf("libarchive version: %s\n", archive_version_string());
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "libarchive — multi-format archive and compression library";
     homepage = "https://www.libarchive.org";

@@ -54,6 +54,31 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-libmnl";
+        library = self;
+        libs = [ "-lmnl" ];
+        testSource = ''
+          #include <libmnl/libmnl.h>
+          #include <stdio.h>
+          int main() {
+            /* mnl_socket_open may fail in sandbox; we test symbol resolution */
+            struct mnl_socket *nl = mnl_socket_open(0);
+            if (nl) mnl_socket_close(nl);
+            printf("libmnl: PASS\n");
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "libmnl — minimalistic Netlink communication library";
     homepage = "https://www.netfilter.org/projects/libmnl/";

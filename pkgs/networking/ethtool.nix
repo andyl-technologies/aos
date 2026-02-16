@@ -63,4 +63,18 @@ mkDerivation {
     homepage = "https://mirrors.edge.kernel.org/pub/software/network/ethtool/";
     license = "GPL-2.0-only";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-ethtool";
+        tool = self;
+        command = "ethtool --version";
+      };
+    };
 }

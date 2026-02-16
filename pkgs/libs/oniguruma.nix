@@ -55,6 +55,28 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-oniguruma";
+        library = self;
+        libs = [ "-lonig" ];
+        testSource = ''
+          #include <oniguruma.h>
+          #include <stdio.h>
+          int main() {
+            printf("oniguruma version: %s\n", onig_version());
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "Oniguruma — regular expression library";
     homepage = "https://github.com/kkos/oniguruma";

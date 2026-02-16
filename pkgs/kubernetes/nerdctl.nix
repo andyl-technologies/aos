@@ -42,6 +42,20 @@ mkGoPackage {
         chmod +x "$out/bin/nerdctl"
   '';
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-nerdctl";
+        tool = self;
+        command = "nerdctl --version";
+      };
+    };
+
   meta = {
     description = "nerdctl — Docker-compatible CLI for containerd";
     homepage = "https://github.com/containerd/nerdctl";

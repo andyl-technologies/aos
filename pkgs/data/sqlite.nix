@@ -70,6 +70,55 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-sqlite";
+        library = self;
+        libs = [ "-lsqlite3" ];
+        testSource = ''
+          #include <sqlite3.h>
+          #include <stdio.h>
+          int main() {
+            printf("sqlite version: %s\n", sqlite3_libversion());
+            return 0;
+          }
+        '';
+      };
+
+      cli = testing.mkFirecrackerTest {
+        pname = "tool-sqlite3-cli";
+        rootfsDeps = [
+          self
+          pkgs.coreutils
+        ];
+        testScript = ''
+                RESULT=$(sqlite3 :memory: "SELECT 1+1;")
+                if [ "$RESULT" != "2" ]; then
+                  echo "FAIL: expected 2, got '$RESULT'" >&2
+                  exit 1
+                fi
+
+                # Test table creation and query
+                sqlite3 /tmp/test.db << 'SQL'
+          CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, value INTEGER);
+          INSERT INTO items VALUES (1, 'alpha', 10);
+          INSERT INTO items VALUES (2, 'beta', 20);
+          INSERT INTO items VALUES (3, 'gamma', 30);
+          SQL
+                SUM=$(sqlite3 /tmp/test.db "SELECT SUM(value) FROM items;")
+                test "$SUM" = "60"
+
+                echo "==> sqlite3 cli: passed"
+        '';
+      };
+    };
+
   meta = {
     description = "SQLite — self-contained SQL database engine";
     homepage = "https://www.sqlite.org";

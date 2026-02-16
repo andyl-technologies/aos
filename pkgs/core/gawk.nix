@@ -56,6 +56,42 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      processing = testing.mkFirecrackerTest {
+        pname = "tool-gawk-processing";
+        rootfsDeps = [
+          self
+          pkgs.coreutils
+        ];
+        testScript = ''
+          # Field extraction
+          RESULT=$(echo "a b c" | awk '{print $2}')
+          if [ "$RESULT" != "b" ]; then
+            echo "FAIL: expected b, got '$RESULT'" >&2
+            exit 1
+          fi
+
+          # CSV field sum
+          printf 'alice,30\nbob,25\n' > /tmp/data.csv
+          SUM=$(awk -F, '{sum += $2} END {print sum}' /tmp/data.csv)
+          test "$SUM" = "55"
+
+          # Pattern matching
+          printf 'error: fail\ninfo: ok\nerror: timeout\n' > /tmp/log.txt
+          COUNT=$(awk '/^error/' /tmp/log.txt | wc -l | tr -d ' ')
+          test "$COUNT" = "2"
+
+          echo "==> gawk processing: passed"
+        '';
+      };
+    };
+
   meta = {
     description = "GNU Awk — pattern scanning and processing language";
     homepage = "https://www.gnu.org/software/gawk/";

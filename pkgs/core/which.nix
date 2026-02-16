@@ -52,6 +52,28 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      lookup = testing.mkFirecrackerTest {
+        pname = "tool-which-lookup";
+        rootfsDeps = [
+          self
+          pkgs.coreutils
+        ];
+        testScript = ''
+          RESULT=$(which bash)
+          test -n "$RESULT"
+          test -x "$RESULT"
+          echo "==> which lookup: bash found at $RESULT"
+        '';
+      };
+    };
+
   meta = {
     description = "which — show the full path of shell commands";
     homepage = "https://www.gnu.org/software/which/";
