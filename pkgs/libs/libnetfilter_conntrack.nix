@@ -60,6 +60,39 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-libnetfilter-conntrack";
+        library = self;
+        libs = [
+          "-lnetfilter_conntrack"
+          "-lnfnetlink"
+          "-lmnl"
+        ];
+        extraDeps = [
+          pkgs.libnfnetlink
+          pkgs.libmnl
+        ];
+        testSource = ''
+          #include <libnetfilter_conntrack/libnetfilter_conntrack.h>
+          #include <stdio.h>
+          int main() {
+            struct nf_conntrack *ct = nfct_new();
+            if (!ct) return 1;
+            nfct_destroy(ct);
+            printf("libnetfilter_conntrack: PASS\n");
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "libnetfilter_conntrack — userspace library for in-kernel connection tracking";
     homepage = "https://netfilter.org/projects/libnetfilter_conntrack/";

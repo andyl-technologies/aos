@@ -71,4 +71,31 @@ mkDerivation {
     homepage = "https://www.openssh.com";
     license = "BSD-2-Clause";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-openssh-version";
+        tool = self;
+        command = "ssh -V 2>&1";
+      };
+
+      keygen = testing.mkFirecrackerTest {
+        pname = "tool-openssh-keygen";
+        rootfsDeps = [ self ];
+        testScript = ''
+          echo "==> Generating ed25519 keypair"
+          ssh-keygen -t ed25519 -f /tmp/testkey -N ""
+          echo "==> Verifying key files exist"
+          test -f /tmp/testkey
+          test -f /tmp/testkey.pub
+          echo "==> ssh-keygen test passed"
+        '';
+      };
+    };
 }

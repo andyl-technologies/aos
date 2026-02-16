@@ -72,4 +72,18 @@ mkDerivation {
     homepage = "https://rsync.samba.org/";
     license = "GPL-3.0-or-later";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-rsync";
+        tool = self;
+        command = "rsync --version";
+      };
+    };
 }

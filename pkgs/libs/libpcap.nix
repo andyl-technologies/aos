@@ -65,6 +65,28 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      link = testing.mkLinkCheck {
+        pname = "lib-libpcap";
+        library = self;
+        libs = [ "-lpcap" ];
+        testSource = ''
+          #include <pcap/pcap.h>
+          #include <stdio.h>
+          int main() {
+            printf("libpcap version: %s\n", pcap_lib_version());
+            return 0;
+          }
+        '';
+      };
+    };
+
   meta = {
     description = "libpcap — packet capture library";
     homepage = "https://www.tcpdump.org";

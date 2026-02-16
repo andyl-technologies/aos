@@ -55,6 +55,31 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      roundtrip = testing.mkFirecrackerTest {
+        pname = "tool-xz-roundtrip";
+        rootfsDeps = [
+          self
+          pkgs.coreutils
+        ];
+        testScript = ''
+          echo "xz test data" > /tmp/xz-test.txt
+          xz /tmp/xz-test.txt
+          test -f /tmp/xz-test.txt.xz
+          test ! -f /tmp/xz-test.txt
+          xz -d /tmp/xz-test.txt.xz
+          test "$(cat /tmp/xz-test.txt)" = "xz test data"
+          echo "==> xz roundtrip: passed"
+        '';
+      };
+    };
+
   meta = {
     description = "XZ Utils — LZMA compression utilities";
     homepage = "https://tukaani.org/xz/";

@@ -66,6 +66,47 @@ mkDerivation {
     }
   ];
 
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "build-cmake";
+        tool = self;
+        command = "cmake --version";
+      };
+
+      build = testing.mkFirecrackerTest {
+        pname = "build-cmake-build";
+        rootfsDeps = [
+          self
+          pkgs.make
+        ];
+        testScript = ''
+          mkdir -p /tmp/proj
+          cat > /tmp/proj/CMakeLists.txt << 'EOF'
+          cmake_minimum_required(VERSION 3.10)
+          project(test C)
+          add_executable(test_app main.c)
+          EOF
+          cat > /tmp/proj/main.c << 'EOF'
+          #include <stdio.h>
+          int main() { printf("cmake works\n"); return 0; }
+          EOF
+          mkdir -p /tmp/proj/build
+          cd /tmp/proj/build
+          cmake ..
+          make
+          result=$(./test_app)
+          test "$result" = "cmake works"
+          echo "==> cmake-build passed"
+        '';
+      };
+    };
+
   meta = {
     description = "Cross-platform build system generator";
     homepage = "https://cmake.org";

@@ -47,9 +47,9 @@ mkDerivation {
       script = ''
         ./configure \
           --prefix=$out \
-          --sysconfdir=$out/etc \
+          --sysconfdir=/etc \
           --localstatedir=$out/var \
-          --with-pidfile=$out/run/chronyd.pid \
+          --with-pidfile=/run/chrony/chronyd.pid \
           --without-editline \
           --without-readline \
           --disable-nts
@@ -74,4 +74,18 @@ mkDerivation {
     homepage = "https://chrony-project.org";
     license = "GPL-2.0-only";
   };
+
+  checks =
+    {
+      testing,
+      self,
+      pkgs,
+    }:
+    {
+      version = testing.mkToolCheck {
+        pname = "tool-chrony";
+        tool = self;
+        command = "chronyd --version";
+      };
+    };
 }
