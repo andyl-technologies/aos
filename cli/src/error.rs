@@ -26,6 +26,28 @@ pub enum AosError {
 
     #[error("{message}")]
     InvalidArgument { message: String },
+
+    // APM (package manager) errors
+    #[error("package not found: {name}")]
+    PackageNotFound { name: String },
+
+    #[error("registry error: {message}")]
+    RegistryError { message: String },
+
+    #[error("download error: {message}")]
+    DownloadError { message: String },
+
+    #[error("hash mismatch: expected {expected}, got {actual}")]
+    HashMismatch { expected: String, actual: String },
+
+    #[error("profile error: {message}")]
+    ProfileError { message: String },
+
+    #[error("registry '{name}' still has {count} installed package(s) — remove them first")]
+    RegistryHasPackages { name: String, count: usize },
+
+    #[error("operation cancelled by user")]
+    UserCancelled,
 }
 
 impl AosError {
@@ -35,6 +57,13 @@ impl AosError {
             AosError::NixBuild { .. } | AosError::NixEval { .. } | AosError::ImageBuild { .. } => 1,
             AosError::InvalidArgument { .. } => 2,
             AosError::NixNotFound | AosError::RootNotFound => 3,
+            // APM exit codes (per cli.md)
+            AosError::PackageNotFound { .. } => 2,
+            AosError::RegistryError { .. } | AosError::ProfileError { .. } => 1,
+            AosError::DownloadError { .. } => 3,
+            AosError::HashMismatch { .. } => 4,
+            AosError::RegistryHasPackages { .. } => 1,
+            AosError::UserCancelled => 100,
         }
     }
 }
