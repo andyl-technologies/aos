@@ -141,8 +141,8 @@ in
         command = "openssl version";
       };
 
-      cli-dgst = testing.mkFirecrackerTest {
-        pname = "lib-openssl-cli-dgst";
+      cli-dgst = testing.mkVMTest {
+        name = "lib-openssl-cli-dgst";
         rootfsDeps = [self];
         testScript = ''
           echo "test" > /tmp/input.txt
@@ -185,8 +185,8 @@ in
         '';
       };
 
-      consumers = testing.mkFirecrackerTest {
-        pname = "lib-openssl-consumers";
+      consumers = testing.mkVMTest {
+        name = "lib-openssl-consumers";
         rootfsDeps = [
           pkgs.curl
           pkgs.openssh

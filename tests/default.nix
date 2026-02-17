@@ -59,7 +59,7 @@
     acc: name: let
       pkg = pkgs.${name};
     in
-      if builtins.isAttrs pkg && pkg ? checks
+      if builtins.isAttrs pkg && pkg ? checks && builtins.isFunction pkg.checks
       then
         acc
         // prefixAttrs name (

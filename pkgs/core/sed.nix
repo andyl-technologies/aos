@@ -58,8 +58,8 @@ in
       self,
       pkgs,
     }: {
-      substitute = testing.mkFirecrackerTest {
-        pname = "tool-sed-substitute";
+      substitute = testing.mkVMTest {
+        name = "tool-sed-substitute";
         rootfsDeps = [
           self
           pkgs.coreutils
@@ -84,8 +84,8 @@ in
         '';
       };
 
-      delete = testing.mkFirecrackerTest {
-        pname = "tool-sed-delete";
+      delete = testing.mkVMTest {
+        name = "tool-sed-delete";
         rootfsDeps = [
           self
           pkgs.coreutils

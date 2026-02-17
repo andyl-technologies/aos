@@ -115,6 +115,92 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    system.checks.kernel-security = lib.mkCheckGroup {
+      name = "kernel-security";
+      description = "Kernel sysctl hardening checks";
+      checks = [
+        (lib.mkCheck {
+          name = "aslr";
+          description = "ASLR is fully enabled (randomize_va_space=2)";
+          script = ''
+            assert_output_contains "cat /proc/sys/kernel/randomize_va_space" "2" \
+              "ASLR is fully enabled"
+          '';
+        })
+        (lib.mkCheck {
+          name = "syncookies";
+          description = "TCP syncookies are enabled";
+          script = ''
+            assert_output_contains "cat /proc/sys/net/ipv4/tcp_syncookies" "1" \
+              "TCP syncookies are enabled"
+          '';
+        })
+        (lib.mkCheck {
+          name = "protected-hardlinks";
+          description = "Protected hardlinks sysctl exists";
+          script = ''
+            assert_success "test -f /proc/sys/fs/protected_hardlinks" \
+              "Protected hardlinks sysctl is accessible"
+          '';
+        })
+        (lib.mkCheck {
+          name = "protected-symlinks";
+          description = "Protected symlinks sysctl exists";
+          script = ''
+            assert_success "test -f /proc/sys/fs/protected_symlinks" \
+              "Protected symlinks sysctl is accessible"
+          '';
+        })
+        (lib.mkCheck {
+          name = "proc-isolation";
+          description = "PID 1 visible in /proc";
+          script = ''
+            assert_success "test -d /proc/1" \
+              "PID 1 visible in /proc"
+          '';
+        })
+        (lib.mkCheck {
+          name = "syskernel";
+          description = "/sys/kernel is accessible";
+          script = ''
+            assert_success "test -d /sys/kernel" \
+              "/sys/kernel is accessible"
+          '';
+        })
+      ];
+    };
+
+    system.checks.hardening = lib.mkCheckGroup {
+      name = "hardening";
+      description = "Userspace hardening checks";
+      checks = [
+        (lib.mkCheck {
+          name = "dmesg-restrict";
+          description = "dmesg_restrict is enabled";
+          script = ''
+            assert_output_contains "cat /proc/sys/kernel/dmesg_restrict" "1" \
+              "dmesg_restrict is enabled"
+          '';
+        })
+        (lib.mkCheck {
+          name = "kptr-restrict";
+          description = "kptr_restrict is set";
+          script = ''
+            assert_success "test -f /proc/sys/kernel/kptr_restrict" \
+              "kptr_restrict sysctl exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "ptrace-scope";
+          description = "ptrace scope is restricted";
+          script = ''
+            assert_success "test -f /proc/sys/kernel/yama/ptrace_scope" \
+              "ptrace_scope sysctl exists"
+          '';
+        })
+      ];
+    };
+
     # /etc/sysctl.d/80-aos-hardening.conf — security sysctl settings.
     # Applied by systemd-sysctl.service during early boot.
     environment.etc."sysctl.d/80-aos-hardening.conf" = {

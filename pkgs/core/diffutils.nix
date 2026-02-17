@@ -58,8 +58,8 @@ in
       self,
       pkgs,
     }: {
-      diff = testing.mkFirecrackerTest {
-        pname = "tool-diffutils-diff";
+      diff = testing.mkVMTest {
+        name = "tool-diffutils-diff";
         rootfsDeps = [
           self
           pkgs.coreutils

@@ -62,8 +62,8 @@ in
       self,
       pkgs,
     }: {
-      sort = testing.mkFirecrackerTest {
-        pname = "tool-coreutils-sort";
+      sort = testing.mkVMTest {
+        name = "tool-coreutils-sort";
         rootfsDeps = [self];
         testScript = ''
           printf '3\n1\n2\n' > /tmp/nums.txt
@@ -76,8 +76,8 @@ in
         '';
       };
 
-      wc = testing.mkFirecrackerTest {
-        pname = "tool-coreutils-wc";
+      wc = testing.mkVMTest {
+        name = "tool-coreutils-wc";
         rootfsDeps = [self];
         testScript = ''
           RESULT=$(echo "hello world" | wc -w | tr -d ' ')
@@ -89,8 +89,8 @@ in
         '';
       };
 
-      head-tail = testing.mkFirecrackerTest {
-        pname = "tool-coreutils-head-tail";
+      head-tail = testing.mkVMTest {
+        name = "tool-coreutils-head-tail";
         rootfsDeps = [self];
         testScript = ''
           printf 'a\nb\nc\nd\ne\n' > /tmp/lines.txt
@@ -109,8 +109,8 @@ in
         '';
       };
 
-      basic-ops = testing.mkFirecrackerTest {
-        pname = "tool-coreutils-basic-ops";
+      basic-ops = testing.mkVMTest {
+        name = "tool-coreutils-basic-ops";
         rootfsDeps = [self];
         testScript = ''
           mkdir -p /tmp/test-dir/sub
@@ -150,8 +150,8 @@ in
         '';
       };
 
-      text-ops = testing.mkFirecrackerTest {
-        pname = "tool-coreutils-text-ops";
+      text-ops = testing.mkVMTest {
+        name = "tool-coreutils-text-ops";
         rootfsDeps = [self];
         testScript = ''
           # cat
@@ -187,8 +187,8 @@ in
         '';
       };
 
-      perms = testing.mkFirecrackerTest {
-        pname = "tool-coreutils-perms";
+      perms = testing.mkVMTest {
+        name = "tool-coreutils-perms";
         rootfsDeps = [self];
         testScript = ''
           echo "perm test" > /tmp/perm-test.txt

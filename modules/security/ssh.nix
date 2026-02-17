@@ -245,6 +245,37 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    system.checks.ssh = lib.mkCheckGroup {
+      name = "ssh";
+      description = "SSH server checks";
+      checks = [
+        (lib.mkCheck {
+          name = "sshd-active";
+          description = "sshd service is active";
+          script = ''
+            assert_success "systemctl is-active sshd" \
+              "sshd service is active"
+          '';
+        })
+        (lib.mkCheck {
+          name = "sshd-config";
+          description = "sshd_config exists";
+          script = ''
+            assert_success "test -f /etc/ssh/sshd_config" \
+              "sshd_config exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "password-auth-disabled";
+          description = "Password authentication is disabled";
+          script = ''
+            assert_output_contains "cat /etc/ssh/sshd_config" "PasswordAuthentication no" \
+              "Password authentication is disabled"
+          '';
+        })
+      ];
+    };
+
     environment.systemPackages = [pkgs.openssh];
 
     # /etc/ssh/sshd_config — OpenSSH server configuration.
