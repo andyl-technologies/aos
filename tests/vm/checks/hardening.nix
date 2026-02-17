@@ -1,4 +1,7 @@
-{ mkCheck, mkCheckGroup }:
+{
+  mkCheck,
+  mkCheckGroup,
+}:
 mkCheckGroup {
   name = "hardening";
   description = "Userspace hardening checks";

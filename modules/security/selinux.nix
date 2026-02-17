@@ -7,18 +7,14 @@
 ##!
 ##! Absorbed TOML config values:
 ##!   [security.selinux] enable, mode, policy, autorelabel
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.security.selinux;
-in
-{
+in {
   options.aos.security.selinux = {
     ## Enable SELinux mandatory access control.
     ##
@@ -106,12 +102,12 @@ in
       # This must run before any confined services start.
       "selinux-policy-load" = {
         description = "Load SELinux Policy";
-        wantedBy = [ "sysinit.target" ];
+        wantedBy = ["sysinit.target"];
         before = [
           "sysinit.target"
           "systemd-tmpfiles-setup.service"
         ];
-        after = [ "local-fs.target" ];
+        after = ["local-fs.target"];
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
@@ -123,13 +119,13 @@ in
       # Runs on first boot or when /.autorelabel exists.
       "selinux-autorelabel" = lib.mkIf cfg.autorelabel {
         description = "SELinux Filesystem Relabeling";
-        wantedBy = [ "sysinit.target" ];
-        before = [ "sysinit.target" ];
+        wantedBy = ["sysinit.target"];
+        before = ["sysinit.target"];
         after = [
           "selinux-policy-load.service"
           "local-fs.target"
         ];
-        requires = [ "selinux-policy-load.service" ];
+        requires = ["selinux-policy-load.service"];
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;

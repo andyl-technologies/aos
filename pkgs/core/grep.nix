@@ -4,66 +4,62 @@
   fetchurl,
   make,
   pcre2,
-}:
-
-let
-  version = "3.11";
+}: let
+  version = "3.12";
 in
-mkDerivation {
-  pname = "grep";
-  inherit version;
+  mkDerivation {
+    pname = "grep";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://gnu.mirror.constant.com/grep/grep-${version}.tar.xz"
-      "https://mirrors.kernel.org/gnu/grep/grep-${version}.tar.xz"
-      "https://ftp.gnu.org/gnu/grep/grep-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://gnu.mirror.constant.com/grep/grep-${version}.tar.xz"
+        "https://mirrors.kernel.org/gnu/grep/grep-${version}.tar.xz"
+        "https://ftp.gnu.org/gnu/grep/grep-${version}.tar.xz"
+      ];
+      hash = "sha256-JkmyfA6Q5jLq3NdXvgbG6aT0jZQd5R58D4P/dkCKB7k=";
+    };
+
+    buildDeps = [make];
+    runtimeDeps = [pcre2];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd grep-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --disable-nls \
+            --enable-perl-regexp
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-HbKu3eidDepCsW2VKPiUyNFdrk4ZC1muzHj1qVEnbqs=";
-  };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ pcre2 ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd grep-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --disable-nls \
-          --enable-perl-regexp
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       basic = testing.mkFirecrackerTest {
         pname = "tool-grep-basic";
         rootfsDeps = [
@@ -144,9 +140,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "GNU Grep — search for patterns in files";
-    homepage = "https://www.gnu.org/software/grep/";
-    license = "GPL-3.0-or-later";
-  };
-}
+    meta = {
+      description = "GNU Grep — search for patterns in files";
+      homepage = "https://www.gnu.org/software/grep/";
+      license = "GPL-3.0-or-later";
+    };
+  }

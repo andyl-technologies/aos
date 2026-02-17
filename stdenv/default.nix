@@ -17,10 +17,9 @@
 #   let stdenv = import ./stdenv { inherit bootstrap; };
 #   in stdenv.mkDerivation { ... }
 #
-
 {
   # Bootstrap toolchain outputs from pkgs/bootstrap or stdenv/bootstrap
-  bootstrap ? import ./bootstrap/seeds.nix { },
+  bootstrap ? import ./bootstrap/seeds.nix {},
   # Specific toolchain components (override for testing or cross-compilation)
   gcc ? null,
   glibc ? null,
@@ -39,36 +38,90 @@
   # System parameters
   system ? "x86_64-linux",
   storeDir ? "/nix/store",
-}:
-
-let
+}: let
   lib = import ../lib;
 
   # The shell used for building. In a bootstrapped system, this is the
   # bash built by the bootstrap chain.
-  shellPath = if bash != null then "${bash}/bin/bash" else "/bin/sh";
+  shellPath =
+    if bash != null
+    then "${bash}/bin/bash"
+    else "/bin/sh";
 
   # CC wrapper that sets up include paths, library paths, and rpaths
   ccWrapper = import ./cc-wrapper.nix {
     inherit storeDir system;
-    cc = if gcc != null then gcc else "${storeDir}/gcc-13.3.0";
-    libc = if glibc != null then glibc else "${storeDir}/glibc-2.39";
-    binutils_ = if binutils != null then binutils else "${storeDir}/binutils-2.42";
+    cc =
+      if gcc != null
+      then gcc
+      else "${storeDir}/gcc-13.3.0";
+    libc =
+      if glibc != null
+      then glibc
+      else "${storeDir}/glibc-2.39";
+    binutils_ =
+      if binutils != null
+      then binutils
+      else "${storeDir}/binutils-2.42";
   };
 
   # The initial PATH for builds, composed from the bootstrap toolchain
   initialPath = builtins.filter (p: p != null) [
-    (if coreutils != null then coreutils else null)
-    (if findutils != null then findutils else null)
-    (if gnumake != null then gnumake else null)
-    (if gawk != null then gawk else null)
-    (if grep != null then grep else null)
-    (if sed != null then sed else null)
-    (if tar != null then tar else null)
-    (if gzip != null then gzip else null)
-    (if diffutils != null then diffutils else null)
-    (if patch != null then patch else null)
-    (if bash != null then bash else null)
+    (
+      if coreutils != null
+      then coreutils
+      else null
+    )
+    (
+      if findutils != null
+      then findutils
+      else null
+    )
+    (
+      if gnumake != null
+      then gnumake
+      else null
+    )
+    (
+      if gawk != null
+      then gawk
+      else null
+    )
+    (
+      if grep != null
+      then grep
+      else null
+    )
+    (
+      if sed != null
+      then sed
+      else null
+    )
+    (
+      if tar != null
+      then tar
+      else null
+    )
+    (
+      if gzip != null
+      then gzip
+      else null
+    )
+    (
+      if diffutils != null
+      then diffutils
+      else null
+    )
+    (
+      if patch != null
+      then patch
+      else null
+    )
+    (
+      if bash != null
+      then bash
+      else null
+    )
   ];
 
   # Construct PATH from initial tools
@@ -112,12 +165,12 @@ let
   # ---------------------------------------------------------------------------
   # mkDerivation — wrapped version with stdenv defaults
   # ---------------------------------------------------------------------------
-  mkDerivation =
-    args:
-    let
-      # Inject stdenv tools into buildDeps unless already present
-      stdenvBuildDeps = (args.buildDeps or [ ]) ++ initialPath;
-      effectiveArgs = args // {
+  mkDerivation = args: let
+    # Inject stdenv tools into buildDeps unless already present
+    stdenvBuildDeps = (args.buildDeps or []) ++ initialPath;
+    effectiveArgs =
+      args
+      // {
         buildDeps = stdenvBuildDeps;
         system = args.system or system;
         shell = args.shell or shellPath;
@@ -132,28 +185,27 @@ let
         RANLIB = "${ccWrapper}/bin/ranlib";
         STRIP = "${ccWrapper}/bin/strip";
       };
-    in
+  in
     lib.mkDerivation effectiveArgs;
 
   # ---------------------------------------------------------------------------
   # mkShell — wrapped version with stdenv defaults
   # ---------------------------------------------------------------------------
-  mkShell =
-    args:
-    let
-      effectiveArgs = args // {
-        buildDeps = (args.buildDeps or [ ]) ++ initialPath;
+  mkShell = args: let
+    effectiveArgs =
+      args
+      // {
+        buildDeps = (args.buildDeps or []) ++ initialPath;
         system = args.system or system;
         shell = args.shell or shellPath;
       };
-    in
+  in
     lib.mkShell effectiveArgs;
 
   # ---------------------------------------------------------------------------
   # fetchurl / fetchgit — pass through from lib with defaults
   # ---------------------------------------------------------------------------
-  fetchurl =
-    args:
+  fetchurl = args:
     lib.fetchurl (
       args
       // {
@@ -162,8 +214,7 @@ let
       }
     );
 
-  fetchgit =
-    args:
+  fetchgit = args:
     lib.fetchgit (
       args
       // {
@@ -171,9 +222,7 @@ let
         storeDir = args.storeDir or storeDir;
       }
     );
-
-in
-{
+in {
   inherit
     mkDerivation
     mkShell
@@ -197,7 +246,8 @@ in
   inherit bootstrap;
 
   # Phase helpers re-exported for convenience
-  inherit (lib)
+  inherit
+    (lib)
     replacePhase
     addPhaseAfter
     addPhaseBefore

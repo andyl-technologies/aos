@@ -3,65 +3,61 @@
   mkDerivation,
   fetchurl,
   make,
-}:
-
-let
-  version = "5.6.4";
+}: let
+  version = "5.8.2";
 in
-mkDerivation {
-  pname = "xz";
-  inherit version;
+  mkDerivation {
+    pname = "xz";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/tukaani-project/xz/releases/download/v${version}/xz-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/tukaani-project/xz/releases/download/v${version}/xz-${version}.tar.xz"
+      ];
+      hash = "sha256-iQlm7D9dXMFRB3h54VfAWTUApSL0E6xQuibSKpoUUhQ=";
+    };
+
+    buildDeps = [make];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd xz-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --disable-nls \
+            --disable-static \
+            --enable-shared
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-gpzP5512l0j3VX56RCmmTQaFjifh42LiXQGre5MdnJU=";
-  };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd xz-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --disable-nls \
-          --disable-static \
-          --enable-shared
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       roundtrip = testing.mkFirecrackerTest {
         pname = "tool-xz-roundtrip";
         rootfsDeps = [
@@ -80,9 +76,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "XZ Utils — LZMA compression utilities";
-    homepage = "https://tukaani.org/xz/";
-    license = "GPL-2.0-or-later";
-  };
-}
+    meta = {
+      description = "XZ Utils — LZMA compression utilities";
+      homepage = "https://tukaani.org/xz/";
+      license = "GPL-2.0-or-later";
+    };
+  }

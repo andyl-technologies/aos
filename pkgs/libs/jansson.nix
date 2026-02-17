@@ -5,74 +5,70 @@
   make,
   cmake,
   ninja,
-}:
-
-let
-  version = "2.14.1";
+}: let
+  version = "2.15.0";
 in
-mkDerivation {
-  pname = "jansson";
-  inherit version;
+  mkDerivation {
+    pname = "jansson";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/akheron/jansson/archive/refs/tags/v${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/akheron/jansson/archive/refs/tags/v${version}.tar.gz"
+      ];
+      hash = "sha256-c6wSu8Yv9TbkDHo+Fe0AeZPFyk0jiX3iPxkG+JG1pLs=";
+    };
+
+    buildDeps = [
+      make
+      cmake
+      ninja
     ];
-    hash = "sha256-l5IQ6v/f+89Uz8NNBH/M3hPyG1KaOB3ybbhx2Ib3KaQ=";
-  };
+    runtimeDeps = [];
+    propagatedDeps = [];
 
-  buildDeps = [
-    make
-    cmake
-    ninja
-  ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd jansson-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$out \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DJANSSON_BUILD_SHARED_LIBS=ON \
+            -DJANSSON_BUILD_DOCS=OFF
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          ninja -C build -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          ninja -C build install
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd jansson-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        cmake -S . -B build -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_INSTALL_PREFIX=$out \
-          -DCMAKE_INSTALL_LIBDIR=lib \
-          -DJANSSON_BUILD_SHARED_LIBS=ON \
-          -DJANSSON_BUILD_DOCS=OFF
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        ninja -C build -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        ninja -C build install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       link = testing.mkLinkCheck {
         pname = "lib-jansson";
         library = self;
-        libs = [ "-ljansson" ];
+        libs = ["-ljansson"];
         testSource = ''
           #include <jansson.h>
           #include <stdio.h>
@@ -87,9 +83,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "jansson — C library for encoding, decoding and manipulating JSON data";
-    homepage = "https://github.com/akheron/jansson";
-    license = "MIT";
-  };
-}
+    meta = {
+      description = "jansson — C library for encoding, decoding and manipulating JSON data";
+      homepage = "https://github.com/akheron/jansson";
+      license = "MIT";
+    };
+  }

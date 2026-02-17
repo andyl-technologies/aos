@@ -10,15 +10,12 @@
 #   - Nix daemon for building packages from source
 #   - Seed orchestration (image building + HTTPS serving)
 #   - ZFS datasets for Nix store, image artifacts, and source checkout
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-{
+}: {
   imports = [
     ./server.nix
     ../modules/services/nginx.nix

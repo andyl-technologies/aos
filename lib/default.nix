@@ -6,10 +6,7 @@
 ##! The `system` parameter is threaded through to all derivation builders
 ##! (mkDerivation, mkShell, fetchurl, fetchgit, fetchCargoDeps, fetchGoModules)
 ##! so that every package targets the correct platform.
-
-{ system }:
-
-let
+{system}: let
   trivial = import ./trivial.nix;
   lists = import ./lists.nix;
   attrsets = import ./attrsets.nix;
@@ -24,51 +21,54 @@ let
       types
       ;
   };
-  derivations = import ./derivations.nix { inherit system; };
+  derivations = import ./derivations.nix {inherit system;};
 in
-trivial
-// lists
-// attrsets
-// strings
-// {
-  inherit types system;
-  inherit (modules)
-    evalModules
-    mkOption
-    mkIf
-    mkMerge
-    mkOverride
-    mkDefault
-    mkForce
-    mkOrder
-    mkBefore
-    mkAfter
-    ;
-  inherit (derivations)
-    mkDerivation
-    mkShell
-    fetchurl
-    fetchgit
-    fetchCargoDeps
-    fetchGoModules
-    fakeHash
-    ;
+  trivial
+  // lists
+  // attrsets
+  // strings
+  // {
+    inherit types system;
+    inherit
+      (modules)
+      evalModules
+      mkOption
+      mkIf
+      mkMerge
+      mkOverride
+      mkDefault
+      mkForce
+      mkOrder
+      mkBefore
+      mkAfter
+      ;
+    inherit
+      (derivations)
+      mkDerivation
+      mkShell
+      fetchurl
+      fetchgit
+      fetchCargoDeps
+      fetchGoModules
+      fakeHash
+      ;
 
-  # Phase manipulation helpers from derivations module
-  inherit (derivations)
-    replacePhase
-    addPhaseAfter
-    addPhaseBefore
-    removePhase
-    ;
+    # Phase manipulation helpers from derivations module
+    inherit
+      (derivations)
+      replacePhase
+      addPhaseAfter
+      addPhaseBefore
+      removePhase
+      ;
 
-  # Re-export submodules for direct access when needed
-  inherit
-    trivial
-    lists
-    attrsets
-    strings
-    modules
-    derivations
-    ;
-}
+    # Re-export submodules for direct access when needed
+    inherit
+      trivial
+      lists
+      attrsets
+      strings
+      modules
+      derivations
+      ;
+  }

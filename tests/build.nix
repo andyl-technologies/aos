@@ -6,10 +6,10 @@
 #
 # Usage:
 #   nix-build -A checks.build
-
-{ pkgs, lib }:
-
-let
+{
+  pkgs,
+  lib,
+}: let
   # Key packages that must build successfully for any AOS image.
   criticalPackages = [
     pkgs.linux
@@ -23,17 +23,15 @@ let
 
   # Check that a package's closure does not exceed a size limit.
   # This is a derivation that queries the store at build time.
-  checkClosureSize =
-    pkg: maxMB:
-    let
-      nameStr = pkg.pname or pkg.name or "unknown";
-    in
+  checkClosureSize = pkg: maxMB: let
+    nameStr = pkg.pname or pkg.name or "unknown";
+  in
     pkgs.mkDerivation {
       pname = "closure-check-${nameStr}";
       version = "0";
       src = null;
 
-      buildDeps = [ pkg ];
+      buildDeps = [pkg];
 
       phases = [
         {
@@ -57,34 +55,35 @@ let
         }
       ];
     };
-
 in
-pkgs.mkDerivation {
-  pname = "aos-build-checks";
-  version = "0";
-  src = null;
+  pkgs.mkDerivation {
+    pname = "aos-build-checks";
+    version = "0";
+    src = null;
 
-  # Force all critical packages to build by listing them as dependencies.
-  buildDeps = criticalPackages ++ [
-    (checkClosureSize pkgs.linux 500)
-    (checkClosureSize pkgs.systemd 200)
-    (checkClosureSize pkgs.containerd 300)
-    (checkClosureSize pkgs.coreutils 100)
-  ];
+    # Force all critical packages to build by listing them as dependencies.
+    buildDeps =
+      criticalPackages
+      ++ [
+        (checkClosureSize pkgs.linux 500)
+        (checkClosureSize pkgs.systemd 200)
+        (checkClosureSize pkgs.containerd 300)
+        (checkClosureSize pkgs.coreutils 100)
+      ];
 
-  phases = [
-    {
-      name = "check";
-      script = ''
-        echo "==> AOS Build Checks"
-        echo ""
-        echo "All critical packages built successfully."
-        echo "All closure size checks passed."
-        echo ""
-        echo "==> All build checks passed."
-        mkdir -p $out
-        echo "PASS" > $out/result
-      '';
-    }
-  ];
-}
+    phases = [
+      {
+        name = "check";
+        script = ''
+          echo "==> AOS Build Checks"
+          echo ""
+          echo "All critical packages built successfully."
+          echo "All closure size checks passed."
+          echo ""
+          echo "==> All build checks passed."
+          mkdir -p $out
+          echo "PASS" > $out/result
+        '';
+      }
+    ];
+  }

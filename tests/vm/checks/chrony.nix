@@ -1,4 +1,7 @@
-{ mkCheck, mkCheckGroup }:
+{
+  mkCheck,
+  mkCheckGroup,
+}:
 mkCheckGroup {
   name = "chrony";
   description = "NTP time sync checks";

@@ -14,27 +14,23 @@
 #   - It supports C++11, which modern GCC requires to build
 #   - It is the version used by Guix's bootstrap chain
 #
-
 {
   gcc46, # Output of stage4-gcc46.nix (GCC 4.6.4, C only)
   sources,
   # Attrset with: gcc75-source, gmp-source, mpfr-source, mpc-source,
   #               linux-headers-source, glibc-source, binutils-source
   system ? "x86_64-linux",
-}:
-
-let
+}: let
   version = "7.5.0";
 
   archParams =
-    if system == "x86_64-linux" then
-      {
-        target = "x86_64-unknown-linux-gnu";
-        arch = "x86_64";
-        kernelArch = "x86";
-      }
-    else
-      throw "stage5-gcc75: only x86_64-linux is supported at this stage";
+    if system == "x86_64-linux"
+    then {
+      target = "x86_64-unknown-linux-gnu";
+      arch = "x86_64";
+      kernelArch = "x86";
+    }
+    else throw "stage5-gcc75: only x86_64-linux is supported at this stage";
 
   # ---------------------------------------------------------------------------
   # Prerequisite: GMP (GNU Multiple Precision Arithmetic Library)
@@ -402,28 +398,27 @@ let
       ''
     ];
   };
-
 in
-gcc75
-// {
-  inherit version;
+  gcc75
+  // {
+    inherit version;
 
-  # Export sub-components for downstream stages
-  components = {
-    inherit
-      gmp
-      mpfr
-      mpc
-      linux-headers
-      binutils
-      glibc-intermediate
-      ;
-  };
+    # Export sub-components for downstream stages
+    components = {
+      inherit
+        gmp
+        mpfr
+        mpc
+        linux-headers
+        binutils
+        glibc-intermediate
+        ;
+    };
 
-  meta = {
-    description = "GCC 7.5.0 (C + C++) — built by GCC 4.6.4, enables modern GCC";
-    homepage = "https://gcc.gnu.org/";
-    license = "GPL-3.0-or-later";
-    platforms = [ "x86_64-linux" ];
-  };
-}
+    meta = {
+      description = "GCC 7.5.0 (C + C++) — built by GCC 4.6.4, enables modern GCC";
+      homepage = "https://gcc.gnu.org/";
+      license = "GPL-3.0-or-later";
+      platforms = ["x86_64-linux"];
+    };
+  }

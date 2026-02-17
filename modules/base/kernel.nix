@@ -8,23 +8,19 @@
 ##!
 ##! These are performance/functionality sysctls — security-focused sysctls
 ##! belong in modules/security/hardening.nix.
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.kernel;
 
   # Format sysctl settings as a sysctl.d(5) drop-in file.
   sysctlText = builtins.concatStringsSep "\n" (
     lib.mapAttrsToList (key: value: "${key} = ${value}") cfg.sysctl
   );
-in
-{
+in {
   options.aos.kernel = {
     ## Enable TCP BBR congestion control.
     bbr = lib.mkOption {
@@ -82,7 +78,7 @@ in
     ## Kernel modules to load at boot.
     modules = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ ];
+      default = [];
       description = ''
         Kernel modules to load at boot. Written to
         /etc/modules-load.d/aos-kernel.conf and loaded by

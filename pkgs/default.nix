@@ -2,9 +2,7 @@
 ##! Imports all package definitions and wires dependencies together.
 ##! Bootstrap tools (gcc, coreutils, tar, etc.) are injected into every build.
 ##! All other tools are built hermetically from source — no nixpkgs, no host tools.
-{ lib }:
-
-let
+{lib}: let
   fetchurl = lib.fetchurl;
 
   # Pre-built bootstrap tools provide gcc, coreutils, tar, make, etc.
@@ -15,10 +13,9 @@ let
 
   # Dynamic linker path inside bootstrap-tools (architecture-dependent).
   dynamicLinker =
-    if lib.system == "aarch64-linux" then
-      "${bootstrapTools}/lib/ld-linux-aarch64.so.1"
-    else
-      "${bootstrapTools}/lib/ld-linux-x86-64.so.2";
+    if lib.system == "aarch64-linux"
+    then "${bootstrapTools}/lib/ld-linux-aarch64.so.1"
+    else "${bootstrapTools}/lib/ld-linux-x86-64.so.2";
 
   # Common compiler/linker flags needed because bootstrap tools' store
   # paths were nuked.  Every invocation of gcc/g++/cpp/ld must include these.
@@ -71,18 +68,23 @@ let
 
               # gcc wrapper (C only — no C++ path issues)
               # $NIX_LDFLAGS is set by mkDerivation with -Wl,-rpath for all deps
+              # -isystem $BT_INC goes AFTER "$@" so build-system headers (e.g.
+              # systemd override) can shadow bootstrap glibc headers (matches
+              # nixpkgs cc-wrapper extraAfter ordering).
               cat > $out/bin/gcc << GCCEOF
         #!/bin/sh
-        exec $REAL_GCC -B$out/lib -B$BT_LIB -isystem $BT_INC -L$BT_LIB -L$BT_GCC_LIB -Wl,-dynamic-linker=$DYN_LINK -Wl,-rpath,$BT_LIB -Wl,-rpath,$BT_GCC_LIB \$NIX_LDFLAGS "\$@"
+        exec $REAL_GCC -B$out/lib -B$BT_LIB -L$BT_LIB -L$BT_GCC_LIB -Wl,-dynamic-linker=$DYN_LINK -Wl,-rpath,$BT_LIB -Wl,-rpath,$BT_GCC_LIB \$NIX_LDFLAGS "\$@" -isystem $BT_INC
         GCCEOF
 
               cp $out/bin/gcc $out/bin/cc
 
               # g++ wrapper — uses -nostdinc++ then re-adds C++ headers before
-              # glibc headers so #include_next from cstdlib finds stdlib.h
+              # glibc headers so #include_next from cstdlib finds stdlib.h.
+              # Only -isystem $BT_INC (glibc) goes AFTER "$@" so build-system
+              # headers can shadow it; C++ paths stay before "$@".
               cat > $out/bin/g++ << GPPEOF
         #!/bin/sh
-        exec $REAL_GPP -nostdinc++ -isystem $BT_CXX -isystem $BT_CXX_ARCH -isystem $BT_CXX_BACKWARD -isystem $BT_INC -B$out/lib -B$BT_LIB -L$BT_LIB -L$BT_GCC_LIB -Wl,-dynamic-linker=$DYN_LINK -Wl,-rpath,$BT_LIB -Wl,-rpath,$BT_GCC_LIB \$NIX_LDFLAGS "\$@"
+        exec $REAL_GPP -nostdinc++ -isystem $BT_CXX -isystem $BT_CXX_ARCH -isystem $BT_CXX_BACKWARD -B$out/lib -B$BT_LIB -L$BT_LIB -L$BT_GCC_LIB -Wl,-dynamic-linker=$DYN_LINK -Wl,-rpath,$BT_LIB -Wl,-rpath,$BT_GCC_LIB \$NIX_LDFLAGS "\$@" -isystem $BT_INC
         GPPEOF
 
               cp $out/bin/g++ $out/bin/c++
@@ -90,7 +92,7 @@ let
               # cpp wrapper (preprocessor only)
               cat > $out/bin/cpp << CPPEOF
         #!/bin/sh
-        exec $REAL_CPP -isystem $BT_INC "\$@"
+        exec $REAL_CPP "\$@" -isystem $BT_INC
         CPPEOF
 
               # ld wrapper — note: ld uses -rpath (not -Wl,-rpath), so we don't
@@ -109,17 +111,17 @@ let
   # Wrap lib.mkDerivation to automatically include bootstrap tools in PATH
   # and set the correct compiler/linker flags so that compiled programs
   # can find the dynamic linker and shared libraries.
-  mkDerivation =
-    args:
+  mkDerivation = args:
     lib.mkDerivation (
       args
       // {
         # ccWrapper goes first in PATH so its wrappers shadow bootstrap gcc
-        buildDeps = [
-          ccWrapper
-          bootstrapTools
-        ]
-        ++ (args.buildDeps or [ ]);
+        buildDeps =
+          [
+            ccWrapper
+            bootstrapTools
+          ]
+          ++ (args.buildDeps or []);
 
         # Explicit CC/CXX/CPP point to wrappers so configure scripts use them
         CC = "${ccWrapper}/bin/gcc";
@@ -144,23 +146,22 @@ let
   phases = import ../stdenv/phases.nix;
 
   # Wire fetchers with AOS toolchains (using lazy self-reference)
-  fetchCargoDeps =
-    args:
+  fetchCargoDeps = args:
     lib.fetchCargoDeps (
       args
       // {
         cargo = self.rust;
         inherit bootstrapTools;
-        extraLibPaths = [
-          self.openssl
-          self.zlib
-        ]
-        ++ (args.extraLibPaths or [ ]);
+        extraLibPaths =
+          [
+            self.openssl
+            self.zlib
+          ]
+          ++ (args.extraLibPaths or []);
       }
     );
 
-  fetchGoModules =
-    args:
+  fetchGoModules = args:
     lib.fetchGoModules (
       args
       // {
@@ -198,46 +199,50 @@ let
     "doParallelCheck"
   ];
 
-  mkCargoPackage =
-    args:
-    let
-      # Extract cargo-specific attrs for the phase generator
-      cargoArgs = builtins.intersectAttrs (builtins.listToAttrs (
+  mkCargoPackage = args: let
+    # Extract cargo-specific attrs for the phase generator
+    cargoArgs =
+      builtins.intersectAttrs (builtins.listToAttrs (
         builtins.map (n: {
           name = n;
           value = true;
-        }) cargoSpecificAttrs
-      )) args;
-      # Remove cargo-specific attrs before passing to mkDerivation
-      restArgs = builtins.removeAttrs args cargoSpecificAttrs;
-    in
+        })
+        cargoSpecificAttrs
+      ))
+      args;
+    # Remove cargo-specific attrs before passing to mkDerivation
+    restArgs = builtins.removeAttrs args cargoSpecificAttrs;
+  in
     mkDerivation (
       restArgs
       // {
-        buildDeps = [ self.rust ] ++ (args.buildDeps or [ ]);
+        buildDeps = [self.rust] ++ (args.buildDeps or []);
         phases = phases.cargoPhases cargoArgs;
       }
     );
 
-  mkGoPackage =
-    args:
-    let
-      goArgs = builtins.intersectAttrs (builtins.listToAttrs (
+  mkGoPackage = args: let
+    goArgs =
+      builtins.intersectAttrs (builtins.listToAttrs (
         builtins.map (n: {
           name = n;
           value = true;
-        }) goSpecificAttrs
-      )) args;
-      # Default goOutput to pname when not explicitly set
-      goArgsWithDefaults = goArgs // {
+        })
+        goSpecificAttrs
+      ))
+      args;
+    # Default goOutput to pname when not explicitly set
+    goArgsWithDefaults =
+      goArgs
+      // {
         goOutput = args.goOutput or args.pname or (throw "mkGoPackage: goOutput or pname required");
       };
-      restArgs = builtins.removeAttrs args goSpecificAttrs;
-    in
+    restArgs = builtins.removeAttrs args goSpecificAttrs;
+  in
     mkDerivation (
       restArgs
       // {
-        buildDeps = [ self.go ] ++ (args.buildDeps or [ ]);
+        buildDeps = [self.go] ++ (args.buildDeps or []);
         phases = phases.goPhases goArgsWithDefaults;
       }
     );
@@ -246,73 +251,83 @@ let
   # The package file is a function whose formals are introspected via
   # builtins.functionArgs, then satisfied from the package set plus the
   # always-available helpers (mkDerivation, fetchurl).
-  callPackage =
-    path: overrides:
-    let
-      fn = import path;
-      auto = builtins.intersectAttrs (builtins.functionArgs fn) (
-        self
-        // {
-          inherit mkDerivation fetchurl;
-        }
-      );
-    in
+  callPackage = path: overrides: let
+    fn = import path;
+    auto = builtins.intersectAttrs (builtins.functionArgs fn) (
+      self
+      // {
+        inherit mkDerivation fetchurl;
+      }
+    );
+  in
     fn (auto // overrides);
 
+  # Shared Linux kernel source (single tarball for linux and linux-headers)
+  linuxSource = import ./kernel/_source.nix {inherit fetchurl;};
+
   # Shared Kubernetes source (single tarball for kubelet, kubeadm, kubectl)
-  kubeSource = import ./kubernetes/_source.nix { inherit fetchurl; };
+  kubeSource = import ./kubernetes/_source.nix {inherit fetchurl;};
 
   # Auto-discover packages from subdirectories.
   # Recursively scans for .nix files, skipping default.nix and _-prefixed
   # files/directories (used for shared resources like _source.nix).
-  discoverPackages =
-    dir:
-    let
-      entries = builtins.readDir dir;
-      names = builtins.attrNames entries;
+  discoverPackages = dir: let
+    entries = builtins.readDir dir;
+    names = builtins.attrNames entries;
 
-      # .nix files → packages (skip default.nix and _-prefixed)
-      nixFiles = builtins.filter (
+    # .nix files → packages (skip default.nix and _-prefixed)
+    nixFiles =
+      builtins.filter (
         name:
-        entries.${name} == "regular"
-        && lib.hasSuffix ".nix" name
-        && name != "default.nix"
-        && builtins.substring 0 1 name != "_"
-      ) names;
+          entries.${name}
+          == "regular"
+          && lib.hasSuffix ".nix" name
+          && name != "default.nix"
+          && builtins.substring 0 1 name != "_"
+      )
+      names;
 
-      # Subdirectories to recurse into (skip _-prefixed)
-      subdirs = builtins.filter (
+    # Subdirectories to recurse into (skip _-prefixed)
+    subdirs =
+      builtins.filter (
         name: entries.${name} == "directory" && builtins.substring 0 1 name != "_"
-      ) names;
+      )
+      names;
 
-      filePackages = builtins.listToAttrs (
-        builtins.map (name: {
-          name = lib.removeSuffix ".nix" name;
-          value = callPackage (dir + "/${name}") { };
-        }) nixFiles
-      );
+    filePackages = builtins.listToAttrs (
+      builtins.map (name: {
+        name = lib.removeSuffix ".nix" name;
+        value = callPackage (dir + "/${name}") {};
+      })
+      nixFiles
+    );
 
-      subdirPackages = builtins.foldl' (
+    subdirPackages =
+      builtins.foldl' (
         acc: subdir: acc // discoverPackages (dir + "/${subdir}")
-      ) { } subdirs;
-    in
+      ) {}
+      subdirs;
+  in
     filePackages // subdirPackages;
 
-  self = {
-    # --- Plumbing ---
-    inherit mkDerivation fetchurl lib;
-    inherit mkCargoPackage mkGoPackage;
-    inherit fetchCargoDeps fetchGoModules;
-    inherit bootstrapTools;
-    fakeHash = lib.fakeHash;
-  }
-  // discoverPackages ./.
-  // {
-    # --- Explicit overrides for packages needing non-standard arguments ---
-    kubelet = callPackage ./kubernetes/kubelet.nix { inherit kubeSource; };
-    kubeadm = callPackage ./kubernetes/kubeadm.nix { inherit kubeSource; };
-    kubectl = callPackage ./kubernetes/kubectl.nix { inherit kubeSource; };
-  };
+  self =
+    {
+      # --- Plumbing ---
+      inherit mkDerivation fetchurl lib;
+      inherit mkCargoPackage mkGoPackage;
+      inherit fetchCargoDeps fetchGoModules;
+      inherit bootstrapTools;
+      fakeHash = lib.fakeHash;
+    }
+    // discoverPackages ./.
+    // {
+      # --- Explicit overrides for packages needing non-standard arguments ---
+      linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
+      linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
 
+      kubelet = callPackage ./kubernetes/kubelet.nix {inherit kubeSource;};
+      kubeadm = callPackage ./kubernetes/kubeadm.nix {inherit kubeSource;};
+      kubectl = callPackage ./kubernetes/kubectl.nix {inherit kubeSource;};
+    };
 in
-self
+  self

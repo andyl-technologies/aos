@@ -8,15 +8,12 @@
 ##!
 ##! Options:
 ##!   [services.vaultAgent] enable, address, role, authPath, templates, autoAuth
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.services.vaultAgent;
 
   # Build template stanzas from the templates attrset.
@@ -30,7 +27,8 @@ let
         ${lib.optionalString (tmpl ? perms) "perms = \"${tmpl.perms}\""}
         ${lib.optionalString (tmpl ? command) "command = \"${tmpl.command}\""}
       }
-    '') cfg.templates
+    '')
+    cfg.templates
   );
 
   # Build auto_auth stanza from the autoAuth attrset.
@@ -66,9 +64,7 @@ let
 
     ${templateStanzas}
   '';
-
-in
-{
+in {
   options.aos.services.vaultAgent = {
     ## Enable the HashiCorp Vault agent for automatic secret management.
     ##
@@ -129,7 +125,7 @@ in
     ## ```
     templates = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
-      default = { };
+      default = {};
       description = ''
         Attribute set of secret templates. Each key is a template name
         and the value is an attrset with:
@@ -143,7 +139,7 @@ in
     ## Additional auto-auth configuration.
     autoAuth = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
-      default = { };
+      default = {};
       description = ''
         Additional auto-auth configuration. Supports:
         - tokenPath: path to the Kubernetes service account token
@@ -153,7 +149,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ pkgs.vault ];
+    environment.systemPackages = [pkgs.vault];
 
     # /etc/vault-agent.d/config.hcl — Vault agent configuration.
     environment.etc."vault-agent.d/config.hcl" = {
@@ -163,9 +159,9 @@ in
     # vault-agent.service — HashiCorp Vault agent daemon.
     systemd.services."vault-agent" = {
       description = "HashiCorp Vault Agent";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+      wantedBy = ["multi-user.target"];
+      after = ["network-online.target"];
+      wants = ["network-online.target"];
       serviceConfig = {
         Type = "simple";
         ExecStart = "${pkgs.vault}/bin/vault agent -config=/etc/vault-agent.d/config.hcl";
