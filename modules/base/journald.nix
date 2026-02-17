@@ -8,18 +8,14 @@
 ##! Persistent storage (the default) writes journal files to /var/log/journal,
 ##! which survives reboots. Volatile storage uses tmpfs at /run/log/journal and
 ##! is lost on reboot but avoids disk I/O.
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.journald;
-in
-{
+in {
   options.aos.journald = {
     ## Journal storage mode (persistent, volatile, auto).
     storage = lib.mkOption {
@@ -117,7 +113,11 @@ in
         SystemMaxFileSize=${cfg.systemMaxFileSize}
         RateLimitIntervalSec=${cfg.rateLimitInterval}
         RateLimitBurst=${toString cfg.rateLimitBurst}
-        ForwardToSyslog=${if cfg.forwardToSyslog then "yes" else "no"}
+        ForwardToSyslog=${
+          if cfg.forwardToSyslog
+          then "yes"
+          else "no"
+        }
         Compress=yes
       '';
     };

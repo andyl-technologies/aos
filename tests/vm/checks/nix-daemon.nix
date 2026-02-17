@@ -2,7 +2,10 @@
 #
 # Verifies the Nix daemon configuration, service unit, build users,
 # and state directories.
-{ mkCheck, mkCheckGroup }:
+{
+  mkCheck,
+  mkCheckGroup,
+}:
 mkCheckGroup {
   name = "nix-daemon";
   description = "Nix package manager daemon checks";

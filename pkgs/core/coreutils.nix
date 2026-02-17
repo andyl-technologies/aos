@@ -4,71 +4,67 @@
   fetchurl,
   make,
   openssl,
-}:
-
-let
-  version = "9.5";
+}: let
+  version = "9.10";
 in
-mkDerivation {
-  pname = "coreutils";
-  inherit version;
+  mkDerivation {
+    pname = "coreutils";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://gnu.mirror.constant.com/coreutils/coreutils-${version}.tar.xz"
-      "https://mirrors.kernel.org/gnu/coreutils/coreutils-${version}.tar.xz"
-      "https://ftp.gnu.org/gnu/coreutils/coreutils-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://gnu.mirror.constant.com/coreutils/coreutils-${version}.tar.xz"
+        "https://mirrors.kernel.org/gnu/coreutils/coreutils-${version}.tar.xz"
+        "https://ftp.gnu.org/gnu/coreutils/coreutils-${version}.tar.xz"
+      ];
+      hash = "sha256-FlNamt8LEANzZOLWEqrT2fTso6NElJztdNEvr0vVHSU=";
+    };
+
+    buildDeps = [make];
+    runtimeDeps = [openssl];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd coreutils-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --without-gmp \
+            --with-openssl \
+            --disable-nls \
+            --enable-no-install-program=groups,hostname,kill,uptime
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-zTKO3qyS9qZl3p8yPJO3Eq8YWLwuDYjz9xAEaUcKG4o=";
-  };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ openssl ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd coreutils-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --without-gmp \
-          --with-openssl \
-          --disable-nls \
-          --enable-no-install-program=groups,hostname,kill,uptime
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       sort = testing.mkFirecrackerTest {
         pname = "tool-coreutils-sort";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           printf '3\n1\n2\n' > /tmp/nums.txt
           RESULT=$(sort /tmp/nums.txt | tr '\n' ' ')
@@ -82,7 +78,7 @@ mkDerivation {
 
       wc = testing.mkFirecrackerTest {
         pname = "tool-coreutils-wc";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           RESULT=$(echo "hello world" | wc -w | tr -d ' ')
           if [ "$RESULT" != "2" ]; then
@@ -95,7 +91,7 @@ mkDerivation {
 
       head-tail = testing.mkFirecrackerTest {
         pname = "tool-coreutils-head-tail";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           printf 'a\nb\nc\nd\ne\n' > /tmp/lines.txt
 
@@ -115,7 +111,7 @@ mkDerivation {
 
       basic-ops = testing.mkFirecrackerTest {
         pname = "tool-coreutils-basic-ops";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           mkdir -p /tmp/test-dir/sub
           echo "content" > /tmp/test-dir/file.txt
@@ -156,7 +152,7 @@ mkDerivation {
 
       text-ops = testing.mkFirecrackerTest {
         pname = "tool-coreutils-text-ops";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           # cat
           echo "hello" > /tmp/text-test.txt
@@ -193,7 +189,7 @@ mkDerivation {
 
       perms = testing.mkFirecrackerTest {
         pname = "tool-coreutils-perms";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           echo "perm test" > /tmp/perm-test.txt
           chmod 755 /tmp/perm-test.txt
@@ -221,9 +217,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "GNU Coreutils — basic file, shell, and text manipulation utilities";
-    homepage = "https://www.gnu.org/software/coreutils/";
-    license = "GPL-3.0-or-later";
-  };
-}
+    meta = {
+      description = "GNU Coreutils — basic file, shell, and text manipulation utilities";
+      homepage = "https://www.gnu.org/software/coreutils/";
+      license = "GPL-3.0-or-later";
+    };
+  }

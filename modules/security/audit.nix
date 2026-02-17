@@ -7,15 +7,12 @@
 ##!
 ##! Absorbed TOML config values:
 ##!   [security.audit] enable, rules, backlog_limit, failure_mode
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.security.audit;
 
   # Format the audit rules file.
@@ -35,9 +32,7 @@ let
     ## User-defined audit rules:
     ${builtins.concatStringsSep "\n" cfg.rules}
   '';
-
-in
-{
+in {
   options.aos.security.audit = {
     ## Enable the Linux audit framework (auditd).
     ##
@@ -135,7 +130,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ pkgs.audit ];
+    environment.systemPackages = [pkgs.audit];
 
     # /etc/audit/audit.rules — audit rule definitions.
     # Loaded by auditd on startup via auditctl.
@@ -168,7 +163,7 @@ in
     # auditd.service — the audit daemon.
     systemd.services."auditd" = {
       description = "Linux Audit Daemon";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
       after = [
         "local-fs.target"
         "systemd-tmpfiles-setup.service"

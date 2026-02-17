@@ -1,4 +1,7 @@
-{ mkCheck, mkCheckGroup }:
+{
+  mkCheck,
+  mkCheckGroup,
+}:
 mkCheckGroup {
   name = "systemd-basics";
   description = "systemd service infrastructure checks";

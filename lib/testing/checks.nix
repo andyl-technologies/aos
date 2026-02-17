@@ -10,122 +10,117 @@
 #   flattenChecks — Flatten nested check groups into a flat list
 #   composeChecks — Flatten + wrap each check with echo banners
 #   validateChecks — Write checks to temp files and run sh -n syntax check
-
 let
   # Flatten nested check groups into a flat list of { path, check } records.
-  flattenChecks =
-    let
-      go =
-        prefix: items:
-        builtins.concatMap (
-          item:
-          if item._type == "check" then
-            [
-              {
-                path = if prefix == "" then item.name else "${prefix}/${item.name}";
-                check = item;
-              }
-            ]
-          else if item._type == "checkGroup" then
-            go (if prefix == "" then item.name else "${prefix}/${item.name}") item.checks
-          else
-            throw "Unknown check type: ${item._type or "null"}"
-        ) items;
-    in
+  flattenChecks = let
+    go = prefix: items:
+      builtins.concatMap (
+        item:
+          if item._type == "check"
+          then [
+            {
+              path =
+                if prefix == ""
+                then item.name
+                else "${prefix}/${item.name}";
+              check = item;
+            }
+          ]
+          else if item._type == "checkGroup"
+          then
+            go (
+              if prefix == ""
+              then item.name
+              else "${prefix}/${item.name}"
+            )
+            item.checks
+          else throw "Unknown check type: ${item._type or "null"}"
+      )
+      items;
+  in
     checks: go "" checks;
-in
-{
-  mkCheck =
-    {
-      name,
-      description,
-      script,
-      tags ? [ ],
-    }:
-    {
-      _type = "check";
-      inherit
-        name
-        description
-        script
-        tags
-        ;
-    };
+in {
+  mkCheck = {
+    name,
+    description,
+    script,
+    tags ? [],
+  }: {
+    _type = "check";
+    inherit
+      name
+      description
+      script
+      tags
+      ;
+  };
 
-  mkCheckGroup =
-    {
-      name,
-      description,
-      checks,
-    }:
-    {
-      _type = "checkGroup";
-      inherit name description checks;
-    };
+  mkCheckGroup = {
+    name,
+    description,
+    checks,
+  }: {
+    _type = "checkGroup";
+    inherit name description checks;
+  };
 
   inherit flattenChecks;
 
-  composeChecks =
-    checks:
-    let
-      flat = flattenChecks checks;
-    in
+  composeChecks = checks: let
+    flat = flattenChecks checks;
+  in
     builtins.concatStringsSep "\n" (
       builtins.map (
-        entry:
-        let
+        entry: let
           path = entry.path;
           check = entry.check;
-        in
-        ''
+        in ''
           echo "--- check: ${path} ---"
           echo "    ${check.description}"
           ${check.script}
           echo "--- ok: ${path} ---"
           echo ""
         ''
-      ) flat
+      )
+      flat
     );
 
-  validateChecks =
-    {
-      pkgs,
-      checks,
-    }:
-    let
-      flat = flattenChecks checks;
+  validateChecks = {
+    pkgs,
+    checks,
+  }: let
+    flat = flattenChecks checks;
 
-      validationScript = builtins.concatStringsSep "\n" (
-        builtins.map (
-          entry:
-          let
-            path = entry.path;
-            check = entry.check;
-            safeName = builtins.replaceStrings [ "/" ] [ "-" ] path;
-          in
-          ''
-            echo "  validating: ${path}"
-            cat > "$TMPDIR/check-${safeName}.sh" << 'CHECKEOF'
-            # Assertion stubs for syntax validation
-            run_in_guest() { :; }
-            assert_success() { :; }
-            assert_output_contains() { :; }
-            AGENT_SOCK="/dev/null"
-            SERIAL_LOG="/dev/null"
+    validationScript = builtins.concatStringsSep "\n" (
+      builtins.map (
+        entry: let
+          path = entry.path;
+          check = entry.check;
+          safeName = builtins.replaceStrings ["/"] ["-"] path;
+        in ''
+          echo "  validating: ${path}"
+          cat > "$TMPDIR/check-${safeName}.sh" << 'CHECKEOF'
+          # Assertion stubs for syntax validation
+          run_in_guest() { :; }
+          assert_success() { :; }
+          assert_output_contains() { :; }
+          AGENT_SOCK="/dev/null"
+          SERIAL_LOG="/dev/null"
 
-            ${check.script}
-            CHECKEOF
-            sh -n "$TMPDIR/check-${safeName}.sh"
-          ''
-        ) flat
-      );
-    in
+          ${check.script}
+          CHECKEOF
+          sh -n "$TMPDIR/check-${safeName}.sh"
+        ''
+      )
+      flat
+    );
+  in
     pkgs.mkDerivation {
       pname = "aos-check-validate";
       version = "0";
       src = null;
 
-      buildDeps = [ pkgs.coreutils ];
+      buildDeps = [pkgs.coreutils];
 
       phases = [
         {

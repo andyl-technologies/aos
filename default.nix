@@ -16,17 +16,12 @@
 #   systems/  — System variant compositions (base, server, k8s-*)
 #   modules/image/ — Disk image builder module
 #   tests/    — Multi-layer test suite (eval, build, vm, fleet)
-
-{
-  system ? "x86_64-linux",
-}:
-
-let
-  lib = import ./lib { inherit system; };
+{system ? "x86_64-linux"}: let
+  lib = import ./lib {inherit system;};
 
   # All packages are built hermetically from source using only bootstrap
   # tools and previously-built AOS packages.  No nixpkgs anywhere.
-  pkgs = import ./pkgs { inherit lib; };
+  pkgs = import ./pkgs {inherit lib;};
 
   # All test tools are AOS packages built from source.
   testTools = {
@@ -34,26 +29,23 @@ let
   };
 
   # Helper: evaluate a system variant from a module path list.
-  mkSystem =
-    modules:
+  mkSystem = modules:
     lib.evalModules {
       modules = modules;
       inherit pkgs lib;
     };
 
   systems = {
-    base = mkSystem [ ./systems/base.nix ];
-    server = mkSystem [ ./systems/server.nix ];
-    seed = mkSystem [ ./systems/seed.nix ];
-    k8s-worker = mkSystem [ ./systems/k8s-worker.nix ];
-    k8s-control-plane = mkSystem [ ./systems/k8s-control-plane.nix ];
+    base = mkSystem [./systems/base.nix];
+    server = mkSystem [./systems/server.nix];
+    seed = mkSystem [./systems/seed.nix];
+    k8s-worker = mkSystem [./systems/k8s-worker.nix];
+    k8s-control-plane = mkSystem [./systems/k8s-control-plane.nix];
   };
-
-in
-{
+in {
   inherit pkgs lib systems;
 
   images = lib.mapAttrs (name: system: system.config.system.build.image) systems;
 
-  checks = import ./tests { inherit pkgs lib testTools; };
+  checks = import ./tests {inherit pkgs lib testTools;};
 }

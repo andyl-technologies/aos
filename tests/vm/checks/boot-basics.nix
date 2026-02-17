@@ -1,4 +1,7 @@
-{ mkCheck, mkCheckGroup }:
+{
+  mkCheck,
+  mkCheckGroup,
+}:
 mkCheckGroup {
   name = "boot-basics";
   description = "Core boot verification";
@@ -29,10 +32,10 @@ mkCheckGroup {
     })
     (mkCheck {
       name = "kernel-version";
-      description = "Kernel version is 6.12.x";
+      description = "Kernel version is 6.18.x";
       script = ''
-        assert_output_contains "uname -r" "6.12" \
-          "kernel version is 6.12.x"
+        assert_output_contains "uname -r" "6.18" \
+          "kernel version is 6.18.x"
       '';
     })
   ];

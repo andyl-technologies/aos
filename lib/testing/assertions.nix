@@ -15,7 +15,6 @@
 # Usage (from fleet.nix, Firecracker driver):
 #   assertions = import ./assertions.nix;
 #   ... ${assertions.mkFleetVsockHelpers "${pkgs.socat}/bin/socat"} ...
-
 rec {
   # Shell helpers for single-VM tests.
   # Expects these shell variables/commands in the environment:

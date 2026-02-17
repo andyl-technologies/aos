@@ -3,19 +3,15 @@
 ##! Provides aos.image options and wires system.build.image to the
 ##! builder derivation. System variants set image sizing options;
 ##! the builder produces a bootable GPT disk image.
-
 {
   config,
   lib,
   pkgs,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.image;
   buildImage = import ./builder.nix;
-in
-{
+in {
   options.aos.image = {
     ## Whether to build a disk image for this system variant.
     enable = lib.mkOption {
@@ -52,7 +48,7 @@ in
   config = lib.mkIf cfg.enable {
     system.build.image = buildImage {
       inherit pkgs lib;
-      system = { inherit config; };
+      system = {inherit config;};
       name = config.aos.system.variant;
       inherit (cfg) diskSize espSize rootSize;
     };

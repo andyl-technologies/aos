@@ -11,15 +11,12 @@
 #   - nftables firewall (default-deny inbound)
 #   - OpenSSH server (key-only, no root password login)
 #   - Chrony NTP time synchronization
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-{
+}: {
   imports = [
     ./base.nix
     ../modules/security/selinux.nix
@@ -46,5 +43,4 @@
   # --- Services ---
   aos.services.ssh.enable = true;
   aos.services.chrony.enable = true;
-
 }

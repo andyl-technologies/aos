@@ -1,4 +1,7 @@
-{ mkCheck, mkCheckGroup }:
+{
+  mkCheck,
+  mkCheckGroup,
+}:
 mkCheckGroup {
   name = "kubelet";
   description = "Kubelet and CNI checks";
