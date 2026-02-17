@@ -1,18 +1,18 @@
 # lib/testing/integration.nix — Higher-level integration test wrappers
 #
-# Provides convenience functions built on top of mkFirecrackerTest for
-# common integration test patterns:
+# Provides convenience functions built on top of mkVMTest (headless mode)
+# for common integration test patterns:
 #
 #   mkLinkCheck    — Compile, link, and run a C program against a library
 #   mkToolCheck    — Run a CLI tool and optionally verify output
 #   mkCompileCheck — Compile-only (no run) to verify headers/linkage
 #
-# All tests run in headless Firecracker microVMs with no systemd and
-# no agent. The test script IS the init process (PID 1).
+# All tests run in headless microVMs with no systemd and no agent.
+# The test script IS the init process (PID 1).
 {
   pkgs,
   lib,
-  mkFirecrackerTest,
+  mkVMTest,
 }: let
   bootstrapTools = pkgs.bootstrapTools;
 
@@ -59,8 +59,8 @@
     includePath = makeIncludePath allLibDeps;
     libraryPath = makeLibraryPath allLibDeps;
   in
-    mkFirecrackerTest {
-      inherit pname;
+    mkVMTest {
+      name = pname;
       rootfsDeps = allLibDeps;
       testScript = ''
                 export C_INCLUDE_PATH="${includePath}:$C_INCLUDE_PATH"
@@ -104,8 +104,8 @@
       ''
       else "";
   in
-    mkFirecrackerTest {
-      inherit pname;
+    mkVMTest {
+      name = pname;
       rootfsDeps = allDeps;
       testScript = ''
         echo "==> Running tool check"
@@ -128,8 +128,8 @@
     includePath = makeIncludePath deps;
     libraryPath = makeLibraryPath deps;
   in
-    mkFirecrackerTest {
-      inherit pname;
+    mkVMTest {
+      name = pname;
       rootfsDeps = deps;
       testScript = ''
                 export C_INCLUDE_PATH="${includePath}:$C_INCLUDE_PATH"
@@ -157,8 +157,8 @@
     includePath = makeIncludePath deps;
     libraryPath = makeLibraryPath deps;
   in
-    mkFirecrackerTest {
-      inherit pname;
+    mkVMTest {
+      name = pname;
       rootfsDeps = deps;
       testScript = ''
                 export C_INCLUDE_PATH="${includePath}:$C_INCLUDE_PATH"

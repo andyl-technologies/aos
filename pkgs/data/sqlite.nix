@@ -85,8 +85,8 @@ in
         '';
       };
 
-      cli = testing.mkFirecrackerTest {
-        pname = "tool-sqlite3-cli";
+      cli = testing.mkVMTest {
+        name = "tool-sqlite3-cli";
         rootfsDeps = [
           self
           pkgs.coreutils

@@ -96,8 +96,8 @@ in
       self,
       pkgs,
     }: {
-      tools = testing.mkFirecrackerTest {
-        pname = "cross-cutting-selinux-tools";
+      tools = testing.mkVMTest {
+        name = "cross-cutting-selinux-tools";
         rootfsDeps = [
           self
           pkgs.libselinux

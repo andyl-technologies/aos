@@ -124,8 +124,8 @@ in
       self,
       pkgs,
     }: {
-      hello = testing.mkFirecrackerTest {
-        pname = "toolchain-rust-hello";
+      hello = testing.mkVMTest {
+        name = "toolchain-rust-hello";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -142,8 +142,8 @@ in
         '';
       };
 
-      cargo = testing.mkFirecrackerTest {
-        pname = "toolchain-rust-cargo";
+      cargo = testing.mkVMTest {
+        name = "toolchain-rust-cargo";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -175,8 +175,8 @@ in
         '';
       };
 
-      bootstrap-chain = testing.mkFirecrackerTest {
-        pname = "toolchain-rust-bootstrap-chain";
+      bootstrap-chain = testing.mkVMTest {
+        name = "toolchain-rust-bootstrap-chain";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -209,8 +209,8 @@ in
         '';
       };
 
-      build = testing.mkFirecrackerTest {
-        pname = "cross-cutting-rust-build";
+      build = testing.mkVMTest {
+        name = "cross-cutting-rust-build";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -242,8 +242,8 @@ in
         '';
       };
 
-      ffi = testing.mkFirecrackerTest {
-        pname = "cross-cutting-rust-ffi";
+      ffi = testing.mkVMTest {
+        name = "cross-cutting-rust-ffi";
         rootfsDeps = [
           self
           pkgs.zlib

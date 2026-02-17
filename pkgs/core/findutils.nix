@@ -58,8 +58,8 @@ in
       self,
       pkgs,
     }: {
-      find = testing.mkFirecrackerTest {
-        pname = "tool-findutils-find";
+      find = testing.mkVMTest {
+        name = "tool-findutils-find";
         rootfsDeps = [
           self
           pkgs.coreutils
@@ -82,8 +82,8 @@ in
         '';
       };
 
-      xargs = testing.mkFirecrackerTest {
-        pname = "tool-xargs-basic";
+      xargs = testing.mkVMTest {
+        name = "tool-xargs-basic";
         rootfsDeps = [
           self
           pkgs.coreutils

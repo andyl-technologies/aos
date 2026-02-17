@@ -68,8 +68,8 @@ in
         '';
       };
 
-      cli-roundtrip = testing.mkFirecrackerTest {
-        pname = "lib-lz4-cli-roundtrip";
+      cli-roundtrip = testing.mkVMTest {
+        name = "lib-lz4-cli-roundtrip";
         rootfsDeps = [self];
         testScript = ''
           echo "lz4 round-trip test data 1234567890" > /tmp/original.txt

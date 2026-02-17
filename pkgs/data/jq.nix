@@ -64,8 +64,8 @@ in
         command = "jq --version";
       };
 
-      query = testing.mkFirecrackerTest {
-        pname = "tool-jq-query";
+      query = testing.mkVMTest {
+        name = "tool-jq-query";
         rootfsDeps = [self];
         testScript = ''
           echo '{"a":1}' > /tmp/input.json

@@ -147,6 +147,69 @@ in {
   };
 
   config = {
+    system.checks.filesystem = lib.mkCheckGroup {
+      name = "filesystem";
+      description = "Filesystem layout checks";
+      checks = [
+        (lib.mkCheck {
+          name = "tmp-tmpfs";
+          description = "/tmp is tmpfs";
+          script = ''
+            assert_output_contains "cat /proc/mounts" "/tmp tmpfs" \
+              "/tmp is tmpfs"
+          '';
+        })
+        (lib.mkCheck {
+          name = "run-tmpfs";
+          description = "/run is tmpfs";
+          script = ''
+            assert_output_contains "cat /proc/mounts" "/run tmpfs" \
+              "/run is tmpfs"
+          '';
+        })
+        (lib.mkCheck {
+          name = "nix-store-exists";
+          description = "/nix/store directory exists";
+          script = ''
+            assert_success "test -d /nix/store" \
+              "/nix/store directory exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "nix-store-populated";
+          description = "/nix/store is populated";
+          script = ''
+            assert_success "ls /nix/store/ | head -1" \
+              "/nix/store is populated"
+          '';
+        })
+        (lib.mkCheck {
+          name = "var-writable";
+          description = "/var is writable";
+          script = ''
+            assert_success "touch /var/test-write && rm /var/test-write" \
+              "/var is writable"
+          '';
+        })
+        (lib.mkCheck {
+          name = "etc-os-release";
+          description = "/etc/os-release exists";
+          script = ''
+            assert_success "test -f /etc/os-release" \
+              "/etc/os-release exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "etc-passwd";
+          description = "/etc/passwd exists";
+          script = ''
+            assert_success "test -f /etc/passwd" \
+              "/etc/passwd exists"
+          '';
+        })
+      ];
+    };
+
     # Base ZFS datasets — other modules add entries via the same option.
     aos.filesystems.zfs.datasets = {
       "var" = {

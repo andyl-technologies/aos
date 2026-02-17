@@ -73,8 +73,8 @@ in
       self,
       pkgs,
     }: {
-      binaries = testing.mkFirecrackerTest {
-        pname = "tool-cni-plugins";
+      binaries = testing.mkVMTest {
+        name = "tool-cni-plugins";
         rootfsDeps = [self];
         testScript = ''
           echo "==> Verifying CNI plugin binaries exist"

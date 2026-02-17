@@ -217,6 +217,85 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    system.checks.nginx = lib.mkCheckGroup {
+      name = "nginx";
+      description = "nginx web server checks";
+      checks = [
+        (lib.mkCheck {
+          name = "config-exists";
+          description = "nginx.conf is generated";
+          script = ''
+            assert_success "test -f /etc/nginx/nginx.conf" \
+              "nginx.conf exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "config-worker-processes";
+          description = "nginx.conf has worker_processes directive";
+          script = ''
+            assert_output_contains "cat /etc/nginx/nginx.conf" "worker_processes" \
+              "nginx.conf contains worker_processes"
+          '';
+        })
+        (lib.mkCheck {
+          name = "config-listen-80";
+          description = "nginx.conf listens on port 80";
+          script = ''
+            assert_output_contains "cat /etc/nginx/nginx.conf" "listen 80" \
+              "nginx.conf contains listen 80"
+          '';
+        })
+        (lib.mkCheck {
+          name = "config-listen-443";
+          description = "nginx.conf has HTTPS server block";
+          script = ''
+            assert_output_contains "cat /etc/nginx/nginx.conf" "listen 443 ssl" \
+              "nginx.conf contains listen 443 ssl"
+          '';
+        })
+        (lib.mkCheck {
+          name = "config-acme";
+          description = "nginx.conf loads ACME module";
+          script = ''
+            assert_output_contains "cat /etc/nginx/nginx.conf" "ngx_http_acme_module" \
+              "nginx.conf loads ACME module"
+          '';
+        })
+        (lib.mkCheck {
+          name = "service-loaded";
+          description = "nginx systemd service unit exists";
+          script = ''
+            assert_success "systemctl cat nginx" \
+              "nginx service unit is loaded"
+          '';
+        })
+        (lib.mkCheck {
+          name = "tmpfiles-config";
+          description = "nginx tmpfiles config exists";
+          script = ''
+            assert_success "test -f /etc/tmpfiles.d/aos-nginx.conf" \
+              "nginx tmpfiles config exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "firewall-http";
+          description = "Firewall allows port 80";
+          script = ''
+            assert_output_contains "cat /etc/nftables.conf" "80" \
+              "nftables config includes port 80"
+          '';
+        })
+        (lib.mkCheck {
+          name = "firewall-https";
+          description = "Firewall allows port 443";
+          script = ''
+            assert_output_contains "cat /etc/nftables.conf" "443" \
+              "nftables config includes port 443"
+          '';
+        })
+      ];
+    };
+
     environment.systemPackages = [
       pkgs.nginx
       pkgs.nginx-acme

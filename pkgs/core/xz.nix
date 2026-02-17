@@ -58,8 +58,8 @@ in
       self,
       pkgs,
     }: {
-      roundtrip = testing.mkFirecrackerTest {
-        pname = "tool-xz-roundtrip";
+      roundtrip = testing.mkVMTest {
+        name = "tool-xz-roundtrip";
         rootfsDeps = [
           self
           pkgs.coreutils
