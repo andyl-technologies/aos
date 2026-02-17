@@ -20,17 +20,6 @@ pub fn run(nix: &NixRunner, printer: &Printer, cmd: &Option<TestCmd>) -> Result<
             };
             run_layer(nix, printer, &attr, &label)
         }
-        Some(TestCmd::Integration { group }) => {
-            let attr = match group {
-                Some(g) => format!("checks.integration.{g}"),
-                None => "checks.integration".to_string(),
-            };
-            let label = match group {
-                Some(g) => format!("integration/{g}"),
-                None => "integration".to_string(),
-            };
-            run_layer(nix, printer, &attr, &label)
-        }
         Some(TestCmd::Fleet { suite }) => {
             let attr = match suite {
                 Some(s) => format!("checks.fleet.{s}"),
@@ -51,7 +40,6 @@ fn run_all(nix: &NixRunner, printer: &Printer) -> Result<()> {
     let layers: &[(&str, &str)] = &[
         ("checks.eval", "eval"),
         ("checks.build", "build"),
-        ("checks.integration", "integration"),
         ("checks.vm", "vm"),
         ("checks.fleet", "fleet"),
     ];
