@@ -17,8 +17,8 @@
   # -------------------------------------------------------------------------
   # For key shared libraries, verify the SONAME exists and matches expected
   # patterns. Catches accidental SONAME changes during upgrades.
-  soname-validation = testing.mkFirecrackerTest {
-    pname = "abi-soname-validation";
+  soname-validation = testing.mkVMTest {
+    name ="abi-soname-validation";
     rootfsDeps = [
       pkgs.elfutils
       pkgs.openssl
@@ -77,8 +77,8 @@
   # Compile and run C programs that compare compile-time version macros against
   # runtime version functions. A mismatch indicates headers from one version
   # but .so from another.
-  version-consistency = testing.mkFirecrackerTest {
-    pname = "abi-version-consistency";
+  version-consistency = testing.mkVMTest {
+    name ="abi-version-consistency";
     rootfsDeps = [
       pkgs.openssl
       pkgs.zlib
@@ -165,8 +165,8 @@
   # -------------------------------------------------------------------------
   # For libraries that ship .pc files, verify pkg-config --modversion and
   # --cflags --libs return valid values with paths that exist on disk.
-  pkgconfig-audit = testing.mkFirecrackerTest {
-    pname = "abi-pkgconfig-audit";
+  pkgconfig-audit = testing.mkVMTest {
+    name ="abi-pkgconfig-audit";
     rootfsDeps = [
       pkgs.pkg-config
       pkgs.openssl
@@ -260,8 +260,8 @@
   # For key binaries, verify RPATH/RUNPATH entries point to existing directories
   # that contain the expected .so files, and that no binary has /usr/lib or /lib
   # in its RPATH (should only have /nix/store paths).
-  rpath-validation = testing.mkFirecrackerTest {
-    pname = "abi-rpath-validation";
+  rpath-validation = testing.mkVMTest {
+    name ="abi-rpath-validation";
     rootfsDeps = [
       pkgs.elfutils
       pkgs.curl
@@ -342,8 +342,8 @@
   # -------------------------------------------------------------------------
   # For openssl and zlib, verify that key exported symbols exist. This catches
   # accidental symbol stripping or misconfigured builds.
-  symbol-exports = testing.mkFirecrackerTest {
-    pname = "abi-symbol-exports";
+  symbol-exports = testing.mkVMTest {
+    name ="abi-symbol-exports";
     rootfsDeps = [
       pkgs.binutils
       pkgs.openssl
@@ -401,8 +401,8 @@
   # -------------------------------------------------------------------------
   # For key binaries, verify the ELF interpreter path points to a valid
   # ld-linux-x86-64.so.2 that exists on disk.
-  dynamic-linker = testing.mkFirecrackerTest {
-    pname = "abi-dynamic-linker";
+  dynamic-linker = testing.mkVMTest {
+    name ="abi-dynamic-linker";
     rootfsDeps = [
       pkgs.elfutils
       pkgs.bash

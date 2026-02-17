@@ -63,6 +63,29 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    system.checks.k8s-control-plane = lib.mkCheckGroup {
+      name = "k8s-control-plane";
+      description = "Kubernetes control plane configuration (kubeadm, etcd)";
+      checks = [
+        (lib.mkCheck {
+          name = "kubernetes-dir";
+          description = "/etc/kubernetes directory exists";
+          script = ''
+            assert_success "test -d /etc/kubernetes" \
+              "/etc/kubernetes directory exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "etcd-dir";
+          description = "/var/lib/etcd directory exists";
+          script = ''
+            assert_success "test -d /var/lib/etcd" \
+              "/var/lib/etcd directory exists"
+          '';
+        })
+      ];
+    };
+
     # ZFS dataset for etcd data — tuned for small-record transactional writes.
     aos.filesystems.zfs.datasets."var/lib/etcd" = {
       mountpoint = "/var/lib/etcd";

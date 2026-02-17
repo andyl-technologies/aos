@@ -81,8 +81,8 @@ in
         command = "ssh -V 2>&1";
       };
 
-      keygen = testing.mkFirecrackerTest {
-        pname = "tool-openssh-keygen";
+      keygen = testing.mkVMTest {
+        name = "tool-openssh-keygen";
         rootfsDeps = [self];
         testScript = ''
           echo "==> Generating ed25519 keypair"

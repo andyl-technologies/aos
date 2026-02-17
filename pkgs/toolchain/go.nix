@@ -69,8 +69,8 @@ in
       self,
       pkgs,
     }: {
-      hello = testing.mkFirecrackerTest {
-        pname = "toolchain-go-hello";
+      hello = testing.mkVMTest {
+        name = "toolchain-go-hello";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -103,8 +103,8 @@ in
         '';
       };
 
-      cgo = testing.mkFirecrackerTest {
-        pname = "toolchain-go-cgo";
+      cgo = testing.mkVMTest {
+        name = "toolchain-go-cgo";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -140,8 +140,8 @@ in
         '';
       };
 
-      test = testing.mkFirecrackerTest {
-        pname = "toolchain-go-test";
+      test = testing.mkVMTest {
+        name = "toolchain-go-test";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -184,8 +184,8 @@ in
         '';
       };
 
-      static = testing.mkFirecrackerTest {
-        pname = "toolchain-go-static";
+      static = testing.mkVMTest {
+        name = "toolchain-go-static";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -226,8 +226,8 @@ in
         '';
       };
 
-      cgo-openssl = testing.mkFirecrackerTest {
-        pname = "toolchain-go-cgo-openssl";
+      cgo-openssl = testing.mkVMTest {
+        name = "toolchain-go-cgo-openssl";
         rootfsDeps = [
           self
           pkgs.openssl
@@ -267,8 +267,8 @@ in
         '';
       };
 
-      cgo-zlib = testing.mkFirecrackerTest {
-        pname = "toolchain-go-cgo-zlib";
+      cgo-zlib = testing.mkVMTest {
+        name = "toolchain-go-cgo-zlib";
         rootfsDeps = [
           self
           pkgs.zlib
@@ -308,8 +308,8 @@ in
         '';
       };
 
-      vet = testing.mkFirecrackerTest {
-        pname = "toolchain-go-vet";
+      vet = testing.mkVMTest {
+        name = "toolchain-go-vet";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -362,8 +362,8 @@ in
         '';
       };
 
-      fmt = testing.mkFirecrackerTest {
-        pname = "toolchain-go-fmt";
+      fmt = testing.mkVMTest {
+        name = "toolchain-go-fmt";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -406,8 +406,8 @@ in
         '';
       };
 
-      build = testing.mkFirecrackerTest {
-        pname = "cross-cutting-go-build";
+      build = testing.mkVMTest {
+        name = "cross-cutting-go-build";
         rootfsDeps = [self];
         memory = 512;
         testScript = ''
@@ -448,8 +448,8 @@ in
         '';
       };
 
-      cgo-full = testing.mkFirecrackerTest {
-        pname = "cross-cutting-go-cgo-full";
+      cgo-full = testing.mkVMTest {
+        name = "cross-cutting-go-cgo-full";
         rootfsDeps = [
           self
           pkgs.zlib

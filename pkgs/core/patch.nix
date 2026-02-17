@@ -57,8 +57,8 @@ in
       self,
       pkgs,
     }: {
-      apply = testing.mkFirecrackerTest {
-        pname = "tool-patch-apply";
+      apply = testing.mkVMTest {
+        name = "tool-patch-apply";
         rootfsDeps = [
           self
           pkgs.diffutils

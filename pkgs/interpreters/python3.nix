@@ -106,8 +106,8 @@ in
       self,
       pkgs,
     }: {
-      import = testing.mkFirecrackerTest {
-        pname = "cross-cutting-python-import";
+      import = testing.mkVMTest {
+        name = "cross-cutting-python-import";
         rootfsDeps = [self];
         testScript = ''
           export PATH="${self}/bin:$PATH"
@@ -129,8 +129,8 @@ in
         '';
       };
 
-      chain = testing.mkFirecrackerTest {
-        pname = "cross-cutting-python-chain";
+      chain = testing.mkVMTest {
+        name = "cross-cutting-python-chain";
         rootfsDeps = [
           self
           pkgs.sqlite

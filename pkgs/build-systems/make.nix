@@ -63,8 +63,8 @@ in
         command = "make --version";
       };
 
-      build = testing.mkFirecrackerTest {
-        pname = "build-make-build";
+      build = testing.mkVMTest {
+        name = "build-make-build";
         rootfsDeps = [self];
         testScript = ''
           mkdir -p /tmp/proj
