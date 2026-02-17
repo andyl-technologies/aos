@@ -8,7 +8,7 @@
   craneLib,
   pkgs,
 }: let
-  src = craneLib.cleanCargoSource ./cli;
+  src = craneLib.cleanCargoSource ../../../cli;
   commonArgs = {
     inherit src;
     pname = "aos";
@@ -33,6 +33,7 @@ in
       postInstall = ''
         wrapProgram $out/bin/aos \
           --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
+        ln -s aos $out/bin/apm
       '';
 
       meta.description = "AOS build tool";

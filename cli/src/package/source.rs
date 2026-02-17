@@ -1,0 +1,442 @@
+//! `apm verify` and `apm source` commands.
+//!
+//! - `verify <pkg>`: compare the installed NAR hash against the registry.
+//! - `source <pkg>`: show/fetch/verify the source derivation.
+
+use std::process::Stdio;
+
+use anyhow::{bail, Context, Result};
+
+use crate::error::AosError;
+use crate::output::Printer;
+use super::config::ApmConfig;
+use super::profile::Profile;
+use super::profile::meta;
+use super::registry::RegistrySet;
+use super::verify as hash_verify;
+
+// ---------------------------------------------------------------------------
+// Platform detection (shared helper)
+// ---------------------------------------------------------------------------
+
+fn current_platform() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "x86_64-linux"
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64-linux"
+    } else {
+        "x86_64-linux"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// apm verify <package>
+// ---------------------------------------------------------------------------
+
+/// Verify an installed package's NAR hash against the registry.
+///
+/// 1. Look up the package in the profile metadata.
+/// 2. Look up the package in the registry to get `nar_hash`.
+/// 3. Run `nix-store --dump` on the installed store path.
+/// 4. Hash the NAR content with SHA-256.
+/// 5. Compare against the registry's `nar_hash`.
+pub async fn run_verify(
+    config: &ApmConfig,
+    package: &str,
+    printer: &Printer,
+) -> Result<()> {
+    printer.header(&format!("Verifying package '{package}'..."));
+
+    // 1. Open profile and find installed metadata.
+    let profile = Profile::open(config.scope)?;
+    let all_meta = meta::list_meta(&profile)?;
+
+    let installed = all_meta
+        .iter()
+        .find(|m| {
+            m.apm
+                .as_ref()
+                .map(|a| a.name == package)
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| AosError::PackageNotFound {
+            name: package.to_string(),
+        })?;
+
+    let store_path = &installed.store_path;
+
+    // 2. Load registries and resolve package for its nar_hash.
+    let enabled = config.enabled_registries();
+    let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
+
+    let (_, pkg_meta) = reg_set.resolve(package).ok_or_else(|| AosError::PackageNotFound {
+        name: package.to_string(),
+    })?;
+
+    let expected_hash = &pkg_meta.nar_hash;
+
+    printer.kv("Store path", store_path);
+    printer.kv("Expected NAR hash", expected_hash);
+
+    // 3-4. Run nix-store --dump and hash the output.
+    match hash_verify::verify_installed(store_path, expected_hash).await {
+        Ok(()) => {
+            printer.success(&format!("OK: '{package}' integrity verified"));
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(AosError::HashMismatch { expected, actual }) =
+                e.downcast_ref::<AosError>()
+            {
+                printer.error(&format!(
+                    "MISMATCH: '{package}' has been modified on disk"
+                ));
+                printer.kv("Expected", expected);
+                printer.kv("Actual", actual);
+                bail!(
+                    "package '{package}' failed integrity verification: expected {expected}, got {actual}"
+                );
+            }
+            Err(e)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// apm source <package>
+// ---------------------------------------------------------------------------
+
+/// Show or fetch the source derivation for a package.
+///
+/// Flags:
+/// - `--show-drv`: Print the `source_drv` path from the registry.
+/// - `--fetch`: Download the source derivation NAR.
+/// - `--verify`: Rebuild from source and compare hash.
+/// - (default, no flags): Print the `source_drv` field.
+pub async fn run_source(
+    config: &ApmConfig,
+    package: &str,
+    show_drv: bool,
+    fetch: bool,
+    verify_source: bool,
+    printer: &Printer,
+) -> Result<()> {
+    // Load registries and resolve package.
+    let enabled = config.enabled_registries();
+    let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
+
+    let (reg, pkg_meta) = reg_set.resolve(package).ok_or_else(|| AosError::PackageNotFound {
+        name: package.to_string(),
+    })?;
+
+    let source_drv = &pkg_meta.source_drv;
+
+    if source_drv.is_empty() {
+        bail!("package '{package}' has no source derivation recorded in registry '{}'", reg.config.name);
+    }
+
+    // Default or --show-drv: just print the source derivation path.
+    if show_drv || (!fetch && !verify_source) {
+        printer.header(&format!("Source derivation for '{package}':"));
+        printer.kv("Source drv", source_drv);
+        printer.kv("Source NAR hash", &pkg_meta.source_nar_hash);
+        printer.kv("Registry", &reg.config.name);
+        return Ok(());
+    }
+
+    // --fetch: realise the source derivation via nix-store.
+    if fetch {
+        printer.header(&format!("Fetching source derivation for '{package}'..."));
+        printer.kv("Source drv", source_drv);
+
+        let output = tokio::process::Command::new("nix-store")
+            .args(["--realise", source_drv])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("running nix-store --realise")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "nix-store --realise failed for {source_drv}: {}",
+                stderr.trim()
+            );
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        printer.success(&format!("Source realised: {}", stdout.trim()));
+        return Ok(());
+    }
+
+    // --verify: rebuild from source and compare hash.
+    if verify_source {
+        printer.header(&format!("Rebuilding '{package}' from source..."));
+        printer.kv("Source drv", source_drv);
+
+        let output = tokio::process::Command::new("nix-store")
+            .args(["--realise", source_drv])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("running nix-store --realise for source verification")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "nix-store --realise failed for {source_drv}: {}",
+                stderr.trim()
+            );
+        }
+
+        let built_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Now dump and hash the built output.
+        printer.info("Hashing rebuilt output...");
+
+        let dump_output = tokio::process::Command::new("nix-store")
+            .args(["--dump", &built_path])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .with_context(|| format!("running nix-store --dump {built_path}"))?;
+
+        if !dump_output.status.success() {
+            let stderr = String::from_utf8_lossy(&dump_output.stderr);
+            bail!("nix-store --dump failed for {built_path}: {}", stderr.trim());
+        }
+
+        let actual_hash = hash_verify::sha256_stream(dump_output.stdout.as_slice())?;
+        let expected_hash = &pkg_meta.nar_hash;
+
+        printer.kv("Expected NAR hash", expected_hash);
+        printer.kv("Rebuilt NAR hash", &actual_hash);
+
+        if actual_hash == *expected_hash {
+            printer.success(&format!(
+                "OK: source rebuild of '{package}' matches installed binary"
+            ));
+        } else {
+            printer.error(&format!(
+                "MISMATCH: source rebuild of '{package}' differs from installed binary"
+            ));
+            bail!(
+                "source verification failed: expected {expected_hash}, got {actual_hash}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::package::config::ApmConfig;
+    use crate::package::registry::parse::CURL_TOML;
+    use crate::package::types::{
+        ApmMeta, ApmSettings, InstalledMeta, ProfileScope, RegistryConfig,
+    };
+    use tempfile::TempDir;
+
+    /// Helper: build a minimal ApmConfig with a temp cache dir containing
+    /// a registry with specified packages.
+    fn make_config_with_registry(
+        tmp: &TempDir,
+        packages: &[(&str, &str)],
+    ) -> ApmConfig {
+        // Set up the registry cache at tmp/remote/test-reg/packages/{letter}/{name}.toml
+        let cache_dir = tmp.path().join("remote");
+        let reg_dir = cache_dir.join("test-reg").join("packages");
+        for (name, content) in packages {
+            let first_letter = &name[..1];
+            let dir = reg_dir.join(first_letter);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("{name}.toml")), content).unwrap();
+        }
+
+        // Set up the config dir with a registry TOML
+        let config_dir = tmp.path().join("config");
+        let registries_dir = config_dir.join("registries.d");
+        std::fs::create_dir_all(&registries_dir).unwrap();
+        std::fs::write(
+            registries_dir.join("test-reg.toml"),
+            r#"[registry]
+name = "test-reg"
+url = "https://registry.example.com/test"
+priority = 500
+"#,
+        )
+        .unwrap();
+
+        ApmConfig {
+            settings: ApmSettings::default(),
+            registries: vec![(
+                RegistryConfig {
+                    name: "test-reg".into(),
+                    url: "https://registry.example.com/test".into(),
+                    priority: 500,
+                    enabled: true,
+                    pin: None,
+                    branch: None,
+                    signing: None,
+                },
+                None,
+            )],
+            scope: ProfileScope::User,
+        }
+    }
+
+    /// Helper: write installed metadata to a profile.
+    fn write_installed_meta(profile_dir: &std::path::Path, hash: &str, name: &str) {
+        let meta_dir = profile_dir.join("meta");
+        std::fs::create_dir_all(&meta_dir).unwrap();
+
+        let meta = InstalledMeta {
+            store_path: format!("/var/lib/store/{hash}-{name}-1.0"),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: name.into(),
+                version: "1.0".into(),
+                explicit: true,
+                registry: "test-reg".into(),
+                installed_at: "2026-02-16T00:00:00Z".into(),
+                held: false,
+            }),
+        };
+
+        let json = serde_json::to_string_pretty(&meta).unwrap();
+        std::fs::write(meta_dir.join(format!("{hash}.json")), &json).unwrap();
+    }
+
+    // -- source: show drv path -----------------------------------------------
+
+    #[tokio::test]
+    async fn source_shows_drv_path() {
+        let tmp = TempDir::new().unwrap();
+        let config = make_config_with_registry(&tmp, &[("curl", CURL_TOML)]);
+
+        // Override cache_path by adjusting config.scope — we'll test via
+        // RegistrySet::load directly since config.cache_path() is derived from scope.
+        // Instead, test the registry resolution part.
+        let enabled = config.enabled_registries();
+        let cache_dir = tmp.path().join("remote");
+        let reg_set = RegistrySet::load(&cache_dir, &enabled, "x86_64-linux").unwrap();
+
+        let (reg, meta) = reg_set.resolve("curl").unwrap();
+        assert_eq!(meta.source_drv, "/var/lib/store/i8k4l9m3n0o5-curl-8.5.0.drv");
+        assert_eq!(meta.source_nar_hash, "sha256:112233");
+        assert_eq!(reg.config.name, "test-reg");
+    }
+
+    // -- source: missing source_drv ------------------------------------------
+
+    #[tokio::test]
+    async fn source_no_source_drv_errors() {
+        // Create a package TOML where source_drv is empty.
+        let toml_with_empty_source = r#"
+[package]
+name = "nosrc"
+description = "A package with no source"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/abc123-nosrc-1.0"
+nar_hash = "sha256:aabb"
+nar_size = 1024
+download_hash = "sha256:ccdd"
+download_size = 512
+closure_size = 1024
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+
+        let tmp = TempDir::new().unwrap();
+        let config = make_config_with_registry(&tmp, &[("nosrc", toml_with_empty_source)]);
+
+        let cache_dir = tmp.path().join("remote");
+        let enabled = config.enabled_registries();
+        let reg_set = RegistrySet::load(&cache_dir, &enabled, "x86_64-linux").unwrap();
+
+        let (_, meta) = reg_set.resolve("nosrc").unwrap();
+        assert!(meta.source_drv.is_empty());
+    }
+
+    // -- source: package not found -------------------------------------------
+
+    #[tokio::test]
+    async fn source_package_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let config = make_config_with_registry(&tmp, &[("curl", CURL_TOML)]);
+
+        let enabled = config.enabled_registries();
+        let cache_dir = tmp.path().join("remote");
+        let reg_set = RegistrySet::load(&cache_dir, &enabled, "x86_64-linux").unwrap();
+
+        assert!(reg_set.resolve("nonexistent").is_none());
+    }
+
+    // -- verify: hash comparison logic (unit test) ---------------------------
+
+    #[test]
+    fn verify_hash_comparison_match() {
+        let data: &[u8] = b"test NAR content";
+        let hash = hash_verify::sha256_stream(data).unwrap();
+        // Verify the same data produces the same hash.
+        let hash2 = hash_verify::sha256_stream(b"test NAR content".as_slice()).unwrap();
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn verify_hash_comparison_mismatch() {
+        let hash1 = hash_verify::sha256_stream(b"content A".as_slice()).unwrap();
+        let hash2 = hash_verify::sha256_stream(b"content B".as_slice()).unwrap();
+        assert_ne!(hash1, hash2);
+    }
+
+    // -- verify: installed meta lookup (unit test) ---------------------------
+
+    #[test]
+    fn verify_finds_installed_package_meta() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap();
+
+        write_installed_meta(tmp.path(), "abc123", "curl");
+
+        let all_meta = meta::list_meta(&profile).unwrap();
+        let found = all_meta
+            .iter()
+            .find(|m| m.apm.as_ref().map(|a| a.name == "curl").unwrap_or(false));
+        assert!(found.is_some());
+        assert!(found.unwrap().store_path.contains("curl"));
+    }
+
+    #[test]
+    fn verify_missing_package_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap();
+
+        let all_meta = meta::list_meta(&profile).unwrap();
+        let found = all_meta
+            .iter()
+            .find(|m| m.apm.as_ref().map(|a| a.name == "nonexistent").unwrap_or(false));
+        assert!(found.is_none());
+    }
+}

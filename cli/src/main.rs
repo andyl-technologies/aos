@@ -4,8 +4,10 @@ mod commands;
 mod error;
 mod nix;
 mod output;
+mod package;
 mod server;
 
+use std::path::Path;
 use std::process;
 
 use anyhow::Result;
@@ -38,7 +40,22 @@ async fn main() {
         eprintln!("This is a bug. Please report it.");
     }));
 
-    let cli = Cli::parse();
+    // Detect argv[0]: if invoked as "apm", implicitly prepend "package".
+    let cli = {
+        let argv0 = std::env::args().next().unwrap_or_default();
+        let is_apm = Path::new(&argv0)
+            .file_name()
+            .map(|n| n == "apm")
+            .unwrap_or(false);
+
+        if is_apm {
+            let mut args: Vec<String> = std::env::args().collect();
+            args.insert(1, "package".to_string());
+            Cli::parse_from(args)
+        } else {
+            Cli::parse()
+        }
+    };
 
     let exit_code = match run(&cli).await {
         Ok(()) => 0,
@@ -69,12 +86,12 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::token::run(&printer, command, &socket_path).await;
     }
 
-    let mut nix = NixRunner::new(cli.verbose, cli.quiet)?;
-
-    // If the test command specifies a store, configure NixRunner to use it.
-    if let Commands::Test { store, .. } = &cli.command {
-        nix.set_store(store.clone());
+    // Package management (apm) has its own infrastructure — no NixRunner needed.
+    if let Commands::Package(args) = &cli.command {
+        return package::run(args.system, &args.command, args.dry_run, args.yes, &printer).await;
     }
+
+    let nix = NixRunner::new(cli.verbose, cli.quiet)?;
 
     match &cli.command {
         Commands::Build {
@@ -101,7 +118,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Show { package } => commands::show::run(&nix, &printer, package),
         Commands::Graph { package, dot } => commands::graph::run(&nix, &printer, package, *dot),
         Commands::Lint { package } => commands::lint::run(&nix, &printer, package.as_deref()),
-        Commands::Test { command, .. } => commands::test::run(&nix, &printer, command),
+        Commands::Test { command } => commands::test::run(&nix, &printer, command),
         Commands::Shell => commands::shell::run(&nix, &printer),
         Commands::Repl => commands::repl::run(&nix, &printer),
         Commands::Gc {
@@ -152,6 +169,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Completions { .. } => unreachable!(),
         Commands::Serve { .. } => unreachable!(),
         Commands::Token { .. } => unreachable!(),
+        Commands::Package { .. } => unreachable!(),
     }
 }
 
