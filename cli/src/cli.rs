@@ -1,4 +1,4 @@
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "aos", about = "AOS build tool", version)]
@@ -65,9 +65,6 @@ pub enum Commands {
     Test {
         #[command(subcommand)]
         command: Option<TestCmd>,
-        /// Nix store URL for remote builds (e.g., ssh-ng://user@host)
-        #[arg(long, env = "AOS_STORE", global = true)]
-        store: Option<String>,
     },
     /// Enter development shell
     Shell,
@@ -154,6 +151,8 @@ pub enum Commands {
         #[command(subcommand)]
         command: TokenCmd,
     },
+    /// Package manager (apm)
+    Package(PackageArgs),
     /// Browse documentation
     Doc {
         /// Source path or flake URI (default: current directory)
@@ -232,17 +231,212 @@ pub enum TestCmd {
     Build,
     /// Run VM integration tests
     Vm {
-        /// Test suite name (e.g., boot, ssh, services, server-security)
+        /// Test suite name
         suite: Option<String>,
-    },
-    /// Run headless Firecracker integration tests
-    Integration {
-        /// Test group (e.g., toolchain, libraries, tools, build-systems)
-        group: Option<String>,
     },
     /// Run fleet tests
     Fleet {
         /// Test suite name
         suite: Option<String>,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Package manager (apm) CLI
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct PackageArgs {
+    #[command(subcommand)]
+    pub command: PackageCommand,
+
+    /// Operate on the system profile (requires root)
+    #[arg(long, global = true)]
+    pub system: bool,
+
+    /// Show what would be done without doing it
+    #[arg(long, global = true)]
+    pub dry_run: bool,
+
+    /// Assume yes to all prompts
+    #[arg(short = 'y', long, global = true)]
+    pub yes: bool,
+}
+
+#[derive(Subcommand)]
+pub enum PackageCommand {
+    /// Install one or more packages
+    Install {
+        /// Package names to install
+        packages: Vec<String>,
+        /// Install from a specific registry
+        #[arg(long)]
+        registry: Option<String>,
+        /// Download NARs but don't install
+        #[arg(long)]
+        download_only: bool,
+        /// Reinstall even if already at target version
+        #[arg(long)]
+        reinstall: bool,
+        /// Skip automatic dependency installation
+        #[arg(long)]
+        no_deps: bool,
+    },
+    /// Remove packages (keep deps)
+    Remove {
+        /// Package names to remove
+        packages: Vec<String>,
+        /// Also remove orphaned dependencies
+        #[arg(long)]
+        autoremove: bool,
+    },
+    /// Remove orphaned dependency packages
+    Autoremove,
+    /// Re-download and reinstall packages
+    Reinstall {
+        /// Package names to reinstall
+        packages: Vec<String>,
+    },
+    /// Fetch latest registry metadata
+    Update {
+        /// Update only this registry
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Upgrade installed packages to latest
+    Upgrade {
+        /// Specific packages to upgrade (default: all)
+        packages: Vec<String>,
+        /// Skip specific packages
+        #[arg(long)]
+        exclude: Vec<String>,
+    },
+    /// Upgrade all packages with dependency resolution changes
+    FullUpgrade,
+    /// Search package names and descriptions
+    Search {
+        /// Search pattern
+        pattern: String,
+        /// Search only package names
+        #[arg(long)]
+        names_only: bool,
+        /// Search only installed packages
+        #[arg(long)]
+        installed: bool,
+        /// Search only this registry
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show detailed package information
+    Show {
+        /// Package name
+        package: String,
+    },
+    /// List packages
+    List {
+        /// Only installed packages
+        #[arg(long)]
+        installed: bool,
+        /// Only packages with available upgrades
+        #[arg(long)]
+        upgradable: bool,
+        /// Only held packages
+        #[arg(long)]
+        held: bool,
+        /// Only from this registry
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show closure tree (store references)
+    Depends {
+        /// Package name
+        package: String,
+    },
+    /// Show reverse dependencies
+    Rdepends {
+        /// Package name
+        package: String,
+    },
+    /// Show available versions and registry origins
+    Policy {
+        /// Package name
+        package: String,
+    },
+    /// List files installed by a package
+    Files {
+        /// Package name
+        package: String,
+    },
+    /// Prevent a package from being upgraded
+    Hold {
+        /// Package name
+        package: String,
+    },
+    /// Remove upgrade hold
+    Unhold {
+        /// Package name
+        package: String,
+    },
+    /// List held packages
+    Held,
+    /// Remove cached NAR downloads
+    Clean {
+        /// Also remove old profile generations
+        #[arg(long)]
+        generations: bool,
+        /// Number of generations to retain (with --generations)
+        #[arg(long, default_value = "3")]
+        keep: u32,
+    },
+    /// Run Nix garbage collection on unreachable paths
+    Gc,
+    /// Verify installed package against registry hash
+    Verify {
+        /// Package name
+        package: String,
+    },
+    /// Show/fetch the source derivation for a package
+    Source {
+        /// Package name
+        package: String,
+        /// Print the source derivation path
+        #[arg(long)]
+        show_drv: bool,
+        /// Download the source derivation and all source inputs
+        #[arg(long)]
+        fetch: bool,
+        /// Rebuild from source and compare hash with installed binary
+        #[arg(long)]
+        verify: bool,
+    },
+    /// Roll back to a previous profile generation
+    Rollback {
+        /// Roll back to a specific generation number
+        #[arg(long)]
+        generation: Option<u32>,
+    },
+    /// Manage registries
+    Registry {
+        #[command(subcommand)]
+        command: RegistryCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RegistryCommand {
+    /// List configured registries and priorities
+    List,
+    /// Add a registry
+    Add {
+        /// Registry URL
+        url: String,
+        /// Priority (higher = preferred)
+        #[arg(long, default_value = "500")]
+        priority: u32,
+    },
+    /// Remove a registry (fails if packages still installed)
+    Remove {
+        /// Registry name
+        name: String,
     },
 }
