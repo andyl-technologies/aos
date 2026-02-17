@@ -77,7 +77,7 @@ The `aos` CLI is a Rust tool (`cli/`) for working with this repo. Run it via
 the Nix flake — do NOT use `cargo run` directly (it needs alejandra in PATH):
 
 ```sh
-# Enter the dev shell (provides aos + just in PATH, installs pre-commit hook):
+# Enter the dev shell (provides aos + just in PATH):
 nix develop
 
 # Or run a one-off command without entering the shell:
@@ -103,12 +103,6 @@ nix run . -- <subcommand>
 | `aos repl`    | Open a Nix REPL with the AOS package set loaded         |
 | `aos why-depends` | Explain why one derivation depends on another      |
 | `aos completions` | Generate shell completions                         |
-
-### Pre-commit hook
-
-The dev shell installs a pre-commit hook that auto-formats `.nix` files and
-re-stages them before committing. The hook is defined in `dev/shell.nix` and
-written to `.git/hooks/pre-commit` on `nix develop`.
 
 ## Testing
 
