@@ -13,124 +13,120 @@
   rust-bootstrap,
   openssl,
   zlib,
-}:
-
-let
+}: let
   version = "1.93.0";
 in
-mkDerivation {
-  pname = "rust";
-  inherit version;
+  mkDerivation {
+    pname = "rust";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
+      ];
+      hash = "sha256-aREr2DwyGUP/w5C32y9Z7z/ruV2scA9nwhVvv2tQpwU=";
+    };
+
+    buildDeps = [
+      make
+      cmake
+      ninja
+      pkg-config
+      python3
+      bash
+      which
+      rust-bootstrap
+      llvm
+      openssl
     ];
-    hash = "sha256-aREr2DwyGUP/w5C32y9Z7z/ruV2scA9nwhVvv2tQpwU=";
-  };
+    runtimeDeps = [
+      llvm
+      zlib
+    ];
 
-  buildDeps = [
-    make
-    cmake
-    ninja
-    pkg-config
-    python3
-    bash
-    which
-    rust-bootstrap
-    llvm
-    openssl
-  ];
-  runtimeDeps = [
-    llvm
-    zlib
-  ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd rustc-${version}-src
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          # Create a fake git wrapper so x.py doesn't panic when running git commands
+          mkdir -p .fake-bin
+          printf '#!/bin/sh\nexit 0\n' > .fake-bin/git
+          chmod +x .fake-bin/git
+          export PATH="$PWD/.fake-bin:$PATH"
+          cat > config.toml << TOML
+          change-id = 148795
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd rustc-${version}-src
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        # Create a fake git wrapper so x.py doesn't panic when running git commands
-        mkdir -p .fake-bin
-        printf '#!/bin/sh\nexit 0\n' > .fake-bin/git
-        chmod +x .fake-bin/git
-        export PATH="$PWD/.fake-bin:$PATH"
-        cat > config.toml << TOML
-        change-id = 148795
+          [llvm]
+          link-shared = true
+          download-ci-llvm = false
 
-        [llvm]
-        link-shared = true
-        download-ci-llvm = false
+          [build]
+          docs = false
+          extended = true
+          tools = ["cargo"]
+          vendor = true
+          cargo = "${rust-bootstrap}/bin/cargo"
+          rustc = "${rust-bootstrap}/bin/rustc"
 
-        [build]
-        docs = false
-        extended = true
-        tools = ["cargo"]
-        vendor = true
-        cargo = "${rust-bootstrap}/bin/cargo"
-        rustc = "${rust-bootstrap}/bin/rustc"
+          [install]
+          prefix = "$out"
+          sysconfdir = "etc"
 
-        [install]
-        prefix = "$out"
-        sysconfdir = "etc"
+          [rust]
+          channel = "stable"
+          codegen-units = 0
+          rpath = true
+          omit-git-hash = true
+          download-rustc = false
 
-        [rust]
-        channel = "stable"
-        codegen-units = 0
-        rpath = true
-        omit-git-hash = true
-        download-rustc = false
+          [target.x86_64-unknown-linux-gnu]
+          llvm-config = "${llvm}/bin/llvm-config"
 
-        [target.x86_64-unknown-linux-gnu]
-        llvm-config = "${llvm}/bin/llvm-config"
+          [target.aarch64-unknown-linux-gnu]
+          llvm-config = "${llvm}/bin/llvm-config"
+          TOML
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          export PATH="$PWD/.fake-bin:$PATH"
+          python3 x.py build -j $NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          export PATH="$PWD/.fake-bin:$PATH"
+          python3 x.py install
 
-        [target.aarch64-unknown-linux-gnu]
-        llvm-config = "${llvm}/bin/llvm-config"
-        TOML
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        export PATH="$PWD/.fake-bin:$PATH"
-        python3 x.py build -j $NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        export PATH="$PWD/.fake-bin:$PATH"
-        python3 x.py install
+          # Patch ELF binaries
+          INTERP=$(patchelf --print-interpreter $(which bash))
+          BT_LIB=$(dirname "$INTERP")
+          for f in $out/bin/*; do
+            if [ -f "$f" ] && [ ! -L "$f" ]; then
+              patchelf --set-interpreter "$INTERP" --set-rpath "$out/lib:${llvm}/lib:${openssl}/lib:${zlib}/lib:$BT_LIB" "$f" 2>/dev/null || true
+            fi
+          done
+        '';
+      }
+    ];
 
-        # Patch ELF binaries
-        INTERP=$(patchelf --print-interpreter $(which bash))
-        BT_LIB=$(dirname "$INTERP")
-        for f in $out/bin/*; do
-          if [ -f "$f" ] && [ ! -L "$f" ]; then
-            patchelf --set-interpreter "$INTERP" --set-rpath "$out/lib:${llvm}/lib:${openssl}/lib:${zlib}/lib:$BT_LIB" "$f" 2>/dev/null || true
-          fi
-        done
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       hello = testing.mkFirecrackerTest {
         pname = "toolchain-rust-hello";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           cat > /tmp/hello.rs << 'EOF'
@@ -148,7 +144,7 @@ mkDerivation {
 
       cargo = testing.mkFirecrackerTest {
         pname = "toolchain-rust-cargo";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export CARGO_HOME="/tmp/cargo"
@@ -181,7 +177,7 @@ mkDerivation {
 
       bootstrap-chain = testing.mkFirecrackerTest {
         pname = "toolchain-rust-bootstrap-chain";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           # Verify rustc and cargo versions
@@ -215,7 +211,7 @@ mkDerivation {
 
       build = testing.mkFirecrackerTest {
         pname = "cross-cutting-rust-build";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export PATH="${self}/bin:$PATH"
@@ -285,9 +281,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "Rust programming language — compiler and cargo";
-    homepage = "https://www.rust-lang.org";
-    license = "MIT OR Apache-2.0";
-  };
-}
+    meta = {
+      description = "Rust programming language — compiler and cargo";
+      homepage = "https://www.rust-lang.org";
+      license = "MIT OR Apache-2.0";
+    };
+  }

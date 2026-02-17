@@ -12,29 +12,25 @@
 # The Mes Scheme interpreter also provides the first scripting language
 # in the bootstrap chain, replacing the limited kaem script runner.
 #
-
 {
   mescc-tools, # Output of stage1-mescc-tools.nix
   sources, # Attrset with: mes-source (GNU Mes source tarball/path)
   system ? "x86_64-linux",
-}:
-
-let
+}: let
   version = "0.27";
 
   archParams =
-    if system == "x86_64-linux" then
-      {
-        arch = "x86_64";
-        archFlag = "--with-arch=x86_64";
-      }
-    else if system == "aarch64-linux" then
-      {
-        arch = "aarch64";
-        archFlag = "--with-arch=aarch64";
-      }
-    else
-      throw "stage2-mes: unsupported system '${system}'";
+    if system == "x86_64-linux"
+    then {
+      arch = "x86_64";
+      archFlag = "--with-arch=x86_64";
+    }
+    else if system == "aarch64-linux"
+    then {
+      arch = "aarch64";
+      archFlag = "--with-arch=aarch64";
+    }
+    else throw "stage2-mes: unsupported system '${system}'";
 
   mes = builtins.derivation {
     name = "mes-${version}";
@@ -155,18 +151,17 @@ let
       ''
     ];
   };
-
 in
-mes
-// {
-  inherit version;
-  meta = {
-    description = "GNU Mes — Scheme interpreter and MesCC C compiler for bootstrapping";
-    homepage = "https://www.gnu.org/software/mes/";
-    license = "GPL-3.0-or-later";
-    platforms = [
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
-  };
-}
+  mes
+  // {
+    inherit version;
+    meta = {
+      description = "GNU Mes — Scheme interpreter and MesCC C compiler for bootstrapping";
+      homepage = "https://www.gnu.org/software/mes/";
+      license = "GPL-3.0-or-later";
+      platforms = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+    };
+  }

@@ -14,13 +14,10 @@
 #
 # Source: https://github.com/oriansj/bootstrap-seeds
 #
-
 {
   system ? "x86_64-linux",
   storeDir ? "/nix/store",
-}:
-
-let
+}: let
   # Version of the bootstrap-seeds repository
   version = "1.0.0";
 
@@ -108,18 +105,17 @@ let
       ''
     ];
   };
-
 in
-seeds
-// {
-  inherit version;
-  meta = {
-    description = "Minimal binary seeds (hex0 + kaem) for full-source bootstrap";
-    homepage = "https://github.com/oriansj/bootstrap-seeds";
-    license = "GPL-3.0-or-later";
-    platforms = [
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
-  };
-}
+  seeds
+  // {
+    inherit version;
+    meta = {
+      description = "Minimal binary seeds (hex0 + kaem) for full-source bootstrap";
+      homepage = "https://github.com/oriansj/bootstrap-seeds";
+      license = "GPL-3.0-or-later";
+      platforms = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+    };
+  }

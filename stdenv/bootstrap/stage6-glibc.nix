@@ -12,7 +12,6 @@
 # This stage produces the toolchain that stdenv/default.nix wraps
 # and provides to all subsequent package builds.
 #
-
 {
   gcc75, # Output of stage5-gcc75.nix (GCC 7.5.0)
   sources,
@@ -20,19 +19,16 @@
   #               linux-headers-source, gmp-source, mpfr-source,
   #               mpc-source, isl-source
   system ? "x86_64-linux",
-}:
-
-let
+}: let
   archParams =
-    if system == "x86_64-linux" then
-      {
-        target = "x86_64-unknown-linux-gnu";
-        arch = "x86_64";
-        kernelArch = "x86";
-        ldso = "ld-linux-x86-64.so.2";
-      }
-    else
-      throw "stage6-glibc: only x86_64-linux is supported";
+    if system == "x86_64-linux"
+    then {
+      target = "x86_64-unknown-linux-gnu";
+      arch = "x86_64";
+      kernelArch = "x86";
+      ldso = "ld-linux-x86-64.so.2";
+    }
+    else throw "stage6-glibc: only x86_64-linux is supported";
 
   # Convenience: reference GCC 7.5's sub-components
   prevBinutils = gcc75.components.binutils;
@@ -432,9 +428,7 @@ let
       ''
     ];
   };
-
-in
-{
+in {
   # The primary outputs: production toolchain
   inherit glibc;
   gcc = gcc13;
@@ -467,6 +461,6 @@ in
   meta = {
     description = "AOS production toolchain: glibc 2.39 + GCC 13.3 + binutils 2.42";
     license = "GPL-3.0-or-later AND LGPL-2.1-or-later";
-    platforms = [ "x86_64-linux" ];
+    platforms = ["x86_64-linux"];
   };
 }

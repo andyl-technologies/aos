@@ -7,46 +7,43 @@
   system,
   aos ? null,
   just ? null,
-}:
-
-let
+}: let
   packages = builtins.filter (p: p != null) [
     aos
     just
   ];
   binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
 in
-builtins.derivation {
-  name = "aos-dev";
-  inherit system;
-  builder = "/bin/bash";
-  args = [
-    "-c"
-    "echo 'Use nix develop, not nix build'; exit 1"
-  ];
+  builtins.derivation {
+    name = "aos-dev";
+    inherit system;
+    builder = "/bin/bash";
+    args = [
+      "-c"
+      "echo 'Use nix develop, not nix build'; exit 1"
+    ];
 
-  shellHook =
-    (
-      if binPath != "" then
-        ''
+    shellHook =
+      (
+        if binPath != ""
+        then ''
           export PATH="${binPath}''${PATH:+:$PATH}"
         ''
-      else
-        ""
-    )
-    + ''
-      export AOS_ROOT="$(pwd)"
+        else ""
+      )
+      + ''
+        export AOS_ROOT="$(pwd)"
 
-      # Install pre-commit hook that auto-formats and re-stages .nix files.
-      if [ -d .git ]; then
-        cat > .git/hooks/pre-commit << 'HOOK'
-      #!/usr/bin/env bash
-      set -euo pipefail
-      aos fmt
-      git diff --name-only | grep '\.nix$' | while IFS= read -r f; do git add "$f"; done || true
-      exec aos fmt --check
-      HOOK
-        chmod +x .git/hooks/pre-commit
-      fi
-    '';
-}
+        # Install pre-commit hook that auto-formats and re-stages .nix files.
+        if [ -d .git ]; then
+          cat > .git/hooks/pre-commit << 'HOOK'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        aos fmt
+        git diff --name-only | grep '\.nix$' | while IFS= read -r f; do git add "$f"; done || true
+        exec aos fmt --check
+        HOOK
+          chmod +x .git/hooks/pre-commit
+        fi
+      '';
+  }

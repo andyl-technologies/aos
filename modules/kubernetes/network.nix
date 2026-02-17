@@ -8,24 +8,19 @@
 ##! Absorbed TOML config values:
 ##!   [kubernetes.network] enable, pod_cidr, service_cidr
 ##!   [kubernetes.network] kernel_modules, sysctl
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.kubernetes.network;
 
   # Format sysctl entries for the drop-in file.
   sysctlText = builtins.concatStringsSep "\n" (
     lib.mapAttrsToList (key: value: "${key} = ${value}") cfg.sysctl
   );
-
-in
-{
+in {
   options.aos.kubernetes.network = {
     ## Enable Kubernetes networking prerequisites.
     ##
@@ -101,7 +96,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ pkgs.cni-plugins ];
+    environment.systemPackages = [pkgs.cni-plugins];
 
     # /etc/modules-load.d/k8s.conf — kernel modules to load at boot.
     environment.etc."modules-load.d/k8s.conf" = {
@@ -125,12 +120,12 @@ in
     # systemd service to load kernel modules at boot.
     systemd.services."k8s-modules-load" = {
       description = "Load Kubernetes Networking Kernel Modules";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
       before = [
         "containerd.service"
         "kubelet.service"
       ];
-      after = [ "systemd-modules-load.service" ];
+      after = ["systemd-modules-load.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

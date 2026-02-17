@@ -6,13 +6,11 @@
 #
 # Usage:
 #   nix-build -A checks.eval
-
 {
   pkgs,
   lib,
   systems,
 }:
-
 # Use a raw derivation with /bin/sh so we don't need to build coreutils.
 # The real verification happens at Nix eval time: the builtins.toJSON calls
 # force every system variant's config, so any module error causes an

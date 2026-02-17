@@ -1,7 +1,7 @@
 ##! Linux Kernel
 {
   mkDerivation,
-  fetchurl,
+  linuxSource,
   make,
   perl,
   bash,
@@ -15,20 +15,9 @@
   bc,
   binutils,
 }:
-
-let
-  version = "6.12.11";
-in
 mkDerivation {
   pname = "linux";
-  inherit version;
-
-  src = fetchurl {
-    urls = [
-      "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${version}.tar.xz"
-    ];
-    hash = "sha256-R1Fy/b2HoVPxI6V5Umcudzvbba9bWKQX0aXkGfz+7Ek=";
-  };
+  inherit (linuxSource) version src;
 
   buildDeps = [
     make
@@ -43,8 +32,8 @@ mkDerivation {
     bc
     binutils
   ];
-  runtimeDeps = [ kmod ];
-  propagatedDeps = [ ];
+  runtimeDeps = [kmod];
+  propagatedDeps = [];
 
   # Path to kernel config fragments — these are merged before building.
   configDir = ./config;
@@ -54,7 +43,7 @@ mkDerivation {
       name = "unpack";
       script = ''
         tar xf $src
-        cd linux-${version}
+        cd linux-${linuxSource.version}
       '';
     }
     {
@@ -84,10 +73,10 @@ mkDerivation {
         mkdir -p $out/boot $out/lib/modules
 
         # Install kernel image
-        cp arch/x86/boot/bzImage $out/boot/vmlinuz-${version}
-        cp vmlinux $out/boot/vmlinux-${version}
-        cp System.map $out/boot/System.map-${version}
-        cp .config $out/boot/config-${version}
+        cp arch/x86/boot/bzImage $out/boot/vmlinuz-${linuxSource.version}
+        cp vmlinux $out/boot/vmlinux-${linuxSource.version}
+        cp System.map $out/boot/System.map-${linuxSource.version}
+        cp .config $out/boot/config-${linuxSource.version}
 
         # Install modules
         make modules_install \

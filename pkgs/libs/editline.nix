@@ -4,60 +4,58 @@
   fetchurl,
   make,
   ncurses,
-}:
-
-let
+}: let
   version = "1.17.1";
 in
-mkDerivation {
-  pname = "editline";
-  inherit version;
+  mkDerivation {
+    pname = "editline";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/troglobit/editline/releases/download/${version}/editline-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/troglobit/editline/releases/download/${version}/editline-${version}.tar.xz"
+      ];
+      hash = "sha256-3yI7MzOlRf3bxntJ3tPSQsZvrfegS+s62iCVf80f/A4=";
+    };
+
+    buildDeps = [make];
+    runtimeDeps = [ncurses];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd editline-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --enable-shared \
+            --disable-static
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-3yI7MzOlRf3bxntJ3tPSQsZvrfegS+s62iCVf80f/A4=";
-  };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ncurses ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd editline-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --enable-shared \
-          --disable-static
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  meta = {
-    description = "editline — small line editing library";
-    homepage = "https://github.com/troglobit/editline";
-    license = "ISC";
-  };
-}
+    meta = {
+      description = "editline — small line editing library";
+      homepage = "https://github.com/troglobit/editline";
+      license = "ISC";
+    };
+  }

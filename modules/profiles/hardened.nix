@@ -5,15 +5,12 @@
 ##! level, audit logging, system hardening, core dump suppression, and
 ##! the nftables firewall. This profile is intended for nodes handling
 ##! sensitive workloads where security takes precedence over debuggability.
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-{
+}: {
   aos.security.selinux.enable = true;
   aos.security.selinux.mode = "enforcing";
   aos.security.audit.enable = true;

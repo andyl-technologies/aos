@@ -8,32 +8,28 @@
 # This implements the "live-bootstrap" / "stage0-posix" build process
 # where each assembler/compiler is built by the one before it.
 #
-
 {
   seeds, # Output of seeds.nix (provides hex0 and kaem)
   stage0-posix-src, # Source path/derivation for stage0-posix
   system ? "x86_64-linux",
-}:
-
-let
+}: let
   # Architecture-specific parameters
   archParams =
-    if system == "x86_64-linux" then
-      {
-        arch = "x86";
-        archDir = "x86";
-        elfClass = "ELF64";
-        endian = "little";
-      }
-    else if system == "aarch64-linux" then
-      {
-        arch = "aarch64";
-        archDir = "AArch64";
-        elfClass = "ELF64";
-        endian = "little";
-      }
-    else
-      throw "stage1-mescc-tools: unsupported system '${system}'";
+    if system == "x86_64-linux"
+    then {
+      arch = "x86";
+      archDir = "x86";
+      elfClass = "ELF64";
+      endian = "little";
+    }
+    else if system == "aarch64-linux"
+    then {
+      arch = "aarch64";
+      archDir = "AArch64";
+      elfClass = "ELF64";
+      endian = "little";
+    }
+    else throw "stage1-mescc-tools: unsupported system '${system}'";
 
   # ---------------------------------------------------------------------------
   # hex1: hex0 + labels + relative addressing
@@ -166,24 +162,23 @@ let
       ''
     ];
   };
-
 in
-mescc-tools
-// {
-  meta = {
-    description = "mescc-tools: hex0 -> hex1 -> hex2 -> M0 -> M1 -> M2-Planet bootstrap chain";
-    homepage = "https://github.com/oriansj/mescc-tools";
-    license = "GPL-3.0-or-later";
-    platforms = [
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
-  };
+  mescc-tools
+  // {
+    meta = {
+      description = "mescc-tools: hex0 -> hex1 -> hex2 -> M0 -> M1 -> M2-Planet bootstrap chain";
+      homepage = "https://github.com/oriansj/mescc-tools";
+      license = "GPL-3.0-or-later";
+      platforms = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+    };
 
-  # Export individual tools for fine-grained dependency tracking
-  tools = {
-    inherit hex1;
-    hex1-proper = hex1-proper;
-    # The rest are built as part of the monolithic mescc-tools derivation
-  };
-}
+    # Export individual tools for fine-grained dependency tracking
+    tools = {
+      inherit hex1;
+      hex1-proper = hex1-proper;
+      # The rest are built as part of the monolithic mescc-tools derivation
+    };
+  }

@@ -8,19 +8,15 @@
 ##! Absorbed TOML config values:
 ##!   [kubernetes.control_plane] enable, advertise_address, api_server_port
 ##!   [kubernetes.control_plane] etcd_data_dir
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.kubernetes.controlPlane;
   netCfg = config.aos.kubernetes.network;
-in
-{
+in {
   options.aos.kubernetes.controlPlane = {
     ## Enable this node as a Kubernetes control plane node.
     ##

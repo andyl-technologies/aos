@@ -9,24 +9,20 @@
 # The wrappers are shell scripts that invoke the real compiler/linker
 # with the correct flags prepended.
 #
-
 {
   cc, # Path to the unwrapped GCC installation
   libc, # Path to the glibc installation
   binutils_, # Path to binutils installation
   storeDir ? "/nix/store",
   system ? "x86_64-linux",
-}:
-
-let
+}: let
   # Determine the target triple from the system string
   targetTriple =
-    if system == "x86_64-linux" then
-      "x86_64-unknown-linux-gnu"
-    else if system == "aarch64-linux" then
-      "aarch64-unknown-linux-gnu"
-    else
-      throw "cc-wrapper: unsupported system '${system}'";
+    if system == "x86_64-linux"
+    then "x86_64-unknown-linux-gnu"
+    else if system == "aarch64-linux"
+    then "aarch64-unknown-linux-gnu"
+    else throw "cc-wrapper: unsupported system '${system}'";
 
   # GCC version subdirectory (for internal headers)
   # This is determined at build time; we parameterize it.
@@ -206,14 +202,13 @@ let
       ''
     ];
   };
-
 in
-wrapperDrv
-// {
-  # Expose metadata for other parts of the build system
-  inherit cc libc;
-  binutils = binutils_;
-  isWrapper = true;
-  targetPrefix = "";
-  inherit targetTriple;
-}
+  wrapperDrv
+  // {
+    # Expose metadata for other parts of the build system
+    inherit cc libc;
+    binutils = binutils_;
+    isWrapper = true;
+    targetPrefix = "";
+    inherit targetTriple;
+  }

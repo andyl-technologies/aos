@@ -3,68 +3,64 @@
   mkDerivation,
   fetchurl,
   make,
-}:
-
-let
-  version = "5.2.32";
+}: let
+  version = "5.3";
 in
-mkDerivation {
-  pname = "bash";
-  inherit version;
+  mkDerivation {
+    pname = "bash";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://gnu.mirror.constant.com/bash/bash-${version}.tar.gz"
-      "https://mirrors.kernel.org/gnu/bash/bash-${version}.tar.gz"
-      "https://ftp.gnu.org/gnu/bash/bash-${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://gnu.mirror.constant.com/bash/bash-${version}.tar.gz"
+        "https://mirrors.kernel.org/gnu/bash/bash-${version}.tar.gz"
+        "https://ftp.gnu.org/gnu/bash/bash-${version}.tar.gz"
+      ];
+      hash = "sha256-DVzYaWX4aaJs9k9Lcb57lvkKO6iz104n6OnZ1VUPMbo=";
+    };
+
+    buildDeps = [make];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd bash-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --without-bash-malloc \
+            --with-installed-readline \
+            --disable-nls
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+          ln -sf bash $out/bin/sh
+        '';
+      }
     ];
-    hash = "sha256-0++A0rZ9jLvk0yZcY6csRvmyeOrW4OBtYYAbWPI/ULU=";
-  };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd bash-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --without-bash-malloc \
-          --with-installed-readline \
-          --disable-nls
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-        ln -sf bash $out/bin/sh
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       version = testing.mkToolCheck {
         pname = "tool-bash";
         tool = self;
@@ -73,7 +69,7 @@ mkDerivation {
 
       scripting = testing.mkFirecrackerTest {
         pname = "tool-bash-scripting";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           # Test arrays, functions, string manipulation
           bash -c '
@@ -110,7 +106,7 @@ mkDerivation {
 
       source = testing.mkFirecrackerTest {
         pname = "tool-bash-source";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           cat > /tmp/library.sh << 'LIB'
           greet() { echo "hello $1"; }
@@ -133,9 +129,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "GNU Bash — the Bourne-Again SHell";
-    homepage = "https://www.gnu.org/software/bash/";
-    license = "GPL-3.0-or-later";
-  };
-}
+    meta = {
+      description = "GNU Bash — the Bourne-Again SHell";
+      homepage = "https://www.gnu.org/software/bash/";
+      license = "GPL-3.0-or-later";
+    };
+  }

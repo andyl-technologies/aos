@@ -5,76 +5,72 @@
   make,
   cmake,
   ninja,
-}:
-
-let
-  version = "1.1.0";
+}: let
+  version = "1.2.0";
 in
-mkDerivation {
-  pname = "brotli";
-  inherit version;
+  mkDerivation {
+    pname = "brotli";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/google/brotli/archive/refs/tags/v${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/google/brotli/archive/refs/tags/v${version}.tar.gz"
+      ];
+      hash = "sha256-gWyW6Ojxk7QBUdrX6P83sSIdAZ28ucNc0/rb/mR33+w=";
+    };
+
+    buildDeps = [
+      make
+      cmake
+      ninja
     ];
-    hash = "sha256-5yCmyilCi4A/StFlNxdx9TmPq6OX7fZ3iDehhZnqE/8=";
-  };
+    runtimeDeps = [];
+    propagatedDeps = [];
 
-  buildDeps = [
-    make
-    cmake
-    ninja
-  ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd brotli-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$out \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DBUILD_SHARED_LIBS=ON \
+            -DBROTLI_DISABLE_TESTS=ON
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          ninja -C build -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          ninja -C build install
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd brotli-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        cmake -S . -B build -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_INSTALL_PREFIX=$out \
-          -DCMAKE_INSTALL_LIBDIR=lib \
-          -DBUILD_SHARED_LIBS=ON \
-          -DBROTLI_DISABLE_TESTS=ON
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        ninja -C build -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        ninja -C build install
-      '';
-    }
-  ];
+    meta = {
+      description = "Brotli — generic-purpose lossless compression algorithm";
+      homepage = "https://github.com/google/brotli";
+      license = "MIT";
+    };
 
-  meta = {
-    description = "Brotli — generic-purpose lossless compression algorithm";
-    homepage = "https://github.com/google/brotli";
-    license = "MIT";
-  };
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       link = testing.mkLinkCheck {
         pname = "lib-brotli";
         library = self;
@@ -131,4 +127,4 @@ mkDerivation {
         '';
       };
     };
-}
+  }

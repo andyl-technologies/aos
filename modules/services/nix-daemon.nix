@@ -3,15 +3,12 @@
 ##! Configures the Nix daemon for building packages from source. Provides
 ##! socket-activated nix-daemon service, build user accounts, and the
 ##! /etc/nix/nix.conf configuration file.
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.services.nix;
 
   # Build nix.conf from module options.
@@ -34,12 +31,10 @@ let
   # Generate build user accounts (nixbld1..nixbldN).
   buildUsers = builtins.listToAttrs (
     builtins.genList (
-      i:
-      let
+      i: let
         n = i + 1;
         name = "nixbld${toString n}";
-      in
-      {
+      in {
         inherit name;
         value = {
           uid = 30000 + n;
@@ -47,14 +42,13 @@ let
           home = "/var/empty";
           shell = "/sbin/nologin";
           description = "Nix build user ${toString n}";
-          extraGroups = [ ];
+          extraGroups = [];
         };
       }
-    ) cfg.buildUsersCount
+    )
+    cfg.buildUsersCount
   );
-
-in
-{
+in {
   options.aos.services.nix = {
     ## Enable the Nix package manager daemon.
     enable = lib.mkOption {
@@ -80,7 +74,7 @@ in
     ## Users allowed to connect to the Nix daemon.
     trustedUsers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ ];
+      default = [];
       description = "Users allowed to connect to the Nix daemon and perform privileged operations.";
     };
 
@@ -100,7 +94,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ pkgs.nix ];
+    environment.systemPackages = [pkgs.nix];
 
     # /etc/nix/nix.conf — Nix daemon configuration.
     environment.etc."nix/nix.conf" = {
@@ -110,7 +104,7 @@ in
     # nix-daemon.socket — socket activation for the Nix daemon.
     systemd.services."nix-daemon" = {
       description = "Nix Daemon";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
       after = [
         "local-fs.target"
         "network.target"

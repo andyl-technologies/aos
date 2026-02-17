@@ -4,64 +4,60 @@
   fetchurl,
   make,
   oniguruma,
-}:
-
-let
-  version = "1.7.1";
+}: let
+  version = "1.8.1";
 in
-mkDerivation {
-  pname = "jq";
-  inherit version;
+  mkDerivation {
+    pname = "jq";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/jqlang/jq/releases/download/jq-${version}/jq-${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/jqlang/jq/releases/download/jq-${version}/jq-${version}.tar.gz"
+      ];
+      hash = "sha256-K+ZOcSnOyxHVkGKQ66EK9pT7nj5/n8IIoxHcM8qDfrA=";
+    };
+
+    buildDeps = [make];
+    runtimeDeps = [oniguruma];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd jq-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --disable-maintainer-mode \
+            --with-oniguruma
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-R4ycoSn9LjRD/icxS0VeIR4NjGC8j/ffcDhz3u7lgMI=";
-  };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ oniguruma ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd jq-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --disable-maintainer-mode \
-          --with-oniguruma
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       version = testing.mkToolCheck {
         pname = "tool-jq";
         tool = self;
@@ -70,7 +66,7 @@ mkDerivation {
 
       query = testing.mkFirecrackerTest {
         pname = "tool-jq-query";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           echo '{"a":1}' > /tmp/input.json
           RESULT=$(jq '.a' /tmp/input.json)
@@ -83,9 +79,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "Lightweight command-line JSON processor";
-    homepage = "https://jqlang.github.io/jq/";
-    license = "MIT";
-  };
-}
+    meta = {
+      description = "Lightweight command-line JSON processor";
+      homepage = "https://jqlang.github.io/jq/";
+      license = "MIT";
+    };
+  }

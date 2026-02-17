@@ -8,10 +8,10 @@
 #
 # Usage:
 #   nix-build -A checks.integration.cross-cutting-tls-stack
-
-{ pkgs, testing }:
-
 {
+  pkgs,
+  testing,
+}: {
   # -------------------------------------------------------------------------
   # 1. TLS Stack — openssl + curl + ca-certificates interop
   # -------------------------------------------------------------------------
@@ -74,7 +74,7 @@
   # Full C compilation pipeline exercising every stage of gcc/binutils.
   c-pipeline = testing.mkFirecrackerTest {
     pname = "cross-cutting-c-pipeline";
-    rootfsDeps = [ pkgs.binutils ];
+    rootfsDeps = [pkgs.binutils];
     testScript = ''
       cat > /tmp/pipeline.c << 'EOF'
       #include <stdio.h>
@@ -113,7 +113,7 @@
   # -------------------------------------------------------------------------
   go-build = testing.mkFirecrackerTest {
     pname = "cross-cutting-go-build";
-    rootfsDeps = [ pkgs.go ];
+    rootfsDeps = [pkgs.go];
     memory = 512;
     testScript = ''
       export GOPATH="/tmp/gopath"
@@ -158,7 +158,7 @@
   # -------------------------------------------------------------------------
   rust-build = testing.mkFirecrackerTest {
     pname = "cross-cutting-rust-build";
-    rootfsDeps = [ pkgs.rust ];
+    rootfsDeps = [pkgs.rust];
     memory = 512;
     testScript = ''
       export PATH="${pkgs.rust}/bin:$PATH"
@@ -534,7 +534,7 @@
   # -------------------------------------------------------------------------
   python-import = testing.mkFirecrackerTest {
     pname = "cross-cutting-python-import";
-    rootfsDeps = [ pkgs.python3 ];
+    rootfsDeps = [pkgs.python3];
     testScript = ''
             export PATH="${pkgs.python3}/bin:$PATH"
             export LD_LIBRARY_PATH="${pkgs.python3}/lib:$LD_LIBRARY_PATH"

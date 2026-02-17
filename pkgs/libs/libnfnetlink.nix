@@ -3,68 +3,64 @@
   mkDerivation,
   fetchurl,
   make,
-}:
-
-let
+}: let
   version = "1.0.2";
 in
-mkDerivation {
-  pname = "libnfnetlink";
-  inherit version;
+  mkDerivation {
+    pname = "libnfnetlink";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://www.netfilter.org/projects/libnfnetlink/files/libnfnetlink-${version}.tar.bz2"
+    src = fetchurl {
+      urls = [
+        "https://www.netfilter.org/projects/libnfnetlink/files/libnfnetlink-${version}.tar.bz2"
+      ];
+      hash = "sha256-sGTHw9Qm77R4bmCo5oWbgu4vLF5J/+6mQM/k/jPLw3Y=";
+    };
+
+    buildDeps = [make];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd libnfnetlink-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --disable-static \
+            --enable-shared
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-sGTHw9Qm77R4bmCo5oWbgu4vLF5J/+6mQM/k/jPLw3Y=";
-  };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd libnfnetlink-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --disable-static \
-          --enable-shared
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       link = testing.mkLinkCheck {
         pname = "lib-libnfnetlink";
         library = self;
-        libs = [ "-lnfnetlink" ];
+        libs = ["-lnfnetlink"];
         testSource = ''
           #include <libnfnetlink/libnfnetlink.h>
           #include <stdio.h>
@@ -79,9 +75,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "libnfnetlink — low-level library for netfilter kernel/userspace communication";
-    homepage = "https://www.netfilter.org/projects/libnfnetlink/";
-    license = "GPL-2.0-only";
-  };
-}
+    meta = {
+      description = "libnfnetlink — low-level library for netfilter kernel/userspace communication";
+      homepage = "https://www.netfilter.org/projects/libnfnetlink/";
+      license = "GPL-2.0-only";
+    };
+  }

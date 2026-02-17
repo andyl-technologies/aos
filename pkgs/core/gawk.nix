@@ -3,66 +3,62 @@
   mkDerivation,
   fetchurl,
   make,
-}:
-
-let
-  version = "5.3.1";
+}: let
+  version = "5.3.2";
 in
-mkDerivation {
-  pname = "gawk";
-  inherit version;
+  mkDerivation {
+    pname = "gawk";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://gnu.mirror.constant.com/gawk/gawk-${version}.tar.xz"
-      "https://mirrors.kernel.org/gnu/gawk/gawk-${version}.tar.xz"
-      "https://ftp.gnu.org/gnu/gawk/gawk-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://gnu.mirror.constant.com/gawk/gawk-${version}.tar.xz"
+        "https://mirrors.kernel.org/gnu/gawk/gawk-${version}.tar.xz"
+        "https://ftp.gnu.org/gnu/gawk/gawk-${version}.tar.xz"
+      ];
+      hash = "sha256-+MNIZQnecFGSE4sA7ywAu73Q6Eww1cB9I/xzqdxMycw=";
+    };
+
+    buildDeps = [make];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd gawk-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --disable-nls \
+            --without-readline
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-aU23ZIEqYjZCPU/0DOt7bExEEwG3KtUCu1wn4AzVb3g=";
-  };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd gawk-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --disable-nls \
-          --without-readline
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       processing = testing.mkFirecrackerTest {
         pname = "tool-gawk-processing";
         rootfsDeps = [
@@ -92,9 +88,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "GNU Awk — pattern scanning and processing language";
-    homepage = "https://www.gnu.org/software/gawk/";
-    license = "GPL-3.0-or-later";
-  };
-}
+    meta = {
+      description = "GNU Awk — pattern scanning and processing language";
+      homepage = "https://www.gnu.org/software/gawk/";
+      license = "GPL-3.0-or-later";
+    };
+  }

@@ -3,44 +3,40 @@
   mkGoPackage,
   fetchurl,
   fetchGoModules,
-}:
-
-let
-  version = "3.16.4";
+}: let
+  version = "4.1.1";
 in
-mkGoPackage {
-  pname = "helm";
-  inherit version;
+  mkGoPackage {
+    pname = "helm";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/helm/helm/archive/v${version}/helm-${version}.tar.gz"
-    ];
-    hash = "sha256-QooO0GE2zCAY/+KD9eT3+6TSo3vFZs0M9apVDEmF9bs=";
-  };
-
-  goModules = fetchGoModules {
     src = fetchurl {
       urls = [
         "https://github.com/helm/helm/archive/v${version}/helm-${version}.tar.gz"
       ];
-      hash = "sha256-QooO0GE2zCAY/+KD9eT3+6TSo3vFZs0M9apVDEmF9bs=";
+      hash = "sha256-Gr26jVRYYMr/BfMYNASGFfaHouGLuTrmYl84/XH6aSg=";
     };
-    hash = "sha256-KgKhLwxTHBC4MxN+BPK8WIENLvHug3CqmE+Ykx3w8eg=";
-  };
 
-  goPackage = "./cmd/helm";
-  goOutput = "helm";
-  ldflags = "-s -w -X helm.sh/helm/v3/internal/version.version=v${version} -X helm.sh/helm/v3/internal/version.gitTreeState=clean";
-  doCheck = false;
+    goModules = fetchGoModules {
+      src = fetchurl {
+        urls = [
+          "https://github.com/helm/helm/archive/v${version}/helm-${version}.tar.gz"
+        ];
+        hash = "sha256-Gr26jVRYYMr/BfMYNASGFfaHouGLuTrmYl84/XH6aSg=";
+      };
+      hash = "sha256-3bG0KJn4wwo9JtTl6DqQX4Mfu3cqBdMK7VUyy64xZAs=";
+    };
 
-  checks =
-    {
+    goPackage = "./cmd/helm";
+    goOutput = "helm";
+    ldflags = "-s -w -X helm.sh/helm/v4/internal/version.version=v${version} -X helm.sh/helm/v4/internal/version.gitTreeState=clean";
+    doCheck = false;
+
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       version = testing.mkToolCheck {
         pname = "tool-helm";
         tool = self;
@@ -48,9 +44,9 @@ mkGoPackage {
       };
     };
 
-  meta = {
-    description = "Helm — the Kubernetes package manager";
-    homepage = "https://helm.sh";
-    license = "Apache-2.0";
-  };
-}
+    meta = {
+      description = "Helm — the Kubernetes package manager";
+      homepage = "https://helm.sh";
+      license = "Apache-2.0";
+    };
+  }

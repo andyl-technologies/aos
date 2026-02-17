@@ -15,16 +15,13 @@
 #
 # Validation (no VM, instant):
 #   nix-build -A checks.vm.validate
-
 {
   pkgs,
   lib,
   systems,
   testTools,
-}:
-
-let
-  harness = import ../../lib/testing { inherit pkgs lib testTools; };
+}: let
+  harness = import ../../lib/testing {inherit pkgs lib testTools;};
 
   # ---------------------------------------------------------------------------
   # Declarative mapping: check group name -> system variant
@@ -95,25 +92,25 @@ let
   # ---------------------------------------------------------------------------
   # Auto-generate per-check-group VM test derivations
   # ---------------------------------------------------------------------------
-  perCheckTests = builtins.mapAttrs (
-    name: spec:
-    let
-      checkModule = import ./checks/${name}.nix {
-        inherit (harness) mkCheck mkCheckGroup;
-      };
-    in
-    harness.mkVMTest {
-      inherit name;
-      system = systems.${spec.variant};
-      checks = [ checkModule ];
-    }
-  ) moduleTests;
+  perCheckTests =
+    builtins.mapAttrs (
+      name: spec: let
+        checkModule = import ./checks/${name}.nix {
+          inherit (harness) mkCheck mkCheckGroup;
+        };
+      in
+        harness.mkVMTest {
+          inherit name;
+          system = systems.${spec.variant};
+          checks = [checkModule];
+        }
+    )
+    moduleTests;
 
   # ---------------------------------------------------------------------------
   # Aggregate helper: trivial derivation that depends on constituent tests
   # ---------------------------------------------------------------------------
-  mkAggregate =
-    name: testNames:
+  mkAggregate = name: testNames:
     pkgs.mkDerivation {
       pname = "aos-vm-aggregate-${name}";
       version = "0";
@@ -176,21 +173,20 @@ let
   # ---------------------------------------------------------------------------
   # Collect all check modules for the validation gate
   # ---------------------------------------------------------------------------
-  allChecks =
-    let
-      mkC = {
-        inherit (harness) mkCheck mkCheckGroup;
-      };
-    in
+  allChecks = let
+    mkC = {
+      inherit (harness) mkCheck mkCheckGroup;
+    };
+  in
     builtins.map (name: import ./checks/${name}.nix mkC) (builtins.attrNames moduleTests);
 in
-# Merge: individual tests + aggregates/aliases + validate
-perCheckTests
-// aggregates
-// {
-  # Pre-flight syntax validation (no VM, instant)
-  validate = harness.validateChecks {
-    inherit pkgs;
-    checks = allChecks;
-  };
-}
+  # Merge: individual tests + aggregates/aliases + validate
+  perCheckTests
+  // aggregates
+  // {
+    # Pre-flight syntax validation (no VM, instant)
+    validate = harness.validateChecks {
+      inherit pkgs;
+      checks = allChecks;
+    };
+  }

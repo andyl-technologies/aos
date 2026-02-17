@@ -4,78 +4,74 @@
   fetchurl,
   make,
   go-bootstrap,
-}:
-
-let
-  version = "1.23.5";
+}: let
+  version = "1.26.0";
 in
-mkDerivation {
-  pname = "go";
-  inherit version;
+  mkDerivation {
+    pname = "go";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://go.dev/dl/go${version}.src.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://go.dev/dl/go${version}.src.tar.gz"
+      ];
+      hash = "sha256-yRMqih9r0qpKrR10uCMdlSdJUEg6SVBlfubFbm6Bd5A=";
+    };
+
+    buildDeps = [
+      make
+      go-bootstrap
     ];
-    hash = "sha256-pvP0u9PmvdYm95tmjyEvu1ZJ2vdQhPt5tnigrk2XQjs=";
-  };
+    runtimeDeps = [];
 
-  buildDeps = [
-    make
-    go-bootstrap
-  ];
-  runtimeDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd go
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          export GOROOT_BOOTSTRAP=${go-bootstrap}
+          export GOROOT_FINAL=$out
+          export GOCACHE=$TMPDIR/go-cache
+          cd src
+          bash make.bash
+          cd ..
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p $out/bin $out/src $out/pkg
+          cp -a bin/* $out/bin/
+          cp -a src/* $out/src/
+          cp -a pkg/* $out/pkg/
+          cp -a lib $out/ 2>/dev/null || true
+          cp -a misc $out/ 2>/dev/null || true
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd go
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        export GOROOT_BOOTSTRAP=${go-bootstrap}
-        export GOROOT_FINAL=$out
-        export GOCACHE=$TMPDIR/go-cache
-        cd src
-        bash make.bash
-        cd ..
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        mkdir -p $out/bin $out/src $out/pkg
-        cp -a bin/* $out/bin/
-        cp -a src/* $out/src/
-        cp -a pkg/* $out/pkg/
-        cp -a lib $out/ 2>/dev/null || true
-        cp -a misc $out/ 2>/dev/null || true
+          # Patch ELF binaries
+          INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
+          for f in $out/bin/* $out/pkg/tool/*/*; do
+            if [ -f "$f" ] && [ ! -L "$f" ]; then
+              patchelf --set-interpreter "$INTERP" "$f" 2>/dev/null || true
+            fi
+          done
+        '';
+      }
+    ];
 
-        # Patch ELF binaries
-        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
-        for f in $out/bin/* $out/pkg/tool/*/*; do
-          if [ -f "$f" ] && [ ! -L "$f" ]; then
-            patchelf --set-interpreter "$INTERP" "$f" 2>/dev/null || true
-          fi
-        done
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       hello = testing.mkFirecrackerTest {
         pname = "toolchain-go-hello";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -109,7 +105,7 @@ mkDerivation {
 
       cgo = testing.mkFirecrackerTest {
         pname = "toolchain-go-cgo";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -146,7 +142,7 @@ mkDerivation {
 
       test = testing.mkFirecrackerTest {
         pname = "toolchain-go-test";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -157,7 +153,7 @@ mkDerivation {
           mkdir -p /tmp/testpkg
           cat > /tmp/testpkg/go.mod << 'EOF'
           module testpkg
-          go 1.23
+          go 1.26
           EOF
 
           cat > /tmp/testpkg/math.go << 'EOF'
@@ -190,7 +186,7 @@ mkDerivation {
 
       static = testing.mkFirecrackerTest {
         pname = "toolchain-go-static";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -314,7 +310,7 @@ mkDerivation {
 
       vet = testing.mkFirecrackerTest {
         pname = "toolchain-go-vet";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -326,7 +322,7 @@ mkDerivation {
           mkdir -p /tmp/cleanpkg
           cat > /tmp/cleanpkg/go.mod << 'EOF'
           module cleanpkg
-          go 1.23
+          go 1.26
           EOF
 
           cat > /tmp/cleanpkg/main.go << 'EOF'
@@ -343,7 +339,7 @@ mkDerivation {
           mkdir -p /tmp/buggypkg
           cat > /tmp/buggypkg/go.mod << 'EOF'
           module buggypkg
-          go 1.23
+          go 1.26
           EOF
 
           cat > /tmp/buggypkg/main.go << 'EOF'
@@ -368,7 +364,7 @@ mkDerivation {
 
       fmt = testing.mkFirecrackerTest {
         pname = "toolchain-go-fmt";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -400,7 +396,7 @@ mkDerivation {
           cp /tmp/formatted.go /tmp/fmtpkg/main.go
           cat > /tmp/fmtpkg/go.mod << 'EOF'
           module fmtpkg
-          go 1.23
+          go 1.26
           EOF
 
           cd /tmp/fmtpkg
@@ -412,7 +408,7 @@ mkDerivation {
 
       build = testing.mkFirecrackerTest {
         pname = "cross-cutting-go-build";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/gopath"
@@ -545,9 +541,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "Go programming language";
-    homepage = "https://go.dev";
-    license = "BSD-3-Clause";
-  };
-}
+    meta = {
+      description = "Go programming language";
+      homepage = "https://go.dev";
+      license = "BSD-3-Clause";
+    };
+  }

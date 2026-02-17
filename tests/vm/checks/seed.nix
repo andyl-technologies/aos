@@ -2,7 +2,10 @@
 #
 # Verifies seed-specific infrastructure: build/publish services,
 # timer configuration, directory structure, and nginx vhost wiring.
-{ mkCheck, mkCheckGroup }:
+{
+  mkCheck,
+  mkCheckGroup,
+}:
 mkCheckGroup {
   name = "seed";
   description = "Seed server orchestration checks";

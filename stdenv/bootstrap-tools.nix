@@ -13,12 +13,7 @@
 #
 # The bootstrap files are the same ones used by nixpkgs' stdenv, hosted at
 # tarballs.nixos.org.  They are content-addressed (verified by hash).
-
-{
-  system ? "aarch64-linux",
-}:
-
-let
+{system ? "aarch64-linux"}: let
   # Per-architecture download URLs and hashes.
   # Source: nixpkgs pkgs/stdenv/linux/bootstrap-files/*.nix
   archFiles = {
@@ -90,6 +85,5 @@ let
       ./bootstrap-tools/unpack.sh
     ];
   };
-
 in
-bootstrapTools
+  bootstrapTools

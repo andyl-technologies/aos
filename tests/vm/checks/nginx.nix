@@ -3,7 +3,10 @@
 # Verifies nginx configuration, service unit, and binary presence.
 # ACME certificate issuance is not tested (requires internet + real domain);
 # these checks validate that the nginx infrastructure is correctly wired.
-{ mkCheck, mkCheckGroup }:
+{
+  mkCheck,
+  mkCheckGroup,
+}:
 mkCheckGroup {
   name = "nginx";
   description = "nginx web server checks";

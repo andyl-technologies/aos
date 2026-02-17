@@ -7,140 +7,170 @@
 ##!   - system.build.toplevel       — the top-level system derivation
 ##!   - system.build.kernel         — the kernel derivation
 ##!   - system.build.initrd         — the initrd derivation
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   # --- Render /etc files ---
   etcScript = lib.concatStringsSep "\n" (
     lib.mapAttrsToList (
       name: entry:
-      if entry ? source then
-        "mkdir -p $out/etc/$(dirname ${name})\nln -sfn ${entry.source} $out/etc/${name}"
-      else if entry ? text then
-        "mkdir -p $out/etc/$(dirname ${name})\ncat > $out/etc/${name} << 'ETCEOF'\n${entry.text}\nETCEOF"
-      else
-        "# skipping ${name} (no text or source attribute)"
-    ) config.environment.etc
+        if entry ? source
+        then "mkdir -p $out/etc/$(dirname ${name})\nln -sfn ${entry.source} $out/etc/${name}"
+        else if entry ? text
+        then "mkdir -p $out/etc/$(dirname ${name})\ncat > $out/etc/${name} << 'ETCEOF'\n${entry.text}\nETCEOF"
+        else "# skipping ${name} (no text or source attribute)"
+    )
+    config.environment.etc
   );
 
   # --- Render systemd units ---
-  renderUnit =
-    name: unit:
-    let
-      section =
-        secName: attrs:
-        "[${secName}]\n"
-        + lib.concatStringsSep "\n" (
-          lib.mapAttrsToList (
-            k: v: if builtins.isBool v then (if v then "${k}=yes" else "${k}=no") else "${k}=${toString v}"
-          ) attrs
-        );
-      unitSection = {
+  renderUnit = name: unit: let
+    section = secName: attrs:
+      "[${secName}]\n"
+      + lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (
+          k: v:
+            if builtins.isBool v
+            then
+              (
+                if v
+                then "${k}=yes"
+                else "${k}=no"
+              )
+            else "${k}=${toString v}"
+        )
+        attrs
+      );
+    unitSection =
+      {
         Description = unit.description;
       }
-      // (if unit ? after then { After = lib.concatStringsSep " " unit.after; } else { })
-      // (if unit ? wants then { Wants = lib.concatStringsSep " " unit.wants; } else { })
-      // (if unit ? before then { Before = lib.concatStringsSep " " unit.before; } else { });
-      installSection =
-        if unit ? wantedBy then { WantedBy = lib.concatStringsSep " " unit.wantedBy; } else { };
-    in
-    ''
-      ${section "Unit" unitSection}
-      ${section "Service" unit.serviceConfig}
-      ${if installSection != { } then section "Install" installSection else ""}
-    '';
+      // (
+        if unit ? after
+        then {After = lib.concatStringsSep " " unit.after;}
+        else {}
+      )
+      // (
+        if unit ? wants
+        then {Wants = lib.concatStringsSep " " unit.wants;}
+        else {}
+      )
+      // (
+        if unit ? before
+        then {Before = lib.concatStringsSep " " unit.before;}
+        else {}
+      );
+    installSection =
+      if unit ? wantedBy
+      then {WantedBy = lib.concatStringsSep " " unit.wantedBy;}
+      else {};
+  in ''
+    ${section "Unit" unitSection}
+    ${section "Service" unit.serviceConfig}
+    ${
+      if installSection != {}
+      then section "Install" installSection
+      else ""
+    }
+  '';
 
   unitScripts = lib.concatStringsSep "\n" (
     lib.mapAttrsToList (
       name: unit:
-      if unit ? description && unit ? serviceConfig then
-        ''
-          mkdir -p $out/etc/systemd/system
-          cat > $out/etc/systemd/system/${name}.service << 'UNITEOF'
-          ${renderUnit name unit}
-          UNITEOF
-        ''
-        + (
-          if unit ? wantedBy then
-            lib.concatStringsSep "\n" (
-              builtins.map (target: ''
-                mkdir -p $out/etc/systemd/system/${target}.wants
-                ln -sfn ../${name}.service $out/etc/systemd/system/${target}.wants/${name}.service
-              '') unit.wantedBy
-            )
-          else
-            ""
-        )
-      else
-        "# skipping unit ${name} (incomplete definition)"
-    ) config.systemd.services
+        if unit ? description && unit ? serviceConfig
+        then
+          ''
+            mkdir -p $out/etc/systemd/system
+            cat > $out/etc/systemd/system/${name}.service << 'UNITEOF'
+            ${renderUnit name unit}
+            UNITEOF
+          ''
+          + (
+            if unit ? wantedBy
+            then
+              lib.concatStringsSep "\n" (
+                builtins.map (target: ''
+                  mkdir -p $out/etc/systemd/system/${target}.wants
+                  ln -sfn ../${name}.service $out/etc/systemd/system/${target}.wants/${name}.service
+                '')
+                unit.wantedBy
+              )
+            else ""
+          )
+        else "# skipping unit ${name} (incomplete definition)"
+    )
+    config.systemd.services
   );
 
   # --- Render systemd timers ---
-  renderTimer =
-    name: timer:
-    let
-      timerSection = lib.concatStringsSep "\n" (
-        lib.mapAttrsToList (
-          k: v: if builtins.isBool v then (if v then "${k}=yes" else "${k}=no") else "${k}=${toString v}"
-        ) timer.timerConfig
-      );
-      installSection =
-        if timer ? wantedBy then "[Install]\nWantedBy=${lib.concatStringsSep " " timer.wantedBy}" else "";
-    in
-    ''
-      [Unit]
-      Description=${timer.description}
+  renderTimer = name: timer: let
+    timerSection = lib.concatStringsSep "\n" (
+      lib.mapAttrsToList (
+        k: v:
+          if builtins.isBool v
+          then
+            (
+              if v
+              then "${k}=yes"
+              else "${k}=no"
+            )
+          else "${k}=${toString v}"
+      )
+      timer.timerConfig
+    );
+    installSection =
+      if timer ? wantedBy
+      then "[Install]\nWantedBy=${lib.concatStringsSep " " timer.wantedBy}"
+      else "";
+  in ''
+    [Unit]
+    Description=${timer.description}
 
-      [Timer]
-      ${timerSection}
+    [Timer]
+    ${timerSection}
 
-      ${installSection}
-    '';
+    ${installSection}
+  '';
 
   timerScripts = lib.concatStringsSep "\n" (
     lib.mapAttrsToList (
       name: timer:
-      if timer ? description && timer ? timerConfig then
-        ''
-          mkdir -p $out/etc/systemd/system
-          cat > $out/etc/systemd/system/${name}.timer << 'TIMEREOF'
-          ${renderTimer name timer}
-          TIMEREOF
-        ''
-        + (
-          if timer ? wantedBy then
-            lib.concatStringsSep "\n" (
-              builtins.map (target: ''
-                mkdir -p $out/etc/systemd/system/${target}.wants
-                ln -sfn ../${name}.timer $out/etc/systemd/system/${target}.wants/${name}.timer
-              '') timer.wantedBy
-            )
-          else
-            ""
-        )
-      else
-        "# skipping timer ${name} (incomplete definition)"
-    ) config.systemd.timers
+        if timer ? description && timer ? timerConfig
+        then
+          ''
+            mkdir -p $out/etc/systemd/system
+            cat > $out/etc/systemd/system/${name}.timer << 'TIMEREOF'
+            ${renderTimer name timer}
+            TIMEREOF
+          ''
+          + (
+            if timer ? wantedBy
+            then
+              lib.concatStringsSep "\n" (
+                builtins.map (target: ''
+                  mkdir -p $out/etc/systemd/system/${target}.wants
+                  ln -sfn ../${name}.timer $out/etc/systemd/system/${target}.wants/${name}.timer
+                '')
+                timer.wantedBy
+              )
+            else ""
+          )
+        else "# skipping timer ${name} (incomplete definition)"
+    )
+    config.systemd.timers
   );
 
   # --- Build the system PATH from systemPackages ---
-  makeBinPath =
-    pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
-
-in
-{
+  makeBinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
+in {
   options = {
     ## Assertions checked during system evaluation.
     assertions = lib.mkOption {
       type = lib.types.listOf lib.types.anything;
-      default = [ ];
+      default = [];
       description = ''
         List of assertion attrsets { assertion = bool; message = string; }.
         If any assertion is false, the system build fails with the message.
@@ -150,7 +180,7 @@ in
     ## Warning messages reported during evaluation.
     warnings = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ ];
+      default = [];
       description = ''
         List of warning messages. These are reported during evaluation
         but do not prevent the system from building.
@@ -160,7 +190,7 @@ in
     ## Packages that appear in the system profile PATH.
     environment.systemPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
-      default = [ ];
+      default = [];
       description = ''
         The set of packages that appear in the system profile. These packages
         are made available in the system PATH and are included in the Nix store
@@ -171,7 +201,7 @@ in
     ## Files to install in /etc (text or source symlink).
     environment.etc = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
-      default = { };
+      default = {};
       description = ''
         Set of files to be installed in /etc. Each attribute maps a relative
         path under /etc to either { text = "..."; } for inline content or
@@ -182,7 +212,7 @@ in
     ## Systemd service unit definitions.
     systemd.services = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
-      default = { };
+      default = {};
       description = ''
         Set of systemd service units. Each attribute maps a unit name to an
         attrset with description, serviceConfig, wantedBy, after, wants, etc.
@@ -192,7 +222,7 @@ in
     ## Systemd timer unit definitions.
     systemd.timers = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
-      default = { };
+      default = {};
       description = "Set of systemd timer units.";
     };
 
@@ -226,7 +256,7 @@ in
       name = "aos-system-toplevel";
       src = null;
 
-      buildDeps = [ pkgs.coreutils ];
+      buildDeps = [pkgs.coreutils];
 
       phases = [
         {
@@ -256,7 +286,8 @@ in
             ${lib.concatStringsSep "\n" (
               builtins.map (
                 p: "echo ${builtins.toString p} >> $out/nix-support/system-packages"
-              ) config.environment.systemPackages
+              )
+              config.environment.systemPackages
             )}
           '';
         }

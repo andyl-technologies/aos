@@ -1,6 +1,8 @@
 ##! kubeadm — Kubernetes cluster bootstrapping tool
-{ mkGoPackage, kubeSource }:
-
+{
+  mkGoPackage,
+  kubeSource,
+}:
 mkGoPackage {
   pname = "kubeadm";
   inherit (kubeSource) version src;
@@ -10,19 +12,17 @@ mkGoPackage {
   ldflags = "-s -w -X k8s.io/component-base/version.gitVersion=v${kubeSource.version}";
   doCheck = false;
 
-  checks =
-    {
-      testing,
-      self,
-      pkgs,
-    }:
-    {
-      version = testing.mkToolCheck {
-        pname = "tool-kubeadm";
-        tool = self;
-        command = "kubeadm version";
-      };
+  checks = {
+    testing,
+    self,
+    pkgs,
+  }: {
+    version = testing.mkToolCheck {
+      pname = "tool-kubeadm";
+      tool = self;
+      command = "kubeadm version";
     };
+  };
 
   meta = {
     description = "kubeadm — tool for bootstrapping Kubernetes clusters";

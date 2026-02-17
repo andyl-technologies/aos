@@ -8,29 +8,31 @@
 ##!   [firewall] enable, default_policy, allowed_tcp, allowed_udp
 ##!   [firewall] forward_policy, trusted_interfaces
 ##!   [firewall.kubernetes] worker_tcp, worker_udp, control_plane_tcp, cilium_tcp
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.firewall;
 
   # Format a list of ports as an nftables set expression: { 22, 80, 443 }
-  portSet =
-    ports:
-    if ports == [ ] then "" else "{ ${builtins.concatStringsSep ", " (builtins.map toString ports)} }";
+  portSet = ports:
+    if ports == []
+    then ""
+    else "{ ${builtins.concatStringsSep ", " (builtins.map toString ports)} }";
 
   # Build nftables rules for allowed TCP ports.
   tcpInputRules =
-    if cfg.allowedTCP == [ ] then "" else "    tcp dport ${portSet cfg.allowedTCP} accept\n";
+    if cfg.allowedTCP == []
+    then ""
+    else "    tcp dport ${portSet cfg.allowedTCP} accept\n";
 
   # Build nftables rules for allowed UDP ports.
   udpInputRules =
-    if cfg.allowedUDP == [ ] then "" else "    udp dport ${portSet cfg.allowedUDP} accept\n";
+    if cfg.allowedUDP == []
+    then ""
+    else "    udp dport ${portSet cfg.allowedUDP} accept\n";
 
   # Trusted interface rules — accept all traffic on lo, etc.
   trustedIfaceRules = builtins.concatStringsSep "\n" (
@@ -39,28 +41,24 @@ let
 
   # Kubernetes-specific rules (only included when K8s ports are defined).
   k8sWorkerTcpRules =
-    if cfg.kubernetes.workerTCP == [ ] then
-      ""
-    else
-      "    tcp dport ${portSet cfg.kubernetes.workerTCP} accept comment \"K8s worker ports\"\n";
+    if cfg.kubernetes.workerTCP == []
+    then ""
+    else "    tcp dport ${portSet cfg.kubernetes.workerTCP} accept comment \"K8s worker ports\"\n";
 
   k8sWorkerUdpRules =
-    if cfg.kubernetes.workerUDP == [ ] then
-      ""
-    else
-      "    udp dport ${portSet cfg.kubernetes.workerUDP} accept comment \"K8s overlay (VXLAN)\"\n";
+    if cfg.kubernetes.workerUDP == []
+    then ""
+    else "    udp dport ${portSet cfg.kubernetes.workerUDP} accept comment \"K8s overlay (VXLAN)\"\n";
 
   k8sControlPlaneTcpRules =
-    if cfg.kubernetes.controlPlaneTCP == [ ] then
-      ""
-    else
-      "    tcp dport ${portSet cfg.kubernetes.controlPlaneTCP} accept comment \"K8s control plane\"\n";
+    if cfg.kubernetes.controlPlaneTCP == []
+    then ""
+    else "    tcp dport ${portSet cfg.kubernetes.controlPlaneTCP} accept comment \"K8s control plane\"\n";
 
   k8sCiliumTcpRules =
-    if cfg.kubernetes.ciliumTCP == [ ] then
-      ""
-    else
-      "    tcp dport ${portSet cfg.kubernetes.ciliumTCP} accept comment \"Cilium health/Hubble\"\n";
+    if cfg.kubernetes.ciliumTCP == []
+    then ""
+    else "    tcp dport ${portSet cfg.kubernetes.ciliumTCP} accept comment \"Cilium health/Hubble\"\n";
 
   # Full nftables ruleset.
   nftablesConf = ''
@@ -117,9 +115,7 @@ let
       }
     }
   '';
-
-in
-{
+in {
   options.aos.firewall = {
     ## Enable the nftables-based firewall.
     ##
@@ -156,14 +152,14 @@ in
     ## ```
     allowedTCP = lib.mkOption {
       type = lib.types.listOf lib.types.port;
-      default = [ 22 ];
+      default = [22];
       description = "TCP ports to allow inbound. Default: SSH only.";
     };
 
     ## UDP ports to allow inbound.
     allowedUDP = lib.mkOption {
       type = lib.types.listOf lib.types.port;
-      default = [ ];
+      default = [];
       description = "UDP ports to allow inbound.";
     };
 
@@ -185,7 +181,7 @@ in
     ## Network interfaces where all traffic is accepted unconditionally.
     trustedInterfaces = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "lo" ];
+      default = ["lo"];
       description = ''
         Network interfaces where all traffic is accepted unconditionally.
         The loopback interface (lo) should always be trusted.
@@ -212,7 +208,7 @@ in
       ## UDP ports for Kubernetes worker nodes (VXLAN overlay).
       workerUDP = lib.mkOption {
         type = lib.types.listOf lib.types.port;
-        default = [ 8472 ];
+        default = [8472];
         description = ''
           UDP ports for Kubernetes worker nodes:
           - 8472: VXLAN overlay network (Flannel/Cilium)
@@ -268,10 +264,10 @@ in
     # nftables.service — load the firewall rules at boot.
     systemd.services."nftables" = {
       description = "nftables Firewall";
-      wantedBy = [ "multi-user.target" ];
-      before = [ "network-pre.target" ];
-      wants = [ "network-pre.target" ];
-      after = [ "local-fs.target" ];
+      wantedBy = ["multi-user.target"];
+      before = ["network-pre.target"];
+      wants = ["network-pre.target"];
+      after = ["local-fs.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

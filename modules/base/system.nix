@@ -7,18 +7,14 @@
 ##! Absorbed TOML config values:
 ##!   [system] name, version, variant, state_version
 ##!   [locale] lang, timezone
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   cfg = config.aos.system;
-in
-{
+in {
   options.aos.system = {
     ## Operating system name used in os-release and branding.
     name = lib.mkOption {

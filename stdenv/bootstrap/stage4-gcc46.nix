@@ -18,25 +18,21 @@
 #   - GNU binutils for as, ld
 #   - GNU make (for building GCC itself)
 #
-
 {
   tinycc, # Output of stage3-tinycc.nix
   mescc-tools, # Output of stage1-mescc-tools.nix (for M1, hex2 if needed)
   sources, # Attrset with: gcc464-source, binutils-source, glibc-source, make-source
   system ? "x86_64-linux",
-}:
-
-let
+}: let
   version = "4.6.4";
 
   archParams =
-    if system == "x86_64-linux" then
-      {
-        target = "x86_64-unknown-linux-gnu";
-        arch = "x86_64";
-      }
-    else
-      throw "stage4-gcc46: only x86_64-linux is supported at this stage";
+    if system == "x86_64-linux"
+    then {
+      target = "x86_64-unknown-linux-gnu";
+      arch = "x86_64";
+    }
+    else throw "stage4-gcc46: only x86_64-linux is supported at this stage";
 
   # ---------------------------------------------------------------------------
   # Step 1: Build a minimal binutils with TinyCC
@@ -298,21 +294,20 @@ let
       ''
     ];
   };
-
 in
-gcc
-// {
-  inherit version;
+  gcc
+  // {
+    inherit version;
 
-  # Export sub-components for debugging
-  components = {
-    inherit binutils-bootstrap make-bootstrap glibc-bootstrap;
-  };
+    # Export sub-components for debugging
+    components = {
+      inherit binutils-bootstrap make-bootstrap glibc-bootstrap;
+    };
 
-  meta = {
-    description = "GCC 4.6.4 (C only) — first optimizing compiler, built by TinyCC";
-    homepage = "https://gcc.gnu.org/";
-    license = "GPL-3.0-or-later";
-    platforms = [ "x86_64-linux" ];
-  };
-}
+    meta = {
+      description = "GCC 4.6.4 (C only) — first optimizing compiler, built by TinyCC";
+      homepage = "https://gcc.gnu.org/";
+      license = "GPL-3.0-or-later";
+      platforms = ["x86_64-linux"];
+    };
+  }
