@@ -65,8 +65,8 @@ in
       self,
       pkgs,
     }: {
-      as = testing.mkFirecrackerTest {
-        pname = "toolchain-binutils-as";
+      as = testing.mkVMTest {
+        name = "toolchain-binutils-as";
         testScript = ''
           cat > /tmp/test.s << 'EOF'
           .section .data
@@ -90,8 +90,8 @@ in
         '';
       };
 
-      ld = testing.mkFirecrackerTest {
-        pname = "toolchain-binutils-ld";
+      ld = testing.mkVMTest {
+        name = "toolchain-binutils-ld";
         testScript = ''
           cat > /tmp/test.s << 'EOF'
           .section .data
@@ -115,8 +115,8 @@ in
         '';
       };
 
-      ar = testing.mkFirecrackerTest {
-        pname = "toolchain-binutils-ar";
+      ar = testing.mkVMTest {
+        name = "toolchain-binutils-ar";
         testScript = ''
           cat > /tmp/add.c << 'EOF'
           int add(int a, int b) { return a + b; }
@@ -142,8 +142,8 @@ in
         '';
       };
 
-      nm = testing.mkFirecrackerTest {
-        pname = "toolchain-binutils-nm";
+      nm = testing.mkVMTest {
+        name = "toolchain-binutils-nm";
         testScript = ''
           cat > /tmp/sym.c << 'EOF'
           int exported_function(void) { return 42; }
@@ -163,8 +163,8 @@ in
         '';
       };
 
-      strip = testing.mkFirecrackerTest {
-        pname = "toolchain-binutils-strip";
+      strip = testing.mkVMTest {
+        name = "toolchain-binutils-strip";
         testScript = ''
           cat > /tmp/prog.c << 'EOF'
           #include <stdio.h>
@@ -181,8 +181,8 @@ in
         '';
       };
 
-      objdump = testing.mkFirecrackerTest {
-        pname = "toolchain-binutils-objdump";
+      objdump = testing.mkVMTest {
+        name = "toolchain-binutils-objdump";
         testScript = ''
           cat > /tmp/func.c << 'EOF'
           int target_func(int x) { return x * 2; }
@@ -206,8 +206,8 @@ in
         '';
       };
 
-      readelf = testing.mkFirecrackerTest {
-        pname = "toolchain-binutils-readelf";
+      readelf = testing.mkVMTest {
+        name = "toolchain-binutils-readelf";
         testScript = ''
           cat > /tmp/simple.c << 'EOF'
           int main(void) { return 0; }

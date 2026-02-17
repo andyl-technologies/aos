@@ -160,6 +160,76 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    system.checks.container-support = lib.mkCheckGroup {
+      name = "container-support";
+      description = "Container kernel feature checks";
+      checks = [
+        (lib.mkCheck {
+          name = "cgroups-v2";
+          description = "cgroups v2 filesystem is mounted";
+          script = ''
+            assert_success "test -d /sys/fs/cgroup" \
+              "cgroups filesystem is mounted"
+          '';
+        })
+        (lib.mkCheck {
+          name = "pid-namespace";
+          description = "PID namespaces available";
+          script = ''
+            assert_success "test -f /proc/self/ns/pid" \
+              "PID namespaces available"
+          '';
+        })
+        (lib.mkCheck {
+          name = "net-namespace";
+          description = "Network namespaces available";
+          script = ''
+            assert_success "test -f /proc/self/ns/net" \
+              "Network namespaces available"
+          '';
+        })
+        (lib.mkCheck {
+          name = "mnt-namespace";
+          description = "Mount namespaces available";
+          script = ''
+            assert_success "test -f /proc/self/ns/mnt" \
+              "Mount namespaces available"
+          '';
+        })
+      ];
+    };
+
+    system.checks.containerd = lib.mkCheckGroup {
+      name = "containerd";
+      description = "Container runtime checks";
+      checks = [
+        (lib.mkCheck {
+          name = "containerd-active";
+          description = "containerd service is active";
+          script = ''
+            assert_success "systemctl is-active containerd" \
+              "containerd service is active"
+          '';
+        })
+        (lib.mkCheck {
+          name = "containerd-socket";
+          description = "containerd socket exists";
+          script = ''
+            assert_success "test -S /run/containerd/containerd.sock" \
+              "containerd socket exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "containerd-config";
+          description = "containerd config.toml exists";
+          script = ''
+            assert_success "test -f /etc/containerd/config.toml" \
+              "containerd config.toml exists"
+          '';
+        })
+      ];
+    };
+
     # ZFS dataset for containerd state (container images, snapshots).
     aos.filesystems.zfs.datasets."var/lib/containerd" = {
       mountpoint = "/var/lib/containerd";

@@ -64,8 +64,8 @@ in
         command = "tar --version";
       };
 
-      roundtrip = testing.mkFirecrackerTest {
-        pname = "tool-tar-roundtrip";
+      roundtrip = testing.mkVMTest {
+        name = "tool-tar-roundtrip";
         rootfsDeps = [
           self
           pkgs.gzip
@@ -90,8 +90,8 @@ in
         '';
       };
 
-      xz = testing.mkFirecrackerTest {
-        pname = "tool-tar-xz";
+      xz = testing.mkVMTest {
+        name = "tool-tar-xz";
         rootfsDeps = [
           self
           pkgs.xz
@@ -115,8 +115,8 @@ in
         '';
       };
 
-      zstd = testing.mkFirecrackerTest {
-        pname = "tool-tar-zstd";
+      zstd = testing.mkVMTest {
+        name = "tool-tar-zstd";
         rootfsDeps = [
           self
           pkgs.zstd
@@ -140,8 +140,8 @@ in
         '';
       };
 
-      bzip2 = testing.mkFirecrackerTest {
-        pname = "tool-tar-bzip2";
+      bzip2 = testing.mkVMTest {
+        name = "tool-tar-bzip2";
         rootfsDeps = [
           self
           pkgs.bzip2

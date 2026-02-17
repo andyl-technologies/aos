@@ -75,8 +75,8 @@ in
         command = "cmake --version";
       };
 
-      build = testing.mkFirecrackerTest {
-        pname = "build-cmake-build";
+      build = testing.mkVMTest {
+        name = "build-cmake-build";
         rootfsDeps = [
           self
           pkgs.make

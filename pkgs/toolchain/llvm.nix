@@ -76,8 +76,8 @@ in
       self,
       pkgs,
     }: {
-      compile-c = testing.mkFirecrackerTest {
-        pname = "toolchain-llvm-compile-c";
+      compile-c = testing.mkVMTest {
+        name = "toolchain-llvm-compile-c";
         rootfsDeps = [self];
         testScript = ''
           cat > /tmp/hello.c << 'EOF'
@@ -104,8 +104,8 @@ in
         '';
       };
 
-      compile-cpp = testing.mkFirecrackerTest {
-        pname = "toolchain-llvm-compile-cpp";
+      compile-cpp = testing.mkVMTest {
+        name = "toolchain-llvm-compile-cpp";
         rootfsDeps = [self];
         testScript = ''
           cat > /tmp/test.cpp << 'EOF'
@@ -141,8 +141,8 @@ in
         '';
       };
 
-      libllvm = testing.mkFirecrackerTest {
-        pname = "toolchain-llvm-libllvm";
+      libllvm = testing.mkVMTest {
+        name = "toolchain-llvm-libllvm";
         rootfsDeps = [self];
         testScript = ''
           LLVM="${builtins.toString self}"
@@ -162,8 +162,8 @@ in
         '';
       };
 
-      tools = testing.mkFirecrackerTest {
-        pname = "toolchain-llvm-tools";
+      tools = testing.mkVMTest {
+        name = "toolchain-llvm-tools";
         rootfsDeps = [self];
         testScript = ''
           cat > /tmp/tiny.c << 'EOF'
@@ -203,8 +203,8 @@ in
         '';
       };
 
-      link-openssl = testing.mkFirecrackerTest {
-        pname = "toolchain-llvm-link-openssl";
+      link-openssl = testing.mkVMTest {
+        name = "toolchain-llvm-link-openssl";
         rootfsDeps = [
           self
           pkgs.openssl

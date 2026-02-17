@@ -60,8 +60,8 @@ in
       self,
       pkgs,
     }: {
-      basic = testing.mkFirecrackerTest {
-        pname = "tool-grep-basic";
+      basic = testing.mkVMTest {
+        name = "tool-grep-basic";
         rootfsDeps = [
           self
           pkgs.coreutils
@@ -96,8 +96,8 @@ in
         '';
       };
 
-      regex = testing.mkFirecrackerTest {
-        pname = "tool-grep-regex";
+      regex = testing.mkVMTest {
+        name = "tool-grep-regex";
         rootfsDeps = [
           self
           pkgs.coreutils
@@ -118,8 +118,8 @@ in
         '';
       };
 
-      recursive = testing.mkFirecrackerTest {
-        pname = "tool-grep-recursive";
+      recursive = testing.mkVMTest {
+        name = "tool-grep-recursive";
         rootfsDeps = [
           self
           pkgs.coreutils

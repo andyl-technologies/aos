@@ -1,7 +1,8 @@
 # tests/vm/default.nix — VM integration test suite (per-check-group derivations)
 #
-# Each check group gets its own VM test derivation, independently cacheable
-# by Nix. Aggregate targets provide backwards-compatible groupings.
+# Checks are defined in modules via `system.checks.<name>` and automatically
+# discovered from evaluated system configs. Each check group gets its own VM
+# test derivation, independently cacheable by Nix.
 #
 # Individual tests:
 #   nix-build -A checks.vm.boot-basics
@@ -25,87 +26,50 @@
 
   # ---------------------------------------------------------------------------
   # Declarative mapping: check group name -> system variant
+  #
+  # Modules define checks via system.checks.<name>. This mapping tells the
+  # harness which system variant to use for each check group. The check
+  # definitions themselves come from the evaluated module config.
   # ---------------------------------------------------------------------------
-  moduleTests = {
-    boot-basics = {
-      variant = "base";
-    };
-    filesystem = {
-      variant = "base";
-    };
-    kernel-security = {
-      variant = "server";
-    };
-    networking-base = {
-      variant = "server";
-    };
-    systemd-basics = {
-      variant = "server";
-    };
-    ssh = {
-      variant = "server";
-    };
-    firewall = {
-      variant = "server";
-    };
-    hardening = {
-      variant = "server";
-    };
-    selinux = {
-      variant = "server";
-    };
-    audit = {
-      variant = "server";
-    };
-    chrony = {
-      variant = "server";
-    };
-    container-support = {
-      variant = "k8s-worker";
-    };
-    containerd = {
-      variant = "k8s-worker";
-    };
-    kubelet = {
-      variant = "k8s-worker";
-    };
-    k8s-networking = {
-      variant = "k8s-worker";
-    };
-    node-exporter = {
-      variant = "k8s-worker";
-    };
-    k8s-control-plane = {
-      variant = "k8s-control-plane";
-    };
-    nginx = {
-      variant = "seed";
-    };
-    nix-daemon = {
-      variant = "seed";
-    };
-    seed = {
-      variant = "seed";
-    };
+  checkVariants = {
+    boot-basics = "base";
+    filesystem = "base";
+    kernel-security = "server";
+    networking-base = "server";
+    systemd-basics = "server";
+    ssh = "server";
+    firewall = "server";
+    hardening = "server";
+    selinux = "server";
+    audit = "server";
+    chrony = "server";
+    container-support = "k8s-worker";
+    containerd = "k8s-worker";
+    kubelet = "k8s-worker";
+    k8s-networking = "k8s-worker";
+    node-exporter = "k8s-worker";
+    k8s-control-plane = "k8s-control-plane";
+    nginx = "seed";
+    nix-daemon = "seed";
+    seed = "seed";
   };
 
   # ---------------------------------------------------------------------------
-  # Auto-generate per-check-group VM test derivations
+  # Auto-generate per-check-group VM test derivations from module-defined checks
   # ---------------------------------------------------------------------------
   perCheckTests =
     builtins.mapAttrs (
-      name: spec: let
-        checkModule = import ./checks/${name}.nix {
-          inherit (harness) mkCheck mkCheckGroup;
-        };
+      name: variantName: let
+        system = systems.${variantName};
+        checkGroup = system.config.system.checks.${name};
       in
         harness.mkVMTest {
           inherit name;
-          system = systems.${spec.variant};
-          checks = [checkModule];
+          inherit system;
+          checks = [checkGroup];
         }
     )
-    moduleTests;
+    checkVariants;
 
   # ---------------------------------------------------------------------------
   # Aggregate helper: trivial derivation that depends on constituent tests
@@ -171,14 +135,16 @@
   };
 
   # ---------------------------------------------------------------------------
-  # Collect all check modules for the validation gate
+  # Collect all check groups for the validation gate
   # ---------------------------------------------------------------------------
-  allChecks = let
-    mkC = {
-      inherit (harness) mkCheck mkCheckGroup;
-    };
-  in
-    builtins.map (name: import ./checks/${name}.nix mkC) (builtins.attrNames moduleTests);
+  allChecks =
+    builtins.map (
+      name: let
+        variantName = checkVariants.${name};
+        system = systems.${variantName};
+      in
+        system.config.system.checks.${name}
+    ) (builtins.attrNames checkVariants);
 in
   # Merge: individual tests + aggregates/aliases + validate
   perCheckTests

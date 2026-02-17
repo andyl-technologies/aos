@@ -97,6 +97,21 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    system.checks.node-exporter = lib.mkCheckGroup {
+      name = "node-exporter";
+      description = "Prometheus node exporter checks";
+      checks = [
+        (lib.mkCheck {
+          name = "node-exporter-active";
+          description = "node-exporter service is active";
+          script = ''
+            assert_success "systemctl is-active node-exporter" \
+              "node-exporter service is active"
+          '';
+        })
+      ];
+    };
+
     environment.systemPackages = [pkgs.node-exporter];
 
     # node-exporter.service — Prometheus node metrics exporter.

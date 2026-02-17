@@ -94,6 +94,69 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    system.checks.nix-daemon = lib.mkCheckGroup {
+      name = "nix-daemon";
+      description = "Nix package manager daemon checks";
+      checks = [
+        (lib.mkCheck {
+          name = "nix-conf-exists";
+          description = "nix.conf is generated";
+          script = ''
+            assert_success "test -f /etc/nix/nix.conf" \
+              "/etc/nix/nix.conf exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "nix-conf-sandbox";
+          description = "nix.conf enables sandboxing";
+          script = ''
+            assert_output_contains "cat /etc/nix/nix.conf" "sandbox = true" \
+              "nix.conf has sandbox = true"
+          '';
+        })
+        (lib.mkCheck {
+          name = "nix-conf-flakes";
+          description = "nix.conf enables flakes";
+          script = ''
+            assert_output_contains "cat /etc/nix/nix.conf" "nix-command flakes" \
+              "nix.conf enables flakes experimental feature"
+          '';
+        })
+        (lib.mkCheck {
+          name = "service-loaded";
+          description = "nix-daemon systemd service unit exists";
+          script = ''
+            assert_success "systemctl cat nix-daemon" \
+              "nix-daemon service unit is loaded"
+          '';
+        })
+        (lib.mkCheck {
+          name = "build-user-exists";
+          description = "nixbld1 build user exists";
+          script = ''
+            assert_output_contains "cat /etc/passwd" "nixbld1" \
+              "nixbld1 user exists in /etc/passwd"
+          '';
+        })
+        (lib.mkCheck {
+          name = "build-group-exists";
+          description = "nixbld group exists";
+          script = ''
+            assert_output_contains "cat /etc/group" "nixbld" \
+              "nixbld group exists in /etc/group"
+          '';
+        })
+        (lib.mkCheck {
+          name = "tmpfiles-config";
+          description = "Nix tmpfiles config exists";
+          script = ''
+            assert_success "test -f /etc/tmpfiles.d/aos-nix.conf" \
+              "Nix tmpfiles config exists"
+          '';
+        })
+      ];
+    };
+
     environment.systemPackages = [pkgs.nix];
 
     # /etc/nix/nix.conf — Nix daemon configuration.

@@ -98,8 +98,8 @@ in
         '';
       };
 
-      cli-roundtrip = testing.mkFirecrackerTest {
-        pname = "lib-zstd-cli-roundtrip";
+      cli-roundtrip = testing.mkVMTest {
+        name = "lib-zstd-cli-roundtrip";
         rootfsDeps = [self];
         testScript = ''
           echo "zstd round-trip test data 1234567890" > /tmp/original.txt

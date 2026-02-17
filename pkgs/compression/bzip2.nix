@@ -80,8 +80,8 @@ in
         '';
       };
 
-      cli-roundtrip = testing.mkFirecrackerTest {
-        pname = "lib-bzip2-cli-roundtrip";
+      cli-roundtrip = testing.mkVMTest {
+        name = "lib-bzip2-cli-roundtrip";
         rootfsDeps = [self];
         testScript = ''
           echo "bzip2 round-trip test data 1234567890" > /tmp/original.txt

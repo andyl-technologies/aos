@@ -1,16 +1,17 @@
 # lib/testing/default.nix — AOS test infrastructure library
 #
-# Provides test harness builders for VM and fleet tests, Firecracker-based
-# headless microVM tests, higher-level integration check wrappers, plus the
-# composable check module system for reusable test assertions.
+# Provides test harness builders for VM and fleet tests, higher-level
+# integration check wrappers, plus the composable check module system
+# for reusable test assertions.
+#
+# mkVMTest supports two modes:
+#   - System mode (system param): full systemd + agent, for module checks
+#   - Headless mode (rootfsDeps param): test script IS init, for package checks
 #
 # Usage:
 #   let testing = import ./lib/testing { inherit pkgs lib testTools; };
-#   in testing.mkVMTest { ... }
-#
-# For headless Firecracker tests (no testTools needed):
-#   let testing = import ./lib/testing { inherit pkgs lib; testTools = {}; };
-#   in testing.mkFirecrackerTest { ... }
+#   in testing.mkVMTest { name = "boot"; system = ...; checks = [...]; }
+#   in testing.mkVMTest { name = "zlib-link"; rootfsDeps = [...]; testScript = "..."; }
 {
   pkgs,
   lib,
@@ -21,14 +22,14 @@
   firecracker = import ./firecracker.nix {inherit pkgs lib;};
   integration = import ./integration.nix {
     inherit pkgs lib;
-    inherit (firecracker) mkFirecrackerTest;
+    inherit (vm) mkVMTest;
   };
   assertions = import ./assertions.nix;
   checks = import ./checks.nix;
 in {
   inherit (vm) mkVMTest mkTestRootfs;
   inherit (fleet) mkFleetTest;
-  inherit (firecracker) mkFirecrackerTest mkFirecrackerRootfs;
+  inherit (firecracker) mkFirecrackerRootfs;
   inherit
     (integration)
     mkLinkCheck

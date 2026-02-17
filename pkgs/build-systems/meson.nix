@@ -74,8 +74,8 @@ in
         extraDeps = [pkgs.ninja];
       };
 
-      build = testing.mkFirecrackerTest {
-        pname = "build-meson-build";
+      build = testing.mkVMTest {
+        name = "build-meson-build";
         rootfsDeps = [
           self
           pkgs.ninja

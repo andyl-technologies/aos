@@ -21,6 +21,14 @@
         names
       );
 
+    prefixAttrs = prefix: attrs:
+      builtins.listToAttrs (
+        builtins.map (name: {
+          name = "${prefix}-${name}";
+          value = attrs.${name};
+        }) (builtins.attrNames attrs)
+      );
+
     aosFor = system: let
       lib = import ./lib {inherit system;};
       pkgs = import ./pkgs {inherit lib;};
@@ -50,8 +58,50 @@
 
     formatter = genAttrs systems (system: (aosFor system).pkgs.alejandra);
 
-    checks = genAttrs systems (system: {
-      aos = (aosFor system).pkgs.aos;
-    });
+    checks = genAttrs systems (
+      system: let
+        env = aosFor system;
+        testTools = {
+          qemu = env.pkgs.qemu;
+          socat = env.pkgs.socat;
+          jq = env.pkgs.jq;
+        };
+        allChecks = import ./tests {
+          inherit (env) pkgs lib;
+          inherit testTools;
+        };
+      in
+        {
+          # CLI tool builds successfully
+          aos = env.pkgs.aos;
+
+          # Format check
+          format = env.pkgs.mkDerivation {
+            pname = "aos-format-check";
+            version = "0";
+            src = ./.;
+            buildDeps = [env.pkgs.alejandra];
+            phases = [
+              {
+                name = "check";
+                script = ''
+                  alejandra --check $src
+                  mkdir -p $out
+                  echo "Format check passed" > $out/result
+                '';
+              }
+            ];
+          };
+
+          # Pure evaluation checks
+          eval = allChecks.eval;
+
+          # Package build checks
+          build = allChecks.build;
+        }
+        // prefixAttrs "vm" allChecks.vm
+        // prefixAttrs "fleet" allChecks.fleet
+        // prefixAttrs "integration" allChecks.integration
+    );
   };
 }

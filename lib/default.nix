@@ -22,6 +22,7 @@
       ;
   };
   derivations = import ./derivations.nix {inherit system;};
+  checks = import ./testing/checks.nix;
 in
   trivial
   // lists
@@ -62,6 +63,15 @@ in
       removePhase
       ;
 
+    # Check constructors (pure data, no deps) for use in modules
+    inherit
+      (checks)
+      mkCheck
+      mkCheckGroup
+      flattenChecks
+      composeChecks
+      ;
+
     # Re-export submodules for direct access when needed
     inherit
       trivial
@@ -70,5 +80,6 @@ in
       strings
       modules
       derivations
+      checks
       ;
   }

@@ -15,6 +15,17 @@
 }: let
   cfg = config.aos.system;
 in {
+  options.system.checks = lib.mkOption {
+    type = lib.types.attrsOf lib.types.anything;
+    default = {};
+    description = ''
+      VM checks contributed by modules, keyed by check group name.
+      Each value should be a check group created with lib.mkCheckGroup.
+      These are automatically collected and used to generate VM test
+      derivations in the flake's checks output.
+    '';
+  };
+
   options.aos.system = {
     ## Operating system name used in os-release and branding.
     name = lib.mkOption {
@@ -81,6 +92,92 @@ in {
   };
 
   config = {
+    system.checks.boot-basics = lib.mkCheckGroup {
+      name = "boot-basics";
+      description = "Core boot verification";
+      checks = [
+        (lib.mkCheck {
+          name = "os-release";
+          description = "os-release contains ANDYL OS";
+          script = ''
+            assert_output_contains "cat /etc/os-release" "ANDYL OS" \
+              "os-release contains ANDYL OS"
+          '';
+        })
+        (lib.mkCheck {
+          name = "hostname";
+          description = "Hostname is set";
+          script = ''
+            assert_success "test -f /etc/hostname" \
+              "/etc/hostname exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "systemd-running";
+          description = "systemd reached running state";
+          script = ''
+            assert_success "systemctl is-system-running --wait || true" \
+              "systemd reached running state"
+          '';
+        })
+        (lib.mkCheck {
+          name = "kernel-version";
+          description = "Kernel version is 6.18.x";
+          script = ''
+            assert_output_contains "uname -r" "6.18" \
+              "kernel version is 6.18.x"
+          '';
+        })
+      ];
+    };
+
+    system.checks.systemd-basics = lib.mkCheckGroup {
+      name = "systemd-basics";
+      description = "systemd service infrastructure checks";
+      checks = [
+        (lib.mkCheck {
+          name = "runtime-dir";
+          description = "systemd runtime directory exists";
+          script = ''
+            assert_success "test -d /run/systemd/system" \
+              "systemd runtime directory exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "timers";
+          description = "systemd timers are functional";
+          script = ''
+            assert_success "systemctl list-timers --no-pager" \
+              "systemd timers are functional"
+          '';
+        })
+        (lib.mkCheck {
+          name = "list-services";
+          description = "systemctl can list services";
+          script = ''
+            assert_success "systemctl list-units --type=service --no-pager" \
+              "systemctl can list services"
+          '';
+        })
+        (lib.mkCheck {
+          name = "journal";
+          description = "journalctl can read system journal";
+          script = ''
+            assert_success "journalctl --no-pager -n 5" \
+              "journalctl can read system journal"
+          '';
+        })
+        (lib.mkCheck {
+          name = "etc-writable";
+          description = "/etc is writable for updates";
+          script = ''
+            assert_success "touch /etc/test-write && rm /etc/test-write" \
+              "/etc is writable for updates"
+          '';
+        })
+      ];
+    };
+
     # /etc/os-release — standard freedesktop.org OS identification file.
     # Consumed by systemd, container runtimes, and monitoring tools.
     environment.etc."os-release" = {

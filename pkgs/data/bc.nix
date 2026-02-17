@@ -78,8 +78,8 @@ in
       self,
       pkgs,
     }: {
-      calc = testing.mkFirecrackerTest {
-        pname = "tool-bc-calc";
+      calc = testing.mkVMTest {
+        name = "tool-bc-calc";
         rootfsDeps = [
           self
           pkgs.coreutils

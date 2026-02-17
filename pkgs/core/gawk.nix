@@ -59,8 +59,8 @@ in
       self,
       pkgs,
     }: {
-      processing = testing.mkFirecrackerTest {
-        pname = "tool-gawk-processing";
+      processing = testing.mkVMTest {
+        name = "tool-gawk-processing";
         rootfsDeps = [
           self
           pkgs.coreutils

@@ -103,8 +103,8 @@ in
       self,
       pkgs,
     }: {
-      c-hello = testing.mkFirecrackerTest {
-        pname = "toolchain-c-hello";
+      c-hello = testing.mkVMTest {
+        name = "toolchain-c-hello";
         testScript = ''
           cat > /tmp/hello.c << 'EOF'
           #include <stdio.h>
@@ -115,8 +115,8 @@ in
         '';
       };
 
-      cpp-hello = testing.mkFirecrackerTest {
-        pname = "toolchain-cpp-hello";
+      cpp-hello = testing.mkVMTest {
+        name = "toolchain-cpp-hello";
         testScript = ''
           cat > /tmp/hello.cpp << 'EOF'
           #include <iostream>
@@ -134,8 +134,8 @@ in
         '';
       };
 
-      dynamic-linking = testing.mkFirecrackerTest {
-        pname = "toolchain-dynamic-linking";
+      dynamic-linking = testing.mkVMTest {
+        name = "toolchain-dynamic-linking";
         testScript = ''
           cat > /tmp/dyntest.c << 'EOF'
           #include <stdio.h>
@@ -154,8 +154,8 @@ in
         '';
       };
 
-      shared-library = testing.mkFirecrackerTest {
-        pname = "toolchain-shared-library";
+      shared-library = testing.mkVMTest {
+        name = "toolchain-shared-library";
         testScript = ''
           cat > /tmp/mylib.c << 'EOF'
           int mylib_add(int a, int b) { return a + b; }
@@ -177,8 +177,8 @@ in
         '';
       };
 
-      optimization = testing.mkFirecrackerTest {
-        pname = "toolchain-gcc-optimization";
+      optimization = testing.mkVMTest {
+        name = "toolchain-gcc-optimization";
         testScript = ''
           cat > /tmp/opttest.c << 'EOF'
           #include <stdio.h>
@@ -212,8 +212,8 @@ in
         '';
       };
 
-      warnings = testing.mkFirecrackerTest {
-        pname = "toolchain-gcc-warnings";
+      warnings = testing.mkVMTest {
+        name = "toolchain-gcc-warnings";
         testScript = ''
           cat > /tmp/clean.c << 'EOF'
           #include <stdio.h>
@@ -239,8 +239,8 @@ in
         '';
       };
 
-      static = testing.mkFirecrackerTest {
-        pname = "toolchain-gcc-static";
+      static = testing.mkVMTest {
+        name = "toolchain-gcc-static";
         testScript = ''
           cat > /tmp/static.c << 'EOF'
           #include <stdio.h>
@@ -256,8 +256,8 @@ in
         '';
       };
 
-      preprocessor = testing.mkFirecrackerTest {
-        pname = "toolchain-gcc-preprocessor";
+      preprocessor = testing.mkVMTest {
+        name = "toolchain-gcc-preprocessor";
         testScript = ''
           cat > /tmp/preproc.c << 'EOF'
           #include <stdio.h>
@@ -339,8 +339,8 @@ in
         '';
       };
 
-      rpath-injection = testing.mkFirecrackerTest {
-        pname = "toolchain-gcc-rpath-injection";
+      rpath-injection = testing.mkVMTest {
+        name = "toolchain-gcc-rpath-injection";
         rootfsDeps = [
           pkgs.openssl
           pkgs.zlib
@@ -390,8 +390,8 @@ in
         '';
       };
 
-      include-paths = testing.mkFirecrackerTest {
-        pname = "toolchain-gcc-include-paths";
+      include-paths = testing.mkVMTest {
+        name = "toolchain-gcc-include-paths";
         rootfsDeps = [
           pkgs.openssl
           pkgs.zlib

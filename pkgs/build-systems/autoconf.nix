@@ -60,8 +60,8 @@ in
       self,
       pkgs,
     }: {
-      build = testing.mkFirecrackerTest {
-        pname = "build-autotools-build";
+      build = testing.mkVMTest {
+        name = "build-autotools-build";
         rootfsDeps = [
           self
           pkgs.automake

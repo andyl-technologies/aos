@@ -60,8 +60,8 @@ in
       self,
       pkgs,
     }: {
-      policy = testing.mkFirecrackerTest {
-        pname = "cross-cutting-selinux-policy";
+      policy = testing.mkVMTest {
+        name = "cross-cutting-selinux-policy";
         rootfsDeps = [
           self
           pkgs.libsepol

@@ -17,8 +17,8 @@
   # -------------------------------------------------------------------------
   # Compile a C program that initializes curl with openssl, sets CA bundle
   # path from ca-certificates, and prints library versions.
-  tls-stack = testing.mkFirecrackerTest {
-    pname = "cross-cutting-tls-stack";
+  tls-stack = testing.mkVMTest {
+    name ="cross-cutting-tls-stack";
     rootfsDeps = [
       pkgs.openssl
       pkgs.curl
@@ -72,8 +72,8 @@
   # 2. C Pipeline — preprocess, compile to asm, assemble, link, run
   # -------------------------------------------------------------------------
   # Full C compilation pipeline exercising every stage of gcc/binutils.
-  c-pipeline = testing.mkFirecrackerTest {
-    pname = "cross-cutting-c-pipeline";
+  c-pipeline = testing.mkVMTest {
+    name ="cross-cutting-c-pipeline";
     rootfsDeps = [pkgs.binutils];
     testScript = ''
       cat > /tmp/pipeline.c << 'EOF'
@@ -111,8 +111,8 @@
   # -------------------------------------------------------------------------
   # 3. Go Build — compile and run a Go program
   # -------------------------------------------------------------------------
-  go-build = testing.mkFirecrackerTest {
-    pname = "cross-cutting-go-build";
+  go-build = testing.mkVMTest {
+    name ="cross-cutting-go-build";
     rootfsDeps = [pkgs.go];
     memory = 512;
     testScript = ''
@@ -156,8 +156,8 @@
   # -------------------------------------------------------------------------
   # 4. Rust Build — compile and run a Rust program
   # -------------------------------------------------------------------------
-  rust-build = testing.mkFirecrackerTest {
-    pname = "cross-cutting-rust-build";
+  rust-build = testing.mkVMTest {
+    name ="cross-cutting-rust-build";
     rootfsDeps = [pkgs.rust];
     memory = 512;
     testScript = ''
@@ -194,8 +194,8 @@
   # -------------------------------------------------------------------------
   # A single C program that compresses data with zstd, decompresses, then
   # compresses with zlib, decompresses, and verifies both round-trips match.
-  compression-interop = testing.mkFirecrackerTest {
-    pname = "cross-cutting-compression-interop";
+  compression-interop = testing.mkVMTest {
+    name ="cross-cutting-compression-interop";
     rootfsDeps = [
       pkgs.zlib
       pkgs.zstd
@@ -282,8 +282,8 @@
   # -------------------------------------------------------------------------
   # 6. Archive Chain — tar+gzip create, libarchive extract via C program
   # -------------------------------------------------------------------------
-  archive-chain = testing.mkFirecrackerTest {
-    pname = "cross-cutting-archive-chain";
+  archive-chain = testing.mkVMTest {
+    name ="cross-cutting-archive-chain";
     rootfsDeps = [
       pkgs.tar
       pkgs.gzip
@@ -359,8 +359,8 @@
   # -------------------------------------------------------------------------
   # 7. pkg-config Chain — discover openssl flags, compile using them
   # -------------------------------------------------------------------------
-  pkg-config-chain = testing.mkFirecrackerTest {
-    pname = "cross-cutting-pkg-config-chain";
+  pkg-config-chain = testing.mkVMTest {
+    name ="cross-cutting-pkg-config-chain";
     rootfsDeps = [
       pkgs.pkg-config
       pkgs.openssl
@@ -397,8 +397,8 @@
   # -------------------------------------------------------------------------
   # 8. Multi-lib Link — single binary linking openssl + zlib + curl + pcre2
   # -------------------------------------------------------------------------
-  multi-lib-link = testing.mkFirecrackerTest {
-    pname = "cross-cutting-multi-lib-link";
+  multi-lib-link = testing.mkVMTest {
+    name ="cross-cutting-multi-lib-link";
     rootfsDeps = [
       pkgs.openssl
       pkgs.zlib
@@ -460,8 +460,8 @@
   # -------------------------------------------------------------------------
   # 9. Nix Stack — verify nix binary runs, can evaluate expressions
   # -------------------------------------------------------------------------
-  nix-stack = testing.mkFirecrackerTest {
-    pname = "cross-cutting-nix-stack";
+  nix-stack = testing.mkVMTest {
+    name ="cross-cutting-nix-stack";
     rootfsDeps = [
       pkgs.nix
       pkgs.brotli
@@ -510,8 +510,8 @@
   # -------------------------------------------------------------------------
   # 10. SELinux Tools — verify seinfo runs from setools package
   # -------------------------------------------------------------------------
-  selinux-tools = testing.mkFirecrackerTest {
-    pname = "cross-cutting-selinux-tools";
+  selinux-tools = testing.mkVMTest {
+    name ="cross-cutting-selinux-tools";
     rootfsDeps = [
       pkgs.setools
       pkgs.libselinux
@@ -532,8 +532,8 @@
   # -------------------------------------------------------------------------
   # 11. Python Import — verify python3 interpreter starts and imports work
   # -------------------------------------------------------------------------
-  python-import = testing.mkFirecrackerTest {
-    pname = "cross-cutting-python-import";
+  python-import = testing.mkVMTest {
+    name ="cross-cutting-python-import";
     rootfsDeps = [pkgs.python3];
     testScript = ''
             export PATH="${pkgs.python3}/bin:$PATH"
@@ -560,8 +560,8 @@
   # -------------------------------------------------------------------------
   # Verify python3 can use its C extension modules that link against
   # external libraries (sqlite, zlib, readline).
-  python-chain = testing.mkFirecrackerTest {
-    pname = "cross-cutting-python-chain";
+  python-chain = testing.mkVMTest {
+    name ="cross-cutting-python-chain";
     rootfsDeps = [
       pkgs.python3
       pkgs.sqlite
@@ -606,8 +606,8 @@
   # In a headless VM without real networking, verify the netfilter library
   # stack compiles and links as a unit by compiling a C program that
   # includes headers from all three and calls basic init/free functions.
-  network-firewall-stack = testing.mkFirecrackerTest {
-    pname = "cross-cutting-network-firewall-stack";
+  network-firewall-stack = testing.mkVMTest {
+    name ="cross-cutting-network-firewall-stack";
     rootfsDeps = [
       pkgs.libnl
       pkgs.libmnl
@@ -674,8 +674,8 @@
   # -------------------------------------------------------------------------
   # Compile a single C program that links all four TLS-related libraries
   # and calls init functions from each, verifying they coexist.
-  tls-full-chain = testing.mkFirecrackerTest {
-    pname = "cross-cutting-tls-full-chain";
+  tls-full-chain = testing.mkVMTest {
+    name ="cross-cutting-tls-full-chain";
     rootfsDeps = [
       pkgs.openssl
       pkgs.libssh2
@@ -741,8 +741,8 @@
   # -------------------------------------------------------------------------
   # Write a Go program with CGO that calls zlib compress/uncompress via
   # C FFI, compile and run it.
-  go-cgo-full = testing.mkFirecrackerTest {
-    pname = "cross-cutting-go-cgo-full";
+  go-cgo-full = testing.mkVMTest {
+    name ="cross-cutting-go-cgo-full";
     rootfsDeps = [
       pkgs.go
       pkgs.zlib
@@ -838,8 +838,8 @@
   # -------------------------------------------------------------------------
   # Write a Rust program that uses extern "C" to call zlibVersion() from
   # zlib, compile with rustc and -lz flag.
-  rust-ffi = testing.mkFirecrackerTest {
-    pname = "cross-cutting-rust-ffi";
+  rust-ffi = testing.mkVMTest {
+    name ="cross-cutting-rust-ffi";
     rootfsDeps = [
       pkgs.rust
       pkgs.zlib
@@ -881,8 +881,8 @@
   # -------------------------------------------------------------------------
   # Use checkpolicy to compile a minimal SELinux policy module (.te source)
   # into a binary policy module, verifying the SELinux policy toolchain.
-  selinux-policy = testing.mkFirecrackerTest {
-    pname = "cross-cutting-selinux-policy";
+  selinux-policy = testing.mkVMTest {
+    name ="cross-cutting-selinux-policy";
     rootfsDeps = [
       pkgs.checkpolicy
       pkgs.libsepol
@@ -916,8 +916,8 @@
   # -------------------------------------------------------------------------
   # Deeper nix stack test: initialize the store, run nix-instantiate for
   # evaluation, and verify nix-store operations work.
-  nix-store-ops = testing.mkFirecrackerTest {
-    pname = "cross-cutting-nix-store-ops";
+  nix-store-ops = testing.mkVMTest {
+    name ="cross-cutting-nix-store-ops";
     rootfsDeps = [
       pkgs.nix
       pkgs.brotli
@@ -972,8 +972,8 @@
   # Run syntax validation for key services: sshd, chronyd, nginx.
   # In a headless VM without systemd, just verify the binaries can parse
   # minimal configuration files.
-  config-validity = testing.mkFirecrackerTest {
-    pname = "cross-cutting-config-validity";
+  config-validity = testing.mkVMTest {
+    name ="cross-cutting-config-validity";
     rootfsDeps = [
       pkgs.openssh
       pkgs.chrony

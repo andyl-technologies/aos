@@ -55,8 +55,8 @@ in
       self,
       pkgs,
     }: {
-      lookup = testing.mkFirecrackerTest {
-        pname = "tool-which-lookup";
+      lookup = testing.mkVMTest {
+        name = "tool-which-lookup";
         rootfsDeps = [
           self
           pkgs.coreutils

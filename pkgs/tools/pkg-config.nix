@@ -63,8 +63,8 @@ in
         command = "pkg-config --version";
       };
 
-      query = testing.mkFirecrackerTest {
-        pname = "build-pkg-config-query";
+      query = testing.mkVMTest {
+        name = "build-pkg-config-query";
         rootfsDeps = [
           self
           pkgs.zlib
@@ -81,8 +81,8 @@ in
         '';
       };
 
-      compile = testing.mkFirecrackerTest {
-        pname = "build-pkg-config-compile";
+      compile = testing.mkVMTest {
+        name = "build-pkg-config-compile";
         rootfsDeps = [
           self
           pkgs.zlib

@@ -121,8 +121,8 @@ in
         '';
       };
 
-      consumers = testing.mkFirecrackerTest {
-        pname = "lib-zlib-consumers";
+      consumers = testing.mkVMTest {
+        name = "lib-zlib-consumers";
         rootfsDeps = [
           pkgs.curl
           pkgs.libarchive

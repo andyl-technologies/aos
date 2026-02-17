@@ -118,8 +118,8 @@ in
       self,
       pkgs,
     }: {
-      stack = testing.mkFirecrackerTest {
-        pname = "cross-cutting-nix-stack";
+      stack = testing.mkVMTest {
+        name = "cross-cutting-nix-stack";
         rootfsDeps = [
           self
           pkgs.brotli
@@ -165,8 +165,8 @@ in
         '';
       };
 
-      store-ops = testing.mkFirecrackerTest {
-        pname = "cross-cutting-nix-store-ops";
+      store-ops = testing.mkVMTest {
+        name = "cross-cutting-nix-store-ops";
         rootfsDeps = [
           self
           pkgs.brotli

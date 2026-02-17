@@ -67,8 +67,8 @@ in
         command = "bash --version";
       };
 
-      scripting = testing.mkFirecrackerTest {
-        pname = "tool-bash-scripting";
+      scripting = testing.mkVMTest {
+        name = "tool-bash-scripting";
         rootfsDeps = [self];
         testScript = ''
           # Test arrays, functions, string manipulation
@@ -104,8 +104,8 @@ in
         '';
       };
 
-      source = testing.mkFirecrackerTest {
-        pname = "tool-bash-source";
+      source = testing.mkVMTest {
+        name = "tool-bash-source";
         rootfsDeps = [self];
         testScript = ''
           cat > /tmp/library.sh << 'LIB'

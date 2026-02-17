@@ -96,6 +96,29 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    system.checks.k8s-networking = lib.mkCheckGroup {
+      name = "k8s-networking";
+      description = "Kubernetes network prerequisites checks";
+      checks = [
+        (lib.mkCheck {
+          name = "ip-forward";
+          description = "IP forwarding is enabled";
+          script = ''
+            assert_output_contains "cat /proc/sys/net/ipv4/ip_forward" "1" \
+              "IP forwarding is enabled"
+          '';
+        })
+        (lib.mkCheck {
+          name = "bridge-nf-call";
+          description = "Bridge netfilter call is enabled";
+          script = ''
+            assert_output_contains "cat /proc/sys/net/bridge/bridge-nf-call-iptables" "1" \
+              "Bridge netfilter call is enabled"
+          '';
+        })
+      ];
+    };
+
     environment.systemPackages = [pkgs.cni-plugins];
 
     # /etc/modules-load.d/k8s.conf — kernel modules to load at boot.

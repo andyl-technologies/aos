@@ -122,6 +122,69 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    system.checks.seed = lib.mkCheckGroup {
+      name = "seed";
+      description = "Seed server orchestration checks";
+      checks = [
+        (lib.mkCheck {
+          name = "tmpfiles-config";
+          description = "Seed tmpfiles config exists";
+          script = ''
+            assert_success "test -f /etc/tmpfiles.d/aos-seed.conf" \
+              "seed tmpfiles config exists"
+          '';
+        })
+        (lib.mkCheck {
+          name = "build-service";
+          description = "aos-build-images service unit exists";
+          script = ''
+            assert_success "systemctl cat aos-build-images" \
+              "aos-build-images service unit is loaded"
+          '';
+        })
+        (lib.mkCheck {
+          name = "publish-service";
+          description = "aos-publish-images service unit exists";
+          script = ''
+            assert_success "systemctl cat aos-publish-images" \
+              "aos-publish-images service unit is loaded"
+          '';
+        })
+        (lib.mkCheck {
+          name = "build-timer";
+          description = "aos-build-images timer unit exists";
+          script = ''
+            assert_success "systemctl cat aos-build-images-timer" \
+              "aos-build-images-timer unit is loaded"
+          '';
+        })
+        (lib.mkCheck {
+          name = "nginx-vhost";
+          description = "nginx config contains seed vhost";
+          script = ''
+            assert_output_contains "cat /etc/nginx/nginx.conf" "autoindex on" \
+              "nginx config has autoindex for image serving"
+          '';
+        })
+        (lib.mkCheck {
+          name = "nginx-basic-auth";
+          description = "nginx config has basic auth for seed";
+          script = ''
+            assert_output_contains "cat /etc/nginx/nginx.conf" "auth_basic" \
+              "nginx config has basic auth directive"
+          '';
+        })
+        (lib.mkCheck {
+          name = "image-root-config";
+          description = "nginx config serves /var/lib/aos/images";
+          script = ''
+            assert_output_contains "cat /etc/nginx/nginx.conf" "/var/lib/aos/images" \
+              "nginx config serves image directory"
+          '';
+        })
+      ];
+    };
+
     # ZFS datasets for image storage and source checkout.
     aos.filesystems.zfs.datasets."var/lib/aos" = {
       mountpoint = "/var/lib/aos";
