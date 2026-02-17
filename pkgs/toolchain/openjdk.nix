@@ -16,6 +16,9 @@
   binutils,
   cups,
   file,
+  fontconfig,
+  freetype,
+  xorg-stubs,
   openjdk-bootstrap,
 }:
 let
@@ -45,9 +48,12 @@ mkDerivation {
     coreutils
     binutils
     file
+    xorg-stubs
   ];
   runtimeDeps = [
     zlib
+    fontconfig
+    freetype
   ];
   propagatedDeps = [ ];
 
@@ -84,6 +90,10 @@ mkDerivation {
           --with-lcms=bundled \
           --with-cups-include=${cups}/include \
           --with-alsa=${alsa-lib} \
+          --with-freetype-include=${freetype}/include/freetype2 \
+          --with-freetype-lib=${freetype}/lib \
+          --x-includes=${xorg-stubs}/include \
+          --x-libraries=${xorg-stubs}/lib \
           --with-version-build=${build} \
           --with-version-opt=aos \
           --with-version-pre= \
@@ -108,11 +118,22 @@ mkDerivation {
         INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
         BT_LIB=$(dirname "$INTERP")
 
+        # Find libstdc++ directory (nested under lib/gcc/...)
+        STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
+        STDCXX_DIR=""
+        if [ -n "$STDCXX_FILE" ]; then
+          STDCXX_DIR=$(dirname "$STDCXX_FILE")
+        fi
+        RPATH="$out/lib:$out/lib/server:$BT_LIB"
+        if [ -n "$STDCXX_DIR" ]; then
+          RPATH="$RPATH:$STDCXX_DIR"
+        fi
+
         # Patch executables
         for f in $out/bin/* $out/lib/jspawnhelper; do
           if [ -f "$f" ] && [ ! -L "$f" ]; then
             patchelf --set-interpreter "$INTERP" \
-                     --set-rpath "$out/lib:$out/lib/server:$BT_LIB" \
+                     --set-rpath "$RPATH" \
                      "$f" 2>/dev/null || true
           fi
         done
@@ -120,7 +141,7 @@ mkDerivation {
         # Patch shared libraries
         find $out/lib -name '*.so' -o -name '*.so.*' | while read f; do
           if [ -f "$f" ] && [ ! -L "$f" ]; then
-            patchelf --set-rpath "$out/lib:$out/lib/server:$BT_LIB" \
+            patchelf --set-rpath "$RPATH" \
                      "$f" 2>/dev/null || true
           fi
         done

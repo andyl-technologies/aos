@@ -19,7 +19,7 @@
 
   # Common compiler/linker flags needed because bootstrap tools' store
   # paths were nuked.  Every invocation of gcc/g++/cpp/ld must include these.
-  defaultCFlags = "-B${bootstrapTools}/lib -isystem ${bootstrapTools}/include-glibc";
+  defaultCFlags = "-B${bootstrapTools}/lib -idirafter ${bootstrapTools}/include-glibc";
   defaultLdFlags = "-L${bootstrapTools}/lib -Wl,-dynamic-linker=${dynamicLinker} -Wl,-rpath,${bootstrapTools}/lib";
 
   # CC wrapper — shell scripts that prepend the required flags to every
@@ -66,14 +66,15 @@
               # Discover GCC library directory (contains libstdc++.so, libgcc_s.so)
               BT_GCC_LIB=$(ls -d "$BT_LIB/gcc"/*/*/ 2>/dev/null | head -1)
 
-              # gcc wrapper (C only — no C++ path issues)
-              # $NIX_LDFLAGS is set by mkDerivation with -Wl,-rpath for all deps
-              # -isystem $BT_INC goes AFTER "$@" so build-system headers (e.g.
-              # systemd override) can shadow bootstrap glibc headers (matches
-              # nixpkgs cc-wrapper extraAfter ordering).
+              # gcc wrapper — also used for C++ when invoked as `gcc -xc++`
+              # (e.g. by Bazel).  Use -idirafter for glibc headers so they appear
+              # AFTER the built-in C++ include dirs in the search path.  This lets
+              # #include_next <stdlib.h> from cstdlib find stdlib.h correctly.
+              # (-isystem would place them BEFORE C++ dirs, breaking #include_next.)
+              # $NIX_LDFLAGS is set by mkDerivation with -Wl,-rpath for all deps.
               cat > $out/bin/gcc << GCCEOF
         #!/bin/sh
-        exec $REAL_GCC -B$out/lib -B$BT_LIB -L$BT_LIB -L$BT_GCC_LIB -Wl,-dynamic-linker=$DYN_LINK -Wl,-rpath,$BT_LIB -Wl,-rpath,$BT_GCC_LIB \$NIX_LDFLAGS "\$@" -isystem $BT_INC
+        exec $REAL_GCC -B$out/lib -B$BT_LIB -L$BT_LIB -L$BT_GCC_LIB -Wl,-dynamic-linker=$DYN_LINK -Wl,-rpath,$BT_LIB -Wl,-rpath,$BT_GCC_LIB \$NIX_LDFLAGS "\$@" -idirafter $BT_INC
         GCCEOF
 
               cp $out/bin/gcc $out/bin/cc
