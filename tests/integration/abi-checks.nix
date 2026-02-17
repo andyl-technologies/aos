@@ -8,10 +8,10 @@
 #   nix-build -A checks.integration.abi-soname-validation
 #   nix-build -A checks.integration.abi-version-consistency
 #   nix-build -A checks.integration.abi-pkgconfig-audit
-
-{ pkgs, testing }:
-
 {
+  pkgs,
+  testing,
+}: {
   # -------------------------------------------------------------------------
   # 1. SONAME tracking (design 2.1)
   # -------------------------------------------------------------------------

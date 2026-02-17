@@ -11,32 +11,28 @@
 #   1. MesCC compiles TinyCC (tcc-mes) — slow but functional
 #   2. tcc-mes recompiles TinyCC (tcc-tcc) — faster, more complete
 #
-
 {
   mes, # Output of stage2-mes.nix (provides mes and mescc)
   mescc-tools, # Output of stage1-mescc-tools.nix (provides M1, hex2)
   sources, # Attrset with: tinycc-source
   system ? "x86_64-linux",
-}:
-
-let
+}: let
   version = "0.9.27";
 
   archParams =
-    if system == "x86_64-linux" then
-      {
-        arch = "x86_64";
-        tccArch = "x86_64";
-        elfBits = "64";
-      }
-    else if system == "aarch64-linux" then
-      {
-        arch = "aarch64";
-        tccArch = "arm64";
-        elfBits = "64";
-      }
-    else
-      throw "stage3-tinycc: unsupported system '${system}'";
+    if system == "x86_64-linux"
+    then {
+      arch = "x86_64";
+      tccArch = "x86_64";
+      elfBits = "64";
+    }
+    else if system == "aarch64-linux"
+    then {
+      arch = "aarch64";
+      tccArch = "arm64";
+      elfBits = "64";
+    }
+    else throw "stage3-tinycc: unsupported system '${system}'";
 
   # ---------------------------------------------------------------------------
   # Pass 1: MesCC compiles TinyCC
@@ -183,25 +179,24 @@ let
       ''
     ];
   };
-
 in
-tcc-tcc
-// {
-  inherit version;
+  tcc-tcc
+  // {
+    inherit version;
 
-  # Export both passes for debugging/verification
-  passes = {
-    pass1 = tcc-mescc;
-    pass2 = tcc-tcc;
-  };
+    # Export both passes for debugging/verification
+    passes = {
+      pass1 = tcc-mescc;
+      pass2 = tcc-tcc;
+    };
 
-  meta = {
-    description = "TinyCC — small C compiler, bootstrapped from MesCC";
-    homepage = "https://bellard.org/tcc/";
-    license = "LGPL-2.1-or-later";
-    platforms = [
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
-  };
-}
+    meta = {
+      description = "TinyCC — small C compiler, bootstrapped from MesCC";
+      homepage = "https://bellard.org/tcc/";
+      license = "LGPL-2.1-or-later";
+      platforms = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+    };
+  }

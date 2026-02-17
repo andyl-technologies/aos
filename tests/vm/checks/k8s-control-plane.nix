@@ -1,4 +1,7 @@
-{ mkCheck, mkCheckGroup }:
+{
+  mkCheck,
+  mkCheckGroup,
+}:
 mkCheckGroup {
   name = "k8s-control-plane";
   description = "Kubernetes control plane configuration (kubeadm, etcd)";

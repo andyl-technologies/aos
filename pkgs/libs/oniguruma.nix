@@ -3,69 +3,65 @@
   mkDerivation,
   fetchurl,
   make,
-}:
-
-let
+}: let
   version = "6.9.10";
 in
-mkDerivation {
-  pname = "oniguruma";
-  inherit version;
+  mkDerivation {
+    pname = "oniguruma";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/kkos/oniguruma/releases/download/v${version}/onig-${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/kkos/oniguruma/releases/download/v${version}/onig-${version}.tar.gz"
+      ];
+      hash = "sha256-Klz8WuJZ5Ol/hraN//wVLNr/6U4gYLdwy4JyONdp/AU=";
+    };
+
+    buildDeps = [make];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd onig-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --enable-shared \
+            --disable-static \
+            --enable-posix-api=yes
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-Klz8WuJZ5Ol/hraN//wVLNr/6U4gYLdwy4JyONdp/AU=";
-  };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd onig-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --enable-shared \
-          --disable-static \
-          --enable-posix-api=yes
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       link = testing.mkLinkCheck {
         pname = "lib-oniguruma";
         library = self;
-        libs = [ "-lonig" ];
+        libs = ["-lonig"];
         testSource = ''
           #include <oniguruma.h>
           #include <stdio.h>
@@ -77,9 +73,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "Oniguruma — regular expression library";
-    homepage = "https://github.com/kkos/oniguruma";
-    license = "BSD-2-Clause";
-  };
-}
+    meta = {
+      description = "Oniguruma — regular expression library";
+      homepage = "https://github.com/kkos/oniguruma";
+      license = "BSD-2-Clause";
+    };
+  }

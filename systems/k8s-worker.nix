@@ -10,15 +10,12 @@
 #   - CNI networking (bridge, VXLAN via Flannel/Cilium)
 #   - Prometheus node-exporter for host metrics
 #   - Firewall rules for kubelet, kube-proxy, NodePort range, and VXLAN
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-{
+}: {
   imports = [
     ./server.nix
     ../modules/kubernetes/containerd.nix
@@ -54,15 +51,16 @@
   #   10250 — kubelet API
   #   10256 — kube-proxy health
   #   30000-32767 — NodePort service range
-  aos.firewall.allowedTCP = [
-    22
-    10250
-    10256
-  ]
-  ++ (lib.range 30000 32767);
+  aos.firewall.allowedTCP =
+    [
+      22
+      10250
+      10256
+    ]
+    ++ (lib.range 30000 32767);
 
   # 8472/UDP — VXLAN overlay traffic (Flannel, Cilium VXLAN mode)
-  aos.firewall.allowedUDP = [ 8472 ];
+  aos.firewall.allowedUDP = [8472];
 
   # Container networking requires forwarding between interfaces.
   aos.firewall.forwardPolicy = "accept";

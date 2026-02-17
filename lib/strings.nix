@@ -1,7 +1,6 @@
 ##! lib/strings.nix — String utility functions
 ##!
 ##! Functions for manipulating and constructing strings.
-
 rec {
   ## # Concatenation
 
@@ -23,8 +22,7 @@ rec {
   ## Map a function over a list and concatenate with a separator.
   ## # Type
   ## `string -> (a -> string) -> [a] -> string`
-  concatMapStringsSep =
-    sep: f: list:
+  concatMapStringsSep = sep: f: list:
     builtins.concatStringsSep sep (builtins.map f list);
 
   ## Concatenate strings separated by newlines, with a trailing newline.
@@ -47,48 +45,41 @@ rec {
   ## Test whether a string starts with a given prefix.
   ## # Type
   ## `string -> string -> bool`
-  hasPrefix =
-    prefix: str:
-    let
-      pLen = builtins.stringLength prefix;
-      sLen = builtins.stringLength str;
-    in
+  hasPrefix = prefix: str: let
+    pLen = builtins.stringLength prefix;
+    sLen = builtins.stringLength str;
+  in
     pLen <= sLen && builtins.substring 0 pLen str == prefix;
 
   ## Test whether a string ends with a given suffix.
   ## # Type
   ## `string -> string -> bool`
-  hasSuffix =
-    suffix: str:
-    let
-      sufLen = builtins.stringLength suffix;
-      strLen = builtins.stringLength str;
-    in
+  hasSuffix = suffix: str: let
+    sufLen = builtins.stringLength suffix;
+    strLen = builtins.stringLength str;
+  in
     sufLen <= strLen && builtins.substring (strLen - sufLen) sufLen str == suffix;
 
   ## Remove a prefix from a string if present, otherwise return unchanged.
   ## # Type
   ## `string -> string -> string`
-  removePrefix =
-    prefix: str:
-    let
-      pLen = builtins.stringLength prefix;
-    in
-    if hasPrefix prefix str then
-      builtins.substring pLen (builtins.stringLength str - pLen) str
-    else
-      str;
+  removePrefix = prefix: str: let
+    pLen = builtins.stringLength prefix;
+  in
+    if hasPrefix prefix str
+    then builtins.substring pLen (builtins.stringLength str - pLen) str
+    else str;
 
   ## Remove a suffix from a string if present, otherwise return unchanged.
   ## # Type
   ## `string -> string -> string`
-  removeSuffix =
-    suffix: str:
-    let
-      sufLen = builtins.stringLength suffix;
-      strLen = builtins.stringLength str;
-    in
-    if hasSuffix suffix str then builtins.substring 0 (strLen - sufLen) str else str;
+  removeSuffix = suffix: str: let
+    sufLen = builtins.stringLength suffix;
+    strLen = builtins.stringLength str;
+  in
+    if hasSuffix suffix str
+    then builtins.substring 0 (strLen - sufLen) str
+    else str;
 
   ## # Replacement
 
@@ -100,129 +91,127 @@ rec {
 
   ## # Type
   ## `string -> string`
-  toLower =
-    str:
+  toLower = str:
     builtins.replaceStrings
-      [
-        "A"
-        "B"
-        "C"
-        "D"
-        "E"
-        "F"
-        "G"
-        "H"
-        "I"
-        "J"
-        "K"
-        "L"
-        "M"
-        "N"
-        "O"
-        "P"
-        "Q"
-        "R"
-        "S"
-        "T"
-        "U"
-        "V"
-        "W"
-        "X"
-        "Y"
-        "Z"
-      ]
-      [
-        "a"
-        "b"
-        "c"
-        "d"
-        "e"
-        "f"
-        "g"
-        "h"
-        "i"
-        "j"
-        "k"
-        "l"
-        "m"
-        "n"
-        "o"
-        "p"
-        "q"
-        "r"
-        "s"
-        "t"
-        "u"
-        "v"
-        "w"
-        "x"
-        "y"
-        "z"
-      ]
-      str;
+    [
+      "A"
+      "B"
+      "C"
+      "D"
+      "E"
+      "F"
+      "G"
+      "H"
+      "I"
+      "J"
+      "K"
+      "L"
+      "M"
+      "N"
+      "O"
+      "P"
+      "Q"
+      "R"
+      "S"
+      "T"
+      "U"
+      "V"
+      "W"
+      "X"
+      "Y"
+      "Z"
+    ]
+    [
+      "a"
+      "b"
+      "c"
+      "d"
+      "e"
+      "f"
+      "g"
+      "h"
+      "i"
+      "j"
+      "k"
+      "l"
+      "m"
+      "n"
+      "o"
+      "p"
+      "q"
+      "r"
+      "s"
+      "t"
+      "u"
+      "v"
+      "w"
+      "x"
+      "y"
+      "z"
+    ]
+    str;
 
   ## # Type
   ## `string -> string`
-  toUpper =
-    str:
+  toUpper = str:
     builtins.replaceStrings
-      [
-        "a"
-        "b"
-        "c"
-        "d"
-        "e"
-        "f"
-        "g"
-        "h"
-        "i"
-        "j"
-        "k"
-        "l"
-        "m"
-        "n"
-        "o"
-        "p"
-        "q"
-        "r"
-        "s"
-        "t"
-        "u"
-        "v"
-        "w"
-        "x"
-        "y"
-        "z"
-      ]
-      [
-        "A"
-        "B"
-        "C"
-        "D"
-        "E"
-        "F"
-        "G"
-        "H"
-        "I"
-        "J"
-        "K"
-        "L"
-        "M"
-        "N"
-        "O"
-        "P"
-        "Q"
-        "R"
-        "S"
-        "T"
-        "U"
-        "V"
-        "W"
-        "X"
-        "Y"
-        "Z"
-      ]
-      str;
+    [
+      "a"
+      "b"
+      "c"
+      "d"
+      "e"
+      "f"
+      "g"
+      "h"
+      "i"
+      "j"
+      "k"
+      "l"
+      "m"
+      "n"
+      "o"
+      "p"
+      "q"
+      "r"
+      "s"
+      "t"
+      "u"
+      "v"
+      "w"
+      "x"
+      "y"
+      "z"
+    ]
+    [
+      "A"
+      "B"
+      "C"
+      "D"
+      "E"
+      "F"
+      "G"
+      "H"
+      "I"
+      "J"
+      "K"
+      "L"
+      "M"
+      "N"
+      "O"
+      "P"
+      "Q"
+      "R"
+      "S"
+      "T"
+      "U"
+      "V"
+      "W"
+      "X"
+      "Y"
+      "Z"
+    ]
+    str;
 
   ## # Splitting
 
@@ -231,13 +220,11 @@ rec {
   ## `splitString "." "a.b.c" == ["a" "b" "c"]`
   ## # Type
   ## `string -> string -> [string]`
-  splitString =
-    sep: str:
-    let
-      parts = builtins.split (escapeRegex sep) str;
-      # builtins.split returns interleaved matches and non-matches.
-      # Non-matches are strings, matches are lists. We want only the strings.
-    in
+  splitString = sep: str: let
+    parts = builtins.split (escapeRegex sep) str;
+    # builtins.split returns interleaved matches and non-matches.
+    # Non-matches are strings, matches are lists. We want only the strings.
+  in
     builtins.filter builtins.isString parts;
 
   ## # Conditional
@@ -245,7 +232,10 @@ rec {
   ## Return the string if condition is true, otherwise empty string.
   ## # Type
   ## `bool -> string -> string`
-  optionalString = cond: str: if cond then str else "";
+  optionalString = cond: str:
+    if cond
+    then str
+    else "";
 
   ## # Formatting
 
@@ -254,19 +244,16 @@ rec {
   ## `fixedWidthString 5 "0" "42" == "00042"`
   ## # Type
   ## `int -> string -> string -> string`
-  fixedWidthString =
-    width: fill: str:
-    let
-      strLen = builtins.stringLength str;
-      fillLen = builtins.stringLength fill;
+  fixedWidthString = width: fill: str: let
+    strLen = builtins.stringLength str;
+    fillLen = builtins.stringLength fill;
+  in
+    if strLen >= width
+    then str
+    else let
+      needed = width - strLen;
+      padding = concatStrings (builtins.genList (_: fill) (needed / fillLen + 1));
     in
-    if strLen >= width then
-      str
-    else
-      let
-        needed = width - strLen;
-        padding = concatStrings (builtins.genList (_: fill) (needed / fillLen + 1));
-      in
       builtins.substring (builtins.stringLength padding - needed) needed padding + str;
 
   ## Format an integer with zero-padding to a fixed width.
@@ -281,7 +268,7 @@ rec {
   ## Escape a string for safe use as a shell argument.
   ## # Type
   ## `string -> string`
-  escapeShellArg = arg: "'${builtins.replaceStrings [ "'" ] [ "'\\''" ] (builtins.toString arg)}'";
+  escapeShellArg = arg: "'${builtins.replaceStrings ["'"] ["'\\''"] (builtins.toString arg)}'";
 
   ## Escape and join a list of strings as shell arguments.
   ## # Type
@@ -298,8 +285,7 @@ rec {
   ## Create shell variable assignments from an attrset, one per line.
   ## # Type
   ## `attrset -> string`
-  toShellVars =
-    vars:
+  toShellVars = vars:
     builtins.concatStringsSep "\n" (
       builtins.map (name: toShellVar name (builtins.toString vars.${name})) (builtins.attrNames vars)
     );
@@ -309,16 +295,14 @@ rec {
   ## Construct a colon-separated PATH from a list of derivations or store paths.
   ## # Type
   ## `[derivation | string] -> string`
-  makeBinPath =
-    paths: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") paths);
+  makeBinPath = paths: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") paths);
 
   ## Like makeBinPath but for an arbitrary subdirectory.
   ##
   ## `makeSearchPath "lib" [pkg1 pkg2] == "/nix/store/...-pkg1/lib:/nix/store/...-pkg2/lib"`
   ## # Type
   ## `string -> [derivation | string] -> string`
-  makeSearchPath =
-    subDir: paths:
+  makeSearchPath = subDir: paths:
     builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/${subDir}") paths);
 
   ## # Type
@@ -338,42 +322,41 @@ rec {
   ## Escape special regex characters in a string for use with builtins.match/split.
   ## # Type
   ## `string -> string`
-  escapeRegex =
-    str:
+  escapeRegex = str:
     builtins.replaceStrings
-      [
-        "\\"
-        "."
-        "^"
-        "$"
-        "*"
-        "+"
-        "?"
-        "("
-        ")"
-        "["
-        "]"
-        "{"
-        "}"
-        "|"
-      ]
-      [
-        "\\\\"
-        "\\."
-        "\\^"
-        "\\$"
-        "\\*"
-        "\\+"
-        "\\?"
-        "\\("
-        "\\)"
-        "\\["
-        "\\]"
-        "\\{"
-        "\\}"
-        "\\|"
-      ]
-      str;
+    [
+      "\\"
+      "."
+      "^"
+      "$"
+      "*"
+      "+"
+      "?"
+      "("
+      ")"
+      "["
+      "]"
+      "{"
+      "}"
+      "|"
+    ]
+    [
+      "\\\\"
+      "\\."
+      "\\^"
+      "\\$"
+      "\\*"
+      "\\+"
+      "\\?"
+      "\\("
+      "\\)"
+      "\\["
+      "\\]"
+      "\\{"
+      "\\}"
+      "\\|"
+    ]
+    str;
 
   ## Test if a string matches a regex, returning captured groups or null.
   ## # Type
@@ -385,24 +368,25 @@ rec {
   ## Remove leading and trailing whitespace.
   ## # Type
   ## `string -> string`
-  trim =
-    str:
-    let
-      # Match leading whitespace, content, trailing whitespace
-      m = builtins.match "[ \t\n\r]*(.*[^ \t\n\r])[ \t\n\r]*" str;
-    in
-    if m == null then "" else builtins.elemAt m 0;
+  trim = str: let
+    # Match leading whitespace, content, trailing whitespace
+    m = builtins.match "[ \t\n\r]*(.*[^ \t\n\r])[ \t\n\r]*" str;
+  in
+    if m == null
+    then ""
+    else builtins.elemAt m 0;
 
   ## Remove trailing slashes and collapse double slashes in a path string.
   ## # Type
   ## `string -> string`
-  normalizePath =
-    path:
-    let
-      # Remove trailing slashes (keep at least one char)
-      withoutTrailing = removeSuffix "/" path;
-      result = if withoutTrailing == "" then "/" else withoutTrailing;
-    in
+  normalizePath = path: let
+    # Remove trailing slashes (keep at least one char)
+    withoutTrailing = removeSuffix "/" path;
+    result =
+      if withoutTrailing == ""
+      then "/"
+      else withoutTrailing;
+  in
     result;
 
   ## Read a file and strip trailing newline.
@@ -420,12 +404,12 @@ rec {
   ## Parse a string as an integer. Throws on invalid input.
   ## # Type
   ## `string -> int`
-  toInt =
-    str:
-    let
-      parsed = builtins.fromJSON str;
-    in
-    if builtins.isInt parsed then parsed else throw "toInt: '${str}' is not a valid integer";
+  toInt = str: let
+    parsed = builtins.fromJSON str;
+  in
+    if builtins.isInt parsed
+    then parsed
+    else throw "toInt: '${str}' is not a valid integer";
 
   ## # Type
   ## `float -> string`
@@ -436,11 +420,13 @@ rec {
   ## Indent each line of a multi-line string by n spaces.
   ## # Type
   ## `int -> string -> string`
-  indent =
-    n: str:
-    let
-      pad = concatStrings (builtins.genList (_: " ") n);
-      lines = splitString "\n" str;
-    in
-    builtins.concatStringsSep "\n" (builtins.map (line: if line == "" then "" else pad + line) lines);
+  indent = n: str: let
+    pad = concatStrings (builtins.genList (_: " ") n);
+    lines = splitString "\n" str;
+  in
+    builtins.concatStringsSep "\n" (builtins.map (line:
+      if line == ""
+      then ""
+      else pad + line)
+    lines);
 }

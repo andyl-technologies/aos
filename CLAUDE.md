@@ -53,7 +53,6 @@ mkDerivation {
   its `buildDeps` — packages don't need to specify them.
 - `C_INCLUDE_PATH`, `LIBRARY_PATH`, and `PKG_CONFIG_PATH` are set from all
   deps (build + runtime + propagated).
-- Builds run on a remote NixOS builder: `--store ssh-ng://dylan@builder-hil1-319ea92d`
 - The builder shell is `/bin/sh` (dash on NixOS). Bash-specific syntax in phase
   scripts will fail. Use `$CONFIG_SHELL` (bootstrap bash) for bash features.
 

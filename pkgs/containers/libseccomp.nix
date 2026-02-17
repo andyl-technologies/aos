@@ -4,63 +4,61 @@
   fetchurl,
   make,
   gperf,
-}:
-
-let
-  version = "2.5.5";
+}: let
+  version = "2.6.0";
 in
-mkDerivation {
-  pname = "libseccomp";
-  inherit version;
+  mkDerivation {
+    pname = "libseccomp";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/seccomp/libseccomp/releases/download/v${version}/libseccomp-${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/seccomp/libseccomp/releases/download/v${version}/libseccomp-${version}.tar.gz"
+      ];
+      hash = "sha256-g7YIUjLRWIw3ncm5yuR7s3QHzyYubnSZPGG6ctKnhNw=";
+    };
+
+    buildDeps = [
+      make
+      gperf
     ];
-    hash = "sha256-JIosik2bmFiqa69ScSw0r+/PnJ6Ut23OAsHJqiX7M3U=";
-  };
+    runtimeDeps = [];
+    propagatedDeps = [];
 
-  buildDeps = [
-    make
-    gperf
-  ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd libseccomp-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --disable-static \
+            --enable-shared
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd libseccomp-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --disable-static \
-          --enable-shared
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  meta = {
-    description = "libseccomp — enhanced seccomp (mode 2) userspace library";
-    homepage = "https://github.com/seccomp/libseccomp";
-    license = "LGPL-2.1-only";
-  };
-}
+    meta = {
+      description = "libseccomp — enhanced seccomp (mode 2) userspace library";
+      homepage = "https://github.com/seccomp/libseccomp";
+      license = "LGPL-2.1-only";
+    };
+  }

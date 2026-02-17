@@ -18,41 +18,36 @@
 #   nix-build -A checks.vm.boot                       Run VM boot test
 #   nix-build -A checks.fleet.k8s                     Run k8s cluster fleet test
 #   nix-build -A checks.integration.zlib-link         Run a single integration test
-
 {
   pkgs,
   lib,
   testTools,
-}:
-
-let
-  mkSystem =
-    modules:
+}: let
+  mkSystem = modules:
     lib.evalModules {
       modules = modules;
       inherit pkgs lib;
     };
 
   systems = {
-    base = mkSystem [ ../systems/base.nix ];
-    server = mkSystem [ ../systems/server.nix ];
-    seed = mkSystem [ ../systems/seed.nix ];
-    k8s-worker = mkSystem [ ../systems/k8s-worker.nix ];
-    k8s-control-plane = mkSystem [ ../systems/k8s-control-plane.nix ];
+    base = mkSystem [../systems/base.nix];
+    server = mkSystem [../systems/server.nix];
+    seed = mkSystem [../systems/seed.nix];
+    k8s-worker = mkSystem [../systems/k8s-worker.nix];
+    k8s-control-plane = mkSystem [../systems/k8s-control-plane.nix];
   };
 
   # Firecracker-based integration tests use the testing library but don't
   # need QEMU or other testTools — pass an empty set.
   testing = import ../lib/testing {
     inherit pkgs lib;
-    testTools = { };
+    testTools = {};
   };
 
   # Collect integration checks defined on packages via their `checks` attribute.
   # Each package's `checks` is a function: { testing, self, pkgs } -> attrset.
   # Results are prefixed with the package name to avoid collisions.
-  prefixAttrs =
-    prefix: attrs:
+  prefixAttrs = prefix: attrs:
     builtins.listToAttrs (
       builtins.map (name: {
         name = "${prefix}-${name}";
@@ -61,28 +56,26 @@ let
     );
 
   packageChecks = builtins.foldl' (
-    acc: name:
-    let
+    acc: name: let
       pkg = pkgs.${name};
     in
-    if builtins.isAttrs pkg && pkg ? checks then
-      acc
-      // prefixAttrs name (
-        pkg.checks {
-          inherit testing pkgs;
-          self = pkg;
-        }
-      )
-    else
-      acc
-  ) { } (builtins.attrNames pkgs);
+      if builtins.isAttrs pkg && pkg ? checks
+      then
+        acc
+        // prefixAttrs name (
+          pkg.checks {
+            inherit testing pkgs;
+            self = pkg;
+          }
+        )
+      else acc
+  ) {} (builtins.attrNames pkgs);
 
   # Cross-cutting and ABI tests that span multiple packages stay central.
-  centralChecks = import ./integration/central.nix { inherit pkgs testing; };
-in
-{
-  eval = import ./eval.nix { inherit pkgs lib systems; };
-  build = import ./build.nix { inherit pkgs lib; };
+  centralChecks = import ./integration/central.nix {inherit pkgs testing;};
+in {
+  eval = import ./eval.nix {inherit pkgs lib systems;};
+  build = import ./build.nix {inherit pkgs lib;};
   vm = import ./vm {
     inherit
       pkgs

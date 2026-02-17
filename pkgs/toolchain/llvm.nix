@@ -7,82 +7,78 @@
   ninja,
   python3,
   zlib,
-}:
-
-let
-  version = "20.1.8";
+}: let
+  version = "21.1.8";
 in
-mkDerivation {
-  pname = "llvm";
-  inherit version;
+  mkDerivation {
+    pname = "llvm";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz"
+      ];
+      hash = "sha256-RjOiNhf6MaPqUSQlhup/sdpxQOQmvWL8FkJh/gNqoUI=";
+    };
+
+    buildDeps = [
+      make
+      cmake
+      ninja
+      python3
     ];
-    hash = "sha256-aJj5Y8jpOJgebEowLoPsW+tGMBR8cxEYPPYQaa8WMz0=";
-  };
+    runtimeDeps = [zlib];
 
-  buildDeps = [
-    make
-    cmake
-    ninja
-    python3
-  ];
-  runtimeDeps = [ zlib ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd llvm-project-${version}.src
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          cmake -S llvm -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$out \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
+            -DLLVM_LINK_LLVM_DYLIB=ON \
+            -DLLVM_INSTALL_UTILS=ON \
+            -DLLVM_ENABLE_ZLIB=ON \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          ninja -C build -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          ninja -C build install
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd llvm-project-${version}.src
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        cmake -S llvm -B build -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_INSTALL_PREFIX=$out \
-          -DLLVM_ENABLE_PROJECTS="clang;lld" \
-          -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
-          -DLLVM_LINK_LLVM_DYLIB=ON \
-          -DLLVM_INSTALL_UTILS=ON \
-          -DLLVM_ENABLE_ZLIB=ON \
-          -DLLVM_ENABLE_TERMINFO=OFF \
-          -DLLVM_ENABLE_LIBXML2=OFF \
-          -DLLVM_ENABLE_LIBEDIT=OFF \
-          -DLLVM_INCLUDE_BENCHMARKS=OFF \
-          -DLLVM_INCLUDE_EXAMPLES=OFF \
-          -DLLVM_INCLUDE_TESTS=OFF \
-          -DLLVM_INCLUDE_DOCS=OFF
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        ninja -C build -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        ninja -C build install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       compile-c = testing.mkFirecrackerTest {
         pname = "toolchain-llvm-compile-c";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           cat > /tmp/hello.c << 'EOF'
           #include <stdio.h>
@@ -110,7 +106,7 @@ mkDerivation {
 
       compile-cpp = testing.mkFirecrackerTest {
         pname = "toolchain-llvm-compile-cpp";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           cat > /tmp/test.cpp << 'EOF'
           #include <iostream>
@@ -147,7 +143,7 @@ mkDerivation {
 
       libllvm = testing.mkFirecrackerTest {
         pname = "toolchain-llvm-libllvm";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           LLVM="${builtins.toString self}"
 
@@ -168,7 +164,7 @@ mkDerivation {
 
       tools = testing.mkFirecrackerTest {
         pname = "toolchain-llvm-tools";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           cat > /tmp/tiny.c << 'EOF'
           int main(void) { return 0; }
@@ -245,9 +241,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "LLVM compiler infrastructure";
-    homepage = "https://llvm.org";
-    license = "Apache-2.0";
-  };
-}
+    meta = {
+      description = "LLVM compiler infrastructure";
+      homepage = "https://llvm.org";
+      license = "Apache-2.0";
+    };
+  }

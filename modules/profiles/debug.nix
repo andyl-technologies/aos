@@ -5,15 +5,12 @@
 ##! core dumps are enabled for crash analysis, and kernel lockdown is
 ##! disabled to allow kernel debugging tools. This profile should never
 ##! be used in production environments.
-
 {
   config,
   pkgs,
   lib,
   ...
-}:
-
-{
+}: {
   aos.security.selinux.enable = true;
   aos.security.selinux.mode = "permissive";
   aos.security.hardening.coreDump.enable = true;

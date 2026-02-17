@@ -3,64 +3,60 @@
   mkDerivation,
   fetchurl,
   make,
-}:
-
-let
+}: let
   version = "0.29.2";
 in
-mkDerivation {
-  pname = "pkg-config";
-  inherit version;
+  mkDerivation {
+    pname = "pkg-config";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://pkgconfig.freedesktop.org/releases/pkg-config-${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://pkgconfig.freedesktop.org/releases/pkg-config-${version}.tar.gz"
+      ];
+      hash = "sha256-b8acAWiMlFilfrmhZkyaujcszaQgoCv0Qp/mEOfn1ZE=";
+    };
+
+    buildDeps = [make];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd pkg-config-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --with-internal-glib \
+            --disable-host-tool
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-b8acAWiMlFilfrmhZkyaujcszaQgoCv0Qp/mEOfn1ZE=";
-  };
 
-  buildDeps = [ make ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd pkg-config-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --with-internal-glib \
-          --disable-host-tool
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       version = testing.mkToolCheck {
         pname = "build-pkg-config";
         tool = self;
@@ -116,9 +112,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "pkg-config — helper tool for compiling applications and libraries";
-    homepage = "https://www.freedesktop.org/wiki/Software/pkg-config/";
-    license = "GPL-2.0-or-later";
-  };
-}
+    meta = {
+      description = "pkg-config — helper tool for compiling applications and libraries";
+      homepage = "https://www.freedesktop.org/wiki/Software/pkg-config/";
+      license = "GPL-2.0-or-later";
+    };
+  }
