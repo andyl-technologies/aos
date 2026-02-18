@@ -35,6 +35,7 @@
     seed = mkSystem [../systems/seed.nix];
     k8s-worker = mkSystem [../systems/k8s-worker.nix];
     k8s-control-plane = mkSystem [../systems/k8s-control-plane.nix];
+    golden = mkSystem [../systems/golden.nix];
   };
 
   # Firecracker-based integration tests use the testing library but don't

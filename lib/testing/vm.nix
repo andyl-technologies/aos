@@ -49,6 +49,7 @@
     hostname ? "aos-test",
     networkConfig ? null,
     hostsEntries ? null,
+    userdata ? null,
   }: let
     toplevel = system.config.system.build.toplevel;
     systemdPkg = pkgs.systemd;
@@ -245,6 +246,22 @@
                 cat > rootfs/etc/systemd/network/10-eth0.network << 'NETCFG'
                 ${networkConfig}
                 NETCFG
+              ''
+              else ""
+            }
+
+                        ${
+              if userdata != null
+              then ''
+                # Inject cloud-init userdata (NoCloud seed)
+                mkdir -p rootfs/var/lib/cloud/seed/nocloud
+                mkdir -p rootfs/var/lib/cloud/state
+                cat > rootfs/var/lib/cloud/seed/nocloud/user-data << 'USERDATAEOF'
+                ${userdata}
+                USERDATAEOF
+                cat > rootfs/var/lib/cloud/seed/nocloud/meta-data << 'METADATAEOF'
+                {"instance-id":"test-vm","local-hostname":"aos-test"}
+                METADATAEOF
               ''
               else ""
             }
@@ -675,6 +692,7 @@
     # System mode (full systemd + agent):
     system ? null,
     checks ? [],
+    userdata ? null,
     # Headless mode (test script IS init):
     rootfsDeps ? null,
     # Shared:
@@ -693,7 +711,7 @@
       }
     else if system != null
     then let
-      systemRootfs = mkTestRootfs {inherit system;};
+      systemRootfs = mkTestRootfs {inherit system userdata;};
       systemKernel = system.config.system.build.kernel;
       # Compose checks into script, then append testScript if provided
       checksScript =

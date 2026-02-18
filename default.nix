@@ -41,6 +41,7 @@
     seed = mkSystem [./systems/seed.nix];
     k8s-worker = mkSystem [./systems/k8s-worker.nix];
     k8s-control-plane = mkSystem [./systems/k8s-control-plane.nix];
+    golden = mkSystem [./systems/golden.nix];
   };
 in {
   inherit pkgs lib systems;
