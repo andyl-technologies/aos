@@ -1,147 +1,47 @@
 ##! ANDYL OS — Package set composition.
 ##! Imports all package definitions and wires dependencies together.
-##! Bootstrap tools (gcc, coreutils, tar, etc.) are injected into every build.
-##! All other tools are built hermetically from source — no nixpkgs, no host tools.
+##! The source bootstrap chain (hex0 → GCC 14.3.0) provides the production
+##! toolchain. All packages are built hermetically from source — no nixpkgs.
 {lib}: let
   fetchurl = lib.fetchurl;
 
-  # Pre-built bootstrap tools provide gcc, coreutils, tar, make, etc.
-  # in the Nix build sandbox where no system tools are available.
-  bootstrapTools = import ../stdenv/bootstrap-tools.nix {
+  # ── Source bootstrap chain ──────────────────────────────────────────
+  # hex0 (229 bytes) → ... → GCC 3.4.6 + BusyBox + Make
+  bootstrap = import ../stdenv/bootstrap {system = lib.system;};
+
+  # GCC 3.4.6 → 4.1.2 → ... → 14.3.0 + glibc 2.39 + binutils 2.41
+  # + bash 5.2, coreutils 9.5, etc.
+  toolchain = import ../stdenv/toolchain {inherit bootstrap;};
+
+  # ── Production stdenv ───────────────────────────────────────────────
+  # Wraps the toolchain into mkDerivation, ccWrapper, etc.
+  stdenv = import ../stdenv {
+    inherit (toolchain)
+      gcc
+      glibc
+      binutils
+      bash
+      coreutils
+      gnumake
+      sed
+      grep
+      findutils
+      gawk
+      diffutils
+      tar
+      gzip
+      patch
+      ;
     system = lib.system;
   };
 
-  # Dynamic linker path inside bootstrap-tools (architecture-dependent).
-  dynamicLinker =
-    if lib.system == "aarch64-linux"
-    then "${bootstrapTools}/lib/ld-linux-aarch64.so.1"
-    else "${bootstrapTools}/lib/ld-linux-x86-64.so.2";
+  # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH)
+  mkDerivation = stdenv.mkDerivation;
 
-  # Common compiler/linker flags needed because bootstrap tools' store
-  # paths were nuked.  Every invocation of gcc/g++/cpp/ld must include these.
-  defaultCFlags = "-B${bootstrapTools}/lib -idirafter ${bootstrapTools}/include-glibc";
-  defaultLdFlags = "-L${bootstrapTools}/lib -Wl,-dynamic-linker=${dynamicLinker} -Wl,-rpath,${bootstrapTools}/lib";
-
-  # CC wrapper — shell scripts that prepend the required flags to every
-  # gcc/g++/cpp/ld invocation.  This mirrors the nixpkgs cc-wrapper
-  # approach: even when a Makefile calls bare `gcc`, the wrapper ensures
-  # headers and libraries are found.
-  ccWrapper = builtins.derivation {
-    name = "cc-wrapper";
-    system = lib.system;
-    builder = "/bin/sh";
-    PATH = "${bootstrapTools}/bin";
-    # Pass values as env vars so the builder script can reference them
-    REAL_GCC = "${bootstrapTools}/bin/gcc";
-    REAL_GPP = "${bootstrapTools}/bin/g++";
-    REAL_CPP = "${bootstrapTools}/bin/cpp";
-    REAL_LD = "${bootstrapTools}/bin/ld";
-    BT_LIB = "${bootstrapTools}/lib";
-    BT_INC = "${bootstrapTools}/include-glibc";
-    CRT1 = "${bootstrapTools}/lib/crt1.o";
-    DYN_LINK = dynamicLinker;
-    args = [
-      "-c"
-      ''
-              set -e
-              mkdir -p $out/bin $out/lib
-
-              # Create Scrt1.o (PIE variant) — symlink to crt1.o since the
-              # bootstrap glibc doesn't ship Scrt1.o separately.
-              ln -s $CRT1 $out/lib/Scrt1.o
-              ln -s $CRT1 $out/lib/rcrt1.o
-
-              # Discover C++ include paths for -nostdinc++ re-addition.
-              # Bootstrap GCC's built-in system header dir was nuked, so
-              # #include_next <stdlib.h> from cstdlib fails.  Fix: use
-              # -nostdinc++ to remove the broken built-in C++ search dirs,
-              # then re-add them via -isystem WITH include-glibc placed AFTER
-              # the C++ dirs.  This lets #include_next find stdlib.h.
-              BT_ROOT=$(dirname $BT_LIB)
-              CXX_VER=$(ls "$BT_ROOT/include/c++")
-              BT_CXX="$BT_ROOT/include/c++/$CXX_VER"
-              BT_CXX_ARCH=$(ls -d "$BT_CXX"/*-linux-gnu 2>/dev/null | head -1)
-              BT_CXX_BACKWARD="$BT_CXX/backward"
-
-              # Discover GCC library directory (contains libstdc++.so, libgcc_s.so)
-              BT_GCC_LIB=$(ls -d "$BT_LIB/gcc"/*/*/ 2>/dev/null | head -1)
-
-              # gcc wrapper — also used for C++ when invoked as `gcc -xc++`
-              # (e.g. by Bazel).  Use -idirafter for glibc headers so they appear
-              # AFTER the built-in C++ include dirs in the search path.  This lets
-              # #include_next <stdlib.h> from cstdlib find stdlib.h correctly.
-              # (-isystem would place them BEFORE C++ dirs, breaking #include_next.)
-              # $NIX_LDFLAGS is set by mkDerivation with -Wl,-rpath for all deps.
-              cat > $out/bin/gcc << GCCEOF
-        #!/bin/sh
-        exec $REAL_GCC -B$out/lib -B$BT_LIB -L$BT_LIB -L$BT_GCC_LIB -Wl,-dynamic-linker=$DYN_LINK -Wl,-rpath,$BT_LIB -Wl,-rpath,$BT_GCC_LIB \$NIX_LDFLAGS "\$@" -idirafter $BT_INC
-        GCCEOF
-
-              cp $out/bin/gcc $out/bin/cc
-
-              # g++ wrapper — uses -nostdinc++ then re-adds C++ headers before
-              # glibc headers so #include_next from cstdlib finds stdlib.h.
-              # Only -isystem $BT_INC (glibc) goes AFTER "$@" so build-system
-              # headers can shadow it; C++ paths stay before "$@".
-              cat > $out/bin/g++ << GPPEOF
-        #!/bin/sh
-        exec $REAL_GPP -nostdinc++ -isystem $BT_CXX -isystem $BT_CXX_ARCH -isystem $BT_CXX_BACKWARD -B$out/lib -B$BT_LIB -L$BT_LIB -L$BT_GCC_LIB -Wl,-dynamic-linker=$DYN_LINK -Wl,-rpath,$BT_LIB -Wl,-rpath,$BT_GCC_LIB \$NIX_LDFLAGS "\$@" -isystem $BT_INC
-        GPPEOF
-
-              cp $out/bin/g++ $out/bin/c++
-
-              # cpp wrapper (preprocessor only)
-              cat > $out/bin/cpp << CPPEOF
-        #!/bin/sh
-        exec $REAL_CPP "\$@" -isystem $BT_INC
-        CPPEOF
-
-              # ld wrapper — note: ld uses -rpath (not -Wl,-rpath), so we don't
-              # pass $NIX_LDFLAGS here (which uses gcc format).  Builds go through
-              # gcc/g++ which handle it.
-              cat > $out/bin/ld << LDEOF
-        #!/bin/sh
-        exec $REAL_LD -L$BT_LIB -L$BT_GCC_LIB -dynamic-linker=$DYN_LINK -rpath $BT_LIB -rpath $BT_GCC_LIB "\$@"
-        LDEOF
-
-              chmod +x $out/bin/*
-      ''
-    ];
-  };
-
-  # Wrap lib.mkDerivation to automatically include bootstrap tools in PATH
-  # and set the correct compiler/linker flags so that compiled programs
-  # can find the dynamic linker and shared libraries.
-  mkDerivation = args:
-    lib.mkDerivation (
-      args
-      // {
-        # ccWrapper goes first in PATH so its wrappers shadow bootstrap gcc
-        buildDeps =
-          [
-            ccWrapper
-            bootstrapTools
-          ]
-          ++ (args.buildDeps or []);
-
-        # Explicit CC/CXX/CPP point to wrappers so configure scripts use them
-        CC = "${ccWrapper}/bin/gcc";
-        CXX = "${ccWrapper}/bin/g++";
-        CPP = "${ccWrapper}/bin/cpp";
-        AR = "${bootstrapTools}/bin/ar";
-        AS = "${bootstrapTools}/bin/as";
-        LD = "${ccWrapper}/bin/ld";
-        NM = "${bootstrapTools}/bin/nm";
-        RANLIB = "${bootstrapTools}/bin/ranlib";
-        STRIP = "${bootstrapTools}/bin/strip";
-        CONFIG_SHELL = "${bootstrapTools}/bin/bash";
-
-        # Also set CFLAGS/LDFLAGS for build systems that use them directly
-        CPPFLAGS = "-isystem ${bootstrapTools}/include-glibc ${args.CPPFLAGS or ""}";
-        CFLAGS = "${defaultCFlags} ${args.CFLAGS or ""}";
-        LDFLAGS = "${defaultLdFlags} ${args.LDFLAGS or ""}";
-      }
-    );
+  # Compatibility: some fetchers need a "bootstrapTools" with basic tools.
+  # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.; for PATH we use
+  # the stdenv's initial path which includes all POSIX tools.
+  bootstrapTools = stdenv.cc;
 
   # Import phase generators from stdenv/phases.nix
   phases = import ../stdenv/phases.nix;

@@ -1,8 +1,8 @@
 # stdenv/default.nix — AOS standard build environment
 #
 # This is the production stdenv that packages use for building.
-# It wraps the GCC 13.3 + glibc 2.39 toolchain produced by the
-# bootstrap chain (built in pkgs/).
+# It wraps the toolchain produced by the source bootstrap chain
+# (stdenv/bootstrap/).
 #
 # Provides:
 #   mkDerivation — build a package
@@ -13,115 +13,65 @@
 #   shell       — path to bash
 #   system      — target system ("x86_64-linux")
 #
+# All tool parameters are REQUIRED — the caller must provide them.
+# The bootstrap chain (stdenv/bootstrap/) produces gcc, glibc, and binutils.
+# Other tools (bash, coreutils, etc.) must also be built from source and
+# passed in by the caller.
+#
 # Usage:
-#   let stdenv = import ./stdenv { inherit bootstrap; };
+#   let stdenv = import ./stdenv {
+#     inherit gcc glibc binutils bash coreutils gnumake ...;
+#   };
 #   in stdenv.mkDerivation { ... }
 #
 {
-  # Bootstrap toolchain outputs from pkgs/bootstrap or stdenv/bootstrap
-  bootstrap ? import ./bootstrap/seeds.nix {},
-  # Specific toolchain components (override for testing or cross-compilation)
-  gcc ? null,
-  glibc ? null,
-  binutils ? null,
-  coreutils ? null,
-  bash ? null,
-  gnumake ? null,
-  findutils ? null,
-  gawk ? null,
-  grep ? null,
-  sed ? null,
-  tar ? null,
-  gzip ? null,
-  diffutils ? null,
-  patch ? null,
+  # Toolchain components — all REQUIRED, no defaults
+  gcc,
+  glibc,
+  binutils,
+  bash,
+  coreutils,
+  gnumake,
+  findutils,
+  gawk,
+  grep,
+  sed,
+  tar,
+  gzip,
+  diffutils,
+  patch,
   # System parameters
   system ? "x86_64-linux",
   storeDir ? "/nix/store",
 }: let
-  lib = import ../lib;
+  lib = import ../lib {inherit system;};
 
-  # The shell used for building. In a bootstrapped system, this is the
-  # bash built by the bootstrap chain.
-  shellPath =
-    if bash != null
-    then "${bash}/bin/bash"
-    else "/bin/sh";
+  # The shell used for building — bash from the bootstrap chain
+  shellPath = "${bash}/bin/bash";
 
   # CC wrapper that sets up include paths, library paths, and rpaths
   ccWrapper = import ./cc-wrapper.nix {
     inherit storeDir system;
-    cc =
-      if gcc != null
-      then gcc
-      else "${storeDir}/gcc-13.3.0";
-    libc =
-      if glibc != null
-      then glibc
-      else "${storeDir}/glibc-2.39";
-    binutils_ =
-      if binutils != null
-      then binutils
-      else "${storeDir}/binutils-2.42";
+    shell = shellPath;
+    inherit coreutils;
+    cc = gcc;
+    libc = glibc;
+    binutils_ = binutils;
   };
 
-  # The initial PATH for builds, composed from the bootstrap toolchain
-  initialPath = builtins.filter (p: p != null) [
-    (
-      if coreutils != null
-      then coreutils
-      else null
-    )
-    (
-      if findutils != null
-      then findutils
-      else null
-    )
-    (
-      if gnumake != null
-      then gnumake
-      else null
-    )
-    (
-      if gawk != null
-      then gawk
-      else null
-    )
-    (
-      if grep != null
-      then grep
-      else null
-    )
-    (
-      if sed != null
-      then sed
-      else null
-    )
-    (
-      if tar != null
-      then tar
-      else null
-    )
-    (
-      if gzip != null
-      then gzip
-      else null
-    )
-    (
-      if diffutils != null
-      then diffutils
-      else null
-    )
-    (
-      if patch != null
-      then patch
-      else null
-    )
-    (
-      if bash != null
-      then bash
-      else null
-    )
+  # The initial PATH for builds, composed from all required tools
+  initialPath = [
+    coreutils
+    findutils
+    gnumake
+    gawk
+    grep
+    sed
+    tar
+    gzip
+    diffutils
+    patch
+    bash
   ];
 
   # Construct PATH from initial tools
@@ -138,12 +88,12 @@
     args = [
       "-c"
       ''
-        mkdir -p $out
-        cp ${./setup.sh} $out/setup.sh
-        chmod 644 $out/setup.sh
+        ${coreutils}/bin/mkdir -p $out
+        ${coreutils}/bin/cp ${./setup.sh} $out/setup.sh
+        ${coreutils}/bin/chmod 644 $out/setup.sh
 
         # Record the toolchain paths
-        cat > $out/setup-vars.sh << 'SETUP_EOF'
+        ${coreutils}/bin/cat > $out/setup-vars.sh << 'SETUP_EOF'
         export CC="${ccWrapper}/bin/gcc"
         export CXX="${ccWrapper}/bin/g++"
         export LD="${ccWrapper}/bin/ld"
@@ -156,8 +106,8 @@
         export STRINGS="${ccWrapper}/bin/strings"
         SETUP_EOF
 
-        echo "${shellPath}" > $out/shell-path
-        echo "${system}" > $out/system
+        ${coreutils}/bin/echo "${shellPath}" > $out/shell-path
+        ${coreutils}/bin/echo "${system}" > $out/system
       ''
     ];
   };
@@ -241,9 +191,6 @@ in {
 
   # Initial path components for inspection
   inherit initialPath;
-
-  # Bootstrap reference
-  inherit bootstrap;
 
   # Phase helpers re-exported for convenience
   inherit
