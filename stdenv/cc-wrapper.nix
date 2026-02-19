@@ -13,6 +13,8 @@
   cc, # Path to the unwrapped GCC installation
   libc, # Path to the glibc installation
   binutils_, # Path to binutils installation
+  shell, # Path to bash binary (e.g. "${bash}/bin/bash")
+  coreutils, # Path to coreutils package
   storeDir ? "/nix/store",
   system ? "x86_64-linux",
 }: let
@@ -28,23 +30,30 @@
   # This is determined at build time; we parameterize it.
   gccLibDir = "${cc}/lib/gcc/${targetTriple}";
 
+  # Coreutils commands with full paths
+  mkdir = "${coreutils}/bin/mkdir";
+  cat = "${coreutils}/bin/cat";
+  chmod = "${coreutils}/bin/chmod";
+  ln = "${coreutils}/bin/ln";
+  echo = "${coreutils}/bin/echo";
+
   wrapperDrv = builtins.derivation {
     name = "aos-cc-wrapper";
     inherit system;
-    builder = "/bin/sh";
+    builder = shell;
     args = [
       "-c"
       ''
               set -eu
 
-              mkdir -p $out/bin
-              mkdir -p $out/nix-support
+              ${mkdir} -p $out/bin
+              ${mkdir} -p $out/nix-support
 
               # -----------------------------------------------------------------------
               # gcc wrapper
               # -----------------------------------------------------------------------
-              cat > $out/bin/gcc << 'WRAPPER_EOF'
-        #!/bin/sh
+              ${cat} > $out/bin/gcc << 'WRAPPER_EOF'
+        #!${shell}
         # AOS GCC wrapper — adds system include and library paths
         set -eu
 
@@ -87,13 +96,13 @@
 
         exec ${cc}/bin/gcc $extra_cflags $hardening_flags "$@" $extra_ldflags
         WRAPPER_EOF
-              chmod +x $out/bin/gcc
+              ${chmod} +x $out/bin/gcc
 
               # -----------------------------------------------------------------------
               # g++ wrapper
               # -----------------------------------------------------------------------
-              cat > $out/bin/g++ << 'WRAPPER_EOF'
-        #!/bin/sh
+              ${cat} > $out/bin/g++ << 'WRAPPER_EOF'
+        #!${shell}
         # AOS G++ wrapper — adds system include and library paths
         set -eu
 
@@ -127,19 +136,19 @@
 
         exec ${cc}/bin/g++ $extra_cflags $hardening_flags "$@" $extra_ldflags
         WRAPPER_EOF
-              chmod +x $out/bin/g++
+              ${chmod} +x $out/bin/g++
 
               # -----------------------------------------------------------------------
               # cc symlink (many build systems look for 'cc')
               # -----------------------------------------------------------------------
-              ln -s gcc $out/bin/cc
-              ln -s g++ $out/bin/c++
+              ${ln} -s gcc $out/bin/cc
+              ${ln} -s g++ $out/bin/c++
 
               # -----------------------------------------------------------------------
               # ld wrapper
               # -----------------------------------------------------------------------
-              cat > $out/bin/ld << 'WRAPPER_EOF'
-        #!/bin/sh
+              ${cat} > $out/bin/ld << 'WRAPPER_EOF'
+        #!${shell}
         # AOS ld wrapper — adds library search paths and rpath
         set -eu
 
@@ -160,45 +169,45 @@
 
         exec ${binutils_}/bin/ld $extra_flags "$@"
         WRAPPER_EOF
-              chmod +x $out/bin/ld
+              ${chmod} +x $out/bin/ld
 
               # -----------------------------------------------------------------------
               # Binutils pass-through wrappers
               # -----------------------------------------------------------------------
               for tool in ar as nm objcopy objdump ranlib readelf size strings strip; do
-                cat > $out/bin/$tool << TOOL_EOF
-        #!/bin/sh
+                ${cat} > $out/bin/$tool << TOOL_EOF
+        #!${shell}
         exec ${binutils_}/bin/$tool "\$@"
         TOOL_EOF
-                chmod +x $out/bin/$tool
+                ${chmod} +x $out/bin/$tool
               done
 
               # -----------------------------------------------------------------------
               # pkg-config wrapper (sets PKG_CONFIG_PATH)
               # -----------------------------------------------------------------------
-              cat > $out/bin/pkg-config << 'WRAPPER_EOF'
-        #!/bin/sh
+              ${cat} > $out/bin/pkg-config << 'WRAPPER_EOF'
+        #!${shell}
         # AOS pkg-config wrapper
         export PKG_CONFIG_PATH="${libc}/lib/pkgconfig:''${PKG_CONFIG_PATH:-}"
         exec pkg-config "$@"
         WRAPPER_EOF
-              chmod +x $out/bin/pkg-config
+              ${chmod} +x $out/bin/pkg-config
 
               # -----------------------------------------------------------------------
               # nix-support metadata files
               # -----------------------------------------------------------------------
               # These files record the wrapper's configuration for introspection.
-              echo "${cc}"        > $out/nix-support/orig-cc
-              echo "${libc}"      > $out/nix-support/orig-libc
-              echo "${binutils_}" > $out/nix-support/orig-binutils
-              echo "${system}"    > $out/nix-support/system
+              ${echo} "${cc}"        > $out/nix-support/orig-cc
+              ${echo} "${libc}"      > $out/nix-support/orig-libc
+              ${echo} "${binutils_}" > $out/nix-support/orig-binutils
+              ${echo} "${system}"    > $out/nix-support/system
 
               # Propagated include and library paths
-              echo "-isystem ${libc}/include" > $out/nix-support/cc-cflags
-              echo "-L${libc}/lib -Wl,-rpath,${libc}/lib" > $out/nix-support/cc-ldflags
+              ${echo} "-isystem ${libc}/include" > $out/nix-support/cc-cflags
+              ${echo} "-L${libc}/lib -Wl,-rpath,${libc}/lib" > $out/nix-support/cc-ldflags
 
               # Record the dynamic linker path
-              echo "${libc}/lib/ld-linux-x86-64.so.2" > $out/nix-support/dynamic-linker
+              ${echo} "${libc}/lib/ld-linux-x86-64.so.2" > $out/nix-support/dynamic-linker
       ''
     ];
   };
