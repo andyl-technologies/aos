@@ -21,6 +21,7 @@
       types
       ;
   };
+  platformMod = import ./platform.nix;
   derivations = import ./derivations.nix {inherit system;};
   checks = import ./testing/checks.nix;
 in
@@ -30,6 +31,8 @@ in
   // strings
   // {
     inherit types system;
+    inherit (platformMod) mkPlatform;
+    platform = platformMod.mkPlatform system;
     inherit
       (modules)
       evalModules

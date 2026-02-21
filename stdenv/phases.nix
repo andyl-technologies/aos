@@ -7,25 +7,9 @@
 #   goPhases        — go build
 #   cargoPhases     — cargo build --release
 #
-# Each is a function returning a list of { name :: string; script :: string; }
-# records, compatible with mkDerivation's `phases` parameter.
-#
-# Usage:
-#   stdenv.mkDerivation {
-#     phases = phases.cmakePhases {};
-#     ...
-#   };
-#
-# Available pre/post hooks (set in mkDerivation):
-#   preConfigure  — runs before the configure phase
-#   postConfigure — runs after the configure phase
-#   preBuild      — runs before the build phase
-#   postBuild     — runs after the build phase
-#   preInstall    — runs before the install phase
-#   postInstall   — runs after the install phase
+# Each returns a list of { name; script; } records for mkDerivation's `phases`.
 #
 let
-  # Shared unpack phase used by all build systems
   unpackPhase = {
     name = "unpack";
     script = ''
@@ -47,7 +31,6 @@ let
         exit 1
       fi
 
-      # Enter the source directory
       if [ -d source ]; then
         cd source
       else
@@ -59,11 +42,10 @@ let
     '';
   };
 
-  # Shared fixup phase — strip, patchShebangs, patchELF, validate-runpath, moveDocs
   fixupPhase = {
     name = "fixup";
     script = ''
-      # --- Strip debug symbols ---
+      # Strip debug symbols
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping debug symbols..."
         find "$out" -type f -name '*.so*' -exec strip -S {} \; 2>/dev/null || true
@@ -79,11 +61,10 @@ let
         fi
       fi
 
-      # --- Patch shebangs ---
+      # Patch shebangs
       if [ -z "''${dontPatchShebangs:-}" ]; then
         echo "patching shebangs..."
         find "$out" -type f -executable | while read f; do
-          # Read first two bytes to check for #!
           header=$(dd if="$f" bs=1 count=2 2>/dev/null) || continue
           case "$header" in
             '#!') ;;
@@ -109,7 +90,7 @@ let
         done
       fi
 
-      # --- Patch ELF RPATH ---
+      # Shrink ELF RPATHs
       if [ -z "''${dontPatchELF:-}" ] && command -v patchelf >/dev/null 2>&1; then
         echo "shrinking ELF RPATHs..."
         find "$out" -type f \( -name '*.so*' -o -perm -u+x \) | while read f; do
@@ -117,7 +98,7 @@ let
         done
       fi
 
-      # --- Validate runpath ---
+      # Validate runpaths
       if [ -z "''${dontValidateRunpath:-}" ] && command -v patchelf >/dev/null 2>&1; then
         echo "validating ELF runpaths..."
         find "$out" -type f -perm -u+x | while read f; do
@@ -126,7 +107,6 @@ let
           rpath=$(patchelf --print-rpath "$f" 2>/dev/null) || continue
           for lib in $needed; do
             found=0
-            # Check each rpath directory (colon-separated)
             _old_IFS="$IFS"
             IFS=':'
             for dir in $rpath; do
@@ -136,7 +116,6 @@ let
               fi
             done
             IFS="$_old_IFS"
-            # Also check $out/lib
             if [ "$found" = 0 ] && [ -f "$out/lib/$lib" ]; then
               found=1
             fi
@@ -147,7 +126,7 @@ let
         done
       fi
 
-      # --- Move docs ---
+      # Move docs
       if [ -z "''${dontMoveDocs:-}" ]; then
         for d in man doc info; do
           if [ -d "$out/$d" ]; then
@@ -158,14 +137,14 @@ let
       fi
     '';
   };
-in rec {
-  # ---------------------------------------------------------------------------
+in
+rec {
   # GNU Autoconf (configure / make / make install)
-  # ---------------------------------------------------------------------------
-  autoconfPhases = {
-    doCheck ? true,
-    checkTarget ? "check",
-  }:
+  autoconfPhases =
+    {
+      doCheck ? true,
+      checkTarget ? "check",
+    }:
     [
       unpackPhase
       {
@@ -194,16 +173,17 @@ in rec {
       }
     ]
     ++ (
-      if doCheck
-      then [
-        {
-          name = "check";
-          script = ''
-            make ${checkTarget} -j$NIX_BUILD_CORES
-          '';
-        }
-      ]
-      else []
+      if doCheck then
+        [
+          {
+            name = "check";
+            script = ''
+              make ${checkTarget} -j$NIX_BUILD_CORES
+            '';
+          }
+        ]
+      else
+        [ ]
     )
     ++ [
       {
@@ -215,10 +195,11 @@ in rec {
       fixupPhase
     ];
 
-  # ---------------------------------------------------------------------------
   # CMake
-  # ---------------------------------------------------------------------------
-  cmakePhases = {doCheck ? true}:
+  cmakePhases =
+    {
+      doCheck ? true,
+    }:
     [
       unpackPhase
       {
@@ -242,16 +223,17 @@ in rec {
       }
     ]
     ++ (
-      if doCheck
-      then [
-        {
-          name = "check";
-          script = ''
-            cd build && ctest --output-on-failure -j$NIX_BUILD_CORES
-          '';
-        }
-      ]
-      else []
+      if doCheck then
+        [
+          {
+            name = "check";
+            script = ''
+              cd build && ctest --output-on-failure -j$NIX_BUILD_CORES
+            '';
+          }
+        ]
+      else
+        [ ]
     )
     ++ [
       {
@@ -263,13 +245,12 @@ in rec {
       fixupPhase
     ];
 
-  # ---------------------------------------------------------------------------
   # Meson + Ninja
-  # ---------------------------------------------------------------------------
-  mesonPhases = {
-    doCheck ? true,
-    mesonTestFlags ? "",
-  }:
+  mesonPhases =
+    {
+      doCheck ? true,
+      mesonTestFlags ? "",
+    }:
     [
       unpackPhase
       {
@@ -291,16 +272,17 @@ in rec {
       }
     ]
     ++ (
-      if doCheck
-      then [
-        {
-          name = "check";
-          script = ''
-            meson test -C build --no-rebuild ${mesonTestFlags}
-          '';
-        }
-      ]
-      else []
+      if doCheck then
+        [
+          {
+            name = "check";
+            script = ''
+              meson test -C build --no-rebuild ${mesonTestFlags}
+            '';
+          }
+        ]
+      else
+        [ ]
     )
     ++ [
       {
@@ -312,54 +294,45 @@ in rec {
       fixupPhase
     ];
 
-  # ---------------------------------------------------------------------------
   # Go
-  # ---------------------------------------------------------------------------
-  goPhases = {
-    goModules ? null,
-    goPackage ? ".",
-    goOutput,
-    cgoEnabled ? false,
-    ldflags ? "-s -w",
-    tags ? [],
-    doCheck ? true,
-    goTestFlags ? "./...",
-    doParallelCheck ? true,
-  }: let
-    tagsFlag =
-      if tags != []
-      then "-tags ${builtins.concatStringsSep "," tags}"
-      else "";
-  in
+  goPhases =
+    {
+      goModules ? null,
+      goPackage ? ".",
+      goOutput,
+      cgoEnabled ? false,
+      ldflags ? "-s -w",
+      tags ? [ ],
+      doCheck ? true,
+      goTestFlags ? "./...",
+      doParallelCheck ? true,
+    }:
+    let
+      tagsFlag = if tags != [ ] then "-tags ${builtins.concatStringsSep "," tags}" else "";
+    in
     [
       unpackPhase
       {
         name = "configure";
-        script =
-          ''
-            export GOPATH="$TMPDIR/go"
-            export GOCACHE="$TMPDIR/go-cache"
-            export GOFLAGS="-trimpath"
-            export CGO_ENABLED=${
-              if cgoEnabled
-              then "1"
-              else "0"
-            }
-            export GONOSUMDB="*"
-            export GONOSUMCHECK="*"
-            mkdir -p "$GOPATH" "$GOCACHE"
+        script = ''
+          export GOPATH="$TMPDIR/go"
+          export GOCACHE="$TMPDIR/go-cache"
+          export GOFLAGS="-trimpath"
+          export CGO_ENABLED=${if cgoEnabled then "1" else "0"}
+          export GONOSUMDB="*"
+          export GONOSUMCHECK="*"
+          mkdir -p "$GOPATH" "$GOCACHE"
 
-          ''
-          + (
-            if goModules != null
-            then ''
-              # Use pre-fetched modules
+        ''
+        + (
+          if goModules != null then
+            ''
               export GOPATH="${goModules}"
               export GOFLAGS="$GOFLAGS -mod=readonly"
               export GOPROXY=off
             ''
-            else ''
-              # Use vendored deps from source if available
+          else
+            ''
               if [ -d vendor ]; then
                 export GOFLAGS="$GOFLAGS -mod=vendor"
                 export GOPROXY=off
@@ -367,7 +340,7 @@ in rec {
                 export GOPROXY="https://proxy.golang.org,direct"
               fi
             ''
-          );
+        );
       }
       {
         name = "build";
@@ -381,25 +354,22 @@ in rec {
       }
     ]
     ++ (
-      if doCheck
-      then [
-        {
-          name = "check";
-          script = ''
-            go test \
-              -v \
-              ${
-              if !doParallelCheck
-              then "-p 1"
-              else ""
-            } \
-              ${tagsFlag} \
-              ${goTestFlags}
-            go vet ${goTestFlags}
-          '';
-        }
-      ]
-      else []
+      if doCheck then
+        [
+          {
+            name = "check";
+            script = ''
+              go test \
+                -v \
+                ${if !doParallelCheck then "-p 1" else ""} \
+                ${tagsFlag} \
+                ${goTestFlags}
+              go vet ${goTestFlags}
+            '';
+          }
+        ]
+      else
+        [ ]
     )
     ++ [
       {
@@ -412,48 +382,36 @@ in rec {
       fixupPhase
     ];
 
-  # ---------------------------------------------------------------------------
   # Rust (Cargo)
-  # ---------------------------------------------------------------------------
-  cargoPhases = {
-    cargoDeps,
-    cargoFlags ? "",
-    buildType ? "release",
-    checkType ? buildType,
-    cargoTestFlags ? "",
-    buildFeatures ? [],
-    buildNoDefaultFeatures ? false,
-    installBins ? true,
-    installLibs ? false,
-    doCheck ? true,
-    doParallelCheck ? true,
-    gitDeps ? [],
-  }: let
-    featuresFlag =
-      if buildFeatures != []
-      then "--features ${builtins.concatStringsSep "," buildFeatures}"
-      else "";
-    noDefaultFlag =
-      if buildNoDefaultFeatures
-      then "--no-default-features"
-      else "";
-    profileFlag =
-      if buildType == "release"
-      then "--release"
-      else "";
-    checkProfileFlag =
-      if checkType == "release"
-      then "--release"
-      else "";
+  cargoPhases =
+    {
+      cargoDeps,
+      cargoFlags ? "",
+      buildType ? "release",
+      checkType ? buildType,
+      cargoTestFlags ? "",
+      buildFeatures ? [ ],
+      buildNoDefaultFeatures ? false,
+      installBins ? true,
+      installLibs ? false,
+      doCheck ? true,
+      doParallelCheck ? true,
+      gitDeps ? [ ],
+    }:
+    let
+      featuresFlag =
+        if buildFeatures != [ ] then "--features ${builtins.concatStringsSep "," buildFeatures}" else "";
+      noDefaultFlag = if buildNoDefaultFeatures then "--no-default-features" else "";
+      profileFlag = if buildType == "release" then "--release" else "";
+      checkProfileFlag = if checkType == "release" then "--release" else "";
 
-    # Generate printf args for git source replacements in .cargo/config.toml
-    gitSourceLines = builtins.concatStringsSep "" (
-      builtins.map (
-        dep: "printf '[source.\"git+${dep.url}\"]\\ngit = \"${dep.url}\"\\nreplace-with = \"vendored-sources\"\\n\\n' >> .cargo/config.toml\n"
-      )
-      gitDeps
-    );
-  in
+      gitSourceLines = builtins.concatStringsSep "" (
+        builtins.map (
+          dep:
+          "printf '[source.\"git+${dep.url}\"]\\ngit = \"${dep.url}\"\\nreplace-with = \"vendored-sources\"\\n\\n' >> .cargo/config.toml\n"
+        ) gitDeps
+      );
+    in
     [
       unpackPhase
       {
@@ -461,8 +419,6 @@ in rec {
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
           mkdir -p "$CARGO_HOME"
-
-          # Point cargo at vendored deps
           mkdir -p .cargo
           printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' > .cargo/config.toml
           ${gitSourceLines}
@@ -483,65 +439,61 @@ in rec {
       }
     ]
     ++ (
-      if doCheck
-      then [
-        {
-          name = "check";
-          script = ''
-            cargo test \
-              ${checkProfileFlag} \
-              --frozen \
-              --offline \
-              ${
-              if !doParallelCheck
-              then "-- --test-threads=1"
-              else ""
-            } \
-              ${cargoTestFlags}
-          '';
-        }
-      ]
-      else []
+      if doCheck then
+        [
+          {
+            name = "check";
+            script = ''
+              cargo test \
+                ${checkProfileFlag} \
+                --frozen \
+                --offline \
+                ${if !doParallelCheck then "-- --test-threads=1" else ""} \
+                ${cargoTestFlags}
+            '';
+          }
+        ]
+      else
+        [ ]
     )
     ++ [
       {
         name = "install";
         script =
           (
-            if installBins
-            then ''
-              mkdir -p "$out/bin"
-              find target/${buildType} -maxdepth 1 -type f -executable \
-                ! -name '*.d' ! -name '*.so' ! -name '*.dylib' | while read bin; do
-                install -m 755 "$bin" "$out/bin/"
-              done
-            ''
-            else ""
+            if installBins then
+              ''
+                mkdir -p "$out/bin"
+                find target/${buildType} -maxdepth 1 -type f -executable \
+                  ! -name '*.d' ! -name '*.so' ! -name '*.dylib' | while read bin; do
+                  install -m 755 "$bin" "$out/bin/"
+                done
+              ''
+            else
+              ""
           )
           + (
-            if installLibs
-            then ''
-              mkdir -p "$out/lib"
-              find target/${buildType} -maxdepth 1 \
-                \( -name '*.so' -o -name '*.a' -o -name '*.dylib' \) | while read lib; do
-                install -m 644 "$lib" "$out/lib/"
-              done
-            ''
-            else ""
+            if installLibs then
+              ''
+                mkdir -p "$out/lib"
+                find target/${buildType} -maxdepth 1 \
+                  \( -name '*.so' -o -name '*.a' -o -name '*.dylib' \) | while read lib; do
+                  install -m 644 "$lib" "$out/lib/"
+                done
+              ''
+            else
+              ""
           );
       }
       fixupPhase
     ];
 
-  # ---------------------------------------------------------------------------
   # Python (setuptools / PEP 517)
-  # ---------------------------------------------------------------------------
   pythonPhases = [
     unpackPhase
     {
       name = "configure";
       script = ''
-        # Set up Python environment
         export PYTHONDONTWRITEBYTECODE=1
       '';
     }
@@ -568,14 +520,8 @@ in rec {
     fixupPhase
   ];
 
-  # ---------------------------------------------------------------------------
-  # Convenience: get the default phases (autoconf with defaults)
-  # ---------------------------------------------------------------------------
-  defaultPhases = autoconfPhases {};
+  defaultPhases = autoconfPhases { };
 
-  # ---------------------------------------------------------------------------
-  # Phase helper: create a simple "copy-only" phase list for pre-built binaries
-  # ---------------------------------------------------------------------------
   copyPhases = [
     unpackPhase
     {
@@ -587,16 +533,11 @@ in rec {
     }
   ];
 
-  # ---------------------------------------------------------------------------
-  # Phase helper: kernel-style build (make with ARCH, make modules_install, etc.)
-  # ---------------------------------------------------------------------------
   kernelPhases = [
     unpackPhase
     {
       name = "configure";
       script = ''
-        # TODO: kernel configuration
-        # make defconfig or use a provided .config
         if [ -f "$kernelConfig" ]; then
           cp "$kernelConfig" .config
         else
@@ -620,8 +561,6 @@ in rec {
         make modules_install \
           INSTALL_MOD_PATH="$out" \
           ARCH=x86
-
-        # Install kernel image
         cp arch/x86/boot/bzImage "$out/boot/vmlinuz"
         cp System.map "$out/boot/System.map"
         cp .config "$out/boot/config"

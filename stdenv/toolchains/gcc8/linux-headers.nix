@@ -1,0 +1,40 @@
+# stdenv/toolchains/gcc8/linux-headers.nix — Linux 4.18 headers (RHEL 8)
+#
+# Kernel headers installed via headers_install. Required by glibc 2.28.
+#
+{ prev, gcc, binutils, buildPlatform, hostPlatform }:
+let
+  src = builtins.fetchTarball {
+    url = "https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.18.tar.xz";
+    sha256 = "1hq2aazxgqxmhyrm8pp3yapdzmpyfd715z73ka617qw7dkxfspz9";
+  };
+
+in
+builtins.derivation {
+  name = "linux-headers-4.18";
+  system = buildPlatform.system;
+  builder = "${prev.bash}/bin/bash";
+  args = [
+    "-c"
+    ''
+      set -eu
+      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
+
+      cd "$TMPDIR"
+      cp -r ${src} linux-4.18
+      cd linux-4.18
+      chmod -R u+w .
+
+      make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+
+      echo "Linux 4.18 headers installed to $out"
+    ''
+  ];
+} // {
+  meta = {
+    description = "Linux kernel headers, version 4.18";
+    homepage = "https://www.kernel.org/";
+    license = "GPL-2.0-only";
+    platforms = ["i686-linux" "x86_64-linux" "aarch64-linux"];
+  };
+}
