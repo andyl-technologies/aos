@@ -1,232 +1,193 @@
-# stdenv/default.nix — AOS standard build environment
+# stdenv/default.nix — AOS standard build environment (self-initializing)
 #
-# This is the production stdenv that packages use for building.
-# It wraps the toolchain produced by the source bootstrap chain
-# (stdenv/bootstrap/).
+# Imports the full bootstrap chain and all toolchain tiers internally, then
+# wraps each tier into a complete stdenv with a uniform interface.
 #
-# Provides:
-#   mkDerivation — build a package
-#   mkShell     — development shell
-#   fetchurl    — fetch a URL
-#   fetchgit    — fetch a Git repo
-#   cc          — the wrapped C/C++ compiler
-#   shell       — path to bash
-#   system      — target system ("x86_64-linux")
-#
-# All tool parameters are REQUIRED — the caller must provide them.
-# The bootstrap chain (stdenv/bootstrap/) produces gcc, glibc, and binutils.
-# Other tools (bash, coreutils, etc.) must also be built from source and
-# passed in by the caller.
+# The default stdenv uses the latest toolchain (GCC 14.3.0). Every stdenv
+# exposes .toolchains.<name> for alternate toolchain stdenvs with the
+# identical interface — similar to Bazel toolchains.
 #
 # Usage:
-#   let stdenv = import ./stdenv {
-#     inherit gcc glibc binutils bash coreutils gnumake ...;
-#   };
-#   in stdenv.mkDerivation { ... }
+#   stdenv.mkDerivation { ... }                  # build with GCC 14
+#   stdenv.toolchains.gcc11.mkDerivation { ... } # build with GCC 11
+#   stdenv.bootstrap.gcc                         # GCC 2.95.3 from hex0 chain
+#
+# Attributes on every stdenv:
+#   mkDerivation, mkShell, fetchurl, fetchgit    — builders
+#   cc, shell, stdenv, initialPath               — environment
+#   gcc, glibc, binutils, bash, coreutils, ...   — raw toolchain components
+#   bootstrap                                    — hex0 → GCC 2.95.3 chain
+#   toolchains                                   — attrset of alternate stdenvs
 #
 {
-  # Toolchain components — all REQUIRED, no defaults
-  gcc,
-  glibc,
-  binutils,
-  bash,
-  coreutils,
-  gnumake,
-  findutils,
-  gawk,
-  grep,
-  sed,
-  tar,
-  gzip,
-  diffutils,
-  patch,
-  # System parameters
-  system ? "x86_64-linux",
+  buildPlatform,
+  hostPlatform ? buildPlatform,
+  targetPlatform ? hostPlatform,
   storeDir ? "/nix/store",
-}: let
-  lib = import ../lib {inherit system;};
+}:
+let
+  system = buildPlatform.system;
+  lib = import ../lib { inherit system; };
 
-  # The shell used for building — bash from the bootstrap chain
-  shellPath = "${bash}/bin/bash";
+  # ── Bootstrap: hex0 → GCC 2.95.3 + glibc 2.2.5 (i686) ─────────────
+  bootstrap = import ./bootstrap { inherit buildPlatform; };
 
-  # CC wrapper that sets up include paths, library paths, and rpaths
-  ccWrapper = import ./cc-wrapper.nix {
-    inherit storeDir system;
-    shell = shellPath;
-    inherit coreutils;
-    cc = gcc;
-    libc = glibc;
-    binutils_ = binutils;
+  # ── Toolchain ladder: GCC 3.4 → 4.1 → 4.4 → 4.8 → 8 → 11 → 14 ───
+  tiers = import ./toolchains {
+    inherit bootstrap buildPlatform hostPlatform targetPlatform;
   };
 
-  # The initial PATH for builds, composed from all required tools
-  initialPath = [
-    coreutils
-    findutils
-    gnumake
-    gawk
-    grep
-    sed
-    tar
-    gzip
-    diffutils
-    patch
-    bash
-  ];
+  # ── Wrap a raw toolchain tier into a full stdenv ────────────────────
+  # Returns the same interface regardless of which tier is used.
+  mkStdenvFromTier = tier:
+    let
+      shellPath = "${tier.bash}/bin/bash";
 
-  # Construct PATH from initial tools
-  initialPathStr = lib.concatStringsSep ":" (
-    builtins.map (p: "${builtins.toString p}/bin") initialPath
-  );
-
-  # The stdenv derivation itself — a package that contains setup.sh
-  # and references to the toolchain
-  stdenvDrv = builtins.derivation {
-    name = "aos-stdenv";
-    inherit system;
-    builder = shellPath;
-    args = [
-      "-c"
-      ''
-        ${coreutils}/bin/mkdir -p $out
-        ${coreutils}/bin/cp ${./setup.sh} $out/setup.sh
-        ${coreutils}/bin/chmod 644 $out/setup.sh
-
-        # Record the toolchain paths
-        ${coreutils}/bin/cat > $out/setup-vars.sh << 'SETUP_EOF'
-        export CC="${ccWrapper}/bin/gcc"
-        export CXX="${ccWrapper}/bin/g++"
-        export LD="${ccWrapper}/bin/ld"
-        export AR="${ccWrapper}/bin/ar"
-        export RANLIB="${ccWrapper}/bin/ranlib"
-        export STRIP="${ccWrapper}/bin/strip"
-        export NM="${ccWrapper}/bin/nm"
-        export OBJDUMP="${ccWrapper}/bin/objdump"
-        export SIZE="${ccWrapper}/bin/size"
-        export STRINGS="${ccWrapper}/bin/strings"
-        SETUP_EOF
-
-        ${coreutils}/bin/echo "${shellPath}" > $out/shell-path
-        ${coreutils}/bin/echo "${system}" > $out/system
-      ''
-    ];
-  };
-
-  # ---------------------------------------------------------------------------
-  # mkDerivation — wrapped version with stdenv defaults
-  # ---------------------------------------------------------------------------
-  mkDerivation = args: let
-    # Inject stdenv tools into buildDeps unless already present
-    stdenvBuildDeps = (args.buildDeps or []) ++ initialPath;
-    effectiveArgs =
-      args
-      // {
-        buildDeps = stdenvBuildDeps;
-        system = args.system or system;
-        shell = args.shell or shellPath;
-        storeDir = args.storeDir or storeDir;
-        stdenv = stdenvDrv;
-
-        # Set the C compiler environment variables
-        CC = "${ccWrapper}/bin/gcc";
-        CXX = "${ccWrapper}/bin/g++";
-        LD = "${ccWrapper}/bin/ld";
-        AR = "${ccWrapper}/bin/ar";
-        RANLIB = "${ccWrapper}/bin/ranlib";
-        STRIP = "${ccWrapper}/bin/strip";
+      ccWrapper = import ./cc-wrapper.nix {
+        inherit storeDir hostPlatform;
+        shell = shellPath;
+        coreutils = tier.coreutils;
+        cc = tier.gcc;
+        libc = tier.glibc;
+        binutils_ = tier.binutils;
       };
-  in
-    lib.mkDerivation effectiveArgs;
 
-  # ---------------------------------------------------------------------------
-  # mkShell — wrapped version with stdenv defaults
-  # ---------------------------------------------------------------------------
-  mkShell = args: let
-    effectiveArgs =
-      args
-      // {
-        buildDeps = (args.buildDeps or []) ++ initialPath;
-        system = args.system or system;
-        shell = args.shell or shellPath;
+      initialPath = [
+        tier.coreutils
+        tier.findutils
+        tier.gnumake
+        tier.gawk
+        tier.grep
+        tier.sed
+        tier.tar
+        tier.gzip
+        tier.diffutils
+        tier.patch
+        tier.bash
+      ];
+
+      stdenvDrv = builtins.derivation {
+        name = "aos-stdenv";
+        inherit system;
+        builder = shellPath;
+        args = [
+          "-c"
+          ''
+            ${tier.coreutils}/bin/mkdir -p $out
+            ${tier.coreutils}/bin/cp ${./setup.sh} $out/setup.sh
+            ${tier.coreutils}/bin/chmod 644 $out/setup.sh
+
+            ${tier.coreutils}/bin/cat > $out/setup-vars.sh << 'SETUP_EOF'
+            export CC="${ccWrapper}/bin/gcc"
+            export CXX="${ccWrapper}/bin/g++"
+            export LD="${ccWrapper}/bin/ld"
+            export AR="${ccWrapper}/bin/ar"
+            export RANLIB="${ccWrapper}/bin/ranlib"
+            export STRIP="${ccWrapper}/bin/strip"
+            export NM="${ccWrapper}/bin/nm"
+            export OBJDUMP="${ccWrapper}/bin/objdump"
+            export SIZE="${ccWrapper}/bin/size"
+            export STRINGS="${ccWrapper}/bin/strings"
+            SETUP_EOF
+
+            ${tier.coreutils}/bin/echo "${shellPath}" > $out/shell-path
+            ${tier.coreutils}/bin/echo "${system}" > $out/system
+          ''
+        ];
       };
-  in
-    lib.mkShell effectiveArgs;
 
-  # ---------------------------------------------------------------------------
-  # fetchurl / fetchgit — pass through from lib with defaults
-  # ---------------------------------------------------------------------------
-  fetchurl = args:
-    lib.fetchurl (
-      args
-      // {
-        system = args.system or system;
-        storeDir = args.storeDir or storeDir;
-      }
-    );
+      mkDerivation = args:
+        let
+          effectiveArgs = args // {
+            buildDeps = (args.buildDeps or [ ]) ++ initialPath;
+            system = args.system or system;
+            shell = args.shell or shellPath;
+            storeDir = args.storeDir or storeDir;
+            stdenv = stdenvDrv;
+            CC = "${ccWrapper}/bin/gcc";
+            CXX = "${ccWrapper}/bin/g++";
+            LD = "${ccWrapper}/bin/ld";
+            AR = "${ccWrapper}/bin/ar";
+            RANLIB = "${ccWrapper}/bin/ranlib";
+            STRIP = "${ccWrapper}/bin/strip";
+          };
+        in
+        lib.mkDerivation effectiveArgs;
 
-  fetchgit = args:
-    lib.fetchgit (
-      args
-      // {
-        system = args.system or system;
-        storeDir = args.storeDir or storeDir;
-      }
-    );
-in {
-  inherit
-    mkDerivation
-    mkShell
-    fetchurl
-    fetchgit
-    ;
-  inherit system storeDir;
-  inherit lib;
+      mkShell = args:
+        lib.mkShell (
+          args
+          // {
+            buildDeps = (args.buildDeps or [ ]) ++ initialPath;
+            system = args.system or system;
+            shell = args.shell or shellPath;
+          }
+        );
 
-  # Toolchain components
-  cc = ccWrapper;
-  shell = shellPath;
+      fetchurl = args:
+        lib.fetchurl (
+          args
+          // {
+            system = args.system or system;
+            storeDir = args.storeDir or storeDir;
+          }
+        );
 
-  # The stdenv derivation (contains setup.sh)
-  stdenv = stdenvDrv;
+      fetchgit = args:
+        lib.fetchgit (
+          args
+          // {
+            system = args.system or system;
+            storeDir = args.storeDir or storeDir;
+          }
+        );
 
-  # Initial path components for inspection
-  inherit initialPath;
+    in
+    {
+      inherit mkDerivation mkShell fetchurl fetchgit;
+      inherit system storeDir lib;
+      cc = ccWrapper;
+      shell = shellPath;
+      stdenv = stdenvDrv;
+      inherit initialPath;
+      inherit (lib)
+        replacePhase
+        addPhaseAfter
+        addPhaseBefore
+        removePhase
+        ;
+      isCross = buildPlatform.system != hostPlatform.system;
+      inherit buildPlatform hostPlatform targetPlatform;
 
-  # Phase helpers re-exported for convenience
-  inherit
-    (lib)
-    replacePhase
-    addPhaseAfter
-    addPhaseBefore
-    removePhase
-    ;
+      # Raw toolchain components (direct access for packages that need them)
+      inherit (tier)
+        gcc
+        glibc
+        binutils
+        bash
+        coreutils
+        gnumake
+        sed
+        grep
+        findutils
+        gawk
+        diffutils
+        tar
+        gzip
+        patch
+        ;
 
-  # Is this a cross-compilation stdenv?
-  isCross = false;
+      # Bootstrap chain (hex0 → GCC 2.95.3) accessible from any stdenv
+      inherit bootstrap;
 
-  # Host and build platform info
-  hostPlatform = {
-    inherit system;
-    isLinux = true;
-    isx86_64 = system == "x86_64-linux";
-    isAarch64 = system == "aarch64-linux";
-    parsed = {
-      cpu = {
-        name = "x86_64";
-        bits = 64;
-      };
-      kernel = {
-        name = "linux";
-      };
-      abi = {
-        name = "gnu";
-      };
+      # All toolchain stdenvs — lazy, same interface as this stdenv
+      toolchains = toolchainStdenvs;
     };
-  };
-  buildPlatform = {
-    inherit system;
-    isLinux = true;
-    isx86_64 = system == "x86_64-linux";
-    isAarch64 = system == "aarch64-linux";
-  };
-}
+
+  # One stdenv per named toolchain tier (lazy — only built when accessed)
+  toolchainStdenvs = builtins.mapAttrs (_: mkStdenvFromTier)
+    (builtins.removeAttrs tiers [ "latest" ]);
+
+in
+# Default stdenv: latest toolchain (GCC 14.3.0)
+mkStdenvFromTier tiers.latest

@@ -1,0 +1,51 @@
+# ln.hex0 — create a symbolic link (i386 Linux)
+# Usage: ln <target> <link_name>
+# Exits 0 on success, 1 on failure.
+# This is the smallest possible symlink tool for bootstrap.
+
+## ELF Header
+7F 45 4C 46    # e_ident[EI_MAG] = ELF magic
+01             # e_ident[EI_CLASS] = ELFCLASS32
+01             # e_ident[EI_DATA] = ELFDATA2LSB
+01             # e_ident[EI_VERSION] = EV_CURRENT
+03             # e_ident[EI_OSABI] = ELFOSABI_LINUX
+00 00 00 00 00 00 00 00  # e_ident padding
+02 00          # e_type = ET_EXEC
+03 00          # e_machine = EM_386
+01 00 00 00    # e_version = EV_CURRENT
+54 80 04 08    # e_entry = 0x08048054
+34 00 00 00    # e_phoff = 52
+00 00 00 00    # e_shoff = 0
+00 00 00 00    # e_flags = 0
+34 00          # e_ehsize = 52
+20 00          # e_phentsize = 32
+01 00          # e_phnum = 1
+00 00          # e_shentsize = 0
+00 00          # e_shnum = 0
+00 00          # e_shstrndx = 0
+
+## Program Header (PT_LOAD)
+01 00 00 00    # p_type = PT_LOAD
+00 00 00 00    # p_offset = 0
+00 80 04 08    # p_vaddr = 0x08048000
+00 80 04 08    # p_paddr = 0x08048000
+6D 00 00 00    # p_filesz = 109
+6D 00 00 00    # p_memsz = 109
+07 00 00 00    # p_flags = PF_R | PF_W | PF_X
+01 00 00 00    # p_align = 1
+
+## _start (0x08048054)
+59             # pop ecx       ; argc (discard)
+58             # pop eax       ; argv[0] (discard)
+5B             # pop ebx       ; argv[1] = target (oldname)
+59             # pop ecx       ; argv[2] = link_name (newname)
+B8 53 00 00 00 # mov eax, 83   ; SYS_symlink
+CD 80          # int 0x80
+# eax = 0 on success, negative on error
+31 DB          # xor ebx, ebx  ; exit code = 0
+85 C0          # test eax, eax
+79 01          # jns .ok        ; jump if success (eax >= 0)
+43             # inc ebx       ; exit code = 1
+# .ok:
+B8 01 00 00 00 # mov eax, 1    ; SYS_exit
+CD 80          # int 0x80
