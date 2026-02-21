@@ -1,46 +1,18 @@
 ##! ANDYL OS — Package set composition.
 ##! Imports all package definitions and wires dependencies together.
-##! The source bootstrap chain (hex0 → GCC 14.3.0) provides the production
-##! toolchain. All packages are built hermetically from source — no nixpkgs.
-{lib}: let
+##! The stdenv argument provides the production toolchain (GCC 14.3.0) and all
+##! build infrastructure. All packages are built hermetically from source — no nixpkgs.
+{
+  lib,
+  stdenv,
+}:
+let
   fetchurl = lib.fetchurl;
-
-  # ── Source bootstrap chain ──────────────────────────────────────────
-  # hex0 (229 bytes) → ... → GCC 3.4.6 + BusyBox + Make
-  bootstrap = import ../stdenv/bootstrap {system = lib.system;};
-
-  # GCC 3.4.6 → 4.1.2 → ... → 14.3.0 + glibc 2.39 + binutils 2.41
-  # + bash 5.2, coreutils 9.5, etc.
-  toolchain = import ../stdenv/toolchain {inherit bootstrap;};
-
-  # ── Production stdenv ───────────────────────────────────────────────
-  # Wraps the toolchain into mkDerivation, ccWrapper, etc.
-  stdenv = import ../stdenv {
-    inherit (toolchain)
-      gcc
-      glibc
-      binutils
-      bash
-      coreutils
-      gnumake
-      sed
-      grep
-      findutils
-      gawk
-      diffutils
-      tar
-      gzip
-      patch
-      ;
-    system = lib.system;
-  };
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH)
   mkDerivation = stdenv.mkDerivation;
 
-  # Compatibility: some fetchers need a "bootstrapTools" with basic tools.
-  # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.; for PATH we use
-  # the stdenv's initial path which includes all POSIX tools.
+  # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
   bootstrapTools = stdenv.cc;
 
   # Import phase generators from stdenv/phases.nix
@@ -219,6 +191,8 @@
       inherit fetchCargoDeps fetchGoModules;
       inherit bootstrapTools;
       fakeHash = lib.fakeHash;
+      # --- Build infrastructure ---
+      inherit stdenv;
     }
     // discoverPackages ./.
     // {

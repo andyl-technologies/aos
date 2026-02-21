@@ -18,6 +18,7 @@
 ##! and is used as the default for all derivation builders.
 {system}: let
   defaultSystem = system;
+  inherit (import ./trivial.nix) throwIfNot;
 
   # ---------------------------------------------------------------------------
   # Default phase definitions
@@ -365,7 +366,10 @@
       "checks"
     ];
 
-    drv = builtins.derivation (
+    drv = throwIfNot
+      (!(meta ? platforms) || builtins.elem system meta.platforms)
+      "${name} is not supported on ${system} (supported: ${builtins.concatStringsSep ", " (meta.platforms or [])})"
+      (builtins.derivation (
       {
         inherit name system;
         builder = shell;
@@ -420,7 +424,7 @@
         NIX_STORE_DIR = storeDir;
       }
       // extraArgs
-    );
+    ));
 
     # Attach metadata and override mechanism
     result =
