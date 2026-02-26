@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   openssl,
   libcap,
   libseccomp,
@@ -22,7 +22,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       pkg-config
     ];
     runtimeDeps = [
@@ -82,6 +82,26 @@ in
         pname = "tool-chrony";
         tool = self;
         command = "chronyd --version";
+      };
+
+      config-validity = testing.mkVMTest {
+        name = "cross-cutting-chrony-config-validity";
+        rootfsDeps = [self];
+        testScript = ''
+          export PATH="${self}/bin:${self}/sbin:$PATH"
+          export LD_LIBRARY_PATH="${self}/lib:$LD_LIBRARY_PATH"
+
+          echo "==> Testing chronyd config parsing"
+          cat > /tmp/chrony.conf << 'CHRONYCFG'
+          pool pool.ntp.org iburst
+          driftfile /var/lib/chrony/drift
+          makestep 1.0 3
+          rtcsync
+          CHRONYCFG
+          chronyd -p -f /tmp/chrony.conf
+          echo "    chronyd config: valid"
+          echo "Chrony config validity: PASS"
+        '';
       };
     };
   }

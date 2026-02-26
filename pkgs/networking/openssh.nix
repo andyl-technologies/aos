@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   openssl,
   zlib,
 }: let
@@ -19,7 +19,7 @@ in
       hash = "sha256-AhoucJoO30JQsSVr1anlAEEakN3avqgw7VnO+Q652Fw=";
     };
 
-    buildDeps = [make];
+    buildDeps = [gnumake];
     runtimeDeps = [
       openssl
       zlib
@@ -91,6 +91,34 @@ in
           test -f /tmp/testkey
           test -f /tmp/testkey.pub
           echo "==> ssh-keygen test passed"
+        '';
+      };
+
+      rpath = testing.mkRPATHCheck {
+        pkg = self;
+        bins = ["ssh"];
+      };
+
+      config-validity = testing.mkVMTest {
+        name = "cross-cutting-openssh-config-validity";
+        rootfsDeps = [self];
+        testScript = ''
+          export PATH="${self}/bin:${self}/sbin:$PATH"
+
+          echo "==> Testing sshd config parsing"
+          mkdir -p /tmp/sshd_test /run/sshd
+          cat > /tmp/sshd_test/sshd_config << 'SSHCFG'
+          Port 2222
+          PermitRootLogin no
+          PasswordAuthentication no
+          PubkeyAuthentication yes
+          SSHCFG
+
+          ssh-keygen -t ed25519 -f /tmp/sshd_test/host_key -N "" -q
+          echo "HostKey /tmp/sshd_test/host_key" >> /tmp/sshd_test/sshd_config
+          sshd -t -f /tmp/sshd_test/sshd_config
+          echo "    sshd config: valid"
+          echo "OpenSSH config validity: PASS"
         '';
       };
     };

@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   go,
   runc,
 }: let
@@ -20,7 +20,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       go
     ];
     runtimeDeps = [runc];

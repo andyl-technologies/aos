@@ -7,7 +7,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
 }:
 let
   # ── sources ──────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ mkDerivation {
   # Dummy src — we use the fetchurl results directly in phases
   src = xorgprotoSrc;
 
-  buildDeps = [ make ];
+  buildDeps = [ gnumake ];
   runtimeDeps = [ ];
   propagatedDeps = [ ];
 

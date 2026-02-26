@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   go,
 }: let
   version = "1.9.0";
@@ -19,7 +19,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       go
     ];
     runtimeDeps = [];

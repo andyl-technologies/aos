@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   pkg-config,
   zlib,
   m4,
@@ -24,7 +24,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       pkg-config
       m4
     ];

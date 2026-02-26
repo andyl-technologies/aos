@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   go,
   pkg-config,
   libseccomp,
@@ -22,7 +22,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       go
       pkg-config
     ];

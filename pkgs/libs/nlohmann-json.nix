@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   cmake,
   ninja,
 }: let
@@ -20,7 +20,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       cmake
       ninja
     ];
