@@ -1,11 +1,11 @@
 ##! modules/base/system.nix — Core system identity module
 ##!
 ##! Defines the fundamental identity of the AOS installation: name, version,
-##! variant, locale, and timezone. Generates /etc/os-release and configures
+##! locale, and timezone. Generates /etc/os-release and configures
 ##! systemd locale and timezone settings.
 ##!
 ##! Absorbed TOML config values:
-##!   [system] name, version, variant, state_version
+##!   [system] name, version, state_version
 ##!   [locale] lang, timezone
 {
   config,
@@ -26,6 +26,27 @@ in {
     '';
   };
 
+  options.system.cloudInitTests = lib.mkOption {
+    type = lib.types.attrsOf lib.types.anything;
+    default = {};
+    description = ''
+      Cloud-init VM test specifications, keyed by test name.
+      Each value should be { userdata = null or JSON string; checks = mkCheckGroup {...}; }.
+      These are automatically collected and used to generate golden-image VM
+      test derivations in the flake's checks output.
+    '';
+  };
+
+  options.system.fleetTests = lib.mkOption {
+    type = lib.types.attrsOf lib.types.anything;
+    default = {};
+    description = ''
+      Fleet (multi-VM) test specifications, keyed by test name.
+      Each value should be { machines = {...}; testScript = "..."; timeout = int; }.
+      Machine specs reference system variants by string name (resolved at collection time).
+    '';
+  };
+
   options.aos.system = {
     ## Operating system name used in os-release and branding.
     name = lib.mkOption {
@@ -39,19 +60,6 @@ in {
       type = lib.types.str;
       default = "0.1.0";
       description = "AOS release version string.";
-    };
-
-    ## System variant name (base, k8s-worker, k8s-control-plane, server).
-    ##
-    ## # See Also
-    ## - `aos.system.version`
-    variant = lib.mkOption {
-      type = lib.types.str;
-      default = "base";
-      description = ''
-        System variant name. Common values: "base", "k8s-worker",
-        "k8s-control-plane", "server".
-      '';
     };
 
     ## State version for forward-compatible migrations.
@@ -186,9 +194,7 @@ in {
         ID=${lib.toLower cfg.name}
         VERSION="${cfg.version}"
         VERSION_ID=${cfg.version}
-        PRETTY_NAME="${cfg.name} ${cfg.version} (${cfg.variant})"
-        VARIANT="${cfg.variant}"
-        VARIANT_ID=${lib.toLower cfg.variant}
+        PRETTY_NAME="${cfg.name} ${cfg.version}"
         HOME_URL="https://aos.dev"
         BUG_REPORT_URL="https://aos.dev/issues"
         AOS_STATE_VERSION=${cfg.stateVersion}

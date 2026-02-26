@@ -44,6 +44,11 @@
     }
     PubkeyAuthentication yes
     AuthorizedKeysFile ${cfg.authorizedKeysFile}
+    ${
+      if cfg.authorizedKeysCommand != null
+      then "AuthorizedKeysCommand ${cfg.authorizedKeysCommand}\n    AuthorizedKeysCommandUser ${cfg.authorizedKeysCommandUser}"
+      else ""
+    }
     MaxAuthTries ${toString cfg.maxAuthTries}
 
     # Disable unused authentication methods.
@@ -241,6 +246,30 @@ in {
         of ~/.ssh/authorized_keys because home directories may not exist
         on immutable systems.
       '';
+    };
+
+    ## Command for sshd to run to look up authorized keys.
+    ##
+    ## Used by opkssh and similar tools to provide alternative key
+    ## lookup mechanisms (e.g. OIDC-based authentication).
+    ##
+    ## # Examples
+    ## ```nix
+    ## aos.services.ssh.authorizedKeysCommand = "/usr/bin/opkssh verify %u %k %t";
+    ## ```
+    authorizedKeysCommand = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Command for sshd to run to look up authorized keys.";
+    };
+
+    ## User under which the AuthorizedKeysCommand runs.
+    ##
+    ## Must be a dedicated unprivileged user for security.
+    authorizedKeysCommandUser = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "User under which the AuthorizedKeysCommand runs.";
     };
   };
 
