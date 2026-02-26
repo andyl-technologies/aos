@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
 }: let
   version = "10.47";
 in
@@ -17,7 +17,7 @@ in
       hash = "sha256-R/6MmUYSUNQviebo/a66naBXhV0G63/AjZygP9CNe8c=";
     };
 
-    buildDeps = [make];
+    buildDeps = [gnumake];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -63,6 +63,11 @@ in
       self,
       pkgs,
     }: {
+      soname = testing.mkSONAMECheck {
+        pkg = self;
+        libs = ["libpcre2-8.so"];
+      };
+
       link = testing.mkLinkCheck {
         pname = "lib-pcre2";
         library = self;

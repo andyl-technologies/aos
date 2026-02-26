@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   oniguruma,
 }: let
   version = "1.8.1";
@@ -18,7 +18,7 @@ in
       hash = "sha256-K+ZOcSnOyxHVkGKQ66EK9pT7nj5/n8IIoxHcM8qDfrA=";
     };
 
-    buildDeps = [make];
+    buildDeps = [gnumake];
     runtimeDeps = [oniguruma];
     propagatedDeps = [];
 
@@ -58,6 +58,16 @@ in
       self,
       pkgs,
     }: {
+      rpath = testing.mkRPATHCheck {
+        pkg = self;
+        bins = ["jq"];
+      };
+
+      dynamic-linker = testing.mkDynLinkerCheck {
+        pkg = self;
+        bins = ["jq"];
+      };
+
       version = testing.mkToolCheck {
         pname = "tool-jq";
         tool = self;

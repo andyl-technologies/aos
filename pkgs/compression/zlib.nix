@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
 }: let
   version = "1.3.1";
 in
@@ -17,7 +17,7 @@ in
       hash = "sha256-OO+WuN/lENQnB9nHgYd5FHklQRM+GHCEFGO/pz+IPjI=";
     };
 
-    buildDeps = [make];
+    buildDeps = [gnumake];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -119,6 +119,30 @@ in
               return 0;
           }
         '';
+      };
+
+      soname = testing.mkSONAMECheck {
+        pkg = self;
+        libs = ["libz.so"];
+      };
+
+      symbols = testing.mkSymbolCheck {
+        pkg = self;
+        libName = "libz.so";
+        symbols = ["compress" "uncompress" "deflate" "inflate"];
+      };
+
+      version-consistency = testing.mkVersionCheck {
+        pkg = self;
+        name = "zlib";
+        headerCode = ''
+          #include <zlib.h>
+        '';
+        runtimeCode = ''
+          const char *header_ver = ZLIB_VERSION;
+          const char *runtime_ver = zlibVersion();
+        '';
+        libs = ["-lz"];
       };
 
       consumers = testing.mkVMTest {
