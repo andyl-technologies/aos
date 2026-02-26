@@ -86,4 +86,10 @@ builtins.derivation {
       echo "GCC 11.5.0 installed to $out"
     ''
   ];
-} // { meta.platforms = [ "i686-linux" "x86_64-linux" "aarch64-linux" ]; }
+} // {
+  meta = {
+    build = { os = "linux"; cpu = ["x86_64" "i686" "aarch64"]; };
+    execute = { os = "linux"; cpu = ["x86_64" "i686" "aarch64"]; };
+    target = { os = "linux"; cpu = ["x86_64" "i686" "aarch64"]; };
+  };
+}

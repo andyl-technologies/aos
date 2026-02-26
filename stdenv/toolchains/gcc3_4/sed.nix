@@ -53,6 +53,7 @@ builtins.derivation {
     description = "GNU stream editor, version 4.1.2";
     homepage = "https://www.gnu.org/software/sed/";
     license = "GPL-2.0-or-later";
-    platforms = [ "i686-linux" "x86_64-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = ["x86_64" "i686"]; };
   };
 }

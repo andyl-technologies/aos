@@ -53,6 +53,7 @@ builtins.derivation {
     description = "GNU find, xargs, and locate utilities, version 4.1.20";
     homepage = "https://www.gnu.org/software/findutils/";
     license = "GPL-2.0-or-later";
-    platforms = [ "i686-linux" "x86_64-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = ["x86_64" "i686"]; };
   };
 }

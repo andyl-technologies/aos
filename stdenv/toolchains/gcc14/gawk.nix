@@ -49,6 +49,7 @@ builtins.derivation {
     description = "GNU awk 5.3.1 pattern scanning and processing language";
     homepage = "https://www.gnu.org/software/gawk/";
     license = "GPL-3.0-or-later";
-    platforms = [ "i686-linux" "x86_64-linux" "aarch64-linux" ];
+    build = { os = "linux"; };
+    execute = { os = "linux"; };
   };
 }

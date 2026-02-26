@@ -91,10 +91,8 @@ builtins.derivation {
     description = "GNU Compiler Collection 14.3.0 — production compiler with PIE+SSP";
     homepage = "https://gcc.gnu.org/";
     license = "GPL-3.0-or-later";
-    platforms = [
-      "i686-linux"
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
+    build = { os = "linux"; cpu = ["x86_64" "i686" "aarch64"]; };
+    execute = { os = "linux"; cpu = ["x86_64" "i686" "aarch64"]; };
+    target = { os = "linux"; cpu = ["x86_64" "i686" "aarch64"]; };
   };
 }
