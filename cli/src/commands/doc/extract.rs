@@ -379,18 +379,17 @@ fn walk_nix_files(dir: &Path, f: &mut dyn FnMut(&Path)) {
 /// Enrich module option entries with type and default metadata obtained by
 /// evaluating the Nix module system.
 ///
-/// Evaluates `systems.base.options` and merges the resulting type names and
+/// Evaluates `system.options` and merges the resulting type names and
 /// default values into the comment-parsed `DocEntry` records.  If evaluation
 /// fails (e.g. the user hasn't built yet), the entries are left unchanged.
 fn enrich_options_from_eval(nix: &NixRunner, entries: &mut [DocEntry]) {
-    // Nix expression that serializes option metadata for all options across
-    // all system variants to a JSON-safe attrset.
+    // Nix expression that serializes option metadata for all system options
+    // to a JSON-safe attrset.
     let expr = format!(
         r#"
         let
           aos = import {root}/default.nix {{}};
-          options = builtins.foldl' (acc: sys: acc // sys.options) {{}}
-            (builtins.attrValues aos.systems);
+          options = aos.system.options;
           safeVal = v:
             if v == null then null
             else if builtins.isString v then v

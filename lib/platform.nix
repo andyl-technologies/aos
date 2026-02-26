@@ -1,4 +1,4 @@
-# lib/platform.nix — Structured platform description
+# lib/platform.nix — Structured platform description with constraint model
 #
 # Converts a Nix system string (e.g. "x86_64-linux") into a rich record
 # with GNU triple, architecture flags, dynamic linker path, etc.
@@ -11,7 +11,45 @@
 #   targetPlatform — what code a compiler generates (compilers only)
 #
 # For native builds all three are identical. Cross-compilation decouples them.
-{
+#
+# Constraint model:
+#   Every platform exposes a `constraints` attrset ({ cpu, os, abi }) and a
+#   `canExecute` list of constraint sets for ISA-compatible architectures.
+#   Verification functions (satisfies, canRun, canBuildOn) check compatibility
+#   at evaluation time.
+let
+  # ── CPU table (single source of truth) ──────────────────────────────
+  # Adding a new architecture = one row. ISA compat is explicit data, not code.
+  cpus = {
+    x86_64 = {
+      bits = 64;
+      family = "x86";
+      linuxArch = "x86_64";
+      gnuConfig = "x86_64-unknown-linux-gnu";
+      dynamicLinker = "ld-linux-x86-64.so.2";
+      canExecute = ["i686"]; # ISA supersets this CPU can natively run
+    };
+    i686 = {
+      bits = 32;
+      family = "x86";
+      linuxArch = "x86";
+      gnuConfig = "i686-unknown-linux-gnu";
+      dynamicLinker = "ld-linux.so.2";
+      canExecute = [];
+    };
+    aarch64 = {
+      bits = 64;
+      family = "arm";
+      linuxArch = "arm64";
+      gnuConfig = "aarch64-unknown-linux-gnu";
+      dynamicLinker = "ld-linux-aarch64.so.1";
+      canExecute = []; # armv7l would go here when supported
+    };
+  };
+
+  knownCpuNames = builtins.attrNames cpus;
+
+  # ── mkPlatform ──────────────────────────────────────────────────────
   mkPlatform = system: let
     parts = builtins.match "([a-z0-9_]+)-([a-z]+)" system;
     cpuName =
@@ -25,83 +63,109 @@
   in
     if kernelName != "linux"
     then throw "platform: unsupported kernel '${kernelName}' (only linux)"
-    else if cpuName == "x86_64"
-    then {
+    else if !(cpus ? ${cpuName})
+    then throw "platform: unsupported CPU '${cpuName}' (known: ${builtins.concatStringsSep ", " knownCpuNames})"
+    else let cpu = cpus.${cpuName}; in {
       inherit system;
-      config = "x86_64-unknown-linux-gnu";
-      isx86_64 = true;
-      isAarch64 = false;
-      isi686 = false;
-      is32bit = false;
-      is64bit = true;
+      config = cpu.gnuConfig;
+      linuxArch = cpu.linuxArch;
+      dynamicLinker = cpu.dynamicLinker;
+
+      # Constraint identity — what this platform IS
+      constraints = {
+        cpu = cpuName;
+        os = kernelName;
+        abi = "gnu";
+      };
+
+      # ISA execution compatibility — derived from CPU table
+      # Each entry = a constraint set for platforms whose binaries we can natively run
+      canExecute = builtins.map (c: {cpu = c; os = kernelName;}) (cpu.canExecute);
+
+      # Backward-compat booleans
+      isx86_64 = cpuName == "x86_64";
+      isAarch64 = cpuName == "aarch64";
+      isi686 = cpuName == "i686";
+      is32bit = cpu.bits == 32;
+      is64bit = cpu.bits == 64;
       isLinux = true;
-      linuxArch = "x86_64";
-      dynamicLinker = "ld-linux-x86-64.so.2";
+
+      # Backward-compat parsed record
       parsed = {
         cpu = {
-          name = "x86_64";
-          bits = 64;
+          name = cpuName;
+          inherit (cpu) bits;
         };
         vendor = "unknown";
         kernel = {
-          name = "linux";
+          name = kernelName;
         };
         abi = {
           name = "gnu";
         };
       };
-    }
-    else if cpuName == "aarch64"
-    then {
-      inherit system;
-      config = "aarch64-unknown-linux-gnu";
-      isx86_64 = false;
-      isAarch64 = true;
-      isi686 = false;
-      is32bit = false;
-      is64bit = true;
-      isLinux = true;
-      linuxArch = "arm64";
-      dynamicLinker = "ld-linux-aarch64.so.1";
-      parsed = {
-        cpu = {
-          name = "aarch64";
-          bits = 64;
-        };
-        vendor = "unknown";
-        kernel = {
-          name = "linux";
-        };
-        abi = {
-          name = "gnu";
-        };
-      };
-    }
-    else if cpuName == "i686"
-    then {
-      inherit system;
-      config = "i686-unknown-linux-gnu";
-      isx86_64 = false;
-      isAarch64 = false;
-      isi686 = true;
-      is32bit = true;
-      is64bit = false;
-      isLinux = true;
-      linuxArch = "x86";
-      dynamicLinker = "ld-linux.so.2";
-      parsed = {
-        cpu = {
-          name = "i686";
-          bits = 32;
-        };
-        vendor = "unknown";
-        kernel = {
-          name = "linux";
-        };
-        abi = {
-          name = "gnu";
-        };
-      };
-    }
-    else throw "platform: unsupported CPU '${cpuName}'";
+    };
+
+  # ── Constraint functions ────────────────────────────────────────────
+
+  # Does `platform` satisfy a constraint set?
+  # Keys are AND, list values within a key are OR, omitted keys are unconstrained.
+  satisfies = platform: constraints:
+    builtins.all (key: let
+      req = constraints.${key};
+      actual = platform.constraints.${key};
+    in
+      if builtins.isList req
+      then builtins.elem actual req
+      else actual == req)
+    (builtins.attrNames constraints);
+
+  # Can `builder` natively execute binaries matching `targetConstraints`?
+  # True if builder directly satisfies, OR if any canExecute entry satisfies.
+  # Keys absent from a canExecute entry are unconstrained (match anything).
+  canRun = builder: targetConstraints:
+    satisfies builder targetConstraints
+    || builtins.any (compat:
+      builtins.all (key: let
+        req = targetConstraints.${key};
+      in
+        # If compat entry doesn't specify this key, treat as "any value OK"
+        !(compat ? ${key})
+        || (
+          if builtins.isList req
+          then builtins.elem compat.${key} req
+          else compat.${key} == req
+        ))
+      (builtins.attrNames targetConstraints))
+    (builder.canExecute or []);
+
+  # Can `system` (string) build a derivation with the given BUILD constraint?
+  canBuildOn = system: buildConstraint: let
+    platform = mkPlatform system;
+  in
+    canRun platform buildConstraint;
+
+  # Backward-compat: can `system` build packages from a meta.platforms list?
+  # Accounts for ISA compatibility (x86_64 accepts i686-linux packages).
+  platformIsCompatible = system: platforms: let
+    build = mkPlatform system;
+  in
+    builtins.any (p:
+      p == system || canRun build (mkPlatform p).constraints)
+    platforms;
+
+  # Can a toolchain targeting `target` produce code that runs on `execute`?
+  # Both args are constraint sets. Compatible = for every key present in both,
+  # their values overlap (list values are OR'd).
+  constraintsCompatible = target: execute:
+    builtins.all (key:
+      if !(target ? ${key}) || !(execute ? ${key}) then true
+      else let
+        t = target.${key}; e = execute.${key};
+        tList = if builtins.isList t then t else [t];
+        eList = if builtins.isList e then e else [e];
+      in builtins.any (ev: builtins.elem ev tList) eList
+    ) (builtins.attrNames (target // execute));
+in {
+  inherit mkPlatform cpus satisfies canRun canBuildOn platformIsCompatible constraintsCompatible;
 }

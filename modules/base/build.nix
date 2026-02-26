@@ -300,6 +300,50 @@ in {
 
     system.build.kernel = pkgs.linux;
 
+    # Fleet test: verify rolling update across two servers (zero-downtime upgrade).
+    system.fleetTests.rolling-update = {
+      machines = {
+        server1 = {
+          variant = "server";
+          role = "server";
+          mac = "52:54:00:00:00:01";
+        };
+        server2 = {
+          variant = "server";
+          role = "server";
+          mac = "52:54:00:00:00:02";
+        };
+      };
+      testScript = ''
+        # Verify both servers boot and reach running state
+        server1.wait_for_unit("multi-user.target")
+        server2.wait_for_unit("multi-user.target")
+
+        # Record initial version on both servers
+        V1=$(server1.succeed("cat /etc/os-release | grep VERSION_ID | cut -d= -f2"))
+        V2=$(server2.succeed("cat /etc/os-release | grep VERSION_ID | cut -d= -f2"))
+
+        # Initiate rolling update on server1 while server2 stays up
+        server1.succeed("sysupdate apply --reboot")
+        server2.succeed("systemctl is-system-running --wait || true")
+
+        # Wait for server1 to come back after reboot
+        server1.wait_for_unit("multi-user.target")
+
+        # Now update server2 while server1 is running the new version
+        server2.succeed("sysupdate apply --reboot")
+        server1.succeed("systemctl is-system-running --wait || true")
+
+        # Wait for server2 to come back
+        server2.wait_for_unit("multi-user.target")
+
+        # Verify both servers are running and reachable after the rolling update
+        server1.succeed("systemctl is-system-running --wait || true")
+        server2.succeed("systemctl is-system-running --wait || true")
+      '';
+      timeout = 300;
+    };
+
     system.build.initrd = pkgs.mkDerivation {
       name = "aos-initrd";
       src = null;

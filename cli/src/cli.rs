@@ -206,21 +206,12 @@ pub enum TokenCmd {
 
 #[derive(Subcommand)]
 pub enum SystemCmd {
-    /// Build a system configuration
-    Build {
-        /// System variant (base, server, k8s-worker, k8s-control-plane)
-        variant: String,
-    },
-    /// Build a disk image
-    Image {
-        /// System variant (base, server, k8s-worker, k8s-control-plane)
-        variant: String,
-    },
-    /// Evaluate a system configuration
-    Eval {
-        /// System variant (base, server, k8s-worker, k8s-control-plane)
-        variant: String,
-    },
+    /// Build the system configuration
+    Build,
+    /// Build the disk image
+    Image,
+    /// Evaluate the system configuration
+    Eval,
 }
 
 #[derive(Subcommand)]

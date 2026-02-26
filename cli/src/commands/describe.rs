@@ -5,9 +5,6 @@ use anyhow::Result;
 use crate::nix::NixRunner;
 use crate::output::Printer;
 
-/// Known system variants — kept in sync with `commands/system.rs`.
-const KNOWN_VARIANTS: &[&str] = &["base", "server", "k8s-worker", "k8s-control-plane"];
-
 /// `aos describe` — show repository information.
 pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
     let git_commit = git_rev().unwrap_or_else(|| "unknown".to_string());
@@ -34,7 +31,6 @@ pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
         "git_branch": git_branch,
         "git_dirty": git_dirty,
         "package_count": pkg_count,
-        "system_variants": KNOWN_VARIANTS,
         "root": nix.root().to_string_lossy(),
     })) {
         return Ok(());
@@ -49,7 +45,6 @@ pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
         printer.kv("Git status", "dirty (uncommitted changes)");
     }
     printer.kv("Packages", &pkg_count);
-    printer.kv("System variants", &KNOWN_VARIANTS.join(", "));
 
     Ok(())
 }
