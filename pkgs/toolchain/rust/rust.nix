@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   cmake,
   ninja,
   pkg-config,
@@ -10,11 +10,11 @@
   bash,
   which,
   llvm,
-  rust-bootstrap,
+  rust-1_92,
   openssl,
   zlib,
 }: let
-  version = "1.93.0";
+  version = "1.93.1";
 in
   mkDerivation {
     pname = "rust";
@@ -24,18 +24,18 @@ in
       urls = [
         "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
       ];
-      hash = "sha256-aREr2DwyGUP/w5C32y9Z7z/ruV2scA9nwhVvv2tQpwU=";
+      hash = "sha256-TCMKRLPZyfPO+VCUNxn4OABY0nyR/aXjapqUfvAT4B8=";
     };
 
     buildDeps = [
-      make
+      gnumake
       cmake
       ninja
       pkg-config
       python3
       bash
       which
-      rust-bootstrap
+      rust-1_92
       llvm
       openssl
     ];
@@ -60,7 +60,7 @@ in
           printf '#!/bin/sh\nexit 0\n' > .fake-bin/git
           chmod +x .fake-bin/git
           export PATH="$PWD/.fake-bin:$PATH"
-          cat > config.toml << TOML
+          cat > bootstrap.toml << TOML
           change-id = 148795
 
           [llvm]
@@ -72,8 +72,8 @@ in
           extended = true
           tools = ["cargo"]
           vendor = true
-          cargo = "${rust-bootstrap}/bin/cargo"
-          rustc = "${rust-bootstrap}/bin/rustc"
+          cargo = "${rust-1_92}/bin/cargo"
+          rustc = "${rust-1_92}/bin/rustc"
 
           [install]
           prefix = "$out"
