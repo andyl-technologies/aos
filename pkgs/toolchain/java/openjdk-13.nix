@@ -1,0 +1,34 @@
+##! OpenJDK 13 — bootstrap chain intermediate (built with openjdk-12)
+{
+  mkDerivation,
+  fetchurl,
+  gnumake,
+  autoconf,
+  bash,
+  which,
+  zip,
+  unzip,
+  gawk,
+  coreutils,
+  zlib,
+  alsa-lib,
+  binutils,
+  cups,
+  file,
+  fontconfig,
+  freetype,
+  xorg-stubs,
+  openjdk-12,
+}: let
+  mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
+    inherit fetchurl mkDerivation gnumake autoconf bash which zip unzip gawk
+            coreutils zlib alsa-lib binutils cups file fontconfig freetype xorg-stubs;
+  };
+in
+  mkOpenJDKBootstrap {
+    major = 13;
+    version = "13.0.14";
+    build = "5";
+    srcHash = "sha256-TI6ISQ7TAnbqAUXTfzPglPz0Ns5Si6sp9qmjVGgg+vQ=";
+    prevJdk = openjdk-12;
+  }
