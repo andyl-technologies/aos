@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   perl,
   linux-headers,
   binutils,
@@ -22,7 +22,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       perl
       binutils
     ];

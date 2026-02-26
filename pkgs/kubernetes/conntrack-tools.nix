@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   pkg-config,
   flex,
   bison,
@@ -29,7 +29,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       pkg-config
       flex
       bison

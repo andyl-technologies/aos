@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   pkg-config,
   util-linux,
 }: let
@@ -20,7 +20,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       pkg-config
     ];
     runtimeDeps = [util-linux];

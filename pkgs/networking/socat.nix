@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   openssl,
 }: let
   version = "1.8.0.3";
@@ -18,7 +18,7 @@ in
       hash = "sha256-AesBc2HZW7OmlB6EC1nkRjo/q/kt9BVO0CsWou1qAJU=";
     };
 
-    buildDeps = [make];
+    buildDeps = [gnumake];
     runtimeDeps = [openssl];
     propagatedDeps = [];
 
@@ -64,6 +64,11 @@ in
       self,
       pkgs,
     }: {
+      rpath = testing.mkRPATHCheck {
+        pkg = self;
+        bins = ["socat"];
+      };
+
       version = testing.mkToolCheck {
         pname = "tool-socat";
         tool = self;

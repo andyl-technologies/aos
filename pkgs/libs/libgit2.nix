@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   cmake,
   ninja,
   openssl,
@@ -24,7 +24,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       cmake
       ninja
       python3
