@@ -3,9 +3,14 @@
 # Provides convenience functions built on top of mkVMTest (headless mode)
 # for common integration test patterns:
 #
-#   mkLinkCheck    — Compile, link, and run a C program against a library
-#   mkToolCheck    — Run a CLI tool and optionally verify output
-#   mkCompileCheck — Compile-only (no run) to verify headers/linkage
+#   mkLinkCheck       — Compile, link, and run a C program against a library
+#   mkToolCheck       — Run a CLI tool and optionally verify output
+#   mkCompileCheck    — Compile-only (no run) to verify headers/linkage
+#   mkSONAMECheck     — Verify SONAME exists on shared libraries
+#   mkRPATHCheck      — Verify RPATH entries point to valid dirs
+#   mkSymbolCheck     — Verify symbols are exported from a shared library
+#   mkVersionCheck    — Compare header version macros to runtime version
+#   mkDynLinkerCheck  — Verify ELF interpreter exists
 #
 # All tests run in headless microVMs with no systemd and no agent.
 # The test script IS the init process (PID 1).
@@ -177,11 +182,322 @@
                 echo "==> Test program exited successfully"
       '';
     };
+  # -------------------------------------------------------------------------
+  # mkSONAMECheck — Verify SONAME exists on shared libraries
+  # -------------------------------------------------------------------------
+  mkSONAMECheck = {
+    pkg,
+    libs,
+  }: let
+    libChecks = builtins.concatStringsSep "\n" (
+      builtins.map (
+        l: ''
+          check_soname "${pkg}/lib/${l}" "${l}"
+        ''
+      )
+      libs
+    );
+  in
+    mkVMTest {
+      name = "${pkg.pname or "pkg"}-soname";
+      rootfsDeps = [pkgs.elfutils pkg];
+      testScript = ''
+        FAIL=0
+
+        check_soname() {
+          LIB_PATH="$1"
+          LIB_NAME="$2"
+
+          if [ ! -f "$LIB_PATH" ]; then
+            echo "SKIP: $LIB_NAME ($LIB_PATH not found)"
+            return
+          fi
+
+          SONAME_LINE=$(readelf -d "$LIB_PATH" 2>/dev/null | grep SONAME || true)
+          if [ -z "$SONAME_LINE" ]; then
+            echo "FAIL: $LIB_NAME has no SONAME"
+            FAIL=1
+            return
+          fi
+          echo "PASS: $LIB_NAME SONAME: $SONAME_LINE"
+        }
+
+        echo "==> Checking SONAMEs"
+        ${libChecks}
+
+        if [ "$FAIL" -ne 0 ]; then
+          echo "==> SONAME check FAILED"
+          exit 1
+        fi
+        echo "==> All SONAME checks passed"
+      '';
+    };
+
+  # -------------------------------------------------------------------------
+  # mkRPATHCheck — Verify RPATH entries point to valid dirs
+  # -------------------------------------------------------------------------
+  mkRPATHCheck = {
+    pkg,
+    bins,
+  }: let
+    binChecks = builtins.concatStringsSep "\n" (
+      builtins.map (
+        b: let
+          # Support both bin/ and sbin/ — try both paths
+          binPath =
+            if builtins.substring 0 1 b == "/"
+            then "${pkg}${b}"
+            else "${pkg}/bin/${b}";
+        in ''
+          if [ -f "${binPath}" ]; then
+            check_rpath "${binPath}" "${b}"
+          elif [ -f "${pkg}/sbin/${b}" ]; then
+            check_rpath "${pkg}/sbin/${b}" "${b}"
+          else
+            echo "SKIP: ${b} not found in ${pkg}/bin/ or ${pkg}/sbin/"
+          fi
+        ''
+      )
+      bins
+    );
+  in
+    mkVMTest {
+      name = "${pkg.pname or "pkg"}-rpath";
+      rootfsDeps = [pkgs.elfutils pkg];
+      testScript = ''
+        FAIL=0
+
+        check_rpath() {
+          BINARY="$1"
+          LABEL="$2"
+
+          echo "==> Checking RPATH for $LABEL ($BINARY)"
+
+          RPATH_LINE=$(readelf -d "$BINARY" 2>/dev/null | grep -E 'RPATH|RUNPATH' || true)
+
+          if [ -z "$RPATH_LINE" ]; then
+            echo "  WARN: $LABEL has no RPATH/RUNPATH"
+            return
+          fi
+
+          echo "  $RPATH_LINE"
+
+          RPATH_VAL=$(echo "$RPATH_LINE" | sed 's/.*\[//' | sed 's/\]//')
+
+          OLD_IFS="$IFS"
+          IFS=":"
+          for dir in $RPATH_VAL; do
+            IFS="$OLD_IFS"
+
+            case "$dir" in
+              /usr/lib*|/lib|/lib64)
+                echo "  FAIL: $LABEL has non-Nix RPATH entry: $dir"
+                FAIL=1
+                ;;
+            esac
+
+            if [ ! -d "$dir" ]; then
+              echo "  FAIL: $LABEL RPATH directory does not exist: $dir"
+              FAIL=1
+            else
+              echo "  OK: $dir exists"
+            fi
+          done
+          IFS="$OLD_IFS"
+        }
+
+        ${binChecks}
+
+        if [ "$FAIL" -ne 0 ]; then
+          echo "==> RPATH check FAILED"
+          exit 1
+        fi
+        echo "==> All RPATH checks passed"
+      '';
+    };
+
+  # -------------------------------------------------------------------------
+  # mkSymbolCheck — Verify symbols are exported from a shared library
+  # -------------------------------------------------------------------------
+  mkSymbolCheck = {
+    pkg,
+    libName,
+    symbols,
+  }: let
+    symbolChecks = builtins.concatStringsSep "\n" (
+      builtins.map (
+        sym: ''
+          check_symbol "${pkg}/lib/${libName}" "${libName}" "${sym}"
+        ''
+      )
+      symbols
+    );
+  in
+    mkVMTest {
+      name = "${pkg.pname or "pkg"}-symbols";
+      rootfsDeps = [pkgs.binutils pkg];
+      testScript = ''
+        FAIL=0
+
+        check_symbol() {
+          LIB_PATH="$1"
+          LIB_NAME="$2"
+          SYMBOL="$3"
+
+          if [ ! -f "$LIB_PATH" ]; then
+            echo "SKIP: $LIB_NAME ($LIB_PATH not found)"
+            return
+          fi
+
+          if nm -D "$LIB_PATH" 2>/dev/null | grep -q " T $SYMBOL"; then
+            echo "PASS: $LIB_NAME exports $SYMBOL"
+          else
+            echo "FAIL: $LIB_NAME missing symbol $SYMBOL"
+            FAIL=1
+          fi
+        }
+
+        echo "==> Checking symbol exports"
+        ${symbolChecks}
+
+        if [ "$FAIL" -ne 0 ]; then
+          echo "==> Symbol check FAILED"
+          exit 1
+        fi
+        echo "==> All symbol checks passed"
+      '';
+    };
+
+  # -------------------------------------------------------------------------
+  # mkVersionCheck — Compare header version macros to runtime version
+  # -------------------------------------------------------------------------
+  # headerCode: C code fragment that sets `const char *header_ver = ...;`
+  # runtimeCode: C code fragment that sets `const char *runtime_ver = ...;`
+  # libs: linker flags (e.g. ["-lssl" "-lcrypto"])
+  mkVersionCheck = {
+    pkg,
+    name,
+    headerCode,
+    runtimeCode,
+    libs ? [],
+  }: let
+    includePath = makeIncludePath [pkg];
+    libraryPath = makeLibraryPath [pkg];
+    libFlags = builtins.concatStringsSep " " libs;
+  in
+    mkVMTest {
+      name = "${pkg.pname or "pkg"}-version-${name}";
+      rootfsDeps = [pkg];
+      testScript = ''
+        export C_INCLUDE_PATH="${includePath}:$C_INCLUDE_PATH"
+        export LIBRARY_PATH="${libraryPath}:$LIBRARY_PATH"
+        export LD_LIBRARY_PATH="${libraryPath}:$LD_LIBRARY_PATH"
+
+        cat > /tmp/check_version.c << 'EOF'
+        #include <stdio.h>
+        #include <string.h>
+        ${headerCode}
+        int main(void) {
+            ${runtimeCode}
+            if (strcmp(header_ver, runtime_ver) != 0) {
+                fprintf(stderr, "MISMATCH: header=%s runtime=%s\n", header_ver, runtime_ver);
+                return 1;
+            }
+            printf("MATCH: %s\n", runtime_ver);
+            return 0;
+        }
+        EOF
+
+        echo "==> Checking ${name} version consistency"
+        gcc -o /tmp/check_version /tmp/check_version.c ${libFlags}
+        /tmp/check_version
+        echo "==> Version consistency check passed"
+      '';
+    };
+
+  # -------------------------------------------------------------------------
+  # mkDynLinkerCheck — Verify ELF interpreter exists
+  # -------------------------------------------------------------------------
+  mkDynLinkerCheck = {
+    pkg,
+    bins,
+  }: let
+    binChecks = builtins.concatStringsSep "\n" (
+      builtins.map (
+        b: let
+          binPath =
+            if builtins.substring 0 1 b == "/"
+            then "${pkg}${b}"
+            else "${pkg}/bin/${b}";
+        in ''
+          if [ -f "${binPath}" ]; then
+            check_interp "${binPath}" "${b}"
+          elif [ -f "${pkg}/sbin/${b}" ]; then
+            check_interp "${pkg}/sbin/${b}" "${b}"
+          else
+            echo "SKIP: ${b} not found in ${pkg}/bin/ or ${pkg}/sbin/"
+          fi
+        ''
+      )
+      bins
+    );
+  in
+    mkVMTest {
+      name = "${pkg.pname or "pkg"}-dynamic-linker";
+      rootfsDeps = [pkgs.elfutils pkg];
+      testScript = ''
+        FAIL=0
+
+        check_interp() {
+          BINARY="$1"
+          LABEL="$2"
+
+          echo "==> Checking dynamic linker for $LABEL ($BINARY)"
+
+          INTERP_LINE=$(readelf -l "$BINARY" 2>/dev/null | grep "interpreter" || true)
+
+          if [ -z "$INTERP_LINE" ]; then
+            echo "  INFO: $LABEL has no interpreter (possibly static)"
+            return
+          fi
+
+          echo "  $INTERP_LINE"
+
+          INTERP=$(echo "$INTERP_LINE" | sed 's/.*interpreter: //' | sed 's/\].*//')
+
+          if [ -z "$INTERP" ]; then
+            echo "  FAIL: could not parse interpreter path for $LABEL"
+            FAIL=1
+            return
+          fi
+
+          if [ -f "$INTERP" ]; then
+            echo "  PASS: interpreter exists: $INTERP"
+          else
+            echo "  FAIL: interpreter does not exist: $INTERP"
+            FAIL=1
+          fi
+        }
+
+        ${binChecks}
+
+        if [ "$FAIL" -ne 0 ]; then
+          echo "==> Dynamic linker check FAILED"
+          exit 1
+        fi
+        echo "==> All dynamic linker checks passed"
+      '';
+    };
 in {
   inherit
     mkLinkCheck
     mkToolCheck
     mkCompileCheck
     mkCxxCompileCheck
+    mkSONAMECheck
+    mkRPATHCheck
+    mkSymbolCheck
+    mkVersionCheck
+    mkDynLinkerCheck
     ;
 }
