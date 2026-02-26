@@ -1,4 +1,4 @@
-# stdenv/bootstrap/stage5-gnumake.nix — GNU Make 3.79.1 from TCC (Mes libc)
+# stdenv/bootstrap/stage4-gnumake-tcc.nix — GNU Make 3.79.1 from TCC (Mes libc)
 #
 # First make in the bootstrap chain. Built with TCC as CC, linked against
 # Mes libc (static). This make is used by later stage-4 builds (binutils,
@@ -7,64 +7,48 @@
 # GNU Make 3.79.1 (2000) is simple enough to compile file-by-file with TCC.
 # No configure — we pre-define the needed HAVE_* macros on the command line.
 #
-# Builder: bash 2.05b (TCC-compiled, stage 4)
+# Builder: bash-tcc + coreutils-tcc (stage 4)
 #
 {
   tinycc, # Output of stage3-tinycc.nix (TCC with Mes libc)
-  posix-tools, # Output of stage1-posix-tools.nix
-  bash, # Output of stage4-bash.nix (bash 2.05b from TCC)
+  bash, # Output of stage4-bash-tcc.nix (bash shell)
+  coreutils, # Output of stage4-coreutils-tcc.nix (cp, mkdir, etc.)
   buildPlatform,
   ...
 }:
 let
   system = buildPlatform.system;
+  sources = import ./sources.nix;
 
   src = builtins.fetchTarball {
-    url = "https://mirrors.kernel.org/gnu/make/make-3.79.1.tar.gz";
-    sha256 = "sha256-0ATEyqEsirZxYPdk1ifsRqXp1KUWPLrtGgAmw/QYgYI=";
+    url = sources.gnumake.url;
+    sha256 = sources.gnumake.sha256;
   };
-
-  # Recursive copy helper for bootstrap (posix-tools cp handles single files)
-  cpdir = ''
-    cpdir() {
-      for item in "$1"/*; do
-        [ -e "$item" ] || continue
-        base="''${item##*/}"
-        if [ -d "$item" ]; then
-          [ -d "$2/$base" ] || mkdir "$2/$base"
-          cpdir "$item" "$2/$base"
-        else
-          cp "$item" "$2/$base"
-        fi
-      done
-    }
-  '';
 
 in
 builtins.derivation {
-  name = "gnumake-3.79.1";
+  name = "gnumake-${sources.gnumake.version}";
   inherit system;
   builder = "${bash}/bin/bash";
   args = [
     "-c"
     ''
-      ${cpdir}
       set -eu
 
       export PATH="${
         builtins.concatStringsSep ":" (
           builtins.map (p: "${p}/bin") [
             bash
+            coreutils
             tinycc
-            posix-tools
           ]
         )
       }"
       CC=${tinycc}/bin/tcc
 
-      # Copy source to writable directory
-      mkdir $TMPDIR/src
-      cpdir ${src} $TMPDIR/src
+      # Copy source to writable directory (store files are read-only)
+      cp -r ${src} $TMPDIR/src
+      chmod -R u+w $TMPDIR/src
       cd $TMPDIR/src
 
       # ── Create output directories ────────────────────────────────────────
@@ -80,7 +64,10 @@ builtins.derivation {
       echo "==> Building GNU Make 3.79.1"
 
       # ── Common flags ─────────────────────────────────────────────────────
-      CFLAGS_BASE="-c -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART"
+      # -Dsys_siglist=_make_siglist: Mes libc exports sys_siglist as a FUNCTION
+      # (not an array), causing segfault when gnumake indexes into it. Rename
+      # to avoid the Mes libc symbol collision.
+      CFLAGS_BASE="-c -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -Dsys_siglist=_make_siglist"
 
       # ── getopt (no extra flags needed) ───────────────────────────────────
       $CC -c -I. getopt.c
@@ -130,6 +117,7 @@ builtins.derivation {
     description = "GNU Make, version 3.79.1";
     homepage = "https://www.gnu.org/software/make/";
     license = "GPL-2.0-or-later";
-    platforms = [ "i686-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = "i686"; };
   };
 }

@@ -73,9 +73,7 @@ builtins.derivation {
     description = "GNU patch file patching utility, version 2.6.1";
     homepage = "https://www.gnu.org/software/patch/";
     license = "GPL-3.0-or-later";
-    platforms = [
-      "i686-linux"
-      "x86_64-linux"
-    ];
+    build = { os = "linux"; };
+    execute = { os = "linux"; };
   };
 }

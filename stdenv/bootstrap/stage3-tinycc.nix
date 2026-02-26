@@ -16,7 +16,7 @@
 # After each boot stage, the Mes C library is rebuilt with the new compiler,
 # producing progressively better object code.
 #
-# Builder: kaemNix -> full kaem. kaemNix reads $buildScriptPath, then
+# Builder: kaem -> full kaem. kaem reads $buildScriptPath, then
 # invokes full kaem to run the real build script (builtins.toFile).
 # No /bin/sh dependency.
 #
@@ -26,18 +26,21 @@
 {
   mes, # Output of stage2-mes.nix
   posix-tools, # Output of stage1-posix-tools.nix
-  seeds, # Output of stage0-seeds.nix (provides kaemNix)
+  seeds, # Output of stage0-seeds.nix (provides kaem)
   buildPlatform,
   ...
 }:
 let
   system = buildPlatform.system;
+  # Guix's TCC fork — janneke's tinycc with 30 MesCC-compatibility patches.
+  # Upstream TCC cannot be compiled by MesCC; this fork has the fixes baked in.
+  # Same source Guix uses in their bootstrap (gnu/packages/commencement.scm).
   tccsrc = builtins.derivation {
     name = "tinycc-source";
     inherit system;
     builder = "builtin:fetchurl";
-    url = "https://gitlab.com/janneke/tinycc/-/archive/34b45a69ffcc846d33557ce58424965dde2286a3/tinycc-34b45a69ffcc846d33557ce58424965dde2286a3.tar.gz";
-    outputHash = "sha256-l0Ti3eA+FMqmEht+VBTScwRZtsT8Xgork+Ow8ifRwt4=";
+    url = "https://lilypond.org/janneke/tcc/tcc-0.9.26-1149-g46a75d0c.tar.gz";
+    outputHash = "sha256-9PbOEhrGMaI0rwgHU/udZF0jNNIBYLN6u+dbV0oeHRk=";
     outputHashMode = "flat";
     outputHashAlgo = "sha256";
     preferLocalBuild = true;
@@ -361,7 +364,7 @@ let
     ungz --file ''${NYACC_TAR} --output ''${WORK}/nyacc.tar
     untar --file ''${WORK}/nyacc.tar
     rm ''${WORK}/nyacc.tar
-    NYACC_DIR=''${WORK}/nyacc-1.00.2-lb1
+    NYACC_DIR=''${WORK}/nyacc-1.00.2
 
     # Mes paths from stage 2
     MES_BIN=''${MES_OUT}/bin/mes-m2
@@ -369,7 +372,7 @@ let
     MES_LIBDIR=''${MES_OUT}/lib/x86-mes
 
     # GUILE_LOAD_PATH: use unpacked source trees for Scheme modules
-    GUILE_LOAD_PATH=''${MES_SRC_DIR}/mes/module:''${MES_SRC_DIR}/module:''${NYACC_DIR}/module
+    GUILE_LOAD_PATH=''${NYACC_DIR}/module:''${MES_SRC_DIR}/mes/module:''${MES_SRC_DIR}/module
     MES_STACK=15000000
     MES_ARENA=30000000
     MES_MAX_ARENA=30000000
@@ -403,7 +406,7 @@ let
     untar --non-strict --file ''${WORK}/tcc.tar
     rm ''${WORK}/tcc.tar
 
-    TCC_SRC=''${WORK}/tinycc-34b45a69ffcc846d33557ce58424965dde2286a3
+    TCC_SRC=''${WORK}/tcc-0.9.26-1149-g46a75d0c
     cd ''${TCC_SRC}
 
     # tcc.h includes config.h unconditionally — empty one suffices
@@ -423,7 +426,17 @@ let
     # ══════════════════════════════════════════════════════════════════
     echo "==> Pass 1: MesCC compiling TCC..."
 
-    ''${MES_BIN} --no-auto-compile -e main ''${MESCC} -- -S -o tcc.s -I ''${INCDIR} -D BOOTSTRAP=1 -I . -D TCC_TARGET_I386=1 -D inline= -D CONFIG_TCCDIR=\"''${LIBDIR}/tcc\" -D CONFIG_SYSROOT=\"/\" -D CONFIG_TCC_CRTPREFIX=\"''${LIBDIR}\" -D CONFIG_TCC_ELFINTERP=\"/mes/loader\" -D CONFIG_TCC_SYSINCLUDEPATHS=\"''${INCDIR}\" -D TCC_LIBGCC=\"''${LIBDIR}/libc.a\" -D CONFIG_TCC_LIBTCC1_MES=0 -D CONFIG_TCCBOOT=1 -D CONFIG_TCC_STATIC=1 -D CONFIG_USE_LIBGCC=1 -D TCC_VERSION=\"0.9.28-dev\" -D ONE_SOURCE=1 tcc.c
+    # Patch TCC source for MesCC Pass 1 — NYACC cannot parse
+    # "typedef __jmp_buf jmp_buf[1]" from setjmp.h (array typedefs).
+    # Remove setjmp usage entirely for Pass 1; Boot 0/1/2 restore unpatched source.
+    cp ''${TCC_SRC}/tcc.h ''${WORK}/tcc.h.orig
+    cp ''${TCC_SRC}/libtcc.c ''${WORK}/libtcc.c.orig
+    replace --file ''${TCC_SRC}/tcc.h --output ''${TCC_SRC}/tcc.h --match-on "#include <setjmp.h>" --replace-with "/* setjmp removed for MesCC */"
+    replace --file ''${TCC_SRC}/tcc.h --output ''${TCC_SRC}/tcc.h --match-on "jmp_buf error_jmp_buf;" --replace-with "long error_jmp_buf;"
+    replace --file ''${TCC_SRC}/libtcc.c --output ''${TCC_SRC}/libtcc.c --match-on "longjmp(s1->error_jmp_buf, 1);" --replace-with "exit(1);"
+    replace --file ''${TCC_SRC}/libtcc.c --output ''${TCC_SRC}/libtcc.c --match-on "if (setjmp(s1->error_jmp_buf) == 0) {" --replace-with "if (1) {"
+
+    ''${MES_BIN} --no-auto-compile -e main ''${MESCC} -- -S -o tcc.s -I ''${INCDIR} -D BOOTSTRAP=1 -I . -D TCC_TARGET_I386=1 -D inline= -D CONFIG_TCCDIR=\"''${LIBDIR}/tcc\" -D CONFIG_SYSROOT=\"/\" -D CONFIG_TCC_CRTPREFIX=\"''${LIBDIR}\" -D CONFIG_TCC_ELFINTERP=\"/mes/loader\" -D CONFIG_TCC_SYSINCLUDEPATHS=\"''${INCDIR}\" -D TCC_LIBGCC=\"''${LIBDIR}/libc.a\" -D CONFIG_TCC_LIBTCC1_MES=0 -D CONFIG_TCCBOOT=1 -D CONFIG_TCC_STATIC=1 -D CONFIG_USE_LIBGCC=1 -D TCC_VERSION=\"0.9.26\" -D ONE_SOURCE=1 tcc.c
 
     echo "==> tcc.s produced, linking..."
     ''${MES_BIN} --no-auto-compile -e main ''${MESCC} -- --base-address 0x08048000 -o ''${BINDIR}/tcc-mes -L ''${WORK}/lib -L ''${MES_OUT}/lib tcc.s -l c+tcc
@@ -438,13 +451,17 @@ let
     CC=''${BINDIR}/tcc-mes
     ${mkRebuildLibcScript "CC"}
 
+    # Restore original TCC source for Boot passes (TCC can parse real setjmp.h)
+    cp ''${WORK}/tcc.h.orig ''${TCC_SRC}/tcc.h
+    cp ''${WORK}/libtcc.c.orig ''${TCC_SRC}/libtcc.c
+
     # ══════════════════════════════════════════════════════════════════
     # BOOT 0: tcc-mes compiles tcc-boot0
     # ══════════════════════════════════════════════════════════════════
     echo "==> Boot 0: tcc-mes compiling tcc-boot0..."
     cd ''${TCC_SRC}
 
-    ''${BINDIR}/tcc-mes -g -v -static -o ''${BINDIR}/tcc-boot0 -D BOOTSTRAP=1 -D HAVE_FLOAT=1 -D HAVE_BITFIELD=1 -D HAVE_LONG_LONG=1 -D HAVE_SETJMP=1 -I . -I ''${INCDIR} -D TCC_TARGET_I386=1 -D CONFIG_TCCDIR=\"''${LIBDIR}/tcc\" -D CONFIG_TCC_CRTPREFIX=\"''${LIBDIR}\" -D CONFIG_TCC_ELFINTERP=\"/mes/loader\" -D CONFIG_TCC_LIBPATHS=\"''${LIBDIR}:''${LIBDIR}/tcc\" -D CONFIG_TCC_SYSINCLUDEPATHS=\"''${INCDIR}\" -D TCC_LIBGCC=\"''${LIBDIR}/libc.a\" -D TCC_LIBTCC1=\"libtcc1.a\" -D CONFIG_TCCBOOT=1 -D CONFIG_TCC_STATIC=1 -D CONFIG_USE_LIBGCC=1 -D TCC_VERSION=\"0.9.28-dev\" -D ONE_SOURCE=1 -L . -L ''${LIBDIR} tcc.c
+    ''${BINDIR}/tcc-mes -g -v -static -o ''${BINDIR}/tcc-boot0 -D BOOTSTRAP=1 -D HAVE_FLOAT=1 -D HAVE_BITFIELD=1 -D HAVE_LONG_LONG=1 -D HAVE_SETJMP=1 -I . -I ''${INCDIR} -D TCC_TARGET_I386=1 -D CONFIG_TCCDIR=\"''${LIBDIR}/tcc\" -D CONFIG_TCC_CRTPREFIX=\"''${LIBDIR}\" -D CONFIG_TCC_ELFINTERP=\"/mes/loader\" -D CONFIG_TCC_LIBPATHS=\"''${LIBDIR}:''${LIBDIR}/tcc\" -D CONFIG_TCC_SYSINCLUDEPATHS=\"''${INCDIR}\" -D TCC_LIBGCC=\"''${LIBDIR}/libc.a\" -D TCC_LIBTCC1=\"libtcc1.a\" -D CONFIG_TCCBOOT=1 -D CONFIG_TCC_STATIC=1 -D CONFIG_USE_LIBGCC=1 -D TCC_VERSION=\"0.9.26\" -D ONE_SOURCE=1 -L . -L ''${LIBDIR} tcc.c
 
     chmod 750 ''${BINDIR}/tcc-boot0
     echo "==> tcc-boot0 built"
@@ -461,7 +478,7 @@ let
     echo "==> Boot 1: tcc-boot0 compiling tcc-boot1..."
     cd ''${TCC_SRC}
 
-    ''${BINDIR}/tcc-boot0 -g -v -static -o ''${BINDIR}/tcc-boot1 -D BOOTSTRAP=1 -D HAVE_FLOAT=1 -D HAVE_BITFIELD=1 -D HAVE_LONG_LONG=1 -D HAVE_SETJMP=1 -I . -I ''${INCDIR} -D TCC_TARGET_I386=1 -D CONFIG_TCCDIR=\"''${LIBDIR}/tcc\" -D CONFIG_TCC_CRTPREFIX=\"''${LIBDIR}\" -D CONFIG_TCC_ELFINTERP=\"/mes/loader\" -D CONFIG_TCC_LIBPATHS=\"''${LIBDIR}:''${LIBDIR}/tcc\" -D CONFIG_TCC_SYSINCLUDEPATHS=\"''${INCDIR}\" -D TCC_LIBGCC=\"''${LIBDIR}/libc.a\" -D TCC_LIBTCC1=\"libtcc1.a\" -D CONFIG_TCCBOOT=1 -D CONFIG_TCC_STATIC=1 -D CONFIG_USE_LIBGCC=1 -D TCC_VERSION=\"0.9.28-dev\" -D ONE_SOURCE=1 -L . -L ''${LIBDIR} tcc.c
+    ''${BINDIR}/tcc-boot0 -g -v -static -o ''${BINDIR}/tcc-boot1 -D BOOTSTRAP=1 -D HAVE_FLOAT=1 -D HAVE_BITFIELD=1 -D HAVE_LONG_LONG=1 -D HAVE_SETJMP=1 -I . -I ''${INCDIR} -D TCC_TARGET_I386=1 -D CONFIG_TCCDIR=\"''${LIBDIR}/tcc\" -D CONFIG_TCC_CRTPREFIX=\"''${LIBDIR}\" -D CONFIG_TCC_ELFINTERP=\"/mes/loader\" -D CONFIG_TCC_LIBPATHS=\"''${LIBDIR}:''${LIBDIR}/tcc\" -D CONFIG_TCC_SYSINCLUDEPATHS=\"''${INCDIR}\" -D TCC_LIBGCC=\"''${LIBDIR}/libc.a\" -D TCC_LIBTCC1=\"libtcc1.a\" -D CONFIG_TCCBOOT=1 -D CONFIG_TCC_STATIC=1 -D CONFIG_USE_LIBGCC=1 -D TCC_VERSION=\"0.9.26\" -D ONE_SOURCE=1 -L . -L ''${LIBDIR} tcc.c
 
     chmod 750 ''${BINDIR}/tcc-boot1
     echo "==> tcc-boot1 built"
@@ -479,7 +496,7 @@ let
     cd ''${TCC_SRC}
 
     # Use $out paths so the installed binary finds its libs in the Nix store
-    ''${BINDIR}/tcc-boot1 -g -v -static -o ''${BINDIR}/tcc -D BOOTSTRAP=1 -D HAVE_FLOAT=1 -D HAVE_BITFIELD=1 -D HAVE_LONG_LONG=1 -D HAVE_SETJMP=1 -I . -I ''${INCDIR} -D TCC_TARGET_I386=1 -D CONFIG_TCCDIR=\"''${out}/lib/x86-mes/tcc\" -D CONFIG_TCC_CRTPREFIX=\"''${out}/lib/x86-mes\" -D CONFIG_TCC_ELFINTERP=\"/mes/loader\" -D CONFIG_TCC_LIBPATHS=\"''${out}/lib/x86-mes:''${out}/lib/x86-mes/tcc\" -D CONFIG_TCC_SYSINCLUDEPATHS=\"''${out}/include\" -D TCC_LIBGCC=\"''${out}/lib/x86-mes/libc.a\" -D TCC_LIBTCC1=\"libtcc1.a\" -D CONFIG_TCCBOOT=1 -D CONFIG_TCC_STATIC=1 -D CONFIG_USE_LIBGCC=1 -D TCC_VERSION=\"0.9.28-dev\" -D ONE_SOURCE=1 -L . -L ''${LIBDIR} tcc.c
+    ''${BINDIR}/tcc-boot1 -g -v -static -o ''${BINDIR}/tcc -D BOOTSTRAP=1 -D HAVE_FLOAT=1 -D HAVE_BITFIELD=1 -D HAVE_LONG_LONG=1 -D HAVE_SETJMP=1 -I . -I ''${INCDIR} -D TCC_TARGET_I386=1 -D CONFIG_TCCDIR=\"''${out}/lib/x86-mes/tcc\" -D CONFIG_TCC_CRTPREFIX=\"''${out}/lib/x86-mes\" -D CONFIG_TCC_ELFINTERP=\"/mes/loader\" -D CONFIG_TCC_LIBPATHS=\"''${out}/lib/x86-mes:''${out}/lib/x86-mes/tcc\" -D CONFIG_TCC_SYSINCLUDEPATHS=\"''${out}/include\" -D TCC_LIBGCC=\"''${out}/lib/x86-mes/libc.a\" -D TCC_LIBTCC1=\"libtcc1.a\" -D CONFIG_TCCBOOT=1 -D CONFIG_TCC_STATIC=1 -D CONFIG_USE_LIBGCC=1 -D TCC_VERSION=\"0.9.26\" -D ONE_SOURCE=1 -L . -L ''${LIBDIR} tcc.c
 
     chmod 750 ''${BINDIR}/tcc
     echo "==> tcc (boot2) built"
@@ -600,11 +617,11 @@ let
 
   # The complete TCC bootstrap chain
   tinycc = builtins.derivation {
-    name = "tinycc-0.9.28-dev";
+    name = "tinycc-0.9.26";
     inherit system;
     builder = "${seeds.kaemNix}";
     passAsFile = [ "buildScript" ];
-    # Single-line buildScript: kaemNix invokes full kaem
+    # Single-line buildScript: kaem invokes full kaem
     buildScript = "${posix-tools}/bin/kaem --verbose --strict --file ${buildKaem}\n";
     # Derivation paths passed as env vars for full kaem ${VAR} expansion
     POSIX_TOOLS = "${posix-tools}";
@@ -618,11 +635,12 @@ let
 in
 tinycc
 // {
-  version = "0.9.28-dev";
+  version = "0.9.26";
   meta = {
     description = "TinyCC (TCC) is a small and fast C compiler (janneke's fork)";
     homepage = "https://gitlab.com/janneke/tinycc";
     license = "LGPL-2.1-or-later";
-    platforms = [ "i686-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = "i686"; };
   };
 }
