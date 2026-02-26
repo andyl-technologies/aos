@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   pkg-config,
 }: let
   version = "1.3.7";
@@ -19,7 +19,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       pkg-config
     ];
     runtimeDeps = [];

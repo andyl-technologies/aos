@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   binutils,
 }: let
   version = "4.0.4";
@@ -18,7 +18,7 @@ in
       hash = "sha256-QLYehCpO/L+A8+U7LyIMBE6M/kbrTdY5bIO3USQLHA0=";
     };
 
-    buildDeps = [make binutils];
+    buildDeps = [gnumake binutils];
     runtimeDeps = [];
     propagatedDeps = [];
 

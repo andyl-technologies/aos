@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   ncurses,
 }: let
   version = "8.3";
@@ -19,7 +19,7 @@ in
       hash = "sha256-/lODIERngozUle6NHTwDen66E4nCK8agQfYnl2+QYcw=";
     };
 
-    buildDeps = [make];
+    buildDeps = [gnumake];
     runtimeDeps = [ncurses];
     propagatedDeps = [ncurses];
 

@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
 }:
 
 let
@@ -19,7 +19,7 @@ mkDerivation {
     hash = "sha256-A22WmRZG0ESe0KqVLk++IbR2zplKvCduSdMOaGcIvTc=";
   };
 
-  buildDeps = [ make ];
+  buildDeps = [ gnumake ];
   runtimeDeps = [ ];
   propagatedDeps = [ ];
 

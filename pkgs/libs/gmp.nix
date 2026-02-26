@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   m4,
 }: let
   version = "6.3.0";
@@ -21,7 +21,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       m4
     ];
     runtimeDeps = [];

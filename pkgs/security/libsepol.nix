@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   flex,
 }: let
   version = "3.10";
@@ -19,7 +19,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       flex
     ];
     runtimeDeps = [];

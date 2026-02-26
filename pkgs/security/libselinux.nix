@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   pkg-config,
   libsepol,
   pcre2,
@@ -21,7 +21,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       pkg-config
     ];
     runtimeDeps = [

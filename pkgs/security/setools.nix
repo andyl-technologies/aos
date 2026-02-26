@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   pkg-config,
   python3,
   setuptools,
@@ -24,7 +24,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       pkg-config
       python3
       setuptools

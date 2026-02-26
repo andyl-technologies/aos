@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   pkg-config,
   gettext,
   libsepol,
@@ -25,7 +25,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       pkg-config
       gettext
     ];

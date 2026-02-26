@@ -203,6 +203,22 @@ let
       kubelet = callPackage ./kubernetes/kubelet.nix {inherit kubeSource;};
       kubeadm = callPackage ./kubernetes/kubeadm.nix {inherit kubeSource;};
       kubectl = callPackage ./kubernetes/kubectl.nix {inherit kubeSource;};
+
+      # --- stdenv packages (linked, not rebuilt) ---
+      gcc = stdenv.gcc;
+      glibc = stdenv.glibc;
+      binutils = stdenv.binutils;
+      bash = stdenv.bash;
+      coreutils = stdenv.coreutils;
+      gnumake = stdenv.gnumake;
+      sed = stdenv.sed;
+      grep = stdenv.grep;
+      findutils = stdenv.findutils;
+      gawk = stdenv.gawk;
+      diffutils = stdenv.diffutils;
+      tar = stdenv.tar;
+      gzip = stdenv.gzip;
+      patch = stdenv.patch;
     };
 in
   self

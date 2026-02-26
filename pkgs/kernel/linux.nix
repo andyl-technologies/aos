@@ -2,7 +2,7 @@
 {
   mkDerivation,
   linuxSource,
-  make,
+  gnumake,
   perl,
   bash,
   gawk,
@@ -20,7 +20,7 @@ mkDerivation {
   inherit (linuxSource) version src;
 
   buildDeps = [
-    make
+    gnumake
     perl
     bash
     gawk

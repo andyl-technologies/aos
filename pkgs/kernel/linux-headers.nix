@@ -2,13 +2,13 @@
 {
   mkDerivation,
   linuxSource,
-  make,
+  gnumake,
 }:
 mkDerivation {
   pname = "linux-headers";
   inherit (linuxSource) version src;
 
-  buildDeps = [make];
+  buildDeps = [gnumake];
   runtimeDeps = [];
   propagatedDeps = [];
 

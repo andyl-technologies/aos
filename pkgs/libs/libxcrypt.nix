@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   perl,
 }: let
   version = "4.5.2";
@@ -19,7 +19,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       perl
     ];
     runtimeDeps = [];

@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
 }: let
   version = "1.0.2";
 in
@@ -17,7 +17,7 @@ in
       hash = "sha256-sGTHw9Qm77R4bmCo5oWbgu4vLF5J/+6mQM/k/jPLw3Y=";
     };
 
-    buildDeps = [make];
+    buildDeps = [gnumake];
     runtimeDeps = [];
     propagatedDeps = [];
 

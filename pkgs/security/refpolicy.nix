@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   m4,
   python3,
   util-linux,
@@ -24,7 +24,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       m4
       python3
       util-linux

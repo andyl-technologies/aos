@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   bash,
   which,
   bzip2,
@@ -23,7 +23,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       bash
       which
     ];

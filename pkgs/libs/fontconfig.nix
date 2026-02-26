@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   gperf,
   pkg-config,
   python3,
@@ -24,7 +24,7 @@ mkDerivation {
   };
 
   buildDeps = [
-    make
+    gnumake
     gperf
     pkg-config
     python3

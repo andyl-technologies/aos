@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   pkg-config,
   libmnl,
   libnfnetlink,
@@ -21,7 +21,7 @@ in
     };
 
     buildDeps = [
-      make
+      gnumake
       pkg-config
     ];
     runtimeDeps = [

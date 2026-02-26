@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
 }: let
   version = "1.10.0";
 in
@@ -17,7 +17,7 @@ in
       hash = "sha256-U3USkEdEs14jKRIFXM+Oxm12hjn/Or5XiNkNeS7F9Is=";
     };
 
-    buildDeps = [make];
+    buildDeps = [gnumake];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -66,6 +66,11 @@ in
             return 0;
           }
         '';
+      };
+
+      soname = testing.mkSONAMECheck {
+        pkg = self;
+        libs = ["liblz4.so"];
       };
 
       cli-roundtrip = testing.mkVMTest {
