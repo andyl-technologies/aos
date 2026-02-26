@@ -118,7 +118,7 @@ in {
     # Written to /boot/loader/entries/aos.conf
     environment.etc."boot/loader/entries/aos.conf" = {
       text = ''
-        title   AOS ${config.aos.system.version} (${config.aos.system.variant})
+        title   AOS ${config.aos.system.version}
         linux   /vmlinuz
         ${lib.optionalString cfg.initrd.enable "initrd  /initramfs.img"}
         options ${kernelCmdline}

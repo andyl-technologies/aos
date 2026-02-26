@@ -70,8 +70,6 @@
   # systemd-boot EFI binary paths.
   systemdBootEfi = "${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootx64.efi";
 
-  # Variant name for the boot entry title.
-  variant = system.config.aos.system.variant;
   version = system.config.aos.system.version;
 in
   pkgs.mkDerivation {
@@ -92,7 +90,7 @@ in
       {
         name = "build-image";
         script = ''
-          echo "==> Creating ${diskSize} raw disk image for AOS ${variant}"
+          echo "==> Creating ${diskSize} raw disk image for AOS ${name}"
 
           # ── 1. Create empty raw image ──────────────────────────────────────
           truncate -s ${diskSize} image.raw
@@ -177,9 +175,9 @@ in
           LOADER
 
           # ── 9. Write boot entry ────────────────────────────────────────────
-          echo "==> Writing boot entry for AOS ${variant} ${version}"
+          echo "==> Writing boot entry for AOS ${name} ${version}"
           cat > /mnt/aos-esp/loader/entries/aos.conf <<ENTRY
-          title   AOS ${variant} ${version}
+          title   AOS ${name} ${version}
           linux   /vmlinuz
           initrd  /initrd.img
           options ${kernelParams}
@@ -214,7 +212,6 @@ in
           cat > $out/image-info.json <<META
           {
             "name": "${name}",
-            "variant": "${variant}",
             "version": "${version}",
             "diskSize": "${diskSize}",
             "espSize": "${espSize}",

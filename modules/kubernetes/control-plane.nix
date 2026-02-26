@@ -176,5 +176,45 @@ in {
       10257 # kube-controller-manager
       10259 # kube-scheduler
     ];
+
+    # Fleet test: verify a control-plane + worker cluster can form and schedule pods.
+    system.fleetTests.k8s-cluster = {
+      machines = {
+        control-plane = {
+          variant = "k8s-control-plane";
+          role = "control-plane";
+          mac = "52:54:00:00:00:01";
+        };
+        worker = {
+          variant = "k8s-worker";
+          role = "worker";
+          mac = "52:54:00:00:00:02";
+        };
+      };
+      testScript = ''
+        # Wait for control plane to be ready
+        control-plane.wait_for_unit("kubelet.service")
+        control-plane.succeed("kubeadm init --config /etc/kubernetes/kubeadm-config.yaml")
+        control-plane.wait_until_succeeds("kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes")
+
+        # Extract join command for worker
+        JOIN_CMD=$(control-plane.succeed("kubeadm token create --print-join-command"))
+
+        # Join worker to the cluster
+        worker.wait_for_unit("kubelet.service")
+        worker.succeed(JOIN_CMD)
+
+        # Verify both nodes are visible from the control plane
+        control-plane.wait_until_succeeds("test $(kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes --no-headers | wc -l) -eq 2")
+
+        # Verify worker reaches Ready state
+        control-plane.wait_until_succeeds("kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes | grep worker | grep -q Ready")
+
+        # Schedule a test pod and verify it lands on the worker
+        control-plane.succeed("kubectl --kubeconfig /etc/kubernetes/admin.conf run test-pod --image=pause --restart=Never")
+        control-plane.wait_until_succeeds("kubectl --kubeconfig /etc/kubernetes/admin.conf get pod test-pod -o jsonpath='{.status.phase}' | grep -q Running")
+      '';
+      timeout = 600;
+    };
   };
 }

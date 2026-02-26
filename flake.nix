@@ -66,9 +66,15 @@
           socat = env.pkgs.socat;
           jq = env.pkgs.jq;
         };
-        allChecks = import ./tests {
+        aosSystem = env.lib.evalModules {
+          modules = [./system.nix];
+          pkgs = env.pkgs;
+          lib = env.lib;
+        };
+        allChecks = import ./lib/testing/collect.nix {
           inherit (env) pkgs lib;
           inherit testTools;
+          system = aosSystem;
         };
       in
         {
@@ -100,7 +106,6 @@
           build = allChecks.build;
         }
         // prefixAttrs "vm" allChecks.vm
-        // prefixAttrs "fleet" allChecks.fleet
         // prefixAttrs "integration" allChecks.integration
     );
   };
