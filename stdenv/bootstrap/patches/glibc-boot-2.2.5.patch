@@ -215,7 +215,7 @@ diff -purN -x .git -x fubar -x fubar.c -x Makefile -x config.status -x config.h 
  	 echo '#include <bp-thunks.h>'; \\
 -	) | \$(COMPILE.c) -x c -o \$@ -"
 +	) > stdin.c; \$(COMPILE.c) -x c -o \$@ stdin.c"
- ### Use this for debugging output:
+ ### Use this for debugging intermediate output:
  ### 	) >\$(@:.ob=.c)
  ### 	\$(subst -c,-E,\$(COMPILE.c)) -o \$(@:.ob=.ib) \$(@:.ob=.c)
 diff -purN -x .git -x fubar -x fubar.c -x Makefile -x config.status -x config.h -x BOOT -x BOOT-GCC -x texis -x '*.info*' ../glibc-2.2.5/sysdeps/unix/sysv/linux/sys/timex.h glibc-2.2.5/sysdeps/unix/sysv/linux/sys/timex.h

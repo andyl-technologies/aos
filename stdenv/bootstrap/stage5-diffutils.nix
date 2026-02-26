@@ -1,48 +1,40 @@
-# stdenv/bootstrap/stage8-diffutils.nix — GNU diffutils 2.7 from GCC 2.95.3 (glibc)
+# stdenv/bootstrap/stage5-diffutils.nix — GNU diffutils 2.7 from GCC 2.95.3 (glibc)
 #
 # Compiled with self-hosted GCC 2.95.3 linked against glibc 2.2.5.
-# Uses configure/make (via TCC-compiled tools from stage 5).
+# Uses configure/make.
 #
 # GNU diffutils 2.7 (1994) provides diff, cmp, sdiff, and diff3.
 # Classic version used in many bootstrap chains.
 #
-# Builder: bash 2.05b (TCC-compiled, stage 4)
+# Builder: bash + coreutils (stage 4)
 #
 {
   gcc, # Self-hosted GCC 2.95.3
   glibc, # glibc 2.2.5
   linuxHeaders, # Linux kernel headers
-  posix-tools, # Output of stage1-posix-tools.nix
-  bash, # TCC-compiled bash 2.05b (stage 4, used as builder)
+  binutils, # binutils (stage 5 — provides ar, ranlib)
+  bash, # bash 2.05b (stage 4)
+  coreutils, # coreutils (stage 4)
   gnumake, # gnumake-tcc from stage 5
-  sed, # sed-tcc from stage 5 (needed by configure)
-  grep, # grep-tcc from stage 5 (needed by configure)
+  sed, # sed (stage 4)
+  grep, # grep (stage 4)
+  patch, # patch (stage 4)
+  diffutils, # diffutils (stage 4)
+  gawk, # GNU awk (stage 4)
+  tar, # GNU tar (stage 4)
   buildPlatform,
   ...
 }:
 let
   system = buildPlatform.system;
+  lib = import ./lib.nix;
+
+  sources = import ./sources.nix;
 
   src = builtins.fetchTarball {
-    url = "https://mirrors.kernel.org/gnu/diffutils/diffutils-2.7.tar.gz";
-    sha256 = "sha256-AdsuvMN3btb0J5q9xxJs2zrSSO8+V7gd7yBMO4LVpxs=";
+    url = sources.diffutils.url;
+    sha256 = sources.diffutils.sha256;
   };
-
-  # Recursive copy helper for bootstrap (posix-tools cp handles single files)
-  cpdir = ''
-    cpdir() {
-      for item in "$1"/*; do
-        [ -e "$item" ] || continue
-        base="''${item##*/}"
-        if [ -d "$item" ]; then
-          [ -d "$2/$base" ] || mkdir "$2/$base"
-          cpdir "$item" "$2/$base"
-        else
-          cp "$item" "$2/$base"
-        fi
-      done
-    }
-  '';
 
 in
 builtins.derivation {
@@ -52,18 +44,22 @@ builtins.derivation {
   args = [
     "-c"
     ''
-      ${cpdir}
       set -eu
 
       export PATH="${
         builtins.concatStringsSep ":" (
           builtins.map (p: "${p}/bin") [
             gcc
+            binutils
             gnumake
+            coreutils
+            bash
             sed
             grep
-            posix-tools
-            bash
+            patch
+            diffutils
+            gawk
+            tar
           ]
         )
       }"
@@ -71,20 +67,28 @@ builtins.derivation {
       export SHELL="${bash}/bin/bash"
 
       # Copy source to writable directory
-      mkdir $TMPDIR/src
-      cpdir ${src} $TMPDIR/src
+      cp -r ${src} $TMPDIR/src
+      chmod -R u+w $TMPDIR/src
       cd $TMPDIR/src
+
+      # Bypass automake sanity check (coreutils-tcc's ls -t is broken)
+      ${bash}/bin/bash ${lib.bypassSanityCheck} configure
 
       CC="${gcc}/bin/gcc" \
       CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
       LDFLAGS="-static -L${glibc}/lib" \
+      LIBS="-Wl,--start-group -lc -lnss_files -lnss_dns -lresolv -Wl,--end-group" \
       CONFIG_SHELL="${bash}/bin/bash" \
       ./configure \
         --prefix=$out \
         --build=i686-unknown-linux-gnu \
-        --host=i686-unknown-linux-gnu
+        --host=i686-unknown-linux-gnu \
+        --disable-nls
 
       make
+
+      # Pre-create output directories (diffutils 2.7's Makefile may not mkdir)
+      mkdir -p $out/bin $out/info $out/man/man1
       make install
 
       echo "GNU diffutils 2.7 built successfully"
@@ -96,6 +100,7 @@ builtins.derivation {
     description = "GNU file comparison utilities (diff, cmp, sdiff, diff3), version 2.7";
     homepage = "https://www.gnu.org/software/diffutils/";
     license = "GPL-2.0-or-later";
-    platforms = [ "i686-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = "i686"; };
   };
 }

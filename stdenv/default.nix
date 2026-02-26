@@ -99,7 +99,7 @@ let
       mkDerivation = args:
         let
           effectiveArgs = args // {
-            buildDeps = (args.buildDeps or [ ]) ++ initialPath;
+            buildDeps = (args.buildDeps or [ ]) ++ [ccWrapper] ++ initialPath;
             system = args.system or system;
             shell = args.shell or shellPath;
             storeDir = args.storeDir or storeDir;
@@ -157,6 +157,7 @@ let
         removePhase
         ;
       isCross = buildPlatform.system != hostPlatform.system;
+      canExecHost = lib.canRun buildPlatform hostPlatform.constraints;
       inherit buildPlatform hostPlatform targetPlatform;
 
       # Raw toolchain components (direct access for packages that need them)

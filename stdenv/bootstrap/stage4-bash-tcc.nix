@@ -22,13 +22,14 @@
 }:
 let
   system = buildPlatform.system;
+  sources = import ./sources.nix;
 
   bash-src = builtins.derivation {
-    name = "bash-2.05b.tar.gz";
+    name = "bash-${sources.bash.version}.tar.gz";
     inherit system;
     builder = "builtin:fetchurl";
-    url = "https://mirrors.kernel.org/gnu/bash/bash-2.05b.tar.gz";
-    outputHash = "sha256-ugPUEpmMxUvQsPLWwyEAln0xNwmK/9wtMubnwRsWP+Q=";
+    url = sources.bash.url;
+    outputHash = sources.bash.tarballHash;
     outputHashMode = "flat";
     outputHashAlgo = "sha256";
     preferLocalBuild = true;
