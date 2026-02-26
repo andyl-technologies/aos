@@ -1,9 +1,9 @@
-##! OpenJDK 21 — Java Development Kit built from source
+##! OpenJDK 25 — Java Development Kit built from source
 {
   mkDerivation,
   fetchurl,
   lib,
-  make,
+  gnumake,
   autoconf,
   bash,
   which,
@@ -19,11 +19,11 @@
   fontconfig,
   freetype,
   xorg-stubs,
-  openjdk-bootstrap,
+  openjdk-24,
 }:
 let
-  version = "21.0.10";
-  build = "7";
+  version = "25.0.2";
+  build = "10";
   tag = "jdk-${version}+${build}";
 in
 mkDerivation {
@@ -32,13 +32,13 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://github.com/openjdk/jdk21u/archive/refs/tags/${tag}.tar.gz"
+      "https://github.com/openjdk/jdk25u/archive/refs/tags/${tag}.tar.gz"
     ];
-    hash = "sha256-ZQCQbLfMSSaM5Mo2jbPd81QbQK/SXuyzeOE9WnL0MhQ=";
+    hash = "sha256-mzFkzt9416dqWUmdemgzFFx+Amnse2ZL/l7gPO0vRJ4=";
   };
 
   buildDeps = [
-    make
+    gnumake
     autoconf
     bash
     which
@@ -71,7 +71,7 @@ mkDerivation {
       name = "unpack";
       script = ''
         tar xf $src
-        cd jdk21u-*
+        cd jdk25u-jdk-*
       '';
     }
     {
@@ -79,7 +79,7 @@ mkDerivation {
       script = ''
         # OpenJDK configure requires bash
         $CONFIG_SHELL configure \
-          --with-boot-jdk=${openjdk-bootstrap} \
+          --with-boot-jdk=${openjdk-24} \
           --enable-headless-only \
           --with-native-debug-symbols=none \
           --disable-warnings-as-errors \
@@ -150,7 +150,7 @@ mkDerivation {
   ];
 
   meta = {
-    description = "OpenJDK 21 — Java Development Kit built from source";
+    description = "OpenJDK 25 — Java Development Kit built from source";
     homepage = "https://openjdk.org";
     license = "GPL-2.0-with-classpath-exception";
   };
@@ -168,7 +168,7 @@ mkDerivation {
         testScript = ''
           OUTPUT=$(java -version 2>&1)
           case "$OUTPUT" in
-            *"21.0"*) ;;
+            *"25.0"*) ;;
             *) echo "==> ERROR: unexpected java version: $OUTPUT" >&2; exit 1 ;;
           esac
           echo "==> openjdk version: PASS"
