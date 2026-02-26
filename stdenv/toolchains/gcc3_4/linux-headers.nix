@@ -12,11 +12,13 @@ let
   };
 
   # Linux 2.6.9 uses include/asm-<arch> directory names
-  asmDir =
-    if hostPlatform.system == "x86_64-linux" then "asm-x86_64"
-    else if hostPlatform.system == "i686-linux" then "asm-i386"
-    else if hostPlatform.system == "aarch64-linux" then "asm-arm64"
-    else throw "unsupported system: ${hostPlatform.system}";
+  asmDirMap = {
+    x86_64 = "asm-x86_64";
+    i686 = "asm-i386";
+    aarch64 = "asm-arm64";
+  };
+  asmDir = asmDirMap.${hostPlatform.constraints.cpu}
+    or (throw "unsupported CPU for linux-headers: ${hostPlatform.constraints.cpu}");
 in
 builtins.derivation {
   name = "linux-headers-2.6.9";
@@ -55,6 +57,7 @@ builtins.derivation {
     description = "Linux kernel headers, version 2.6.9";
     homepage = "https://www.kernel.org/";
     license = "GPL-2.0-only";
-    platforms = [ "i686-linux" "x86_64-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = ["x86_64" "i686"]; };
   };
 }

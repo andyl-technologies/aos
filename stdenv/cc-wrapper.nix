@@ -10,6 +10,7 @@
   shell,
   coreutils,
   hostPlatform,
+  storeDir ? "/nix/store",
 }:
 let
   system = hostPlatform.system;
@@ -159,4 +160,9 @@ wrapperDrv
   isWrapper = true;
   targetPrefix = "";
   inherit targetTriple;
+  constraints = {
+    build = null;
+    execute = hostPlatform.constraints;
+    target = hostPlatform.constraints;
+  };
 }

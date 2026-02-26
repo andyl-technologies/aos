@@ -42,4 +42,9 @@ builtins.derivation {
       echo "GNU sed 4.1.5 installed to $out"
     ''
   ];
-} // { meta.platforms = [ "i686-linux" "x86_64-linux" ]; }
+} // {
+  meta = {
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = ["x86_64" "i686"]; };
+  };
+}

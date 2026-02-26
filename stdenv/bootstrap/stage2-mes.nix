@@ -49,8 +49,8 @@ let
     name = "nyacc-source-1.00.2";
     inherit system;
     builder = "builtin:fetchurl";
-    url = "https://github.com/Googulator/nyacc/releases/download/V1.00.2-lb1/nyacc-1.00.2-lb1.tar.gz";
-    outputHash = "sha256-cIyUP4nJcpEOlUTuB3dxrL0KLA/G0zSW/hWCZN22Uyc=";
+    url = "https://download.savannah.nongnu.org/releases/nyacc/nyacc-1.00.2.tar.gz";
+    outputHash = "sha256-825Pt91STcP0s1TT1TE/aefOWmrpNxHoz21R6qjSsxg=";
     outputHashMode = "flat";
     outputHashAlgo = "sha256";
     preferLocalBuild = true;
@@ -271,7 +271,7 @@ let
     MES_SOURCE=''${MES_SRC}
     MES_LIB=''${MES_SRC}/lib
 
-    GUILE_LOAD_PATH=''${MES_SRC}/mes/module:''${MES_SRC}/module:''${NYACC_DIR}/module
+    GUILE_LOAD_PATH=''${NYACC_DIR}/module:''${MES_SRC}/mes/module:''${MES_SRC}/module
 
     M1=''${POSIX_TOOLS}/bin/M1
     HEX2=''${POSIX_TOOLS}/bin/hex2
@@ -682,6 +682,7 @@ mes
     description = "GNU Mes -- Scheme interpreter and MesCC C compiler";
     homepage = "https://www.gnu.org/software/mes/";
     license = "GPL-3.0-or-later";
-    platforms = [ "i686-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = "i686"; };
   };
 }

@@ -59,10 +59,7 @@ builtins.derivation {
     description = "Linux kernel headers, version 3.10";
     homepage = "https://www.kernel.org/";
     license = "GPL-2.0-only";
-    platforms = [
-      "i686-linux"
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
+    build = { os = "linux"; };
+    execute = { os = "linux"; };
   };
 }

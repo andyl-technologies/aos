@@ -60,10 +60,7 @@ builtins.derivation {
     description = "GNU binutils 2.41 — linker, assembler, and binary utilities";
     homepage = "https://www.gnu.org/software/binutils/";
     license = "GPL-3.0-or-later";
-    platforms = [
-      "i686-linux"
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
+    build = { os = "linux"; };
+    execute = { os = "linux"; };
   };
 }

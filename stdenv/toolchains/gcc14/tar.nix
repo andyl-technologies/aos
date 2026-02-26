@@ -55,10 +55,7 @@ builtins.derivation {
     description = "GNU tar 1.35 archiving utility";
     homepage = "https://www.gnu.org/software/tar/";
     license = "GPL-3.0-or-later";
-    platforms = [
-      "i686-linux"
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
+    build = { os = "linux"; };
+    execute = { os = "linux"; };
   };
 }

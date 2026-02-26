@@ -53,6 +53,7 @@ builtins.derivation {
     description = "GNU file comparison utilities (diff, cmp, sdiff, diff3), version 2.8.1";
     homepage = "https://www.gnu.org/software/diffutils/";
     license = "GPL-2.0-or-later";
-    platforms = [ "i686-linux" "x86_64-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = ["x86_64" "i686"]; };
   };
 }

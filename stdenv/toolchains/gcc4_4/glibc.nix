@@ -100,9 +100,7 @@ builtins.derivation {
     description = "GNU C Library, version 2.12";
     homepage = "https://www.gnu.org/software/libc/";
     license = "LGPL-2.1-or-later";
-    platforms = [
-      "i686-linux"
-      "x86_64-linux"
-    ];
+    build = { os = "linux"; };
+    execute = { os = "linux"; };
   };
 }

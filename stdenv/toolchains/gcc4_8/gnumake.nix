@@ -68,6 +68,7 @@ builtins.derivation {
     description = "GNU Make build automation tool, version 3.82";
     homepage = "https://www.gnu.org/software/make/";
     license = "GPL-3.0-or-later";
-    platforms = [ "i686-linux" "x86_64-linux" "aarch64-linux" ];
+    build = { os = "linux"; };
+    execute = { os = "linux"; };
   };
 }

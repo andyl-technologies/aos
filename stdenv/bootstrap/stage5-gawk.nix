@@ -1,47 +1,38 @@
-# stdenv/bootstrap/stage8-gawk.nix — GNU awk 3.0.6 from GCC 2.95.3 (glibc)
+# stdenv/bootstrap/stage5-gawk.nix — GNU awk 3.0.6 from GCC 2.95.3 (glibc)
 #
 # Compiled with self-hosted GCC 2.95.3 linked against glibc 2.2.5.
-# Uses configure/make (via TCC-compiled tools from stage 5).
+# Uses configure/make.
 #
 # GNU awk 3.0.6 (November 2000) is era-appropriate for GCC 2.95.3.
 #
-# Builder: bash 2.05b (TCC-compiled, stage 4)
+# Builder: bash + coreutils (stage 4)
 #
 {
   gcc, # Self-hosted GCC 2.95.3
   glibc, # glibc 2.2.5
   linuxHeaders, # Linux kernel headers
-  posix-tools, # Output of stage1-posix-tools.nix
-  bash, # TCC-compiled bash 2.05b (stage 4, used as builder)
+  binutils, # binutils (stage 5 — provides ar, ranlib)
+  bash, # bash 2.05b (stage 4)
+  coreutils, # coreutils (stage 4)
   gnumake, # gnumake-tcc from stage 5
-  sed, # sed-tcc from stage 5 (needed by configure)
-  grep, # grep-tcc from stage 5 (needed by configure)
+  sed, # sed (stage 4)
+  grep, # grep (stage 4)
+  patch, # patch (stage 4)
+  diffutils, # diffutils (stage 4)
+  gawk, # GNU awk (stage 4)
+  tar, # GNU tar (stage 4)
   buildPlatform,
   ...
 }:
 let
   system = buildPlatform.system;
+  lib = import ./lib.nix;
+  sources = import ./sources.nix;
 
   src = builtins.fetchTarball {
-    url = "https://mirrors.kernel.org/gnu/gawk/gawk-3.0.6.tar.gz";
-    sha256 = "sha256-KxjOpC2yN3DtY3HOcoe+/Ze71nE+BegC8mYxld6qu7c=";
+    url = sources.gawk.url;
+    sha256 = sources.gawk.sha256;
   };
-
-  # Recursive copy helper for bootstrap (posix-tools cp handles single files)
-  cpdir = ''
-    cpdir() {
-      for item in "$1"/*; do
-        [ -e "$item" ] || continue
-        base="''${item##*/}"
-        if [ -d "$item" ]; then
-          [ -d "$2/$base" ] || mkdir "$2/$base"
-          cpdir "$item" "$2/$base"
-        else
-          cp "$item" "$2/$base"
-        fi
-      done
-    }
-  '';
 
 in
 builtins.derivation {
@@ -51,18 +42,22 @@ builtins.derivation {
   args = [
     "-c"
     ''
-      ${cpdir}
       set -eu
 
       export PATH="${
         builtins.concatStringsSep ":" (
           builtins.map (p: "${p}/bin") [
             gcc
+            binutils
             gnumake
+            coreutils
+            bash
             sed
             grep
-            posix-tools
-            bash
+            patch
+            diffutils
+            gawk
+            tar
           ]
         )
       }"
@@ -70,13 +65,14 @@ builtins.derivation {
       export SHELL="${bash}/bin/bash"
 
       # Copy source to writable directory
-      mkdir $TMPDIR/src
-      cpdir ${src} $TMPDIR/src
+      cp -r ${src} $TMPDIR/src
+      chmod -R u+w $TMPDIR/src
       cd $TMPDIR/src
 
       CC="${gcc}/bin/gcc" \
       CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
       LDFLAGS="-static -L${glibc}/lib" \
+      LIBS="-Wl,--start-group -lc -lnss_files -lnss_dns -lresolv -Wl,--end-group" \
       CONFIG_SHELL="${bash}/bin/bash" \
       ./configure \
         --prefix=$out \
@@ -84,11 +80,14 @@ builtins.derivation {
         --host=i686-unknown-linux-gnu \
         --disable-nls
 
-      make
-      make install
+      # Build only the main gawk binary (skip awklib which has pwcat —
+      # it links getpwent/NSS symbols missing from our static bootstrap glibc)
+      make gawk
 
-      # Create awk symlink if not present
-      test -f "$out/bin/gawk" && test ! -f "$out/bin/awk" && ln -s gawk "$out/bin/awk"
+      # Manual install (make install would try to build awklib)
+      mkdir -p $out/bin
+      cp gawk $out/bin/gawk
+      ln -s gawk $out/bin/awk
 
       echo "GNU awk 3.0.6 built successfully"
     ''
@@ -99,6 +98,7 @@ builtins.derivation {
     description = "GNU awk pattern scanning and processing language, version 3.0.6";
     homepage = "https://www.gnu.org/software/gawk/";
     license = "GPL-2.0-or-later";
-    platforms = [ "i686-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = "i686"; };
   };
 }

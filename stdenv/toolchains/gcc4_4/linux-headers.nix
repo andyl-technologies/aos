@@ -57,9 +57,7 @@ builtins.derivation {
     description = "Linux kernel headers, version 2.6.32";
     homepage = "https://www.kernel.org/";
     license = "GPL-2.0-only";
-    platforms = [
-      "i686-linux"
-      "x86_64-linux"
-    ];
+    build = { os = "linux"; };
+    execute = { os = "linux"; };
   };
 }

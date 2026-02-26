@@ -26,7 +26,7 @@
 # Reference: https://github.com/oriansj/stage0-posix
 #
 {
-  seeds, # Output of stage0-seeds.nix (provides hex0, kaem, kaemNix, mkdir, ln)
+  seeds, # Output of stage0-seeds.nix (provides hex0, kaemNix, mkdir, ln)
   buildPlatform,
   ...
 }:
@@ -196,7 +196,7 @@ let
       ${seeds.mkdir} bootstrap-seeds/POSIX
       ${seeds.mkdir} bootstrap-seeds/POSIX/x86
       ${seeds.ln} ${seeds.hex0} bootstrap-seeds/POSIX/x86/hex0-seed
-      ${seeds.ln} ${seeds.kaem} bootstrap-seeds/POSIX/x86/kaem-optional-seed
+      ${seeds.ln} ${seeds.kaemNix} bootstrap-seeds/POSIX/x86/kaem-optional-seed
 
       # Symlink answers file for sha256sum verification
       ${seeds.ln} ${src}/x86.answers x86.answers
@@ -205,7 +205,7 @@ let
       ${seeds.ln} ${src}/after.kaem after.kaem
 
       # ── Phase 0: hex0-seed -> hex0, kaem-minimal ──────────────────
-      ${seeds.kaem} x86/mescc-tools-seed-kaem.kaem
+      ${seeds.kaemNix} x86/mescc-tools-seed-kaem.kaem
 
       # ── Phases 1-11: hex1->hex2->M0->catm->cc_x86->M2->blood-elf->M1->hex2->kaem
       ./x86/artifact/kaem-0 x86/mescc-tools-mini-kaem.kaem
@@ -226,6 +226,7 @@ posix-tools
     description = "posix-tools: hex0 -> hex1 -> hex2 -> M0 -> M1 -> M2-Planet bootstrap chain";
     homepage = "https://github.com/oriansj/stage0-posix";
     license = "GPL-3.0-or-later";
-    platforms = [ "i686-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = "i686"; };
   };
 }

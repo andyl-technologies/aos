@@ -45,4 +45,9 @@ builtins.derivation {
       echo "Bash 5.1 installed to $out"
     ''
   ];
-} // { meta.platforms = [ "i686-linux" "x86_64-linux" "aarch64-linux" ]; }
+} // {
+  meta = {
+    build = { os = "linux"; };
+    execute = { os = "linux"; };
+  };
+}

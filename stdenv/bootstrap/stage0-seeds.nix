@@ -24,29 +24,17 @@
 }:
 let
   system = buildPlatform.system;
+
   # The ONLY opaque binary: hex0-seed (256 bytes, committed with git +x)
   # Nix preserves the executable bit when importing files to the store.
   hex0 = ./seeds/hex0;
-
-  # Compile kaem-minimal from source using hex0
-  # kaem executes a script line-by-line: fork/exec each line, abort on
-  # non-zero exit. Supports cd builtin. NO variable expansion.
-  kaem = builtins.derivation {
-    name = "kaem";
-    inherit system;
-    builder = "${hex0}";
-    args = [
-      "${./seeds/kaem-minimal.hex0}"
-      (builtins.placeholder "out")
-    ];
-  };
 
   # Compile patched kaem-nix from source using hex0
   # Like kaem-minimal but when argc < 2, reads $buildScriptPath from
   # the process environment. This allows it to be used as a Nix builder
   # with passAsFile without needing /bin/sh.
   kaemNix = builtins.derivation {
-    name = "kaem-nix";
+    name = "kaem-minimal-nix";
     inherit system;
     builder = "${hex0}";
     args = [
@@ -85,7 +73,6 @@ in
 {
   inherit
     hex0
-    kaem
     kaemNix
     mkdir
     ln
@@ -95,6 +82,7 @@ in
     description = "Bootstrap seeds: hex0 (256B opaque binary) + tools compiled from hex0 source";
     homepage = "https://github.com/oriansj/bootstrap-seeds";
     license = "GPL-3.0-or-later";
-    platforms = [ "i686-linux" ];
+    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
+    execute = { os = "linux"; cpu = "i686"; };
   };
 }
