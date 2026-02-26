@@ -2,8 +2,8 @@
 {
   mkDerivation,
   fetchurl,
-  make,
-  go-bootstrap,
+  gnumake,
+  go-1_24,
 }: let
   version = "1.26.0";
 in
@@ -19,8 +19,8 @@ in
     };
 
     buildDeps = [
-      make
-      go-bootstrap
+      gnumake
+      go-1_24
     ];
     runtimeDeps = [];
 
@@ -35,7 +35,7 @@ in
       {
         name = "build";
         script = ''
-          export GOROOT_BOOTSTRAP=${go-bootstrap}
+          export GOROOT_BOOTSTRAP=${go-1_24}
           export GOROOT_FINAL=$out
           export GOCACHE=$TMPDIR/go-cache
           cd src
