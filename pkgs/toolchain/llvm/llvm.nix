@@ -1,0 +1,249 @@
+##! LLVM — compiler infrastructure (foundation for Rust)
+{
+  mkDerivation,
+  fetchurl,
+  gnumake,
+  cmake,
+  ninja,
+  python3,
+  zlib,
+}: let
+  version = "21.1.8";
+in
+  mkDerivation {
+    pname = "llvm";
+    inherit version;
+
+    src = fetchurl {
+      urls = [
+        "https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz"
+      ];
+      hash = "sha256-RjOiNhf6MaPqUSQlhup/sdpxQOQmvWL8FkJh/gNqoUI=";
+    };
+
+    buildDeps = [
+      gnumake
+      cmake
+      ninja
+      python3
+    ];
+    runtimeDeps = [zlib];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd llvm-project-${version}.src
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          cmake -S llvm -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$out \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
+            -DLLVM_LINK_LLVM_DYLIB=ON \
+            -DLLVM_INSTALL_UTILS=ON \
+            -DLLVM_ENABLE_ZLIB=ON \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          ninja -C build -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          ninja -C build install
+        '';
+      }
+    ];
+
+    checks = {
+      testing,
+      self,
+      pkgs,
+    }: {
+      compile-c = testing.mkVMTest {
+        name = "toolchain-llvm-compile-c";
+        rootfsDeps = [self];
+        testScript = ''
+          cat > /tmp/hello.c << 'EOF'
+          #include <stdio.h>
+          int main(void) {
+              printf("clang-c-ok\n");
+              return 0;
+          }
+          EOF
+
+          BT="${builtins.toString pkgs.bootstrapTools}"
+          DL=$(ls $BT/lib/ld-linux-*.so.* | head -1)
+          GCC_VER=$(ls "$BT/lib/gcc/x86_64-unknown-linux-gnu/")
+          clang \
+            --sysroot=/ \
+            -B$BT/lib \
+            -B$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER \
+            -isystem $BT/include-glibc \
+            -L$BT/lib \
+            -Wl,-dynamic-linker=$DL \
+            -Wl,-rpath,$BT/lib \
+            -o /tmp/hello /tmp/hello.c
+          /tmp/hello
+        '';
+      };
+
+      compile-cpp = testing.mkVMTest {
+        name = "toolchain-llvm-compile-cpp";
+        rootfsDeps = [self];
+        testScript = ''
+          cat > /tmp/test.cpp << 'EOF'
+          #include <iostream>
+          #include <vector>
+          int main() {
+              std::vector<int> v = {3, 1, 2};
+              int sum = 0;
+              for (int x : v) sum += x;
+              if (sum != 6) return 1;
+              std::cout << "clang-cpp-ok" << std::endl;
+              return 0;
+          }
+          EOF
+
+          BT="${builtins.toString pkgs.bootstrapTools}"
+          BT_ROOT=$(dirname $BT/lib)
+          CXX_VER=$(ls "$BT_ROOT/include/c++")
+          DL=$(ls $BT/lib/ld-linux-*.so.* | head -1)
+          clang++ \
+            --sysroot=/ \
+            -isystem "$BT_ROOT/include/c++/$CXX_VER" \
+            -isystem "$BT_ROOT/include/c++/$CXX_VER/x86_64-unknown-linux-gnu" \
+            -isystem $BT/include-glibc \
+            -B$BT/lib \
+            -B$BT/lib/gcc/x86_64-unknown-linux-gnu/$CXX_VER \
+            -L$BT/lib \
+            -L$BT/lib/gcc/x86_64-unknown-linux-gnu/$CXX_VER/ \
+            -Wl,-dynamic-linker=$DL \
+            -Wl,-rpath,$BT/lib \
+            -o /tmp/test /tmp/test.cpp -lstdc++
+          /tmp/test
+        '';
+      };
+
+      libllvm = testing.mkVMTest {
+        name = "toolchain-llvm-libllvm";
+        rootfsDeps = [self];
+        testScript = ''
+          LLVM="${builtins.toString self}"
+
+          # Verify libLLVM.so exists
+          ls $LLVM/lib/libLLVM*.so > /dev/null 2>&1
+          echo "==> libLLVM.so found"
+
+          # Verify llvm-config works
+          llvm-config --version
+          llvm-config --libdir
+          llvm-config --includedir
+
+          LIBDIR=$(llvm-config --libdir)
+          test -d "$LIBDIR"
+          echo "==> llvm-config reports valid paths"
+        '';
+      };
+
+      tools = testing.mkVMTest {
+        name = "toolchain-llvm-tools";
+        rootfsDeps = [self];
+        testScript = ''
+          cat > /tmp/tiny.c << 'EOF'
+          int main(void) { return 0; }
+          EOF
+
+          # Compile with gcc wrapper to get a valid object file
+          gcc -c -o /tmp/tiny.o /tmp/tiny.c
+
+          LLVM="${builtins.toString self}"
+
+          # llvm-ar: create static archive
+          llvm-ar rcs /tmp/tiny.a /tmp/tiny.o
+          test -f /tmp/tiny.a
+          echo "  llvm-ar: OK"
+
+          # llvm-nm: list symbols
+          llvm-nm /tmp/tiny.o > /tmp/llvm-nm-out
+          found_main=0
+          while IFS= read -r line; do
+            case "$line" in
+              *main*) found_main=1 ;;
+            esac
+          done < /tmp/llvm-nm-out
+          test "$found_main" = "1"
+          echo "  llvm-nm: OK"
+
+          # ld.lld: verify exists
+          if [ -x "$LLVM/bin/ld.lld" ]; then
+            ld.lld --version
+            echo "  ld.lld: OK"
+          else
+            echo "  ld.lld: not found (skipped)"
+          fi
+
+          echo "==> LLVM tools verified"
+        '';
+      };
+
+      link-openssl = testing.mkVMTest {
+        name = "toolchain-llvm-link-openssl";
+        rootfsDeps = [
+          self
+          pkgs.openssl
+        ];
+        testScript = ''
+          cat > /tmp/ssl_test.c << 'EOF'
+          #include <stdio.h>
+          #include <openssl/crypto.h>
+          int main(void) {
+              printf("openssl-via-clang: %s\n", OpenSSL_version(OPENSSL_VERSION));
+              return 0;
+          }
+          EOF
+
+          BT="${builtins.toString pkgs.bootstrapTools}"
+          OPENSSL="${builtins.toString pkgs.openssl}"
+          DL=$(ls $BT/lib/ld-linux-*.so.* | head -1)
+          GCC_VER=$(ls "$BT/lib/gcc/x86_64-unknown-linux-gnu/")
+
+          clang \
+            --sysroot=/ \
+            -isystem $OPENSSL/include \
+            -isystem $BT/include-glibc \
+            -B$BT/lib \
+            -B$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER \
+            -L$BT/lib \
+            -L$OPENSSL/lib \
+            -Wl,-dynamic-linker=$DL \
+            -Wl,-rpath,$BT/lib \
+            -Wl,-rpath,$OPENSSL/lib \
+            -o /tmp/ssl_test /tmp/ssl_test.c -lcrypto
+          /tmp/ssl_test
+        '';
+      };
+    };
+
+    meta = {
+      description = "LLVM compiler infrastructure";
+      homepage = "https://llvm.org";
+      license = "Apache-2.0";
+    };
+  }
