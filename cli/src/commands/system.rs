@@ -1,79 +1,56 @@
 use anyhow::{Context, Result};
 
 use crate::cli::SystemCmd;
-use crate::error::AosError;
 use crate::nix::NixRunner;
 use crate::output::{create_spinner, Printer};
 
-/// Known system variants.
-const KNOWN_VARIANTS: &[&str] = &["base", "server", "k8s-worker", "k8s-control-plane"];
-
 pub fn run(nix: &NixRunner, printer: &Printer, cmd: &SystemCmd) -> Result<()> {
     match cmd {
-        SystemCmd::Build { variant } => build(nix, printer, variant),
-        SystemCmd::Image { variant } => image(nix, printer, variant),
-        SystemCmd::Eval { variant } => eval(nix, printer, variant),
+        SystemCmd::Build => build(nix, printer),
+        SystemCmd::Image => image(nix, printer),
+        SystemCmd::Eval => eval(nix, printer),
     }
 }
 
-fn validate_variant(variant: &str) -> Result<()> {
-    if !KNOWN_VARIANTS.contains(&variant) {
-        return Err(AosError::InvalidArgument {
-            message: format!(
-                "unknown system variant '{variant}'. Known variants: {}",
-                KNOWN_VARIANTS.join(", ")
-            ),
-        }
-        .into());
-    }
-    Ok(())
-}
+fn build(nix: &NixRunner, printer: &Printer) -> Result<()> {
+    let attr = "system.config.system.build.toplevel";
 
-fn build(nix: &NixRunner, printer: &Printer, variant: &str) -> Result<()> {
-    validate_variant(variant)?;
+    printer.info("Building system...");
 
-    let attr = format!("systems.{variant}.config.system.build.toplevel");
-
-    printer.info(&format!("Building system '{variant}'..."));
-
-    let spinner = create_spinner(&format!("building system {variant}"));
+    let spinner = create_spinner("building system");
     let store_path = nix
-        .build(&attr, None)
-        .with_context(|| format!("building system '{variant}'"))?;
+        .build(attr, None)
+        .with_context(|| "building system")?;
     spinner.finish_and_clear();
 
     if printer.json_if_active(&serde_json::json!({
-        "variant": variant,
         "store_path": store_path.to_string_lossy(),
     })) {
         return Ok(());
     }
 
     printer.success(&format!(
-        "Built system {variant} -> {}",
+        "Built system -> {}",
         store_path.display()
     ));
 
     Ok(())
 }
 
-fn image(nix: &NixRunner, printer: &Printer, variant: &str) -> Result<()> {
-    validate_variant(variant)?;
+fn image(nix: &NixRunner, printer: &Printer) -> Result<()> {
+    let attr = "image";
+    let out_link = "output/aos.raw";
 
-    let attr = format!("images.{variant}");
-    let out_link = format!("output/aos-{variant}.raw");
-
-    printer.info(&format!("Building image for '{variant}'..."));
+    printer.info("Building image...");
     printer.info(&format!("Output: {out_link}"));
 
-    let spinner = create_spinner(&format!("building image {variant}"));
+    let spinner = create_spinner("building image");
     let store_path = nix
-        .build(&attr, Some(&out_link))
-        .with_context(|| format!("building image for '{variant}'"))?;
+        .build(attr, Some(out_link))
+        .with_context(|| "building image")?;
     spinner.finish_and_clear();
 
     if printer.json_if_active(&serde_json::json!({
-        "variant": variant,
         "store_path": store_path.to_string_lossy(),
         "output": out_link,
     })) {
@@ -81,24 +58,22 @@ fn image(nix: &NixRunner, printer: &Printer, variant: &str) -> Result<()> {
     }
 
     printer.success(&format!(
-        "Built image {variant} -> {}",
+        "Built image -> {}",
         store_path.display()
     ));
 
     Ok(())
 }
 
-fn eval(nix: &NixRunner, printer: &Printer, variant: &str) -> Result<()> {
-    validate_variant(variant)?;
+fn eval(nix: &NixRunner, printer: &Printer) -> Result<()> {
+    let attr = "system.config";
 
-    let attr = format!("systems.{variant}.config");
+    printer.info("Evaluating system...");
 
-    printer.info(&format!("Evaluating system '{variant}'..."));
-
-    let spinner = create_spinner(&format!("evaluating {variant}"));
+    let spinner = create_spinner("evaluating system");
     let value = nix
-        .eval_json(&attr)
-        .with_context(|| format!("evaluating system '{variant}'"))?;
+        .eval_json(attr)
+        .with_context(|| "evaluating system")?;
     spinner.finish_and_clear();
 
     if printer.json_if_active(&value) {
@@ -110,7 +85,7 @@ fn eval(nix: &NixRunner, printer: &Printer, variant: &str) -> Result<()> {
         serde_json::to_string_pretty(&value).unwrap_or_else(|_| format!("{value}"));
     printer.plain(&pretty);
 
-    printer.success(&format!("Evaluation of '{variant}' succeeded"));
+    printer.success("Evaluation succeeded");
 
     Ok(())
 }

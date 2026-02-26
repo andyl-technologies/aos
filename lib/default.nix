@@ -31,7 +31,7 @@ in
   // strings
   // {
     inherit types system;
-    inherit (platformMod) mkPlatform;
+    inherit (platformMod) mkPlatform cpus satisfies canRun canBuildOn platformIsCompatible constraintsCompatible;
     platform = platformMod.mkPlatform system;
     inherit
       (modules)

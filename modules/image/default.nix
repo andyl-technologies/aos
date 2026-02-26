@@ -49,7 +49,7 @@ in {
     system.build.image = buildImage {
       inherit pkgs lib;
       system = {inherit config;};
-      name = config.aos.system.variant;
+      name = config.aos.system.name;
       inherit (cfg) diskSize espSize rootSize;
     };
   };
