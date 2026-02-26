@@ -73,10 +73,7 @@
 
     # Bootstrap toolchain paths for compilation inside the VM
     btBase = builtins.toString bootstrapTools;
-    dynamicLinker =
-      if lib.system == "aarch64-linux"
-      then "${btBase}/lib/ld-linux-aarch64.so.1"
-      else "${btBase}/lib/ld-linux-x86-64.so.2";
+    dynamicLinker = "${btBase}/lib/${lib.platform.dynamicLinker}";
 
     initScript = ''
       #!/bin/sh

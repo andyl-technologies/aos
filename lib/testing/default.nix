@@ -36,6 +36,11 @@ in {
     mkToolCheck
     mkCompileCheck
     mkCxxCompileCheck
+    mkSONAMECheck
+    mkRPATHCheck
+    mkSymbolCheck
+    mkVersionCheck
+    mkDynLinkerCheck
     ;
   inherit assertions;
   inherit

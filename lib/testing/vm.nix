@@ -45,7 +45,7 @@
 
   mkTestRootfs = {
     system,
-    name ? system.config.aos.system.variant,
+    name ? "aos-test",
     hostname ? "aos-test",
     networkConfig ? null,
     hostsEntries ? null,

@@ -1,4 +1,4 @@
-# tests/build.nix — Layer 2: Build checks
+# lib/testing/build.nix — Layer 2: Build checks
 #
 # Verifies key packages build successfully and closure sizes stay within
 # reasonable bounds. Failing on oversized closures catches accidental
