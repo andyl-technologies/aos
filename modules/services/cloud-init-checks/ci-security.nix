@@ -1,5 +1,5 @@
 # tests/vm/checks/ci-security.nix — Security hardening on golden image
-{lib}:
+{ lib }:
 lib.mkCheckGroup {
   name = "ci-security";
   description = "Golden image security hardening verification";

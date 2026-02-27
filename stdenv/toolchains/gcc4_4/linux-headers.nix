@@ -6,12 +6,14 @@
   prev,
   buildPlatform,
   hostPlatform,
-}: let
-  fetchSrc = {
-    name,
-    url,
-    hash,
-  }:
+}:
+let
+  fetchSrc =
+    {
+      name,
+      url,
+      hash,
+    }:
     builtins.derivation {
       inherit name;
       system = buildPlatform.system;
@@ -29,33 +31,37 @@
     hash = "sha256-UJl4bYC4QH2YphnfACCcI1NRfyLYBP3ZUzs2Kty0UE4=";
   };
 in
-  builtins.derivation {
-    name = "linux-headers-2.6.32";
-    system = buildPlatform.system;
-    builder = "${prev.bash}/bin/bash";
-    args = [
-      "-c"
-      ''
-        set -eu
-        export PATH="${prev.coreutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.patch}/bin"
+builtins.derivation {
+  name = "linux-headers-2.6.32";
+  system = buildPlatform.system;
+  builder = "${prev.bash}/bin/bash";
+  args = [
+    "-c"
+    ''
+      set -eu
+      export PATH="${prev.coreutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.patch}/bin"
 
-        cd "$TMPDIR"
-        tar xjf ${linux-src}
-        cd linux-2.6.32
-        chmod -R u+w .
+      cd "$TMPDIR"
+      tar xjf ${linux-src}
+      cd linux-2.6.32
+      chmod -R u+w .
 
-        make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+      make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
-        echo "Linux 2.6.32 headers installed to $out"
-      ''
-    ];
-  }
-  // {
-    meta = {
-      description = "Linux kernel headers, version 2.6.32";
-      homepage = "https://www.kernel.org/";
-      license = "GPL-2.0-only";
-      build = {os = "linux";};
-      execute = {os = "linux";};
+      echo "Linux 2.6.32 headers installed to $out"
+    ''
+  ];
+}
+// {
+  meta = {
+    description = "Linux kernel headers, version 2.6.32";
+    homepage = "https://www.kernel.org/";
+    license = "GPL-2.0-only";
+    build = {
+      os = "linux";
     };
-  }
+    execute = {
+      os = "linux";
+    };
+  };
+}

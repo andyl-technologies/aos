@@ -14,19 +14,21 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.services.ignition;
 
   # Build the list of ZFS dataset creation commands from the unified
   # dataset config (aos.filesystems.zfs.datasets).
-  datasetCmds =
-    lib.mapAttrsToList (
-      name: props: let
-        propFlags = builtins.concatStringsSep " " (lib.mapAttrsToList (k: v: "-o ${k}=${v}") props);
-      in "${pkgs.zfs}/sbin/zfs create ${propFlags} ${cfg.poolName}/${name}"
-    )
-    config.aos.filesystems.zfs.datasets;
-in {
+  datasetCmds = lib.mapAttrsToList (
+    name: props:
+    let
+      propFlags = builtins.concatStringsSep " " (lib.mapAttrsToList (k: v: "-o ${k}=${v}") props);
+    in
+    "${pkgs.zfs}/sbin/zfs create ${propFlags} ${cfg.poolName}/${name}"
+  ) config.aos.filesystems.zfs.datasets;
+in
+{
   options.aos.services.ignition = {
     ## Enable Ignition first-boot provisioning.
     ##
@@ -79,7 +81,7 @@ in {
     ## Block devices to include in the ZFS pool.
     poolDisks = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = ''
         Block devices to include in the ZFS pool. Example:
         [ "/dev/vdb" ] for a single disk or
@@ -93,14 +95,14 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [pkgs.ignition];
+    environment.systemPackages = [ pkgs.ignition ];
 
     # Ignition service — runs in the initrd before sysroot mount.
     # This is the core first-boot provisioning unit.
     systemd.services."ignition-apply" = {
       description = "Ignition First-Boot Provisioning";
-      wantedBy = ["initrd.target"];
-      before = ["initrd-root-fs.target"];
+      wantedBy = [ "initrd.target" ];
+      before = [ "initrd-root-fs.target" ];
       after = [
         "systemd-udevd.service"
         "initrd-root-device.target"
@@ -117,10 +119,10 @@ in {
 
     # ZFS pool creation service — creates the pool from raw disks.
     # Only runs on first boot when the pool does not yet exist.
-    systemd.services."ignition-zfs-pool" = lib.mkIf (cfg.createZfsPool && cfg.poolDisks != []) {
+    systemd.services."ignition-zfs-pool" = lib.mkIf (cfg.createZfsPool && cfg.poolDisks != [ ]) {
       description = "Ignition: Create ZFS Pool";
-      wantedBy = ["initrd.target"];
-      before = ["ignition-zfs-datasets.service"];
+      wantedBy = [ "initrd.target" ];
+      before = [ "ignition-zfs-datasets.service" ];
       after = [
         "ignition-apply.service"
         "systemd-udevd.service"
@@ -153,9 +155,9 @@ in {
     # Runs after the pool exists, creating datasets that do not yet exist.
     systemd.services."ignition-zfs-datasets" = lib.mkIf cfg.createZfsPool {
       description = "Ignition: Create ZFS Datasets";
-      wantedBy = ["initrd.target"];
-      before = ["initrd-root-fs.target"];
-      after = ["ignition-zfs-pool.service"];
+      wantedBy = [ "initrd.target" ];
+      before = [ "initrd-root-fs.target" ];
+      after = [ "ignition-zfs-pool.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

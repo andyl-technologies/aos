@@ -13,7 +13,8 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.services.chrony;
 
   # Build chrony.conf from the module options.
@@ -59,7 +60,8 @@
     # Disable IPv6 if not available (avoids log spam).
     # bindaddress 0.0.0.0
   '';
-in {
+in
+{
   options.aos.services.chrony = {
     ## Enable chronyd NTP time synchronization.
     ##
@@ -99,7 +101,7 @@ in {
     ## Subnets allowed to use this host as an NTP server.
     allowedSubnets = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = ''
         Subnets allowed to use this host as an NTP server. Empty means
         this host is a client only. Example: [ "10.0.0.0/8" ] to serve
@@ -162,7 +164,7 @@ in {
       ];
     };
 
-    environment.systemPackages = [pkgs.chrony];
+    environment.systemPackages = [ pkgs.chrony ];
 
     # /etc/chrony.conf — chronyd configuration.
     environment.etc."chrony.conf" = {
@@ -172,9 +174,9 @@ in {
     # chronyd.service — NTP time synchronization daemon.
     systemd.services."chronyd" = {
       description = "NTP Time Synchronization (chrony)";
-      wantedBy = ["multi-user.target"];
-      after = ["network-online.target"];
-      wants = ["network-online.target"];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "forking";
         ExecStart = "${pkgs.chrony}/sbin/chronyd -f /etc/chrony.conf -u chrony";
@@ -209,12 +211,12 @@ in {
       home = "/var/lib/chrony";
       shell = "/sbin/nologin";
       description = "chrony NTP daemon";
-      extraGroups = [];
+      extraGroups = [ ];
     };
 
     aos.users.groups.chrony = {
       gid = 994;
-      members = ["chrony"];
+      members = [ "chrony" ];
     };
   };
 }

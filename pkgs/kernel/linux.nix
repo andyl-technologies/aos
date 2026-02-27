@@ -32,8 +32,8 @@ mkDerivation {
     bc
     binutils
   ];
-  runtimeDeps = [kmod];
-  propagatedDeps = [];
+  runtimeDeps = [ kmod ];
+  propagatedDeps = [ ];
 
   # Path to kernel config fragments — these are merged before building.
   configDir = ./config;

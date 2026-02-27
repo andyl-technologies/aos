@@ -7,59 +7,62 @@
   bison,
   libsepol,
   libselinux,
-}: let
+}:
+let
   version = "3.10";
 in
-  mkDerivation {
-    pname = "checkpolicy";
-    inherit version;
+mkDerivation {
+  pname = "checkpolicy";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/SELinuxProject/selinux/releases/download/${version}/selinux-${version}.tar.gz"
-      ];
-      hash = "sha256-tHDgCV1FBpqAzs+Av5xRImQrycFU9BqnbTBQ6DfVmiA=";
-    };
-
-    buildDeps = [
-      gnumake
-      flex
-      bison
+  src = fetchurl {
+    urls = [
+      "https://github.com/SELinuxProject/selinux/releases/download/${version}/selinux-${version}.tar.gz"
     ];
-    runtimeDeps = [
-      libsepol
-      libselinux
-    ];
-    propagatedDeps = [];
+    hash = "sha256-tHDgCV1FBpqAzs+Av5xRImQrycFU9BqnbTBQ6DfVmiA=";
+  };
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd selinux-${version}/checkpolicy
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make PREFIX=$out BINDIR=$out/bin \
-            -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install PREFIX=$out BINDIR=$out/bin
-        '';
-      }
-    ];
+  buildDeps = [
+    gnumake
+    flex
+    bison
+  ];
+  runtimeDeps = [
+    libsepol
+    libselinux
+  ];
+  propagatedDeps = [ ];
 
-    checks = {
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd selinux-${version}/checkpolicy
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make PREFIX=$out BINDIR=$out/bin \
+          -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install PREFIX=$out BINDIR=$out/bin
+      '';
+    }
+  ];
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       policy = testing.mkVMTest {
         name = "cross-cutting-selinux-policy";
         rootfsDeps = [
@@ -88,9 +91,9 @@ in
       };
     };
 
-    meta = {
-      description = "checkpolicy — SELinux policy compiler (checkpolicy, checkmodule)";
-      homepage = "https://github.com/SELinuxProject/selinux";
-      license = "GPL-2.0-or-later";
-    };
-  }
+  meta = {
+    description = "checkpolicy — SELinux policy compiler (checkpolicy, checkmodule)";
+    homepage = "https://github.com/SELinuxProject/selinux";
+    license = "GPL-2.0-or-later";
+  };
+}

@@ -37,7 +37,8 @@
   file,
   ca-certificates,
   perl,
-}: let
+}:
+let
   version = "1.37.0";
 
   # Configurable store directory (not hardcoded to /nix/store)
@@ -259,194 +260,196 @@
     preferLocalBuild = true;
   };
 in
-  mkDerivation {
-    pname = "envoy";
-    inherit version;
+mkDerivation {
+  pname = "envoy";
+  inherit version;
 
-    inherit src;
+  inherit src;
 
-    buildDeps = [
-      bazel
-      bash
-      coreutils
-      which
-      zip
-      unzip
-      gawk
-      python3
-      openjdk
-      gcc
-      binutils
-      llvm
-      rust
-      cmake
-      ninja
-      grep
-      gzip
-      patch
-      diffutils
-      findutils
-      sed
-      tar
-      xz
-      file
-      ca-certificates
-      perl
-    ];
-    runtimeDeps = [];
-    propagatedDeps = [];
+  buildDeps = [
+    bazel
+    bash
+    coreutils
+    which
+    zip
+    unzip
+    gawk
+    python3
+    openjdk
+    gcc
+    binutils
+    llvm
+    rust
+    cmake
+    ninja
+    grep
+    gzip
+    patch
+    diffutils
+    findutils
+    sed
+    tar
+    xz
+    file
+    ca-certificates
+    perl
+  ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          mkdir envoy_src
-          cd envoy_src
-          tar xzf $src --strip-components=1
-        '';
-      }
-      {
-        name = "patch";
-        script = patchAndSetup;
-      }
-      {
-        name = "build";
-        script = ''
-          # Copy repository cache from FOD and make writable
-          cp -a ${envoyDeps} ../repo_cache
-          chmod -R u+w ../repo_cache
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        mkdir envoy_src
+        cd envoy_src
+        tar xzf $src --strip-components=1
+      '';
+    }
+    {
+      name = "patch";
+      script = patchAndSetup;
+    }
+    {
+      name = "build";
+      script = ''
+        # Copy repository cache from FOD and make writable
+        cp -a ${envoyDeps} ../repo_cache
+        chmod -R u+w ../repo_cache
 
-          # Restore actual store paths from per-tool placeholders
-          ${restorePaths}
+        # Restore actual store paths from per-tool placeholders
+        ${restorePaths}
 
-          # Restore Cargo.Bazel.lock if it was saved
-          if [ -f ../repo_cache/Cargo.Bazel.lock ]; then
-            cp ../repo_cache/Cargo.Bazel.lock \
-              source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock 2>/dev/null || true
-          fi
+        # Restore Cargo.Bazel.lock if it was saved
+        if [ -f ../repo_cache/Cargo.Bazel.lock ]; then
+          cp ../repo_cache/Cargo.Bazel.lock \
+            source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock 2>/dev/null || true
+        fi
 
-          # Derive bootstrapTools lib path from CONFIG_SHELL (set by mkDerivation)
-          BT_LIB=$(dirname "$(dirname "$CONFIG_SHELL")")/lib
+        # Derive bootstrapTools lib path from CONFIG_SHELL (set by mkDerivation)
+        BT_LIB=$(dirname "$(dirname "$CONFIG_SHELL")")/lib
 
-          # Patch ELF binaries in the external repo cache so build tools
-          # can execute with the correct dynamic linker
-          INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
-          find ../repo_cache -type f -executable | while read execbin; do
-            file "$execbin" | grep -q ': ELF .*, dynamically linked,' || continue
-            patchelf --set-interpreter "$INTERP" "$execbin" 2>/dev/null || true
+        # Patch ELF binaries in the external repo cache so build tools
+        # can execute with the correct dynamic linker
+        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
+        find ../repo_cache -type f -executable | while read execbin; do
+          file "$execbin" | grep -q ': ELF .*, dynamically linked,' || continue
+          patchelf --set-interpreter "$INTERP" "$execbin" 2>/dev/null || true
+        done
+
+        # tcmalloc fix for newer GCC: suppress -Wchanges-meaning
+        find ../repo_cache -path "*/com_github_google_tcmalloc/tcmalloc/copts.bzl" | \
+          while read f; do
+            sed -i '/TCMALLOC_GCC_FLAGS = \[/a\    "-Wno-changes-meaning",' "$f" 2>/dev/null || true
           done
 
-          # tcmalloc fix for newer GCC: suppress -Wchanges-meaning
-          find ../repo_cache -path "*/com_github_google_tcmalloc/tcmalloc/copts.bzl" | \
-            while read f; do
-              sed -i '/TCMALLOC_GCC_FLAGS = \[/a\    "-Wno-changes-meaning",' "$f" 2>/dev/null || true
-            done
+        # CMake 3.1 → 3.5 compatibility fix for libevent
+        find ../repo_cache -path "*/com_github_libevent_libevent/CMakeLists.txt" | \
+          while read f; do
+            sed -i 's/cmake_minimum_required(VERSION 3\.1\b/cmake_minimum_required(VERSION 3.5/' "$f" 2>/dev/null || true
+          done
 
-          # CMake 3.1 → 3.5 compatibility fix for libevent
-          find ../repo_cache -path "*/com_github_libevent_libevent/CMakeLists.txt" | \
-            while read f; do
-              sed -i 's/cmake_minimum_required(VERSION 3\.1\b/cmake_minimum_required(VERSION 3.5/' "$f" 2>/dev/null || true
-            done
+        # Create bash wrapper with PATH for Bazel genrules (same pattern as bazel.nix)
+        mkdir -p ../tools
+        cat > ../tools/bash-with-path << BASHWRAP
+        #!${bash}/bin/bash
+        export PATH="${toolsPath}:\$PATH"
+        export LD_LIBRARY_PATH="$BT_LIB''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+        exec ${bash}/bin/bash "\$@"
+        BASHWRAP
+        chmod +x ../tools/bash-with-path
 
-          # Create bash wrapper with PATH for Bazel genrules (same pattern as bazel.nix)
-          mkdir -p ../tools
-          cat > ../tools/bash-with-path << BASHWRAP
-          #!${bash}/bin/bash
-          export PATH="${toolsPath}:\$PATH"
-          export LD_LIBRARY_PATH="$BT_LIB''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-          exec ${bash}/bin/bash "\$@"
-          BASHWRAP
-          chmod +x ../tools/bash-with-path
+        export HOME=$(mktemp -d)
+        export JAVA_HOME="${openjdk}"
+        export SSL_CERT_FILE="${ca-certificates}/etc/ssl/certs/ca-certificates.crt"
+        export PATH="${toolsPath}:$PATH"
 
-          export HOME=$(mktemp -d)
-          export JAVA_HOME="${openjdk}"
-          export SSL_CERT_FILE="${ca-certificates}/etc/ssl/certs/ca-certificates.crt"
-          export PATH="${toolsPath}:$PATH"
+        # Unset C_INCLUDE_PATH so Bazel's CC toolchain auto-detection doesn't
+        # pick up bootstrapTools/include as a -I flag, which breaks
+        # #include_next <stdlib.h> in the C++ standard library headers.
+        unset C_INCLUDE_PATH CPATH CPLUS_INCLUDE_PATH
 
-          # Unset C_INCLUDE_PATH so Bazel's CC toolchain auto-detection doesn't
-          # pick up bootstrapTools/include as a -I flag, which breaks
-          # #include_next <stdlib.h> in the C++ standard library headers.
-          unset C_INCLUDE_PATH CPATH CPLUS_INCLUDE_PATH
+        REPO_CACHE_ABS="$(cd ../repo_cache && pwd)"
+        BASH_WITH_PATH="$(cd ../tools && pwd)/bash-with-path"
 
-          REPO_CACHE_ABS="$(cd ../repo_cache && pwd)"
-          BASH_WITH_PATH="$(cd ../tools && pwd)/bash-with-path"
+        bazel --batch \
+          --output_user_root="$TMPDIR/bazel_cache" \
+          --server_javabase="${openjdk}" \
+          build -c opt //source/exe:envoy-static \
+          --config=gcc \
+          --spawn_strategy=standalone \
+          --verbose_failures \
+          --curses=no \
+          --repository_cache="$REPO_CACHE_ABS" \
+          --repository_disable_download \
+          --noenable_bzlmod \
+          --extra_toolchains=@local_jdk//:all \
+          --java_runtime_version=local_jdk \
+          --tool_java_runtime_version=local_jdk \
+          --extra_toolchains=//bazel/nix:rust_nix_x86_64 \
+          --linkopt=-fuse-ld=lld \
+          --host_linkopt=-fuse-ld=lld \
+          --linkopt=-Wl,-z,noexecstack \
+          --linkopt=-Wl,--unresolved-symbols=ignore-in-object-files \
+          --cxxopt=-Wno-changes-meaning \
+          --action_env=PATH=${toolsPath} \
+          --host_action_env=PATH=${toolsPath} \
+          --action_env=LD_LIBRARY_PATH=$BT_LIB \
+          --host_action_env=LD_LIBRARY_PATH=$BT_LIB \
+          --shell_executable="$BASH_WITH_PATH" \
+          --define=wasm=disabled \
+          --incompatible_enable_cc_toolchain_resolution=true \
+          --cxxopt=-Wno-error
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        mkdir -p $out/bin
 
-          bazel --batch \
-            --output_user_root="$TMPDIR/bazel_cache" \
-            --server_javabase="${openjdk}" \
-            build -c opt //source/exe:envoy-static \
-            --config=gcc \
-            --spawn_strategy=standalone \
-            --verbose_failures \
-            --curses=no \
-            --repository_cache="$REPO_CACHE_ABS" \
-            --repository_disable_download \
-            --noenable_bzlmod \
-            --extra_toolchains=@local_jdk//:all \
-            --java_runtime_version=local_jdk \
-            --tool_java_runtime_version=local_jdk \
-            --extra_toolchains=//bazel/nix:rust_nix_x86_64 \
-            --linkopt=-fuse-ld=lld \
-            --host_linkopt=-fuse-ld=lld \
-            --linkopt=-Wl,-z,noexecstack \
-            --linkopt=-Wl,--unresolved-symbols=ignore-in-object-files \
-            --cxxopt=-Wno-changes-meaning \
-            --action_env=PATH=${toolsPath} \
-            --host_action_env=PATH=${toolsPath} \
-            --action_env=LD_LIBRARY_PATH=$BT_LIB \
-            --host_action_env=LD_LIBRARY_PATH=$BT_LIB \
-            --shell_executable="$BASH_WITH_PATH" \
-            --define=wasm=disabled \
-            --incompatible_enable_cc_toolchain_resolution=true \
-            --cxxopt=-Wno-error
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          mkdir -p $out/bin
+        ENVOY_BIN=bazel-bin/source/exe/envoy-static
+        if [ ! -f "$ENVOY_BIN" ]; then
+          echo "ERROR: bazel did not produce envoy-static binary" >&2
+          exit 1
+        fi
 
-          ENVOY_BIN=bazel-bin/source/exe/envoy-static
-          if [ ! -f "$ENVOY_BIN" ]; then
-            echo "ERROR: bazel did not produce envoy-static binary" >&2
-            exit 1
-          fi
+        cp "$ENVOY_BIN" $out/bin/envoy
+        chmod +x $out/bin/envoy
 
-          cp "$ENVOY_BIN" $out/bin/envoy
-          chmod +x $out/bin/envoy
+        # Patch ELF interpreter and RPATH
+        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
+        BT_LIB=$(dirname "$INTERP")
+        STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
+        STDCXX_DIR=""
+        if [ -n "$STDCXX_FILE" ]; then
+          STDCXX_DIR=$(dirname "$STDCXX_FILE")
+        fi
+        RPATH="$BT_LIB"
+        if [ -n "$STDCXX_DIR" ]; then
+          RPATH="$RPATH:$STDCXX_DIR"
+        fi
+        patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" \
+                 $out/bin/envoy 2>/dev/null || true
+      '';
+    }
+  ];
 
-          # Patch ELF interpreter and RPATH
-          INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
-          BT_LIB=$(dirname "$INTERP")
-          STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
-          STDCXX_DIR=""
-          if [ -n "$STDCXX_FILE" ]; then
-            STDCXX_DIR=$(dirname "$STDCXX_FILE")
-          fi
-          RPATH="$BT_LIB"
-          if [ -n "$STDCXX_DIR" ]; then
-            RPATH="$RPATH:$STDCXX_DIR"
-          fi
-          patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" \
-                   $out/bin/envoy 2>/dev/null || true
-        '';
-      }
-    ];
+  meta = {
+    description = "Envoy proxy — high-performance L7 proxy and communication bus";
+    homepage = "https://www.envoyproxy.io";
+    license = "Apache-2.0";
+  };
 
-    meta = {
-      description = "Envoy proxy — high-performance L7 proxy and communication bus";
-      homepage = "https://www.envoyproxy.io";
-      license = "Apache-2.0";
-    };
-
-    checks = {
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       version = testing.mkVMTest {
         name = "networking-envoy-version";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           OUTPUT=$(envoy --version 2>&1)
           case "$OUTPUT" in
@@ -463,7 +466,7 @@ in
 
       validate-config = testing.mkVMTest {
         name = "networking-envoy-validate-config";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           # Write a minimal Envoy config
           mkdir -p /tmp/envoy
@@ -512,4 +515,4 @@ in
         '';
       };
     };
-  }
+}

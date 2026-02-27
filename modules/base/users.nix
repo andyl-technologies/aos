@@ -12,13 +12,16 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.users;
 
   # Generate a passwd(5) line for a user.
-  mkPasswdLine = name: u: "${name}:x:${toString u.uid}:${
-    toString (cfg.groups.${u.group}.gid or 65534)
-  }:${u.description}:${u.home}:${u.shell}";
+  mkPasswdLine =
+    name: u:
+    "${name}:x:${toString u.uid}:${
+      toString (cfg.groups.${u.group}.gid or 65534)
+    }:${u.description}:${u.home}:${u.shell}";
 
   # Generate a group(5) line for a group.
   mkGroupLine = name: g: "${name}:x:${toString g.gid}:${builtins.concatStringsSep "," g.members}";
@@ -26,21 +29,21 @@
   # Generate a shadow(5) line for a user.
   # All system users get locked passwords by default (! prefix).
   # Root gets an empty password hash that requires key-based auth.
-  mkShadowLine = name: _u:
-    if name == "root"
-    then "${name}:!*::0:99999:7:::"
-    else "${name}:!*::0:99999:7:::";
+  mkShadowLine =
+    name: _u: if name == "root" then "${name}:!*::0:99999:7:::" else "${name}:!*::0:99999:7:::";
 
   # Collect all users from extraGroups and merge into group members.
   extraGroupMembers = builtins.foldl' (
-    acc: entry: let
+    acc: entry:
+    let
       userName = entry.name;
       userCfg = entry.value;
       groups = userCfg.extraGroups;
     in
-      builtins.foldl' (a: grp: a // {${grp} = (a.${grp} or []) ++ [userName];}) acc groups
-  ) {} (lib.mapAttrsToList (name: value: {inherit name value;}) cfg.users);
-in {
+    builtins.foldl' (a: grp: a // { ${grp} = (a.${grp} or [ ]) ++ [ userName ]; }) acc groups
+  ) { } (lib.mapAttrsToList (name: value: { inherit name value; }) cfg.users);
+in
+{
   options.aos.users = {
     ## System user accounts.
     ##
@@ -94,7 +97,7 @@ in {
             ## Additional groups this user belongs to.
             extraGroups = lib.mkOption {
               type = lib.types.listOf lib.types.str;
-              default = [];
+              default = [ ];
               description = "Additional groups this user belongs to.";
             };
           };
@@ -107,7 +110,7 @@ in {
           home = "/root";
           shell = "/bin/bash";
           description = "System Administrator";
-          extraGroups = [];
+          extraGroups = [ ];
         };
         nobody = {
           uid = 65534;
@@ -115,7 +118,7 @@ in {
           home = "/";
           shell = "/sbin/nologin";
           description = "Nobody";
-          extraGroups = [];
+          extraGroups = [ ];
         };
         systemd-journal = {
           uid = 190;
@@ -123,7 +126,7 @@ in {
           home = "/";
           shell = "/sbin/nologin";
           description = "systemd Journal";
-          extraGroups = [];
+          extraGroups = [ ];
         };
         systemd-network = {
           uid = 192;
@@ -131,7 +134,7 @@ in {
           home = "/";
           shell = "/sbin/nologin";
           description = "systemd Network Management";
-          extraGroups = [];
+          extraGroups = [ ];
         };
       };
       description = "System user accounts.";
@@ -161,7 +164,7 @@ in {
             ## Users who are members of this group.
             members = lib.mkOption {
               type = lib.types.listOf lib.types.str;
-              default = [];
+              default = [ ];
               description = "Users who are members of this group.";
             };
           };
@@ -170,27 +173,27 @@ in {
       default = {
         root = {
           gid = 0;
-          members = ["root"];
+          members = [ "root" ];
         };
         nobody = {
           gid = 65534;
-          members = [];
+          members = [ ];
         };
         utmp = {
           gid = 22;
-          members = [];
+          members = [ ];
         };
         wheel = {
           gid = 10;
-          members = [];
+          members = [ ];
         };
         systemd-journal = {
           gid = 190;
-          members = [];
+          members = [ ];
         };
         systemd-network = {
           gid = 192;
-          members = [];
+          members = [ ];
         };
       };
       description = "System groups.";
@@ -209,13 +212,13 @@ in {
       text =
         builtins.concatStringsSep "\n" (
           lib.mapAttrsToList (
-            name: g: let
-              allMembers = g.members ++ (extraGroupMembers.${name} or []);
+            name: g:
+            let
+              allMembers = g.members ++ (extraGroupMembers.${name} or [ ]);
               uniqueMembers = lib.unique allMembers;
             in
-              mkGroupLine name (g // {members = uniqueMembers;})
-          )
-          cfg.groups
+            mkGroupLine name (g // { members = uniqueMembers; })
+          ) cfg.groups
         )
         + "\n";
     };

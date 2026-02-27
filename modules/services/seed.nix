@@ -9,7 +9,8 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.services.seed;
 
   # Build script for image building service.
@@ -76,7 +77,8 @@
     shell
     IPXE
   '';
-in {
+in
+{
   options.aos.services.seed = {
     ## Enable the AOS seed server for building and serving OS images.
     ##
@@ -239,7 +241,7 @@ in {
         "nix-daemon.service"
         "local-fs.target"
       ];
-      wants = ["network-online.target"];
+      wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${pkgs.bash}/bin/sh -c '${buildScript}'";
@@ -252,7 +254,7 @@ in {
     # aos-build-images.timer — periodic build trigger.
     systemd.services."aos-build-images-timer" = {
       description = "AOS Image Build Timer";
-      wantedBy = ["timers.target"];
+      wantedBy = [ "timers.target" ];
       timerConfig = {
         OnCalendar = cfg.buildInterval;
         Persistent = true;
@@ -263,7 +265,7 @@ in {
     # aos-publish-images.service — atomically publishes built images.
     systemd.services."aos-publish-images" = {
       description = "AOS Image Publisher";
-      after = ["aos-build-images.service"];
+      after = [ "aos-build-images.service" ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${pkgs.bash}/bin/sh -c '${publishScript}'";

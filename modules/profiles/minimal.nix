@@ -10,7 +10,8 @@
   pkgs,
   lib,
   ...
-}: {
+}:
+{
   aos.security.selinux.enable = false;
   aos.security.audit.enable = false;
   aos.security.hardening.enable = false;

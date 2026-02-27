@@ -22,21 +22,22 @@
 #
 # All stages target i686-linux (32-bit). Cross-compilation happens in toolchains.
 #
-{buildPlatform, ...}: let
+{ buildPlatform, ... }:
+let
   # ══════════════════════════════════════════════════════════════════════
   # Stage 0: Seeds (hex0-seed + hex0-compiled tools)
   # ══════════════════════════════════════════════════════════════════════
-  seeds = import ./stage0-seeds.nix {inherit buildPlatform;};
+  seeds = import ./stage0-seeds.nix { inherit buildPlatform; };
 
   # ══════════════════════════════════════════════════════════════════════
   # Stage 1: Posix-tools (M2-Planet, M1, hex2, blood-elf, full kaem, etc.)
   # ══════════════════════════════════════════════════════════════════════
-  posix-tools = import ./stage1-posix-tools.nix {inherit seeds buildPlatform;};
+  posix-tools = import ./stage1-posix-tools.nix { inherit seeds buildPlatform; };
 
   # ══════════════════════════════════════════════════════════════════════
   # Stage 2: GNU Mes 0.27.1 (Scheme interpreter + MesCC C compiler)
   # ══════════════════════════════════════════════════════════════════════
-  mes = import ./stage2-mes.nix {inherit posix-tools seeds buildPlatform;};
+  mes = import ./stage2-mes.nix { inherit posix-tools seeds buildPlatform; };
 
   # ══════════════════════════════════════════════════════════════════════
   # Stage 3: TinyCC 0.9.27 (built via MesCC → boot chain)
@@ -213,7 +214,8 @@
   };
 
   # 5a continued: Binutils recompiled with self-hosted GCC
-  binutils = import ./stage5-binutils.nix ({
+  binutils = import ./stage5-binutils.nix (
+    {
       inherit
         gcc
         glibc
@@ -221,15 +223,19 @@
         buildPlatform
         ;
     }
-    // stage4-tools);
+    // stage4-tools
+  );
 
   # Stage 5 tools — stage4 shell tools + stage5 GCC-compiled binutils.
   # All stage5b packages use the trusted binutils (ar, as, ld, etc.).
-  stage5-tools = stage4-tools // {binutils = binutils;};
+  stage5-tools = stage4-tools // {
+    binutils = binutils;
+  };
 
   # 5b: All tools recompiled with GCC 2.95.3 + glibc + binutils
 
-  gawk = import ./stage5-gawk.nix ({
+  gawk = import ./stage5-gawk.nix (
+    {
       inherit
         gcc
         glibc
@@ -237,9 +243,11 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
+    // stage5-tools
+  );
 
-  sed = import ./stage5-sed.nix ({
+  sed = import ./stage5-sed.nix (
+    {
       inherit
         gcc
         glibc
@@ -247,9 +255,11 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
+    // stage5-tools
+  );
 
-  bash = import ./stage5-bash.nix ({
+  bash = import ./stage5-bash.nix (
+    {
       inherit
         gcc
         glibc
@@ -257,9 +267,11 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
+    // stage5-tools
+  );
 
-  patch = import ./stage5-patch.nix ({
+  patch = import ./stage5-patch.nix (
+    {
       inherit
         gcc
         glibc
@@ -267,9 +279,11 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
+    // stage5-tools
+  );
 
-  coreutils = import ./stage5-coreutils.nix ({
+  coreutils = import ./stage5-coreutils.nix (
+    {
       inherit
         gcc
         glibc
@@ -277,9 +291,11 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
+    // stage5-tools
+  );
 
-  gnumake = import ./stage5-gnumake.nix ({
+  gnumake = import ./stage5-gnumake.nix (
+    {
       inherit
         gcc
         glibc
@@ -287,9 +303,11 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
+    // stage5-tools
+  );
 
-  grep = import ./stage5-grep.nix ({
+  grep = import ./stage5-grep.nix (
+    {
       inherit
         gcc
         glibc
@@ -297,9 +315,11 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
+    // stage5-tools
+  );
 
-  findutils = import ./stage5-findutils.nix ({
+  findutils = import ./stage5-findutils.nix (
+    {
       inherit
         gcc
         glibc
@@ -307,9 +327,11 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
+    // stage5-tools
+  );
 
-  diffutils = import ./stage5-diffutils.nix ({
+  diffutils = import ./stage5-diffutils.nix (
+    {
       inherit
         gcc
         glibc
@@ -317,9 +339,11 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
+    // stage5-tools
+  );
 
-  tar = import ./stage5-tar.nix ({
+  tar = import ./stage5-tar.nix (
+    {
       inherit
         gcc
         glibc
@@ -327,9 +351,11 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
+    // stage5-tools
+  );
 
-  gzip = import ./stage5-gzip.nix ({
+  gzip = import ./stage5-gzip.nix (
+    {
       inherit
         gcc
         glibc
@@ -337,8 +363,10 @@
         buildPlatform
         ;
     }
-    // stage5-tools);
-in {
+    // stage5-tools
+  );
+in
+{
   # ── Public exports (consumed by toolchains/gcc3_4) ──────────────────
   inherit gcc; # GCC 2.95.3 (self-hosted, linked against glibc)
   inherit glibc; # glibc 2.2.5 (GCC-compiled)

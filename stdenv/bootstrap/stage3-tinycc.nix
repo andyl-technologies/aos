@@ -29,7 +29,8 @@
   seeds, # Output of stage0-seeds.nix (provides kaem)
   buildPlatform,
   ...
-}: let
+}:
+let
   system = buildPlatform.system;
   # Guix's TCC fork — janneke's tinycc with 30 MesCC-compatibility patches.
   # Upstream TCC cannot be compiled by MesCC; this fork has the fixes baked in.
@@ -619,7 +620,7 @@
     name = "tinycc-0.9.26";
     inherit system;
     builder = "${seeds.kaemNix}";
-    passAsFile = ["buildScript"];
+    passAsFile = [ "buildScript" ];
     # Single-line buildScript: kaem invokes full kaem
     buildScript = "${posix-tools}/bin/kaem --verbose --strict --file ${buildKaem}\n";
     # Derivation paths passed as env vars for full kaem ${VAR} expansion
@@ -632,20 +633,23 @@
     MES_LIB = "${mes}/lib";
   };
 in
-  tinycc
-  // {
-    version = "0.9.26";
-    meta = {
-      description = "TinyCC (TCC) is a small and fast C compiler (janneke's fork)";
-      homepage = "https://gitlab.com/janneke/tinycc";
-      license = "LGPL-2.1-or-later";
-      build = {
-        os = "linux";
-        cpu = ["x86_64" "i686"];
-      };
-      execute = {
-        os = "linux";
-        cpu = "i686";
-      };
+tinycc
+// {
+  version = "0.9.26";
+  meta = {
+    description = "TinyCC (TCC) is a small and fast C compiler (janneke's fork)";
+    homepage = "https://gitlab.com/janneke/tinycc";
+    license = "LGPL-2.1-or-later";
+    build = {
+      os = "linux";
+      cpu = [
+        "x86_64"
+        "i686"
+      ];
     };
-  }
+    execute = {
+      os = "linux";
+      cpu = "i686";
+    };
+  };
+}

@@ -1,5 +1,5 @@
 # tests/vm/checks/ci-networking.nix — Cloud-init static IP networking
-{lib}:
+{ lib }:
 lib.mkCheckGroup {
   name = "ci-networking";
   description = "Cloud-init static IP configuration";

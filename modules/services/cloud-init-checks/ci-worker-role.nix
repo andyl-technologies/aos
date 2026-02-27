@@ -1,5 +1,5 @@
 # tests/vm/checks/ci-worker-role.nix — K8s worker role via cloud-init
-{lib}:
+{ lib }:
 lib.mkCheckGroup {
   name = "ci-worker-role";
   description = "Cloud-init k8s-worker role configuration";
