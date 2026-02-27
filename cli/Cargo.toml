@@ -34,6 +34,12 @@ rand = "0.9"
 hex = "0.4"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
 futures-util = "0.3"
+async-trait = "0.1"
+url = "2"
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+aws-sdk-s3 = "1"
+aws-config = "1"
+suppaftp = { version = "6", features = ["async-rustls"] }
 ratatui = "0.29"
 crossterm = "0.28"
 atty = "0.2"
