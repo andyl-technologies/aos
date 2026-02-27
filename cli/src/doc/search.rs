@@ -1,4 +1,4 @@
-use crate::commands::doc::model::DocEntry;
+use crate::doc::model::DocEntry;
 
 /// Perform fuzzy subsequence search against all entries.
 ///
@@ -167,7 +167,7 @@ mod tests {
     fn make_entry(path: &str, summary: &str) -> DocEntry {
         DocEntry {
             path: path.to_string(),
-            category: crate::commands::doc::model::DocCategory::Function,
+            category: crate::doc::model::DocCategory::Function,
             summary: summary.to_string(),
             body: String::new(),
             type_sig: None,

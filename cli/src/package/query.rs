@@ -7,7 +7,7 @@ use super::profile::meta::list_meta;
 use super::profile::Profile;
 use super::registry::{store_path_hash, Registry, RegistrySet};
 use super::types::{InstalledMeta, PackageMeta};
-use crate::output::{OutputMode, Printer};
+use aos::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Search

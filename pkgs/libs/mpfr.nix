@@ -15,7 +15,7 @@ mkDerivation {
   src = fetchurl {
     urls = [
       "https://www.mpfr.org/mpfr-${version}/mpfr-${version}.tar.xz"
-      "https://ftp.gnu.org/gnu/mpfr/mpfr-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/mpfr/mpfr-${version}.tar.xz"
       "https://mirrors.kernel.org/gnu/mpfr/mpfr-${version}.tar.xz"
     ];
     hash = "sha256-tnugOD736KhWNzTi6InvXsPDuJigHQD6CmhprYHGzgE=";

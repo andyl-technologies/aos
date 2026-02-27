@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
-use crate::nix::NixRunner;
-use crate::output::{create_spinner, Printer};
+use aos::nix::NixRunner;
+use aos::output::{create_spinner, Printer};
 
 /// `aos show <package>` — display package metadata.
 pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {

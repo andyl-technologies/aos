@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 
 use super::registry::{store_path_hash, RegistrySet};
 use super::types::PackageMeta;
-use crate::error::AosError;
+use aos::error::AosError;
 
 // ---------------------------------------------------------------------------
 // Resolved closure

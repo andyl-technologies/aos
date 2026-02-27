@@ -11,8 +11,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
-use crate::nix::NixRunner;
-use crate::output::{OutputMode, Printer};
+use aos::nix::NixRunner;
+use aos::output::{OutputMode, Printer};
 
 // -----------------------------------------------------------------------
 // Nix-evaluated source metadata

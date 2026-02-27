@@ -9,8 +9,8 @@ use super::profile::meta::{self, delete_meta, list_meta};
 use super::profile::Profile;
 use super::registry::store_path_hash;
 use super::types::InstalledMeta;
-use crate::error::AosError;
-use crate::output::Printer;
+use aos::error::AosError;
+use aos::output::Printer;
 
 // ---------------------------------------------------------------------------
 // Public API

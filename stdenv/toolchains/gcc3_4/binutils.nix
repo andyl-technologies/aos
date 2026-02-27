@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/binutils/binutils-2.15.tar.bz2";
+    url = "https://mirrors.kernel.org/gnu/binutils/binutils-2.15.tar.bz2";
     sha256 = "1igaw1vps1j0l8zmm4npazjwj287kwxd1rqbbgy39nsrxg9njp5d";
   };
 in
@@ -24,8 +24,16 @@ builtins.derivation {
     "-c"
     ''
       set -eu
-      export PATH="${this.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.patch}/bin:${prev.bash}/bin"
+      export PATH="${prev.coreutils}/bin:${this.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
+
+      # Dummy lex/flex to satisfy configure checks — the actual build
+      # uses pre-generated parser files and never invokes lex.
+      mkdir -p "$TMPDIR/fakebin"
+      printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
+      printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
+      chmod +x "$TMPDIR/fakebin/lex" "$TMPDIR/fakebin/flex"
+      export PATH="$TMPDIR/fakebin:$PATH"
 
       cd ${src}
 

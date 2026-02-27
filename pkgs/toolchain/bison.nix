@@ -16,7 +16,7 @@ mkDerivation {
     urls = [
       "https://gnu.mirror.constant.com/bison/bison-${version}.tar.xz"
       "https://mirrors.kernel.org/gnu/bison/bison-${version}.tar.xz"
-      "https://ftp.gnu.org/gnu/bison/bison-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/bison/bison-${version}.tar.xz"
     ];
     hash = "sha256-m7oCFMz38QecXVkhAEUie89hlRmEDr+oDNOEnP9aW/I=";
   };

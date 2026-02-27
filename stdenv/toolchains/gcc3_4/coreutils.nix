@@ -13,7 +13,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/coreutils/coreutils-5.2.1.tar.bz2";
+    url = "https://mirrors.kernel.org/gnu/coreutils/coreutils-5.2.1.tar.bz2";
     sha256 = "1m4gaqhwhpaba4n2qwsdy4spdrqx6aszrl4r8z7av4jdlyq3qckl";
   };
 in
@@ -25,7 +25,7 @@ builtins.derivation {
     "-c"
     ''
       set -eu
-      export PATH="${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${this.tar}/bin:${this.gzip}/bin:${prev.patch}/bin:${prev.bash}/bin"
+      export PATH="${prev.coreutils}/bin:${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${this.tar}/bin:${this.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd ${src}

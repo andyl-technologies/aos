@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 
 use crate::cli::TestCmd;
-use crate::nix::NixRunner;
-use crate::output::{create_spinner, Printer};
+use aos::nix::NixRunner;
+use aos::output::{create_spinner, Printer};
 
 /// `aos test [subcommand]` — run test layers.
 pub fn run(nix: &NixRunner, printer: &Printer, cmd: &Option<TestCmd>) -> Result<()> {
@@ -63,7 +63,7 @@ fn run_all(nix: &NixRunner, printer: &Printer) -> Result<()> {
             }
             Err(err) => {
                 printer.error(&format!("  {label}: FAILED"));
-                if printer.mode() == crate::output::OutputMode::Verbose {
+                if printer.mode() == aos::output::OutputMode::Verbose {
                     printer.plain(&format!("    {err:#}"));
                 }
                 failures.push(label.to_string());
