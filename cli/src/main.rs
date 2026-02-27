@@ -2,7 +2,9 @@ mod cli;
 mod client;
 mod commands;
 mod error;
+mod narinfo;
 mod nix;
+mod nix_cli;
 mod output;
 mod package;
 mod server;
@@ -91,6 +93,11 @@ async fn run(cli: &Cli) -> Result<()> {
         return package::run(args.system, &args.command, args.dry_run, args.yes, &printer).await;
     }
 
+    // Cache commands use NixCli (classic nix commands), not NixRunner.
+    if let Commands::Cache { command } = &cli.command {
+        return commands::cache::run(&printer, command).await;
+    }
+
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
 
     match &cli.command {
@@ -170,6 +177,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Serve { .. } => unreachable!(),
         Commands::Token { .. } => unreachable!(),
         Commands::Package { .. } => unreachable!(),
+        Commands::Cache { .. } => unreachable!(),
     }
 }
 
