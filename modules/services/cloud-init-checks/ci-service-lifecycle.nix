@@ -1,5 +1,5 @@
 # tests/vm/checks/ci-service-lifecycle.nix — Cloud-init service lifecycle
-{lib}:
+{ lib }:
 lib.mkCheckGroup {
   name = "ci-service-lifecycle";
   description = "Cloud-init all 4 stages complete in order";

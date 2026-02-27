@@ -23,7 +23,8 @@
   tar, # GNU tar (stage 4)
   buildPlatform,
   ...
-}: let
+}:
+let
   system = buildPlatform.system;
   lib = import ./lib.nix;
   sources = import ./sources.nix;
@@ -33,76 +34,79 @@
     sha256 = sources.gawk.sha256;
   };
 in
-  builtins.derivation {
-    name = "gawk-3.0.6";
-    inherit system;
-    builder = "${bash}/bin/bash";
-    args = [
-      "-c"
-      ''
-        set -eu
+builtins.derivation {
+  name = "gawk-3.0.6";
+  inherit system;
+  builder = "${bash}/bin/bash";
+  args = [
+    "-c"
+    ''
+      set -eu
 
-        export PATH="${
-          builtins.concatStringsSep ":" (
-            builtins.map (p: "${p}/bin") [
-              gcc
-              binutils
-              gnumake
-              coreutils
-              bash
-              sed
-              grep
-              patch
-              diffutils
-              gawk
-              tar
-            ]
-          )
-        }"
-        export CONFIG_SHELL="${bash}/bin/bash"
-        export SHELL="${bash}/bin/bash"
+      export PATH="${
+        builtins.concatStringsSep ":" (
+          builtins.map (p: "${p}/bin") [
+            gcc
+            binutils
+            gnumake
+            coreutils
+            bash
+            sed
+            grep
+            patch
+            diffutils
+            gawk
+            tar
+          ]
+        )
+      }"
+      export CONFIG_SHELL="${bash}/bin/bash"
+      export SHELL="${bash}/bin/bash"
 
-        # Copy source to writable directory
-        cp -r ${src} $TMPDIR/src
-        chmod -R u+w $TMPDIR/src
-        cd $TMPDIR/src
+      # Copy source to writable directory
+      cp -r ${src} $TMPDIR/src
+      chmod -R u+w $TMPDIR/src
+      cd $TMPDIR/src
 
-        CC="${gcc}/bin/gcc" \
-        CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
-        LDFLAGS="-static -L${glibc}/lib" \
-        LIBS="-Wl,--start-group -lc -lnss_files -lnss_dns -lresolv -Wl,--end-group" \
-        CONFIG_SHELL="${bash}/bin/bash" \
-        ./configure \
-          --prefix=$out \
-          --build=i686-unknown-linux-gnu \
-          --host=i686-unknown-linux-gnu \
-          --disable-nls
+      CC="${gcc}/bin/gcc" \
+      CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
+      LDFLAGS="-static -L${glibc}/lib" \
+      LIBS="-Wl,--start-group -lc -lnss_files -lnss_dns -lresolv -Wl,--end-group" \
+      CONFIG_SHELL="${bash}/bin/bash" \
+      ./configure \
+        --prefix=$out \
+        --build=i686-unknown-linux-gnu \
+        --host=i686-unknown-linux-gnu \
+        --disable-nls
 
-        # Build only the main gawk binary (skip awklib which has pwcat —
-        # it links getpwent/NSS symbols missing from our static bootstrap glibc)
-        make gawk
+      # Build only the main gawk binary (skip awklib which has pwcat —
+      # it links getpwent/NSS symbols missing from our static bootstrap glibc)
+      make gawk
 
-        # Manual install (make install would try to build awklib)
-        mkdir -p $out/bin
-        cp gawk $out/bin/gawk
-        ln -s gawk $out/bin/awk
+      # Manual install (make install would try to build awklib)
+      mkdir -p $out/bin
+      cp gawk $out/bin/gawk
+      ln -s gawk $out/bin/awk
 
-        echo "GNU awk 3.0.6 built successfully"
-      ''
-    ];
-  }
-  // {
-    meta = {
-      description = "GNU awk pattern scanning and processing language, version 3.0.6";
-      homepage = "https://www.gnu.org/software/gawk/";
-      license = "GPL-2.0-or-later";
-      build = {
-        os = "linux";
-        cpu = ["x86_64" "i686"];
-      };
-      execute = {
-        os = "linux";
-        cpu = "i686";
-      };
+      echo "GNU awk 3.0.6 built successfully"
+    ''
+  ];
+}
+// {
+  meta = {
+    description = "GNU awk pattern scanning and processing language, version 3.0.6";
+    homepage = "https://www.gnu.org/software/gawk/";
+    license = "GPL-2.0-or-later";
+    build = {
+      os = "linux";
+      cpu = [
+        "x86_64"
+        "i686"
+      ];
     };
-  }
+    execute = {
+      os = "linux";
+      cpu = "i686";
+    };
+  };
+}

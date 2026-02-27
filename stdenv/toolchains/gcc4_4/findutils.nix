@@ -6,12 +6,14 @@
   prev,
   buildPlatform,
   hostPlatform,
-}: let
-  fetchSrc = {
-    name,
-    url,
-    hash,
-  }:
+}:
+let
+  fetchSrc =
+    {
+      name,
+      url,
+      hash,
+    }:
     builtins.derivation {
       inherit name;
       system = buildPlatform.system;
@@ -29,51 +31,55 @@
     hash = "sha256-Q08y0XHLwKXnLPxTcsb8TLDmgfjc5Wag3ltvzNcCtio=";
   };
 in
-  builtins.derivation {
-    name = "findutils-4.4.2";
-    system = buildPlatform.system;
-    builder = "${prev.bash}/bin/bash";
-    args = [
-      "-c"
-      ''
-        set -eu
-        export PATH="${prev.coreutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.patch}/bin"
+builtins.derivation {
+  name = "findutils-4.4.2";
+  system = buildPlatform.system;
+  builder = "${prev.bash}/bin/bash";
+  args = [
+    "-c"
+    ''
+      set -eu
+      export PATH="${prev.coreutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.patch}/bin"
 
-        cd "$TMPDIR"
-        tar xzf ${findutils-src}
+      cd "$TMPDIR"
+      tar xzf ${findutils-src}
 
-        SRC="$TMPDIR/findutils-4.4.2"
-        cd "$SRC"
-        chmod -R u+w .
-        find . -name configure -exec chmod +x {} + 2>/dev/null || true
-        find . -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
-        chmod +x install-sh missing mkinstalldirs build-aux/install-sh 2>/dev/null || true
-        find . -type f \( -name '*.c' -o -name '*.h' \) -exec touch {} + 2>/dev/null || true
+      SRC="$TMPDIR/findutils-4.4.2"
+      cd "$SRC"
+      chmod -R u+w .
+      find . -name configure -exec chmod +x {} + 2>/dev/null || true
+      find . -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
+      chmod +x install-sh missing mkinstalldirs build-aux/install-sh 2>/dev/null || true
+      find . -type f \( -name '*.c' -o -name '*.h' \) -exec touch {} + 2>/dev/null || true
 
-        mkdir -p "$TMPDIR/build"
-        cd "$TMPDIR/build"
+      mkdir -p "$TMPDIR/build"
+      cd "$TMPDIR/build"
 
-        CC="${prev.gcc}/bin/gcc" \
-        CFLAGS="-O2 -I${prev.glibc}/include" \
-        LDFLAGS="-L${prev.glibc}/lib -static" \
-        "$SRC/configure" \
-          --prefix="$out" \
-          --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
-          --disable-nls
+      CC="${prev.gcc}/bin/gcc" \
+      CFLAGS="-O2 -I${prev.glibc}/include" \
+      LDFLAGS="-L${prev.glibc}/lib -static" \
+      "$SRC/configure" \
+        --prefix="$out" \
+        --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
+        --disable-nls
 
-        make -j"$(nproc)"
-        make install
+      make -j"$(nproc)"
+      make install
 
-        echo "GNU findutils 4.4.2 installed to $out"
-      ''
-    ];
-  }
-  // {
-    meta = {
-      description = "GNU find, xargs, and locate utilities, version 4.4.2";
-      homepage = "https://www.gnu.org/software/findutils/";
-      license = "GPL-3.0-or-later";
-      build = {os = "linux";};
-      execute = {os = "linux";};
+      echo "GNU findutils 4.4.2 installed to $out"
+    ''
+  ];
+}
+// {
+  meta = {
+    description = "GNU find, xargs, and locate utilities, version 4.4.2";
+    homepage = "https://www.gnu.org/software/findutils/";
+    license = "GPL-3.0-or-later";
+    build = {
+      os = "linux";
     };
-  }
+    execute = {
+      os = "linux";
+    };
+  };
+}

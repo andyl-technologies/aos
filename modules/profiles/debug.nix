@@ -10,7 +10,8 @@
   pkgs,
   lib,
   ...
-}: {
+}:
+{
   aos.security.selinux.enable = true;
   aos.security.selinux.mode = "permissive";
   aos.security.hardening.coreDump.enable = true;

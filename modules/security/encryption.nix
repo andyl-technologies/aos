@@ -12,18 +12,18 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.security.encryption;
 
   # Generate the crypttab entry for the encrypted device.
   # Format: <name> <device> <key-file> <options>
-  crypttabEntry = let
-    keyField =
-      if cfg.keyFile != ""
-      then cfg.keyFile
-      else "none";
-    options = "luks,cipher=${cfg.cipher},size=${toString cfg.keySize}";
-  in "encrypted ${cfg.device} ${keyField} ${options}";
+  crypttabEntry =
+    let
+      keyField = if cfg.keyFile != "" then cfg.keyFile else "none";
+      options = "luks,cipher=${cfg.cipher},size=${toString cfg.keySize}";
+    in
+    "encrypted ${cfg.device} ${keyField} ${options}";
 
   # Crypttab configuration file.
   crypttabText = ''
@@ -33,7 +33,8 @@
     # <name>      <device>    <key-file>    <options>
     ${crypttabEntry}
   '';
-in {
+in
+{
   options.aos.security.encryption = {
     ## Enable disk encryption at rest using LUKS.
     ##
@@ -106,7 +107,7 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [pkgs.cryptsetup];
+    environment.systemPackages = [ pkgs.cryptsetup ];
 
     # /etc/crypttab — encrypted volume definitions.
     # Read by systemd-cryptsetup-generator to create units that unlock

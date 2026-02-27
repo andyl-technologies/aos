@@ -13,7 +13,8 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.monitoring.nodeExporter;
 
   # Build the --collector.* and --no-collector.* flags.
@@ -31,7 +32,8 @@
     ++ enabledFlags
     ++ disabledFlags
   );
-in {
+in
+{
   options.aos.monitoring.nodeExporter = {
     ## Enable the Prometheus node_exporter for hardware and OS metrics.
     enable = lib.mkOption {
@@ -77,7 +79,7 @@ in {
     ## List of node_exporter collectors to explicitly disable.
     disabledCollectors = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = ''
         List of node_exporter collectors to explicitly disable. Use this
         to suppress collectors that produce excessive cardinality or are
@@ -112,14 +114,14 @@ in {
       ];
     };
 
-    environment.systemPackages = [pkgs.node-exporter];
+    environment.systemPackages = [ pkgs.node-exporter ];
 
     # node-exporter.service — Prometheus node metrics exporter.
     systemd.services."node-exporter" = {
       description = "Prometheus Node Exporter";
-      wantedBy = ["multi-user.target"];
-      after = ["network-online.target"];
-      wants = ["network-online.target"];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "simple";
         ExecStart = "${pkgs.node-exporter}/bin/node_exporter ${nodeExporterFlags}";
@@ -134,7 +136,7 @@ in {
         ProtectHome = true;
         NoNewPrivileges = true;
         PrivateTmp = true;
-        ReadOnlyPaths = ["/"];
+        ReadOnlyPaths = [ "/" ];
         # Allow access to /proc and /sys for metrics collection.
         ProtectKernelTunables = false;
         ProtectKernelModules = true;

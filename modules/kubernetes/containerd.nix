@@ -13,18 +13,17 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.kubernetes.containerd;
 
   # Build registry mirror host directory configuration (v2 format).
-  registryHostConfigs =
-    lib.mapAttrsToList (registry: mirror: ''
-      [plugins."io.containerd.grpc.v1.cri".registry.configs."${registry}".tls]
-        insecure_skip_verify = false
-      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."${registry}"]
-        endpoint = ["${mirror}"]
-    '')
-    cfg.registryMirrors;
+  registryHostConfigs = lib.mapAttrsToList (registry: mirror: ''
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."${registry}".tls]
+      insecure_skip_verify = false
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."${registry}"]
+      endpoint = ["${mirror}"]
+  '') cfg.registryMirrors;
 
   # Full containerd config.toml (v2 format with CRI v2 plugin paths).
   containerdConfig = ''
@@ -47,29 +46,22 @@
         [plugins."io.containerd.grpc.v1.cri".containerd]
           snapshotter = "${cfg.snapshotter}"
           default_runtime_name = "runc"
-          discard_unpacked_layers = ${
-      if cfg.discardUnpackedLayers
-      then "true"
-      else "false"
-    }
+          discard_unpacked_layers = ${if cfg.discardUnpackedLayers then "true" else "false"}
           [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
             [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
               runtime_type = "${cfg.runtimeType}"
               [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
-                SystemdCgroup = ${
-      if cfg.cgroupDriver == "systemd"
-      then "true"
-      else "false"
-    }
+                SystemdCgroup = ${if cfg.cgroupDriver == "systemd" then "true" else "false"}
         [plugins."io.containerd.grpc.v1.cri".cni]
           bin_dir = "/opt/cni/bin"
           conf_dir = "/etc/cni/net.d"
-    ${lib.optionalString (cfg.registryMirrors != {}) ''
+    ${lib.optionalString (cfg.registryMirrors != { }) ''
           [plugins."io.containerd.grpc.v1.cri".registry]
       ${builtins.concatStringsSep "\n" registryHostConfigs}
     ''}
   '';
-in {
+in
+{
   options.aos.kubernetes.containerd = {
     ## Enable the containerd container runtime.
     ##
@@ -133,7 +125,7 @@ in {
     ## ```
     registryMirrors = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = {};
+      default = { };
       description = ''
         Registry mirror mappings. Each key is the original registry
         (e.g. "docker.io") and the value is the mirror URL
@@ -251,7 +243,7 @@ in {
     # containerd.service — container runtime daemon.
     systemd.services."containerd" = {
       description = "containerd Container Runtime";
-      wantedBy = ["multi-user.target"];
+      wantedBy = [ "multi-user.target" ];
       after = [
         "network.target"
         "local-fs.target"

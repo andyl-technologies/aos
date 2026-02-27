@@ -24,7 +24,8 @@
   pkgs,
   lib,
   ...
-}: {
+}:
+{
   imports = [
     # Base system
     ./modules/base/build.nix

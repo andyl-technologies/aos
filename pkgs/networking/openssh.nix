@@ -5,76 +5,79 @@
   gnumake,
   openssl,
   zlib,
-}: let
+}:
+let
   version = "10.0p1";
 in
-  mkDerivation {
-    pname = "openssh";
-    inherit version;
+mkDerivation {
+  pname = "openssh";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${version}.tar.gz"
-      ];
-      hash = "sha256-AhoucJoO30JQsSVr1anlAEEakN3avqgw7VnO+Q652Fw=";
-    };
-
-    buildDeps = [gnumake];
-    runtimeDeps = [
-      openssl
-      zlib
+  src = fetchurl {
+    urls = [
+      "https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${version}.tar.gz"
     ];
-    propagatedDeps = [];
+    hash = "sha256-AhoucJoO30JQsSVr1anlAEEakN3avqgw7VnO+Q652Fw=";
+  };
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd openssh-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --sysconfdir=$out/etc/ssh \
-            --with-ssl-dir=${openssl} \
-            --with-zlib=${zlib} \
-            --with-privsep-path=$out/var/empty/sshd \
-            --with-privsep-user=sshd \
-            --without-pam \
-            --disable-strip
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          # Strip setuid bits from install (not available in Nix sandbox)
-          sed -i 's/-m 4711/-m 0755/g' Makefile
-          make install
-        '';
-      }
-    ];
+  buildDeps = [ gnumake ];
+  runtimeDeps = [
+    openssl
+    zlib
+  ];
+  propagatedDeps = [ ];
 
-    meta = {
-      description = "OpenSSH — secure shell connectivity tools";
-      homepage = "https://www.openssh.com";
-      license = "BSD-2-Clause";
-    };
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd openssh-${version}
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        ./configure \
+          --prefix=$out \
+          --sysconfdir=$out/etc/ssh \
+          --with-ssl-dir=${openssl} \
+          --with-zlib=${zlib} \
+          --with-privsep-path=$out/var/empty/sshd \
+          --with-privsep-user=sshd \
+          --without-pam \
+          --disable-strip
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        # Strip setuid bits from install (not available in Nix sandbox)
+        sed -i 's/-m 4711/-m 0755/g' Makefile
+        make install
+      '';
+    }
+  ];
 
-    checks = {
+  meta = {
+    description = "OpenSSH — secure shell connectivity tools";
+    homepage = "https://www.openssh.com";
+    license = "BSD-2-Clause";
+  };
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       version = testing.mkToolCheck {
         pname = "tool-openssh-version";
         tool = self;
@@ -83,7 +86,7 @@ in
 
       keygen = testing.mkVMTest {
         name = "tool-openssh-keygen";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           echo "==> Generating ed25519 keypair"
           ssh-keygen -t ed25519 -f /tmp/testkey -N ""
@@ -96,12 +99,12 @@ in
 
       rpath = testing.mkRPATHCheck {
         pkg = self;
-        bins = ["ssh"];
+        bins = [ "ssh" ];
       };
 
       config-validity = testing.mkVMTest {
         name = "cross-cutting-openssh-config-validity";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           export PATH="${self}/bin:${self}/sbin:$PATH"
 
@@ -122,4 +125,4 @@ in
         '';
       };
     };
-  }
+}

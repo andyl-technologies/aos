@@ -19,7 +19,8 @@
   freetype,
   xorg-stubs,
   openjdk-22,
-}: let
+}:
+let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
     inherit
       fetchurl
@@ -43,10 +44,10 @@
       ;
   };
 in
-  mkOpenJDKBootstrap {
-    major = 23;
-    version = "23.0.2";
-    build = "7";
-    srcHash = "sha256-pQchkZBngfybbXDjNa6NI/AIc5zlg3KwGYAltLovvsY=";
-    prevJdk = openjdk-22;
-  }
+mkOpenJDKBootstrap {
+  major = 23;
+  version = "23.0.2";
+  build = "7";
+  srcHash = "sha256-pQchkZBngfybbXDjNa6NI/AIc5zlg3KwGYAltLovvsY=";
+  prevJdk = openjdk-22;
+}

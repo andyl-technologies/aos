@@ -8,7 +8,8 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.services.nginx;
 
   # Apply submodule defaults — AOS submodule merge doesn't auto-apply nested
@@ -20,49 +21,47 @@
     basicAuthFile = vhost.basicAuthFile or "/etc/nginx/htpasswd";
     root = vhost.root or null;
     autoindex = vhost.autoindex or false;
-    locations = vhost.locations or {};
+    locations = vhost.locations or { };
     extraConfig = vhost.extraConfig or "";
   };
 
   # Build virtual host server blocks for port 443.
-  vhostBlocks =
-    lib.mapAttrsToList (
-      name: raw: let
-        vhost = applyVhostDefaults raw;
-        acmeDirectives = lib.optionalString vhost.acme ''
-          acme ${vhost.serverName};
-          ssl_certificate $acme_certificate;
-          ssl_certificate_key $acme_certificate_key;
-        '';
-        authDirectives = lib.optionalString vhost.basicAuth ''
-          auth_basic "Restricted";
-          auth_basic_user_file ${vhost.basicAuthFile};
-        '';
-        locationBlocks =
-          lib.mapAttrsToList (locPath: locCfg: ''
-            location ${locPath} {
-              ${lib.optionalString (locCfg ? root) "root ${locCfg.root};"}
-              ${lib.optionalString (locCfg ? proxyPass) "proxy_pass ${locCfg.proxyPass};"}
-              ${lib.optionalString (locCfg ? extraConfig) locCfg.extraConfig}
-            }
-          '')
-          vhost.locations;
-        rootDirective = lib.optionalString (vhost.root != null) "root ${vhost.root};";
-        autoindexDirective = lib.optionalString vhost.autoindex "autoindex on;";
-      in ''
-        server {
-          listen 443 ssl;
-          server_name ${vhost.serverName};
-          ${acmeDirectives}
-          ${authDirectives}
-          ${rootDirective}
-          ${autoindexDirective}
-          ${builtins.concatStringsSep "\n    " locationBlocks}
-          ${vhost.extraConfig}
+  vhostBlocks = lib.mapAttrsToList (
+    name: raw:
+    let
+      vhost = applyVhostDefaults raw;
+      acmeDirectives = lib.optionalString vhost.acme ''
+        acme ${vhost.serverName};
+        ssl_certificate $acme_certificate;
+        ssl_certificate_key $acme_certificate_key;
+      '';
+      authDirectives = lib.optionalString vhost.basicAuth ''
+        auth_basic "Restricted";
+        auth_basic_user_file ${vhost.basicAuthFile};
+      '';
+      locationBlocks = lib.mapAttrsToList (locPath: locCfg: ''
+        location ${locPath} {
+          ${lib.optionalString (locCfg ? root) "root ${locCfg.root};"}
+          ${lib.optionalString (locCfg ? proxyPass) "proxy_pass ${locCfg.proxyPass};"}
+          ${lib.optionalString (locCfg ? extraConfig) locCfg.extraConfig}
         }
-      ''
-    )
-    cfg.virtualHosts;
+      '') vhost.locations;
+      rootDirective = lib.optionalString (vhost.root != null) "root ${vhost.root};";
+      autoindexDirective = lib.optionalString vhost.autoindex "autoindex on;";
+    in
+    ''
+      server {
+        listen 443 ssl;
+        server_name ${vhost.serverName};
+        ${acmeDirectives}
+        ${authDirectives}
+        ${rootDirective}
+        ${autoindexDirective}
+        ${builtins.concatStringsSep "\n    " locationBlocks}
+        ${vhost.extraConfig}
+      }
+    ''
+  ) cfg.virtualHosts;
 
   # Full nginx.conf
   nginxConf = ''
@@ -100,8 +99,8 @@
       acme_zone acme 1m;
 
       ${lib.optionalString (cfg.acmeEmail != "") ''
-      acme_email ${cfg.acmeEmail};
-    ''}
+        acme_email ${cfg.acmeEmail};
+      ''}
 
       # HTTP server — ACME challenges + redirect to HTTPS
       server {
@@ -121,7 +120,8 @@
       ${builtins.concatStringsSep "\n  " vhostBlocks}
     }
   '';
-in {
+in
+{
   options.aos.services.nginx = {
     ## Enable the nginx web server with ACME TLS support.
     ##
@@ -199,7 +199,7 @@ in {
             ## Location blocks for this virtual host.
             locations = lib.mkOption {
               type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
-              default = {};
+              default = { };
               description = "Location blocks for this virtual host.";
             };
             ## Extra nginx configuration for this server block.
@@ -211,7 +211,7 @@ in {
           };
         }
       );
-      default = {};
+      default = { };
       description = "nginx virtual host definitions.";
     };
   };
@@ -309,12 +309,12 @@ in {
     # nginx.service — HTTP server daemon.
     systemd.services."nginx" = {
       description = "nginx HTTP Server";
-      wantedBy = ["multi-user.target"];
+      wantedBy = [ "multi-user.target" ];
       after = [
         "network-online.target"
         "local-fs.target"
       ];
-      wants = ["network-online.target"];
+      wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "forking";
         PIDFile = "/run/nginx.pid";
