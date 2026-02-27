@@ -65,7 +65,9 @@ let
     then throw "platform: unsupported kernel '${kernelName}' (only linux)"
     else if !(cpus ? ${cpuName})
     then throw "platform: unsupported CPU '${cpuName}' (known: ${builtins.concatStringsSep ", " knownCpuNames})"
-    else let cpu = cpus.${cpuName}; in {
+    else let
+      cpu = cpus.${cpuName};
+    in {
       inherit system;
       config = cpu.gnuConfig;
       linuxArch = cpu.linuxArch;
@@ -80,7 +82,10 @@ let
 
       # ISA execution compatibility — derived from CPU table
       # Each entry = a constraint set for platforms whose binaries we can natively run
-      canExecute = builtins.map (c: {cpu = c; os = kernelName;}) (cpu.canExecute);
+      canExecute = builtins.map (c: {
+        cpu = c;
+        os = kernelName;
+      }) (cpu.canExecute);
 
       # Backward-compat booleans
       isx86_64 = cpuName == "x86_64";
@@ -158,13 +163,23 @@ let
   # Both args are constraint sets. Compatible = for every key present in both,
   # their values overlap (list values are OR'd).
   constraintsCompatible = target: execute:
-    builtins.all (key:
-      if !(target ? ${key}) || !(execute ? ${key}) then true
-      else let
-        t = target.${key}; e = execute.${key};
-        tList = if builtins.isList t then t else [t];
-        eList = if builtins.isList e then e else [e];
-      in builtins.any (ev: builtins.elem ev tList) eList
+    builtins.all (
+      key:
+        if !(target ? ${key}) || !(execute ? ${key})
+        then true
+        else let
+          t = target.${key};
+          e = execute.${key};
+          tList =
+            if builtins.isList t
+            then t
+            else [t];
+          eList =
+            if builtins.isList e
+            then e
+            else [e];
+        in
+          builtins.any (ev: builtins.elem ev tList) eList
     ) (builtins.attrNames (target // execute));
 in {
   inherit mkPlatform cpus satisfies canRun canBuildOn platformIsCompatible constraintsCompatible;

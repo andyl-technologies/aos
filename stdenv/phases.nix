@@ -137,14 +137,12 @@ let
       fi
     '';
   };
-in
-rec {
+in rec {
   # GNU Autoconf (configure / make / make install)
-  autoconfPhases =
-    {
-      doCheck ? true,
-      checkTarget ? "check",
-    }:
+  autoconfPhases = {
+    doCheck ? true,
+    checkTarget ? "check",
+  }:
     [
       unpackPhase
       {
@@ -173,17 +171,16 @@ rec {
       }
     ]
     ++ (
-      if doCheck then
-        [
-          {
-            name = "check";
-            script = ''
-              make ${checkTarget} -j$NIX_BUILD_CORES
-            '';
-          }
-        ]
-      else
-        [ ]
+      if doCheck
+      then [
+        {
+          name = "check";
+          script = ''
+            make ${checkTarget} -j$NIX_BUILD_CORES
+          '';
+        }
+      ]
+      else []
     )
     ++ [
       {
@@ -196,10 +193,7 @@ rec {
     ];
 
   # CMake
-  cmakePhases =
-    {
-      doCheck ? true,
-    }:
+  cmakePhases = {doCheck ? true}:
     [
       unpackPhase
       {
@@ -223,17 +217,16 @@ rec {
       }
     ]
     ++ (
-      if doCheck then
-        [
-          {
-            name = "check";
-            script = ''
-              cd build && ctest --output-on-failure -j$NIX_BUILD_CORES
-            '';
-          }
-        ]
-      else
-        [ ]
+      if doCheck
+      then [
+        {
+          name = "check";
+          script = ''
+            cd build && ctest --output-on-failure -j$NIX_BUILD_CORES
+          '';
+        }
+      ]
+      else []
     )
     ++ [
       {
@@ -246,11 +239,10 @@ rec {
     ];
 
   # Meson + Ninja
-  mesonPhases =
-    {
-      doCheck ? true,
-      mesonTestFlags ? "",
-    }:
+  mesonPhases = {
+    doCheck ? true,
+    mesonTestFlags ? "",
+  }:
     [
       unpackPhase
       {
@@ -272,17 +264,16 @@ rec {
       }
     ]
     ++ (
-      if doCheck then
-        [
-          {
-            name = "check";
-            script = ''
-              meson test -C build --no-rebuild ${mesonTestFlags}
-            '';
-          }
-        ]
-      else
-        [ ]
+      if doCheck
+      then [
+        {
+          name = "check";
+          script = ''
+            meson test -C build --no-rebuild ${mesonTestFlags}
+          '';
+        }
+      ]
+      else []
     )
     ++ [
       {
@@ -295,44 +286,49 @@ rec {
     ];
 
   # Go
-  goPhases =
-    {
-      goModules ? null,
-      goPackage ? ".",
-      goOutput,
-      cgoEnabled ? false,
-      ldflags ? "-s -w",
-      tags ? [ ],
-      doCheck ? true,
-      goTestFlags ? "./...",
-      doParallelCheck ? true,
-    }:
-    let
-      tagsFlag = if tags != [ ] then "-tags ${builtins.concatStringsSep "," tags}" else "";
-    in
+  goPhases = {
+    goModules ? null,
+    goPackage ? ".",
+    goOutput,
+    cgoEnabled ? false,
+    ldflags ? "-s -w",
+    tags ? [],
+    doCheck ? true,
+    goTestFlags ? "./...",
+    doParallelCheck ? true,
+  }: let
+    tagsFlag =
+      if tags != []
+      then "-tags ${builtins.concatStringsSep "," tags}"
+      else "";
+  in
     [
       unpackPhase
       {
         name = "configure";
-        script = ''
-          export GOPATH="$TMPDIR/go"
-          export GOCACHE="$TMPDIR/go-cache"
-          export GOFLAGS="-trimpath"
-          export CGO_ENABLED=${if cgoEnabled then "1" else "0"}
-          export GONOSUMDB="*"
-          export GONOSUMCHECK="*"
-          mkdir -p "$GOPATH" "$GOCACHE"
+        script =
+          ''
+            export GOPATH="$TMPDIR/go"
+            export GOCACHE="$TMPDIR/go-cache"
+            export GOFLAGS="-trimpath"
+            export CGO_ENABLED=${
+              if cgoEnabled
+              then "1"
+              else "0"
+            }
+            export GONOSUMDB="*"
+            export GONOSUMCHECK="*"
+            mkdir -p "$GOPATH" "$GOCACHE"
 
-        ''
-        + (
-          if goModules != null then
-            ''
+          ''
+          + (
+            if goModules != null
+            then ''
               export GOPATH="${goModules}"
               export GOFLAGS="$GOFLAGS -mod=readonly"
               export GOPROXY=off
             ''
-          else
-            ''
+            else ''
               if [ -d vendor ]; then
                 export GOFLAGS="$GOFLAGS -mod=vendor"
                 export GOPROXY=off
@@ -340,7 +336,7 @@ rec {
                 export GOPROXY="https://proxy.golang.org,direct"
               fi
             ''
-        );
+          );
       }
       {
         name = "build";
@@ -354,22 +350,25 @@ rec {
       }
     ]
     ++ (
-      if doCheck then
-        [
-          {
-            name = "check";
-            script = ''
-              go test \
-                -v \
-                ${if !doParallelCheck then "-p 1" else ""} \
-                ${tagsFlag} \
-                ${goTestFlags}
-              go vet ${goTestFlags}
-            '';
-          }
-        ]
-      else
-        [ ]
+      if doCheck
+      then [
+        {
+          name = "check";
+          script = ''
+            go test \
+              -v \
+              ${
+              if !doParallelCheck
+              then "-p 1"
+              else ""
+            } \
+              ${tagsFlag} \
+              ${goTestFlags}
+            go vet ${goTestFlags}
+          '';
+        }
+      ]
+      else []
     )
     ++ [
       {
@@ -383,35 +382,44 @@ rec {
     ];
 
   # Rust (Cargo)
-  cargoPhases =
-    {
-      cargoDeps,
-      cargoFlags ? "",
-      buildType ? "release",
-      checkType ? buildType,
-      cargoTestFlags ? "",
-      buildFeatures ? [ ],
-      buildNoDefaultFeatures ? false,
-      installBins ? true,
-      installLibs ? false,
-      doCheck ? true,
-      doParallelCheck ? true,
-      gitDeps ? [ ],
-    }:
-    let
-      featuresFlag =
-        if buildFeatures != [ ] then "--features ${builtins.concatStringsSep "," buildFeatures}" else "";
-      noDefaultFlag = if buildNoDefaultFeatures then "--no-default-features" else "";
-      profileFlag = if buildType == "release" then "--release" else "";
-      checkProfileFlag = if checkType == "release" then "--release" else "";
+  cargoPhases = {
+    cargoDeps,
+    cargoFlags ? "",
+    buildType ? "release",
+    checkType ? buildType,
+    cargoTestFlags ? "",
+    buildFeatures ? [],
+    buildNoDefaultFeatures ? false,
+    installBins ? true,
+    installLibs ? false,
+    doCheck ? true,
+    doParallelCheck ? true,
+    gitDeps ? [],
+  }: let
+    featuresFlag =
+      if buildFeatures != []
+      then "--features ${builtins.concatStringsSep "," buildFeatures}"
+      else "";
+    noDefaultFlag =
+      if buildNoDefaultFeatures
+      then "--no-default-features"
+      else "";
+    profileFlag =
+      if buildType == "release"
+      then "--release"
+      else "";
+    checkProfileFlag =
+      if checkType == "release"
+      then "--release"
+      else "";
 
-      gitSourceLines = builtins.concatStringsSep "" (
-        builtins.map (
-          dep:
-          "printf '[source.\"git+${dep.url}\"]\\ngit = \"${dep.url}\"\\nreplace-with = \"vendored-sources\"\\n\\n' >> .cargo/config.toml\n"
-        ) gitDeps
-      );
-    in
+    gitSourceLines = builtins.concatStringsSep "" (
+      builtins.map (
+        dep: "printf '[source.\"git+${dep.url}\"]\\ngit = \"${dep.url}\"\\nreplace-with = \"vendored-sources\"\\n\\n' >> .cargo/config.toml\n"
+      )
+      gitDeps
+    );
+  in
     [
       unpackPhase
       {
@@ -439,50 +447,51 @@ rec {
       }
     ]
     ++ (
-      if doCheck then
-        [
-          {
-            name = "check";
-            script = ''
-              cargo test \
-                ${checkProfileFlag} \
-                --frozen \
-                --offline \
-                ${if !doParallelCheck then "-- --test-threads=1" else ""} \
-                ${cargoTestFlags}
-            '';
-          }
-        ]
-      else
-        [ ]
+      if doCheck
+      then [
+        {
+          name = "check";
+          script = ''
+            cargo test \
+              ${checkProfileFlag} \
+              --frozen \
+              --offline \
+              ${
+              if !doParallelCheck
+              then "-- --test-threads=1"
+              else ""
+            } \
+              ${cargoTestFlags}
+          '';
+        }
+      ]
+      else []
     )
     ++ [
       {
         name = "install";
         script =
           (
-            if installBins then
-              ''
-                mkdir -p "$out/bin"
-                find target/${buildType} -maxdepth 1 -type f -executable \
-                  ! -name '*.d' ! -name '*.so' ! -name '*.dylib' | while read bin; do
-                  install -m 755 "$bin" "$out/bin/"
-                done
-              ''
-            else
-              ""
+            if installBins
+            then ''
+              mkdir -p "$out/bin"
+              find target/${buildType} -maxdepth 1 -type f -executable \
+                ! -name '*.d' ! -name '*.so' ! -name '*.dylib' | while read bin; do
+                install -m 755 "$bin" "$out/bin/"
+              done
+            ''
+            else ""
           )
           + (
-            if installLibs then
-              ''
-                mkdir -p "$out/lib"
-                find target/${buildType} -maxdepth 1 \
-                  \( -name '*.so' -o -name '*.a' -o -name '*.dylib' \) | while read lib; do
-                  install -m 644 "$lib" "$out/lib/"
-                done
-              ''
-            else
-              ""
+            if installLibs
+            then ''
+              mkdir -p "$out/lib"
+              find target/${buildType} -maxdepth 1 \
+                \( -name '*.so' -o -name '*.a' -o -name '*.dylib' \) | while read lib; do
+                install -m 644 "$lib" "$out/lib/"
+              done
+            ''
+            else ""
           );
       }
       fixupPhase
@@ -520,7 +529,7 @@ rec {
     fixupPhase
   ];
 
-  defaultPhases = autoconfPhases { };
+  defaultPhases = autoconfPhases {};
 
   copyPhases = [
     unpackPhase

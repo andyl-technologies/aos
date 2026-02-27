@@ -224,54 +224,54 @@
   # Bash script to patch configure: replaces the broken sed pipeline
   # with a call to fixSubsScript.
   patchConfigureScript = builtins.toFile "patch-configure.sh" ''
-    replacement="$1"
-    state=0
-    buf=""
-    has_subs=no
-    lines=0
-    while IFS= read -r line; do
-      case "$state" in
-        0)
-          case "$line" in
-            "sed -n "*)
-              state=1
-              buf="$line"
-              has_subs=no
-              lines=1
+        replacement="$1"
+        state=0
+        buf=""
+        has_subs=no
+        lines=0
+        while IFS= read -r line; do
+          case "$state" in
+            0)
+              case "$line" in
+                "sed -n "*)
+                  state=1
+                  buf="$line"
+                  has_subs=no
+                  lines=1
+                  ;;
+                *)
+                  printf '%s\n' "$line"
+                  ;;
+              esac
               ;;
-            *)
-              printf '%s\n' "$line"
-              ;;
-          esac
-          ;;
-        1)
-          buf="$buf
-$line"
-          lines=$((lines + 1))
-          case "$line" in
-            *subs.awk*|*subs\.awk*) has_subs=yes ;;
-          esac
-          case "$line" in
-            *ac_write_fail*)
-              if test "$has_subs" = yes; then
-                printf '%s\n' "$replacement"
-              else
+            1)
+              buf="$buf
+    $line"
+              lines=$((lines + 1))
+              case "$line" in
+                *subs.awk*|*subs\.awk*) has_subs=yes ;;
+              esac
+              case "$line" in
+                *ac_write_fail*)
+                  if test "$has_subs" = yes; then
+                    printf '%s\n' "$replacement"
+                  else
+                    printf '%s\n' "$buf"
+                  fi
+                  state=0
+                  buf=""
+                  ;;
+              esac
+              if test "$lines" -gt 80 2>/dev/null; then
                 printf '%s\n' "$buf"
+                state=0
+                buf=""
               fi
-              state=0
-              buf=""
               ;;
           esac
-          if test "$lines" -gt 80 2>/dev/null; then
-            printf '%s\n' "$buf"
-            state=0
-            buf=""
-          fi
-          ;;
-      esac
-    done
-    if test "$state" = 1; then
-      printf '%s\n' "$buf"
-    fi
+        done
+        if test "$state" = 1; then
+          printf '%s\n' "$buf"
+        fi
   '';
 }

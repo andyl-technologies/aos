@@ -305,7 +305,6 @@
         }
       ];
     };
-
 in {
   inherit mkFirecrackerRootfs;
 }

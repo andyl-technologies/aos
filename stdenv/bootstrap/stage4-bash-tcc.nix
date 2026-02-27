@@ -19,8 +19,7 @@
   seeds, # Output of stage0-seeds.nix (provides kaemNix)
   buildPlatform,
   ...
-}:
-let
+}: let
   system = buildPlatform.system;
   sources = import ./sources.nix;
 
@@ -555,23 +554,22 @@ let
     echo "  ''${out}/bin/bash"
     echo "  ''${out}/bin/sh"
   '';
-
 in
-builtins.derivation {
-  name = "bash-2.05b-tcc";
-  inherit system;
-  builder = "${seeds.kaemNix}";
-  passAsFile = [ "buildScript" ];
-  buildScript = "${posix-tools}/bin/kaem --verbose --strict --file ${buildKaem}\n";
-  POSIX_TOOLS = "${posix-tools}";
-  TINYCC = "${tinycc}";
-  BASH_SRC = "${bash-src}";
-}
-// {
-  meta = {
-    description = "GNU Bourne-Again SHell 2.05b (TCC/Mes libc, minimal)";
-    homepage = "https://www.gnu.org/software/bash/";
-    license = "GPL-2.0-or-later";
-    platforms = [ "i686-linux" ];
-  };
-}
+  builtins.derivation {
+    name = "bash-2.05b-tcc";
+    inherit system;
+    builder = "${seeds.kaemNix}";
+    passAsFile = ["buildScript"];
+    buildScript = "${posix-tools}/bin/kaem --verbose --strict --file ${buildKaem}\n";
+    POSIX_TOOLS = "${posix-tools}";
+    TINYCC = "${tinycc}";
+    BASH_SRC = "${bash-src}";
+  }
+  // {
+    meta = {
+      description = "GNU Bourne-Again SHell 2.05b (TCC/Mes libc, minimal)";
+      homepage = "https://www.gnu.org/software/bash/";
+      license = "GPL-2.0-or-later";
+      platforms = ["i686-linux"];
+    };
+  }

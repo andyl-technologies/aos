@@ -18,11 +18,7 @@
 # The bootstrap targets x86 (32-bit) because MesCC's x86_64 code generator
 # is broken (GNU Mes issue #470). Cross-compilation happens after GCC.
 #
-{
-  buildPlatform,
-  ...
-}:
-let
+{buildPlatform, ...}: let
   system = buildPlatform.system;
 
   # The ONLY opaque binary: hex0-seed (256 bytes, committed with git +x)
@@ -69,8 +65,7 @@ let
       (builtins.placeholder "out")
     ];
   };
-in
-{
+in {
   inherit
     hex0
     kaemNix
@@ -82,7 +77,13 @@ in
     description = "Bootstrap seeds: hex0 (256B opaque binary) + tools compiled from hex0 source";
     homepage = "https://github.com/oriansj/bootstrap-seeds";
     license = "GPL-3.0-or-later";
-    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
-    execute = { os = "linux"; cpu = "i686"; };
+    build = {
+      os = "linux";
+      cpu = ["x86_64" "i686"];
+    };
+    execute = {
+      os = "linux";
+      cpu = "i686";
+    };
   };
 }

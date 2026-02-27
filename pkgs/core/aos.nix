@@ -4,7 +4,6 @@
   fetchCargoDeps,
   git,
   nix,
-  alejandra,
 }: let
   version = "0.1.0";
   src = builtins.path {
@@ -31,7 +30,7 @@ in
           mv $out/bin/aos $out/bin/.aos-unwrapped
           cat > $out/bin/aos << 'WRAPPER'
       #!/bin/sh
-      export PATH="${git}/bin:${nix}/bin:${alejandra}/bin''${PATH:+:$PATH}"
+      export PATH="${git}/bin:${nix}/bin''${PATH:+:$PATH}"
       exec "$(dirname "$0")/.aos-unwrapped" "$@"
       WRAPPER
           chmod +x $out/bin/aos

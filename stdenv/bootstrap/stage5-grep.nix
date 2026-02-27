@@ -21,8 +21,7 @@
   tar, # GNU tar (stage 4)
   buildPlatform,
   ...
-}:
-let
+}: let
   system = buildPlatform.system;
   lib = import ./lib.nix;
 
@@ -32,70 +31,75 @@ let
     url = sources.grep.url;
     sha256 = sources.grep.sha256;
   };
-
 in
-builtins.derivation {
-  name = "grep-2.4";
-  inherit system;
-  builder = "${bash}/bin/bash";
-  args = [
-    "-c"
-    ''
-      set -eu
+  builtins.derivation {
+    name = "grep-2.4";
+    inherit system;
+    builder = "${bash}/bin/bash";
+    args = [
+      "-c"
+      ''
+        set -eu
 
-      export PATH="${
-        builtins.concatStringsSep ":" (
-          builtins.map (p: "${p}/bin") [
-            gcc
-            binutils
-            gnumake
-            coreutils
-            bash
-            sed
-            grep
-            patch
-            diffutils
-            gawk
-            tar
-          ]
-        )
-      }"
-      export CONFIG_SHELL="${bash}/bin/bash"
-      export SHELL="${bash}/bin/bash"
+        export PATH="${
+          builtins.concatStringsSep ":" (
+            builtins.map (p: "${p}/bin") [
+              gcc
+              binutils
+              gnumake
+              coreutils
+              bash
+              sed
+              grep
+              patch
+              diffutils
+              gawk
+              tar
+            ]
+          )
+        }"
+        export CONFIG_SHELL="${bash}/bin/bash"
+        export SHELL="${bash}/bin/bash"
 
-      # Copy source to writable directory
-      cp -r ${src} $TMPDIR/src
-      chmod -R u+w $TMPDIR/src
-      cd $TMPDIR/src
+        # Copy source to writable directory
+        cp -r ${src} $TMPDIR/src
+        chmod -R u+w $TMPDIR/src
+        cd $TMPDIR/src
 
-      # Bypass automake sanity check (coreutils-tcc's ls -t is broken)
-      ${bash}/bin/bash ${lib.bypassSanityCheck} configure
+        # Bypass automake sanity check (coreutils-tcc's ls -t is broken)
+        ${bash}/bin/bash ${lib.bypassSanityCheck} configure
 
-      CC="${gcc}/bin/gcc" \
-      CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
-      LDFLAGS="-static -L${glibc}/lib" \
-      LIBS="-Wl,--start-group -lc -lnss_files -lnss_dns -lresolv -Wl,--end-group" \
-      CONFIG_SHELL="${bash}/bin/bash" \
-      ./configure \
-        --prefix=$out \
-        --build=i686-unknown-linux-gnu \
-        --host=i686-unknown-linux-gnu \
-        --disable-nls \
-        --disable-dependency-tracking
+        CC="${gcc}/bin/gcc" \
+        CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
+        LDFLAGS="-static -L${glibc}/lib" \
+        LIBS="-Wl,--start-group -lc -lnss_files -lnss_dns -lresolv -Wl,--end-group" \
+        CONFIG_SHELL="${bash}/bin/bash" \
+        ./configure \
+          --prefix=$out \
+          --build=i686-unknown-linux-gnu \
+          --host=i686-unknown-linux-gnu \
+          --disable-nls \
+          --disable-dependency-tracking
 
-      make
-      make install
+        make
+        make install
 
-      echo "GNU grep 2.4 built successfully"
-    ''
-  ];
-}
-// {
-  meta = {
-    description = "GNU grep 2.4 — built from GCC 2.95.3 with glibc for bootstrap";
-    homepage = "https://www.gnu.org/software/grep/";
-    license = "GPL-2.0-or-later";
-    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
-    execute = { os = "linux"; cpu = "i686"; };
-  };
-}
+        echo "GNU grep 2.4 built successfully"
+      ''
+    ];
+  }
+  // {
+    meta = {
+      description = "GNU grep 2.4 — built from GCC 2.95.3 with glibc for bootstrap";
+      homepage = "https://www.gnu.org/software/grep/";
+      license = "GPL-2.0-or-later";
+      build = {
+        os = "linux";
+        cpu = ["x86_64" "i686"];
+      };
+      execute = {
+        os = "linux";
+        cpu = "i686";
+      };
+    };
+  }

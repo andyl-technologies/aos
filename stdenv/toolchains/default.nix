@@ -16,8 +16,7 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
-}:
-let
+}: let
   gcc3_4 = import ./gcc3_4 {
     inherit
       bootstrap
@@ -50,8 +49,7 @@ let
     prev = gcc11;
     inherit buildPlatform hostPlatform targetPlatform;
   };
-in
-{
+in {
   # All toolchain tiers accessible by name
   inherit
     gcc3_4

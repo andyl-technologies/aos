@@ -247,12 +247,20 @@
   # Handles mkDerivation results (.constraints), tier packages (.meta), and
   # bare derivations (no data → null, skip validation).
   getDepConstraints = dep:
-    if dep ? constraints then
-      { execute = dep.constraints.execute; target = dep.constraints.target; }
-    else if dep ? meta then
-      { execute = dep.meta.execute or null; target = dep.meta.target or null; }
-    else
-      { execute = null; target = null; };
+    if dep ? constraints
+    then {
+      execute = dep.constraints.execute;
+      target = dep.constraints.target;
+    }
+    else if dep ? meta
+    then {
+      execute = dep.meta.execute or null;
+      target = dep.meta.target or null;
+    }
+    else {
+      execute = null;
+      target = null;
+    };
 
   # ---------------------------------------------------------------------------
   # mkDerivation
@@ -301,7 +309,8 @@
   }: let
     # Accept either `name` (direct) or `pname` (computed as pname-version).
     name =
-      args.name or (
+      args.name
+      or (
         if pname != null
         then "${pname}-${version}"
         else throw "mkDerivation: either 'pname' or 'name' must be provided"
@@ -385,115 +394,123 @@
 
     # Our execution constraint — where this derivation's output runs.
     ourExecute =
-      if meta ? execute then meta.execute
-      else { os = buildPlatform.constraints.os; cpu = buildPlatform.constraints.cpu; };
+      if meta ? execute
+      then meta.execute
+      else {
+        os = buildPlatform.constraints.os;
+        cpu = buildPlatform.constraints.cpu;
+      };
 
     # Rule 1: every buildDep must execute on our build platform
     validateDepExecute = dep: let
       dc = getDepConstraints dep;
       depName = dep.name or dep.pname or "(unknown)";
     in
-      dc.execute == null
+      dc.execute
+      == null
       || throwIfNot (canRun buildPlatform dc.execute)
-        "mkDerivation (${name}): build dep '${depName}' cannot execute on ${system}"
-        true;
+      "mkDerivation (${name}): build dep '${depName}' cannot execute on ${system}"
+      true;
 
     # Rule 2: every toolchain dep must target our execute platform
     validateDepTarget = dep: let
       dc = getDepConstraints dep;
       depName = dep.name or dep.pname or "(unknown)";
     in
-      dc.target == null
+      dc.target
+      == null
       || throwIfNot (constraintsCompatible dc.target ourExecute)
-        "mkDerivation (${name}): toolchain '${depName}' targets incompatible platform"
-        true;
+      "mkDerivation (${name}): toolchain '${depName}' targets incompatible platform"
+      true;
 
     # Only validate on linux (the only platform AOS supports). On other
     # platforms mkPlatform would throw; skip gracefully via short-circuit.
     systemIsLinux = let
       parts = builtins.match "([a-z0-9_]+)-([a-z]+)" system;
-    in parts != null && builtins.elemAt parts 1 == "linux";
+    in
+      parts != null && builtins.elemAt parts 1 == "linux";
 
     chainingOk =
       !systemIsLinux
       || (builtins.all validateDepExecute allBuildDeps
-          && builtins.all validateDepTarget allBuildDeps);
+        && builtins.all validateDepTarget allBuildDeps);
 
     # Platform compatibility check: supports new-style structured constraints
     # (meta.build / meta.execute) and old-style meta.platforms string lists.
     platformOk =
       # New-style: structured BUILD constraint (where can this be built?)
-      if meta ? build then
-        canBuildOn system meta.build
+      if meta ? build
+      then canBuildOn system meta.build
       # New-style: structured EXECUTE constraint (where does the output run?)
-      else if meta ? execute then
-        satisfies (mkPlatform system) meta.execute
+      else if meta ? execute
+      then satisfies (mkPlatform system) meta.execute
       # Old-style: platform string list (backward compat with ISA awareness)
-      else if meta ? platforms then
-        platformIsCompatible system meta.platforms
+      else if meta ? platforms
+      then platformIsCompatible system meta.platforms
       else true;
 
-    drv = throwIfNot
+    drv =
+      throwIfNot
       platformOk
       "${name} is not supported on ${system}"
       (throwIfNot chainingOk
         "${name}: dependency constraint validation failed"
         (builtins.derivation (
-      {
-        inherit name system;
-        builder = shell;
-        args = [
-          "-c"
-          builder
-        ];
-        inherit outputs;
+          {
+            inherit name system;
+            builder = shell;
+            args = [
+              "-c"
+              builder
+            ];
+            inherit outputs;
 
-        # Source
-        src =
-          if src != null
-          then builtins.toString src
-          else "";
+            # Source
+            src =
+              if src != null
+              then builtins.toString src
+              else "";
 
-        # Environment variables for the build
-        PATH = makePath allBuildDeps;
+            # Environment variables for the build
+            PATH = makePath allBuildDeps;
 
-        # Configuration flags
-        inherit
-          configureFlags
-          makeFlags
-          installFlags
-          cmakeFlags
-          mesonFlags
-          ;
+            # Configuration flags
+            inherit
+              configureFlags
+              makeFlags
+              installFlags
+              cmakeFlags
+              mesonFlags
+              ;
 
-        # Dependency search paths — include buildDeps so build-time
-        # libraries (e.g. elfutils for the kernel's objtool) are found.
-        C_INCLUDE_PATH = makeIncPath allBuildDeps;
-        CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
-        LIBRARY_PATH = makeLibPath allBuildDeps;
-        LD_LIBRARY_PATH = makeLibPath allBuildDeps;
+            # Dependency search paths — include buildDeps so build-time
+            # libraries (e.g. elfutils for the kernel's objtool) are found.
+            C_INCLUDE_PATH = makeIncPath allBuildDeps;
+            CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
+            LIBRARY_PATH = makeLibPath allBuildDeps;
+            LD_LIBRARY_PATH = makeLibPath allBuildDeps;
 
-        # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
-        # shared libraries at runtime without LD_LIBRARY_PATH.
-        # Includes transitive propagated deps but NOT buildDeps to avoid
-        # dragging the compiler toolchain into the runtime closure.
-        NIX_LDFLAGS = makeRpathFlags (
-          collectPropagated (runtimeDeps ++ propagatedDeps) (runtimeDeps ++ propagatedDeps)
-        );
-        PKG_CONFIG_PATH = builtins.concatStringsSep ":" (
-          builtins.map (d: "${builtins.toString d}/lib/pkgconfig") allBuildDeps
-        );
+            # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
+            # shared libraries at runtime without LD_LIBRARY_PATH.
+            # Includes transitive propagated deps but NOT buildDeps to avoid
+            # dragging the compiler toolchain into the runtime closure.
+            NIX_LDFLAGS = makeRpathFlags (
+              collectPropagated (runtimeDeps ++ propagatedDeps) (runtimeDeps ++ propagatedDeps)
+            );
+            PKG_CONFIG_PATH = builtins.concatStringsSep ":" (
+              builtins.map (d: "${builtins.toString d}/lib/pkgconfig") allBuildDeps
+            );
 
-        # Store the dependencies for runtime reference
-        buildInputs = builtins.map builtins.toString runtimeDeps;
-        nativeBuildInputs = builtins.map builtins.toString buildDeps;
-        propagatedBuildInputs = builtins.map builtins.toString propagatedDeps;
+            # Store the dependencies for runtime reference
+            buildInputs = builtins.map builtins.toString runtimeDeps;
+            nativeBuildInputs = builtins.map builtins.toString buildDeps;
+            propagatedBuildInputs = builtins.map builtins.toString propagatedDeps;
 
-        # Prefer store dir parameter
-        NIX_STORE_DIR = storeDir;
-      }
-      // extraArgs
-    )));
+            # Prefer store dir parameter
+            NIX_STORE_DIR = storeDir;
+          }
+          // extraArgs
+        )));
 
     # Attach metadata and override mechanism
     result =
@@ -788,6 +805,11 @@
           '')
           fetchedGitDeps
         );
+
+    bootstrapToolsPath =
+      if bootstrapTools != null
+      then ":${bootstrapTools}/bin"
+      else ":/usr/bin:/bin";
   in
     builtins.derivation {
       inherit name system;
@@ -796,7 +818,7 @@
         "-c"
         ''
           set -eu
-          export PATH="${cargo}/bin:${bootstrapTools}/bin"
+          export PATH="${cargo}/bin${bootstrapToolsPath}"
           ${
             if extraLibPaths != []
             then "export LD_LIBRARY_PATH=\"${ldLibPath}\""

@@ -41,16 +41,16 @@
   # ---------------------------------------------------------------------------
   moduleCheckNames = builtins.attrNames system.config.system.checks;
 
-  perCheckTests =
-    builtins.listToAttrs (
-      builtins.map (name: {
-        inherit name;
-        value = harness.mkVMTest {
-          inherit name system;
-          checks = [system.config.system.checks.${name}];
-        };
-      }) moduleCheckNames
-    );
+  perCheckTests = builtins.listToAttrs (
+    builtins.map (name: {
+      inherit name;
+      value = harness.mkVMTest {
+        inherit name system;
+        checks = [system.config.system.checks.${name}];
+      };
+    })
+    moduleCheckNames
+  );
 
   # ---------------------------------------------------------------------------
   # Cloud-init tests: auto-discover from system.config.system.cloudInitTests

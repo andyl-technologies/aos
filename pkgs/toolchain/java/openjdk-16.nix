@@ -21,8 +21,26 @@
   openjdk-15,
 }: let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
-    inherit fetchurl mkDerivation gnumake autoconf bash which zip unzip gawk
-            coreutils zlib alsa-lib binutils cups file fontconfig freetype xorg-stubs;
+    inherit
+      fetchurl
+      mkDerivation
+      gnumake
+      autoconf
+      bash
+      which
+      zip
+      unzip
+      gawk
+      coreutils
+      zlib
+      alsa-lib
+      binutils
+      cups
+      file
+      fontconfig
+      freetype
+      xorg-stubs
+      ;
   };
 in
   mkOpenJDKBootstrap {

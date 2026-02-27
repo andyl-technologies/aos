@@ -43,6 +43,7 @@ suppaftp = { version = "6", features = ["async-rustls"] }
 ratatui = "0.29"
 crossterm = "0.28"
 atty = "0.2"
+alejandra = "3.1.0"
 
 [dev-dependencies]
 tempfile = "3"

@@ -2,10 +2,19 @@
 #
 # Built with GCC 4.8.5 + glibc 2.17 from this tier.
 #
-{ prev, gcc, binutils, glibc, buildPlatform, hostPlatform }:
-let
-  fetchSrc =
-    { name, url, hash }:
+{
+  prev,
+  gcc,
+  binutils,
+  glibc,
+  buildPlatform,
+  hostPlatform,
+}: let
+  fetchSrc = {
+    name,
+    url,
+    hash,
+  }:
     builtins.derivation {
       inherit name;
       system = buildPlatform.system;
@@ -22,53 +31,52 @@ let
     url = "https://mirrors.kernel.org/gnu/sed/sed-4.2.2.tar.bz2";
     hash = "sha256-8EjRg42ihMi8l1PkUGuFoeDMHqiZnTb2mVvLlGDN29c=";
   };
-
 in
-builtins.derivation {
-  name = "sed-4.2.2";
-  system = buildPlatform.system;
-  builder = "${prev.bash}/bin/bash";
-  args = [
-    "-c"
-    ''
-      set -eu
-      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.patch}/bin"
+  builtins.derivation {
+    name = "sed-4.2.2";
+    system = buildPlatform.system;
+    builder = "${prev.bash}/bin/bash";
+    args = [
+      "-c"
+      ''
+        set -eu
+        export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.patch}/bin"
 
-      cd "$TMPDIR"
-      tar xjf ${sed-src}
+        cd "$TMPDIR"
+        tar xjf ${sed-src}
 
-      SRC="$TMPDIR/sed-4.2.2"
-      cd "$SRC"
-      chmod -R u+w .
-      find . -name configure -exec chmod +x {} + 2>/dev/null || true
-      find . -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
-      chmod +x install-sh missing mkinstalldirs build-aux/install-sh 2>/dev/null || true
-      find . -type f \( -name '*.c' -o -name '*.h' \) -exec touch {} + 2>/dev/null || true
+        SRC="$TMPDIR/sed-4.2.2"
+        cd "$SRC"
+        chmod -R u+w .
+        find . -name configure -exec chmod +x {} + 2>/dev/null || true
+        find . -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
+        chmod +x install-sh missing mkinstalldirs build-aux/install-sh 2>/dev/null || true
+        find . -type f \( -name '*.c' -o -name '*.h' \) -exec touch {} + 2>/dev/null || true
 
-      mkdir -p "$TMPDIR/build"
-      cd "$TMPDIR/build"
+        mkdir -p "$TMPDIR/build"
+        cd "$TMPDIR/build"
 
-      CC="${gcc}/bin/gcc" \
-      CFLAGS="-O2 -I${glibc}/include" \
-      LDFLAGS="-L${glibc}/lib -static" \
-      "$SRC/configure" \
-        --prefix="$out" \
-        --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
-        --disable-nls
+        CC="${gcc}/bin/gcc" \
+        CFLAGS="-O2 -I${glibc}/include" \
+        LDFLAGS="-L${glibc}/lib -static" \
+        "$SRC/configure" \
+          --prefix="$out" \
+          --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
+          --disable-nls
 
-      make -j"$(nproc)"
-      make install
+        make -j"$(nproc)"
+        make install
 
-      echo "GNU sed 4.2.2 installed to $out"
-    ''
-  ];
-}
-// {
-  meta = {
-    description = "GNU stream editor, version 4.2.2";
-    homepage = "https://www.gnu.org/software/sed/";
-    license = "GPL-3.0-or-later";
-    build = { os = "linux"; };
-    execute = { os = "linux"; };
-  };
-}
+        echo "GNU sed 4.2.2 installed to $out"
+      ''
+    ];
+  }
+  // {
+    meta = {
+      description = "GNU stream editor, version 4.2.2";
+      homepage = "https://www.gnu.org/software/sed/";
+      license = "GPL-3.0-or-later";
+      build = {os = "linux";};
+      execute = {os = "linux";};
+    };
+  }
