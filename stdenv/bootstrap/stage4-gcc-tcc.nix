@@ -23,8 +23,7 @@
   tar, # GNU tar from TCC
   buildPlatform,
   ...
-}:
-let
+}: let
   system = buildPlatform.system;
   sources = import ./sources.nix;
 
@@ -39,12 +38,12 @@ let
 
   # GCC wrapper script (pre-generated, no heredoc needed)
   gcc-wrapper = builtins.toFile "gcc-wrapper" ''
-#!BASH
-exec "REAL" \
-  -B"GCCLIB/" \
-  -B"BINUTILS/bin/" \
-  "$@"
-'';
+    #!BASH
+    exec "REAL" \
+      -B"GCCLIB/" \
+      -B"BINUTILS/bin/" \
+      "$@"
+  '';
 
   # Bash-based substitute for the sed pipeline in autoconf 2.13's config.status.
   # autoconf 2.13 splits conftest.subs into 90-line chunks (conftest.s1, s2, ...)
@@ -130,201 +129,209 @@ exec "REAL" \
       esac
     done
   '';
-
 in
-builtins.derivation {
-  name = "gcc-${sources.gcc.version}";
-  inherit system;
-  builder = "${bash}/bin/bash";
-  args = [
-    "-c"
-    ''
-      set -eu
+  builtins.derivation {
+    name = "gcc-${sources.gcc.version}";
+    inherit system;
+    builder = "${bash}/bin/bash";
+    args = [
+      "-c"
+      ''
+        set -eu
 
-      export PATH="${
-        builtins.concatStringsSep ":" (
-          builtins.map (p: "${p}/bin") [
-            coreutils
-            sed
-            grep
-            patch
-            diffutils
-            gawk
-            bash
-            gnumake
-            tinycc
-            binutils
-            tar
-          ]
-        )
-      }"
-      export CONFIG_SHELL="${bash}/bin/bash"
-      export SHELL="${bash}/bin/bash"
-      export MAKE="${gnumake}/bin/make"
+        export PATH="${
+          builtins.concatStringsSep ":" (
+            builtins.map (p: "${p}/bin") [
+              coreutils
+              sed
+              grep
+              patch
+              diffutils
+              gawk
+              bash
+              gnumake
+              tinycc
+              binutils
+              tar
+            ]
+          )
+        }"
+        export CONFIG_SHELL="${bash}/bin/bash"
+        export SHELL="${bash}/bin/bash"
+        export MAKE="${gnumake}/bin/make"
 
-      # ── Copy source to writable directory (store files are read-only) ──
-      cp -r ${src} $TMPDIR/src
-      chmod -R u+w $TMPDIR/src
-      SRC=$TMPDIR/src
+        # ── Copy source to writable directory (store files are read-only) ──
+        cp -r ${src} $TMPDIR/src
+        chmod -R u+w $TMPDIR/src
+        SRC=$TMPDIR/src
 
-      # ── Apply Guix bootstrap patch ─────────────────────────────────────
-      cd $SRC
-      echo "==> Applying gcc-boot-2.95.3.patch"
-      patch --force -p1 -i ${patchFile}
+        # ── Apply Guix bootstrap patch ─────────────────────────────────────
+        cd $SRC
+        echo "==> Applying gcc-boot-2.95.3.patch"
+        patch --force -p1 -i ${patchFile}
 
-      # ── Fix C_alloca → alloca in libiberty ─────────────────────────────
-      # Mes libc provides alloca() but not C_alloca(). The libiberty C_alloca
-      # implementation conflicts with Mes libc's alloca.
-      sed -i 's/C_alloca/alloca/g' $SRC/libiberty/alloca.c
-      sed -i 's/C_alloca/alloca/g' $SRC/include/libiberty.h
+        # ── Fix C_alloca → alloca in libiberty ─────────────────────────────
+        # Mes libc provides alloca() but not C_alloca(). The libiberty C_alloca
+        # implementation conflicts with Mes libc's alloca.
+        sed -i 's/C_alloca/alloca/g' $SRC/libiberty/alloca.c
+        sed -i 's/C_alloca/alloca/g' $SRC/include/libiberty.h
 
-      # ── Remove texinfo directory (no makeinfo available) ───────────────
-      rm -rf $SRC/texinfo
-      touch $SRC/gcc/cpp.info $SRC/gcc/gcc.info
+        # ── Remove texinfo directory (no makeinfo available) ───────────────
+        rm -rf $SRC/texinfo
+        touch $SRC/gcc/cpp.info $SRC/gcc/gcc.info
 
-      # ── Seed config.cache ──────────────────────────────────────────────
-      # TCC cannot run configure's float format test (it involves running a
-      # compiled program that inspects FP representation). Seed the answer.
-      printf '%s\n' "ac_cv_c_float_format='IEEE (little-endian)'" > $SRC/config.cache
+        # ── Seed config.cache ──────────────────────────────────────────────
+        # TCC cannot run configure's float format test (it involves running a
+        # compiled program that inspects FP representation). Seed the answer.
+        printf '%s\n' "ac_cv_c_float_format='IEEE (little-endian)'" > $SRC/config.cache
 
-      # ── Patch configure scripts: replace sed pipeline with bash ────────
-      # autoconf 2.13's config.status builds a multi-sed pipeline
-      # (sed -f conftest.s1 | sed -f conftest.s2 | ...) that fails with
-      # sed-tcc due to pipe/buffer bugs. Replace with our bash-based script.
-      REPLACEMENT="ac_sed_cmds=\"\$CONFIG_SHELL ${gccSubsScript}\""
+        # ── Patch configure scripts: replace sed pipeline with bash ────────
+        # autoconf 2.13's config.status builds a multi-sed pipeline
+        # (sed -f conftest.s1 | sed -f conftest.s2 | ...) that fails with
+        # sed-tcc due to pipe/buffer bugs. Replace with our bash-based script.
+        REPLACEMENT="ac_sed_cmds=\"\$CONFIG_SHELL ${gccSubsScript}\""
 
-      # Patch top-level configure (if autoconf-generated)
-      if grep -q 'ac_max_sed_cmds' $SRC/configure; then
-        $CONFIG_SHELL ${patchGccConfigureScript} "$REPLACEMENT" \
-          < $SRC/configure > $SRC/configure.patched
-        mv $SRC/configure.patched $SRC/configure
-        chmod +x $SRC/configure
-        echo "  patched: configure"
-      fi
-
-      # Patch subdirectory configures
-      for d in $SRC/*/; do
-        if test -f "$d/configure" && grep -q 'ac_max_sed_cmds' "$d/configure"; then
+        # Patch top-level configure (if autoconf-generated)
+        if grep -q 'ac_max_sed_cmds' $SRC/configure; then
           $CONFIG_SHELL ${patchGccConfigureScript} "$REPLACEMENT" \
-            < "$d/configure" > "$d/configure.patched"
-          mv "$d/configure.patched" "$d/configure"
-          chmod +x "$d/configure"
-          echo "  patched: $d/configure"
+            < $SRC/configure > $SRC/configure.patched
+          mv $SRC/configure.patched $SRC/configure
+          chmod +x $SRC/configure
+          echo "  patched: configure"
         fi
-      done
 
-      # ── Set up TCC as the compiler ─────────────────────────────────────
-      CPPFLAGS=" -D __GLIBC_MINOR__=6"
-      export CC="tcc -static $CPPFLAGS"
-      export CC_FOR_BUILD="tcc -static $CPPFLAGS"
-      export CPP="tcc -E $CPPFLAGS"
-
-      # ── Create cc wrapper (libgcc1 build uses OLDCC which defaults to cc) ─
-      mkdir -p $TMPDIR/wrappers
-      {
-        echo "#!${bash}/bin/bash"
-        echo "exec tcc -static -D __GLIBC_MINOR__=6 \"\$@\""
-      } > $TMPDIR/wrappers/cc
-      chmod +x $TMPDIR/wrappers/cc
-      export PATH="$TMPDIR/wrappers:$PATH"
-
-      # ── Configure ──────────────────────────────────────────────────────
-      echo "==> Configuring GCC 2.95.3"
-      cd $SRC
-      $CONFIG_SHELL ./configure \
-        --enable-static \
-        --disable-shared \
-        --disable-werror \
-        --enable-languages=c \
-        --build=${target} \
-        --host=${target} \
-        --prefix=$out \
-        --cache-file=config.cache
-
-      # ── Fix missing lang.* targets (C-only build, no language fragments) ─
-      # sed-tcc's `r` command (read file) is broken, so config.status fails
-      # to insert Make-hooks contents into the Makefile. For C-only builds,
-      # all lang.* targets should be empty (no-op). Append them if missing.
-      if ! grep -q '^lang\.start\.encap' $SRC/gcc/Makefile; then
-        echo "==> Adding empty lang.* targets to gcc/Makefile"
-        for t in all.build all.cross start.encap rest.encap info dvi \
-                 install-normal install-common install-info install-man \
-                 uninstall distdir mostlyclean clean distclean extraclean \
-                 maintainer-clean stage1 stage2 stage3 stage4; do
-          printf 'lang.%s:\n' "$t" >> $SRC/gcc/Makefile
+        # Patch subdirectory configures
+        for d in $SRC/*/; do
+          if test -f "$d/configure" && grep -q 'ac_max_sed_cmds' "$d/configure"; then
+            $CONFIG_SHELL ${patchGccConfigureScript} "$REPLACEMENT" \
+              < "$d/configure" > "$d/configure.patched"
+            mv "$d/configure.patched" "$d/configure"
+            chmod +x "$d/configure"
+            echo "  patched: $d/configure"
+          fi
         done
-      fi
 
-      # ── Build ──────────────────────────────────────────────────────────
-      echo "==> Building GCC 2.95.3"
-      $MAKE \
-        CC="tcc -static -D __GLIBC_MINOR__=6" \
-        OLDCC="tcc -static -D __GLIBC_MINOR__=6" \
-        CC_FOR_BUILD="tcc -static -D __GLIBC_MINOR__=6" \
-        AR=ar \
-        RANLIB=ranlib \
-        LIBGCC2_INCLUDES="-I ${tinycc}/include" \
-        LANGUAGES=c \
-        BOOT_LDFLAGS=" -B${tinycc}/lib/x86-mes/" \
-        SHELL=${bash}/bin/bash
+        # ── Set up TCC as the compiler ─────────────────────────────────────
+        CPPFLAGS=" -D __GLIBC_MINOR__=6"
+        export CC="tcc -static $CPPFLAGS"
+        export CC_FOR_BUILD="tcc -static $CPPFLAGS"
+        export CPP="tcc -E $CPPFLAGS"
 
-      # ── Install ────────────────────────────────────────────────────────
-      echo "==> Installing GCC 2.95.3"
-      $MAKE install \
-        SHELL=${bash}/bin/bash
+        # ── Create cc wrapper (libgcc1 build uses OLDCC which defaults to cc) ─
+        mkdir -p $TMPDIR/wrappers
+        {
+          echo "#!${bash}/bin/bash"
+          echo "exec tcc -static -D __GLIBC_MINOR__=6 \"\$@\""
+        } > $TMPDIR/wrappers/cc
+        chmod +x $TMPDIR/wrappers/cc
+        export PATH="$TMPDIR/wrappers:$PATH"
 
-      # ── Post-install: merge libgcc2.a + libtcc1.a into libgcc.a ───────
-      GCCLIB=$out/lib/gcc-lib/${target}/2.95.3
+        # ── Configure ──────────────────────────────────────────────────────
+        echo "==> Configuring GCC 2.95.3"
+        cd $SRC
+        $CONFIG_SHELL ./configure \
+          --enable-static \
+          --disable-shared \
+          --disable-werror \
+          --enable-languages=c \
+          --build=${target} \
+          --host=${target} \
+          --prefix=$out \
+          --cache-file=config.cache
 
-      echo "==> Merging libgcc2.a + libtcc1.a into libgcc.a"
-      mkdir -p $TMPDIR/libgcc-merge
-      cd $TMPDIR/libgcc-merge
-      ar x $SRC/gcc/libgcc2.a
-      ar x ${tinycc}/lib/x86-mes/tcc/libtcc1.a
-      ar r $GCCLIB/libgcc.a *.o
+        # ── Fix missing lang.* targets (C-only build, no language fragments) ─
+        # sed-tcc's `r` command (read file) is broken, so config.status fails
+        # to insert Make-hooks contents into the Makefile. For C-only builds,
+        # all lang.* targets should be empty (no-op). Append them if missing.
+        if ! grep -q '^lang\.start\.encap' $SRC/gcc/Makefile; then
+          echo "==> Adding empty lang.* targets to gcc/Makefile"
+          for t in all.build all.cross start.encap rest.encap info dvi \
+                   install-normal install-common install-info install-man \
+                   uninstall distdir mostlyclean clean distclean extraclean \
+                   maintainer-clean stage1 stage2 stage3 stage4; do
+            printf 'lang.%s:\n' "$t" >> $SRC/gcc/Makefile
+          done
+        fi
 
-      # Also install copies for downstream consumers
-      cp $SRC/gcc/libgcc2.a $out/lib/libgcc2.a
-      cp ${tinycc}/lib/x86-mes/tcc/libtcc1.a $out/lib/libtcc1.a
+        # ── Build ──────────────────────────────────────────────────────────
+        echo "==> Building GCC 2.95.3"
+        $MAKE \
+          CC="tcc -static -D __GLIBC_MINOR__=6" \
+          OLDCC="tcc -static -D __GLIBC_MINOR__=6" \
+          CC_FOR_BUILD="tcc -static -D __GLIBC_MINOR__=6" \
+          AR=ar \
+          RANLIB=ranlib \
+          LIBGCC2_INCLUDES="-I ${tinycc}/include" \
+          LANGUAGES=c \
+          BOOT_LDFLAGS=" -B${tinycc}/lib/x86-mes/" \
+          SHELL=${bash}/bin/bash
 
-      # Create combined libc.a (libc.o + libtcc1.o) for Mes libc compat
-      cd $TMPDIR
-      ar x ${tinycc}/lib/x86-mes/tcc/libtcc1.a
-      ar x ${tinycc}/lib/x86-mes/libc.a
-      ar r $GCCLIB/libc.a unified-libc.o libtcc1.o
+        # ── Install ────────────────────────────────────────────────────────
+        echo "==> Installing GCC 2.95.3"
+        $MAKE install \
+          SHELL=${bash}/bin/bash
 
-      # ── Symlink binutils tools and CRT files into GCC lib dir ─────────
-      # collect2 searches for ld relative to its own directory, so we need
-      # ld and as in the GCC lib dir where collect2 lives.
-      ln -s ${binutils}/bin/ld $GCCLIB/ld
-      ln -s ${binutils}/bin/as $GCCLIB/as
+        # ── Post-install: merge libgcc2.a + libtcc1.a into libgcc.a ───────
+        GCCLIB=$out/lib/gcc-lib/${target}/2.95.3
 
-      # CRT startup files from Mes libc (crt1.o, crti.o, crtn.o)
-      cp ${tinycc}/lib/x86-mes/crt1.o $GCCLIB/crt1.o
-      cp ${tinycc}/lib/x86-mes/crti.o $GCCLIB/crti.o
-      cp ${tinycc}/lib/x86-mes/crtn.o $GCCLIB/crtn.o
+        echo "==> Merging libgcc2.a + libtcc1.a into libgcc.a"
+        mkdir -p $TMPDIR/libgcc-merge
+        cd $TMPDIR/libgcc-merge
+        ar x $SRC/gcc/libgcc2.a
+        ar x ${tinycc}/lib/x86-mes/tcc/libtcc1.a
+        ar r $GCCLIB/libgcc.a *.o
 
-      # ── Create gcc wrapper ─────────────────────────────────────────────
-      mv $out/bin/gcc $out/bin/gcc-real
+        # Also install copies for downstream consumers
+        cp $SRC/gcc/libgcc2.a $out/lib/libgcc2.a
+        cp ${tinycc}/lib/x86-mes/tcc/libtcc1.a $out/lib/libtcc1.a
 
-      cp ${gcc-wrapper} $out/bin/gcc
-      sed -i "s|BASH|${bash}/bin/bash|g" $out/bin/gcc
-      sed -i "s|REAL|$out/bin/gcc-real|g" $out/bin/gcc
-      sed -i "s|GCCLIB|$GCCLIB|g" $out/bin/gcc
-      sed -i "s|BINUTILS|${binutils}|g" $out/bin/gcc
-      chmod 750 $out/bin/gcc
+        # Create combined libc.a (libc.o + libtcc1.o) for Mes libc compat
+        cd $TMPDIR
+        ar x ${tinycc}/lib/x86-mes/tcc/libtcc1.a
+        ar x ${tinycc}/lib/x86-mes/libc.a
+        ar r $GCCLIB/libc.a unified-libc.o libtcc1.o
 
-      echo "GCC 2.95.3 installed to $out"
-    ''
-  ];
-}
-// {
-  meta = {
-    description = "GNU Compiler Collection, version 2.95.3";
-    homepage = "https://gcc.gnu.org/";
-    license = "GPL-2.0-or-later";
-    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
-    execute = { os = "linux"; cpu = "i686"; };
-    target = { os = "linux"; cpu = "i686"; };
-  };
-}
+        # ── Symlink binutils tools and CRT files into GCC lib dir ─────────
+        # collect2 searches for ld relative to its own directory, so we need
+        # ld and as in the GCC lib dir where collect2 lives.
+        ln -s ${binutils}/bin/ld $GCCLIB/ld
+        ln -s ${binutils}/bin/as $GCCLIB/as
+
+        # CRT startup files from Mes libc (crt1.o, crti.o, crtn.o)
+        cp ${tinycc}/lib/x86-mes/crt1.o $GCCLIB/crt1.o
+        cp ${tinycc}/lib/x86-mes/crti.o $GCCLIB/crti.o
+        cp ${tinycc}/lib/x86-mes/crtn.o $GCCLIB/crtn.o
+
+        # ── Create gcc wrapper ─────────────────────────────────────────────
+        mv $out/bin/gcc $out/bin/gcc-real
+
+        cp ${gcc-wrapper} $out/bin/gcc
+        sed -i "s|BASH|${bash}/bin/bash|g" $out/bin/gcc
+        sed -i "s|REAL|$out/bin/gcc-real|g" $out/bin/gcc
+        sed -i "s|GCCLIB|$GCCLIB|g" $out/bin/gcc
+        sed -i "s|BINUTILS|${binutils}|g" $out/bin/gcc
+        chmod 750 $out/bin/gcc
+
+        echo "GCC 2.95.3 installed to $out"
+      ''
+    ];
+  }
+  // {
+    meta = {
+      description = "GNU Compiler Collection, version 2.95.3";
+      homepage = "https://gcc.gnu.org/";
+      license = "GPL-2.0-or-later";
+      build = {
+        os = "linux";
+        cpu = ["x86_64" "i686"];
+      };
+      execute = {
+        os = "linux";
+        cpu = "i686";
+      };
+      target = {
+        os = "linux";
+        cpu = "i686";
+      };
+    };
+  }

@@ -322,7 +322,8 @@
     result = {
       options = evaluated.options or {};
       config =
-        evaluated.config or (builtins.removeAttrs evaluated [
+        evaluated.config
+        or (builtins.removeAttrs evaluated [
           "options"
           "imports"
           "require"

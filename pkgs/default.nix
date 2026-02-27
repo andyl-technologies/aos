@@ -5,8 +5,7 @@
 {
   lib,
   stdenv,
-}:
-let
+}: let
   fetchurl = lib.fetchurl;
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH)

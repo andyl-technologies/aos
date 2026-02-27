@@ -21,9 +21,8 @@
 {
   system ? builtins.currentSystem,
   crossSystem ? null,
-}:
-let
-  lib = import ./lib { inherit system; };
+}: let
+  lib = import ./lib {inherit system;};
   buildPlatform = lib.platform;
   hostPlatform =
     if crossSystem != null
@@ -39,7 +38,7 @@ let
 
   # All packages are built hermetically from source using only stdenv.
   # No nixpkgs anywhere.
-  pkgs = import ./pkgs { inherit lib stdenv; };
+  pkgs = import ./pkgs {inherit lib stdenv;};
 
   # All test tools are AOS packages built from source.
   testTools = {
@@ -48,15 +47,17 @@ let
 
   # Evaluate the single system definition.
   aosSystem = lib.evalModules {
-    modules = [ ./system.nix ];
+    modules = [./system.nix];
     inherit pkgs lib;
   };
-in
-{
+in {
   inherit pkgs lib stdenv;
 
   system = aosSystem;
   image = aosSystem.config.system.build.image;
 
-  checks = import ./lib/testing/collect.nix { inherit pkgs lib testTools; system = aosSystem; };
+  checks = import ./lib/testing/collect.nix {
+    inherit pkgs lib testTools;
+    system = aosSystem;
+  };
 }
