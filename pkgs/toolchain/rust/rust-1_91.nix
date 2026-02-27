@@ -12,15 +12,28 @@
   openssl,
   zlib,
   rust-1_90,
-}: let
+}:
+let
   mkRustBootstrap = import ./_rust-bootstrap.nix {
-    inherit fetchurl mkDerivation gnumake cmake ninja pkg-config python3 bash which openssl zlib;
+    inherit
+      fetchurl
+      mkDerivation
+      gnumake
+      cmake
+      ninja
+      pkg-config
+      python3
+      bash
+      which
+      openssl
+      zlib
+      ;
   };
 in
-  mkRustBootstrap {
-    version = "1.91.1";
-    srcHash = "sha256-ONziBdOfYVcSYfBEQjehzp7+y5cOdg2OxNlXr1tEVyM=";
-    changeId = 0;
-    prevRust = rust-1_90;
-    needsDownloadRustc = true;
-  }
+mkRustBootstrap {
+  version = "1.91.1";
+  srcHash = "sha256-ONziBdOfYVcSYfBEQjehzp7+y5cOdg2OxNlXr1tEVyM=";
+  changeId = 0;
+  prevRust = rust-1_90;
+  needsDownloadRustc = true;
+}

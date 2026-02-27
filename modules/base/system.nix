@@ -12,12 +12,14 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.system;
-in {
+in
+{
   options.system.checks = lib.mkOption {
     type = lib.types.attrsOf lib.types.anything;
-    default = {};
+    default = { };
     description = ''
       VM checks contributed by modules, keyed by check group name.
       Each value should be a check group created with lib.mkCheckGroup.
@@ -28,7 +30,7 @@ in {
 
   options.system.cloudInitTests = lib.mkOption {
     type = lib.types.attrsOf lib.types.anything;
-    default = {};
+    default = { };
     description = ''
       Cloud-init VM test specifications, keyed by test name.
       Each value should be { userdata = null or JSON string; checks = mkCheckGroup {...}; }.
@@ -39,7 +41,7 @@ in {
 
   options.system.fleetTests = lib.mkOption {
     type = lib.types.attrsOf lib.types.anything;
-    default = {};
+    default = { };
     description = ''
       Fleet (multi-VM) test specifications, keyed by test name.
       Each value should be { machines = {...}; testScript = "..."; timeout = int; }.

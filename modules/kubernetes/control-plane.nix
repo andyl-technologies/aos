@@ -13,10 +13,12 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.kubernetes.controlPlane;
   netCfg = config.aos.kubernetes.network;
-in {
+in
+{
   options.aos.kubernetes.controlPlane = {
     ## Enable this node as a Kubernetes control plane node.
     ##

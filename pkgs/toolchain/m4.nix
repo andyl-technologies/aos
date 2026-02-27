@@ -3,56 +3,57 @@
   mkDerivation,
   fetchurl,
   gnumake,
-}: let
+}:
+let
   version = "1.4.20";
 in
-  mkDerivation {
-    pname = "m4";
-    inherit version;
+mkDerivation {
+  pname = "m4";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://ftp.gnu.org/gnu/m4/m4-${version}.tar.xz"
-      ];
-      hash = "sha256-4jbqOhzPX2wnCxxLtgcm83H6SUWajqrryQshazKNrys=";
-    };
-
-    buildDeps = [gnumake];
-    runtimeDeps = [];
-    propagatedDeps = [];
-
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd m4-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-        '';
-      }
+  src = fetchurl {
+    urls = [
+      "https://ftp.gnu.org/gnu/m4/m4-${version}.tar.xz"
     ];
+    hash = "sha256-4jbqOhzPX2wnCxxLtgcm83H6SUWajqrryQshazKNrys=";
+  };
 
-    meta = {
-      description = "GNU m4 — macro processor";
-      homepage = "https://www.gnu.org/software/m4/";
-      license = "GPL-3.0-or-later";
-    };
-  }
+  buildDeps = [ gnumake ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
+
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd m4-${version}
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        ./configure \
+          --prefix=$out
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install
+      '';
+    }
+  ];
+
+  meta = {
+    description = "GNU m4 — macro processor";
+    homepage = "https://www.gnu.org/software/m4/";
+    license = "GPL-3.0-or-later";
+  };
+}

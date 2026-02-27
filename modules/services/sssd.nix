@@ -13,7 +13,8 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.services.sssd;
 
   # Build sssd.conf from module options.
@@ -28,7 +29,8 @@
 
     ${cfg.config}
   '';
-in {
+in
+{
   options.aos.services.sssd = {
     ## Enable SSSD for centralized identity and authentication.
     enable = lib.mkOption {
@@ -49,7 +51,7 @@ in {
     ## ```
     domains = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = ''
         List of SSSD domain names to enable. Each domain must have a
         corresponding [domain/<name>] section in the config option.
@@ -86,7 +88,7 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [pkgs.sssd];
+    environment.systemPackages = [ pkgs.sssd ];
 
     # /etc/sssd/sssd.conf — SSSD configuration.
     environment.etc."sssd/sssd.conf" = {
@@ -97,9 +99,9 @@ in {
     # sssd.service — System Security Services Daemon.
     systemd.services."sssd" = {
       description = "System Security Services Daemon";
-      wantedBy = ["multi-user.target"];
-      after = ["network-online.target"];
-      wants = ["network-online.target"];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "notify";
         ExecStart = "${pkgs.sssd}/sbin/sssd -i --logger=files";

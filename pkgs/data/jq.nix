@@ -4,68 +4,71 @@
   fetchurl,
   gnumake,
   oniguruma,
-}: let
+}:
+let
   version = "1.8.1";
 in
-  mkDerivation {
-    pname = "jq";
-    inherit version;
+mkDerivation {
+  pname = "jq";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/jqlang/jq/releases/download/jq-${version}/jq-${version}.tar.gz"
-      ];
-      hash = "sha256-K+ZOcSnOyxHVkGKQ66EK9pT7nj5/n8IIoxHcM8qDfrA=";
-    };
-
-    buildDeps = [gnumake];
-    runtimeDeps = [oniguruma];
-    propagatedDeps = [];
-
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd jq-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --disable-maintainer-mode \
-            --with-oniguruma
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-        '';
-      }
+  src = fetchurl {
+    urls = [
+      "https://github.com/jqlang/jq/releases/download/jq-${version}/jq-${version}.tar.gz"
     ];
+    hash = "sha256-K+ZOcSnOyxHVkGKQ66EK9pT7nj5/n8IIoxHcM8qDfrA=";
+  };
 
-    checks = {
+  buildDeps = [ gnumake ];
+  runtimeDeps = [ oniguruma ];
+  propagatedDeps = [ ];
+
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd jq-${version}
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        ./configure \
+          --prefix=$out \
+          --disable-maintainer-mode \
+          --with-oniguruma
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install
+      '';
+    }
+  ];
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       rpath = testing.mkRPATHCheck {
         pkg = self;
-        bins = ["jq"];
+        bins = [ "jq" ];
       };
 
       dynamic-linker = testing.mkDynLinkerCheck {
         pkg = self;
-        bins = ["jq"];
+        bins = [ "jq" ];
       };
 
       version = testing.mkToolCheck {
@@ -76,7 +79,7 @@ in
 
       query = testing.mkVMTest {
         name = "tool-jq-query";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           echo '{"a":1}' > /tmp/input.json
           RESULT=$(jq '.a' /tmp/input.json)
@@ -89,9 +92,9 @@ in
       };
     };
 
-    meta = {
-      description = "Lightweight command-line JSON processor";
-      homepage = "https://jqlang.github.io/jq/";
-      license = "MIT";
-    };
-  }
+  meta = {
+    description = "Lightweight command-line JSON processor";
+    homepage = "https://jqlang.github.io/jq/";
+    license = "MIT";
+  };
+}

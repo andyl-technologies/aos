@@ -11,9 +11,11 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.serve;
-in {
+in
+{
   options.aos.serve = {
     ## Enable the AOS binary cache server.
     enable = lib.mkOption {
@@ -59,7 +61,7 @@ in {
     ## Cache views to garbage-collect on the timer schedule.
     gcViews = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = ''
         List of cache views to garbage-collect on the timer schedule.
         Each view will be passed to `aos gc --view VIEW --collect`.
@@ -77,7 +79,7 @@ in {
     };
 
     # Supplementary group for token bootstrap administration.
-    users.groups.aos-admins = {};
+    users.groups.aos-admins = { };
 
     # aos-serve.service — long-lived HTTP binary cache server.
     systemd.services."aos-serve" = {
@@ -86,13 +88,13 @@ in {
         "network.target"
         "local-fs.target"
       ];
-      wantedBy = ["multi-user.target"];
+      wantedBy = [ "multi-user.target" ];
       serviceConfig = {
         Type = "exec";
         ExecStart = "${pkgs.aos}/bin/aos serve --config ${cfg.configFile}";
         User = cfg.user;
         Group = cfg.group;
-        SupplementaryGroups = ["aos-admins"];
+        SupplementaryGroups = [ "aos-admins" ];
         KillMode = "mixed";
         TimeoutStopSec = 90;
         Restart = "on-failure";
@@ -111,9 +113,9 @@ in {
     };
 
     # aos-serve-gc.service — oneshot garbage collection of cache views.
-    systemd.services."aos-serve-gc" = lib.mkIf (cfg.gcViews != []) {
+    systemd.services."aos-serve-gc" = lib.mkIf (cfg.gcViews != [ ]) {
       description = "AOS Cache Server Garbage Collection";
-      after = ["local-fs.target"];
+      after = [ "local-fs.target" ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = builtins.map (view: "${pkgs.aos}/bin/aos gc --view ${view} --collect") cfg.gcViews;
@@ -125,9 +127,9 @@ in {
     };
 
     # aos-serve-gc.timer — periodic trigger for cache GC.
-    systemd.timers."aos-serve-gc" = lib.mkIf (cfg.gcViews != []) {
+    systemd.timers."aos-serve-gc" = lib.mkIf (cfg.gcViews != [ ]) {
       description = "AOS Cache Server Garbage Collection Timer";
-      wantedBy = ["timers.target"];
+      wantedBy = [ "timers.target" ];
       timerConfig = {
         OnCalendar = cfg.gcSchedule;
         RandomizedDelaySec = "1h";

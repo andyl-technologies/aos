@@ -14,9 +14,11 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.kubernetes.nodeProblemDetector;
-in {
+in
+{
   options.aos.kubernetes.nodeProblemDetector = {
     ## Enable the Kubernetes Node Problem Detector (NPD).
     enable = lib.mkOption {
@@ -43,17 +45,17 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [pkgs.node-problem-detector];
+    environment.systemPackages = [ pkgs.node-problem-detector ];
 
     # node-problem-detector.service — Kubernetes node health monitor.
     systemd.services."node-problem-detector" = {
       description = "Kubernetes Node Problem Detector";
-      wantedBy = ["multi-user.target"];
+      wantedBy = [ "multi-user.target" ];
       after = [
         "network-online.target"
         "kubelet.service"
       ];
-      wants = ["network-online.target"];
+      wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "simple";
         ExecStart = builtins.concatStringsSep " " [
