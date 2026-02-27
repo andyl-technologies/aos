@@ -31,8 +31,7 @@
   seeds, # Output of stage0-seeds.nix (provides kaemNix)
   buildPlatform,
   ...
-}:
-let
+}: let
   system = buildPlatform.system;
   mesSrc = builtins.derivation {
     name = "mes-source-0.27.1";
@@ -659,7 +658,7 @@ let
     name = "mes-0.27.1";
     inherit system;
     builder = "${seeds.kaemNix}";
-    passAsFile = [ "buildScript" ];
+    passAsFile = ["buildScript"];
     # Single-line buildScript: kaemNix reads this via $buildScriptPath,
     # forks/execs full kaem to run the real build script.
     buildScript = "${posix-tools}/bin/kaem --verbose --strict --file ${buildKaem}\n";
@@ -669,20 +668,26 @@ let
     NYACC_TAR = "${nyaccSrc}";
   };
 in
-mes
-// {
-  version = "0.27.1";
+  mes
+  // {
+    version = "0.27.1";
 
-  passthru = {
-    src.mes = mesSrc;
-    src.nyacc = nyaccSrc;
-  };
+    passthru = {
+      src.mes = mesSrc;
+      src.nyacc = nyaccSrc;
+    };
 
-  meta = {
-    description = "GNU Mes -- Scheme interpreter and MesCC C compiler";
-    homepage = "https://www.gnu.org/software/mes/";
-    license = "GPL-3.0-or-later";
-    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
-    execute = { os = "linux"; cpu = "i686"; };
-  };
-}
+    meta = {
+      description = "GNU Mes -- Scheme interpreter and MesCC C compiler";
+      homepage = "https://www.gnu.org/software/mes/";
+      license = "GPL-3.0-or-later";
+      build = {
+        os = "linux";
+        cpu = ["x86_64" "i686"];
+      };
+      execute = {
+        os = "linux";
+        cpu = "i686";
+      };
+    };
+  }

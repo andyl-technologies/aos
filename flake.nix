@@ -10,7 +10,12 @@
     systems = [
       "x86_64-linux"
       "aarch64-linux"
+      "x86_64-darwin"
+      "aarch64-darwin"
     ];
+
+    isDarwin = s: builtins.elem s ["x86_64-darwin" "aarch64-darwin"];
+    linuxSystems = builtins.filter (s: !isDarwin s) systems;
 
     genAttrs = names: f:
       builtins.listToAttrs (
@@ -31,34 +36,58 @@
 
     aosFor = system: let
       lib = import ./lib {inherit system;};
-      pkgs = import ./pkgs {inherit lib;};
+      buildPlatform = lib.platform;
+      stdenv = import ./stdenv {
+        inherit buildPlatform;
+        hostPlatform = buildPlatform;
+        targetPlatform = buildPlatform;
+      };
+      pkgs = import ./pkgs {inherit lib stdenv;};
     in {
       inherit lib pkgs;
     };
   in {
     packages = genAttrs systems (
-      system: let
-        env = aosFor system;
-      in {
-        aos = env.pkgs.aos;
-        default = env.pkgs.aos;
-      }
+      system:
+        if isDarwin system
+        then let
+          darwinAos = import ./dev/darwin/aos.nix {inherit system;};
+        in {
+          aos = darwinAos;
+          default = darwinAos;
+        }
+        else let
+          env = aosFor system;
+        in {
+          aos = env.pkgs.aos;
+          default = env.pkgs.aos;
+        }
     );
 
     devShells = genAttrs systems (
-      system: let
-        env = aosFor system;
-      in {
-        default = import ./dev/shell.nix {
-          inherit system;
-          inherit (env.pkgs) aos just;
-        };
-      }
+      system:
+        if isDarwin system
+        then let
+          darwinAos = import ./dev/darwin/aos.nix {inherit system;};
+        in {
+          default = import ./dev/shell.nix {
+            inherit system;
+            aos = darwinAos;
+          };
+        }
+        else let
+          env = aosFor system;
+        in {
+          default = import ./dev/shell.nix {
+            inherit system;
+            inherit (env.pkgs) aos just;
+          };
+        }
     );
 
-    formatter = genAttrs systems (system: (aosFor system).pkgs.alejandra);
+    formatter = genAttrs linuxSystems (system: (aosFor system).pkgs.alejandra);
 
-    checks = genAttrs systems (
+    checks = genAttrs linuxSystems (
       system: let
         env = aosFor system;
         testTools = {

@@ -11,8 +11,7 @@
   coreutils,
   hostPlatform,
   storeDir ? "/nix/store",
-}:
-let
+}: let
   system = hostPlatform.system;
   targetTriple = hostPlatform.config;
   dynamicLinker = "${libc}/lib/${hostPlatform.dynamicLinker}";
@@ -153,16 +152,16 @@ let
     ];
   };
 in
-wrapperDrv
-// {
-  inherit cc libc;
-  binutils = binutils_;
-  isWrapper = true;
-  targetPrefix = "";
-  inherit targetTriple;
-  constraints = {
-    build = null;
-    execute = hostPlatform.constraints;
-    target = hostPlatform.constraints;
-  };
-}
+  wrapperDrv
+  // {
+    inherit cc libc;
+    binutils = binutils_;
+    isWrapper = true;
+    targetPrefix = "";
+    inherit targetTriple;
+    constraints = {
+      build = null;
+      execute = hostPlatform.constraints;
+      target = hostPlatform.constraints;
+    };
+  }

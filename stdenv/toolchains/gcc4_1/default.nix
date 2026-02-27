@@ -11,14 +11,11 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
-}:
-let
-  callPackage =
-    path: overrides:
-    let
-      fn = import path;
-      auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
-    in
+}: let
+  callPackage = path: overrides: let
+    fn = import path;
+    auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
+  in
     fn (auto // overrides);
 
   scope = {
@@ -30,31 +27,31 @@ let
       ;
 
     # Phase 1: GCC 4.1.2 built with prev.gcc (3.4.6)
-    gcc = callPackage ./gcc.nix { };
+    gcc = callPackage ./gcc.nix {};
 
     # Phase 2: binutils 2.17 built with THIS.gcc
-    binutils = callPackage ./binutils.nix { };
+    binutils = callPackage ./binutils.nix {};
 
     # Phase 3: linux-headers + glibc built with THIS.gcc + THIS.binutils
-    linuxHeaders = callPackage ./linux-headers.nix { };
-    glibc = callPackage ./glibc.nix { };
+    linuxHeaders = callPackage ./linux-headers.nix {};
+    glibc = callPackage ./glibc.nix {};
 
     # Phase 4: POSIX tools built with THIS.gcc + THIS.binutils + THIS.glibc
-    bash = callPackage ./bash.nix { };
-    coreutils = callPackage ./coreutils.nix { };
-    gnumake = callPackage ./gnumake.nix { };
-    sed = callPackage ./sed.nix { };
-    grep = callPackage ./grep.nix { };
-    gawk = callPackage ./gawk.nix { };
-    findutils = callPackage ./findutils.nix { };
-    diffutils = callPackage ./diffutils.nix { };
-    tar = callPackage ./tar.nix { };
-    gzip = callPackage ./gzip.nix { };
-    patch = callPackage ./patch.nix { };
+    bash = callPackage ./bash.nix {};
+    coreutils = callPackage ./coreutils.nix {};
+    gnumake = callPackage ./gnumake.nix {};
+    sed = callPackage ./sed.nix {};
+    grep = callPackage ./grep.nix {};
+    gawk = callPackage ./gawk.nix {};
+    findutils = callPackage ./findutils.nix {};
+    diffutils = callPackage ./diffutils.nix {};
+    tar = callPackage ./tar.nix {};
+    gzip = callPackage ./gzip.nix {};
+    patch = callPackage ./patch.nix {};
   };
-in
-{
-  inherit (scope)
+in {
+  inherit
+    (scope)
     gcc
     binutils
     glibc
