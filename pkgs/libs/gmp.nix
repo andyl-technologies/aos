@@ -15,7 +15,7 @@ mkDerivation {
   src = fetchurl {
     urls = [
       "https://gmplib.org/download/gmp/gmp-${version}.tar.xz"
-      "https://ftp.gnu.org/gnu/gmp/gmp-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/gmp/gmp-${version}.tar.xz"
       "https://mirrors.kernel.org/gnu/gmp/gmp-${version}.tar.xz"
     ];
     hash = "sha256-o8K4AgG4nmhhb0rTC8Zq7kknw85Q4zkpyoGdXENTiJg=";

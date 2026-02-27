@@ -14,7 +14,7 @@ mkDerivation {
   src = fetchurl {
     urls = [
       "https://gnu.mirror.constant.com/which/which-${version}.tar.gz"
-      "https://ftp.gnu.org/gnu/which/which-${version}.tar.gz"
+      "https://mirrors.kernel.org/gnu/which/which-${version}.tar.gz"
     ];
     hash = "sha256-9KJFuUEks3fYtJZGv0IfkVXTaqdhS26/g3BdP/x26q0=";
   };

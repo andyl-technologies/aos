@@ -13,8 +13,8 @@ use super::resolve::resolve_closure;
 use super::store::{create_gc_roots, filter_missing, import_nar};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
-use crate::error::AosError;
-use crate::output::Printer;
+use aos::error::AosError;
+use aos::output::Printer;
 
 // ---------------------------------------------------------------------------
 // Public types

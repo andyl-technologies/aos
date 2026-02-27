@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/make/make-3.81.tar.bz2";
+    url = "https://mirrors.kernel.org/gnu/make/make-3.81.tar.bz2";
     sha256 = "1lvil72fkzv18p3nlgxpibp2s6058a6080fvg56124c75982bywk";
   };
 in

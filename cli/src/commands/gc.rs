@@ -1,9 +1,9 @@
 use anyhow::{bail, Context, Result};
 
-use crate::client::remote::RemoteClient;
-use crate::nix::NixRunner;
-use crate::output::{create_spinner, Printer};
-use crate::server;
+use aos::client::remote::RemoteClient;
+use aos::nix::NixRunner;
+use aos::output::{create_spinner, Printer};
+use aos::server;
 
 /// `aos gc` — garbage collection with local, view-based, or remote modes.
 pub async fn run(
@@ -109,9 +109,9 @@ fn run_view_gc(
     dry_run: bool,
     all: bool,
 ) -> Result<()> {
-    use crate::server::evict;
-    use crate::server::store::NixStore;
-    use crate::server::views::ViewManager;
+    use aos::server::evict;
+    use aos::server::store::NixStore;
+    use aos::server::views::ViewManager;
 
     let root = server::aos_root();
     let db_path = root.join("var/nix/db/db.sqlite");
@@ -125,7 +125,7 @@ fn run_view_gc(
 
     // We need a ViewManager but we don't have full config.
     // Create a minimal one with just the target view.
-    let view_config = crate::server::config::ViewConfig {
+    let view_config = aos::server::config::ViewConfig {
         name: view.to_string(),
         ttl: None,
         source_ttl: None,
@@ -228,12 +228,12 @@ fn pin_root(
     view: &str,
     store_path: &str,
 ) -> Result<()> {
-    use crate::server::views::ViewManager;
+    use aos::server::views::ViewManager;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let root = server::aos_root();
 
-    let view_config = crate::server::config::ViewConfig {
+    let view_config = aos::server::config::ViewConfig {
         name: view.to_string(),
         ttl: None,
         source_ttl: None,

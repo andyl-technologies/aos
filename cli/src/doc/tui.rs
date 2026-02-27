@@ -14,8 +14,8 @@ use ratatui::{
     Frame, Terminal,
 };
 
-use crate::commands::doc::model::{DocCategory, DocEntry, DocIndex};
-use crate::commands::doc::search::fuzzy_search;
+use crate::doc::model::{DocCategory, DocEntry, DocIndex};
+use crate::doc::search::fuzzy_search;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -353,7 +353,7 @@ impl App {
 // ---------------------------------------------------------------------------
 
 fn build_language_tree(entries: &[DocEntry]) -> TreeState {
-    use crate::commands::doc::language_data::chapters;
+    use crate::doc::language_data::chapters;
 
     let mut nodes: Vec<TreeNode> = Vec::new();
 
@@ -390,7 +390,7 @@ fn build_language_tree(entries: &[DocEntry]) -> TreeState {
 }
 
 fn build_language_content() -> Vec<(String, String, String)> {
-    use crate::commands::doc::language_data::chapters;
+    use crate::doc::language_data::chapters;
     let mut content = Vec::new();
     for chapter in chapters() {
         for topic in chapter.topics {

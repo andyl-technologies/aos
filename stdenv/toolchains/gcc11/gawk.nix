@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/gawk/gawk-5.1.0.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/gawk/gawk-5.1.0.tar.xz";
     sha256 = "0nzwgfhcds1jgijx4181h1nlahzznncd3bq9n4xn6d2lvagqr4qb";
   };
 in

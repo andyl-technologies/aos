@@ -13,7 +13,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/glibc/glibc-2.34.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.34.tar.xz";
     sha256 = "1vx5ny3fg9l3mx14pdk2wccy2h11axy4lgm9wmjp2izfcid5iz1l";
   };
 in

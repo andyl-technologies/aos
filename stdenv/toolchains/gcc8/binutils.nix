@@ -10,7 +10,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/binutils/binutils-2.30.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/binutils/binutils-2.30.tar.xz";
     sha256 = "11x6da64y0i165nxhyyb6m89ig5n00hnvj6k6pf8wbz5xicrmiig";
   };
 in

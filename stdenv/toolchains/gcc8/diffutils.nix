@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/diffutils/diffutils-3.6.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/diffutils/diffutils-3.6.tar.xz";
     sha256 = "09n0jhyb372c5203g18flpik9mfl0qk9i33lch1r8y114rlvw2r1";
   };
 in

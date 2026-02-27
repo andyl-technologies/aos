@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/patch/patch-2.7.6.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/patch/patch-2.7.6.tar.xz";
     sha256 = "1yiy0xq1ha193yga0canc9ijw4hbd92c93l7ksqlhmzsn2yph39n";
   };
 in

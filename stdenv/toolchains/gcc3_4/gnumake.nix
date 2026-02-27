@@ -13,7 +13,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/make/make-3.80.tar.bz2";
+    url = "https://mirrors.kernel.org/gnu/make/make-3.80.tar.bz2";
     sha256 = "050qpdwd85y7f9lhkj0i19av2nybn248m26zkl2as47wp2y1daki";
   };
 in
@@ -25,7 +25,7 @@ builtins.derivation {
     "-c"
     ''
       set -eu
-      export PATH="${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${this.tar}/bin:${this.gzip}/bin:${prev.patch}/bin:${prev.bash}/bin"
+      export PATH="${prev.coreutils}/bin:${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${this.tar}/bin:${this.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd ${src}

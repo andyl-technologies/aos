@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use tokio::process::Command;
 
-use crate::output::Printer;
+use aos::output::Printer;
 use crate::package::types::{RegistryConfig, RegistryState, SigningConfig};
 
 // ---------------------------------------------------------------------------

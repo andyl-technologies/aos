@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/sed/sed-4.5.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/sed/sed-4.5.tar.xz";
     sha256 = "1hds0a4k5z2llh9qdkxmmvppc2c8xa3j0jx9ljjy231kwz38l6n9";
   };
 in

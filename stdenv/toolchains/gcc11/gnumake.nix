@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/make/make-4.3.tar.gz";
+    url = "https://mirrors.kernel.org/gnu/make/make-4.3.tar.gz";
     sha256 = "17z72ib90c3218ic02maxdxy40d3sdxhzbnmxs9myiy25ysxb434";
   };
 in

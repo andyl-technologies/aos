@@ -8,8 +8,8 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use crate::error::AosError;
-use crate::output::Printer;
+use aos::error::AosError;
+use aos::output::Printer;
 use crate::package::config::ApmConfig;
 use crate::package::registry::{bundle, git};
 use crate::package::registry::state;

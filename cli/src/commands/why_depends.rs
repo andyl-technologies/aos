@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
-use crate::nix::NixRunner;
-use crate::output::{create_spinner, Printer};
+use aos::nix::NixRunner;
+use aos::output::{create_spinner, Printer};
 
 /// `aos why-depends <package> <dependency>` — trace why a package depends on
 /// another.

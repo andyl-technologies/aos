@@ -18,37 +18,68 @@
   targetPlatform,
 }:
 let
+  # The bootstrap tools are i686 binaries (from the source bootstrap chain).
+  # All toolchain tiers build for i686 until a cross-compilation tier is added
+  # to transition to x86_64. Uses buildPlatform.system for Nix scheduling so
+  # derivations run on the builder (x86_64 can execute i686 via compat).
+  i686Platform = {
+    system = buildPlatform.system;
+    config = "i686-unknown-linux-gnu";
+    constraints = {
+      cpu = "i686";
+      os = "linux";
+      abi = "gnu";
+    };
+    linuxArch = "i386";
+    isi686 = true;
+    isx86_64 = false;
+    isAarch64 = false;
+    is32bit = true;
+    is64bit = false;
+    isLinux = true;
+  };
+
   gcc3_4 = import ./gcc3_4 {
-    inherit
-      bootstrap
-      buildPlatform
-      hostPlatform
-      targetPlatform
-      ;
+    inherit bootstrap;
+    buildPlatform = i686Platform;
+    hostPlatform = i686Platform;
+    targetPlatform = i686Platform;
   };
   gcc4_1 = import ./gcc4_1 {
     prev = gcc3_4;
-    inherit buildPlatform hostPlatform targetPlatform;
+    buildPlatform = i686Platform;
+    hostPlatform = i686Platform;
+    targetPlatform = i686Platform;
   };
   gcc4_4 = import ./gcc4_4 {
     prev = gcc4_1;
-    inherit buildPlatform hostPlatform targetPlatform;
+    buildPlatform = i686Platform;
+    hostPlatform = i686Platform;
+    targetPlatform = i686Platform;
   };
   gcc4_8 = import ./gcc4_8 {
     prev = gcc4_4;
-    inherit buildPlatform hostPlatform targetPlatform;
+    buildPlatform = i686Platform;
+    hostPlatform = i686Platform;
+    targetPlatform = i686Platform;
   };
   gcc8 = import ./gcc8 {
     prev = gcc4_8;
-    inherit buildPlatform hostPlatform targetPlatform;
+    buildPlatform = i686Platform;
+    hostPlatform = i686Platform;
+    targetPlatform = i686Platform;
   };
   gcc11 = import ./gcc11 {
     prev = gcc8;
-    inherit buildPlatform hostPlatform targetPlatform;
+    buildPlatform = i686Platform;
+    hostPlatform = i686Platform;
+    targetPlatform = i686Platform;
   };
   gcc14 = import ./gcc14 {
     prev = gcc11;
-    inherit buildPlatform hostPlatform targetPlatform;
+    buildPlatform = i686Platform;
+    hostPlatform = i686Platform;
+    targetPlatform = i686Platform;
   };
 in
 {

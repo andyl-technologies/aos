@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/grep/grep-3.7.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/grep/grep-3.7.tar.xz";
     sha256 = "18dfjbxp0yi63w9v5vz54gwr44vhnngay20lm51x34bygh6x4m7n";
   };
 in

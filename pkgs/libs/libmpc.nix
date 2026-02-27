@@ -15,7 +15,7 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://ftp.gnu.org/gnu/mpc/mpc-${version}.tar.gz"
+      "https://mirrors.kernel.org/gnu/mpc/mpc-${version}.tar.gz"
       "https://mirrors.kernel.org/gnu/mpc/mpc-${version}.tar.gz"
     ];
     hash = "sha256-q2QkkvXPiCt0qgy3MM1BCoHtzb7IlRg86TDnBsHHWbg=";

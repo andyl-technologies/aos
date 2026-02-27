@@ -14,7 +14,7 @@ mkDerivation {
   src = fetchurl {
     urls = [
       "https://invisible-mirror.net/archives/ncurses/ncurses-${version}.tar.gz"
-      "https://ftp.gnu.org/gnu/ncurses/ncurses-${version}.tar.gz"
+      "https://mirrors.kernel.org/gnu/ncurses/ncurses-${version}.tar.gz"
     ];
     hash = "sha256-NVtMu+2ICwOBoExGYXt2VuNiWF1S6c+Epn4gCbdJ/xE=";
   };

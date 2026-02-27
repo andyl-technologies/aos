@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::output::Printer;
-use crate::server::{self, bootstrap, build, config, drain, routes, sign, store, tokens, views};
+use aos::output::Printer;
+use aos::server::{self, bootstrap, build, config, drain, routes, sign, store, tokens, views};
 
 /// `aos serve` — start the HTTP binary cache server.
 pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {

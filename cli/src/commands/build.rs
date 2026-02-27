@@ -1,10 +1,10 @@
 use anyhow::{bail, Context, Result};
 
-use crate::client::remote::RemoteClient;
-use crate::client::sse::{EventAction, SseStream};
-use crate::error::AosError;
-use crate::nix::NixRunner;
-use crate::output::{create_spinner, Printer};
+use aos::client::remote::RemoteClient;
+use aos::client::sse::{EventAction, SseStream};
+use aos::error::AosError;
+use aos::nix::NixRunner;
+use aos::output::{create_spinner, Printer};
 
 /// `aos build <package>` or `aos build --all`.
 pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>, all: bool) -> Result<()> {
@@ -121,7 +121,7 @@ pub async fn run_remote(
                 .to_string();
 
             if path.ends_with(".drv") && output.stdout.len() < PACK_SIZE_LIMIT {
-                pack_paths.push(crate::client::pack::PackPath {
+                pack_paths.push(aos::client::pack::PackPath {
                     hash,
                     nar_data: output.stdout,
                 });
@@ -133,7 +133,7 @@ pub async fn run_remote(
         // Upload small .drv files as a pack.
         if !pack_paths.is_empty() {
             let spinner = create_spinner(&format!("uploading {} small paths as pack", pack_paths.len()));
-            let pack_data = crate::client::pack::create_pack(&pack_paths);
+            let pack_data = aos::client::pack::create_pack(&pack_paths);
             client.upload_pack(&pack_data).await
                 .context("uploading path pack")?;
             spinner.finish_and_clear();

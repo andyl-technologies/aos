@@ -23,8 +23,8 @@ use std::fs;
 use anyhow::{bail, Context, Result};
 
 use crate::cli::{PackageCommand, RegistryCommand};
-use crate::error::AosError;
-use crate::output::Printer;
+use aos::error::AosError;
+use aos::output::Printer;
 use types::ProfileScope;
 
 /// Main entry point for `aos package` / `apm`.

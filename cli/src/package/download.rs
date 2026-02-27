@@ -7,8 +7,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
-use crate::error::AosError;
-use crate::output::Printer;
+use aos::error::AosError;
+use aos::output::Printer;
 use super::types::RegistryConfig;
 
 // ---------------------------------------------------------------------------

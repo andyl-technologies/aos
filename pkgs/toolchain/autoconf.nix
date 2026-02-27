@@ -15,7 +15,7 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://ftp.gnu.org/gnu/autoconf/autoconf-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/autoconf/autoconf-${version}.tar.xz"
     ];
     hash = "sha256-uohcExlXjWyU1G6bDc60AUyq/iSQ5Deg28o/JwoiP1o=";
   };

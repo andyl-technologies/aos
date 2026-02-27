@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use super::Generation;
-use crate::output::Printer;
+use aos::output::Printer;
 
 /// FHS directories to merge from store paths.
 ///

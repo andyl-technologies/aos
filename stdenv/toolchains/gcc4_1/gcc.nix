@@ -11,8 +11,15 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/gcc/gcc-4.1.2/gcc-core-4.1.2.tar.bz2";
+    url = "https://mirrors.kernel.org/gnu/gcc/gcc-4.1.2/gcc-core-4.1.2.tar.bz2";
     sha256 = "0fzi14bjj39lx9s8ppkrlarbmga8j51p7f4qnm3w4rh13z6gnz87";
+  };
+
+  # Linux kernel headers for CRT compilation — glibc headers reference
+  # linux/*.h which must be available when xgcc compiles crtstuff.c.
+  linuxSrc = builtins.fetchTarball {
+    url = "https://cdn.kernel.org/pub/linux/kernel/v2.6/linux-2.6.18.tar.bz2";
+    sha256 = "0ad6d97c1z5z79gafbxsd9d9wq4f21hmvp52s91dysqk24fkbdbx";
   };
 in
 builtins.derivation {
@@ -25,6 +32,7 @@ builtins.derivation {
       set -eu
       export PATH="${prev.coreutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
+      export LIBRARY_PATH="${prev.glibc}/lib"
 
       cd "$TMPDIR"
       cp -r ${src} gcc-4.1.2
@@ -39,8 +47,8 @@ builtins.derivation {
       cd "$TMPDIR/build"
 
       CC="${prev.gcc}/bin/gcc" \
-      CFLAGS="-O2 -static" \
-      LDFLAGS="-static" \
+      CFLAGS="-O2 -static -I${prev.glibc}/include" \
+      LDFLAGS="-static -L${prev.glibc}/lib" \
       "$TMPDIR/gcc-4.1.2/configure" \
         --prefix="$out" \
         --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${targetPlatform.config} \
@@ -51,6 +59,28 @@ builtins.derivation {
         --with-native-system-header-dir="${prev.glibc}/include" \
         --without-headers --program-transform-name=
 
+      # Patch SYSTEM_HEADER_DIR in gcc/Makefile to prevent fixincludes
+      # from looking at /usr/include.
+      make configure-gcc
+      sed -i \
+        "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${prev.glibc}/include|" \
+        gcc/Makefile
+
+      # xgcc searches $prefix/$target/sys-include for system headers.
+      # Create merged include dir with glibc + linux kernel headers.
+      mkdir -p "$out/${targetPlatform.config}/sys-include"
+      for item in "${prev.glibc}/include"/*; do
+        ln -sf "$item" "$out/${targetPlatform.config}/sys-include/"
+      done
+      # Remove conflicting symlinks before copying kernel headers as real dirs
+      rm -f "$out/${targetPlatform.config}/sys-include/linux" \
+            "$out/${targetPlatform.config}/sys-include/asm" \
+            "$out/${targetPlatform.config}/sys-include/asm-generic"
+      cp -r ${linuxSrc}/include/linux "$out/${targetPlatform.config}/sys-include/"
+      cp -r ${linuxSrc}/include/asm-i386 "$out/${targetPlatform.config}/sys-include/asm"
+      cp -r ${linuxSrc}/include/asm-generic "$out/${targetPlatform.config}/sys-include/"
+      ln -sf "$out/${targetPlatform.config}/sys-include" "$out/${targetPlatform.config}/include"
+
       make -j"$(nproc)" \
         BOOT_CFLAGS="-O2 -static" \
         CFLAGS_FOR_TARGET="-O2 -I${prev.glibc}/include" \
@@ -59,6 +89,24 @@ builtins.derivation {
       make install
 
       [ -f "$out/bin/gcc" ] && [ ! -f "$out/bin/cc" ] && ln -sf gcc "$out/bin/cc"
+
+      # Create empty libgcc_eh.a — glibc expects it but --disable-shared
+      # means GCC doesn't build it. An empty archive satisfies the linker.
+      "${prev.binutils}/bin/ar" crs "$out/lib/gcc/${targetPlatform.config}/4.1.2/libgcc_eh.a"
+
+      # Symlink all glibc CRT files and libraries into GCC's lib directory
+      # so GCC can find crt1.o, crti.o, crtn.o, libc.a, libm.a etc.
+      for f in "${prev.glibc}/lib/"*.o "${prev.glibc}/lib/"*.a; do
+        test -f "$f" && ln -sf "$f" "$out/lib/"
+      done
+
+      # Symlink binutils tools into GCC's target bin directory so GCC
+      # can find as/ld without relying on PATH.
+      mkdir -p "$out/${targetPlatform.config}/bin"
+      for tool in as ld ar nm ranlib strip objcopy objdump; do
+        test -f "${prev.binutils}/bin/$tool" && \
+          ln -sf "${prev.binutils}/bin/$tool" "$out/${targetPlatform.config}/bin/$tool"
+      done
 
       echo "GCC 4.1.2 installed to $out"
     ''

@@ -7,8 +7,8 @@ use std::process::Stdio;
 
 use anyhow::{bail, Context, Result};
 
-use crate::error::AosError;
-use crate::output::Printer;
+use aos::error::AosError;
+use aos::output::Printer;
 use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;

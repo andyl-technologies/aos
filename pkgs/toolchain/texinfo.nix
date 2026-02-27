@@ -16,7 +16,7 @@ mkDerivation {
     urls = [
       "https://gnu.mirror.constant.com/texinfo/texinfo-${version}.tar.xz"
       "https://mirrors.kernel.org/gnu/texinfo/texinfo-${version}.tar.xz"
-      "https://ftp.gnu.org/gnu/texinfo/texinfo-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/texinfo/texinfo-${version}.tar.xz"
     ];
     hash = "sha256-AynXeI++8RP6gsuAiJyhl6NEzg33ZG/gAJdMXXFDY6Y=";
   };

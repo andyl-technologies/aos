@@ -13,7 +13,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/tar/tar-1.14.tar.gz";
+    url = "https://mirrors.kernel.org/gnu/tar/tar-1.14.tar.gz";
     sha256 = "1mz6wp9isz9qbc255x0xd6s5g4flpqyj2wdkdsffm0qhiq92yh1r";
   };
 in
@@ -25,7 +25,7 @@ builtins.derivation {
     "-c"
     ''
       set -eu
-      export PATH="${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.patch}/bin:${prev.bash}/bin"
+      export PATH="${prev.coreutils}/bin:${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd ${src}

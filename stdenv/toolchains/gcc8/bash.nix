@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/bash/bash-4.4.tar.gz";
+    url = "https://mirrors.kernel.org/gnu/bash/bash-4.4.tar.gz";
     sha256 = "11pcg69yhvfqj51iqm9kxmsinjkdlfz51cjp9mvg727fk60224vw";
   };
 in

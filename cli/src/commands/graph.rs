@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
-use crate::nix::NixRunner;
-use crate::output::{create_spinner, Printer};
+use aos::nix::NixRunner;
+use aos::output::{create_spinner, Printer};
 
 /// `aos graph <package>` — display the dependency graph for a package.
 pub fn run(nix: &NixRunner, printer: &Printer, package: &str, dot: bool) -> Result<()> {

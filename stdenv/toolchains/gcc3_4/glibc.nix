@@ -12,12 +12,12 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/glibc/glibc-2.3.4.tar.bz2";
+    url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.3.4.tar.bz2";
     sha256 = "13cg3l7szdf0ardqi13gxgg2z9v5yvzv7xpizrg9mcrk125vjx5y";
   };
 
   linuxpthreads = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/glibc/glibc-linuxthreads-2.3.4.tar.bz2";
+    url = "https://mirrors.kernel.org/gnu/glibc/glibc-linuxthreads-2.3.4.tar.bz2";
     sha256 = "1zlv8zql09fyicf9lh27z73f9afyr3mismhkngnybgqvcfgp7zgj";
   };
 in
@@ -29,7 +29,7 @@ builtins.derivation {
     "-c"
     ''
       set -eu
-      export PATH="${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.patch}/bin:${prev.bash}/bin"
+      export PATH="${prev.coreutils}/bin:${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       # Copy source to writable location and add linuxthreads
@@ -41,6 +41,9 @@ builtins.derivation {
       cp -r ${linuxpthreads}/linuxthreads_db "$TMPDIR/glibc-2.3.4/" 2>/dev/null || true
 
       SRC="$TMPDIR/glibc-2.3.4"
+
+      # glibc 2.3.4 configure hardcodes /bin/pwd which doesn't exist in sandbox
+      sed -i 's|/bin/pwd|pwd|g' "$SRC/configure"
 
       # Out-of-tree build required by glibc
       mkdir -p "$TMPDIR/build"
@@ -57,7 +60,8 @@ builtins.derivation {
         --with-headers="${this.linuxHeaders}/include" \
         --disable-profile \
         --disable-nscd \
-        --enable-add-ons=linuxthreads \
+        --enable-add-ons=nptl \
+        --enable-kernel=2.6.0 \
         --without-gd \
         --without-selinux \
         libc_cv_forced_unwind=yes \

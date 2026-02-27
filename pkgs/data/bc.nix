@@ -13,7 +13,7 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://ftp.gnu.org/gnu/bc/bc-${version}.tar.gz"
+      "https://mirrors.kernel.org/gnu/bc/bc-${version}.tar.gz"
     ];
     hash = "sha256-Yq38qJsKHAFkws3KWcohDB1Ew//Eba+ZMc9JQmZMsCo=";
   };

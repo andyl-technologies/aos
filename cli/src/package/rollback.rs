@@ -4,7 +4,7 @@ use super::config::ApmConfig;
 use super::profile::meta;
 use super::profile::Profile;
 use super::registry::RegistrySet;
-use crate::output::Printer;
+use aos::output::Printer;
 
 /// Run `apm rollback [--generation=N]`.
 ///

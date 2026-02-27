@@ -11,22 +11,22 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/gcc/gcc-11.5.0/gcc-11.5.0.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/gcc/gcc-11.5.0/gcc-11.5.0.tar.xz";
     sha256 = "1gd9gix3jgbmav964rrp8c8h2dp1mkszwyawvxgik6cw4r2hx9s3";
   };
 
   gmp-src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/gmp/gmp-6.3.0.tar.xz";
     sha256 = "1kc3dy4jxand0y118yb9715g9xy1fnzqgkwxy02vd57y2fhg2pcw";
   };
 
   mpfr-src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.1.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/mpfr/mpfr-4.2.1.tar.xz";
     sha256 = "1irpgc9aqyhgkwqk7cvib1dgr5v5hf4m0vaaknssyfpkjmab9ydq";
   };
 
   mpc-src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/mpc/mpc-1.3.1.tar.gz";
+    url = "https://mirrors.kernel.org/gnu/mpc/mpc-1.3.1.tar.gz";
     sha256 = "1b6layaybj039fajx8dpy2zvcfy7s02y3y4lficz16vac0fsd0jk";
   };
 

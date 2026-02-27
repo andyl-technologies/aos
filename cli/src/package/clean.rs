@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
-use crate::output::Printer;
+use aos::output::Printer;
 
 /// Run `apm clean [--generations] [--keep=N]`.
 ///
