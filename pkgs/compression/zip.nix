@@ -3,72 +3,68 @@
   mkDerivation,
   fetchurl,
   gnumake,
-}:
-
-let
+}: let
   version = "3.0";
 in
-mkDerivation {
-  pname = "zip";
-  inherit version;
+  mkDerivation {
+    pname = "zip";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://downloads.sourceforge.net/infozip/zip30.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://downloads.sourceforge.net/infozip/zip30.tar.gz"
+      ];
+      hash = "sha256-8Oi7H5t+sLAShUlaJpnfOkt2Z4TBdlqPGu7fY8CAY2k=";
+    };
+
+    buildDeps = [gnumake];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd zip30
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          # Remove hardcoded CC = cc so ccWrapper is used
+          sed -i 's/^CC = cc$//' unix/Makefile
+
+          # Fix implicit function declarations for modern compilers
+          sed -i '1i #include <time.h>' timezone.c 2>/dev/null || true
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -f unix/Makefile generic -j$NIX_BUILD_CORES \
+            LFLAGS2="$NIX_LDFLAGS"
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make -f unix/Makefile prefix=$out install INSTALL=cp
+        '';
+      }
     ];
-    hash = "sha256-8Oi7H5t+sLAShUlaJpnfOkt2Z4TBdlqPGu7fY8CAY2k=";
-  };
 
-  buildDeps = [ gnumake ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
+    meta = {
+      description = "zip — package and compress files into ZIP archives";
+      homepage = "http://infozip.sourceforge.net/Zip.html";
+      license = "Info-ZIP";
+    };
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd zip30
-      '';
-    }
-    {
-      name = "patch";
-      script = ''
-        # Remove hardcoded CC = cc so ccWrapper is used
-        sed -i 's/^CC = cc$//' unix/Makefile
-
-        # Fix implicit function declarations for modern compilers
-        sed -i '1i #include <time.h>' timezone.c 2>/dev/null || true
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -f unix/Makefile generic -j$NIX_BUILD_CORES \
-          LFLAGS2="$NIX_LDFLAGS"
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make -f unix/Makefile prefix=$out install INSTALL=cp
-      '';
-    }
-  ];
-
-  meta = {
-    description = "zip — package and compress files into ZIP archives";
-    homepage = "http://infozip.sourceforge.net/Zip.html";
-    license = "Info-ZIP";
-  };
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       roundtrip = testing.mkVMTest {
         name = "tool-zip-roundtrip";
         rootfsDeps = [
@@ -138,4 +134,4 @@ mkDerivation {
         '';
       };
     };
-}
+  }

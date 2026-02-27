@@ -2,10 +2,19 @@
 #
 # Built with GCC 4.8.5 + glibc 2.17 from this tier.
 #
-{ prev, gcc, binutils, glibc, buildPlatform, hostPlatform }:
-let
-  fetchSrc =
-    { name, url, hash }:
+{
+  prev,
+  gcc,
+  binutils,
+  glibc,
+  buildPlatform,
+  hostPlatform,
+}: let
+  fetchSrc = {
+    name,
+    url,
+    hash,
+  }:
     builtins.derivation {
       inherit name;
       system = buildPlatform.system;
@@ -22,53 +31,52 @@ let
     url = "https://mirrors.kernel.org/gnu/make/make-3.82.tar.bz2";
     hash = "sha256-4sGnPxecQMceL+ir+KigaIuEmVOFEphNpKdpWNBAKWY=";
   };
-
 in
-builtins.derivation {
-  name = "gnumake-3.82";
-  system = buildPlatform.system;
-  builder = "${prev.bash}/bin/bash";
-  args = [
-    "-c"
-    ''
-      set -eu
-      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.patch}/bin"
+  builtins.derivation {
+    name = "gnumake-3.82";
+    system = buildPlatform.system;
+    builder = "${prev.bash}/bin/bash";
+    args = [
+      "-c"
+      ''
+        set -eu
+        export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.patch}/bin"
 
-      cd "$TMPDIR"
-      tar xjf ${make-src}
+        cd "$TMPDIR"
+        tar xjf ${make-src}
 
-      SRC="$TMPDIR/make-3.82"
-      cd "$SRC"
-      chmod -R u+w .
-      find . -name configure -exec chmod +x {} + 2>/dev/null || true
-      find . -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
-      chmod +x install-sh missing mkinstalldirs build-aux/install-sh 2>/dev/null || true
-      find . -type f \( -name '*.c' -o -name '*.h' \) -exec touch {} + 2>/dev/null || true
+        SRC="$TMPDIR/make-3.82"
+        cd "$SRC"
+        chmod -R u+w .
+        find . -name configure -exec chmod +x {} + 2>/dev/null || true
+        find . -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
+        chmod +x install-sh missing mkinstalldirs build-aux/install-sh 2>/dev/null || true
+        find . -type f \( -name '*.c' -o -name '*.h' \) -exec touch {} + 2>/dev/null || true
 
-      mkdir -p "$TMPDIR/build"
-      cd "$TMPDIR/build"
+        mkdir -p "$TMPDIR/build"
+        cd "$TMPDIR/build"
 
-      CC="${gcc}/bin/gcc" \
-      CFLAGS="-O2 -I${glibc}/include" \
-      LDFLAGS="-L${glibc}/lib -static" \
-      "$SRC/configure" \
-        --prefix="$out" \
-        --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
-        --disable-nls
+        CC="${gcc}/bin/gcc" \
+        CFLAGS="-O2 -I${glibc}/include" \
+        LDFLAGS="-L${glibc}/lib -static" \
+        "$SRC/configure" \
+          --prefix="$out" \
+          --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
+          --disable-nls
 
-      make -j"$(nproc)"
-      make install
+        make -j"$(nproc)"
+        make install
 
-      echo "GNU Make 3.82 installed to $out"
-    ''
-  ];
-}
-// {
-  meta = {
-    description = "GNU Make build automation tool, version 3.82";
-    homepage = "https://www.gnu.org/software/make/";
-    license = "GPL-3.0-or-later";
-    build = { os = "linux"; };
-    execute = { os = "linux"; };
-  };
-}
+        echo "GNU Make 3.82 installed to $out"
+      ''
+    ];
+  }
+  // {
+    meta = {
+      description = "GNU Make build automation tool, version 3.82";
+      homepage = "https://www.gnu.org/software/make/";
+      license = "GPL-3.0-or-later";
+      build = {os = "linux";};
+      execute = {os = "linux";};
+    };
+  }

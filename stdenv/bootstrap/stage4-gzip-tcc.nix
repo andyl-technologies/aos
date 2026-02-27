@@ -12,8 +12,7 @@
   posix-tools, # Output of stage1-posix-tools.nix (mkdir, cp, chmod)
   buildPlatform,
   ...
-}:
-let
+}: let
   system = buildPlatform.system;
   sources = import ./sources.nix;
 
@@ -52,75 +51,81 @@ let
     }
   '';
 in
-builtins.derivation {
-  name = "gzip-${sources.gzip.version}-tcc";
-  inherit system;
-  builder = "${bash}/bin/bash";
-  args = [
-    "-c"
-    ''
-      set -eu
+  builtins.derivation {
+    name = "gzip-${sources.gzip.version}-tcc";
+    inherit system;
+    builder = "${bash}/bin/bash";
+    args = [
+      "-c"
+      ''
+        set -eu
 
-      export PATH="${bash}/bin:${tinycc}/bin:${posix-tools}/bin"
-      CC="${tinycc}/bin/tcc"
-      SRC=${src}
+        export PATH="${bash}/bin:${tinycc}/bin:${posix-tools}/bin"
+        CC="${tinycc}/bin/tcc"
+        SRC=${src}
 
-      mkdir $out
-      mkdir $out/bin
+        mkdir $out
+        mkdir $out/bin
 
-      # Defines for Mes libc compatibility
-      DEFS="-I$SRC -DSTDC_HEADERS -DHAVE_UNISTD_H -DHAVE_FCNTL_H"
-      DEFS="$DEFS -DHAVE_STRING_H -DHAVE_STDLIB_H -DHAVE_MEMORY_H"
-      DEFS="$DEFS -DRETSIGTYPE=int -Dvfork=fork"
-      DEFS="$DEFS -DVERSION=\"1.2.4\""
+        # Defines for Mes libc compatibility
+        DEFS="-I$SRC -DSTDC_HEADERS -DHAVE_UNISTD_H -DHAVE_FCNTL_H"
+        DEFS="$DEFS -DHAVE_STRING_H -DHAVE_STDLIB_H -DHAVE_MEMORY_H"
+        DEFS="$DEFS -DRETSIGTYPE=int -Dvfork=fork"
+        DEFS="$DEFS -DVERSION=\"1.2.4\""
 
-      echo "==> Building GNU gzip 1.2.4"
+        echo "==> Building GNU gzip 1.2.4"
 
-      # ── Copy source to writable area (need to concat crc.c) ─────────
-      cp_r() {
-        local s="$1" d="$2"
-        if test -d "$s"; then
-          mkdir "$d"
-          for f in "$s"/*; do cp_r "$f" "$d/''${f##*/}"; done
-        else
-          cp "$s" "$d"
-        fi
-      }
-      cp_r $SRC $TMPDIR/src
-      cd $TMPDIR/src
+        # ── Copy source to writable area (need to concat crc.c) ─────────
+        cp_r() {
+          local s="$1" d="$2"
+          if test -d "$s"; then
+            mkdir "$d"
+            for f in "$s"/*; do cp_r "$f" "$d/''${f##*/}"; done
+          else
+            cp "$s" "$d"
+          fi
+        }
+        cp_r $SRC $TMPDIR/src
+        cd $TMPDIR/src
 
-      # ── Build makecrc helper and generate crc.c ──────────────────────
-      $CC $DEFS -DGZIP -o $TMPDIR/makecrc makecrc.c
-      $TMPDIR/makecrc > $TMPDIR/src/crc.c
+        # ── Build makecrc helper and generate crc.c ──────────────────────
+        $CC $DEFS -DGZIP -o $TMPDIR/makecrc makecrc.c
+        $TMPDIR/makecrc > $TMPDIR/src/crc.c
 
-      # ── Compile stat override ────────────────────────────────────────
-      $CC -c -I$SRC -o $TMPDIR/stat_override.o ${stat-override-c}
+        # ── Compile stat override ────────────────────────────────────────
+        $CC -c -I$SRC -o $TMPDIR/stat_override.o ${stat-override-c}
 
-      # ── Compile gzip source files ────────────────────────────────────
-      OBJS="$TMPDIR/stat_override.o"
-      for f in gzip zip deflate trees bits unzip inflate util lzw unlzw unpack getopt crc; do
-        $CC -c $DEFS -DGZIP -Dstat=_gzip_stat -Dfstat=_gzip_fstat -o $TMPDIR/$f.o $f.c
-        OBJS="$OBJS $TMPDIR/$f.o"
-      done
+        # ── Compile gzip source files ────────────────────────────────────
+        OBJS="$TMPDIR/stat_override.o"
+        for f in gzip zip deflate trees bits unzip inflate util lzw unlzw unpack getopt crc; do
+          $CC -c $DEFS -DGZIP -Dstat=_gzip_stat -Dfstat=_gzip_fstat -o $TMPDIR/$f.o $f.c
+          OBJS="$OBJS $TMPDIR/$f.o"
+        done
 
-      # ── Link ─────────────────────────────────────────────────────────
-      echo "==> Linking gzip"
-      $CC -static -o $out/bin/gzip $OBJS
+        # ── Link ─────────────────────────────────────────────────────────
+        echo "==> Linking gzip"
+        $CC -static -o $out/bin/gzip $OBJS
 
-      # Create gunzip and zcat as copies
-      cp $out/bin/gzip $out/bin/gunzip
-      cp $out/bin/gzip $out/bin/zcat
+        # Create gunzip and zcat as copies
+        cp $out/bin/gzip $out/bin/gunzip
+        cp $out/bin/gzip $out/bin/zcat
 
-      echo "GNU gzip 1.2.4 (TCC/Mes libc) installed to $out"
-    ''
-  ];
-}
-// {
-  meta = {
-    description = "GNU gzip 1.2.4 — TCC-compiled with Mes libc for bootstrap";
-    homepage = "https://www.gnu.org/software/gzip/";
-    license = "GPL-2.0-or-later";
-    build = { os = "linux"; cpu = ["x86_64" "i686"]; };
-    execute = { os = "linux"; cpu = "i686"; };
-  };
-}
+        echo "GNU gzip 1.2.4 (TCC/Mes libc) installed to $out"
+      ''
+    ];
+  }
+  // {
+    meta = {
+      description = "GNU gzip 1.2.4 — TCC-compiled with Mes libc for bootstrap";
+      homepage = "https://www.gnu.org/software/gzip/";
+      license = "GPL-2.0-or-later";
+      build = {
+        os = "linux";
+        cpu = ["x86_64" "i686"];
+      };
+      execute = {
+        os = "linux";
+        cpu = "i686";
+      };
+    };
+  }
