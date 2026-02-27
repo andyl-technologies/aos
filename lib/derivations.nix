@@ -803,7 +803,6 @@ let
               printf '{"files":{},"package":null}' > "$out/${dep.crate}/.cargo-checksum.json"
             '') fetchedGitDeps
           );
-
     in
     builtins.derivation {
       inherit name system;

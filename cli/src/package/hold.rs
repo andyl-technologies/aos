@@ -4,7 +4,7 @@ use super::config::ApmConfig;
 use super::profile::meta;
 use super::profile::Profile;
 use super::registry::store_path_hash;
-use crate::output::Printer;
+use aos::output::Printer;
 
 /// Run `apm hold <package>` -- prevent a package from being upgraded.
 pub async fn run_hold(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {

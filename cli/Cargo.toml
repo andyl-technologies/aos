@@ -3,6 +3,14 @@ name = "aos"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "aos"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aos"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"

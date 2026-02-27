@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 
 use crate::cli::SystemCmd;
-use crate::nix::NixRunner;
-use crate::output::{create_spinner, Printer};
+use aos::nix::NixRunner;
+use aos::output::{create_spinner, Printer};
 
 pub fn run(nix: &NixRunner, printer: &Printer, cmd: &SystemCmd) -> Result<()> {
     match cmd {

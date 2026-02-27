@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/gzip/gzip-1.12.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/gzip/gzip-1.12.tar.xz";
     sha256 = "005z322837gzb0srn1g1383l7wb21fasgg8mvsrgp3909yhi0r2z";
   };
 in

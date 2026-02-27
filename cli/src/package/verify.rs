@@ -6,7 +6,7 @@ use std::process::Stdio;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::error::AosError;
+use aos::error::AosError;
 
 // ---------------------------------------------------------------------------
 // SHA-256 computation

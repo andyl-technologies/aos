@@ -1,7 +1,7 @@
 use anyhow::Result;
 
-use crate::nix::NixRunner;
-use crate::output::Printer;
+use aos::nix::NixRunner;
+use aos::output::Printer;
 
 /// `aos shell` — enter the project's development shell.
 pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {

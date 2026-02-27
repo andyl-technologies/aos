@@ -8,7 +8,7 @@ use super::profile::meta;
 use super::profile::Profile;
 use super::registry::{store_path_hash, RegistrySet};
 use super::types::PackageMeta;
-use crate::output::Printer;
+use aos::output::Printer;
 
 // ---------------------------------------------------------------------------
 // Dependency tree node

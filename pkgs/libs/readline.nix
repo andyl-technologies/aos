@@ -14,7 +14,7 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://ftp.gnu.org/gnu/readline/readline-${version}.tar.gz"
+      "https://mirrors.kernel.org/gnu/readline/readline-${version}.tar.gz"
       "https://mirrors.kernel.org/gnu/readline/readline-${version}.tar.gz"
     ];
     hash = "sha256-/lODIERngozUle6NHTwDen66E4nCK8agQfYnl2+QYcw=";

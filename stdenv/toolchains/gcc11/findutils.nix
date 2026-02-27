@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/findutils/findutils-4.8.0.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/findutils/findutils-4.8.0.tar.xz";
     sha256 = "1506z55lj1qwixpp3mwz7j62hbppcgdr3n440rd0g446a9qjwchl";
   };
 in

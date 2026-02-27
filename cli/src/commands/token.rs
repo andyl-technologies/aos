@@ -5,7 +5,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 use crate::cli::TokenCmd;
-use crate::output::Printer;
+use aos::output::Printer;
 
 /// `aos token` — manage provisioning tokens via the bootstrap socket.
 pub async fn run(printer: &Printer, command: &TokenCmd, socket_path: &Path) -> Result<()> {

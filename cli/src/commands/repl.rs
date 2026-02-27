@@ -1,7 +1,7 @@
 use anyhow::Result;
 
-use crate::nix::NixRunner;
-use crate::output::Printer;
+use aos::nix::NixRunner;
+use aos::output::Printer;
 
 /// `aos repl` — start an interactive Nix REPL with `default.nix` loaded.
 pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
