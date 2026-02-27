@@ -1,8 +1,8 @@
 use anyhow::{bail, Result};
 use ignore::WalkBuilder;
 
-use crate::nix::NixRunner;
-use crate::output::Printer;
+use aos::nix::NixRunner;
+use aos::output::Printer;
 
 pub fn run(
     nix: &NixRunner,

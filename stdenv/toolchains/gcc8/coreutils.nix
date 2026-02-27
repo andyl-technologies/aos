@@ -12,7 +12,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/coreutils/coreutils-8.30.tar.xz";
+    url = "https://mirrors.kernel.org/gnu/coreutils/coreutils-8.30.tar.xz";
     sha256 = "0pp6vvpzw0v6s45yq58cszrh514a5v8jq32321apszw7rbffkslb";
   };
 in

@@ -15,7 +15,7 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://ftp.gnu.org/gnu/automake/automake-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/automake/automake-${version}.tar.xz"
     ];
     hash = "sha256-FoqjYyeDUbia9WaERI9SWlvOUHnQtoQr2RD90/FkaIc=";
   };

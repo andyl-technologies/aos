@@ -12,7 +12,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
-use crate::output::Printer;
+use aos::output::Printer;
 
 // ---------------------------------------------------------------------------
 // Bundle manifest types (parsed from bundle-list.toml)

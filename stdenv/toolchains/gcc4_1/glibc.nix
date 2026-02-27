@@ -13,7 +13,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/glibc/glibc-2.5.tar.bz2";
+    url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.5.tar.bz2";
     sha256 = "0khysawcx2glspp1nq2j02sszqjc06hjrpiirbw1qr2a73q5jg1w";
   };
 in
@@ -32,6 +32,9 @@ builtins.derivation {
       cp -r ${src} glibc-2.5
       cd glibc-2.5
       chmod -R u+w .
+
+      # glibc configure hardcodes /bin/pwd which doesn't exist in sandbox
+      sed -i 's|/bin/pwd|pwd|g' configure
 
       # Out-of-tree build (required by glibc)
       mkdir -p "$TMPDIR/build"

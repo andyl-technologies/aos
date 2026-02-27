@@ -2,8 +2,8 @@ use std::process::Command;
 
 use anyhow::Result;
 
-use crate::nix::NixRunner;
-use crate::output::Printer;
+use aos::nix::NixRunner;
+use aos::output::Printer;
 
 /// `aos describe` — show repository information.
 pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {

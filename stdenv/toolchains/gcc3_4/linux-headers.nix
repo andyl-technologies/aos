@@ -35,7 +35,7 @@ builtins.derivation {
     "-c"
     ''
       set -eu
-      export PATH="${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.patch}/bin:${prev.bash}/bin"
+      export PATH="${prev.coreutils}/bin:${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       # Copy source tree to writable location
@@ -52,9 +52,14 @@ builtins.derivation {
       cp -r include/${asmDir} "$out/include/asm"
       cp -r include/asm-generic "$out/include/"
 
-      # Create version/autoconf headers
-      make ARCH=${hostPlatform.linuxArch} include/linux/version.h 2>/dev/null || true
-      test -f include/linux/version.h && cp include/linux/version.h "$out/include/linux/"
+      # Create version/autoconf headers.
+      # Linux 2.6.9 uses ARCH=i386 (not x86, which was unified in 2.6.24).
+      make ARCH=i386 include/linux/version.h 2>/dev/null || true
+      if ! test -f include/linux/version.h; then
+        # Manually create version.h if make failed
+        printf '#define UTS_RELEASE "2.6.9"\n#define LINUX_VERSION_CODE 132617\n#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))\n' > include/linux/version.h
+      fi
+      cp include/linux/version.h "$out/include/linux/"
 
       echo "Linux 2.6.9 headers installed to $out"
     ''

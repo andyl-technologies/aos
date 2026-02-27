@@ -19,7 +19,7 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://ftp.gnu.org/gnu/classpath/classpath-${version}.tar.gz"
+      "https://mirrors.kernel.org/gnu/classpath/classpath-${version}.tar.gz"
     ];
     hash = "sha256-+Skpf4rpthOhoWfiMVZoYYkyYGUdkTrZtsEZM4lf7Mg=";
   };

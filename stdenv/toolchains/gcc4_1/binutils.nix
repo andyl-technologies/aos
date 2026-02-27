@@ -10,7 +10,7 @@
 }:
 let
   src = builtins.fetchTarball {
-    url = "https://ftp.gnu.org/gnu/binutils/binutils-2.17.tar.bz2";
+    url = "https://mirrors.kernel.org/gnu/binutils/binutils-2.17.tar.bz2";
     sha256 = "054ilydpm1i4clgm2f2ffddwl0047n0cnibyqm60rwa1vizgxw2i";
   };
 in
@@ -24,18 +24,55 @@ builtins.derivation {
       set -eu
       export PATH="${prev.coreutils}/bin:${gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
+      # Create static-only lib directory — avoids picking up .so files.
+      mkdir -p "$TMPDIR/static-lib"
+      for f in "${prev.glibc}/lib/"*.a "${prev.glibc}/lib/"*.o; do
+        test -f "$f" && ln -sf "$f" "$TMPDIR/static-lib/"
+      done
+
+      # GCC wrapper that always passes -static — libtool strips -static
+      # from CC args, but the wrapper ensures it's always present.
+      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -L'"$TMPDIR"'/static-lib "$@"\n' \
+        > "$TMPDIR/fakebin/gcc"
+      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -L'"$TMPDIR"'/static-lib "$@"\n' \
+        > "$TMPDIR/fakebin/cc"
+      chmod +x "$TMPDIR/fakebin/gcc" "$TMPDIR/fakebin/cc"
+
+      export CC="$TMPDIR/fakebin/gcc"
+      export CFLAGS="-O2 -I${prev.glibc}/include"
+      export LDFLAGS="-L$TMPDIR/static-lib -static"
 
       cd "$TMPDIR"
       cp -r ${src} binutils-2.17
       cd binutils-2.17
       chmod -R u+w .
 
+      # Touch pre-built .info files and pre-generated parser/lexer .c/.h files
+      # so make doesn't try to regenerate them (we don't have makeinfo/flex/bison).
+      find . -name '*.info' -print | xargs touch
+      find . -name '*.c' -newer . -print | xargs touch 2>/dev/null || true
+      # Ensure generated .c files are newer than .l and .y sources
+      for f in ld/ldlex.c ld/ldgram.c ld/ldgram.h \
+               gas/itbl-parse.c gas/itbl-parse.h gas/itbl-lex.c \
+               binutils/arlex.c binutils/arparse.c binutils/arparse.h \
+               binutils/deflex.c binutils/defparse.c binutils/defparse.h \
+               binutils/rclex.c binutils/rcparse.c binutils/rcparse.h \
+               binutils/syslex.c binutils/sysinfo.c binutils/sysinfo.h; do
+        test -f "$f" && touch "$f"
+      done
+
+      # Dummy makeinfo that creates empty output files to avoid doc build failures.
+      # Must parse -o flag to create the expected output file.
+      mkdir -p "$TMPDIR/fakebin"
+      printf '#!/bin/sh\nfor a; do case "$prev" in -o) touch "$a";; esac; prev="$a"; done\nexit 0\n' \
+        > "$TMPDIR/fakebin/makeinfo"
+      chmod +x "$TMPDIR/fakebin/makeinfo"
+      export PATH="$TMPDIR/fakebin:$PATH"
+
       mkdir -p "$TMPDIR/build"
       cd "$TMPDIR/build"
 
-      CC="${gcc}/bin/gcc" \
-      CFLAGS="-O2 -I${prev.glibc}/include" \
-      LDFLAGS="-L${prev.glibc}/lib -static" \
+      MAKEINFO="$TMPDIR/fakebin/makeinfo" \
       "$TMPDIR/binutils-2.17/configure" \
         --prefix="$out" \
         --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
@@ -44,8 +81,8 @@ builtins.derivation {
         --with-sysroot=/ \
         --program-transform-name=
 
-      make -j"$(nproc)"
-      make install
+      make -j"$(nproc)" MAKEINFO="$TMPDIR/fakebin/makeinfo"
+      make install MAKEINFO="$TMPDIR/fakebin/makeinfo"
 
       echo "binutils 2.17 installed to $out"
     ''

@@ -13,7 +13,7 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://ftp.gnu.org/gnu/gperf/gperf-${version}.tar.gz"
+      "https://mirrors.kernel.org/gnu/gperf/gperf-${version}.tar.gz"
     ];
     hash = "sha256-/Yfgq6fkOuBUg3r9bNTbA6PyaT3rNhkIXm7Z2NlgStg=";
   };

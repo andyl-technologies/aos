@@ -1,13 +1,6 @@
 mod cli;
-mod client;
 mod commands;
-mod error;
-mod narinfo;
-mod nix;
-mod nix_cli;
-mod output;
 mod package;
-mod server;
 
 use std::path::Path;
 use std::process;
@@ -15,10 +8,10 @@ use std::process;
 use anyhow::Result;
 use clap::Parser;
 
+use aos::error::AosError;
+use aos::nix::NixRunner;
+use aos::output::Printer;
 use cli::{Cli, Commands};
-use error::AosError;
-use nix::NixRunner;
-use output::Printer;
 
 #[tokio::main]
 async fn main() {
@@ -84,7 +77,7 @@ async fn run(cli: &Cli) -> Result<()> {
 
     // Token management connects to the bootstrap socket — no NixRunner needed.
     if let Commands::Token { command } = &cli.command {
-        let socket_path = server::aos_root().join("run/bootstrap.sock");
+        let socket_path = aos::server::aos_root().join("run/bootstrap.sock");
         return commands::token::run(&printer, command, &socket_path).await;
     }
 
@@ -170,7 +163,7 @@ async fn run(cli: &Cli) -> Result<()> {
             list,
             rebuild,
         } => {
-            commands::doc::run(&nix, &printer, source, path, search, list, *rebuild).await
+            aos::doc::run(&nix, &printer, source, path, search, list, *rebuild).await
         }
         // Already handled above, but the match must be exhaustive.
         Commands::Completions { .. } => unreachable!(),

@@ -13,7 +13,7 @@ mkDerivation {
 
   src = fetchurl {
     urls = [
-      "https://ftp.gnu.org/gnu/m4/m4-${version}.tar.xz"
+      "https://mirrors.kernel.org/gnu/m4/m4-${version}.tar.xz"
     ];
     hash = "sha256-4jbqOhzPX2wnCxxLtgcm83H6SUWajqrryQshazKNrys=";
   };
