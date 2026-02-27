@@ -1,4 +1,5 @@
 pub mod build;
+pub mod cache;
 pub mod completions;
 pub mod describe;
 pub mod doc;

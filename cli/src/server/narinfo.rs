@@ -1,18 +1,7 @@
+use crate::narinfo::{basename, store_hash};
 use crate::server::config::CompressionConfig;
 use crate::server::sign::NarInfoSigner;
 use crate::server::store::PathInfo;
-
-/// Extract the basename (everything after the last `/`) from a store path.
-fn basename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
-
-/// Extract the hash portion from a store path basename.
-/// E.g., "abc123-foo-1.0" → "abc123"
-fn store_hash(path: &str) -> &str {
-    let name = basename(path);
-    name.split('-').next().unwrap_or(name)
-}
 
 /// Resolve compression name and file extension from config.
 fn compression_parts(config: &CompressionConfig) -> (&str, &str) {
