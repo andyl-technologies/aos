@@ -5,79 +5,82 @@
   gnumake,
   zlib,
   perl,
-}: let
+}:
+let
   version = "3.4.1";
 in
-  mkDerivation {
-    pname = "openssl";
-    inherit version;
+mkDerivation {
+  pname = "openssl";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://www.openssl.org/source/openssl-${version}.tar.gz"
-      ];
-      hash = "sha256-ACotazC1i/S+pGxDvdljZar42qbEKHgqpP7uBtoZffM=";
-    };
-
-    buildDeps = [
-      gnumake
-      perl
+  src = fetchurl {
+    urls = [
+      "https://www.openssl.org/source/openssl-${version}.tar.gz"
     ];
-    runtimeDeps = [zlib];
-    propagatedDeps = [];
+    hash = "sha256-ACotazC1i/S+pGxDvdljZar42qbEKHgqpP7uBtoZffM=";
+  };
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd openssl-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          perl ./Configure \
-            --prefix=$out \
-            --libdir=lib \
-            --openssldir=$out/etc/ssl \
-            linux-x86_64 \
-            no-ssl2 \
-            no-ssl3 \
-            no-dtls \
-            no-legacy \
-            shared \
-            zlib \
-            --with-zlib-include=${zlib}/include \
-            --with-zlib-lib=${zlib}/lib \
-            -Wl,-rpath,$out/lib
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install_sw install_ssldirs
-        '';
-      }
-    ];
+  buildDeps = [
+    gnumake
+    perl
+  ];
+  runtimeDeps = [ zlib ];
+  propagatedDeps = [ ];
 
-    meta = {
-      description = "OpenSSL — TLS/SSL and cryptography toolkit";
-      homepage = "https://www.openssl.org";
-      license = "Apache-2.0";
-    };
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd openssl-${version}
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        perl ./Configure \
+          --prefix=$out \
+          --libdir=lib \
+          --openssldir=$out/etc/ssl \
+          linux-x86_64 \
+          no-ssl2 \
+          no-ssl3 \
+          no-dtls \
+          no-legacy \
+          shared \
+          zlib \
+          --with-zlib-include=${zlib}/include \
+          --with-zlib-lib=${zlib}/lib \
+          -Wl,-rpath,$out/lib
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install_sw install_ssldirs
+      '';
+    }
+  ];
 
-    checks = {
+  meta = {
+    description = "OpenSSL — TLS/SSL and cryptography toolkit";
+    homepage = "https://www.openssl.org";
+    license = "Apache-2.0";
+  };
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       link = testing.mkLinkCheck {
         pname = "lib-openssl";
         library = self;
@@ -99,7 +102,7 @@ in
       evp = testing.mkLinkCheck {
         pname = "lib-openssl-evp";
         library = self;
-        libs = ["-lcrypto"];
+        libs = [ "-lcrypto" ];
         testSource = ''
           #include <openssl/evp.h>
           #include <stdio.h>
@@ -122,7 +125,7 @@ in
       rand = testing.mkLinkCheck {
         pname = "lib-openssl-rand";
         library = self;
-        libs = ["-lcrypto"];
+        libs = [ "-lcrypto" ];
         testSource = ''
           #include <openssl/rand.h>
           #include <stdio.h>
@@ -143,7 +146,7 @@ in
 
       cli-dgst = testing.mkVMTest {
         name = "lib-openssl-cli-dgst";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           echo "test" > /tmp/input.txt
           OUTPUT=$(openssl dgst -sha256 /tmp/input.txt)
@@ -164,7 +167,7 @@ in
       header-version = testing.mkLinkCheck {
         pname = "lib-openssl-header-version";
         library = self;
-        libs = ["-lcrypto"];
+        libs = [ "-lcrypto" ];
         testSource = ''
           #include <openssl/opensslv.h>
           #include <openssl/crypto.h>
@@ -187,19 +190,30 @@ in
 
       soname = testing.mkSONAMECheck {
         pkg = self;
-        libs = ["libssl.so" "libcrypto.so"];
+        libs = [
+          "libssl.so"
+          "libcrypto.so"
+        ];
       };
 
       symbols = testing.mkSymbolCheck {
         pkg = self;
         libName = "libssl.so";
-        symbols = ["SSL_read" "SSL_write" "SSL_connect" "SSL_accept"];
+        symbols = [
+          "SSL_read"
+          "SSL_write"
+          "SSL_connect"
+          "SSL_accept"
+        ];
       };
 
       crypto-symbols = testing.mkSymbolCheck {
         pkg = self;
         libName = "libcrypto.so";
-        symbols = ["EVP_EncryptInit" "EVP_DigestInit"];
+        symbols = [
+          "EVP_EncryptInit"
+          "EVP_DigestInit"
+        ];
       };
 
       version-consistency = testing.mkVersionCheck {
@@ -213,7 +227,10 @@ in
           const char *header_ver = OPENSSL_VERSION_TEXT;
           const char *runtime_ver = OpenSSL_version(OPENSSL_VERSION);
         '';
-        libs = ["-lssl" "-lcrypto"];
+        libs = [
+          "-lssl"
+          "-lcrypto"
+        ];
       };
 
       consumers = testing.mkVMTest {
@@ -268,4 +285,4 @@ in
         '';
       };
     };
-  }
+}

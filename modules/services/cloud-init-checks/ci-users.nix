@@ -1,5 +1,5 @@
 # tests/vm/checks/ci-users.nix — Cloud-init user creation
-{lib}:
+{ lib }:
 lib.mkCheckGroup {
   name = "ci-users";
   description = "Cloud-init user creation";

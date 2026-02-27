@@ -1,5 +1,5 @@
 # tests/vm/checks/ci-firewall-server.nix — Cloud-init server firewall rules
-{lib}:
+{ lib }:
 lib.mkCheckGroup {
   name = "ci-firewall-server";
   description = "Cloud-init server role firewall configuration";

@@ -5,65 +5,66 @@
   gnumake,
   pkg-config,
   util-linux,
-}: let
+}:
+let
   version = "1.47.3";
 in
-  mkDerivation {
-    pname = "e2fsprogs";
-    inherit version;
+mkDerivation {
+  pname = "e2fsprogs";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://downloads.sourceforge.net/e2fsprogs/e2fsprogs-${version}.tar.gz"
-      ];
-      hash = "sha256-L1Fk5k3X2R6t0eDop32SwG3Xg3uxnx2Ric4ZObNj0rQ=";
-    };
-
-    buildDeps = [
-      gnumake
-      pkg-config
+  src = fetchurl {
+    urls = [
+      "https://downloads.sourceforge.net/e2fsprogs/e2fsprogs-${version}.tar.gz"
     ];
-    runtimeDeps = [util-linux];
-    propagatedDeps = [util-linux];
+    hash = "sha256-L1Fk5k3X2R6t0eDop32SwG3Xg3uxnx2Ric4ZObNj0rQ=";
+  };
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd e2fsprogs-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --enable-elf-shlibs \
-            --disable-libblkid \
-            --disable-libuuid \
-            --disable-uuidd \
-            --disable-fsck
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-          make install-libs
-        '';
-      }
-    ];
+  buildDeps = [
+    gnumake
+    pkg-config
+  ];
+  runtimeDeps = [ util-linux ];
+  propagatedDeps = [ util-linux ];
 
-    meta = {
-      description = "Utilities for ext2/ext3/ext4 filesystems";
-      homepage = "http://e2fsprogs.sourceforge.net/";
-      license = "GPL-2.0-only";
-    };
-  }
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd e2fsprogs-${version}
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        ./configure \
+          --prefix=$out \
+          --enable-elf-shlibs \
+          --disable-libblkid \
+          --disable-libuuid \
+          --disable-uuidd \
+          --disable-fsck
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install
+        make install-libs
+      '';
+    }
+  ];
+
+  meta = {
+    description = "Utilities for ext2/ext3/ext4 filesystems";
+    homepage = "http://e2fsprogs.sourceforge.net/";
+    license = "GPL-2.0-only";
+  };
+}

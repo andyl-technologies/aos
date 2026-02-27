@@ -10,7 +10,8 @@
   pkgs,
   lib,
   ...
-}: {
+}:
+{
   aos.security.selinux.enable = true;
   aos.security.selinux.mode = "enforcing";
   aos.security.audit.enable = true;

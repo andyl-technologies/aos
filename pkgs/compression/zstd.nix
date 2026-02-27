@@ -4,61 +4,64 @@
   fetchurl,
   gnumake,
   zlib,
-}: let
+}:
+let
   version = "1.5.7";
 in
-  mkDerivation {
-    pname = "zstd";
-    inherit version;
+mkDerivation {
+  pname = "zstd";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/facebook/zstd/releases/download/v${version}/zstd-${version}.tar.gz"
-      ];
-      hash = "sha256-6zPlH0mhXgI5UM14Jcp0pKK0Pbg1SCWsJPwbfuCeb6M=";
-    };
-
-    buildDeps = [gnumake];
-    runtimeDeps = [zlib];
-    propagatedDeps = [];
-
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd zstd-${version}
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make PREFIX=$out -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install PREFIX=$out
-        '';
-      }
+  src = fetchurl {
+    urls = [
+      "https://github.com/facebook/zstd/releases/download/v${version}/zstd-${version}.tar.gz"
     ];
+    hash = "sha256-6zPlH0mhXgI5UM14Jcp0pKK0Pbg1SCWsJPwbfuCeb6M=";
+  };
 
-    meta = {
-      description = "Zstandard — fast real-time compression algorithm";
-      homepage = "https://facebook.github.io/zstd/";
-      license = "BSD-3-Clause";
-    };
+  buildDeps = [ gnumake ];
+  runtimeDeps = [ zlib ];
+  propagatedDeps = [ ];
 
-    checks = {
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd zstd-${version}
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make PREFIX=$out -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install PREFIX=$out
+      '';
+    }
+  ];
+
+  meta = {
+    description = "Zstandard — fast real-time compression algorithm";
+    homepage = "https://facebook.github.io/zstd/";
+    license = "BSD-3-Clause";
+  };
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       link = testing.mkLinkCheck {
         pname = "lib-zstd";
         library = self;
-        libs = ["-lzstd"];
+        libs = [ "-lzstd" ];
         testSource = ''
           #include <zstd.h>
           #include <stdio.h>
@@ -72,7 +75,7 @@ in
       compress = testing.mkLinkCheck {
         pname = "lib-zstd-compress";
         library = self;
-        libs = ["-lzstd"];
+        libs = [ "-lzstd" ];
         testSource = ''
           #include <zstd.h>
           #include <string.h>
@@ -100,7 +103,7 @@ in
 
       cli-roundtrip = testing.mkVMTest {
         name = "lib-zstd-cli-roundtrip";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           echo "zstd round-trip test data 1234567890" > /tmp/original.txt
           zstd /tmp/original.txt -o /tmp/compressed.zst
@@ -117,7 +120,7 @@ in
 
       soname = testing.mkSONAMECheck {
         pkg = self;
-        libs = ["libzstd.so"];
+        libs = [ "libzstd.so" ];
       };
 
       version-consistency = testing.mkVersionCheck {
@@ -130,7 +133,7 @@ in
           const char *header_ver = ZSTD_VERSION_STRING;
           const char *runtime_ver = ZSTD_versionString();
         '';
-        libs = ["-lzstd"];
+        libs = [ "-lzstd" ];
       };
 
       compression-interop = testing.mkVMTest {
@@ -216,4 +219,4 @@ in
         '';
       };
     };
-  }
+}

@@ -1,5 +1,5 @@
 # tests/vm/checks/ci-ssh-keys.nix — Cloud-init SSH authorized keys
-{lib}:
+{ lib }:
 lib.mkCheckGroup {
   name = "ci-ssh-keys";
   description = "Cloud-init SSH key provisioning";

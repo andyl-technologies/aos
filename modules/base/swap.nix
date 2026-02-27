@@ -13,9 +13,11 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.swap;
-in {
+in
+{
   options.aos.swap = {
     zram = {
       ## Enable zram compressed swap.
@@ -96,9 +98,9 @@ in {
     # Runs once at boot before swap.target to ensure zram is available early.
     systemd.services."zram-setup" = lib.mkIf cfg.zram.enable {
       description = "Setup zram compressed swap device";
-      wantedBy = ["swap.target"];
-      before = ["swap.target"];
-      after = ["systemd-modules-load.service"];
+      wantedBy = [ "swap.target" ];
+      before = [ "swap.target" ];
+      after = [ "systemd-modules-load.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -148,8 +150,8 @@ in {
     # Enable systemd-oomd.service when oomd is configured.
     systemd.services."systemd-oomd" = lib.mkIf cfg.oomd.enable {
       description = "Userspace Out-Of-Memory (OOM) Killer";
-      wantedBy = ["multi-user.target"];
-      after = ["systemd-journald.service"];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "systemd-journald.service" ];
       serviceConfig = {
         Type = "notify";
         Restart = "on-failure";

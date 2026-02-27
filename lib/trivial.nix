@@ -15,7 +15,8 @@
   ## Swap the order of arguments to a binary function.
   ## # Type
   ## `(a -> b -> c) -> b -> a -> c`
-  flip = f: a: b:
+  flip =
+    f: a: b:
     f b a;
 
   ## Compose a list of functions, applying left to right.
@@ -30,32 +31,28 @@
   ## `compose f g x == f (g x)`
   ## # Type
   ## `(b -> c) -> (a -> b) -> a -> c`
-  compose = f: g: x:
+  compose =
+    f: g: x:
     f (g x);
 
   ## Apply a function if the value is not null, otherwise return null.
   ## # Type
   ## `(a -> b) -> a | null -> b | null`
-  mapNullable = f: v:
-    if v == null
-    then null
-    else f v;
+  mapNullable = f: v: if v == null then null else f v;
 
   ## Throw an error if condition is true, otherwise return the value.
   ## # Type
   ## `bool -> string -> a -> a`
-  throwIf = cond: msg: val:
-    if cond
-    then throw msg
-    else val;
+  throwIf =
+    cond: msg: val:
+    if cond then throw msg else val;
 
   ## Throw an error if condition is false, otherwise return the value.
   ## # Type
   ## `bool -> string -> a -> a`
-  throwIfNot = cond: msg: val:
-    if cond
-    then val
-    else throw msg;
+  throwIfNot =
+    cond: msg: val:
+    if cond then val else throw msg;
 
   ## Print a warning message to stderr and return the value.
   ## In Nix, builtins.trace writes to stderr during evaluation.
@@ -80,27 +77,23 @@
 
   ## # Type
   ## `int -> int -> int`
-  min = a: b:
-    if a < b
-    then a
-    else b;
+  min = a: b: if a < b then a else b;
 
   ## # Type
   ## `int -> int -> int`
-  max = a: b:
-    if a > b
-    then a
-    else b;
+  max = a: b: if a > b then a else b;
 
   ## Clamp a value between a lower and upper bound.
   ## # Type
   ## `int -> int -> int -> int`
-  clamp = lower: upper: v:
-    if v < lower
-    then lower
-    else if v > upper
-    then upper
-    else v;
+  clamp =
+    lower: upper: v:
+    if v < lower then
+      lower
+    else if v > upper then
+      upper
+    else
+      v;
 
   ## # Type
   ## `int -> int -> int`
@@ -117,20 +110,13 @@
   ## Convert a non-negative integer to a lowercase hex string.
   ## # Type
   ## `int -> string`
-  toHexString = let
-    hexDigit = d:
-      if d < 10
-      then builtins.toString d
-      else builtins.elemAt ["a" "b" "c" "d" "e" "f"] (d - 10);
-    go = n:
-      if n < 16
-      then hexDigit n
-      else go (n / 16) + hexDigit (n - (n / 16) * 16);
-  in
-    n:
-      if n == 0
-      then "0"
-      else go n;
+  toHexString =
+    let
+      hexDigit =
+        d: if d < 10 then builtins.toString d else builtins.elemAt [ "a" "b" "c" "d" "e" "f" ] (d - 10);
+      go = n: if n < 16 then hexDigit n else go (n / 16) + hexDigit (n - (n / 16) * 16);
+    in
+    n: if n == 0 then "0" else go n;
 
   ## Read and parse a JSON file.
   ## # Type

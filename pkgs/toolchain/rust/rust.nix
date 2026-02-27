@@ -13,120 +13,123 @@
   rust-1_92,
   openssl,
   zlib,
-}: let
+}:
+let
   version = "1.93.1";
 in
-  mkDerivation {
-    pname = "rust";
-    inherit version;
+mkDerivation {
+  pname = "rust";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
-      ];
-      hash = "sha256-TCMKRLPZyfPO+VCUNxn4OABY0nyR/aXjapqUfvAT4B8=";
-    };
-
-    buildDeps = [
-      gnumake
-      cmake
-      ninja
-      pkg-config
-      python3
-      bash
-      which
-      rust-1_92
-      llvm
-      openssl
+  src = fetchurl {
+    urls = [
+      "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
     ];
-    runtimeDeps = [
-      llvm
-      zlib
-    ];
+    hash = "sha256-TCMKRLPZyfPO+VCUNxn4OABY0nyR/aXjapqUfvAT4B8=";
+  };
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd rustc-${version}-src
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          # Create a fake git wrapper so x.py doesn't panic when running git commands
-          mkdir -p .fake-bin
-          printf '#!/bin/sh\nexit 0\n' > .fake-bin/git
-          chmod +x .fake-bin/git
-          export PATH="$PWD/.fake-bin:$PATH"
-          cat > bootstrap.toml << TOML
-          change-id = 148795
+  buildDeps = [
+    gnumake
+    cmake
+    ninja
+    pkg-config
+    python3
+    bash
+    which
+    rust-1_92
+    llvm
+    openssl
+  ];
+  runtimeDeps = [
+    llvm
+    zlib
+  ];
 
-          [llvm]
-          link-shared = true
-          download-ci-llvm = false
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd rustc-${version}-src
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        # Create a fake git wrapper so x.py doesn't panic when running git commands
+        mkdir -p .fake-bin
+        printf '#!/bin/sh\nexit 0\n' > .fake-bin/git
+        chmod +x .fake-bin/git
+        export PATH="$PWD/.fake-bin:$PATH"
+        cat > bootstrap.toml << TOML
+        change-id = 148795
 
-          [build]
-          docs = false
-          extended = true
-          tools = ["cargo"]
-          vendor = true
-          cargo = "${rust-1_92}/bin/cargo"
-          rustc = "${rust-1_92}/bin/rustc"
+        [llvm]
+        link-shared = true
+        download-ci-llvm = false
 
-          [install]
-          prefix = "$out"
-          sysconfdir = "etc"
+        [build]
+        docs = false
+        extended = true
+        tools = ["cargo"]
+        vendor = true
+        cargo = "${rust-1_92}/bin/cargo"
+        rustc = "${rust-1_92}/bin/rustc"
 
-          [rust]
-          channel = "stable"
-          codegen-units = 0
-          rpath = true
-          omit-git-hash = true
-          download-rustc = false
+        [install]
+        prefix = "$out"
+        sysconfdir = "etc"
 
-          [target.x86_64-unknown-linux-gnu]
-          llvm-config = "${llvm}/bin/llvm-config"
+        [rust]
+        channel = "stable"
+        codegen-units = 0
+        rpath = true
+        omit-git-hash = true
+        download-rustc = false
 
-          [target.aarch64-unknown-linux-gnu]
-          llvm-config = "${llvm}/bin/llvm-config"
-          TOML
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          export PATH="$PWD/.fake-bin:$PATH"
-          python3 x.py build -j $NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          export PATH="$PWD/.fake-bin:$PATH"
-          python3 x.py install
+        [target.x86_64-unknown-linux-gnu]
+        llvm-config = "${llvm}/bin/llvm-config"
 
-          # Patch ELF binaries
-          INTERP=$(patchelf --print-interpreter $(which bash))
-          BT_LIB=$(dirname "$INTERP")
-          for f in $out/bin/*; do
-            if [ -f "$f" ] && [ ! -L "$f" ]; then
-              patchelf --set-interpreter "$INTERP" --set-rpath "$out/lib:${llvm}/lib:${openssl}/lib:${zlib}/lib:$BT_LIB" "$f" 2>/dev/null || true
-            fi
-          done
-        '';
-      }
-    ];
+        [target.aarch64-unknown-linux-gnu]
+        llvm-config = "${llvm}/bin/llvm-config"
+        TOML
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        export PATH="$PWD/.fake-bin:$PATH"
+        python3 x.py build -j $NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        export PATH="$PWD/.fake-bin:$PATH"
+        python3 x.py install
 
-    checks = {
+        # Patch ELF binaries
+        INTERP=$(patchelf --print-interpreter $(which bash))
+        BT_LIB=$(dirname "$INTERP")
+        for f in $out/bin/*; do
+          if [ -f "$f" ] && [ ! -L "$f" ]; then
+            patchelf --set-interpreter "$INTERP" --set-rpath "$out/lib:${llvm}/lib:${openssl}/lib:${zlib}/lib:$BT_LIB" "$f" 2>/dev/null || true
+          fi
+        done
+      '';
+    }
+  ];
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       hello = testing.mkVMTest {
         name = "toolchain-rust-hello";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         memory = 512;
         testScript = ''
           cat > /tmp/hello.rs << 'EOF'
@@ -144,7 +147,7 @@ in
 
       cargo = testing.mkVMTest {
         name = "toolchain-rust-cargo";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         memory = 512;
         testScript = ''
           export CARGO_HOME="/tmp/cargo"
@@ -177,7 +180,7 @@ in
 
       bootstrap-chain = testing.mkVMTest {
         name = "toolchain-rust-bootstrap-chain";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         memory = 512;
         testScript = ''
           # Verify rustc and cargo versions
@@ -211,7 +214,7 @@ in
 
       build = testing.mkVMTest {
         name = "cross-cutting-rust-build";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         memory = 512;
         testScript = ''
           export PATH="${self}/bin:$PATH"
@@ -281,9 +284,9 @@ in
       };
     };
 
-    meta = {
-      description = "Rust programming language — compiler and cargo";
-      homepage = "https://www.rust-lang.org";
-      license = "MIT OR Apache-2.0";
-    };
-  }
+  meta = {
+    description = "Rust programming language — compiler and cargo";
+    homepage = "https://www.rust-lang.org";
+    license = "MIT OR Apache-2.0";
+  };
+}

@@ -1,5 +1,5 @@
 # tests/vm/checks/ci-hostname.nix — Cloud-init hostname configuration
-{lib}:
+{ lib }:
 lib.mkCheckGroup {
   name = "ci-hostname";
   description = "Cloud-init hostname configuration";

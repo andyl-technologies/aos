@@ -25,7 +25,8 @@
   tar, # GNU tar (stage 4)
   buildPlatform,
   ...
-}: let
+}:
+let
   system = buildPlatform.system;
   lib = import ./lib.nix;
   sources = import ./sources.nix;
@@ -35,98 +36,101 @@
     sha256 = sources.coreutils.sha256;
   };
 in
-  builtins.derivation {
-    name = "coreutils-5.0";
-    inherit system;
-    builder = "${bash}/bin/bash";
-    args = [
-      "-c"
-      ''
-        set -eu
+builtins.derivation {
+  name = "coreutils-5.0";
+  inherit system;
+  builder = "${bash}/bin/bash";
+  args = [
+    "-c"
+    ''
+      set -eu
 
-        export PATH="${
-          builtins.concatStringsSep ":" (
-            builtins.map (p: "${p}/bin") [
-              gcc
-              binutils
-              gnumake
-              coreutils
-              bash
-              sed
-              grep
-              patch
-              diffutils
-              gawk
-              tar
-            ]
-          )
-        }"
-        export CONFIG_SHELL="${bash}/bin/bash"
-        export SHELL="${bash}/bin/bash"
+      export PATH="${
+        builtins.concatStringsSep ":" (
+          builtins.map (p: "${p}/bin") [
+            gcc
+            binutils
+            gnumake
+            coreutils
+            bash
+            sed
+            grep
+            patch
+            diffutils
+            gawk
+            tar
+          ]
+        )
+      }"
+      export CONFIG_SHELL="${bash}/bin/bash"
+      export SHELL="${bash}/bin/bash"
 
-        # ── Set up gawk wrapper (bypass TCC double-in-struct bug) ─────────
-        mkdir -p $TMPDIR/wrappers
-        {
-          echo "#!${bash}/bin/bash"
-          cat ${lib.awkWrapper}
-        } > $TMPDIR/wrappers/gawk
-        sed -i "s|GAWK_REAL_PATH|${gawk}/bin/gawk|g" $TMPDIR/wrappers/gawk
-        chmod +x $TMPDIR/wrappers/gawk
-        ln -s gawk $TMPDIR/wrappers/awk
+      # ── Set up gawk wrapper (bypass TCC double-in-struct bug) ─────────
+      mkdir -p $TMPDIR/wrappers
+      {
+        echo "#!${bash}/bin/bash"
+        cat ${lib.awkWrapper}
+      } > $TMPDIR/wrappers/gawk
+      sed -i "s|GAWK_REAL_PATH|${gawk}/bin/gawk|g" $TMPDIR/wrappers/gawk
+      chmod +x $TMPDIR/wrappers/gawk
+      ln -s gawk $TMPDIR/wrappers/awk
 
-        # Dummy makeinfo (not available in bootstrap, but make install tries to run it for docs)
-        printf '#!${bash}/bin/bash\nexit 0\n' > $TMPDIR/wrappers/makeinfo
-        chmod +x $TMPDIR/wrappers/makeinfo
+      # Dummy makeinfo (not available in bootstrap, but make install tries to run it for docs)
+      printf '#!${bash}/bin/bash\nexit 0\n' > $TMPDIR/wrappers/makeinfo
+      chmod +x $TMPDIR/wrappers/makeinfo
 
-        export PATH="$TMPDIR/wrappers:$PATH"
+      export PATH="$TMPDIR/wrappers:$PATH"
 
-        # Copy source to writable directory
-        cp -r ${src} $TMPDIR/src
-        chmod -R u+w $TMPDIR/src
-        cd $TMPDIR/src
+      # Copy source to writable directory
+      cp -r ${src} $TMPDIR/src
+      chmod -R u+w $TMPDIR/src
+      cd $TMPDIR/src
 
-        # Bypass automake sanity check (coreutils-tcc's ls -t is broken)
-        ${bash}/bin/bash ${lib.bypassSanityCheck} configure
+      # Bypass automake sanity check (coreutils-tcc's ls -t is broken)
+      ${bash}/bin/bash ${lib.bypassSanityCheck} configure
 
-        # ── Patch configure: replace broken sed pipeline ──────────────────
-        REPLACEMENT='$CONFIG_SHELL ${lib.fixSubsScript} "$ac_delim" <conf$$subs.awk >>$CONFIG_STATUS || ac_write_fail=1'
+      # ── Patch configure: replace broken sed pipeline ──────────────────
+      REPLACEMENT='$CONFIG_SHELL ${lib.fixSubsScript} "$ac_delim" <conf$$subs.awk >>$CONFIG_STATUS || ac_write_fail=1'
 
-        $CONFIG_SHELL ${lib.patchConfigureScript} "$REPLACEMENT" \
-          < configure > configure.patched
-        mv configure.patched configure
-        chmod +x configure
+      $CONFIG_SHELL ${lib.patchConfigureScript} "$REPLACEMENT" \
+        < configure > configure.patched
+      mv configure.patched configure
+      chmod +x configure
 
-        CC="${gcc}/bin/gcc" \
-        CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
-        LDFLAGS="-static -L${glibc}/lib" \
-        LIBS="-Wl,--start-group -lc -lnss_files -lnss_dns -lresolv -Wl,--end-group" \
-        CONFIG_SHELL="${bash}/bin/bash" \
-        ./configure \
-          --prefix=$out \
-          --build=i686-unknown-linux-gnu \
-          --host=i686-unknown-linux-gnu \
-          --disable-nls \
-          --disable-dependency-tracking
+      CC="${gcc}/bin/gcc" \
+      CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
+      LDFLAGS="-static -L${glibc}/lib" \
+      LIBS="-Wl,--start-group -lc -lnss_files -lnss_dns -lresolv -Wl,--end-group" \
+      CONFIG_SHELL="${bash}/bin/bash" \
+      ./configure \
+        --prefix=$out \
+        --build=i686-unknown-linux-gnu \
+        --host=i686-unknown-linux-gnu \
+        --disable-nls \
+        --disable-dependency-tracking
 
-        make
-        make install
+      make
+      make install
 
-        echo "GNU Coreutils 5.0 built successfully"
-      ''
-    ];
-  }
-  // {
-    meta = {
-      description = "GNU core utilities (ls, cat, cp, mv, etc.), version 5.0";
-      homepage = "https://www.gnu.org/software/coreutils/";
-      license = "GPL-2.0-or-later";
-      build = {
-        os = "linux";
-        cpu = ["x86_64" "i686"];
-      };
-      execute = {
-        os = "linux";
-        cpu = "i686";
-      };
+      echo "GNU Coreutils 5.0 built successfully"
+    ''
+  ];
+}
+// {
+  meta = {
+    description = "GNU core utilities (ls, cat, cp, mv, etc.), version 5.0";
+    homepage = "https://www.gnu.org/software/coreutils/";
+    license = "GPL-2.0-or-later";
+    build = {
+      os = "linux";
+      cpu = [
+        "x86_64"
+        "i686"
+      ];
     };
-  }
+    execute = {
+      os = "linux";
+      cpu = "i686";
+    };
+  };
+}

@@ -7,7 +7,8 @@
 {
   craneLib,
   pkgs,
-}: let
+}:
+let
   src = craneLib.cleanCargoSource ../../../cli;
   commonArgs = {
     inherit src;
@@ -23,20 +24,20 @@
     pkgs.nixfmt
   ];
 in
-  craneLib.buildPackage (
-    commonArgs
-    // {
-      inherit cargoArtifacts;
+craneLib.buildPackage (
+  commonArgs
+  // {
+    inherit cargoArtifacts;
 
-      nativeBuildInputs = [pkgs.makeWrapper];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
 
-      postInstall = ''
-        wrapProgram $out/bin/aos \
-          --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
-        ln -s aos $out/bin/apm
-      '';
+    postInstall = ''
+      wrapProgram $out/bin/aos \
+        --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
+      ln -s aos $out/bin/apm
+    '';
 
-      meta.description = "AOS build tool";
-      meta.mainProgram = "aos";
-    }
-  )
+    meta.description = "AOS build tool";
+    meta.mainProgram = "aos";
+  }
+)

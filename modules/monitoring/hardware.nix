@@ -13,7 +13,8 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.monitoring.hardware;
 
   # Watchdog configuration for systemd's system.conf.d drop-in.
@@ -47,7 +48,8 @@
     # Check for thermal throttling events in dmesg.
     # Logs a warning if CPU throttling is detected.
   '';
-in {
+in
+{
   options.aos.monitoring.hardware = {
     ## Enable hardware health monitoring (watchdog, SMART, thermal).
     enable = lib.mkOption {
@@ -120,8 +122,8 @@ in {
 
     systemd.services."smartd" = lib.mkIf cfg.smartd {
       description = "S.M.A.R.T. Disk Monitoring Daemon";
-      wantedBy = ["multi-user.target"];
-      after = ["local-fs.target"];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "local-fs.target" ];
       serviceConfig = {
         Type = "forking";
         ExecStart = "${pkgs.smartmontools}/sbin/smartd -c /etc/smartd.conf";
@@ -150,7 +152,7 @@ in {
 
     systemd.services."thermal-check.timer" = lib.mkIf cfg.thermalThrottling {
       description = "Periodic Thermal Throttling Check";
-      wantedBy = ["timers.target"];
+      wantedBy = [ "timers.target" ];
       serviceConfig = {
         OnBootSec = "5min";
         OnUnitActiveSec = "10min";
@@ -159,6 +161,6 @@ in {
     };
 
     # Install smartmontools if smartd is enabled.
-    environment.systemPackages = lib.mkIf cfg.smartd [pkgs.smartmontools];
+    environment.systemPackages = lib.mkIf cfg.smartd [ pkgs.smartmontools ];
   };
 }

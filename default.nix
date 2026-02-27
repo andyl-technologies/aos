@@ -21,13 +21,11 @@
 {
   system ? builtins.currentSystem,
   crossSystem ? null,
-}: let
-  lib = import ./lib {inherit system;};
+}:
+let
+  lib = import ./lib { inherit system; };
   buildPlatform = lib.platform;
-  hostPlatform =
-    if crossSystem != null
-    then lib.mkPlatform crossSystem
-    else buildPlatform;
+  hostPlatform = if crossSystem != null then lib.mkPlatform crossSystem else buildPlatform;
 
   # Self-contained stdenv: hex0 bootstrap → toolchain ladder → production stdenv.
   # stdenv.toolchains.<name> gives alternate stdenvs with the same interface.
@@ -38,7 +36,7 @@
 
   # All packages are built hermetically from source using only stdenv.
   # No nixpkgs anywhere.
-  pkgs = import ./pkgs {inherit lib stdenv;};
+  pkgs = import ./pkgs { inherit lib stdenv; };
 
   # All test tools are AOS packages built from source.
   testTools = {
@@ -47,10 +45,11 @@
 
   # Evaluate the single system definition.
   aosSystem = lib.evalModules {
-    modules = [./system.nix];
+    modules = [ ./system.nix ];
     inherit pkgs lib;
   };
-in {
+in
+{
   inherit pkgs lib stdenv;
 
   system = aosSystem;

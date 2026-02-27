@@ -4,108 +4,97 @@
   # No external inputs. All packages — including the toolchain, dev tools,
   # and test infrastructure (QEMU, etc.) — are built from source using only
   # the bootstrap tools and the AOS package set defined in this repository.
-  inputs = {};
+  inputs = { };
 
-  outputs = _: let
-    systems = [
-      "x86_64-linux"
-      "aarch64-linux"
-      "x86_64-darwin"
-      "aarch64-darwin"
-    ];
+  outputs =
+    _:
+    let
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
 
-    isDarwin = s: builtins.elem s ["x86_64-darwin" "aarch64-darwin"];
-    linuxSystems = builtins.filter (s: !isDarwin s) systems;
+      genAttrs =
+        names: f:
+        builtins.listToAttrs (
+          map (n: {
+            name = n;
+            value = f n;
+          }) names
+        );
 
-    genAttrs = names: f:
-      builtins.listToAttrs (
-        map (n: {
-          name = n;
-          value = f n;
-        })
-        names
-      );
+      prefixAttrs =
+        prefix: attrs:
+        builtins.listToAttrs (
+          builtins.map (name: {
+            name = "${prefix}-${name}";
+            value = attrs.${name};
+          }) (builtins.attrNames attrs)
+        );
 
-    prefixAttrs = prefix: attrs:
-      builtins.listToAttrs (
-        builtins.map (name: {
-          name = "${prefix}-${name}";
-          value = attrs.${name};
-        }) (builtins.attrNames attrs)
-      );
-
-    aosFor = system: let
-      lib = import ./lib {inherit system;};
-      buildPlatform = lib.platform;
-      stdenv = import ./stdenv {
-        inherit buildPlatform;
-        hostPlatform = buildPlatform;
-        targetPlatform = buildPlatform;
-      };
-      pkgs = import ./pkgs {inherit lib stdenv;};
-    in {
-      inherit lib pkgs;
-    };
-  in {
-    packages = genAttrs systems (
-      system:
-        if isDarwin system
-        then let
-          darwinAos = import ./dev/darwin/aos.nix {inherit system;};
-        in {
-          aos = darwinAos;
-          default = darwinAos;
-        }
-        else let
+      aosFor =
+        system:
+        let
+          lib = import ./lib { inherit system; };
+          buildPlatform = lib.platform;
+          stdenv = import ./stdenv {
+            inherit buildPlatform;
+            hostPlatform = buildPlatform;
+            targetPlatform = buildPlatform;
+          };
+          pkgs = import ./pkgs { inherit lib stdenv; };
+        in
+        {
+          inherit lib pkgs;
+        };
+    in
+    {
+      packages = genAttrs systems (
+        system:
+        let
           env = aosFor system;
-        in {
+        in
+        {
           aos = env.pkgs.aos;
           default = env.pkgs.aos;
         }
-    );
+      );
 
-    devShells = genAttrs systems (
-      system:
-        if isDarwin system
-        then let
-          darwinAos = import ./dev/darwin/aos.nix {inherit system;};
-        in {
-          default = import ./dev/shell.nix {
-            inherit system;
-            aos = darwinAos;
-          };
-        }
-        else let
+      devShells = genAttrs systems (
+        system:
+        let
           env = aosFor system;
-        in {
+        in
+        {
           default = import ./dev/shell.nix {
             inherit system;
             inherit (env.pkgs) aos just;
           };
         }
-    );
+      );
 
-    formatter = genAttrs linuxSystems (system: (aosFor system).pkgs.alejandra);
+      formatter = genAttrs systems (system: (aosFor system).pkgs.alejandra);
 
-    checks = genAttrs linuxSystems (
-      system: let
-        env = aosFor system;
-        testTools = {
-          qemu = env.pkgs.qemu;
-          socat = env.pkgs.socat;
-          jq = env.pkgs.jq;
-        };
-        aosSystem = env.lib.evalModules {
-          modules = [./system.nix];
-          pkgs = env.pkgs;
-          lib = env.lib;
-        };
-        allChecks = import ./lib/testing/collect.nix {
-          inherit (env) pkgs lib;
-          inherit testTools;
-          system = aosSystem;
-        };
-      in
+      checks = genAttrs systems (
+        system:
+        let
+          env = aosFor system;
+          testTools = {
+            qemu = env.pkgs.qemu;
+            socat = env.pkgs.socat;
+            jq = env.pkgs.jq;
+          };
+          aosSystem = env.lib.evalModules {
+            modules = [ ./system.nix ];
+            pkgs = env.pkgs;
+            lib = env.lib;
+          };
+          allChecks = import ./lib/testing/collect.nix {
+            inherit (env) pkgs lib;
+            inherit testTools;
+            system = aosSystem;
+          };
+        in
         {
           # CLI tool builds successfully
           aos = env.pkgs.aos;
@@ -115,7 +104,7 @@
             pname = "aos-format-check";
             version = "0";
             src = ./.;
-            buildDeps = [env.pkgs.alejandra];
+            buildDeps = [ env.pkgs.alejandra ];
             phases = [
               {
                 name = "check";
@@ -136,6 +125,6 @@
         }
         // prefixAttrs "vm" allChecks.vm
         // prefixAttrs "integration" allChecks.integration
-    );
-  };
+      );
+    };
 }

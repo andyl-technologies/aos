@@ -12,7 +12,8 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.security.fail2ban;
 
   # Format the list of ignored IPs for the jail.local config.
@@ -21,15 +22,16 @@
   # Format individual jail sections from the jails attrset.
   jailSections = builtins.concatStringsSep "\n" (
     lib.mapAttrsToList (
-      name: jailCfg: let
+      name: jailCfg:
+      let
         # Convert each jail attribute to key = value lines.
         jailLines = lib.mapAttrsToList (key: value: "${key} = ${toString value}") jailCfg;
-      in ''
+      in
+      ''
         [${name}]
         ${builtins.concatStringsSep "\n" jailLines}
       ''
-    )
-    cfg.jails
+    ) cfg.jails
   );
 
   # Full jail.local configuration file.
@@ -45,7 +47,8 @@
 
     ${jailSections}
   '';
-in {
+in
+{
   options.aos.security.fail2ban = {
     ## Enable the fail2ban intrusion prevention system.
     ##
@@ -99,7 +102,7 @@ in {
     ## IP addresses or CIDR ranges that are never banned.
     ignoreIPs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = ["127.0.0.1/8"];
+      default = [ "127.0.0.1/8" ];
       description = ''
         List of IP addresses or CIDR ranges that are never banned.
         The loopback range should always be included to prevent
@@ -130,7 +133,7 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [pkgs.fail2ban];
+    environment.systemPackages = [ pkgs.fail2ban ];
 
     # /etc/fail2ban/jail.local — jail configuration.
     # Fail2ban reads this file to determine which services to monitor
@@ -143,7 +146,7 @@ in {
     # Monitors log files and bans IPs that exceed the failure threshold.
     systemd.services."fail2ban" = {
       description = "Fail2ban Intrusion Prevention";
-      wantedBy = ["multi-user.target"];
+      wantedBy = [ "multi-user.target" ];
       after = [
         "network.target"
         "nftables.service"

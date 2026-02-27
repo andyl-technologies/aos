@@ -19,7 +19,8 @@
   freetype,
   xorg-stubs,
   openjdk-8,
-}: let
+}:
+let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
     inherit
       fetchurl
@@ -43,10 +44,10 @@
       ;
   };
 in
-  mkOpenJDKBootstrap {
-    major = 9;
-    version = "9.0.4";
-    build = "12";
-    srcHash = "sha256-Y1hwtR++gwC9zF6xrFEArtBnVvHSES0+g6KYuJ3OPtI=";
-    prevJdk = openjdk-8;
-  }
+mkOpenJDKBootstrap {
+  major = 9;
+  version = "9.0.4";
+  build = "12";
+  srcHash = "sha256-Y1hwtR++gwC9zF6xrFEArtBnVvHSES0+g6KYuJ3OPtI=";
+  prevJdk = openjdk-8;
+}

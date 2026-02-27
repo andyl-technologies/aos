@@ -10,57 +10,64 @@
   hostPlatform,
   this,
   ...
-}: let
+}:
+let
   src = builtins.fetchTarball {
     url = "https://ftp.gnu.org/gnu/gawk/gawk-3.1.3.tar.bz2";
     sha256 = "1yhi1nzpwl206jxfm3jxyk377bmyj9lkhiyiwphfmcrg1fyzzrlz";
   };
 in
-  builtins.derivation {
-    name = "gawk-3.1.3";
-    system = buildPlatform.system;
-    builder = "${prev.bash}/bin/bash";
-    args = [
-      "-c"
-      ''
-        set -eu
-        export PATH="${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${this.tar}/bin:${this.gzip}/bin:${prev.patch}/bin:${prev.bash}/bin"
-        export CONFIG_SHELL="${prev.bash}/bin/bash"
+builtins.derivation {
+  name = "gawk-3.1.3";
+  system = buildPlatform.system;
+  builder = "${prev.bash}/bin/bash";
+  args = [
+    "-c"
+    ''
+      set -eu
+      export PATH="${this.gcc}/bin:${this.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${this.tar}/bin:${this.gzip}/bin:${prev.patch}/bin:${prev.bash}/bin"
+      export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-        cd ${src}
+      cd ${src}
 
-        mkdir -p "$TMPDIR/build"
-        cd "$TMPDIR/build"
+      mkdir -p "$TMPDIR/build"
+      cd "$TMPDIR/build"
 
-        CC="${this.gcc}/bin/gcc" \
-        CFLAGS="-O2 -I${this.glibc}/include" \
-        LDFLAGS="-L${this.glibc}/lib -static" \
-        ${src}/configure \
-          --prefix="$out" \
-          --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
-          --disable-nls
+      CC="${this.gcc}/bin/gcc" \
+      CFLAGS="-O2 -I${this.glibc}/include" \
+      LDFLAGS="-L${this.glibc}/lib -static" \
+      ${src}/configure \
+        --prefix="$out" \
+        --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
+        --disable-nls
 
-        make -j"$(nproc)"
-        make install
+      make -j"$(nproc)"
+      make install
 
-        test -f "$out/bin/gawk" && test ! -f "$out/bin/awk" && ln -sf gawk "$out/bin/awk"
+      test -f "$out/bin/gawk" && test ! -f "$out/bin/awk" && ln -sf gawk "$out/bin/awk"
 
-        echo "GNU awk 3.1.3 installed to $out"
-      ''
-    ];
-  }
-  // {
-    meta = {
-      description = "GNU awk pattern scanning and processing language, version 3.1.3";
-      homepage = "https://www.gnu.org/software/gawk/";
-      license = "GPL-2.0-or-later";
-      build = {
-        os = "linux";
-        cpu = ["x86_64" "i686"];
-      };
-      execute = {
-        os = "linux";
-        cpu = ["x86_64" "i686"];
-      };
+      echo "GNU awk 3.1.3 installed to $out"
+    ''
+  ];
+}
+// {
+  meta = {
+    description = "GNU awk pattern scanning and processing language, version 3.1.3";
+    homepage = "https://www.gnu.org/software/gawk/";
+    license = "GPL-2.0-or-later";
+    build = {
+      os = "linux";
+      cpu = [
+        "x86_64"
+        "i686"
+      ];
     };
-  }
+    execute = {
+      os = "linux";
+      cpu = [
+        "x86_64"
+        "i686"
+      ];
+    };
+  };
+}

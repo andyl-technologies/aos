@@ -14,12 +14,14 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.boot;
 
   # Build the complete kernel command line string from the list of parameters.
   kernelCmdline = builtins.concatStringsSep " " cfg.kernelParams;
-in {
+in
+{
   options.aos.boot = {
     ## Boot loader to use (currently systemd-boot only).
     loader = lib.mkOption {

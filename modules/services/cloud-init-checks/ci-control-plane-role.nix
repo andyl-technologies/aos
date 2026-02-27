@@ -1,5 +1,5 @@
 # tests/vm/checks/ci-control-plane-role.nix — K8s control plane role via cloud-init
-{lib}:
+{ lib }:
 lib.mkCheckGroup {
   name = "ci-control-plane-role";
   description = "Cloud-init k8s-control-plane role configuration";

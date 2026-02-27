@@ -18,7 +18,8 @@
 {
   pkgs,
   lib,
-}: let
+}:
+let
   bootstrapTools = pkgs.bootstrapTools;
   bashPkg = pkgs.bash;
   coreutilsPkg = pkgs.coreutils;
@@ -31,92 +32,91 @@
   # Uses exportReferencesGraph to discover the Nix store closure, then
   # creates an ext4 image populated via mkfs.ext4 -d (no mount needed).
 
-  mkFirecrackerRootfs = {
-    pname,
-    testScript,
-    rootfsDeps,
-  }: let
-    allDeps =
-      rootfsDeps
-      ++ [
+  mkFirecrackerRootfs =
+    {
+      pname,
+      testScript,
+      rootfsDeps,
+    }:
+    let
+      allDeps = rootfsDeps ++ [
         bashPkg
         coreutilsPkg
         utilLinuxPkg
         bootstrapTools
       ];
 
-    # Build the exportReferencesGraph pairs list: ["name1" drv1 "name2" drv2 ...]
-    graphPairs =
-      lib.imap (i: dep: [
+      # Build the exportReferencesGraph pairs list: ["name1" drv1 "name2" drv2 ...]
+      graphPairs = lib.imap (i: dep: [
         "closure-${builtins.toString i}"
         dep
-      ])
-      allDeps;
-    flatGraphPairs = builtins.concatLists graphPairs;
+      ]) allDeps;
+      flatGraphPairs = builtins.concatLists graphPairs;
 
-    closureFileNames = builtins.genList (i: "closure-${builtins.toString i}") (builtins.length allDeps);
+      closureFileNames = builtins.genList (i: "closure-${builtins.toString i}") (builtins.length allDeps);
 
-    catClosures = builtins.concatStringsSep " " closureFileNames;
+      catClosures = builtins.concatStringsSep " " closureFileNames;
 
-    # Build PATH entries for all deps — include both bin/ and sbin/
-    depPaths = builtins.concatStringsSep ":" (
-      builtins.concatMap (
-        dep: let
-          base = builtins.toString dep;
-        in [
-          "${base}/bin"
-          "${base}/sbin"
-        ]
-      )
-      allDeps
-    );
+      # Build PATH entries for all deps — include both bin/ and sbin/
+      depPaths = builtins.concatStringsSep ":" (
+        builtins.concatMap (
+          dep:
+          let
+            base = builtins.toString dep;
+          in
+          [
+            "${base}/bin"
+            "${base}/sbin"
+          ]
+        ) allDeps
+      );
 
-    # Bootstrap toolchain paths for compilation inside the VM
-    btBase = builtins.toString bootstrapTools;
-    dynamicLinker = "${btBase}/lib/${lib.platform.dynamicLinker}";
+      # Bootstrap toolchain paths for compilation inside the VM
+      btBase = builtins.toString bootstrapTools;
+      dynamicLinker = "${btBase}/lib/${lib.platform.dynamicLinker}";
 
-    initScript = ''
-      #!/bin/sh
-      # /init — PID 1 for headless Firecracker microVM test
-      # Mounts essential filesystems, runs the test, reports result via serial.
+      initScript = ''
+        #!/bin/sh
+        # /init — PID 1 for headless Firecracker microVM test
+        # Mounts essential filesystems, runs the test, reports result via serial.
 
-      # PATH must be set BEFORE mount calls — kernel runs init with empty env
-      # /usr/local/bin first: contains gcc/g++ wrappers that must shadow raw bootstrap tools
-      export PATH="/usr/local/bin:${depPaths}:/bin:/usr/bin:/sbin:/usr/sbin"
-      export HOME=/tmp
+        # PATH must be set BEFORE mount calls — kernel runs init with empty env
+        # /usr/local/bin first: contains gcc/g++ wrappers that must shadow raw bootstrap tools
+        export PATH="/usr/local/bin:${depPaths}:/bin:/usr/bin:/sbin:/usr/sbin"
+        export HOME=/tmp
 
-      # Bootstrap gcc needs explicit include/library paths (no ccWrapper in VM)
-      export C_INCLUDE_PATH="${btBase}/include-glibc"
-      export LIBRARY_PATH="${btBase}/lib"
-      export LD_LIBRARY_PATH="${btBase}/lib"
+        # Bootstrap gcc needs explicit include/library paths (no ccWrapper in VM)
+        export C_INCLUDE_PATH="${btBase}/include-glibc"
+        export LIBRARY_PATH="${btBase}/lib"
+        export LD_LIBRARY_PATH="${btBase}/lib"
 
-      mount -t proc proc /proc
-      mount -t sysfs sysfs /sys
-      mount -t devtmpfs devtmpfs /dev
-      mount -t tmpfs tmpfs /tmp
-      mount -t tmpfs tmpfs /run
+        mount -t proc proc /proc
+        mount -t sysfs sysfs /sys
+        mount -t devtmpfs devtmpfs /dev
+        mount -t tmpfs tmpfs /tmp
+        mount -t tmpfs tmpfs /run
 
-      # Run the test script; capture exit code
-      test_result=0
-      (
-        set -e
-        ${testScript}
-      ) || test_result=1
+        # Run the test script; capture exit code
+        test_result=0
+        (
+          set -e
+          ${testScript}
+        ) || test_result=1
 
-      if [ "$test_result" -eq 0 ]; then
-        echo 'TEST_RESULT:PASS'
-      else
-        echo 'TEST_RESULT:FAIL'
-      fi
+        if [ "$test_result" -eq 0 ]; then
+          echo 'TEST_RESULT:PASS'
+        else
+          echo 'TEST_RESULT:FAIL'
+        fi
 
-      # Allow serial UART to drain before hard reboot
-      sleep 0.2
+        # Allow serial UART to drain before hard reboot
+        sleep 0.2
 
-      # Trigger clean Firecracker exit via SysRq reboot
-      # (poweroff hangs Firecracker; reboot -f needs util-linux/systemd)
-      echo b > /proc/sysrq-trigger
-    '';
-  in
+        # Trigger clean Firecracker exit via SysRq reboot
+        # (poweroff hangs Firecracker; reboot -f needs util-linux/systemd)
+        echo b > /proc/sysrq-trigger
+      '';
+    in
     pkgs.mkDerivation {
       pname = "fc-rootfs-${pname}";
       version = "0";
@@ -246,26 +246,25 @@
 
                         # Symlink binaries from all rootfsDeps
                         ${builtins.concatStringsSep "\n" (
-              builtins.map (dep: ''
-                if [ -d "${builtins.toString dep}/bin" ]; then
-                  for bin in "${builtins.toString dep}/bin/"*; do
-                    name=$(basename "$bin")
-                    if [ ! -e "rootfs/usr/bin/$name" ]; then
-                      ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
-                    fi
-                  done
-                fi
-                if [ -d "${builtins.toString dep}/sbin" ]; then
-                  for bin in "${builtins.toString dep}/sbin/"*; do
-                    name=$(basename "$bin")
-                    if [ ! -e "rootfs/usr/sbin/$name" ]; then
-                      ln -sfn "$bin" "rootfs/usr/sbin/$name" 2>/dev/null || true
-                    fi
-                  done
-                fi
-              '')
-              rootfsDeps
-            )}
+                          builtins.map (dep: ''
+                            if [ -d "${builtins.toString dep}/bin" ]; then
+                              for bin in "${builtins.toString dep}/bin/"*; do
+                                name=$(basename "$bin")
+                                if [ ! -e "rootfs/usr/bin/$name" ]; then
+                                  ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
+                                fi
+                              done
+                            fi
+                            if [ -d "${builtins.toString dep}/sbin" ]; then
+                              for bin in "${builtins.toString dep}/sbin/"*; do
+                                name=$(basename "$bin")
+                                if [ ! -e "rootfs/usr/sbin/$name" ]; then
+                                  ln -sfn "$bin" "rootfs/usr/sbin/$name" 2>/dev/null || true
+                                fi
+                              done
+                            fi
+                          '') rootfsDeps
+                        )}
 
                         # Minimal /etc files
                         echo "aos-fc-test" > rootfs/etc/hostname
@@ -305,6 +304,7 @@
         }
       ];
     };
-in {
+in
+{
   inherit mkFirecrackerRootfs;
 }

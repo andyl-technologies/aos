@@ -18,17 +18,19 @@
   lib,
   testTools,
   system,
-}: let
+}:
+let
   # VM test harness (needs QEMU etc. for system-mode tests)
-  harness = import ./. {inherit pkgs lib testTools;};
+  harness = import ./. { inherit pkgs lib testTools; };
 
   # Integration test harness (headless Firecracker, no QEMU needed)
   testing = import ./. {
     inherit pkgs lib;
-    testTools = {};
+    testTools = { };
   };
 
-  prefixAttrs = prefix: attrs:
+  prefixAttrs =
+    prefix: attrs:
     builtins.listToAttrs (
       builtins.map (name: {
         name = "${prefix}-${name}";
@@ -46,32 +48,30 @@
       inherit name;
       value = harness.mkVMTest {
         inherit name system;
-        checks = [system.config.system.checks.${name}];
+        checks = [ system.config.system.checks.${name} ];
       };
-    })
-    moduleCheckNames
+    }) moduleCheckNames
   );
 
   # ---------------------------------------------------------------------------
   # Cloud-init tests: auto-discover from system.config.system.cloudInitTests
   # ---------------------------------------------------------------------------
-  ciTests =
-    builtins.mapAttrs (
-      name: spec:
-        harness.mkVMTest {
-          inherit name system;
-          checks = [spec.checks];
-          userdata = spec.userdata;
-        }
-    )
-    system.config.system.cloudInitTests;
+  ciTests = builtins.mapAttrs (
+    name: spec:
+    harness.mkVMTest {
+      inherit name system;
+      checks = [ spec.checks ];
+      userdata = spec.userdata;
+    }
+  ) system.config.system.cloudInitTests;
 
   # ---------------------------------------------------------------------------
   # Aggregate helper: trivial derivation that depends on constituent tests
   # ---------------------------------------------------------------------------
   allVMTests = perCheckTests // ciTests;
 
-  mkAggregate = name: testNames:
+  mkAggregate =
+    name: testNames:
     pkgs.mkDerivation {
       pname = "aos-vm-aggregate-${name}";
       version = "0";
@@ -134,26 +134,29 @@
   # ---------------------------------------------------------------------------
   allCheckGroups =
     builtins.map (name: system.config.system.checks.${name}) moduleCheckNames
-    ++ builtins.map (name: system.config.system.cloudInitTests.${name}.checks) (builtins.attrNames system.config.system.cloudInitTests);
+    ++ builtins.map (name: system.config.system.cloudInitTests.${name}.checks) (
+      builtins.attrNames system.config.system.cloudInitTests
+    );
 
   # ---------------------------------------------------------------------------
   # Package integration checks (Firecracker-based, defined on packages)
   # ---------------------------------------------------------------------------
   packageChecks = builtins.foldl' (
-    acc: name: let
+    acc: name:
+    let
       pkg = pkgs.${name};
     in
-      if builtins.isAttrs pkg && pkg ? checks && builtins.isFunction pkg.checks
-      then
-        acc
-        // prefixAttrs name (
-          pkg.checks {
-            inherit testing pkgs;
-            self = pkg;
-          }
-        )
-      else acc
-  ) {} (builtins.attrNames pkgs);
+    if builtins.isAttrs pkg && pkg ? checks && builtins.isFunction pkg.checks then
+      acc
+      // prefixAttrs name (
+        pkg.checks {
+          inherit testing pkgs;
+          self = pkg;
+        }
+      )
+    else
+      acc
+  ) { } (builtins.attrNames pkgs);
 
   # ---------------------------------------------------------------------------
   # Stdenv integration check: c-pipeline
@@ -165,7 +168,7 @@
   stdenvChecks = {
     cross-cutting-c-pipeline = testing.mkVMTest {
       name = "cross-cutting-c-pipeline";
-      rootfsDeps = [pkgs.binutils];
+      rootfsDeps = [ pkgs.binutils ];
       testScript = ''
         cat > /tmp/pipeline.c << 'EOF'
         #include <stdio.h>
@@ -208,9 +211,10 @@
   # for future use when the fleet test harness supports variant resolution.
   # ---------------------------------------------------------------------------
   fleetSpecs = system.config.system.fleetTests;
-in {
-  eval = import ./eval.nix {inherit pkgs lib system;};
-  build = import ./build.nix {inherit pkgs lib;};
+in
+{
+  eval = import ./eval.nix { inherit pkgs lib system; };
+  build = import ./build.nix { inherit pkgs lib; };
   vm =
     allVMTests
     // aggregates

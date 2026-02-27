@@ -29,7 +29,8 @@
   seeds, # Output of stage0-seeds.nix (provides hex0, kaemNix, mkdir, ln)
   buildPlatform,
   ...
-}: let
+}:
+let
   system = buildPlatform.system;
   src = builtins.fetchGit {
     url = "https://github.com/oriansj/stage0-posix.git";
@@ -122,7 +123,7 @@
     name = "posix-tools";
     inherit system;
     builder = "${seeds.kaemNix}";
-    passAsFile = ["buildScript"];
+    passAsFile = [ "buildScript" ];
     # ── Build script (run by kaemNix) ──────────────────────────────────
     # kaemNix (kaem-minimal) has NO variable expansion — every path must
     # be a literal string, pre-interpolated by Nix at eval time. CWD is
@@ -219,19 +220,22 @@
     '';
   };
 in
-  posix-tools
-  // {
-    meta = {
-      description = "posix-tools: hex0 -> hex1 -> hex2 -> M0 -> M1 -> M2-Planet bootstrap chain";
-      homepage = "https://github.com/oriansj/stage0-posix";
-      license = "GPL-3.0-or-later";
-      build = {
-        os = "linux";
-        cpu = ["x86_64" "i686"];
-      };
-      execute = {
-        os = "linux";
-        cpu = "i686";
-      };
+posix-tools
+// {
+  meta = {
+    description = "posix-tools: hex0 -> hex1 -> hex2 -> M0 -> M1 -> M2-Planet bootstrap chain";
+    homepage = "https://github.com/oriansj/stage0-posix";
+    license = "GPL-3.0-or-later";
+    build = {
+      os = "linux";
+      cpu = [
+        "x86_64"
+        "i686"
+      ];
     };
-  }
+    execute = {
+      os = "linux";
+      cpu = "i686";
+    };
+  };
+}

@@ -7,78 +7,81 @@
   ninja,
   python3,
   zlib,
-}: let
+}:
+let
   version = "21.1.8";
 in
-  mkDerivation {
-    pname = "llvm";
-    inherit version;
+mkDerivation {
+  pname = "llvm";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz"
-      ];
-      hash = "sha256-RjOiNhf6MaPqUSQlhup/sdpxQOQmvWL8FkJh/gNqoUI=";
-    };
-
-    buildDeps = [
-      gnumake
-      cmake
-      ninja
-      python3
+  src = fetchurl {
+    urls = [
+      "https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz"
     ];
-    runtimeDeps = [zlib];
+    hash = "sha256-RjOiNhf6MaPqUSQlhup/sdpxQOQmvWL8FkJh/gNqoUI=";
+  };
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd llvm-project-${version}.src
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          cmake -S llvm -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$out \
-            -DLLVM_ENABLE_PROJECTS="clang;lld" \
-            -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
-            -DLLVM_LINK_LLVM_DYLIB=ON \
-            -DLLVM_INSTALL_UTILS=ON \
-            -DLLVM_ENABLE_ZLIB=ON \
-            -DLLVM_ENABLE_TERMINFO=OFF \
-            -DLLVM_ENABLE_LIBXML2=OFF \
-            -DLLVM_ENABLE_LIBEDIT=OFF \
-            -DLLVM_INCLUDE_BENCHMARKS=OFF \
-            -DLLVM_INCLUDE_EXAMPLES=OFF \
-            -DLLVM_INCLUDE_TESTS=OFF \
-            -DLLVM_INCLUDE_DOCS=OFF
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          ninja -C build -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          ninja -C build install
-        '';
-      }
-    ];
+  buildDeps = [
+    gnumake
+    cmake
+    ninja
+    python3
+  ];
+  runtimeDeps = [ zlib ];
 
-    checks = {
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd llvm-project-${version}.src
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        cmake -S llvm -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=$out \
+          -DLLVM_ENABLE_PROJECTS="clang;lld" \
+          -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
+          -DLLVM_LINK_LLVM_DYLIB=ON \
+          -DLLVM_INSTALL_UTILS=ON \
+          -DLLVM_ENABLE_ZLIB=ON \
+          -DLLVM_ENABLE_TERMINFO=OFF \
+          -DLLVM_ENABLE_LIBXML2=OFF \
+          -DLLVM_ENABLE_LIBEDIT=OFF \
+          -DLLVM_INCLUDE_BENCHMARKS=OFF \
+          -DLLVM_INCLUDE_EXAMPLES=OFF \
+          -DLLVM_INCLUDE_TESTS=OFF \
+          -DLLVM_INCLUDE_DOCS=OFF
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        ninja -C build -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        ninja -C build install
+      '';
+    }
+  ];
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       compile-c = testing.mkVMTest {
         name = "toolchain-llvm-compile-c";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           cat > /tmp/hello.c << 'EOF'
           #include <stdio.h>
@@ -106,7 +109,7 @@ in
 
       compile-cpp = testing.mkVMTest {
         name = "toolchain-llvm-compile-cpp";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           cat > /tmp/test.cpp << 'EOF'
           #include <iostream>
@@ -143,7 +146,7 @@ in
 
       libllvm = testing.mkVMTest {
         name = "toolchain-llvm-libllvm";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           LLVM="${builtins.toString self}"
 
@@ -164,7 +167,7 @@ in
 
       tools = testing.mkVMTest {
         name = "toolchain-llvm-tools";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           cat > /tmp/tiny.c << 'EOF'
           int main(void) { return 0; }
@@ -241,9 +244,9 @@ in
       };
     };
 
-    meta = {
-      description = "LLVM compiler infrastructure";
-      homepage = "https://llvm.org";
-      license = "Apache-2.0";
-    };
-  }
+  meta = {
+    description = "LLVM compiler infrastructure";
+    homepage = "https://llvm.org";
+    license = "Apache-2.0";
+  };
+}

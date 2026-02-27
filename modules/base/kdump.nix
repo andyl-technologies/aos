@@ -14,9 +14,11 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.kdump;
-in {
+in
+{
   options.aos.kdump = {
     ## Enable kdump kernel crash dump capture.
     ##
@@ -71,8 +73,8 @@ in {
     # requiring any disk I/O from the panicked system.
     systemd.services."kdump" = {
       description = "Load kdump crash kernel";
-      wantedBy = ["multi-user.target"];
-      after = ["local-fs.target"];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "local-fs.target" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -86,7 +88,7 @@ in {
     # kernel's command line) and copies /proc/vmcore to the target directory.
     systemd.services."kdump-save" = {
       description = "Save kernel crash dump";
-      after = ["local-fs.target"];
+      after = [ "local-fs.target" ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${pkgs.makedumpfile}/bin/makedumpfile -l --message-level 1 -d 31 /proc/vmcore ${cfg.target}/vmcore-$(date +%Y%m%d-%H%M%S)";
