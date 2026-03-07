@@ -1,0 +1,27 @@
+[package]
+name = "aos-cache"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aos-core = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+reqwest = { workspace = true }
+ssh2 = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+suppaftp = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+url = { workspace = true }
+zstd = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+indicatif = { workspace = true }
+console = { workspace = true }
+base64 = { workspace = true }
+regex = { workspace = true }
