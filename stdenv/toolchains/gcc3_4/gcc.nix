@@ -85,7 +85,7 @@ builtins.derivation {
       cp -r ${linuxSrc}/include/asm-generic "$out/${targetPlatform.config}/sys-include/"
       ln -sf "$out/${targetPlatform.config}/sys-include" "$out/${targetPlatform.config}/include"
 
-      make -j"$(nproc)" \
+      make -j"$NIX_BUILD_CORES" \
         BOOT_CFLAGS="-O2 -static" \
         CFLAGS_FOR_TARGET="-O2 -I${prev.glibc}/include" \
         LDFLAGS_FOR_TARGET="-L${prev.glibc}/lib -static"

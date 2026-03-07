@@ -1,15 +1,28 @@
 # stdenv/toolchains/default.nix — GCC version ladder
 #
-# Chains 7 toolchain tiers from GCC 3.4.6 (RHEL 4) through GCC 14.3.0 (RHEL 10).
+# Chains toolchain tiers from GCC 3.4.6 (RHEL 4) through GCC 14.3.0 (RHEL 10).
 # Each tier builds a complete set of tools (compiler + binutils + glibc + POSIX utils).
-# The latest tier (gcc14) is the default export; all tiers remain accessible.
 #
-# Usage:
-#   let
-#     bootstrap = import ./stdenv/bootstrap {};
-#     toolchains = import ./stdenv/toolchains { inherit bootstrap buildPlatform hostPlatform targetPlatform; };
-#   in toolchains.gcc       # → GCC 14.3.0
-#      toolchains.gcc3_4    # → entire RHEL 4 tier
+# The bootstrap chain produces i686 binaries (mescc only works on i686).
+# Standalone cross tiers handle architecture transitions:
+#   gcc3_4_cross — always: i686 → x86_64
+#   gcc4_8_cross — aarch64 targets: x86_64 → aarch64 (GCC 4.8+ has backend)
+#   gcc8_cross   — riscv64 targets: x86_64 → riscv64 (GCC 7+ has backend)
+#
+# Chain:
+#   gcc3_4 (i686) → gcc3_4_cross (i686→x86_64)
+#     → gcc4_1..gcc4_8 (x86_64)
+#     → [aarch64: gcc4_8_cross] → gcc8 (x86_64 or aarch64)
+#     → [riscv64: gcc8_cross]   → gcc11 (x86_64 or target)
+#     → gcc14 (final target)
+#
+# The latest tier is recompiled with itself as the last step to ensure
+# optimal code generation in the final output. To update: add the new
+# tier, point `latest` at it, and set its self-recompile as the return.
+#
+# Post-cross tiers run via QEMU binfmt_misc on the x86_64 builder.
+# The `system` attribute is always buildPlatform.system (x86_64-linux)
+# for Nix scheduling.
 #
 {
   bootstrap,
@@ -18,80 +31,113 @@
   targetPlatform,
 }:
 let
-  # The bootstrap tools are i686 binaries (from the source bootstrap chain).
-  # All toolchain tiers build for i686 until a cross-compilation tier is added
-  # to transition to x86_64. Uses buildPlatform.system for Nix scheduling so
-  # derivations run on the builder (x86_64 can execute i686 via compat).
-  i686Platform = {
-    system = buildPlatform.system;
-    config = "i686-unknown-linux-gnu";
-    constraints = {
-      cpu = "i686";
-      os = "linux";
-      abi = "gnu";
-    };
-    linuxArch = "i386";
-    isi686 = true;
-    isx86_64 = false;
-    isAarch64 = false;
-    is32bit = true;
-    is64bit = false;
-    isLinux = true;
-  };
+  lib = import ../../lib/platform.nix;
 
+  # Override system for Nix scheduling while preserving platform identity.
+  # Foreign-arch binaries run via QEMU binfmt_misc on the x86_64 builder.
+  mkBuildable = platform: platform // { system = buildPlatform.system; };
+
+  bootstrapPlatform = mkBuildable (lib.mkPlatform "i686-linux");
+
+  # ── Cross transition logic ────────────────────────────────────────
+  cross0Platform = lib.mkPlatform "x86_64-linux";
+
+  cross1Targets = [ "aarch64" ]; # GCC 3.4
+  needsCross1 = builtins.elem hostPlatform.constraints.cpu cross1Targets;
+  cross1Platform = if needsCross1 then mkBuildable hostPlatform else cross0Platform;
+
+  cross2Targets = [ "riscv64" ]; # GCC 8
+  needsCross2 = builtins.elem hostPlatform.constraints.cpu cross2Targets;
+  cross2Platform = if needsCross2 then mkBuildable hostPlatform else cross1Platform;
+
+  # ── gcc3_4: i686 native ───────────────────────────────────────────
   gcc3_4 = import ./gcc3_4 {
     inherit bootstrap;
-    buildPlatform = i686Platform;
-    hostPlatform = i686Platform;
-    targetPlatform = i686Platform;
+    buildPlatform = bootstrapPlatform;
+    hostPlatform = bootstrapPlatform;
+    targetPlatform = bootstrapPlatform;
   };
-  gcc4_1 = import ./gcc4_1 {
+
+  # ── gcc3_4_cross: always i686→x86_64 ──────────────────────────────
+  gcc3_4_cross = import ./gcc3_4_cross {
     prev = gcc3_4;
-    buildPlatform = i686Platform;
-    hostPlatform = i686Platform;
-    targetPlatform = i686Platform;
+    prevPlatform = bootstrapPlatform;
+    buildPlatform = bootstrapPlatform;
+    hostPlatform = cross0Platform;
+    targetPlatform = cross0Platform;
+  };
+
+  # ── gcc4_1 through gcc4_8: x86_64 native ──────────────────────────
+  gcc4_1 = import ./gcc4_1 {
+    prev = gcc3_4_cross;
+    buildPlatform = cross0Platform;
+    hostPlatform = cross0Platform;
+    targetPlatform = cross0Platform;
   };
   gcc4_4 = import ./gcc4_4 {
     prev = gcc4_1;
-    buildPlatform = i686Platform;
-    hostPlatform = i686Platform;
-    targetPlatform = i686Platform;
+    buildPlatform = cross0Platform;
+    hostPlatform = cross0Platform;
+    targetPlatform = cross0Platform;
   };
   gcc4_8 = import ./gcc4_8 {
     prev = gcc4_4;
-    buildPlatform = i686Platform;
-    hostPlatform = i686Platform;
-    targetPlatform = i686Platform;
+    buildPlatform = cross0Platform;
+    hostPlatform = cross0Platform;
+    targetPlatform = cross0Platform;
   };
-  gcc8 = import ./gcc8 {
+
+  # ── gcc4_8_cross: x86_64→aarch64 (when needed) ────────────────────
+  gcc4_8_cross = import ./gcc4_8_cross {
     prev = gcc4_8;
-    buildPlatform = i686Platform;
-    hostPlatform = i686Platform;
-    targetPlatform = i686Platform;
+    prevPlatform = cross0Platform;
+    buildPlatform = cross0Platform;
+    inherit hostPlatform targetPlatform;
   };
-  gcc11 = import ./gcc11 {
+
+  # ── gcc8: native on x86_64 or aarch64 ─────────────────────────────
+  gcc8 = import ./gcc8 {
+    prev = if needsCross1 then gcc4_8_cross else gcc4_8;
+    buildPlatform = cross1Platform;
+    hostPlatform = cross1Platform;
+    targetPlatform = cross1Platform;
+  };
+
+  # ── gcc8_cross: x86_64→riscv64 (when needed) ──────────────────────
+  gcc8_cross = import ./gcc8_cross {
     prev = gcc8;
-    buildPlatform = i686Platform;
-    hostPlatform = i686Platform;
-    targetPlatform = i686Platform;
+    prevPlatform = cross1Platform;
+    buildPlatform = cross1Platform;
+    inherit hostPlatform targetPlatform;
   };
+
+  # ── gcc11: native on final target ─────────────────────────────────
+  gcc11 = import ./gcc11 {
+    prev = if needsCross2 then gcc8_cross else gcc8;
+    buildPlatform = cross2Platform;
+    hostPlatform = cross2Platform;
+    targetPlatform = cross2Platform;
+  };
+
+  # ── gcc14: native on final target ─────────────────────────────────
   gcc14 = import ./gcc14 {
     prev = gcc11;
-    buildPlatform = i686Platform;
-    hostPlatform = i686Platform;
-    targetPlatform = i686Platform;
+    buildPlatform = mkBuildable hostPlatform;
+    hostPlatform = mkBuildable hostPlatform;
+    targetPlatform = mkBuildable targetPlatform;
   };
+
+  # ── latest: change this when adding a new GCC tier ──────────────
+  # Points to the newest tier directory. The return value recompiles
+  # it with itself for optimal output.
+  latestDir = ./gcc14;
+  latestPrev = gcc14;
+
 in
-{
-  # All toolchain tiers accessible by name
-  inherit
-    gcc3_4
-    gcc4_1
-    gcc4_4
-    gcc4_8
-    gcc8
-    gcc11
-    gcc14
-    ;
-  latest = gcc14;
+# Final stdenv: latest recompiled with itself.
+import latestDir {
+  prev = latestPrev;
+  buildPlatform = mkBuildable hostPlatform;
+  hostPlatform = mkBuildable hostPlatform;
+  targetPlatform = mkBuildable targetPlatform;
 }

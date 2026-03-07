@@ -39,7 +39,7 @@ builtins.derivation {
       ${src}/configure \
         --prefix="$out"
 
-      make -j"$(nproc)"
+      make -j"$NIX_BUILD_CORES"
       make install
 
       echo "GNU patch 2.5.4 installed to $out"

@@ -3,7 +3,6 @@
 # Usage:
 #   nix-build -A pkgs.coreutils           Build a package
 #   nix-build -A stdenv                   Build the production stdenv (GCC 14)
-#   nix-build -A stdenv.toolchains.gcc11  Build the GCC 11 stdenv
 #   nix-build -A stdenv.bootstrap.gcc     GCC 2.95.3 from hex0 chain
 #   nix-build -A system.config            Evaluate the system config
 #   nix-build -A image                    Build the bootable disk image
@@ -28,7 +27,6 @@ let
   hostPlatform = if crossSystem != null then lib.mkPlatform crossSystem else buildPlatform;
 
   # Self-contained stdenv: hex0 bootstrap → toolchain ladder → production stdenv.
-  # stdenv.toolchains.<name> gives alternate stdenvs with the same interface.
   stdenv = import ./stdenv {
     inherit buildPlatform hostPlatform;
     targetPlatform = hostPlatform;

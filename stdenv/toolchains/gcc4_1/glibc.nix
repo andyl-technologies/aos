@@ -16,6 +16,8 @@ let
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.5.tar.bz2";
     sha256 = "0khysawcx2glspp1nq2j02sszqjc06hjrpiirbw1qr2a73q5jg1w";
   };
+
+  stubsSuffix = if hostPlatform.is64bit then "64" else "32";
 in
 builtins.derivation {
   name = "glibc-2.5";
@@ -36,11 +38,38 @@ builtins.derivation {
       # glibc configure hardcodes /bin/pwd which doesn't exist in sandbox
       sed -i 's|/bin/pwd|pwd|g' configure
 
+      # vm86 is a versioned symbol (vm86@@GLIBC_2.3.4) — make-syscalls.sh only
+      # generates rules for versioned symbols when building shared libraries.
+      # With --disable-shared, the rule is skipped but the i386 Makefile still
+      # lists vm86 in sysdep_routines, causing "No rule to make target vm86.o".
+      sed -i '/^sysdep_routines/s/ vm86//' sysdeps/unix/sysv/linux/i386/Makefile 2>/dev/null || true
+
       # Out-of-tree build (required by glibc)
       mkdir -p "$TMPDIR/build"
       cd "$TMPDIR/build"
 
-      CC="${gcc}/bin/gcc" \
+      # GCC 4.1.2 produces dynamically-linked test programs by default,
+      # but there's no dynamic linker in the sandbox. Create a wrapper
+      # that adds -static only when linking (not for -c/-S/-E compilation).
+      mkdir -p "$TMPDIR/fakebin"
+      cat > "$TMPDIR/fakebin/gcc-wrap" << 'WRAPPER'
+#!/bin/sh
+linking=yes
+for arg; do
+  case "$arg" in
+    -c|-S|-E) linking=no; break ;;
+  esac
+done
+if [ "$linking" = "yes" ]; then
+  exec REAL_GCC "$@" -static
+else
+  exec REAL_GCC "$@"
+fi
+WRAPPER
+      sed -i "s|REAL_GCC|${gcc}/bin/gcc|g" "$TMPDIR/fakebin/gcc-wrap"
+      chmod +x "$TMPDIR/fakebin/gcc-wrap"
+
+      CC="$TMPDIR/fakebin/gcc-wrap" \
       AR="${binutils}/bin/ar" \
       RANLIB="${binutils}/bin/ranlib" \
       CFLAGS="-O2" \
@@ -58,8 +87,14 @@ builtins.derivation {
         libc_cv_forced_unwind=yes \
         libc_cv_c_cleanup=yes
 
-      make -j"$(nproc)"
+      make -j"$NIX_BUILD_CORES"
       make install
+
+      # Fix stubs file: static-only build generates stubs-.h (empty ABI suffix)
+      # instead of stubs-32.h. Rename so stubs.h can find it.
+      if [ -f "$out/include/gnu/stubs-.h" ] && [ ! -f "$out/include/gnu/stubs-${stubsSuffix}.h" ]; then
+        mv "$out/include/gnu/stubs-.h" "$out/include/gnu/stubs-${stubsSuffix}.h"
+      fi
 
       # Copy linux headers into glibc output for downstream use
       cp -r "${linuxHeaders}/include/linux" "$out/include/" 2>/dev/null || true

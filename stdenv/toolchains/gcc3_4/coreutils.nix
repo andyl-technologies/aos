@@ -41,7 +41,7 @@ builtins.derivation {
         --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
         --disable-nls
 
-      make -j"$(nproc)"
+      make -j"$NIX_BUILD_CORES"
       make install
 
       echo "Coreutils 5.2.1 installed to $out"

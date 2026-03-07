@@ -25,8 +25,35 @@ builtins.derivation {
       set -eu
       export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
 
+      # GCC 14 defaults to PIE, but Scrt1.o isn't in the specs dir.
+      # Wrap gcc to disable PIE for the kernel host tools (fixdep etc.)
+      mkdir -p "$TMPDIR/fakebin"
+      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -no-pie -L${prev.glibc}/lib "$@"\n' > "$TMPDIR/fakebin/gcc"
+      chmod +x "$TMPDIR/fakebin/gcc"
+
+      # Linux 5.3+ uses rsync for headers_install. Provide a minimal replacement.
+      cat > "$TMPDIR/fakebin/rsync" << 'RSYNC_EOF'
+#!/bin/sh
+# Minimal rsync replacement for kernel headers_install.
+# Handles: rsync -mrl --include='*.h' --exclude='*' src/ dst/
+src="" dst=""
+for arg; do
+  case "$arg" in -*) ;; *) if [ -z "$src" ]; then src="$arg"; else dst="$arg"; fi ;; esac
+done
+if [ -d "$src" ]; then
+  cd "$src"
+  find . -name '*.h' | while read f; do
+    d="$(dirname "$f")"
+    mkdir -p "$dst/$d"
+    cp "$f" "$dst/$d/"
+  done
+fi
+RSYNC_EOF
+      chmod +x "$TMPDIR/fakebin/rsync"
+      export PATH="$TMPDIR/fakebin:$PATH"
+
       cd "$TMPDIR"
-      cp -r ${src} linux-6.12
+      mkdir linux-6.12 && (cd ${src} && ${prev.tar}/bin/tar cf - .) | (cd linux-6.12 && ${prev.tar}/bin/tar xf -)
       cd linux-6.12
       chmod -R u+w .
 

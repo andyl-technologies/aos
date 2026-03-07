@@ -42,7 +42,7 @@ builtins.derivation {
         --without-bash-malloc \
         --disable-nls
 
-      make -j"$(nproc)"
+      make -j"$NIX_BUILD_CORES"
       make install
 
       test -f "$out/bin/bash" && test ! -f "$out/bin/sh" && ln -sf bash "$out/bin/sh"

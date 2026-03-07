@@ -8,8 +8,8 @@
 let
   version = "0.1.0";
   src = builtins.path {
-    path = ../../cli;
-    name = "aos-cli-src";
+    path = ../../crates;
+    name = "aos-crates-src";
     filter =
       path: type:
       let
@@ -22,9 +22,11 @@ mkCargoPackage {
   pname = "aos";
   inherit version src;
 
+  cargoFlags = "-p aos";
+
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-gMnRobrTtGEeOlR/ewCeeqE0zXuAJcxkl/HTaMT3jx4=";
+    hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
   };
 
   doCheck = false;

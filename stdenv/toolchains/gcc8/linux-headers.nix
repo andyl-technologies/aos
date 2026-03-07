@@ -26,7 +26,7 @@ builtins.derivation {
       export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
 
       cd "$TMPDIR"
-      cp -r ${src} linux-4.18
+      mkdir linux-4.18 && (cd ${src} && ${prev.tar}/bin/tar cf - .) | (cd linux-4.18 && ${prev.tar}/bin/tar xf -)
       cd linux-4.18
       chmod -R u+w .
 

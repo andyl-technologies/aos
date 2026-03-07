@@ -40,6 +40,9 @@ trivial
     canBuildOn
     platformIsCompatible
     constraintsCompatible
+    executionTargets
+    resolveTarget
+    mkPlatformFromConstraints
     ;
   platform = platformMod.mkPlatform system;
   inherit (modules)

@@ -5,6 +5,10 @@
 {
   prev,
   gcc,
+  m4,
+  flex,
+  bison,
+  texinfo,
   buildPlatform,
   hostPlatform,
 }:
@@ -22,10 +26,13 @@ builtins.derivation {
     "-c"
     ''
       set -eu
-      export PATH="${prev.coreutils}/bin:${gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
+      export PATH="${prev.coreutils}/bin:${gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin:${m4}/bin:${flex}/bin:${bison}/bin:${texinfo}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
+
+      # Create helper directories up front
+      mkdir -p "$TMPDIR/static-lib" "$TMPDIR/fakebin"
+
       # Create static-only lib directory — avoids picking up .so files.
-      mkdir -p "$TMPDIR/static-lib"
       for f in "${prev.glibc}/lib/"*.a "${prev.glibc}/lib/"*.o; do
         test -f "$f" && ln -sf "$f" "$TMPDIR/static-lib/"
       done
@@ -61,18 +68,12 @@ builtins.derivation {
         test -f "$f" && touch "$f"
       done
 
-      # Dummy makeinfo that creates empty output files to avoid doc build failures.
-      # Must parse -o flag to create the expected output file.
-      mkdir -p "$TMPDIR/fakebin"
-      printf '#!/bin/sh\nfor a; do case "$prev" in -o) touch "$a";; esac; prev="$a"; done\nexit 0\n' \
-        > "$TMPDIR/fakebin/makeinfo"
-      chmod +x "$TMPDIR/fakebin/makeinfo"
       export PATH="$TMPDIR/fakebin:$PATH"
 
       mkdir -p "$TMPDIR/build"
       cd "$TMPDIR/build"
 
-      MAKEINFO="$TMPDIR/fakebin/makeinfo" \
+      MAKEINFO="${texinfo}/bin/makeinfo" \
       "$TMPDIR/binutils-2.17/configure" \
         --prefix="$out" \
         --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
@@ -81,8 +82,8 @@ builtins.derivation {
         --with-sysroot=/ \
         --program-transform-name=
 
-      make -j"$(nproc)" MAKEINFO="$TMPDIR/fakebin/makeinfo"
-      make install MAKEINFO="$TMPDIR/fakebin/makeinfo"
+      make -j"$NIX_BUILD_CORES" MAKEINFO="${texinfo}/bin/makeinfo"
+      make install MAKEINFO="${texinfo}/bin/makeinfo"
 
       echo "binutils 2.17 installed to $out"
     ''

@@ -3,6 +3,11 @@
 # Built with THIS tier's GCC 11.5.0 + binutils 2.35 + linux-headers 5.14.
 # glibc 2.34 requires out-of-tree build.
 #
+# NOTE: We build with shared libraries enabled (default) because glibc 2.34+
+# unconditionally includes generated files (libc-modules.h, abi-versions.h,
+# first-versions.h, etc.) that are only created during shared builds.
+# The --disable-shared path is not viable for modern glibc.
+#
 {
   prev,
   gcc,
@@ -25,11 +30,12 @@ builtins.derivation {
     "-c"
     ''
       set -eu
-      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
+      export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin:${prev.bison}/bin:${prev.m4}/bin:${prev.python3}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
-      cp -r ${src} glibc-2.34
+      mkdir glibc-2.34 && (cd ${src} && ${prev.tar}/bin/tar cf - .) | (cd glibc-2.34 && ${prev.tar}/bin/tar xf -)
       cd glibc-2.34
       chmod -R u+w .
 
@@ -46,18 +52,18 @@ builtins.derivation {
         --build=${buildPlatform.config} \
         --host=${hostPlatform.config} \
         --with-headers="${linuxHeaders}/include" \
-        --disable-shared \
         --disable-profile \
         --disable-nscd \
         --disable-timezone-tools \
+        --disable-werror \
         --enable-static-nss \
         --without-gd \
         --without-selinux \
         libc_cv_forced_unwind=yes \
         libc_cv_c_cleanup=yes
 
-      make -j"$(nproc)"
-      make install
+      make -j"$NIX_BUILD_CORES" build-programs=no AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+      make install build-programs=no AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
 
       # Copy linux headers into glibc output for downstream use
       cp -r "${linuxHeaders}/include/linux" "$out/include/" 2>/dev/null || true
