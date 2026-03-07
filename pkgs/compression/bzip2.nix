@@ -36,7 +36,7 @@ mkDerivation {
         make -j$NIX_BUILD_CORES \
           CC=$CC \
           CFLAGS="$CFLAGS -fPIC -O2 -D_FILE_OFFSET_BITS=64" \
-          LDFLAGS="$LDFLAGS"
+          LDFLAGS="$LDFLAGS -no-pie"
         make -f Makefile-libbz2_so \
           CC=$CC \
           CFLAGS="$CFLAGS -fPIC -O2 -D_FILE_OFFSET_BITS=64" \

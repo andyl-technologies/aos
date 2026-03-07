@@ -64,6 +64,8 @@ let
         tc.sed
         tc.tar
         tc.gzip
+        tc.xz
+        tc.bzip2
         tc.diffutils
         tc.patch
         tc.bash
@@ -114,6 +116,7 @@ let
             AR = "${ccWrapper}/bin/ar";
             RANLIB = "${ccWrapper}/bin/ranlib";
             STRIP = "${ccWrapper}/bin/strip";
+            CONFIG_SHELL = shellPath;
           };
         in
         lib.mkDerivation effectiveArgs;

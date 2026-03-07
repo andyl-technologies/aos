@@ -48,14 +48,6 @@ mkDerivation {
         cp -a bin/* $out/bin/
         cp -a src/* $out/src/
         cp -a pkg/* $out/pkg/
-
-        # Patch ELF binaries
-        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
-        for f in $out/bin/* $out/pkg/tool/*/*; do
-          if [ -f "$f" ] && [ ! -L "$f" ]; then
-            patchelf --set-interpreter "$INTERP" "$f" 2>/dev/null || true
-          fi
-        done
       '';
     }
   ];
