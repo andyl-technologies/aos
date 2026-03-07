@@ -7,6 +7,13 @@
   gcc,
   binutils,
   glibc,
+  m4,
+  flex,
+  bison,
+  autoconf,
+  automake,
+  texinfo,
+  help2man,
   buildPlatform,
   hostPlatform,
 }:
@@ -42,7 +49,8 @@ builtins.derivation {
     "-c"
     ''
       set -eu
-      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.patch}/bin"
+      export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO="${texinfo}/bin/makeinfo"
+      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.patch}/bin:${m4}/bin:${flex}/bin:${bison}/bin:${autoconf}/bin:${automake}/bin:${texinfo}/bin:${help2man}/bin"
 
       cd "$TMPDIR"
       tar xjf ${tar-src}
@@ -53,21 +61,30 @@ builtins.derivation {
       find . -name configure -exec chmod +x {} + 2>/dev/null || true
       find . -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
       chmod +x install-sh missing mkinstalldirs build-aux/install-sh 2>/dev/null || true
-      find . -type f \( -name '*.c' -o -name '*.h' \) -exec touch {} + 2>/dev/null || true
+      # Use fixed timestamps to prevent regeneration
+      find . -type f -exec touch -t 200001010000.00 {} + 2>/dev/null || true
+      find . -type f \( -name '*.c' -o -name '*.h' \) -exec touch -t 200001010030.00 {} + 2>/dev/null || true
+      find . \( -name 'configure' -o -name 'Makefile.in' -o -name 'aclocal.m4' -o -name 'config.h.in' \) -exec touch -t 200001010100.00 {} + 2>/dev/null || true
+      # Touch pre-generated man page so make doesn't try to rebuild it
+      find . \( -name '*.1' -o -name '*.info' \) -exec touch -t 200001010200.00 {} + 2>/dev/null || true
+
+      # Fix gnulib gets() warning — glibc 2.17 removed gets() declaration
+      ${prev.sed}/bin/sed -i '/_GL_WARN_ON_USE (gets,/d' gnu/stdio.in.h 2>/dev/null || true
 
       mkdir -p "$TMPDIR/build"
       cd "$TMPDIR/build"
 
       CC="${gcc}/bin/gcc" \
-      CFLAGS="-O2 -I${glibc}/include" \
+      CFLAGS="-O2 -isystem ${glibc}/include" \
+      CPPFLAGS="-isystem ${glibc}/include" \
       LDFLAGS="-L${glibc}/lib -static" \
       "$SRC/configure" \
         --prefix="$out" \
         --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
         --disable-nls
 
-      make -j"$(nproc)"
-      make install
+      make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+      make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
 
       echo "GNU tar 1.26 installed to $out"
     ''
