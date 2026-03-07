@@ -67,7 +67,7 @@ builtins.derivation {
         libc_cv_forced_unwind=yes \
         libc_cv_c_cleanup=yes
 
-      make -j"$(nproc)"
+      make -j"$NIX_BUILD_CORES"
       make install
 
       # Copy linux headers into glibc output for downstream use

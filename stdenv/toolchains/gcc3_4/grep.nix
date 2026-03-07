@@ -44,7 +44,7 @@ builtins.derivation {
         --disable-nls \
         --disable-perl-regexp
 
-      make -j"$(nproc)"
+      make -j"$NIX_BUILD_CORES"
       make install
 
       echo "GNU grep 2.5.1 installed to $out"

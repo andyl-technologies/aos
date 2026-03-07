@@ -225,6 +225,17 @@ builtins.derivation {
       rm -rf $SRC/texinfo
       touch $SRC/gcc/cpp.info $SRC/gcc/gcc.info
 
+      # ── Dummy autotools (not available in bootstrap) ──────────────────
+      mkdir -p $TMPDIR/fakebin
+      for cmd in autoheader aclocal automake autoconf makeinfo help2man; do
+        printf '#!/bin/sh\nexit 0\n' > $TMPDIR/fakebin/$cmd
+        chmod +x $TMPDIR/fakebin/$cmd
+      done
+      export PATH="$TMPDIR/fakebin:$PATH"
+
+      # Touch all files to prevent autoconf regeneration
+      find $SRC -type f -exec touch {} + 2>/dev/null || true
+
       # ── Seed config.cache ──────────────────────────────────────────────
       # Preload answers for tests that may not work in bootstrap environment
       printf '%s\n' "ac_cv_c_float_format='IEEE (little-endian)'" > $SRC/config.cache

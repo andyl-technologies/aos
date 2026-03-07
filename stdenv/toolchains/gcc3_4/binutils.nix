@@ -51,7 +51,7 @@ builtins.derivation {
         --with-sysroot=/ \
         --program-transform-name=
 
-      make -j"$(nproc)"
+      make -j"$NIX_BUILD_CORES"
       make install
 
       echo "binutils 2.15 installed to $out"

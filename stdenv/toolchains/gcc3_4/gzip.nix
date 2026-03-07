@@ -39,7 +39,7 @@ builtins.derivation {
       ${src}/configure \
         --prefix="$out"
 
-      make -j"$(nproc)"
+      make -j"$NIX_BUILD_CORES"
       make install
 
       echo "GNU gzip 1.3.5 installed to $out"
