@@ -45,6 +45,14 @@ let
       dynamicLinker = "ld-linux-aarch64.so.1";
       canExecute = [ ]; # armv7l would go here when supported
     };
+    riscv64 = {
+      bits = 64;
+      family = "riscv";
+      linuxArch = "riscv";
+      gnuConfig = "riscv64-unknown-linux-gnu";
+      dynamicLinker = "ld-linux-riscv64-lp64d.so.1";
+      canExecute = [ ];
+    };
   };
 
   knownCpuNames = builtins.attrNames cpus;
@@ -96,6 +104,7 @@ let
         # Backward-compat booleans
         isx86_64 = cpuName == "x86_64";
         isAarch64 = cpuName == "aarch64";
+        isRiscv64 = cpuName == "riscv64";
         isi686 = cpuName == "i686";
         is32bit = cpu.bits == 32;
         is64bit = cpu.bits == 64;
@@ -168,6 +177,40 @@ let
     in
     builtins.any (p: p == system || canRun build (mkPlatform p).constraints) platforms;
 
+  # Priority-ordered list of constraint sets a platform can natively execute.
+  # Self first (highest priority), then ISA-compatible architectures.
+  # e.g. x86_64 → [ {cpu="x86_64";os="linux";abi="gnu"} {cpu="i686";os="linux"} ]
+  executionTargets =
+    platform:
+    [ platform.constraints ] ++ (platform.canExecute or [ ]);
+
+  # Pick the best execution platform for a given constraint set.
+  # Returns the first (highest-priority) execution target that satisfies the
+  # requirement, or null if no match.
+  resolveTarget =
+    buildPlatform: requiredConstraints:
+    let
+      targets = executionTargets buildPlatform;
+      match = builtins.filter (
+        t:
+        builtins.all (
+          key:
+          let
+            req = requiredConstraints.${key};
+          in
+          !(t ? ${key})
+          || (if builtins.isList req then builtins.elem t.${key} req else t.${key} == req)
+        ) (builtins.attrNames requiredConstraints)
+      ) targets;
+    in
+    if match == [ ] then null else builtins.head match;
+
+  # Construct a full platform record from a constraint set.
+  # Inverse of platform.constraints — goes from { cpu, os } back to mkPlatform.
+  mkPlatformFromConstraints =
+    constraints:
+    mkPlatform "${constraints.cpu}-${constraints.os}";
+
   # Can a toolchain targeting `target` produce code that runs on `execute`?
   # Both args are constraint sets. Compatible = for every key present in both,
   # their values overlap (list values are OR'd).
@@ -196,5 +239,8 @@ in
     canBuildOn
     platformIsCompatible
     constraintsCompatible
+    executionTargets
+    resolveTarget
+    mkPlatformFromConstraints
     ;
 }

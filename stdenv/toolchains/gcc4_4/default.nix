@@ -38,6 +38,19 @@ let
     linuxHeaders = callPackage ./linux-headers.nix { };
     glibc = callPackage ./glibc.nix { };
 
+    # Phase 3.5: Autotools rebuilt with THIS tier's gcc + prev.glibc
+    # Order: perl/texinfo/help2man first (no m4/flex/bison deps),
+    # then m4/flex/bison/autoconf/automake (can use real texinfo/help2man)
+    perl = callPackage ./perl.nix { };
+    texinfo = callPackage ./texinfo.nix { };
+    help2man = callPackage ./help2man.nix { };
+    m4 = callPackage ./m4.nix { };
+    flex = callPackage ./flex.nix { };
+    bison = callPackage ./bison.nix { }; # 3.0.4 upgrade (satisfies glibc 2.28 bison >= 2.7)
+    autoconf = callPackage ./autoconf.nix { };
+    automake = callPackage ./automake.nix { };
+    gperf = callPackage ./gperf.nix { }; # needs C++ (first available in this tier)
+
     # Phase 4: POSIX tools built with THIS.gcc + THIS.binutils + THIS.glibc
     bash = callPackage ./bash.nix { };
     coreutils = callPackage ./coreutils.nix { };
@@ -49,6 +62,7 @@ let
     diffutils = callPackage ./diffutils.nix { };
     tar = callPackage ./tar.nix { };
     gzip = callPackage ./gzip.nix { };
+    bzip2 = callPackage ./bzip2.nix { };
     patch = callPackage ./patch.nix { };
   };
 in
@@ -58,6 +72,15 @@ in
     binutils
     glibc
     linuxHeaders
+    m4
+    flex
+    bison
+    perl
+    autoconf
+    automake
+    texinfo
+    help2man
+    gperf
     bash
     coreutils
     gnumake
@@ -68,6 +91,7 @@ in
     diffutils
     tar
     gzip
+    bzip2
     patch
     ;
 }

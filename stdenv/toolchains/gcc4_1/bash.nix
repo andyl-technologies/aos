@@ -7,6 +7,13 @@
   gcc,
   binutils,
   glibc,
+  m4,
+  flex,
+  bison,
+  autoconf,
+  automake,
+  texinfo,
+  help2man,
   buildPlatform,
   hostPlatform,
 }:
@@ -24,27 +31,26 @@ builtins.derivation {
     "-c"
     ''
       set -eu
-      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
+      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin:${m4}/bin:${flex}/bin:${bison}/bin:${autoconf}/bin:${automake}/bin:${texinfo}/bin:${help2man}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
       cp -r ${src} bash-3.2
       cd bash-3.2
       chmod -R u+w .
+      # Touch all files to prevent unnecessary autotools regeneration
+      find . -type f -exec touch {} + 2>/dev/null || true
 
-      mkdir -p "$TMPDIR/build"
-      cd "$TMPDIR/build"
-
-      CC="${gcc}/bin/gcc" \
+      CC="${gcc}/bin/gcc -static" \
       CFLAGS="-O2 -I${glibc}/include" \
-      LDFLAGS="-L${glibc}/lib -static" \
-      "$TMPDIR/bash-3.2/configure" \
+      LDFLAGS="-L${glibc}/lib -static -Wl,--whole-archive ${glibc}/lib/libnss_files.a ${glibc}/lib/libnss_dns.a ${glibc}/lib/libresolv.a -Wl,--no-whole-archive -Wl,--defsym=__res_iclose=0 -Wl,-u,dl_iterate_phdr" \
+      ./configure \
         --prefix="$out" \
         --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
         --without-bash-malloc \
         --disable-nls
 
-      make -j"$(nproc)"
+      make -j1
       make install
 
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"

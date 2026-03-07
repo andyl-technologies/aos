@@ -21,6 +21,15 @@ let
     url = "https://cdn.kernel.org/pub/linux/kernel/v2.6/linux-2.6.18.tar.bz2";
     sha256 = "0ad6d97c1z5z79gafbxsd9d9wq4f21hmvp52s91dysqk24fkbdbx";
   };
+
+  # Linux 2.6.18 uses asm-<arch> directory names (pre-2.6.24 unification)
+  asmDirMap = {
+    x86_64 = "asm-x86_64";
+    i686 = "asm-i386";
+  };
+  asmDir =
+    asmDirMap.${hostPlatform.constraints.cpu}
+      or (throw "unsupported CPU for linux headers: ${hostPlatform.constraints.cpu}");
 in
 builtins.derivation {
   name = "gcc-4.1.2";
@@ -39,6 +48,12 @@ builtins.derivation {
       cd gcc-4.1.2
       chmod -R u+w .
 
+      # Touch pre-generated lex/yacc output files so make doesn't try to
+      # regenerate them (flex/bison aren't available). cp -r from the Nix
+      # store creates files with current timestamps, and the .l/.y files
+      # may end up with slightly newer mtimes than the .c files.
+      touch gcc/gengtype-lex.c gcc/gengtype-yacc.c gcc/gengtype-yacc.h
+
       # Fix known build issues with modern host compilers
       sed -i 's/ix86_attribute_table\[\]/ix86_attribute_table[10]/' gcc/config/i386/i386.c 2>/dev/null || true
       sed -i 's/C_alloca/alloca/g' libiberty/alloca.c include/libiberty.h
@@ -47,6 +62,7 @@ builtins.derivation {
       cd "$TMPDIR/build"
 
       CC="${prev.gcc}/bin/gcc" \
+      CPP="${prev.gcc}/bin/gcc -E" \
       CFLAGS="-O2 -static -I${prev.glibc}/include" \
       LDFLAGS="-static -L${prev.glibc}/lib" \
       "$TMPDIR/gcc-4.1.2/configure" \
@@ -77,11 +93,11 @@ builtins.derivation {
             "$out/${targetPlatform.config}/sys-include/asm" \
             "$out/${targetPlatform.config}/sys-include/asm-generic"
       cp -r ${linuxSrc}/include/linux "$out/${targetPlatform.config}/sys-include/"
-      cp -r ${linuxSrc}/include/asm-i386 "$out/${targetPlatform.config}/sys-include/asm"
+      cp -r ${linuxSrc}/include/${asmDir} "$out/${targetPlatform.config}/sys-include/asm"
       cp -r ${linuxSrc}/include/asm-generic "$out/${targetPlatform.config}/sys-include/"
       ln -sf "$out/${targetPlatform.config}/sys-include" "$out/${targetPlatform.config}/include"
 
-      make -j"$(nproc)" \
+      make -j"$NIX_BUILD_CORES" \
         BOOT_CFLAGS="-O2 -static" \
         CFLAGS_FOR_TARGET="-O2 -I${prev.glibc}/include" \
         LDFLAGS_FOR_TARGET="-L${prev.glibc}/lib -static"

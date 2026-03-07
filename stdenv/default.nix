@@ -1,23 +1,20 @@
 # stdenv/default.nix — AOS standard build environment (self-initializing)
 #
-# Imports the full bootstrap chain and all toolchain tiers internally, then
-# wraps each tier into a complete stdenv with a uniform interface.
+# Imports the full bootstrap chain and toolchain ladder internally, then
+# wraps the latest tier into a complete stdenv.
 #
-# The default stdenv uses the latest toolchain (GCC 14.3.0). Every stdenv
-# exposes .toolchains.<name> for alternate toolchain stdenvs with the
-# identical interface — similar to Bazel toolchains.
+# The latest toolchain (currently GCC 14.3.0) is recompiled with itself
+# as the last step to ensure optimal code generation in the output.
 #
 # Usage:
-#   stdenv.mkDerivation { ... }                  # build with GCC 14
-#   stdenv.toolchains.gcc11.mkDerivation { ... } # build with GCC 11
-#   stdenv.bootstrap.gcc                         # GCC 2.95.3 from hex0 chain
+#   stdenv.mkDerivation { ... }       # build with the latest GCC
+#   stdenv.bootstrap.gcc              # GCC 2.95.3 from hex0 chain
 #
-# Attributes on every stdenv:
+# Attributes:
 #   mkDerivation, mkShell, fetchurl, fetchgit    — builders
 #   cc, shell, stdenv, initialPath               — environment
 #   gcc, glibc, binutils, bash, coreutils, ...   — raw toolchain components
 #   bootstrap                                    — hex0 → GCC 2.95.3 chain
-#   toolchains                                   — attrset of alternate stdenvs
 #
 {
   buildPlatform,
@@ -33,7 +30,8 @@ let
   bootstrap = import ./bootstrap { inherit buildPlatform; };
 
   # ── Toolchain ladder: GCC 3.4 → 4.1 → 4.4 → 4.8 → 8 → 11 → 14 ───
-  tiers = import ./toolchains {
+  # Returns the latest tier (recompiled with itself for optimal output).
+  tier = import ./toolchains {
     inherit
       bootstrap
       buildPlatform
@@ -43,33 +41,32 @@ let
   };
 
   # ── Wrap a raw toolchain tier into a full stdenv ────────────────────
-  # Returns the same interface regardless of which tier is used.
   mkStdenvFromTier =
-    tier:
+    tc:
     let
-      shellPath = "${tier.bash}/bin/bash";
+      shellPath = "${tc.bash}/bin/bash";
 
       ccWrapper = import ./cc-wrapper.nix {
         inherit storeDir hostPlatform;
         shell = shellPath;
-        coreutils = tier.coreutils;
-        cc = tier.gcc;
-        libc = tier.glibc;
-        binutils_ = tier.binutils;
+        coreutils = tc.coreutils;
+        cc = tc.gcc;
+        libc = tc.glibc;
+        binutils_ = tc.binutils;
       };
 
       initialPath = [
-        tier.coreutils
-        tier.findutils
-        tier.gnumake
-        tier.gawk
-        tier.grep
-        tier.sed
-        tier.tar
-        tier.gzip
-        tier.diffutils
-        tier.patch
-        tier.bash
+        tc.coreutils
+        tc.findutils
+        tc.gnumake
+        tc.gawk
+        tc.grep
+        tc.sed
+        tc.tar
+        tc.gzip
+        tc.diffutils
+        tc.patch
+        tc.bash
       ];
 
       stdenvDrv = builtins.derivation {
@@ -79,11 +76,11 @@ let
         args = [
           "-c"
           ''
-            ${tier.coreutils}/bin/mkdir -p $out
-            ${tier.coreutils}/bin/cp ${./setup.sh} $out/setup.sh
-            ${tier.coreutils}/bin/chmod 644 $out/setup.sh
+            ${tc.coreutils}/bin/mkdir -p $out
+            ${tc.coreutils}/bin/cp ${./setup.sh} $out/setup.sh
+            ${tc.coreutils}/bin/chmod 644 $out/setup.sh
 
-            ${tier.coreutils}/bin/cat > $out/setup-vars.sh << 'SETUP_EOF'
+            ${tc.coreutils}/bin/cat > $out/setup-vars.sh << 'SETUP_EOF'
             export CC="${ccWrapper}/bin/gcc"
             export CXX="${ccWrapper}/bin/g++"
             export LD="${ccWrapper}/bin/ld"
@@ -96,8 +93,8 @@ let
             export STRINGS="${ccWrapper}/bin/strings"
             SETUP_EOF
 
-            ${tier.coreutils}/bin/echo "${shellPath}" > $out/shell-path
-            ${tier.coreutils}/bin/echo "${system}" > $out/system
+            ${tc.coreutils}/bin/echo "${shellPath}" > $out/shell-path
+            ${tc.coreutils}/bin/echo "${system}" > $out/system
           ''
         ];
       };
@@ -175,7 +172,7 @@ let
       inherit buildPlatform hostPlatform targetPlatform;
 
       # Raw toolchain components (direct access for packages that need them)
-      inherit (tier)
+      inherit (tc)
         gcc
         glibc
         binutils
@@ -194,15 +191,6 @@ let
 
       # Bootstrap chain (hex0 → GCC 2.95.3) accessible from any stdenv
       inherit bootstrap;
-
-      # All toolchain stdenvs — lazy, same interface as this stdenv
-      toolchains = toolchainStdenvs;
     };
-
-  # One stdenv per named toolchain tier (lazy — only built when accessed)
-  toolchainStdenvs = builtins.mapAttrs (_: mkStdenvFromTier) (
-    builtins.removeAttrs tiers [ "latest" ]
-  );
 in
-# Default stdenv: latest toolchain (GCC 14.3.0)
-mkStdenvFromTier tiers.latest
+mkStdenvFromTier tier
