@@ -7,7 +7,7 @@
   zlib,
 }:
 let
-  version = "4.2.3";
+  version = "3.31.6";
 in
 mkDerivation {
   pname = "cmake";
@@ -17,7 +17,7 @@ mkDerivation {
     urls = [
       "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}.tar.gz"
     ];
-    hash = "sha256-fvrM3oxaayloutbOD+YOGbbhBwGhL86UjCv3m6yKEek=";
+    hash = "sha256-ZTQn8PUBR1Cq//InJ/sqpgxscyypGAjPt4ziLd2eVfA=";
   };
 
   buildDeps = [ gnumake ];

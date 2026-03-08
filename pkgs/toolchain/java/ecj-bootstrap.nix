@@ -6,6 +6,7 @@
   fastjar,
   jamvm-1_5,
   classpath-0_93,
+  ant-bootstrap,
   unzip,
 }:
 let
@@ -27,6 +28,7 @@ mkDerivation {
     fastjar
     jamvm-1_5
     classpath-0_93
+    ant-bootstrap
     unzip
   ];
   runtimeDeps = [
@@ -51,11 +53,29 @@ mkDerivation {
 
         # Compile with Jikes against GNU Classpath
         # Jikes needs the bootclasspath to find core Java classes
+        # ECJ's JDTCompilerAdapter extends Ant's DefaultCompilerAdapter
         mkdir -p classes
         jikes -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
+          -classpath ${ant-bootstrap}/lib/ant.jar \
           -d classes \
           -nowarn \
           @sources.txt
+
+        # Copy resource files (properties, etc.) into classes dir
+        find . -maxdepth 1 -name '*.java' -prune -o -type f -name '*.properties' -print \
+          -o -type f -name '*.rsc' -print \
+          -o -type f -name '*.profile' -print | while read f; do
+          dir=$(dirname "$f")
+          mkdir -p "classes/$dir"
+          cp "$f" "classes/$f"
+        done
+
+        # Also copy from org/eclipse subdirs
+        find org -type f ! -name '*.java' | while read f; do
+          dir=$(dirname "$f")
+          mkdir -p "classes/$dir"
+          cp "$f" "classes/$f"
+        done
 
         # Package into ecj.jar
         cd classes
@@ -70,14 +90,14 @@ mkDerivation {
 
                 cp ecj.jar $out/lib/ecj.jar
 
-                # Create wrapper script to invoke ECJ via JamVM
-                cat > $out/bin/ecj <<WRAPPER
-        #!/bin/sh
-        exec ${jamvm-1_5}/bin/jamvm \
-          -Xbootclasspath/p:${classpath-0_93}/share/classpath/glibj.zip \
-          -jar $out/lib/ecj.jar "\$@"
-        WRAPPER
-                chmod +x $out/bin/ecj
+        # Create wrapper script to invoke ECJ via JamVM
+        # JamVM already has correct boot classpath from --with-classpath-install-dir
+        # -J flags from callers are silently ignored (we set -Xmx768M directly)
+        printf '#!/bin/sh\nexec %s -Xmx768M -cp %s org.eclipse.jdt.internal.compiler.batch.Main "$@"\n' \
+          "${jamvm-1_5}/bin/jamvm" \
+          "$out/lib/ecj.jar" \
+          > $out/bin/ecj
+        chmod +x $out/bin/ecj
       '';
     }
   ];

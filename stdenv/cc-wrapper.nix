@@ -58,13 +58,20 @@ let
           extra_ldflags="$extra_ldflags -Wl,--dynamic-linker=${dynamicLinker}"
           extra_ldflags="$extra_ldflags -Wl,-rpath-link,${libc}/lib"
           extra_ldflags="$extra_ldflags -L${cc}/lib"
+          extra_ldflags="$extra_ldflags -L${cc}/lib64"
           extra_ldflags="$extra_ldflags -Wl,-rpath,${cc}/lib"
+          extra_ldflags="$extra_ldflags -Wl,-rpath,${cc}/lib64"
           extra_ldflags="$extra_ldflags -B${libc}/lib"
         fi
 
-        hardening_flags="-fstack-protector-strong -D_FORTIFY_SOURCE=2"
+        hardening_flags="-fstack-protector-strong"
 
-        exec ${cc}/bin/gcc $extra_cflags $hardening_flags "$@" $extra_ldflags
+        nix_ldflags=""
+        if [ "$linking" = true ] && [ -n "''${NIX_LDFLAGS:-}" ]; then
+          nix_ldflags="$NIX_LDFLAGS"
+        fi
+
+        exec ${cc}/bin/gcc $extra_cflags $hardening_flags "$@" $extra_ldflags $nix_ldflags
         WRAPPER_EOF
                 ${chmod} +x $out/bin/gcc
 
@@ -92,13 +99,20 @@ let
           extra_ldflags="$extra_ldflags -Wl,--dynamic-linker=${dynamicLinker}"
           extra_ldflags="$extra_ldflags -Wl,-rpath-link,${libc}/lib"
           extra_ldflags="$extra_ldflags -L${cc}/lib"
+          extra_ldflags="$extra_ldflags -L${cc}/lib64"
           extra_ldflags="$extra_ldflags -Wl,-rpath,${cc}/lib"
+          extra_ldflags="$extra_ldflags -Wl,-rpath,${cc}/lib64"
           extra_ldflags="$extra_ldflags -B${libc}/lib"
         fi
 
-        hardening_flags="-fstack-protector-strong -D_FORTIFY_SOURCE=2"
+        hardening_flags="-fstack-protector-strong"
 
-        exec ${cc}/bin/g++ $extra_cflags $hardening_flags "$@" $extra_ldflags
+        nix_ldflags=""
+        if [ "$linking" = true ] && [ -n "''${NIX_LDFLAGS:-}" ]; then
+          nix_ldflags="$NIX_LDFLAGS"
+        fi
+
+        exec ${cc}/bin/g++ $extra_cflags $hardening_flags "$@" $extra_ldflags $nix_ldflags
         WRAPPER_EOF
                 ${chmod} +x $out/bin/g++
 
@@ -117,7 +131,9 @@ let
         extra_flags="$extra_flags --dynamic-linker ${dynamicLinker}"
         extra_flags="$extra_flags -rpath-link ${libc}/lib"
         extra_flags="$extra_flags -L${cc}/lib"
+        extra_flags="$extra_flags -L${cc}/lib64"
         extra_flags="$extra_flags -rpath ${cc}/lib"
+        extra_flags="$extra_flags -rpath ${cc}/lib64"
         extra_flags="$extra_flags -z relro -z now"
 
         exec ${binutils_}/bin/ld $extra_flags "$@"

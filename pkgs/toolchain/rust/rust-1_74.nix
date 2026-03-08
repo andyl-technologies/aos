@@ -73,7 +73,7 @@ mkDerivation {
           'symbolic-ref) echo "v${mrustcVersion}" ;;' \
           'describe)     echo "v${mrustcVersion}" ;;' \
           'diff-index)   exit 0 ;;' \
-          '*)            exit 0 ;;' \
+          '*)            exit 1 ;;' \
           'esac' > .fake-bin/git
         chmod +x .fake-bin/git
         export PATH="$PWD/.fake-bin:$PATH"
@@ -85,10 +85,14 @@ mkDerivation {
         tar xf ${rustcSrc}
         cd rustc-${version}-src
         patch -p0 < ../rustc-${version}-src.patch
+
         cd ..
 
         # Create the dl-version marker so minicargo.mk skips the download step
         touch rustc-${version}-src/dl-version
+
+        # Symlink the tarball so minicargo.mk doesn't try to download with curl
+        ln -sf ${rustcSrc} rustc-${version}-src.tar.gz
       '';
     }
     {
@@ -103,10 +107,21 @@ mkDerivation {
     {
       name = "build-rustc";
       script = ''
+        # Fix arc4random: cmake detects it in glibc but the header doesn't declare it.
+        # Add cmake flag to prevent LLVM from trying to use arc4random.
+        sed -i '/LLVM_CMAKE_OPTS += CMAKE_BUILD_TYPE/a LLVM_CMAKE_OPTS += HAVE_DECL_ARC4RANDOM=0\nLLVM_CMAKE_OPTS += BUILD_SHARED_LIBS=OFF\nLLVM_CMAKE_OPTS += LLVM_BUILD_EXAMPLES=OFF\nLLVM_CMAKE_OPTS += LLVM_ENABLE_PLUGINS=OFF\nLLVM_CMAKE_OPTS += LLVM_ENABLE_PIC=ON' minicargo.mk
+
         export RUSTC_VERSION=${version}
         export MRUSTC_TARGET_VER=1.74
         export OUTDIR_SUF=-${version}
         export PARLEVEL=$NIX_BUILD_CORES
+
+        # openssl-sys build script needs these to find OpenSSL
+        export OPENSSL_DIR=${openssl}
+        export OPENSSL_LIB_DIR=${openssl}/lib
+        export OPENSSL_INCLUDE_DIR=${openssl}/include
+        export OPENSSL_NO_VENDOR=1
+        export OPENSSL_STATIC=0
 
         # Build standard libraries
         make -f minicargo.mk LIBS -j$NIX_BUILD_CORES
@@ -122,6 +137,10 @@ mkDerivation {
       name = "build-bootstrap";
       script = ''
         cd run_rustc
+
+        # The Makefile sets LD_LIBRARY_PATH=$(abspath $(LIBDIR)), overriding any
+        # external value. Patch it to also include OpenSSL/zlib for cargo to work.
+        sed -i 's|LD_LIBRARY_PATH=\$(abspath \$(LIBDIR))|LD_LIBRARY_PATH=${openssl}/lib:${zlib}/lib:\$(abspath \$(LIBDIR))|' Makefile
 
         # Run the 4-stage internal bootstrap:
         # 1. Build libstd with minicargo + mrustc-built rustc
@@ -143,54 +162,28 @@ mkDerivation {
         # Copy the bootstrapped compiler and standard library
         cp -a "$PREFIX"/* $out/
 
-        # Patch ELF binaries with correct dynamic linker and rpath
-        INTERP=$(patchelf --print-interpreter $(which bash))
-        BT_LIB=$(dirname "$INTERP")
+        # Set up LD_LIBRARY_PATH for all binaries via wrapper scripts.
+        # We don't have patchelf, so use wrappers instead.
+        LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${zlib}/lib:${openssl}/lib"
 
-        # Find the GCC libstdc++ directory for RPATH
-        STDCXX_DIR=""
-        STDCXX=$(find "$BT_LIB" -name 'libstdc++.so.6' -type f 2>/dev/null | head -1 || true)
-        if [ -n "$STDCXX" ]; then
-          STDCXX_DIR=$(dirname "$STDCXX")
-        fi
-
-        RPATH="$out/lib:${zlib}/lib:${openssl}/lib:$BT_LIB"
-        if [ -n "$STDCXX_DIR" ]; then
-          RPATH="$RPATH:$STDCXX_DIR"
-        fi
-
-        # Patch top-level binaries
+        # Wrap ELF binaries in bin/
         for f in $out/bin/*; do
           if [ -f "$f" ] && [ ! -L "$f" ]; then
-            patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" "$f" 2>/dev/null || true
+            # Check if it's a shell script or ELF binary
+            if head -c4 "$f" | grep -q "ELF"; then
+              mv "$f" "$f.unwrapped"
+              cat > "$f" <<WRAP
+#!/bin/sh
+export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
+exec "$f.unwrapped" "\$@"
+WRAP
+              chmod +x "$f"
+            elif head -1 "$f" | grep -q '^#!'; then
+              # Shell wrapper from run_rustc — fix LD_LIBRARY_PATH
+              sed -i "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" "$f"
+            fi
           fi
         done
-
-        # Patch shared libraries
-        for f in $out/lib/*.so $out/lib/*.so.*; do
-          if [ -f "$f" ] && [ ! -L "$f" ]; then
-            patchelf --set-rpath "$RPATH" "$f" 2>/dev/null || true
-          fi
-        done
-
-        # Patch rustlib binaries and libraries
-        if [ -d "$out/lib/rustlib" ]; then
-          find $out/lib/rustlib -type f -executable | while read f; do
-            patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" "$f" 2>/dev/null || true
-          done
-          find $out/lib/rustlib -name '*.so' -type f | while read f; do
-            patchelf --set-rpath "$RPATH" "$f" 2>/dev/null || true
-          done
-        fi
-
-        # The run_rustc output may produce a shell wrapper for rustc.
-        # If bin/rustc is a shell script, patch it to use absolute paths.
-        if [ -f "$out/bin/rustc" ] && head -1 "$out/bin/rustc" | grep -q '^#!'; then
-          # It is a wrapper script; rewrite LD_LIBRARY_PATH to use $out paths
-          ${bash}/bin/bash -c '
-            sed -i "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"'"$out"'/lib\"|" '"$out"'/bin/rustc
-          '
-        fi
       '';
     }
   ];

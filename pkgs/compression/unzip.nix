@@ -53,17 +53,14 @@ mkDerivation {
         # Remove conflicting localtime() declaration from unxcfg.h (C23 fix)
         sed -i '/^struct tm \*localtime/d' unix/unxcfg.h 2>/dev/null || true
 
-        # Large file support
-        sed -i 's/^CF = /CF = -DLARGE_FILE_SUPPORT -D_FILE_OFFSET_BITS=64 /' unix/Makefile 2>/dev/null || true
-
-        # Linux does not support lchmod
-        sed -i 's/^CF = /CF = -DNO_LCHMOD /' unix/Makefile 2>/dev/null || true
+        # Large file support + no lchmod
+        sed -i 's/^CF = /CF = -DLARGE_FILE_SUPPORT -D_FILE_OFFSET_BITS=64 -DNO_LCHMOD /' unix/Makefile 2>/dev/null || true
       '';
     }
     {
       name = "build";
       script = ''
-        make -f unix/Makefile generic -j$NIX_BUILD_CORES \
+        make -f unix/Makefile linux_noasm -j$NIX_BUILD_CORES \
           LFLAGS2="$NIX_LDFLAGS"
       '';
     }

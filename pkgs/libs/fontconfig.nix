@@ -8,6 +8,7 @@
   python3,
   freetype,
   expat,
+  zlib,
 }:
 let
   version = "2.15.0";
@@ -32,6 +33,7 @@ mkDerivation {
   runtimeDeps = [
     freetype
     expat
+    zlib
   ];
   propagatedDeps = [ ];
 
@@ -46,6 +48,8 @@ mkDerivation {
     {
       name = "build";
       script = ''
+        FREETYPE_CFLAGS="-I${freetype}/include/freetype2" \
+        FREETYPE_LIBS="-L${freetype}/lib -lfreetype" \
         $CONFIG_SHELL ./configure \
           --prefix=$out \
           --sysconfdir=$out/etc \

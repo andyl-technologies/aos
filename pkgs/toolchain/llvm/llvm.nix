@@ -41,6 +41,12 @@ mkDerivation {
     {
       name = "configure";
       script = ''
+        # Fix arc4random not being visible in C++ — include stdlib.h directly
+        sed -i '/#include.*Process\.inc/i #include <stdlib.h>' llvm/lib/Support/Process.cpp 2>/dev/null || true
+        # Also fix it in the .inc file directly if needed
+        if grep -q 'arc4random' llvm/lib/Support/Unix/Process.inc; then
+          sed -i '1i #include <stdlib.h>' llvm/lib/Support/Unix/Process.inc
+        fi
         cmake -S llvm -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_INSTALL_PREFIX=$out \
@@ -55,7 +61,8 @@ mkDerivation {
           -DLLVM_INCLUDE_BENCHMARKS=OFF \
           -DLLVM_INCLUDE_EXAMPLES=OFF \
           -DLLVM_INCLUDE_TESTS=OFF \
-          -DLLVM_INCLUDE_DOCS=OFF
+          -DLLVM_INCLUDE_DOCS=OFF \
+          -DHAVE_DECL_ARC4RANDOM=0
       '';
     }
     {

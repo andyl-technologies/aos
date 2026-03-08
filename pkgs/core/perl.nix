@@ -44,7 +44,8 @@ mkDerivation {
           -Dman1dir=$out/share/man/man1 \
           -Dman3dir=$out/share/man/man3 \
           -Dusethreads \
-          -Duseshrplib
+          -Duseshrplib \
+          -Dlibs='-lpthread -ldl -lm -lutil -lc'
       '';
     }
     {

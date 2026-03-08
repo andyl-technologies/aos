@@ -59,7 +59,7 @@ builtins.derivation {
         -Dcc="${gcc}/bin/gcc" \
         -Dccflags="-O2 -isystem ${glibc}/include" \
         -Dcppflags="-isystem ${glibc}/include" \
-        -Dldflags="-L${glibc}/lib -static" \
+        -Dldflags="-L${glibc}/lib -static -no-pie" \
         -Dlibs="-lm -lpthread" \
         -Dar="${binutils}/bin/ar" \
         -Dfull_ar="${binutils}/bin/ar" \

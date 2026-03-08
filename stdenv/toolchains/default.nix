@@ -128,16 +128,8 @@ let
   };
 
   # ── latest: change this when adding a new GCC tier ──────────────
-  # Points to the newest tier directory. The return value recompiles
-  # it with itself for optimal output.
-  latestDir = ./gcc14;
-  latestPrev = gcc14;
-
+  # Points to the newest tier directory.
+  # TODO: Re-enable self-recompile once GCC 14's in-tree GMP configure
+  # CC_FOR_BUILD issue is resolved (sysroot path invalidated after install).
 in
-# Final stdenv: latest recompiled with itself.
-import latestDir {
-  prev = latestPrev;
-  buildPlatform = mkBuildable hostPlatform;
-  hostPlatform = mkBuildable hostPlatform;
-  targetPlatform = mkBuildable targetPlatform;
-}
+gcc14

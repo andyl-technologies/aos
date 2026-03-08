@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 
+use crate::sse::{EventAction, SseEvent, SseStream};
+
 /// Client for communicating with the AOS cache server.
 pub struct RemoteClient {
     client: Client,
@@ -340,11 +342,124 @@ impl RemoteClient {
         resp.json().await.context("failed to parse GC response")
     }
 
+    /// Fetch the `.narinfo` for a store path hash.
+    ///
+    /// Sends a `GET` to `/{view}/{hash}.narinfo` and returns the raw narinfo
+    /// text. Returns `None` if the path is not found (HTTP 404).
+    pub async fn get_narinfo(&self, hash: &str) -> Result<Option<String>> {
+        let url = format!("{}/{}/{}.narinfo", self.base_url, self.view, hash);
+
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("failed to fetch narinfo")?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("narinfo request failed (HTTP {status}): {body}");
+        }
+
+        let body = resp.text().await.context("failed to read narinfo body")?;
+        Ok(Some(body))
+    }
+
+    /// Download a NAR for a store path.
+    ///
+    /// Sends a `GET` to `/{view}/nar/{hash}-{name}.nar{.zst|.xz}` and returns
+    /// the raw (possibly compressed) bytes. The `filename` should include the
+    /// hash, name, and compression suffix (e.g. `abc123-foo.nar.zst`).
+    pub async fn get_nar(&self, filename: &str) -> Result<Vec<u8>> {
+        let url = format!("{}/{}/nar/{}", self.base_url, self.view, filename);
+
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("failed to fetch NAR")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("NAR download failed (HTTP {status}): {body}");
+        }
+
+        let bytes = resp.bytes().await.context("failed to read NAR body")?;
+        Ok(bytes.to_vec())
+    }
+
     /// Return the SSE build stream URL for the given derivation path.
     pub fn build_url(&self, drv_path: &str) -> String {
         format!(
             "{}/{}/build?drv={}",
             self.base_url, self.view, drv_path
         )
+    }
+
+    /// Return the internal token (for use with SSE connections).
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// Return a reference to the underlying HTTP client.
+    pub fn http_client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Trigger a remote build and stream SSE events via callback.
+    ///
+    /// Sends a `POST` to `/{view}/build?drv=...` and processes the returned
+    /// SSE event stream. Automatically reconnects with `Last-Event-ID` replay
+    /// on disconnect, up to `max_retries` times.
+    pub async fn build(
+        &self,
+        drv_path: &str,
+        max_retries: u32,
+        on_event: impl FnMut(&SseEvent) -> EventAction,
+    ) -> Result<()> {
+        let url = self.build_url(drv_path);
+        SseStream::connect_post_with_reconnect(
+            &self.client,
+            &url,
+            &self.token,
+            max_retries,
+            None,
+            on_event,
+        )
+        .await
+    }
+
+    /// Trigger a remote build of multiple derivations and stream multiplexed
+    /// SSE events via callback.
+    ///
+    /// Sends a `POST` to `/{view}/build-closure` with a JSON body containing
+    /// the list of derivation paths. Events are tagged with their originating
+    /// derivation. Automatically reconnects on disconnect.
+    pub async fn build_closure(
+        &self,
+        drvs: &[String],
+        max_retries: u32,
+        on_event: impl FnMut(&SseEvent) -> EventAction,
+    ) -> Result<()> {
+        let url = format!("{}/{}/build-closure", self.base_url, self.view);
+        let body = serde_json::json!({ "drvs": drvs });
+        SseStream::connect_post_with_reconnect(
+            &self.client,
+            &url,
+            &self.token,
+            max_retries,
+            Some(&body),
+            on_event,
+        )
+        .await
     }
 }

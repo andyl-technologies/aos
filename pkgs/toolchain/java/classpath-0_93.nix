@@ -40,8 +40,20 @@ mkDerivation {
       '';
     }
     {
+      name = "patch";
+      script = ''
+        # Fix implicit function declarations for GCC 14 (C23 default)
+        sed -i '1i #include <stdlib.h>' native/fdlibm/dtoa.c
+
+        # Disable -Werror — old code triggers many new GCC 14 warnings
+        find . -name Makefile.in -exec sed -i 's/-Werror//g' {} +
+        find . -name configure -exec sed -i 's/-Werror//g' {} +
+      '';
+    }
+    {
       name = "configure";
       script = ''
+        CFLAGS="-O2 -Wno-error" \
         ./configure \
           --prefix=$out \
           --disable-gtk-peer \

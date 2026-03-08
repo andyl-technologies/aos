@@ -69,6 +69,7 @@ let
         tc.diffutils
         tc.patch
         tc.bash
+        tc.patchelf
       ];
 
       stdenvDrv = builtins.derivation {

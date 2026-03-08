@@ -36,4 +36,5 @@ mkRustBootstrap {
   changeId = 0;
   prevRust = rust-1_90;
   needsDownloadRustc = true;
+  disableLld = true;
 }

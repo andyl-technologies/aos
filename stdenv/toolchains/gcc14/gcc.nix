@@ -102,7 +102,7 @@ builtins.derivation {
         --prefix="$out" \
         --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${targetPlatform.config} \
         --enable-languages=c,c++ \
-        --disable-shared --disable-nls --disable-threads \
+        --disable-shared --disable-nls --enable-threads=posix \
         --disable-multilib --disable-bootstrap \
         --disable-libsanitizer --disable-libvtv \
         --enable-default-pie --enable-default-ssp \
@@ -130,15 +130,30 @@ builtins.derivation {
 #endif
 LIMITS_EOF
 
-      # Now build target libraries (libgcc)
+      # Now build target libraries (libgcc + libstdc++)
+      # libstdc++ is needed so this GCC can be used as the host compiler
+      # for the self-recompile step (g++ must be able to create executables).
       make -j"$NIX_BUILD_CORES" all-target-libgcc \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
-        CFLAGS_FOR_TARGET="-O2" \
+        CFLAGS_FOR_TARGET="-O2 -fPIC" \
+        LDFLAGS_FOR_TARGET="-static"
+      make -j"$NIX_BUILD_CORES" all-target-libstdc++-v3 \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
+        CFLAGS_FOR_TARGET="-O2 -fPIC" \
+        CXXFLAGS_FOR_TARGET="-O2 -fPIC" \
+        LDFLAGS_FOR_TARGET="-static"
+      make -j"$NIX_BUILD_CORES" all-target-libatomic \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
+        CFLAGS_FOR_TARGET="-O2 -fPIC" \
         LDFLAGS_FOR_TARGET="-static"
 
       make install-gcc \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
       make install-target-libgcc \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+      make install-target-libstdc++-v3 \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+      make install-target-libatomic \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
 
       [ -f "$out/bin/gcc" ] && [ ! -f "$out/bin/cc" ] && ln -sf gcc "$out/bin/cc"
@@ -160,17 +175,27 @@ LIMITS_EOF
       ln -sf ${prev.glibc}/lib/libc.a "$SPEC_DIR/libc.a" 2>/dev/null || true
       ln -sf ${prev.glibc}/lib/libm.a "$SPEC_DIR/libm.a" 2>/dev/null || true
       ln -sf ${prev.glibc}/lib/libpthread.a "$SPEC_DIR/libpthread.a" 2>/dev/null || true
-      # Install specs file: add glibc header path, default -static, --start-group
+      # Install specs file: add glibc header path.
+      # Do NOT add forced -static to link specs — it conflicts with the PIE default
+      # (GCC 14 has --enable-default-pie). The spec `%{!static:` condition checks
+      # user flags, not spec-generated ones, so spec-injected -static still adds
+      # -dynamic-linker, producing a broken static PIE. Tier tools pass -static
+      # and -no-pie explicitly in their own LDFLAGS instead.
       "$out/bin/gcc" -dumpspecs > "$SPEC_DIR/specs"
       # Add -idirafter for glibc + linux kernel headers (not -isystem, which goes
       # before C++ headers and breaks #include_next <stdlib.h> in cstdlib).
-      # Two -idirafter entries: glibc first, then linux-headers (for linux/*.h).
       ${prev.sed}/bin/sed -i '/^\*cpp:$/{n; s|^|-idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} |}' \
         "$SPEC_DIR/specs" 2>/dev/null || true
-      ${prev.sed}/bin/sed -i '/^\*link:$/{n; s|^|%{!shared:%{!nostdlib:-static}} |}' \
-        "$SPEC_DIR/specs" 2>/dev/null || true
-      ${prev.sed}/bin/sed -i '/^\*link_gcc_c_sequence:$/{n; s|.*|%{!shared:%{!nostdlib:--start-group}} %G %L %{!shared:%{!nostdlib:--end-group}}|}' \
-        "$SPEC_DIR/specs" 2>/dev/null || true
+
+      # Create libgcc_s.so linker script stub.
+      # GCC was built with --disable-shared so libgcc_s.so doesn't exist,
+      # but GCC's default link sequence for dynamic executables references
+      # -lgcc_s. This linker script redirects it to the static libgcc.a.
+      echo "/* Stub: redirect -lgcc_s to static libgcc */" > "$SPEC_DIR/libgcc_s.so"
+      echo "INPUT(-lgcc)" >> "$SPEC_DIR/libgcc_s.so"
+      # Also create libgcc_s.a for explicit static linking
+      echo "/* Stub: redirect -lgcc_s to static libgcc */" > "$SPEC_DIR/libgcc_s.a"
+      echo "INPUT(-lgcc)" >> "$SPEC_DIR/libgcc_s.a"
 
       echo "GCC 14.3.0 installed to $out"
     ''

@@ -7,7 +7,6 @@
   zlib,
   openssl,
   xz,
-  python3-3_12,
 }:
 let
   version = "3.14.3";
@@ -40,7 +39,6 @@ mkDerivation {
   buildDeps = [
     gnumake
     pkg-config
-    python3-3_12
   ];
   runtimeDeps = [
     zlib
@@ -60,7 +58,7 @@ mkDerivation {
     {
       name = "configure";
       script = ''
-        LDFLAGS="$LDFLAGS -Wl,-rpath,$out/lib" \
+        LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" \
         ./configure \
           --prefix=$out \
           --enable-shared \
@@ -69,8 +67,7 @@ mkDerivation {
           --with-ensurepip=no \
           --without-static-libpython \
           --disable-test-modules \
-          --with-openssl=${openssl} \
-          --with-build-python=${python3-3_12}/bin/python3
+          --with-openssl=${openssl}
       '';
     }
     {

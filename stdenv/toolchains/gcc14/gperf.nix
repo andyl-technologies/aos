@@ -53,7 +53,7 @@ builtins.derivation {
       CFLAGS="-O2 -isystem ${glibc}/include" \
       CXXFLAGS="-O2 -isystem ${glibc}/include" \
       CPPFLAGS="-isystem ${glibc}/include" \
-      LDFLAGS="-L${glibc}/lib -static" \
+      LDFLAGS="-L${glibc}/lib -static -no-pie" \
       "$TMPDIR/gperf-3.1/configure" \
         --prefix="$out" \
         --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config}

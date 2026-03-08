@@ -58,7 +58,7 @@ mkDerivation {
     {
       name = "configure";
       script = ''
-        LDFLAGS="$LDFLAGS -Wl,-rpath,$out/lib" \
+        LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" \
         ./configure \
           --prefix=$out \
           --enable-shared \

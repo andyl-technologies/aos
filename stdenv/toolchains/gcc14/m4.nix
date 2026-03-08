@@ -54,7 +54,7 @@ builtins.derivation {
       CC="${gcc}/bin/gcc" \
       CFLAGS="-O2 -isystem ${glibc}/include" \
       CPPFLAGS="-isystem ${glibc}/include" \
-      LDFLAGS="-L${glibc}/lib -static" \
+      LDFLAGS="-L${glibc}/lib -static -no-pie" \
       "$TMPDIR/m4-1.4.19/configure" \
         --prefix="$out" \
         --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \

@@ -56,9 +56,13 @@ mkDerivation {
     {
       name = "configure";
       script = ''
-        # Create a fake git wrapper so x.py doesn't panic when running git commands
+        # Fix arc4random: cmake detects it in glibc but the header doesn't declare it
+        sed -i 's/check_symbol_exists(arc4random "stdlib.h" HAVE_DECL_ARC4RANDOM)/set(HAVE_DECL_ARC4RANDOM 0 CACHE BOOL "")/' \
+          src/llvm-project/llvm/cmake/config-ix.cmake 2>/dev/null || true
+
+        # Fake git — must return exit 1 to avoid canonicalize("") panic
         mkdir -p .fake-bin
-        printf '#!/bin/sh\nexit 0\n' > .fake-bin/git
+        printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
         chmod +x .fake-bin/git
         export PATH="$PWD/.fake-bin:$PATH"
         cat > bootstrap.toml << TOML
@@ -86,6 +90,8 @@ mkDerivation {
         rpath = true
         omit-git-hash = true
         download-rustc = false
+        lld = false
+        use-lld = false
 
         [target.x86_64-unknown-linux-gnu]
         llvm-config = "${llvm}/bin/llvm-config"
@@ -99,6 +105,11 @@ mkDerivation {
       name = "build";
       script = ''
         export PATH="$PWD/.fake-bin:$PATH"
+        export OPENSSL_DIR=${openssl}
+        export OPENSSL_LIB_DIR=${openssl}/lib
+        export OPENSSL_INCLUDE_DIR=${openssl}/include
+        export OPENSSL_NO_VENDOR=1
+        export OPENSSL_STATIC=0
         python3 x.py build -j $NIX_BUILD_CORES
       '';
     }
@@ -106,14 +117,29 @@ mkDerivation {
       name = "install";
       script = ''
         export PATH="$PWD/.fake-bin:$PATH"
+        export OPENSSL_DIR=${openssl}
+        export OPENSSL_LIB_DIR=${openssl}/lib
+        export OPENSSL_INCLUDE_DIR=${openssl}/include
+        export OPENSSL_NO_VENDOR=1
+        export OPENSSL_STATIC=0
         python3 x.py install
 
-        # Patch ELF binaries
-        INTERP=$(patchelf --print-interpreter $(which bash))
-        BT_LIB=$(dirname "$INTERP")
+        # No patchelf available — use wrapper scripts
+        LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${llvm}/lib:${openssl}/lib:${zlib}/lib"
+
         for f in $out/bin/*; do
           if [ -f "$f" ] && [ ! -L "$f" ]; then
-            patchelf --set-interpreter "$INTERP" --set-rpath "$out/lib:${llvm}/lib:${openssl}/lib:${zlib}/lib:$BT_LIB" "$f" 2>/dev/null || true
+            if head -c4 "$f" | grep -q "ELF"; then
+              mv "$f" "$f.unwrapped"
+              cat > "$f" <<WRAP
+#!/bin/sh
+export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
+exec "$f.unwrapped" "\$@"
+WRAP
+              chmod +x "$f"
+            elif head -1 "$f" | grep -q '^#!'; then
+              sed -i "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" "$f"
+            fi
           fi
         done
       '';
