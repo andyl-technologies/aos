@@ -20,6 +20,7 @@
   prevRust,
   needsDownloadRustc ? false,
   useBootstrapToml ? false,
+  disableLld ? false,
 }:
 let
   configFileName = if useBootstrapToml then "bootstrap.toml" else "config.toml";
@@ -59,9 +60,16 @@ mkDerivation {
     {
       name = "configure";
       script = ''
-        # Fake git so x.py doesn't panic
+        # Fix arc4random: cmake detects it in glibc but the header doesn't
+        # declare it. Force the check result to 0.
+        sed -i 's/check_symbol_exists(arc4random "stdlib.h" HAVE_DECL_ARC4RANDOM)/set(HAVE_DECL_ARC4RANDOM 0 CACHE BOOL "")/' \
+          src/llvm-project/llvm/cmake/config-ix.cmake
+
+        # Fake git so x.py doesn't panic.
+        # Must return exit 1 for unknown commands (especially rev-parse),
+        # otherwise bootstrap tries canonicalize("") and panics.
         mkdir -p .fake-bin
-        printf '#!/bin/sh\nexit 0\n' > .fake-bin/git
+        printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
         chmod +x .fake-bin/git
         export PATH="$PWD/.fake-bin:$PATH"
 
@@ -89,6 +97,7 @@ mkDerivation {
         rpath = true
         omit-git-hash = true
         ${if needsDownloadRustc then "download-rustc = false" else ""}
+        ${if disableLld then "lld = false\n        use-lld = false" else ""}
         TOML
       '';
     }
@@ -96,6 +105,15 @@ mkDerivation {
       name = "build";
       script = ''
         export PATH="$PWD/.fake-bin:$PATH"
+        export RUST_BACKTRACE=1
+
+        # openssl-sys build script needs these to find OpenSSL
+        export OPENSSL_DIR=${openssl}
+        export OPENSSL_LIB_DIR=${openssl}/lib
+        export OPENSSL_INCLUDE_DIR=${openssl}/include
+        export OPENSSL_NO_VENDOR=1
+        export OPENSSL_STATIC=0
+
         python3 x.py build -j $NIX_BUILD_CORES
       '';
     }
@@ -103,21 +121,29 @@ mkDerivation {
       name = "install";
       script = ''
         export PATH="$PWD/.fake-bin:$PATH"
+        export OPENSSL_DIR=${openssl}
+        export OPENSSL_LIB_DIR=${openssl}/lib
+        export OPENSSL_INCLUDE_DIR=${openssl}/include
+        export OPENSSL_NO_VENDOR=1
+        export OPENSSL_STATIC=0
         python3 x.py install
 
-        INTERP=$(patchelf --print-interpreter $(which bash))
-        BT_LIB=$(dirname "$INTERP")
+        # No patchelf available — use wrapper scripts (same pattern as rust-1_74.nix)
+        LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${zlib}/lib"
+
         for f in $out/bin/*; do
           if [ -f "$f" ] && [ ! -L "$f" ]; then
-            patchelf --set-interpreter "$INTERP" --set-rpath "$out/lib:$BT_LIB" "$f" 2>/dev/null || true
-          fi
-        done
-        find $out/lib -type f -executable 2>/dev/null | while read f; do
-          patchelf --set-interpreter "$INTERP" --set-rpath "$out/lib:$BT_LIB" "$f" 2>/dev/null || true
-        done
-        for f in $out/lib/*.so $out/lib/*.so.*; do
-          if [ -f "$f" ] && [ ! -L "$f" ]; then
-            patchelf --set-rpath "$out/lib:$BT_LIB" "$f" 2>/dev/null || true
+            if head -c4 "$f" | grep -q "ELF"; then
+              mv "$f" "$f.unwrapped"
+              cat > "$f" <<WRAP
+#!/bin/sh
+export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
+exec "$f.unwrapped" "\$@"
+WRAP
+              chmod +x "$f"
+            elif head -1 "$f" | grep -q '^#!'; then
+              sed -i "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" "$f"
+            fi
           fi
         done
       '';

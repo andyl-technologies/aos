@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   jikes,
+  fastjar,
   jamvm-1_5,
   classpath-0_93,
 }:
@@ -24,6 +25,7 @@ mkDerivation {
   buildDeps = [
     gnumake
     jikes
+    fastjar
     jamvm-1_5
     classpath-0_93
   ];
@@ -43,30 +45,62 @@ mkDerivation {
     {
       name = "build";
       script = ''
-        export JAVA_HOME=${jamvm-1_5}
-        export JAVAC="${jikes}/bin/jikes -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip"
-        export ANT_HOME=$out
-        $CONFIG_SHELL bootstrap.sh
+        TOOLS=src/main/org/apache/tools
+        CLASSDIR=build/classes
+        mkdir -p build $CLASSDIR
+
+        # Resolve version.txt placeholders
+        printf 'VERSION=%s\nDATE=%s\n' "${version}" "2012-05-02" \
+          > $TOOLS/ant/version.txt
+
+        # Compile the bootstrap subset (exact same files as bootstrap.sh)
+        ${jikes}/bin/jikes \
+          -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
+          -sourcepath src/main \
+          -d $CLASSDIR -nowarn \
+          $TOOLS/bzip2/*.java \
+          $TOOLS/tar/*.java \
+          $TOOLS/zip/*.java \
+          $TOOLS/ant/util/regexp/RegexpMatcher.java \
+          $TOOLS/ant/util/regexp/RegexpMatcherFactory.java \
+          $TOOLS/ant/property/*.java \
+          $TOOLS/ant/types/*.java \
+          $TOOLS/ant/types/resources/*.java \
+          $TOOLS/ant/*.java \
+          $TOOLS/ant/taskdefs/*.java \
+          $TOOLS/ant/taskdefs/compilers/*.java \
+          $TOOLS/ant/taskdefs/condition/*.java
+
+        # Copy resources (properties, version, etc.)
+        cd src/main
+        find . -type f \( -name '*.properties' -o -name '*.txt' -o -name '*.dtd' -o -name '*.xml' -o -name '*.mf' \) | while read f; do
+          dir=$(dirname "$f")
+          mkdir -p "../../$CLASSDIR/$dir"
+          cp "$f" "../../$CLASSDIR/$f"
+        done
+        cd ../..
+
+        # Create jars
+        mkdir -p bootstrap/lib
+        cd $CLASSDIR
+        ${fastjar}/bin/fastjar cf ../../bootstrap/lib/ant.jar .
+        ${fastjar}/bin/fastjar cf ../../bootstrap/lib/ant-launcher.jar \
+          org/apache/tools/ant/launch
+        cd ../..
       '';
     }
     {
       name = "install";
       script = ''
-                mkdir -p $out/bin $out/lib
-                cp -r bootstrap/lib/* $out/lib/
-                cp bootstrap/bin/ant $out/bin/
-                chmod +x $out/bin/ant
+        mkdir -p $out/bin $out/lib $out/jre/bin
+        cp bootstrap/lib/*.jar $out/lib/
+        ln -s ${jamvm-1_5}/bin/jamvm $out/jre/bin/java
 
-                # Create a wrapper that sets up the classpath and JVM correctly
-                mv $out/bin/ant $out/bin/.ant-unwrapped
-                cat > $out/bin/ant <<WRAPPER
-        #!/bin/sh
-        export JAVA_HOME="${jamvm-1_5}"
-        export ANT_HOME="$out"
-        export CLASSPATH="$out/lib/ant.jar:$out/lib/ant-launcher.jar"
-        exec $out/bin/.ant-unwrapped "\$@"
-        WRAPPER
-                chmod +x $out/bin/ant
+        # Create ant wrapper
+        printf '#!/bin/sh\nexport JAVA_HOME="%s/jre"\nexport ANT_HOME="%s"\nexport CLASSPATH="%s/lib/ant.jar:%s/lib/ant-launcher.jar"\nexec %s/jre/bin/java -cp "$CLASSPATH" org.apache.tools.ant.launch.Launcher "$@"\n' \
+          "$out" "$out" "$out" "$out" "$out" \
+          > $out/bin/ant
+        chmod +x $out/bin/ant
       '';
     }
   ];

@@ -50,7 +50,7 @@ builtins.derivation {
 
       # CC wrapper: always pass -static (libtool strips -static from LDFLAGS)
       mkdir -p "$TMPDIR/ccwrap"
-      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/gcc"
+      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
       chmod +x "$TMPDIR/ccwrap/gcc"
       ln -sf gcc "$TMPDIR/ccwrap/cc"
 
@@ -61,7 +61,7 @@ builtins.derivation {
       CC="$TMPDIR/ccwrap/gcc" \
       CFLAGS="-O2 -isystem ${glibc}/include" \
       CPPFLAGS="-isystem ${glibc}/include" \
-      LDFLAGS="-L${glibc}/lib -static" \
+      LDFLAGS="-L${glibc}/lib -static -no-pie" \
       "$TMPDIR/flex-2.6.4/configure" \
         --prefix="$out" \
         --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
