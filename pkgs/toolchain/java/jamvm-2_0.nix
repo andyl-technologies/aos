@@ -35,8 +35,16 @@ mkDerivation {
       '';
     }
     {
+      name = "patch";
+      script = ''
+        # Add _GNU_SOURCE for pthread_getattr_np (GNU extension)
+        sed -i '1i #define _GNU_SOURCE' src/os/linux/os.c 2>/dev/null || true
+      '';
+    }
+    {
       name = "configure";
       script = ''
+        CFLAGS="-O2 -std=gnu11 -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types" \
         ./configure \
           --prefix=$out \
           --with-classpath-install-dir=${classpath-0_99}
@@ -52,6 +60,8 @@ mkDerivation {
       name = "install";
       script = ''
         make install
+        # Create java symlink so this can be used as JAVA_HOME
+        ln -s jamvm $out/bin/java
       '';
     }
   ];

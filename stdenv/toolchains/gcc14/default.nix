@@ -92,6 +92,14 @@ let
     autoconf = callPackage ./autoconf.nix { };
     automake = callPackage ./automake.nix { };
     gperf = callPackage ./gperf.nix { };
+    python3 = prev.python3;
+
+    # Compression tools (needed so tar can decompress .tar.xz/.tar.bz2 in the production stdenv)
+    xz = callPackage ./xz.nix { };
+    bzip2 = callPackage ./bzip2.nix { gcc = gccRaw; };
+
+    # Build tools
+    patchelf = callPackage ./patchelf.nix { };
 
     # Phase 4: POSIX tools built with wrapped gcc + binutils + glibc
     bash = callPackage ./bash.nix { };
@@ -122,6 +130,10 @@ in
     texinfo
     help2man
     gperf
+    python3
+    xz
+    bzip2
+    patchelf
     bash
     coreutils
     gnumake

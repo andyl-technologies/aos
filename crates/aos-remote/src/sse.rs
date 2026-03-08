@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
+use serde_json;
 
 /// A single Server-Sent Event parsed from an SSE stream.
 #[derive(Debug)]
@@ -21,8 +22,8 @@ pub enum EventAction {
 pub struct SseStream;
 
 impl SseStream {
-    /// Connect to an SSE endpoint, consume the full response, and return the
-    /// parsed events.
+    /// Connect to an SSE endpoint via GET, consume the full response, and
+    /// return the parsed events.
     ///
     /// If `last_event_id` is provided it is sent as the `Last-Event-ID` header
     /// so the server can replay missed events.
@@ -57,26 +58,106 @@ impl SseStream {
         Ok(Self::parse(&body))
     }
 
-    /// Connect to an SSE endpoint with automatic reconnection on disconnect.
-    /// Calls the provided callback for each event. Retries up to `max_retries`
-    /// times on connection failure, using Last-Event-ID for replay.
+    /// Connect to an SSE endpoint via POST, consume the full response, and
+    /// return the parsed events.
+    ///
+    /// If `last_event_id` is provided it is sent as the `Last-Event-ID` header
+    /// so the server can replay missed events. An optional JSON body can be
+    /// included in the POST request.
+    pub async fn connect_post(
+        client: &Client,
+        url: &str,
+        token: &str,
+        last_event_id: Option<&str>,
+        json_body: Option<&serde_json::Value>,
+    ) -> Result<Vec<SseEvent>> {
+        let mut request = client
+            .post(url)
+            .bearer_auth(token)
+            .header("Accept", "text/event-stream");
+
+        if let Some(id) = last_event_id {
+            request = request.header("Last-Event-ID", id);
+        }
+
+        if let Some(body) = json_body {
+            request = request.json(body);
+        }
+
+        let resp = request
+            .send()
+            .await
+            .context("failed to connect to SSE endpoint (POST)")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("SSE connection failed (HTTP {status}): {body}");
+        }
+
+        let body = resp.text().await.context("failed to read SSE response body")?;
+
+        Ok(Self::parse(&body))
+    }
+
+    /// Connect to an SSE endpoint via GET with automatic reconnection on
+    /// disconnect. Calls the provided callback for each event. Retries up to
+    /// `max_retries` times on connection failure, using Last-Event-ID for
+    /// replay.
     pub async fn connect_with_reconnect(
         client: &Client,
         url: &str,
         token: &str,
         max_retries: u32,
+        on_event: impl FnMut(&SseEvent) -> EventAction,
+    ) -> Result<()> {
+        Self::reconnect_loop(client, url, token, max_retries, None, on_event).await
+    }
+
+    /// Connect to an SSE endpoint via POST with automatic reconnection on
+    /// disconnect. Calls the provided callback for each event. Retries up to
+    /// `max_retries` times on connection failure, using Last-Event-ID for
+    /// replay.
+    pub async fn connect_post_with_reconnect(
+        client: &Client,
+        url: &str,
+        token: &str,
+        max_retries: u32,
+        json_body: Option<&serde_json::Value>,
+        on_event: impl FnMut(&SseEvent) -> EventAction,
+    ) -> Result<()> {
+        Self::reconnect_loop(client, url, token, max_retries, json_body, on_event).await
+    }
+
+    /// Internal reconnection loop shared by GET and POST variants.
+    async fn reconnect_loop(
+        client: &Client,
+        url: &str,
+        token: &str,
+        max_retries: u32,
+        json_body: Option<&serde_json::Value>,
         mut on_event: impl FnMut(&SseEvent) -> EventAction,
     ) -> Result<()> {
         let mut last_event_id: Option<String> = None;
         let mut retries = 0;
 
         loop {
-            let result = Self::connect(
-                client,
-                url,
-                token,
-                last_event_id.as_deref(),
-            ).await;
+            let result = if json_body.is_some() {
+                Self::connect_post(
+                    client,
+                    url,
+                    token,
+                    last_event_id.as_deref(),
+                    json_body,
+                ).await
+            } else {
+                Self::connect(
+                    client,
+                    url,
+                    token,
+                    last_event_id.as_deref(),
+                ).await
+            };
 
             match result {
                 Ok(events) => {

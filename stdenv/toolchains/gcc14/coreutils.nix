@@ -14,6 +14,7 @@
   automake,
   texinfo,
   help2man,
+  perl,
   buildPlatform,
   hostPlatform,
 }:
@@ -32,7 +33,7 @@ builtins.derivation {
     ''
       set -eu
       export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO="${texinfo}/bin/makeinfo"
-      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin:${m4}/bin:${flex}/bin:${bison}/bin:${autoconf}/bin:${automake}/bin:${texinfo}/bin:${help2man}/bin"
+      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin:${m4}/bin:${flex}/bin:${bison}/bin:${autoconf}/bin:${automake}/bin:${texinfo}/bin:${help2man}/bin:${perl}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
@@ -59,11 +60,12 @@ builtins.derivation {
       CC="${gcc}/bin/gcc" \
       CFLAGS="-O2 -isystem ${glibc}/include" \
       CPPFLAGS="-isystem ${glibc}/include" \
-      LDFLAGS="-L${glibc}/lib -static" \
+      LDFLAGS="-L${glibc}/lib -static -no-pie" \
       "$TMPDIR/coreutils-9.5/configure" \
         --prefix="$out" \
         --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
-        --disable-nls
+        --disable-nls \
+        --enable-no-install-program=stdbuf
 
       make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
       make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true

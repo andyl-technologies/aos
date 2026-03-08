@@ -4,7 +4,7 @@ use aos_core::error::AosError;
 use aos_core::nix::NixRunner;
 use aos_core::output::{create_spinner, Printer};
 use aos_remote::build::RemoteClient;
-use aos_remote::sse::{EventAction, SseStream};
+use aos_remote::sse::EventAction;
 
 /// `aos build <package>` or `aos build --all`.
 pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>, all: bool) -> Result<()> {
@@ -152,10 +152,8 @@ pub async fn run_remote(
 
     // Step 5: Request remote build and stream logs via SSE with reconnection.
     printer.info("Starting remote build...");
-    let build_url = client.build_url(&drv_str);
-    let reqwest_client = reqwest::Client::new();
 
-    SseStream::connect_with_reconnect(&reqwest_client, &build_url, token, 5, |event| {
+    client.build(&drv_str, 5, |event| {
         match event.event.as_deref() {
             Some("log") => printer.plain(&event.data),
             Some("status") => printer.info(&format!("[status] {}", event.data)),
