@@ -59,7 +59,7 @@ builtins.derivation {
       CC="${gcc}/bin/gcc" \
       CFLAGS="-O2 -isystem ${glibc}/include" \
       CPPFLAGS="-isystem ${glibc}/include" \
-      LDFLAGS="-L${glibc}/lib -static" \
+      LDFLAGS="-L${glibc}/lib -static -no-pie" \
       "$TMPDIR/patch-2.7.6/configure" \
         --prefix="$out"
 

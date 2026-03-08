@@ -35,6 +35,12 @@ builtins.derivation {
       export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin:${m4}/bin:${flex}/bin:${bison}/bin:${autoconf}/bin:${automake}/bin:${texinfo}/bin:${help2man}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
+      # CC wrapper: always pass -static (libtool strips -static from LDFLAGS)
+      mkdir -p "$TMPDIR/ccwrap"
+      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
+      chmod +x "$TMPDIR/ccwrap/gcc"
+      export PATH="$TMPDIR/ccwrap:$PATH"
+
       cd "$TMPDIR"
       mkdir make-4.4 && (cd ${src} && ${prev.tar}/bin/tar cf - .) | (cd make-4.4 && ${prev.tar}/bin/tar xf -)
       cd make-4.4
@@ -56,10 +62,10 @@ builtins.derivation {
       cd "$TMPDIR/build"
 
       export LIBRARY_PATH="${glibc}/lib"
-      CC="${gcc}/bin/gcc" \
+      CC="$TMPDIR/ccwrap/gcc" \
       CFLAGS="-O2 -isystem ${glibc}/include" \
       CPPFLAGS="-isystem ${glibc}/include" \
-      LDFLAGS="-L${glibc}/lib -static" \
+      LDFLAGS="-L${glibc}/lib -static -no-pie" \
       "$TMPDIR/make-4.4/configure" \
         --prefix="$out" \
         --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \

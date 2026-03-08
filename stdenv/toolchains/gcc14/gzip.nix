@@ -59,7 +59,7 @@ builtins.derivation {
       CC="${gcc}/bin/gcc" \
       CFLAGS="-O2 -isystem ${glibc}/include" \
       CPPFLAGS="-isystem ${glibc}/include" \
-      LDFLAGS="-L${glibc}/lib -static" \
+      LDFLAGS="-L${glibc}/lib -static -no-pie" \
       "$TMPDIR/gzip-1.13/configure" \
         --prefix="$out"
 
