@@ -859,6 +859,7 @@ let
       sourceRoot ? null,
       name ? "go-modules",
       system ? defaultSystem,
+      extraPaths ? [ ],
     }:
     builtins.derivation {
       inherit name system;
@@ -867,7 +868,7 @@ let
         "-c"
         ''
           set -eu
-          export PATH="${go}/bin:${bootstrapTools}/bin"
+          export PATH="${go}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${p}/bin") extraPaths)}"
           export GOPROXY="https://proxy.golang.org,direct"
           export GONOSUMDB="*"
           export GONOSUMCHECK="*"
