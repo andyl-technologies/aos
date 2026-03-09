@@ -41,6 +41,12 @@ let
       // {
         go = self.go;
         inherit bootstrapTools;
+        extraPaths = [
+          stdenv.coreutils
+          stdenv.tar
+          stdenv.gzip
+          stdenv.bash
+        ];
       }
     );
 
