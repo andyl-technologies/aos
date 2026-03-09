@@ -30,6 +30,7 @@
   targets ? [
     "X86"
     "AArch64"
+    "BPF"
   ],
   # Version-specific workarounds
   needsArc4randomFix ? true,
