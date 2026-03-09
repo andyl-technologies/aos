@@ -46,27 +46,34 @@ mkDerivation {
 
         # Build BPF datapath programs
         export PATH="${llvm}/bin:$PATH"
+
+        # Suppress clang 22 warning for uninitialized const pointer in SRv6 code
+        # Append after -Wimplicit-fallthrough (last warning flag) so it comes after -Werror
+        sed -i '/-Wimplicit-fallthrough/a CLANG_FLAGS += -Wno-uninitialized-const-pointer' bpf/Makefile.bpf
+
         make -C bpf SHELL="$CONFIG_SHELL" \
           CLANG="${llvm}/bin/clang" \
           LLC="${llvm}/bin/llc" \
           STRIP="${llvm}/bin/llvm-strip"
 
-        # Build cilium-agent
-        go build -trimpath \
-          -ldflags "-s -w -X github.com/cilium/cilium/pkg/version.ciliumVersion=${version}" \
-          -o cilium-agent ./daemon/cmd
+        mkdir -p _bin
 
-        # Build cilium CLI
-        go build -trimpath \
+        # Build cilium-agent
+        go build -trimpath -mod=vendor \
           -ldflags "-s -w -X github.com/cilium/cilium/pkg/version.ciliumVersion=${version}" \
-          -o cilium ./cilium
+          -o _bin/cilium-agent ./daemon
+
+        # Build cilium-dbg CLI
+        go build -trimpath -mod=vendor \
+          -ldflags "-s -w -X github.com/cilium/cilium/pkg/version.ciliumVersion=${version}" \
+          -o _bin/cilium-dbg ./cilium-dbg
       '';
     }
     {
       name = "install";
       script = ''
         mkdir -p $out/bin $out/lib/bpf
-        install -m 755 cilium-agent cilium $out/bin/
+        install -m 755 _bin/cilium-agent _bin/cilium-dbg $out/bin/
 
         # Install compiled BPF programs
         cp -r bpf/out/* $out/lib/bpf/ 2>/dev/null || true
@@ -84,7 +91,7 @@ mkDerivation {
       version = testing.mkToolCheck {
         pname = "tool-cilium";
         tool = self;
-        command = "cilium version --client";
+        command = "cilium-dbg version --client";
       };
     };
 

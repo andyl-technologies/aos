@@ -676,6 +676,13 @@ JAVACEOF
                 printf 'all:\n\t@echo "%s disabled for headless build"\nclean:\n\t@true\n' "$component" > "$f" 2>/dev/null || true
               done
             done
+            # Skip ct.sym generation (CreateSymbols processor) — our bootstrap
+            # JAXWS build is incomplete (missing internal ASM classes), causing
+            # hard errors during the symbol verification step. ct.sym is only
+            # needed for cross-compilation checks, not for a working JDK.
+            find "$dir" -path '*/jdk/make/common/Release.gmk' 2>/dev/null | while read f; do
+              sed -i 's/-processor com.sun.tools.javac.sym.CreateSymbols/-proc:none/' "$f" 2>/dev/null || true
+            done
             # Skip ant -diagnostics in langtools (JamVM is too slow for this)
             find "$dir" -path '*/langtools/make/Makefile' 2>/dev/null | while read f; do
               sed -i 's|$(ANT_JAVA_HOME) $(ANT_OPTS) $(ANT) -diagnostics > $@ ;|mkdir -p $(OUTPUTDIR)/build \&\& echo "diagnostics skipped" > $@ ;|' "$f" 2>/dev/null || true
@@ -1183,31 +1190,13 @@ ANTEOF2
           ALSA_INCLUDE=${alsa-lib}/include/alsa/version.h \
           ALSA_LIBRARY=${alsa-lib}/lib/libasound.so \
           ANT=$TOOLS/ant \
+          DISABLE_NIMBUS=true \
           SKIP_FASTDEBUG_BUILD=true \
           SKIP_DEBUG_BUILD=true \
           -j$NIX_BUILD_CORES
 
-        # Disable generatenimbus and nimbus L&F in final build — boot JDK
-        # lacks JAXB classes needed by the Nimbus L&F source generator.
-        # NimbusDefaults is a generated class; without the generator, nimbus
-        # source files can't compile. Disable by removing source and tools.
-        find openjdk -path '*/jdk/make/tools/generate_nimbus/Makefile' 2>/dev/null | while read f; do
-          printf 'all:\n\t@echo "generatenimbus disabled (no JAXB in boot JDK)"\nclean:\n\t@true\n' > "$f" 2>/dev/null || true
-        done
-        mkdir -p openjdk.build/btjars
-        touch openjdk.build/btjars/generatenimbus.jar
-        # Remove nimbus source and all Makefile references to nimbus
-        for dir in openjdk openjdk-boot; do
-          if [ -d "$dir/jdk/src/share/classes/javax/swing/plaf/nimbus" ]; then
-            mv "$dir/jdk/src/share/classes/javax/swing/plaf/nimbus" \
-               "$dir/jdk/src/share/classes/javax/swing/plaf/nimbus.disabled" 2>/dev/null || true
-          fi
-          # Remove nimbus references from plaf Makefile
-          f="$dir/jdk/make/javax/swing/plaf/Makefile"
-          if [ -f "$f" ]; then
-            sed -i '/nimbus/Id' "$f" 2>/dev/null || true
-          fi
-        done
+        # Nimbus L&F is disabled via DISABLE_NIMBUS make variable (see below)
+        # because boot JDK lacks JAXB classes for the Nimbus source generator.
 
         # Replace rmic with no-op for final build — JamVM's rmic crashes with
         # StackOverflowError (MALFORMED zip entry in isExemptPackage recursion)
@@ -1249,6 +1238,7 @@ RMICEOF
           ALSA_INCLUDE=${alsa-lib}/include/alsa/version.h \
           ALSA_LIBRARY=${alsa-lib}/lib/libasound.so \
           ANT=$TOOLS/ant \
+          DISABLE_NIMBUS=true \
           SKIP_FASTDEBUG_BUILD=true \
           SKIP_DEBUG_BUILD=true
       '';
