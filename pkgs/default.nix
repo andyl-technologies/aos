@@ -140,6 +140,9 @@ let
   # Shared Kubernetes source (single tarball for kubelet, kubectl)
   kubeSource = import ./kubernetes/_source.nix { inherit fetchurl; };
 
+  # Shared KubeEdge source (single tarball for cloudcore, edgecore)
+  kubeedgeSource = import ./iot/_kubeedge-source.nix { inherit fetchurl; };
+
   # Auto-discover packages from subdirectories.
   # Recursively scans for .nix files, skipping default.nix and _-prefixed
   # files/directories (used for shared resources like _source.nix).
@@ -194,6 +197,9 @@ let
 
     kubelet = callPackage ./kubernetes/kubelet.nix { inherit kubeSource; };
     kubectl = callPackage ./kubernetes/kubectl.nix { inherit kubeSource; };
+
+    cloudcore = callPackage ./iot/cloudcore.nix { inherit kubeedgeSource; };
+    edgecore = callPackage ./iot/edgecore.nix { inherit kubeedgeSource; };
 
     # --- stdenv packages (linked, not rebuilt) ---
     gcc = stdenv.gcc;
