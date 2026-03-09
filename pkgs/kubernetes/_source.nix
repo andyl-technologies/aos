@@ -1,4 +1,4 @@
-##! Shared Kubernetes source — used by kubelet, kubeadm, kubectl
+##! Shared Kubernetes source — used by kubelet, kubectl
 { fetchurl }:
 let
   version = "1.35.1";
