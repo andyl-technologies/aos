@@ -137,7 +137,7 @@ let
   # Shared Linux kernel source (single tarball for linux and linux-headers)
   linuxSource = import ./kernel/_source.nix { inherit fetchurl; };
 
-  # Shared Kubernetes source (single tarball for kubelet, kubeadm, kubectl)
+  # Shared Kubernetes source (single tarball for kubelet, kubectl)
   kubeSource = import ./kubernetes/_source.nix { inherit fetchurl; };
 
   # Auto-discover packages from subdirectories.
@@ -193,7 +193,6 @@ let
     linux-headers = callPackage ./kernel/linux-headers.nix { inherit linuxSource; };
 
     kubelet = callPackage ./kubernetes/kubelet.nix { inherit kubeSource; };
-    kubeadm = callPackage ./kubernetes/kubeadm.nix { inherit kubeSource; };
     kubectl = callPackage ./kubernetes/kubectl.nix { inherit kubeSource; };
 
     # --- stdenv packages (linked, not rebuilt) ---
