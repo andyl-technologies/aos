@@ -13,7 +13,7 @@
   unzip,
   gawk,
   python3,
-  openjdk,
+  openjdk-21,
   gcc,
   binutils,
   grep,
@@ -21,6 +21,8 @@
   patch,
   diffutils,
   xz,
+  bootstrapTools,
+  gcc-libs,
 }:
 let
   version = "7.7.1";
@@ -56,7 +58,7 @@ mkDerivation {
     unzip
     gawk
     python3
-    openjdk
+    openjdk-21
     gcc
     binutils
     grep
@@ -73,31 +75,52 @@ mkDerivation {
       script = ''
         mkdir -p $out/bin $out/lib
 
-        # Install and patch the raw binary
+        # Install the pre-built binary as-is (DO NOT patchelf — it corrupts
+        # this binary and causes segfaults in the dynamic linker)
         cp $src $out/lib/bazel-real
         chmod u+wx $out/lib/bazel-real
 
-        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
+        INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
         BT_LIB=$(dirname "$INTERP")
-        STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
-        STDCXX_DIR=""
-        if [ -n "$STDCXX_FILE" ]; then
-          STDCXX_DIR=$(dirname "$STDCXX_FILE")
-        fi
-        RPATH="$BT_LIB"
-        if [ -n "$STDCXX_DIR" ]; then
-          RPATH="$RPATH:$STDCXX_DIR"
-        fi
 
-        patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" \
-                 $out/lib/bazel-real
+        # Compile a tiny LD_PRELOAD library that intercepts
+        # readlink("/proc/self/exe") to return the real bazel binary path.
+        # Without this, invoking via explicit ld.so makes /proc/self/exe
+        # point to the dynamic linker, and Bazel (a self-extracting zip)
+        # tries to open ld.so as a zip file.
+        cat > /tmp/proc_self_exe_fix.c << 'CSRC'
+        #define _GNU_SOURCE
+        #include <dlfcn.h>
+        #include <string.h>
+        #include <stdlib.h>
+        #include <unistd.h>
+        typedef ssize_t (*readlink_fn_t)(const char *, char *, size_t);
+        ssize_t readlink(const char *pathname, char *buf, size_t bufsiz) {
+            readlink_fn_t real_readlink = (readlink_fn_t)dlsym(RTLD_NEXT, "readlink");
+            if (strcmp(pathname, "/proc/self/exe") == 0) {
+                const char *p = getenv("BAZEL_REAL_PATH");
+                if (p) {
+                    size_t len = strlen(p);
+                    if (len > bufsiz) len = bufsiz;
+                    memcpy(buf, p, len);
+                    return (ssize_t)len;
+                }
+            }
+            return real_readlink(pathname, buf, bufsiz);
+        }
+        CSRC
+        cc -shared -fPIC -o $out/lib/proc_self_exe_fix.so \
+          /tmp/proc_self_exe_fix.c -ldl
 
-        # Create wrapper script that provides PATH and JAVA_HOME
+        # Create wrapper script
         cat > $out/bin/bazel << WRAPPER
         #!${bash}/bin/bash
         export PATH="${bash}/bin:${coreutils}/bin:${which}/bin:${zip}/bin:${unzip}/bin:${gawk}/bin:${python3}/bin:${gcc}/bin:${binutils}/bin:${grep}/bin:${gzip}/bin:${patch}/bin:${diffutils}/bin:${xz}/bin:\$PATH"
-        export JAVA_HOME="${openjdk}"
-        exec $out/lib/bazel-real "\$@"
+        export JAVA_HOME="${openjdk-21}"
+        export LD_LIBRARY_PATH="${gcc-libs}/lib:$BT_LIB''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+        export BAZEL_REAL_PATH="$out/lib/bazel-real"
+        export LD_PRELOAD="$out/lib/proc_self_exe_fix.so''${LD_PRELOAD:+:\$LD_PRELOAD}"
+        exec $INTERP $out/lib/bazel-real "\$@"
         WRAPPER
         chmod +x $out/bin/bazel
       '';
