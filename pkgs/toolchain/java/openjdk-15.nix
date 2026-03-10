@@ -18,6 +18,7 @@
   fontconfig,
   freetype,
   xorg-stubs,
+  bootstrapTools,
   openjdk-14,
 }:
 let
@@ -41,6 +42,7 @@ let
       fontconfig
       freetype
       xorg-stubs
+      bootstrapTools
       ;
   };
 in
