@@ -19,6 +19,7 @@
   fontconfig,
   freetype,
   xorg-stubs,
+  bootstrapTools,
 }:
 {
   major,
@@ -75,6 +76,42 @@ mkDerivation {
       script = ''
         tar xf $src
         cd jdk*-*
+
+        # GCC 14 makes "ordered comparison of pointer with integer zero" a hard
+        # error in C++.  Fix the two occurrences in JDK 9 hotspot source.
+        for f in hotspot/src/share/vm/opto/lcm.cpp src/hotspot/share/opto/lcm.cpp; do
+          if [ -f "$f" ]; then
+            sed -i 's/narrow_oop_base() > 0/narrow_oop_base() != (address)0/' "$f"
+          fi
+        done
+        for f in hotspot/src/share/vm/memory/virtualspace.cpp src/hotspot/share/gc/shared/virtualspace.cpp; do
+          if [ -f "$f" ]; then
+            sed -i 's/base() > 0/base() != (char*)0/' "$f"
+          fi
+        done
+        # Fix os_linux.cpp: "if (p < 0)" where p is char*
+        for f in hotspot/src/os/linux/vm/os_linux.cpp src/hotspot/os/linux/os_linux.cpp; do
+          if [ -f "$f" ]; then
+            sed -i 's/if (p < 0)/if (p == NULL)/' "$f"
+          fi
+        done
+
+        # Extend currency date range check from 10 to 20 years (builds break
+        # when currency data entries exceed 10 years from build date).
+        for f in \
+          jdk/make/src/classes/build/tools/generatecurrencydata/GenerateCurrencyData.java \
+          make/jdk/src/classes/build/tools/generatecurrencydata/GenerateCurrencyData.java; do
+          if [ -f "$f" ]; then
+            sed -i 's/((long) 10) \* 365/((long) 20) * 365/; s/more than 10 years/more than 20 years/' "$f"
+          fi
+        done
+
+        # Fix DependOnVariable for GNU Make 4.3+ compatibility (JDK-8237879).
+        # Replace $(eval -include ...) with $(if $(wildcard ...),$(eval include ...))
+        # This was fixed upstream in JDK 11.0.8+ but never backported to JDK 9/10.
+        if [ -f make/common/MakeBase.gmk ]; then
+          sed -i 's/$(eval -include $(call DependOnVariableFileName, $1, $2))/$(if $(wildcard $(call DependOnVariableFileName, $1, $2)),$(eval include $(call DependOnVariableFileName, $1, $2)))/' make/common/MakeBase.gmk
+        fi
       '';
     }
     {
@@ -99,7 +136,8 @@ mkDerivation {
           --with-version-build=${build} \
           --with-version-opt=aos \
           --with-version-pre= \
-          --with-extra-cflags="-Wno-error" \
+          --with-extra-cflags="-Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks" \
+          --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks" \
           --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
           --with-jobs=$NIX_BUILD_CORES \
           ${extraCfgStr}
@@ -108,6 +146,16 @@ mkDerivation {
     {
       name = "build";
       script = ''
+        # Disable AVX-512 in glibc to prevent SIGSEGV in memmove during JVM
+        # bootstrap (older JDK hotspot code has alignment issues with AVX-512)
+        export GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX512F
+
+        # Remove -z defs from generated spec.gmk — our xorg-stubs don't
+        # export all X11 symbols and some JDK libs use runtime-resolved deps
+        find build -name 'spec.gmk' 2>/dev/null | while read f; do
+          sed -i 's/-Xlinker -z -Xlinker defs//g; s/-Wl,-z,defs//g' "$f" 2>/dev/null || true
+        done
+
         make images JOBS=$NIX_BUILD_CORES
       '';
     }
@@ -118,7 +166,7 @@ mkDerivation {
         cp -a build/*/images/jdk/* $out/
 
         # Patch ELF binaries with the correct dynamic linker and rpath
-        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
+        INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
         BT_LIB=$(dirname "$INTERP")
 
         # Find libstdc++ directory (nested under lib/gcc/...)
@@ -127,10 +175,12 @@ mkDerivation {
         if [ -n "$STDCXX_FILE" ]; then
           STDCXX_DIR=$(dirname "$STDCXX_FILE")
         fi
-        RPATH="$out/lib:$out/lib/server:$BT_LIB"
+        RPATH="$out/lib:$out/lib/jli:$out/lib/server:$BT_LIB"
         if [ -n "$STDCXX_DIR" ]; then
           RPATH="$RPATH:$STDCXX_DIR"
         fi
+        # Add runtime dependency library paths
+        RPATH="$RPATH:${zlib}/lib:${fontconfig}/lib:${freetype}/lib"
 
         # Patch executables
         for f in $out/bin/* $out/lib/jspawnhelper; do
