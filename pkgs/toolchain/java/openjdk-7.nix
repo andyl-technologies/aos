@@ -30,6 +30,7 @@
   ant-bootstrap,
   fastjar,
   libxslt,
+  bootstrapTools,
 }:
 let
   icedteaVersion = "2.6.13";
@@ -676,12 +677,17 @@ JAVACEOF
                 printf 'all:\n\t@echo "%s disabled for headless build"\nclean:\n\t@true\n' "$component" > "$f" 2>/dev/null || true
               done
             done
-            # Skip ct.sym generation (CreateSymbols processor) — our bootstrap
-            # JAXWS build is incomplete (missing internal ASM classes), causing
-            # hard errors during the symbol verification step. ct.sym is only
-            # needed for cross-compilation checks, not for a working JDK.
+            # Skip ct.sym generation (CreateSymbols processor) — the JAXWS build
+            # is missing internal ASM classes (MethodVisitor), causing hard errors
+            # during the symbol verification step. Without ct.sym, javac falls back
+            # to using rt.jar directly for symbol resolution.
             find "$dir" -path '*/jdk/make/common/Release.gmk' 2>/dev/null | while read f; do
-              sed -i 's/-processor com.sun.tools.javac.sym.CreateSymbols/-proc:none/' "$f" 2>/dev/null || true
+              awk '
+                /XDprocess.packages/ && /proc:only/ { skip=1; print "\t@echo \"ct.sym generation skipped (bootstrap)\""; next }
+                skip && /\\$/ { next }
+                skip && !/\\$/ { skip=0; next }
+                { print }
+              ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
             done
             # Skip ant -diagnostics in langtools (JamVM is too slow for this)
             find "$dir" -path '*/langtools/make/Makefile' 2>/dev/null | while read f; do
@@ -1169,19 +1175,35 @@ ANTEOF2
           ALT_COMPILER_PATH=$TOOLS/ \
           ANT=$TOOLS/ant
 
-        # Patch JAVAH_CMD to use gjavah — OpenJDK's javah.jar crashes with
-        # NullPointerException under JamVM (JavahTask.java:509).
-        # JAVAH_CMD includes -bootclasspath in its definition, so we must
-        # preserve those Make variable references when redefining it.
-        for dir in openjdk-boot openjdk; do
-          f="$dir/jdk/make/common/internal/Defs-control.gmk"
-          if [ -f "$f" ]; then
-            echo '# gjavah override — OpenJDK javah.jar NPE under JamVM' >> "$f"
-            echo 'JAVAH_CMD = ${gjavah}/bin/gjavah -bootclasspath "$(CLASSBINDIR)$(CLASSPATH_SEPARATOR)$(BOOTDIR)/jre/lib/rt.jar$(CLASSPATH_SEPARATOR)$(CLASSBINDIR)"' >> "$f"
-          fi
-        done
+        # Create gjavah wrapper that adds the module's classes directory to
+        # the classpath. OpenJDK compiles module classes to tmp/.../classes/
+        # but JAVAH_CMD only has the main classes/ dir. This wrapper derives
+        # the module's classes dir from the -d argument (CClassHeaders →
+        # classes sibling) and adds it via -classpath.
+        cat > $TOOLS/gjavah-wrapper << 'GJAVAHEOF'
+#!/bin/sh
+PREV=""
+for arg in "$@"; do
+  if [ "$PREV" = "-d" ]; then
+    CLASSDIR=$(echo "$arg" | sed 's|/CClassHeaders.*$|/classes|')
+    if [ -d "$CLASSDIR" ]; then
+      exec GJAVAH_REAL -classpath "$CLASSDIR" "$@"
+    fi
+  fi
+  PREV="$arg"
+done
+exec GJAVAH_REAL "$@"
+GJAVAHEOF
+        sed -i "s|GJAVAH_REAL|${gjavah}/bin/gjavah|g" $TOOLS/gjavah-wrapper
+        chmod +x $TOOLS/gjavah-wrapper
 
         # Build up to and including boot JDK + stage2 bootstrap setup
+        # JAVAH_CMD is passed on the make command line to override the
+        # OpenJDK build system's computed value. JAVAH_CMD is NOT defined
+        # in source .gmk files — it's generated at build time from BOOTDIR
+        # and other variables. The computed value uses `java -jar javah.jar`
+        # which crashes with NPE under JamVM. Make command-line variables
+        # override all makefile-level assignments including computed ones.
         make stamps/bootstrap-directory-symlink-stage2.stamp \
           ALT_UNIXCOMMAND_PATH=$TOOLS/ \
           ALT_USRBIN_PATH=$TOOLS/ \
@@ -1193,6 +1215,7 @@ ANTEOF2
           DISABLE_NIMBUS=true \
           SKIP_FASTDEBUG_BUILD=true \
           SKIP_DEBUG_BUILD=true \
+          "JAVAH_CMD=$TOOLS/gjavah-wrapper -bootclasspath \$(CLASSBINDIR):\$(BOOTDIR)/jre/lib/rt.jar" \
           -j$NIX_BUILD_CORES
 
         # Nimbus L&F is disabled via DISABLE_NIMBUS make variable (see below)
@@ -1240,7 +1263,8 @@ RMICEOF
           ANT=$TOOLS/ant \
           DISABLE_NIMBUS=true \
           SKIP_FASTDEBUG_BUILD=true \
-          SKIP_DEBUG_BUILD=true
+          SKIP_DEBUG_BUILD=true \
+          "JAVAH_CMD=$TOOLS/gjavah-wrapper -bootclasspath \$(CLASSBINDIR):\$(BOOTDIR)/jre/lib/rt.jar"
       '';
     }
     {
@@ -1254,8 +1278,15 @@ RMICEOF
           cp -a openjdk.build/images/j2sdk-image/* $out/
         fi
 
+        # Remove empty ct.sym — ct.sym generation was skipped due to missing
+        # ASM classes. Without ct.sym, javac uses rt.jar directly for symbol
+        # resolution, which is correct for same-version compilation.
+        rm -f $out/lib/ct.sym
+
         # Patch ELF binaries with correct dynamic linker and rpath
-        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
+        # CONFIG_SHELL (bash) is statically linked, so patchelf --print-interpreter
+        # fails on it. Read the dynamic linker from the cc-wrapper metadata instead.
+        INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
         BT_LIB=$(dirname "$INTERP")
 
         # Find libstdc++ directory (nested under lib/gcc/...)
@@ -1264,7 +1295,7 @@ RMICEOF
         if [ -n "$STDCXX_FILE" ]; then
           STDCXX_DIR=$(dirname "$STDCXX_FILE")
         fi
-        RPATH="$out/lib:$out/jre/lib/amd64:$out/jre/lib/amd64/server:$BT_LIB"
+        RPATH="$out/lib:$out/lib/amd64:$out/lib/amd64/jli:$out/jre/lib/amd64:$out/jre/lib/amd64/jli:$out/jre/lib/amd64/server:$BT_LIB"
         if [ -n "$STDCXX_DIR" ]; then
           RPATH="$RPATH:$STDCXX_DIR"
         fi
