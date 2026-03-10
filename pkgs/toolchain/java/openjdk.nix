@@ -20,6 +20,7 @@
   freetype,
   xorg-stubs,
   openjdk-24,
+  bootstrapTools,
 }:
 let
   version = "25.0.2";
@@ -60,11 +61,13 @@ mkDerivation {
   patches = [
     ./openjdk-patches/fix-java-home-jdk21.patch
     ./openjdk-patches/read-truststore-from-env-jdk10.patch
-    ./openjdk-patches/currency-date-range-jdk10.patch
     ./openjdk-patches/increase-javadoc-heap-jdk13.patch
     ./openjdk-patches/ignore-LegalNoticeFilePlugin-jdk18.patch
-    ./openjdk-patches/gnumake-4.4.1.patch
   ];
+  postPatch = ''
+    # Fix ambiguous fma() → float call in mulnode.cpp (GCC 14)
+    sed -i 's/return TypeH::make(fma(f1, f2, f3))/return TypeH::make((float)fma(f1, f2, f3))/' src/hotspot/share/opto/mulnode.cpp
+  '';
 
   phases = [
     {
@@ -97,7 +100,8 @@ mkDerivation {
           --with-version-build=${build} \
           --with-version-opt=aos \
           --with-version-pre= \
-          --with-extra-cflags="-Wno-error" \
+          --with-extra-cflags="-Wno-error -fcommon" \
+          --with-extra-cxxflags="-Wno-error" \
           --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
           --with-jobs=$NIX_BUILD_CORES
       '';
@@ -105,6 +109,12 @@ mkDerivation {
     {
       name = "build";
       script = ''
+        # Remove -z defs from generated spec.gmk — our xorg-stubs don't
+        # export all X11 symbols and some JDK libs use runtime-resolved deps
+        find build -name 'spec.gmk' 2>/dev/null | while read f; do
+          sed -i 's/-Xlinker -z -Xlinker defs//g; s/-Wl,-z,defs//g' "$f" 2>/dev/null || true
+        done
+
         make images JOBS=$NIX_BUILD_CORES
       '';
     }
@@ -115,7 +125,7 @@ mkDerivation {
         cp -a build/*/images/jdk/* $out/
 
         # Patch ELF binaries with the correct dynamic linker and rpath
-        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
+        INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
         BT_LIB=$(dirname "$INTERP")
 
         # Find libstdc++ directory (nested under lib/gcc/...)
@@ -124,10 +134,12 @@ mkDerivation {
         if [ -n "$STDCXX_FILE" ]; then
           STDCXX_DIR=$(dirname "$STDCXX_FILE")
         fi
-        RPATH="$out/lib:$out/lib/server:$BT_LIB"
+        RPATH="$out/lib:$out/lib/jli:$out/lib/server:$BT_LIB"
         if [ -n "$STDCXX_DIR" ]; then
           RPATH="$RPATH:$STDCXX_DIR"
         fi
+        # Add runtime dependency library paths
+        RPATH="$RPATH:${zlib}/lib:${fontconfig}/lib:${freetype}/lib"
 
         # Patch executables
         for f in $out/bin/* $out/lib/jspawnhelper; do
