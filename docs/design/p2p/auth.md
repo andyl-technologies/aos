@@ -27,10 +27,10 @@ capability. Joins the mesh with its own keypair and UCAN. May be ephemeral
 (CI container that submits a build and exits) or long-lived (observability
 dashboard). Examples:
 
-- Developer laptops running `aos remote build`
+- Developer laptops running `aos build -i <identity>`
 - CI containers that submit builds and stream logs
-- Web UIs and dashboards
-- S3 archivers that fetch NARs for cold storage
+- Web UIs and dashboards (`aos net -i <identity>`)
+- Archivers that fetch NARs for cold storage
 - Monitoring and alerting systems
 
 Same mesh, same auth model (UCAN), different capabilities. A daemon is just a
@@ -93,12 +93,15 @@ capability-based authorization scheme built on JWT. Key properties:
 
 | Capability | What it grants | Typical holder |
 |------------|----------------|----------------|
-| `submit` | Publish jobs to `builds/wanted` | Daemons, dev clients, CI clients |
-| `claim` | Claim jobs from `builds/wanted` and execute builds | Daemons only |
-| `serve` | Serve NARs and narinfo to peers requesting store paths | Daemons |
-| `fetch` | Fetch NARs from peers | Daemons, archiver clients |
-| `observe` | Subscribe to build logs, query build status | All |
-| `manage` | GC, view management, peer administration | Admin daemons |
+| `build/submit` | Publish jobs to `build/wanted/{universe}/{system}` | Daemons, dev clients, CI clients |
+| `build/claim` | Claim jobs from `build/wanted/{universe}/{system}` and execute builds | Daemons only |
+| `build/observe` | Subscribe to build logs, query build status | All |
+| `store/serve` | Serve NARs/chunks to peers requesting store paths | Daemons |
+| `store/fetch` | Fetch NARs/chunks from peers | Daemons, archiver clients |
+| `admin/manage` | GC, view management, peer administration | Admin daemons |
+| `sync/write` | Publish CRDT mutations to `sync/{universe}/` namespace. Path-scoped: `aos://{universe}/sync/profiles/dylan/*` grants write only to that subtree. | Daemons, dev clients |
+| `sync/read` | Receive CRDT state from universe. Path-scoped similarly. | Daemons, clients |
+| `shell/create` | Create login shells on hosts with login capability. | Daemons, dev clients |
 
 ### UCAN Structure
 
@@ -111,6 +114,7 @@ capability-based authorization scheme built on JWT. Key properties:
     {"with": "aos://default/*", "can": "build/submit"},
     {"with": "aos://default/*", "can": "build/observe"},
     {"with": "aos://staging/*", "can": "build/submit"}
+    // "with" uses universe-scoped URIs: aos://{universe}/*
   ],
   "prf": ["<parent-UCAN>"],
   "fct": [
@@ -118,6 +122,23 @@ capability-based authorization scheme built on JWT. Key properties:
   ]
 }
 ```
+
+Path-scoped sync capabilities use the same URI scheme with path prefixes to
+restrict write access to specific subtrees within the sync namespace:
+
+```json
+{
+  "att": [
+    {"with": "aos://staging/sync/profiles/dylan/*", "can": "sync/write"},
+    {"with": "aos://staging/sync/*", "can": "sync/read"},
+    {"with": "aos://staging/*", "can": "shell/create"}
+  ]
+}
+```
+
+Here the peer can write CRDT mutations only under `sync/profiles/dylan/` in the
+`staging` universe, read all sync state in that universe, and create login
+shells on any host in `staging`.
 
 Fields:
 
@@ -136,9 +157,9 @@ Fields:
 - `fct` (facts): optional metadata. Not used for authorization decisions but
   useful for debugging and observability.
 
-The `with` field scopes capabilities to views: `aos://default/*` means "the
-view named `default`, all resources within it." This enables fine-grained
-scoping. A CI client might only have `submit` for the `staging` view and
+The `with` field scopes capabilities to universes: `aos://default/*` means "the
+universe named `default`, all resources within it." This enables fine-grained
+scoping. A CI client might only have `submit` for the `staging` universe and
 nothing else.
 
 ### Delegation Chain
@@ -150,15 +171,15 @@ daemons to clients:
 Root Key (offline after initial setup)
   |
   | UCAN #1: root -> Daemon A
-  |   cap: [submit, claim, serve, fetch, observe, manage]
-  |   views: [*]  (all views)
+  |   cap: [build/submit, build/claim, store/serve, store/fetch, build/observe, admin/manage]
+  |   universes: [*]  (all universes)
   |   exp: 2027-01-01
   |
   +---> Daemon A stores UCAN #1
   |
   | UCAN #2: root -> Daemon B
-  |   cap: [claim, serve, fetch, observe]
-  |   views: [default]
+  |   cap: [build/claim, store/serve, store/fetch, build/observe]
+  |   universes: [default]
   |   exp: 2027-01-01
   |
   +---> Daemon B: build-only worker, cannot submit jobs
@@ -166,8 +187,8 @@ Root Key (offline after initial setup)
   | UCAN #3: Daemon A -> Client C (delegated, not root-signed)
   |   iss: PeerId-A
   |   aud: PeerId-C
-  |   cap: [submit, observe]  <-- attenuated from A's full set
-  |   views: [staging]         <-- further restricted
+  |   cap: [build/submit, build/observe]  <-- attenuated from A's full set
+  |   universes: [staging]         <-- further restricted
   |   exp: 7 days from now
   |   prf: [UCAN #1]          <-- proof: A got these caps from root
   |
@@ -176,14 +197,56 @@ Root Key (offline after initial setup)
         Capabilities only narrow at each delegation step
 ```
 
-Note that Daemon A can delegate `submit` and `observe` (which it holds) but
-cannot delegate `manage` to Client C unless it also restricts its own future
+Note that Daemon A can delegate `build/submit` and `build/observe` (which it holds) but
+cannot delegate `admin/manage` to Client C unless it also restricts its own future
 use (UCAN attenuation is monotonically narrowing).
+
+Sync capabilities follow the same delegation pattern with path scoping:
+
+```
+Root Key
+  |
+  | UCAN #S1: root -> Daemon A
+  |   cap: [sync/write, sync/read]
+  |   with: aos://*/sync/*        (all paths, all universes)
+  |   exp: 2027-01-01
+  |
+  +---> Daemon A: full sync read/write for all paths
+  |
+  | UCAN #S2: Daemon A -> Developer Client D (delegated)
+  |   iss: PeerId-A
+  |   aud: PeerId-D
+  |   cap: [sync/write]           <-- attenuated: write only
+  |   with: aos://default/sync/profiles/dylan/*  <-- path-scoped
+  |   cap: [sync/read]
+  |   with: aos://default/sync/*  <-- can read all sync state
+  |   exp: 7 days from now
+  |   prf: [UCAN #S1]
+  |
+  +---> Client D: can write only to their own profile subtree
+  |
+  | UCAN #S3: Daemon A -> CI Client E (delegated)
+  |   iss: PeerId-A
+  |   aud: PeerId-E
+  |   cap: [sync/write]
+  |   with: aos://staging/sync/shells/ci-*  <-- scoped to CI shells
+  |   cap: [sync/read]
+  |   with: aos://staging/sync/*
+  |   exp: 24 hours from now
+  |   prf: [UCAN #S1]
+  |
+  +---> Client E: CI can only write shell state under ci-* prefix
+```
+
+Path scoping ensures that delegated sync capabilities cannot exceed the
+subtree granted by the parent UCAN. Daemon A has `sync/*` (all paths) and
+can narrow to `sync/profiles/dylan/*` or `sync/shells/ci-*` for specific
+clients.
 
 ### Verification
 
 When a peer receives a GossipSub message (e.g., a job submission on
-`builds/wanted`), it validates the attached UCAN before accepting the message:
+`build/wanted/{universe}/{system}`), it validates the attached UCAN before accepting the message:
 
 ```rust
 fn validate_gossipsub_message(
@@ -196,7 +259,7 @@ fn validate_gossipsub_message(
     };
 
     // Verify the UCAN chain back to the root key
-    let chain = match ucan::ProofChain::from_token_string(&job.ucan_token) {
+    let chain = match ucan::ProofChain::from_token_string(&job.ucan) {
         Ok(c) => c,
         Err(_) => return MessageAcceptance::Reject,
     };
@@ -213,16 +276,65 @@ fn validate_gossipsub_message(
 
     // Check: token has the required capability for this message type
     let required_cap = match job.message_type {
-        "builds/wanted" => "build/submit",
-        "builds/claimed" => "build/claim",
+        t if t.starts_with("build/wanted/") => "build/submit",
+        t if t.starts_with("build/claimed/") => "build/claim",
         _ => return MessageAcceptance::Reject,
     };
 
-    if !chain.has_capability(required_cap, &format!("aos://{}/*", job.view)) {
+    if !chain.has_capability(required_cap, &format!("aos://{}/*", job.universe)) {
         return MessageAcceptance::Reject;
     }
 
+    // Sync deltas on the sync/{universe} GossipSub topic are validated the
+    // same way: check UCAN chain, verify the `with` path covers the delta's
+    // target path, and check expiry.  For example, a delta targeting
+    // sync/profiles/dylan/status requires a UCAN whose `with` field is a
+    // prefix match (e.g. aos://default/sync/profiles/dylan/*).
+    // See validate_sync_delta() below.
+
     // Check: not expired
+    if chain.is_expired() {
+        return MessageAcceptance::Reject;
+    }
+
+    MessageAcceptance::Accept
+}
+```
+
+Sync deltas published to `sync/{universe}` GossipSub topics are validated
+identically:
+
+```rust
+fn validate_sync_delta(
+    msg: &gossipsub::Message,
+    root_pubkey: &PublicKey,
+) -> MessageAcceptance {
+    let delta: SyncDelta = match serde_json::from_slice(&msg.data) {
+        Ok(d) => d,
+        Err(_) => return MessageAcceptance::Reject,
+    };
+
+    let chain = match ucan::ProofChain::from_token_string(&delta.ucan) {
+        Ok(c) => c,
+        Err(_) => return MessageAcceptance::Reject,
+    };
+
+    if chain.root_issuer() != root_pubkey {
+        return MessageAcceptance::Reject;
+    }
+
+    if chain.audience() != msg.source {
+        return MessageAcceptance::Reject;
+    }
+
+    // Path-scoped check: the UCAN's `with` field must be a prefix of
+    // the delta's target path.  e.g. "aos://default/sync/profiles/dylan/*"
+    // covers "aos://default/sync/profiles/dylan/status".
+    let delta_resource = format!("aos://{}/sync/{}", delta.universe, delta.path);
+    if !chain.has_capability("sync/write", &delta_resource) {
+        return MessageAcceptance::Reject;
+    }
+
     if chain.is_expired() {
         return MessageAcceptance::Reject;
     }
@@ -237,6 +349,26 @@ messages are ignored and their connections deprioritized. This provides
 automatic protection against both misconfigured peers and active attackers.
 
 ---
+
+## Auth Domain Separation
+
+UCAN is for mesh (peer-to-peer). Unix sockets are for local (same
+machine/container). They never mix. A UCAN token is never sent over a Unix
+socket; `SO_PEERCRED` is never used on the mesh. The two auth systems operate
+at different boundaries and serve different purposes:
+
+- **Mesh auth (UCAN)**: identifies peers across the network, encodes
+  capabilities, supports delegation chains. Used for all libp2p communication.
+- **Local auth (Unix sockets)**: identifies users/processes on the same
+  machine via kernel-provided credentials. Socket path is the credential for
+  containers (if you can connect, you are authorized at that level).
+  `SO_PEERCRED` provides uid/gid for host users.
+
+For multi-user containers and VMs, the daemon runs in **forwarding mode**:
+it binds a control socket inside the container and forwards requests to an
+upstream daemon socket on the host. Capabilities narrow at each nesting level.
+See [sockets.md](sockets.md) for the full socket architecture, socket types,
+and multi-level nesting.
 
 ## Unix Socket Control Protocol
 
@@ -279,6 +411,9 @@ socket = "/run/aos/control.sock"
 socket_group = "aos"              # Unix group that can connect
 
 [control.groups]
+# Short forms for local auth policy -- these map to the qualified UCAN
+# capability names internally (e.g. "submit" -> "build/submit",
+# "fetch" -> "store/fetch", "manage" -> "admin/manage").
 aos-admin = ["submit", "observe", "manage", "fetch"]
 aos-build = ["submit", "observe"]
 aos-read  = ["observe"]
@@ -315,13 +450,13 @@ object. The daemon responds with one or more JSON lines (streaming for logs).
 {"action": "peers"}
 
 // Delegate a UCAN to a client
-{"action": "delegate", "cap": ["submit", "observe"], "views": ["staging"], "expires": "7d"}
+{"action": "delegate", "cap": ["build/submit", "build/observe"], "universes": ["staging"], "expires": "7d"}
 ```
 
 The `delegate` action is how a daemon issues UCAN tokens to client peers. The
 daemon creates a sub-UCAN attenuated from its own capabilities, signs it with
 its own key, and returns the token string. The user can then pass this token to
-a client peer (e.g., their laptop running `aos remote build`).
+a client peer (e.g., their laptop running `aos build -i <identity>`).
 
 ---
 
@@ -330,42 +465,49 @@ a client peer (e.g., their laptop running `aos remote build`).
 ### What is a client peer
 
 A client is a lightweight libp2p peer that joins the mesh with its own identity
-and UCAN. It has no Nix store and cannot execute builds. Clients are used for:
+and UCAN. It has no Nix store and cannot execute builds. Clients are created
+by passing the `-i <identity>` flag to `aos build` or `aos net`, which
+activates P2P mode in the main `aos` binary instead of talking to the local
+daemon socket. Clients are used for:
 
-- `aos remote build foo` -- developer laptop submitting builds without running
-  a local daemon
+- `aos build -i myident foo` -- developer laptop submitting builds without
+  running a local daemon
 - CI containers -- submit builds, watch results, exit
-- Web UIs and dashboards -- observe build activity in real time
-- Archiving tools -- fetch NARs from the mesh for backup to S3 or other storage
+- Web UIs and dashboards -- `aos net -i myident` to observe build activity
+- Archiving tools -- fetch NARs from the mesh for backup or cold storage
 - Monitoring and alerting -- observe peer health, build failure rates
 
-### How `aos remote` works
+### How `aos build -i` works
 
 ```
-$ aos remote build foo --mesh seed1.example.com --token <UCAN-file>
+$ aos build -i myident foo
 ```
+
+Identity files live at `~/.aos/identities/myident/` and contain `key.ed25519`,
+`token.ucan`, and `seed_peers`.
 
 The steps:
 
-1. Read UCAN from file (or `$AOS_TOKEN` env var, or system keychain)
-2. Generate an ephemeral ed25519 keypair (or read a persistent one from
-   `~/.aos/client.key`)
-3. Start a lightweight libp2p peer (no Kademlia server mode, no NAR serving)
-4. Connect to the mesh via the specified seed peer
-5. Present UCAN during the `/aos/auth/1.0.0` handshake -- peers verify the
+1. Read the identity from `~/.aos/identities/myident/`
+2. Load the ed25519 keypair from `key.ed25519`
+3. Read the UCAN token from `token.ucan`
+4. Read bootstrap peers from `seed_peers`
+5. Start a lightweight libp2p peer (no Kademlia server mode, no NAR serving)
+6. Connect to the mesh via the seed peers
+7. Present UCAN during the `/aos/auth/1.0.0` handshake -- peers verify the
    chain back to the root key
-6. Evaluate the derivation locally (requires Nix on the local machine, but
+8. Evaluate the derivation locally (requires Nix on the local machine, but
    not a daemon)
-7. Publish the job to `builds/wanted` via GossipSub (UCAN must include
-   `submit` capability)
-8. Subscribe to `builds/logs/{drv_hash}` via GossipSub
-9. Stream logs to the terminal as they arrive
-10. On completion: print the result and exit
+9. Publish the job to `build/wanted/{universe}/{system}` via GossipSub (UCAN must include
+   `build/submit` capability)
+10. Subscribe to `build/logs/{drv_hash}` via GossipSub
+11. Stream logs to the terminal as they arrive
+12. On completion: print the result and exit
 
-For long-lived clients:
+For long-lived observation:
 
 ```
-$ aos remote watch --mesh seed1.example.com --token <UCAN-file>
+$ aos net logs -i myident
 # Subscribes to all build activity, streams to stdout or a dashboard
 ```
 
@@ -382,7 +524,7 @@ $ aos remote watch --mesh seed1.example.com --token <UCAN-file>
 | Persistence | Long-lived, stores state on disk | Ephemeral or long-lived, minimal state |
 | Identity | Persistent keypair (machine-level) | Persistent or ephemeral keypair |
 
-Both daemon and client use `aos-p2p` for the libp2p layer. The daemon
+Both daemon and client modes use `aos-p2p` for the libp2p layer. The daemon
 additionally links `aos-core` for Nix store operations and build execution.
 
 ---
@@ -392,7 +534,7 @@ additionally links `aos-core` for Nix store operations and build execution.
 ### Step 1: Create the cluster root key
 
 ```
-$ aos init
+$ aos auth init
 ```
 
 This command:
@@ -425,10 +567,10 @@ full-capability UCAN to itself, and starts the mesh (a mesh of one).
 Alternatively, issue the UCAN explicitly:
 
 ```
-$ aos enroll daemon \
+$ aos auth enroll daemon \
     --root-key ~/.aos/root.key \
-    --cap submit,claim,serve,fetch,observe,manage \
-    --views '*' \
+    --cap build/submit,build/claim,store/serve,store/fetch,build/observe,admin/manage \
+    --universes '*' \
     --expires 1y
 # Prints UCAN token
 
@@ -440,11 +582,11 @@ $ aos daemon --token <UCAN-token> --root-pubkey <root-public-key>
 On the admin machine (which holds the root key):
 
 ```
-$ aos enroll daemon \
+$ aos auth enroll daemon \
     --root-key ~/.aos/root.key \
     --peer-id QmDaemonB \
-    --cap claim,serve,fetch,observe \
-    --views default \
+    --cap build/claim,store/serve,store/fetch,build/observe \
+    --universes default \
     --expires 1y
 # Prints UCAN token
 ```
@@ -467,10 +609,10 @@ key, and the new daemon is admitted to the mesh.
 Root-issued client token:
 
 ```
-$ aos enroll client \
+$ aos auth enroll client \
     --root-key ~/.aos/root.key \
-    --cap submit,observe \
-    --views staging \
+    --cap build/submit,build/observe \
+    --universes staging \
     --expires 30d
 # Prints UCAN token (not bound to a specific PeerId -- bearer token)
 ```
@@ -478,9 +620,9 @@ $ aos enroll client \
 Daemon-delegated client token (no root key needed):
 
 ```
-$ aos delegate \
-    --cap submit,observe \
-    --views staging \
+$ aos auth delegate \
+    --cap build/submit,build/observe \
+    --universes staging \
     --expires 7d
 # Daemon issues a sub-UCAN from its own capabilities
 # Prints delegated token
@@ -589,7 +731,7 @@ This is not planned for the initial implementation.
 ### Root key rotation
 
 ```
-$ aos rotate-root \
+$ aos auth rotate-root \
     --old-key ~/.aos/root.key \
     --new-key ~/.aos/root-new.key
 ```
@@ -687,4 +829,5 @@ admitted with full capabilities. This should never be used in production.
 | Revocation | Short-lived tokens + DHT revocation list + connection gating |
 | Root trust | Single root public key distributed to all nodes |
 | Replay prevention | UCAN `exp` field + GossipSub message deduplication |
+| Path-scoped sync permissions | UCAN path prefix matching on sync namespace |
 | Privilege escalation prevention | UCAN attenuation: delegated tokens can only narrow, never widen |
