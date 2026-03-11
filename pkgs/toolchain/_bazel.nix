@@ -41,6 +41,84 @@
   versionCheck ? builtins.substring 0 3 version,
 }:
 let
+  # Python script to repackage a self-extracting ELF+zip Bazel binary after
+  # patchelf. Patchelf changes the ELF portion's size, corrupting the zip
+  # central directory offsets. This script splits, patches, and recombines.
+  repackBazelPy = builtins.toFile "repack_bazel.py" ''
+import zipfile, io, os, sys, subprocess, tempfile, shutil
+
+bazel_path = sys.argv[1]
+interp = sys.argv[2]
+rpath = sys.argv[3]
+patchelf_bin = sys.argv[4]
+output_path = sys.argv[5]
+
+with open(bazel_path, 'rb') as f:
+    data = f.read()
+
+zf = zipfile.ZipFile(bazel_path, 'r')
+first_offset = min(zi.header_offset for zi in zf.infolist())
+elf_prefix = data[:first_offset]
+
+# Optionally patch LD_PRELOAD string in ELF prefix (for bootstrap wrapper)
+if len(sys.argv) > 6 and sys.argv[6] == '--patch-ld-preload':
+    elf_prefix = elf_prefix.replace(b'LD_PRELOAD', b'XX_PRELOAD')
+
+# Write ELF prefix to temp file, patchelf it, read back
+tmpdir = tempfile.mkdtemp()
+elf_tmp = os.path.join(tmpdir, 'elf_prefix')
+with open(elf_tmp, 'wb') as f:
+    f.write(elf_prefix)
+os.chmod(elf_tmp, 0o755)
+subprocess.run([patchelf_bin, '--set-interpreter', interp, '--set-rpath', rpath, elf_tmp], check=True)
+with open(elf_tmp, 'rb') as f:
+    patched_prefix = f.read()
+
+# Extract, patchelf ELF binaries in the zip payload
+extract_dir = os.path.join(tmpdir, 'zip_contents')
+os.makedirs(extract_dir)
+zf.extractall(extract_dir)
+
+for name in os.listdir(extract_dir):
+    fpath = os.path.join(extract_dir, name)
+    if not os.path.isfile(fpath):
+        continue
+    with open(fpath, 'rb') as f:
+        magic = f.read(4)
+    if magic != b'\x7fELF':
+        continue
+    try:
+        result = subprocess.run([patchelf_bin, '--print-interpreter', fpath], capture_output=True, text=True)
+        if '/lib64/ld-linux-x86-64.so.2' in result.stdout:
+            os.chmod(fpath, 0o755)
+            subprocess.run([patchelf_bin, '--set-interpreter', interp, '--set-rpath', rpath, fpath], check=True)
+            print(f"Patched zip entry: {name}")
+    except Exception as e:
+        print(f"Skipping {name}: {e}")
+
+# Repackage
+buf = io.BytesIO()
+new_zf = zipfile.ZipFile(buf, 'w')
+for zi in zf.infolist():
+    fpath = os.path.join(extract_dir, zi.filename)
+    if os.path.isfile(fpath):
+        with open(fpath, 'rb') as f:
+            file_data = f.read()
+        new_zi = zipfile.ZipInfo(zi.filename, date_time=zi.date_time)
+        new_zi.compress_type = zi.compress_type
+        new_zi.external_attr = zi.external_attr
+        new_zf.writestr(new_zi, file_data)
+zf.close()
+new_zf.close()
+
+with open(output_path, 'wb') as f:
+    f.write(patched_prefix)
+    f.write(buf.getvalue())
+os.chmod(output_path, 0o755)
+shutil.rmtree(tmpdir)
+print("Repackaged bazel binary")
+  '';
+
   # All tools Bazel needs in PATH during build and at runtime
   toolsPath = lib.makeBinPath [
     bash
@@ -89,106 +167,16 @@ let
         BT_LIB=$(dirname "$INTERP")
 
         # Repackage the bootstrap Bazel binary with patchelf'd ELF files.
-        # The bazel binary is a self-extracting ELF+zip. On startup, Bazel
-        # extracts the zip to an install base directory, then verifies each
-        # extracted file's CRC32 against the zip central directory. Pre-built
-        # ELF binaries (process-wrapper, build-runfiles, linux-sandbox,
-        # daemonize) have /lib64/ld-linux-x86-64.so.2 as their interpreter,
-        # which doesn't exist in the Nix sandbox.
-        #
-        # By extracting the zip, patchelf'ing the ELF binaries, and
-        # repackaging into a new zip, the CRC32s in the new zip match the
-        # modified files, so Bazel's integrity check passes.
-        cat > "$TMPDIR/repack_bazel.py" << 'PYEOF'
-import zipfile, io, struct, sys, os, subprocess, hashlib
-
-bazel_path = sys.argv[1]
-interp = sys.argv[2]
-bt_lib = sys.argv[3]
-gcc_libs = sys.argv[4]
-patchelf_bin = sys.argv[5]
-output_path = sys.argv[6]
-
-# Read the original binary
-with open(bazel_path, 'rb') as f:
-    data = f.read()
-
-# Open as zip (zipfile parses from the end, handles self-extracting ELFs)
-zf = zipfile.ZipFile(bazel_path, 'r')
-
-# Find where the zip payload starts in the binary
-first_offset = min(zi.header_offset for zi in zf.infolist())
-elf_prefix = data[:first_offset]
-
-# Patch the ELF prefix to prevent Bazel from stripping LD_PRELOAD.
-# Bazel's C++ client searches for "LD_PRELOAD" in the environment and
-# removes it. Replace with "XX_PRELOAD" (same length) so our
-# proc_self_exe_fix.so library survives.
-elf_prefix = elf_prefix.replace(b'LD_PRELOAD', b'XX_PRELOAD')
-
-# Extract all files
-extract_dir = os.path.join(os.environ['TMPDIR'], 'bazel_install_base')
-os.makedirs(extract_dir, exist_ok=True)
-zf.extractall(extract_dir)
-
-# Patchelf ELF binaries that have /lib64/ld-linux-x86-64.so.2 as interpreter
-rpath = f"{bt_lib}:{gcc_libs}/lib"
-patched = []
-for name in os.listdir(extract_dir):
-    fpath = os.path.join(extract_dir, name)
-    if not os.path.isfile(fpath):
-        continue
-    # Check if it's an ELF file
-    with open(fpath, 'rb') as f:
-        magic = f.read(4)
-    if magic != b'\x7fELF':
-        continue
-    # Check interpreter
-    try:
-        result = subprocess.run(
-            [patchelf_bin, '--print-interpreter', fpath],
-            capture_output=True, text=True)
-        if '/lib64/ld-linux-x86-64.so.2' in result.stdout:
-            os.chmod(fpath, 0o755)
-            subprocess.run(
-                [patchelf_bin, '--set-interpreter', interp, '--set-rpath', rpath, fpath],
-                check=True)
-            patched.append(name)
-            print(f"Patched: {name}")
-    except Exception as e:
-        print(f"Skipping {name}: {e}")
-
-# Repackage the zip preserving the original file order and compression
-buf = io.BytesIO()
-new_zf = zipfile.ZipFile(buf, 'w')
-for zi in zf.infolist():
-    fpath = os.path.join(extract_dir, zi.filename)
-    if os.path.isfile(fpath):
-        with open(fpath, 'rb') as f:
-            file_data = f.read()
-        # Preserve original compression method
-        new_zi = zipfile.ZipInfo(zi.filename, date_time=zi.date_time)
-        new_zi.compress_type = zi.compress_type
-        new_zi.external_attr = zi.external_attr
-        new_zf.writestr(new_zi, file_data)
-zf.close()
-new_zf.close()
-
-# Write new binary: [ELF prefix][new zip]
-with open(output_path, 'wb') as f:
-    f.write(elf_prefix)
-    f.write(buf.getvalue())
-os.chmod(output_path, 0o755)
-
-print(f"Repackaged bazel binary with {len(patched)} patched ELF files")
-PYEOF
-        python3 "$TMPDIR/repack_bazel.py" \
+        # The bazel binary is a self-extracting ELF+zip — patchelf changes
+        # the ELF size, corrupting zip offsets. Use the shared repack script.
+        RPATH="$BT_LIB:${gcc-libs}/lib"
+        python3 ${repackBazelPy} \
           "${bazel-bootstrap}/lib/bazel-real" \
           "$INTERP" \
-          "$BT_LIB" \
-          "${gcc-libs}" \
+          "$RPATH" \
           "${patchelf}/bin/patchelf" \
-          "$TMPDIR/bazel-patched"
+          "$TMPDIR/bazel-patched" \
+          --patch-ld-preload
 
         # Create wrapper script (still need proc_self_exe_fix for
         # /proc/self/exe since we invoke via explicit ld.so)
@@ -641,16 +629,17 @@ PYEOF
           exit 1
         fi
 
-        # Install the binary
-        cp "$BAZEL_BIN" $out/bin/bazel-real
-        chmod +x $out/bin/bazel-real
-
-        # Patch ELF interpreter and RPATH
+        # The output binary is a self-extracting ELF+zip. Patchelf changes the
+        # ELF portion's size, corrupting the zip central directory offsets.
+        # Use the shared repack script.
         INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
         BT_LIB=$(dirname "$INTERP")
         RPATH="$BT_LIB:${gcc-libs}/lib"
-        patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" \
-                 $out/bin/bazel-real 2>/dev/null || true
+
+        python3 ${repackBazelPy} \
+          "$BAZEL_BIN" "$INTERP" "$RPATH" \
+          "${patchelf}/bin/patchelf" \
+          "$out/bin/bazel-real"
 
         # Create wrapper script
         cat > $out/bin/bazel << WRAPPER
