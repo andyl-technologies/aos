@@ -64,6 +64,7 @@ trivial
     fetchgit
     fetchCargoDeps
     fetchGoModules
+    fetchBazelDeps
     fakeHash
     ;
 

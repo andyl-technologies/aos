@@ -11,9 +11,9 @@ emergent from local decisions made independently by each daemon node.
 A build job enters the mesh through the following sequence:
 
 1. The client evaluates the Nix expression locally to obtain a `.drv` path.
-2. The client uploads the derivation's input store paths to the binary cache
-   (S3) via the daemon's HTTP interface.
-3. The daemon publishes the job to the GossipSub topic `builds/wanted`.
+2. The client uploads the derivation's input store paths to the mesh via
+   the daemon's P2P interface (see [store.md](store.md)).
+3. The daemon publishes the job to the GossipSub topic `build/wanted/{universe}/{system}`.
 
 ### Job Message Format
 
@@ -22,7 +22,7 @@ A build job enters the mesh through the following sequence:
   "job_id": "uuid",
   "drv_path": "/nix/store/abc123-foo.drv",
   "drv_hash": "abc123",
-  "view": "default",
+  "universe": "default",
   "arch": "x86_64-linux",
   "features": ["kvm"],
   "priority": 0,
@@ -38,7 +38,7 @@ Field descriptions:
 - `drv_path` -- the full Nix store path of the derivation to build.
 - `drv_hash` -- the hash portion of the store path, used as the canonical key
   for deduplication and DHT lookups.
-- `view` -- the output view to build (e.g. `"default"`, `"dev"`).
+- `universe` -- the target universe for this build (e.g. `"default"`, `"dev"`).
 - `arch` -- the target architecture (e.g. `"x86_64-linux"`, `"aarch64-linux"`).
 - `features` -- required system features (e.g. `["kvm"]`, `["big-parallel"]`).
 - `priority` -- numeric priority. 0 is normal; higher values are more urgent.
@@ -47,8 +47,8 @@ Field descriptions:
 - `submitted_at` -- Unix timestamp of submission.
 - `submitter_peer_id` -- the libp2p peer ID of the daemon that submitted the job.
 
-Every daemon subscribed to `builds/wanted` on the GossipSub mesh receives this
-announcement. GossipSub delivers messages to ALL subscribers -- it is a pub/sub
+Every daemon subscribed to `build/wanted/{universe}/{system}` on the GossipSub mesh
+receives this announcement. GossipSub delivers messages to ALL subscribers -- it is a pub/sub
 broadcast, not a work queue.
 
 ---
@@ -61,14 +61,14 @@ simultaneously.
 
 ### Claim Flow
 
-1. Daemon receives job from `builds/wanted`.
+1. Daemon receives job from `build/wanted/{universe}/{system}`.
 2. Daemon evaluates eligibility: architecture match, required features, and
    available capacity.
 3. Daemon checks the Kademlia DHT: `GET("build:{drv_hash}")`.
    - If a record exists, another daemon has already claimed this job. Skip it.
    - If no record is found, proceed to claim.
 4. Daemon writes a DHT record: `PUT("build:{drv_hash}", {peer_id, status: "building", started_at})`.
-5. Daemon publishes to GossipSub topic `builds/claimed`:
+5. Daemon publishes to GossipSub topic `build/claimed/{universe}/{system}`:
    ```json
    {
      "drv_hash": "abc123",
@@ -87,7 +87,7 @@ simultaneously.
 }
 ```
 
-The `status` field transitions through: `"building"` -> `"uploading"` ->
+The `status` field transitions through: `"building"` -> `"announcing"` ->
 `"complete"` (or `"failed"`). The daemon updates the DHT record at each
 transition.
 
@@ -102,8 +102,8 @@ derivation concurrently.
 
 - Nix builds are deterministic. Both daemons produce identical output store
   paths with identical content.
-- Both daemons upload to S3. S3 writes are idempotent -- writing the same key
-  with the same content is a no-op from the perspective of correctness.
+- Both daemons announce as DHT providers. Provider records are additive --
+  multiple providers for the same content-addressed path is harmless.
 - There is no data corruption risk, only wasted compute.
 - In practice, DHT propagation latency is sub-second. Races are rare for
   normal-priority jobs because affinity-based delays (described below) naturally
@@ -118,8 +118,8 @@ derivation concurrently.
   longer before attempting to claim (see the scheduling section below). This
   naturally staggers claim attempts over approximately one second, giving the
   DHT time to propagate the first claim.
-- **GossipSub `builds/claimed` announcement:** The claiming daemon publishes
-  to `builds/claimed` immediately after writing the DHT record. GossipSub
+- **GossipSub `build/claimed/{universe}/{system}` announcement:** The claiming daemon
+  publishes to `build/claimed/{universe}/{system}` immediately after writing the DHT record. GossipSub
   message propagation is typically faster than DHT record propagation, so other
   daemons learn about the claim sooner than they would from DHT alone.
 
@@ -202,8 +202,8 @@ behaviors without any central coordination:
   for any given job naturally wins.
 
 - **Minimized input transfer.** Because the best-matched daemon claims first,
-  it needs to download fewer inputs from the binary cache before starting the
-  build. This reduces both build latency and network bandwidth.
+  it needs to fetch fewer inputs from peers before starting the build. This
+  reduces both build latency and network bandwidth.
 
 - **No thundering herd.** Claim attempts are spread over approximately 1 second
   proportional to inverse affinity. Even with 100 daemons, they do not all hit
@@ -257,7 +257,7 @@ The TTL is 5 minutes. Daemons re-publish every 2 minutes to keep records
 fresh. If a daemon goes offline, its record expires within 5 minutes and peers
 stop considering it for scheduling estimates.
 
-HTTP-serving daemons can query peer capability records to:
+Daemons can query peer capability records to:
 
 - Estimate cluster capacity (total `max_jobs - active_jobs` across all
   daemons).
@@ -275,7 +275,7 @@ indicate more urgent jobs.
 ### Daemon-Side Priority Queue
 
 Each daemon maintains a local priority queue of pending jobs -- those received
-via GossipSub `builds/wanted` but not yet claimed. On each scheduling tick
+via GossipSub `build/wanted/{universe}/{system}` but not yet claimed. On each scheduling tick
 (when a build slot becomes available), the daemon selects the highest-priority
 eligible job from this queue and attempts to claim it.
 
@@ -324,10 +324,10 @@ dependency ordering:
    graph.
 2. The daemon topologically sorts the DAG.
 3. The daemon publishes **leaf derivations** first -- those with no unbuilt
-   dependencies (all inputs already exist in the binary cache).
-4. As builds complete (the daemon monitors `builds/claimed` and DHT status
-   records), it identifies newly unblocked derivations and publishes them to
-   `builds/wanted`.
+   dependencies (all inputs already exist in the mesh).
+4. As builds complete (the daemon monitors `build/claimed/{universe}/{system}` and DHT
+   status records), it identifies newly unblocked derivations and publishes
+   them to `build/wanted/{universe}/{system}`.
 5. This continues until the root derivation is built.
 
 ### Alternative: Eager Publishing with Daemon-Side Readiness Checks
@@ -335,7 +335,7 @@ dependency ordering:
 An alternative approach publishes the entire closure at once and lets daemons
 determine readiness independently:
 
-1. The daemon publishes all derivations in the closure to `builds/wanted`
+1. The daemon publishes all derivations in the closure to `build/wanted/{universe}/{system}`
    simultaneously, including dependency metadata:
    ```json
    {
@@ -394,11 +394,11 @@ struct DerivationState {
 enum BuildStatus {
     /// Waiting for dependencies to complete
     Blocked,
-    /// Published to builds/wanted, waiting for a daemon to claim
+    /// Published to build/wanted/{universe}/{system}, waiting for a daemon to claim
     Published,
     /// Claimed by a daemon
     Building { daemon_peer_id: String },
-    /// Output uploaded to cache
+    /// Output announced to mesh
     Complete,
     /// Build failed
     Failed { error: String },
@@ -408,4 +408,4 @@ enum BuildStatus {
 When a derivation transitions to `Complete`, the submitting daemon checks all
 derivations that depend on it. If all of a derivation's dependencies are now
 `Complete`, it transitions the derivation from `Blocked` to `Published` and
-announces it on `builds/wanted`.
+announces it on `build/wanted/{universe}/{system}`.

@@ -8,18 +8,20 @@ This documents the Rust crate structure and implementation plan for the AOS dist
 crates/
   aos-p2p/              # Shared libp2p networking layer + auth protocol
   aos-daemon/            # Unified daemon binary (builds, joins mesh, Unix socket control)
-  aos-client/            # Lightweight P2P client (remote build submission, observability, archiving)
 
   # Existing crates (modified):
   aos-core/              # Shared types, Nix runner (already exists)
-  aos/                   # CLI binary (already exists)
+  aos/                   # CLI binary (already exists) -- the `-i` flag activates P2P client mode
 ```
 
-Note: `aos-remote` (the old HTTP client) is removed and replaced by `aos-client`, which communicates over libp2p rather than HTTP.
+Note: there is no separate client binary. The `aos` binary handles both daemon
+socket mode (default) and P2P client mode (activated by `-i <identity>`). The
+P2P transport layer from `aos-p2p` is linked into the `aos` binary and used
+when `-i` is provided.
 
 ## aos-p2p -- Shared Networking Layer
 
-The core libp2p integration crate. Both `aos-daemon` and `aos-client` depend on this.
+The core libp2p integration crate. Both `aos-daemon` and the `aos` binary (for P2P client mode) depend on this.
 
 ```
 aos-p2p/
@@ -35,8 +37,11 @@ aos-p2p/
     protocols/
       mod.rs
       log_replay.rs       # /aos/log-replay/1.0.0 protocol codec
-      nar_fetch.rs        # /aos/nar-fetch/1.0.0 protocol codec
+      content_transfer.rs # WANT_MANIFEST and WANT_CHUNK protocol codecs
+      sync.rs             # /aos/sync/1.0.0 anti-entropy protocol codec
     types.rs              # Shared message types (BuildJob, BuildClaim, LogEvent, BuildResult)
+    sync.rs               # CRDT sync state management (LWW-Map, merge logic)
+    merkle.rs             # Merkle tree construction and anti-entropy protocol
     bloom.rs              # Bloom filter for store affinity
     node.rs               # P2pNode wrapper -- manages Swarm lifecycle, event loop
 ```
@@ -96,12 +101,16 @@ pub struct AosBehaviour {
     pub identify: identify::Behaviour,
 }
 
+// Sync protocol integration:
+// - Sync deltas ride on the existing GossipSub behaviour (topic: `sync/{universe}`)
+// - Anti-entropy uses the `libp2p_stream::Behaviour` for the `/aos/sync/1.0.0` protocol
+
 // types.rs
 pub struct BuildJob {
     pub job_id: String,
     pub drv_path: String,
     pub drv_hash: String,
-    pub view: String,
+    pub universe: String,
     pub arch: String,
     pub features: Vec<String>,
     pub priority: i32,
@@ -149,6 +158,10 @@ libp2p = { version = "0.54", features = [
 ] }
 libp2p-stream = "0.2"
 ucan = "0.4"
+fastcdc = "3"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+sha2 = "0.10"
+blake3 = "1"           # Merkle tree hashing (alternative to sha2; sha2 also sufficient)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -161,13 +174,19 @@ The single daemon binary. Manages the local Nix store, performs builds, and join
 the mesh. Local clients communicate via a Unix socket control protocol. Auth
 policy maps local uid/gid to capabilities (no HTTP, no JWT).
 
+The daemon also supports a **forwarding mode** for containers and VMs: it binds
+a control socket inside the container and forwards requests to an upstream
+daemon socket on the host, narrowing capabilities at each level. The forwarding
+mode is extremely lightweight (~200 lines) -- no mesh participation, no store
+management, just socket-to-socket proxying. See [sockets.md](sockets.md).
+
 ```
 aos-daemon/
   src/
     main.rs               # CLI entry, config loading, daemon startup
     config.rs             # Daemon configuration (TOML)
     worker.rs             # Main event loop, job listening, claiming
-    executor.rs           # Build execution (nix-store --realise wrapper)
+    executor.rs           # Build execution (nspawn + ephemeral FUSE view, see builds.md)
     logs.rs               # Log buffer, GossipSub publishing, replay handler
     store.rs              # Local store queries, bloom filter, input fetching
     provider.rs           # DHT provider announcement for build outputs
@@ -175,6 +194,9 @@ aos-daemon/
     shutdown.rs           # Graceful shutdown handling
     control.rs            # Unix socket control protocol (local CLI <-> daemon)
     policy.rs             # Local auth policy (uid/gid -> capabilities)
+    viewdb.rs             # ViewDb trait: view (persistent) and ephemeral view lifecycle
+    sync_handler.rs       # Handles incoming sync deltas, triggers content fetch, manages local CRDT state
+    chunk_store.rs        # Content-defined chunk storage, manifest management, chunk GC
 ```
 
 ### Unix Socket Control Protocol (`control.rs`)
@@ -190,7 +212,7 @@ pub struct ControlServer {
 }
 
 pub enum ControlRequest {
-    Build { drv_path: String, view: String },
+    Build { drv_path: String, universe: String },
     SubscribeLogs { job_id: String },
     Status,
     Gc { older_than: Option<Duration> },
@@ -240,37 +262,6 @@ tracing-subscriber = "0.3"
 lru = "0.12"
 ```
 
-## aos-client -- Lightweight P2P Client
-
-A lightweight client binary for remote build submission, log observation, and
-NAR fetching (for archivers). Connects directly to the P2P mesh via `aos-p2p`
-but does not include any Nix store or build machinery. Authenticates to daemons
-using UCAN tokens.
-
-```
-aos-client/
-  src/
-    main.rs          # CLI entry (aos remote)
-    config.rs        # Client configuration
-    submit.rs        # Build submission
-    watch.rs         # Log observation
-    fetch.rs         # NAR fetching (for archivers)
-```
-
-### Dependencies
-
-```toml
-[dependencies]
-aos-p2p = { path = "../aos-p2p" }
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-clap = { version = "4", features = ["derive"] }
-anyhow = "1"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-```
-
 ## Modifications to Existing Crates
 
 ### aos-core
@@ -284,11 +275,19 @@ Add shared types if not already present:
 
 Subcommands:
 - `aos daemon` -- run the daemon (manages local Nix store, performs builds, joins mesh; local CLI talks to it via Unix socket)
-- `aos build` -- local build (talks to daemon via Unix socket control protocol)
-- `aos remote build` -- P2P client build submission (via `aos-client`)
-- `aos remote watch` -- P2P client log observation (via `aos-client`)
-- `aos enroll` -- issue UCANs from root key (generates initial UCAN for a peer)
-- `aos delegate` -- daemon delegates sub-UCANs (attenuated capabilities to downstream peers)
+- `aos build` -- build a package (via daemon socket by default; with `-i <identity>`, joins the P2P mesh directly as a client peer)
+- `aos net` -- network observability (peers, builds, topology, bandwidth, logs); with `-i <identity>`, observes via P2P mesh instead of daemon socket
+  - `aos net peers` -- list connected mesh peers
+  - `aos net builds` -- list active/recent builds
+  - `aos net topology` -- show mesh topology
+  - `aos net bandwidth` -- show bandwidth stats
+  - `aos net logs` -- stream build logs
+- `aos auth init` -- generate the cluster root keypair
+- `aos auth enroll` -- issue UCANs from root key (generates initial UCAN for a peer)
+- `aos auth delegate` -- daemon delegates sub-UCANs (attenuated capabilities to downstream peers)
+- `aos auth revoke` -- revoke a UCAN
+- `aos auth rotate-root` -- rotate the cluster root key
+- `aos auth list` -- list issued tokens/UCANs
 
 ## Implementation Phases
 
@@ -304,25 +303,29 @@ Subcommands:
 - [ ] `/aos/auth/1.0.0` handshake protocol implementation
 - [ ] UCAN token parsing and chain verification
 - [ ] Capability model (Build, Watch, Fetch, Delegate, Admin)
-- [ ] Root key management and UCAN issuance (`aos enroll`)
-- [ ] Sub-UCAN delegation (`aos delegate`)
+- [ ] Root key management and UCAN issuance (`aos auth enroll`)
+- [ ] Sub-UCAN delegation (`aos auth delegate`)
 
 ### Phase 3: aos-daemon MVP
 - [ ] Unix socket control server (`control.rs`)
 - [ ] Local auth policy -- uid/gid to capabilities (`policy.rs`)
 - [ ] Main loop: listen for jobs on GossipSub
 - [ ] Job claiming via DHT
-- [ ] Build execution (nix-store --realise)
+- [ ] Build execution (nspawn + ephemeral FUSE view)
 - [ ] Log streaming via GossipSub
 - [ ] Log replay handler (/aos/log-replay/1.0.0)
 - [ ] Output announcement via DHT provider records
 - [ ] Capability advertisement
+- [ ] CRDT sync state (LWW-Map) and delta propagation via GossipSub (`sync/{universe}` topic)
+- [ ] Merkle tree anti-entropy protocol (`/aos/sync/1.0.0`) for state reconciliation
+- [ ] Sync handler -- incoming delta processing, content fetch triggers, local CRDT merge
 
-### Phase 4: aos-client
+### Phase 4: P2P client mode in `aos` binary
+- [ ] Identity loading from `~/.aos/identities/{name}/`
+- [ ] `-i <identity>` flag on `aos build` (P2P build submission)
+- [ ] `-i <identity>` flag on `aos net` (P2P network observability)
 - [ ] P2P mesh join with UCAN authentication
-- [ ] Build submission (`aos remote build`)
-- [ ] Log observation (`aos remote watch`)
-- [ ] NAR fetching for archivers (`fetch.rs`)
+- [ ] NAR fetching for archivers
 
 ### Phase 5: Robustness
 - [ ] Affinity-based delayed claiming
@@ -330,7 +333,7 @@ Subcommands:
 - [ ] Reconnect retry logic
 - [ ] Builder crash detection and job re-announcement
 - [ ] Daemon log cache (fallback for late joiners)
-- [ ] NAR fetch protocol (/aos/nar-fetch/1.0.0) for P2P mode
+- [ ] Content transfer protocols (WANT_MANIFEST/WANT_CHUNK) for P2P mode
 - [ ] Monitoring metrics
 
 ### Phase 6: Production hardening
@@ -349,7 +352,7 @@ cargo build --workspace
 # Run daemon locally
 cargo run -p aos-daemon -- --config daemon.toml
 
-# Integration test: start 3 daemons, submit a build via aos-client
+# Integration test: start 3 daemons, submit a build via aos build -i
 cargo test -p aos-p2p --test integration
 ```
 
@@ -364,10 +367,11 @@ The existing `aos-server` crate contains valuable code that will be refactored i
 | `compress.rs` | `aos-daemon/src/store.rs` | NAR compression |
 | `sign.rs` | `aos-daemon` | Daemon signs outputs, may re-sign when proxying |
 | `drain.rs` | `aos-daemon` | Graceful shutdown |
-| `views.rs` | `aos-daemon` | View management |
+| `views.rs` | `aos-daemon/src/viewdb.rs` | View (persistent) and ephemeral view management |
 | `config.rs` | `aos-daemon/src/config.rs` | Unified daemon config |
 | `store.rs` | `aos-daemon/src/store.rs` | Local store queries |
 | `pack.rs` | `aos-daemon/src/store.rs` | NAR pack handling |
 | `evict.rs` | `aos-daemon` | GC/eviction |
 
-The `aos-remote` crate (old HTTP client) is replaced by `aos-client`, which communicates over libp2p with UCAN-based authentication instead of HTTP with JWT.
+The `aos-remote` crate (old client) is removed. P2P client functionality is now
+part of the `aos` binary, activated by the `-i <identity>` flag.

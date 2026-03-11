@@ -13,7 +13,7 @@ Two peer types participate in the mesh:
   Daemons hold full-capability UCANs and participate in all GossipSub topics.
 - **Clients** -- ephemeral or long-lived processes that request builds, tail
   logs, and fetch store paths. Clients hold limited-capability UCANs (e.g.,
-  `build/request`, `store/read`) and do not claim or execute build jobs.
+  `build/submit`, `build/observe`) and do not claim or execute build jobs.
 
 All code examples target `libp2p 0.54+` with the `tokio` async runtime.
 
@@ -349,14 +349,19 @@ async fn main() -> anyhow::Result<()> {
     }
     swarm.behaviour_mut().kademlia.bootstrap()?;
 
-    // Subscribe to build coordination topics.
-    let topics = [
-        gossipsub::IdentTopic::new("builds/wanted"),
-        gossipsub::IdentTopic::new("builds/claimed"),
-        gossipsub::IdentTopic::new("builds/result"),
-    ];
-    for topic in &topics {
-        swarm.behaviour_mut().gossipsub.subscribe(topic)?;
+    // Subscribe to build coordination topics (universe-scoped).
+    // Each daemon subscribes to topics for the universes it serves.
+    for universe in &config.universes {
+        for system in &config.systems {
+            let topics = [
+                gossipsub::IdentTopic::new(format!("build/wanted/{universe}/{system}")),
+                gossipsub::IdentTopic::new(format!("build/claimed/{universe}/{system}")),
+                gossipsub::IdentTopic::new(format!("build/result/{universe}/{system}")),
+            ];
+            for topic in &topics {
+                swarm.behaviour_mut().gossipsub.subscribe(topic)?;
+            }
+        }
     }
 
     // Main event loop.
@@ -404,21 +409,22 @@ peer scoring penalties and eventual mesh pruning.
 
 The mesh uses four topic families:
 
-- **`builds/wanted`** -- Published by the daemon handling a client request when
-  a build is requested. Contains the derivation hash, output hash (if known),
-  and builder requirements (architecture, features). All daemons subscribe to
-  this topic.
+- **`build/wanted/{universe}/{system}`** -- Published by the daemon handling a client
+  request when a build is requested. Contains the derivation hash, output hash
+  (if known), and builder requirements (architecture, features). Daemons
+  subscribe to the universe+system-scoped topics for universes and architectures
+  they serve.
 
-- **`builds/claimed`** -- Published by a daemon when it accepts a job. Contains
-  the derivation hash and the claiming peer's ID. Prevents duplicate work:
-  other daemons that see a claim for a derivation they were about to build
-  will back off (with configurable contention resolution).
+- **`build/claimed/{universe}/{system}`** -- Published by a daemon when it accepts a job.
+  Contains the derivation hash and the claiming peer's ID. Prevents duplicate
+  work: other daemons that see a claim for a derivation they were about to
+  build will back off (with configurable contention resolution).
 
-- **`builds/result`** -- Published when a build completes (success or failure).
-  Contains the derivation hash, output store path, output hash, and build
-  duration. Other daemons subscribe to learn where to fetch results.
+- **`build/result/{universe}/{system}`** -- Published when a build completes (success or
+  failure). Contains the derivation hash, output store path, output hash, and
+  build duration. Other daemons subscribe to learn where to fetch results.
 
-- **`builds/logs/{drv_hash}`** -- Per-build log streaming. Subscribers receive
+- **`build/logs/{drv_hash}`** -- Per-build log streaming. Subscribers receive
   incremental log output in real time. Peers subscribe on demand when a user
   requests log tailing and unsubscribe when the build completes or the user
   disconnects.
@@ -478,15 +484,15 @@ SwarmEvent::Behaviour(AosBehaviourEvent::Gossipsub(gossipsub::Event::Message {
     let data = &message.data;
 
     match topic {
-        "builds/wanted" => {
-            let job: BuildRequest = serde_json::from_slice(data)?;
+        t if t.starts_with("build/wanted/") => {
+            let job: BuildJob = serde_json::from_slice(data)?;
             log::info!(
                 "Build wanted: {} (from {propagation_source})",
                 job.drv_hash,
             );
             handle_build_request(&mut swarm, job).await?;
         }
-        "builds/claimed" => {
+        t if t.starts_with("build/claimed/") => {
             let claim: BuildClaim = serde_json::from_slice(data)?;
             log::info!(
                 "Build claimed: {} by {}",
@@ -495,7 +501,7 @@ SwarmEvent::Behaviour(AosBehaviourEvent::Gossipsub(gossipsub::Event::Message {
             );
             handle_build_claim(&mut state, claim);
         }
-        "builds/result" => {
+        t if t.starts_with("build/result/") => {
             let result: BuildResult = serde_json::from_slice(data)?;
             log::info!(
                 "Build result: {} -> {:?}",
@@ -504,8 +510,8 @@ SwarmEvent::Behaviour(AosBehaviourEvent::Gossipsub(gossipsub::Event::Message {
             );
             handle_build_result(&mut state, result).await?;
         }
-        t if t.starts_with("builds/logs/") => {
-            let drv_hash = &t["builds/logs/".len()..];
+        t if t.starts_with("build/logs/") => {
+            let drv_hash = &t["build/logs/".len()..];
             handle_log_chunk(drv_hash, data).await?;
         }
         _ => {
@@ -753,8 +759,9 @@ streams will be disconnected after the timeout.
 The practical effect is a two-tier connectivity model:
 
 - **Mesh peers** (same GossipSub topics): permanent connections maintained by
-  heartbeats. All daemons subscribe to `builds/wanted`, `builds/claimed`, and
-  `builds/result`, so they stay connected as long as the processes run.
+  heartbeats. Daemons subscribe to universe+system-scoped topics (`build/wanted/{universe}/{system}`,
+  `build/claimed/{universe}/{system}`, `build/result/{universe}/{system}`) for their configured
+  universes and architectures, so they stay connected as long as the processes run.
 
 - **DHT-only peers** (no shared topics): transient connections for Kademlia
   queries. These connections are opened on demand, used for routing table
@@ -787,9 +794,14 @@ let topic_params = TopicScoreParams {
     ..Default::default()
 };
 
-for topic_str in ["builds/wanted", "builds/claimed", "builds/result"] {
-    let topic_hash = gossipsub::IdentTopic::new(topic_str).hash();
-    peer_score_params.topics.insert(topic_hash, topic_params.clone());
+// Apply scoring to universe+system-scoped topics for each configured universe and system.
+for universe in &config.universes {
+    for prefix in ["build/wanted", "build/claimed", "build/result"] {
+        for system in &config.systems {
+            let topic_hash = gossipsub::IdentTopic::new(format!("{prefix}/{universe}/{system}")).hash();
+            peer_score_params.topics.insert(topic_hash, topic_params.clone());
+        }
+    }
 }
 
 let thresholds = PeerScoreThresholds {
@@ -863,10 +875,10 @@ The handshake proceeds as follows:
 5. If `AUTH_OK`, the peer is added to the GossipSub mesh and Kademlia routing
    table normally. If `AUTH_DENIED`, the connection is closed.
 
-Daemons present UCANs with full capabilities (`build/*`, `store/*`,
-`mesh/relay`). Clients present UCANs with limited capabilities (e.g.,
-`build/request`, `store/read`, `log/tail`). The receiving peer checks that the
-UCAN capabilities match the peer's intended role.
+Daemons present UCANs with full capabilities (`build/submit`, `build/claim`,
+`store/serve`, `store/fetch`, `admin/manage`). Clients present UCANs with
+limited capabilities (e.g., `build/submit`, `build/observe`). The receiving
+peer checks that the UCAN capabilities match the peer's intended role.
 
 ### GossipSub Message Validation
 

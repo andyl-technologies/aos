@@ -79,6 +79,28 @@ let
     "doParallelCheck"
   ];
 
+  # Attrs that mkBazelPackage consumes (not passed to mkDerivation)
+  bazelSpecificAttrs = [
+    "bazelDeps"
+    "bazel"
+    "jdk"
+    "tools"
+    "caCertificates"
+    "bazelTarget"
+    "bazelFlags"
+    "bazelBuildFlags"
+    "bazelFetchFlags"
+    "scrubMap"
+    "depsHash"
+    "fetchPostPatch"
+    "fetchEnv"
+    "postFetch"
+    "removeRepos"
+    "populateBCR"
+    "installPhase"
+    "preBazelBuild"
+  ];
+
   mkCargoPackage =
     args:
     let
@@ -120,6 +142,84 @@ let
       // {
         buildDeps = [ self.go ] ++ (args.buildDeps or [ ]);
         phases = phases.goPhases goArgsWithDefaults;
+      }
+    );
+
+  # Wire fetchBazelDeps with AOS-specific defaults
+  fetchBazelDeps =
+    args:
+    lib.fetchBazelDeps (
+      args
+      // {
+        inherit bootstrapTools;
+        caCertificates = args.caCertificates or self.ca-certificates;
+      }
+    );
+
+  mkBazelPackage =
+    args:
+    let
+      # Extract bazel-specific parameters
+      bazel = args.bazel or self.bazel;
+      jdk = args.jdk or self.openjdk;
+      tools = args.tools or [ ];
+      caCerts = args.caCertificates or self.ca-certificates;
+      bazelTarget = args.bazelTarget or (throw "mkBazelPackage: bazelTarget required");
+      bazelFlags = args.bazelFlags or [ ];
+      bazelBuildFlags = args.bazelBuildFlags or [ ];
+      scrubMap = args.scrubMap or { };
+      installPhase = args.installPhase or (throw "mkBazelPackage: installPhase required");
+
+      # Create or use provided deps FOD
+      deps =
+        args.bazelDeps or (fetchBazelDeps {
+          name = "${args.pname or "bazel"}-deps-${args.version or "0"}";
+          inherit (args) src;
+          hash = args.depsHash or lib.fakeHash;
+          inherit bazel jdk tools;
+          caCertificates = caCerts;
+          postPatch = args.postPatch or "";
+          fetchPostPatch = args.fetchPostPatch or "";
+          inherit bazelTarget bazelFlags;
+          bazelFetchFlags = args.bazelFetchFlags or [ ];
+          env = args.fetchEnv or { };
+          inherit scrubMap;
+          postFetch = args.postFetch or "";
+          removeRepos = args.removeRepos or [
+            "bazel_tools"
+            "embedded_jdk"
+            "local_config_cc"
+            "local_jdk"
+          ];
+          populateBCR = args.populateBCR or true;
+        });
+
+      # Remove bazel-specific attrs before passing to mkDerivation
+      restArgs = builtins.removeAttrs args bazelSpecificAttrs;
+    in
+    mkDerivation (
+      restArgs
+      // {
+        buildDeps =
+          [
+            bazel
+            jdk
+            self.patchelf
+          ]
+          ++ tools
+          ++ (args.buildDeps or [ ]);
+        phases = phases.bazelPhases {
+          bazelDeps = deps;
+          inherit bazel jdk tools;
+          inherit bootstrapTools;
+          patchelf = self.patchelf;
+          bash = stdenv.bash;
+          caCertificates = caCerts;
+          inherit bazelTarget bazelFlags bazelBuildFlags;
+          inherit scrubMap;
+          preBuild = args.preBazelBuild or "";
+          inherit installPhase;
+        };
       }
     );
 
@@ -188,8 +288,8 @@ let
   self = {
     # --- Plumbing ---
     inherit mkDerivation fetchurl lib;
-    inherit mkCargoPackage mkGoPackage;
-    inherit fetchCargoDeps fetchGoModules;
+    inherit mkCargoPackage mkGoPackage mkBazelPackage;
+    inherit fetchCargoDeps fetchGoModules fetchBazelDeps;
     inherit bootstrapTools;
     fakeHash = lib.fakeHash;
     # --- Build infrastructure ---

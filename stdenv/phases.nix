@@ -567,4 +567,180 @@ rec {
       '';
     }
   ];
+
+  # Bazel (two-phase: fetchBazelDeps FOD + offline build)
+  #
+  # Returns phases that unpack deps from a fetchBazelDeps FOD, patchelf
+  # downloaded ELF binaries, restore scrubbed store paths, and run
+  # `bazel build` offline with --repository_disable_download.
+  bazelPhases =
+    {
+      # Result of fetchBazelDeps (directory containing external/ subtree)
+      bazelDeps,
+      # Bazel package to use
+      bazel,
+      # Java runtime
+      jdk,
+      # Packages for PATH (same list used in fetchBazelDeps)
+      tools,
+      # ccWrapper (provides nix-support/dynamic-linker)
+      bootstrapTools,
+      # For patchelfing downloaded ELF binaries
+      patchelf,
+      # Bash package (for wrapper script)
+      bash,
+      # CA cert bundle (optional)
+      caCertificates ? null,
+      # Build target (e.g. "//source/exe:envoy-static")
+      bazelTarget,
+      # Common bazel flags (shared with fetch)
+      bazelFlags ? [ ],
+      # Build-specific flags (e.g. "-c opt", "--config=gcc")
+      bazelBuildFlags ? [ ],
+      # Store path scrubbing map (same as fetchBazelDeps, used for restoration)
+      scrubMap ? { },
+      # Pre-build setup script
+      preBuild ? "",
+      # Install script (required — no reasonable default for Bazel outputs)
+      installPhase,
+    }:
+    let
+      toolsPath = builtins.concatStringsSep ":" (
+        builtins.map (d: "${builtins.toString d}/bin") tools
+      );
+      flagsStr = builtins.concatStringsSep " " bazelFlags;
+      buildFlagsStr = builtins.concatStringsSep " " bazelBuildFlags;
+      restoreSedArgs = builtins.concatStringsSep " " (
+        builtins.attrValues (
+          builtins.mapAttrs (
+            path: placeholder: "-e 's|${placeholder}|${path}|g'"
+          ) scrubMap
+        )
+      );
+    in
+    [
+      unpackPhase
+      {
+        name = "configure";
+        script = ''
+          # Unpack deps from FOD
+          bazelOut="$TMPDIR/output"
+          mkdir -p "$bazelOut"
+          cp -a ${bazelDeps} "$bazelOut/external"
+          chmod -R +w "$bazelOut"
+
+          # Restore symlinks that reference the placeholder paths from fetchBazelDeps
+          find "$bazelOut/external" -type l | while read symlink; do
+            target="$(readlink "$symlink")"
+            case "$target" in
+              *__BAZEL_SRCDIR__*|*__BAZEL_TMPDIR__*)
+                new="$(echo "$target" | sed -e "s,__BAZEL_SRCDIR__,$PWD,g" -e "s,__BAZEL_TMPDIR__,$TMPDIR,g")"
+                rm "$symlink"
+                ln -sf "$new" "$symlink"
+                ;;
+            esac
+          done
+
+          # Patchelf dynamically-linked ELF binaries from upstream
+          INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
+          BT_LIB=$(dirname "$INTERP")
+          find "$bazelOut/external" -type f -executable | while read execbin; do
+            interp=$(${patchelf}/bin/patchelf --print-interpreter "$execbin" 2>/dev/null) || continue
+            case "$interp" in
+              */lib64/ld-linux*|*/lib/ld-linux*)
+                ${patchelf}/bin/patchelf --set-interpreter "$INTERP" --set-rpath "$BT_LIB" \
+                  "$execbin" 2>/dev/null || true
+                ;;
+            esac
+          done
+
+          ${
+            if scrubMap != { } then
+              ''
+                # Restore store paths from placeholders
+                find "$bazelOut/external" -type f | while read f; do
+                  sed -i ${restoreSedArgs} "$f" 2>/dev/null || true
+                done
+              ''
+            else
+              ""
+          }
+
+          # Configure .bazelrc for offline build
+          echo "common --repository_cache=\"$bazelOut/external/repository_cache\"" >> .bazelrc
+          echo "common --repository_disable_download" >> .bazelrc
+
+          # Generate --override_repository for all repos in the deps
+          # Copy repos outside output_base to avoid Bazel cycles
+          mkdir -p "$TMPDIR/repo-overrides"
+          for repo in "$bazelOut/external"/*/; do
+            repo_name="$(basename "$repo")"
+            case "$repo_name" in
+              repository_cache) continue ;;
+            esac
+            cp -a "$repo" "$TMPDIR/repo-overrides/$repo_name"
+            chmod -R u+rwx "$TMPDIR/repo-overrides/$repo_name"
+            echo "common --override_repository=$repo_name=$TMPDIR/repo-overrides/$repo_name" >> .bazelrc
+          done
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          # Set up environment
+          INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
+          BT_LIB=$(dirname "$INTERP")
+
+          # Create bash wrapper with PATH for genrules
+          mkdir -p $TMPDIR/bazel-tools
+          cat > $TMPDIR/bazel-tools/bash-with-path << BASHWRAP
+#!${bash}/bin/bash
+export PATH="${toolsPath}:\$PATH"
+export LD_LIBRARY_PATH="$BT_LIB''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+exec ${bash}/bin/bash "\$@"
+BASHWRAP
+          chmod +x $TMPDIR/bazel-tools/bash-with-path
+
+          export HOME="$TMPDIR/bazel-home"
+          mkdir -p "$HOME"
+          export JAVA_HOME="${jdk}"
+          ${
+            if caCertificates != null then
+              ''export SSL_CERT_FILE="${caCertificates}/etc/ssl/certs/ca-certificates.crt"''
+            else
+              ""
+          }
+          export PATH="${toolsPath}:${jdk}/bin:${bazel}/bin:$PATH"
+          export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
+          # Unset C_INCLUDE_PATH to prevent #include_next breakage
+          unset C_INCLUDE_PATH CPATH CPLUS_INCLUDE_PATH
+
+          ${preBuild}
+
+          BAZEL_USE_CPP_ONLY_TOOLCHAIN=1 \
+          USER=nix \
+          bazel --batch \
+            --output_base="$TMPDIR/output" \
+            --output_user_root="$TMPDIR/tmp" \
+            --server_javabase="${jdk}" \
+            build ${bazelTarget} \
+            --curses=no \
+            --verbose_failures \
+            --jobs $NIX_BUILD_CORES \
+            ${flagsStr} \
+            ${buildFlagsStr} \
+            --action_env=PATH=${toolsPath} \
+            --host_action_env=PATH=${toolsPath} \
+            --action_env=LD_LIBRARY_PATH=$BT_LIB \
+            --host_action_env=LD_LIBRARY_PATH=$BT_LIB \
+            --shell_executable=$TMPDIR/bazel-tools/bash-with-path
+        '';
+      }
+      {
+        name = "install";
+        script = installPhase;
+      }
+      fixupPhase
+    ];
 }

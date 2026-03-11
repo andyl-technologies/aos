@@ -125,7 +125,9 @@ mkDerivation {
           -DLLVM_TARGETS_TO_BUILD="${targetsStr}" \
           -DLLVM_LINK_LLVM_DYLIB=ON \
           -DLLVM_INSTALL_UTILS=ON \
-          -DLLVM_ENABLE_ZLIB=ON \
+          -DLLVM_ENABLE_ZLIB=FORCE_ON \
+          -DZLIB_INCLUDE_DIR=${zlib}/include \
+          -DZLIB_LIBRARY=${zlib}/lib/libz.so \
           -DLLVM_ENABLE_TERMINFO=OFF \
           -DLLVM_ENABLE_LIBXML2=OFF \
           -DLLVM_ENABLE_LIBEDIT=OFF \
@@ -157,6 +159,14 @@ mkDerivation {
       name = "install";
       script = ''
         ninja -C build install
+
+        # LLVM 22 moved PassPlugin.h from llvm/Passes/ to llvm/Plugins/.
+        # Create backward-compat symlink for consumers expecting the old path
+        # (e.g. Rust's llvm-wrapper/PassWrapper.cpp).
+        if [ -f "$out/include/llvm/Plugins/PassPlugin.h" ] && \
+           [ ! -f "$out/include/llvm/Passes/PassPlugin.h" ]; then
+          ln -s ../Plugins/PassPlugin.h "$out/include/llvm/Passes/PassPlugin.h"
+        fi
       '';
     }
   ];

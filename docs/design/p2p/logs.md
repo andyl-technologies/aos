@@ -14,7 +14,7 @@ Build logs flow through three mechanisms depending on the scenario:
 Daemon publishes each log line as a GossipSub message:
 
 ```
-Topic: builds/logs/{drv_hash}
+Topic: build/logs/{drv_hash}
 Message: {
   "seq": 42,           // monotonically increasing sequence number
   "kind": "log",       // or "status", "complete", "error"
@@ -26,7 +26,7 @@ Message: {
 ### Building Daemon Side
 
 ```rust
-let topic = gossipsub::IdentTopic::new(format!("builds/logs/{}", job.drv_hash));
+let topic = gossipsub::IdentTopic::new(format!("build/logs/{}", job.drv_hash));
 swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
 let mut seq = 0u64;
@@ -46,9 +46,9 @@ log_buffer.append(complete.clone());
 swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_vec(&complete)?)?;
 ```
 
-### HTTP-Serving Daemon Side (Subscriber)
+### Observing Daemon Side (Subscriber)
 
-The daemon handling the client request subscribes to `builds/logs/{drv_hash}` when a client requests a build. It translates GossipSub messages to SSE frames:
+The daemon handling the client request subscribes to `build/logs/{drv_hash}` when a client requests a build. It relays GossipSub messages to the local client:
 
 ```rust
 // GossipSub message received
@@ -70,7 +70,7 @@ GossipSub is ephemeral -- if you weren't subscribed when a message was sent, you
 
 ### The Protocol: /aos/log-replay/1.0.0
 
-When a client connects to an HTTP-serving daemon for a build that's already in progress:
+When a client connects to a daemon for a build that's already in progress:
 
 1. The daemon looks up the building peer via DHT: `GET("build:{drv_hash}")` -> `{peer_id: daemon_A}`
 2. The daemon opens a direct libp2p stream to Daemon A using the `/aos/log-replay/1.0.0` protocol
@@ -78,7 +78,7 @@ When a client connects to an HTTP-serving daemon for a build that's already in p
 4. Daemon A responds with all buffered log lines from seq 0, then keeps the stream open for live tailing
 
 ```
-HTTP-Serving Daemon                 Daemon A (builder)
+Observing Daemon                    Daemon A (builder)
   |                                    |
   |  OPEN /aos/log-replay/1.0.0       |
   |  {drv_hash: "abc123", from_seq: 0}|
@@ -142,20 +142,20 @@ const MAX_EVENTS: usize = 100_000;
 
 This caps memory usage at ~100K events (~10-50MB depending on line length). For extremely long builds, oldest lines are dropped from the buffer but are still available in the caches of other daemons that subscribed via GossipSub.
 
-## SSE Reconnection
+## Client Reconnection
 
-When an SSE client disconnects and reconnects (browser retry, network blip):
+When a client disconnects and reconnects (network blip, process restart):
 
-1. Client sends `Last-Event-ID: 342` header
+1. Client sends `from_seq: 343` in its reconnection request
 2. The daemon requests replay from the builder with `from_seq: 343`
 3. Client resumes seamlessly from where it left off
-4. Works even if client reconnects to a different HTTP-serving daemon -- the daemon contacts the same builder peer via DHT lookup
+4. Works even if client reconnects to a different daemon -- the daemon contacts the same builder peer via DHT lookup
 
 ## Fallback: Daemon Log Cache
 
 Daemons cache log events they receive via GossipSub. If the building daemon crashes and a late joiner requests logs:
 
-1. The HTTP-serving daemon checks if the builder peer is reachable -- it's not
+1. The observing daemon checks if the builder peer is reachable -- it's not
 2. The daemon serves logs from its own cache (partial -- only events received while subscribed)
 3. The daemon marks the logs as partial: `{partial: true, reason: "builder_unreachable"}`
 
@@ -173,10 +173,10 @@ a byproduct, not the artifact.
 
 ```
 Build starts     -> Building daemon buffers locally + publishes to GossipSub
-Client connects  -> HTTP-serving daemon subscribes to GossipSub topic (live)
-Late joiner      -> HTTP-serving daemon requests replay from builder (direct stream)
-Client reconnect -> HTTP-serving daemon requests replay from from_seq (direct stream)
-Builder crashes  -> HTTP-serving daemon serves from its own GossipSub cache (partial)
+Client connects  -> Observing daemon subscribes to GossipSub topic (live)
+Late joiner      -> Observing daemon requests replay from builder (direct stream)
+Client reconnect -> Observing daemon requests replay from from_seq (direct stream)
+Builder crashes  -> Observing daemon serves from its own GossipSub cache (partial)
 Build completes  -> Building daemon persists log locally; other daemons retain cached copy
 Historical query -> Ask peers who cached the log (builder or subscribing daemons)
 ```

@@ -5,6 +5,27 @@ the same code, joins the same libp2p mesh, and manages a local Nix store.
 Configuration determines what each node does -- execute builds, accept local
 control commands, both, or neither. There is no separate "gateway" process.
 
+The daemon operates in one of three modes:
+
+- **Full mode** -- Joins the mesh, manages a local Nix store, exposes control
+  and build sockets. This is the default on host machines.
+- **Forward mode** -- Does not join the mesh. Binds a control socket inside a
+  container or VM, forwards requests to an upstream daemon socket
+  (bind-mounted from the host). Extremely lightweight. See
+  [sockets.md](sockets.md) for the forwarding protocol and multi-level
+  nesting support.
+- **Nested-full mode** -- A full daemon running inside a container/VM with its
+  own store. Receives a restricted upstream socket for mesh access but manages
+  its own builds locally. See [sockets.md](sockets.md) for details.
+
+**Auto-detection**: when no explicit mode is configured, the daemon checks for
+an upstream socket at a well-known path (e.g., `/run/aos/upstream.sock`). If
+present, it starts in forward mode. If absent, it starts in full mode. This
+lets containers inherit the correct mode without explicit configuration.
+
+See [sockets.md](sockets.md) for the full Unix socket architecture, including
+socket types, capability narrowing, and multi-level nesting.
+
 ## Role
 
 Every daemon:
@@ -12,19 +33,23 @@ Every daemon:
 - Generates or loads a persistent ed25519 peer identity
 - Joins the libp2p mesh via mDNS and seed peers
 - Participates in the Kademlia DHT (stores and retrieves records)
-- Subscribes to GossipSub topics (`builds/wanted`, `builds/claimed`,
-  `builds/result`, per-build log topics)
-- Serves the `/aos/nar-fetch/1.0.0` and `/aos/log-replay/1.0.0` stream
+- Subscribes to GossipSub topics (universe+system-scoped: `build/wanted/{universe}/{system}`,
+  `build/claimed/{universe}/{system}`, `build/result/{universe}/{system}`; drv-scoped: per-build
+  log topics `build/logs/{drv_hash}`)
+- Serves the WANT_MANIFEST, WANT_CHUNK, and `/aos/log-replay/1.0.0` stream
   protocols to peers
 - Manages the local Nix store (GC, store path queries)
 - Advertises capabilities and store bloom filter via DHT
+- Participates in CRDT sync for configured universes (publishes and/or receives
+  sync deltas based on view sync mode)
 
 What varies by configuration:
 
 - **Control socket** (`[control]`): accepts local commands over a Unix socket,
   authenticates callers via `SO_PEERCRED`, maps Unix groups to capabilities
-- **Build subsystem** (`[build]`): claims jobs, executes `nix-store --realise`,
-  signs outputs, streams logs
+- **Build subsystem** (`[build]`): claims jobs, executes builds inside nspawn
+  containers with ephemeral FUSE views (see [builds.md](builds.md)), signs
+  outputs, streams logs
 
 ## Configuration
 
@@ -43,6 +68,9 @@ socket = "/run/aos/control.sock"
 socket_group = "aos"
 
 [control.groups]
+# Short forms for local auth policy -- these map to the qualified UCAN
+# capability names internally (e.g. "submit" -> "build/submit",
+# "fetch" -> "store/fetch", "manage" -> "admin/manage").
 aos-admin = ["submit", "observe", "manage", "fetch"]
 aos-build = ["submit", "observe"]
 aos-read  = ["observe"]
@@ -66,15 +94,28 @@ max_store_size = "100G"
 
 [signing]
 secret_key_file = "/etc/aos/signing-key"
+
+# View sync configuration (optional per view)
+[views.staging]
+universe = "staging"
+sync = "both"              # send, receive, both, or none
+fetch = "eager"            # eager, lazy, or manifest-only
+fuse = "async"             # eager, async, or lazy (see views.md FUSE Operation Modes)
+
+[views.staging.fuse_async]
+max_concurrent_fetches = 32
+priority_prefixes = ["bin/", "lib/"]
 ```
 
 Roles emerge from which sections are present:
 
-| `[control]` | `[build]` | Effective role |
-|--------------|-----------|----------------|
-| yes          | yes       | Full daemon. Accepts local commands via Unix socket, executes builds, participates in mesh. |
-| no           | yes       | Build-only daemon. Claims and executes builds, streams logs, serves NARs to peers. No local control interface. |
-| no           | no        | Cache peer. Stores and serves paths via libp2p but does not build or accept local commands. |
+| `[control]` | `[build]` | Upstream socket | Effective role |
+|--------------|-----------|-----------------|----------------|
+| yes          | yes       | no              | Full daemon. Accepts local commands via Unix socket, executes builds, participates in mesh. |
+| no           | yes       | no              | Build-only daemon. Claims and executes builds, streams logs, serves NARs to peers. No local control interface. |
+| no           | no        | no              | Cache peer. Stores and serves paths via libp2p but does not build or accept local commands. |
+| yes          | no        | yes             | Forwarding daemon. Binds a control socket, forwards requests to upstream. No mesh, no store. See [sockets.md](sockets.md). |
+| yes          | yes       | yes             | Nested-full daemon. Own store and builds, but uses upstream socket for mesh access. See [sockets.md](sockets.md). |
 
 ## Authentication
 
@@ -107,7 +148,7 @@ Each daemon holds a UCAN token (`[auth].token_file`) signed by the root key
 (`[auth].root_pubkey_file`). The UCAN encodes:
 
 - The daemon's peer identity (audience)
-- Granted capabilities (e.g., `build/*`, `nar/fetch`, `log/replay`)
+- Granted capabilities (e.g., `build/submit`, `build/claim`, `store/serve`, `store/fetch`)
 - Expiry and optional caveats (e.g., architecture restrictions)
 
 When a peer opens a stream protocol, it presents its UCAN in the handshake. The
@@ -129,6 +170,10 @@ Socket path is configurable (default `/run/aos/control.sock`). The daemon
 creates the socket with the group specified by `socket_group` and mode `0770`,
 so only members of that group can connect.
 
+For the full socket architecture -- including the three socket types (control,
+build, upstream), capability narrowing through nesting levels, and the
+forwarding protocol -- see [sockets.md](sockets.md).
+
 ### Commands
 
 **build** -- Submit a build request to the mesh.
@@ -136,6 +181,11 @@ so only members of that group can connect.
 ```json
 {"cmd": "build", "drv_path": "/nix/store/abc123-foo.drv"}
 ```
+
+The view/universe context depends on which socket the client connected to: a
+view-scoped socket (see [sockets.md](sockets.md)) implies the view and its
+universe; the control socket requires the view to be specified in the request
+(e.g., `"view": "staging"`).
 
 Response: a stream of JSON lines (one per log event), terminated by a line
 with `"kind": "complete"` or `"kind": "error"`.
@@ -195,7 +245,7 @@ Requires: `observe` capability.
 **delegate** -- Mint a child UCAN for a new peer.
 
 ```json
-{"cmd": "delegate", "peer_id": "QmNewPeer", "capabilities": ["build/*", "nar/fetch"], "lifetime_secs": 86400}
+{"cmd": "delegate", "peer_id": "QmNewPeer", "capabilities": ["build/submit", "build/claim", "store/fetch"], "lifetime_secs": 86400}
 ```
 
 Returns the encoded UCAN token string.
@@ -209,32 +259,46 @@ Requires: `manage` capability.
    |-- Generate or load peer identity (ed25519 keypair)
    |-- Join libp2p mesh (mDNS + seed peers)
    |-- Build store bloom filter from local Nix store
+   |-- Open LMDB environments: chunks/index.mdb, per-view access.mdb, state/*.mdb
+   |   (state/history.mdb stores completed build records and shell metadata)
    |-- Publish capabilities to DHT
-   |-- Subscribe to GossipSub: builds/wanted, builds/claimed, builds/result
-   |-- Register stream protocol handlers: /aos/log-replay/1.0.0, /aos/nar-fetch/1.0.0
+   |-- Subscribe to GossipSub: build/wanted/{universe}/{system}, build/claimed/{universe}/{system}, build/result/{universe}/{system}
+   |-- Register stream protocol handlers: /aos/log-replay/1.0.0, WANT_MANIFEST, WANT_CHUNK
    |-- If [control]: bind Unix socket, start accepting connections
    |-- If [build]: enable job claiming in the main loop
+   |-- Subscribe to sync/{universe} GossipSub topic for each configured universe
+   |-- Start anti-entropy timer for periodic merkle root exchange
    +-- Start capability refresh timer (120s interval)
 
 2. Main Loop
    |-- Handle swarm events (GossipSub messages, stream requests, DHT queries)
    |-- If [build] and capacity available:
    |   |-- Evaluate pending jobs (arch, features, bloom affinity)
-   |   |-- Claim via DHT, announce on builds/claimed
-   |   |-- Fetch missing inputs from peers via /aos/nar-fetch/1.0.0
-   |   |-- Execute nix-store --realise
+   |   |-- Claim via DHT, announce on build/claimed
+   |   |-- Fetch missing inputs from peers via WANT_MANIFEST + WANT_CHUNK
+   |   |-- Create ephemeral view (projection: Closure) for the build sandbox
+   |   |-- Execute build in nspawn container with ephemeral FUSE view (see builds.md)
+   |   |-- On completion or failure: destroy ephemeral view, flush access data to parent view
+   |   |-- Chunk output NARs (FastCDC), write chunks to chunk store, generate manifests
    |   |-- Sign outputs, announce as DHT provider
    |   |-- Stream logs via GossipSub + buffer for replay
-   |   +-- Publish result to builds/result
+   |   +-- Publish result to build/result
    |-- If [control]:
    |   |-- Accept Unix socket connections
    |   |-- Authenticate caller via SO_PEERCRED
    |   +-- Dispatch commands (build, watch, status, gc, peers, delegate)
+   |-- If [views] with sync != none:
+   |   |-- Handle incoming sync deltas (GossipSub messages on sync/{universe})
+   |   |-- Validate UCAN path permissions
+   |   |-- LWW merge into local CRDT state
+   |   |-- If delta contains a new closure root and the view has fetch=eager:
+   |   |   +-- Trigger content fetch (WANT_MANIFEST + WANT_CHUNK for the closure)
+   |   +-- Handle anti-entropy requests on /aos/sync/1.0.0 stream
    +-- Refresh capabilities periodically
 
 3. Shutdown
    |-- If [control]: stop accepting new connections, drain in-flight commands
-   |-- If [build]: unsubscribe from builds/wanted, wait for in-flight builds (with timeout)
+   |-- If [build]: unsubscribe from build/wanted/{universe}/{system} topics, wait for in-flight builds (with timeout)
    |-- Remove capability record from DHT
    +-- Disconnect from mesh
 ```
@@ -249,6 +313,7 @@ struct Daemon {
     store_bloom: BloomFilter,
     log_buffers: HashMap<String, Arc<LogBuffer>>,
     control: Option<ControlSocket>,    // present when [control] is configured
+    sync_states: HashMap<String, SyncState>,  // universe -> CRDT sync state
 }
 
 impl Daemon {
@@ -256,6 +321,7 @@ impl Daemon {
         self.publish_capabilities().await?;
 
         let mut capability_interval = tokio::time::interval(Duration::from_secs(120));
+        let mut anti_entropy_interval = tokio::time::interval(Duration::from_secs(300));
         let mut pending_jobs: BinaryHeap<PrioritizedJob> = BinaryHeap::new();
 
         loop {
@@ -286,6 +352,14 @@ impl Daemon {
                     self.handle_control_connection(conn).await?;
                 }
 
+                // Run anti-entropy sync (only when views with sync != none are configured)
+                _ = anti_entropy_interval.tick(),
+                    if !self.sync_states.is_empty() => {
+                    for (universe, state) in &mut self.sync_states {
+                        state.run_anti_entropy(&mut self.swarm, universe).await?;
+                    }
+                }
+
                 // Refresh capabilities periodically
                 _ = capability_interval.tick() => {
                     self.publish_capabilities().await?;
@@ -306,12 +380,13 @@ impl Daemon {
 ## Build Execution
 
 Build execution requires `[build]` to be configured. It proceeds in three
-phases: fetching missing inputs from peers, running `nix-store --realise`, and
-announcing the daemon as a provider for outputs.
+phases: fetching missing inputs from peers, running the build inside an nspawn
+container with an ephemeral FUSE view (see [builds.md](builds.md) for the
+isolation model), and announcing the daemon as a provider for outputs.
 
 ### Job Evaluation and Claiming
 
-When a job arrives on `builds/wanted`, the daemon evaluates whether it should
+When a job arrives on `build/wanted/{universe}/{system}`, the daemon evaluates whether it should
 claim it. Hard filters (architecture, required features) are checked first.
 If the daemon is eligible, it computes an affinity score based on bloom filter
 overlap with the job's input closure. Higher affinity means the daemon already
@@ -351,7 +426,7 @@ async fn try_claim_and_execute(&mut self, job: BuildJob) -> Result<()> {
         drv_hash: job.drv_hash.clone(),
         builder_peer_id: self.swarm.local_peer_id().to_string(),
     };
-    self.gossipsub_publish("builds/claimed", &claimed_msg)?;
+    self.gossipsub_publish(&format!("build/claimed/{}/{}", job.universe, job.system), &claimed_msg)?;
 
     // Execute build in background
     let active = self.active_builds.clone();
@@ -379,19 +454,17 @@ async fn execute_build(
     log_buffer: Arc<LogBuffer>,
 ) -> Result<BuildResult> {
     let drv_hash = &job.drv_hash;
-    let topic = gossipsub::IdentTopic::new(format!("builds/logs/{drv_hash}"));
+    let topic = gossipsub::IdentTopic::new(format!("build/logs/{drv_hash}"));
 
     // Phase 1: Fetch missing inputs
     emit_status(swarm, &topic, &log_buffer, "fetching-inputs", drv_hash);
     fetch_missing_inputs(&job.drv_path, swarm).await?;
 
-    // Phase 2: Execute nix-store --realise
+    // Phase 2: Execute build in nspawn container with ephemeral FUSE view
+    // (see builds.md for isolation details: nspawn + FUSE overlay model)
     emit_status(swarm, &topic, &log_buffer, "building", drv_hash);
 
-    let mut child = Command::new("nix-store")
-        .args(["--realise", &job.drv_path])
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut child = spawn_isolated_build(&job.drv_path)?;
 
     let stderr = child.stderr.take().unwrap();
     let mut lines = BufReader::new(stderr).lines();
@@ -421,9 +494,13 @@ async fn execute_build(
     if status.success() {
         let outputs = query_outputs(&job.drv_path).await?;
 
-        // Sign outputs and announce as provider for output store paths via DHT
-        emit_status(swarm, &topic, &log_buffer, "signing-and-announcing", drv_hash);
+        // Chunk outputs, generate manifests, sign, and announce
+        emit_status(swarm, &topic, &log_buffer, "chunking-and-announcing", drv_hash);
         for output in &outputs {
+            // Chunk the NAR and write chunks + manifest to chunk store
+            let nar_data = nix_store_dump(output)?;
+            chunk_store.index_nar(output, &nar_data)?;
+
             let key = store_path_to_kad_key(output);
             swarm.behaviour_mut().kademlia
                 .start_providing(key)?;
@@ -451,8 +528,8 @@ async fn execute_build(
         };
         dht_put(&format!("build:{drv_hash}"), &result, Duration::from_secs(86400)).await?;
 
-        // Publish to result topic
-        gossipsub_publish("builds/result", &result)?;
+        // Publish to universe-scoped result topic
+        gossipsub_publish(&format!("build/result/{}/{}", job.universe, job.system), &result)?;
 
         // Update bloom filter with new store paths
         for output in &outputs {
@@ -482,11 +559,11 @@ async fn execute_build(
 }
 ```
 
-### Nix Store Retry
+### Build Retry
 
-If `nix-store --realise` fails with daemon connection errors, the daemon retries
-with exponential backoff (up to 3 attempts). It emits `store-unavailable` log
-events so watchers know what is happening.
+If the build fails with transient errors (store unavailability, container setup
+failure), the daemon retries with exponential backoff (up to 3 attempts). It
+emits `store-unavailable` log events so watchers know what is happening.
 
 ## Log Replay Handler
 
@@ -531,36 +608,76 @@ async fn handle_log_replay(
 }
 ```
 
-## NAR Fetch Handler
+## Content Transfer Handlers (WANT_MANIFEST / WANT_CHUNK)
 
-The daemon serves the `/aos/nar-fetch/1.0.0` stream protocol, allowing any peer
-to fetch store paths directly.
+The daemon serves two content transfer protocols matching the two-level
+transfer model defined in [chunks.md](chunks.md).
+
+### WANT_MANIFEST Handler
+
+WANT_MANIFEST requests are universe-scoped. The handler checks the requester's
+UCAN for the requested universe and verifies that the store path is rooted in
+a local view mapped to that universe before serving the manifest.
 
 ```rust
-async fn handle_nar_fetch(
+async fn handle_want_manifest(
     mut stream: libp2p::Stream,
+    chunk_store: &ChunkStore,
+    roots_db: &RootsDb,
+    ucan_verifier: &UcanVerifier,
+    remote_peer: &PeerId,
 ) -> Result<()> {
-    let request: NarFetchRequest = read_framed(&mut stream).await?;
+    let request: WantManifestRequest = read_framed(&mut stream).await?;
 
-    // Resolve store hash to full path
-    let store_path = resolve_store_path(&request.store_hash)?;
+    // Auth check: verify requester has store/fetch for this universe
+    if !ucan_verifier.check_capability(
+        remote_peer,
+        "store/fetch",
+        &format!("aos://{}/*", request.universe),
+    ) {
+        write_framed(&mut stream, &ManifestResponse::Denied).await?;
+        return Ok(());
+    }
 
-    // Generate narinfo
-    let narinfo = generate_narinfo(&store_path)?;
-    write_framed(&mut stream, &narinfo).await?;
+    // View membership check: is store_hash rooted in a view for this universe?
+    let view = universe_to_view(&request.universe);
+    if !roots_db.contains(&(view, &request.store_hash)) {
+        // Cross-view local sharing: check if we have the path in any view
+        if chunk_store.has_manifest(&request.store_hash) {
+            roots_db.insert(&(view, &request.store_hash));
+        } else {
+            write_framed(&mut stream, &ManifestResponse::DontHave).await?;
+            return Ok(());
+        }
+    }
 
-    // Stream NAR data (optionally compressed)
-    let mut child = Command::new("nix-store")
-        .args(["--dump", &store_path])
-        .stdout(Stdio::piped())
-        .spawn()?;
+    let manifest = chunk_store.get_manifest(&request.store_hash)?;
+    write_framed(&mut stream, &ManifestResponse::Have(manifest)).await?;
+    Ok(())
+}
+```
 
-    let mut stdout = child.stdout.take().unwrap();
-    let mut buf = vec![0u8; 64 * 1024]; // 64KB chunks
-    loop {
-        let n = stdout.read(&mut buf).await?;
-        if n == 0 { break; }
-        stream.write_all(&buf[..n]).await?;
+### WANT_CHUNK Handler
+
+WANT_CHUNK requests are universe-agnostic. No auth check is performed --
+possession of a manifest (obtained via authenticated WANT_MANIFEST) implies
+authorization to fetch the referenced chunks. Chunks are served via pread from
+pack files.
+
+```rust
+async fn handle_want_chunk(
+    mut stream: libp2p::Stream,
+    chunk_store: &ChunkStore,
+) -> Result<()> {
+    let request: WantChunkRequest = read_framed(&mut stream).await?;
+
+    match chunk_store.serve_chunk(&request.chunk_hash) {
+        Ok(data) => {
+            write_framed(&mut stream, &ChunkResponse::Have(data)).await?;
+        }
+        Err(_) => {
+            write_framed(&mut stream, &ChunkResponse::DontHave).await?;
+        }
     }
 
     Ok(())
@@ -612,7 +729,7 @@ Shutdown proceeds in two phases, draining active subsystems concurrently:
 - Send error responses to streaming watchers so they know to reconnect
 
 **Build drain** (when `[build]` is configured):
-- Unsubscribe from `builds/wanted` (stop accepting new jobs)
+- Unsubscribe from `build/wanted/{universe}/{system}` topics (stop accepting new jobs)
 - Wait for in-flight builds to complete (with configurable timeout)
 - If timeout expires, emit `error` log events for incomplete builds so watchers
   know to retry
@@ -641,10 +758,22 @@ aos-daemon/
     control.rs          # Unix socket control interface, JSON-line protocol
     auth.rs             # SO_PEERCRED local auth, UCAN mesh auth
     log_replay.rs       # /aos/log-replay/1.0.0 handler
-    nar_fetch.rs        # /aos/nar-fetch/1.0.0 handler
+    content_transfer.rs # WANT_MANIFEST and WANT_CHUNK handlers
     signing.rs          # output signing and trust management
     store.rs            # local Nix store management
     ucan.rs             # UCAN token parsing, validation, and delegation
+    viewdb.rs           # ViewDb trait: manages multiple LMDB environments --
+                        #   per-view access.mdb (LRU tracking),
+                        #   global state/roots.mdb (view roots),
+                        #   and in-memory MemoryViewDb for ephemeral builds
+    fuse_modes.rs       # FUSE operation modes (eager, async, lazy) --
+                        #   controls when chunk data is fetched from peers.
+                        #   Eager: all chunks pre-fetched before mount.
+                        #   Async: background fetch with priority queue.
+                        #   Lazy: on-demand fetch on first read().
+                        #   See views.md for full specification.
+    chunk_store.rs      # Content-defined chunk storage (FastCDC + BLAKE3), chunks/index.mdb
+    sync.rs             # CRDT sync state management (state/sync.mdb), delta handling, anti-entropy
 ```
 
 ## Resource Management
