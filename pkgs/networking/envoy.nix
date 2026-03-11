@@ -1,17 +1,14 @@
 ##! Envoy proxy — high-performance L7 proxy built from source
 ##!
-##! Two-phase FOD build adapted from nixpkgs: (1) envoyDeps fetches all Bazel
-##! external deps into a repository cache via `bazel sync --noenable_bzlmod`,
-##! (2) the main build compiles envoy-static offline with --repository_disable_download.
-##!
-##! Store paths are scrubbed with per-tool placeholders (not a blanket regex) and
-##! restored to actual paths before the build. This follows the nixpkgs pattern
-##! for reproducible FOD hashes.
+##! Uses mkBazelPackage (two-phase FOD build adapted from nixpkgs):
+##! (1) fetchBazelDeps fetches all Bazel external deps via `bazel build --nobuild`
+##! (2) bazelPhases patchelfs downloaded ELFs and builds offline
 {
-  mkDerivation,
+  mkBazelPackage,
+  fetchBazelDeps,
   fetchurl,
   lib,
-  bazel,
+  bazel-7,
   bash,
   coreutils,
   which,
@@ -37,15 +34,18 @@
   file,
   ca-certificates,
   perl,
+  gnumake,
+  pkg-config,
+  autoconf,
+  automake,
+  m4,
+  patchelf,
+  bootstrapTools,
 }:
 let
   version = "1.37.0";
 
-  # Configurable store directory (not hardcoded to /nix/store)
-  storeDir = builtins.storeDir;
-
-  # All tools Bazel needs in PATH during build
-  toolsPath = lib.makeBinPath [
+  tools = [
     bash
     coreutils
     which
@@ -69,19 +69,89 @@ let
     xz
     file
     perl
+    gnumake
+    pkg-config
+    autoconf
+    automake
+    m4
   ];
 
   src = fetchurl {
     urls = [
       "https://github.com/envoyproxy/envoy/archive/v${version}.tar.gz"
     ];
-    hash = lib.fakeHash;
+    hash = "sha256-XPOlNCvf/owcwowK+mGiRlTR94FIDT3MImyB/kGh5xM=";
   };
 
-  # Common patch + setup script used in both FOD and build phases.
-  # Applies patches, sets up Rust toolchain, injects Cargo/Rustc templates
-  # into dependency_imports.bzl, and replaces shebangs.
-  patchAndSetup = ''
+  # Script to clean up python toolchain references that the patch may miss
+  fixPythonBzl = builtins.toFile "fix_python_bzl.py" ''
+import re, sys
+with open(sys.argv[1], 'r') as f:
+    content = f.read()
+# Remove python_register_toolchains(...) call block (handles nested parens)
+content = re.sub(r'\n\s*#[^\n]*[Rr]egisters[^\n]*\n', '\n', content)
+content = re.sub(r'\n\s*python_register_toolchains\(.*?\n\s*\)\n', '\n', content, flags=re.DOTALL)
+# Remove _python_minor_version function if still present
+content = re.sub(r'\ndef _python_minor_version\([^)]*\):\n[^\n]*\n', '\n', content)
+# Remove PYTHON_VERSION/PYTHON_MINOR_VERSION if still present
+content = re.sub(r'\n# Python version[^\n]*\n', '\n', content)
+content = re.sub(r'\nPYTHON_VERSION = [^\n]*\n', '\n', content)
+content = re.sub(r'\nPYTHON_MINOR_VERSION = [^\n]*\n', '\n', content)
+# Remove python_version parameter from function signature and calls
+content = re.sub(r',\s*\n\s*python_version\s*=\s*PYTHON_VERSION', "", content)
+content = re.sub(r'\s*python_version\s*=\s*python_version,', "", content)
+with open(sys.argv[1], 'w') as f:
+    f.write(content)
+  '';
+
+  # Script to replace yq usage in repo.bzl with dummy data.
+  # The envoy_repo repository rule uses yq (a pre-built Go binary) to parse
+  # .github/config.yml. The yq binary can't execute in the Nix sandbox.
+  fixRepoBzl = builtins.toFile "fix_repo_bzl.py" ''
+import re, sys
+with open(sys.argv[1], "r") as f:
+    content = f.read()
+
+old_block = """    json_result = repository_ctx.execute([
+        repository_ctx.path(repository_ctx.attr.yq),
+        repository_ctx.path(repository_ctx.attr.envoy_ci_config),
+        "-ojson",
+    ])
+    if json_result.return_code != 0:
+        fail("yq failed: {}".format(json_result.stderr))
+    repository_ctx.file("ci-config.json", json_result.stdout)
+    config_data = json.decode(repository_ctx.read("ci-config.json"))"""
+
+# Provide dummy container data — not needed for building from source
+new_block = """    # AOS: skip yq (pre-built binary incompatible with Nix sandbox).
+    # Provide dummy CI container config — not needed for source builds.
+    config_data = {"build-image": {"repo": "envoyproxy/envoy-build-ubuntu", "repo-gcr": "envoyproxy/envoy-build-ubuntu", "sha": "dummy", "sha-gcc": "dummy", "sha-mobile": "dummy", "sha-worker": "dummy", "tag": "dummy"}}"""
+
+content = content.replace(old_block, new_block)
+
+# Also remove the yq attr from _envoy_repo since it's no longer needed
+content = content.replace('"yq": attr.label(default = "@yq"),', "")
+
+with open(sys.argv[1], "w") as f:
+    f.write(content)
+  '';
+
+  # Store path scrubbing map — shared between fetch and build phases
+  # Use unsafeDiscardStringContext because Nix disallows store path refs as dynamic attr keys
+  scrub = builtins.unsafeDiscardStringContext;
+  scrubMap = {
+    "${scrub python3}" = "__AOS_PYTHON__";
+    "${scrub bash}" = "__AOS_BASH__";
+    "${scrub coreutils}" = "__AOS_COREUTILS__";
+    "${scrub rust}" = "__AOS_RUST__";
+    "${scrub openjdk}" = "__AOS_JDK__";
+    "${scrub gcc}" = "__AOS_GCC__";
+    "${scrub binutils}" = "__AOS_BINUTILS__";
+    "${scrub llvm}" = "__AOS_LLVM__";
+  };
+
+  # Source patching — shared between fetch and build phases
+  postPatchScript = ''
     # Apply patches
     patch -p1 < ${./envoy-patches/0001-use-system-python.patch}
     patch -p1 < ${./envoy-patches/0003-use-system-cc-toolchains.patch}
@@ -90,28 +160,83 @@ let
     # Remove .bazelversion so AOS Bazel is used directly
     rm -f .bazelversion
 
-    # Remove -Werror from envoy_internal.bzl (GCC may produce warnings Clang doesn't)
+    # Ensure python toolchain registration is fully removed
+    python3 ${fixPythonBzl} bazel/repositories_extra.bzl
+
+    # Replace yq-based YAML parsing with dummy data
+    python3 ${fixRepoBzl} bazel/repo.bzl
+
+    # Remove yq/jq toolchain registrations (pre-built Go binaries)
+    sed -i '/register_yq_toolchains/d' bazel/dependency_imports.bzl
+    sed -i '/register_jq_toolchains/d' bazel/dependency_imports.bzl
+
+    # Disable toolchains_llvm setup — we use AOS-built GCC
+    sed -i '/bazel_toolchain_dependencies/d' bazel/repositories_extra.bzl
+    sed -i '/toolchain_llvm/d' bazel/repositories_extra.bzl 2>/dev/null || true
+
+    # Remove envoy_toolchains() from WORKSPACE — it loads @toolchains_llvm rules
+    # which transitively need @helly25_bzl (defined by bazel_toolchain_dependencies, now removed)
+    sed -i '/envoy_toolchains/d' WORKSPACE
+    cat > bazel/toolchains.bzl << 'TOOLCHAINS_EOF'
+# AOS: toolchains_llvm disabled — using AOS-built GCC directly
+def envoy_toolchains():
+    pass
+TOOLCHAINS_EOF
+
+    # Remove llvm_toolchain references from dependency_imports_extra.bzl
+    sed -i '/llvm_toolchain/d' bazel/dependency_imports_extra.bzl
+    sed -i '/llvm_register_toolchains/d' bazel/dependency_imports_extra.bzl
+
+    # Remove emsdk/emscripten (wasm toolchain — not needed)
+    sed -i '/emsdk/d' bazel/dependency_imports.bzl
+    sed -i '/emscripten/d' bazel/dependency_imports.bzl
+    sed -i '/emsdk/d' bazel/repositories_extra.bzl
+    sed -i '/_emsdk/d' bazel/repositories.bzl
+
+    # Remove bazel_toolchains (RBE exec properties — not needed for local build)
+    sed -i '/bazel_toolchains/d' bazel/repositories.bzl
+
+    # Stub out RBE BUILD files that use @bazel_toolchains
+    # Provide stub platform targets so references from other BUILD files work
+    cat > bazel/rbe/toolchains/BUILD << 'RBE_EOF'
+# AOS: RBE disabled — provide stub platform target
+platform(
+    name = "rbe_linux_gcc_platform",
+    visibility = ["//visibility:public"],
+)
+RBE_EOF
+    cat > bazel/platforms/rbe/BUILD << 'RBE_EOF'
+# AOS: RBE disabled
+RBE_EOF
+    if [ -f mobile/bazel/platforms/rbe/BUILD ]; then
+      echo '# AOS: RBE disabled' > mobile/bazel/platforms/rbe/BUILD
+    fi
+
+    # Remove -Werror (GCC may produce warnings Clang doesn't)
     sed -i '/"-Werror"/d' bazel/envoy_internal.bzl
 
-    # Remove javabase from .bazelrc (we set it via --server_javabase)
+    # Remove host_platform from --config=gcc (our stub platform has no CC toolchain)
+    # We'll set flags directly instead
+    sed -i '/host_platform.*rbe_linux_gcc/d' .bazelrc
+    # Use lld linker (envoy's auto-configured CC toolchain uses lld-specific flags
+    # like --start-lib that bfd doesn't support)
+    sed -i 's/-fuse-ld=gold/-fuse-ld=lld/g' .bazelrc
+
+    # Remove javabase from .bazelrc (set via --server_javabase)
     sed -i '/javabase=/d' .bazelrc
 
     # Set up Rust toolchain symlinks for Bazel
-    # The nix-build.BUILD.bazel expects: cargo, rustc, rustdoc executables
-    # and rustcroot/lib/rustlib/<triple>/lib/ for stdlib
     mkdir -p bazel/nix
     ln -sf ${rust}/bin/rustc bazel/nix/rustc
     ln -sf ${rust}/bin/cargo bazel/nix/cargo
     ln -sf ${rust}/bin/rustdoc bazel/nix/rustdoc
     ln -sf ${rust} bazel/nix/rustcroot
-    # Substitute @bash@ placeholder in BUILD file
     sed "s|@bash@|${bash}/bin/bash|g" ${./envoy-patches/nix-build.BUILD.bazel} > bazel/nix/BUILD.bazel
 
-    # Inject Rust toolchain templates into dependency_imports.bzl
-    # Without this, Bazel's crate_universe can't find cargo/rustc
+    # Inject Rust toolchain templates and bootstrap settings into crate_universe
     sed -i \
-      -e 's|crate_universe_dependencies()|crate_universe_dependencies(rust_toolchain_cargo_template="@@//bazel/nix:cargo", rust_toolchain_rustc_template="@@//bazel/nix:rustc")|' \
-      -e 's|crates_repository(|crates_repository(rust_toolchain_cargo_template="@@//bazel/nix:cargo", rust_toolchain_rustc_template="@@//bazel/nix:rustc",|' \
+      -e 's|crate_universe_dependencies()|crate_universe_dependencies(bootstrap=True, rust_toolchain_cargo_template="@@//bazel/nix:cargo", rust_toolchain_rustc_template="@@//bazel/nix:rustc")|' \
+      -e 's|crates_repository(|crates_repository(generator="@@cargo_bazel_bootstrap//:cargo-bazel", supported_platform_triples=["x86_64-unknown-linux-gnu"], rust_toolchain_cargo_template="@@//bazel/nix:cargo", rust_toolchain_rustc_template="@@//bazel/nix:rustc",|' \
       bazel/dependency_imports.bzl
 
     # Fix luajit build script shebang
@@ -135,304 +260,205 @@ let
           "$f" 2>/dev/null || true
       done
   '';
-
-  # Per-tool placeholder strings for store path scrubbing.
-  # Each tool gets its own placeholder so we can restore the exact path
-  # during the build phase (not a lossy blanket replacement).
-  scrubPaths = ''
-    # Targeted store path scrubbing — replace specific tool paths with
-    # named placeholders so they can be restored to actual paths at build time.
-    # This follows the nixpkgs pattern for reproducible FOD hashes.
-    SCRUB_FILES=$(find "$out" -type f)
-    for f in $SCRUB_FILES; do
-      file "$f" | grep -q text || continue
-      sed -i \
-        -e "s|${python3}|__AOS_PYTHON__|g" \
-        -e "s|${bash}|__AOS_BASH__|g" \
-        -e "s|${coreutils}|__AOS_COREUTILS__|g" \
-        -e "s|${rust}|__AOS_RUST__|g" \
-        -e "s|${openjdk}|__AOS_JDK__|g" \
-        -e "s|${gcc}|__AOS_GCC__|g" \
-        -e "s|${binutils}|__AOS_BINUTILS__|g" \
-        -e "s|${llvm}|__AOS_LLVM__|g" \
-        "$f" 2>/dev/null || true
-    done
-  '';
-
-  # Reverse the scrubbing — restore actual store paths from placeholders
-  restorePaths = ''
-    RESTORE_FILES=$(find ../repo_cache -type f)
-    for f in $RESTORE_FILES; do
-      file "$f" | grep -q text || continue
-      sed -i \
-        -e "s|__AOS_PYTHON__|${python3}|g" \
-        -e "s|__AOS_BASH__|${bash}|g" \
-        -e "s|__AOS_COREUTILS__|${coreutils}|g" \
-        -e "s|__AOS_RUST__|${rust}|g" \
-        -e "s|__AOS_JDK__|${openjdk}|g" \
-        -e "s|__AOS_GCC__|${gcc}|g" \
-        -e "s|__AOS_BINUTILS__|${binutils}|g" \
-        -e "s|__AOS_LLVM__|${llvm}|g" \
-        "$f" 2>/dev/null || true
-    done
-  '';
-
-  # Fixed-output derivation: fetch all Bazel external dependencies into a
-  # repository cache. Store paths are scrubbed with per-tool placeholders
-  # so the output hash is stable across rebuilds.
-  envoyDeps = builtins.derivation {
-    name = "envoy-deps-${version}";
-    system = lib.system;
-    builder = "${bash}/bin/bash";
-    args = [
-      "-c"
-      ''
-        set -eu
-        export PATH="${toolsPath}:${openjdk}/bin:${bazel}/bin:$PATH"
-        export HOME="$TMPDIR/home"
-        mkdir -p "$HOME"
-        export JAVA_HOME="${openjdk}"
-        export SSL_CERT_FILE="${ca-certificates}/etc/ssl/certs/ca-certificates.crt"
-
-        # Extract source
-        mkdir -p "$TMPDIR/envoy_src"
-        cd "$TMPDIR/envoy_src"
-        tar xzf ${src} --strip-components=1
-
-        ${patchAndSetup}
-
-        # Fetch all external deps into repository cache
-        bazel --batch \
-          --output_user_root="$TMPDIR/bazel_cache" \
-          --server_javabase="${openjdk}" \
-          sync \
-          --noenable_bzlmod \
-          --repository_cache="$TMPDIR/repo_cache" \
-          --curses=no \
-          --verbose_failures || true
-
-        # The bazel output_base contains the fetched external repos
-        BAZEL_OUT="$TMPDIR/bazel_cache"
-        EXTERNAL=$(find "$BAZEL_OUT" -type d -name external | head -1)
-
-        # Copy repository cache to output
-        cp -a "$TMPDIR/repo_cache" "$out" 2>/dev/null || mkdir -p "$out"
-
-        # Save Cargo.Bazel.lock if it exists (pins Rust crate versions)
-        if [ -n "$EXTERNAL" ] && [ -f "$EXTERNAL/../Cargo.Bazel.lock" ]; then
-          cp "$EXTERNAL/../Cargo.Bazel.lock" "$out/Cargo.Bazel.lock"
-        fi
-        # Also check in the source tree
-        if [ -f source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock ]; then
-          cp source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock "$out/Cargo.Bazel.lock" 2>/dev/null || true
-        fi
-
-        # --- Clean non-reproducible artifacts ---
-
-        # Remove compiled Python bytecode
-        find "$out" -name "*.pyc" -type f -delete
-
-        # Remove Go caches (timestamps, non-deterministic)
-        find "$out" -type d -name "gocache" -exec rm -rf {} + 2>/dev/null || true
-        find "$out" -type d -name "sumdb" -exec rm -rf {} + 2>/dev/null || true
-
-        # Remove unused platform JDK downloads (keep only current platform)
-        find "$out" -type d -name "remotejdk*" -exec rm -rf {} + 2>/dev/null || true
-        find "$out" -type d -name "android*" -exec rm -rf {} + 2>/dev/null || true
-
-        # Remove cargo_bazel_bootstrap and crate index caches
-        find "$out" -type d -name "cargo_bazel_bootstrap" -exec rm -rf {} + 2>/dev/null || true
-        find "$out" -type d -name ".cargo_home" -exec rm -rf {} + 2>/dev/null || true
-        find "$out" -type d -name "splicing-output" -exec rm -rf {} + 2>/dev/null || true
-
-        # --- Targeted store path scrubbing ---
-        ${scrubPaths}
-
-        # Normalize permissions for reproducibility
-        find "$out" -type f -exec chmod 644 {} \;
-        find "$out" -type d -exec chmod 755 {} \;
-      ''
-    ];
-
-    outputHash = lib.fakeHash;
-    outputHashMode = "recursive";
-    outputHashAlgo = "sha256";
-    preferLocalBuild = true;
-  };
 in
-mkDerivation {
+mkBazelPackage {
   pname = "envoy";
-  inherit version;
+  inherit version src;
 
-  inherit src;
+  bazel = bazel-7;
+  jdk = openjdk;
+  inherit tools;
+  caCertificates = ca-certificates;
 
-  buildDeps = [
-    bazel
-    bash
-    coreutils
-    which
-    zip
-    unzip
-    gawk
-    python3
-    openjdk
-    gcc
-    binutils
-    llvm
-    rust
-    cmake
-    ninja
-    grep
-    gzip
-    patch
-    diffutils
-    findutils
-    sed
-    tar
-    xz
-    file
-    ca-certificates
-    perl
+  postPatch = postPatchScript;
+  bazelTarget = "//source/exe:envoy-static";
+  bazelFlags = [
+    "--noenable_bzlmod"
+    "--define=wasm=disabled"
   ];
+  inherit scrubMap;
+
+  # --- Fetch-specific ---
+  depsHash = "sha256-URSRVVx2hqsB8EmmAM2bEJdM0rjxwA3/laMGUKSZE64=";
+  fetchPostPatch = "";
+  bazelFetchFlags = [
+    "--extra_toolchains=//bazel/nix:rust_nix_x86_64"
+  ];
+  fetchEnv = {
+    CARGO_BAZEL_REPIN = "true";
+  };
+  postFetch = ''
+    # Fix tcmalloc GCC warning
+    find "$bazelOut/external" -path "*/com_github_google_tcmalloc/tcmalloc/copts.bzl" | \
+      while read f; do
+        sed -i '/TCMALLOC_GCC_FLAGS = \[/a\    "-Wno-changes-meaning",' "$f" 2>/dev/null || true
+      done
+
+    # CMake 3.1 → 3.5 compat fix for libevent
+    find "$bazelOut/external" -path "*/com_github_libevent_libevent/CMakeLists.txt" | \
+      while read f; do
+        sed -i 's/cmake_minimum_required(VERSION 3\.1/cmake_minimum_required(VERSION 3.5/' "$f" 2>/dev/null || true
+      done
+
+    # Save Cargo.Bazel.lock
+    if [ -f source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock ]; then
+      cp source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock "$bazelOut/external/Cargo.Bazel.lock"
+    fi
+
+    # Remove cargo_bazel_bootstrap (compiled binary references store paths)
+    rm -rf "$bazelOut/external/cargo_bazel_bootstrap"
+    # Clean up crate index build artifacts (keep generated BUILD files)
+    find "$bazelOut/external" -path "*/dynamic_modules_rust_sdk_crate_index/.cargo_home" \
+      -exec rm -rf {} + 2>/dev/null || true
+    find "$bazelOut/external" -path "*/dynamic_modules_rust_sdk_crate_index/splicing-output" \
+      -exec rm -rf {} + 2>/dev/null || true
+
+    # Remove prebuilt JDK toolchains
+    rm -rf "$bazelOut/external/remotejdk"*
+    rm -rf "$bazelOut/external/local_jdk"
+    rm -rf "$bazelOut/external/android_tools" "$bazelOut/external/android_gmaven_r8"
+    find "$bazelOut/external/repository_cache" -maxdepth 1 -type f \
+      \( -iname '*remotejdk*' -o -iname '*remote_java_tools*' -o -iname '*android*' \) \
+      -delete 2>/dev/null || true
+
+    # Remove Go caches
+    rm -rf "$bazelOut/external/bazel_gazelle_go_repository_cache/gocache" 2>/dev/null || true
+    rm -rf "$bazelOut/external/bazel_gazelle_go_repository_cache/pkg" 2>/dev/null || true
+  '';
+
+  # --- Build-specific ---
+  bazelBuildFlags = [
+    "-c opt"
+    "--config=gcc"
+    "--spawn_strategy=standalone"
+    "--extra_toolchains=@local_jdk//:all"
+    "--java_runtime_version=local_jdk"
+    "--tool_java_runtime_version=local_jdk"
+    "--extra_toolchains=//bazel/nix:rust_nix_x86_64"
+    "--strip=always"
+    "--linkopt=-fuse-ld=lld"
+    "--host_linkopt=-fuse-ld=lld"
+    "--action_env=BAZEL_LINKOPTS=-lm:-fuse-ld=lld"
+    "--linkopt=-no-pie"
+    "--host_linkopt=-no-pie"
+    "--linkopt=-Wl,-z,noexecstack"
+    "--linkopt=-Wl,--unresolved-symbols=ignore-in-object-files"
+    "--cxxopt=-Wno-changes-meaning"
+    "--cxxopt=-Wno-error"
+  ];
+  preBazelBuild = ''
+    # Restore Cargo.Bazel.lock if saved in FOD
+    if [ -f "$TMPDIR/output/external/Cargo.Bazel.lock" ]; then
+      cp "$TMPDIR/output/external/Cargo.Bazel.lock" \
+        source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock 2>/dev/null || true
+    fi
+
+    # Fix glibc include path: cc-wrapper uses -idirafter which puts glibc-2.39
+    # after GCC's builtin glibc-2.34. Add -isystem to put it first.
+    # Must use two --copt entries (not -isystem=path, which means sysroot-relative).
+    GLIBC=$(cat ${bootstrapTools}/nix-support/orig-libc)
+    INTERP=$(cat ${bootstrapTools}/nix-support/dynamic-linker)
+    echo "build --copt=-isystem --copt=$GLIBC/include" >> .bazelrc
+    echo "build --host_copt=-isystem --host_copt=$GLIBC/include" >> .bazelrc
+    # Fix library path and dynamic linker for linking
+    echo "build --linkopt=-L$GLIBC/lib" >> .bazelrc
+    echo "build --host_linkopt=-L$GLIBC/lib" >> .bazelrc
+    echo "build --linkopt=-Wl,-dynamic-linker,$INTERP" >> .bazelrc
+    echo "build --host_linkopt=-Wl,-dynamic-linker,$INTERP" >> .bazelrc
+    # Also set RPATH so linked binaries find glibc at runtime
+    echo "build --linkopt=-Wl,-rpath,$GLIBC/lib" >> .bazelrc
+    echo "build --host_linkopt=-Wl,-rpath,$GLIBC/lib" >> .bazelrc
+
+    # Patch shebangs in repo overrides (external deps have #!/bin/bash etc.)
+    find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name '*.py' -o -name '*.pl' \
+         -o -name 'configure' -o -name '*.bzl' -o -name 'BUILD' -o -name 'BUILD.*' \
+         -o -name '*.tpl' -o -name '*.txt' \) 2>/dev/null | \
+      while read f; do
+        sed -i \
+          -e "s|/usr/local/bin/bash|${bash}/bin/bash|g" \
+          -e "s|/usr/bin/bash|${bash}/bin/bash|g" \
+          -e "s|/bin/bash|${bash}/bin/bash|g" \
+          -e "s|/usr/bin/env python3|${python3}/bin/python3|g" \
+          -e "s|/usr/bin/env python|${python3}/bin/python3|g" \
+          -e "s|/usr/bin/env bash|${bash}/bin/bash|g" \
+          -e "s|/usr/bin/env perl|${perl}/bin/perl|g" \
+          -e "s|/usr/bin/env|${coreutils}/bin/env|g" \
+          -e "s|/usr/bin/perl|${perl}/bin/perl|g" \
+          "$f" 2>/dev/null || true
+      done
+
+    # Patch #!/bin/sh shebangs (first line only to avoid false matches)
+    find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name 'configure' \) 2>/dev/null | \
+      while read f; do
+        sed -i "1s|^#!/bin/sh|#!${bash}/bin/bash|" "$f" 2>/dev/null || true
+      done
+
+    # Create fake-bin with tools that GCC/Go need to find
+    mkdir -p "$TMPDIR/fake-bin"
+
+    # GCC's collect2 needs to find the linker (ld.lld since we use -fuse-ld=lld).
+    # Go's builder-cc wrapper restricts PATH, so collect2 can't find it normally.
+    # Provide symlinks and tell GCC via -B and COMPILER_PATH.
+    ln -sf ${llvm}/bin/ld.lld "$TMPDIR/fake-bin/ld.lld"
+    ln -sf ${llvm}/bin/ld.lld "$TMPDIR/fake-bin/ld"
+    echo "build --linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
+    echo "build --host_linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
+    echo "build --action_env=COMPILER_PATH=$TMPDIR/fake-bin" >> .bazelrc
+
+    # Provide a fake git — bazel/get_workspace_status calls git for revision info
+    cat > "$TMPDIR/fake-bin/git" << 'FAKEGIT'
+#!/bin/sh
+# Fake git for workspace status — return empty/dummy values
+case "$*" in
+  *rev-parse*HEAD*) echo "0000000000000000000000000000000000000000" ;;
+  *rev-parse*) echo "unknown" ;;
+  *describe*) echo "v1.37.0" ;;
+  *status*) echo "" ;;
+  *diff*) exit 0 ;;
+  *log*) echo "" ;;
+  *) echo "" ;;
+esac
+exit 0
+FAKEGIT
+    chmod +x "$TMPDIR/fake-bin/git"
+    export PATH="$TMPDIR/fake-bin:$PATH"
+  '';
+  installPhase = ''
+    mkdir -p $out/bin
+
+    ENVOY_BIN=$TMPDIR/output/execroot/envoy/bazel-out/k8-opt/bin/source/exe/envoy-static
+    if [ ! -f "$ENVOY_BIN" ]; then
+      # Try alternative path
+      ENVOY_BIN=$(find $TMPDIR/output -name envoy-static -type f 2>/dev/null | head -1)
+    fi
+    if [ -z "$ENVOY_BIN" ] || [ ! -f "$ENVOY_BIN" ]; then
+      echo "ERROR: bazel did not produce envoy-static binary" >&2
+      find $TMPDIR/output -name 'envoy*' -type f 2>&1 || true
+      exit 1
+    fi
+
+    cp "$ENVOY_BIN" $out/bin/envoy
+    chmod +x $out/bin/envoy
+
+    # Patch ELF interpreter and RPATH
+    INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
+    BT_LIB=$(dirname "$INTERP")
+    STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
+    STDCXX_DIR=""
+    if [ -n "$STDCXX_FILE" ]; then
+      STDCXX_DIR=$(dirname "$STDCXX_FILE")
+    fi
+    RPATH="$BT_LIB"
+    if [ -n "$STDCXX_DIR" ]; then
+      RPATH="$RPATH:$STDCXX_DIR"
+    fi
+    ${patchelf}/bin/patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" \
+             $out/bin/envoy 2>/dev/null || true
+  '';
+
+  buildDeps = [ patchelf ];
   runtimeDeps = [ ];
   propagatedDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        mkdir envoy_src
-        cd envoy_src
-        tar xzf $src --strip-components=1
-      '';
-    }
-    {
-      name = "patch";
-      script = patchAndSetup;
-    }
-    {
-      name = "build";
-      script = ''
-        # Copy repository cache from FOD and make writable
-        cp -a ${envoyDeps} ../repo_cache
-        chmod -R u+w ../repo_cache
-
-        # Restore actual store paths from per-tool placeholders
-        ${restorePaths}
-
-        # Restore Cargo.Bazel.lock if it was saved
-        if [ -f ../repo_cache/Cargo.Bazel.lock ]; then
-          cp ../repo_cache/Cargo.Bazel.lock \
-            source/extensions/dynamic_modules/sdk/rust/Cargo.Bazel.lock 2>/dev/null || true
-        fi
-
-        # Derive bootstrapTools lib path from CONFIG_SHELL (set by mkDerivation)
-        BT_LIB=$(dirname "$(dirname "$CONFIG_SHELL")")/lib
-
-        # Patch ELF binaries in the external repo cache so build tools
-        # can execute with the correct dynamic linker
-        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
-        find ../repo_cache -type f -executable | while read execbin; do
-          file "$execbin" | grep -q ': ELF .*, dynamically linked,' || continue
-          patchelf --set-interpreter "$INTERP" "$execbin" 2>/dev/null || true
-        done
-
-        # tcmalloc fix for newer GCC: suppress -Wchanges-meaning
-        find ../repo_cache -path "*/com_github_google_tcmalloc/tcmalloc/copts.bzl" | \
-          while read f; do
-            sed -i '/TCMALLOC_GCC_FLAGS = \[/a\    "-Wno-changes-meaning",' "$f" 2>/dev/null || true
-          done
-
-        # CMake 3.1 → 3.5 compatibility fix for libevent
-        find ../repo_cache -path "*/com_github_libevent_libevent/CMakeLists.txt" | \
-          while read f; do
-            sed -i 's/cmake_minimum_required(VERSION 3\.1\b/cmake_minimum_required(VERSION 3.5/' "$f" 2>/dev/null || true
-          done
-
-        # Create bash wrapper with PATH for Bazel genrules (same pattern as bazel.nix)
-        mkdir -p ../tools
-        cat > ../tools/bash-with-path << BASHWRAP
-        #!${bash}/bin/bash
-        export PATH="${toolsPath}:\$PATH"
-        export LD_LIBRARY_PATH="$BT_LIB''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-        exec ${bash}/bin/bash "\$@"
-        BASHWRAP
-        chmod +x ../tools/bash-with-path
-
-        export HOME=$(mktemp -d)
-        export JAVA_HOME="${openjdk}"
-        export SSL_CERT_FILE="${ca-certificates}/etc/ssl/certs/ca-certificates.crt"
-        export PATH="${toolsPath}:$PATH"
-
-        # Unset C_INCLUDE_PATH so Bazel's CC toolchain auto-detection doesn't
-        # pick up bootstrapTools/include as a -I flag, which breaks
-        # #include_next <stdlib.h> in the C++ standard library headers.
-        unset C_INCLUDE_PATH CPATH CPLUS_INCLUDE_PATH
-
-        REPO_CACHE_ABS="$(cd ../repo_cache && pwd)"
-        BASH_WITH_PATH="$(cd ../tools && pwd)/bash-with-path"
-
-        bazel --batch \
-          --output_user_root="$TMPDIR/bazel_cache" \
-          --server_javabase="${openjdk}" \
-          build -c opt //source/exe:envoy-static \
-          --config=gcc \
-          --spawn_strategy=standalone \
-          --verbose_failures \
-          --curses=no \
-          --repository_cache="$REPO_CACHE_ABS" \
-          --repository_disable_download \
-          --noenable_bzlmod \
-          --extra_toolchains=@local_jdk//:all \
-          --java_runtime_version=local_jdk \
-          --tool_java_runtime_version=local_jdk \
-          --extra_toolchains=//bazel/nix:rust_nix_x86_64 \
-          --linkopt=-fuse-ld=lld \
-          --host_linkopt=-fuse-ld=lld \
-          --linkopt=-Wl,-z,noexecstack \
-          --linkopt=-Wl,--unresolved-symbols=ignore-in-object-files \
-          --cxxopt=-Wno-changes-meaning \
-          --action_env=PATH=${toolsPath} \
-          --host_action_env=PATH=${toolsPath} \
-          --action_env=LD_LIBRARY_PATH=$BT_LIB \
-          --host_action_env=LD_LIBRARY_PATH=$BT_LIB \
-          --shell_executable="$BASH_WITH_PATH" \
-          --define=wasm=disabled \
-          --incompatible_enable_cc_toolchain_resolution=true \
-          --cxxopt=-Wno-error
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        mkdir -p $out/bin
-
-        ENVOY_BIN=bazel-bin/source/exe/envoy-static
-        if [ ! -f "$ENVOY_BIN" ]; then
-          echo "ERROR: bazel did not produce envoy-static binary" >&2
-          exit 1
-        fi
-
-        cp "$ENVOY_BIN" $out/bin/envoy
-        chmod +x $out/bin/envoy
-
-        # Patch ELF interpreter and RPATH
-        INTERP=$(patchelf --print-interpreter "$CONFIG_SHELL")
-        BT_LIB=$(dirname "$INTERP")
-        STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
-        STDCXX_DIR=""
-        if [ -n "$STDCXX_FILE" ]; then
-          STDCXX_DIR=$(dirname "$STDCXX_FILE")
-        fi
-        RPATH="$BT_LIB"
-        if [ -n "$STDCXX_DIR" ]; then
-          RPATH="$RPATH:$STDCXX_DIR"
-        fi
-        patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" \
-                 $out/bin/envoy 2>/dev/null || true
-      '';
-    }
-  ];
 
   meta = {
     description = "Envoy proxy — high-performance L7 proxy and communication bus";

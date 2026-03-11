@@ -901,6 +901,213 @@ let
 
       preferLocalBuild = true;
     };
+
+  # ---------------------------------------------------------------------------
+  # fetchBazelDeps
+  # ---------------------------------------------------------------------------
+  # fetchBazelDeps { bazel; jdk; src; hash; tools; ... }
+  #
+  # Fixed-output derivation that fetches all Bazel external dependencies via
+  # `bazel build --nobuild`. Produces a directory containing the external/
+  # subtree with store paths scrubbed for reproducibility.
+  #
+  # The two-phase pattern (fetchBazelDeps + bazelPhases) mirrors nixpkgs's
+  # buildBazelPackage: the FOD downloads deps with network access, then the
+  # build phase patchelfs ELFs and builds offline.
+  fetchBazelDeps =
+    {
+      bazel,
+      jdk,
+      src,
+      hash,
+      tools ? [ ],
+      bootstrapTools,
+      caCertificates,
+      # Source patching script (shared with build phase)
+      postPatch ? "",
+      # Additional patches for fetch phase only (e.g. bootstrap=True)
+      fetchPostPatch ? "",
+      # Target for `bazel build --nobuild`
+      bazelTarget,
+      # Common bazel flags (used in both fetch and build)
+      bazelFlags ? [ ],
+      # Fetch-specific flags
+      bazelFetchFlags ? [ ],
+      # Environment variables to set
+      env ? { },
+      # Store path scrubbing: { storePath = "placeholder"; }
+      scrubMap ? { },
+      # Extra cleanup after fetch
+      postFetch ? "",
+      name ? "bazel-deps",
+      system ? defaultSystem,
+      # Built-in repos to remove (Bazel recreates them)
+      removeRepos ? [
+        "bazel_tools"
+        "embedded_jdk"
+        "local_config_cc"
+        "local_jdk"
+      ],
+      # Whether to populate repository_cache via empty workspace sync
+      populateBCR ? true,
+    }:
+    let
+      toolsPath = builtins.concatStringsSep ":" (
+        builtins.map (d: "${builtins.toString d}/bin") tools
+      );
+      flagsStr = builtins.concatStringsSep " " bazelFlags;
+      fetchFlagsStr = builtins.concatStringsSep " " bazelFetchFlags;
+      envExports = builtins.concatStringsSep "\n" (
+        builtins.attrValues (
+          builtins.mapAttrs (k: v: "export ${k}=\"${builtins.toString v}\"") env
+        )
+      );
+      scrubSedArgs = builtins.concatStringsSep " " (
+        builtins.attrValues (
+          builtins.mapAttrs (
+            path: placeholder: "-e 's|${path}|${placeholder}|g'"
+          ) scrubMap
+        )
+      );
+      removeReposCmds = builtins.concatStringsSep "\n" (
+        builtins.map (
+          repo: "rm -rf \"$bazelOut/external/${repo}\" \"$bazelOut/external/@${repo}.marker\""
+        ) removeRepos
+      );
+    in
+    builtins.derivation {
+      inherit name system;
+      builder = "/bin/sh";
+      args = [
+        "-c"
+        ''
+          set -eu
+          export PATH="${toolsPath}:${jdk}/bin:${bazel}/bin:$PATH"
+          export HOME="$TMPDIR/home"
+          mkdir -p "$HOME"
+          export JAVA_HOME="${jdk}"
+          export SSL_CERT_FILE="${caCertificates}/etc/ssl/certs/ca-certificates.crt"
+
+          # Set up Rust linker flags so build scripts get the correct dynamic linker
+          INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
+          BT_LIB=$(dirname "$INTERP")
+          export CARGO_BUILD_RUSTFLAGS="-C link-arg=-Wl,-dynamic-linker,$INTERP -C link-arg=-Wl,-rpath,$BT_LIB"
+
+          ${envExports}
+
+          bazelOut="$TMPDIR/output"
+          bazelUserRoot="$TMPDIR/tmp"
+
+          # Extract source
+          mkdir -p "$TMPDIR/src"
+          cd "$TMPDIR/src"
+          tar xf "${src}" 2>/dev/null || unzip -q "${src}" 2>/dev/null || { echo "Cannot extract source"; exit 1; }
+          ndirs=$(ls -d */ 2>/dev/null | wc -l)
+          if [ "$ndirs" -eq 1 ]; then cd "$(ls -d */)"; fi
+          SRCDIR="$(pwd)"
+
+          # Apply shared patches
+          ${postPatch}
+
+          # Apply fetch-specific patches
+          ${fetchPostPatch}
+
+          # Set up repository cache
+          mkdir -p "$bazelOut/external/repository_cache"
+          echo 'common --repository_cache="'"$bazelOut"'/external/repository_cache"' >> .bazelrc
+
+          ${
+            if populateBCR then
+              ''
+                # Populate repository_cache with built-in repo data
+                mkdir -p "$TMPDIR/empty"
+                cd "$TMPDIR/empty"
+                touch MODULE.bazel WORKSPACE
+                bazel --batch --output_user_root="$bazelUserRoot" \
+                  --server_javabase="${jdk}" \
+                  sync --noenable_bzlmod \
+                  --repository_cache="$bazelOut/external/repository_cache" \
+                  --curses=no 2>&1 || true
+                cd "$SRCDIR"
+              ''
+            else
+              ""
+          }
+
+          # Fetch dependencies via build --nobuild
+          BAZEL_USE_CPP_ONLY_TOOLCHAIN=1 \
+          USER=nix \
+          bazel --batch \
+            --output_base="$bazelOut" \
+            --output_user_root="$bazelUserRoot" \
+            --server_javabase="${jdk}" \
+            build --nobuild \
+            --curses=no \
+            --loading_phase_threads=1 \
+            ${flagsStr} \
+            ${fetchFlagsStr} \
+            ${bazelTarget}
+
+          # --- Standard cleanup ---
+
+          # Remove built-in workspaces (Bazel recreates them)
+          ${removeReposCmds}
+
+          # Clear markers
+          find "$bazelOut/external" -name '@*.marker' -exec sh -c 'echo > "$1"' _ {} \;
+
+          # Remove VCS dirs
+          find "$bazelOut/external" -type d \( -name .git -o -name .svn -o -name .hg \) \
+            -exec rm -rf {} + 2>/dev/null || true
+
+          # Remove top-level symlinks (may point to temp paths)
+          find "$bazelOut/external" -maxdepth 1 -type l -delete
+
+          # Patch symlinks to remove build dir references
+          # Replace the source directory path first (more specific), then TMPDIR
+          find "$bazelOut/external" -type l | while read symlink; do
+            new_target="$(readlink "$symlink" | sed -e "s,$SRCDIR,__BAZEL_SRCDIR__,g" -e "s,$TMPDIR,__BAZEL_TMPDIR__,g")"
+            rm "$symlink"
+            ln -sf "$new_target" "$symlink"
+          done
+
+          # Strip build location from requirements.bzl
+          find "$bazelOut/external" -name requirements.bzl | while read f; do
+            sed -i '/# Generated from /d' "$f"
+          done
+
+          # Remove compiled Python
+          find "$bazelOut" -name '*.pyc' -delete
+
+          ${
+            if scrubMap != { } then
+              ''
+                # --- Store path scrubbing ---
+                find "$bazelOut/external" -type f | while read f; do
+                  sed -i ${scrubSedArgs} "$f" 2>/dev/null || true
+                done
+              ''
+            else
+              ""
+          }
+
+          # --- Project-specific cleanup ---
+          ${postFetch}
+
+          # Copy external/ to output
+          cp -a "$bazelOut/external" "$out"
+
+          # Normalize permissions for reproducibility
+          find "$out" -type f -exec chmod 644 {} \;
+          find "$out" -type d -exec chmod 755 {} \;
+        ''
+      ];
+
+      outputHash = hash;
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+      preferLocalBuild = true;
+    };
 in
 {
   inherit
@@ -910,6 +1117,7 @@ in
     fetchgit
     fetchCargoDeps
     fetchGoModules
+    fetchBazelDeps
     fakeHash
     ;
   inherit

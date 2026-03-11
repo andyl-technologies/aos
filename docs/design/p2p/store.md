@@ -30,57 +30,75 @@ store hash is derived from the derivation inputs (input-addressed) or content
 (content-addressed), while the NAR hash is a straight hash of the serialized
 archive bytes.
 
-## Provider Records (Kademlia DHT)
+## Two-Level Transfer Protocol: Manifests and Chunks
 
-When a peer has a store path, it publishes a **provider record** to the DHT:
+NAR transfer uses a two-level protocol built on content-defined chunking
+(FastCDC). Each NAR is split into variable-size chunks; a **manifest** lists
+the chunk hashes that compose the NAR. The two levels have different scoping:
 
-```
-Provider Record:
-  key: store_hash (e.g. "abc123")
-  provider: peer_id
-```
+- **Manifests are universe-scoped.** A WANT_MANIFEST request includes the
+  universe name. The serving daemon checks that the requesting peer's UCAN
+  grants `fetch` capability for that universe and that the daemon is a member
+  of the universe before serving the manifest. This is the auth boundary.
+- **Chunks are universe-agnostic.** A WANT_CHUNK request identifies a chunk by
+  its BLAKE3 hash. No universe name, no UCAN check. Possession of a manifest
+  (obtained via an authenticated WANT_MANIFEST) implies authorization to
+  fetch the referenced chunks. This is the content layer, and it enables
+  cross-version deduplication: identical chunks shared between, e.g.,
+  `gcc-14.1.0` and `gcc-14.2.0` are stored and transferred only once.
 
-This says "I have this store path, ask me for it." Provider records expire
-after a configurable TTL (default: 24 hours) and must be re-published
-periodically by peers that still hold the path.
+See [chunks.md](chunks.md) for the full chunking model, chunk store design,
+and deduplication analysis.
 
-## Fetch Protocol: /aos/nar-fetch/1.0.0
+### Fetch Flow
 
 When a daemon needs a store path it does not have:
 
-1. Query DHT: `GET_PROVIDERS("abc123")` returns `[daemon_A, daemon_B, daemon_C]`.
-2. Open libp2p stream to closest/fastest provider: `/aos/nar-fetch/1.0.0`.
-3. Send request: `{store_hash: "abc123", compression: "zstd"}`.
-4. Provider streams the NAR data directly.
+1. **Provider discovery (DHT, no broadcast)**: Query the Kademlia DHT for
+   providers of the store hash: `kademlia.get_providers(store_hash)`. This
+   returns a bounded set of PeerIds (up to Kademlia's K, typically 20). No
+   broadcast or GossipSub query is involved.
+2. **Manifest (directed, one provider)**: Pick one provider from the
+   `get_providers` results and send a point-to-point WANT_MANIFEST request.
+   Receive the manifest: narinfo metadata + file tree with per-file chunk lists.
+   The provider checks the requester's UCAN for the requested universe.
+3. Check local chunk store for already-held chunks (dedup hit).
+4. **Chunks (directed, all providers in parallel)**: Send WANT_CHUNK for each
+   missing chunk, distributed round-robin across the providers returned by
+   `get_providers`. Requests are directed point-to-point, not broadcast.
+5. Reassemble the store path from chunks, validate the NAR hash against the
+   narinfo, and write to the local chunk store.
 
 ```
-Daemon C                            Daemon A (has the path)
-  |                                    |
-  |  DHT: GET_PROVIDERS("abc123")      |
-  |  -> [daemon_A, daemon_B]           |
-  |                                    |
-  |  OPEN /aos/nar-fetch/1.0.0        |
-  |  {hash: "abc123", comp: "zstd"}   |
-  |------------------------------------+
-  |                                    |
-  |  <---- narinfo metadata            |
-  |  <---- compressed NAR bytes        |  (streamed)
-  |  <---- EOF                         |
-  |                                    |
-  |  nix-store --import < nar_data     |
+Daemon C needs store path abc123 in universe "default":
+
+1. Discovery (DHT provider records, no broadcast):
+   kademlia.get_providers(abc123) → [PeerA, PeerD, PeerF]
+
+2. Manifest (directed, one peer):
+   Daemon C                            Daemon A
+     |                                    |
+     |  WANT_MANIFEST                     |
+     |  {hash: "abc123", universe: "default"}
+     |------------------------------------+
+     |                                    |
+     |  <---- manifest (file tree +       |
+     |         per-file chunk lists)      |
+     |  Auth: A checks C's UCAN for "default"
+
+3. Chunks (directed, all providers in parallel):
+   WANT_CHUNK(chunk_1) → PeerA    <---- chunk bytes
+   WANT_CHUNK(chunk_2) → PeerD    <---- chunk bytes
+   WANT_CHUNK(chunk_3) → PeerF    <---- chunk bytes
+   WANT_CHUNK(chunk_4) → PeerA    <---- chunk bytes
+   ... (round-robin across providers)
+
+4. Reassemble store path, validate NAR hash
 ```
 
-The protocol is a simple request-response over a libp2p stream:
-
-1. **Request frame**: length-prefixed JSON with `store_hash` and optional
-   `compression` field (`"zstd"`, `"xz"`, or `"none"`).
-2. **Response header**: length-prefixed JSON with narinfo metadata (store path,
-   NAR hash, NAR size, decompressed size, references, signatures).
-3. **Response body**: raw compressed NAR bytes streamed until EOF.
-
-The receiver validates the NAR hash against the narinfo before importing into
-the local store. If validation fails, the stream is reset and another provider
-is tried.
+The receiver validates the NAR hash against the narinfo before writing to the
+local store. If validation fails, the transfer is retried from another provider
+discovered via the same `get_providers` call.
 
 ## Output Publishing
 
@@ -88,12 +106,21 @@ After a successful build, the daemon:
 
 1. Queries outputs: `nix-store -q --outputs {drv_path}`
 2. Queries runtime closure: `nix-store -qR {output_path}`
-3. For each path in the closure, publishes a provider record to the DHT
-   announcing that this peer holds the path.
+3. For each path in the closure, chunks the NAR (FastCDC), writes chunks to the
+   local chunk store, and generates a manifest listing the chunk hashes.
 4. Signs the narinfo with the daemon's signing key.
+5. Advertises each output store hash as a DHT provider record via
+   `kademlia.start_providing(store_hash)`. The TTL on each provider record
+   is computed per-path based on GC policy, LRU rank, and pin/CRDT state
+   (see [chunks.md](chunks.md) for the `provider_ttl_for` estimation model).
+   Cold paths near the eviction frontier get short TTLs; hot or pinned paths
+   get long TTLs. This ensures provider records expire close to when the
+   daemon would actually GC the content, avoiding stale advertisements. See
+   the Garbage Collection section for re-advertisement after GC.
+6. Announces build completion via GossipSub (`build/result/{universe}/{system}`).
 
 The NAR data stays in the local Nix store. Other peers fetch it on demand via
-the `/aos/nar-fetch/1.0.0` protocol.
+the WANT_MANIFEST / WANT_CHUNK protocol.
 
 ## Binary Cache HTTP Interface
 
@@ -117,8 +144,10 @@ the HTTP binary cache protocol and the P2P network.
 - **Zero external dependencies**: Fully self-contained mesh. No object storage
   to provision, pay for, or maintain.
 - **Parallel fetching**: Can fetch different paths from different providers
-  concurrently (future optimization: chunk-level parallelism within a single
-  NAR).
+  concurrently, with chunk-level parallelism within a single NAR.
+- **Cross-version dedup**: Content-defined chunking means that similar NARs
+  (e.g. consecutive versions of the same package) share most chunks,
+  reducing storage and transfer costs.
 
 ## Query Missing Paths
 
@@ -218,10 +247,18 @@ Each peer manages its own local Nix store independently:
 - **Capacity advertisement**: Daemon capability messages include available disk
   space. The scheduler uses this to avoid assigning builds to daemons that are
   low on space and might need to GC mid-build.
-- **Provider record expiry**: When a peer GCs a store path, it stops
-  re-publishing the provider record for that path. The record expires from the
-  DHT after the TTL (default: 24 hours), and other peers will no longer attempt
-  to fetch from that peer.
+- **DHT provider re-advertisement**: After GC completes, the daemon
+  re-advertises all surviving store paths as DHT provider records with
+  per-path TTLs computed from `provider_ttl_for` (see
+  [chunks.md](chunks.md)). TTL-based GC views use remaining time before
+  max_age expiry; budget-based GC views use LRU rank relative to the
+  eviction frontier; pinned/CRDT paths get max TTL. Paths that were
+  garbage-collected are not re-advertised, so their provider records
+  naturally expire from the DHT. This avoids stale provider advertisements
+  without requiring explicit removal from the DHT.
+- **Mesh availability**: Chunk GC runs after store path GC: chunks that are
+  no longer referenced by any manifest are removed from the local chunk store.
+  See [views.md](views.md) for the full GC algorithm.
 
 ```rust
 async fn maybe_gc_local_store(min_free_pct: f64) -> Result<()> {
