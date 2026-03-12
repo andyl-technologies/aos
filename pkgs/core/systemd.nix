@@ -91,10 +91,10 @@ mkDerivation {
           fi
         done
 
-        # key_serial_t is provided by libkeyutils headers which we don't have.
-        # Add the typedef to systemd's override header so keyctl support compiles.
-        sed -i '1i #include <stdint.h>\ntypedef int32_t key_serial_t;' \
-          src/include/override/sys/keyctl.h
+        # linux/vm_sockets.h needs struct sockaddr/sa_family_t from sys/socket.h.
+        # glibc 2.39's linux/vm_sockets.h doesn't include it automatically.
+        sed -i 's|#include <linux/vm_sockets.h>|#include <sys/socket.h>\n#include <linux/vm_sockets.h>|' \
+          src/basic/socket-util.h
       '';
     }
     {
@@ -143,9 +143,16 @@ mkDerivation {
                 # to /lib instead of $out/lib without this)
                 export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib -Wl,-rpath,$out/lib/systemd"
 
+                # Strip linux-headers from C_INCLUDE_PATH so we can add it as
+                # -I in build.ninja with controlled ordering (GCC ignores -I for
+                # dirs already in C_INCLUDE_PATH, which is treated as -isystem).
+                export C_INCLUDE_PATH="$(echo "$C_INCLUDE_PATH" | tr ':' '\n' | grep -v linux-headers | tr '\n' ':' | sed 's/:$//')"
+                export CFLAGS="''${CFLAGS:-} -Wno-error=missing-prototypes -Wno-error=return-type"
+
                 mkdir -p build && cd build
                 meson setup .. \
                   --prefix=/ \
+                  -Dwerror=false \
                   --sysconfdir=/etc \
                   --buildtype=release \
                   -Dmode=release \
@@ -223,6 +230,24 @@ mkDerivation {
                   -Ddbussessionservicedir=$out/share/dbus-1/services \
                   -Ddbussystemservicedir=$out/share/dbus-1/system-services \
                   -Ddbus-interfaces-dir=$out/share/dbus-1/interfaces
+
+                # systemd's src/include/override/ has replacement headers (sys/syscall.h,
+                # sys/socket.h, sys/mount.h, linux/keyctl.h, etc.) that use
+                # #include_next to chain to glibc while adding missing defines
+                # (SCM_MAX_FD, KEY_POS_VIEW, __NR_setxattrat, struct xattr_args...).
+                #
+                # Problem: cc-wrapper injects -isystem /glibc/include BEFORE meson's
+                # -isystem for the override dir, so glibc headers always win.
+                #
+                # Fix: AFTER meson generates build.ninja (so configure checks are
+                # unaffected), promote overrides from -isystem to -I and append
+                # linux-headers -I so the search order is:
+                #   1. override/ (-I, has fallback defines + #include_next)
+                #   2. linux-headers (-I, newer kernel UAPI than glibc's bundled copy)
+                #   3. glibc (-isystem from cc-wrapper)
+                sed -i 's|-isystem\.\./src/include/override|-I../src/include/override|g' build.ninja
+                sed -i 's|-isystemsrc/include/override|-Isrc/include/override|g' build.ninja
+                sed -i 's|-isystem\.\./src/include/uapi|-I../src/include/uapi -I${linux-headers}/include|g' build.ninja
       '';
     }
     {

@@ -7,6 +7,8 @@
   meson,
   ninja,
   python3,
+  setuptools,
+  distlib,
   glib,
   pixman,
   zlib,
@@ -31,6 +33,8 @@ mkDerivation {
     meson
     ninja
     python3
+    setuptools
+    distlib
   ];
   runtimeDeps = [
     glib
@@ -57,7 +61,7 @@ mkDerivation {
     {
       name = "configure";
       script = ''
-        export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+        export PYTHONPATH="${meson}/lib/python3/site-packages:${distlib}/lib/python3.14/site-packages:${setuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
 
         ./configure \
           --prefix=$out \

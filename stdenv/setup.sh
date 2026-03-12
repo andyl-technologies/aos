@@ -14,6 +14,11 @@
 
 set -euo pipefail
 
+# Initialize common build variables (safe for set -u / nounset)
+: "${CFLAGS:=}"
+: "${CPPFLAGS:=}"
+: "${LDFLAGS:=}"
+
 # Set up PATH from build dependencies
 if [ -n "${buildInputs:-}" ]; then
   for dep in $buildInputs; do

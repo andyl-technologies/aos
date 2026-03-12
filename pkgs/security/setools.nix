@@ -56,7 +56,7 @@ mkDerivation {
     {
       name = "build";
       script = ''
-        export PYTHONPATH=${setuptools}/lib/python3.12/site-packages:${cython}/lib/python3.12/site-packages
+        export PYTHONPATH=$(echo ${setuptools}/lib/python3.*/site-packages):$(echo ${cython}/lib/python3.*/site-packages)
         export SEPOL="${libsepol}/lib/libsepol.a"
         export CFLAGS="-I${libsepol}/include -I${libselinux}/include"
         export LDFLAGS="-L${libsepol}/lib -L${libselinux}/lib -Wl,-rpath,${libsepol}/lib -Wl,-rpath,${libselinux}/lib"
@@ -69,7 +69,7 @@ mkDerivation {
         # Manual install — setup.py install fails on Python 3.12 because
         # its egg byte-compilation subprocess can't find distutils (removed
         # in 3.12). nixpkgs uses pyproject mode; we do a direct copy instead.
-        SITE=$out/lib/python3.12/site-packages
+        SITE=$out/lib/python3/site-packages
         mkdir -p $SITE $out/bin $out/share/man/man1
 
         # Python packages (setools has the .so built in-place)

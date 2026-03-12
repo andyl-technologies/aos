@@ -8,7 +8,6 @@
   mkGoPackage,
   fetchurl,
   fetchGoModules,
-  fakeHash,
 }:
 let
   version = "0.13.0";
@@ -31,7 +30,7 @@ mkGoPackage {
       ];
       hash = "sha256-ewGAyL2g3xXGJ6maEF5B921CHBmo9/jyVtp+sv7JkbU=";
     };
-    hash = fakeHash;
+    hash = "sha256-JLVeQ1HlNnH5QFwMfSX/MBGqFPCyCcZfZGL7t1KjIOE=";
   };
 
   goPackage = ".";

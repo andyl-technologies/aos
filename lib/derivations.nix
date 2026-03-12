@@ -752,6 +752,7 @@ let
       sourceRoot ? null,
       cargoPatches ? [ ],
       extraLibPaths ? [ ],
+      extraPaths ? [ ],
       gitDeps ? [ ],
       name ? "cargo-deps",
       system ? defaultSystem,
@@ -811,7 +812,7 @@ let
         "-c"
         ''
           set -eu
-          export PATH="${cargo}/bin:${bootstrapTools}/bin"
+          export PATH="${cargo}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
           ${if extraLibPaths != [ ] then "export LD_LIBRARY_PATH=\"${ldLibPath}\"" else ""}
 
           # Extract source into a clean subdirectory so ls -d */ works
