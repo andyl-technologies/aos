@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  linux-headers,
   libcap,
 }:
 let
@@ -19,7 +20,7 @@ mkDerivation {
     hash = "sha256-1dG11Q7kotDReHW8aua9an1bNNlVfqhHo5+uxTH6qgo=";
   };
 
-  buildDeps = [ gnumake ];
+  buildDeps = [ gnumake linux-headers ];
   runtimeDeps = [ libcap ];
   propagatedDeps = [ ];
 
@@ -29,6 +30,19 @@ mkDerivation {
       script = ''
         tar xf $src
         cd audit-${version}
+      '';
+    }
+    {
+      name = "patch";
+      script = ''
+        # IPX support was removed from Linux kernel headers (6.x+).
+        # Define the missing struct so auparse/interpret.c compiles.
+        sed -i '1i\
+        #ifndef _LINUX_IPX_H\
+        #define _LINUX_IPX_H\
+        #include <stdint.h>\
+        struct sockaddr_ipx { short sipx_family; uint16_t sipx_port; uint32_t sipx_network; };\
+        #endif' auparse/interpret.c
       '';
     }
     {

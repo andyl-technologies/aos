@@ -149,14 +149,6 @@ let
                   ${chmod} +x $out/bin/$tool
                 done
 
-                # ── pkg-config wrapper ────────────────────────────────────────
-                ${cat} > $out/bin/pkg-config << 'WRAPPER_EOF'
-        #!${shell}
-        export PKG_CONFIG_PATH="${libc}/lib/pkgconfig:''${PKG_CONFIG_PATH:-}"
-        exec pkg-config "$@"
-        WRAPPER_EOF
-                ${chmod} +x $out/bin/pkg-config
-
                 # ── nix-support metadata ──────────────────────────────────────
                 ${echo} "${cc}"        > $out/nix-support/orig-cc
                 ${echo} "${libc}"      > $out/nix-support/orig-libc

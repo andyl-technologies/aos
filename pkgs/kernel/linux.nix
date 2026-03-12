@@ -14,6 +14,7 @@
   elfutils,
   bc,
   binutils,
+  gcc-libs,
 }:
 mkDerivation {
   pname = "linux";
@@ -64,6 +65,9 @@ mkDerivation {
     {
       name = "build";
       script = ''
+        # sorttable (host tool) uses pthreads; glibc's pthread_exit needs
+        # libgcc_s.so.1 for stack unwinding at runtime.
+        export LD_LIBRARY_PATH="${gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         make -j$NIX_BUILD_CORES ARCH=x86_64 bzImage modules
       '';
     }
