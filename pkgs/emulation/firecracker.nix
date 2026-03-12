@@ -3,12 +3,14 @@
   mkCargoPackage,
   fetchurl,
   fetchCargoDeps,
+  lib,
   libseccomp,
   llvm,
   linux-headers,
   cmake,
   gnumake,
   bootstrapTools,
+  glibc,
 }:
 let
   version = "1.14.1";
@@ -50,7 +52,7 @@ mkCargoPackage {
 
   # bindgen needs libclang.so and system headers
   LIBCLANG_PATH = "${llvm}/lib";
-  BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${bootstrapTools}/include-glibc -isystem ${linux-headers}/include";
+  BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${glibc}/include -isystem ${linux-headers}/include";
 
   # Build only the firecracker binary from the workspace
   cargoFlags = "-p firecracker";
