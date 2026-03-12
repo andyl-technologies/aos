@@ -10,7 +10,7 @@
   pcre2,
   zlib,
   libxcrypt,
-  bootstrapTools,
+  glibc,
 }:
 let
   version = "0.3.1";
@@ -27,7 +27,7 @@ mkCargoPackage {
 
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-RTo+++YM3AQkCijApZxxdErXxTecR+rV7EMLfSp74YM=";
+    hash = "sha256-lBt52lD/rH9dr22VDMb7w9CNJPwTO1sywh3MnuzL5gk=";
   };
 
   cargoFlags = "--lib";
@@ -49,7 +49,7 @@ mkCargoPackage {
 
   # bindgen needs libclang and system headers (libclang doesn't use C_INCLUDE_PATH)
   LIBCLANG_PATH = "${llvm}/lib";
-  BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${bootstrapTools}/include-glibc";
+  BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${glibc}/include";
   # nginx-sys needs the source tree and build artifacts
   NGINX_SOURCE_DIR = "${nginx}/share/nginx-dev";
   NGINX_BUILD_DIR = "${nginx}/share/nginx-dev/objs";

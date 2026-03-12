@@ -46,8 +46,8 @@ mkDerivation {
       name = "build";
       script = ''
         make PREFIX=$out SHLIBDIR=$out/lib \
-          CFLAGS="-I${libsepol}/include" \
-          LDFLAGS="-L${libsepol}/lib" \
+          CFLAGS="-I${libsepol}/include -I${pcre2}/include" \
+          LDFLAGS="-L${libsepol}/lib -L${pcre2}/lib -lpcre2-8" \
           USE_PCRE2=y \
           -j$NIX_BUILD_CORES
       '';

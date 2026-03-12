@@ -26,6 +26,12 @@ let
       // {
         cargo = self.rust;
         inherit bootstrapTools;
+        extraPaths = [
+          stdenv.coreutils
+          stdenv.tar
+          stdenv.gzip
+          stdenv.bash
+        ];
         extraLibPaths = [
           self.openssl
           self.zlib
