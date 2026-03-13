@@ -45,16 +45,21 @@ broadcast announcement of available store objects.
 
 ## Provider TTL and Eviction
 
-Provider records have a TTL that is not fixed but derived from a **GC LRU
-eviction function**. Each peer manages its local store with a
-least-recently-used policy. When a store object is evicted from a peer's local
-store (because the peer needs to reclaim space and the object has not been
-accessed recently), the peer stops re-publishing the corresponding provider
-record. The record then expires from the DHT naturally when its TTL lapses.
+Provider record TTLs for `aos:store:{store_hash}` are tiered based on object
+state:
 
-This means that popular, frequently-accessed objects remain well-replicated
-across the network, while cold objects gradually lose providers and may
-eventually become unavailable unless at least one peer retains them.
+| Object State | TTL | Rationale |
+|---|---|---|
+| Pinned (active FUSE view or roots_db) | Cluster-config interval (default 1 day) | Stable, long-lived. |
+| Replicated (in replication pool) | Cluster-config interval (default 1 day) | Managed by replication protocol. |
+| Unpinned, unreplicated | Estimated time to GC (capped at cluster-config interval) | May be evicted soon; TTL reflects expected lifetime. |
+
+Provider records are refreshed at `TTL * 2/3` intervals.
+
+Newly published objects are subject to `ClusterConfig.min_hold_duration`
+(default 1 hour) — the publisher retains the object for at least this period
+regardless of LRU position, ensuring replicators have time to download it. See
+[replication.md](replication.md) for the full replication protocol.
 
 ## Manifest Format
 
@@ -100,36 +105,44 @@ and confirms it matches the expected hash.
 
 ## Transfer Flow
 
-Retrieving a store object follows a five-step sequence:
+Retrieving a store object follows a six-step sequence:
 
 1. **Discover providers.** Query the DHT with `get_providers` for key
    `aos:store:{object_id}`. Select one or more providers from the results.
 
 2. **Request manifest.** Open the `/aos/store/manifest/1.0.0` stream to a
    provider and send a `ManifestRequest{store_hash}`. The provider responds
-   with a `ManifestResponse` containing either the full `Manifest` or a
-   `StreamError` (e.g., code 404 if the store hash is not found). This step
-   requires a valid `/aos/store/read` UCAN.
+   with a `ManifestResponse` containing the `Manifest` (including `references`
+   and `closure` hints) or a `StreamError`. This step requires a valid
+   `/aos/store/read` UCAN.
 
-3. **Check local chunks.** Walk the manifest entries and collect all `ChunkRef`
-   hashes. Check which chunks already exist in the local store. Chunks shared
-   with previously-fetched objects will already be present.
+3. **Resolve closure.** The manifest's `references` field lists the object's
+   immediate store dependencies (authoritative). The `closure` field provides
+   best-effort transitive dependency hints — each `ClosureHint` names a
+   dependency and its own immediate references (if the serving peer has it
+   locally). This lets the fetcher discover the full closure without
+   sequentially walking the DAG.
 
-4. **Batch request missing chunks.** Open the `/aos/store/chunk/1.0.0` stream
-   to a provider and send a `ChunkRequest` containing all missing chunk hashes
-   in a single batch (repeated `bytes` hashes). The provider responds with a
-   stream of `Chunk{hash, chunk}` messages. If a requested hash is not found,
-   the provider sends a `Chunk` with the requested hash and empty `chunk` bytes,
-   allowing the requester to identify missing chunks and try other providers.
-   No authentication is required for chunk transfer.
+4. **Check local state.** Walk the resolved closure and check which manifests
+   and chunks already exist in the local store. Chunks shared with
+   previously-fetched objects will already be present.
 
-5. **Reconstruct.** Reassemble each file by concatenating its chunks in order
+5. **Fetch missing content in parallel.** For each missing store object in the
+   closure, fetch its manifest (which may reveal additional deps at the
+   frontier where closure hints were incomplete). Fetch all missing chunks
+   across multiple providers in parallel. The requesting peer may contact
+   multiple providers simultaneously, requesting different subsets of missing
+   chunks from each.
+
+6. **Reconstruct.** Reassemble each file by concatenating its chunks in order
    (as specified by the manifest entries). Verify each chunk's hash on receipt.
    Verify the reconstructed object's NAR hash against the manifest's
    `nar_hash`.
 
-The requesting peer may contact multiple providers in parallel to increase
-throughput, requesting different subsets of missing chunks from each.
+The closure hints in step 3 collapse what would otherwise be a depth-sequential
+DAG walk into a single parallel fetch wave. For objects where the serving peer
+has the full transitive closure locally, the fetcher learns every dependency
+from a single manifest response.
 
 ## Chunk Deduplication
 
@@ -152,23 +165,20 @@ explicit deduplication index or coordination between peers.
 
 ## Auth Boundary
 
-The store protocol draws a deliberate authorization boundary between manifests
-and chunks:
+Both store protocols require the `/aos/store/read` UCAN capability:
 
-- **Manifests are gated.** The `/aos/store/manifest/1.0.0` protocol requires
-  the caller to present a valid `/aos/store/read` UCAN. The manifest reveals
-  the structure of a store object: its name, file tree layout, and the chunk
-  hashes needed to reconstruct it.
+- **`/aos/store/manifest/1.0.0`** requires the caller to present a valid
+  `/aos/store/read` UCAN. The manifest reveals the structure of a store object:
+  its name, file tree layout, and the chunk hashes needed to reconstruct it.
 
-- **Chunks are ungated.** The `/aos/store/chunk/1.0.0` protocol requires no
-  authentication. Chunks are opaque blobs identified by their xxh3-128 hash. A
-  chunk hash alone reveals nothing about which store object it belongs to or
-  what role it plays in the file tree. Without the manifest, a set of chunks is
-  meaningless.
+- **`/aos/store/chunk/1.0.0`** also requires `/aos/store/read`. While chunks
+  are content-addressed and self-verifying by hash, gating access prevents
+  unauthorized peers from exfiltrating store data even if they learn chunk
+  hashes through other means.
 
-This design means that chunk transfer can be freely parallelized across any
-available peer without credential exchange, while the manifest -- which gives
-meaning to the chunks -- remains access-controlled.
+In practice, a peer that has authenticated once for the manifest can reuse the
+same UCAN for chunk requests. Chunk transfer can still be parallelized across
+multiple providers -- each provider independently verifies the UCAN.
 
 ## Build Output Publishing
 
@@ -182,11 +192,23 @@ store network:
    file tree structure and chunk references for the build output. The manifest
    includes the store hash, NAR hash, and NAR size.
 
-3. **Start providing.** The daemon calls `start_providing` on the DHT for
+3. **Scan references.** The daemon scans the output for embedded store hashes
+   (reference scanning, same as Nix). The discovered references are recorded
+   in `closure_db` (StoreDB) and included in the manifest's `references`
+   field. When serving this manifest later, the daemon walks `closure_db`
+   transitively to populate the `closure` hints.
+
+4. **Start providing.** The daemon calls `start_providing` on the DHT for
    `aos:store:{object_id}`, registering itself as a provider of the new store
    object.
 
-From this point, other peers can discover the object via the DHT and retrieve
-it using the manifest and chunk transfer protocols. As other peers fetch and
-retain the object, they also become providers, increasing the object's
-availability across the network.
+5. **Announce on GossipSub.** The daemon publishes a `StorePublish` message to
+   the `aos/store/publish` topic, notifying peers
+   that a new store object is available. This allows peers to proactively
+   discover new objects without polling the DHT.
+
+From this point, other peers can discover the object via the DHT (or learn
+about it immediately via the GossipSub announcement) and retrieve it using the
+manifest and chunk transfer protocols. As other peers fetch and retain the
+object, they also become providers, increasing the object's availability across
+the network.

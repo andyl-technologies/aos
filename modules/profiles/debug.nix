@@ -1,19 +1,45 @@
-##! modules/profiles/debug.nix — Debug profile
+##! modules/profiles/debug.nix — Debug tools profile
 ##!
-##! Relaxes security controls to facilitate development and debugging.
-##! SELinux runs in permissive mode (logs violations without denying access),
-##! core dumps are enabled for crash analysis, and kernel lockdown is
-##! disabled to allow kernel debugging tools. This profile should never
-##! be used in production environments.
+##! Adds diagnostic and debugging tools to the system. Sets the security
+##! level to "debug" (permissive SELinux, core dumps enabled, no lockdown).
 {
   config,
   pkgs,
   lib,
   ...
 }:
+let
+  cfg = config.aos.profiles.debug;
+in
 {
-  aos.security.selinux.enable = true;
-  aos.security.selinux.mode = "permissive";
-  aos.security.hardening.coreDump.enable = true;
-  aos.security.hardening.kernelLockdown = "none";
+  options.aos.profiles.debug = {
+    enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Enable the debug profile. Adds diagnostic tools (strace, tcpdump,
+        hdparm, smartmontools, etc.) and sets security to debug level.
+      '';
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    # Security: debug level (permissive SELinux, core dumps, no lockdown)
+    aos.security.level = lib.mkDefault "debug";
+
+    # Debug and diagnostic tools
+    environment.systemPackages = [
+      pkgs.strace
+      pkgs.tcpdump
+      pkgs.lsof
+      pkgs.hdparm
+      pkgs.smartmontools
+      pkgs.procps-ng
+      pkgs.conntrack-tools
+      pkgs.iproute2
+      pkgs.ethtool
+      pkgs.curl
+      pkgs.jq
+    ];
+  };
 }
