@@ -130,9 +130,13 @@
           eval = aos.checks.eval;
           build = aos.checks.build;
         }
-        // prefixAttrs "vm" aos.checks.vm
+        # Per-system module checks: server-boot-basics, edge-boot-basics, etc.
+        // prefixAttrs "server" aos.systems.server.checks
+        // prefixAttrs "edge" aos.systems.edge.checks
+        # Package integration checks
         // prefixAttrs "integration" aos.checks.integration
-        // prefixAttrs "system" aos.systemChecks
+        # Fleet tests (multi-VM)
+        // prefixAttrs "fleet" aos.fleetTests
       );
     };
 }

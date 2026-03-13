@@ -1,20 +1,13 @@
-# systems/tests/security.nix — Security configuration verification
-#
-# Verifies that security hardening is applied: kernel parameters,
-# firewall configuration, user/group setup, and file permissions.
-{ lib }:
+##! modules/tests/security.nix — Security configuration verification checks
+##!
+##! Verifies security hardening: kernel parameters, firewall configuration,
+##! user/group setup, and file permissions.
+{ config, lib, ... }:
 {
-  name = "security";
-  description = "Security configuration verification";
-  type = "vm";
-  appliesTo = [
-    "server"
-    "edge"
-  ];
-
-  checks =
-    { config, lib }:
-    [
+  system.checks.system-security = lib.mkCheckGroup {
+    name = "system-security";
+    description = "Security configuration verification";
+    checks = [
       (lib.mkCheck {
         name = "root-no-password";
         description = "root account has no password set";
@@ -53,4 +46,5 @@
         '';
       })
     ];
+  };
 }

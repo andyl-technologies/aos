@@ -343,12 +343,20 @@ let
   # ---------------------------------------------------------------------------
   # evalModules — the main entry point
   # ---------------------------------------------------------------------------
+  # Parameters:
+  #   modules    — list of module paths or attrsets to evaluate
+  #   pkgs       — package set passed to all modules as `pkgs`
+  #   lib        — library set passed to all modules as `lib`
+  #   extraArgs  — additional arguments merged into module call args
+  #   specialArgs — like extraArgs but semantically reserved for caller-provided
+  #                 overrides (e.g. system-level config). Merged after extraArgs.
   evalModules =
     {
       modules,
       pkgs ? { },
       lib ? { },
       extraArgs ? { },
+      specialArgs ? { },
     }:
     let
       moduleLib =
@@ -384,7 +392,7 @@ let
                     config = finalConfig;
                     pkgs = pkgs;
                     lib = moduleLib;
-                    inherit extraArgs;
+                    extraArgs = extraArgs // specialArgs;
                   } mod;
                 in
                 collectModules evaled.imports ++ [ evaled ]

@@ -1,20 +1,13 @@
-# systems/tests/boot.nix — Core boot verification
-#
-# Verifies that the system boots to multi-user.target with systemd as PID 1,
-# essential filesystems are mounted, and the system identity is correct.
-{ lib }:
+##! modules/tests/boot.nix — Core boot verification checks
+##!
+##! Verifies that the system boots to multi-user.target with systemd as PID 1,
+##! essential filesystems are mounted, and the system identity is correct.
+{ config, lib, ... }:
 {
-  name = "boot";
-  description = "Core system boot verification";
-  type = "vm";
-  appliesTo = [
-    "server"
-    "edge"
-  ];
-
-  checks =
-    { config, lib }:
-    [
+  system.checks.system-boot = lib.mkCheckGroup {
+    name = "system-boot";
+    description = "Core system boot verification";
+    checks = [
       (lib.mkCheck {
         name = "systemd-pid1";
         description = "systemd is running as PID 1";
@@ -68,4 +61,5 @@
         '';
       })
     ];
+  };
 }

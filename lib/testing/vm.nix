@@ -101,6 +101,7 @@ let
                         mkdir -p rootfs/proc rootfs/sys rootfs/tmp rootfs/run
                         mkdir -p rootfs/var/log rootfs/var/lib rootfs/var/tmp
                         mkdir -p rootfs/opt/aos-test/bin
+                        mkdir -p rootfs/lib64
 
                         # Collect all unique store paths from the closure graphs
                         cat closure-toplevel closure-systemd closure-coreutils closure-bash closure-socat \
@@ -109,17 +110,41 @@ let
                         echo "==> Copying $(wc -l < all-paths) store paths to rootfs"
 
                         count=0
+                        failed=0
                         total=$(wc -l < all-paths)
                         while IFS= read -r p; do
                           count=$((count + 1))
                           if [ -e "$p" ]; then
-                            cp -a "$p" rootfs/nix/store/
+                            if ! cp -a "$p" rootfs/nix/store/ 2>/tmp/cp-err; then
+                              echo "    WARN: failed to copy $p: $(cat /tmp/cp-err)"
+                              failed=$((failed + 1))
+                            fi
+                          else
+                            echo "    WARN: path does not exist: $p"
+                            failed=$((failed + 1))
                           fi
                           if [ $((count % 10)) -eq 0 ]; then
                             printf '\r    [%d/%d]' "$count" "$total"
                           fi
                         done < all-paths
                         echo ""
+                        if [ "$failed" -gt 0 ]; then
+                          echo "    WARNING: $failed paths failed to copy"
+                        fi
+
+                        # /lib64/ld-linux-x86-64.so.2 — needed for PIE binaries
+                        # (e.g. containerd built with CGO) that reference the
+                        # system dynamic linker. Find the glibc ld-linux from
+                        # the copied store paths.
+                        LD_LINUX=$(find rootfs/nix/store -name 'ld-linux-x86-64.so.2' -path '*glibc-*/lib/*' 2>/dev/null | sort -V | tail -1)
+                        if [ -n "$LD_LINUX" ]; then
+                          # Convert rootfs-relative path to absolute guest path
+                          GUEST_LD="''${LD_LINUX#rootfs}"
+                          ln -sfn "$GUEST_LD" rootfs/lib64/ld-linux-x86-64.so.2
+                          echo "    /lib64/ld-linux-x86-64.so.2 -> $GUEST_LD"
+                        else
+                          echo "    WARNING: ld-linux-x86-64.so.2 not found in rootfs glibc"
+                        fi
 
                         # /sbin/init -> systemd
                         ln -sfn $SYSTEMD/lib/systemd/systemd rootfs/sbin/init
