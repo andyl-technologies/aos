@@ -13,6 +13,7 @@ let
     ./monitoring
     ./image
     ./profiles
+    ./tests
   ];
 
   # Discover all .nix files in a directory (non-recursive).
