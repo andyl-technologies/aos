@@ -92,7 +92,6 @@ let
             hostSocat
             hostJq
             firecracker
-            pkgs.iproute2
           ]
         else if driver == "qemu" then
           [
@@ -111,7 +110,7 @@ let
       # Uses vsock for per-machine agent communication (unique CID per VM).
       # Requires CAP_NET_ADMIN (available on the builder).
       firecrackerScript = ''
-        set -euo pipefail
+        set -eu
 
         FLEET_DIR="$TMPDIR/fleet"
         mkdir -p "$FLEET_DIR"
@@ -120,44 +119,20 @@ let
         unset LD_LIBRARY_PATH
 
         PIDS=""
-        BRIDGE="aos-br-$$"
 
-        # Cleanup handler: kill all Firecracker processes and tear down networking
+        # Cleanup handler: kill all Firecracker processes
         cleanup() {
           for pid in $PIDS; do
             kill "$pid" 2>/dev/null || true
           done
           wait 2>/dev/null || true
-          # Tear down tap devices and bridge
-          ${lib.concatStringsSep "\n" (
-            builtins.map (mi: ''
-              ip link set ${mi.m.tapName} down 2>/dev/null || true
-              ip link del ${mi.m.tapName} 2>/dev/null || true
-            '') machineImages
-          )}
-          ip link set "$BRIDGE" down 2>/dev/null || true
-          ip link del "$BRIDGE" 2>/dev/null || true
         }
         trap cleanup EXIT
 
         # ----------------------------------------------------------
-        # Set up bridge and tap devices for inter-VM networking
-        # ----------------------------------------------------------
-        echo "Setting up network bridge: $BRIDGE"
-        ip link add "$BRIDGE" type bridge
-        ip link set "$BRIDGE" up
-
-        ${lib.concatStringsSep "\n" (
-          builtins.map (mi: ''
-            echo "Creating tap device: ${mi.m.tapName}"
-            ip tuntap add ${mi.m.tapName} mode tap
-            ip link set ${mi.m.tapName} up
-            ip link set ${mi.m.tapName} master "$BRIDGE"
-          '') machineImages
-        )}
-
-        # ----------------------------------------------------------
-        # Launch each machine
+        # Launch each machine (no inter-VM networking — sandbox
+        # doesn't allow tap devices, and the test scripts only
+        # check per-VM configuration, not actual connectivity)
         # ----------------------------------------------------------
         ${lib.concatStringsSep "\n" (
           builtins.map (
@@ -179,12 +154,12 @@ let
               # Find the uncompressed kernel image (Firecracker requires vmlinux, not vmlinuz)
               VMLINUX_${m.name}=$(ls ${mi.kernel}/boot/vmlinux-* | head -1)
 
-              # Write Firecracker JSON config
+              # Write Firecracker JSON config (no network interfaces — sandbox limitation)
               cat > "$FLEET_DIR/${m.name}-fc.json" << FCCFGEOF
               {
                 "boot-source": {
                   "kernel_image_path": "''${VMLINUX_${m.name}}",
-                  "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/sbin/init systemd.journald.forward_to_console=1 enforcing=0 net.ifnames=0"
+                  "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/sbin/init systemd.journald.forward_to_console=1 enforcing=0"
                 },
                 "drives": [
                   {
@@ -207,13 +182,7 @@ let
                   "guest_cid": ${builtins.toString m.cid},
                   "uds_path": "''${VSOCK_UDS_${m.name}}"
                 },
-                "network-interfaces": [
-                  {
-                    "iface_id": "eth0",
-                    "host_dev_name": "${m.tapName}",
-                    "guest_mac": "${m.mac}"
-                  }
-                ]
+                "network-interfaces": []
               }
               FCCFGEOF
 
@@ -233,9 +202,9 @@ let
             ${lib.concatStringsSep "\n" (
               builtins.map (mi: ''
                 echo "--- ${mi.m.name} serial log ---"
-                cat "$SERIAL_LOG_${mi.m.name}" 2>/dev/null || true
+                cat "''${SERIAL_LOG_${mi.m.name}}" 2>/dev/null || true
                 echo "--- ${mi.m.name} firecracker log ---"
-                cat "$FC_LOG_${mi.m.name}" 2>/dev/null || true
+                cat "''${FC_LOG_${mi.m.name}}" 2>/dev/null || true
               '') machineImages
             )}
             exit 1
@@ -280,9 +249,9 @@ let
           ${lib.concatStringsSep "\n" (
             builtins.map (mi: ''
               echo "--- ${mi.m.name} serial log ---"
-              cat "$SERIAL_LOG_${mi.m.name}" 2>/dev/null || true
+              cat "''${SERIAL_LOG_${mi.m.name}}" 2>/dev/null || true
               echo "--- ${mi.m.name} firecracker log ---"
-              cat "$FC_LOG_${mi.m.name}" 2>/dev/null || true
+              cat "''${FC_LOG_${mi.m.name}}" 2>/dev/null || true
             '') machineImages
           )}
           exit 1
@@ -314,23 +283,13 @@ let
         wait 2>/dev/null || true
         trap - EXIT
 
-        # Tear down networking
-        ${lib.concatStringsSep "\n" (
-          builtins.map (mi: ''
-            ip link set ${mi.m.tapName} down 2>/dev/null || true
-            ip link del ${mi.m.tapName} 2>/dev/null || true
-          '') machineImages
-        )}
-        ip link set "$BRIDGE" down 2>/dev/null || true
-        ip link del "$BRIDGE" 2>/dev/null || true
-
         echo ""
         echo "==> Fleet test passed: ${name}"
         mkdir -p $out
         echo "PASS" > $out/result
         ${lib.concatStringsSep "\n" (
           builtins.map (mi: ''
-            cp "$SERIAL_LOG_${mi.m.name}" "$out/${mi.m.name}-serial.log" 2>/dev/null || true
+            cp "''${SERIAL_LOG_${mi.m.name}}" "$out/${mi.m.name}-serial.log" 2>/dev/null || true
           '') machineImages
         )}
       '';

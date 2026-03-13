@@ -15,6 +15,9 @@
   bc,
   binutils,
   gcc-libs,
+  # Optional: extra kernel config fragment text to merge after the base
+  # config fragments. Like NixOS structuredExtraConfig but as raw kconfig text.
+  extraConfig ? "",
 }:
 mkDerivation {
   pname = "linux";
@@ -57,6 +60,19 @@ mkDerivation {
         for frag in $configDir/*.config; do
           scripts/kconfig/merge_config.sh -m .config "$frag"
         done
+
+        # Merge extra config from the system profile
+        ${
+          if extraConfig != "" then
+            ''
+              cat > .extra-config << 'EXTRAEOF'
+              ${extraConfig}
+              EXTRAEOF
+              scripts/kconfig/merge_config.sh -m .config .extra-config
+            ''
+          else
+            ""
+        }
 
         # Finalize — fill in defaults for any new symbols
         make olddefconfig ARCH=x86_64

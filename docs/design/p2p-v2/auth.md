@@ -2,8 +2,54 @@
 
 ## 1. Identity Types
 
-Three identity types underpin all authentication in AOS P2P v2. Each is an
-ed25519 keypair managed by a different actor and scoped to a different lifetime.
+The identity model uses a certificate tree hierarchy with three tiers. Each
+identity is an ed25519 keypair. The hierarchy enables offline root keys,
+scoped delegation through intermediates, and subtree revocation.
+
+```
+Root (offline, vault/HSM)
+  ├── Intermediate "ops-admin" (online, 1yr expiry)
+  │     ├── PeerIdentity: daemon-1
+  │     ├── PeerIdentity: daemon-2
+  │     └── PeerIdentity: daemon-3
+  ├── Intermediate "ci-admin" (online, 90d expiry)
+  │     ├── JobIdentity: build-job-1
+  │     └── JobIdentity: build-job-2
+  └── Intermediate "dev-admin" (online, 6mo expiry)
+        ├── PeerIdentity: dev-laptop-alice
+        └── PeerIdentity: dev-laptop-bob
+```
+
+### Root Identity
+
+An offline ed25519 keypair stored in a vault or HSM. The root public key is
+embedded in `ClusterConfig` and never changes for the lifetime of the cluster.
+
+- **Scope**: One per cluster.
+- **Lifetime**: Permanent. Never rotated unless the cluster is re-bootstrapped.
+- **Purpose**: Signs `IntermediateCert` records. Signs `ClusterConfig` records
+  published to the DHT under `aos:cluster:{cluster_ident}:config`. Acts as the
+  ultimate root of trust for the cluster.
+- **Operational constraint**: The root private key is **never used for
+  day-to-day operations**. It is only brought online to sign new intermediate
+  certificates or update `ClusterConfig`.
+
+### Intermediate Identities
+
+Online ed25519 keypairs held by ops teams, CI systems, or team leads. Each
+intermediate has a certificate (`IntermediateCert`) signed by the root or by a
+parent intermediate.
+
+- **Scope**: One per administrative domain (e.g., ops team, CI pipeline, dev
+  team).
+- **Lifetime**: Medium-lived with explicit expiry (days to years). Must be
+  renewed by the parent before expiry.
+- **Purpose**: Issues UCAN capability delegations to peers and jobs. An
+  intermediate can only delegate capabilities that it was itself granted.
+  Capabilities are scoped — an intermediate with only `/aos/job/announce`
+  cannot issue UCANs beyond its granted scope.
+- **Certificate format**: See `IntermediateCert` in
+  [protocol.md](protocol.md#41-dht-messages).
 
 ### PeerIdentity
 
@@ -12,8 +58,8 @@ PeerId is the hash of the public key.
 
 - **Scope**: One per running daemon instance.
 - **Lifetime**: Long-lived, persisted across daemon restarts.
-- **Purpose**: Signs `ProfileSpec` records published to the DHT under
-  `aos:profile:{peer_ident}`. Identifies the daemon in all libp2p interactions.
+- **Purpose**: Identifies the daemon in all libp2p interactions. Participates
+  in mesh routing, GossipSub, and stream protocols.
 
 ### JobIdentity
 
@@ -23,21 +69,23 @@ A per-job ed25519 keypair created each time a job is scheduled.
 - **Lifetime**: Ephemeral. Created when the job is posted, destroyed when the
   job exits or is cancelled.
 - **Purpose**: Signs `JobState` records published to the DHT under
-  `aos:job:{job_ident}`. The job process receives the private key via systemd
+  `aos:cluster:{cluster_ident}:job:{job_ident}:state`. The job process receives the private key via systemd
   credential injection (`LoadCredential`), allowing it to participate in libp2p
   as a first-class peer with its own identity.
 
-### ClusterIdentity
+## 2. Two-Layer Authorization Model
 
-A per-cluster ed25519 keypair created when the cluster is bootstrapped.
+The protocol uses two distinct authorization mechanisms:
 
-- **Scope**: One per cluster.
-- **Lifetime**: Long-lived. Held by the cluster administrator.
-- **Purpose**: Signs `ClusterConfig` records published to the DHT under
-  `aos:cluster:{cluster_ident}`. Acts as the root of trust for the cluster by
-  issuing UCAN capability delegations to peers and jobs.
+- **DHT record signing**: Identity-based signatures that prove a record was
+  written by the correct identity (sections 2 and following).
+- **UCAN protocol authorization**: Capability-based tokens that authorize
+  GossipSub messages and stream protocol requests (sections 3--5).
 
-## 2. DHT Record Signing
+See [permissions.md](permissions.md) for the detailed breakdown of which
+capabilities map to which protocol operations and how roles compose them.
+
+## 3. DHT Record Signing
 
 Every DHT record type has a defined signature requirement. Validators reject
 records that fail signature verification.
@@ -45,16 +93,16 @@ records that fail signature verification.
 | Key Format | Signed By | Validation Rule |
 |---|---|---|
 | `aos:store:{object_id}` | None | Provider records are self-verifying via content hash. No signature required. |
-| `aos:profile:{peer_ident}` | PeerIdentity | Public key extracted from `{peer_ident}`, signature verified against record payload. |
-| `aos:job:{job_ident}` | JobIdentity | Public key extracted from `{job_ident}`, signature verified against record payload. |
-| `aos:cluster:{cluster_ident}` | ClusterIdentity | Public key extracted from `{cluster_ident}`, signature verified against record payload. |
+| `aos:cluster:{cluster_ident}:job:{job_ident}:state` | JobIdentity | Public key extracted from `{job_ident}`, signature verified against record payload. |
+| `aos:cluster:{cluster_ident}:config` | Root Identity | Public key extracted from `{cluster_ident}`, signature verified against record payload. |
+| `aos:auth:token:{token_hash}:revoke` | Token Issuer | Signature verified against the issuer's public key. TTL mirrors the revoked token's expiry. See [Revocation](#10-revocation). |
 
 Store records require no signature because the object ID is itself a
 content-addressed hash. Any peer can verify a store object by recomputing its
-hash. Profile, job, and cluster records are identity-addressed and require the
+hash. Job, cluster, and revocation records are identity-addressed and require the
 corresponding identity's signature to prevent impersonation.
 
-## 3. UCAN Capability Model
+## 4. UCAN Capability Model
 
 Authorization for GossipSub messages and stream protocol requests uses UCAN
 (User Controlled Authorization Networks). A UCAN is a signed JWT-like token that
@@ -62,12 +110,10 @@ encodes a capability delegation chain.
 
 ### Capability Structure
 
-Each UCAN capability specifies:
-
-- **Resource path**: A hierarchical namespace (e.g., `/aos/job/announce`).
-- **WHERE clauses**: Conditions that scope the capability to specific clusters,
-  jobs, or operations. The verifier evaluates each clause against the message
-  or request being authorized.
+Each UCAN capability specifies a resource path and WHERE clauses that scope it
+to specific clusters, jobs, or operations. See
+[permissions.md](permissions.md) for the complete resource/verb matrix, policy
+restrictions, and role definitions.
 
 A capability matches a request when:
 
@@ -77,22 +123,32 @@ A capability matches a request when:
 
 ### Delegation
 
-The ClusterIdentity is the root issuer. It delegates capabilities to peers,
-which may further delegate subsets of those capabilities (attenuation). Each
-link in the chain is signed by the delegator. Verification walks the chain from
-the presented UCAN back to a trusted ClusterIdentity root.
+Intermediate identities are the primary issuers of UCANs to leaf identities
+(peers and jobs). An intermediate can only delegate capabilities it was itself
+granted in its `IntermediateCert`. Peers may further delegate subsets of those
+capabilities (attenuation). Each link in the chain is signed by the delegator.
 
-## 4. GossipSub Message Authorization
+Verification walks the full cert chain: UCAN signature -> intermediate
+certificate -> root public key. See [UCAN Verification](#ucan-verification)
+for the detailed algorithm.
+
+## 5. GossipSub Message Authorization
 
 Every message published to a GossipSub topic must carry a UCAN in the message
 envelope. Subscribers validate the UCAN before accepting the message. Messages
-that fail validation are dropped silently.
+that fail validation are dropped silently. See
+[permissions.md](permissions.md) for the full publish/subscribe capability
+mapping per topic.
 
 | Topic | Required UCAN Capability |
 |---|---|
-| `aos/cluster/{cluster_ident}/jobs/announce` | `/aos/job/announce` WHERE `.cluster == {cluster_ident}` AND `.operation HAS {post_op}` |
+| `aos/cluster/{cluster_ident}/jobs/announce` | `/aos/job/create`, `/aos/job/claim`, `/aos/job/cancel` (depends on delta type) |
 | `aos/cluster/{cluster_ident}/load/announce` | `/aos/load/announce` WHERE `.cluster == {cluster_ident}` |
-| `aos/cluster/{cluster_ident}/control/announce` | `/aos/control/announce` WHERE `.cluster == {cluster_ident}` AND `.operation HAS {control_op}` |
+| `aos/store/publish` | `/aos/store/write` |
+| `aos/auth/token/revoke` | Authorized by the token issuer (see [Revocation](#10-revocation)) |
+| `aos/auth/token/issue` | Authorized by the token issuer |
+| `aos/store/replicate` | `/aos/store/replicate` |
+| `aos/store/purge` | `/aos/store/purge` |
 
 The WHERE clauses enforce that:
 
@@ -100,10 +156,8 @@ The WHERE clauses enforce that:
   cluster B's topics.
 - **Operation scoping**: Job announcement capabilities can be restricted to
   specific operations (e.g., only `create` and `cancel`, but not `claim`).
-  Control signal capabilities can similarly be restricted to specific control
-  operations.
 
-## 5. Stream Protocol Authorization
+## 6. Stream Protocol Authorization
 
 Stream protocol requests carry a UCAN in the request header. The serving peer
 validates the UCAN before processing the request.
@@ -111,23 +165,23 @@ validates the UCAN before processing the request.
 | Protocol | Required UCAN Capability |
 |---|---|
 | `/aos/store/manifest/1.0.0` | `/aos/store/read` |
-| `/aos/store/chunk/1.0.0` | None |
-| `/aos/job/exec/1.0.0` | `/aos/job/exec` WHERE `.job == {job_ident}` |
+| `/aos/store/chunk/1.0.0` | `/aos/store/read` |
+| `/aos/job/start/1.0.0` | `/aos/job/start` WHERE `.job == {job_ident}` |
 | `/aos/job/log/1.0.0` | `/aos/job/read` WHERE `.cluster == {cluster_ident}` OR `.job == {job_ident}` |
 
 Notable design choices:
 
-- **Chunk transfer is unauthenticated.** Chunks are content-addressed by
-  xxh3-128 hash. Knowing a chunk hash is sufficient to request it, and the
-  response is self-verifying. The manifest request (which reveals which chunks
-  compose an object) is the authorization boundary.
+- **Both manifest and chunk transfer require `/aos/store/read`.** While chunks
+  are content-addressed and self-verifying by hash, gating access prevents
+  unauthorized peers from exfiltrating store data even if they learn chunk
+  hashes through other means.
 - **Log access has two scopes.** A cluster-scoped UCAN grants access to logs
   for all jobs in the cluster. A job-scoped UCAN grants access only to that
   specific job's logs.
 - **Exec authorization is job-scoped.** The UCAN must name the specific job
   identity being executed.
 
-## 6. Two-Phase Exec Authorization
+## 7. Two-Phase Start Authorization
 
 Job execution requires mutual authorization between the job creator and the
 claiming peer. Neither party can unilaterally start a job on the other's
@@ -135,36 +189,36 @@ machine. This is enforced through two UCANs that cross in opposite directions.
 
 ### Phase 1: Claim
 
-When a peer claims a job, it includes an `exec_ucan` in the `JobClaim` message:
+When a peer claims a job, it includes a `start_ucan` in the `JobClaim` message:
 
 ```protobuf
 message JobClaim {
     string peer_id = 1;
-    string exec_ucan = 2;  // Claimant authorizes the creator to exec on their machine.
+    string start_ucan = 2;  // Claimant authorizes the creator to start on their machine.
 }
 ```
 
-The `exec_ucan` is issued by the claimant and grants the job identity holder
-(i.e., the creator) the `/aos/job/exec` capability scoped to this specific job.
+The `start_ucan` is issued by the claimant and grants the job identity holder
+(i.e., the creator) the `/aos/job/start` capability scoped to this specific job.
 This proves: **the claimant consents to run this job on their machine.**
 
-### Phase 2: Exec
+### Phase 2: Start
 
-The creator calls `/aos/job/exec/1.0.0` on the claimant with an `ExecRequest`:
+The creator calls `/aos/job/start/1.0.0` on the claimant with a `JobStartRequest`:
 
 ```protobuf
-message ExecRequest {
+message JobStartRequest {
     string job_ucan = 1;   // Creator delegates the job identity to the claimant.
-    string exec_ucan = 2;  // The exec_ucan from the JobClaim.
+    string start_ucan = 2;  // The start_ucan from the JobClaim.
 }
 ```
 
-The `ExecRequest` carries two UCANs:
+The `JobStartRequest` carries two UCANs:
 
 - **`job_ucan`**: Issued by the creator, delegating the JobIdentity (private
   key access via systemd secrets) to the claimant. This proves: **the creator
   authorizes this specific peer to act as the job.**
-- **`exec_ucan`**: The same UCAN from the claim, echoed back. This proves:
+- **`start_ucan`**: The same UCAN from the claim, echoed back. This proves:
   **the claimant previously consented to execute this job.**
 
 The claimant verifies both UCANs before starting the job container. The job
@@ -175,37 +229,64 @@ injection so it can join libp2p and sign its own DHT records.
 
 Neither UCAN alone is sufficient:
 
-- Without `exec_ucan`, a creator could force arbitrary peers to run jobs they
+- Without `start_ucan`, a creator could force arbitrary peers to run jobs they
   never agreed to.
 - Without `job_ucan`, a claimant could impersonate a job identity it was never
   granted, or a creator could bait-and-switch the job after claiming.
 
 Both sides must independently prove their intent for execution to proceed.
 
-## 7. Cluster Bootstrapping
+## 8. Cluster Bootstrapping
 
-When a new cluster is created, the administrator generates a ClusterIdentity
+When a new cluster is created, the administrator generates a root ed25519
 keypair and publishes a signed `ClusterConfig` record to the DHT. The
-bootstrapping sequence is:
+`ClusterConfig` carries the root public key and a list of active intermediate
+certificates.
 
-1. **Generate ClusterIdentity.** The administrator creates the ed25519 keypair.
-   The public key hash becomes the `{cluster_ident}`.
-2. **Publish ClusterConfig.** The initial cluster configuration is signed and
-   published to `aos:cluster:{cluster_ident}`.
-3. **Issue initial UCANs.** The ClusterIdentity issues UCAN delegations to the
-   first set of peers, granting them capabilities to announce jobs, report load,
-   and publish control signals on the cluster's GossipSub topics. This is
-   analogous to creating initial service accounts and RBAC bindings in
-   Kubernetes.
-4. **Peers join.** Each peer receives its UCAN delegation (out of band or via a
+The bootstrapping sequence is:
+
+1. **Generate Root Identity.** The administrator creates the ed25519 keypair
+   offline (vault or HSM). The public key hash becomes the `{cluster_ident}`.
+2. **Create Intermediate Certificates.** The root signs one or more
+   `IntermediateCert` records, each scoped to a set of capabilities and an
+   expiry window. For example: `ops-admin` (1yr, full capabilities),
+   `ci-admin` (90d, job announce + start only), `dev-admin` (6mo, job announce
+   + log read only).
+3. **Publish ClusterConfig.** The initial cluster configuration — including
+   `root_public_key` and the list of `IntermediateCert` records — is signed by
+   the root and published to `aos:cluster:{cluster_ident}:config`.
+4. **Issue initial UCANs.** Each intermediate issues UCAN delegations to its
+   assigned peers and jobs, granting them capabilities to announce jobs, report
+   load on the cluster's GossipSub topics.
+5. **Peers join.** Each peer receives its UCAN delegation (out of band or via a
    registration protocol) and begins participating in the cluster's topics and
    protocols.
 
-The ClusterIdentity private key does not need to remain online after
-bootstrapping. It is only required when issuing new UCAN delegations or updating
-the `ClusterConfig`.
+The root private key does not need to remain online after bootstrapping. It is
+only required when signing new intermediate certificates or updating the
+`ClusterConfig`. Intermediate keys remain online to issue and renew UCANs.
 
-## 8. Job Identity Lifecycle
+### UCAN Verification
+
+When verifying a UCAN presented by a peer or job, the verifier walks the
+certificate chain from the UCAN back to the root:
+
+```
+Verify UCAN:
+  1. UCAN says iss=intermediate-X, aud=peer-Y
+  2. Look up intermediate-X in ClusterConfig.intermediates
+  3. Verify intermediate's cert signature chains to root (or parent intermediate)
+  4. Check intermediate not expired (not_before <= now <= not_after)
+  5. Check intermediate not revoked (DHT lookup or cache hit)
+  6. Verify UCAN signature by intermediate's key
+  7. Verify UCAN capabilities are subset of intermediate's capabilities
+```
+
+For chained intermediates (where `parent_cert_id` is non-empty), step 3
+recurses: verify the parent intermediate's cert, then the grandparent's, until
+reaching a cert signed directly by the root.
+
+## 9. Job Identity Lifecycle
 
 Job identities are ephemeral and tightly scoped to a single job execution.
 
@@ -215,52 +296,87 @@ Job identities are ephemeral and tightly scoped to a single job execution.
    delta) to the cluster's jobs GossipSub topic. The `{job_ident}` is included
    in the message.
 3. **Delegation.** When execution begins (Phase 2), the creator delegates the
-   JobIdentity to the claimant via the `job_ucan` in the `ExecRequest`.
+   JobIdentity to the claimant via the `job_ucan` in the `JobStartRequest`.
 4. **Injection.** The claimant's daemon injects the JobIdentity private key into
    the job's systemd unit via `LoadCredential`. The job process reads the key
    from the credential path at startup.
 5. **Participation.** The running job uses its JobIdentity to join libp2p, sign
-   `JobState` DHT records under `aos:job:{job_ident}`, and authenticate to any
+   `JobState` DHT records under `aos:cluster:{cluster_ident}:job:{job_ident}:state`, and authenticate to any
    protocols that accept job-scoped UCANs.
 6. **Destruction.** When the job exits (normally or via cancellation), the
    JobIdentity is discarded. The DHT record expires via its short TTL liveness
    check. The keypair is never reused.
 
-## 9. Revocation
+## 10. Revocation
 
-UCAN revocation uses a combination of short-lived tokens and emergency signals
-to ensure that compromised or decommissioned peers lose access promptly.
+UCAN and intermediate certificate revocation uses a DHT-based model with
+GossipSub notifications for protocol propagation. This replaces the previous
+approach of relying solely on short-lived tokens and emergency eviction signals.
 
-### Short-Lived UCANs
+### Revocation Records
 
-UCANs are issued with short expiry windows (hours to days). Non-renewal is
-implicit revocation: when a UCAN expires, the peer can no longer authorize
-messages or requests with it. The ClusterIdentity holder simply stops issuing
-new delegations to revoke a peer's access. This is the normal revocation path
-and requires no broadcast.
+Revocation records are stored in the DHT at `aos:auth:token:{token_hash}:revoke`.
 
-### Emergency Revocation
+- **Value**: `RevocationRecord` — see [protocol.md](protocol.md#41-dht-messages)
+  for the protobuf definition.
+- **Signature**: Must be signed by the same key that issued the token being
+  revoked. This prevents unauthorized revocation — only the issuer of a UCAN
+  or the signer of an intermediate cert can revoke it.
+- **TTL**: Mirrors the revoked token's expiry time. When the token would have
+  expired anyway, the revocation record is garbage-collected automatically.
 
-For immediate revocation (e.g., a compromised peer key), the ClusterIdentity
-publishes a `ControlSignal` with a `PeerSet` signal marking the target peer as
-`EVICTED`. All peers that receive the signal:
+### GossipSub Notification
 
-1. Stop accepting GossipSub messages from the evicted peer.
-2. Reject stream protocol requests from the evicted peer.
-3. Remove the evicted peer from scheduling consideration.
+When a token is revoked, the issuer publishes a `RevocationNotice` to the
+GossipSub topic `aos/auth/token/revoke`. The notice carries only
+the `token_hash` — it is lightweight by design. Peers that receive the
+notification fetch the full `RevocationRecord` from the DHT if they do not
+already have it cached.
 
-This takes effect as fast as GossipSub propagation (typically sub-second within
-a cluster).
+### Local Revocation Cache
+
+Each peer maintains a local revocation cache with two layers:
+
+- **Positive cache**: Known-revoked tokens. Populated from DHT lookups and
+  GossipSub notifications. Entries persist until the token's original expiry
+  time (matching the DHT TTL).
+- **Negative cache**: Known-NOT-revoked tokens with a short TTL (default 60s).
+  Prevents repeated DHT lookups for high-frequency operations. Entries are
+  invalidated immediately when a GossipSub revocation notice arrives for the
+  token.
+
+### Tiered Validation
+
+Different operations have different risk profiles and volume characteristics.
+The revocation check strategy is tiered accordingly:
+
+| Operation | Revocation Check | Rationale |
+|---|---|---|
+| Chunk fetch | Cache only (no DHT lookup on miss) | High volume, low risk. Chunks are content-addressed and self-verifying. |
+| GossipSub messages | Cache + negative cache (60s TTL) | Medium volume, medium risk. Stale-by-60s is acceptable. |
+| Job exec | Cache + synchronous DHT lookup on miss | Low volume, high risk. No negative caching — always verify against DHT if not positively cached. |
+
+### Intermediate Subtree Revocation
+
+Revoking an intermediate certificate implicitly revokes its entire subtree.
+There is no need to individually revoke each child UCAN issued by that
+intermediate. During UCAN verification (see [UCAN Verification](#ucan-verification)),
+the cert chain walk encounters the revoked intermediate at step 5 and rejects
+the entire chain. All UCANs issued by the revoked intermediate — and any
+sub-intermediates chained below it — become invalid immediately.
 
 ### Per-Message Validation
 
 Every GossipSub message carries a UCAN in its envelope. On receipt, peers
 validate the UCAN before processing the message:
 
-1. **Expiry check**: if the UCAN's `exp` claim is in the past, the message is
+1. **Chain walk**: Verify the UCAN's delegation chain through intermediates to
+   the root (see [UCAN Verification](#ucan-verification)).
+2. **Expiry check**: If the UCAN's `exp` claim is in the past, the message is
    rejected.
-2. **Revocation check**: if the message author's PeerId matches an `EVICTED`
-   peer in the local ControlSignal state, the message is rejected.
-3. **Peer score penalty**: rejected messages incur a GossipSub peer score
+3. **Revocation check**: Check the revocation cache (and optionally DHT) for
+   the UCAN and each intermediate in the chain, per the tiered validation
+   policy.
+4. **Peer score penalty**: Rejected messages incur a GossipSub peer score
    penalty. Repeated violations cause the peer to be disconnected and
    blacklisted by the mesh.

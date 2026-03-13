@@ -29,7 +29,7 @@
 ##!       "registry_mirrors": {},
 ##!       "containerd": { "snapshotter": "overlayfs" }
 ##!     },
-##!     "services": { "chrony": true, "fail2ban": true }
+##!     "services": { "chrony": true }
 ##!   }
 {
   config,

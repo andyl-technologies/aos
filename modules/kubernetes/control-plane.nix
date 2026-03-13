@@ -89,12 +89,14 @@ in
     };
 
     # ZFS dataset for etcd data — tuned for small-record transactional writes.
-    aos.filesystems.zfs.datasets."var/lib/etcd" = {
-      mountpoint = "/var/lib/etcd";
-      compression = "zstd-3";
-      atime = "off";
-      recordsize = "4K";
-      sync = "always";
+    aos.filesystems.zfs.datasets = lib.mkIf config.aos.filesystems.zfs.enable {
+      "var/lib/etcd" = {
+        mountpoint = "/var/lib/etcd";
+        compression = "zstd-3";
+        atime = "off";
+        recordsize = "4K";
+        sync = "always";
+      };
     };
 
     # kubeadm configuration for control plane initialization.
@@ -168,13 +170,11 @@ in
     ];
 
     # Open control plane ports in the firewall.
-    # These are additional to the base kubelet port (10250).
+    # These are additional to the base kubelet ports (10250, 10256, 30000).
     aos.firewall.allowedTCP = [
-      22 # SSH
       cfg.apiServerPort # kube-apiserver
       2379 # etcd client
       2380 # etcd peer
-      10250 # kubelet API
       10257 # kube-controller-manager
       10259 # kube-scheduler
     ];

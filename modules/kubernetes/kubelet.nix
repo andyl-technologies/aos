@@ -427,10 +427,11 @@ in
     # Ensure containerd is enabled when kubelet is enabled.
     aos.kubernetes.containerd.enable = true;
 
-    # Open kubelet API port in the firewall.
+    # Open kubelet ports in the firewall.
     aos.firewall.allowedTCP = [
-      22
-      10250
+      10250 # kubelet API
+      10256 # kube-proxy health check
+      30000 # NodePort range start (30000-32767)
     ];
   };
 }

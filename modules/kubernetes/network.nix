@@ -173,5 +173,16 @@ in
       "lxc*"
       "veth*"
     ];
+
+    # Cilium CNI ports.
+    aos.firewall.allowedTCP = [
+      4240 # Cilium health checks
+      4244 # Hubble relay
+    ];
+
+    # VXLAN overlay network (Flannel/Cilium).
+    aos.firewall.allowedUDP = [
+      8472
+    ];
   };
 }

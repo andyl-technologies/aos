@@ -88,7 +88,7 @@ let
       TOPLEVEL = builtins.toString toplevel;
       SYSTEMD = builtins.toString systemdPkg;
       COREUTILS = builtins.toString coreutilsPkg;
-      BASH = builtins.toString bashPkg;
+      AOS_BASH = builtins.toString bashPkg;
       SOCAT = builtins.toString socatPkg;
       SYSTEM_PACKAGES = builtins.concatStringsSep " " (builtins.map builtins.toString systemPackages);
 
@@ -136,7 +136,7 @@ let
                         # systemd's default PATH for services is /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
                         mkdir -p rootfs/usr/bin rootfs/usr/sbin
                         # /bin/sh -> bash
-                        ln -sfn $BASH/bin/bash rootfs/bin/sh
+                        ln -sfn $AOS_BASH/bin/bash rootfs/bin/sh
                         # coreutils (sleep, cat, echo, tr, sed, etc.)
                         for bin in $COREUTILS/bin/*; do
                           name=$(basename "$bin")
@@ -475,14 +475,21 @@ let
                         ln -sfn ../aos-test-agent.service \
                           rootfs/etc/systemd/system/multi-user.target.wants/aos-test-agent.service
 
-                        # Calculate image size with overhead
-                        # Use du -sk (kilobytes) for portability, then convert to MB
-                        SIZE_KB=$(du -sk rootfs | cut -f1)
-                        SIZE_MB=$(( SIZE_KB / 1024 ))
-                        # Triple the size for ext4 metadata, journal, inode tables
-                        IMAGE_MB=$(( SIZE_MB * 3 + 512 ))
+                        # Calculate image size: use --apparent-size because mkfs.ext4 -d
+                        # does NOT preserve hardlinks — each hardlinked file becomes a
+                        # separate copy, so apparent size is what matters.
+                        APPARENT_KB=$(du -sk --apparent-size rootfs | cut -f1)
+                        SIZE_MB=$(( APPARENT_KB / 1024 ))
+                        # 50% overhead for ext4 metadata/journal + 256MB headroom
+                        IMAGE_MB=$(( SIZE_MB * 3 / 2 + 256 ))
+                        if [ "$IMAGE_MB" -lt 2048 ]; then
+                          IMAGE_MB=2048
+                        fi
 
                         echo "==> Rootfs data: ''${SIZE_MB}MB, image: ''${IMAGE_MB}MB"
+                        # stdenv setup.sh creates $out as a directory; mkfs.ext4
+                        # needs a file. Write to temp file, then replace $out.
+                        rm -rf $out
                         mkfs.ext4 -d rootfs -L rootfs -m 1 -q $out ''${IMAGE_MB}M
           '';
         }

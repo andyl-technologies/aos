@@ -223,11 +223,13 @@ in
     };
 
     # ZFS dataset for containerd state (container images, snapshots).
-    aos.filesystems.zfs.datasets."var/lib/containerd" = {
-      mountpoint = "/var/lib/containerd";
-      compression = "zstd-3";
-      atime = "off";
-      recordsize = "128K";
+    aos.filesystems.zfs.datasets = lib.mkIf config.aos.filesystems.zfs.enable {
+      "var/lib/containerd" = {
+        mountpoint = "/var/lib/containerd";
+        compression = "zstd-3";
+        atime = "off";
+        recordsize = "128K";
+      };
     };
 
     environment.systemPackages = [
