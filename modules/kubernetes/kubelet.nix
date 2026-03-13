@@ -102,7 +102,7 @@ let
 
   kubeletFlags = builtins.concatStringsSep " " (
     builtins.filter (s: s != "") [
-      "--config=/var/lib/kubelet/config.yaml"
+      "--config=/etc/kubernetes/kubelet-config.yaml"
       "--kubeconfig=/etc/kubernetes/kubelet.conf"
       "--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf"
       "--container-runtime-endpoint=${cfg.containerRuntimeEndpoint}"
@@ -360,7 +360,7 @@ in
           name = "kubelet-config";
           description = "kubelet config.yaml exists";
           script = ''
-            assert_success "test -f /var/lib/kubelet/config.yaml" \
+            assert_success "test -f /etc/kubernetes/kubelet-config.yaml" \
               "kubelet config.yaml exists"
           '';
         })
@@ -381,6 +381,8 @@ in
     ];
 
     # /var/lib/kubelet/config.yaml — KubeletConfiguration.
+    # The kubelet expects this at /var/lib/kubelet/config.yaml (as set in its
+    # --config flag). We write it to /etc and symlink from /var/lib/kubelet/.
     environment.etc."kubernetes/kubelet-config.yaml" = {
       text = kubeletConfigYaml;
     };
