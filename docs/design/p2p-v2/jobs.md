@@ -5,22 +5,23 @@ encompasses any containerized task -- builds, login shells, services -- and
 progresses through a well-defined lifecycle coordinated via CRDT state
 transitions on GossipSub.
 
-## Container Types
+## Activation Types
 
-A job runs one of two container types, determined by its `JobSpec`:
+A job's container behavior is determined by the `ActivationType` in its
+`ContainerSpec`:
 
-**BuilderSpec** -- a build container with a writable store overlay for creating
-new store objects. Network access is disabled and the container runs under
-isolation equivalent to the nix sandbox. The output is one or more new store
-objects written to the overlay.
+**ACTIVATION_NONE** -- mount the view, run an entrypoint. No special
+activation. Used for interactive shells and simple one-off commands.
 
-**ProfileContainer** -- a profile container that runs a login shell, long-running
-service, or other profile-based workload. Network access follows the profile
-configuration (none or host NAT).
+**ACTIVATION_SYSTEMD_V1** -- run systemd as PID 1 with an activation script
+that installs units and services. Used for long-running service containers.
 
-Both container types run a single container based on the referenced profile.
-See [containers.md](containers.md) for the full container orchestration model,
-including init processes, activation, OverlayFS setup, and output registration.
+**ACTIVATION_DERIVATION** -- parse a `.drv`, exec the builder, capture output
+from an OverlayFS writable layer. Network access disabled. Used for builds.
+
+All containers receive a `ViewSpec` defining the FUSE view (transitive closure
+of store objects). See [containers.md](containers.md) for the full container
+orchestration model and [view.md](view.md) for view semantics.
 
 ## State Diagram
 
@@ -32,7 +33,7 @@ including init processes, activation, OverlayFS setup, and output registration.
                     v
                  [claimed]
                     |
-          exec RPC  |  (creator picks best claim)
+         start RPC  |  (creator picks best claim)
                     v
                  [starting]
                     |
@@ -62,53 +63,86 @@ announces the job to all peers in the cluster. The `JobSpec` contains:
 - An absolute epoch deadline (microseconds since epoch) by which the job must
   complete. Peers reject claims after the deadline has passed. Running jobs
   that exceed the deadline are killed.
-- A container spec: either `BuilderSpec` (derivation path, writable store
-  overlay, network disabled) or `ProfileContainer` (profile store hash).
+- A container spec: activation type, view spec (store hashes defining the FUSE
+  view), and optional derivation hash for build jobs.
 - A node selector: required system architecture, features, and peer labels.
 - Resource limits: max memory, CPU cores, and scratch disk.
 - Network mode: `NETWORK_NONE` (required for builds) or `NETWORK_HOST` (for
-  profile containers).
+  service containers).
 
 The job is now visible to all cluster members subscribed to the jobs announce
 topic.
 
-### 2. Claim
+### 2. Claim (Load-Staggered First-Claim)
 
 Eligible peers that are willing and able to run the job publish `JobPost`
 messages with a `claim(JobClaim)` delta. Each claim contains:
 
 - `peer_id` -- the claiming peer's identity.
-- `exec_ucan` -- a UCAN granting the job identity holder permission to execute
-  on this peer (see Two-Phase Exec below).
+- `start_ucan` -- a UCAN granting the job identity holder permission to execute
+  on this peer (see Two-Phase Start below).
 
 Multiple peers may claim the same job. Claims are not binding -- they are
 offers.
 
-### 3. Exec
+**Load-staggered claiming.** Rather than collecting claims over a fixed window
+and then picking the best, claiming uses a load-proportional delay. Each peer
+knows the load of every other peer from periodic `LoadReport` messages on
+GossipSub. When a peer receives a `JobPost{create}`, it computes a claim delay
+based on its relative load position among eligible peers:
 
-The creator evaluates all received claims and picks the best one. "Best" is
-determined by the creator; the protocol does not prescribe a selection
-algorithm. This is not first-come-first-served.
+```rust
+fn claim_delay(&self, job: &JobSpec) -> Duration {
+    let my_load = self.current_load_fraction();
 
-The creator then opens a `/aos/job/exec/1.0.0` stream to the selected
-claimant and sends an `ExecRequest` containing:
+    let mut peer_loads: Vec<f64> = self.load_reports.values()
+        .filter(|r| r.system == job.node_selector.system)
+        .map(|r| r.usage.cpu_fraction)
+        .collect();
+    peer_loads.sort();
+
+    let my_rank = peer_loads.iter()
+        .position(|&l| l >= my_load)
+        .unwrap_or(peer_loads.len()) as f64 / peer_loads.len().max(1) as f64;
+
+    // 50ms (lowest load) to 500ms (highest load)
+    Duration::from_millis((50.0 + my_rank * 450.0) as u64)
+}
+```
+
+The lowest-loaded eligible peer delays ~50ms before claiming; the
+highest-loaded delays ~500ms. The creator picks the **first valid claim** that
+arrives -- there is no collection window. This naturally routes jobs to the
+least-loaded eligible peer without a central scheduler.
+
+See [scheduling.md](scheduling.md) for the full claim delay computation
+including load ranking, affinity bonus, confidence penalty, urgency factor, and
+failure avoidance.
+
+### 3. Start (RPC)
+
+The creator picks the first valid claim that arrives (see load-staggered
+claiming above) and opens a `/aos/job/start/1.0.0` stream to the selected
+claimant with a `JobStartRequest` containing:
 
 - `job_ucan` -- delegates the job identity to the claimant's peer, so the
   claimant can sign as the job.
-- `exec_ucan` -- the same exec authorization the claimant provided in its
+- `start_ucan` -- the same start authorization the claimant provided in its
   claim, echoed back.
+- `reservation` -- an optional `ReservationToken` if the creator is using a
+  reservation from a previous job (see [Slot Reservation](#slot-reservation)).
 
 The claimant validates both UCANs and starts the container.
 
 ### Creator Offline Fallback
 
-The two-phase exec handshake is the normal path. If the creator goes offline
+The two-phase start handshake is the normal path. If the creator goes offline
 after posting a job, two fallback behaviors prevent jobs from hanging
 indefinitely:
 
-- **Exec timeout**: if no exec call is made within `job_exec_timeout_ms` (from
+- **Start timeout**: if no start call is made within `job_exec_timeout_ms` (from
   `ClusterConfig`) after the first claim, the first claimant (lowest peer_id
-  among claimants with the earliest timestamp) auto-executes. The claimant
+  among claimants with the earliest timestamp) auto-starts. The claimant
   generates its own `job_ucan` delegation as a self-signed fallback and proceeds
   with container startup.
 - **Claim deadline**: if no claims arrive before the job's deadline, the job
@@ -124,7 +158,7 @@ start(JobStart)}` to the cluster. The job is now in the running state.
 ### 5. Running
 
 While the job runs, it maintains liveness by refreshing a DHT record at
-`aos:job:{job_ident}` with a short TTL (see Liveness below). The job container
+`aos:cluster:{cluster_ident}:job:{job_ident}:state` with a short TTL (see Liveness below). The job container
 has its own PeerId and can participate in libp2p directly -- fetching store
 content, publishing provider records, or communicating with other jobs.
 
@@ -172,6 +206,7 @@ message JobExit {
     int32 exit_code = 1;                // Process exit code (0 = success).
     uint64 duration_ms = 2;             // Wall-clock duration from start to exit.
     repeated StoreOutput outputs = 3;   // Store objects produced (build jobs only).
+    optional ReservationToken reservation = 4;  // Slot reservation for follow-up jobs.
 }
 
 message StoreOutput {
@@ -187,10 +222,13 @@ message StoreOutput {
 - `duration_ms` -- milliseconds elapsed between the `started_at` timestamp in
   `JobStart` and the container exit. Useful for scheduling heuristics and build
   time estimation.
-- `outputs` -- for `BuilderSpec` jobs, the store objects written to the overlay
-  during the build. Each output has a content-addressed `store_hash` that other
-  peers can use to fetch the result via the store transfer protocol. For
-  `ProfileContainer` jobs, this field is empty.
+- `outputs` -- for `ACTIVATION_DERIVATION` jobs, the store objects written to
+  the overlay during the build. Each output has a content-addressed `store_hash`
+  that other peers can use to fetch the result via the store transfer protocol.
+  For other activation types, this field is empty.
+- `reservation` -- an optional `ReservationToken` offering the job creator a
+  reserved slot on this builder for a follow-up job. See
+  [Slot Reservation](#slot-reservation) below.
 
 ### JobError
 
@@ -253,7 +291,7 @@ message JobCancel {
 
 ### JobState
 
-Active job state stored in the DHT liveness record at `aos:job:{job_ident}`.
+Active job state stored in the DHT liveness record at `aos:cluster:{cluster_ident}:job:{job_ident}:state`.
 Refreshed periodically by the running container with a short TTL.
 
 ```protobuf
@@ -282,14 +320,14 @@ enum JobPhase {
   disk_used_bytes). Allows the creator to monitor job resource usage without
   streaming logs.
 
-## Two-Phase Exec Handshake
+## Two-Phase Start Handshake
 
 The two-phase design exists because two separate authorization proofs are
 needed:
 
-**exec_ucan (claimant provides)**: "I authorize this job to execute on my
+**start_ucan (claimant provides)**: "I authorize this job to execute on my
 resources." The claimant creates this UCAN when it claims the job. It grants
-the job identity holder the `/aos/job/exec` capability scoped to this specific
+the job identity holder the `/aos/job/start` capability scoped to this specific
 job. This proves the claimant consents to run the workload.
 
 **job_ucan (creator provides)**: "I delegate the job's identity to you." The
@@ -298,11 +336,11 @@ selects a claimant, it delegates this identity via UCAN so the claimant can
 sign DHT records and GossipSub messages as the job. This proves the creator
 authorized this specific peer to act as the job.
 
-Both UCANs are presented in the `ExecRequest`. The claimant validates the
+Both UCANs are presented in the `JobStartRequest`. The claimant validates the
 `job_ucan` chain (creator -> claimant) and the creator has already validated the
-`exec_ucan` chain (claimant -> job identity). Neither party can act
+`start_ucan` chain (claimant -> job identity). Neither party can act
 unilaterally: the claimant cannot start without the job identity delegation, and
-the creator cannot force execution without the claimant's exec authorization.
+the creator cannot force execution without the claimant's start authorization.
 
 ## Job Identity
 
@@ -310,14 +348,14 @@ Each job gets its own PeerId, backed by a unique keypair generated at job
 creation time. This identity is:
 
 - Created by the job creator as part of `JobSpec` construction.
-- Delegated to the executing peer via `job_ucan` in the `ExecRequest`.
+- Delegated to the executing peer via `job_ucan` in the `JobStartRequest`.
 - Injected into the job container via systemd secrets, making the keypair
   available to the containerized process.
 
 This per-job identity enables the container to participate in libp2p as a
 first-class peer:
 
-- Publish and refresh its own DHT liveness record at `aos:job:{job_ident}`.
+- Publish and refresh its own DHT liveness record at `aos:cluster:{cluster_ident}:job:{job_ident}:state`.
 - Sign `JobPost` state transitions (start, exit, error).
 - Open stream protocols to fetch store content or stream logs.
 - Advertise provider records for store objects it produces (build jobs).
@@ -347,10 +385,86 @@ cluster peers. The degree of parallelism is controlled by the client (how many
 jobs it submits at once) and the cluster (how many peers claim and execute
 jobs).
 
+## Slot Reservation
+
+When a builder completes a job, it MAY include a `ReservationToken` in the
+`JobExit` message. This token is a short-lived (~30 second) offer to the
+original job creator: "I have a slot available for you -- skip the claiming
+phase and call `/aos/job/start` directly."
+
+### ReservationToken
+
+```protobuf
+message ReservationToken {
+    string builder_peer_id = 1;
+    string creator_peer_id = 2;
+    uint64 valid_until = 3;          // epoch micros, ~30s from now
+    bytes signature = 4;             // builder signs (creator_peer_id, valid_until)
+}
+```
+
+The token is signed by the builder's key and scoped to the original creator's
+PeerId. The builder includes it in `JobExit.reservation` when it has capacity
+for another job and wants to offer the slot to the same creator.
+
+### Reservation Flow
+
+If the creator has a follow-up job in the DAG (a newly-unblocked dependency),
+it can skip GossipSub announcement and claiming entirely:
+
+1. Creator receives `JobExit` with a `ReservationToken`.
+2. Creator has a pending job ready to submit.
+3. Creator opens `/aos/job/start/1.0.0` directly to the builder and sends a
+   `JobStartRequest` with the `reservation` field set.
+4. Builder verifies: token is signed by me, not expired, `creator_peer_id`
+   matches the caller, I still have capacity.
+5. If valid, the builder starts the job immediately.
+6. If the creator does not use the token within the validity window (~30s),
+   the slot returns to the general scheduling pool.
+
+### Comparison
+
+```
+First job (no reservation):
+  JobPost{create} → GossipSub → claims arrive → pick first → exec → build → exit+reservation
+
+Subsequent jobs (with reservation):
+  Creator has reservation → /aos/job/start directly → build → exit+new reservation → ...
+```
+
+| Path | Overhead | Round-trips |
+|---|---|---|
+| Normal (GossipSub + claim) | ~1.6s | GossipSub broadcast + claim delay + start stream |
+| Reservation | ~0.8s | Direct start stream only |
+
+The reservation path eliminates the GossipSub round-trip and claim collection
+delay, roughly halving per-job scheduling overhead. For deep build DAGs with
+many sequential dependencies, this compounds significantly.
+
+### Benefits
+
+- **Reduced latency**: ~0.8s overhead per job instead of ~1.6s.
+- **Chunk store locality**: the previous job's inputs are warm in the builder's
+  local chunk store cache. Subsequent jobs in the same DAG often share large
+  portions of their input closure, so keeping them on the same builder avoids
+  redundant content transfers.
+- **Chain scheduling**: a builder completing one job in a DAG can immediately
+  start the next, forming a pipeline. Each `JobExit` offers a new reservation
+  token, so the creator can chain jobs on the same builder as long as the DAG
+  has sequential dependencies.
+
+### Fallback
+
+If the reservation is invalid, expired, or the builder is now at capacity, the
+`JobStartRequest` is rejected with a `JobError`. The creator falls back to normal
+GossipSub job submission: it publishes `JobPost{create}` and waits for
+load-staggered claims as usual. Reservation is purely an optimization -- the
+protocol is correct without it.
+
 ## Liveness and Crash Detection
 
 While a job is running, the job container refreshes a DHT record at
-`aos:job:{job_ident}` with a short TTL. This serves as a heartbeat:
+`aos:cluster:{cluster_ident}:job:{job_ident}:state` with a short TTL. This serves as a heartbeat:
 
 - **Healthy job**: the record exists in the DHT and is periodically refreshed
   before TTL expiry.
@@ -369,7 +483,7 @@ expiring.
 When a job's DHT liveness record expires and no terminal delta (exit, error,
 cancel) has been published to the JobPost CRDT, the job is in a failed state:
 
-1. The DHT record at `aos:job:{job_ident}` expires (no refresh from the
+1. The DHT record at `aos:cluster:{cluster_ident}:job:{job_ident}:state` expires (no refresh from the
    crashed container).
 2. The creator detects the missing liveness record.
 3. The creator may publish `JobPost{delta: error(JobError)}` to record the
@@ -395,7 +509,7 @@ order.
 
 **Multiple claims**: the `claim` phase is special -- multiple claim deltas are
 valid for the same job (different peers offering to execute). The CRDT
-accumulates all claims. The `start` delta (which follows the creator's exec RPC)
+accumulates all claims. The `start` delta (which follows the creator's start RPC)
 resolves which claim was selected.
 
 **Generation for crash recovery**: each `JobPost` carries sufficient
@@ -414,7 +528,7 @@ state:
 - **Multiple claims, same timestamp**: the claim with the lowest `peer_id`
   (lexicographic) wins for ordering purposes. Since multiple claims are
   accumulated (not conflicting), this ordering affects only which claim is
-  considered "first" for exec timeout fallback.
+  considered "first" for start timeout fallback.
 
 **Consistency**: because GossipSub delivers to all cluster members and the
 phase ordering is monotonic, all peers eventually agree on the current state of
@@ -430,24 +544,24 @@ fetch all required inputs before the build begins. The flow is:
    objects before posting the `JobPost{delta: create}`. This ensures the DHT has
    provider records pointing to the creator for every input.
 
-2. **Builder fetches the derivation.** The builder daemon that claims and
-   executes the job:
-   a. Parses the `.drv` path from `JobSpec.container.builder.derivation`.
-   b. Fetches the `.drv` via `get_providers` on `aos:store:{drv_hash}`, then
-      requests the manifest via `/aos/store/manifest/1.0.0`, then fetches chunks
-      via `/aos/store/chunk/1.0.0`. The `.drv` is a store object like any other.
-   c. Parses the `.drv` to discover the input closure (all build-time
-      dependencies -- the transitive set of store objects needed for the build).
+2. **Builder resolves the closure.** If the `JobStartRequest` included a
+   manifest (the creator's hint), the builder uses it directly — no manifest
+   fetch needed for the root object. The manifest's `references` and `closure`
+   fields provide the transitive dependency tree. For any `ClosureHint` entries
+   with empty references (frontier nodes where the creator lacked local
+   knowledge), the builder fetches those manifests to discover their deps.
 
-3. **Builder fetches the input closure.** For each input store object in the
-   closure, the builder follows the same provider discovery, manifest fetch,
-   chunk fetch sequence. Inputs may be fetched from the creator, from other
-   peers that hold the objects, or from a configured registry.
+3. **Builder fetches missing content.** The builder checks which manifests and
+   chunks from the resolved closure are already local. All missing content is
+   fetched in parallel — manifests from providers, chunks batched across
+   multiple providers. As new manifests arrive (for frontier nodes), they may
+   reveal additional dependencies, which are fetched immediately. The builder
+   streams `JobStartStatus{progress}` back to the creator during this phase.
 
-4. **Builder creates a FUSE view.** The builder creates a closure view (see
-   [fuse.md](fuse.md)) in **eager mode** -- all inputs must be fully local
-   before the build starts. The FUSE mount blocks until every manifest and chunk
-   is fetched.
+4. **Builder creates a FUSE view.** The builder creates a view from the
+   `ViewSpec` (see [view.md](view.md)) — all inputs must be fully local before
+   the build starts. The FUSE mount blocks until every manifest and chunk is
+   fetched.
 
 5. **Builder mounts OverlayFS.** A writable upper layer is created on top of
    the read-only FUSE view. The merged mount is bind-mounted as `/nix/store`
@@ -462,7 +576,7 @@ fetch all required inputs before the build begins. The flow is:
 
 Job CRDT records are local state maintained by each peer, not persisted in the
 DHT. The DHT holds only the short-lived liveness heartbeat at
-`aos:job:{job_ident}`.
+`aos:cluster:{cluster_ident}:job:{job_ident}:state`.
 
 ### Active Jobs
 
@@ -484,7 +598,7 @@ After the retention period, the job record is pruned from local state.
 
 ### DHT Heartbeat Records
 
-The DHT liveness record at `aos:job:{job_ident}` expires naturally via its
+The DHT liveness record at `aos:cluster:{cluster_ident}:job:{job_ident}:state` expires naturally via its
 short TTL after the job completes (the container stops refreshing). No explicit
 cleanup is needed.
 
@@ -495,14 +609,58 @@ CRDT record unless it arrives within the retention window of a peer that still
 holds the record and a protocol-level state sync occurs. Completed jobs are
 ephemeral observations, not durable history.
 
+## Container Exec
+
+The `/aos/job/exec/1.0.0` stream protocol allows executing a command inside a
+running job's container, similar to `docker exec`. This is useful for debugging,
+inspection, and interactive access.
+
+### Flow
+
+1. Client opens `/aos/job/exec/1.0.0` stream to the builder hosting the job.
+2. Sends `JobExecRequest` with command, TTY preference, and optional env/user.
+3. Builder verifies: job exists, is RUNNING, requester has `/aos/job/exec`
+   capability.
+4. Builder uses `nsenter` to spawn the process in the container's namespaces
+   (mount, PID, network, user).
+5. Stream becomes bidirectional `ExecFrame` multiplexing:
+   - daemon to client: stdout, stderr, exit
+   - client to daemon: stdin, window resize, signals
+6. When the process exits, daemon sends `ExecExit` frame and closes the stream.
+
+### PTY Mode (tty=true)
+
+- Daemon allocates a pseudoterminal in the container.
+- stdout and stderr are merged through the PTY.
+- Terminal control sequences (colors, cursor movement) pass through.
+- `WindowResize` frames propagate SIGWINCH to the PTY.
+- Interactive shells work naturally: bash, zsh, etc.
+
+### Non-PTY Mode (tty=false)
+
+- stdout and stderr are separate frame types.
+- No terminal processing -- raw byte streams.
+- Good for scripted commands: `aos exec {job_id} cat /etc/config`
+
+### Use Cases
+
+- **Debug a failed build**: container retained on failure, exec into it to
+  inspect state.
+- **Interactive shell**: `aos exec {job_id} bash -l`
+- **One-off inspection**: `aos exec {job_id} ls -la /build/output/`
+- **Live debugging**: exec into a running build to check progress.
+
 ## Stream Protocol Error Handling
 
 Stream protocols used by the job system include error responses for fault
 reporting:
 
-- **`/aos/job/exec/1.0.0`**: the `ExecResult` message already handles errors
+- **`/aos/job/start/1.0.0`**: the `JobStartStatus` message already handles errors
   via its `oneof result { JobStart started = 1; JobError failed = 2; }`.
 - **`/aos/job/log/1.0.0`**: responses are wrapped in `LogResponse`, which is a
   `oneof { LogEvent event = 1; StreamError error = 2; }`. A `StreamError` with
   code 404 is returned if the `job_id` in the `LogRequest` is unknown to the
   serving peer.
+- **`/aos/job/exec/1.0.0`**: the builder sends an `ExecFrame` with an `ExecExit`
+  on normal termination. If the job is not found or not running, the builder
+  resets the stream with a protocol-level error before any frames are exchanged.

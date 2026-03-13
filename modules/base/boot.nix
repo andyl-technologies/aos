@@ -35,7 +35,7 @@ in
 
     ## Kernel command line parameters.
     ##
-    ## Other modules (e.g. SELinux, hardening, kdump) append to this list.
+    ## Other modules (e.g. SELinux, hardening) append to this list.
     ##
     ## # Examples
     ## ```nix
