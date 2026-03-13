@@ -1,20 +1,13 @@
-# systems/tests/network.nix — Network configuration verification
-#
-# Verifies that networking is properly configured: systemd-networkd,
-# DNS resolution, firewall rules, and network interfaces.
-{ lib }:
+##! modules/tests/network.nix — Network configuration verification checks
+##!
+##! Verifies networking: systemd-networkd, DNS resolution, firewall rules,
+##! and network interfaces.
+{ config, lib, ... }:
 {
-  name = "network";
-  description = "Network configuration verification";
-  type = "vm";
-  appliesTo = [
-    "server"
-    "edge"
-  ];
-
-  checks =
-    { config, lib }:
-    [
+  system.checks.system-network = lib.mkCheckGroup {
+    name = "system-network";
+    description = "Network configuration verification";
+    checks = [
       (lib.mkCheck {
         name = "loopback-up";
         description = "loopback interface is up";
@@ -46,4 +39,5 @@
         '';
       })
     ];
+  };
 }

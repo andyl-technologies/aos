@@ -1,20 +1,13 @@
-# systems/tests/services.nix — Core services verification
-#
-# Verifies that essential system services (SSH, chrony, systemd-networkd,
-# systemd-journald) are configured and running correctly.
-{ lib }:
+##! modules/tests/services.nix — Core services verification checks
+##!
+##! Verifies that essential system services (SSH, chrony, systemd-networkd,
+##! systemd-journald) are configured correctly.
+{ config, lib, ... }:
 {
-  name = "services";
-  description = "Core system services verification";
-  type = "vm";
-  appliesTo = [
-    "server"
-    "edge"
-  ];
-
-  checks =
-    { config, lib }:
-    [
+  system.checks.system-services = lib.mkCheckGroup {
+    name = "system-services";
+    description = "Core system services verification";
+    checks = [
       (lib.mkCheck {
         name = "journald-running";
         description = "systemd-journald is active";
@@ -58,4 +51,5 @@
         '';
       })
     ];
+  };
 }
