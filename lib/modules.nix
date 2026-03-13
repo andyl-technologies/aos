@@ -39,10 +39,16 @@ let
   # ---------------------------------------------------------------------------
   # mkOption — declare a module option
   # ---------------------------------------------------------------------------
+  # Sentinel value for "no default provided" (distinct from default = null)
+  _noDefault = {
+    _type = "noDefault";
+  };
+  isNoDefault = v: builtins.isAttrs v && v ? _type && v._type == "noDefault";
+
   mkOption =
     {
       type ? types.anything,
-      default ? null,
+      default ? _noDefault,
       description ? "",
       example ? null,
       readOnly ? false,
@@ -444,7 +450,7 @@ let
                 # Determine the merged value
                 mergedValue =
                   if priorityFilteredDefs == [ ] then
-                    if decl.option.default != null then
+                    if !(isNoDefault decl.option.default) then
                       decl.option.default
                     else
                       throw "The option '${pathStr}' is used but has no definition and no default value."
