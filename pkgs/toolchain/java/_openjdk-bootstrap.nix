@@ -31,11 +31,15 @@
   extraConfigureFlags ? [ ],
   extraBuildDeps ? [ ],
   extraPatches ? [ ],
+  # Override build parallelism (defaults to $NIX_BUILD_CORES).
+  # Useful when the boot JDK has javac concurrency bugs.
+  buildJobs ? null,
 }:
 let
   tag = "jdk-${version}+${build}";
   repo = "jdk${toString major}${repoSuffix}";
   extraCfgStr = builtins.concatStringsSep " " extraConfigureFlags;
+  jobsExpr = if buildJobs != null then toString buildJobs else "$NIX_BUILD_CORES";
 in
 mkDerivation {
   pname = "openjdk-${toString major}";
@@ -139,7 +143,7 @@ mkDerivation {
           --with-extra-cflags="-Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks" \
           --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks" \
           --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
-          --with-jobs=$NIX_BUILD_CORES \
+          --with-jobs=${jobsExpr} \
           ${extraCfgStr}
       '';
     }
@@ -156,7 +160,7 @@ mkDerivation {
           sed -i 's/-Xlinker -z -Xlinker defs//g; s/-Wl,-z,defs//g' "$f" 2>/dev/null || true
         done
 
-        make images JOBS=$NIX_BUILD_CORES
+        make images JOBS=${jobsExpr}
       '';
     }
     {
