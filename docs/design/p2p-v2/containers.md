@@ -1,18 +1,23 @@
 # Container Orchestration
 
-Jobs create containers determined by the `ContainerSpec` in the `JobSpec`. All
-containers run under systemd-nspawn with UID isolation and separate mount
-namespaces. The `ActivationType` determines init process, activation behavior,
-and lifecycle. The `ViewSpec` defines the FUSE view mounted into the container.
+Jobs create containers determined by the `JobSpec` oneof — either a `BuildSpec`,
+`RunSpec`, or `FetchSpec`. All containers run under systemd-nspawn with UID
+isolation and separate mount namespaces. The spec type determines init process,
+activation behavior, and lifecycle. All container storage is declared via
+`VolumeRequest` entries in the `JobSpec`. Each volume request resolves to a
+`StoreVolume` (read-only FUSE mount of store content), a `LocalVolume`
+(writable ZFS dataset), or a `LocalPersistentVolume`. See
+[volumes.md](volumes.md).
 
-## Activation Types
+## Job Spec Types
 
-### ACTIVATION_NONE
+### RunSpec (INIT_DIRECT)
 
-Mount the view via FUSE, run a shell or specified entrypoint. No special
-activation. Useful for interactive shells or simple one-off commands.
+Mount the job's StoreVolume(s) via FUSE and LocalVolume(s) as writable mounts.
+Run a shell or specified entrypoint. No special activation. Useful for
+interactive shells or simple one-off commands.
 
-### ACTIVATION_SYSTEMD_V1
+### RunSpec (INIT_SYSTEMD)
 
 Run systemd as PID 1. The view's store objects include an activation script
 that installs units, configs, and binaries into the container filesystem.
@@ -20,9 +25,9 @@ systemd discovers the units and starts services.
 
 **Activation flow:**
 
-1. Daemon computes the transitive closure from the `ViewSpec` and creates a
-   FUSE view. All manifests and chunks are fetched before the mount is
-   available.
+1. Daemon resolves the job's StoreVolume requests, fetching content and
+   creating FUSE mounts. All NixObjects and chunks are fetched before the
+   mount is available.
 2. Daemon creates an nspawn container with systemd as init (PID 1).
 3. Activation script runs early in boot:
    - Symlinks units into `/etc/systemd/system/`.
@@ -42,12 +47,12 @@ Activation links everything in; systemd starts the services.
 (`LoadCredential`). Services inside the container can read the credential to
 obtain the job's `PeerId` for libp2p participation.
 
-### ACTIVATION_DERIVATION
+### BuildSpec
 
 Execute a single Nix derivation and produce new store objects. Uses a
 host-level build rootfs and a minimal init process (not systemd). The
-`ContainerSpec.derivation` field specifies the `.drv` store hash, and
-`ContainerSpec.overlay` is true to enable the writable OverlayFS layer.
+`BuildSpec.drv_hash` field specifies the `.drv` store hash. BuildSpec
+containers always use an OverlayFS writable layer.
 
 #### Build Rootfs
 
@@ -76,19 +81,19 @@ the derivation's input closure (defined in the `ViewSpec`).
 #### Container Setup
 
 1. **Fetch and parse the derivation.** The daemon fetches the `.drv` store
-   object from `ContainerSpec.derivation` and parses it to extract:
+   object from `BuildSpec.drv_hash` and parses it to extract:
    - Builder executable (store hash + relative path)
    - Args
    - Environment variables (including `$out` — the output store hash/path)
    - Input closure (store hashes of all build-time dependencies)
 
-2. **Create view.** The daemon creates a FUSE view from the `ViewSpec`
-   (which lists the input closure). All manifests and chunks are fetched
-   before the mount is available. See [view.md](view.md).
+2. **Create StoreVolume.** The daemon resolves the StoreVolume from the job's
+   volume requests (which lists the input closure). All NixObjects and chunks
+   are fetched before the mount is available. See [view.md](view.md).
 
 3. **Set up OverlayFS.**
    - Lower layer: FUSE mount (read-only, input closure only)
-   - Upper layer: tmpfs or ZFS dataset (writable, for build output)
+   - Upper layer: the job's LocalVolume (ZFS dataset with quota, writable, for build output)
    - Merged: what the container sees as its store directory
 
 4. **Spawn nspawn container:**
@@ -111,19 +116,19 @@ the derivation's input closure (defined in the `ViewSpec`).
 
 1. Daemon reads the output directory from the OverlayFS upper layer.
 2. Chunks output files (FastCDC: 64KB min, 256KB avg, 1MB max).
-3. Generates manifest, computes NAR hash (SHA-256, for Nix compatibility).
-4. Writes manifest to `db/chunks.mdb` (`manifests_db`).
-5. Writes chunk references to `chunk_refs_db` (reverse index for GC).
+3. Creates NixObject with NAR hash, tree/blob objects, and chunk trees.
+4. Writes NixObject to `meta_db`, store index to `store_db`.
+5. Writes chunk locations to `db/chunk.mdb` (`chunk_db`).
 6. Calls `start_providing(output_store_hash)` on DHT.
 7. Publishes `StorePublish` to the `store/publish` GossipSub topic.
 8. Publishes `JobPost{delta: exit(JobExit{outputs: [out_hash]})}`.
-9. Cleanup: unmount overlay, unmount FUSE, remove upper layer.
+9. Cleanup: unmount overlay, unmount FUSE, destroy ephemeral LocalVolume ZFS datasets.
 
 **Non-zero exit (failure):**
 
 1. Daemon captures error info (exit code, last log lines).
 2. Publishes `JobPost{delta: error(JobError{exit_code, message, ...})}`.
-3. Optionally: ZFS snapshot of upper layer for post-mortem inspection.
+3. Optionally: ZFS snapshot of the LocalVolume dataset for post-mortem inspection.
 4. Cleanup (or retain for a configurable inspection period).
 
 **Network:** `NETWORK_NONE` — mandatory. No network access, same isolation as
@@ -140,42 +145,49 @@ All containers share a common security baseline:
   Prevents privilege escalation via `SO_PEERCRED` or host filesystem access.
 - **Separate mount namespace**: the container sees only its FUSE/overlay mounts.
 
-`ACTIVATION_DERIVATION` containers add further restrictions:
+`BuildSpec` containers add further restrictions:
 
 - **No network**: `--private-network` drops all interfaces.
 - **Whitelist store access**: only declared inputs are visible via FUSE.
   Everything else returns `ENOENT`.
 
-## Activation Comparison
+## Spec Comparison
 
-| | ACTIVATION_NONE | ACTIVATION_SYSTEMD_V1 | ACTIVATION_DERIVATION |
+| | RunSpec (INIT_DIRECT) | RunSpec (INIT_SYSTEMD) | BuildSpec |
 |---|---|---|---|
 | Init (PID 1) | shell/entrypoint | systemd | build-init (minimal) |
 | Activation | None | activate script | None (exec builder) |
 | Services | Single process | Multiple (systemd units) | Single (builder) |
 | Lifecycle | Until cancel/exit | Until cancel/exit | One-shot |
 | Network | Configurable | Typically NETWORK_HOST | NETWORK_NONE |
-| Store mount | FUSE (view closure) | FUSE (view closure) | FUSE + OverlayFS |
+| Store mount | StoreVolume (FUSE) | StoreVolume (FUSE) | StoreVolume (FUSE) + LocalVolume (ZFS) |
+| Writable storage | LocalVolume (ZFS) | LocalVolume (ZFS) | LocalVolume (ZFS overlay upper) |
 | Output | None | None (services run in-place) | Store objects from overlay |
 
 ## Output Registration
 
-When an `ACTIVATION_DERIVATION` container exits successfully, the daemon makes
+When a `BuildSpec` container exits successfully, the daemon makes
 the output available on the mesh:
 
 1. Walk the output directory (the OverlayFS upper layer).
 2. Chunk each file using FastCDC (64KB min, 256KB avg, 1MB max).
 3. Write chunks to local pack files (dedup: skip if chunk hash exists).
-4. Generate manifest (file tree with per-file chunk references).
+4. Create BlobObjects (one per file, with chunk tree if needed), TreeObjects (bottom-up), NixObject MetaObject.
 5. Compute NAR hash on-the-fly (SHA-256, for Nix compatibility).
-6. Write manifest to `db/chunks.mdb` (`manifests_db`).
-7. Update `chunk_refs_db` (reverse index for GC).
+6. Write NixObject to `meta_db`, store index to `store_db`.
+7. Update chunk locations in `db/chunk.mdb` (`chunk_db`).
 8. Publish DHT provider record: `start_providing(output_store_hash)`.
 9. Publish `StorePublish` to the `store/publish` GossipSub topic.
 10. Publish `JobPost{delta: exit(JobExit{outputs: [store_hash, ...]})}`.
 
+Build output registration produces git-compatible tree and blob objects:
+the daemon walks the output directory, computes blake3 blob hashes for
+each file, FastCDC-chunks each file, constructs git tree objects bottom-up,
+and records the root tree hash in the NixObject. See
+[git-store.md](git-store.md) for the chunking pipeline.
+
 The output is now discoverable via `get_providers` and fetchable via
-`/aos/store/manifest` and `/aos/store/chunk`. See
+`/aos/store/object` and `/aos/store/chunk`. See
 [storage.md](storage.md) and [store.md](store.md).
 
 ## Crash Cleanup
@@ -187,6 +199,8 @@ On daemon restart, stale containers from a previous run must be cleaned up:
 3. Unmount stale OverlayFS mounts.
 4. Unmount stale FUSE views.
 5. Remove tmpfs upper layer directories.
+6. List ZFS datasets under `{pool}/aos/volumes/ephemeral/` with no running job
+   and destroy them.
 
 For builds that were in progress: the `JobPost` CRDT will show them as `RUNNING`
 but the DHT heartbeat will expire, triggering crash recovery. See
@@ -199,7 +213,12 @@ but the DHT heartbeat will expire, triggering crash recovery. See
 - [fuse.md](fuse.md) -- FUSE filesystem implementation.
 - [storage.md](storage.md) -- chunk store, pack files, output registration.
 - [store.md](store.md) -- output becomes available on the mesh via provider
-  records and manifest/chunk protocols.
-- [protocol.md](protocol.md) -- `ContainerSpec`, `ActivationType`, `ViewSpec`
+  records and object/chunk protocols.
+- [protocol.md](protocol.md) -- `BuildSpec`, `RunSpec`, `FetchSpec`, `ViewSpec`
   protobuf definitions.
+- [volumes.md](volumes.md) -- volume model (StoreVolume, LocalPersistentVolume,
+  LocalVolume), ZFS integration.
 - [auth.md](auth.md) -- job identity (`PeerId`) injected into containers.
+- [git-store.md](git-store.md) -- content-addressed object model (tree/blob
+  objects over CDC chunks) used during output registration.
+- [../../tla/Jobs.tla](../../tla/Jobs.tla) -- TLA+ formal specification: BuildSpec idempotency under split-brain.

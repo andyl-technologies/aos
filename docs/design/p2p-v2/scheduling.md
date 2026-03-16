@@ -22,6 +22,12 @@ the job is instantly rejected:
 6. **Failure avoidance**: the derivation has not failed on this builder recently
    (checked against local failure history).
 7. **Resource headroom**: enough free resources for the job's `ResourceLimits`.
+8. **Local volume space**: the sum of `LocalVolume.size` and new
+   `LocalPersistentVolume.size` in the job's volume requests must fit within
+   `local_space_state.free`.
+9. **Persistent volume pinning**: if any `LocalPersistentVolume` in the job's
+   volume requests references an existing volume ID, this peer must be the node
+   holding that volume.
 
 ## Claim Delay (Soft Ranking)
 
@@ -78,20 +84,25 @@ fn load_rank_delay(&self, job: &JobSpec, load_table: &LoadTable) -> Duration {
 ### Affinity Bonus (0-200ms reduction)
 
 Based on fraction of the job's input closure that exists in the local chunk
-store. The peer walks the job spec store object's closure (via `closure_db`)
-and checks which store hashes have local manifests.
+store. The peer walks the job spec store object's closure (via `store_db`)
+and checks which store hashes have local NixObjects.
 
 ```rust
 fn affinity_bonus(&self, job_spec_hash: &StoreHash) -> Duration {
-    let closure = self.closure_db.transitive_closure(job_spec_hash);
+    let closure = self.store_db.transitive_closure(job_spec_hash);
     if closure.is_empty() { return Duration::ZERO; }
     let local_hits = closure.iter()
-        .filter(|h| self.chunk_db.has_manifest(h))
+        .filter(|h| self.chunk_db.has_object(h))
         .count();
     let fraction = local_hits as f64 / closure.len() as f64;
     Duration::from_millis((fraction * 200.0) as u64)
 }
 ```
+
+> **Note:** StoreVolume locality replaces the previous "input closure" language
+> for affinity computation. Additionally, if this node holds a
+> `LocalPersistentVolume` referenced by the job, the maximum affinity bonus
+> (200ms) is applied unconditionally.
 
 ### Confidence Penalty (0-200ms)
 
@@ -199,7 +210,8 @@ See [jobs.md](jobs.md#slot-reservation) for the full reservation flow.
 
 ## Resource Model
 
-Four states per resource:
+Four resource dimensions: CPU, memory, disk, and `local_space`. Each uses a
+four-state model:
 
 - **Reserved**: host overhead, non-allocatable.
 - **Free**: available for new jobs.
@@ -212,14 +224,16 @@ For scheduling, peers evaluate FREE resources against the job's
 `ResourceLimits`:
 
 ```rust
-fn has_capacity_for(&self, limits: &ResourceLimits) -> bool {
+fn has_capacity_for(&self, limits: &ResourceLimits, volume_space_needed: u64) -> bool {
     let cpu_free = self.cpu_state.free;
     let mem_free = self.memory_state.free;
     let disk_free = self.disk_state.free;
+    let local_space_free = self.local_space_state.free;
 
     (limits.cpu_cores == 0 || cpu_free >= limits.cpu_cores as u64 * 1_000_000)
     && (limits.memory_bytes == 0 || mem_free >= limits.memory_bytes)
     && (limits.disk_bytes == 0 || disk_free >= limits.disk_bytes)
+    && (volume_space_needed == 0 || local_space_free >= volume_space_needed)
 }
 ```
 
@@ -262,6 +276,9 @@ Scheduling uses confidence bounds:
 
 This biases toward letting other peers claim when uncertain.
 
+Where `volume_space_needed` is the sum of all `LocalVolume` and
+`LocalPersistentVolume` sizes in the job's volume requests.
+
 ## Relationship to Other Docs
 
 - [jobs.md](jobs.md) -- job lifecycle, claiming protocol, reservation tokens.
@@ -269,3 +286,5 @@ This biases toward letting other peers claim when uncertain.
 - [permissions.md](permissions.md) -- `/aos/job/claim` capability required.
 - [protocol.md](protocol.md) -- LoadReport, LoadFull, LoadDelta, ResourceState
   protobuf definitions.
+- [volumes.md](volumes.md) -- volume requests, local space resource, persistent volume pinning.
+- [../../tla/Jobs.tla](../../tla/Jobs.tla) -- TLA+ formal specification: load-staggered claiming, affinity bonus.

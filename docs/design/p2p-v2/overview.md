@@ -35,10 +35,9 @@ Cluster configuration is published to the DHT as a signed record.
 A job is a unit of work executed by a peer within a cluster. Jobs encompass
 builds, login shells, and any other containerized task:
 
-- **Build jobs** use `ACTIVATION_DERIVATION` with a writable store overlay
-  and network access disabled.
-- **Service containers** use `ACTIVATION_SYSTEMD_V1` with systemd as PID 1.
-- **Login shells** use `ACTIVATION_NONE` with a simple entrypoint.
+- **Build jobs** use `BuildSpec` with a `.drv` reference, writable store overlay, and network disabled.
+- **Service containers** use `RunSpec` with `INIT_SYSTEMD` and systemd as PID 1.
+- **Login shells** use `RunSpec` with `INIT_DIRECT` and a simple entrypoint.
 
 Each job gets its own `JobIdentity` (keypair and PeerId) and participates in
 libp2p independently.
@@ -60,12 +59,12 @@ dependency order.
 
 Content is identified by object ID and transferred in two steps:
 
-1. **Discovery**: DHT provider records (`aos:store:{object_id}`) advertise which
+1. **Discovery**: DHT provider records (`aos:store:object:{object_id}`) advertise which
    peers hold an object. TTL is based on GC LRU eviction; no signature
    validation is required.
-2. **Transfer**: The `/aos/store/manifest/1.0.0` stream protocol retrieves the
-   file tree structure. The `/aos/store/chunk/1.0.0` stream protocol transfers
-   raw data chunks.
+2. **Transfer**: The `/aos/store/object/1.0.0` stream protocol fetches store
+   objects (NixObjects, trees, blobs) by blake3 hash. The
+   `/aos/store/chunk/1.0.0` stream protocol transfers raw data chunks.
 
 ## Protocol Summary
 
@@ -73,15 +72,20 @@ Content is identified by object ID and transferred in two steps:
 
 | Key Pattern | Value Type | Lifetime | Signed By |
 |---|---|---|---|
-| `aos:store:{object_id}` | ProviderRecord | TTL (GC LRU eviction) | None (no signature validation) |
+| `aos:store:object:{object_id}` | ProviderRecord | TTL (GC LRU eviction) | None (no signature validation) |
 | `aos:cluster:{cluster_ident}:job:{job_ident}` | ProviderRecord | Short (heartbeat) | None |
 | `aos:cluster:{cluster_ident}:job:{job_ident}:state` | JobState | Short-lived (liveness check) | JobIdentity |
-| `aos:cluster:{cluster_ident}` | ProviderRecord | Short (heartbeat) | None |
+| `aos:cluster:{cluster_ident}:members` | ProviderRecord | Short (heartbeat) | None |
 | `aos:cluster:{cluster_ident}:config` | ClusterConfig | Long-lived | Root Identity |
 | `aos:auth:token:{token_hash}:revoke` | RevocationRecord | Mirrors token expiry | Token issuer key |
-| `aos:store` | ProviderRecord | Short (1 min) | None |
-| `aos:workflow` | ProviderRecord | Short (1 min) | None |
-| `aos:workflow:{workflow_id}` | ProviderRecord | Workflow lifetime | None |
+| `aos:store:replica` | ProviderRecord | Short (1 min) | None |
+| `aos:store:upload` | ProviderRecord | Short (1 min) | None |
+| `aos:store:fetch` | ProviderRecord | Short (1 min) | None |
+| `aos:workflow:runners` | ProviderRecord | Short (1 min) | None |
+| `aos:cluster:{cluster_ident}:job` | ProviderRecord | Short (1 min) | None |
+| `aos:workflow:run:{workflow_id}` | ProviderRecord | Workflow lifetime | None |
+| `aos:statute:validators` | ProviderRecord | Short (heartbeat) | None |
+| `aos:statute:head` | Block hash | Short | None |
 
 ### GossipSub Topics (per cluster)
 
@@ -96,20 +100,30 @@ Content is identified by object ID and transferred in two steps:
 | `aos/store/purge` | StorePurge | Global (not cluster-scoped) |
 | `aos/workflows/announce` | WorkflowPost | Global |
 | `aos/workflows/active/{id}/state` | WorkflowStateMessage | Per-workflow |
+| `aos/statute/transactions` | Transaction | Global |
 
 ### Stream Protocols
 
 | Protocol | Request/Response | Auth Requirement |
 |---|---|---|
-| `/aos/store/manifest/1.0.0` | ManifestRequest / ManifestResponse | `/aos/store/read` |
+| `/aos/store/object/1.0.0` | ObjectRequest / ObjectResponse | `/aos/store/read` |
 | `/aos/store/chunk/1.0.0` | ChunkRequest / Chunk (stream) | `/aos/store/read` |
-| `/aos/job/start/1.0.0` | JobStartRequest / JobStartResult | `/aos/job/start` WHERE `.job == {job_ident}` |
+| `/aos/job/start/1.0.0` | JobStartRequest / JobStartStatus (stream) | `/aos/job/start` WHERE `.job == {job_ident}` |
 | `/aos/job/log/1.0.0` | LogRequest / LogResponse | `/aos/job/read` WHERE `.cluster == {cluster_ident}` OR `.job == {job_ident}` |
 | `/aos/job/exec/1.0.0` | JobExecRequest / ExecFrame (bidirectional stream) | `/aos/job/exec` |
 | `/aos/workflow/info/1.0.0` | WorkflowInfoRequest / WorkflowInfoResponse | `/aos/workflow/read` |
 | `/aos/workflow/log/1.0.0` | WorkflowLogRequest / WorkflowTransition (stream) | `/aos/workflow/read` |
 | `/aos/workflow/list/1.0.0` | WorkflowListRequest / WorkflowListResponse | `/aos/workflow/read` |
-| `/aos/workflow/start/1.0.0` | WorkflowStartRequest / WorkflowStartResponse | `/aos/workflow/start` |
+| `/aos/workflow/run/1.0.0` | WorkflowRunRequest / WorkflowRunStatus (stream) | `/aos/workflow/run` |
+| `/aos/job/run/1.0.0` | JobRunRequest / JobRunStatus (stream) | `/aos/job/create` |
+| `/aos/job/create/1.0.0` | JobCreateRequest / JobCreateStatus (stream) | `/aos/job/create` |
+| `/aos/store/upload/1.0.0` | StoreUploadRequest / StoreUploadComplete | `/aos/store/upload` |
+| `/aos/store/fetch/1.0.0` | StoreFetchRequest / StoreFetchStatus (stream) | `/aos/store/fetch` |
+| `/aos/auth/enroll/1.0.0` | EnrollRequest / EnrollResponse | Network key (or delegate) |
+| `/aos/statute/consensus/1.0.0` | HotStuff messages | Statute validator |
+| `/aos/statute/sync/1.0.0` | BlockSyncRequest / Block (stream) | Statute validator/follower |
+| `/aos/statute/read/1.0.0` | StatuteReadRequest / StatuteReadResponse | Statute follower |
+| `/aos/statute/write/1.0.0` | Transaction / StatuteWriteResponse (stream) | Statute validator |
 
 ## Document Index
 
@@ -117,19 +131,29 @@ Content is identified by object ID and transferred in two steps:
 |---|---|
 | [overview.md](overview.md) | This document. Protocol summary and key concepts. |
 | [identity.md](identity.md) | Identity types, keypairs, and signing. |
-| [clusters.md](clusters.md) | Cluster configuration, membership, and trust domains. |
-| [dht.md](dht.md) | DHT record types, lifetimes, and validation rules. |
-| [gossipsub.md](gossipsub.md) | GossipSub topics, message types, and CRDT semantics. |
-| [streams.md](streams.md) | Stream protocols, request/response formats, and auth. |
+| [daemon.md](daemon.md) | Daemon architecture, configuration, and startup. |
 | [jobs.md](jobs.md) | Job lifecycle, two-phase execution, and container types. |
-| [store.md](store.md) | Content storage, provider records, manifest and chunk transfer. |
+| [store.md](store.md) | Content storage, provider records, resolve and chunk transfer. |
+| [store-upload.md](store-upload.md) | Store upload protocol: content-addressed uploads, security model, pin TTL, deduplication. |
+| [fetch.md](fetch.md) | Store fetch engine: connection management, parallel downloads, mirror failover, chunking pipeline. |
+| [identity.md](identity.md) | Identity management: credential sources, key store, resolution, integration. |
+| [workflow-validation.md](workflow-validation.md) | Workflow validation: structural, graph, input, fetch, cross-workflow, and capacity checks. |
 | [storage.md](storage.md) | Local chunk store: on-disk layout, LMDB databases, FastCDC chunking, pack files, compaction. |
 | [auth.md](auth.md) | UCAN capabilities, delegation, and per-protocol authorization. |
 | [permissions.md](permissions.md) | Resource/verb matrix, policy restrictions, and role definitions. |
 | [scheduling.md](scheduling.md) | Decentralized job scheduling: eligibility filters, claim delay computation, resource model, and decay estimation. |
+| [volumes.md](volumes.md) | Volume model: StoreVolume, LocalPersistentVolume, LocalVolume. ZFS integration, scheduling interaction. |
 | [view.md](view.md) | View model: ViewSpec, transitive closure, OverlayFS, GC pinning. |
 | [fuse.md](fuse.md) | FUSE filesystem implementation: path resolution, chunk reads, operations. |
 | [containers.md](containers.md) | Container orchestration: activation types (none, systemd, derivation), container setup, output registration. |
 | [replication.md](replication.md) | Store replication: hash-distance assignment, replicator coordination, purge, rebalancing. |
 | [workflow.md](workflow.md) | Distributed workflows: reactive DAGs, step execution, transition ordering, inter-workflow signaling. |
 | [workflow-spec.md](workflow-spec.md) | Workflow specification format: step types, idempotency model, GC pinning, Nix build example. |
+| [cloud-init.md](cloud-init.md) | Cloud-init integration: native module, systemd slice hierarchy, auto-detection, secrets. |
+| [enrollment.md](enrollment.md) | Network enrollment: node states, manual enrollment, key management, enrollment protocol. |
+| [git.md](git.md) | Git repositories: refs in Statute, content in store, meta objects, auto-pinning. |
+| [git-store.md](git-store.md) | Git-compatible store model: merkle tree structure, blob/tree hashing, subtree dedup, CDC chunk mapping. |
+| [mounts.md](mounts.md) | Statute mounts: protocol handlers in the KV namespace, capabilities, sandboxing. |
+| [statute.md](statute.md) | Statute BFT KV store: consensus, UCAN authorization, CUE schema validation, merkle-trie state. |
+| [workflow-templates.md](workflow-templates.md) | Workflow templates: parameterized CUE definitions, template composition, instance tracking. |
+| [system.md](system.md) | System architecture: four building blocks (store, statute, jobs, workflows) and composition patterns. |
