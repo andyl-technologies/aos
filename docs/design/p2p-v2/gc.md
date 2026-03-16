@@ -9,24 +9,30 @@ affect other peers.
 
 The pin set is the union of two sources:
 
-- **Active FUSE views:** every store hash in any mounted FUSE view is pinned.
-  The daemon tracks mounted views in memory -- no LMDB needed for this. This
-  covers all job containers (input closures, service views) and any other
-  active views.
-- **Manual pins (StoreDB (roots_db)):** store hashes pinned by the operator via the
-  `store.mdb` database. Used for keeping specific store objects that should not
+- **Active StoreVolumes:** every store hash in any mounted StoreVolume is pinned.
+  The daemon tracks mounted StoreVolumes in memory -- no LMDB needed for this.
+  This covers all job containers (input closures, service views) and any other
+  active StoreVolumes.
+- **Manual pins (gc.mdb):** store hashes pinned by the operator via the
+  `gc.mdb` database. Used for keeping specific store objects that should not
   be evicted regardless of LRU age.
-- **Active workflow specs:** the store hash of each non-terminated workflow's
-  spec is pinned. Since the spec protobuf contains store hashes as literal
-  strings (output hashes, derivation hashes, source hashes, dependent workflow
-  IDs), reference scanning records all of them in `closure_db`. The standard
-  closure-based pinning transitively protects everything the workflow references.
-  Cross-workflow pinning is automatic: if W2's spec references W1's workflow_id
-  (a store hash), W1's spec and its entire closure are transitively pinned.
-  Pins are released when the workflow terminates. See
-  [workflow-spec.md](workflow-spec.md) for the full model.
+- **Statute auto-pinning:** all `#StoreRef` and `#TreeRef` values found in
+  the latest Statute state are pinned, including their full closures. The GC
+  scanner walks the Statute state trie, finds hash values matching the store
+  reference pattern, and traces closures through store_db (refs), tree_db,
+  blob_db, meta_db (ref fields), and chunk_db. This replaces explicit
+  workflow pinning — workflow specs, replica set images, git refs, and any
+  other store references in Statute are automatically protected. Removing a
+  Statute key releases the pin.
 
 Everything else is LRU-evictable based on `last_access` in the AccessDB.
+
+The GC closure walker follows the object graph: NixObject (meta_db) → root_tree →
+tree_db → blob_db → BlobObject.root_chunk/root_height → chunk tree (height > 0
+nodes) → height-0 data chunks. Additionally:
+- **Store objects:** store_db refs → transitive store dependencies
+- **Merkle tree:** tree_db entries → subtree tree hashes + blob hashes
+- **Meta objects:** meta_db ref fields → recursively follow all object references (commits → trees → parent commits → ...)
 
 ## Replication Pool and Hold Duration
 
@@ -35,7 +41,7 @@ Objects managed by the replication protocol receive special GC treatment:
 - **Replication pool objects** (unpinned objects held for replication) are
   excluded from normal LRU eviction. They are managed by the replication
   protocol -- removed via explicit purge messages or pool eviction when the
-  replication budget (`[store.replication] reserved_bytes`) is exceeded.
+  replication budget (`[store.replication] reserved`) is exceeded.
 - **Newly published objects** are subject to `ClusterConfig.min_hold_duration`
   -- GC skips objects younger than this threshold to allow replicators time to
   discover and download the object before the publisher evicts it.
@@ -59,15 +65,15 @@ max_size = "50TB"
 
 ### Phase 1: Store Object Eviction
 
-Input: AccessDB (LRU data) + active FUSE views (daemon memory) + StoreDB (roots_db)
+Input: AccessDB (LRU data) + active StoreVolumes (daemon memory) + gc.mdb (pins)
 (manual pins) + budget
-Output: evicted manifests from ChunkDB, removed entries from AccessDB
+Output: evicted NixObject entries from store_db, removed entries from AccessDB
 
 ```rust
 fn gc_store_objects(
     access_db: &AccessDb,
-    active_views: &HashSet<String>,  // from daemon's FUSE mount state
-    roots_db: &RootsDb,              // manual pins
+    active_views: &HashSet<String>,  // from daemon's mounted StoreVolume state
+    gc_db: &GcDb,                    // manual pins (gc.mdb)
     chunk_db: &ChunkDb,
     max_size: u64,
 ) {
@@ -75,7 +81,7 @@ fn gc_store_objects(
     if total_size <= max_size { return; }
 
     let pinned: HashSet<String> = active_views
-        .union(&roots_db.all_roots())
+        .union(&gc_db.all_roots())
         .cloned()
         .collect();
 
@@ -90,7 +96,7 @@ fn gc_store_objects(
     for candidate in candidates {
         if total_size - freed <= target { break; }
         access_db.delete(&candidate.store_hash);
-        chunk_db.delete_manifest(&candidate.store_hash);
+        chunk_db.delete_nix_object(&candidate.store_hash);
         freed += candidate.nar_size;
     }
 }
@@ -98,7 +104,7 @@ fn gc_store_objects(
 
 ### Phase 2: Orphaned Chunk Cleanup (Mark and Sweep)
 
-Input: all remaining manifests in ChunkDB
+Input: all remaining NixObjects in store_db
 Output: removed orphaned chunk location entries
 
 Why mark-and-sweep instead of reference counting:
@@ -107,14 +113,14 @@ Why mark-and-sweep instead of reference counting:
 - Simpler (no ref count bugs, no stale counts after crashes)
 - Runs infrequently (only after Phase 1, during idle time)
 
-Tradeoff: mark phase scans all manifests O(total chunk references). For 100K
+Tradeoff: mark phase scans all NixObjects O(total chunk references). For 100K
 store objects, ~80 seconds at LMDB read speeds. Acceptable for periodic GC.
 
 ```rust
 fn gc_orphaned_chunks(chunk_db) {
-    // MARK: all chunk hashes referenced by any surviving manifest
-    let referenced: HashSet<[u8; 16]> = chunk_db.all_manifests()
-        .flat_map(|m| m.file_chunk_hashes())
+    // MARK: chunks reachable from any surviving NixObject's tree/blob/chunk-tree graph
+    let referenced: HashSet<[u8; 16]> = chunk_db.all_nix_objects()
+        .flat_map(|obj| obj.reachable_chunk_hashes())
         .collect();
 
     // SWEEP: remove unreferenced chunk locations
@@ -152,9 +158,9 @@ Cold paths (bottom, near eviction): short TTL (minutes)
 Pinned paths (active containers): max TTL
 ```
 
-Self-correcting: `last_access = max(creation_time, last_manifest_serve)`.
+Self-correcting: `last_access = max(creation_time, last_resolve_serve)`.
 Content being actively served to remote peers stays advertised. FUSE reads do
-not affect provider TTL -- objects in active FUSE views are pinned and get max
+not affect provider TTL -- objects in active StoreVolumes are pinned and get max
 TTL regardless.
 
 After GC runs: re-advertise surviving store objects with updated TTLs. Evicted
@@ -175,10 +181,26 @@ dead_ratio = 0.3           # compact packs with >30% dead space
 idle_only = true           # only compact when no active jobs
 ```
 
+## Volume Cleanup
+
+Volume cleanup is separate from chunk store GC. Volumes are ZFS datasets
+managed by the daemon, not pack file content.
+
+- **LocalVolume**: destroyed (ZFS dataset destroy) when the owning job exits.
+  On daemon restart, orphaned ephemeral datasets (under
+  `{pool}/aos/volumes/ephemeral/` with no running job) are destroyed.
+- **LocalPersistentVolume**: destroyed by configurable TTL after last use
+  (`clusters.X.volumes.persistent_ttl`), or via explicit delete through the
+  daemon API. The daemon periodically scans persistent volume ZFS datasets
+  and checks `user:aos:last_used_at` against the TTL.
+- **StoreVolume**: no cleanup needed. StoreVolumes are read-only FUSE mounts
+  over the chunk store. Unmounting releases the GC pin; the chunks themselves
+  are subject to normal LRU eviction.
+
 ## Relationship to Other Docs
 
 - [storage.md](storage.md) -- on-disk layout and database specs (AccessDB,
-  ChunkDB, StoreDB (roots_db))
+  store_db, gc.mdb)
 - [storage.md](storage.md) -- pack file format, FastCDC chunking,
   read/write operations
 - [fuse.md](fuse.md) -- FUSE filesystem views (read-only, no access tracking)
@@ -186,3 +208,5 @@ idle_only = true           # only compact when no active jobs
 - [containers.md](containers.md) -- container lifecycle pins roots on start,
   unpins on exit
 - [jobs.md](jobs.md) -- job lifecycle determines when roots are pinned/unpinned
+- [volumes.md](volumes.md) -- volume lifecycle, ZFS dataset cleanup, LocalPersistentVolume TTL.
+- [../../tla/Store.tla](../../tla/Store.tla) -- TLA+ formal specification: GC pinning invariants, Statute auto-pinning, min hold duration.

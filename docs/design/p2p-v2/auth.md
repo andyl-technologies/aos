@@ -92,7 +92,7 @@ records that fail signature verification.
 
 | Key Format | Signed By | Validation Rule |
 |---|---|---|
-| `aos:store:{object_id}` | None | Provider records are self-verifying via content hash. No signature required. |
+| `aos:store:object:{object_id}` | None | Provider records are self-verifying via content hash. No signature required. |
 | `aos:cluster:{cluster_ident}:job:{job_ident}:state` | JobIdentity | Public key extracted from `{job_ident}`, signature verified against record payload. |
 | `aos:cluster:{cluster_ident}:config` | Root Identity | Public key extracted from `{cluster_ident}`, signature verified against record payload. |
 | `aos:auth:token:{token_hash}:revoke` | Token Issuer | Signature verified against the issuer's public key. TTL mirrors the revoked token's expiry. See [Revocation](#10-revocation). |
@@ -164,14 +164,14 @@ validates the UCAN before processing the request.
 
 | Protocol | Required UCAN Capability |
 |---|---|
-| `/aos/store/manifest/1.0.0` | `/aos/store/read` |
+| `/aos/store/object/1.0.0` | `/aos/store/read` |
 | `/aos/store/chunk/1.0.0` | `/aos/store/read` |
 | `/aos/job/start/1.0.0` | `/aos/job/start` WHERE `.job == {job_ident}` |
 | `/aos/job/log/1.0.0` | `/aos/job/read` WHERE `.cluster == {cluster_ident}` OR `.job == {job_ident}` |
 
 Notable design choices:
 
-- **Both manifest and chunk transfer require `/aos/store/read`.** While chunks
+- **Both object and chunk transfer require `/aos/store/read`.** While chunks
   are content-addressed and self-verifying by hash, gating access prevents
   unauthorized peers from exfiltrating store data even if they learn chunk
   hashes through other means.
@@ -277,6 +277,10 @@ Verify UCAN:
   2. Look up intermediate-X in ClusterConfig.intermediates
   3. Verify intermediate's cert signature chains to root (or parent intermediate)
   4. Check intermediate not expired (not_before <= now <= not_after)
+     Note: intermediate certificate expiry is checked at UCAN verification time
+     (step 4). If an intermediate has expired (`not_after < now`), the entire UCAN
+     chain is rejected — even if the UCAN itself has not expired. This prevents
+     using long-lived UCANs issued by expired intermediates.
   5. Check intermediate not revoked (DHT lookup or cache hit)
   6. Verify UCAN signature by intermediate's key
   7. Verify UCAN capabilities are subset of intermediate's capabilities
@@ -345,6 +349,11 @@ Each peer maintains a local revocation cache with two layers:
   invalidated immediately when a GossipSub revocation notice arrives for the
   token.
 
+The negative cache is bounded by a maximum entry count (default 10,000
+entries). When the cache is full, the oldest entry is evicted (LRU). This
+prevents memory exhaustion from an attacker generating many unique token
+hashes to fill the cache.
+
 ### Tiered Validation
 
 Different operations have different risk profiles and volume characteristics.
@@ -380,3 +389,71 @@ validate the UCAN before processing the message:
 4. **Peer score penalty**: Rejected messages incur a GossipSub peer score
    penalty. Repeated violations cause the peer to be disconnected and
    blacklisted by the mesh.
+
+---
+
+## Protocol
+
+```protobuf
+// DHT key: aos:cluster:{cluster_id}:config
+// Signed by the cluster root identity. Contains the certificate tree
+// and cluster-wide configuration parameters.
+message ClusterConfig {
+    string cluster_id = 1;           // cluster identifier
+    bytes root_public_key = 2;       // root identity public key (trust anchor)
+    repeated IntermediateCert intermediates = 3; // active intermediate certificates
+    uint32 replication_factor = 4;   // min replicator copies per store object (default 3)
+    uint64 min_hold_duration = 5;    // min time publisher retains object before GC (microseconds, default 1hr)
+}
+
+// Certificate for an intermediate identity in the cert tree.
+// Signed by the root or by a parent intermediate (chained via parent_cert_id).
+// An intermediate can only delegate capabilities it was itself granted.
+message IntermediateCert {
+    string cert_id = 1;             // unique certificate identifier
+    bytes public_key = 2;           // this intermediate's public key
+    string name = 3;                // human label (e.g. "ops-admin", "ci-admin")
+    repeated string capabilities = 4; // capabilities this intermediate can delegate
+    uint64 not_before = 5;          // validity start (epoch microseconds)
+    uint64 not_after = 6;           // validity end (epoch microseconds)
+    bytes signature = 7;            // signed by root or parent intermediate
+    string parent_cert_id = 8;      // "" for root-signed, cert_id for chained
+}
+
+// DHT key: aos:auth:token:{token_hash}:revoke
+// Revocation record for a UCAN or intermediate certificate.
+// Signed by the token's issuer — only the issuer can revoke.
+// TTL mirrors the revoked token's original expiry.
+message RevocationRecord {
+    bytes token_hash = 1;           // hash of the revoked token
+    uint64 revoked_at = 2;          // when revocation was issued (epoch microseconds)
+    string issuer = 3;              // PeerId of the token issuer
+    bytes signature = 4;            // issuer signs (token_hash, revoked_at)
+}
+
+// GossipSub topic: aos/auth/token/revoke
+// Lightweight notification prompting peers to fetch the full
+// RevocationRecord from the DHT. Peers that receive this update
+// their local revocation cache.
+message RevocationNotice {
+    bytes token_hash = 1;           // hash of the revoked token
+    string cluster_id = 2;          // cluster context
+}
+
+// GossipSub topic: aos/auth/token/issue
+// Optional notification when a UCAN is issued. Enables proactive topic
+// admission decisions, audit logging, and revocation cache warming.
+// Not required for correctness — the system works without it.
+message IssuanceNotice {
+    bytes token_hash = 1;           // hash of the issued token
+    string issuer = 2;              // PeerId of the issuing intermediate
+    string subject = 3;             // PeerId of the recipient (audience)
+    repeated string capabilities = 4; // capabilities granted
+    uint64 not_after = 5;           // token expiry (epoch microseconds)
+    string cluster_id = 6;          // cluster context
+}
+```
+
+## Relationship to Other Docs
+
+- [../../tla/Network.tla](../../tla/Network.tla) -- TLA+ formal specification: DHT record TTLs, gossipsub message delivery for revocation notifications.

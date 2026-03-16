@@ -19,7 +19,8 @@ See [protocol.md](protocol.md) for the complete protobuf definitions:
 
 ## 2. Resource State Model
 
-Each resource (CPU, memory, disk) uses a four-state model via `ResourceState`:
+Each resource (CPU, memory, disk, local_space) uses a four-state model via
+`ResourceState`:
 
 - **Active**: currently consumed by running workloads.
 - **Claimed**: allocated to a job but not actively consumed (could spike).
@@ -27,6 +28,10 @@ Each resource (CPU, memory, disk) uses a four-state model via `ResourceState`:
 
 The total allocatable capacity is `total - reserved` (from `ResourceCapacity`),
 which equals `active + claimed + free`.
+
+The `local_space` resource represents available ZFS pool space for
+`LocalVolume` and `LocalPersistentVolume` allocations. It follows the same
+four-state model as other resources.
 
 ## 3. EWMA Smoothing
 
@@ -38,6 +43,7 @@ using an exponentially weighted moving average (EWMA) before publishing:
 | CPU | 0.3 | CPU fluctuates rapidly; higher alpha tracks changes quickly. |
 | Memory | 0.1 | Memory changes more gradually; lower alpha reduces noise. |
 | Disk | 0.05 | Disk changes are slow and monotonic during builds. |
+| Local space | 0.05 | ZFS pool space changes slowly, similar to disk. |
 
 The EWMA value and its slope (rate of change) are published in the
 `SmoothedTrend` fields. Receivers use these for extrapolation when reports are
@@ -98,3 +104,85 @@ LoadReports serve scheduling decisions:
 If a peer's LoadReport is older than `peer_liveness_timeout` (from
 ClusterConfig, or a built-in default), that peer is considered offline and
 excluded from scheduling decisions.
+
+## Protocol
+
+```protobuf
+// GossipSub topic: aos/cluster/{id}/load/announce
+// Periodic resource utilization report published by each peer.
+// Uses full/delta encoding: first report is LoadFull, subsequent
+// reports are LoadDelta containing only changed fields.
+message LoadReport {
+    string peer_id = 1;             // reporting peer
+    uint64 timestamp = 2;           // epoch microseconds
+    uint64 sequence = 3;            // monotonic counter for ordering/dedup
+
+    oneof report {
+        LoadFull full = 4;          // complete state (first report + periodic refresh)
+        LoadDelta delta = 5;        // incremental changes since last full
+    }
+
+    bytes signature = 6;            // peer signs the report
+}
+
+// Complete resource snapshot including static metadata.
+// Published on first report and periodically as a refresh.
+message LoadFull {
+    string system = 1;              // architecture (e.g. "x86_64-linux")
+    repeated string features = 2;   // node features (e.g. ["kvm", "big-parallel"])
+    ResourceCapacity capacity = 3;  // total allocatable resources (from cgroup limits)
+    ResourceState cpu = 4;          // current CPU utilization
+    ResourceState memory = 5;       // current memory utilization
+    ResourceState disk = 6;         // current disk utilization
+    uint32 jobs_running = 7;        // number of running job containers
+    uint32 jobs_claimed = 8;        // number of claimed but not yet started jobs
+    SmoothedTrend cpu_trend = 9;    // EWMA-smoothed CPU trend
+    SmoothedTrend memory_trend = 10; // EWMA-smoothed memory trend
+    uint32 fetch_jobs_active = 11;  // active FetchSpec jobs
+    uint32 fetch_jobs_max = 12;     // max concurrent fetch jobs (from config)
+    ResourceState local_space = 13;      // ZFS pool space for volume allocations
+    SmoothedTrend local_space_trend = 14; // EWMA trend for local space usage
+}
+
+// Incremental update containing only fields that changed since
+// the last report. Receivers apply deltas on top of the last
+// known full state. Deltas for unknown peers are discarded.
+message LoadDelta {
+    optional ResourceState cpu = 1;
+    optional ResourceState memory = 2;
+    optional ResourceState disk = 3;
+    optional uint32 jobs_running = 4;
+    optional uint32 jobs_claimed = 5;
+    optional SmoothedTrend cpu_trend = 6;
+    optional SmoothedTrend memory_trend = 7;
+    optional ResourceState local_space = 8;
+    optional SmoothedTrend local_space_trend = 9;
+}
+
+// Total and reserved capacity for a resource type.
+// Allocatable = total - reserved.
+message ResourceCapacity {
+    uint64 total = 1;               // total capacity (bytes or millicores)
+    uint64 reserved = 2;            // host/OS overhead, not allocatable to jobs
+}
+
+// Four-state resource utilization model.
+// total allocatable = active + claimed + free.
+message ResourceState {
+    uint64 active = 1;              // currently consumed by running workloads
+    uint64 claimed = 2;             // allocated to a job but not actively consumed
+    uint64 free = 3;                // available for new jobs
+}
+
+// EWMA-smoothed trend for a resource metric.
+// Published for receivers to extrapolate when reports are stale.
+message SmoothedTrend {
+    double ewma = 1;                // exponentially weighted moving average
+    double slope = 2;               // rate of change (for linear extrapolation)
+}
+```
+
+## Relationship to Other Docs
+
+- [volumes.md](volumes.md) -- volume types that consume local_space, persistent volume lifecycle.
+- [../../tla/Network.tla](../../tla/Network.tla) -- TLA+ formal specification: GossipSub message delivery model for load reports.
