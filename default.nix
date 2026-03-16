@@ -244,6 +244,7 @@ in
       system = serverSystem;
     };
     build = import ./lib/testing/build.nix { inherit pkgs lib; };
+    tla = import ./lib/testing/tla.nix { inherit pkgs lib; };
     # Module-level VM checks (from server system, for backwards compat)
     vm = serverSystem.config.system.build.checks;
     integration = packageChecks // stdenvChecks;
