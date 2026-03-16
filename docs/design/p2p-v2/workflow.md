@@ -43,7 +43,7 @@ workflows they are tracking.
 
 | Key | Value | TTL |
 |---|---|---|
-| `aos:workflow:{workflow_id}` | Provider record | Workflow lifetime |
+| `aos:workflow:run:{workflow_id}` | Provider record | Workflow lifetime |
 
 Peers tracking a workflow call `start_providing` on this key. New joiners or
 reconnecting clients use `get_providers` to find peers with the workflow's
@@ -99,10 +99,10 @@ distinct IDs for repeated submissions of the same graph.
 Each daemon specifies workflow limits in its configuration:
 
 ```toml
-[workflow]
+[workflows]
 max_steps = 10000          # max total steps per workflow
 max_depth = 500            # max steps through longest path
-max_active_workflows = 100 # max concurrent active workflows
+max_concurrent = 100       # max concurrent active workflows
 ```
 
 Workflows exceeding limits are rejected at announcement time. The longest path
@@ -152,13 +152,13 @@ within one sync window (~60s).
 
 **Phase 2: Transition backfill (async).** The peer requests missing transitions
 via `/aos/workflow/log/1.0.0` from a peer found through `get_providers` on
-`aos:workflow:{workflow_id}`. It requests transitions after its last known
+`aos:workflow:run:{workflow_id}`. It requests transitions after its last known
 timestamp. As transitions arrive, they are written to `transitions_db`. The
 peer is operationally current after phase 1 but cannot serve
 `/aos/workflow/log/1.0.0` requests until phase 2 completes.
 
 **DHT advertisement timing:** a peer should NOT call `start_providing` on
-`aos:workflow:{workflow_id}` until phase 2 completes. This prevents clients or
+`aos:workflow:run:{workflow_id}` until phase 2 completes. This prevents clients or
 other peers from requesting the log from a peer with gaps. After backfill is
 done, the peer advertises itself as a full tracker.
 
@@ -188,12 +188,21 @@ executor to pick up. If no `timeout` is set, the step uses the workflow's
 
 ### Step Actions
 
-Four step types are available: `ensure_store_object` (make sure a store object
-exists — either by building from a derivation or fetching from upstream
-mirrors), `await_workflow`
-(inter-workflow dependency), and `decision` (conditional skip). See
-[workflow-spec.md](workflow-spec.md) for detailed semantics, idempotency
-guarantees, and a concrete build example.
+Nine step types are available, all returning either `StoreRef` (deterministic)
+or `Promise<StoreRef>` (must flow through `await`):
+
+- `input` — required store object (must exist before start)
+- `fetch` — download FOD from upstream URLs
+- `build` — hermetic Nix build from .drv
+- `match` — exhaustive pattern matching with decision table (replaces `decision`)
+- `read` — read historical Statute state at a fixed state root
+- `run` — execute non-idempotent job, returns Promise (Statute-claimed)
+- `await` — resolve a Promise into a StoreRef (universal promise resolver)
+- `record` — write a StoreRef to Statute as a transition point
+- `observe` — watch another workflow's transition point, returns Promise
+
+See [workflow-spec.md](workflow-spec.md) for formal semantics, type system,
+and validation rules.
 
 ---
 
@@ -254,10 +263,10 @@ workflow and does not call `start_providing` on its DHT key.
 
 All store hashes referenced by active (non-terminated) workflows are pinned
 against garbage collection. Pinning is closure-based: **pin the workflow spec
-store object, and its `closure_db` transitive closure covers everything.**
+store object, and its `store_db` refs transitive closure covers everything.**
 
 The workflow spec protobuf contains store hashes as literal strings. Reference
-scanning on ingest finds all of them and records them in `closure_db`. The
+scanning on ingest finds all of them and records them in `store_db` refs. The
 spec's closure automatically includes all FOD sources, derivation hashes,
 expected output hashes, decision check hashes, and dependent workflow spec
 hashes (since `workflow_id` = store hash of the spec). No per-step tracking
@@ -354,7 +363,7 @@ step_claim_delay = base_delay - local_input_affinity + load_penalty
 
 - **base_delay**: 50-200ms random jitter (prevents thundering herd).
 - **local_input_affinity**: bonus based on fraction of the step's input
-  closure already present in the local store (via `closure_db` walk). A builder
+  closure already present in the local store (via `store_db` refs walk). A builder
   that just produced the previous step's output has near-zero delay.
 - **load_penalty**: penalty for high current load (same model as job claiming).
 
@@ -481,11 +490,10 @@ to produce the full derivation DAG, then submits it:
    derivation DAG with all FOD sources and build steps.
 
 2. **Client constructs the workflow store object:**
-   - `ensure_store_object` steps with `fetch` source for FOD sources (upstream
-     mirror URLs + content hash).
-   - `ensure_store_object` steps with `drv_hash` source for each derivation.
+   - `input` steps for each `.drv` file (must be uploaded before submission).
+   - `fetch` steps for FOD sources (upstream mirror URLs + content hash).
+   - `build` steps for each derivation (references the `.drv` by store hash).
    - `decision` steps to skip derivations whose outputs already exist.
-   - All `.drv` files embedded in the `drvs/` directory of the store object.
 
 3. **Client publishes the workflow store object** via the standard store
    protocol (`start_providing`). The store hash becomes the `workflow_id`.
@@ -525,9 +533,9 @@ provide(gcc-src)  provide(llvm-src)  provide(rust-src)
                             final-output
 ```
 
-Steps like `await(gcc)` are `await_store_object` -- they complete when gcc's
-output is available, whether built by this workflow or already present in the
-store.
+Steps like `await(gcc)` are `decision` steps using `store_object_exists` --
+they check whether gcc's output is already available in the store and skip
+the build if so.
 
 ---
 
@@ -575,32 +583,36 @@ Clients and executors use the same two-phase model:
 Clients typically only need steps 1-2 (they want current state, not full
 history). Executors that intend to serve as full trackers (providing
 `/aos/workflow/log/1.0.0` to others) must complete step 3 before calling
-`start_providing` on `aos:workflow:{workflow_id}`.
+`start_providing` on `aos:workflow:run:{workflow_id}`.
 
 ### Remote Start
 
-Clients can submit workflows to the cluster via the `/aos/workflow/start/1.0.0`
+Clients can submit workflows to the cluster via the `/aos/workflow/run/1.0.0`
 stream protocol. This is the primary entry point for external workflow
 submission.
 
 **Discovery:** peers that accept remote workflow starts advertise themselves on
-the DHT key `aos:workflow` as a provider record with a short TTL (1 min). The
+the DHT key `aos:workflow:runners` as a provider record with a short TTL (1 min). The
 client calls `get_providers` on this key to discover available bootstrap nodes.
 
 **Bootstrap sequence:** the receiving daemon performs the following steps
 atomically (all-or-nothing from the client's perspective):
 
-1. **Validate.** Check the requester's UCAN against `/aos/workflow/start`
-   permission. Validate the workflow spec against daemon limits (`max_steps`,
-   `max_depth`, `max_active_workflows`).
+1. **Validate.** Check the requester's UCAN against `/aos/workflow/run`.
+   Parse and validate the workflow spec (structural, graph, input existence,
+   fetch source, cross-workflow, resource, and capacity checks). See
+   [workflow-validation.md](workflow-validation.md) for the full validation
+   model. Validation completes before any store writes or gossipsub
+   messages — if it fails, no side effects occur.
 2. **Check for duplicates.** Query `get_providers` on
-   `aos:workflow:{workflow_id}` (where `workflow_id` = store hash of the spec).
+   `aos:workflow:run:{workflow_id}` (where `workflow_id` = store hash of the spec).
    If providers exist, the workflow is already running -- respond with
    `409 Duplicate`.
-3. **Ingest store object.** Write the workflow store object (manifest + chunks)
-   to the local chunk store. Record references in `closure_db`.
+3. **Create store object.** Write the workflow store object (NixObject + chunks)
+   to the local chunk store. The workflow spec is a JSON-encoded protobuf
+   stored as `workflow.json`. Record references in `store_db` refs.
 4. **Publish to DHT.** Call `start_providing` on
-   `aos:store:{workflow_store_hash}` so other peers can fetch the spec.
+   `aos:store:object:{workflow_store_hash}` so other peers can fetch the spec.
 5. **Announce store object.** Publish `StorePublish` to the `store/publish`
    gossipsub topic.
 6. **Ingest workflow.** Write the workflow record to `WorkflowDB`. Run cycle
@@ -608,10 +620,10 @@ atomically (all-or-nothing from the client's perspective):
 7. **Create state topic.** Subscribe to
    `aos/workflows/active/{workflow_id}/state`.
 8. **Advertise as tracker.** Call `start_providing` on
-   `aos:workflow:{workflow_id}`.
+   `aos:workflow:run:{workflow_id}`.
 9. **Announce workflow.** Publish `WorkflowPost{create(spec_hash)}` to
    `aos/workflows/announce`.
-10. **Respond.** Return `WorkflowStarted{workflow_id, bootstrap_peer}`.
+10. **Respond.** Return `WorkflowRunStarted{workflow_id, bootstrap_peer}`.
 
 **Crash safety:**
 - If the bootstrap node crashes before step 9, nothing is announced. The store
@@ -625,6 +637,22 @@ workflow is announced. It becomes a regular tracker/executor. It may execute
 steps, publish state snapshots, and serve `/aos/workflow/log/1.0.0` requests --
 but any other executor can do the same. The workflow does not depend on the
 bootstrap node staying alive.
+
+### Reactive Mount (Alternative to Remote Start)
+
+Instead of submitting workflows via `/aos/workflow/run/1.0.0`, workflows
+can be defined as reactive mounts in Statute. The workflow definition lives
+at `{mount_path}/definition` within a workflow mount. When read dependencies
+change (detected via merkle tree delta between blocks), the mount
+automatically creates new workflow runs.
+
+This eliminates the need for explicit workflow submission for event-driven
+use cases. See [mounts.md](mounts.md) for the reactive mount model.
+
+Workflow runs created by reactive mounts are stored at
+`{mount_path}/runs/{workflow_id}/`, with transitions recorded at
+`{mount_path}/runs/{workflow_id}/transitions/`. This replaces the previous
+static `/workflows/state/{workflow_id}` path convention.
 
 ---
 
@@ -650,6 +678,14 @@ bootstrap node staying alive.
   garbage-collect the workflow's transition log from the WorkflowDB.
 - **Split-brain / partition**: duplicate step executions are resolved by
   canonical ordering after partition heal. See [Split-Brain Behavior](#split-brain-behavior).
+- **Cross-workflow cycle detection is per-daemon.** Each daemon independently
+  checks its local `workflow_deps_db` for cycles. In a decentralized system,
+  a cycle that spans multiple daemons (W1 on daemon1 awaits W2, W2 on daemon2
+  awaits W1) may not be detected. Affected workflows will hang at their
+  `await_workflow` steps until their deadlines expire. This is an accepted
+  limitation — global cycle detection would require consensus, conflicting
+  with the coordination-free design. Operators should review cross-workflow
+  dependencies before submission.
 
 ---
 
@@ -673,6 +709,302 @@ Dependency: `/aos/workflow/execute` requires `/aos/job/create`,
 
 ---
 
+## Protocol
+
+```protobuf
+// --- Workflow Announcement ---
+
+// GossipSub topic: aos/workflows/announce
+// Workflow creation and cancellation. The spec itself is a store
+// object (workflow.json); the announce message references it by hash.
+message WorkflowPost {
+    string workflow_id = 1;        // = store hash of the WorkflowSpec store object
+    string ucan = 2;              // authorization chain
+
+    oneof delta {
+        WorkflowCreate create = 3; // new workflow announced
+        WorkflowCancel cancel = 4; // workflow cancelled
+    }
+}
+
+message WorkflowCreate {
+    string spec_hash = 1;         // store hash of the WorkflowSpec store object
+    string creator = 2;           // PeerId of the submitting client
+}
+
+// --- Workflow Specification (stored as workflow.json) ---
+
+// The workflow blueprint. Stored as a JSON-encoded protobuf in a
+// store object. The workflow_id is the store hash of this object.
+// All store hashes embedded in the spec (output_hash, input, fetch
+// URLs) are found by reference scanning and recorded in store_db refs,
+// enabling closure-based GC pinning.
+message WorkflowSpec {
+    uint64 nonce = 1;             // deduplication nonce
+    uint64 deadline = 3;          // epoch microseconds; must complete by this time
+    uint64 expiration = 4;        // epoch microseconds; state deleted after this time
+    repeated WorkflowStep steps = 7; // the workflow DAG
+}
+
+// A single step in the workflow DAG. Each step has a unique ID,
+// an action to perform, and dependencies on other steps.
+message WorkflowStep {
+    string id = 1;                // unique name (e.g. "build-gcc", "src-linux")
+    StepAction action = 2;        // what to do when this step is ready
+    repeated string deps = 3;     // step IDs that must complete first
+    optional uint64 timeout = 4;  // per-step timeout (microseconds from claim time)
+}
+
+message StepAction {
+    oneof action {
+        InputStep input = 1;
+        FetchStep fetch = 2;
+        BuildStep build = 3;
+        MatchStep match = 4;         // exhaustive pattern matching
+        ReadStep read = 5; // read historical Statute state
+        RunStep run = 6;             // non-idempotent, Statute-claimed
+        AwaitStep await = 7;         // resolve Promise → StoreRef
+        RecordStep record = 8;       // write transition point to Statute
+        ObserveStep observe = 9;     // watch another workflow's transition
+    }
+}
+
+message MatchStep {
+    map<string, MatchCondition> conditions = 1;
+    repeated MatchCase cases = 2;
+}
+
+message MatchCondition {
+    oneof condition {
+        string store_object_exists = 1;
+    }
+}
+
+message MatchCase {
+    map<string, bool> when = 1;      // condition values to match
+    repeated string activate = 2;    // step IDs to activate
+}
+
+message ReadStep {
+    bytes state_root = 1;            // Statute state root (must exist before start)
+    string key = 2;                  // Statute key to read
+}
+
+message RunStep {
+    string spec_hash = 1;           // RunSpec job spec (#StoreRef)
+}
+
+message AwaitStep {
+    string source = 1;              // step ID of run or observe step
+}
+
+message RecordStep {
+    string source = 1;              // step ID whose output to record
+    string transition = 2;          // transition point name
+}
+
+message ObserveStep {
+    string workflow_id = 1;         // target workflow
+    string transition = 2;          // transition point to watch
+}
+
+// Declare a required store object that must exist before the workflow
+// starts. Validated at submission time — rejected if no providers.
+// Completes immediately at runtime (the object already exists).
+message InputStep {
+    string store_hash = 1;       // store hash that must exist
+}
+
+// Download a content-addressed object (FOD) from upstream mirrors.
+// Creates a FetchSpec job internally. If the output already exists
+// in the store, completes immediately without downloading.
+message FetchStep {
+    string output_hash = 1;      // expected store hash of the output
+    repeated string urls = 2;    // mirror URLs in priority order
+    string hash = 3;             // expected content hash (SRI format)
+}
+
+// Submit a hermetic Nix build. Creates a BuildSpec job from the
+// referenced .drv store object. If the output already exists in
+// the store, completes immediately without building.
+message BuildStep {
+    string drv_hash = 1;         // store hash of the .drv (must exist as store object)
+    string output_hash = 2;      // expected output store hash (computed from .drv)
+}
+
+
+message WorkflowCancel {
+    string reason = 1;
+    uint64 cancelled_at = 2;      // epoch microseconds
+}
+
+// --- Per-Workflow State Topic ---
+
+// GossipSub topic: aos/workflows/active/{workflow_id}/state
+// Envelope for all messages on the per-workflow state topic.
+message WorkflowStateMessage {
+    oneof message {
+        WorkflowTransition transition = 1; // individual step state change
+        WorkflowStateSnapshot snapshot = 2; // periodic full state
+    }
+}
+
+// A state change applied to a single workflow step.
+// Forms an ordered log that all trackers converge on.
+message WorkflowTransition {
+    string workflow_id = 1;
+    uint64 sequence = 2;          // per-executor local counter (dedup only)
+    string step_id = 3;           // which step changed
+    StepTransition transition = 4; // new state
+    string executor = 5;          // PeerId that made this change
+    uint64 timestamp = 6;         // epoch microseconds (canonical ordering key)
+    repeated bytes causal_deps = 7; // hashes of transitions this depends on
+    optional StepResult result = 8; // step output (for completed steps)
+    bytes hash = 9;               // transition hash (for dedup + causal refs)
+}
+
+// Periodic full state snapshot. Published by one peer per sync window.
+// Late joiners apply the snapshot to catch up immediately.
+// NOTE: State snapshots are NOT cryptographically signed. They are treated as
+// hints for fast catch-up, not as authoritative state. Peers that receive a
+// snapshot verify it against the transition log — if the snapshot's
+// `state_hash` does not match the state computed from known transitions, the
+// snapshot is discarded and the peer falls back to log-based catch-up. A
+// malicious snapshot publisher cannot corrupt workflow state; it can only
+// cause a temporary mismatch that is detected and corrected.
+message WorkflowStateSnapshot {
+    string workflow_id = 1;
+    string publisher = 2;         // PeerId
+    uint64 timestamp = 3;
+    WorkflowStatus status = 4;    // overall workflow status
+    map<string, StepState> step_states = 5; // current state per step
+    uint64 transition_count = 6;  // total transitions applied
+    bytes state_hash = 7;         // hash of serialized state (consistency check)
+}
+
+enum StepTransition {
+    STEP_READY = 0;
+    STEP_CLAIMED = 1;
+    STEP_RUNNING = 2;
+    STEP_COMPLETED = 3;
+    STEP_FAILED = 4;
+    STEP_SKIPPED = 5;
+}
+
+message StepResult {
+    repeated string output_hashes = 1; // store hashes produced
+    optional string error = 2;        // error message (for failed steps)
+    optional string job_id = 3;       // associated job ID
+}
+
+enum WorkflowStatus {
+    WORKFLOW_PENDING = 0;
+    WORKFLOW_RUNNING = 1;
+    WORKFLOW_COMPLETED = 2;
+    WORKFLOW_FAILED = 3;
+    WORKFLOW_CANCELLED = 4;
+    WORKFLOW_EXPIRED = 5;
+}
+
+message StepState {
+    StepTransition status = 1;
+    optional string executor = 2;
+    optional uint64 claimed_at = 3;
+    optional StepResult result = 4;
+}
+
+// --- Workflow Stream Protocols ---
+
+// Stream protocol: /aos/workflow/info/1.0.0
+// Fetch the current workflow spec and state snapshot.
+message WorkflowInfoRequest {
+    string workflow_id = 1;
+}
+
+message WorkflowInfoResponse {
+    oneof result {
+        WorkflowInfo info = 1;
+        StreamError error = 2;    // 404=not found
+    }
+}
+
+message WorkflowInfo {
+    string spec_hash = 1;        // store hash of the WorkflowSpec
+    WorkflowStatus status = 2;   // overall status
+    map<string, StepState> step_states = 3; // per-step states
+    string creator = 4;          // PeerId of the creator
+}
+
+// Stream protocol: /aos/workflow/log/1.0.0
+// Fetch or tail the workflow transition history.
+message WorkflowLogRequest {
+    string workflow_id = 1;
+    optional uint64 after_sequence = 2; // resume from this point
+    bool follow = 3;                    // keep streaming new transitions
+}
+// Response is a stream of WorkflowTransition messages.
+
+// Stream protocol: /aos/workflow/list/1.0.0
+// List known workflows, with optional filters and pagination.
+message WorkflowListRequest {
+    optional WorkflowStatus status_filter = 1;
+    optional string creator_filter = 2;
+    uint32 page_size = 3;
+    optional string page_token = 4;
+}
+
+message WorkflowListResponse {
+    repeated WorkflowListEntry workflows = 1;
+    optional string next_page_token = 2;
+}
+
+message WorkflowListEntry {
+    string workflow_id = 1;
+    string creator = 2;
+    WorkflowStatus status = 3;
+    uint64 deadline = 4;
+    uint32 steps_total = 5;
+    uint32 steps_completed = 6;
+}
+
+// Stream protocol: /aos/workflow/run/1.0.0
+// Submit a workflow to a bootstrap node. The node validates the spec,
+// creates the store object, announces the workflow, and begins tracking.
+// Client disconnect = cancel workflow globally.
+message WorkflowRunRequest {
+    string cluster_id = 1;        // cluster context
+    NixObject nix_object = 2;     // workflow store object NixObject
+    repeated Chunk chunks = 3;    // all chunks inline
+    string ucan = 4;              // requester's authorization
+}
+
+message WorkflowRunStatus {
+    oneof status {
+        WorkflowRunProgress progress = 1;
+        WorkflowRunStarted started = 2;  // terminal: workflow announced
+        StreamError failed = 3;          // terminal: validation/capacity error
+    }
+}
+
+message WorkflowRunProgress {
+    WorkflowRunPhase phase = 1;
+    string message = 2;
+}
+
+enum WorkflowRunPhase {
+    WORKFLOW_RUN_INGESTING = 0;   // ingesting workflow store object
+    WORKFLOW_RUN_PUBLISHING = 1;  // publishing to DHT + store/publish
+    WORKFLOW_RUN_ANNOUNCING = 2;  // announcing on workflows/announce
+}
+
+message WorkflowRunStarted {
+    string workflow_id = 1;       // = store hash of the workflow spec
+    string bootstrap_peer = 2;   // PeerId of the bootstrap node
+}
+```
+
+---
+
 ## Relationship to Other Docs
 
 - [protocol.md](protocol.md) -- protobuf definitions for workflow messages,
@@ -683,4 +1015,5 @@ Dependency: `/aos/workflow/execute` requires `/aos/job/create`,
   interface.
 - [permissions.md](permissions.md) -- workflow UCAN capabilities.
 - [replication.md](replication.md) -- store object replication interacts with
-  workflow `await_store_object` steps.
+  workflow `decision` steps (`store_object_exists`).
+- [../../tla/Workflows.tla](../../tla/Workflows.tla) -- TLA+ formal specification: step DAG execution, speculative claiming, lease expiry, workflow termination.

@@ -5,23 +5,29 @@ encompasses any containerized task -- builds, login shells, services -- and
 progresses through a well-defined lifecycle coordinated via CRDT state
 transitions on GossipSub.
 
-## Activation Types
+## Job Spec Types
 
-A job's container behavior is determined by the `ActivationType` in its
-`ContainerSpec`:
+A job's behavior is determined by the `JobSpec` oneof, which is one of:
 
-**ACTIVATION_NONE** -- mount the view, run an entrypoint. No special
-activation. Used for interactive shells and simple one-off commands.
+**BuildSpec** -- parse a `.drv`, exec the builder, capture output from an
+OverlayFS writable layer. Network access disabled. Used for hermetic builds.
+The `BuildSpec.drv_hash` field references the `.drv` store hash.
 
-**ACTIVATION_SYSTEMD_V1** -- run systemd as PID 1 with an activation script
-that installs units and services. Used for long-running service containers.
+**FetchSpec** -- download a content-addressed store object from upstream URLs
+(mirrors). The fetch engine executes the download, verifies the hash, chunks
+the result, and publishes it to the mesh. See [fetch.md](fetch.md).
 
-**ACTIVATION_DERIVATION** -- parse a `.drv`, exec the builder, capture output
-from an OverlayFS writable layer. Network access disabled. Used for builds.
+**RunSpec** -- run a mutable container. The `init_mode` field determines the
+init process:
+- `INIT_DIRECT` -- mount the view, run a shell or specified entrypoint. No
+  special activation. Used for interactive shells and simple one-off commands.
+- `INIT_SYSTEMD` -- run systemd as PID 1 with an activation script that
+  installs units and services. Used for long-running service containers.
 
-All containers receive a `ViewSpec` defining the FUSE view (transitive closure
-of store objects). See [containers.md](containers.md) for the full container
-orchestration model and [view.md](view.md) for view semantics.
+All containers declare their storage requirements via `VolumeRequest` entries in
+the parent `JobSpec`. See [volumes.md](volumes.md) for volume types and
+semantics, [containers.md](containers.md) for the full container orchestration
+model, and [view.md](view.md) for FUSE view details.
 
 ## State Diagram
 
@@ -63,10 +69,13 @@ announces the job to all peers in the cluster. The `JobSpec` contains:
 - An absolute epoch deadline (microseconds since epoch) by which the job must
   complete. Peers reject claims after the deadline has passed. Running jobs
   that exceed the deadline are killed.
-- A container spec: activation type, view spec (store hashes defining the FUSE
-  view), and optional derivation hash for build jobs.
+- A job spec oneof: `BuildSpec` (with `drv_hash`), `FetchSpec` (with URLs and
+  expected hash), or `RunSpec` (with init mode and capabilities).
+- Volume requests: `VolumeRequest` entries declaring all storage the job needs
+  (StoreVolume for inputs, LocalVolume for writable layers). See
+  [volumes.md](volumes.md).
 - A node selector: required system architecture, features, and peer labels.
-- Resource limits: max memory, CPU cores, and scratch disk.
+- Resource limits: max memory and CPU cores.
 - Network mode: `NETWORK_NONE` (required for builds) or `NETWORK_HOST` (for
   service containers).
 
@@ -222,10 +231,10 @@ message StoreOutput {
 - `duration_ms` -- milliseconds elapsed between the `started_at` timestamp in
   `JobStart` and the container exit. Useful for scheduling heuristics and build
   time estimation.
-- `outputs` -- for `ACTIVATION_DERIVATION` jobs, the store objects written to
-  the overlay during the build. Each output has a content-addressed `store_hash`
-  that other peers can use to fetch the result via the store transfer protocol.
-  For other activation types, this field is empty.
+- `outputs` -- for `BuildSpec` jobs, the store objects written to the overlay
+  during the build. Each output has a content-addressed `store_hash` that other
+  peers can use to fetch the result via the store transfer protocol. For
+  `RunSpec` and `FetchSpec` jobs, this field is empty.
 - `reservation` -- an optional `ReservationToken` offering the job creator a
   reserved slot on this builder for a follow-up job. See
   [Slot Reservation](#slot-reservation) below.
@@ -545,27 +554,28 @@ fetch all required inputs before the build begins. The flow is:
    provider records pointing to the creator for every input.
 
 2. **Builder resolves the closure.** If the `JobStartRequest` included a
-   manifest (the creator's hint), the builder uses it directly — no manifest
-   fetch needed for the root object. The manifest's `references` and `closure`
-   fields provide the transitive dependency tree. For any `ClosureHint` entries
-   with empty references (frontier nodes where the creator lacked local
-   knowledge), the builder fetches those manifests to discover their deps.
+   object hint (the creator's hint), the builder uses it directly — no
+   object fetch needed for the root object. The NixObject's refs provide the
+   dependency tree. For any dependencies where the builder lacks local
+   knowledge, the builder fetches those objects to discover their deps.
 
-3. **Builder fetches missing content.** The builder checks which manifests and
+3. **Builder fetches missing content.** The builder checks which objects and
    chunks from the resolved closure are already local. All missing content is
-   fetched in parallel — manifests from providers, chunks batched across
-   multiple providers. As new manifests arrive (for frontier nodes), they may
-   reveal additional dependencies, which are fetched immediately. The builder
-   streams `JobStartStatus{progress}` back to the creator during this phase.
+   fetched in parallel — NixObjects resolved from providers, chunks batched
+   across multiple providers. As new objects are resolved (for frontier nodes),
+   they may reveal additional dependencies, which are fetched immediately. The
+   builder streams `JobStartStatus{progress}` back to the creator during this
+   phase.
 
-4. **Builder creates a FUSE view.** The builder creates a view from the
-   `ViewSpec` (see [view.md](view.md)) — all inputs must be fully local before
-   the build starts. The FUSE mount blocks until every manifest and chunk is
-   fetched.
+4. **Builder resolves the StoreVolume.** The builder resolves the StoreVolume
+   from the job's volume requests, creating a FUSE view
+   (see [view.md](view.md)) — all inputs must be fully local before the build
+   starts. The FUSE mount blocks until every object and chunk is fetched.
 
-5. **Builder mounts OverlayFS.** A writable upper layer is created on top of
-   the read-only FUSE view. The merged mount is bind-mounted as `/nix/store`
-   inside the container.
+5. **Builder creates the LocalVolume.** The builder creates the LocalVolume
+   (ZFS dataset) from the job's volume requests for the overlay upper layer.
+   The merged OverlayFS mount is bind-mounted as `/nix/store` inside the
+   container.
 
 6. **Builder spawns the container.** The `.drv` file specifies the builder
    executable (e.g., `/nix/store/{hash}-bash/bin/bash`) and its arguments. The
@@ -664,3 +674,442 @@ reporting:
 - **`/aos/job/exec/1.0.0`**: the builder sends an `ExecFrame` with an `ExecExit`
   on normal termination. If the job is not found or not running, the builder
   resets the stream with a protocol-level error before any frames are exchanged.
+
+---
+
+## Protocol
+
+```protobuf
+// --- Job Lifecycle (GossipSub + DHT) ---
+
+// GossipSub topic: aos/cluster/{id}/jobs/announce
+// CRDT-merged record tracking a job through its lifecycle.
+// Each delta advances the job's state. Peers merge deltas
+// independently and converge to the same state.
+message JobPost {
+    string cluster_id = 1;          // cluster this job belongs to
+    string job_id = 2;              // = store hash of the JobSpec store object
+    string ucan = 3;                // authorization for this delta
+
+    oneof delta {
+        JobCreate create = 4;       // job announced, waiting for claims
+        JobClaim claim = 5;         // peer claims the job
+        JobStart start = 6;        // container started on the claiming peer
+        JobExit exit = 7;           // container exited (success or failure)
+        JobError error = 8;         // runtime error (container crash, timeout, etc.)
+        JobCancel cancel = 9;       // job cancelled by creator or admin
+    }
+
+    optional string workflow_id = 10;       // set if this job was submitted by a workflow
+    optional string workflow_step_id = 11;  // workflow step that created this job
+}
+
+// References the JobSpec store object. The spec is uploaded to the
+// store before the job is announced.
+message JobCreate {
+    string spec_hash = 1;          // store hash of the JobSpec store object
+    string creator = 2;            // PeerId of the submitting peer
+}
+
+// --- Job Specification (stored as a store object) ---
+
+// The canonical job specification. Stored as a store object; the
+// store hash of this message is the job_id. Contains a oneof
+// selecting the job type: build, fetch, or run. All storage for the
+// job is declared in the volumes field (see volumes.md).
+message JobSpec {
+    uint64 nonce = 1;              // deduplication nonce
+    uint64 deadline = 2;           // absolute epoch microseconds; job must complete by this time
+    NodeSelector node_selector = 3; // scheduling constraints (system, features, labels, tolerations)
+
+    oneof spec {
+        BuildSpec build = 4;       // hermetic Nix build from a .drv
+        FetchSpec fetch = 5;       // download a FOD from upstream URLs
+        RunSpec run = 6;           // mutable container (service, shell)
+    }
+
+    repeated VolumeRequest volumes = 7; // all job storage: StoreVolume for inputs, LocalVolume for writable layers (see volumes.md)
+}
+
+// Hermetic Nix build. References a .drv store object that defines
+// builder, args, env, inputs, and outputs. The daemon parses the .drv
+// to derive the input closure and expected output store paths. Volumes
+// (StoreVolume for inputs, LocalVolume for the overlay upper layer) are
+// generated automatically by the daemon from the .drv parse and included
+// in JobSpec.volumes.
+// Output hashes match `nix build` exactly — computed from the same .drv.
+message BuildSpec {
+    string drv_hash = 1;           // store hash of the .drv (must exist as store object)
+    Resources resources = 2;       // k8s-style resource requests + limits
+}
+
+// Download a FOD from upstream mirrors. Content-addressed: the output
+// hash is verified against the downloaded content. Fetches have no
+// resource requirements — they run as fast as the daemon's fetch
+// config allows. Executed by the daemon's fetch engine.
+message FetchSpec {
+    repeated string urls = 1;      // mirror URLs in priority order
+    string hash = 2;               // expected content hash (SRI format, e.g. "sha256-...")
+    string output_hash = 3;        // expected store hash of the output object
+}
+
+// Mutable container for services, shells, and other non-hermetic
+// workloads. Cannot produce store outputs. Capabilities are additive
+// via a bitmask — an empty capabilities field produces a container
+// with no network and no exec access.
+// Store mounts are declared as StoreVolume entries in JobSpec.volumes.
+message RunSpec {
+    uint32 capabilities = 1;       // bitmask of ContainerCapability flags
+    InitMode init = 2;             // how to start the container
+    // field 3 removed (was ViewSpec view; now in JobSpec.volumes as StoreVolume entries)
+    Resources resources = 4;       // k8s-style resource requests + limits
+}
+
+// Bit flags for mutable container capabilities.
+// Combined via bitwise OR in RunSpec.capabilities.
+enum ContainerCapability {
+    CONTAINER_CAP_NONE = 0;        // no capabilities (restricted)
+    CONTAINER_CAP_NETWORK = 1;     // bit 0: host NAT network access
+    CONTAINER_CAP_EXEC = 2;        // bit 1: allows /aos/job/exec/1.0.0
+}
+
+// Container init process type.
+enum InitMode {
+    INIT_DIRECT = 0;               // run entrypoint directly as PID 1
+    INIT_SYSTEMD = 1;              // systemd as PID 1, activation script installs units
+}
+
+// ViewSpec has been removed. Store mounts are now declared as
+// StoreVolume entries in JobSpec.volumes. See volumes.md for the
+// StoreVolume message definition and semantics.
+
+// k8s-style resource requirements. Keys are resource names
+// ("cpu", "memory", "ephemeral-storage", etc.).
+// Values are k8s Quantity strings ("500m", "4Gi", "2").
+// Note: "ephemeral-storage" in Resources is for cgroup enforcement only;
+// actual disk allocation comes from LocalVolume size in volume requests.
+message Resources {
+    map<string, string> requests = 1; // guaranteed minimum (scheduler checks)
+    map<string, string> limits = 2;   // hard cap (cgroup enforcement)
+}
+
+// Bandwidth limit with a rolling time window.
+// Multiple limits apply simultaneously (e.g., burst + sustained).
+message BandwidthLimit {
+    string limit = 1;              // k8s Quantity (e.g., "1Gi", "100Mi" per window)
+    string window = 2;             // duration (e.g., "1s", "1m")
+}
+
+// --- Scheduling Constraints ---
+
+// Selects which peers are eligible to run a job. The peer must
+// match all specified criteria.
+message NodeSelector {
+    string system = 1;             // required architecture (e.g. "x86_64-linux")
+    repeated string features = 2;  // required features (e.g. ["kvm", "big-parallel"])
+    map<string, string> labels = 3; // required peer labels (e.g. {"gpu": "a100"})
+    repeated Toleration tolerations = 4; // taints this job tolerates
+}
+
+// A toleration allows a job to be scheduled on a tainted peer.
+message Toleration {
+    string key = 1;                // taint key to tolerate
+    string value = 2;             // taint value (empty = match any value)
+    TaintEffect effect = 3;       // which taint effect to tolerate
+}
+
+enum TaintEffect {
+    NO_SCHEDULE = 0;               // peer won't schedule jobs without toleration
+    PREFER_NO_SCHEDULE = 1;        // peer prefers not to schedule (soft)
+    NO_EXECUTE = 2;                // peer evicts running jobs without toleration
+}
+
+// --- Job Claiming and Starting ---
+
+// A peer claims a job, offering to execute it.
+// Includes a start_ucan authorizing the creator to call
+// /aos/job/start/1.0.0 on this peer.
+message JobClaim {
+    string peer_id = 1;           // claiming peer's PeerId
+    string start_ucan = 2;        // UCAN authorizing job start on this peer
+}
+
+// DHT key: aos:cluster:{cluster_id}:job:{job_id}:state
+// Refreshed periodically by the executing peer as a liveness signal.
+// If the heartbeat expires, the job is considered crashed.
+message JobState {
+    string job_id = 1;            // job identifier
+    string peer_id = 2;           // executing peer
+    uint64 refreshed_at = 3;      // last heartbeat (epoch microseconds)
+    JobPhase phase = 4;           // current execution phase
+    ResourceUsage usage = 5;      // current resource consumption
+}
+
+enum JobPhase {
+    JOB_PHASE_STARTING = 0;       // container being created
+    JOB_PHASE_RUNNING = 1;        // container running
+    JOB_PHASE_STOPPING = 2;       // container shutting down
+}
+
+// --- Job Start (two-phase handshake) ---
+
+// Stream protocol: /aos/job/start/1.0.0
+// Creator calls this on the claiming peer to initiate container startup.
+// Response is a progress stream ending with started or failed.
+// Client disconnect = cancel startup.
+message JobStartRequest {
+    string cluster_id = 1;        // cluster context
+    string job_ucan = 2;          // UCAN delegating job identity to builder
+    string start_ucan = 3;        // start_ucan from the JobClaim
+    optional ReservationToken reservation = 4; // skip claim phase if valid
+    optional ObjectResponse object_hint = 5; // object hint (saves builder a round-trip)
+}
+
+message JobStartStatus {
+    oneof status {
+        StartProgress progress = 1; // intermediate sync/setup progress
+        JobStart started = 2;      // terminal: container running
+        JobError failed = 3;       // terminal: could not start
+    }
+}
+
+// Progress during job start (store sync, view creation, container spawn).
+message StartProgress {
+    StartPhase phase = 1;
+    uint32 objects_total = 2;      // total objects to resolve
+    uint32 objects_resolved = 3;   // objects resolved so far
+    uint64 chunks_bytes_total = 4; // total chunk bytes to fetch
+    uint64 chunks_bytes_fetched = 5; // chunk bytes fetched so far
+    string message = 6;            // human-readable status
+}
+
+enum StartPhase {
+    START_PHASE_RESOLVING = 0;     // resolving closure from NixObject references
+    START_PHASE_FETCHING = 1;      // resolving NixObjects + downloading chunks
+    START_PHASE_CREATING_VIEW = 2; // mounting FUSE view
+    START_PHASE_STARTING = 3;      // spawning nspawn container
+}
+
+// Confirmation that the container is running.
+message JobStart {
+    string peer_id = 1;           // executing peer
+    string machine_id = 2;        // stable machine identifier (sd-id128)
+    uint64 started_at = 3;        // epoch microseconds
+    string job_identity = 4;      // PeerId from the job's ephemeral keypair
+}
+
+// Short-lived slot reservation offered by a builder after job exit.
+// Allows the next job in a DAG to skip the claim phase.
+message ReservationToken {
+    string builder_peer_id = 1;   // offering builder
+    string creator_peer_id = 2;   // intended recipient
+    uint64 valid_until = 3;       // epoch microseconds (~30s from creation)
+    bytes signature = 4;          // builder signs (creator_peer_id, valid_until)
+}
+
+// --- Job Completion ---
+
+// Job exited normally. For BuildSpec jobs, includes output store hashes.
+message JobExit {
+    int32 exit_code = 1;          // process exit code (0 = success)
+    uint64 duration_ms = 2;       // wall-clock milliseconds from start to exit
+    repeated StoreOutput outputs = 3; // store objects produced (BuildSpec only)
+    optional ReservationToken reservation = 4; // slot reservation for follow-up jobs
+}
+
+// A store object produced by a BuildSpec job.
+message StoreOutput {
+    string store_hash = 1;        // content address of the output
+    string name = 2;              // output name (e.g. "out", "dev", "lib")
+    uint64 nar_size = 3;          // NAR-serialized size in bytes
+}
+
+// Job error (container crash, runtime failure, timeout, etc.).
+message JobError {
+    string message = 1;           // human-readable error description
+    int32 exit_code = 2;          // process exit code (if available)
+    string phase = 3;             // phase where error occurred (starting/running/unknown)
+    uint64 duration_ms = 4;       // wall-clock milliseconds from start to failure
+    ErrorSource source = 5;       // what caused the error
+}
+
+enum ErrorSource {
+    ERROR_SOURCE_CONTAINER = 0;   // container process failed
+    ERROR_SOURCE_RUNTIME = 1;     // container runtime (nspawn) failed
+    ERROR_SOURCE_LIVENESS = 2;    // DHT liveness heartbeat expired
+    ERROR_SOURCE_TIMEOUT = 3;     // job exceeded deadline
+}
+
+// Job cancellation (by creator or admin).
+message JobCancel {
+    string cancelled_by = 1;      // PeerId requesting cancellation
+    string reason = 2;            // human-readable reason
+    uint64 cancelled_at = 3;      // epoch microseconds
+}
+
+// --- Job Create (remote submission) ---
+
+// Stream protocol: /aos/job/create/1.0.0
+// Submit a job and wait until it's running. The bootstrap node
+// ingests the spec, publishes, waits for claim, and starts the
+// container. Client disconnect = cancel globally.
+message JobCreateRequest {
+    string cluster_id = 1;        // target cluster
+    NixObject nix_object = 2;     // job spec store object NixObject
+    repeated Chunk chunks = 3;    // all chunks inline
+    string ucan = 4;              // requester's authorization
+}
+
+message JobCreateStatus {
+    oneof status {
+        JobCreateProgress progress = 1;
+        JobStart started = 2;     // terminal: container running
+        JobError failed = 3;      // terminal: could not start
+    }
+}
+
+message JobCreateProgress {
+    JobCreatePhase phase = 1;
+    string message = 2;
+}
+
+enum JobCreatePhase {
+    JOB_CREATE_INGESTING = 0;     // ingesting job spec store object
+    JOB_CREATE_PUBLISHING = 1;    // publishing to DHT + gossipsub
+    JOB_CREATE_CLAIMING = 2;      // waiting for a peer to claim
+    JOB_CREATE_STARTING = 3;      // claim received, starting container
+    JOB_CREATE_SYNCING = 4;       // builder syncing store objects
+}
+
+// --- Job Run (full lifecycle) ---
+
+// Stream protocol: /aos/job/run/1.0.0
+// Full lifecycle: create -> claim -> start -> sync -> run -> exit.
+// Unlike /aos/job/create (which terminates at "started"), this
+// protocol waits for the job to complete. Client disconnect = cancel.
+message JobRunRequest {
+    string cluster_id = 1;        // target cluster
+    NixObject nix_object = 2;     // job spec store object NixObject
+    repeated Chunk chunks = 3;    // all chunks inline
+    string ucan = 4;              // requester's authorization
+}
+
+message JobRunStatus {
+    oneof status {
+        JobRunProgress progress = 1;
+        JobExit completed = 2;    // terminal: job exited (includes exit code + outputs)
+        JobError failed = 3;      // terminal: job failed
+    }
+}
+
+message JobRunProgress {
+    JobRunPhase phase = 1;
+    string message = 2;
+    uint32 objects_total = 3;      // sync progress (during SYNCING phase)
+    uint32 objects_resolved = 4;
+    uint64 chunks_bytes_total = 5;
+    uint64 chunks_bytes_fetched = 6;
+}
+
+enum JobRunPhase {
+    JOB_RUN_INGESTING = 0;
+    JOB_RUN_PUBLISHING = 1;
+    JOB_RUN_CLAIMING = 2;
+    JOB_RUN_STARTING = 3;
+    JOB_RUN_SYNCING = 4;
+    JOB_RUN_RUNNING = 5;
+}
+
+// --- Container Exec ---
+
+// Stream protocol: /aos/job/exec/1.0.0
+// Execute a command inside a running job's container (like docker exec).
+// Only allowed for RunSpec containers with CONTAINER_CAP_EXEC.
+// Bidirectional stream: client sends stdin/resize/signal,
+// server sends stdout/stderr/exit.
+message JobExecRequest {
+    string cluster_id = 1;        // cluster context
+    string job_id = 2;            // must reference a running job
+    repeated string command = 3;  // command + args (e.g. ["bash", "-l"])
+    bool tty = 4;                 // allocate a PTY for interactive mode
+    bool interactive = 5;         // forward stdin from client
+    map<string, string> env = 6;  // additional environment variables
+    string working_dir = 7;       // working directory (empty = container default)
+    string user = 8;              // run as user (empty = default)
+}
+
+// Multiplexed bidirectional frames on the exec stream.
+message ExecFrame {
+    oneof frame {
+        bytes stdout = 1;         // daemon -> client: stdout data
+        bytes stderr = 2;         // daemon -> client: stderr data
+        bytes stdin = 3;          // client -> daemon: stdin data
+        WindowResize resize = 4;  // client -> daemon: terminal resize
+        ExecExit exit = 5;        // daemon -> client: process exited (terminal)
+        ExecSignal signal = 6;    // client -> daemon: send signal to process
+    }
+}
+
+message WindowResize {
+    uint32 rows = 1;
+    uint32 cols = 2;
+}
+
+message ExecExit {
+    int32 exit_code = 1;          // process exit code
+    bool signaled = 2;            // true if killed by signal
+    int32 signal = 3;             // signal number (if signaled)
+}
+
+message ExecSignal {
+    int32 signal = 1;             // POSIX signal number (e.g. 2=SIGINT, 15=SIGTERM)
+}
+
+// --- Job Log Streaming ---
+
+// Stream protocol: /aos/job/log/1.0.0
+// Stream structured log events from a job's container. Supports
+// cursor-based resumption for reconnection.
+message LogRequest {
+    string cluster_id = 1;        // cluster context
+    string job_id = 2;            // job to stream logs from
+    optional string after_cursor = 3; // resume from this cursor position
+}
+
+message LogResponse {
+    oneof result {
+        LogEvent event = 1;       // a log event
+        StreamError error = 2;    // 404=job not found, 403=forbidden
+    }
+}
+
+// Structured log event from systemd-journald.
+message LogEvent {
+    string cursor = 1;            // opaque cursor for resumption
+    uint64 realtime_usec = 2;     // wall-clock timestamp (microseconds since epoch)
+    uint64 monotonic_usec = 3;    // monotonic timestamp (microseconds since boot)
+    Priority priority = 4;        // syslog priority level
+    string unit = 5;              // systemd unit name
+    string syslog = 6;            // syslog identifier
+    uint32 pid = 7;               // process ID
+    string cgroup = 8;            // cgroup path
+    bytes line = 9;               // log line content
+    map<string, bytes> fields = 10; // additional structured fields
+}
+
+// Syslog priority levels (RFC 5424).
+enum Priority {
+    EMERGENCY = 0;
+    ALERT = 1;
+    CRITICAL = 2;
+    ERROR = 3;
+    WARNING = 4;
+    NOTICE = 5;
+    INFO = 6;
+    DEBUG = 7;
+}
+```
+
+## Relationship to Other Docs
+
+- [../../tla/Jobs.tla](../../tla/Jobs.tla) -- TLA+ formal specification: job claiming, two-phase handshake, reservation tokens, split-brain idempotency.
