@@ -22,7 +22,7 @@ correct identity can write each record type. No UCANs are involved.
 
 | DHT Key | Signer | Validation |
 |---|---|---|
-| `aos:store:{hash}` | None | Provider records. Self-verifying via content hash. No signature required. |
+| `aos:store:object:{hash}` | None | Provider records. Self-verifying via content hash. No signature required. |
 | `aos:cluster:{cluster_id}:job:{job_id}:state` | JobIdentity | Job's keypair signs. Only the running job writes its heartbeat. |
 | `aos:cluster:{cluster}:config` | Root Identity | Only root signs cluster config. |
 | `aos:auth:token:{token}:revoke` | Token Issuer | Signature must match the key that issued the revoked token. |
@@ -55,8 +55,11 @@ policy restrictions that constrain the capability to specific sub-resources
 ### /aos/job/create
 
 Gates publishing `JobPost{create}` and `JobPost{cancel}` deltas to GossipSub.
+Also gates the `/aos/job/create/1.0.0` and `/aos/job/run/1.0.0` stream
+protocols for remote job creation and execution.
 
 **Checked:** GossipSub validation callback on the `jobs/announce` topic.
+Stream open validation on `/aos/job/create/1.0.0`.
 
 **Policy restrictions (`nb` caveats):**
 
@@ -100,6 +103,13 @@ self-checks before accepting a start stream.
 |---|---|---|
 | `activation` | string[] | Which activation types this builder accepts. |
 | `system` | string[] | Must match builder's actual architecture. |
+
+**Implicit volume operations:** A peer with `/aos/job/claim` may create
+LocalVolume and LocalPersistentVolume ZFS datasets as part of container setup,
+and destroy LocalVolume datasets on container teardown. Volume creation and
+destruction are implicit in job execution -- no separate capability is required.
+(If standalone volume management outside of jobs is needed in the future, it
+would require a new `/aos/volume/manage` capability.)
 
 **Example UCAN capability:**
 
@@ -167,7 +177,7 @@ spawning the process.
 
 ### /aos/store/read
 
-Gates opening `/aos/store/manifest/1.0.0` and `/aos/store/chunk/1.0.0` streams.
+Gates opening `/aos/store/object/1.0.0` and `/aos/store/chunk/1.0.0` streams.
 
 **Checked:** Serving peer verifies requester's UCAN before responding.
 
@@ -207,6 +217,29 @@ roles.
 **Checked:** GossipSub validation callback.
 
 **No sub-resource restrictions.**
+
+---
+
+### /aos/store/upload
+
+Gates opening `/aos/store/upload/1.0.0` streams to upload store objects.
+
+**Checked:** Serving node verifies requester's UCAN before accepting the upload.
+
+**No sub-resource restrictions.** Store upload is global — it is not scoped to
+a cluster.
+
+---
+
+### /aos/store/fetch
+
+Gates opening `/aos/store/fetch/1.0.0` streams to request a daemon to fetch
+FODs from upstream URLs.
+
+**Checked:** Serving node verifies requester's UCAN before accepting the fetch.
+
+**No sub-resource restrictions.** Store fetch is global — it is not scoped to
+a cluster.
 
 ---
 
@@ -315,9 +348,9 @@ restricted to workflow creators or admin roles.
 
 ---
 
-### /aos/workflow/start
+### /aos/workflow/run
 
-Gates opening `/aos/workflow/start/1.0.0` streams to submit workflows to
+Gates opening `/aos/workflow/run/1.0.0` streams to submit workflows to
 bootstrap nodes.
 
 **Checked:** Bootstrap node verifies requester's UCAN before ingesting the
@@ -336,7 +369,7 @@ operation is attempted.
 
 | Capability | Requires | Reason |
 |---|---|---|
-| `/aos/job/claim` | `/aos/store/read` | Builder must fetch manifests and chunks to create views for job containers. |
+| `/aos/job/claim` | `/aos/store/read` | Builder must resolve NixObject metadata and fetch chunks to create views for job containers. |
 | `/aos/job/claim` | `/aos/job/read` | Builder must receive `JobPost` messages to see jobs available for claiming. |
 | `/aos/job/claim` | `/aos/load/write` | Builder must publish LoadReports for scheduling to function. |
 | `/aos/job/claim` | `/aos/load/read` | Builder must receive LoadReports to compute claim delay. |
@@ -344,20 +377,22 @@ operation is attempted.
 | `/aos/job/create` | `/aos/store/read` | Creator must fetch build outputs. |
 | `/aos/job/exec` | `/aos/job/read` | Must be able to discover which peer is running the target job. |
 | `/aos/store/write` | `/aos/store/read` | A peer publishing store objects must also be able to serve them. |
-| `/aos/store/replicate` | `/aos/store/read` | Replicators must fetch manifests and chunks to replicate objects. |
+| `/aos/store/replicate` | `/aos/store/read` | Replicators must resolve NixObject metadata and fetch chunks to replicate objects. |
 | `/aos/store/purge` | `/aos/store/read` | Must be able to identify the objects being purged. |
+| `/aos/store/upload` | `/aos/store/read` | Uploader should also be able to read store objects. |
+| `/aos/store/fetch` | `/aos/store/read` | Fetched objects should be readable by the requester. |
 | `/aos/load/write` | `/aos/load/read` | A peer reporting load must also receive others' reports for scheduling. |
 | `/aos/workflow/execute` | `/aos/job/create` | Workflow executors submit build jobs. |
 | `/aos/workflow/execute` | `/aos/store/read` | Workflow executors fetch store objects. |
 | `/aos/workflow/execute` | `/aos/workflow/read` | Must observe workflow state to advance steps. |
 | `/aos/workflow/create` | `/aos/workflow/read` | Creator must monitor workflow progress. |
-| `/aos/workflow/start` | `/aos/workflow/read` | Submitter must be able to monitor workflow progress. |
+| `/aos/workflow/run` | `/aos/workflow/read` | Submitter must be able to monitor workflow progress. |
 
 A capability set that violates a dependency is **not rejected** — the UCAN is
 still valid. But the peer will encounter authorization failures at runtime. For
 example, a peer with `/aos/job/claim` but without `/aos/store/read` can publish
 a claim, but when the job starts and the daemon tries to fetch the input
-closure, the manifest request will be rejected by the serving peer.
+closure, the object request will be rejected by the serving peer.
 
 The daemon logs a warning on startup for each unsatisfied dependency so
 operators can fix the UCAN delegation before the peer attempts to use the
@@ -428,7 +463,7 @@ responder.
 
 | Protocol | Requester needs | Responder needs |
 |---|---|---|
-| `/aos/store/manifest/1.0.0` | `/aos/store/read` | (serves if has content) |
+| `/aos/store/object/1.0.0` | `/aos/store/read` | (serves if has content) |
 | `/aos/store/chunk/1.0.0` | `/aos/store/read` | (serves if has content) |
 | `/aos/job/start/1.0.0` | job/create (implicit from job posting) | `/aos/job/claim` |
 | `/aos/job/log/1.0.0` | `/aos/job/read` | `/aos/job/claim` (builder serves logs) |
@@ -436,12 +471,21 @@ responder.
 | `/aos/workflow/info/1.0.0` | `/aos/workflow/read` | (serves if tracking workflow) |
 | `/aos/workflow/log/1.0.0` | `/aos/workflow/read` | (serves if tracking workflow) |
 | `/aos/workflow/list/1.0.0` | `/aos/workflow/read` | (serves if tracking workflow) |
-| `/aos/workflow/start/1.0.0` | `/aos/workflow/start` | (accepts if configured) |
+| `/aos/workflow/run/1.0.0` | `/aos/workflow/run` | (accepts if configured) |
+| `/aos/store/upload/1.0.0` | `/aos/store/upload` | (accepts if configured) |
+| `/aos/store/fetch/1.0.0` | `/aos/store/fetch` | (accepts if configured) |
+| `/aos/job/run/1.0.0` | `/aos/job/create` | (accepts if configured) |
+| `/aos/job/create/1.0.0` | `/aos/job/create` | (accepts if configured) |
 
-Both manifest and chunk transfer require `/aos/store/read`. This ensures that
+Both resolve and chunk transfer require `/aos/store/read`. This ensures that
 only authorized cluster members can retrieve store content. Chunks are
 self-verifying by hash, but access is still gated to prevent unauthorized data
 exfiltration.
+
+`/aos/job/create/1.0.0` waits until the job is **running** (terminal =
+`JobStart`). `/aos/job/run/1.0.0` waits until the job **exits** (terminal =
+`JobExit`). Both require `/aos/job/create` capability and cancel the job on
+client disconnect.
 
 ---
 
@@ -475,10 +519,12 @@ A peer that creates build jobs and monitors results.
 /aos/job/read
 /aos/job/exec      (nb: job_creator=["{self}"])
 /aos/store/read
+/aos/store/upload
+/aos/store/fetch
 /aos/load/read
 /aos/auth/read
 /aos/workflow/create
-/aos/workflow/start
+/aos/workflow/run
 /aos/workflow/read
 ```
 
@@ -493,6 +539,8 @@ Full access including token revocation.
 /aos/job/exec
 /aos/store/read
 /aos/store/write
+/aos/store/upload
+/aos/store/fetch
 /aos/store/replicate
 /aos/store/purge
 /aos/load/write
@@ -500,7 +548,7 @@ Full access including token revocation.
 /aos/auth/token/revoke
 /aos/auth/read
 /aos/workflow/create
-/aos/workflow/start
+/aos/workflow/run
 /aos/workflow/execute
 /aos/workflow/read
 /aos/workflow/cancel
