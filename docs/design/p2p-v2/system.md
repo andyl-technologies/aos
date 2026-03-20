@@ -23,8 +23,9 @@ hash always refers to the same content.
   once.
 - **Peer-to-peer transfer.** Objects are discovered via DHT provider records
   and transferred via resolve + chunk stream protocols.
-- **Replicated.** A configurable replication protocol ensures popular objects
-  are available from multiple peers.
+- **Retained by affinity.** Statute mount affinities control which nodes pin
+  store objects. Nodes matching a mount's affinity automatically fetch and
+  retain referenced objects.
 
 The store is the foundation — every other building block depends on it.
 Job specs, workflow specs, build outputs, and system configurations are all
@@ -32,7 +33,7 @@ store objects.
 
 **Docs:** [store.md](store.md), [git-store.md](git-store.md),
 [storage.md](storage.md), [store-upload.md](store-upload.md),
-[fetch.md](fetch.md), [replication.md](replication.md)
+[fetch.md](fetch.md), [mounts.md](mounts.md)
 
 ---
 
@@ -144,7 +145,7 @@ DAG, and submits it to the cluster. The workflow engine:
 2. Builds derivations in dependency order (BuildSpec jobs)
 3. Pipelines builds through builders with local input affinity
 4. Publishes outputs to the store
-5. Replicates outputs across the cluster
+5. Pins outputs on nodes matching mount affinities
 
 The client disconnects during the build and reconnects later to fetch the
 final output. See [workflow-spec.md](workflow-spec.md) for the GNU Hello
@@ -211,7 +212,7 @@ A single AOS daemon can participate in any combination of roles:
 
 Roles are determined by UCAN capabilities and daemon configuration, not by
 a role field. A peer is a "builder" because it has `/aos/job/claim` and a
-`[clusters.X.jobs]` config — not because it declares itself as one.
+`clusters.X.labels.jobs = "true"` config — not because it declares itself as one.
 
 ## Relationship to Other Docs
 

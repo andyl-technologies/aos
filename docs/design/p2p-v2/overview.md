@@ -66,6 +66,11 @@ Content is identified by object ID and transferred in two steps:
    objects (NixObjects, trees, blobs) by blake3 hash. The
    `/aos/store/chunk/1.0.0` stream protocol transfers raw data chunks.
 
+Object retention across the network is driven by Statute mount affinities
+rather than a dedicated replication protocol. Each peer evaluates affinity
+rules from Statute state and pins matching objects locally. See
+[mounts.md](mounts.md) for the affinity model.
+
 ## Protocol Summary
 
 ### DHT Records
@@ -78,10 +83,7 @@ Content is identified by object ID and transferred in two steps:
 | `aos:cluster:{cluster_ident}:members` | ProviderRecord | Short (heartbeat) | None |
 | `aos:cluster:{cluster_ident}:config` | ClusterConfig | Long-lived | Root Identity |
 | `aos:auth:token:{token_hash}:revoke` | RevocationRecord | Mirrors token expiry | Token issuer key |
-| `aos:store:replica` | ProviderRecord | Short (1 min) | None |
 | `aos:store:upload` | ProviderRecord | Short (1 min) | None |
-| `aos:store:fetch` | ProviderRecord | Short (1 min) | None |
-| `aos:workflow:runners` | ProviderRecord | Short (1 min) | None |
 | `aos:cluster:{cluster_ident}:job` | ProviderRecord | Short (1 min) | None |
 | `aos:workflow:run:{workflow_id}` | ProviderRecord | Workflow lifetime | None |
 | `aos:statute:validators` | ProviderRecord | Short (heartbeat) | None |
@@ -94,10 +96,6 @@ Content is identified by object ID and transferred in two steps:
 | `aos/cluster/{cluster_ident}/jobs/announce` | JobPost | CRDT |
 | `aos/cluster/{cluster_ident}/load/announce` | LoadReport | |
 | `aos/auth/token/revoke` | RevocationNotice | Global (not cluster-scoped); peers fetch full record from DHT |
-| `aos/auth/token/issue` | IssuanceNotice | Global (not cluster-scoped); optional issuance notification |
-| `aos/store/publish` | StorePublish | Global (not cluster-scoped) |
-| `aos/store/replicate` | ReplicateMessage | Global (not cluster-scoped) |
-| `aos/store/purge` | StorePurge | Global (not cluster-scoped) |
 | `aos/workflows/announce` | WorkflowPost | Global |
 | `aos/workflows/active/{id}/state` | WorkflowStateMessage | Per-workflow |
 | `aos/statute/transactions` | Transaction | Global |
@@ -111,14 +109,11 @@ Content is identified by object ID and transferred in two steps:
 | `/aos/job/start/1.0.0` | JobStartRequest / JobStartStatus (stream) | `/aos/job/start` WHERE `.job == {job_ident}` |
 | `/aos/job/log/1.0.0` | LogRequest / LogResponse | `/aos/job/read` WHERE `.cluster == {cluster_ident}` OR `.job == {job_ident}` |
 | `/aos/job/exec/1.0.0` | JobExecRequest / ExecFrame (bidirectional stream) | `/aos/job/exec` |
-| `/aos/workflow/info/1.0.0` | WorkflowInfoRequest / WorkflowInfoResponse | `/aos/workflow/read` |
+| `/aos/workflow/state/1.0.0` | WorkflowInfoRequest / WorkflowInfoResponse | `/aos/workflow/read` |
 | `/aos/workflow/log/1.0.0` | WorkflowLogRequest / WorkflowTransition (stream) | `/aos/workflow/read` |
-| `/aos/workflow/list/1.0.0` | WorkflowListRequest / WorkflowListResponse | `/aos/workflow/read` |
-| `/aos/workflow/run/1.0.0` | WorkflowRunRequest / WorkflowRunStatus (stream) | `/aos/workflow/run` |
 | `/aos/job/run/1.0.0` | JobRunRequest / JobRunStatus (stream) | `/aos/job/create` |
 | `/aos/job/create/1.0.0` | JobCreateRequest / JobCreateStatus (stream) | `/aos/job/create` |
 | `/aos/store/upload/1.0.0` | StoreUploadRequest / StoreUploadComplete | `/aos/store/upload` |
-| `/aos/store/fetch/1.0.0` | StoreFetchRequest / StoreFetchStatus (stream) | `/aos/store/fetch` |
 | `/aos/auth/enroll/1.0.0` | EnrollRequest / EnrollResponse | Network key (or delegate) |
 | `/aos/statute/consensus/1.0.0` | HotStuff messages | Statute validator |
 | `/aos/statute/sync/1.0.0` | BlockSyncRequest / Block (stream) | Statute validator/follower |
@@ -146,7 +141,6 @@ Content is identified by object ID and transferred in two steps:
 | [view.md](view.md) | View model: ViewSpec, transitive closure, OverlayFS, GC pinning. |
 | [fuse.md](fuse.md) | FUSE filesystem implementation: path resolution, chunk reads, operations. |
 | [containers.md](containers.md) | Container orchestration: activation types (none, systemd, derivation), container setup, output registration. |
-| [replication.md](replication.md) | Store replication: hash-distance assignment, replicator coordination, purge, rebalancing. |
 | [workflow.md](workflow.md) | Distributed workflows: reactive DAGs, step execution, transition ordering, inter-workflow signaling. |
 | [workflow-spec.md](workflow-spec.md) | Workflow specification format: step types, idempotency model, GC pinning, Nix build example. |
 | [cloud-init.md](cloud-init.md) | Cloud-init integration: native module, systemd slice hierarchy, auto-detection, secrets. |

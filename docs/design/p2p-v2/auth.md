@@ -144,11 +144,7 @@ mapping per topic.
 |---|---|
 | `aos/cluster/{cluster_ident}/jobs/announce` | `/aos/job/create`, `/aos/job/claim`, `/aos/job/cancel` (depends on delta type) |
 | `aos/cluster/{cluster_ident}/load/announce` | `/aos/load/announce` WHERE `.cluster == {cluster_ident}` |
-| `aos/store/publish` | `/aos/store/write` |
 | `aos/auth/token/revoke` | Authorized by the token issuer (see [Revocation](#10-revocation)) |
-| `aos/auth/token/issue` | Authorized by the token issuer |
-| `aos/store/replicate` | `/aos/store/replicate` |
-| `aos/store/purge` | `/aos/store/purge` |
 
 The WHERE clauses enforce that:
 
@@ -402,8 +398,7 @@ message ClusterConfig {
     string cluster_id = 1;           // cluster identifier
     bytes root_public_key = 2;       // root identity public key (trust anchor)
     repeated IntermediateCert intermediates = 3; // active intermediate certificates
-    uint32 replication_factor = 4;   // min replicator copies per store object (default 3)
-    uint64 min_hold_duration = 5;    // min time publisher retains object before GC (microseconds, default 1hr)
+    uint64 min_hold_duration = 4;    // min time publisher retains object before GC (microseconds, default 1hr)
 }
 
 // Certificate for an intermediate identity in the cert tree.
@@ -440,18 +435,6 @@ message RevocationNotice {
     string cluster_id = 2;          // cluster context
 }
 
-// GossipSub topic: aos/auth/token/issue
-// Optional notification when a UCAN is issued. Enables proactive topic
-// admission decisions, audit logging, and revocation cache warming.
-// Not required for correctness — the system works without it.
-message IssuanceNotice {
-    bytes token_hash = 1;           // hash of the issued token
-    string issuer = 2;              // PeerId of the issuing intermediate
-    string subject = 3;             // PeerId of the recipient (audience)
-    repeated string capabilities = 4; // capabilities granted
-    uint64 not_after = 5;           // token expiry (epoch microseconds)
-    string cluster_id = 6;          // cluster context
-}
 ```
 
 ## Relationship to Other Docs

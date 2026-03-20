@@ -1,39 +1,19 @@
-# Store Fetch
+# Store Fetch Engine
 
-The `/aos/store/fetch/1.0.0` stream protocol requests a daemon to download a
-content-addressed store object from upstream URLs (mirrors). This is how FODs
-(fixed-output derivations) — source tarballs, flake inputs — enter the
-network. The client provides URLs and an expected content hash; the daemon
-downloads, verifies, chunks, and publishes the object.
+The fetch engine is the daemon-internal component responsible for downloading
+content-addressed store objects (FODs -- fixed-output derivations, source
+tarballs, flake inputs) from upstream URLs. It is invoked by FetchSpec jobs
+through the normal job lifecycle. There is no separate stream protocol for
+remote fetch requests; fetches go through the job system for load-staggered
+claiming, liveness tracking, and crash recovery.
 
-## Stream Protocol
-
-```
-Client → Server:  StoreFetchRequest { urls, hash, requested_ttl }
-Server → Client:  stream of StoreFetchStatus { progress or complete or error }
-```
-
-The daemon streams progress updates back to the client as the download
-proceeds (bytes downloaded, current speed, current mirror). The final message
-is either success (with the store hash and pin expiry) or failure.
-
-### Discovery
-
-Nodes accepting fetch requests advertise themselves on the DHT key
-`aos:store:fetch` as a provider record with a short TTL (1 min). Clients call
-`get_providers` on this key to discover fetch-capable nodes.
-
-### Daemon Configuration
+## Daemon Configuration
 
 Fetch configuration is per-cluster under `clusters.<name>.fetch`:
 
 ```toml
 [clusters.prod.fetch]
-accept_remote = false              # accept /aos/store/fetch/1.0.0
 max_download_size = "10Gi"         # max download size per fetch
-pin_ttl_min = "1h"
-pin_ttl_max = "7d"
-pin_ttl_default = "24h"
 
 # Connection limits
 max_connections_global = 64        # max concurrent HTTP connections total
@@ -61,7 +41,7 @@ max_mirror_failures = 0            # 0 = try all mirrors before giving up
 
 ## FetchSpec Jobs
 
-Fetches are now job types (`FetchSpec`) that go through the normal job
+Fetches are job types (`FetchSpec`) that go through the normal job
 claim/start/exit lifecycle defined in [jobs.md](jobs.md). A `FetchSpec` job
 contains the URLs, expected content hash, and fetch parameters. The daemon that
 claims the job executes it using the fetch engine described below. This means
@@ -72,7 +52,6 @@ tracking, and crash recovery as build and run jobs.
 
 The fetch engine is the daemon-internal component that executes `FetchSpec`
 jobs. It is also shared by:
-- `/aos/store/fetch/1.0.0` stream protocol (remote fetch requests)
 - Workflow `fetch` steps
 - Any internal operation that needs to download from upstream
 
@@ -168,7 +147,7 @@ concurrently. The queue is priority-ordered:
 
 1. Requests from active workflow steps (have a workflow_id).
 2. Requests from stream protocol clients.
-3. Background replication fetches.
+3. Background affinity-pinned fetches.
 
 Within each priority level, requests are ordered by submission time (FIFO).
 
@@ -229,8 +208,7 @@ stream). After the final byte is received:
 2. The content hash is compared against the expected hash from the request.
 3. **If match:** the NixObject, tree/blob objects, and chunk trees are created,
    written to `store_db`, references scanned into `store_db` refs, provider record
-   published to DHT, `StorePublish` sent to gossipsub. A time-limited pin
-   is created in `gc.mdb`.
+   published to DHT. A time-limited pin is created in `gc.mdb`.
 4. **If mismatch:** the chunks are orphaned (no NixObject references them).
    They'll be cleaned up by the next GC mark-and-sweep cycle. An error is
    returned to the client with the expected vs actual hash.
@@ -285,11 +263,9 @@ See [identity.md](identity.md) for the unified identity management model.
 ## Protocol
 
 ```protobuf
-// Stream protocol: /aos/store/fetch/1.0.0
-// Request a daemon to download a FOD from upstream URLs. The daemon
-// creates a FetchSpec job internally, downloads the content, verifies
-// the hash, chunks it, and publishes the store object. Content-addressed
-// only. Client disconnect = cancel the fetch job.
+// Internal fetch engine types. These are used by FetchSpec jobs and
+// workflow fetch steps. There is no external stream protocol for
+// fetch requests; fetches go through the job system.
 message StoreFetchRequest {
     repeated string urls = 1;       // mirror URLs (priority order)
     string hash = 2;                // expected content hash (SRI format)
