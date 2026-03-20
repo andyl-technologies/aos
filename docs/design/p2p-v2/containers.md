@@ -120,9 +120,8 @@ the derivation's input closure (defined in the `ViewSpec`).
 4. Writes NixObject to `meta_db`, store index to `store_db`.
 5. Writes chunk locations to `db/chunk.mdb` (`chunk_db`).
 6. Calls `start_providing(output_store_hash)` on DHT.
-7. Publishes `StorePublish` to the `store/publish` GossipSub topic.
-8. Publishes `JobPost{delta: exit(JobExit{outputs: [out_hash]})}`.
-9. Cleanup: unmount overlay, unmount FUSE, destroy ephemeral LocalVolume ZFS datasets.
+7. Publishes `JobPost{delta: exit(JobExit{outputs: [out_hash]})}`.
+8. Cleanup: unmount overlay, unmount FUSE, destroy ephemeral LocalVolume ZFS datasets.
 
 **Non-zero exit (failure):**
 
@@ -177,8 +176,7 @@ the output available on the mesh:
 6. Write NixObject to `meta_db`, store index to `store_db`.
 7. Update chunk locations in `db/chunk.mdb` (`chunk_db`).
 8. Publish DHT provider record: `start_providing(output_store_hash)`.
-9. Publish `StorePublish` to the `store/publish` GossipSub topic.
-10. Publish `JobPost{delta: exit(JobExit{outputs: [store_hash, ...]})}`.
+9. Publish `JobPost{delta: exit(JobExit{outputs: [store_hash, ...]})}`.
 
 Build output registration produces git-compatible tree and blob objects:
 the daemon walks the output directory, computes blake3 blob hashes for

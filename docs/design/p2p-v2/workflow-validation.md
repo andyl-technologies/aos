@@ -1,6 +1,6 @@
 # Workflow Validation
 
-When a workflow is submitted via `/aos/workflow/run/1.0.0`, the bootstrap node
+When a workflow is submitted via a Statute mount write, the receiving node
 validates the workflow spec before creating the store object and announcing
 the workflow. Validation is fail-fast — the first error rejects the entire
 workflow.
@@ -63,7 +63,7 @@ All `fetch` source types must have valid configuration:
 - **Hash present:** the `hash` field must be non-empty and in SRI format
   (e.g., `sha256-...`).
 - **Domain filtering:** each URL's domain must pass the daemon's domain
-  filter (`store.fetch.allowed_domains` / `store.fetch.blocked_domains`).
+  filter (`fetch.allowed_domains` / `fetch.blocked_domains`).
   If a URL is blocked, the step is rejected (even if other URLs are valid).
 
 ### 5. Cross-Workflow Validation
@@ -77,7 +77,7 @@ All `await_workflow` steps must reference valid workflows:
     with error: `"referenced workflow {workflow_id} not found"`.
   - If `step_id` is specified, validate that it exists in the referenced
     workflow's spec (requires fetching the spec via
-    `/aos/workflow/info/1.0.0`).
+    `/aos/workflow/state/1.0.0`).
 - **Cross-workflow cycle detection:** the daemon maintains a cross-workflow
   dependency graph in `WorkflowDB.workflow_deps_db`. On submission:
   - Insert edges: this workflow → each `await_workflow` target.
@@ -109,8 +109,8 @@ Check daemon-level limits:
 
 ## Validation Error Response
 
-When validation fails, the daemon returns a `StreamError` in the
-`WorkflowRunStatus` response with:
+When validation fails, the daemon rejects the Statute write with an error
+containing:
 
 - **Code:** `400` for structural/graph/input/fetch errors, `409` for duplicate
   workflow, `503` for capacity limits.
@@ -128,13 +128,13 @@ Example errors:
 503: "max_concurrent workflows limit (100) reached"
 ```
 
-## Validation in the Run Protocol
+## Validation in the Submission Flow
 
-The `/aos/workflow/run/1.0.0` protocol flow with validation:
+The Statute mount write submission flow with validation:
 
-1. **Receive `WorkflowRunRequest`** with the workflow spec (JSON-encoded
-   protobuf) and UCAN.
-2. **Authenticate.** Verify UCAN against `/aos/workflow/run`.
+1. **Receive workflow spec** via Statute mount write (workflow spec store hash
+   written to mount argument keys).
+2. **Authenticate.** Verify UCAN against Statute write permissions.
 3. **Parse spec.** Decode the JSON-encoded `WorkflowSpec` protobuf.
 4. **Run validation stages 1-7** in order. Fail-fast on first error.
 5. **Check for duplicates.** Compute `workflow_id = hash(spec)`. Query DHT
@@ -144,8 +144,6 @@ The `/aos/workflow/run/1.0.0` protocol flow with validation:
 7. **Ingest workflow.** Write to WorkflowDB, create state topic, advertise
    as tracker.
 8. **Announce.** Publish `WorkflowPost{create}` to `workflows/announce`.
-9. **Respond.** Stream `WorkflowRunStatus` progress messages, ending with
-   `WorkflowRunStarted` on success.
 
 Validation (steps 3-5) completes before any store writes or gossipsub
 messages. If validation fails, no side effects occur.
@@ -154,8 +152,7 @@ messages. If validation fails, no side effects occur.
 
 - [workflow.md](workflow.md) -- workflow execution model, state machine.
 - [workflow-spec.md](workflow-spec.md) -- step types, source types, spec format.
-- [protocol.md](protocol.md) -- `WorkflowRunRequest`, `WorkflowRunStatus`
-  protobuf definitions.
+- [protocol.md](protocol.md) -- workflow protobuf definitions.
 - [daemon.md](daemon.md) -- `[workflows]` configuration limits.
 - [storage.md](storage.md) -- WorkflowDB schema (`workflow_deps_db` for cycle
   detection).

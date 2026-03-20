@@ -27,7 +27,7 @@ from consensus, history, and schema validation. Statute replaces:
 | UCAN revocations (`aos:auth:token:{hash}:revoke`) | `/_revocations/{token_hash}` | Revocations need consensus -- a partitioned peer shouldn't miss a revocation. DHT TTLs can expire prematurely. |
 | Validator/governance state | `/_validators/{chain_id}` | Dynamic validator set changes need consensus by definition. |
 
-Provider records (store objects, replicators, cluster membership, job
+Provider records (store objects, cluster membership, job
 executors) remain in the DHT -- they are ephemeral, per-peer, and don't need
 consensus or history. Statute is for **authoritative mutable state**, not
 ephemeral advertisements.
@@ -151,7 +151,6 @@ ALL `_permissions` values must look like.
             config: {
                 cluster_id: _id
                 root_public_key: =~"^[a-f0-9]{64}$"
-                replication_factor: uint & >=1 | *3
                 min_hold_duration: =~"^[0-9]+(s|m|h|d)$" | *"1h"
                 intermediates: [...{
                     cert_id:      string
@@ -591,7 +590,7 @@ This unification means:
 ### Write Path
 
 ```
-Write "/clusters/prod/config" = { replication_factor: 5 }
+Write "/clusters/prod/config" = { min_hold_duration: "2h" }
 
 1. Serialize the value as a blob → blob_hash in objects.mdb/blob_db
 2. Create/update tree objects along the path:
@@ -1110,7 +1109,6 @@ is stored in Statute:
 /clusters/{cluster_id}/config = {
     cluster_id: "prod"
     root_public_key: "abc123..."
-    replication_factor: 3
     min_hold_duration: "1h"
     intermediates: [
         {
@@ -1170,9 +1168,8 @@ Enrolled node configuration is managed in Statute at `/nodes/{peer_id}/`:
         value: string
         effect: "NoSchedule" | "PreferNoSchedule" | "NoExecute"
     }]
-    jobs?: {
-        max_concurrent?: uint
-        accept_remote?: bool
+    limits?: {
+        max_jobs?: uint
     }
 }
 ```

@@ -3,8 +3,8 @@
 The chunk store is the local content-addressed storage engine. It holds chunks
 in append-only pack files, indexes them via LMDB, and serves content for
 `/aos/store/object/1.0.0` and `/aos/store/chunk/1.0.0` requests. Each daemon
-has exactly one chunk store instance. The store is local — replication happens
-at the protocol layer.
+has exactly one chunk store instance. The store is local — retention across
+peers is driven by Statute mount affinities (see [mounts.md](mounts.md)).
 
 ## On-Disk Layout
 
@@ -12,16 +12,22 @@ at the protocol layer.
 /var/lib/aos/
   db/
     store.mdb                 # store index (store_hash → meta_hash)
-    objects.mdb               # merkle tree nodes (tree_db, blob_db)
-    chunk.mdb                 # CDC chunk locations (chunk_hash → pack location)
+    objects.mdb               # merkle tree nodes (tree_db, blob_db, meta_db)
+    chunk.mdb                 # chunk locations (chunk_hash → tier + pack location)
     hash.mdb                  # hash translation (sha256_db, sha1_db, blake3_to_chunk_db)
     gc.mdb                    # GC roots / pins
     access.mdb                # access tracking for LRU eviction
     workflow.mdb              # workflow state and transitions
   chunks/
-    packs/                    # append-only pack files (~1GB each)
-      pack-0001.pack
-      pack-0002.pack
+    nvme/                     # tier: NVMe storage
+      packs/
+        pack-0001.pack
+    hdd/                      # tier: HDD storage
+      packs/
+        pack-0001.pack
+    tmpfs/                    # tier: tmpfs (ephemeral, fast)
+      packs/
+        pack-0001.pack
 ```
 
 ---
@@ -88,12 +94,16 @@ Writers: store object ingest (bursty, but skips existing entries)
 Single default database:
 
 - Key: chunk_hash (xxh128, 16 bytes) — `xxh128(le32(height) || data)`
-- Value: PackLocation { pack_id: u32, offset: u64, length: u32, compressed_length: u32, height: u32 }
+- Value: PackLocation { tier_id: u8, pack_id: u32, offset: u64, length: u32, compressed_length: u32, height: u32 }
 
 The key includes the height in its hash preimage: `xxh128(le32(height) || data)`.
 Height 0 chunks contain raw data bytes. Height N chunks (N > 0) contain a
 serialized list of ChunkRef entries pointing to height N-1 chunks. See
 [git-store.md](git-store.md) for the chunk tree model.
+
+`tier_id` identifies which tier's pack files contain this chunk. A chunk
+exists in exactly one tier at a time — one ChunkDB entry per chunk. The
+lookup is still one LMDB read + one pread.
 
 Maps chunk hashes to their location in pack files. This is the FUSE hot
 path — every `read()` call looks up chunk locations here.
@@ -340,6 +350,69 @@ packs are sealed.
 
 ---
 
+## Storage Tiers
+
+A daemon can have multiple storage tiers, each backed by different media
+(NVMe, HDD, tmpfs). Each tier has its own pack file directory, capacity
+budget, and labels. The LMDB indexes (ChunkDB, ObjectsDB, etc.) are shared
+— only the pack file storage is per-tier.
+
+### Configuration
+
+```toml
+[[store.tiers]]
+name = "nvme"
+chunk_dir = "/var/lib/aos/chunks/nvme"
+budget = "500Gi"
+labels = { media = "nvme", speed = "fast" }
+
+[[store.tiers]]
+name = "hdd"
+chunk_dir = "/mnt/hdd/aos/chunks"
+budget = "10Ti"
+labels = { media = "hdd", speed = "slow" }
+
+[[store.tiers]]
+name = "tmpfs"
+chunk_dir = "/run/aos/chunks-tmpfs"
+budget = "32Gi"
+labels = { media = "tmpfs", persistent = "false" }
+```
+
+### Tier Selection
+
+When ingesting new chunks (build output, fetch, peer transfer):
+
+- If the ingest is driven by an affinity-pinned Statute reference with
+  `tier` labels, place chunks in the matching tier.
+- Otherwise, place in the default tier (first configured tier, or the tier
+  with the most free space).
+- Active pack file rotation is per-tier: each tier has its own active pack.
+
+### Migration
+
+Objects can move between tiers without changing identity (same xxh128 hash):
+
+1. Copy chunk data from source tier pack file to destination tier pack file.
+2. Atomic ChunkDB update: change `tier_id` in PackLocation.
+3. Source tier reclaims space during compaction.
+
+Migration triggers:
+
+- **Promotion**: cold tier -> hot tier when access frequency increases.
+- **Demotion**: hot tier -> cold tier under LRU pressure on the hot tier.
+  Demotion is preferred over eviction — demote to a colder tier before
+  evicting entirely.
+- **Affinity-driven**: when a mount's `_affinity.tier` changes, affected
+  objects migrate to the correct tier.
+
+### Single-Tier Compatibility
+
+A daemon with one `[[store.tiers]]` entry behaves identically to the
+current model. The `tier_id` is always 0 and can be ignored.
+
+---
+
 ## Reading Chunks
 
 Serving a `/aos/store/chunk/1.0.0` request:
@@ -347,7 +420,7 @@ Serving a `/aos/store/chunk/1.0.0` request:
 ```rust
 fn read_chunk(
     env: &lmdb::Environment,
-    pack_dir: &Path,
+    tiers: &[TierConfig],
     chunk_hash: &[u8; 16],
 ) -> io::Result<Vec<u8>> {
     // 1. Look up location in LMDB.
@@ -355,10 +428,11 @@ fn read_chunk(
     let db = env.open_db(None)?;
     let loc_bytes = txn.get(db, chunk_hash)
         .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "chunk not found"))?;
-    let loc: PackLocation = unsafe { std::ptr::read(loc_bytes.as_ptr() as *const _) };
+    let loc: PackLocation = decode_location(loc_bytes);
 
-    // 2. pread from the pack file.
-    let pack_path = pack_dir.join(format!("pack-{:04}.pack", loc.pack_id));
+    // 2. Select the tier's pack directory and pread from the pack file.
+    let tier = &tiers[loc.tier_id as usize];
+    let pack_path = tier.chunk_dir.join(format!("pack-{:04}.pack", loc.pack_id));
     let file = File::open(&pack_path)?;
     let read_len = if loc.compressed_length > 0 {
         loc.compressed_length as usize
@@ -390,7 +464,7 @@ time is recorded in AccessDB at this point.
 ```rust
 fn write_chunks(
     env: &lmdb::Environment,
-    active_pack: &mut ActivePack,
+    tier: &mut TierState,      // target tier
     chunks: &[(Vec<u8>, [u8; 16], u32)], // (data, hash, height) triples
 ) -> io::Result<()> {
     let mut txn = env.begin_rw_txn()?;
@@ -402,13 +476,14 @@ fn write_chunks(
             continue;
         }
 
-        // Compress and write to the active pack file.
+        // Compress and write to the tier's active pack file.
         let (encoded, compressed) = maybe_compress(data);
-        let offset = active_pack.append(&encoded)?;
+        let offset = tier.active_pack.append(&encoded)?;
 
-        // Record location in LMDB.
+        // Record location in LMDB (includes tier_id).
         let loc = PackLocation {
-            pack_id: active_pack.id(),
+            tier_id: tier.id,
+            pack_id: tier.active_pack.id(),
             offset,
             length: data.len() as u32,
             compressed_length: if compressed { encoded.len() as u32 } else { 0 },
@@ -417,9 +492,9 @@ fn write_chunks(
         txn.put(loc_db, hash, &encode_location(&loc), lmdb::WriteFlags::NO_OVERWRITE)?;
 
         // Seal and rotate if the pack is full.
-        if active_pack.size() >= PACK_TARGET_SIZE {
-            active_pack.seal()?;
-            *active_pack = ActivePack::create_next(active_pack.id() + 1)?;
+        if tier.active_pack.size() >= PACK_TARGET_SIZE {
+            tier.active_pack.seal()?;
+            tier.active_pack = ActivePack::create_next(tier.active_pack.id() + 1)?;
         }
     }
 
@@ -551,7 +626,9 @@ eviction, orphaned chunk cleanup, pack compaction).
 ## Pack Compaction
 
 Sealed packs accumulate dead space as chunks are GC'd. Compaction reclaims
-this space by rewriting packs, keeping only live chunks.
+this space by rewriting packs, keeping only live chunks. Compaction is
+per-tier — dead space tracking and the compaction trigger (>30% dead space)
+apply within each tier independently.
 
 ### When Compaction Runs
 
@@ -583,10 +660,11 @@ candidates after each GC cycle completes.
 ```rust
 fn compact_pack(
     env: &lmdb::Environment,
-    pack_dir: &Path,
+    tier: &TierConfig,
     target_pack_id: u32,
     new_pack_id: u32,
 ) -> io::Result<CompactStats> {
+    let pack_dir = &tier.chunk_dir;
     // Collect all live chunk locations pointing to this pack.
     let live_chunks = {
         let txn = env.begin_ro_txn()?;
@@ -622,6 +700,7 @@ fn compact_pack(
 
         let new_offset = new_pack.append(&buf)?;
         updates.push((*hash, PackLocation {
+            tier_id: tier.id,
             pack_id: new_pack_id,
             offset: new_offset,
             length: old_loc.length,
@@ -744,6 +823,10 @@ height-2 nodes only appear above ~256 GB. The interior node chunks are small
 For a large store (100,000 paths, ~1 TB total content), multiply accordingly.
 The LMDB index stays under 1 GB. Pack file count reaches ~600.
 
+With multiple tiers, the total storage capacity is the sum of all tier
+budgets. Hot data lives on fast tiers, cold data on slow tiers. The LMDB
+indexes remain shared and small relative to pack file data.
+
 LMDB's memory-mapped I/O means the index performs well even when it exceeds
 available RAM — the OS page cache handles hot-path caching transparently.
 
@@ -786,11 +869,12 @@ See [volumes.md](volumes.md) for the full volume model and lifecycle.
 
 ## Relationship to Other Docs
 
-- [gc.md](gc.md) -- eviction algorithm using AccessDB and gc.mdb
+- [gc.md](gc.md) -- eviction algorithm using AccessDB and gc.mdb; per-tier LRU eviction, demotion before eviction
 - [fuse.md](fuse.md) -- FUSE filesystem (read-only, no access tracking)
 - [view.md](view.md) -- view model (StoreVolumes pin store objects against GC)
 - [containers.md](containers.md) -- build output registration (primary source of new objects and chunks)
 - [store.md](store.md) -- mesh-level store protocol (resolve, chunk transfer)
 - [git-store.md](git-store.md) -- content-addressed object model (TreeObject, BlobObject, chunk tree, MetaObject)
 - [store-upload.md](store-upload.md) -- upload verification uses blob hashes and tree hashes
-- [volumes.md](volumes.md) -- volume model, ZFS dataset lifecycle.
+- [volumes.md](volumes.md) -- volume model, ZFS dataset lifecycle
+- mounts.md -- `_affinity` tier labels drive tier selection

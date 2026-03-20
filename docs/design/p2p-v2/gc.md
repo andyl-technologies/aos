@@ -16,14 +16,25 @@ The pin set is the union of two sources:
 - **Manual pins (gc.mdb):** store hashes pinned by the operator via the
   `gc.mdb` database. Used for keeping specific store objects that should not
   be evicted regardless of LRU age.
-- **Statute auto-pinning:** all `#StoreRef` and `#TreeRef` values found in
-  the latest Statute state are pinned, including their full closures. The GC
-  scanner walks the Statute state trie, finds hash values matching the store
-  reference pattern, and traces closures through store_db (refs), tree_db,
-  blob_db, meta_db (ref fields), and chunk_db. This replaces explicit
-  workflow pinning — workflow specs, replica set images, git refs, and any
-  other store references in Statute are automatically protected. Removing a
-  Statute key releases the pin.
+- **Statute affinity-scoped pinning:** `#StoreRef` and `#TreeRef` values in
+  Statute state are pinned only if this node matches the effective `_affinity`
+  of the mount containing the reference. The GC closure walker traverses the
+  Statute state trie mount-by-mount:
+
+  1. At each mount boundary, read the mount's effective `_affinity`
+     (intersection of declared affinity with parent).
+  2. Check if this node's effective labels (`node.labels ∪ clusters.X.labels`) match the
+     `_affinity.node` selector.
+  3. Check if any local storage tier's labels match the `_affinity.tier`
+     selector.
+  4. If both match (or if the affinity is empty/inherited from root = all
+     nodes): walk the subtree, pin all `#StoreRef`/`#TreeRef` with full
+     closures.
+  5. If the node or tier doesn't match: skip the subtree entirely. References
+     under this mount are LRU-evictable on this node.
+
+  The check is per mount boundary (sparse), not per key. See
+  [mounts.md](mounts.md) for the full affinity model.
 
 Everything else is LRU-evictable based on `last_access` in the AccessDB.
 
@@ -34,17 +45,27 @@ nodes) → height-0 data chunks. Additionally:
 - **Merkle tree:** tree_db entries → subtree tree hashes + blob hashes
 - **Meta objects:** meta_db ref fields → recursively follow all object references (commits → trees → parent commits → ...)
 
-## Replication Pool and Hold Duration
+## Fetch-on-Pin
 
-Objects managed by the replication protocol receive special GC treatment:
+When the closure walker discovers a new `#StoreRef` that this node should pin
+(affinity matches) but the object is not yet local, the daemon proactively
+fetches it in the background:
 
-- **Replication pool objects** (unpinned objects held for replication) are
-  excluded from normal LRU eviction. They are managed by the replication
-  protocol -- removed via explicit purge messages or pool eviction when the
-  replication budget (`[store.replication] reserved`) is exceeded.
+1. Queue the store_hash for background fetch.
+2. Fetch via `/aos/store/object/1.0.0` and `/aos/store/chunk/1.0.0` from any
+   provider.
+3. Once local, the object is pinned against GC.
+4. Fetches are staggered by node load to avoid thundering herd when many nodes
+   match an affinity simultaneously.
+
+This replaces the separate replication protocol. Statute consensus distributes
+pin state; matching nodes fetch and retain.
+
+## Hold Duration
+
 - **Newly published objects** are subject to `ClusterConfig.min_hold_duration`
-  -- GC skips objects younger than this threshold to allow replicators time to
-  discover and download the object before the publisher evicts it.
+  -- GC skips objects younger than this threshold to allow peers time to
+  discover and fetch the object before the publisher evicts it.
 
 Archive/storage nodes are just peers with very high max_size thresholds (and may
 not participate in job execution).
@@ -80,8 +101,15 @@ fn gc_store_objects(
     let total_size = access_db.total_nar_size();
     if total_size <= max_size { return; }
 
+    // Statute affinity-scoped pins
+    let statute_pins = walk_statute_with_affinity(
+        &statute_state,
+        &my_node_labels,
+        &my_tier_labels,
+    );
     let pinned: HashSet<String> = active_views
         .union(&gc_db.all_roots())
+        .union(&statute_pins)
         .cloned()
         .collect();
 
@@ -155,7 +183,7 @@ provider_ttl = f(lru_rank, disk_headroom, growth_rate)
 
 Hot paths (top of LRU): long TTL (hours)
 Cold paths (bottom, near eviction): short TTL (minutes)
-Pinned paths (active containers): max TTL
+Pinned paths (active containers, affinity match): max TTL
 ```
 
 Self-correcting: `last_access = max(creation_time, last_resolve_serve)`.
@@ -205,6 +233,7 @@ managed by the daemon, not pack file content.
   read/write operations
 - [fuse.md](fuse.md) -- FUSE filesystem views (read-only, no access tracking)
 - [store.md](store.md) -- provider TTL on DHT records
+- [mounts.md](mounts.md) -- `_affinity` model, scoping rules
 - [containers.md](containers.md) -- container lifecycle pins roots on start,
   unpins on exit
 - [jobs.md](jobs.md) -- job lifecycle determines when roots are pinned/unpinned

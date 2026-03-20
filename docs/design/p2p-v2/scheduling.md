@@ -10,15 +10,18 @@ degrades gracefully with incomplete information.
 Before computing claim delay, a peer checks hard filters. If any filter fails,
 the job is instantly rejected:
 
-1. **System match**: `job.node_selector.system == my system`.
-2. **Features match**: `job.node_selector.features` is a subset of my features.
-3. **Label match**: `job.node_selector.labels` satisfied by my labels.
-4. **Taint toleration**: for each of my `NoSchedule` taints, the job's
-   `node_selector.tolerations` must include a matching toleration (same key and
-   value, or value-wildcard). `PreferNoSchedule` taints are checked during soft
-   ranking, not here. `NoExecute` taints reject scheduling AND evict running
-   jobs that lack a toleration.
-5. **Capacity**: `jobs_running + jobs_claimed < max_jobs`.
+1. **System match**: `job.node_selector.system == node.system` (from `[node]`).
+2. **Features match**: `job.node_selector.features` is a subset of `node.features`
+   (from `[node.features]`).
+3. **Label match**: `job.node_selector.labels` satisfied by effective labels
+   (`node.labels ∪ clusters.X.labels`).
+4. **Taint toleration**: for each of my `NoSchedule` taints (from
+   `[[clusters.X.taints]]`), the job's `node_selector.tolerations` must include
+   a matching toleration (same key and value, or value-wildcard).
+   `PreferNoSchedule` taints are checked during soft ranking, not here.
+   `NoExecute` taints reject scheduling AND evict running jobs that lack a
+   toleration.
+5. **Capacity**: `jobs_running + jobs_claimed < clusters.X.limits.max_jobs`.
 6. **Failure avoidance**: the derivation has not failed on this builder recently
    (checked against local failure history).
 7. **Resource headroom**: enough free resources for the job's `ResourceLimits`.
@@ -208,10 +211,24 @@ DAG. Benefits:
 
 See [jobs.md](jobs.md#slot-reservation) for the full reservation flow.
 
+## Label Model
+
+A node's effective labels for scheduling are `node.labels ∪ clusters.X.labels`.
+Labels defined in `[node.labels]` apply globally across all clusters the node
+participates in. Per-cluster overrides in `[clusters.X.labels]` add or shadow
+node-level labels for that cluster only. The merged effective label set is the
+same set used by mount `_affinity` matching and by `job.node_selector.labels`
+evaluation.
+
+Boolean flags that were previously separate config fields (e.g.
+`accept_remote`, `statute.role`) are now expressed as labels. For example,
+`clusters.X.labels.jobs = "true"` replaces `clusters.X.jobs.accept_remote`.
+
 ## Resource Model
 
 Four resource dimensions: CPU, memory, disk, and `local_space`. Each uses a
-four-state model:
+four-state model. Resource capacity and limits come from `[clusters.X.limits]`
+and `[clusters.X.slice]`.
 
 - **Reserved**: host overhead, non-allocatable.
 - **Free**: available for new jobs.

@@ -69,9 +69,12 @@ keys:
 The key store backend is configurable:
 
 ```toml
-# Daemon key store
-[identity]
+# Daemon node identity (key_file is under [node])
+[node]
 key_file = "/etc/aos/peer.key"
+
+# Daemon credential store
+[identity]
 keystore_type = "directory"         # directory, sops, age
 keystore_path = "/etc/aos/"
 
@@ -130,8 +133,7 @@ If resolution fails (file not found, API error, invalid credential):
 ## Daemon Configuration
 
 ```toml
-[identity]
-key_file = "/etc/aos/peer.key"
+# key_file is under [node] (see daemon.md)
 
 # Fetch engine credentials
 [[identity.credentials]]
@@ -201,7 +203,7 @@ The workflow engine uses the identity manager for:
   manager for key storage and UCAN management.
 - [fetch.md](fetch.md) -- fetch engine uses the identity manager for HTTP
   authentication.
-- [daemon.md](daemon.md) -- `[identity]` configuration section.
+- [daemon.md](daemon.md) -- `[node]` and `[identity]` configuration sections.
 - [auth.md](auth.md) -- UCAN chain verification uses the identity manager
   to access certificates.
 - [cloud-init.md](cloud-init.md) -- cloud-init can configure credential

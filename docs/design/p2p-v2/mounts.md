@@ -278,7 +278,7 @@ against GC.
 
 ```cue
 _affinity: {
-    node?: { [string]: string }    // match against node labels (from [clusters.X.node.labels])
+    node?: { [string]: string }    // match against effective labels (node.labels ∪ clusters.X.labels)
     tier?: { [string]: string }    // match against storage tier labels (from [[store.tiers]])
 }
 ```
@@ -351,16 +351,19 @@ The mount definition fields are:
 {
     _mount: "statute"
     _capabilities: { schema: true, permissions: true }
+    _affinity: {}                    // all nodes (default, could be omitted)
 
     // User-defined path for git repositories
     repos: {
         _mount: "statute"
         _capabilities: { schema: true, permissions: true }
+        _affinity: {}                    // all nodes (default, could be omitted)
 
         [_name=string]: {
             _mount: "git"
             _capabilities: { permissions: true }
             // No schema capability -> cannot define sub-mounts inside a repo
+            // inherits parent affinity (all nodes)
         }
 
         // Workflow mounts alongside their repos
@@ -396,6 +399,25 @@ The mount definition fields are:
             _capabilities: { schema: true, permissions: true }
             // Tenant defines their own _schema and _permissions
         }
+    }
+}
+```
+
+### Object Store with Affinity
+
+An S3-like object store where only cache nodes retain objects:
+
+```cue
+// S3-like object store: only cache nodes retain objects
+objects: {
+    _mount: "statute"
+    _capabilities: { schema: true, permissions: true }
+    _affinity: { node: { role: "cache" } }
+
+    [_bucket=string]: {
+        _mount: "statute"
+        _capabilities: { permissions: true }
+        // inherits: only cache nodes pin
     }
 }
 ```
@@ -780,5 +802,8 @@ Two different Statute clusters can have completely different path layouts.
 - [git.md](git.md) -- git mount type implementation.
 - [workflow.md](workflow.md) -- workflow mount type, execution engine.
 - [workflow-spec.md](workflow-spec.md) -- workflow `read` step, spec format.
-- [storage.md](storage.md) -- objects.mdb shared by all mount types.
+- [storage.md](storage.md) -- objects.mdb shared by all mount types, tiered storage, tier labels.
 - [system.md](system.md) -- mounts as the unification layer.
+- [gc.md](gc.md) -- affinity-aware GC closure walker, fetch-on-pin.
+- [daemon.md](daemon.md) -- node labels, tier configuration.
+- [load-reports.md](load-reports.md) -- per-tier capacity reporting.

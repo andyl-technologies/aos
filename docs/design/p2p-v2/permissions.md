@@ -187,39 +187,6 @@ a cluster. The store is shared across all clusters, and any valid
 
 ---
 
-### /aos/store/write
-
-Gates publishing `StorePublish` messages to the `store/publish` GossipSub topic.
-
-**Checked:** GossipSub validation callback. PeerId in StorePublish must match sender.
-
-**No sub-resource restrictions.** Store write access is global (not cluster-scoped) -- the `StorePublish` message is published to the `aos/store/publish` topic.
-
----
-
-### /aos/store/replicate
-
-Gates publishing and subscribing to the `aos/store/replicate` GossipSub topic.
-Required for participation in the store replication protocol.
-
-**Checked:** GossipSub validation callback and connection-time topic admission.
-
-**No sub-resource restrictions.** Store replication is global (not cluster-scoped).
-
----
-
-### /aos/store/purge
-
-Gates publishing `StorePurge` messages to the `aos/store/purge` GossipSub
-topic. Purge is a privileged operation — typically restricted to ops-admin
-roles.
-
-**Checked:** GossipSub validation callback.
-
-**No sub-resource restrictions.**
-
----
-
 ### /aos/store/upload
 
 Gates opening `/aos/store/upload/1.0.0` streams to upload store objects.
@@ -227,18 +194,6 @@ Gates opening `/aos/store/upload/1.0.0` streams to upload store objects.
 **Checked:** Serving node verifies requester's UCAN before accepting the upload.
 
 **No sub-resource restrictions.** Store upload is global — it is not scoped to
-a cluster.
-
----
-
-### /aos/store/fetch
-
-Gates opening `/aos/store/fetch/1.0.0` streams to request a daemon to fetch
-FODs from upstream URLs.
-
-**Checked:** Serving node verifies requester's UCAN before accepting the fetch.
-
-**No sub-resource restrictions.** Store fetch is global — it is not scoped to
 a cluster.
 
 ---
@@ -272,24 +227,6 @@ Gates publishing `RevocationNotice` to the `auth/token/revoke` GossipSub topic.
 
 Note: the DHT revocation record uses issuer signature validation (Layer 1),
 not UCAN. This capability gates the GossipSub notification only.
-
----
-
-### /aos/auth/token/issue
-
-Gates publishing `IssuanceNotice` to the `auth/token/issue` GossipSub topic.
-Optional — the system functions without issuance notifications. Enables
-proactive topic admission, audit logging, and revocation cache warming.
-
-**Checked:** GossipSub validation. Issuer in the notice must match the sender.
-
-**No sub-resource restrictions.**
-
-**Policy restrictions (`nb` caveats):**
-
-| Caveat | Type | Meaning |
-|---|---|---|
-| `scope` | string | `"subtree"` -- can only revoke tokens issued by this intermediate or its children. |
 
 ---
 
@@ -328,8 +265,8 @@ to `aos/workflows/active/{id}/state` topics.
 
 ### /aos/workflow/read
 
-Gates subscribing to workflow topics and opening `/aos/workflow/info/1.0.0`,
-`/aos/workflow/log/1.0.0`, and `/aos/workflow/list/1.0.0` streams.
+Gates subscribing to workflow topics and opening `/aos/workflow/state/1.0.0`
+and `/aos/workflow/log/1.0.0` streams.
 
 **Checked:** Connection-time topic admission. Stream open validation.
 
@@ -343,18 +280,6 @@ Gates publishing `WorkflowPost{cancel}` to `aos/workflows/announce`. Typically
 restricted to workflow creators or admin roles.
 
 **Checked:** GossipSub validation callback.
-
-**No sub-resource restrictions.**
-
----
-
-### /aos/workflow/run
-
-Gates opening `/aos/workflow/run/1.0.0` streams to submit workflows to
-bootstrap nodes.
-
-**Checked:** Bootstrap node verifies requester's UCAN before ingesting the
-workflow.
 
 **No sub-resource restrictions.**
 
@@ -377,16 +302,12 @@ operation is attempted.
 | `/aos/job/create` | `/aos/store/read` | Creator must fetch build outputs. |
 | `/aos/job/exec` | `/aos/job/read` | Must be able to discover which peer is running the target job. |
 | `/aos/store/write` | `/aos/store/read` | A peer publishing store objects must also be able to serve them. |
-| `/aos/store/replicate` | `/aos/store/read` | Replicators must resolve NixObject metadata and fetch chunks to replicate objects. |
-| `/aos/store/purge` | `/aos/store/read` | Must be able to identify the objects being purged. |
 | `/aos/store/upload` | `/aos/store/read` | Uploader should also be able to read store objects. |
-| `/aos/store/fetch` | `/aos/store/read` | Fetched objects should be readable by the requester. |
 | `/aos/load/write` | `/aos/load/read` | A peer reporting load must also receive others' reports for scheduling. |
 | `/aos/workflow/execute` | `/aos/job/create` | Workflow executors submit build jobs. |
 | `/aos/workflow/execute` | `/aos/store/read` | Workflow executors fetch store objects. |
 | `/aos/workflow/execute` | `/aos/workflow/read` | Must observe workflow state to advance steps. |
 | `/aos/workflow/create` | `/aos/workflow/read` | Creator must monitor workflow progress. |
-| `/aos/workflow/run` | `/aos/workflow/read` | Submitter must be able to monitor workflow progress. |
 
 A capability set that violates a dependency is **not rejected** — the UCAN is
 still valid. But the peer will encounter authorization failures at runtime. For
@@ -440,12 +361,8 @@ subscribing.
 | Topic | Publish requires | Subscribe requires |
 |---|---|---|
 | `jobs/announce` | `/aos/job/create` (for create, cancel) or `/aos/job/claim` (for claim, start, exit, error) | `/aos/job/read` |
-| `store/publish` | `/aos/store/write` | `/aos/store/read` |
-| `store/replicate` | `/aos/store/replicate` | `/aos/store/replicate` |
-| `store/purge` | `/aos/store/purge` | `/aos/store/read` |
 | `load/announce` | `/aos/load/write` | `/aos/load/read` |
 | `auth/token/revoke` | `/aos/auth/token/revoke` | `/aos/auth/read` |
-| `auth/token/issue` | `/aos/auth/token/issue` | `/aos/auth/read` |
 | `workflows/announce` | `/aos/workflow/create` | `/aos/workflow/read` |
 | `workflows/active/{id}/state` | `/aos/workflow/execute` | `/aos/workflow/read` |
 
@@ -468,12 +385,9 @@ responder.
 | `/aos/job/start/1.0.0` | job/create (implicit from job posting) | `/aos/job/claim` |
 | `/aos/job/log/1.0.0` | `/aos/job/read` | `/aos/job/claim` (builder serves logs) |
 | `/aos/job/exec/1.0.0` | `/aos/job/exec` | `/aos/job/claim` (builder hosts the container) |
-| `/aos/workflow/info/1.0.0` | `/aos/workflow/read` | (serves if tracking workflow) |
+| `/aos/workflow/state/1.0.0` | `/aos/workflow/read` | (serves if tracking workflow) |
 | `/aos/workflow/log/1.0.0` | `/aos/workflow/read` | (serves if tracking workflow) |
-| `/aos/workflow/list/1.0.0` | `/aos/workflow/read` | (serves if tracking workflow) |
-| `/aos/workflow/run/1.0.0` | `/aos/workflow/run` | (accepts if configured) |
 | `/aos/store/upload/1.0.0` | `/aos/store/upload` | (accepts if configured) |
-| `/aos/store/fetch/1.0.0` | `/aos/store/fetch` | (accepts if configured) |
 | `/aos/job/run/1.0.0` | `/aos/job/create` | (accepts if configured) |
 | `/aos/job/create/1.0.0` | `/aos/job/create` | (accepts if configured) |
 
@@ -502,7 +416,6 @@ A peer that claims and executes jobs.
 /aos/job/read
 /aos/store/read
 /aos/store/write
-/aos/store/replicate
 /aos/load/write
 /aos/load/read
 /aos/auth/read
@@ -520,11 +433,9 @@ A peer that creates build jobs and monitors results.
 /aos/job/exec      (nb: job_creator=["{self}"])
 /aos/store/read
 /aos/store/upload
-/aos/store/fetch
 /aos/load/read
 /aos/auth/read
 /aos/workflow/create
-/aos/workflow/run
 /aos/workflow/read
 ```
 
@@ -538,17 +449,12 @@ Full access including token revocation.
 /aos/job/read
 /aos/job/exec
 /aos/store/read
-/aos/store/write
 /aos/store/upload
-/aos/store/fetch
-/aos/store/replicate
-/aos/store/purge
 /aos/load/write
 /aos/load/read
 /aos/auth/token/revoke
 /aos/auth/read
 /aos/workflow/create
-/aos/workflow/run
 /aos/workflow/execute
 /aos/workflow/read
 /aos/workflow/cancel
@@ -599,7 +505,7 @@ triggers re-evaluation and the peer is pruned from all affected topics.
 
 ## 9. Limits and Enforcement
 
-Distributed limits (max_concurrent, max_replicas) are advisory, not strictly
+Distributed limits (max_jobs, max_replicas) are advisory, not strictly
 enforceable in a decentralized system. A peer can self-enforce its own limits,
 but the cluster cannot prevent a misbehaving peer from exceeding them.
 

@@ -350,7 +350,7 @@ aos workflow run --template ci/full-pipeline \
    }
    ```
 
-8. **Submit.** Client calls `/aos/workflow/run/1.0.0`.
+8. **Submit.** Client writes to the workflow mount argument keys in Statute.
 
 ### Static Verification on Template Update
 

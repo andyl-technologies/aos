@@ -31,8 +31,6 @@ aos:
     gc:
       budget: 500GB
       target: 0.8
-    replication:
-      reserved: "100Gi"
 
   volumes:
     zfs_pool: aos                    # ZFS pool name for volume datasets
@@ -42,7 +40,7 @@ aos:
     max_depth: 500
     max_concurrent: 100
     sync_window: 60
-    accept_remote: false
+    # workflow acceptance is controlled by clusters.X.labels.workflows = "true"
 
   # --- Daemon systemd service configuration ---
   # Controls the aos-daemon.service unit and the parent slice hierarchy.
@@ -60,26 +58,30 @@ aos:
       memory_max: 56G           # all jobs across all clusters capped at 56G
       io_weight: 100
 
+  # --- Node identity (global across all clusters) ---
+  node:
+    system: x86_64-linux
+    features:
+      - kvm
+      - big-parallel
+    labels:
+      rack: r1
+      gpu: a100
+
   # --- Per-cluster configuration ---
   clusters:
     prod:
       ucan_file: /etc/aos/prod.ucan
-      node:
-        system: x86_64-linux
-        features:
-          - kvm
-          - big-parallel
-        labels:
-          rack: r1
-          gpu: a100
-          region: us-east
-        taints:
-          - key: dedicated
-            value: ci
-            effect: NoSchedule
-      jobs:
-        max_concurrent: 8
-        accept_remote: false
+      labels:
+        region: us-east
+        statute: builder
+        jobs: "true"
+      taints:
+        - key: dedicated
+          value: ci
+          effect: NoSchedule
+      limits:
+        max_jobs: 8
       slice:
         cpu_weight: 100
         memory_max: 32G
@@ -88,13 +90,10 @@ aos:
 
     staging:
       ucan_file: /etc/aos/staging.ucan
-      node:
-        system: x86_64-linux
-        features:
-          - kvm
-      jobs:
-        max_concurrent: 4
-        accept_remote: true
+      labels:
+        jobs: "true"
+      limits:
+        max_jobs: 4
       slice:
         cpu_weight: 50
         memory_max: 16G
@@ -200,7 +199,7 @@ Validation checks include:
 - At least one seed peer specified
 - At least one cluster configured
 - Per-cluster slice memory_max does not exceed clusters_slice memory_max
-- `max_concurrent` is positive
+- `limits.max_jobs` is positive
 - `features` and `labels` values are strings
 - `effect` is one of `NoSchedule`, `PreferNoSchedule`, `NoExecute`
 
@@ -225,11 +224,11 @@ The module can read instance metadata and inject values automatically:
 | Source | Injected as |
 |---|---|
 | Instance type (e.g., `m5.4xlarge`) | Auto-computed `memory_max` and `cpu_quota` |
-| Availability zone | `node.labels.az` |
-| Region | `node.labels.region` |
-| Instance ID | `node.labels.instance_id` |
-| GPU presence (e.g., `p3.2xlarge`) | `node.features` += `gpu` |
-| NVMe local disks | `node.features` += `local-ssd`, auto-set `chunk_dir` |
+| Availability zone | `[node.labels] az` |
+| Region | `[node.labels] region` |
+| Instance ID | `[node.labels] instance_id` |
+| GPU presence (e.g., `p3.2xlarge`) | `[node.features]` += `gpu` |
+| NVMe local disks | `[node.features]` += `local-ssd`, auto-set `chunk_dir` |
 | NVMe local disks (ZFS) | If NVMe local disks are detected and no ZFS pool named `volumes.zfs_pool` exists, the cloud-init module creates it automatically. |
 
 Auto-detected values are defaults — explicit config overrides them.
@@ -318,8 +317,6 @@ aos:
     chunk_dir: /var/lib/aos/chunks
     gc:
       budget: 80%                # use 80% of available disk
-    replication:
-      reserved: "50Gi"
 
   service:
     memory_max: 2G
@@ -328,20 +325,22 @@ aos:
       cpu_quota: 90%
       memory_max: auto           # auto-detect from instance type
 
+  node:
+    system: x86_64-linux
+    features:
+      - kvm
+      - big-parallel
+    # labels.az and labels.region auto-detected from instance metadata
+
   clusters:
     prod:
       ucan_source:
         type: aws_secretsmanager
         secret_id: aos/prod/builder-ucan
-      node:
-        system: x86_64-linux
-        features:
-          - kvm
-          - big-parallel
-        # labels.az and labels.region auto-detected from instance metadata
-      jobs:
-        max_concurrent: auto     # auto-detect from instance CPU count
-        accept_remote: true
+      labels:
+        jobs: "true"
+      limits:
+        max_jobs: auto           # auto-detect from instance CPU count
       slice:
         cpu_weight: 100
         memory_max: auto         # auto-detect, apply clusters_slice proportionally
@@ -351,7 +350,7 @@ The `auto` value triggers auto-detection from the instance type and cgroup
 hierarchy. For an `m5.4xlarge` (16 vCPU, 64 GB RAM):
 - `clusters_slice.memory_max` = auto → `~56 GB` (64 GB - 2 GB daemon - ~6 GB OS)
 - `clusters.prod.slice.memory_max` = auto → `~56 GB` (only cluster, gets all)
-- `clusters.prod.jobs.max_concurrent` = auto → `14` (16 vCPU - 2 reserved)
+- `clusters.prod.limits.max_jobs` = auto → `14` (16 vCPU - 2 reserved)
 
 ## Relationship to Other Docs
 
