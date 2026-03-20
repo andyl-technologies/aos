@@ -20,7 +20,7 @@ before the workflow starts (for `input` sources) or are produced during
 execution.
 
 Workflow definitions can be stored in two ways:
-- **As a store object** (`workflow.json`): submitted via `/aos/workflow/run/1.0.0` for explicit one-time execution.
+- **As a store object** (`workflow.json`): submitted via Statute mount writes for explicit one-time execution.
 - **As a Statute mount value**: stored at `{mount_path}/definition` within a workflow mount. The mount evaluates the definition reactively -- when read dependencies change, new workflow runs are created automatically.
 
 In both cases, the resolved WorkflowSpec is stored as a store object and referenced by its hash. The mount model is described in [mounts.md](mounts.md).

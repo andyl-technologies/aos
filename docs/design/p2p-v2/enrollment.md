@@ -54,13 +54,12 @@ clusters:
 
 | Clusters | Behavior |
 |---|---|
-| Zero | Mesh routing, store protocols only. Useful for replicate/archive/submit-only nodes. |
+| Zero | Mesh routing, store protocols only. Useful for archive/submit-only nodes. |
 | One | Full participation in that cluster (jobs, load reports, etc.). |
 | Many | Per-cluster participation with separate UCANs, slices, and resource allocations. |
 
-An enrolled node with zero clusters is valid — it can serve store content,
-participate in replication, and submit workflows, but does not subscribe to
-any cluster-specific topics.
+An enrolled node with zero clusters is valid — it can serve store content
+and submit workflows, but does not subscribe to any cluster-specific topics.
 
 **One-shot enrollment.** The `/aos/auth/enroll/1.0.0` endpoint accepts exactly
 one enrollment request. After enrollment, the endpoint is disabled and returns
@@ -139,7 +138,7 @@ aos net enroll <node_address> \
   --node-labels rack=r1,region=us-east \
   --capabilities prod:/aos/job/claim,/aos/store/read,/aos/load/write,/aos/load/read \
   --capabilities staging:/aos/store/read,/aos/load/read \
-  --jobs-max-concurrent prod:8,staging:4 \
+  --jobs-max prod:8,staging:4 \
   --slice-cpu-weight prod:100,staging:50 \
   --slice-memory-max prod:32G,staging:16G
 ```
@@ -253,7 +252,7 @@ For example, cloud-init might set `features = ["kvm"]` and enrollment adds
 `big-parallel`. The merge behavior is:
 - Lists (features, taints): union
 - Maps (labels): merge (enrollment overrides per-key)
-- Scalars (max_concurrent): enrollment wins
+- Scalars (max_jobs): enrollment wins
 
 ### Post-Enrollment Configuration
 
@@ -421,8 +420,7 @@ message Taint {
 }
 
 message ClusterJobsConfig {
-    uint32 max_concurrent = 1;
-    bool accept_remote = 2;
+    uint32 max_jobs = 1;
 }
 
 message ClusterSliceConfig {

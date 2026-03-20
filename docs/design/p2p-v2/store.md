@@ -63,16 +63,18 @@ state:
 
 | Object State | TTL | Rationale |
 |---|---|---|
-| Pinned (active FUSE view or gc.mdb) | Cluster-config interval (default 1 day) | Stable, long-lived. |
-| Replicated (in replication pool) | Cluster-config interval (default 1 day) | Managed by replication protocol. |
-| Unpinned, unreplicated | Estimated time to GC (capped at cluster-config interval) | May be evicted soon; TTL reflects expected lifetime. |
+| Pinned (active FUSE view, gc.mdb, or affinity-pinned) | Cluster-config interval (default 1 day) | Stable, long-lived. |
+| Unpinned | Estimated time to GC (capped at cluster-config interval) | May be evicted soon; TTL reflects expected lifetime. |
 
 Provider records are refreshed at `TTL * 2/3` intervals.
 
 Newly published objects are subject to `ClusterConfig.min_hold_duration`
 (default 1 hour) — the publisher retains the object for at least this period
-regardless of LRU position, ensuring replicators have time to download it. See
-[replication.md](replication.md) for the full replication protocol.
+regardless of LRU position, ensuring other peers have time to discover and
+fetch it.
+
+Object retention across the network is driven by Statute mount affinities.
+See [mounts.md](mounts.md).
 
 ## NixObject
 
@@ -197,33 +199,17 @@ store network:
    `aos:store:object:{object_id}`, registering itself as a provider of the new store
    object.
 
-5. **Announce on GossipSub.** The daemon publishes a `StorePublish` message to
-   the `aos/store/publish` topic, notifying peers
-   that a new store object is available. This allows peers to proactively
-   discover new objects without polling the DHT.
-
-From this point, other peers can discover the object via the DHT (or learn
-about it immediately via the GossipSub announcement) and retrieve it using the
-object and chunk transfer protocols. As other peers fetch and retain the
-object, they also become providers, increasing the object's availability across
-the network.
+From this point, other peers can discover the object via the DHT and retrieve
+it using the object and chunk transfer protocols. Peers also learn about new
+objects through job exit announcements (which carry output store hashes) and
+Statute refs. As other peers fetch and retain the object, they also become
+providers, increasing the object's availability across the network.
 
 ---
 
 ## Protocol
 
 ```protobuf
-// GossipSub topic: aos/store/publish
-// Announces a new store object is available. Published after the peer
-// has written the provider record to the DHT via start_providing.
-message StorePublish {
-    string store_hash = 1;          // content address of the new store object
-    string name = 2;                // human-readable name (e.g. package name)
-    uint64 nar_size = 3;            // NAR-serialized size in bytes
-    string peer_id = 4;             // PeerId of the publishing peer
-    string ucan = 5;                // authorization chain
-}
-
 // Stream protocol: /aos/store/object/1.0.0
 // Batch fetch objects by blake3 hash. Serves MetaObjects, TreeObjects,
 // and BlobObjects — any object in the blake3 address space.
@@ -267,6 +253,6 @@ message StreamError {
 - [git-store.md](git-store.md) -- content-addressed object model (NixObject, TreeObject, BlobObject, ChunkRef), verification.
 - [storage.md](storage.md) -- local storage engine (pack files, LMDB indexes, CDC chunking)
 - [gc.md](gc.md) -- eviction algorithm using AccessDB and RootsDB
-- [replication.md](replication.md) -- replication protocol
+- [mounts.md](mounts.md) -- Statute mount affinities driving object retention
 - [store-upload.md](store-upload.md) -- upload protocol for FODs
-- [../../tla/Store.tla](../../tla/Store.tla) -- TLA+ formal specification: replication protocol, GC pinning safety, pack compaction, nack termination.
+- [../../tla/Store.tla](../../tla/Store.tla) -- TLA+ formal specification: GC pinning safety, pack compaction, nack termination.
