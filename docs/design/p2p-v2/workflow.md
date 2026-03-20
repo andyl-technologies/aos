@@ -53,9 +53,8 @@ history.
 
 | Protocol | Request | Response | Purpose |
 |---|---|---|---|
-| `/aos/workflow/info/1.0.0` | `WorkflowInfoRequest` | `WorkflowInfoResponse` | Fetch workflow spec + current state snapshot |
+| `/aos/workflow/state/1.0.0` | `WorkflowInfoRequest` | `WorkflowInfoResponse` | Fetch point-in-time workflow state snapshot |
 | `/aos/workflow/log/1.0.0` | `WorkflowLogRequest` | stream of `WorkflowTransition` | Fetch or tail the ordered transition log |
-| `/aos/workflow/list/1.0.0` | `WorkflowListRequest` | `WorkflowListResponse` | List known workflows (paginated) |
 
 ---
 
@@ -90,7 +89,7 @@ WorkflowPost {
 ```
 
 This design solves GossipSub message size limits (specs can be arbitrarily
-large) and gives replication for free -- the spec is a store object like any
+large) and the spec is a store object like any
 other, fetched via the standard store protocol. The `nonce` field ensures
 distinct IDs for repeated submissions of the same graph.
 
@@ -452,7 +451,7 @@ Workflows can depend on other workflows via `await_workflow` steps:
 
 The executor subscribes to the target workflow's state topic and watches
 for the referenced step (or the overall workflow) to reach `completed`. If the
-target is already complete (checked via `/aos/workflow/info/1.0.0`), the step
+target is already complete (checked via `/aos/workflow/state/1.0.0`), the step
 completes immediately.
 
 ### Cycle Detection
@@ -516,7 +515,7 @@ to produce the full derivation DAG, then submits it:
 
 8. **Client disconnects.** The workflow continues autonomously.
 
-9. **Client reconnects later.** Queries `/aos/workflow/info/1.0.0` to get
+9. **Client reconnects later.** Queries `/aos/workflow/state/1.0.0` to get
    current state. Fetches final outputs from the store.
 
 ### Example Workflow Graph
@@ -551,7 +550,7 @@ the build if so.
 ### Monitor
 
 Subscribe to `aos/workflows/active/{workflow_id}/state` for live
-updates. Or poll via `/aos/workflow/info/1.0.0` for the current state
+updates. Or poll via `/aos/workflow/state/1.0.0` for the current state
 snapshot.
 
 ### Cancel
@@ -562,8 +561,8 @@ killed at the executor's discretion). The workflow transitions to `cancelled`.
 
 ### List
 
-Call `/aos/workflow/list/1.0.0` on any peer to list known workflows,
-filterable by status (running, completed, failed, cancelled).
+List known workflows by reading Statute state under the workflow mount path
+(e.g., `{mount_path}/runs/`), filterable by status.
 
 ### Catch-Up (Reconnection)
 
@@ -572,7 +571,7 @@ Clients and executors use the same two-phase model:
 1. **Subscribe** to `aos/workflows/active/{workflow_id}/state` for live
    updates. The next periodic snapshot (within one sync window) provides
    the current state — the peer can begin participating immediately.
-2. **Fast state** via `/aos/workflow/info/1.0.0` for the spec hash and
+2. **Fast state** via `/aos/workflow/state/1.0.0` for the spec hash and
    current step states (if the peer can't wait for the next snapshot).
 3. **Backfill** via `/aos/workflow/log/1.0.0` for the full transition
    history (from a specific timestamp for incremental catch-up). This is
@@ -585,63 +584,27 @@ history). Executors that intend to serve as full trackers (providing
 `/aos/workflow/log/1.0.0` to others) must complete step 3 before calling
 `start_providing` on `aos:workflow:run:{workflow_id}`.
 
-### Remote Start
+### Workflow Submission via Statute
 
-Clients can submit workflows to the cluster via the `/aos/workflow/run/1.0.0`
-stream protocol. This is the primary entry point for external workflow
-submission.
+Workflows are submitted by writing to a workflow mount's argument keys in
+Statute. The client writes the workflow spec store hash to the mount path
+(e.g., `{mount_path}/definition`), and the mount handler validates and
+announces the workflow. This replaces the previous `/aos/workflow/run/1.0.0`
+stream protocol.
 
-**Discovery:** peers that accept remote workflow starts advertise themselves on
-the DHT key `aos:workflow:runners` as a provider record with a short TTL (1 min). The
-client calls `get_providers` on this key to discover available bootstrap nodes.
+See [workflow-validation.md](workflow-validation.md) for the full validation
+model. Validation completes before any store writes or gossipsub
+messages -- if it fails, no side effects occur.
 
-**Bootstrap sequence:** the receiving daemon performs the following steps
-atomically (all-or-nothing from the client's perspective):
+**Dual-path model:** Statute captures durable boundaries (record/await steps)
+as transactions. GossipSub carries idempotent transitions (claims,
+completions, speculative execution) for low-latency executor coordination.
+The GossipSub transitions do not need consensus since all step types outside
+of record/await are idempotent.
 
-1. **Validate.** Check the requester's UCAN against `/aos/workflow/run`.
-   Parse and validate the workflow spec (structural, graph, input existence,
-   fetch source, cross-workflow, resource, and capacity checks). See
-   [workflow-validation.md](workflow-validation.md) for the full validation
-   model. Validation completes before any store writes or gossipsub
-   messages — if it fails, no side effects occur.
-2. **Check for duplicates.** Query `get_providers` on
-   `aos:workflow:run:{workflow_id}` (where `workflow_id` = store hash of the spec).
-   If providers exist, the workflow is already running -- respond with
-   `409 Duplicate`.
-3. **Create store object.** Write the workflow store object (NixObject + chunks)
-   to the local chunk store. The workflow spec is a JSON-encoded protobuf
-   stored as `workflow.json`. Record references in `store_db` refs.
-4. **Publish to DHT.** Call `start_providing` on
-   `aos:store:object:{workflow_store_hash}` so other peers can fetch the spec.
-5. **Announce store object.** Publish `StorePublish` to the `store/publish`
-   gossipsub topic.
-6. **Ingest workflow.** Write the workflow record to `WorkflowDB`. Run cycle
-   detection against existing workflows (via `workflow_deps_db`).
-7. **Create state topic.** Subscribe to
-   `aos/workflows/active/{workflow_id}/state`.
-8. **Advertise as tracker.** Call `start_providing` on
-   `aos:workflow:run:{workflow_id}`.
-9. **Announce workflow.** Publish `WorkflowPost{create(spec_hash)}` to
-   `aos/workflows/announce`.
-10. **Respond.** Return `WorkflowRunStarted{workflow_id, bootstrap_peer}`.
+### Reactive Mounts
 
-**Crash safety:**
-- If the bootstrap node crashes before step 9, nothing is announced. The store
-  object is orphaned and eventually GC'd.
-- If it crashes after step 9, the workflow is live. Other executors discover
-  it via gossipsub and join the state topic. The bootstrap node's crash is
-  handled the same as any executor crash -- lease expiry triggers reclaiming.
-
-**Bootstrap node lifecycle:** the bootstrap node is not special after the
-workflow is announced. It becomes a regular tracker/executor. It may execute
-steps, publish state snapshots, and serve `/aos/workflow/log/1.0.0` requests --
-but any other executor can do the same. The workflow does not depend on the
-bootstrap node staying alive.
-
-### Reactive Mount (Alternative to Remote Start)
-
-Instead of submitting workflows via `/aos/workflow/run/1.0.0`, workflows
-can be defined as reactive mounts in Statute. The workflow definition lives
+Workflows can also be defined as reactive mounts in Statute. The workflow definition lives
 at `{mount_path}/definition` within a workflow mount. When read dependencies
 change (detected via merkle tree delta between blocks), the mount
 automatically creates new workflow runs.
@@ -666,7 +629,7 @@ static `/workflows/state/{workflow_id}` path convention.
   in the log but are superseded.
 - **Executor crash**: the step timeout (or workflow deadline) triggers lease
   expiry. The step reverts to `ready` and another executor picks it up. No
-  data is lost -- the transition log is replicated across all tracking peers.
+  data is lost -- the transition log is distributed to all tracking peers via GossipSub.
   If the crashed executor had submitted a job for a `submit_job` step, the
   job-workflow linkage fields in `JobPost` allow other executors to match
   the `JobExit` back to the workflow step.
@@ -915,8 +878,9 @@ message StepState {
 
 // --- Workflow Stream Protocols ---
 
-// Stream protocol: /aos/workflow/info/1.0.0
-// Fetch the current workflow spec and state snapshot.
+// Stream protocol: /aos/workflow/state/1.0.0
+// Fetch the point-in-time workflow state snapshot. Each peer may have
+// a different view of progress (from GossipSub).
 message WorkflowInfoRequest {
     string workflow_id = 1;
 }
@@ -944,63 +908,6 @@ message WorkflowLogRequest {
 }
 // Response is a stream of WorkflowTransition messages.
 
-// Stream protocol: /aos/workflow/list/1.0.0
-// List known workflows, with optional filters and pagination.
-message WorkflowListRequest {
-    optional WorkflowStatus status_filter = 1;
-    optional string creator_filter = 2;
-    uint32 page_size = 3;
-    optional string page_token = 4;
-}
-
-message WorkflowListResponse {
-    repeated WorkflowListEntry workflows = 1;
-    optional string next_page_token = 2;
-}
-
-message WorkflowListEntry {
-    string workflow_id = 1;
-    string creator = 2;
-    WorkflowStatus status = 3;
-    uint64 deadline = 4;
-    uint32 steps_total = 5;
-    uint32 steps_completed = 6;
-}
-
-// Stream protocol: /aos/workflow/run/1.0.0
-// Submit a workflow to a bootstrap node. The node validates the spec,
-// creates the store object, announces the workflow, and begins tracking.
-// Client disconnect = cancel workflow globally.
-message WorkflowRunRequest {
-    string cluster_id = 1;        // cluster context
-    NixObject nix_object = 2;     // workflow store object NixObject
-    repeated Chunk chunks = 3;    // all chunks inline
-    string ucan = 4;              // requester's authorization
-}
-
-message WorkflowRunStatus {
-    oneof status {
-        WorkflowRunProgress progress = 1;
-        WorkflowRunStarted started = 2;  // terminal: workflow announced
-        StreamError failed = 3;          // terminal: validation/capacity error
-    }
-}
-
-message WorkflowRunProgress {
-    WorkflowRunPhase phase = 1;
-    string message = 2;
-}
-
-enum WorkflowRunPhase {
-    WORKFLOW_RUN_INGESTING = 0;   // ingesting workflow store object
-    WORKFLOW_RUN_PUBLISHING = 1;  // publishing to DHT + store/publish
-    WORKFLOW_RUN_ANNOUNCING = 2;  // announcing on workflows/announce
-}
-
-message WorkflowRunStarted {
-    string workflow_id = 1;       // = store hash of the workflow spec
-    string bootstrap_peer = 2;   // PeerId of the bootstrap node
-}
 ```
 
 ---
@@ -1014,6 +921,5 @@ message WorkflowRunStarted {
 - [store.md](store.md) -- store object availability checks, store watcher
   interface.
 - [permissions.md](permissions.md) -- workflow UCAN capabilities.
-- [replication.md](replication.md) -- store object replication interacts with
-  workflow `decision` steps (`store_object_exists`).
+- [mounts.md](mounts.md) -- mount affinities control store object retention.
 - [../../tla/Workflows.tla](../../tla/Workflows.tla) -- TLA+ formal specification: step DAG execution, speculative claiming, lease expiry, workflow termination.

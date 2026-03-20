@@ -9,9 +9,12 @@ WHERE .cluster == {cluster_ident}`.
 ## 1. Wire Format
 
 LoadReport uses a full/delta oneof. The first report from a peer (and periodic
-refreshes) is a `LoadFull` containing static metadata (system, features,
-capacity) and a complete resource snapshot. Subsequent reports are `LoadDelta`
-messages containing only fields that have changed since the last full report.
+refreshes) is a `LoadFull` containing static metadata (system, features, labels,
+capacity) and a complete resource snapshot. `system` and `features` come from
+`[node.system]` and `[node.features]` respectively. `labels` is the effective
+merged set: `node.labels ∪ clusters.X.labels` for the cluster this report
+covers. Subsequent reports are `LoadDelta` messages containing only fields that
+have changed since the last full report.
 
 See [protocol.md](protocol.md) for the complete protobuf definitions:
 `LoadReport`, `LoadFull`, `LoadDelta`, `ResourceCapacity`, `ResourceState`,
@@ -33,6 +36,11 @@ The `local_space` resource represents available ZFS pool space for
 `LocalVolume` and `LocalPersistentVolume` allocations. It follows the same
 four-state model as other resources.
 
+Storage capacity is now reported per-tier. Each configured store tier (e.g.
+`nvme`, `hdd`) reports its space independently via a `TierState` entry in the
+LoadFull message. Tier labels are included so that schedulers and affinity rules
+can match against storage characteristics.
+
 ## 3. EWMA Smoothing
 
 Raw resource measurements are noisy. Each peer smooths its local measurements
@@ -42,7 +50,7 @@ using an exponentially weighted moving average (EWMA) before publishing:
 |---|---|---|
 | CPU | 0.3 | CPU fluctuates rapidly; higher alpha tracks changes quickly. |
 | Memory | 0.1 | Memory changes more gradually; lower alpha reduces noise. |
-| Disk | 0.05 | Disk changes are slow and monotonic during builds. |
+| Disk (per-tier) | 0.05 | Disk changes are slow and monotonic during builds. Applied per tier. |
 | Local space | 0.05 | ZFS pool space changes slowly, similar to disk. |
 
 The EWMA value and its slope (rate of change) are published in the
@@ -128,8 +136,9 @@ message LoadReport {
 // Complete resource snapshot including static metadata.
 // Published on first report and periodically as a refresh.
 message LoadFull {
-    string system = 1;              // architecture (e.g. "x86_64-linux")
-    repeated string features = 2;   // node features (e.g. ["kvm", "big-parallel"])
+    string system = 1;              // architecture from [node.system]
+    repeated string features = 2;   // node features from [node.features]
+    map<string, string> labels = 16; // effective labels: node.labels ∪ clusters.X.labels
     ResourceCapacity capacity = 3;  // total allocatable resources (from cgroup limits)
     ResourceState cpu = 4;          // current CPU utilization
     ResourceState memory = 5;       // current memory utilization
@@ -142,6 +151,7 @@ message LoadFull {
     uint32 fetch_jobs_max = 12;     // max concurrent fetch jobs (from config)
     ResourceState local_space = 13;      // ZFS pool space for volume allocations
     SmoothedTrend local_space_trend = 14; // EWMA trend for local space usage
+    repeated TierState tiers = 15;       // per-tier store capacity
 }
 
 // Incremental update containing only fields that changed since
@@ -157,6 +167,7 @@ message LoadDelta {
     optional SmoothedTrend memory_trend = 7;
     optional ResourceState local_space = 8;
     optional SmoothedTrend local_space_trend = 9;
+    repeated TierState tiers = 10;       // per-tier store capacity (included when any tier state changes)
 }
 
 // Total and reserved capacity for a resource type.
@@ -179,6 +190,14 @@ message ResourceState {
 message SmoothedTrend {
     double ewma = 1;                // exponentially weighted moving average
     double slope = 2;               // rate of change (for linear extrapolation)
+}
+
+// Per-tier store capacity. Each configured store tier reports independently.
+message TierState {
+    string name = 1;                    // tier name (e.g. "nvme", "hdd")
+    map<string, string> labels = 2;     // tier labels for affinity matching
+    ResourceState space = 3;            // free/claimed/active for this tier
+    SmoothedTrend space_trend = 4;      // EWMA trend
 }
 ```
 
