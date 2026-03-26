@@ -2,61 +2,64 @@
 {
   mkDerivation,
   fetchurl,
-  make,
-}: let
+  gnumake,
+}:
+let
   version = "0.29.2";
 in
-  mkDerivation {
-    pname = "pkg-config";
-    inherit version;
+mkDerivation {
+  pname = "pkg-config";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://pkgconfig.freedesktop.org/releases/pkg-config-${version}.tar.gz"
-      ];
-      hash = "sha256-b8acAWiMlFilfrmhZkyaujcszaQgoCv0Qp/mEOfn1ZE=";
-    };
-
-    buildDeps = [make];
-    runtimeDeps = [];
-    propagatedDeps = [];
-
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd pkg-config-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --with-internal-glib \
-            --disable-host-tool
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-        '';
-      }
+  src = fetchurl {
+    urls = [
+      "https://pkgconfig.freedesktop.org/releases/pkg-config-${version}.tar.gz"
     ];
+    hash = "sha256-b8acAWiMlFilfrmhZkyaujcszaQgoCv0Qp/mEOfn1ZE=";
+  };
 
-    checks = {
+  buildDeps = [ gnumake ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
+
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd pkg-config-${version}
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        ./configure \
+          --prefix=$out \
+          --with-internal-glib \
+          --disable-host-tool
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install
+      '';
+    }
+  ];
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       version = testing.mkToolCheck {
         pname = "build-pkg-config";
         tool = self;
@@ -86,7 +89,7 @@ in
         rootfsDeps = [
           self
           pkgs.zlib
-          pkgs.make
+          pkgs.gnumake
         ];
         testScript = ''
           export PKG_CONFIG_PATH="${pkgs.zlib}/lib/pkgconfig"
@@ -110,11 +113,45 @@ in
           echo "==> pkg-config-compile passed"
         '';
       };
+
+      pkg-config-chain = testing.mkVMTest {
+        name = "cross-cutting-pkg-config-chain";
+        rootfsDeps = [
+          self
+          pkgs.openssl
+        ];
+        testScript = ''
+          export PKG_CONFIG_PATH="${pkgs.openssl}/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export C_INCLUDE_PATH="${pkgs.openssl}/include:$C_INCLUDE_PATH"
+          export LIBRARY_PATH="${pkgs.openssl}/lib:$LIBRARY_PATH"
+          export LD_LIBRARY_PATH="${pkgs.openssl}/lib:$LD_LIBRARY_PATH"
+
+          echo "==> Querying pkg-config for openssl"
+          pkg-config --modversion openssl
+          echo "    CFLAGS: $(pkg-config --cflags openssl)"
+          echo "    LIBS:   $(pkg-config --libs openssl)"
+
+          cat > /tmp/pkgtest.c << 'EOF'
+          #include <openssl/crypto.h>
+          #include <stdio.h>
+          int main(void) {
+              printf("OpenSSL: %s\n", OpenSSL_version(OPENSSL_VERSION));
+              return 0;
+          }
+          EOF
+
+          echo "==> Compiling with pkg-config-discovered flags"
+          gcc -o /tmp/pkgtest /tmp/pkgtest.c $(pkg-config --cflags --libs openssl)
+          echo "==> Running"
+          /tmp/pkgtest
+          echo "pkg-config chain: PASS"
+        '';
+      };
     };
 
-    meta = {
-      description = "pkg-config — helper tool for compiling applications and libraries";
-      homepage = "https://www.freedesktop.org/wiki/Software/pkg-config/";
-      license = "GPL-2.0-or-later";
-    };
-  }
+  meta = {
+    description = "pkg-config — helper tool for compiling applications and libraries";
+    homepage = "https://www.freedesktop.org/wiki/Software/pkg-config/";
+    license = "GPL-2.0-or-later";
+  };
+}

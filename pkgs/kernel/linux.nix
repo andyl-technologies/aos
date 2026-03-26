@@ -2,7 +2,7 @@
 {
   mkDerivation,
   linuxSource,
-  make,
+  gnumake,
   perl,
   bash,
   gawk,
@@ -14,13 +14,17 @@
   elfutils,
   bc,
   binutils,
+  gcc-libs,
+  # Optional: extra kernel config fragment text to merge after the base
+  # config fragments. Like NixOS structuredExtraConfig but as raw kconfig text.
+  extraConfig ? "",
 }:
 mkDerivation {
   pname = "linux";
   inherit (linuxSource) version src;
 
   buildDeps = [
-    make
+    gnumake
     perl
     bash
     gawk
@@ -32,8 +36,8 @@ mkDerivation {
     bc
     binutils
   ];
-  runtimeDeps = [kmod];
-  propagatedDeps = [];
+  runtimeDeps = [ kmod ];
+  propagatedDeps = [ ];
 
   # Path to kernel config fragments — these are merged before building.
   configDir = ./config;
@@ -57,6 +61,19 @@ mkDerivation {
           scripts/kconfig/merge_config.sh -m .config "$frag"
         done
 
+        # Merge extra config from the system profile
+        ${
+          if extraConfig != "" then
+            ''
+              cat > .extra-config << 'EXTRAEOF'
+              ${extraConfig}
+              EXTRAEOF
+              scripts/kconfig/merge_config.sh -m .config .extra-config
+            ''
+          else
+            ""
+        }
+
         # Finalize — fill in defaults for any new symbols
         make olddefconfig ARCH=x86_64
       '';
@@ -64,6 +81,9 @@ mkDerivation {
     {
       name = "build";
       script = ''
+        # sorttable (host tool) uses pthreads; glibc's pthread_exit needs
+        # libgcc_s.so.1 for stack unwinding at runtime.
+        export LD_LIBRARY_PATH="${gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         make -j$NIX_BUILD_CORES ARCH=x86_64 bzImage modules
       '';
     }

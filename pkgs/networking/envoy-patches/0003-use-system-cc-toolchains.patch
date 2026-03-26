@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AOS <aos@andyl.dev>
+Date: Tue, 25 Feb 2026 00:00:00 +0000
+Subject: [PATCH] aos: use system C/C++ toolchains
+
+Configure rules_foreign_cc to use system (AOS) C/C++ toolchains instead
+of downloading prebuilt toolchains or building from source.
+
+Works with --incompatible_enable_cc_toolchain_resolution=true to use
+AOS's gcc/g++ via ccWrapper.
+
+Adapted from nixpkgs 0003-nixpkgs-use-system-C-C-toolchains.patch for Envoy 1.37.0.
+---
+ bazel/dependency_imports.bzl | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/bazel/dependency_imports.bzl b/bazel/dependency_imports.bzl
+--- a/bazel/dependency_imports.bzl
++++ b/bazel/dependency_imports.bzl
+@@ -40,7 +40,11 @@ def envoy_dependency_imports(
+         buf_sha = BUF_SHA,
+         buf_version = BUF_VERSION):
+     compatibility_proxy_repo()
+-    rules_foreign_cc_dependencies()
++    rules_foreign_cc_dependencies(
++        register_default_tools=False,  # no prebuilt toolchains
++        register_built_tools=False,  # nor from source
++        register_preinstalled_tools=True,  # use host tools (default)
++    )
+     go_rules_dependencies()
+     go_register_toolchains(go_version)
+     if go_version != "host":

@@ -1,64 +1,34 @@
 ##! modules/security/firewall.nix — nftables-based firewall module
 ##!
-##! Generates a complete nftables ruleset with input filtering, forward
-##! chain (for Kubernetes pod traffic), and pre-configured port sets for
-##! SSH, Kubernetes worker nodes, control plane components, and Cilium.
-##!
-##! Absorbed TOML config values:
-##!   [firewall] enable, default_policy, allowed_tcp, allowed_udp
-##!   [firewall] forward_policy, trusted_interfaces
-##!   [firewall.kubernetes] worker_tcp, worker_udp, control_plane_tcp, cilium_tcp
+##! Generates a complete nftables ruleset with input filtering and forward
+##! chain (for Kubernetes pod traffic). Services declare their own port
+##! requirements by appending to aos.firewall.allowedTCP / allowedUDP.
 {
   config,
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.firewall;
 
   # Format a list of ports as an nftables set expression: { 22, 80, 443 }
-  portSet = ports:
-    if ports == []
-    then ""
-    else "{ ${builtins.concatStringsSep ", " (builtins.map toString ports)} }";
+  portSet =
+    ports:
+    if ports == [ ] then "" else "{ ${builtins.concatStringsSep ", " (builtins.map toString ports)} }";
 
   # Build nftables rules for allowed TCP ports.
   tcpInputRules =
-    if cfg.allowedTCP == []
-    then ""
-    else "    tcp dport ${portSet cfg.allowedTCP} accept\n";
+    if cfg.allowedTCP == [ ] then "" else "    tcp dport ${portSet cfg.allowedTCP} accept\n";
 
   # Build nftables rules for allowed UDP ports.
   udpInputRules =
-    if cfg.allowedUDP == []
-    then ""
-    else "    udp dport ${portSet cfg.allowedUDP} accept\n";
+    if cfg.allowedUDP == [ ] then "" else "    udp dport ${portSet cfg.allowedUDP} accept\n";
 
   # Trusted interface rules — accept all traffic on lo, etc.
   trustedIfaceRules = builtins.concatStringsSep "\n" (
     builtins.map (iface: "    iifname \"${iface}\" accept") cfg.trustedInterfaces
   );
-
-  # Kubernetes-specific rules (only included when K8s ports are defined).
-  k8sWorkerTcpRules =
-    if cfg.kubernetes.workerTCP == []
-    then ""
-    else "    tcp dport ${portSet cfg.kubernetes.workerTCP} accept comment \"K8s worker ports\"\n";
-
-  k8sWorkerUdpRules =
-    if cfg.kubernetes.workerUDP == []
-    then ""
-    else "    udp dport ${portSet cfg.kubernetes.workerUDP} accept comment \"K8s overlay (VXLAN)\"\n";
-
-  k8sControlPlaneTcpRules =
-    if cfg.kubernetes.controlPlaneTCP == []
-    then ""
-    else "    tcp dport ${portSet cfg.kubernetes.controlPlaneTCP} accept comment \"K8s control plane\"\n";
-
-  k8sCiliumTcpRules =
-    if cfg.kubernetes.ciliumTCP == []
-    then ""
-    else "    tcp dport ${portSet cfg.kubernetes.ciliumTCP} accept comment \"Cilium health/Hubble\"\n";
 
   # Full nftables ruleset.
   nftablesConf = ''
@@ -90,12 +60,6 @@
     ${tcpInputRules}
         # Allowed UDP ports.
     ${udpInputRules}
-        # Kubernetes worker node ports.
-    ${k8sWorkerTcpRules}${k8sWorkerUdpRules}
-        # Kubernetes control plane ports.
-    ${k8sControlPlaneTcpRules}
-        # Cilium CNI ports.
-    ${k8sCiliumTcpRules}
         # Log and drop everything else.
         log prefix "nft-drop: " flags all counter drop
       }
@@ -115,7 +79,8 @@
       }
     }
   '';
-in {
+in
+{
   options.aos.firewall = {
     ## Enable the nftables-based firewall.
     ##
@@ -144,7 +109,8 @@ in {
 
     ## TCP ports to allow inbound.
     ##
-    ## Other modules (e.g. SSH, nginx) append ports here automatically.
+    ## Services append their ports here (e.g. SSH adds port 22,
+    ## kubelet adds 10250, etc).
     ##
     ## # Examples
     ## ```nix
@@ -152,15 +118,17 @@ in {
     ## ```
     allowedTCP = lib.mkOption {
       type = lib.types.listOf lib.types.port;
-      default = [22];
-      description = "TCP ports to allow inbound. Default: SSH only.";
+      default = [ ];
+      description = "TCP ports to allow inbound. Services append their ports here.";
     };
 
     ## UDP ports to allow inbound.
+    ##
+    ## Services append their ports here (e.g. Cilium VXLAN adds 8472).
     allowedUDP = lib.mkOption {
       type = lib.types.listOf lib.types.port;
-      default = [];
-      description = "UDP ports to allow inbound.";
+      default = [ ];
+      description = "UDP ports to allow inbound. Services append their ports here.";
     };
 
     ## Default policy for the forward chain.
@@ -181,72 +149,11 @@ in {
     ## Network interfaces where all traffic is accepted unconditionally.
     trustedInterfaces = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = ["lo"];
+      default = [ "lo" ];
       description = ''
         Network interfaces where all traffic is accepted unconditionally.
         The loopback interface (lo) should always be trusted.
       '';
-    };
-
-    kubernetes = {
-      ## TCP ports for Kubernetes worker nodes.
-      workerTCP = lib.mkOption {
-        type = lib.types.listOf lib.types.port;
-        default = [
-          10250
-          10256
-          30000
-        ];
-        description = ''
-          TCP ports for Kubernetes worker nodes:
-          - 10250: kubelet API
-          - 10256: kube-proxy health check
-          - 30000: NodePort range start (30000-32767 handled separately)
-        '';
-      };
-
-      ## UDP ports for Kubernetes worker nodes (VXLAN overlay).
-      workerUDP = lib.mkOption {
-        type = lib.types.listOf lib.types.port;
-        default = [8472];
-        description = ''
-          UDP ports for Kubernetes worker nodes:
-          - 8472: VXLAN overlay network (Flannel/Cilium)
-        '';
-      };
-
-      ## TCP ports for Kubernetes control plane.
-      controlPlaneTCP = lib.mkOption {
-        type = lib.types.listOf lib.types.port;
-        default = [
-          6443
-          2379
-          2380
-          10257
-          10259
-        ];
-        description = ''
-          TCP ports for Kubernetes control plane:
-          - 6443: kube-apiserver
-          - 2379-2380: etcd client and peer
-          - 10257: kube-controller-manager
-          - 10259: kube-scheduler
-        '';
-      };
-
-      ## TCP ports for Cilium CNI (health checks, Hubble).
-      ciliumTCP = lib.mkOption {
-        type = lib.types.listOf lib.types.port;
-        default = [
-          4240
-          4244
-        ];
-        description = ''
-          TCP ports for Cilium CNI:
-          - 4240: Cilium health checks
-          - 4244: Hubble relay
-        '';
-      };
     };
   };
 
@@ -287,10 +194,10 @@ in {
     # nftables.service — load the firewall rules at boot.
     systemd.services."nftables" = {
       description = "nftables Firewall";
-      wantedBy = ["multi-user.target"];
-      before = ["network-pre.target"];
-      wants = ["network-pre.target"];
-      after = ["local-fs.target"];
+      wantedBy = [ "multi-user.target" ];
+      before = [ "network-pre.target" ];
+      wants = [ "network-pre.target" ];
+      after = [ "local-fs.target" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

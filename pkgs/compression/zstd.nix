@@ -2,63 +2,66 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   zlib,
-}: let
+}:
+let
   version = "1.5.7";
 in
-  mkDerivation {
-    pname = "zstd";
-    inherit version;
+mkDerivation {
+  pname = "zstd";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/facebook/zstd/releases/download/v${version}/zstd-${version}.tar.gz"
-      ];
-      hash = "sha256-6zPlH0mhXgI5UM14Jcp0pKK0Pbg1SCWsJPwbfuCeb6M=";
-    };
-
-    buildDeps = [make];
-    runtimeDeps = [zlib];
-    propagatedDeps = [];
-
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd zstd-${version}
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make PREFIX=$out -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install PREFIX=$out
-        '';
-      }
+  src = fetchurl {
+    urls = [
+      "https://github.com/facebook/zstd/releases/download/v${version}/zstd-${version}.tar.gz"
     ];
+    hash = "sha256-6zPlH0mhXgI5UM14Jcp0pKK0Pbg1SCWsJPwbfuCeb6M=";
+  };
 
-    meta = {
-      description = "Zstandard — fast real-time compression algorithm";
-      homepage = "https://facebook.github.io/zstd/";
-      license = "BSD-3-Clause";
-    };
+  buildDeps = [ gnumake ];
+  runtimeDeps = [ zlib ];
+  propagatedDeps = [ ];
 
-    checks = {
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd zstd-${version}
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make PREFIX=$out -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install PREFIX=$out
+      '';
+    }
+  ];
+
+  meta = {
+    description = "Zstandard — fast real-time compression algorithm";
+    homepage = "https://facebook.github.io/zstd/";
+    license = "BSD-3-Clause";
+  };
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       link = testing.mkLinkCheck {
         pname = "lib-zstd";
         library = self;
-        libs = ["-lzstd"];
+        libs = [ "-lzstd" ];
         testSource = ''
           #include <zstd.h>
           #include <stdio.h>
@@ -72,7 +75,7 @@ in
       compress = testing.mkLinkCheck {
         pname = "lib-zstd-compress";
         library = self;
-        libs = ["-lzstd"];
+        libs = [ "-lzstd" ];
         testSource = ''
           #include <zstd.h>
           #include <string.h>
@@ -100,7 +103,7 @@ in
 
       cli-roundtrip = testing.mkVMTest {
         name = "lib-zstd-cli-roundtrip";
-        rootfsDeps = [self];
+        rootfsDeps = [ self ];
         testScript = ''
           echo "zstd round-trip test data 1234567890" > /tmp/original.txt
           zstd /tmp/original.txt -o /tmp/compressed.zst
@@ -114,5 +117,106 @@ in
           echo "==> zstd CLI round-trip: PASS"
         '';
       };
+
+      soname = testing.mkSONAMECheck {
+        pkg = self;
+        libs = [ "libzstd.so" ];
+      };
+
+      version-consistency = testing.mkVersionCheck {
+        pkg = self;
+        name = "zstd";
+        headerCode = ''
+          #include <zstd.h>
+        '';
+        runtimeCode = ''
+          const char *header_ver = ZSTD_VERSION_STRING;
+          const char *runtime_ver = ZSTD_versionString();
+        '';
+        libs = [ "-lzstd" ];
+      };
+
+      compression-interop = testing.mkVMTest {
+        name = "cross-cutting-compression-interop";
+        rootfsDeps = [
+          pkgs.zlib
+          self
+        ];
+        testScript = ''
+          export C_INCLUDE_PATH="${pkgs.zlib}/include:${self}/include:$C_INCLUDE_PATH"
+          export LIBRARY_PATH="${pkgs.zlib}/lib:${self}/lib:$LIBRARY_PATH"
+          export LD_LIBRARY_PATH="${pkgs.zlib}/lib:${self}/lib:$LD_LIBRARY_PATH"
+
+          cat > /tmp/compress_test.c << 'EOF'
+          #include <zlib.h>
+          #include <zstd.h>
+          #include <string.h>
+          #include <stdlib.h>
+          #include <stdio.h>
+
+          int main(void) {
+              const char *original = "The quick brown fox jumps over the lazy dog. "
+                                     "This is test data for compression interop.";
+              size_t origLen = strlen(original);
+
+              printf("==> Testing zstd round-trip\n");
+              size_t zstdBound = ZSTD_compressBound(origLen);
+              void *zstdComp = malloc(zstdBound);
+              size_t zstdSize = ZSTD_compress(zstdComp, zstdBound, original, origLen, 1);
+              if (ZSTD_isError(zstdSize)) {
+                  fprintf(stderr, "zstd compress failed: %s\n", ZSTD_getErrorName(zstdSize));
+                  return 1;
+              }
+              printf("    Compressed %zu -> %zu bytes with zstd\n", origLen, zstdSize);
+
+              char *zstdDecomp = malloc(origLen + 1);
+              size_t dSize = ZSTD_decompress(zstdDecomp, origLen, zstdComp, zstdSize);
+              if (ZSTD_isError(dSize)) {
+                  fprintf(stderr, "zstd decompress failed: %s\n", ZSTD_getErrorName(dSize));
+                  return 1;
+              }
+              if (dSize != origLen || memcmp(zstdDecomp, original, origLen) != 0) {
+                  fprintf(stderr, "zstd round-trip mismatch\n");
+                  return 1;
+              }
+              printf("    zstd round-trip: OK\n");
+              free(zstdComp);
+              free(zstdDecomp);
+
+              printf("==> Testing zlib round-trip\n");
+              uLong zlibBound = compressBound((uLong)origLen);
+              Bytef *zlibComp = malloc(zlibBound);
+              uLong zlibSize = zlibBound;
+              if (compress(zlibComp, &zlibSize, (const Bytef *)original, (uLong)origLen) != Z_OK) {
+                  fprintf(stderr, "zlib compress failed\n");
+                  return 1;
+              }
+              printf("    Compressed %zu -> %lu bytes with zlib\n", origLen, zlibSize);
+
+              char *zlibDecomp = malloc(origLen + 1);
+              uLong resLen = (uLong)origLen;
+              if (uncompress((Bytef *)zlibDecomp, &resLen, zlibComp, zlibSize) != Z_OK) {
+                  fprintf(stderr, "zlib uncompress failed\n");
+                  return 1;
+              }
+              if (resLen != (uLong)origLen || memcmp(zlibDecomp, original, origLen) != 0) {
+                  fprintf(stderr, "zlib round-trip mismatch\n");
+                  return 1;
+              }
+              printf("    zlib round-trip: OK\n");
+              free(zlibComp);
+              free(zlibDecomp);
+
+              printf("Compression interop: PASS\n");
+              return 0;
+          }
+          EOF
+
+          echo "==> Compiling compression interop test"
+          gcc -o /tmp/compress_test /tmp/compress_test.c -lzstd -lz
+          echo "==> Running compression interop test"
+          /tmp/compress_test
+        '';
+      };
     };
-  }
+}

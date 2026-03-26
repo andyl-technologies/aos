@@ -10,6 +10,7 @@ mirror/
 
 # Rust build artifacts
 cli/target/
+crates/target/
 
 # Nix build results
 result

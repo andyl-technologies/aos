@@ -14,7 +14,8 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.kubernetes.kubelet;
 
   # Build the KubeletConfiguration YAML.
@@ -30,11 +31,7 @@
     clusterDomain: "${cfg.clusterDomain}"
     containerRuntimeEndpoint: "${cfg.containerRuntimeEndpoint}"
     maxPods: ${toString cfg.maxPods}
-    serializeImagePulls: ${
-      if cfg.serializeImagePulls
-      then "true"
-      else "false"
-    }
+    serializeImagePulls: ${if cfg.serializeImagePulls then "true" else "false"}
     authentication:
       anonymous:
         enabled: false
@@ -80,35 +77,32 @@
     containerLogMaxSize: "${cfg.containerLogMaxSize}"
     containerLogMaxFiles: ${toString cfg.containerLogMaxFiles}
     topologyManagerPolicy: "${cfg.topologyManagerPolicy}"
-    ${lib.optionalString (cfg.featureGates != {}) ''
+    ${lib.optionalString (cfg.featureGates != { }) ''
       featureGates:
       ${builtins.concatStringsSep "\n" (
-        lib.mapAttrsToList (k: v: "  ${k}: ${
-          if v
-          then "true"
-          else "false"
-        }")
-        cfg.featureGates
+        lib.mapAttrsToList (k: v: "  ${k}: ${if v then "true" else "false"}") cfg.featureGates
       )}
     ''}
   '';
 
   # Build kubelet command-line flags.
   nodeLabelsFlag =
-    if cfg.nodeLabels == {}
-    then ""
-    else "--node-labels=${
-      builtins.concatStringsSep "," (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.nodeLabels)
-    }";
+    if cfg.nodeLabels == { } then
+      ""
+    else
+      "--node-labels=${
+        builtins.concatStringsSep "," (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.nodeLabels)
+      }";
 
   nodeTaintsFlag =
-    if cfg.nodeTaints == []
-    then ""
-    else "--register-with-taints=${builtins.concatStringsSep "," cfg.nodeTaints}";
+    if cfg.nodeTaints == [ ] then
+      ""
+    else
+      "--register-with-taints=${builtins.concatStringsSep "," cfg.nodeTaints}";
 
   kubeletFlags = builtins.concatStringsSep " " (
     builtins.filter (s: s != "") [
-      "--config=/var/lib/kubelet/config.yaml"
+      "--config=/etc/kubernetes/kubelet-config.yaml"
       "--kubeconfig=/etc/kubernetes/kubelet.conf"
       "--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf"
       "--container-runtime-endpoint=${cfg.containerRuntimeEndpoint}"
@@ -118,7 +112,8 @@
       nodeTaintsFlag
     ]
   );
-in {
+in
+{
   options.aos.kubernetes.kubelet = {
     ## Enable the kubelet Kubernetes node agent.
     ##
@@ -136,7 +131,7 @@ in {
     ## Cluster DNS server IP addresses (typically CoreDNS).
     clusterDNS = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = ["10.96.0.10"];
+      default = [ "10.96.0.10" ];
       description = ''
         Cluster DNS server IP addresses. This is typically the CoreDNS
         service ClusterIP, which must fall within the service CIDR.
@@ -204,7 +199,7 @@ in {
     ## ```
     nodeLabels = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = {};
+      default = { };
       description = ''
         Labels to apply to this node on registration. Example:
         { "topology.kubernetes.io/zone" = "us-east-1a"; }
@@ -214,7 +209,7 @@ in {
     ## Taints to apply to this node on registration.
     nodeTaints = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = ''
         Taints to apply to this node on registration. Format:
         "key=value:effect" (e.g. "node-role.kubernetes.io/control-plane:NoSchedule").
@@ -340,7 +335,7 @@ in {
     ## Kubernetes feature gates to enable or disable.
     featureGates = lib.mkOption {
       type = lib.types.attrsOf lib.types.bool;
-      default = {};
+      default = { };
       description = ''
         Kubernetes feature gates to enable or disable. Example:
         { "GracefulNodeShutdown" = true; "TopologyManager" = true; }
@@ -365,7 +360,7 @@ in {
           name = "kubelet-config";
           description = "kubelet config.yaml exists";
           script = ''
-            assert_success "test -f /var/lib/kubelet/config.yaml" \
+            assert_success "test -f /etc/kubernetes/kubelet-config.yaml" \
               "kubelet config.yaml exists"
           '';
         })
@@ -386,6 +381,8 @@ in {
     ];
 
     # /var/lib/kubelet/config.yaml — KubeletConfiguration.
+    # The kubelet expects this at /var/lib/kubelet/config.yaml (as set in its
+    # --config flag). We write it to /etc and symlink from /var/lib/kubelet/.
     environment.etc."kubernetes/kubelet-config.yaml" = {
       text = kubeletConfigYaml;
     };
@@ -393,13 +390,13 @@ in {
     # kubelet.service — Kubernetes node agent.
     systemd.services."kubelet" = {
       description = "Kubernetes Kubelet";
-      wantedBy = ["multi-user.target"];
+      wantedBy = [ "multi-user.target" ];
       after = [
         "network-online.target"
         "containerd.service"
       ];
-      wants = ["network-online.target"];
-      requires = ["containerd.service"];
+      wants = [ "network-online.target" ];
+      requires = [ "containerd.service" ];
       serviceConfig = {
         Type = "notify";
         ExecStart = "${pkgs.kubelet}/bin/kubelet ${kubeletFlags}";
@@ -432,10 +429,11 @@ in {
     # Ensure containerd is enabled when kubelet is enabled.
     aos.kubernetes.containerd.enable = true;
 
-    # Open kubelet API port in the firewall.
+    # Open kubelet ports in the firewall.
     aos.firewall.allowedTCP = [
-      22
-      10250
+      10250 # kubelet API
+      10256 # kube-proxy health check
+      30000 # NodePort range start (30000-32767)
     ];
   };
 }

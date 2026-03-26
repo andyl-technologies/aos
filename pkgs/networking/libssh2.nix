@@ -2,82 +2,85 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   openssl,
   zlib,
-}: let
+}:
+let
   version = "1.11.1";
 in
-  mkDerivation {
-    pname = "libssh2";
-    inherit version;
+mkDerivation {
+  pname = "libssh2";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://www.libssh2.org/download/libssh2-${version}.tar.gz"
-      ];
-      hash = "sha256-2ex2y+NNuY7sNTn+LImdJrDIN8s+tGalaw8QnKv2WPc=";
-    };
-
-    buildDeps = [
-      make
+  src = fetchurl {
+    urls = [
+      "https://www.libssh2.org/download/libssh2-${version}.tar.gz"
     ];
-    runtimeDeps = [
-      openssl
-      zlib
-    ];
-    propagatedDeps = [openssl];
+    hash = "sha256-2ex2y+NNuY7sNTn+LImdJrDIN8s+tGalaw8QnKv2WPc=";
+  };
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd libssh2-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --with-crypto=openssl \
-            --with-libssl-prefix=${openssl} \
-            --with-libz \
-            --enable-shared \
-            --disable-static
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-        '';
-      }
-    ];
+  buildDeps = [
+    gnumake
+  ];
+  runtimeDeps = [
+    openssl
+    zlib
+  ];
+  propagatedDeps = [ openssl ];
 
-    meta = {
-      description = "libssh2 — client-side C library implementing the SSH2 protocol";
-      homepage = "https://libssh2.org";
-      license = "BSD-3-Clause";
-    };
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd libssh2-${version}
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        ./configure \
+          --prefix=$out \
+          --with-crypto=openssl \
+          --with-libssl-prefix=${openssl} \
+          --with-libz \
+          --enable-shared \
+          --disable-static
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install
+      '';
+    }
+  ];
 
-    checks = {
+  meta = {
+    description = "libssh2 — client-side C library implementing the SSH2 protocol";
+    homepage = "https://libssh2.org";
+    license = "BSD-3-Clause";
+  };
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       link = testing.mkLinkCheck {
         pname = "lib-libssh2";
         library = self;
-        libs = ["-lssh2"];
-        extraDeps = [pkgs.openssl];
+        libs = [ "-lssh2" ];
+        extraDeps = [ pkgs.openssl ];
         testSource = ''
           #include <libssh2.h>
           #include <stdio.h>
@@ -90,4 +93,4 @@ in
         '';
       };
     };
-  }
+}

@@ -21,8 +21,9 @@
 {
   pkgs,
   lib,
-  testTools ? {},
-}: let
+  testTools ? { },
+}:
+let
   # QEMU is the sole host-tool exception (CLAUDE.md) — too complex to bootstrap.
   # socat, jq, and firecracker are AOS packages built from source.
   qemu = testTools.qemu;
@@ -31,7 +32,7 @@
   firecracker = pkgs.firecracker;
 
   # Headless rootfs builder (for integration tests without systemd/agent)
-  fcLib = import ./firecracker.nix {inherit pkgs lib;};
+  fcLib = import ./firecracker.nix { inherit pkgs lib; };
   kernel = pkgs.linux;
 
   # Shared shell assertion helpers
@@ -43,21 +44,23 @@
   # Uses exportReferencesGraph to discover the Nix store closure, then
   # creates an ext4 image populated via mkfs.ext4 -d (no mount needed).
 
-  mkTestRootfs = {
-    system,
-    name ? system.config.aos.system.variant,
-    hostname ? "aos-test",
-    networkConfig ? null,
-    hostsEntries ? null,
-    userdata ? null,
-  }: let
-    toplevel = system.config.system.build.toplevel;
-    systemdPkg = pkgs.systemd;
-    coreutilsPkg = pkgs.coreutils;
-    bashPkg = pkgs.bash;
-    socatPkg = pkgs.socat;
-    systemPackages = system.config.environment.systemPackages;
-  in
+  mkTestRootfs =
+    {
+      system,
+      name ? "aos-test",
+      hostname ? "aos-test",
+      networkConfig ? null,
+      hostsEntries ? null,
+      userdata ? null,
+    }:
+    let
+      toplevel = system.config.system.build.toplevel;
+      systemdPkg = pkgs.systemd;
+      coreutilsPkg = pkgs.coreutils;
+      bashPkg = pkgs.bash;
+      socatPkg = pkgs.socat;
+      systemPackages = system.config.environment.systemPackages;
+    in
     pkgs.mkDerivation {
       pname = "vm-rootfs-${name}";
       version = "0";
@@ -85,7 +88,7 @@
       TOPLEVEL = builtins.toString toplevel;
       SYSTEMD = builtins.toString systemdPkg;
       COREUTILS = builtins.toString coreutilsPkg;
-      BASH = builtins.toString bashPkg;
+      AOS_BASH = builtins.toString bashPkg;
       SOCAT = builtins.toString socatPkg;
       SYSTEM_PACKAGES = builtins.concatStringsSep " " (builtins.map builtins.toString systemPackages);
 
@@ -98,6 +101,7 @@
                         mkdir -p rootfs/proc rootfs/sys rootfs/tmp rootfs/run
                         mkdir -p rootfs/var/log rootfs/var/lib rootfs/var/tmp
                         mkdir -p rootfs/opt/aos-test/bin
+                        mkdir -p rootfs/lib64
 
                         # Collect all unique store paths from the closure graphs
                         cat closure-toplevel closure-systemd closure-coreutils closure-bash closure-socat \
@@ -106,17 +110,41 @@
                         echo "==> Copying $(wc -l < all-paths) store paths to rootfs"
 
                         count=0
+                        failed=0
                         total=$(wc -l < all-paths)
                         while IFS= read -r p; do
                           count=$((count + 1))
                           if [ -e "$p" ]; then
-                            cp -a "$p" rootfs/nix/store/
+                            if ! cp -a "$p" rootfs/nix/store/ 2>/tmp/cp-err; then
+                              echo "    WARN: failed to copy $p: $(cat /tmp/cp-err)"
+                              failed=$((failed + 1))
+                            fi
+                          else
+                            echo "    WARN: path does not exist: $p"
+                            failed=$((failed + 1))
                           fi
                           if [ $((count % 10)) -eq 0 ]; then
                             printf '\r    [%d/%d]' "$count" "$total"
                           fi
                         done < all-paths
                         echo ""
+                        if [ "$failed" -gt 0 ]; then
+                          echo "    WARNING: $failed paths failed to copy"
+                        fi
+
+                        # /lib64/ld-linux-x86-64.so.2 — needed for PIE binaries
+                        # (e.g. containerd built with CGO) that reference the
+                        # system dynamic linker. Find the glibc ld-linux from
+                        # the copied store paths.
+                        LD_LINUX=$(find rootfs/nix/store -name 'ld-linux-x86-64.so.2' -path '*glibc-*/lib/*' 2>/dev/null | sort -V | tail -1)
+                        if [ -n "$LD_LINUX" ]; then
+                          # Convert rootfs-relative path to absolute guest path
+                          GUEST_LD="''${LD_LINUX#rootfs}"
+                          ln -sfn "$GUEST_LD" rootfs/lib64/ld-linux-x86-64.so.2
+                          echo "    /lib64/ld-linux-x86-64.so.2 -> $GUEST_LD"
+                        else
+                          echo "    WARNING: ld-linux-x86-64.so.2 not found in rootfs glibc"
+                        fi
 
                         # /sbin/init -> systemd
                         ln -sfn $SYSTEMD/lib/systemd/systemd rootfs/sbin/init
@@ -133,7 +161,7 @@
                         # systemd's default PATH for services is /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
                         mkdir -p rootfs/usr/bin rootfs/usr/sbin
                         # /bin/sh -> bash
-                        ln -sfn $BASH/bin/bash rootfs/bin/sh
+                        ln -sfn $AOS_BASH/bin/bash rootfs/bin/sh
                         # coreutils (sleep, cat, echo, tr, sed, etc.)
                         for bin in $COREUTILS/bin/*; do
                           name=$(basename "$bin")
@@ -230,41 +258,44 @@
                         # fstab so systemd-remount-fs mounts root read-write
                         printf '/dev/vda / ext4 defaults 0 1\n' > rootfs/etc/fstab
                         ${
-              if hostsEntries != null
-              then ''
-                cat > rootfs/etc/hosts << 'HOSTS'
-                127.0.0.1 localhost
-                ${hostsEntries}
-                HOSTS
-              ''
-              else ""
-            }
+                          if hostsEntries != null then
+                            ''
+                              cat > rootfs/etc/hosts << 'HOSTS'
+                              127.0.0.1 localhost
+                              ${hostsEntries}
+                              HOSTS
+                            ''
+                          else
+                            ""
+                        }
                         ${
-              if networkConfig != null
-              then ''
-                mkdir -p rootfs/etc/systemd/network
-                cat > rootfs/etc/systemd/network/10-eth0.network << 'NETCFG'
-                ${networkConfig}
-                NETCFG
-              ''
-              else ""
-            }
+                          if networkConfig != null then
+                            ''
+                              mkdir -p rootfs/etc/systemd/network
+                              cat > rootfs/etc/systemd/network/10-eth0.network << 'NETCFG'
+                              ${networkConfig}
+                              NETCFG
+                            ''
+                          else
+                            ""
+                        }
 
                         ${
-              if userdata != null
-              then ''
-                # Inject cloud-init userdata (NoCloud seed)
-                mkdir -p rootfs/var/lib/cloud/seed/nocloud
-                mkdir -p rootfs/var/lib/cloud/state
-                cat > rootfs/var/lib/cloud/seed/nocloud/user-data << 'USERDATAEOF'
-                ${userdata}
-                USERDATAEOF
-                cat > rootfs/var/lib/cloud/seed/nocloud/meta-data << 'METADATAEOF'
-                {"instance-id":"test-vm","local-hostname":"aos-test"}
-                METADATAEOF
-              ''
-              else ""
-            }
+                          if userdata != null then
+                            ''
+                              # Inject cloud-init userdata (NoCloud seed)
+                              mkdir -p rootfs/var/lib/cloud/seed/nocloud
+                              mkdir -p rootfs/var/lib/cloud/state
+                              cat > rootfs/var/lib/cloud/seed/nocloud/user-data << 'USERDATAEOF'
+                              ${userdata}
+                              USERDATAEOF
+                              cat > rootfs/var/lib/cloud/seed/nocloud/meta-data << 'METADATAEOF'
+                              {"instance-id":"test-vm","local-hostname":"aos-test"}
+                              METADATAEOF
+                            ''
+                          else
+                            ""
+                        }
 
                         cat > rootfs/etc/os-release << 'OSREL'
             ID=aos
@@ -469,14 +500,21 @@
                         ln -sfn ../aos-test-agent.service \
                           rootfs/etc/systemd/system/multi-user.target.wants/aos-test-agent.service
 
-                        # Calculate image size with overhead
-                        # Use du -sk (kilobytes) for portability, then convert to MB
-                        SIZE_KB=$(du -sk rootfs | cut -f1)
-                        SIZE_MB=$(( SIZE_KB / 1024 ))
-                        # Triple the size for ext4 metadata, journal, inode tables
-                        IMAGE_MB=$(( SIZE_MB * 3 + 512 ))
+                        # Calculate image size: use --apparent-size because mkfs.ext4 -d
+                        # does NOT preserve hardlinks — each hardlinked file becomes a
+                        # separate copy, so apparent size is what matters.
+                        APPARENT_KB=$(du -sk --apparent-size rootfs | cut -f1)
+                        SIZE_MB=$(( APPARENT_KB / 1024 ))
+                        # 50% overhead for ext4 metadata/journal + 256MB headroom
+                        IMAGE_MB=$(( SIZE_MB * 3 / 2 + 256 ))
+                        if [ "$IMAGE_MB" -lt 2048 ]; then
+                          IMAGE_MB=2048
+                        fi
 
                         echo "==> Rootfs data: ''${SIZE_MB}MB, image: ''${IMAGE_MB}MB"
+                        # stdenv setup.sh creates $out as a directory; mkfs.ext4
+                        # needs a file. Write to temp file, then replace $out.
+                        rm -rf $out
                         mkfs.ext4 -d rootfs -L rootfs -m 1 -q $out ''${IMAGE_MB}M
           '';
         }
@@ -491,175 +529,183 @@
   # ---------------------------------------------------------------------------
   # Headless test: test script IS init (PID 1), serial PASS/FAIL markers
   # ---------------------------------------------------------------------------
-  mkHeadlessTest = {
-    name,
-    testScript,
-    rootfsDeps ? [],
-    memory ? 256,
-    driver ? "firecracker",
-  }: let
-    rootfs = fcLib.mkFirecrackerRootfs {
-      pname = name;
-      inherit testScript rootfsDeps;
-    };
-    kernelPath = builtins.toString kernel;
+  mkHeadlessTest =
+    {
+      name,
+      testScript,
+      rootfsDeps ? [ ],
+      memory ? 256,
+      driver ? "firecracker",
+    }:
+    let
+      rootfs = fcLib.mkFirecrackerRootfs {
+        pname = name;
+        inherit testScript rootfsDeps;
+      };
+      kernelPath = builtins.toString kernel;
 
-    headlessBuildDeps =
-      if driver == "firecracker"
-      then [pkgs.coreutils pkgs.grep firecracker]
-      else if driver == "qemu"
-      then [pkgs.coreutils pkgs.grep qemu]
-      else throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
+      headlessBuildDeps =
+        if driver == "firecracker" then
+          [
+            pkgs.coreutils
+            pkgs.grep
+            firecracker
+          ]
+        else if driver == "qemu" then
+          [
+            pkgs.coreutils
+            pkgs.grep
+            qemu
+          ]
+        else
+          throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
 
-    headlessFirecrackerScript = ''
-      set -eu
+      headlessFirecrackerScript = ''
+        set -eu
 
-      SERIAL_LOG="$TMPDIR/serial.log"
-      FC_LOG="$TMPDIR/fc.log"
-      CONFIG="$TMPDIR/vm_config.json"
+        SERIAL_LOG="$TMPDIR/serial.log"
+        FC_LOG="$TMPDIR/fc.log"
+        CONFIG="$TMPDIR/vm_config.json"
 
-      VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
-      if [ -z "$VMLINUX" ]; then
-        echo "ERROR: No vmlinux kernel image found in $KERNEL/boot/"
-        exit 1
-      fi
+        VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
+        if [ -z "$VMLINUX" ]; then
+          echo "ERROR: No vmlinux kernel image found in $KERNEL/boot/"
+          exit 1
+        fi
 
-      cp $ROOTFS rootfs.img
-      chmod u+w rootfs.img
+        cp $ROOTFS rootfs.img
+        chmod u+w rootfs.img
 
-      echo "Kernel: $VMLINUX"
-      echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
-      echo "Memory: ${builtins.toString memory} MiB"
-      ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
+        echo "Kernel: $VMLINUX"
+        echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
+        echo "Memory: ${builtins.toString memory} MiB"
+        ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
 
-      cat > "$CONFIG" << CFGEOF
-      {
-        "boot-source": {
-          "kernel_image_path": "$VMLINUX",
-          "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda ro init=/init quiet"
-        },
-        "drives": [
-          {
-            "drive_id": "rootfs",
-            "path_on_host": "$(pwd)/rootfs.img",
-            "is_root_device": true,
-            "is_read_only": false,
-            "cache_type": "Unsafe",
-            "io_engine": "Sync"
+        cat > "$CONFIG" << CFGEOF
+        {
+          "boot-source": {
+            "kernel_image_path": "$VMLINUX",
+            "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda ro init=/init quiet"
+          },
+          "drives": [
+            {
+              "drive_id": "rootfs",
+              "path_on_host": "$(pwd)/rootfs.img",
+              "is_root_device": true,
+              "is_read_only": false,
+              "cache_type": "Unsafe",
+              "io_engine": "Sync"
+            }
+          ],
+          "machine-config": {
+            "vcpu_count": 1,
+            "mem_size_mib": ${builtins.toString memory},
+            "smt": false,
+            "track_dirty_pages": false,
+            "huge_pages": "None"
           }
-        ],
-        "machine-config": {
-          "vcpu_count": 1,
-          "mem_size_mib": ${builtins.toString memory},
-          "smt": false,
-          "track_dirty_pages": false,
-          "huge_pages": "None"
         }
-      }
-      CFGEOF
+        CFGEOF
 
-      unset LD_LIBRARY_PATH || true
+        unset LD_LIBRARY_PATH || true
 
-      echo "==> Launching Firecracker for test: ${name}"
+        echo "==> Launching Firecracker for test: ${name}"
 
-      FC_EXIT=0
-      firecracker --no-api --config-file "$CONFIG" > "$SERIAL_LOG" 2>"$FC_LOG" || FC_EXIT=$?
+        FC_EXIT=0
+        firecracker --no-api --config-file "$CONFIG" > "$SERIAL_LOG" 2>"$FC_LOG" || FC_EXIT=$?
 
-      echo "Firecracker exited with code: $FC_EXIT"
+        echo "Firecracker exited with code: $FC_EXIT"
 
-      if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
-        echo ""
-        echo "==> TEST PASSED: ${name}"
-        mkdir -p $out
-        cp "$SERIAL_LOG" $out/serial.log
-        cp "$FC_LOG" $out/fc.log 2>/dev/null || true
-        echo "PASS" > $out/result
-      elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
-        echo ""
-        echo "==> TEST FAILED: ${name}"
-        echo "--- serial.log ---"
-        cat "$SERIAL_LOG"
-        echo "--- fc.log ---"
-        cat "$FC_LOG" 2>/dev/null || true
-        exit 1
-      else
-        echo ""
-        echo "==> ERROR: No test result marker found in serial output"
-        echo "--- serial.log ---"
-        cat "$SERIAL_LOG"
-        echo "--- fc.log ---"
-        cat "$FC_LOG" 2>/dev/null || true
-        exit 1
-      fi
-    '';
+        if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
+          echo ""
+          echo "==> TEST PASSED: ${name}"
+          mkdir -p $out
+          cp "$SERIAL_LOG" $out/serial.log
+          cp "$FC_LOG" $out/fc.log 2>/dev/null || true
+          echo "PASS" > $out/result
+        elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
+          echo ""
+          echo "==> TEST FAILED: ${name}"
+          echo "--- serial.log ---"
+          cat "$SERIAL_LOG"
+          echo "--- fc.log ---"
+          cat "$FC_LOG" 2>/dev/null || true
+          exit 1
+        else
+          echo ""
+          echo "==> ERROR: No test result marker found in serial output"
+          echo "--- serial.log ---"
+          cat "$SERIAL_LOG"
+          echo "--- fc.log ---"
+          cat "$FC_LOG" 2>/dev/null || true
+          exit 1
+        fi
+      '';
 
-    headlessQemuScript = ''
-      set -eu
+      headlessQemuScript = ''
+        set -eu
 
-      SERIAL_LOG="$TMPDIR/serial.log"
-      QEMU_LOG="$TMPDIR/qemu.log"
-      CONFIG="$TMPDIR/vm_config.json"
+        SERIAL_LOG="$TMPDIR/serial.log"
+        QEMU_LOG="$TMPDIR/qemu.log"
+        CONFIG="$TMPDIR/vm_config.json"
 
-      VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
-      if [ -z "$VMLINUZ" ]; then
-        echo "ERROR: No vmlinuz kernel image found in $KERNEL/boot/"
-        exit 1
-      fi
+        VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
+        if [ -z "$VMLINUZ" ]; then
+          echo "ERROR: No vmlinuz kernel image found in $KERNEL/boot/"
+          exit 1
+        fi
 
-      cp $ROOTFS rootfs.img
-      chmod u+w rootfs.img
+        cp $ROOTFS rootfs.img
+        chmod u+w rootfs.img
 
-      echo "Kernel: $VMLINUZ"
-      echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
-      echo "Memory: ${builtins.toString memory} MiB"
-      ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
+        echo "Kernel: $VMLINUZ"
+        echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
+        echo "Memory: ${builtins.toString memory} MiB"
+        ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
 
-      unset LD_LIBRARY_PATH || true
+        unset LD_LIBRARY_PATH || true
 
-      echo "==> Launching QEMU for test: ${name}"
+        echo "==> Launching QEMU for test: ${name}"
 
-      qemu-system-x86_64 \
-        -machine q35,accel=kvm \
-        -cpu host \
-        -m ${builtins.toString memory} \
-        -smp 1 \
-        -nographic \
-        -kernel "$VMLINUZ" \
-        -append "root=/dev/vda ro console=ttyS0 init=/init panic=1 quiet" \
-        -drive file=rootfs.img,format=raw,if=virtio \
-        -no-reboot > "$SERIAL_LOG" 2>"$QEMU_LOG" || true
+        qemu-system-x86_64 \
+          -machine q35,accel=kvm \
+          -cpu host \
+          -m ${builtins.toString memory} \
+          -smp 1 \
+          -nographic \
+          -kernel "$VMLINUZ" \
+          -append "root=/dev/vda ro console=ttyS0 init=/init panic=1 quiet" \
+          -drive file=rootfs.img,format=raw,if=virtio \
+          -no-reboot > "$SERIAL_LOG" 2>"$QEMU_LOG" || true
 
-      if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
-        echo ""
-        echo "==> TEST PASSED: ${name}"
-        mkdir -p $out
-        cp "$SERIAL_LOG" $out/serial.log
-        cp "$QEMU_LOG" $out/qemu.log 2>/dev/null || true
-        echo "PASS" > $out/result
-      elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
-        echo ""
-        echo "==> TEST FAILED: ${name}"
-        echo "--- serial.log ---"
-        cat "$SERIAL_LOG"
-        echo "--- qemu.log ---"
-        cat "$QEMU_LOG" 2>/dev/null || true
-        exit 1
-      else
-        echo ""
-        echo "==> ERROR: No test result marker found in serial output"
-        echo "--- serial.log ---"
-        cat "$SERIAL_LOG"
-        echo "--- qemu.log ---"
-        cat "$QEMU_LOG" 2>/dev/null || true
-        exit 1
-      fi
-    '';
+        if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
+          echo ""
+          echo "==> TEST PASSED: ${name}"
+          mkdir -p $out
+          cp "$SERIAL_LOG" $out/serial.log
+          cp "$QEMU_LOG" $out/qemu.log 2>/dev/null || true
+          echo "PASS" > $out/result
+        elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
+          echo ""
+          echo "==> TEST FAILED: ${name}"
+          echo "--- serial.log ---"
+          cat "$SERIAL_LOG"
+          echo "--- qemu.log ---"
+          cat "$QEMU_LOG" 2>/dev/null || true
+          exit 1
+        else
+          echo ""
+          echo "==> ERROR: No test result marker found in serial output"
+          echo "--- serial.log ---"
+          cat "$SERIAL_LOG"
+          echo "--- qemu.log ---"
+          cat "$QEMU_LOG" 2>/dev/null || true
+          exit 1
+        fi
+      '';
 
-    headlessScript =
-      if driver == "firecracker"
-      then headlessFirecrackerScript
-      else headlessQemuScript;
-  in
+      headlessScript = if driver == "firecracker" then headlessFirecrackerScript else headlessQemuScript;
+    in
     pkgs.mkDerivation {
       pname = "aos-vm-test-${name}";
       version = "0";
@@ -677,7 +723,7 @@
         }
       ];
 
-      requiredSystemFeatures = ["kvm"];
+      requiredSystemFeatures = [ "kvm" ];
     };
 
   # ---------------------------------------------------------------------------
@@ -686,354 +732,349 @@
   # Supports two modes:
   #   - System mode (system parameter): full systemd + agent, for module checks
   #   - Headless mode (rootfsDeps parameter): test script IS init, for package checks
-  mkVMTest = {
-    name,
-    driver ? "firecracker",
-    # System mode (full systemd + agent):
-    system ? null,
-    checks ? [],
-    userdata ? null,
-    # Headless mode (test script IS init):
-    rootfsDeps ? null,
-    # Shared:
-    testScript ? null,
-    timeout ? 120,
-    memory ? null,
-  }:
-    if rootfsDeps != null
-    then
+  mkVMTest =
+    {
+      name,
+      driver ? "firecracker",
+      # System mode (full systemd + agent):
+      system ? null,
+      checks ? [ ],
+      userdata ? null,
+      # Headless mode (test script IS init):
+      rootfsDeps ? null,
+      # Shared:
+      testScript ? null,
+      timeout ? 120,
+      memory ? null,
+    }:
+    if rootfsDeps != null then
       mkHeadlessTest {
-        inherit name testScript rootfsDeps driver;
-        memory =
-          if memory != null
-          then memory
-          else 256;
+        inherit
+          name
+          testScript
+          rootfsDeps
+          driver
+          ;
+        memory = if memory != null then memory else 256;
       }
-    else if system != null
-    then let
-      systemRootfs = mkTestRootfs {inherit system userdata;};
-      systemKernel = system.config.system.build.kernel;
-      # Compose checks into script, then append testScript if provided
-      checksScript =
-        if checks != []
-        then checksLib.composeChecks checks
-        else "";
-      composedScript =
-        if checksScript != "" && testScript != null
-        then checksScript + "\n" + testScript
-        else if checksScript != ""
-        then checksScript
-        else if testScript != null
-        then testScript
-        else throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
-
-      effectiveMemory =
-        if memory != null
-        then memory
-        else 2048;
-
-      # Driver-specific build dependencies
-      driverBuildDeps =
-        if driver == "firecracker"
-        then [
-          pkgs.coreutils
-          hostSocat
-          hostJq
-          firecracker
-        ]
-        else if driver == "qemu"
-        then [
-          pkgs.coreutils
-          hostSocat
-          hostJq
-          qemu
-        ]
-        else throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
-
-      # -----------------------------------------------------------------------
-      # Firecracker driver test script (system mode)
-      # -----------------------------------------------------------------------
-      firecrackerScript = ''
-        set -eu
-
-        AGENT_SOCK="$TMPDIR/agent.sock"
-        SERIAL_LOG="$TMPDIR/serial.log"
-        FC_LOG="$TMPDIR/firecracker.log"
-        VSOCK_UDS="$TMPDIR/vm.vsock"
-        FC_CFG="$TMPDIR/fc-config.json"
-
-        # Copy rootfs image to writable location (Firecracker needs rw for system tests)
-        cp $ROOTFS rootfs.img
-        chmod u+w rootfs.img
-
-        # Find the uncompressed kernel image (Firecracker requires vmlinux, not vmlinuz)
-        VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
-
-        # Generate a unique CID from the builder PID (range 3-65535)
-        GUEST_CID=$(( ($$ % 65533) + 3 ))
-
-        echo "Driver: firecracker"
-        echo "Kernel: $VMLINUX"
-        echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
-        echo "CID: $GUEST_CID"
-        echo "Vsock UDS: $VSOCK_UDS"
-        ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
-
-        # Write Firecracker JSON config
-        cat > "$FC_CFG" << FCCFGEOF
-        {
-          "boot-source": {
-            "kernel_image_path": "$VMLINUX",
-            "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/sbin/init systemd.journald.forward_to_console=1 enforcing=0"
-          },
-          "drives": [
-            {
-              "drive_id": "rootfs",
-              "path_on_host": "$(pwd)/rootfs.img",
-              "is_root_device": true,
-              "is_read_only": false,
-              "cache_type": "Unsafe",
-              "io_engine": "Sync"
-            }
-          ],
-          "machine-config": {
-            "vcpu_count": 2,
-            "mem_size_mib": ${builtins.toString effectiveMemory},
-            "smt": false,
-            "track_dirty_pages": false,
-            "huge_pages": "None"
-          },
-          "vsock": {
-            "guest_cid": $GUEST_CID,
-            "uds_path": "$VSOCK_UDS"
-          },
-          "network-interfaces": []
-        }
-        FCCFGEOF
-
-        # Clear LD_LIBRARY_PATH — AOS build libs can conflict
-        unset LD_LIBRARY_PATH
-
-        # Launch Firecracker (serial output goes to stdout, redirected to file)
-        firecracker --no-api --config-file "$FC_CFG" > "$SERIAL_LOG" 2>"$FC_LOG" &
-        FC_PID=$!
-        echo "Firecracker PID: $FC_PID"
-        sleep 1
-        if ! kill -0 "$FC_PID" 2>/dev/null; then
-          echo "ERROR: Firecracker exited immediately!"
-          echo "--- Firecracker log ---"
-          cat "$FC_LOG" 2>/dev/null || true
-          echo "--- Serial log ---"
-          cat "$SERIAL_LOG" 2>/dev/null || true
-          exit 1
-        fi
-
-        cleanup() {
-          kill "$FC_PID" 2>/dev/null || true
-          wait "$FC_PID" 2>/dev/null || true
-        }
-        trap cleanup EXIT
-
-        # Wait for the vsock UDS to appear (Firecracker creates it on start)
-        echo "Waiting for vsock UDS..."
-        VSOCK_WAIT=0
-        while [ ! -S "$VSOCK_UDS" ]; do
-          sleep 0.1
-          VSOCK_WAIT=$((VSOCK_WAIT + 1))
-          if [ "$VSOCK_WAIT" -gt 100 ]; then
-            echo "ERROR: vsock UDS did not appear within 10s"
-            cat "$FC_LOG" 2>/dev/null || true
-            exit 1
-          fi
-        done
-        echo "vsock UDS ready."
-
-        # Import shared test helpers (assert_success, assert_output_contains).
-        # These call run_in_guest() which we override below for vsock.
-        ${assertions.vmHelpers}
-
-        # Override run_in_guest for Firecracker vsock CONNECT protocol.
-        # Each call: connect to the vsock UDS, send "CONNECT 52\n" to establish
-        # a connection to guest port 52, skip the "OK <port>\n" response line,
-        # then send the command and read the JSON response.
-        run_in_guest() {
-          local cmd="$1"
-          {
-            printf 'CONNECT 52\n'
-            sleep 0.1
-            printf '%s\n' "$cmd"
-            sleep 30
-          } | socat - UNIX-CONNECT:"$VSOCK_UDS" 2>/dev/null | tail -n +2 | head -1
-        }
-
-        # Wait for guest agent using PING/PONG
-        echo "Waiting for guest agent..."
-        START_TIME=$(date +%s)
-        DEADLINE=$((START_TIME + ${builtins.toString timeout}))
-        AGENT_READY=0
-        while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-          if kill -0 "$FC_PID" 2>/dev/null; then
-            RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
-            if echo "$RESPONSE" | grep -q '"ready"'; then
-              echo "Guest agent ready."
-              AGENT_READY=1
-              break
-            fi
+    else if system != null then
+      let
+        systemRootfs = mkTestRootfs { inherit system userdata; };
+        systemKernel = system.config.system.build.kernel;
+        # Compose checks into script, then append testScript if provided
+        checksScript = if checks != [ ] then checksLib.composeChecks checks else "";
+        composedScript =
+          if checksScript != "" && testScript != null then
+            checksScript + "\n" + testScript
+          else if checksScript != "" then
+            checksScript
+          else if testScript != null then
+            testScript
           else
-            echo "ERROR: Firecracker exited while waiting for agent"
+            throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
+
+        effectiveMemory = if memory != null then memory else 2048;
+
+        # Driver-specific build dependencies
+        driverBuildDeps =
+          if driver == "firecracker" then
+            [
+              pkgs.coreutils
+              hostSocat
+              hostJq
+              firecracker
+            ]
+          else if driver == "qemu" then
+            [
+              pkgs.coreutils
+              hostSocat
+              hostJq
+              qemu
+            ]
+          else
+            throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
+
+        # -----------------------------------------------------------------------
+        # Firecracker driver test script (system mode)
+        # -----------------------------------------------------------------------
+        firecrackerScript = ''
+          set -eu
+
+          AGENT_SOCK="$TMPDIR/agent.sock"
+          SERIAL_LOG="$TMPDIR/serial.log"
+          FC_LOG="$TMPDIR/firecracker.log"
+          VSOCK_UDS="$TMPDIR/vm.vsock"
+          FC_CFG="$TMPDIR/fc-config.json"
+
+          # Copy rootfs image to writable location (Firecracker needs rw for system tests)
+          cp $ROOTFS rootfs.img
+          chmod u+w rootfs.img
+
+          # Find the uncompressed kernel image (Firecracker requires vmlinux, not vmlinuz)
+          VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
+
+          # Generate a unique CID from the builder PID (range 3-65535)
+          GUEST_CID=$(( ($$ % 65533) + 3 ))
+
+          echo "Driver: firecracker"
+          echo "Kernel: $VMLINUX"
+          echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
+          echo "CID: $GUEST_CID"
+          echo "Vsock UDS: $VSOCK_UDS"
+          ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
+
+          # Write Firecracker JSON config
+          cat > "$FC_CFG" << FCCFGEOF
+          {
+            "boot-source": {
+              "kernel_image_path": "$VMLINUX",
+              "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/sbin/init systemd.journald.forward_to_console=1 enforcing=0"
+            },
+            "drives": [
+              {
+                "drive_id": "rootfs",
+                "path_on_host": "$(pwd)/rootfs.img",
+                "is_root_device": true,
+                "is_read_only": false,
+                "cache_type": "Unsafe",
+                "io_engine": "Sync"
+              }
+            ],
+            "machine-config": {
+              "vcpu_count": 2,
+              "mem_size_mib": ${builtins.toString effectiveMemory},
+              "smt": false,
+              "track_dirty_pages": false,
+              "huge_pages": "None"
+            },
+            "vsock": {
+              "guest_cid": $GUEST_CID,
+              "uds_path": "$VSOCK_UDS"
+            },
+            "network-interfaces": []
+          }
+          FCCFGEOF
+
+          # Clear LD_LIBRARY_PATH — AOS build libs can conflict
+          unset LD_LIBRARY_PATH
+
+          # Launch Firecracker (serial output goes to stdout, redirected to file)
+          firecracker --no-api --config-file "$FC_CFG" > "$SERIAL_LOG" 2>"$FC_LOG" &
+          FC_PID=$!
+          echo "Firecracker PID: $FC_PID"
+          sleep 1
+          if ! kill -0 "$FC_PID" 2>/dev/null; then
+            echo "ERROR: Firecracker exited immediately!"
             echo "--- Firecracker log ---"
             cat "$FC_LOG" 2>/dev/null || true
             echo "--- Serial log ---"
             cat "$SERIAL_LOG" 2>/dev/null || true
             exit 1
           fi
-          sleep 0.5
-        done
 
-        if [ "$AGENT_READY" -ne 1 ]; then
-          echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
-          echo "--- Firecracker log ---"
-          cat "$FC_LOG" 2>/dev/null || true
-          echo "--- Serial log ---"
-          cat "$SERIAL_LOG" 2>/dev/null || true
-          exit 1
-        fi
+          cleanup() {
+            kill "$FC_PID" 2>/dev/null || true
+            wait "$FC_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
 
-        echo ""
-        echo "==> Running test: ${name}"
-        echo ""
-
-        ${composedScript}
-
-        echo ""
-        echo "Shutting down guest..."
-        run_in_guest "SHUTDOWN" || true
-        sleep 2
-        # Firecracker exits on reboot -f from guest
-        wait "$FC_PID" 2>/dev/null || true
-        trap - EXIT
-
-        echo ""
-        echo "==> All tests passed for: ${name}"
-        mkdir -p $out
-        cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
-        echo "PASS" > $out/result
-      '';
-
-      # -----------------------------------------------------------------------
-      # QEMU driver test script (system mode)
-      # -----------------------------------------------------------------------
-      qemuScript = ''
-        set -eu
-
-        AGENT_SOCK="$TMPDIR/agent.sock"
-        SERIAL_LOG="$TMPDIR/serial.log"
-
-        # Copy rootfs image to writable location
-        cp $ROOTFS rootfs.img
-        chmod u+w rootfs.img
-
-        # Find the kernel image
-        VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
-
-        # Pre-flight checks
-        QEMU_LOG="$TMPDIR/qemu.log"
-        echo "Driver: qemu"
-        echo "Kernel: $VMLINUZ"
-        echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
-        ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
-
-        # Clear LD_LIBRARY_PATH — AOS build libs can conflict with QEMU
-        # (QEMU is the sole nixpkgs binary; socat/jq are AOS packages)
-        unset LD_LIBRARY_PATH
-
-        qemu-system-x86_64 --version || echo "QEMU version check failed"
-
-        # Launch QEMU with direct kernel boot
-        qemu-system-x86_64 \
-          -machine q35,accel=kvm \
-          -cpu host \
-          -m ${builtins.toString effectiveMemory} \
-          -smp 2 \
-          -nographic \
-          -kernel "$VMLINUZ" \
-          -append "root=/dev/vda rw console=ttyS0 init=/sbin/init panic=1 systemd.journald.forward_to_console=1 enforcing=0" \
-          -drive file=rootfs.img,format=raw,if=virtio \
-          -device virtio-serial \
-          -device virtserialport,chardev=agent,name=aos.test.agent \
-          -chardev socket,id=agent,path="$AGENT_SOCK",server=on,wait=off \
-          -serial file:"$SERIAL_LOG" \
-          -no-reboot > "$QEMU_LOG" 2>&1 &
-        QEMU_PID=$!
-        echo "QEMU PID: $QEMU_PID"
-        sleep 2
-        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-          echo "ERROR: QEMU exited immediately!"
-          echo "--- QEMU log ---"
-          cat "$QEMU_LOG" 2>/dev/null || true
-          exit 1
-        fi
-
-        cleanup() {
-          kill "$QEMU_PID" 2>/dev/null || true
-          wait "$QEMU_PID" 2>/dev/null || true
-        }
-        trap cleanup EXIT
-
-        # Import shared test helpers (run_in_guest, assert_success, assert_output_contains)
-        ${assertions.vmHelpers}
-
-        # Wait for guest agent using PING/PONG
-        echo "Waiting for guest agent..."
-        START_TIME=$(date +%s)
-        DEADLINE=$((START_TIME + ${builtins.toString timeout}))
-        AGENT_READY=0
-        while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-          if [ -S "$AGENT_SOCK" ]; then
-            RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
-            if echo "$RESPONSE" | grep -q '"ready"'; then
-              echo "Guest agent ready."
-              AGENT_READY=1
-              break
+          # Wait for the vsock UDS to appear (Firecracker creates it on start)
+          echo "Waiting for vsock UDS..."
+          VSOCK_WAIT=0
+          while [ ! -S "$VSOCK_UDS" ]; do
+            sleep 0.1
+            VSOCK_WAIT=$((VSOCK_WAIT + 1))
+            if [ "$VSOCK_WAIT" -gt 100 ]; then
+              echo "ERROR: vsock UDS did not appear within 10s"
+              cat "$FC_LOG" 2>/dev/null || true
+              exit 1
             fi
+          done
+          echo "vsock UDS ready."
+
+          # Import shared test helpers (assert_success, assert_output_contains).
+          # These call run_in_guest() which we override below for vsock.
+          ${assertions.vmHelpers}
+
+          # Override run_in_guest for Firecracker vsock CONNECT protocol.
+          # Each call: connect to the vsock UDS, send "CONNECT 52\n" to establish
+          # a connection to guest port 52, skip the "OK <port>\n" response line,
+          # then send the command and read the JSON response.
+          run_in_guest() {
+            local cmd="$1"
+            {
+              printf 'CONNECT 52\n'
+              sleep 0.1
+              printf '%s\n' "$cmd"
+              sleep 30
+            } | socat - UNIX-CONNECT:"$VSOCK_UDS" 2>/dev/null | tail -n +2 | head -1
+          }
+
+          # Wait for guest agent using PING/PONG
+          echo "Waiting for guest agent..."
+          START_TIME=$(date +%s)
+          DEADLINE=$((START_TIME + ${builtins.toString timeout}))
+          AGENT_READY=0
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            if kill -0 "$FC_PID" 2>/dev/null; then
+              RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
+              if echo "$RESPONSE" | grep -q '"ready"'; then
+                echo "Guest agent ready."
+                AGENT_READY=1
+                break
+              fi
+            else
+              echo "ERROR: Firecracker exited while waiting for agent"
+              echo "--- Firecracker log ---"
+              cat "$FC_LOG" 2>/dev/null || true
+              echo "--- Serial log ---"
+              cat "$SERIAL_LOG" 2>/dev/null || true
+              exit 1
+            fi
+            sleep 0.5
+          done
+
+          if [ "$AGENT_READY" -ne 1 ]; then
+            echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
+            echo "--- Firecracker log ---"
+            cat "$FC_LOG" 2>/dev/null || true
+            echo "--- Serial log ---"
+            cat "$SERIAL_LOG" 2>/dev/null || true
+            exit 1
           fi
-          sleep 0.5
-        done
 
-        if [ "$AGENT_READY" -ne 1 ]; then
-          echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
-          echo "--- QEMU log ---"
-          cat "$QEMU_LOG" 2>/dev/null || true
-          echo "--- Serial log ---"
-          cat "$SERIAL_LOG" 2>/dev/null || true
-          exit 1
-        fi
+          echo ""
+          echo "==> Running test: ${name}"
+          echo ""
 
-        echo ""
-        echo "==> Running test: ${name}"
-        echo ""
+          ${composedScript}
 
-        ${composedScript}
+          echo ""
+          echo "Shutting down guest..."
+          run_in_guest "SHUTDOWN" || true
+          sleep 2
+          # Firecracker exits on reboot -f from guest
+          wait "$FC_PID" 2>/dev/null || true
+          trap - EXIT
 
-        echo ""
-        echo "Shutting down guest..."
-        run_in_guest "SHUTDOWN" || true
-        sleep 2
-        wait "$QEMU_PID" 2>/dev/null || true
-        trap - EXIT
+          echo ""
+          echo "==> All tests passed for: ${name}"
+          mkdir -p $out
+          cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
+          echo "PASS" > $out/result
+        '';
 
-        echo ""
-        echo "==> All tests passed for: ${name}"
-        mkdir -p $out
-        cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
-        echo "PASS" > $out/result
-      '';
+        # -----------------------------------------------------------------------
+        # QEMU driver test script (system mode)
+        # -----------------------------------------------------------------------
+        qemuScript = ''
+          set -eu
 
-      testPhaseScript =
-        if driver == "firecracker"
-        then firecrackerScript
-        else qemuScript;
-    in
+          AGENT_SOCK="$TMPDIR/agent.sock"
+          SERIAL_LOG="$TMPDIR/serial.log"
+
+          # Copy rootfs image to writable location
+          cp $ROOTFS rootfs.img
+          chmod u+w rootfs.img
+
+          # Find the kernel image
+          VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
+
+          # Pre-flight checks
+          QEMU_LOG="$TMPDIR/qemu.log"
+          echo "Driver: qemu"
+          echo "Kernel: $VMLINUZ"
+          echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
+          ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
+
+          # Clear LD_LIBRARY_PATH — AOS build libs can conflict with QEMU
+          # (QEMU is the sole nixpkgs binary; socat/jq are AOS packages)
+          unset LD_LIBRARY_PATH
+
+          qemu-system-x86_64 --version || echo "QEMU version check failed"
+
+          # Launch QEMU with direct kernel boot
+          qemu-system-x86_64 \
+            -machine q35,accel=kvm \
+            -cpu host \
+            -m ${builtins.toString effectiveMemory} \
+            -smp 2 \
+            -nographic \
+            -kernel "$VMLINUZ" \
+            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init panic=1 systemd.journald.forward_to_console=1 enforcing=0" \
+            -drive file=rootfs.img,format=raw,if=virtio \
+            -device virtio-serial \
+            -device virtserialport,chardev=agent,name=aos.test.agent \
+            -chardev socket,id=agent,path="$AGENT_SOCK",server=on,wait=off \
+            -serial file:"$SERIAL_LOG" \
+            -no-reboot > "$QEMU_LOG" 2>&1 &
+          QEMU_PID=$!
+          echo "QEMU PID: $QEMU_PID"
+          sleep 2
+          if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+            echo "ERROR: QEMU exited immediately!"
+            echo "--- QEMU log ---"
+            cat "$QEMU_LOG" 2>/dev/null || true
+            exit 1
+          fi
+
+          cleanup() {
+            kill "$QEMU_PID" 2>/dev/null || true
+            wait "$QEMU_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          # Import shared test helpers (run_in_guest, assert_success, assert_output_contains)
+          ${assertions.vmHelpers}
+
+          # Wait for guest agent using PING/PONG
+          echo "Waiting for guest agent..."
+          START_TIME=$(date +%s)
+          DEADLINE=$((START_TIME + ${builtins.toString timeout}))
+          AGENT_READY=0
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            if [ -S "$AGENT_SOCK" ]; then
+              RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
+              if echo "$RESPONSE" | grep -q '"ready"'; then
+                echo "Guest agent ready."
+                AGENT_READY=1
+                break
+              fi
+            fi
+            sleep 0.5
+          done
+
+          if [ "$AGENT_READY" -ne 1 ]; then
+            echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
+            echo "--- QEMU log ---"
+            cat "$QEMU_LOG" 2>/dev/null || true
+            echo "--- Serial log ---"
+            cat "$SERIAL_LOG" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo ""
+          echo "==> Running test: ${name}"
+          echo ""
+
+          ${composedScript}
+
+          echo ""
+          echo "Shutting down guest..."
+          run_in_guest "SHUTDOWN" || true
+          sleep 2
+          wait "$QEMU_PID" 2>/dev/null || true
+          trap - EXIT
+
+          echo ""
+          echo "==> All tests passed for: ${name}"
+          mkdir -p $out
+          cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
+          echo "PASS" > $out/result
+        '';
+
+        testPhaseScript = if driver == "firecracker" then firecrackerScript else qemuScript;
+      in
       pkgs.mkDerivation {
         pname = "aos-vm-test-${name}";
         version = "0";
@@ -1051,9 +1092,11 @@
           }
         ];
 
-        requiredSystemFeatures = ["kvm"];
+        requiredSystemFeatures = [ "kvm" ];
       }
-    else throw "mkVMTest '${name}': must provide either 'system' (for full VM tests) or 'rootfsDeps' (for headless tests)";
-in {
+    else
+      throw "mkVMTest '${name}': must provide either 'system' (for full VM tests) or 'rootfsDeps' (for headless tests)";
+in
+{
   inherit mkVMTest mkTestRootfs;
 }

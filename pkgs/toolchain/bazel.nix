@@ -1,0 +1,59 @@
+##! Bazel — build tool (default = Bazel 9)
+{
+  mkDerivation,
+  fetchurl,
+  lib,
+  bash,
+  coreutils,
+  which,
+  zip,
+  unzip,
+  gawk,
+  python3,
+  openjdk-21,
+  gcc,
+  binutils,
+  grep,
+  gzip,
+  patch,
+  diffutils,
+  findutils,
+  sed,
+  tar,
+  xz,
+  file,
+  patchelf,
+  bazel-bootstrap,
+  bootstrapTools,
+  gcc-libs,
+}:
+import ./bazel-9.nix {
+  inherit
+    mkDerivation
+    fetchurl
+    lib
+    bash
+    coreutils
+    which
+    zip
+    unzip
+    gawk
+    python3
+    openjdk-21
+    gcc
+    binutils
+    grep
+    gzip
+    patch
+    diffutils
+    findutils
+    sed
+    tar
+    xz
+    file
+    patchelf
+    bazel-bootstrap
+    bootstrapTools
+    gcc-libs
+    ;
+}
