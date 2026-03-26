@@ -2,58 +2,59 @@
 {
   mkDerivation,
   fetchurl,
-  make,
-}: let
+  gnumake,
+}:
+let
   version = "4.2";
 in
-  mkDerivation {
-    pname = "dosfstools";
-    inherit version;
+mkDerivation {
+  pname = "dosfstools";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/dosfstools/dosfstools/releases/download/v${version}/dosfstools-${version}.tar.gz"
-      ];
-      hash = "sha256-ZJJu6/kAktyiGxQlmlMBt7mOexlD6KIBx9cmCEgJtSc=";
-    };
-
-    buildDeps = [make];
-    runtimeDeps = [];
-    propagatedDeps = [];
-
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd dosfstools-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ./configure \
-            --prefix=$out \
-            --enable-compat-symlinks
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-        '';
-      }
+  src = fetchurl {
+    urls = [
+      "https://github.com/dosfstools/dosfstools/releases/download/v${version}/dosfstools-${version}.tar.gz"
     ];
+    hash = "sha256-ZJJu6/kAktyiGxQlmlMBt7mOexlD6KIBx9cmCEgJtSc=";
+  };
 
-    meta = {
-      description = "Utilities for making and checking FAT filesystems";
-      homepage = "https://github.com/dosfstools/dosfstools";
-      license = "GPL-3.0-or-later";
-    };
-  }
+  buildDeps = [ gnumake ];
+  runtimeDeps = [ ];
+  propagatedDeps = [ ];
+
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd dosfstools-${version}
+      '';
+    }
+    {
+      name = "configure";
+      script = ''
+        ./configure \
+          --prefix=$out \
+          --enable-compat-symlinks
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        make -j$NIX_BUILD_CORES
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install
+      '';
+    }
+  ];
+
+  meta = {
+    description = "Utilities for making and checking FAT filesystems";
+    homepage = "https://github.com/dosfstools/dosfstools";
+    license = "GPL-3.0-or-later";
+  };
+}

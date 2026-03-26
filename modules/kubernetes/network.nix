@@ -13,14 +13,16 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.kubernetes.network;
 
   # Format sysctl entries for the drop-in file.
   sysctlText = builtins.concatStringsSep "\n" (
     lib.mapAttrsToList (key: value: "${key} = ${value}") cfg.sysctl
   );
-in {
+in
+{
   options.aos.kubernetes.network = {
     ## Enable Kubernetes networking prerequisites.
     ##
@@ -119,7 +121,7 @@ in {
       ];
     };
 
-    environment.systemPackages = [pkgs.cni-plugins];
+    environment.systemPackages = [ pkgs.cni-plugins ];
 
     # /etc/modules-load.d/k8s.conf — kernel modules to load at boot.
     environment.etc."modules-load.d/k8s.conf" = {
@@ -143,12 +145,12 @@ in {
     # systemd service to load kernel modules at boot.
     systemd.services."k8s-modules-load" = {
       description = "Load Kubernetes Networking Kernel Modules";
-      wantedBy = ["multi-user.target"];
+      wantedBy = [ "multi-user.target" ];
       before = [
         "containerd.service"
         "kubelet.service"
       ];
-      after = ["systemd-modules-load.service"];
+      after = [ "systemd-modules-load.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -170,6 +172,17 @@ in {
       "cilium_net"
       "lxc*"
       "veth*"
+    ];
+
+    # Cilium CNI ports.
+    aos.firewall.allowedTCP = [
+      4240 # Cilium health checks
+      4244 # Hubble relay
+    ];
+
+    # VXLAN overlay network (Flannel/Cilium).
+    aos.firewall.allowedUDP = [
+      8472
     ];
   };
 }

@@ -2,87 +2,90 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
   perl,
   linux-headers,
   binutils,
-}: let
+}:
+let
   version = "2.77";
 in
-  mkDerivation {
-    pname = "libcap";
-    inherit version;
+mkDerivation {
+  pname = "libcap";
+  inherit version;
 
-    src = fetchurl {
-      urls = [
-        "https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-${version}.tar.xz"
-        "https://mirrors.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-${version}.tar.xz"
-      ];
-      hash = "sha256-iXvBi0Svwmxw54zq09uzHhVKzCS+4IWloJB5qI2/b1I=";
-    };
-
-    buildDeps = [
-      make
-      perl
-      binutils
+  src = fetchurl {
+    urls = [
+      "https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-${version}.tar.xz"
+      "https://mirrors.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-${version}.tar.xz"
     ];
-    runtimeDeps = [linux-headers];
-    propagatedDeps = [];
+    hash = "sha256-iXvBi0Svwmxw54zq09uzHhVKzCS+4IWloJB5qI2/b1I=";
+  };
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf $src
-          cd libcap-${version}
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          # Fix shebangs: scripts reference /bin/bash which doesn't exist
-          # in the Nix sandbox. Replace with $CONFIG_SHELL (bootstrap bash).
-          for f in $(find . -name '*.sh' -o -name '*.pl'); do
-            if [ -f "$f" ]; then
-              sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
-              sed -i "1s|#!/usr/bin/env bash|#!$CONFIG_SHELL|" "$f"
-              sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
-            fi
-          done
+  buildDeps = [
+    gnumake
+    perl
+    binutils
+  ];
+  runtimeDeps = [ linux-headers ];
+  propagatedDeps = [ ];
 
-          make -j$NIX_BUILD_CORES \
-            prefix=$out \
-            lib=lib \
-            SHARED=yes \
-            GOLANG=no \
-            PAM_CAP=no \
-            DYNAMIC=yes
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install \
-            prefix=$out \
-            lib=lib \
-            SHARED=yes \
-            GOLANG=no \
-            PAM_CAP=no \
-            RAISE_SETFCAP=no \
-            DYNAMIC=yes
-        '';
-      }
-    ];
+  phases = [
+    {
+      name = "unpack";
+      script = ''
+        tar xf $src
+        cd libcap-${version}
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+        # Fix shebangs: scripts reference /bin/bash which doesn't exist
+        # in the Nix sandbox. Replace with $CONFIG_SHELL (bootstrap bash).
+        for f in $(find . -name '*.sh' -o -name '*.pl'); do
+          if [ -f "$f" ]; then
+            sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
+            sed -i "1s|#!/usr/bin/env bash|#!$CONFIG_SHELL|" "$f"
+            sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
+          fi
+        done
 
-    checks = {
+        make -j$NIX_BUILD_CORES \
+          prefix=$out \
+          lib=lib \
+          SHARED=yes \
+          GOLANG=no \
+          PAM_CAP=no \
+          DYNAMIC=yes
+      '';
+    }
+    {
+      name = "install";
+      script = ''
+        make install \
+          prefix=$out \
+          lib=lib \
+          SHARED=yes \
+          GOLANG=no \
+          PAM_CAP=no \
+          RAISE_SETFCAP=no \
+          DYNAMIC=yes
+      '';
+    }
+  ];
+
+  checks =
+    {
       testing,
       self,
       pkgs,
-    }: {
+    }:
+    {
       link = testing.mkLinkCheck {
         pname = "lib-libcap";
         library = self;
-        libs = ["-lcap"];
+        libs = [ "-lcap" ];
         testSource = ''
           #include <sys/capability.h>
           #include <stdio.h>
@@ -98,9 +101,9 @@ in
       };
     };
 
-    meta = {
-      description = "libcap — POSIX capabilities library";
-      homepage = "https://sites.google.com/site/fullaborern8/home";
-      license = "BSD-3-Clause OR GPL-2.0-only";
-    };
-  }
+  meta = {
+    description = "libcap — POSIX capabilities library";
+    homepage = "https://sites.google.com/site/fullaborern8/home";
+    license = "BSD-3-Clause OR GPL-2.0-only";
+  };
+}

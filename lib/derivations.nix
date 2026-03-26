@@ -16,8 +16,18 @@
 ##!
 ##! The `system` parameter must be provided by the caller (lib/default.nix)
 ##! and is used as the default for all derivation builders.
-{system}: let
+{ system }:
+let
   defaultSystem = system;
+  inherit (import ./trivial.nix) throwIfNot;
+  inherit (import ./platform.nix)
+    satisfies
+    canRun
+    canBuildOn
+    mkPlatform
+    platformIsCompatible
+    constraintsCompatible
+    ;
 
   # ---------------------------------------------------------------------------
   # Default phase definitions
@@ -117,60 +127,62 @@
   ## Replace a phase by name. Throws if the phase is not found.
   ## # Type
   ## `[phase] -> string -> phase -> [phase]`
-  replacePhase = phases: name: newPhase: let
-    found = builtins.any (p: p.name == name) phases;
-  in
-    if !found
-    then throw "replacePhase: phase '${name}' not found in phases list"
+  replacePhase =
+    phases: name: newPhase:
+    let
+      found = builtins.any (p: p.name == name) phases;
+    in
+    if !found then
+      throw "replacePhase: phase '${name}' not found in phases list"
     else
-      builtins.map (p:
-        if p.name == name
-        then newPhase
-        else p)
-      phases;
+      builtins.map (p: if p.name == name then newPhase else p) phases;
 
   ## Insert a new phase after the named phase.
   ## # Type
   ## `[phase] -> string -> phase -> [phase]`
-  addPhaseAfter = phases: afterName: newPhase: let
-    found = builtins.any (p: p.name == afterName) phases;
-  in
-    if !found
-    then throw "addPhaseAfter: phase '${afterName}' not found in phases list"
+  addPhaseAfter =
+    phases: afterName: newPhase:
+    let
+      found = builtins.any (p: p.name == afterName) phases;
+    in
+    if !found then
+      throw "addPhaseAfter: phase '${afterName}' not found in phases list"
     else
       builtins.concatLists (
         builtins.map (
           p:
-            if p.name == afterName
-            then [
+          if p.name == afterName then
+            [
               p
               newPhase
             ]
-            else [p]
-        )
-        phases
+          else
+            [ p ]
+        ) phases
       );
 
   ## Insert a new phase before the named phase.
   ## # Type
   ## `[phase] -> string -> phase -> [phase]`
-  addPhaseBefore = phases: beforeName: newPhase: let
-    found = builtins.any (p: p.name == beforeName) phases;
-  in
-    if !found
-    then throw "addPhaseBefore: phase '${beforeName}' not found in phases list"
+  addPhaseBefore =
+    phases: beforeName: newPhase:
+    let
+      found = builtins.any (p: p.name == beforeName) phases;
+    in
+    if !found then
+      throw "addPhaseBefore: phase '${beforeName}' not found in phases list"
     else
       builtins.concatLists (
         builtins.map (
           p:
-            if p.name == beforeName
-            then [
+          if p.name == beforeName then
+            [
               newPhase
               p
             ]
-            else [p]
-        )
-        phases
+          else
+            [ p ]
+        ) phases
       );
 
   ## Remove a phase by name.
@@ -181,63 +193,96 @@
   # ---------------------------------------------------------------------------
   # Internal: generate the build script from a list of phases
   # ---------------------------------------------------------------------------
-  phasesToScript = phases: shell: let
-    phaseScripts =
-      builtins.map (phase: ''
+  phasesToScript =
+    phases: shell:
+    let
+      phaseScripts = builtins.map (phase: ''
         echo ">>> Phase: ${phase.name}"
         ${phase.script}
         echo "<<< Phase: ${phase.name} complete"
-      '')
-      phases;
-  in ''
-    #!${shell}
-    set -euo pipefail
+      '') phases;
+    in
+    ''
+      #!${shell}
+      set -euo pipefail
 
-    # Source the stdenv setup if available
-    if [ -n "''${stdenv:-}" ] && [ -f "$stdenv/setup.sh" ]; then
-      source "$stdenv/setup.sh"
-    fi
+      # Source the stdenv setup if available
+      if [ -n "''${stdenv:-}" ] && [ -f "$stdenv/setup.sh" ]; then
+        source "$stdenv/setup.sh"
+      fi
 
-    ${builtins.concatStringsSep "\n" phaseScripts}
-  '';
+      ${builtins.concatStringsSep "\n" phaseScripts}
+    '';
 
   # ---------------------------------------------------------------------------
   # Internal: build the PATH from dependency lists
   # ---------------------------------------------------------------------------
-  makePath = deps:
+  makePath =
+    deps:
     builtins.concatStringsSep ":" (
       builtins.concatLists (
         builtins.map (
-          d: let
+          d:
+          let
             p = builtins.toString d;
-          in [
+          in
+          [
             "${p}/bin"
             "${p}/sbin"
           ]
-        )
-        deps
+        ) deps
       )
     );
 
-  makeLibPath = deps: builtins.concatStringsSep ":" (builtins.map (d: "${builtins.toString d}/lib") deps);
+  makeLibPath =
+    deps: builtins.concatStringsSep ":" (builtins.map (d: "${builtins.toString d}/lib") deps);
 
-  makeIncPath = deps: builtins.concatStringsSep ":" (builtins.map (d: "${builtins.toString d}/include") deps);
+  makeIncPath =
+    deps: builtins.concatStringsSep ":" (builtins.map (d: "${builtins.toString d}/include") deps);
 
-  makeRpathFlags = deps:
-    builtins.concatStringsSep " " (builtins.map (d: "-Wl,-rpath,${builtins.toString d}/lib -Wl,-rpath-link,${builtins.toString d}/lib") deps);
+  makeRpathFlags =
+    deps:
+    builtins.concatStringsSep " " (
+      builtins.map (
+        d: "-Wl,-rpath,${builtins.toString d}/lib -Wl,-rpath-link,${builtins.toString d}/lib"
+      ) deps
+    );
 
   # ---------------------------------------------------------------------------
   # Internal: collect transitive propagated deps
   # ---------------------------------------------------------------------------
   # Given a list of direct deps, recursively collects their propagatedDeps
   # so that PKG_CONFIG_PATH, C_INCLUDE_PATH, etc. include transitive deps.
-  collectPropagated = deps: seen: let
-    newPropagated = builtins.concatLists (builtins.map (d: d.propagatedDeps or []) deps);
-    unseen = builtins.filter (d: !(builtins.elem d seen)) newPropagated;
-  in
-    if unseen == []
-    then seen
-    else collectPropagated unseen (seen ++ unseen);
+  collectPropagated =
+    deps: seen:
+    let
+      newPropagated = builtins.concatLists (builtins.map (d: d.propagatedDeps or [ ]) deps);
+      unseen = builtins.filter (d: !(builtins.elem d seen)) newPropagated;
+    in
+    if unseen == [ ] then seen else collectPropagated unseen (seen ++ unseen);
+
+  # ---------------------------------------------------------------------------
+  # Internal: extract constraints from any dep shape
+  # ---------------------------------------------------------------------------
+  # Handles mkDerivation results (.constraints), tier packages (.meta), and
+  # bare derivations (no data → null, skip validation).
+  getDepConstraints =
+    dep:
+    if dep ? constraints then
+      {
+        execute = dep.constraints.execute;
+        target = dep.constraints.target;
+      }
+    else if dep ? meta then
+      {
+        execute = dep.meta.execute or null;
+        target = dep.meta.target or null;
+      }
+    else
+      {
+        execute = null;
+        target = null;
+      };
 
   # ---------------------------------------------------------------------------
   # mkDerivation
@@ -254,203 +299,270 @@
   #   storeDir;        — store directory (default: /nix/store)
   #   ...              — additional attributes passed to builtins.derivation
   # }
-  mkDerivation = args @ {
-    pname ? null,
-    version ? "0",
-    src ? null,
-    buildDeps ? [],
-    runtimeDeps ? [],
-    propagatedDeps ? [],
-    phases ? defaultPhases,
-    meta ? {},
-    storeDir ? "/nix/store",
-    system ? defaultSystem,
-    shell ? "/bin/sh",
-    outputs ? ["out"],
-    configureFlags ? "",
-    makeFlags ? "",
-    installFlags ? "",
-    cmakeFlags ? "",
-    mesonFlags ? "",
-    patches ? [],
-    postPatch ? "",
-    preConfigure ? "",
-    postConfigure ? "",
-    preBuild ? "",
-    postBuild ? "",
-    preInstall ? "",
-    postInstall ? "",
-    passthru ? {},
-    checks ? null,
-    ...
-  }: let
-    # Accept either `name` (direct) or `pname` (computed as pname-version).
-    name =
-      args.name or (
-        if pname != null
-        then "${pname}-${version}"
-        else throw "mkDerivation: either 'pname' or 'name' must be provided"
-      );
-    effectivePname =
-      if pname != null
-      then pname
-      else name;
+  mkDerivation =
+    args@{
+      pname ? null,
+      version ? "0",
+      src ? null,
+      buildDeps ? [ ],
+      runtimeDeps ? [ ],
+      propagatedDeps ? [ ],
+      phases ? defaultPhases,
+      meta ? { },
+      storeDir ? "/nix/store",
+      system ? defaultSystem,
+      shell ? "/bin/sh",
+      outputs ? [ "out" ],
+      configureFlags ? "",
+      makeFlags ? "",
+      installFlags ? "",
+      cmakeFlags ? "",
+      mesonFlags ? "",
+      patches ? [ ],
+      postPatch ? "",
+      preConfigure ? "",
+      postConfigure ? "",
+      preBuild ? "",
+      postBuild ? "",
+      preInstall ? "",
+      postInstall ? "",
+      passthru ? { },
+      checks ? null,
+      ...
+    }:
+    let
+      # Accept either `name` (direct) or `pname` (computed as pname-version).
+      name =
+        args.name or (
+          if pname != null then
+            "${pname}-${version}"
+          else
+            throw "mkDerivation: either 'pname' or 'name' must be provided"
+        );
+      effectivePname = if pname != null then pname else name;
 
-    # Collect all dependencies for PATH, including transitive propagated deps.
-    # e.g. if dbus depends on libselinux and libselinux propagates pcre2,
-    # then pcre2 will be on dbus's PKG_CONFIG_PATH automatically.
-    directDeps = buildDeps ++ runtimeDeps ++ propagatedDeps;
-    allBuildDeps = collectPropagated directDeps directDeps;
+      # Collect all dependencies for PATH, including transitive propagated deps.
+      # e.g. if dbus depends on libselinux and libselinux propagates pcre2,
+      # then pcre2 will be on dbus's PKG_CONFIG_PATH automatically.
+      directDeps = buildDeps ++ runtimeDeps ++ propagatedDeps;
+      allBuildDeps = collectPropagated directDeps directDeps;
 
-    # Prepend patch phase if patches are provided
-    patchPhase = {
-      name = "patch";
-      script = ''
-        # Apply patches
-        ${builtins.concatStringsSep "\n" (builtins.map (p: "patch -p1 < ${p}") patches)}
-        ${postPatch}
-      '';
-    };
+      # Prepend patch phase if patches are provided
+      patchPhase = {
+        name = "patch";
+        script = ''
+          # Apply patches
+          ${builtins.concatStringsSep "\n" (builtins.map (p: "patch -p1 < ${p}") patches)}
+          ${postPatch}
+        '';
+      };
 
-    effectivePhases =
-      if patches != [] || postPatch != ""
-      then addPhaseAfter phases "unpack" patchPhase
-      else phases;
+      effectivePhases =
+        if patches != [ ] || postPatch != "" then addPhaseAfter phases "unpack" patchPhase else phases;
 
-    # Inject pre/post hooks into phases
-    finalPhases =
-      builtins.map (
+      # Inject pre/post hooks into phases
+      finalPhases = builtins.map (
         phase:
-          if phase.name == "configure" && (preConfigure != "" || postConfigure != "")
-          then phase // {script = preConfigure + "\n" + phase.script + "\n" + postConfigure;}
-          else if phase.name == "build" && (preBuild != "" || postBuild != "")
-          then phase // {script = preBuild + "\n" + phase.script + "\n" + postBuild;}
-          else if phase.name == "install" && (preInstall != "" || postInstall != "")
-          then phase // {script = preInstall + "\n" + phase.script + "\n" + postInstall;}
-          else phase
-      )
-      effectivePhases;
+        if phase.name == "configure" && (preConfigure != "" || postConfigure != "") then
+          phase // { script = preConfigure + "\n" + phase.script + "\n" + postConfigure; }
+        else if phase.name == "build" && (preBuild != "" || postBuild != "") then
+          phase // { script = preBuild + "\n" + phase.script + "\n" + postBuild; }
+        else if phase.name == "install" && (preInstall != "" || postInstall != "") then
+          phase // { script = preInstall + "\n" + phase.script + "\n" + postInstall; }
+        else
+          phase
+      ) effectivePhases;
 
-    builder = phasesToScript finalPhases shell;
+      builder = phasesToScript finalPhases shell;
 
-    # Extra args to pass through to builtins.derivation
-    extraArgs = builtins.removeAttrs args [
-      "name"
-      "pname"
-      "version"
-      "src"
-      "buildDeps"
-      "runtimeDeps"
-      "propagatedDeps"
-      "phases"
-      "meta"
-      "storeDir"
-      "system"
-      "shell"
-      "outputs"
-      "configureFlags"
-      "makeFlags"
-      "installFlags"
-      "cmakeFlags"
-      "mesonFlags"
-      "patches"
-      "postPatch"
-      "preConfigure"
-      "postConfigure"
-      "preBuild"
-      "postBuild"
-      "preInstall"
-      "postInstall"
-      "passthru"
-      "checks"
-    ];
+      # Extra args to pass through to builtins.derivation
+      extraArgs = builtins.removeAttrs args [
+        "name"
+        "pname"
+        "version"
+        "src"
+        "buildDeps"
+        "runtimeDeps"
+        "propagatedDeps"
+        "phases"
+        "meta"
+        "storeDir"
+        "system"
+        "shell"
+        "outputs"
+        "configureFlags"
+        "makeFlags"
+        "installFlags"
+        "cmakeFlags"
+        "mesonFlags"
+        "patches"
+        "postPatch"
+        "preConfigure"
+        "postConfigure"
+        "preBuild"
+        "postBuild"
+        "preInstall"
+        "postInstall"
+        "passthru"
+        "checks"
+      ];
 
-    drv = builtins.derivation (
-      {
-        inherit name system;
-        builder = shell;
-        args = [
-          "-c"
-          builder
-        ];
-        inherit outputs;
+      # ── Chaining constraint validation ────────────────────────────────
+      buildPlatform = mkPlatform system;
 
-        # Source
-        src =
-          if src != null
-          then builtins.toString src
-          else "";
+      # Our execution constraint — where this derivation's output runs.
+      ourExecute =
+        if meta ? execute then
+          meta.execute
+        else
+          {
+            os = buildPlatform.constraints.os;
+            cpu = buildPlatform.constraints.cpu;
+          };
 
-        # Environment variables for the build
-        PATH = makePath allBuildDeps;
+      # Rule 1: every buildDep must execute on our build platform
+      validateDepExecute =
+        dep:
+        let
+          dc = getDepConstraints dep;
+          depName = dep.name or dep.pname or "(unknown)";
+        in
+        dc.execute == null
+        ||
+          throwIfNot (canRun buildPlatform dc.execute)
+            "mkDerivation (${name}): build dep '${depName}' cannot execute on ${system}"
+            true;
 
-        # Configuration flags
-        inherit
-          configureFlags
-          makeFlags
-          installFlags
-          cmakeFlags
-          mesonFlags
-          ;
+      # Rule 2: every toolchain dep must target our execute platform
+      validateDepTarget =
+        dep:
+        let
+          dc = getDepConstraints dep;
+          depName = dep.name or dep.pname or "(unknown)";
+        in
+        dc.target == null
+        ||
+          throwIfNot (constraintsCompatible dc.target ourExecute)
+            "mkDerivation (${name}): toolchain '${depName}' targets incompatible platform"
+            true;
 
-        # Dependency search paths — include buildDeps so build-time
-        # libraries (e.g. elfutils for the kernel's objtool) are found.
-        C_INCLUDE_PATH = makeIncPath allBuildDeps;
-        CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
-        LIBRARY_PATH = makeLibPath allBuildDeps;
-        LD_LIBRARY_PATH = makeLibPath allBuildDeps;
+      # Only validate on linux (the only platform AOS supports). On other
+      # platforms mkPlatform would throw; skip gracefully via short-circuit.
+      systemIsLinux =
+        let
+          parts = builtins.match "([a-z0-9_]+)-([a-z]+)" system;
+        in
+        parts != null && builtins.elemAt parts 1 == "linux";
 
-        # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
-        # shared libraries at runtime without LD_LIBRARY_PATH.
-        # Includes transitive propagated deps but NOT buildDeps to avoid
-        # dragging the compiler toolchain into the runtime closure.
-        NIX_LDFLAGS = makeRpathFlags (
-          collectPropagated (runtimeDeps ++ propagatedDeps) (runtimeDeps ++ propagatedDeps)
-        );
-        PKG_CONFIG_PATH = builtins.concatStringsSep ":" (
-          builtins.map (d: "${builtins.toString d}/lib/pkgconfig") allBuildDeps
-        );
+      chainingOk =
+        !systemIsLinux
+        || (builtins.all validateDepExecute allBuildDeps && builtins.all validateDepTarget allBuildDeps);
 
-        # Store the dependencies for runtime reference
-        buildInputs = builtins.map builtins.toString runtimeDeps;
-        nativeBuildInputs = builtins.map builtins.toString buildDeps;
-        propagatedBuildInputs = builtins.map builtins.toString propagatedDeps;
+      # Platform compatibility check: supports new-style structured constraints
+      # (meta.build / meta.execute) and old-style meta.platforms string lists.
+      platformOk =
+        # New-style: structured BUILD constraint (where can this be built?)
+        if meta ? build then
+          canBuildOn system meta.build
+        # New-style: structured EXECUTE constraint (where does the output run?)
+        else if meta ? execute then
+          satisfies (mkPlatform system) meta.execute
+        # Old-style: platform string list (backward compat with ISA awareness)
+        else if meta ? platforms then
+          platformIsCompatible system meta.platforms
+        else
+          true;
 
-        # Prefer store dir parameter
-        NIX_STORE_DIR = storeDir;
-      }
-      // extraArgs
-    );
+      drv = throwIfNot platformOk "${name} is not supported on ${system}" (
+        throwIfNot chainingOk "${name}: dependency constraint validation failed" (
+          builtins.derivation (
+            {
+              inherit name system;
+              builder = shell;
+              args = [
+                "-c"
+                builder
+              ];
+              inherit outputs;
 
-    # Attach metadata and override mechanism
-    result =
-      drv
-      // {
-        inherit meta version propagatedDeps;
-        pname = effectivePname;
+              # Source
+              src = if src != null then builtins.toString src else "";
 
-        # Override mechanism
-        override = overrideArgs:
-          if builtins.isFunction overrideArgs
-          then mkDerivation (overrideArgs args)
-          else mkDerivation (args // overrideArgs);
+              # Environment variables for the build
+              PATH = makePath allBuildDeps;
 
-        # overrideAttrs for modifying the derivation attributes
-        overrideAttrs = f: mkDerivation (args // (f args));
+              # Configuration flags
+              inherit
+                configureFlags
+                makeFlags
+                installFlags
+                cmakeFlags
+                mesonFlags
+                ;
 
-        # passthru attributes (available without building the derivation)
-        passthru =
-          passthru
-          // {
+              # Dependency search paths — include buildDeps so build-time
+              # libraries (e.g. elfutils for the kernel's objtool) are found.
+              C_INCLUDE_PATH = makeIncPath allBuildDeps;
+              CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
+              LIBRARY_PATH = makeLibPath allBuildDeps;
+              LD_LIBRARY_PATH = makeLibPath allBuildDeps;
+
+              # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
+              # shared libraries at runtime without LD_LIBRARY_PATH.
+              # Includes transitive propagated deps but NOT buildDeps to avoid
+              # dragging the compiler toolchain into the runtime closure.
+              NIX_LDFLAGS = makeRpathFlags (
+                collectPropagated (runtimeDeps ++ propagatedDeps) (runtimeDeps ++ propagatedDeps)
+              );
+              PKG_CONFIG_PATH = builtins.concatStringsSep ":" (
+                builtins.map (d: "${builtins.toString d}/lib/pkgconfig") allBuildDeps
+              );
+
+              # Store the dependencies for runtime reference
+              buildInputs = builtins.map builtins.toString runtimeDeps;
+              nativeBuildInputs = builtins.map builtins.toString buildDeps;
+              propagatedBuildInputs = builtins.map builtins.toString propagatedDeps;
+
+              # Prefer store dir parameter
+              NIX_STORE_DIR = storeDir;
+            }
+            // extraArgs
+          )
+        )
+      );
+
+      # Attach metadata and override mechanism
+      result =
+        drv
+        // {
+          inherit meta version propagatedDeps;
+          pname = effectivePname;
+
+          # Expose constraints for downstream chaining verification
+          constraints = {
+            build = meta.build or null;
+            execute = meta.execute or null;
+            target = meta.target or null;
+          };
+
+          # Override mechanism
+          override =
+            overrideArgs:
+            if builtins.isFunction overrideArgs then
+              mkDerivation (overrideArgs args)
+            else
+              mkDerivation (args // overrideArgs);
+
+          # overrideAttrs for modifying the derivation attributes
+          overrideAttrs = f: mkDerivation (args // (f args));
+
+          # passthru attributes (available without building the derivation)
+          passthru = passthru // {
             inherit phases;
           };
-      }
-      // (
-        if checks != null
-        then {inherit checks;}
-        else {}
-      );
-  in
+        }
+        // (if checks != null then { inherit checks; } else { });
+    in
     result;
 
   # ---------------------------------------------------------------------------
@@ -460,25 +572,27 @@
   #
   # Creates a development shell environment. Not meant to produce an installable
   # package; just sets up the environment for interactive development.
-  mkShell = args @ {
-    buildDeps ? [],
-    runtimeDeps ? [],
-    shellHook ? "",
-    name ? "aos-dev-shell",
-    system ? defaultSystem,
-    shell ? "/bin/sh",
-    ...
-  }: let
-    allDeps = buildDeps ++ runtimeDeps;
-    extraArgs = builtins.removeAttrs args [
-      "buildDeps"
-      "runtimeDeps"
-      "shellHook"
-      "name"
-      "system"
-      "shell"
-    ];
-  in
+  mkShell =
+    args@{
+      buildDeps ? [ ],
+      runtimeDeps ? [ ],
+      shellHook ? "",
+      name ? "aos-dev-shell",
+      system ? defaultSystem,
+      shell ? "/bin/sh",
+      ...
+    }:
+    let
+      allDeps = buildDeps ++ runtimeDeps;
+      extraArgs = builtins.removeAttrs args [
+        "buildDeps"
+        "runtimeDeps"
+        "shellHook"
+        "name"
+        "system"
+        "shell"
+      ];
+    in
     builtins.derivation (
       {
         inherit name system;
@@ -523,28 +637,26 @@
   # Accepts either `url` (string) or `urls` (list), following the nixpkgs
   # pattern.  Exactly one must be provided.  The full mirror list is exposed
   # as `.urls` on the result for CLI discovery.
-  fetchurl = {
-    url ? "",
-    urls ? [],
-    hash ? "",
-    sha256 ? hash,
-    name ?
-      builtins.baseNameOf (
-        if url != ""
-        then url
-        else builtins.head urls
-      ),
-    executable ? false,
-    system ? defaultSystem,
-    storeDir ? "/nix/store",
-  }: let
-    resolvedUrls =
-      if urls != [] && url == ""
-      then urls
-      else if urls == [] && url != ""
-      then [url]
-      else throw "fetchurl requires either 'url' or 'urls' to be set, not both";
-  in
+  fetchurl =
+    {
+      url ? "",
+      urls ? [ ],
+      hash ? "",
+      sha256 ? hash,
+      name ? builtins.baseNameOf (if url != "" then url else builtins.head urls),
+      executable ? false,
+      system ? defaultSystem,
+      storeDir ? "/nix/store",
+    }:
+    let
+      resolvedUrls =
+        if urls != [ ] && url == "" then
+          urls
+        else if urls == [ ] && url != "" then
+          [ url ]
+        else
+          throw "fetchurl requires either 'url' or 'urls' to be set, not both";
+    in
     builtins.derivation {
       inherit name system;
       builder = "builtin:fetchurl";
@@ -573,18 +685,19 @@
   # fetchgit { url; rev; hash; }
   #
   # Fixed-output derivation that clones a Git repository at a specific revision.
-  fetchgit = {
-    url,
-    rev,
-    hash ? "",
-    sha256 ? hash,
-    name ? "source",
-    fetchSubmodules ? false,
-    system ? defaultSystem,
-    storeDir ? "/nix/store",
-    deepClone ? false,
-    leaveDotGit ? false,
-  }:
+  fetchgit =
+    {
+      url,
+      rev,
+      hash ? "",
+      sha256 ? hash,
+      name ? "source",
+      fetchSubmodules ? false,
+      system ? defaultSystem,
+      storeDir ? "/nix/store",
+      deepClone ? false,
+      leaveDotGit ? false,
+    }:
     builtins.derivation {
       inherit name system;
       builder = "/bin/sh";
@@ -595,30 +708,14 @@
           export PATH="${storeDir}/git-minimal/bin:$PATH"
           export GIT_SSL_CAINFO="${storeDir}/cacert/etc/ssl/certs/ca-bundle.crt"
 
-          git clone ${
-            if deepClone
-            then ""
-            else "--depth 1"
-          } \
-            ${
-            if fetchSubmodules
-            then "--recurse-submodules"
-            else ""
-          } \
+          git clone ${if deepClone then "" else "--depth 1"} \
+            ${if fetchSubmodules then "--recurse-submodules" else ""} \
             "${url}" "$out"
 
           cd "$out"
           git checkout "${rev}"
-          ${
-            if fetchSubmodules
-            then "git submodule update --init --recursive"
-            else ""
-          }
-          ${
-            if !leaveDotGit
-            then "rm -rf .git"
-            else ""
-          }
+          ${if fetchSubmodules then "git submodule update --init --recursive" else ""}
+          ${if !leaveDotGit then "rm -rf .git" else ""}
         ''
       ];
 
@@ -646,69 +743,68 @@
   # gitDeps: list of { url, rev, crate } for git-sourced crates.
   #   Each is fetched via builtins.fetchGit (no git binary needed in sandbox)
   #   and copied into the vendor directory alongside crates-io deps.
-  fetchCargoDeps = {
-    cargo,
-    bootstrapTools,
-    src,
-    hash,
-    sourceRoot ? null,
-    cargoPatches ? [],
-    extraLibPaths ? [],
-    gitDeps ? [],
-    name ? "cargo-deps",
-    system ? defaultSystem,
-  }: let
-    ldLibPath = builtins.concatStringsSep ":" (
-      builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
-    );
+  fetchCargoDeps =
+    {
+      cargo,
+      bootstrapTools,
+      src,
+      hash,
+      sourceRoot ? null,
+      cargoPatches ? [ ],
+      extraLibPaths ? [ ],
+      extraPaths ? [ ],
+      gitDeps ? [ ],
+      name ? "cargo-deps",
+      system ? defaultSystem,
+    }:
+    let
+      ldLibPath = builtins.concatStringsSep ":" (
+        builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
+      );
 
-    # Fetch each git dependency via builtins.fetchGit (Nix builtin, no git binary)
-    fetchedGitDeps =
-      builtins.map (
+      # Fetch each git dependency via builtins.fetchGit (Nix builtin, no git binary)
+      fetchedGitDeps = builtins.map (
         dep:
-          dep
-          // {
-            fetched = builtins.fetchGit {
-              inherit (dep) url rev;
-            };
-          }
-      )
-      gitDeps;
+        dep
+        // {
+          fetched = builtins.fetchGit {
+            inherit (dep) url rev;
+          };
+        }
+      ) gitDeps;
 
-    # Shell commands to patch Cargo.toml so cargo vendor ignores git deps,
-    # then copy git deps into the vendor output with .cargo-checksum.json
-    gitPatchScript =
-      if fetchedGitDeps == []
-      then ""
-      else
-        builtins.concatStringsSep "\n" (
-          [
-            ''
-              # Patch Cargo.toml to replace git deps with path deps (so cargo vendor succeeds)
-              printf '\n' >> Cargo.toml
-            ''
-          ]
-          ++ builtins.map (dep: ''
-            printf '[patch."${dep.url}"]\n${dep.crate} = { path = "${dep.fetched}" }\n' >> Cargo.toml
-          '')
-          fetchedGitDeps
-        );
+      # Shell commands to patch Cargo.toml so cargo vendor ignores git deps,
+      # then copy git deps into the vendor output with .cargo-checksum.json
+      gitPatchScript =
+        if fetchedGitDeps == [ ] then
+          ""
+        else
+          builtins.concatStringsSep "\n" (
+            [
+              ''
+                # Patch Cargo.toml to replace git deps with path deps (so cargo vendor succeeds)
+                printf '\n' >> Cargo.toml
+              ''
+            ]
+            ++ builtins.map (dep: ''
+              printf '[patch."${dep.url}"]\n${dep.crate} = { path = "${dep.fetched}" }\n' >> Cargo.toml
+            '') fetchedGitDeps
+          );
 
-    # Shell commands to copy git deps into vendor output after cargo vendor
-    gitCopyScript =
-      if fetchedGitDeps == []
-      then ""
-      else
-        builtins.concatStringsSep "\n" (
-          builtins.map (dep: ''
-            # Copy ${dep.crate} from builtins.fetchGit into vendor dir
-            cp -r "${dep.fetched}" "$out/${dep.crate}"
-            chmod -R u+w "$out/${dep.crate}"
-            printf '{"files":{},"package":null}' > "$out/${dep.crate}/.cargo-checksum.json"
-          '')
-          fetchedGitDeps
-        );
-  in
+      # Shell commands to copy git deps into vendor output after cargo vendor
+      gitCopyScript =
+        if fetchedGitDeps == [ ] then
+          ""
+        else
+          builtins.concatStringsSep "\n" (
+            builtins.map (dep: ''
+              # Copy ${dep.crate} from builtins.fetchGit into vendor dir
+              cp -r "${dep.fetched}" "$out/${dep.crate}"
+              chmod -R u+w "$out/${dep.crate}"
+              printf '{"files":{},"package":null}' > "$out/${dep.crate}/.cargo-checksum.json"
+            '') fetchedGitDeps
+          );
+    in
     builtins.derivation {
       inherit name system;
       builder = "/bin/sh";
@@ -716,22 +812,14 @@
         "-c"
         ''
           set -eu
-          export PATH="${cargo}/bin:${bootstrapTools}/bin"
-          ${
-            if extraLibPaths != []
-            then "export LD_LIBRARY_PATH=\"${ldLibPath}\""
-            else ""
-          }
+          export PATH="${cargo}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
+          ${if extraLibPaths != [ ] then "export LD_LIBRARY_PATH=\"${ldLibPath}\"" else ""}
 
           # Extract source into a clean subdirectory so ls -d */ works
           mkdir -p "$TMPDIR/src"
           cd "$TMPDIR/src"
           tar xf "${src}" || cp -r "${src}" source
-          cd ${
-            if sourceRoot != null
-            then sourceRoot
-            else "$(ls -d */)"
-          }
+          cd ${if sourceRoot != null then sourceRoot else "$(ls -d */)"}
 
           # Set up Cargo home (after extraction so dir doesn't interfere)
           export CARGO_HOME="$TMPDIR/cargo-home"
@@ -743,11 +831,7 @@
           ${gitPatchScript}
 
           # Vendor crates-io dependencies
-          cargo vendor ${
-            if fetchedGitDeps == []
-            then "--locked "
-            else ""
-          }"$out"
+          cargo vendor ${if fetchedGitDeps == [ ] then "--locked " else ""}"$out"
 
           ${gitCopyScript}
         ''
@@ -767,15 +851,17 @@
   # fetchGoModules { go; bootstrapTools; src; hash; sourceRoot?; }
   #
   # Fixed-output derivation that downloads Go module dependencies.
-  fetchGoModules = {
-    go,
-    bootstrapTools,
-    src,
-    hash,
-    sourceRoot ? null,
-    name ? "go-modules",
-    system ? defaultSystem,
-  }:
+  fetchGoModules =
+    {
+      go,
+      bootstrapTools,
+      src,
+      hash,
+      sourceRoot ? null,
+      name ? "go-modules",
+      system ? defaultSystem,
+      extraPaths ? [ ],
+    }:
     builtins.derivation {
       inherit name system;
       builder = "/bin/sh";
@@ -783,7 +869,7 @@
         "-c"
         ''
           set -eu
-          export PATH="${go}/bin:${bootstrapTools}/bin"
+          export PATH="${go}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${p}/bin") extraPaths)}"
           export GOPROXY="https://proxy.golang.org,direct"
           export GONOSUMDB="*"
           export GONOSUMCHECK="*"
@@ -792,11 +878,7 @@
           mkdir -p "$TMPDIR/src"
           cd "$TMPDIR/src"
           tar xf "${src}" || cp -r "${src}" source
-          srcdir="${
-            if sourceRoot != null
-            then sourceRoot
-            else "$(ls -d */ 2>/dev/null | head -1)"
-          }"
+          srcdir="${if sourceRoot != null then sourceRoot else "$(ls -d */ 2>/dev/null | head -1)"}"
           cd "$srcdir"
 
           # Set up Go environment (after extraction so dirs don't interfere)
@@ -820,7 +902,215 @@
 
       preferLocalBuild = true;
     };
-in {
+
+  # ---------------------------------------------------------------------------
+  # fetchBazelDeps
+  # ---------------------------------------------------------------------------
+  # fetchBazelDeps { bazel; jdk; src; hash; tools; ... }
+  #
+  # Fixed-output derivation that fetches all Bazel external dependencies via
+  # `bazel build --nobuild`. Produces a directory containing the external/
+  # subtree with store paths scrubbed for reproducibility.
+  #
+  # The two-phase pattern (fetchBazelDeps + bazelPhases) mirrors nixpkgs's
+  # buildBazelPackage: the FOD downloads deps with network access, then the
+  # build phase patchelfs ELFs and builds offline.
+  fetchBazelDeps =
+    {
+      bazel,
+      jdk,
+      src,
+      hash,
+      tools ? [ ],
+      bootstrapTools,
+      caCertificates,
+      # Source patching script (shared with build phase)
+      postPatch ? "",
+      # Additional patches for fetch phase only (e.g. bootstrap=True)
+      fetchPostPatch ? "",
+      # Target for `bazel build --nobuild`
+      bazelTarget,
+      # Common bazel flags (used in both fetch and build)
+      bazelFlags ? [ ],
+      # Fetch-specific flags
+      bazelFetchFlags ? [ ],
+      # Environment variables to set
+      env ? { },
+      # Store path scrubbing: { storePath = "placeholder"; }
+      scrubMap ? { },
+      # Extra cleanup after fetch
+      postFetch ? "",
+      name ? "bazel-deps",
+      system ? defaultSystem,
+      # Built-in repos to remove (Bazel recreates them)
+      removeRepos ? [
+        "bazel_tools"
+        "embedded_jdk"
+        "local_config_cc"
+        "local_jdk"
+      ],
+      # Whether to populate repository_cache via empty workspace sync
+      populateBCR ? true,
+    }:
+    let
+      toolsPath = builtins.concatStringsSep ":" (
+        builtins.map (d: "${builtins.toString d}/bin") tools
+      );
+      flagsStr = builtins.concatStringsSep " " bazelFlags;
+      fetchFlagsStr = builtins.concatStringsSep " " bazelFetchFlags;
+      envExports = builtins.concatStringsSep "\n" (
+        builtins.attrValues (
+          builtins.mapAttrs (k: v: "export ${k}=\"${builtins.toString v}\"") env
+        )
+      );
+      scrubSedArgs = builtins.concatStringsSep " " (
+        builtins.attrValues (
+          builtins.mapAttrs (
+            path: placeholder: "-e 's|${path}|${placeholder}|g'"
+          ) scrubMap
+        )
+      );
+      removeReposCmds = builtins.concatStringsSep "\n" (
+        builtins.map (
+          repo: "rm -rf \"$bazelOut/external/${repo}\" \"$bazelOut/external/@${repo}.marker\""
+        ) removeRepos
+      );
+    in
+    builtins.derivation {
+      inherit name system;
+      builder = "/bin/sh";
+      args = [
+        "-c"
+        ''
+          set -eu
+          export PATH="${toolsPath}:${jdk}/bin:${bazel}/bin:$PATH"
+          export HOME="$TMPDIR/home"
+          mkdir -p "$HOME"
+          export JAVA_HOME="${jdk}"
+          export SSL_CERT_FILE="${caCertificates}/etc/ssl/certs/ca-certificates.crt"
+
+          # Set up Rust linker flags so build scripts get the correct dynamic linker
+          INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
+          BT_LIB=$(dirname "$INTERP")
+          export CARGO_BUILD_RUSTFLAGS="-C link-arg=-Wl,-dynamic-linker,$INTERP -C link-arg=-Wl,-rpath,$BT_LIB"
+
+          ${envExports}
+
+          bazelOut="$TMPDIR/output"
+          bazelUserRoot="$TMPDIR/tmp"
+
+          # Extract source
+          mkdir -p "$TMPDIR/src"
+          cd "$TMPDIR/src"
+          tar xf "${src}" 2>/dev/null || unzip -q "${src}" 2>/dev/null || { echo "Cannot extract source"; exit 1; }
+          ndirs=$(ls -d */ 2>/dev/null | wc -l)
+          if [ "$ndirs" -eq 1 ]; then cd "$(ls -d */)"; fi
+          SRCDIR="$(pwd)"
+
+          # Apply shared patches
+          ${postPatch}
+
+          # Apply fetch-specific patches
+          ${fetchPostPatch}
+
+          # Set up repository cache
+          mkdir -p "$bazelOut/external/repository_cache"
+          echo 'common --repository_cache="'"$bazelOut"'/external/repository_cache"' >> .bazelrc
+
+          ${
+            if populateBCR then
+              ''
+                # Populate repository_cache with built-in repo data
+                mkdir -p "$TMPDIR/empty"
+                cd "$TMPDIR/empty"
+                touch MODULE.bazel WORKSPACE
+                bazel --batch --output_user_root="$bazelUserRoot" \
+                  --server_javabase="${jdk}" \
+                  sync --noenable_bzlmod \
+                  --repository_cache="$bazelOut/external/repository_cache" \
+                  --curses=no 2>&1 || true
+                cd "$SRCDIR"
+              ''
+            else
+              ""
+          }
+
+          # Fetch dependencies via build --nobuild
+          BAZEL_USE_CPP_ONLY_TOOLCHAIN=1 \
+          USER=nix \
+          bazel --batch \
+            --output_base="$bazelOut" \
+            --output_user_root="$bazelUserRoot" \
+            --server_javabase="${jdk}" \
+            build --nobuild \
+            --curses=no \
+            --loading_phase_threads=1 \
+            ${flagsStr} \
+            ${fetchFlagsStr} \
+            ${bazelTarget}
+
+          # --- Standard cleanup ---
+
+          # Remove built-in workspaces (Bazel recreates them)
+          ${removeReposCmds}
+
+          # Clear markers
+          find "$bazelOut/external" -name '@*.marker' -exec sh -c 'echo > "$1"' _ {} \;
+
+          # Remove VCS dirs
+          find "$bazelOut/external" -type d \( -name .git -o -name .svn -o -name .hg \) \
+            -exec rm -rf {} + 2>/dev/null || true
+
+          # Remove top-level symlinks (may point to temp paths)
+          find "$bazelOut/external" -maxdepth 1 -type l -delete
+
+          # Patch symlinks to remove build dir references
+          # Replace the source directory path first (more specific), then TMPDIR
+          find "$bazelOut/external" -type l | while read symlink; do
+            new_target="$(readlink "$symlink" | sed -e "s,$SRCDIR,__BAZEL_SRCDIR__,g" -e "s,$TMPDIR,__BAZEL_TMPDIR__,g")"
+            rm "$symlink"
+            ln -sf "$new_target" "$symlink"
+          done
+
+          # Strip build location from requirements.bzl
+          find "$bazelOut/external" -name requirements.bzl | while read f; do
+            sed -i '/# Generated from /d' "$f"
+          done
+
+          # Remove compiled Python
+          find "$bazelOut" -name '*.pyc' -delete
+
+          ${
+            if scrubMap != { } then
+              ''
+                # --- Store path scrubbing ---
+                find "$bazelOut/external" -type f | while read f; do
+                  sed -i ${scrubSedArgs} "$f" 2>/dev/null || true
+                done
+              ''
+            else
+              ""
+          }
+
+          # --- Project-specific cleanup ---
+          ${postFetch}
+
+          # Copy external/ to output
+          cp -a "$bazelOut/external" "$out"
+
+          # Normalize permissions for reproducibility
+          find "$out" -type f -exec chmod 644 {} \;
+          find "$out" -type d -exec chmod 755 {} \;
+        ''
+      ];
+
+      outputHash = hash;
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+      preferLocalBuild = true;
+    };
+in
+{
   inherit
     mkDerivation
     mkShell
@@ -828,6 +1118,7 @@ in {
     fetchgit
     fetchCargoDeps
     fetchGoModules
+    fetchBazelDeps
     fakeHash
     ;
   inherit

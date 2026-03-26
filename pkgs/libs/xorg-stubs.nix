@@ -7,7 +7,7 @@
 {
   mkDerivation,
   fetchurl,
-  make,
+  gnumake,
 }:
 let
   # ── sources ──────────────────────────────────────────────────────────
@@ -66,6 +66,20 @@ let
     ];
     hash = "sha256-GtWwZTdfSoWRWqYGEcxkB8BgSSohTX+dryFL51LDtNM=";
   };
+
+  libXcompositeSrc = fetchurl {
+    urls = [
+      "https://xorg.freedesktop.org/archive/individual/lib/libXcomposite-0.4.6.tar.xz"
+    ];
+    hash = "sha256-/kC88K4aCQcOuiQIil65gQ7+V0U3eeweIKVQgMbcLIc=";
+  };
+
+  libXfixesSrc = fetchurl {
+    urls = [
+      "https://xorg.freedesktop.org/archive/individual/lib/libXfixes-6.0.1.tar.xz"
+    ];
+    hash = "sha256-tpX5PNJJlCGrAtInREWOZQzMiMHUyBMNYCACE6vALVg=";
+  };
 in
 mkDerivation {
   pname = "xorg-stubs";
@@ -74,7 +88,7 @@ mkDerivation {
   # Dummy src — we use the fetchurl results directly in phases
   src = xorgprotoSrc;
 
-  buildDeps = [ make ];
+  buildDeps = [ gnumake ];
   runtimeDeps = [ ];
   propagatedDeps = [ ];
 
@@ -121,14 +135,39 @@ mkDerivation {
         # ── 7. libXt headers ─────────────────────────────────────────
         tar xf ${libXtSrc}
         cp -a libXt-*/include/X11/*.h $out/include/X11/
+        # Generate Shell.h from Shell.ht template (built by makestrs normally)
+        sed 's/<<<STRING_TABLE_GOES_HERE>>>//' libXt-*/util/Shell.ht | \
+          sed 's|#include <X11/SM/SMlib.h>|/* SM/SMlib.h not needed for stubs */|' \
+          > $out/include/X11/Shell.h
+        # Generate StringDefs.h from StrDefs.ht template
+        if [ -f libXt-*/util/StrDefs.ht ]; then
+          sed 's/<<<STRING_TABLE_GOES_HERE>>>//' libXt-*/util/StrDefs.ht \
+            > $out/include/X11/StringDefs.h
+        fi
+        # Create stub SM directory for any remaining includes
+        mkdir -p $out/include/X11/SM
+        cat > $out/include/X11/SM/SMlib.h << 'SMSTUB'
+        #ifndef _SMLIB_H_
+        #define _SMLIB_H_
+        /* Stub SMlib.h for headless builds */
+        #endif
+        SMSTUB
 
         # ── 8. libXrandr headers ────────────────────────────────────
         tar xf ${libXrandrSrc}
         cp -a libXrandr-*/include/X11/extensions/*.h $out/include/X11/extensions/
 
-        # ── 9. Stub shared libraries for linking ─────────────────────
+        # ── 9. libXcomposite headers ──────────────────────────────
+        tar xf ${libXcompositeSrc}
+        cp -a libXcomposite-*/include/X11/extensions/*.h $out/include/X11/extensions/
+
+        # ── 10. libXfixes headers ────────────────────────────────────
+        tar xf ${libXfixesSrc}
+        cp -a libXfixes-*/include/X11/extensions/*.h $out/include/X11/extensions/
+
+        # ── 11. Stub shared libraries for linking ────────────────────
         # OpenJDK links against these but never calls them in headless mode.
-        for lib in X11 Xext Xrender Xtst Xi Xt Xrandr; do
+        for lib in X11 Xext Xrender Xtst Xi Xt Xrandr Xcomposite Xfixes; do
           echo "void _xorg_stub_''${lib}(void){}" | \
             gcc -shared -o $out/lib/lib''${lib}.so -x c - -Wl,-soname,lib''${lib}.so
         done

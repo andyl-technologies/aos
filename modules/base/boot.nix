@@ -14,12 +14,14 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.boot;
 
   # Build the complete kernel command line string from the list of parameters.
   kernelCmdline = builtins.concatStringsSep " " cfg.kernelParams;
-in {
+in
+{
   options.aos.boot = {
     ## Boot loader to use (currently systemd-boot only).
     loader = lib.mkOption {
@@ -33,7 +35,7 @@ in {
 
     ## Kernel command line parameters.
     ##
-    ## Other modules (e.g. SELinux, hardening, kdump) append to this list.
+    ## Other modules (e.g. SELinux, hardening) append to this list.
     ##
     ## # Examples
     ## ```nix
@@ -118,7 +120,7 @@ in {
     # Written to /boot/loader/entries/aos.conf
     environment.etc."boot/loader/entries/aos.conf" = {
       text = ''
-        title   AOS ${config.aos.system.version} (${config.aos.system.variant})
+        title   AOS ${config.aos.system.version}
         linux   /vmlinuz
         ${lib.optionalString cfg.initrd.enable "initrd  /initramfs.img"}
         options ${kernelCmdline}
