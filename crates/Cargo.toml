@@ -1,0 +1,77 @@
+[workspace]
+resolver = "2"
+members = [
+    "aos",
+    "aos-core",
+    "aos-server",
+    "aos-cache",
+    "aos-remote",
+    "aos-doc",
+    "aos-package",
+]
+
+[workspace.dependencies]
+# Shared dependencies
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "fs", "time"] }
+sha2 = "0.10"
+base64 = "0.22"
+regex = "1"
+glob = "0.3"
+ignore = "0.4"
+hex = "0.4"
+indicatif = "0.17"
+console = "0.15"
+humantime = "2"
+humantime-serde = "1"
+alejandra = "3.1.0"
+
+# HTTP / networking
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+url = "2"
+async-trait = "0.1"
+futures-util = "0.3"
+
+# Server
+axum = { version = "0.8", features = ["macros"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+jsonwebtoken = "9"
+uuid = { version = "1", features = ["v4", "serde"] }
+rand = "0.9"
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
+zstd = "0.13"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["io"] }
+
+# Cache backends
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+aws-sdk-s3 = "1"
+aws-config = "1"
+suppaftp = { version = "6", features = ["async-rustls"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+atty = "0.2"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+
+# Package manager
+toml = "0.8"
+
+# Dev
+tempfile = "3"
+
+# Internal crates
+aos-core = { path = "aos-core" }
+aos-server = { path = "aos-server" }
+aos-cache = { path = "aos-cache" }
+aos-remote = { path = "aos-remote" }
+aos-doc = { path = "aos-doc" }
+aos-package = { path = "aos-package" }

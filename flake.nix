@@ -1,86 +1,120 @@
 {
   description = "ANDYL OS — immutable, minimal Linux distribution built from source";
 
-  # No external inputs. All packages — including the toolchain, dev tools,
-  # and test infrastructure (QEMU, etc.) — are built from source using only
-  # the bootstrap tools and the AOS package set defined in this repository.
-  inputs = {};
+  inputs = { };
 
-  outputs = _: let
-    systems = [
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
+  outputs =
+    _:
+    let
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
 
-    genAttrs = names: f:
-      builtins.listToAttrs (
-        map (n: {
-          name = n;
-          value = f n;
-        })
-        names
-      );
+      genAttrs =
+        names: f:
+        builtins.listToAttrs (
+          map (n: {
+            name = n;
+            value = f n;
+          }) names
+        );
 
-    prefixAttrs = prefix: attrs:
-      builtins.listToAttrs (
-        builtins.map (name: {
-          name = "${prefix}-${name}";
-          value = attrs.${name};
-        }) (builtins.attrNames attrs)
-      );
+      prefixAttrs =
+        prefix: attrs:
+        builtins.listToAttrs (
+          builtins.map (name: {
+            name = "${prefix}-${name}";
+            value = attrs.${name};
+          }) (builtins.attrNames attrs)
+        );
 
-    aosFor = system: let
-      lib = import ./lib {inherit system;};
-      pkgs = import ./pkgs {inherit lib;};
-    in {
-      inherit lib pkgs;
-    };
-  in {
-    packages = genAttrs systems (
-      system: let
-        env = aosFor system;
-      in {
-        aos = env.pkgs.aos;
-        default = env.pkgs.aos;
-      }
-    );
+      aosFor = system: import ./. { inherit system; };
 
-    devShells = genAttrs systems (
-      system: let
-        env = aosFor system;
-      in {
-        default = import ./dev/shell.nix {
-          inherit system;
-          inherit (env.pkgs) aos just;
-        };
-      }
-    );
-
-    formatter = genAttrs systems (system: (aosFor system).pkgs.alejandra);
-
-    checks = genAttrs systems (
-      system: let
-        env = aosFor system;
-        testTools = {
-          qemu = env.pkgs.qemu;
-          socat = env.pkgs.socat;
-          jq = env.pkgs.jq;
-        };
-        allChecks = import ./tests {
-          inherit (env) pkgs lib;
-          inherit testTools;
-        };
-      in
+      # Flatten systems into flake packages:
+      #   server-image-raw, server-image-qcow2, edge-image-raw, etc.
+      # Auto-enumerates both system names and image formats.
+      systemPackages =
+        aos:
+        let
+          sysNames = builtins.attrNames aos.systems;
+          forSystem =
+            name:
+            let
+              formats = builtins.attrNames aos.systems.${name}.build.image;
+            in
+            builtins.listToAttrs (
+              builtins.map (fmt: {
+                name = "${name}-image-${fmt}";
+                value = aos.systems.${name}.build.image.${fmt};
+              }) formats
+            );
+        in
+        builtins.foldl' (acc: name: acc // forSystem name) { } sysNames;
+    in
+    {
+      packages = genAttrs systems (
+        system:
+        let
+          aos = aosFor system;
+        in
         {
-          # CLI tool builds successfully
-          aos = env.pkgs.aos;
+          default = aos.pkgs.aos;
+          aos = aos.pkgs.aos;
+        }
+        // systemPackages aos
+      );
 
-          # Format check
-          format = env.pkgs.mkDerivation {
+      devShells = genAttrs systems (
+        system:
+        let
+          aos = aosFor system;
+          packages = builtins.filter (p: p != null) [
+            aos.pkgs.aos
+            aos.pkgs.just
+          ];
+          binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
+        in
+        {
+          default = builtins.derivation {
+            name = "aos-dev";
+            inherit system;
+            builder = "/bin/bash";
+            args = [
+              "-c"
+              "echo 'Use nix develop, not nix build'; exit 1"
+            ];
+            shellHook =
+              (
+                if binPath != "" then
+                  ''
+                    export PATH="${binPath}''${PATH:+:$PATH}"
+                  ''
+                else
+                  ""
+              )
+              + ''
+                export AOS_ROOT="$(pwd)"
+              '';
+          };
+        }
+      );
+
+      formatter = genAttrs systems (system: (aosFor system).pkgs.alejandra);
+
+      checks = genAttrs systems (
+        system:
+        let
+          aos = aosFor system;
+        in
+        {
+          aos = aos.pkgs.aos;
+
+          format = aos.pkgs.mkDerivation {
             pname = "aos-format-check";
             version = "0";
             src = ./.;
-            buildDeps = [env.pkgs.alejandra];
+            buildDeps = [ aos.pkgs.alejandra ];
             phases = [
               {
                 name = "check";
@@ -93,15 +127,16 @@
             ];
           };
 
-          # Pure evaluation checks
-          eval = allChecks.eval;
-
-          # Package build checks
-          build = allChecks.build;
+          eval = aos.checks.eval;
+          build = aos.checks.build;
         }
-        // prefixAttrs "vm" allChecks.vm
-        // prefixAttrs "fleet" allChecks.fleet
-        // prefixAttrs "integration" allChecks.integration
-    );
-  };
+        # Per-system module checks: server-boot-basics, edge-boot-basics, etc.
+        // prefixAttrs "server" aos.systems.server.checks
+        // prefixAttrs "edge" aos.systems.edge.checks
+        # Package integration checks
+        // prefixAttrs "integration" aos.checks.integration
+        # Fleet tests (multi-VM)
+        // prefixAttrs "fleet" aos.fleetTests
+      );
+    };
 }

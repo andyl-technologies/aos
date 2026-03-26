@@ -13,10 +13,12 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.kubernetes.controlPlane;
   netCfg = config.aos.kubernetes.network;
-in {
+in
+{
   options.aos.kubernetes.controlPlane = {
     ## Enable this node as a Kubernetes control plane node.
     ##
@@ -87,12 +89,14 @@ in {
     };
 
     # ZFS dataset for etcd data — tuned for small-record transactional writes.
-    aos.filesystems.zfs.datasets."var/lib/etcd" = {
-      mountpoint = "/var/lib/etcd";
-      compression = "zstd-3";
-      atime = "off";
-      recordsize = "4K";
-      sync = "always";
+    aos.filesystems.zfs.datasets = lib.mkIf config.aos.filesystems.zfs.enable {
+      "var/lib/etcd" = {
+        mountpoint = "/var/lib/etcd";
+        compression = "zstd-3";
+        atime = "off";
+        recordsize = "4K";
+        sync = "always";
+      };
     };
 
     # kubeadm configuration for control plane initialization.
@@ -166,15 +170,53 @@ in {
     ];
 
     # Open control plane ports in the firewall.
-    # These are additional to the base kubelet port (10250).
+    # These are additional to the base kubelet ports (10250, 10256, 30000).
     aos.firewall.allowedTCP = [
-      22 # SSH
       cfg.apiServerPort # kube-apiserver
       2379 # etcd client
       2380 # etcd peer
-      10250 # kubelet API
       10257 # kube-controller-manager
       10259 # kube-scheduler
     ];
+
+    # Fleet test: verify a control-plane + worker cluster can form and schedule pods.
+    system.fleetTests.k8s-cluster = {
+      machines = {
+        control-plane = {
+          variant = "k8s-control-plane";
+          role = "control-plane";
+          mac = "52:54:00:00:00:01";
+        };
+        worker = {
+          variant = "k8s-worker";
+          role = "worker";
+          mac = "52:54:00:00:00:02";
+        };
+      };
+      testScript = ''
+        # Wait for control plane to be ready
+        control-plane.wait_for_unit("kubelet.service")
+        control-plane.succeed("kubeadm init --config /etc/kubernetes/kubeadm-config.yaml")
+        control-plane.wait_until_succeeds("kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes")
+
+        # Extract join command for worker
+        JOIN_CMD=$(control-plane.succeed("kubeadm token create --print-join-command"))
+
+        # Join worker to the cluster
+        worker.wait_for_unit("kubelet.service")
+        worker.succeed(JOIN_CMD)
+
+        # Verify both nodes are visible from the control plane
+        control-plane.wait_until_succeeds("test $(kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes --no-headers | wc -l) -eq 2")
+
+        # Verify worker reaches Ready state
+        control-plane.wait_until_succeeds("kubectl --kubeconfig /etc/kubernetes/admin.conf get nodes | grep worker | grep -q Ready")
+
+        # Schedule a test pod and verify it lands on the worker
+        control-plane.succeed("kubectl --kubeconfig /etc/kubernetes/admin.conf run test-pod --image=pause --restart=Never")
+        control-plane.wait_until_succeeds("kubectl --kubeconfig /etc/kubernetes/admin.conf get pod test-pod -o jsonpath='{.status.phase}' | grep -q Running")
+      '';
+      timeout = 600;
+    };
   };
 }

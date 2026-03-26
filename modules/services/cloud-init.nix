@@ -29,14 +29,15 @@
 ##!       "registry_mirrors": {},
 ##!       "containerd": { "snapshotter": "overlayfs" }
 ##!     },
-##!     "services": { "chrony": true, "fail2ban": true }
+##!     "services": { "chrony": true }
 ##!   }
 {
   config,
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = config.aos.services.cloudInit;
 
   jqBin = "${pkgs.jq}/bin/jq";
@@ -473,7 +474,8 @@
     echo "done" > "$STATE/boot-finished"
     echo "cloud-init-final: boot-finished"
   '';
-in {
+in
+{
   options.aos.services.cloudInit = {
     ## Enable the cloud-init service for runtime configuration.
     enable = lib.mkOption {
@@ -488,7 +490,208 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [pkgs.jq];
+    system.cloudInitTests.ci-defaults = {
+      userdata = null;
+      checks = import ./cloud-init-checks/ci-defaults.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-hostname = {
+      userdata = builtins.toJSON {
+        hostname = "test-webserver";
+      };
+      checks = import ./cloud-init-checks/ci-hostname.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-networking = {
+      userdata = builtins.toJSON {
+        hostname = "static-net-test";
+        networking = {
+          interfaces = {
+            eth0 = {
+              address = "10.0.0.5/24";
+              gateway = "10.0.0.1";
+              dns = "10.0.0.1";
+            };
+          };
+        };
+      };
+      checks = import ./cloud-init-checks/ci-networking.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-users = {
+      userdata = builtins.toJSON {
+        users = [
+          {
+            name = "deploy";
+            uid = 1000;
+            groups = [ "wheel" ];
+          }
+        ];
+      };
+      checks = import ./cloud-init-checks/ci-users.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-ssh-keys = {
+      userdata = builtins.toJSON {
+        users = [
+          {
+            name = "deploy";
+            uid = 1000;
+            groups = [ "wheel" ];
+            ssh_authorized_keys = [
+              "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForCloudInitVMTest deploy@test"
+            ];
+          }
+        ];
+      };
+      checks = import ./cloud-init-checks/ci-ssh-keys.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-firewall-server = {
+      userdata = builtins.toJSON {
+        role = "server";
+        firewall = {
+          allowed_tcp = [
+            22
+            80
+            443
+          ];
+          allowed_udp = [ ];
+          forward_policy = "drop";
+        };
+      };
+      checks = import ./cloud-init-checks/ci-firewall-server.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-firewall-k8s-worker = {
+      userdata = builtins.toJSON {
+        role = "k8s-worker";
+        firewall = {
+          allowed_tcp = [ 22 ];
+          allowed_udp = [ ];
+          forward_policy = "accept";
+        };
+        kubernetes = {
+          server_url = "https://10.0.0.10:6443";
+          token_file = "/etc/rancher/k3s/agent-token";
+        };
+      };
+      checks = import ./cloud-init-checks/ci-firewall-k8s-worker.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-firewall-k8s-cp = {
+      userdata = builtins.toJSON {
+        role = "k8s-control-plane";
+        firewall = {
+          allowed_tcp = [ 22 ];
+          allowed_udp = [ ];
+          forward_policy = "accept";
+        };
+        kubernetes = {
+          cluster_init = true;
+        };
+      };
+      checks = import ./cloud-init-checks/ci-firewall-k8s-cp.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-server-role = {
+      userdata = builtins.toJSON {
+        role = "server";
+        hostname = "prod-web-01";
+        firewall = {
+          allowed_tcp = [
+            22
+            80
+            443
+          ];
+          allowed_udp = [ ];
+          forward_policy = "drop";
+        };
+      };
+      checks = import ./cloud-init-checks/ci-server-role.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-worker-role = {
+      userdata = builtins.toJSON {
+        role = "k8s-worker";
+        hostname = "worker-01";
+        firewall = {
+          allowed_tcp = [ 22 ];
+          allowed_udp = [ ];
+          forward_policy = "accept";
+        };
+        kubernetes = {
+          server_url = "https://10.0.0.10:6443";
+          token_file = "/etc/rancher/k3s/agent-token";
+        };
+      };
+      checks = import ./cloud-init-checks/ci-worker-role.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-control-plane-role = {
+      userdata = builtins.toJSON {
+        role = "k8s-control-plane";
+        hostname = "cp-01";
+        firewall = {
+          allowed_tcp = [ 22 ];
+          allowed_udp = [ ];
+          forward_policy = "accept";
+        };
+        kubernetes = {
+          cluster_init = true;
+          disable_kube_proxy = true;
+          cluster_cidr = "10.244.0.0/16";
+          service_cidr = "10.96.0.0/12";
+          tls_san = [
+            "10.0.0.10"
+            "cp-01.internal"
+          ];
+        };
+      };
+      checks = import ./cloud-init-checks/ci-control-plane-role.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-k3s-config = {
+      userdata = builtins.toJSON {
+        role = "k8s-worker";
+        hostname = "worker-labeled";
+        kubernetes = {
+          server_url = "https://10.0.0.10:6443";
+          token_file = "/etc/rancher/k3s/agent-token";
+          node_labels = {
+            "topology.kubernetes.io/zone" = "us-east-1a";
+            "node.kubernetes.io/pool" = "workers";
+          };
+          registry_mirrors = {
+            "docker.io" = "https://mirror.internal/v2";
+          };
+        };
+        firewall = {
+          allowed_tcp = [ 22 ];
+          allowed_udp = [ ];
+          forward_policy = "accept";
+        };
+      };
+      checks = import ./cloud-init-checks/ci-k3s-config.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-k8s-net-prereqs = {
+      userdata = builtins.toJSON {
+        role = "k8s-worker";
+        hostname = "net-prereqs-test";
+        kubernetes = {
+          server_url = "https://10.0.0.10:6443";
+          token_file = "/etc/rancher/k3s/agent-token";
+        };
+        firewall = {
+          allowed_tcp = [ 22 ];
+          allowed_udp = [ ];
+          forward_policy = "accept";
+        };
+      };
+      checks = import ./cloud-init-checks/ci-k8s-net-prereqs.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-service-lifecycle = {
+      userdata = builtins.toJSON {
+        role = "server";
+        hostname = "lifecycle-test";
+      };
+      checks = import ./cloud-init-checks/ci-service-lifecycle.nix { inherit lib; };
+    };
+    system.cloudInitTests.ci-security = {
+      userdata = null;
+      checks = import ./cloud-init-checks/ci-security.nix { inherit lib; };
+    };
+
+    environment.systemPackages = [ pkgs.jq ];
 
     # Stage scripts in /etc/aos/cloud-init/
     # Note: build module doesn't support mode, so ExecStart uses /bin/sh explicitly.
@@ -517,12 +720,12 @@ in {
     # Stage 1: cloud-init-local (before networking)
     systemd.services."cloud-init-local" = {
       description = "Cloud-Init Local Stage (hostname, network config)";
-      wantedBy = ["multi-user.target"];
+      wantedBy = [ "multi-user.target" ];
       before = [
         "systemd-networkd.service"
         "cloud-init-network.service"
       ];
-      after = ["local-fs.target"];
+      after = [ "local-fs.target" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -533,12 +736,12 @@ in {
     # Stage 2: cloud-init-network (role detection)
     systemd.services."cloud-init-network" = {
       description = "Cloud-Init Network Stage (role detection)";
-      wantedBy = ["multi-user.target"];
+      wantedBy = [ "multi-user.target" ];
       after = [
         "cloud-init-local.service"
         "network-online.target"
       ];
-      wants = ["network-online.target"];
+      wants = [ "network-online.target" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -549,8 +752,8 @@ in {
     # Stage 3: cloud-init-config (users, ssh keys, firewall, k8s)
     systemd.services."cloud-init-config" = {
       description = "Cloud-Init Config Stage (users, firewall, k8s config)";
-      wantedBy = ["multi-user.target"];
-      after = ["cloud-init-network.service"];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "cloud-init-network.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -561,8 +764,8 @@ in {
     # Stage 4: cloud-init-final (reload services, boot-finished)
     systemd.services."cloud-init-final" = {
       description = "Cloud-Init Final Stage (service reload, boot marker)";
-      wantedBy = ["multi-user.target"];
-      after = ["cloud-init-config.service"];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "cloud-init-config.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

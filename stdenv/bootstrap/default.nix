@@ -1,110 +1,400 @@
-# stdenv/bootstrap/default.nix — Full source bootstrap chain (stages 0-9)
+# stdenv/bootstrap/default.nix — Complete bootstrap chain
 #
-# Composes all bootstrap stages into a single evaluation:
-#    hex0 (229 byte seed, the ONLY opaque binary)
-#     → kaem (compiled from hex0 source)
-#       → mescc-tools (hex0 → M2-Planet → kaem)
-#       → GNU Mes (MesCC C compiler)
-#         → TinyCC 0.9.27 (5-pass from MesCC)
-#           → make 3.82, sed 4.0.9, grep 2.4, patch 2.5.9
-#             → binutils 2.20.1a (from TCC, Mes libc)
-#               → GCC 2.95.3 (from TCC, Mes libc, freestanding)
-#                 → Linux 4.14 headers
-#                   → glibc 2.2.5
-#                     → GCC 3.4.6 (first GCC with real glibc)
-#                       → BusyBox 1.36 + GNU Make 4.4
+# Wires all bootstrap stages together and exports GCC 2.95.3-compiled tools.
+# No TCC-compiled binaries leave bootstrap — stage 5 recompiles everything.
 #
-# Exports only well-built tools for use by the toolchain.
-# All internal bootstrap stages (hex0, kaem, mes, tcc, gcc295, etc.)
-# are NOT exported.
+# Stage 0: hex0 → kaem, mkdir, ln
+# Stage 1: hex0 + kaem → posix-tools (M2-Planet, blood-elf, M1, hex2, kaem, etc.)
+# Stage 2: posix-tools → GNU Mes 0.27.1 (Scheme + MesCC C compiler)
+# Stage 3: MesCC + kaem → TinyCC 0.9.27 (via boot0 → boot1 → boot2 → 0.9.27)
+# Stage 4: TCC + bash → ALL TCC-compiled packages (Mes libc, i386, internal)
+#   4a: bash-tcc       (kaem-built, LAST KAEM BUILD)
+#   4b: sed-tcc, patch-tcc, grep-tcc, diffutils-tcc, gzip-tcc, tar-tcc
+#   4c: coreutils-tcc  (needs patch-tcc)
+#   4d: findutils-tcc
+#   4e: gnumake-tcc    (needs coreutils-tcc)
+#   4f: binutils-tcc   (configure+make, needs sed/grep/patch/coreutils/make)
+#   4g: gcc-tcc        (configure+make, needs everything + binutils-tcc)
+# Stage 5: GCC + bash → ALL GCC-compiled packages (glibc, exported)
+#   5a: linux-headers, glibc, gcc (self-hosted), binutils
+#   5b: bash, gnumake, sed, grep, patch, coreutils, gawk,
+#       findutils, diffutils, tar, gzip
 #
-# Usage:
-#   nix-build -E '(import ./stdenv/bootstrap {}).gcc346'
-#   nix-build -E '(import ./stdenv/bootstrap {}).busybox136'
+# All stages target i686-linux (32-bit). Cross-compilation happens in toolchains.
 #
-{
-  system ? "x86_64-linux",
-}:
+{ buildPlatform, ... }:
 let
-  # ── Stage 0: Bootstrap seeds ──────────────────────────────────────────
-  # hex0 (229 bytes) — the ONLY opaque binary. kaem compiled from source.
-  seeds = import ./stage0-seeds.nix {inherit system;};
+  # ══════════════════════════════════════════════════════════════════════
+  # Stage 0: Seeds (hex0-seed + hex0-compiled tools)
+  # ══════════════════════════════════════════════════════════════════════
+  seeds = import ./stage0-seeds.nix { inherit buildPlatform; };
 
-  # ── Stage 0→1: mescc-tools ────────────────────────────────────────────
-  # hex0 → hex1 → hex2 → M0 → M1 → M2-Planet → kaem + mescc-tools-extra
-  mescc-tools = import ./stage1-mescc-tools.nix {inherit seeds system;};
+  # ══════════════════════════════════════════════════════════════════════
+  # Stage 1: Posix-tools (M2-Planet, M1, hex2, blood-elf, full kaem, etc.)
+  # ══════════════════════════════════════════════════════════════════════
+  posix-tools = import ./stage1-posix-tools.nix { inherit seeds buildPlatform; };
 
-  # ── Stage 1: GNU Mes ──────────────────────────────────────────────────
-  # MesCC C compiler (Scheme-based), Mes libc
-  mes = import ./stage2-mes.nix {inherit mescc-tools system;};
+  # ══════════════════════════════════════════════════════════════════════
+  # Stage 2: GNU Mes 0.27.1 (Scheme interpreter + MesCC C compiler)
+  # ══════════════════════════════════════════════════════════════════════
+  mes = import ./stage2-mes.nix { inherit posix-tools seeds buildPlatform; };
 
-  # ── Stage 2: TinyCC ───────────────────────────────────────────────────
-  # MesCC → TCC 0.9.26 → TCC 0.9.27 (with Mes libc)
-  tinycc = import ./stage3-tinycc.nix {inherit mes mescc-tools system;};
-
-  # ── Stage 3: POSIX tools from TCC ─────────────────────────────────────
-  # Individual tools compiled directly with TCC + Mes libc
-  make382 = import ./stage3-make382.nix {inherit tinycc mescc-tools system;};
-  sed409 = import ./stage3-sed409.nix {inherit tinycc make382 mescc-tools system;};
-  grep24 = import ./stage3-grep24.nix {inherit tinycc mescc-tools system;};
-  patch259 = import ./stage3-patch259.nix {inherit tinycc mescc-tools system;};
-
-  # ── Stage 4: binutils 2.20.1a ─────────────────────────────────────────
-  # GNU assembler/linker (from TCC, Mes libc)
-  binutils220 = import ./stage4-binutils220.nix {
-    inherit tinycc mescc-tools make382 sed409 grep24 patch259 system;
+  # ══════════════════════════════════════════════════════════════════════
+  # Stage 3: TinyCC 0.9.27 (built via MesCC → boot chain)
+  # ══════════════════════════════════════════════════════════════════════
+  tinycc = import ./stage3-tinycc.nix {
+    inherit
+      mes
+      posix-tools
+      seeds
+      buildPlatform
+      ;
   };
 
-  # ── Stage 5: GCC 2.95.3 ───────────────────────────────────────────────
-  # First GCC (C only, from TCC, Mes libc, freestanding)
-  gcc295 = import ./stage5-gcc295.nix {
-    binutils = binutils220;
-    inherit tinycc mescc-tools make382 sed409 grep24 patch259 system;
+  # ══════════════════════════════════════════════════════════════════════
+  # Stage 4: ALL TCC-compiled packages (Mes libc, i386, internal)
+  # These are compiled by TCC against Mes libc (static) with bash as the
+  # builder shell. They exist only to build GCC 2.95.3 and are replaced
+  # by GCC-compiled versions in stage 5.
+  # ══════════════════════════════════════════════════════════════════════
+
+  # 4a: bash (LAST KAEM BUILD — first shell in the chain)
+  bash-tcc = import ./stage4-bash-tcc.nix {
+    inherit
+      tinycc
+      posix-tools
+      seeds
+      buildPlatform
+      ;
   };
 
-  # ── Stage 6: Linux 4.14 headers ───────────────────────────────────────
-  # Sanitized UAPI headers (uses gcc295 to compile unifdef)
-  linuxHeaders414 = import ./stage6-linux-headers.nix {
-    binutils = binutils220;
-    inherit gcc295 mescc-tools make382 sed409 grep24 patch259 system;
+  # 4b: Individual GNU tools (file-by-file TCC builds, no source mods needed)
+  sed-tcc = import ./stage4-sed-tcc.nix {
+    inherit tinycc posix-tools buildPlatform;
+    bash = bash-tcc;
   };
 
-  # ── Stage 7: glibc 2.2.5 ──────────────────────────────────────────────
-  # First real C library (replaces Mes libc for all subsequent stages)
-  glibc225 = import ./stage7-glibc225.nix {
-    binutils = binutils220;
-    linuxHeaders = linuxHeaders414;
-    inherit gcc295 mescc-tools make382 sed409 grep24 patch259 system;
+  patch-tcc = import ./stage4-patch-tcc.nix {
+    inherit tinycc posix-tools buildPlatform;
+    bash = bash-tcc;
   };
 
-  # ── Stage 8: GCC 3.4.6 ────────────────────────────────────────────────
-  # C only, first GCC linked against real glibc
-  gcc346 = import ./stage8-gcc346.nix {
-    glibc = glibc225;
-    binutils = binutils220;
-    inherit gcc295 mescc-tools make382 sed409 grep24 patch259 system;
+  grep-tcc = import ./stage4-grep-tcc.nix {
+    inherit tinycc posix-tools buildPlatform;
+    bash = bash-tcc;
   };
 
-  # ── Stage 9: BusyBox 1.36 + GNU Make 4.4 ──────────────────────────────
-  # BusyBox provides sh + coreutils + everything for toolchain builds
-  # Make 4.4 provides full-featured make for ./configure && make
-  busybox136 = import ./stage9-busybox136.nix {
-    inherit gcc346 glibc225 binutils220 mescc-tools make382 sed409 grep24 patch259 system;
+  diffutils-tcc = import ./stage4-diffutils-tcc.nix {
+    inherit tinycc posix-tools buildPlatform;
+    bash = bash-tcc;
   };
 
-  make44 = import ./stage9-make44.nix {
-    inherit gcc346 glibc225 binutils220 mescc-tools make382 sed409 grep24 patch259 system;
+  gzip-tcc = import ./stage4-gzip-tcc.nix {
+    inherit tinycc posix-tools buildPlatform;
+    bash = bash-tcc;
   };
+
+  tar-tcc = import ./stage4-tar-tcc.nix {
+    inherit tinycc posix-tools buildPlatform;
+    bash = bash-tcc;
+  };
+
+  # 4c: coreutils (needs patch-tcc to apply Mes libc compatibility patches)
+  coreutils-tcc = import ./stage4-coreutils-tcc.nix {
+    inherit tinycc posix-tools buildPlatform;
+    bash = bash-tcc;
+    patch = patch-tcc;
+  };
+
+  # 4d: findutils
+  findutils-tcc = import ./stage4-findutils-tcc.nix {
+    inherit tinycc posix-tools buildPlatform;
+    bash = bash-tcc;
+  };
+
+  # 4e: GNU Make (file-by-file build, needs coreutils for cp -r)
+  gnumake-tcc = import ./stage4-gnumake-tcc.nix {
+    inherit tinycc buildPlatform;
+    bash = bash-tcc;
+    coreutils = coreutils-tcc;
+  };
+
+  # 4e2: GNU awk (file-by-file build, needed by binutils/gcc configure)
+  gawk-tcc = import ./stage4-gawk-tcc.nix {
+    inherit tinycc buildPlatform;
+    bash = bash-tcc;
+    coreutils = coreutils-tcc;
+  };
+
+  # 4f: binutils (configure+make, needs sed/grep/patch/coreutils/make/awk)
+  binutils-tcc = import ./stage4-binutils-tcc.nix {
+    inherit tinycc buildPlatform;
+    bash = bash-tcc;
+    sed = sed-tcc;
+    grep = grep-tcc;
+    patch = patch-tcc;
+    coreutils = coreutils-tcc;
+    diffutils = diffutils-tcc;
+    gnumake = gnumake-tcc;
+    gawk = gawk-tcc;
+  };
+
+  # 4g: GCC 2.95.3 (configure+make, needs everything + binutils-tcc)
+  gcc-tcc = import ./stage4-gcc-tcc.nix {
+    inherit tinycc buildPlatform;
+    bash = bash-tcc;
+    sed = sed-tcc;
+    grep = grep-tcc;
+    patch = patch-tcc;
+    coreutils = coreutils-tcc;
+    diffutils = diffutils-tcc;
+    gnumake = gnumake-tcc;
+    gawk = gawk-tcc;
+    tar = tar-tcc;
+    binutils = binutils-tcc;
+  };
+
+  # ══════════════════════════════════════════════════════════════════════
+  # Stage 5: ALL GCC-compiled packages (glibc, exported)
+  # Everything is recompiled with GCC 2.95.3 to eliminate TCC artifacts.
+  # ══════════════════════════════════════════════════════════════════════
+
+  # 5a: Core toolchain (linux-headers, glibc, self-hosted GCC, binutils)
+
+  linuxHeaders = import ./stage5-linux-headers.nix {
+    inherit buildPlatform;
+    bash = bash-tcc;
+    coreutils = coreutils-tcc;
+    gnumake = gnumake-tcc;
+  };
+
+  glibc = import ./stage5-glibc.nix {
+    gcc = gcc-tcc;
+    binutils = binutils-tcc;
+    inherit linuxHeaders buildPlatform;
+    bash = bash-tcc;
+    sed = sed-tcc;
+    grep = grep-tcc;
+    patch = patch-tcc;
+    coreutils = coreutils-tcc;
+    gnumake = gnumake-tcc;
+    gawk = gawk-tcc;
+    diffutils = diffutils-tcc;
+  };
+
+  # GCC 2.95.3 self-hosted (compiled by gcc-tcc, linked against glibc)
+  gcc = import ./stage5-gcc.nix {
+    gcc = gcc-tcc;
+    binutils = binutils-tcc;
+    inherit glibc linuxHeaders buildPlatform;
+    bash = bash-tcc;
+    sed = sed-tcc;
+    grep = grep-tcc;
+    patch = patch-tcc;
+    coreutils = coreutils-tcc;
+    diffutils = diffutils-tcc;
+    gnumake = gnumake-tcc;
+    gawk = gawk-tcc;
+    tar = tar-tcc;
+  };
+
+  # Stage 4 tool set — TCC-compiled, used to build the stage 5a toolchain.
+  # These may have TCC codegen bugs; we move away from them ASAP.
+  stage4-tools = {
+    bash = bash-tcc;
+    sed = sed-tcc;
+    grep = grep-tcc;
+    patch = patch-tcc;
+    coreutils = coreutils-tcc;
+    diffutils = diffutils-tcc;
+    gnumake = gnumake-tcc;
+    gawk = gawk-tcc;
+    tar = tar-tcc;
+    binutils = binutils-tcc;
+  };
+
+  # 5a continued: Binutils recompiled with self-hosted GCC
+  binutils = import ./stage5-binutils.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage4-tools
+  );
+
+  # Stage 5 tools — stage4 shell tools + stage5 GCC-compiled binutils.
+  # All stage5b packages use the trusted binutils (ar, as, ld, etc.).
+  stage5-tools = stage4-tools // {
+    binutils = binutils;
+  };
+
+  # 5b: All tools recompiled with GCC 2.95.3 + glibc + binutils
+
+  gawk = import ./stage5-gawk.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
+
+  sed = import ./stage5-sed.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
+
+  bash = import ./stage5-bash.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
+
+  patch = import ./stage5-patch.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
+
+  coreutils = import ./stage5-coreutils.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
+
+  gnumake = import ./stage5-gnumake.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
+
+  grep = import ./stage5-grep.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
+
+  findutils = import ./stage5-findutils.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
+
+  diffutils = import ./stage5-diffutils.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
+
+  tar = import ./stage5-tar.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
+
+  gzip = import ./stage5-gzip.nix (
+    {
+      inherit
+        gcc
+        glibc
+        linuxHeaders
+        buildPlatform
+        ;
+    }
+    // stage5-tools
+  );
 in
-  # ════════════════════ BOOTSTRAP BOUNDARY ════════════════════
-  # Only export well-built tools. Everything above this line
-  # (hex0, kaem, mes, tcc, gcc295, make382, sed409, grep24, patch259)
-  # stays INTERNAL — never leaked to the toolchain.
-  {
-    inherit busybox136; # shell + coreutils + everything
-    inherit make44; # GNU Make 4.4
-    inherit gcc346; # GCC 3.4.6 (C only, glibc-linked)
-    inherit glibc225; # glibc 2.2.5
-    inherit binutils220; # binutils 2.20.1a
-    inherit linuxHeaders414; # Linux 4.14 headers
-  }
+{
+  # ── Public exports (consumed by toolchains/gcc3_4) ──────────────────
+  inherit gcc; # GCC 2.95.3 (self-hosted, linked against glibc)
+  inherit glibc; # glibc 2.2.5 (GCC-compiled)
+  inherit binutils; # binutils 2.20.1a (GCC-compiled)
+  inherit bash; # bash 2.05b (GCC-compiled)
+  inherit gnumake; # GNU Make 3.79.1 (GCC-compiled)
+  inherit sed; # GNU sed 4.0.9 (GCC-compiled)
+  inherit grep; # GNU grep 2.4 (GCC-compiled)
+  inherit patch; # GNU patch 2.5.9 (GCC-compiled)
+  inherit coreutils; # GNU Coreutils 5.0 (GCC-compiled)
+  inherit gawk; # GNU awk 3.0.6 (GCC-compiled)
+  inherit findutils; # GNU findutils 4.1 (GCC-compiled)
+  inherit diffutils; # GNU diffutils 2.7 (GCC-compiled)
+  inherit tar; # GNU tar 1.12 (GCC-compiled)
+  inherit gzip; # GNU gzip 1.2.4 (GCC-compiled)
+
+  meta = {
+    description = "AOS source bootstrap: hex0 → posix-tools → Mes → TCC → GCC 2.95.3";
+    build = {
+      os = "linux";
+      cpu = [
+        "x86_64"
+        "i686"
+      ];
+    };
+    execute = {
+      os = "linux";
+      cpu = "i686";
+    };
+  };
+}

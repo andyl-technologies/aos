@@ -1,0 +1,12 @@
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -2811,8 +2811,5 @@
+   char *rp = nullptr;
+   if (ret && dli_fname[0] != '\0') {
+-    rp = os::realpath(dli_fname, buf, buflen);
+-  }
+-  if (rp == nullptr) {
+-    return;
++    snprintf(buf, buflen, "%s", dli_fname);
+   }
+
