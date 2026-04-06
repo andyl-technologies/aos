@@ -278,6 +278,7 @@ dependencies = [
  "tokio-util",
  "toml",
  "tower-http",
+ "tracing",
  "uuid",
  "zstd",
 ]

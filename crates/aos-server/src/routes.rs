@@ -29,6 +29,8 @@ use crate::store::NixStore;
 use crate::tokens::TokenStore;
 use crate::views::ViewManager;
 
+use tracing;
+
 /// Shared server state.
 pub struct AppState {
     pub store: NixStore,
@@ -76,6 +78,7 @@ async fn cache_info_handler(
     // Enforce auth unless anonymous_read is enabled.
     if !view_config.anonymous_read {
         if let AuthResult::Anonymous = auth {
+            tracing::warn!(view = %view, "auth required for cache-info");
             return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
         }
     }
@@ -105,6 +108,7 @@ async fn narinfo_handler(
 
     if !view_config.anonymous_read {
         if let AuthResult::Anonymous = auth {
+            tracing::warn!(view = %view, hash = %hash_narinfo, "auth required for narinfo");
             return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
         }
     }
@@ -118,6 +122,7 @@ async fn narinfo_handler(
         Ok(Some(path)) => path,
         Ok(None) => return (StatusCode::NOT_FOUND, "path not in view").into_response(),
         Err(e) => {
+            tracing::error!(view = %view, hash = %hash, error = %e, "visibility check failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("visibility check: {e}"),
@@ -130,6 +135,7 @@ async fn narinfo_handler(
         Ok(Some(info)) => info,
         Ok(None) => return (StatusCode::NOT_FOUND, "path not in store").into_response(),
         Err(e) => {
+            tracing::error!(view = %view, hash = %hash, error = %e, "store query failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("store query: {e}"),
@@ -142,6 +148,8 @@ async fn narinfo_handler(
     let _ = access::update_access(&state.views, &view, hash);
 
     let body = narinfo::format_narinfo(&info, &state.store_dir, &state.config.compression, Some(&state.signer));
+
+    tracing::info!(view = %view, hash = %hash, "narinfo served");
 
     (
         StatusCode::OK,
@@ -163,6 +171,7 @@ async fn nar_handler(
 
     if !view_config.anonymous_read {
         if let AuthResult::Anonymous = auth {
+            tracing::warn!(view = %view, filename = %filename, "auth required for NAR");
             return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
         }
     }
@@ -187,6 +196,7 @@ async fn nar_handler(
         Ok(Some(path)) => path,
         Ok(None) => return (StatusCode::NOT_FOUND, "path not in view").into_response(),
         Err(e) => {
+            tracing::error!(view = %view, hash = %store_hash, error = %e, "visibility check failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("visibility check: {e}"),
@@ -196,17 +206,23 @@ async fn nar_handler(
     };
 
     match compress::nar_stream(&store_path, compression).await {
-        Ok(body) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, compression.content_type())],
-            body,
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("streaming NAR: {e}"),
-        )
-            .into_response(),
+        Ok(body) => {
+            tracing::info!(view = %view, hash = %store_hash, compression = %compression.narinfo_name(), "NAR streamed");
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, compression.content_type())],
+                body,
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(view = %view, hash = %store_hash, error = %e, "NAR streaming failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("streaming NAR: {e}"),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -229,7 +245,8 @@ async fn query_missing_handler(
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
 
-    if !claims.views.contains(&view) && !claims.views.contains(&"*".to_string()) {
+    if !claims.has_view(&view) {
+        tracing::warn!(view = %view, sub = %claims.sub, "view not authorized for query-missing");
         return (StatusCode::FORBIDDEN, "view not authorized").into_response();
     }
 
@@ -239,6 +256,7 @@ async fn query_missing_handler(
             Ok(true) => {}
             Ok(false) => missing.push(path.clone()),
             Err(e) => {
+                tracing::error!(view = %view, error = %e, "store query failed in query-missing");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("store query: {e}"),
@@ -248,6 +266,7 @@ async fn query_missing_handler(
         }
     }
 
+    tracing::info!(view = %view, total = body.paths.len(), missing = missing.len(), "query-missing completed");
     Json(serde_json::json!({ "missing": missing })).into_response()
 }
 
@@ -282,12 +301,34 @@ async fn upload_path_handler(
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
 
-    if !claims.views.contains(&view) && !claims.views.contains(&"*".to_string()) {
+    if !claims.has_view(&view) {
+        tracing::warn!(view = %view, sub = %claims.sub, "view not authorized for upload");
         return (StatusCode::FORBIDDEN, "view not authorized").into_response();
     }
 
-    if !claims.permissions.contains(&"build".to_string()) {
+    if !claims.has_permission("build") {
+        tracing::warn!(view = %view, sub = %claims.sub, "build permission required for upload");
         return (StatusCode::FORBIDDEN, "build permission required").into_response();
+    }
+
+    // Enforce per-view max_paths quota.
+    if let Some(view_config) = state.views.get_view(&view) {
+        if let Some(max_paths) = view_config.max_paths {
+            match state.views.count_roots(&view) {
+                Ok(count) if count >= max_paths => {
+                    tracing::warn!(view = %view, count, max_paths, "upload rejected: max_paths exceeded");
+                    return (
+                        StatusCode::INSUFFICIENT_STORAGE,
+                        format!("view has {count} rooted paths, max is {max_paths}"),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    tracing::error!(view = %view, error = %e, "failed to count roots for quota check");
+                }
+                _ => {}
+            }
+        }
     }
 
     // Check for Content-Range header for chunked/resumable uploads.
@@ -300,6 +341,7 @@ async fn upload_path_handler(
         // Chunked upload: write chunk to partial file.
         let upload_dir = crate::aos_root().join("uploads");
         if let Err(e) = tokio::fs::create_dir_all(&upload_dir).await {
+            tracing::error!(view = %view, hash = %hash, error = %e, "failed to create upload dir");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("creating upload dir: {e}"),
@@ -319,6 +361,7 @@ async fn upload_path_handler(
         let mut file = match file {
             Ok(f) => f,
             Err(e) => {
+                tracing::error!(view = %view, hash = %hash, error = %e, "failed to open partial file");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("opening partial file: {e}"),
@@ -328,6 +371,7 @@ async fn upload_path_handler(
         };
 
         if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
+            tracing::error!(view = %view, hash = %hash, error = %e, "failed to seek in partial file");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("seeking in partial file: {e}"),
@@ -336,6 +380,7 @@ async fn upload_path_handler(
         }
 
         if let Err(e) = file.write_all(&body).await {
+            tracing::error!(view = %view, hash = %hash, error = %e, "failed to write chunk");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("writing chunk to partial file: {e}"),
@@ -349,9 +394,11 @@ async fn upload_path_handler(
 
         // If this is the final chunk, import the assembled file.
         if received == total {
+            tracing::info!(view = %view, hash = %hash, total_bytes = total, "chunked upload complete, importing");
             let full_data = match tokio::fs::read(&partial_path).await {
                 Ok(d) => d,
                 Err(e) => {
+                    tracing::error!(view = %view, hash = %hash, error = %e, "failed to read assembled file");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("reading assembled file: {e}"),
@@ -363,7 +410,7 @@ async fn upload_path_handler(
             // Clean up the partial file.
             let _ = tokio::fs::remove_file(&partial_path).await;
 
-            return import_nar_data(&full_data).await;
+            return import_nar_with_tmp_root(&full_data, &state.views, &view).await;
         }
 
         // Not the final chunk — return 202 Accepted.
@@ -375,63 +422,65 @@ async fn upload_path_handler(
     }
 
     // No Content-Range — import the full body directly (original behavior).
-    import_nar_data(&body).await
+    tracing::info!(view = %view, hash = %hash, bytes = body.len(), "upload received, importing");
+    import_nar_with_tmp_root(&body, &state.views, &view).await
 }
 
-/// Import NAR data via `nix-store --import` and return the JSON response.
-async fn import_nar_data(data: &[u8]) -> Response {
-    let mut child = match Command::new("nix-store")
+/// Import NAR data via `nix-store --import` and return the imported store path.
+async fn import_nar(data: &[u8]) -> Result<String, Response> {
+    let mut child = Command::new("nix-store")
         .arg("--import")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("spawning nix-store --import: {e}"),
-            )
-                .into_response();
-        }
-    };
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to spawn nix-store --import");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("spawning nix-store --import: {e}")).into_response()
+        })?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        if let Err(e) = stdin.write_all(data).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("writing NAR to nix-store: {e}"),
-            )
-                .into_response();
-        }
+        stdin.write_all(data).await.map_err(|e| {
+            tracing::error!(error = %e, "failed to write NAR to nix-store");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("writing NAR to nix-store: {e}")).into_response()
+        })?;
         drop(stdin);
     }
 
-    let output = match child.wait_with_output().await {
-        Ok(o) => o,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("waiting for nix-store --import: {e}"),
-            )
-                .into_response();
-        }
-    };
+    let output = child.wait_with_output().await.map_err(|e| {
+        tracing::error!(error = %e, "failed waiting for nix-store --import");
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("waiting for nix-store --import: {e}")).into_response()
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("nix-store --import failed: {stderr}"),
-        )
-            .into_response();
+        tracing::error!(stderr = %stderr, "nix-store --import failed");
+        return Err((StatusCode::BAD_REQUEST, format!("nix-store --import failed: {stderr}")).into_response());
     }
 
     let imported = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     if let Err(reason) = pack::validate_imported_path(&imported) {
-        return (StatusCode::BAD_REQUEST, reason).into_response();
+        tracing::warn!(path = %imported, reason = %reason, "imported path rejected");
+        return Err((StatusCode::BAD_REQUEST, reason).into_response());
+    }
+
+    tracing::info!(path = %imported, "store path imported");
+    Ok(imported)
+}
+
+/// Import NAR data and create a temporary GC root in the given view.
+async fn import_nar_with_tmp_root(data: &[u8], views: &ViewManager, view: &str) -> Response {
+    let imported = match import_nar(data).await {
+        Ok(path) => path,
+        Err(resp) => return resp,
+    };
+
+    // Create a temporary GC root to protect the path until its build creates bin/ roots.
+    if let Some(hash) = ViewManager::store_path_hash(&imported) {
+        if let Err(e) = views.create_tmp_root(view, hash, &imported) {
+            tracing::warn!(view = %view, path = %imported, error = %e, "failed to create tmp GC root");
+        }
     }
 
     Json(serde_json::json!({ "path": imported })).into_response()
@@ -484,16 +533,19 @@ async fn build_handler(
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
 
-    if !claims.views.contains(&view) && !claims.views.contains(&"*".to_string()) {
+    if !claims.has_view(&view) {
+        tracing::warn!(view = %view, sub = %claims.sub, "view not authorized for build");
         return (StatusCode::FORBIDDEN, "view not authorized").into_response();
     }
 
-    if !claims.permissions.contains(&"build".to_string()) {
+    if !claims.has_permission("build") {
+        tracing::warn!(view = %view, sub = %claims.sub, "build permission required");
         return (StatusCode::FORBIDDEN, "build permission required").into_response();
     }
 
     // Reject builds during drain.
     if state.drain.is_draining() {
+        tracing::warn!(view = %view, drv = %query.drv, "build rejected during drain");
         return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down").into_response();
     }
 
@@ -503,6 +555,7 @@ async fn build_handler(
     match state.store.is_valid_path(drv_path) {
         Ok(true) => {}
         Ok(false) => {
+            tracing::warn!(view = %view, drv = %drv_path, "derivation not found");
             return (
                 StatusCode::BAD_REQUEST,
                 format!("derivation not found: {drv_path}"),
@@ -510,6 +563,7 @@ async fn build_handler(
                 .into_response();
         }
         Err(e) => {
+            tracing::error!(view = %view, drv = %drv_path, error = %e, "store query failed for build");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("store query: {e}"),
@@ -528,6 +582,8 @@ async fn build_handler(
     let handle = state
         .build_mgr
         .get_or_start(&state, &view, drv_path);
+
+    tracing::info!(view = %view, drv = %drv_path, "build stream started");
 
     // Determine the replay start point.
     let replay_from = last_event_id.map(|id| id + 1).unwrap_or(0);
@@ -597,15 +653,18 @@ async fn build_closure_handler(
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
 
-    if !claims.views.contains(&view) && !claims.views.contains(&"*".to_string()) {
+    if !claims.has_view(&view) {
+        tracing::warn!(view = %view, sub = %claims.sub, "view not authorized for build-closure");
         return (StatusCode::FORBIDDEN, "view not authorized").into_response();
     }
 
-    if !claims.permissions.contains(&"build".to_string()) {
+    if !claims.has_permission("build") {
+        tracing::warn!(view = %view, sub = %claims.sub, "build permission required for build-closure");
         return (StatusCode::FORBIDDEN, "build permission required").into_response();
     }
 
     if state.drain.is_draining() {
+        tracing::warn!(view = %view, count = body.drvs.len(), "build-closure rejected during drain");
         return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down").into_response();
     }
 
@@ -618,6 +677,7 @@ async fn build_closure_handler(
         match state.store.is_valid_path(drv_path) {
             Ok(true) => {}
             Ok(false) => {
+                tracing::warn!(view = %view, drv = %drv_path, "derivation not found in build-closure");
                 return (
                     StatusCode::BAD_REQUEST,
                     format!("derivation not found: {drv_path}"),
@@ -625,6 +685,7 @@ async fn build_closure_handler(
                     .into_response();
             }
             Err(e) => {
+                tracing::error!(view = %view, drv = %drv_path, error = %e, "store query failed in build-closure");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("store query: {e}"),
@@ -633,6 +694,8 @@ async fn build_closure_handler(
             }
         }
     }
+
+    tracing::info!(view = %view, count = body.drvs.len(), "build-closure started");
 
     let last_event_id: Option<u64> = headers
         .get("last-event-id")
@@ -726,17 +789,40 @@ async fn upload_pack_handler(
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
 
-    if !claims.views.contains(&view) && !claims.views.contains(&"*".to_string()) {
+    if !claims.has_view(&view) {
+        tracing::warn!(view = %view, sub = %claims.sub, "view not authorized for upload-pack");
         return (StatusCode::FORBIDDEN, "view not authorized").into_response();
     }
 
-    if !claims.permissions.contains(&"build".to_string()) {
+    if !claims.has_permission("build") {
+        tracing::warn!(view = %view, sub = %claims.sub, "build permission required for upload-pack");
         return (StatusCode::FORBIDDEN, "build permission required").into_response();
+    }
+
+    // Enforce per-view max_paths quota.
+    if let Some(view_config) = state.views.get_view(&view) {
+        if let Some(max_paths) = view_config.max_paths {
+            match state.views.count_roots(&view) {
+                Ok(count) if count >= max_paths => {
+                    tracing::warn!(view = %view, count, max_paths, "upload-pack rejected: max_paths exceeded");
+                    return (
+                        StatusCode::INSUFFICIENT_STORAGE,
+                        format!("view has {count} rooted paths, max is {max_paths}"),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    tracing::error!(view = %view, error = %e, "failed to count roots for quota check");
+                }
+                _ => {}
+            }
+        }
     }
 
     let entries = match pack::parse_pack(&body) {
         Ok(e) => e,
         Err(e) => {
+            tracing::warn!(view = %view, error = %e, "invalid pack upload");
             return (StatusCode::BAD_REQUEST, format!("invalid pack: {e}")).into_response();
         }
     };
@@ -744,13 +830,27 @@ async fn upload_pack_handler(
     let count = entries.len();
 
     match pack::import_pack(&entries).await {
-        Ok(paths) => Json(serde_json::json!({
-            "accepted": count,
-            "rejected": 0,
-            "paths": paths,
-        }))
-        .into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, format!("pack import failed: {e}")).into_response(),
+        Ok(paths) => {
+            // Create temporary GC roots for all imported paths.
+            for path in &paths {
+                if let Some(hash) = ViewManager::store_path_hash(path) {
+                    if let Err(e) = state.views.create_tmp_root(&view, hash, path) {
+                        tracing::warn!(view = %view, path = %path, error = %e, "failed to create tmp GC root for pack entry");
+                    }
+                }
+            }
+            tracing::info!(view = %view, accepted = count, paths = paths.len(), "pack upload completed");
+            Json(serde_json::json!({
+                "accepted": count,
+                "rejected": 0,
+                "paths": paths,
+            }))
+            .into_response()
+        }
+        Err(e) => {
+            tracing::error!(view = %view, error = %e, "pack import failed");
+            (StatusCode::BAD_REQUEST, format!("pack import failed: {e}")).into_response()
+        }
     }
 }
 
@@ -779,13 +879,17 @@ async fn gc_handler(
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
 
-    if !claims.views.contains(&view) && !claims.views.contains(&"*".to_string()) {
+    if !claims.has_view(&view) {
+        tracing::warn!(view = %view, sub = %claims.sub, "view not authorized for gc");
         return (StatusCode::FORBIDDEN, "view not authorized").into_response();
     }
 
-    if !claims.permissions.contains(&"build".to_string()) {
+    if !claims.has_permission("build") {
+        tracing::warn!(view = %view, sub = %claims.sub, "build permission required for gc");
         return (StatusCode::FORBIDDEN, "build permission required").into_response();
     }
+
+    tracing::info!(view = %view, dry_run = body.dry_run, collect = body.collect, "GC triggered");
 
     use crate::evict;
 
@@ -793,6 +897,7 @@ async fn gc_handler(
     let expired = match evict::expire_ttl_roots(&state.views, &view) {
         Ok(e) => e,
         Err(e) => {
+            tracing::error!(view = %view, error = %e, "TTL expiry failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("TTL expiry: {e}"),
@@ -801,11 +906,18 @@ async fn gc_handler(
         }
     };
 
+    if !expired.is_empty() {
+        tracing::info!(view = %view, count = expired.len(), "TTL roots expired");
+    }
+
     // Step 2: Budget-based eviction if max_size is specified.
     let mut evicted = Vec::new();
     if let Some(max_size) = body.max_size {
         match evict::evict_until_budget(&state.store, &state.views, &view, max_size, body.dry_run) {
             Ok(candidates) => {
+                if !candidates.is_empty() {
+                    tracing::info!(view = %view, count = candidates.len(), max_size, "eviction candidates selected");
+                }
                 evicted = candidates
                     .iter()
                     .map(|c| serde_json::json!({
@@ -818,6 +930,7 @@ async fn gc_handler(
                     .collect();
             }
             Err(e) => {
+                tracing::error!(view = %view, error = %e, "eviction failed");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("eviction: {e}"),
@@ -845,12 +958,14 @@ async fn gc_handler(
                         .last()
                         .and_then(|line| line.trim().parse().ok())
                         .unwrap_or(0);
+                    tracing::info!(view = %view, freed_bytes, "nix-store --gc completed");
                     Some(serde_json::json!({
                         "freed_bytes": freed_bytes,
                     }))
                 }
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
+                    tracing::error!(view = %view, stderr = %stderr, "nix-store --gc failed");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("nix-store --gc failed: {stderr}"),
@@ -858,6 +973,7 @@ async fn gc_handler(
                         .into_response();
                 }
                 Err(e) => {
+                    tracing::error!(view = %view, error = %e, "waiting for nix-store --gc failed");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("waiting for nix-store --gc: {e}"),
@@ -866,6 +982,7 @@ async fn gc_handler(
                 }
             },
             Err(e) => {
+                tracing::error!(view = %view, error = %e, "spawning nix-store --gc failed");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("spawning nix-store --gc: {e}"),
@@ -876,6 +993,8 @@ async fn gc_handler(
     } else {
         None
     };
+
+    tracing::info!(view = %view, expired = expired.len(), evicted = evicted.len(), "GC completed");
 
     Json(serde_json::json!({
         "expired": expired.len(),

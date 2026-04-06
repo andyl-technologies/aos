@@ -72,6 +72,7 @@ pub fn expire_ttl_roots(views: &ViewManager, view: &str) -> Result<Vec<String>> 
                     // Expired — remove symlink and metadata
                     let _ = fs::remove_file(entry.path());
                     let _ = fs::remove_file(&meta_path);
+                    tracing::info!(view = %view, ns = %ns, hash = %hash, "path expired by TTL");
                     expired.push(hash);
                 }
             }
@@ -296,6 +297,7 @@ pub fn evict_source_lru(
     sources.sort_by_key(|&(_, ts)| ts);
 
     let to_evict = sources.len() - max_sources;
+    tracing::info!(view = %view, total = sources.len(), max_sources, to_evict, dry_run, "evicting LRU source roots");
     let mut evicted = Vec::new();
 
     for (hash, _) in sources.into_iter().take(to_evict) {
@@ -331,8 +333,11 @@ pub fn evict_until_budget(
     }
 
     if total_size <= max_size {
+        tracing::debug!(view = %view, total_size, max_size, "view already under budget");
         return Ok(Vec::new()); // already under budget
     }
+
+    tracing::info!(view = %view, total_size, max_size, "eviction needed, scoring candidates");
 
     let candidates = score_candidates(store, &roots)?;
     let mut evicted = Vec::new();
@@ -380,6 +385,15 @@ pub fn evict_until_budget(
             }
         }
 
+        tracing::info!(
+            view = %view,
+            hash = %candidate.hash,
+            score = candidate.score,
+            unique_size = candidate.unique_size,
+            age_days = candidate.age_days,
+            dry_run,
+            "eviction candidate selected"
+        );
         total_size = total_size.saturating_sub(candidate.unique_size);
         evicted.push(candidate);
     }
