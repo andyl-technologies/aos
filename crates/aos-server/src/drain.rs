@@ -22,7 +22,11 @@ impl DrainState {
 
     /// Enter drain mode. Returns true if this call initiated the drain.
     pub fn start_drain(&self) -> bool {
-        !self.draining.swap(true, Ordering::SeqCst)
+        let initiated = !self.draining.swap(true, Ordering::SeqCst);
+        if initiated {
+            tracing::info!("drain initiated");
+        }
+        initiated
     }
 
     /// Check if the server is currently draining.
@@ -32,6 +36,7 @@ impl DrainState {
 
     /// Signal that all in-flight work is complete.
     pub fn signal_complete(&self) {
+        tracing::info!("drain complete, all in-flight work finished");
         self.shutdown_complete.notify_waiters();
     }
 
