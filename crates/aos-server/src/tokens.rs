@@ -126,6 +126,14 @@ impl TokenStore {
             comment: comment.map(String::from),
         };
 
+        tracing::info!(
+            token_id = %record.id,
+            views = ?record.views,
+            permissions = ?record.permissions,
+            created_by_uid = ?created_by_uid,
+            "token created"
+        );
+
         Ok((plaintext, record))
     }
 
@@ -166,17 +174,20 @@ impl TokenStore {
             .context("querying token by hash")?;
 
         let Some(raw) = record else {
+            tracing::warn!("token validation failed: unknown token");
             return Ok(None);
         };
 
         // Revoked tokens are invalid.
         if raw.revoked_at.is_some() {
+            tracing::warn!(token_id = %raw.id, "token validation failed: revoked");
             return Ok(None);
         }
 
         // Expired tokens are invalid.
         if let Some(exp) = raw.expires_at {
             if now >= exp {
+                tracing::warn!(token_id = %raw.id, "token validation failed: expired");
                 return Ok(None);
             }
         }
@@ -240,6 +251,10 @@ impl TokenStore {
                 params![now, id],
             )
             .context("revoking token")?;
+
+        if updated > 0 {
+            tracing::info!(token_id = %id, "token revoked");
+        }
 
         Ok(updated > 0)
     }
