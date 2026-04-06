@@ -27,6 +27,7 @@ indicatif = "0.17"
 console = "0.15"
 humantime = "2"
 humantime-serde = "1"
+tracing = "0.1"
 alejandra = "3.1.0"
 
 # HTTP / networking

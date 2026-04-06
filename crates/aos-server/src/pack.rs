@@ -172,6 +172,7 @@ pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
     if has_ca {
         Ok(())
     } else {
+        tracing::warn!(path = %store_path, "imported path rejected: not .drv or content-addressed");
         Err(format!(
             "rejected: {store_path} is neither a .drv nor a content-addressed path"
         ))
@@ -180,6 +181,7 @@ pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
 
 /// Import pack entries into the Nix store via `nix-store --import`.
 pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
+    tracing::info!(count = entries.len(), "importing pack entries");
     let mut paths = Vec::with_capacity(entries.len());
 
     for (i, entry) in entries.iter().enumerate() {
@@ -209,6 +211,7 @@ pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::error!(entry = i, hash = %entry.hash, stderr = %stderr, "pack entry import failed");
             return Err(format!(
                 "entry {i} ({}): nix-store --import failed: {stderr}",
                 entry.hash
