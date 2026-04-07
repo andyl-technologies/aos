@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 aos-core = { workspace = true }
+aos-proto = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -32,6 +33,10 @@ console = { workspace = true }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 tracing = { workspace = true }
+connectrpc = { workspace = true }
+buffa = { workspace = true }
+prost = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

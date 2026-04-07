@@ -31,6 +31,14 @@ use crate::views::ViewManager;
 
 use tracing;
 
+// ConnectRPC service extension traits for registration
+use aos_proto::aos::auth::v1::AuthServiceExt;
+use aos_proto::aos::build::v1::BuildServiceExt;
+use aos_proto::aos::cache::v1::CacheServiceExt;
+use aos_proto::aos::gc::v1::GcServiceExt;
+
+use crate::services;
+
 /// Shared server state.
 pub struct AppState {
     pub store: NixStore,
@@ -44,8 +52,13 @@ pub struct AppState {
     pub signer: NarInfoSigner,
 }
 
-/// Build the axum router.
+/// Build the axum router with both REST and ConnectRPC endpoints.
 pub fn router(state: Arc<AppState>) -> Router {
+    // Build ConnectRPC service router.
+    let connect_router = build_connectrpc_router(Arc::clone(&state));
+
+    // Existing REST routes remain — ConnectRPC is served via fallback so
+    // both coexist on the same port.
     Router::new()
         .route("/{view}/nix-cache-info", get(cache_info_handler))
         .route("/{view}/{hash_narinfo}", get(narinfo_handler))
@@ -58,7 +71,32 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/{view}/upload-pack", post(upload_pack_handler))
         .route("/{view}/gc", post(gc_handler))
         .route("/oauth2/token", post(auth::oauth2_token_handler))
+        .fallback_service(connect_router.into_axum_service())
         .with_state(state)
+}
+
+/// Build the ConnectRPC service router with all RPC services registered.
+fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
+    let cache_svc = Arc::new(services::cache::CacheServiceImpl {
+        state: Arc::clone(&state),
+    });
+    let build_svc = Arc::new(services::build::BuildServiceImpl {
+        state: Arc::clone(&state),
+    });
+    let gc_svc = Arc::new(services::gc::GcServiceImpl {
+        state: Arc::clone(&state),
+    });
+    let auth_svc = Arc::new(services::auth::AuthServiceImpl {
+        state: Arc::clone(&state),
+    });
+
+    let router = connectrpc::Router::new();
+    let router = cache_svc.register(router);
+    let router = build_svc.register(router);
+    let router = gc_svc.register(router);
+    let router = auth_svc.register(router);
+
+    router
 }
 
 // ---------------------------------------------------------------------------
