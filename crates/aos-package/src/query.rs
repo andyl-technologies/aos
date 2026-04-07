@@ -176,6 +176,9 @@ pub async fn show(
         }
         printer.kv("Source drv", &meta.source_drv);
         printer.kv("Maintainer", &meta.maintainer);
+
+        // Show sysroot-specific information.
+        crate::sysroot::show_sysroot_info(meta, printer);
     }
 
     Ok(())
@@ -258,17 +261,28 @@ pub async fn list(
                 continue;
             }
 
+            // Check sysroot containment for non-installed packages.
+            let sysroot_info = if !is_installed && installed_only {
+                crate::sysroot::check_sysroot_containment(&meta.references, config)
+            } else {
+                None
+            };
+
             // Build status string.
-            let status = build_status_string(
-                is_installed,
-                is_upgradable,
-                is_held,
-                if is_upgradable {
-                    Some(&meta.version)
-                } else {
-                    None
-                },
-            );
+            let status = if let Some((sys_name, sys_ver)) = &sysroot_info {
+                format!("via {} {}", sys_name, sys_ver)
+            } else {
+                build_status_string(
+                    is_installed,
+                    is_upgradable,
+                    is_held,
+                    if is_upgradable {
+                        Some(&meta.version)
+                    } else {
+                        None
+                    },
+                )
+            };
 
             let display_version = if let Some(inst) = installed {
                 inst.apm
