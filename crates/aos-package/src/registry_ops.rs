@@ -251,6 +251,136 @@ struct StorePathInfo {
     closure_size: u64,
 }
 
+/// Compute the full transitive closure of a store path.
+///
+/// Returns a list of `(store_hash, Vec<direct_dep_hashes>)` pairs in
+/// dependency order (leaves first, root last).  Uses `nix-store -qR` to
+/// enumerate the closure and `nix-store -q --references` for each member.
+fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
+    // Get the full closure via nix-store -qR.
+    let output = Command::new("nix-store")
+        .args(["-qR", store_path])
+        .output()
+        .with_context(|| format!("running nix-store -qR {store_path}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("nix-store -qR failed for {store_path}: {}", stderr.trim());
+    }
+
+    let closure_paths: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect();
+
+    // For each path in the closure, get its direct references.
+    let mut result = Vec::with_capacity(closure_paths.len());
+    for path in &closure_paths {
+        let ref_output = Command::new("nix-store")
+            .args(["-q", "--references", path])
+            .output()
+            .with_context(|| format!("running nix-store -q --references {path}"))?;
+
+        let refs: Vec<String> = if ref_output.status.success() {
+            String::from_utf8_lossy(&ref_output.stdout)
+                .lines()
+                .filter(|l| !l.is_empty() && *l != path)
+                .map(|l| extract_hash(l).to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        result.push((extract_hash(path).to_string(), refs));
+    }
+
+    Ok(result)
+}
+
+/// Write closure files for a store path and all its closure members.
+///
+/// Creates `closures/{hash}` for the root store path as an adjacency list.
+/// Also ensures `.gitattributes` has the `closures/** -diff` entry.
+fn write_closure_files(
+    dir: &Path,
+    store_path: &str,
+) -> Result<()> {
+    let closure = compute_closure(store_path)?;
+    if closure.is_empty() {
+        return Ok(());
+    }
+
+    let closures_dir = dir.join("closures");
+    std::fs::create_dir_all(&closures_dir)?;
+
+    // Build the adjacency list file content.
+    // Root should be first line — nix-store -qR returns deps-first order,
+    // so the root is typically last.  Reorder: root first, then the rest.
+    let root_hash = extract_hash(store_path).to_string();
+    let mut lines = String::new();
+
+    // Root line first.
+    if let Some((_, deps)) = closure.iter().find(|(h, _)| *h == root_hash) {
+        lines.push_str(&root_hash);
+        for dep in deps {
+            lines.push(' ');
+            lines.push_str(dep);
+        }
+        lines.push('\n');
+    }
+
+    // Then the rest in dependency order.
+    for (hash, deps) in &closure {
+        if *hash == root_hash {
+            continue;
+        }
+        lines.push_str(hash);
+        for dep in deps {
+            lines.push(' ');
+            lines.push_str(dep);
+        }
+        lines.push('\n');
+    }
+
+    std::fs::write(closures_dir.join(&root_hash), &lines)?;
+
+    // Ensure .gitattributes has the closures entry.
+    ensure_gitattributes(dir)?;
+
+    Ok(())
+}
+
+/// Ensure `.gitattributes` contains `closures/** -diff`.
+fn ensure_gitattributes(dir: &Path) -> Result<()> {
+    let path = dir.join(".gitattributes");
+    let entry = "closures/** -diff\n";
+
+    if path.exists() {
+        let content = std::fs::read_to_string(&path)?;
+        if content.contains("closures/** -diff") {
+            return Ok(());
+        }
+        // Append the entry.
+        let mut new_content = content;
+        if !new_content.ends_with('\n') {
+            new_content.push('\n');
+        }
+        new_content.push_str(entry);
+        std::fs::write(&path, new_content)?;
+    } else {
+        std::fs::write(&path, entry)?;
+    }
+
+    Ok(())
+}
+
+/// Extract the store path hash from a full store path.
+fn extract_hash(store_path: &str) -> &str {
+    let basename = store_path.rsplit('/').next().unwrap_or(store_path);
+    basename.split('-').next().unwrap_or(basename)
+}
+
 /// Create a git commit in the registry directory.
 fn commit_registry(dir: &Path, message: &str) -> Result<()> {
     git(dir, &["add", "-A"])?;
@@ -393,7 +523,7 @@ pub async fn publish(
         .map(|s| s.to_string())
         .unwrap_or_else(default_platform);
 
-    printer.step(2, 3, "Writing package TOML...");
+    printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
     let pkg_dir = dir.join("packages").join(&letter);
     std::fs::create_dir_all(&pkg_dir)?;
@@ -424,7 +554,11 @@ pub async fn publish(
 
     std::fs::write(&toml_path, &new_content)?;
 
-    printer.step(3, 3, "Done.");
+    printer.step(3, 4, "Computing closure...");
+    write_closure_files(&dir, &info.path)
+        .with_context(|| format!("writing closure files for {}", info.path))?;
+
+    printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
     printer.kv("Version", pkg_version);
     printer.kv("Platform", &platform);
@@ -892,9 +1026,14 @@ pub async fn verify(
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let packages_dir = dir.join("packages");
+    let closures_dir = dir.join("closures");
 
     let mut errors = 0u32;
     let mut checked = 0u32;
+
+    // Collect all store path hashes from package TOMLs.
+    let mut all_store_hashes: Vec<(String, String)> = Vec::new(); // (hash, pkg_name)
+    let mut all_ref_hashes: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new(); // hash -> references
 
     // Verify package TOML files.
     if packages_dir.is_dir() {
@@ -915,6 +1054,29 @@ pub async fn verify(
                                     path.display()
                                 ));
                                 errors += 1;
+                                continue;
+                            }
+                            // Extract store hashes from all version/platform entries.
+                            let pkg_name = val.get("package")
+                                .and_then(|p| p.get("name"))
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("unknown");
+                            if let Some(versions) = val.get("versions").and_then(|v| v.as_array()) {
+                                for ver in versions {
+                                    if let Some(platforms) = ver.get("platforms").and_then(|p| p.as_table()) {
+                                        for (_plat, plat_val) in platforms {
+                                            if let Some(sp) = plat_val.get("store_path").and_then(|s| s.as_str()) {
+                                                let hash = extract_hash(sp).to_string();
+                                                all_store_hashes.push((hash.clone(), pkg_name.to_string()));
+                                                let refs: Vec<String> = plat_val.get("references")
+                                                    .and_then(|r| r.as_array())
+                                                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                                                    .unwrap_or_default();
+                                                all_ref_hashes.insert(hash, refs);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
@@ -927,11 +1089,83 @@ pub async fn verify(
         }
     }
 
+    // Verify closure files.
+    let mut closure_checked = 0u32;
+
+    for (store_hash, pkg_name) in &all_store_hashes {
+        let closure_path = closures_dir.join(store_hash);
+
+        // Check closure file exists.
+        if !closure_path.exists() {
+            printer.warning(&format!(
+                "{pkg_name}: missing closure file for store hash {store_hash}"
+            ));
+            errors += 1;
+            continue;
+        }
+
+        closure_checked += 1;
+        let content = std::fs::read_to_string(&closure_path)?;
+        let closure = crate::types::ClosureMeta::parse(store_hash, &content);
+
+        // Check root is first member and matches filename.
+        if closure.members.first().map(|s| s.as_str()) != Some(store_hash) {
+            printer.warning(&format!(
+                "{pkg_name}: closure file {store_hash} does not start with root hash"
+            ));
+            errors += 1;
+        }
+
+        // Check that all direct references from the package TOML are in the closure.
+        if let Some(refs) = all_ref_hashes.get(store_hash) {
+            for ref_hash in refs {
+                if !closure.contains(ref_hash) {
+                    printer.warning(&format!(
+                        "{pkg_name}: reference {ref_hash} not found in closure {store_hash}"
+                    ));
+                    errors += 1;
+                }
+            }
+        }
+
+        // Check that all closure members that have direct deps in the
+        // adjacency list actually reference hashes that are also in the
+        // closure (internal consistency).
+        for member in &closure.members {
+            for dep in closure.direct_deps(member) {
+                if !closure.contains(dep) {
+                    printer.warning(&format!(
+                        "{pkg_name}: closure {store_hash}: member {member} references \
+                         {dep} which is not in the closure"
+                    ));
+                    errors += 1;
+                }
+            }
+        }
+    }
+
+    // Check for orphan closure files (closure files with no matching package).
+    if closures_dir.is_dir() {
+        let known_hashes: std::collections::HashSet<&str> =
+            all_store_hashes.iter().map(|(h, _)| h.as_str()).collect();
+        for entry in std::fs::read_dir(&closures_dir)?.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.starts_with('.') && !known_hashes.contains(name_str.as_ref()) {
+                // Not an error — could be a closure for a dep that isn't a
+                // top-level package.  Just note it.
+                checked += 1;
+            }
+        }
+    }
+
     if errors == 0 {
-        printer.success(&format!("Verified {checked} files, no errors."));
+        printer.success(&format!(
+            "Verified {checked} package(s), {closure_checked} closure(s), no errors."
+        ));
     } else {
         printer.error(&format!(
-            "Verified {checked} files, {errors} error(s) found."
+            "Verified {checked} package(s), {closure_checked} closure(s), {errors} error(s) found."
         ));
     }
 
