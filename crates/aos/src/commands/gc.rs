@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 
 use aos_core::nix::NixRunner;
 use aos_core::output::{create_spinner, Printer};
-use aos_remote::build::RemoteClient;
+use aos_remote::AosClient;
 
 /// `aos gc` — garbage collection with local, view-based, or remote modes.
 pub async fn run(
@@ -57,8 +57,7 @@ async fn run_remote(
     let token = token.context("--token (or AOS_TOKEN) is required for remote GC")?;
 
     let spinner = create_spinner("authenticating with remote server");
-    let mut client = RemoteClient::new(url, view_name, token)?;
-    client.authenticate().await?;
+    let client = AosClient::connect(url, view_name, token).await?;
     spinner.finish_and_clear();
 
     let spinner = create_spinner(&format!("running GC on view '{view_name}'"));
@@ -76,23 +75,17 @@ async fn run_remote(
     } else {
         printer.header(&format!("Eviction candidates ({} total):", resp.evicted));
         for c in &resp.eviction_candidates {
-            let hash = c.get("hash").and_then(|v| v.as_str()).unwrap_or("?");
-            let path = c.get("store_path").and_then(|v| v.as_str()).unwrap_or("?");
-            let score = c.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let age = c.get("age_days").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let size = c.get("unique_size").and_then(|v| v.as_u64()).unwrap_or(0);
-            let size_mb = size as f64 / (1024.0 * 1024.0);
+            let size_mb = c.unique_size as f64 / (1024.0 * 1024.0);
             printer.plain(&format!(
-                "  {hash}: score={score:.0} age={age:.1}d unique={size_mb:.1}MB {path}"
+                "  {}: score={:.0} age={:.1}d unique={size_mb:.1}MB {}",
+                c.hash, c.score, c.age_days, c.store_path
             ));
         }
     }
 
-    if let Some(collected) = &resp.collected {
-        if let Some(freed) = collected.get("freed_bytes").and_then(|v| v.as_u64()) {
-            let freed_mb = freed as f64 / (1024.0 * 1024.0);
-            printer.info(&format!("Collected: {freed_mb:.1} MB freed by nix-store --gc"));
-        }
+    if let Some(freed) = resp.collected_bytes {
+        let freed_mb = freed as f64 / (1024.0 * 1024.0);
+        printer.info(&format!("Collected: {freed_mb:.1} MB freed by nix-store --gc"));
     }
 
     printer.success("Remote GC complete");

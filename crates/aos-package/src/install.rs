@@ -11,6 +11,7 @@ use super::profile::Profile;
 use super::registry::{store_path_hash, RegistrySet};
 use super::resolve::{collect_unique_metas, resolve_multiple, ResolvedClosure};
 use super::store::{create_gc_roots, filter_missing, import_nar};
+use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
 use aos_core::error::AosError;
@@ -29,6 +30,7 @@ pub async fn run(
     registry_filter: Option<&str>,
     dry_run: bool,
     yes: bool,
+    ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
 ) -> Result<()> {
     if packages.is_empty() {
@@ -43,6 +45,48 @@ pub async fn run(
     // Step 2: Resolve closures for all requested packages.
     printer.step(2, 7, "Resolving dependencies...");
     let closures = resolve_multiple(&registries, packages, registry_filter)?;
+
+    // Check if any requested package is already provided by the sysroot.
+    for closure in &closures {
+        if let Some((sys_name, sys_ver)) =
+            crate::sysroot::check_sysroot_containment(&closure.root.references, config)
+        {
+            printer.info(&format!(
+                "{} {} already provided by sysroot {} {}",
+                closure.root.name, closure.root.version, sys_name, sys_ver,
+            ));
+            return Ok(());
+        }
+    }
+
+    // Sysroot-lock check: verify package closures don't diverge from sysroot.
+    if !matches!(ignore_lock, IgnoreSysrootLock::All) {
+        if let Some((sysroot_refs, sys_name, sys_version)) =
+            sysroot_lock::get_sysroot_references(config)
+        {
+            let lookup = sysroot_lock::build_registry_lookup(config);
+            for closure in &closures {
+                let pkg_refs: Vec<String> = closure
+                    .closure
+                    .iter()
+                    .map(|m| store_path_hash(&m.store_path).to_string())
+                    .collect();
+
+                let violations =
+                    sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
+                let remaining = ignore_lock.filter(violations);
+
+                if !remaining.is_empty() {
+                    let msg = sysroot_lock::format_violation_error(
+                        &remaining,
+                        &sys_name,
+                        &sys_version,
+                    );
+                    anyhow::bail!(msg);
+                }
+            }
+        }
+    }
 
     // Step 3: Collect unique metas (dedup across closures).
     let all_metas = collect_unique_metas(&closures);
@@ -75,11 +119,9 @@ pub async fn run(
         printer.step(3, 7, "Downloading packages...");
 
         let requests = build_download_requests(&closures, &to_download, config)?;
-        let client = reqwest::Client::new();
         let cache_dir = config.nar_cache_path();
 
         let results = download_nars(
-            &client,
             &requests,
             &cache_dir,
             config.settings.parallel_downloads,

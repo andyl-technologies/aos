@@ -6,7 +6,11 @@
 ##! The `system` parameter is threaded through to all derivation builders
 ##! (mkDerivation, mkShell, fetchurl, fetchgit, fetchCargoDeps, fetchGoModules)
 ##! so that every package targets the correct platform.
-{ system }:
+##!
+##! The optional `bash` parameter (a derivation) causes all builders to use
+##! the AOS-built bash instead of `/bin/sh`. When `null` (early bootstrap),
+##! `/bin/sh` is used as a fallback.
+{ system, bash ? null }:
 let
   trivial = import ./trivial.nix;
   lists = import ./lists.nix;
@@ -23,7 +27,7 @@ let
       ;
   };
   platformMod = import ./platform.nix;
-  derivations = import ./derivations.nix { inherit system; };
+  derivations = import ./derivations.nix { inherit system bash; };
   checks = import ./testing/checks.nix;
 in
 trivial

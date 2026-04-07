@@ -4,7 +4,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::types::PackageMeta;
+use crate::types::{PackageMeta, SysrootImageEntry};
 
 // ---------------------------------------------------------------------------
 // Package TOML schema (registry format)
@@ -26,11 +26,17 @@ struct PackageHeader {
     homepage: Option<String>,
     license: String,
     maintainer: String,
+    /// Whether this package is a system toplevel (sysroot).
+    #[serde(default)]
+    sysroot: bool,
 }
 
 #[derive(Debug, Deserialize)]
 struct VersionEntry {
     version: String,
+    /// Previous version in the version chain (for sysroot packages).
+    #[serde(default)]
+    previous: Option<String>,
     #[serde(default)]
     platforms: HashMap<String, PlatformEntry>,
 }
@@ -47,6 +53,20 @@ struct PlatformEntry {
     source_nar_hash: String,
     #[serde(default)]
     references: Vec<String>,
+    /// Pre-compiled images (only for sysroot packages).
+    #[serde(default)]
+    images: Vec<ImageEntry>,
+}
+
+/// A pre-compiled image entry within a platform entry.
+#[derive(Debug, Deserialize)]
+struct ImageEntry {
+    format: String,
+    store_path: String,
+    nar_hash: String,
+    nar_size: u64,
+    download_hash: String,
+    download_size: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +137,19 @@ pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<Packag
     // Take the first (latest) version that has our platform
     for ver in &toml.versions {
         if let Some(plat) = ver.platforms.get(platform) {
+            let images: Vec<SysrootImageEntry> = plat
+                .images
+                .iter()
+                .map(|img| SysrootImageEntry {
+                    format: img.format.clone(),
+                    store_path: img.store_path.clone(),
+                    nar_hash: img.nar_hash.clone(),
+                    nar_size: img.nar_size,
+                    download_hash: img.download_hash.clone(),
+                    download_size: img.download_size,
+                })
+                .collect();
+
             return Ok(Some(PackageMeta {
                 name: toml.package.name.clone(),
                 version: ver.version.clone(),
@@ -134,6 +167,9 @@ pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<Packag
                 source_drv: plat.source_drv.clone(),
                 source_nar_hash: plat.source_nar_hash.clone(),
                 closure_size: plat.closure_size,
+                sysroot: toml.package.sysroot,
+                previous: ver.previous.clone(),
+                images,
             }));
         }
     }

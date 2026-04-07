@@ -1,51 +1,36 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
-use super::{AuthOptions, CacheBackend};
+use aos_net::{TransferEngine, TransferRequest};
+
+use super::CacheBackend;
 
 /// S3 cache backend.
 ///
 /// Standard binary cache layout in an S3 bucket:
-/// `{prefix}/{hash}.narinfo` and `{prefix}/nar/{filename}`.
+/// `s3://bucket/{prefix}/{hash}.narinfo` and `s3://bucket/{prefix}/nar/{filename}`.
 pub struct S3Backend {
-    client: aws_sdk_s3::Client,
+    engine: Arc<TransferEngine>,
     bucket: String,
     prefix: String,
 }
 
 impl S3Backend {
-    pub async fn new(bucket: &str, prefix: &str, auth: &AuthOptions) -> Result<Self> {
-        let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
-
-        if let Some(ref region) = auth.s3_region {
-            config_loader =
-                config_loader.region(aws_config::Region::new(region.clone()));
-        }
-        if let Some(ref profile) = auth.s3_profile {
-            config_loader = config_loader.profile_name(profile);
-        }
-
-        let config = config_loader.load().await;
-
-        let mut s3_config = aws_sdk_s3::config::Builder::from(&config);
-        if let Some(ref endpoint) = auth.s3_endpoint {
-            s3_config = s3_config.endpoint_url(endpoint).force_path_style(true);
-        }
-
-        let client = aws_sdk_s3::Client::from_conf(s3_config.build());
-
-        Ok(Self {
-            client,
+    pub fn new(bucket: &str, prefix: &str, engine: &Arc<TransferEngine>) -> Self {
+        Self {
+            engine: Arc::clone(engine),
             bucket: bucket.to_string(),
             prefix: prefix.trim_matches('/').to_string(),
-        })
+        }
     }
 
-    fn key(&self, path: &str) -> String {
+    fn s3_url(&self, path: &str) -> String {
         if self.prefix.is_empty() {
-            path.to_string()
+            format!("s3://{}/{}", self.bucket, path)
         } else {
-            format!("{}/{}", self.prefix, path)
+            format!("s3://{}/{}/{}", self.bucket, self.prefix, path)
         }
     }
 }
@@ -53,150 +38,105 @@ impl S3Backend {
 #[async_trait]
 impl CacheBackend for S3Backend {
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
-        let key = self.key(&format!("{store_hash}.narinfo"));
-        match self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(e) => {
-                let svc = e.into_service_error();
-                if svc.is_not_found() {
-                    Ok(false)
-                } else {
-                    Err(anyhow::anyhow!("S3 HeadObject failed: {svc}"))
-                }
-            }
-        }
+        let url = self.s3_url(&format!("{store_hash}.narinfo"));
+        let result = self.engine.head(&url).await?;
+        Ok(result.status != 404)
     }
 
     async fn get_narinfo(&self, store_hash: &str) -> Result<String> {
-        let key = self.key(&format!("{store_hash}.narinfo"));
-        let resp = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
+        let url = self.s3_url(&format!("{store_hash}.narinfo"));
+        let result = self
+            .engine
+            .execute(TransferRequest::get(&url))
             .await
-            .with_context(|| format!("S3 GetObject {key}"))?;
+            .with_context(|| format!("S3 GetObject {url}"))?;
 
-        let body = resp
+        let body = result
             .body
-            .collect()
-            .await
-            .context("reading S3 object body")?;
-        String::from_utf8(body.to_vec()).context("narinfo is not valid UTF-8")
+            .ok_or_else(|| anyhow::anyhow!("empty S3 response for {url}"))?;
+        String::from_utf8(body).context("narinfo is not valid UTF-8")
     }
 
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
-        let key = self.key(&format!("{store_hash}.narinfo"));
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .content_type("text/x-nix-narinfo")
-            .body(content.as_bytes().to_vec().into())
-            .send()
+        let url = self.s3_url(&format!("{store_hash}.narinfo"));
+        let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
+        req.headers.push((
+            "Content-Type".to_string(),
+            "text/x-nix-narinfo".to_string(),
+        ));
+        self.engine
+            .execute(req)
             .await
-            .with_context(|| format!("S3 PutObject {key}"))?;
+            .with_context(|| format!("S3 PutObject {url}"))?;
         Ok(())
     }
 
-    async fn get_nar(&self, url: &str) -> Result<Vec<u8>> {
-        let key = self.key(url);
-        let resp = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
+    async fn get_nar(&self, path: &str) -> Result<Vec<u8>> {
+        let url = self.s3_url(path);
+        let result = self
+            .engine
+            .execute(TransferRequest::get(&url))
             .await
-            .with_context(|| format!("S3 GetObject {key}"))?;
+            .with_context(|| format!("S3 GetObject {url}"))?;
 
-        let body = resp
+        result
             .body
-            .collect()
-            .await
-            .context("reading NAR from S3")?;
-        Ok(body.to_vec())
+            .ok_or_else(|| anyhow::anyhow!("empty S3 NAR response for {url}"))
     }
 
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
-        let key = self.key(&format!("nar/{filename}"));
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .content_type("application/x-nix-nar")
-            .body(data.to_vec().into())
-            .send()
+        let url = self.s3_url(&format!("nar/{filename}"));
+        let mut req = TransferRequest::put(&url, data.to_vec());
+        req.headers.push((
+            "Content-Type".to_string(),
+            "application/x-nix-nar".to_string(),
+        ));
+        self.engine
+            .execute(req)
             .await
-            .with_context(|| format!("S3 PutObject {key}"))?;
+            .with_context(|| format!("S3 PutObject {url}"))?;
         Ok(())
     }
 
     async fn query_missing(&self, store_hashes: &[&str]) -> Result<Vec<String>> {
-        // Parallel HeadObject checks.
-        let mut missing = Vec::new();
-        // Process in chunks to avoid overwhelming S3.
-        for chunk in store_hashes.chunks(50) {
-            let futs: Vec<_> = chunk
-                .iter()
-                .map(|hash| {
-                    let hash = hash.to_string();
-                    let this = &self;
-                    async move {
-                        let exists = this.has_narinfo(&hash).await.unwrap_or(false);
-                        if !exists {
-                            Some(hash)
-                        } else {
-                            None
-                        }
-                    }
-                })
-                .collect();
+        // Batch HEAD requests via the engine.
+        let urls: Vec<String> = store_hashes
+            .iter()
+            .map(|h| self.s3_url(&format!("{h}.narinfo")))
+            .collect();
+        let url_refs: Vec<&str> = urls.iter().map(String::as_str).collect();
+        let results = self.engine.head_batch(&url_refs).await;
 
-            let results = futures_util::future::join_all(futs).await;
-            for r in results {
-                if let Some(hash) = r {
-                    missing.push(hash);
-                }
+        let mut missing = Vec::new();
+        for (i, result) in results.into_iter().enumerate() {
+            let is_present = match result {
+                Ok(r) => r.status != 404,
+                Err(_) => false,
+            };
+            if !is_present {
+                missing.push(store_hashes[i].to_string());
             }
         }
         Ok(missing)
     }
 
     async fn ensure_cache_info(&self, store_dir: &str) -> Result<()> {
-        let key = self.key("nix-cache-info");
+        let url = self.s3_url("nix-cache-info");
 
         // Check if it already exists.
-        match self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-        {
-            Ok(_) => return Ok(()),
-            Err(_) => {}
+        let result = self.engine.head(&url).await?;
+        if result.status == 200 {
+            return Ok(());
         }
 
         let content = format!(
             "StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n"
         );
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .content_type("text/plain")
-            .body(content.into_bytes().into())
-            .send()
+        let mut req = TransferRequest::put(&url, content.into_bytes());
+        req.headers
+            .push(("Content-Type".to_string(), "text/plain".to_string()));
+        self.engine
+            .execute(req)
             .await
             .context("writing nix-cache-info to S3")?;
         Ok(())
