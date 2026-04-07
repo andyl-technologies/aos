@@ -46,7 +46,7 @@ builtins.derivation {
         true
       fi
 
-      cp -r ${src} bison-3.0.4
+      mkdir -p bison-3.0.4 && (cd ${src} && tar cf - .) | (cd bison-3.0.4 && tar xf -)
       cd bison-3.0.4
       chmod -R u+w .
 

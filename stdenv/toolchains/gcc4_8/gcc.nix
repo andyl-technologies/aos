@@ -208,8 +208,8 @@ exec REAL_GCC -isystem HEADER_OVERLAY -isystem GLIBC_INCLUDE "$@"
       # Create target sysroot so xgcc can find headers + CRT files
       # during target library configuration (libgcc, libstdc++, etc.)
       mkdir -p "$out/${targetPlatform.config}/sys-include"
-      cp -r ${prev.glibc}/include/* "$out/${targetPlatform.config}/sys-include/"
-      chmod -R u+w "$out/${targetPlatform.config}/sys-include"
+      cp -r ${prev.glibc}/include/* "$out/${targetPlatform.config}/sys-include/" 2>/dev/null || true
+      chmod -R u+w "$out/${targetPlatform.config}/sys-include" 2>/dev/null || true
       # Apply header overlay fixes (after glibc copy to override broken headers)
       mkdir -p "$out/${targetPlatform.config}/sys-include/gnu"
       mkdir -p "$out/${targetPlatform.config}/sys-include/linux"

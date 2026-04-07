@@ -32,7 +32,7 @@ builtins.derivation {
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
-      cp -r ${src} autoconf-2.63
+      mkdir -p autoconf-2.63 && (cd ${src} && tar cf - .) | (cd autoconf-2.63 && tar xf -)
       cd autoconf-2.63
       chmod -R u+w .
 

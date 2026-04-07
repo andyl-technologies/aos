@@ -14,7 +14,7 @@
 let
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/tar/tar-1.26.tar.bz2";
-    sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: fix hash
+    sha256 = "05d4g4g0wzfzrbyc4cl7rz1bgh4ahnir38gz400cyrsvyjgmg0nk";
   };
 in
 builtins.derivation {

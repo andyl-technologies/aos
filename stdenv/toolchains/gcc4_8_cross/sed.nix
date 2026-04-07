@@ -14,7 +14,7 @@
 let
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/sed/sed-4.2.2.tar.bz2";
-    sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: fix hash
+    sha256 = "1mn6dlmgd1l94qfs39l2h9h5h2mw7v6mcflgk1afypcaxxk4397d";
   };
 in
 builtins.derivation {

@@ -32,7 +32,7 @@ builtins.derivation {
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
-      cp -r ${src} m4-1.4.16
+      mkdir -p m4-1.4.16 && (cd ${src} && tar cf - .) | (cd m4-1.4.16 && tar xf -)
       cd m4-1.4.16
       chmod -R u+w .
 

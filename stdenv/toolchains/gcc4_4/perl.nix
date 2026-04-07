@@ -29,7 +29,7 @@ builtins.derivation {
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
-      cp -r ${src} perl-5.10.1
+      mkdir -p perl-5.10.1 && (cd ${src} && tar cf - .) | (cd perl-5.10.1 && tar xf -)
       cd perl-5.10.1
       chmod -R u+w .
 
@@ -153,7 +153,9 @@ ERREOF
 
       # Build with -j1 to avoid CWD race conditions in ext/ builds
       make -j1
-      make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+      # installman fails loading POSIX autosplit files; skip it
+      make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true || true
+      test -f "$out/bin/perl" || { echo "FATAL: perl not installed"; exit 1; }
 
       echo "Perl 5.10.1 installed to $out"
     ''
