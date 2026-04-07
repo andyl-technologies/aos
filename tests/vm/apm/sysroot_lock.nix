@@ -4,15 +4,79 @@
 # closure diverges from the current sysroot, and that --ignore-sysroot-lock
 # flags bypass the check correctly.
 #
-# These tests run apm in a headless Firecracker microVM with a mock registry
-# and a mock system generation state. No real Nix store is required — the
-# tests fabricate registry metadata and state files that apm reads.
+# These tests run apm in a headless Firecracker microVM with mock registries
+# and a mock system generation state.  All store_path values in the registry
+# TOML point to real Nix store derivations so that `nix-store --check-validity`
+# succeeds when apm's install pipeline reaches the filter_missing step.
+#
+# Two registries are used because apm's registry parser keeps one version per
+# package name.  The sysroot-lock check needs BOTH the sysroot and divergent
+# versions of openssl/zlib to be indexable by name, which requires them to
+# live in separate registries where each has the canonical entry.
 {
   testing,
   apm,
   pkgs,
 }:
 let
+  # --------------------------------------------------------------------------
+  # Real placeholder derivations — tiny packages that produce valid store paths.
+  # Each has a unique (pname, version) so it gets a unique Nix store hash.
+  # We use these as stand-ins for the mock package identities in the registry.
+  # --------------------------------------------------------------------------
+  mkPlaceholder = pname: version:
+    pkgs.mkDerivation {
+      inherit pname version;
+      src = null;
+      buildDeps = [ pkgs.coreutils ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p $out
+            echo "${pname}-${version}" > $out/marker
+          '';
+        }
+      ];
+    };
+
+  # Sysroot closure members (one set of store paths)
+  sysrootOpensslPkg  = mkPlaceholder "openssl" "3.2.1";
+  sysrootZlibPkg     = mkPlaceholder "zlib" "1.3.0";
+  sysrootGlibcPkg    = mkPlaceholder "glibc" "2.39";
+  sysrootToplevelPkg = mkPlaceholder "server" "2026.03";
+
+  # Divergent closure members (different store paths for the same names)
+  pkgOpensslPkg = mkPlaceholder "openssl" "3.3.0";
+  pkgZlibPkg    = mkPlaceholder "zlib" "1.3.1";
+
+  # Additional mock packages
+  nginxPkg    = mkPlaceholder "nginx" "1.27.0";
+  cleanPkgPkg = mkPlaceholder "clean-pkg" "1.0.0";
+
+  # Real store path strings for use in TOML generation
+  sysrootOpenssl  = builtins.toString sysrootOpensslPkg;
+  sysrootZlib     = builtins.toString sysrootZlibPkg;
+  sysrootGlibc    = builtins.toString sysrootGlibcPkg;
+  sysrootToplevel = builtins.toString sysrootToplevelPkg;
+  pkgOpenssl      = builtins.toString pkgOpensslPkg;
+  pkgZlib         = builtins.toString pkgZlibPkg;
+  nginxPath       = builtins.toString nginxPkg;
+  cleanPkgPath    = builtins.toString cleanPkgPkg;
+
+  # All placeholder derivations — included in rootfsDeps so their store paths
+  # are physically present in the VM and pass nix-store --check-validity.
+  allPlaceholders = [
+    sysrootOpensslPkg
+    sysrootZlibPkg
+    sysrootGlibcPkg
+    sysrootToplevelPkg
+    pkgOpensslPkg
+    pkgZlibPkg
+    nginxPkg
+    cleanPkgPkg
+  ];
+
   # Common rootfs deps for all sysroot-lock tests
   testDeps = [
     apm
@@ -21,13 +85,13 @@ let
     pkgs.grep
     pkgs.git
     pkgs.nix
-  ];
+  ] ++ allPlaceholders;
 
   # --------------------------------------------------------------------------
   # Fixture builder: create a mock registry directory with package metadata
   # --------------------------------------------------------------------------
   # This derivation builds a registry directory structure that apm can read.
-  # The registry format is a git repo with packages/<name>/<platform>.toml files.
+  # The registry format is a git repo with packages/<letter>/<name>.toml files.
   #
   # Parameters:
   #   packages — list of { name, version, storePath, sysroot, references, images }
@@ -92,11 +156,13 @@ PKGEOF
     };
 
   # --------------------------------------------------------------------------
-  # Preamble: set up apm config, mock registry, and system generation state
+  # Preamble: set up apm config, mock registries, and system generation state
   # --------------------------------------------------------------------------
-  # This shell fragment is included in every test to bootstrap the mock
-  # environment. Tests override specific parts as needed.
-  mkPreamble = { registryPath, sysrootState ? null }: ''
+  # Uses TWO registries so that both the sysroot and divergent versions of
+  # openssl/zlib are each the canonical entry in their respective registry.
+  # The sysroot-lock lookup (build_registry_lookup) iterates all registries,
+  # so both versions are indexed and can be resolved by name.
+  mkPreamble = { sysrootRegistryPath, userRegistryPath, sysrootState ? null, storePaths ? [] }: ''
     # Use /tmp for all writable state
     export HOME=/tmp/home
     mkdir -p $HOME/.config/apm/registries.d
@@ -108,56 +174,69 @@ PKGEOF
     mkdir -p /var/lib/apm/registries
     mkdir -p /etc/apm/registries.d
 
-    # Copy the mock registry (git repos are read-only in the store)
-    cp -r ${registryPath} /var/lib/apm/registries/test
-    chmod -R u+w /var/lib/apm/registries/test
+    # Copy both mock registries (git repos are read-only in the store)
+    cp -r ${sysrootRegistryPath} /var/lib/apm/registries/sysroot-reg
+    chmod -R u+w /var/lib/apm/registries/sysroot-reg
+    cp -r ${userRegistryPath} /var/lib/apm/registries/user-reg
+    chmod -R u+w /var/lib/apm/registries/user-reg
 
-    # Configure apm to use the mock registry
-    cat > /etc/apm/registries.d/test.toml << 'CFGEOF'
+    # Configure apm to use both registries
+    # sysroot-reg has higher priority (600) and contains the sysroot + old versions
+    cat > /etc/apm/registries.d/sysroot-reg.toml << 'CFGEOF'
 [registry]
-name = "test"
-url = "file:///var/lib/apm/registries/test"
+name = "sysroot-reg"
+url = "file:///var/lib/apm/registries/sysroot-reg"
+priority = 600
+enabled = true
+CFGEOF
+
+    cat > /etc/apm/registries.d/user-reg.toml << 'CFGEOF'
+[registry]
+name = "user-reg"
+url = "file:///var/lib/apm/registries/user-reg"
 priority = 500
 enabled = true
 CFGEOF
 
-    # Symlink the registry into the remote cache (apm reads from here)
-    ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
-    # Also link into user-level cache so user-scope commands find it
-    ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
+    # Symlink registries into the remote cache (apm reads from here)
+    ln -sfn /var/lib/apm/registries/sysroot-reg /var/lib/apm/remote/sysroot-reg
+    ln -sfn /var/lib/apm/registries/user-reg /var/lib/apm/remote/user-reg
+    ln -sfn /var/lib/apm/registries/sysroot-reg $HOME/.local/share/apm/remote/sysroot-reg
+    ln -sfn /var/lib/apm/registries/user-reg $HOME/.local/share/apm/remote/user-reg
 
     ${if sysrootState != null then ''
       # Write system generation state
-      cp ${builtins.toFile "state.json" sysrootState} /var/lib/profiles/system/state.json
+      cp ${builtins.toFile "state.json" (builtins.unsafeDiscardStringContext sysrootState)} /var/lib/profiles/system/state.json
       # Create generation directories
       mkdir -p /var/lib/profiles/system/gen-1
     '' else ""}
+
+    # Register real store paths in the Nix database so that
+    # nix-store --check-validity succeeds for them.
+    # The VM rootfs has /nix/store but no Nix database — create the db dir first.
+    mkdir -p /nix/var/nix/db /nix/var/nix/gcroots
+    ${builtins.concatStringsSep "\n" (builtins.map (p: ''
+      printf '%s\n\n0\n' "${builtins.toString p}" | nix-store --register-validity 2>/dev/null || true
+    '') storePaths)}
   '';
 
-  # --------------------------------------------------------------------------
-  # Mock store path hashes — these simulate Nix store paths.
-  # The hash is the first 32 chars of the store path basename.
-  # --------------------------------------------------------------------------
-  # Sysroot closure: openssl-3.2.1, zlib-1.3.0, glibc-2.39
-  sysrootOpenssl = "/nix/store/aaa11111111111111111111111111111-openssl-3.2.1";
-  sysrootZlib = "/nix/store/ccc33333333333333333333333333333-zlib-1.3.0";
-  sysrootGlibc = "/nix/store/eee55555555555555555555555555555-glibc-2.39";
-  sysrootToplevel = "/nix/store/sss00000000000000000000000000000-server-2026.03";
-
-  # Package closure: openssl-3.3.0 (divergent), zlib-1.3.1 (divergent)
-  pkgOpenssl = "/nix/store/bbb22222222222222222222222222222-openssl-3.3.0";
-  pkgZlib = "/nix/store/ddd44444444444444444444444444444-zlib-1.3.1";
-
-  # Store path hash extraction helper (first 32 chars of basename)
+  # Store path hash extraction helper — takes the first component before '-'
+  # from the basename, matching the Rust store_path_hash() function.
   hashOf = path:
-    let basename = builtins.baseNameOf path;
-    in builtins.substring 0 32 basename;
+    let
+      basename = builtins.baseNameOf (builtins.toString path);
+      parts = builtins.split "-" basename;
+    in builtins.head parts;
 
   # --------------------------------------------------------------------------
-  # Test registry with sysroot + divergent packages
+  # Two registries: sysroot-reg has the sysroot + its versions of shared libs,
+  # user-reg has the newer/divergent versions + user packages.
   # --------------------------------------------------------------------------
-  testRegistry = mkMockRegistry {
-    name = "sysroot-lock";
+
+  # sysroot-reg: contains the sysroot toplevel, the sysroot's versions of
+  # shared libraries, and clean-pkg (whose references match the sysroot).
+  sysrootRegistry = mkMockRegistry {
+    name = "sysroot";
     packages = [
       {
         name = "server";
@@ -189,6 +268,26 @@ CFGEOF
         references = [];
       }
       {
+        # clean-pkg depends on the SAME openssl and zlib as the sysroot
+        name = "clean-pkg";
+        version = "1.0.0";
+        storePath = cleanPkgPath;
+        references = [
+          (hashOf sysrootOpenssl)
+          (hashOf sysrootZlib)
+          (hashOf sysrootGlibc)
+        ];
+      }
+    ];
+  };
+
+  # user-reg: contains the newer/divergent versions and nginx.
+  # Also includes glibc (same store path) so BFS can resolve it within
+  # this registry during closure walking for nginx.
+  userRegistry = mkMockRegistry {
+    name = "user";
+    packages = [
+      {
         name = "openssl";
         version = "3.3.0";
         storePath = pkgOpenssl;
@@ -201,31 +300,28 @@ CFGEOF
         references = [ (hashOf sysrootGlibc) ];
       }
       {
+        name = "glibc";
+        version = "2.39";
+        storePath = sysrootGlibc;
+        references = [];
+      }
+      {
         # nginx depends on the NEWER openssl and zlib (divergent)
         name = "nginx";
         version = "1.27.0";
-        storePath = "/nix/store/nnn00000000000000000000000000000-nginx-1.27.0";
+        storePath = nginxPath;
         references = [
           (hashOf pkgOpenssl)
           (hashOf pkgZlib)
           (hashOf sysrootGlibc)
         ];
       }
-      {
-        # clean-pkg depends on the SAME openssl and zlib (no divergence)
-        name = "clean-pkg";
-        version = "1.0.0";
-        storePath = "/nix/store/ppp00000000000000000000000000000-clean-pkg-1.0.0";
-        references = [
-          (hashOf sysrootOpenssl)
-          (hashOf sysrootZlib)
-          (hashOf sysrootGlibc)
-        ];
-      }
     ];
   };
 
-  # System generation state JSON pointing to the sysroot
+  # System generation state JSON pointing to the sysroot.
+  # The registry field must match the registry name that contains the server
+  # package ("sysroot-reg").
   sysrootStateJson = builtins.toJSON {
     current = 1;
     next = 2;
@@ -235,18 +331,20 @@ CFGEOF
         toplevel = sysrootToplevel;
         version = "2026.03";
         package_name = "server";
-        registry = "test";
+        registry = "sysroot-reg";
         created_at = "2026-03-01T00:00:00Z";
         kernel_path = null;
       }
     ];
   };
 
-  stateJsonFile = builtins.toFile "state.json" sysrootStateJson;
+  stateJsonFile = builtins.toFile "state.json" (builtins.unsafeDiscardStringContext sysrootStateJson);
 
   preamble = mkPreamble {
-    registryPath = testRegistry;
+    sysrootRegistryPath = sysrootRegistry;
+    userRegistryPath = userRegistry;
     sysrootState = sysrootStateJson;
+    storePaths = allPlaceholders;
   };
 
 in
@@ -257,7 +355,7 @@ in
   # Install nginx whose closure has divergent openssl => blocked
   sysroot-lock-blocked = testing.mkVMTest {
     name = "apm-sysroot-lock-blocked";
-    rootfsDeps = testDeps ++ [ testRegistry stateJsonFile ];
+    rootfsDeps = testDeps ++ [ sysrootRegistry userRegistry stateJsonFile ];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -303,7 +401,7 @@ in
   # Ignoring both openssl and zlib succeeds.
   sysroot-lock-ignore-specific = testing.mkVMTest {
     name = "apm-sysroot-lock-ignore-specific";
-    rootfsDeps = testDeps ++ [ testRegistry stateJsonFile ];
+    rootfsDeps = testDeps ++ [ sysrootRegistry userRegistry stateJsonFile ];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -328,8 +426,8 @@ in
 
       echo "==> Test: --ignore-sysroot-lock=openssl,zlib should succeed"
 
-      # Ignore both openssl and zlib — should succeed (download will fail
-      # since store paths are fake, but the sysroot-lock check should pass)
+      # Ignore both openssl and zlib — sysroot-lock check should pass.
+      # Use --dry-run since we have no real download mirror.
       OUTPUT2=$(${apm}/bin/apm install nginx --ignore-sysroot-lock=openssl,zlib --dry-run 2>&1) || true
 
       # With dry-run, it should pass the sysroot-lock check and show the plan
@@ -349,7 +447,7 @@ in
   # --ignore-sysroot-lock (no value) bypasses the entire check
   sysroot-lock-ignore-all = testing.mkVMTest {
     name = "apm-sysroot-lock-ignore-all";
-    rootfsDeps = testDeps ++ [ testRegistry stateJsonFile ];
+    rootfsDeps = testDeps ++ [ sysrootRegistry userRegistry stateJsonFile ];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -375,7 +473,7 @@ in
   # Install a package whose closure fully overlaps with sysroot — no violations
   sysroot-lock-clean = testing.mkVMTest {
     name = "apm-sysroot-lock-clean";
-    rootfsDeps = testDeps ++ [ testRegistry stateJsonFile ];
+    rootfsDeps = testDeps ++ [ sysrootRegistry userRegistry stateJsonFile ];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -401,7 +499,7 @@ in
   # After installing with --ignore-sysroot-lock, list and show display violation info
   sysroot-lock-list-display = testing.mkVMTest {
     name = "apm-sysroot-lock-list-display";
-    rootfsDeps = testDeps ++ [ testRegistry stateJsonFile ];
+    rootfsDeps = testDeps ++ [ sysrootRegistry userRegistry stateJsonFile ];
     memory = 1024;
     testScript = ''
       ${preamble}

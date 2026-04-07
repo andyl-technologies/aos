@@ -325,8 +325,11 @@ PKGEOF
     ];
   };
 
-  # Preamble for system tests
-  mkSystemPreamble = { registryPath, stateJson ? null }: ''
+  # Preamble for system tests.
+  # The storePaths parameter lists real Nix store paths that should be
+  # registered in the Nix database so that `nix-store --check-validity`
+  # succeeds for them (the VM has the files but no db by default).
+  mkSystemPreamble = { registryPath, stateJson ? null, storePaths ? [] }: ''
     export HOME=/tmp/home
     mkdir -p $HOME/.config/apm/registries.d
     mkdir -p $HOME/.local/share/apm/registries
@@ -354,6 +357,14 @@ CFGEOF
     ${if stateJson != null then ''
       cp ${builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateJson)} /var/lib/profiles/system/state.json
     '' else ""}
+
+    # Register real store paths in the Nix database so that
+    # nix-store --check-validity succeeds for them.
+    # The VM rootfs has /nix/store but no Nix database — create the db dir first.
+    mkdir -p /nix/var/nix/db /nix/var/nix/gcroots
+    ${builtins.concatStringsSep "\n" (builtins.map (p: ''
+      printf '%s\n\n0\n' "${builtins.toString p}" | nix-store --register-validity 2>/dev/null || true
+    '') storePaths)}
   '';
 
   # State with v1 installed
@@ -451,6 +462,7 @@ in
     testScript = ''
       ${mkSystemPreamble {
         registryPath = registryV1;
+        storePaths = [ toplevelV1 ];
       }}
 
       echo "==> Test: apm install server --system creates a generation"
@@ -509,6 +521,7 @@ in
       ${mkSystemPreamble {
         registryPath = registryV2;
         stateJson = stateV1;
+        storePaths = [ toplevelV1 toplevelV2 ];
       }}
 
       # Set up gen-1 directory structure
