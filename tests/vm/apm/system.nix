@@ -13,14 +13,20 @@
   pkgs,
 }:
 let
+  # nix runtime deps needed for LD_LIBRARY_PATH (RPATH doesn't cover all deps yet)
+  nixRuntimeDeps = [
+    pkgs.nix pkgs.brotli pkgs.curl pkgs.openssl pkgs.sqlite pkgs.boost
+    pkgs.editline pkgs.libsodium pkgs.libarchive pkgs.gc pkgs.lowdown
+    pkgs.bzip2 pkgs.zlib
+  ];
+
   testDeps = [
     apm
     pkgs.coreutils
     pkgs.jq
     pkgs.grep
     pkgs.git
-    pkgs.nix
-  ];
+  ] ++ nixRuntimeDeps;
 
   # --------------------------------------------------------------------------
   # Mock toplevels — real Nix derivations that simulate system toplevels
@@ -329,8 +335,16 @@ PKGEOF
   # The storePaths parameter lists real Nix store paths that should be
   # registered in the Nix database so that `nix-store --check-validity`
   # succeeds for them (the VM has the files but no db by default).
+  # nix-store needs its runtime libraries (RPATH doesn't cover all deps yet)
+  nixLibPath = builtins.concatStringsSep ":" (map (p: "${p}/lib") [
+    pkgs.nix pkgs.brotli pkgs.curl pkgs.openssl pkgs.sqlite pkgs.boost
+    pkgs.editline pkgs.libsodium pkgs.libarchive pkgs.gc pkgs.lowdown
+    pkgs.bzip2 pkgs.zlib
+  ]);
+
   mkSystemPreamble = { registryPath, stateJson ? null, storePaths ? [] }: ''
     export HOME=/tmp/home
+    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     mkdir -p $HOME/.config/apm/registries.d
     mkdir -p $HOME/.local/share/apm/registries
     mkdir -p $HOME/.local/share/apm/remote

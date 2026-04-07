@@ -78,14 +78,20 @@ let
   ];
 
   # Common rootfs deps for all sysroot-lock tests
+  # nix runtime deps needed for LD_LIBRARY_PATH (RPATH doesn't cover all deps yet)
+  nixRuntimeDeps = [
+    pkgs.nix pkgs.brotli pkgs.curl pkgs.openssl pkgs.sqlite pkgs.boost
+    pkgs.editline pkgs.libsodium pkgs.libarchive pkgs.gc pkgs.lowdown
+    pkgs.bzip2 pkgs.zlib
+  ];
+
   testDeps = [
     apm
     pkgs.coreutils
     pkgs.jq
     pkgs.grep
     pkgs.git
-    pkgs.nix
-  ] ++ allPlaceholders;
+  ] ++ nixRuntimeDeps ++ allPlaceholders;
 
   # --------------------------------------------------------------------------
   # Fixture builder: create a mock registry directory with package metadata
@@ -162,9 +168,13 @@ PKGEOF
   # openssl/zlib are each the canonical entry in their respective registry.
   # The sysroot-lock lookup (build_registry_lookup) iterates all registries,
   # so both versions are indexed and can be resolved by name.
+  # nix-store needs its runtime libraries
+  nixLibPath = builtins.concatStringsSep ":" (map (p: "${p}/lib") nixRuntimeDeps);
+
   mkPreamble = { sysrootRegistryPath, userRegistryPath, sysrootState ? null, storePaths ? [] }: ''
     # Use /tmp for all writable state
     export HOME=/tmp/home
+    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     mkdir -p $HOME/.config/apm/registries.d
     mkdir -p $HOME/.local/share/apm/registries
     mkdir -p $HOME/.local/share/apm/remote
