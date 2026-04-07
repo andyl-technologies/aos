@@ -360,10 +360,13 @@ CFGEOF
 
     # Register real store paths in the Nix database so that
     # nix-store --check-validity succeeds for them.
-    # The VM rootfs has /nix/store but no Nix database — create the db dir first.
-    mkdir -p /nix/var/nix/db /nix/var/nix/gcroots
+    # The VM rootfs has /nix/store but no Nix database.
+    # First initialise the store DB, then register each path.
+    mkdir -p /nix/var/nix/db /nix/var/nix/gcroots /nix/var/nix/temproots /nix/var/nix/userpool
+    export NIX_REMOTE=""
+    nix-store --init
     ${builtins.concatStringsSep "\n" (builtins.map (p: ''
-      printf '%s\n\n0\n' "${builtins.toString p}" | nix-store --register-validity 2>/dev/null || true
+      printf '%s\n\n0\n' "${builtins.toString p}" | nix-store --register-validity
     '') storePaths)}
   '';
 
