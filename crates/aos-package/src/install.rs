@@ -44,6 +44,19 @@ pub async fn run(
     printer.step(2, 7, "Resolving dependencies...");
     let closures = resolve_multiple(&registries, packages, registry_filter)?;
 
+    // Check if any requested package is already provided by the sysroot.
+    for closure in &closures {
+        if let Some((sys_name, sys_ver)) =
+            crate::sysroot::check_sysroot_containment(&closure.root.references, config)
+        {
+            printer.info(&format!(
+                "{} {} already provided by sysroot {} {}",
+                closure.root.name, closure.root.version, sys_name, sys_ver,
+            ));
+            return Ok(());
+        }
+    }
+
     // Step 3: Collect unique metas (dedup across closures).
     let all_metas = collect_unique_metas(&closures);
 
