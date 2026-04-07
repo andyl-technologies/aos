@@ -128,11 +128,9 @@ pub async fn install_system(
     if !to_download.is_empty() {
         printer.step(4, 8, "Downloading...");
         let requests = build_download_requests(&closures, &to_download, config)?;
-        let client = reqwest::Client::new();
         let nar_cache = config.nar_cache_path();
 
         let results = download_nars(
-            &client,
             &requests,
             &nar_cache,
             config.settings.parallel_downloads,
@@ -566,11 +564,9 @@ async fn download_image(
         mirror_url,
     };
 
-    let client = reqwest::Client::new();
     let nar_cache = config.nar_cache_path();
 
     let results = download_nars(
-        &client,
         &[request],
         &nar_cache,
         config.settings.parallel_downloads,
