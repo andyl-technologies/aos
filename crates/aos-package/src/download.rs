@@ -59,10 +59,22 @@ pub fn nar_url(mirror_url: &str, nar_hash: &str) -> String {
 
 /// Determine the mirror URL for a package.
 ///
-/// Uses the registry URL with `/nar/` appended as the mirror base.
-/// Future versions will support an explicit `[[mirrors]]` list in the
-/// registry config.
+/// First checks the local registry clone for a `registry.toml` with
+/// `[[caches]]` entries (sorted by priority). Falls back to the registry
+/// URL with `/nar/` appended.
 pub fn resolve_mirror(registry: &RegistryConfig) -> String {
+    // Try to read caches from the local registry clone.
+    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
+    let registries_dir = std::path::PathBuf::from(&home)
+        .join(".local/share/apm/registries")
+        .join(&registry.name);
+
+    let mirrors = crate::registry_ops::resolve_mirrors(&registries_dir);
+    if let Some(cache) = mirrors.first() {
+        return cache.url.clone();
+    }
+
+    // Fallback: derive from registry URL.
     let base = registry.url.trim_end_matches('/');
     format!("{base}/nar")
 }

@@ -3,10 +3,12 @@ pub mod config;
 pub mod deps;
 pub mod download;
 pub mod hold;
+pub mod image;
 pub mod install;
 pub mod profile;
 pub mod query;
 pub mod registry;
+pub mod registry_ops;
 pub mod remove;
 pub mod resolve;
 pub mod rollback;
@@ -180,6 +182,11 @@ pub enum PackageCommand {
         #[arg(long)]
         generation: Option<u32>,
     },
+    /// Manage images
+    Image {
+        #[command(subcommand)]
+        command: ImageCommand,
+    },
     /// Manage registries
     Registry {
         #[command(subcommand)]
@@ -187,23 +194,539 @@ pub enum PackageCommand {
     },
 }
 
-/// Clap subcommand enum for `apm registry`.
+/// Clap subcommand enum for `apm image`.
+#[derive(Subcommand)]
+pub enum ImageCommand {
+    /// List available images across registries
+    List {
+        /// Filter by registry
+        #[arg(long)]
+        registry: Option<String>,
+        /// Filter by platform
+        #[arg(long)]
+        platform: Option<String>,
+        /// Output format (table, json)
+        #[arg(long, default_value = "table")]
+        format: String,
+    },
+    /// Show image details
+    Show {
+        /// Image name
+        name: String,
+        /// Specific version
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// Download a pre-built image
+    Pull {
+        /// Image name
+        name: String,
+        /// Specific version
+        #[arg(long)]
+        version: Option<String>,
+        /// Platform
+        #[arg(long)]
+        platform: Option<String>,
+        /// Output path for the downloaded image
+        #[arg(long)]
+        output: Option<String>,
+        /// Verify hash after download
+        #[arg(long)]
+        verify: bool,
+    },
+    /// Download the .nix definition for an image
+    Definition {
+        /// Image name
+        name: String,
+        /// Specific version
+        #[arg(long)]
+        version: Option<String>,
+        /// Output path
+        #[arg(long)]
+        output: Option<String>,
+    },
+}
+
+/// Clap subcommand enum for `apm registry` / `apr`.
 #[derive(Subcommand)]
 pub enum RegistryCommand {
+    // ----- Registry Lifecycle -----
+    /// Initialize a new empty registry
+    Create {
+        /// Registry name
+        name: String,
+        /// Remote URL to set as origin
+        #[arg(long)]
+        remote: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
     /// List configured registries and priorities
     List,
-    /// Add a registry
+    /// Add a registry (clone remote into storage)
     Add {
         /// Registry URL
         url: String,
+        /// Registry name (derived from URL if omitted)
+        #[arg(long)]
+        name: Option<String>,
         /// Priority (higher = preferred)
         #[arg(long, default_value = "500")]
         priority: u32,
     },
-    /// Remove a registry (fails if packages still installed)
+    /// Remove a registry
     Remove {
         /// Registry name
         name: String,
+        /// Keep local clone on disk
+        #[arg(long)]
+        keep_local: bool,
+    },
+
+    // ----- Package Entries -----
+    /// Publish a package to the registry from a store path
+    Publish {
+        /// Nix store path to publish
+        store_path: String,
+        /// Package name override
+        #[arg(long)]
+        name: Option<String>,
+        /// Version override
+        #[arg(long)]
+        version: Option<String>,
+        /// Platform override
+        #[arg(long)]
+        platform: Option<String>,
+        /// Package description
+        #[arg(long)]
+        description: Option<String>,
+        /// Package homepage
+        #[arg(long)]
+        homepage: Option<String>,
+        /// Package license
+        #[arg(long)]
+        license: Option<String>,
+        /// Package maintainer
+        #[arg(long)]
+        maintainer: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Remove a package entry from the registry
+    Unpublish {
+        /// Package name
+        package: String,
+        /// Specific version to remove (removes all if omitted)
+        version: Option<String>,
+        /// Platform to remove
+        #[arg(long)]
+        platform: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+
+    // ----- Image Entries -----
+    /// Image registry operations
+    ImageOps {
+        #[command(subcommand)]
+        command: RegistryImageCommand,
+    },
+
+    // ----- Registry Query -----
+    /// Show a package entry from the registry
+    Show {
+        /// Package name
+        package: String,
+        /// Specific version
+        #[arg(long)]
+        version: Option<String>,
+        /// Show raw TOML
+        #[arg(long)]
+        raw: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// List packages in the registry
+    Packages {
+        /// Filter by platform
+        #[arg(long)]
+        platform: Option<String>,
+        /// Show only packages with newer versions available
+        #[arg(long)]
+        outdated: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Validate TOML schema and hashes
+    Verify {
+        /// Verify only this package
+        #[arg(long)]
+        package: Option<String>,
+        /// Attempt to fix validation errors
+        #[arg(long)]
+        fix: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show pending changes vs HEAD or remote
+    Diff {
+        /// Show only file stats
+        #[arg(long)]
+        stat: bool,
+        /// Diff against remote
+        #[arg(long)]
+        remote: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Validate cache has all referenced store paths
+    Validate {
+        /// Validate only this package
+        #[arg(long)]
+        package: Option<String>,
+        /// Validate only this image
+        #[arg(long)]
+        image: Option<String>,
+        /// Filter by platform
+        #[arg(long)]
+        platform: Option<String>,
+        /// Remove entries whose paths are missing
+        #[arg(long)]
+        fix: bool,
+        /// Number of parallel HEAD requests
+        #[arg(short, long, default_value = "32")]
+        jobs: u32,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+
+    // ----- Git Workflow -----
+    /// Show working tree status
+    Status {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show commit history
+    Log {
+        /// Filter log by package
+        #[arg(long)]
+        package: Option<String>,
+        /// Filter log by image
+        #[arg(long)]
+        image: Option<String>,
+        /// Number of commits to show
+        #[arg(short, default_value = "20")]
+        n: u32,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Branch operations
+    Branch {
+        #[command(subcommand)]
+        command: BranchCommand,
+    },
+    /// Push to remote
+    Push {
+        /// Branch to push
+        #[arg(long)]
+        branch: Option<String>,
+        /// Set upstream tracking
+        #[arg(long)]
+        set_upstream: bool,
+        /// Force push
+        #[arg(long)]
+        force: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Fetch and fast-forward from remote
+    Pull {
+        /// Use rebase instead of merge
+        #[arg(long)]
+        rebase: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Merge a branch
+    Merge {
+        /// Branch to merge
+        branch: String,
+        /// Create a merge commit even for fast-forward
+        #[arg(long)]
+        no_ff: bool,
+        /// Squash commits
+        #[arg(long)]
+        squash: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+
+    // ----- GitHub Integration -----
+    /// GitHub Pull Request operations
+    Pr {
+        #[command(subcommand)]
+        command: PrCommand,
+    },
+
+    // ----- Release -----
+    /// Create a git tag
+    Tag {
+        /// Tag name
+        name: String,
+        /// Tag message
+        #[arg(long)]
+        message: Option<String>,
+        /// Signing key
+        #[arg(long)]
+        key: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Generate git bundles for HTTP distribution
+    Bundle {
+        /// Output directory
+        #[arg(long)]
+        output: Option<String>,
+        /// Tag to bundle
+        #[arg(long)]
+        tag: Option<String>,
+        /// Create delta from this tag
+        #[arg(long)]
+        delta_from: Option<String>,
+        /// Update the bundle-list.toml manifest
+        #[arg(long)]
+        update_manifest: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Sign a commit
+    Sign {
+        /// Commit to sign (default: HEAD)
+        commit: Option<String>,
+        /// Signing key
+        #[arg(long)]
+        key: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Subcommands for `apr image` (registry-side image operations).
+#[derive(Subcommand)]
+pub enum RegistryImageCommand {
+    /// Publish an image to the registry
+    Publish {
+        /// Nix store path to publish
+        store_path: String,
+        /// Image name override
+        #[arg(long)]
+        name: Option<String>,
+        /// Version override
+        #[arg(long)]
+        version: Option<String>,
+        /// Platform override
+        #[arg(long)]
+        platform: Option<String>,
+        /// Path to .nix definition file
+        #[arg(long)]
+        definition: Option<String>,
+        /// Base image for lineage tracking
+        #[arg(long)]
+        base: Option<String>,
+        /// Image description
+        #[arg(long)]
+        description: Option<String>,
+        /// Image maintainer
+        #[arg(long)]
+        maintainer: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Remove an image entry from the registry
+    Unpublish {
+        /// Image name
+        name: String,
+        /// Specific version to remove
+        version: Option<String>,
+        /// Platform to remove
+        #[arg(long)]
+        platform: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show an image entry from the registry
+    Show {
+        /// Image name
+        name: String,
+        /// Specific version
+        #[arg(long)]
+        version: Option<String>,
+        /// Show raw TOML
+        #[arg(long)]
+        raw: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// List images in the registry
+    List {
+        /// Filter by platform
+        #[arg(long)]
+        platform: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Branch subcommands.
+#[derive(Subcommand)]
+pub enum BranchCommand {
+    /// List branches
+    List {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Create a new branch
+    Create {
+        /// Branch name
+        name: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Switch to a branch
+    Switch {
+        /// Branch name
+        name: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Delete a branch
+    Delete {
+        /// Branch name
+        name: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// GitHub PR subcommands.
+#[derive(Subcommand)]
+pub enum PrCommand {
+    /// Create a pull request
+    Create {
+        /// PR title
+        #[arg(long)]
+        title: Option<String>,
+        /// PR body
+        #[arg(long)]
+        body: Option<String>,
+        /// Base branch
+        #[arg(long)]
+        base: Option<String>,
+        /// Create as draft
+        #[arg(long)]
+        draft: bool,
+        /// Request review from
+        #[arg(long)]
+        reviewer: Vec<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// List pull requests
+    List {
+        /// Filter by author
+        #[arg(long)]
+        author: Option<String>,
+        /// Show only my PRs
+        #[arg(long)]
+        mine: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show a pull request
+    Show {
+        /// PR number
+        number: u32,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Merge a pull request
+    Merge {
+        /// PR number
+        number: u32,
+        /// Squash merge
+        #[arg(long)]
+        squash: bool,
+        /// Rebase merge
+        #[arg(long)]
+        rebase: bool,
+        /// Regular merge
+        #[arg(long)]
+        merge: bool,
+        /// Delete branch after merge
+        #[arg(long)]
+        delete_branch: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show PR diff
+    Diff {
+        /// PR number
+        number: u32,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
     },
 }
 
@@ -304,6 +827,9 @@ pub async fn run(
         PackageCommand::Rollback { generation } => {
             rollback::run(&config, *generation, dry_run, printer).await
         }
+        PackageCommand::Image { command } => {
+            image::run(command, &config, printer).await
+        }
         PackageCommand::Registry { command } => {
             run_registry(&config, command, printer).await
         }
@@ -321,11 +847,255 @@ async fn run_registry(
 ) -> Result<()> {
     match command {
         RegistryCommand::List => registry_list(config, printer).await,
-        RegistryCommand::Add { url, priority } => {
-            registry_add(config, url, *priority, printer).await
+        RegistryCommand::Add {
+            url,
+            name,
+            priority,
+        } => registry_add(config, url, name.as_deref(), *priority, printer).await,
+        RegistryCommand::Remove { name, keep_local } => {
+            registry_remove(config, name, *keep_local, printer).await
         }
-        RegistryCommand::Remove { name } => {
-            registry_remove(config, name, printer).await
+        RegistryCommand::Create {
+            name, remote, ..
+        } => registry_ops::create(config, name, remote.as_deref(), printer).await,
+        RegistryCommand::Publish {
+            store_path,
+            name,
+            version,
+            platform,
+            description,
+            homepage,
+            license,
+            maintainer,
+            no_commit,
+            message,
+            registry,
+        } => {
+            registry_ops::publish(
+                config,
+                store_path,
+                name.as_deref(),
+                version.as_deref(),
+                platform.as_deref(),
+                description.as_deref(),
+                homepage.as_deref(),
+                license.as_deref(),
+                maintainer.as_deref(),
+                *no_commit,
+                message.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Unpublish {
+            package,
+            version,
+            platform,
+            no_commit,
+            message,
+            registry,
+        } => {
+            registry_ops::unpublish(
+                config,
+                package,
+                version.as_deref(),
+                platform.as_deref(),
+                *no_commit,
+                message.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::ImageOps { command } => {
+            registry_ops::run_image_ops(config, command, printer).await
+        }
+        RegistryCommand::Show {
+            package,
+            version,
+            raw,
+            registry,
+        } => {
+            registry_ops::show(
+                config,
+                package,
+                version.as_deref(),
+                *raw,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Packages {
+            platform,
+            outdated,
+            registry,
+        } => {
+            registry_ops::packages(
+                config,
+                platform.as_deref(),
+                *outdated,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Verify {
+            package,
+            fix,
+            registry,
+        } => {
+            registry_ops::verify(
+                config,
+                package.as_deref(),
+                *fix,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Diff {
+            stat,
+            remote,
+            registry,
+        } => {
+            registry_ops::diff(
+                config,
+                *stat,
+                *remote,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Validate {
+            package,
+            image: img,
+            platform,
+            fix,
+            jobs,
+            registry,
+        } => {
+            registry_ops::validate(
+                config,
+                package.as_deref(),
+                img.as_deref(),
+                platform.as_deref(),
+                *fix,
+                *jobs,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Status { registry } => {
+            registry_ops::status(config, registry.as_deref(), printer).await
+        }
+        RegistryCommand::Log {
+            package,
+            image: img,
+            n,
+            registry,
+        } => {
+            registry_ops::log(
+                config,
+                package.as_deref(),
+                img.as_deref(),
+                *n,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Branch { command } => {
+            registry_ops::run_branch(config, command, printer).await
+        }
+        RegistryCommand::Push {
+            branch,
+            set_upstream,
+            force,
+            registry,
+        } => {
+            registry_ops::push(
+                config,
+                branch.as_deref(),
+                *set_upstream,
+                *force,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Pull { rebase, registry } => {
+            registry_ops::pull(config, *rebase, registry.as_deref(), printer).await
+        }
+        RegistryCommand::Merge {
+            branch,
+            no_ff,
+            squash,
+            registry,
+        } => {
+            registry_ops::merge(
+                config,
+                branch,
+                *no_ff,
+                *squash,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Pr { command } => {
+            registry_ops::run_pr(config, command, printer).await
+        }
+        RegistryCommand::Tag {
+            name,
+            message,
+            key,
+            registry,
+        } => {
+            registry_ops::tag(
+                config,
+                name,
+                message.as_deref(),
+                key.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Bundle {
+            output,
+            tag: tag_name,
+            delta_from,
+            update_manifest,
+            registry,
+        } => {
+            registry_ops::bundle(
+                config,
+                output.as_deref(),
+                tag_name.as_deref(),
+                delta_from.as_deref(),
+                *update_manifest,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Sign {
+            commit,
+            key,
+            registry,
+        } => {
+            registry_ops::sign(
+                config,
+                commit.as_deref(),
+                key.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
         }
     }
 }
@@ -384,10 +1154,13 @@ async fn registry_list(
 async fn registry_add(
     config: &config::ApmConfig,
     url: &str,
+    name_override: Option<&str>,
     priority: u32,
     printer: &Printer,
 ) -> Result<()> {
-    let name = derive_registry_name(url);
+    let name = name_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| derive_registry_name(url));
 
     if config.find_registry(&name).is_some() {
         bail!(
@@ -429,6 +1202,7 @@ enabled = true
 async fn registry_remove(
     config: &config::ApmConfig,
     name: &str,
+    keep_local: bool,
     printer: &Printer,
 ) -> Result<()> {
     if config.find_registry(name).is_none() {
@@ -474,9 +1248,16 @@ async fn registry_remove(
             .with_context(|| format!("removing {}", toml_path.display()))?;
     }
 
-    let cache_dir = config.cache_path().join(name);
-    if cache_dir.exists() {
-        let _ = fs::remove_dir_all(&cache_dir);
+    if !keep_local {
+        let cache_dir = config.cache_path().join(name);
+        if cache_dir.exists() {
+            let _ = fs::remove_dir_all(&cache_dir);
+        }
+
+        let registries_dir = config.scope.registries_path().join(name);
+        if registries_dir.exists() {
+            let _ = fs::remove_dir_all(&registries_dir);
+        }
     }
 
     let key_store = security::KeyStore::new(config.scope.trusted_keys_dirs());
@@ -675,6 +1456,7 @@ mod tests {
         let result = registry_add(
             &config,
             "https://registry.aos.dev/core",
+            None,
             500,
             &printer,
         )
@@ -690,7 +1472,7 @@ mod tests {
         let config = make_config(&tmp, vec![]);
 
         let printer = Printer::new(0, true, false);
-        let result = registry_remove(&config, "nonexistent", &printer).await;
+        let result = registry_remove(&config, "nonexistent", false, &printer).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "got: {err}");
