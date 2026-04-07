@@ -234,6 +234,18 @@ pub enum RegistryCommand {
         /// Priority (higher = preferred)
         #[arg(long, default_value = "500")]
         priority: u32,
+        /// Pin to exact commit hash (mutually exclusive with --branch/--tag/--version)
+        #[arg(long, group = "tracking")]
+        commit: Option<String>,
+        /// Track a branch HEAD (mutually exclusive with --commit/--tag/--version)
+        #[arg(long, group = "tracking")]
+        branch: Option<String>,
+        /// Pin to exact tag name (mutually exclusive with --commit/--branch/--version)
+        #[arg(long, group = "tracking")]
+        tag: Option<String>,
+        /// Semver version constraint on tags (mutually exclusive with --commit/--branch/--tag)
+        #[arg(long, group = "tracking")]
+        version: Option<String>,
     },
     /// Remove a registry
     Remove {
@@ -761,7 +773,21 @@ async fn run_registry(
             url,
             name,
             priority,
-        } => registry_add(config, url, name.as_deref(), *priority, printer).await,
+            commit,
+            branch,
+            tag,
+            version,
+        } => registry_add(
+            config,
+            url,
+            name.as_deref(),
+            *priority,
+            commit.as_deref(),
+            branch.as_deref(),
+            tag.as_deref(),
+            version.as_deref(),
+            printer,
+        ).await,
         RegistryCommand::Remove { name, keep_local } => {
             registry_remove(config, name, *keep_local, printer).await
         }
@@ -1030,10 +1056,16 @@ async fn registry_list(
             "disabled"
         };
 
+        let tracking = reg_config
+            .tracking_mode()
+            .map(|m| m.to_string())
+            .unwrap_or_else(|_| "invalid".to_string());
+
         printer.header(&format!("  {} (priority {})", reg_config.name, reg_config.priority));
         printer.kv("URL", &reg_config.url);
         printer.kv("Status", status);
         printer.kv("Transport", &format!("{:?}", reg_config.transport()));
+        printer.kv("Tracking", &tracking);
 
         let cache_dir = config.cache_path();
         let packages_dir = cache_dir.join(&reg_config.name).join("packages");
@@ -1067,6 +1099,10 @@ async fn registry_add(
     url: &str,
     name_override: Option<&str>,
     priority: u32,
+    commit: Option<&str>,
+    branch: Option<&str>,
+    tag: Option<&str>,
+    version: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let name = name_override
@@ -1081,6 +1117,12 @@ async fn registry_add(
         );
     }
 
+    // Validate version constraint if provided.
+    if let Some(v) = version {
+        semver::VersionReq::parse(v)
+            .map_err(|e| anyhow::anyhow!("invalid version constraint '{}': {}", v, e))?;
+    }
+
     printer.header(&format!("Adding registry '{name}'..."));
     printer.kv("URL", url);
     printer.kv("Priority", &priority.to_string());
@@ -1091,7 +1133,7 @@ async fn registry_add(
         .with_context(|| format!("creating {}", registries_dir.display()))?;
 
     let toml_path = registries_dir.join(format!("{name}.toml"));
-    let toml_content = format!(
+    let mut toml_content = format!(
         r#"[registry]
 name = "{name}"
 url = "{url}"
@@ -1099,6 +1141,21 @@ priority = {priority}
 enabled = true
 "#,
     );
+
+    // Add tracking mode field if specified.
+    if let Some(c) = commit {
+        toml_content.push_str(&format!("commit = \"{c}\"\n"));
+        printer.kv("Tracking", &format!("commit:{}", &c[..c.len().min(12)]));
+    } else if let Some(b) = branch {
+        toml_content.push_str(&format!("branch = \"{b}\"\n"));
+        printer.kv("Tracking", &format!("branch:{b}"));
+    } else if let Some(t) = tag {
+        toml_content.push_str(&format!("tag = \"{t}\"\n"));
+        printer.kv("Tracking", &format!("tag:{t}"));
+    } else if let Some(v) = version {
+        toml_content.push_str(&format!("version = \"{v}\"\n"));
+        printer.kv("Tracking", &format!("version:{v}"));
+    }
 
     fs::write(&toml_path, &toml_content)
         .with_context(|| format!("writing {}", toml_path.display()))?;
@@ -1272,8 +1329,11 @@ mod tests {
             url: format!("https://registry.example.com/{name}"),
             priority,
             enabled: true,
-            pin: None,
+            commit: None,
             branch: None,
+            tag: None,
+            version: None,
+            pin: None,
             signing: None,
         }
     }
@@ -1369,6 +1429,10 @@ mod tests {
             "https://registry.aos.dev/core",
             None,
             500,
+            None,
+            None,
+            None,
+            None,
             &printer,
         )
         .await;
