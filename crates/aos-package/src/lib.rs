@@ -28,6 +28,7 @@ use clap::Subcommand;
 
 use aos_core::error::AosError;
 use aos_core::output::Printer;
+use sysroot::KernelUpgradeMode;
 use types::ProfileScope;
 
 /// Clap subcommand enum for `aos package` / `apm`.
@@ -61,6 +62,18 @@ pub enum PackageCommand {
         /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
         #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
         ignore_sysroot_lock: Option<String>,
+        /// Use kexec to hot-load new kernel (with --system)
+        #[arg(long, group = "kernel_mode")]
+        kexec: bool,
+        /// Full reboot after activation (with --system)
+        #[arg(long, group = "kernel_mode")]
+        reboot: bool,
+        /// Userspace only, defer kernel to next reboot (with --system)
+        #[arg(long, group = "kernel_mode")]
+        live: bool,
+        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        #[arg(long)]
+        drain: bool,
     },
     /// Remove packages (keep deps)
     Remove {
@@ -99,6 +112,18 @@ pub enum PackageCommand {
         /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
         #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
         ignore_sysroot_lock: Option<String>,
+        /// Use kexec to hot-load new kernel (with --system)
+        #[arg(long, group = "kernel_mode")]
+        kexec: bool,
+        /// Full reboot after activation (with --system)
+        #[arg(long, group = "kernel_mode")]
+        reboot: bool,
+        /// Userspace only, defer kernel to next reboot (with --system)
+        #[arg(long, group = "kernel_mode")]
+        live: bool,
+        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        #[arg(long)]
+        drain: bool,
     },
     /// Upgrade all packages with dependency resolution changes
     FullUpgrade,
@@ -209,6 +234,18 @@ pub enum PackageCommand {
         /// List all system generations
         #[arg(long)]
         list: bool,
+        /// Use kexec to hot-load old kernel (with --system)
+        #[arg(long, group = "kernel_mode")]
+        kexec: bool,
+        /// Full reboot after rollback (with --system)
+        #[arg(long, group = "kernel_mode")]
+        reboot: bool,
+        /// Userspace only, defer kernel to next reboot (with --system)
+        #[arg(long, group = "kernel_mode")]
+        live: bool,
+        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        #[arg(long)]
+        drain: bool,
     },
     /// Manage registries
     Registry {
@@ -629,6 +666,19 @@ pub enum PrCommand {
     },
 }
 
+/// Convert mutually-exclusive kernel mode flags into a `KernelUpgradeMode`.
+fn parse_kernel_mode(kexec: bool, reboot: bool, live: bool) -> KernelUpgradeMode {
+    if kexec {
+        KernelUpgradeMode::Kexec
+    } else if reboot {
+        KernelUpgradeMode::Reboot
+    } else if live {
+        KernelUpgradeMode::Live
+    } else {
+        KernelUpgradeMode::Advisory
+    }
+}
+
 /// Main entry point for `aos package` / `apm`.
 pub async fn run(
     system: bool,
@@ -653,12 +703,17 @@ pub async fn run(
             image: image_fmt,
             output: image_output,
             ignore_sysroot_lock,
+            kexec,
+            reboot,
+            live,
+            drain,
             ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(
                 ignore_sysroot_lock.as_deref(),
             );
             if *install_system || image_fmt.is_some() {
+                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::install_system(
                     &config,
                     packages,
@@ -667,6 +722,8 @@ pub async fn run(
                     image_output.as_deref(),
                     dry_run,
                     yes,
+                    kernel_mode,
+                    *drain,
                     printer,
                 )
                 .await
@@ -698,12 +755,17 @@ pub async fn run(
             exclude,
             system: upgrade_system,
             ignore_sysroot_lock,
+            kexec,
+            reboot,
+            live,
+            drain,
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(
                 ignore_sysroot_lock.as_deref(),
             );
             if *upgrade_system {
-                sysroot::upgrade_system(&config, dry_run, printer).await
+                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
+                sysroot::upgrade_system(&config, dry_run, kernel_mode, *drain, printer).await
             } else {
                 upgrade::run(&config, packages, exclude, dry_run, yes, &ignore, printer).await
             }
@@ -769,10 +831,23 @@ pub async fn run(
             generation,
             system: rollback_system,
             list: rollback_list,
+            kexec,
+            reboot,
+            live,
+            drain,
         } => {
             if *rollback_system || *rollback_list {
-                sysroot::rollback_system(&config, *generation, *rollback_list, dry_run, printer)
-                    .await
+                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
+                sysroot::rollback_system(
+                    &config,
+                    *generation,
+                    *rollback_list,
+                    dry_run,
+                    kernel_mode,
+                    *drain,
+                    printer,
+                )
+                .await
             } else {
                 rollback::run(&config, *generation, dry_run, printer).await
             }

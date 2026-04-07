@@ -23,6 +23,24 @@ use crate::types::{PackageMeta, ProfileScope, SystemGeneration, SystemGeneration
 use crate::verify::{verify_download_hash, verify_nar_hash};
 
 // ---------------------------------------------------------------------------
+// Kernel upgrade mode
+// ---------------------------------------------------------------------------
+
+/// How to handle kernel changes during a system update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KernelUpgradeMode {
+    /// Default: update bootloader, advise reboot if kernel changed.
+    #[default]
+    Advisory,
+    /// Use kexec to hot-load new kernel (~2-5s disruption).
+    Kexec,
+    /// Full reboot after activation.
+    Reboot,
+    /// Skip kernel upgrade entirely, userspace only.
+    Live,
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -46,6 +64,8 @@ pub async fn install_system(
     image_output: Option<&str>,
     dry_run: bool,
     yes: bool,
+    kernel_mode: KernelUpgradeMode,
+    drain: bool,
     printer: &Printer,
 ) -> Result<()> {
     if packages.len() != 1 {
@@ -216,33 +236,44 @@ pub async fn install_system(
         }
     }
 
-    // Compare kernels.
-    let mut reboot_needed = false;
-    if let Some(ref old) = old_gen {
-        let old_kernel = old.kernel_path.as_deref().unwrap_or("");
-        let new_kernel = kernel_path.as_deref().unwrap_or("");
-        if !old_kernel.is_empty() && !new_kernel.is_empty() && old_kernel != new_kernel {
-            reboot_needed = true;
-            update_boot_loader(new_kernel, &toplevel_meta.store_path)?;
-            printer.warning(&format!(
-                "Kernel updated: {} -> {}. Reboot required.",
-                short_path(old_kernel),
-                short_path(new_kernel),
-            ));
-        }
-    }
-
     // Diff services if both old and new toplevels have etc/systemd.
     if let Some(ref old) = old_gen {
         let diff = diff_services(&old.toplevel, &toplevel_meta.store_path);
         run_service_diff(&diff, printer);
     }
 
+    // Handle kernel upgrade according to the chosen mode.
+    let old_kernel_path = old_gen.as_ref().and_then(|g| g.kernel_path.clone());
+    handle_kernel_upgrade(
+        &old_kernel_path,
+        &kernel_path,
+        &toplevel_meta.store_path,
+        kernel_mode,
+        drain,
+        printer,
+    )
+    .await?;
+
+    let reboot_hint = match kernel_mode {
+        KernelUpgradeMode::Advisory => {
+            let kernel_changed = match (&old_kernel_path, &kernel_path) {
+                (Some(old), Some(new)) if !old.is_empty() && !new.is_empty() => old != new,
+                _ => false,
+            };
+            if kernel_changed {
+                " (reboot required)"
+            } else {
+                ""
+            }
+        }
+        _ => "",
+    };
+
     printer.success(&format!(
         "System generation {gen_num} active: {} {}{}",
         pkg_name,
         toplevel_meta.version,
-        if reboot_needed { " (reboot required)" } else { "" },
+        reboot_hint,
     ));
 
     Ok(())
@@ -252,6 +283,8 @@ pub async fn install_system(
 pub async fn upgrade_system(
     config: &ApmConfig,
     dry_run: bool,
+    kernel_mode: KernelUpgradeMode,
+    drain: bool,
     printer: &Printer,
 ) -> Result<()> {
     let profile_path = ProfileScope::System.profile_path();
@@ -309,6 +342,8 @@ pub async fn upgrade_system(
         None,
         false,
         true, // auto-yes for upgrade flow
+        kernel_mode,
+        drain,
         printer,
     )
     .await
@@ -320,6 +355,8 @@ pub async fn rollback_system(
     generation: Option<u32>,
     list: bool,
     dry_run: bool,
+    kernel_mode: KernelUpgradeMode,
+    drain: bool,
     printer: &Printer,
 ) -> Result<()> {
     let profile_path = ProfileScope::System.profile_path();
@@ -407,21 +444,20 @@ pub async fn rollback_system(
         }
     }
 
-    // Compare kernels.
-    let old_kernel = current.kernel_path.as_deref().unwrap_or("");
-    let new_kernel = target.kernel_path.as_deref().unwrap_or("");
-    if !old_kernel.is_empty() && !new_kernel.is_empty() && old_kernel != new_kernel {
-        update_boot_loader(new_kernel, &target.toplevel)?;
-        printer.warning(&format!(
-            "Kernel changed: {} -> {}. Reboot required.",
-            short_path(old_kernel),
-            short_path(new_kernel),
-        ));
-    }
-
     // Diff services.
     let diff = diff_services(&current.toplevel, &target.toplevel);
     run_service_diff(&diff, printer);
+
+    // Handle kernel upgrade according to the chosen mode.
+    handle_kernel_upgrade(
+        &current.kernel_path,
+        &target.kernel_path,
+        &target.toplevel,
+        kernel_mode,
+        drain,
+        printer,
+    )
+    .await?;
 
     printer.success(&format!(
         "Rolled back to system generation {} ({} {}).",
@@ -835,6 +871,199 @@ fn update_boot_loader(kernel_path: &str, toplevel: &str) -> Result<()> {
     Ok(())
 }
 
+/// Extract a human-readable kernel version from a store path.
+///
+/// Expects paths like `/nix/store/abc123-linux-6.12.1` and returns `6.12.1`.
+/// Falls back to the basename if no version pattern is found.
+fn extract_kernel_version(path: &Option<String>) -> String {
+    match path {
+        Some(p) => {
+            let base = p.rsplit('/').next().unwrap_or(p);
+            // Strip the Nix hash prefix (32 chars + '-').
+            let name = if base.len() > 33 && base.as_bytes()[32] == b'-' {
+                &base[33..]
+            } else {
+                base
+            };
+            // Strip common prefixes like "linux-".
+            let version = name.strip_prefix("linux-").unwrap_or(name);
+            version.to_string()
+        }
+        None => "unknown".to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kernel upgrade orchestration
+// ---------------------------------------------------------------------------
+
+/// Handle kernel upgrade after activation, according to the chosen mode.
+///
+/// This is the central dispatch for all kernel upgrade strategies. It is called
+/// after the new generation has been activated (services diffed and restarted).
+async fn handle_kernel_upgrade(
+    old_kernel: &Option<String>,
+    new_kernel: &Option<String>,
+    new_toplevel: &str,
+    mode: KernelUpgradeMode,
+    drain: bool,
+    printer: &Printer,
+) -> Result<()> {
+    let kernel_changed = match (old_kernel, new_kernel) {
+        (Some(old), Some(new)) if !old.is_empty() && !new.is_empty() => old != new,
+        _ => false,
+    };
+
+    // Always update boot loader if kernel changed.
+    if kernel_changed {
+        let new_k = new_kernel.as_deref().unwrap_or("");
+        update_boot_loader(new_k, new_toplevel)?;
+    }
+
+    match mode {
+        KernelUpgradeMode::Advisory => {
+            if kernel_changed {
+                let old_ver = extract_kernel_version(old_kernel);
+                let new_ver = extract_kernel_version(new_kernel);
+                printer.warning(&format!(
+                    "Kernel updated: {} -> {}",
+                    old_ver, new_ver,
+                ));
+                printer.plain("  Boot loader updated. Reboot required for kernel changes.");
+                printer.plain("  Use: apm upgrade --system --kexec  (fast, ~3s)");
+                printer.plain("  Or:  apm upgrade --system --reboot (full reboot)");
+            }
+        }
+        KernelUpgradeMode::Kexec => {
+            if kernel_changed {
+                if drain {
+                    drain_workloads(new_toplevel, printer).await?;
+                }
+                let new_ver = extract_kernel_version(new_kernel);
+                printer.plain(&format!("Loading new kernel {} via kexec...", new_ver));
+                kexec_kernel(new_toplevel).await?;
+                // kexec -e does not return on success.
+            } else {
+                printer.info("Kernel unchanged, kexec not needed.");
+            }
+        }
+        KernelUpgradeMode::Reboot => {
+            if drain {
+                drain_workloads(new_toplevel, printer).await?;
+            }
+            if kernel_changed {
+                let new_ver = extract_kernel_version(new_kernel);
+                printer.plain(&format!("Rebooting into new kernel {}...", new_ver));
+            } else {
+                printer.plain("Rebooting (kernel unchanged)...");
+            }
+            run_command("systemctl", &["reboot"])?;
+        }
+        KernelUpgradeMode::Live => {
+            if kernel_changed {
+                let new_ver = extract_kernel_version(new_kernel);
+                printer.plain(&format!(
+                    "Kernel {} staged for next reboot (current session unchanged).",
+                    new_ver,
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Load a new kernel via kexec and execute it.
+///
+/// The kernel and initrd are read from `<toplevel>/kernel` and
+/// `<toplevel>/initrd`. The current kernel command line is reused.
+async fn kexec_kernel(new_toplevel: &str) -> Result<()> {
+    let kernel = format!("{}/kernel", new_toplevel);
+    let initrd = format!("{}/initrd", new_toplevel);
+
+    // Verify kexec is available.
+    check_command_exists("kexec")?;
+
+    // Load new kernel.
+    let mut load_args = vec![
+        "-l".to_string(),
+        kernel,
+        "--reuse-cmdline".to_string(),
+    ];
+    if Path::new(&initrd).exists() {
+        load_args.push(format!("--initrd={}", initrd));
+    }
+    let load_refs: Vec<&str> = load_args.iter().map(|s| s.as_str()).collect();
+    run_command("kexec", &load_refs)?;
+
+    // Sync filesystems before switching.
+    run_command("sync", &[])?;
+
+    // Execute the loaded kernel. This does not return on success.
+    run_command("kexec", &["-e"])?;
+
+    Ok(())
+}
+
+/// Drain workloads before a disruptive kernel switch.
+///
+/// Checks for a `drain` script in the toplevel. If none exists, attempts to
+/// isolate the systemd `drain.target` (if present). If neither mechanism is
+/// available, this is a no-op.
+async fn drain_workloads(toplevel: &str, printer: &Printer) -> Result<()> {
+    let drain_script = format!("{}/drain", toplevel);
+    if Path::new(&drain_script).exists() {
+        printer.plain("Draining workloads...");
+        run_command(&drain_script, &[])?;
+        printer.plain("Drain complete.");
+        return Ok(());
+    }
+
+    // Fall back to systemd drain target if it exists.
+    let status = std::process::Command::new("systemctl")
+        .args(["is-active", "drain.target"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if status.map(|s| s.success()).unwrap_or(false) {
+        printer.plain("Draining workloads via drain.target...");
+        run_command("systemctl", &["isolate", "drain.target"])?;
+        run_command("systemctl", &["start", "--wait", "drain-complete.target"])?;
+        printer.plain("Drain complete.");
+    }
+
+    Ok(())
+}
+
+/// Check that an external command exists on PATH.
+fn check_command_exists(name: &str) -> Result<()> {
+    let status = std::process::Command::new("which")
+        .arg(name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        _ => bail!("required command '{}' not found in PATH", name),
+    }
+}
+
+/// Run an external command, returning an error if it fails.
+fn run_command(cmd: &str, args: &[&str]) -> Result<()> {
+    let status = std::process::Command::new(cmd)
+        .args(args)
+        .status()
+        .with_context(|| format!("running {} {}", cmd, args.join(" ")))?;
+    if !status.success() {
+        bail!(
+            "command '{}' exited with status {}",
+            cmd,
+            status.code().unwrap_or(-1),
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -938,10 +1167,6 @@ fn format_size(bytes: u64) -> String {
     }
     let gib = mib / 1024.0;
     format!("{gib:.1} GiB")
-}
-
-fn short_path(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// Simple DJB2 hash for content fingerprinting (not cryptographic).
@@ -1087,8 +1312,28 @@ mod tests {
     }
 
     #[test]
-    fn short_path_extracts_basename() {
-        assert_eq!(short_path("/nix/store/abc-linux-6.12"), "abc-linux-6.12");
-        assert_eq!(short_path("just-a-name"), "just-a-name");
+    fn extract_kernel_version_from_store_path() {
+        // Nix hash is 32 chars, so basename is "01234567890123456789012345678901-linux-6.12.1"
+        // After stripping 33-char prefix (hash + '-'), we get "linux-6.12.1", then strip "linux-".
+        let path =
+            Some("/nix/store/01234567890123456789012345678901-linux-6.12.1".to_string());
+        assert_eq!(extract_kernel_version(&path), "6.12.1");
+    }
+
+    #[test]
+    fn extract_kernel_version_short_path() {
+        let path = Some("linux-6.11.0".to_string());
+        assert_eq!(extract_kernel_version(&path), "6.11.0");
+    }
+
+    #[test]
+    fn extract_kernel_version_none() {
+        assert_eq!(extract_kernel_version(&None), "unknown");
+    }
+
+    #[test]
+    fn kernel_upgrade_mode_default() {
+        let mode = KernelUpgradeMode::default();
+        assert_eq!(mode, KernelUpgradeMode::Advisory);
     }
 }
