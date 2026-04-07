@@ -1,4 +1,5 @@
 pub mod bundle;
+pub mod closures;
 pub mod git;
 pub mod parse;
 pub mod state;
@@ -8,7 +9,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::types::{PackageMeta, RegistryConfig};
+use super::types::{ClosureMeta, PackageMeta, RegistryConfig};
+use closures::load_closures;
 use parse::parse_registry;
 
 /// A loaded registry with all its packages for the current platform.
@@ -17,13 +19,16 @@ pub struct Registry {
     pub config: RegistryConfig,
     pub packages: HashMap<String, PackageMeta>,
     hash_index: HashMap<String, String>,
+    /// Precomputed closures keyed by store path hash.
+    closures: HashMap<String, ClosureMeta>,
 }
 
 impl Registry {
     /// Load a registry from its local cache directory.
     ///
     /// The cache directory should contain a `packages/` subdirectory with
-    /// the registry's TOML package files organized by first letter.
+    /// the registry's TOML package files organized by first letter, and
+    /// optionally a `closures/` directory with precomputed closure files.
     pub fn load(
         cache_dir: &Path,
         config: &RegistryConfig,
@@ -35,10 +40,13 @@ impl Registry {
                 format!("loading registry '{}' from {}", config.name, registry_dir.display())
             })?;
 
+        let closures = load_closures(&registry_dir).unwrap_or_default();
+
         Ok(Self {
             config: config.clone(),
             packages,
             hash_index,
+            closures,
         })
     }
 
@@ -52,6 +60,11 @@ impl Registry {
         self.hash_index
             .get(hash)
             .and_then(|name| self.packages.get(name))
+    }
+
+    /// Get the precomputed closure for a store path hash, if available.
+    pub fn get_closure(&self, hash: &str) -> Option<&ClosureMeta> {
+        self.closures.get(hash)
     }
 
     /// List all package names.
@@ -142,6 +155,19 @@ impl RegistrySet {
             .and_then(|r| r.get_by_hash(hash))
     }
 
+    /// Get the precomputed closure for a store path hash within a specific
+    /// registry.
+    pub fn get_closure_in(
+        &self,
+        registry_name: &str,
+        hash: &str,
+    ) -> Option<&ClosureMeta> {
+        self.registries
+            .iter()
+            .find(|r| r.config.name == registry_name)
+            .and_then(|r| r.get_closure(hash))
+    }
+
     /// Get all versions of a package across registries (for `apm policy`).
     ///
     /// Returns entries from all registries, ordered by priority (highest first).
@@ -167,25 +193,49 @@ impl RegistrySet {
 pub use parse::store_path_hash;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
 
+    use super::closures::{CURL_CLOSURE, ZLIB_CLOSURE};
     use super::parse::{CURL_TOML, ZLIB_TOML};
 
-    fn make_registry(
+    /// Helper: create a registry in a temp directory from TOML test fixtures.
+    ///
+    /// Optionally writes closure files when `closure_files` is non-empty.
+    pub(crate) fn make_registry(
         tmp: &TempDir,
         name: &str,
         priority: u32,
         toml_files: &[(&str, &str)],
     ) -> Registry {
-        let reg_dir = tmp.path().join(name).join("packages");
+        make_registry_with_closures(tmp, name, priority, toml_files, &[])
+    }
+
+    /// Helper: create a registry with both TOML and closure files.
+    pub(crate) fn make_registry_with_closures(
+        tmp: &TempDir,
+        name: &str,
+        priority: u32,
+        toml_files: &[(&str, &str)],
+        closure_files: &[(&str, &str)],
+    ) -> Registry {
+        let reg_dir = tmp.path().join(name);
+        let pkg_dir = reg_dir.join("packages");
         for (pkg_name, content) in toml_files {
             let first_letter = &pkg_name[..1];
-            let dir = reg_dir.join(first_letter);
+            let dir = pkg_dir.join(first_letter);
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join(format!("{pkg_name}.toml")), content).unwrap();
+        }
+
+        if !closure_files.is_empty() {
+            let closures_dir = reg_dir.join("closures");
+            fs::create_dir_all(&closures_dir).unwrap();
+            for (hash, content) in closure_files {
+                fs::write(closures_dir.join(hash), content).unwrap();
+            }
         }
 
         let config = RegistryConfig {
@@ -303,5 +353,65 @@ mod tests {
         let set = RegistrySet::new(vec![core]);
 
         assert!(set.resolve("nonexistent").is_none());
+    }
+
+    #[test]
+    fn registry_loads_closures() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry_with_closures(
+            &tmp,
+            "aos-core",
+            500,
+            &[("curl", CURL_TOML), ("zlib", ZLIB_TOML)],
+            &[
+                ("h7j3k8l2m9n4", CURL_CLOSURE),
+                ("r4q1m2kp8v3x", ZLIB_CLOSURE),
+            ],
+        );
+
+        // Closures are available.
+        let curl_closure = core.get_closure("h7j3k8l2m9n4").unwrap();
+        assert_eq!(curl_closure.members.len(), 5);
+        assert_eq!(curl_closure.root, "h7j3k8l2m9n4");
+
+        let zlib_closure = core.get_closure("r4q1m2kp8v3x").unwrap();
+        assert_eq!(zlib_closure.members.len(), 1);
+
+        // Missing closure returns None.
+        assert!(core.get_closure("nonexistent").is_none());
+    }
+
+    #[test]
+    fn registry_set_get_closure_in() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry_with_closures(
+            &tmp,
+            "aos-core",
+            500,
+            &[("curl", CURL_TOML)],
+            &[("h7j3k8l2m9n4", CURL_CLOSURE)],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let closure = set.get_closure_in("aos-core", "h7j3k8l2m9n4");
+        assert!(closure.is_some());
+        assert_eq!(closure.unwrap().members.len(), 5);
+
+        // Wrong registry.
+        assert!(set.get_closure_in("aos-extra", "h7j3k8l2m9n4").is_none());
+    }
+
+    #[test]
+    fn registry_without_closures_dir() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(
+            &tmp,
+            "aos-core",
+            500,
+            &[("curl", CURL_TOML)],
+        );
+
+        // No closures dir — get_closure returns None.
+        assert!(core.get_closure("h7j3k8l2m9n4").is_none());
     }
 }
