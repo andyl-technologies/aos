@@ -41,6 +41,20 @@ builtins.derivation {
       sed -i '/^char \*malloc ();$/d' "$TMPDIR/src/libiberty/regex.c"
       sed -i '/^char \*realloc ();$/d' "$TMPDIR/src/libiberty/regex.c"
 
+      # Touch pre-generated parser/lexer .c/.h files so make doesn't try to
+      # regenerate them via bison/yacc/flex (which aren't available at this
+      # bootstrap stage).  The cp -r above resets timestamps, making .y/.l
+      # sources appear newer than their generated outputs.
+      find "$TMPDIR/src" -name '*.info' -print | xargs touch
+      for f in ld/ldlex.c ld/ldgram.c ld/ldgram.h \
+               gas/itbl-parse.c gas/itbl-parse.h gas/itbl-lex.c \
+               binutils/arlex.c binutils/arparse.c binutils/arparse.h \
+               binutils/deflex.c binutils/defparse.c binutils/defparse.h \
+               binutils/rclex.c binutils/rcparse.c binutils/rcparse.h \
+               binutils/syslex.c binutils/sysinfo.c binutils/sysinfo.h; do
+        test -f "$TMPDIR/src/$f" && touch "$TMPDIR/src/$f"
+      done
+
       # Create a static-only lib directory — glibc 2.3.4 has .so files
       # which libtool will try to link dynamically even with -static.
       mkdir -p "$TMPDIR/static-lib"

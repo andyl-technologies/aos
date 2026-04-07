@@ -28,14 +28,22 @@ builtins.derivation {
       export PATH="${prev.coreutils}/bin:${crossGccStage2}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin"
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
+      # Stub autotools — prevents Makefiles from re-running automake/autoconf
+      mkdir -p "$TMPDIR/fakebin"
+      for tool in autoconf autoheader aclocal automake autoreconf autom4te; do
+        printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/fakebin/$tool"
+        chmod +x "$TMPDIR/fakebin/$tool"
+      done
+      export PATH="$TMPDIR/fakebin:$PATH"
+
       # Copy source to patch gnulib getline conflict with glibc 2.3.4
       cp -r ${src} "$TMPDIR/src"
       chmod -R u+w "$TMPDIR/src"
       # glibc 2.3.4 already provides gnu_getline as inline in bits/stdio.h
       : > "$TMPDIR/src/gnulib/lib/getline.c"
       : > "$TMPDIR/src/gnulib/lib/getline.h"
-      # Touch all generated files to prevent autotools regeneration
-      find "$TMPDIR/src" -name 'configure' -o -name 'Makefile.in' -o -name 'config.h.in' -o -name 'aclocal.m4' | xargs touch
+      # Touch ALL files to prevent autotools regeneration after cp -r
+      find "$TMPDIR/src" -type f -exec touch {} + 2>/dev/null || true
 
       mkdir -p "$TMPDIR/build"
       cd "$TMPDIR/build"
@@ -50,8 +58,15 @@ builtins.derivation {
         --build=${buildPlatform.config} --host=${hostPlatform.config} \
         --disable-nls
 
-      make -j"$NIX_BUILD_CORES"
-      make install
+      # Strip autotools regeneration prerequisites from generated Makefiles
+      find . -name Makefile | while read f; do
+        sed -i 's/^Makefile:.*/Makefile:/; s/^config\.status:.*/config.status:/; s/^configure:.*/configure:/' "$f"
+      done
+
+      make -j"$NIX_BUILD_CORES" \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+      make install \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
 
       echo "GNU findutils 4.1.20 (${hostPlatform.config}) installed to $out"
     ''
