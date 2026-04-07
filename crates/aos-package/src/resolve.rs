@@ -30,8 +30,9 @@ pub struct ResolvedClosure {
 
 /// Resolve a single package and its full closure from a registry.
 ///
-/// All deps resolve from the SAME registry as the parent package.
-/// Uses BFS over the `references` field of each `PackageMeta`.
+/// If the registry has a precomputed closure file for the package, uses it
+/// directly (O(n) lookups, no graph traversal).  Otherwise falls back to
+/// BFS over the `references` field of each `PackageMeta`.
 pub fn resolve_closure(
     registries: &RegistrySet,
     name: &str,
@@ -55,7 +56,76 @@ pub fn resolve_closure(
         (reg.config.name.clone(), meta.clone())
     };
 
-    // Step 2: BFS over references, scoped to the same registry.
+    let root_hash = store_path_hash(&root.store_path).to_string();
+
+    // Step 2: Try precomputed closure file first.
+    if let Some(closure_meta) =
+        registries.get_closure_in(&registry_name, &root_hash)
+    {
+        return resolve_from_closure_file(
+            registries,
+            &registry_name,
+            root,
+            closure_meta,
+        );
+    }
+
+    // Step 3: Fall back to BFS over references.
+    resolve_via_bfs(registries, &registry_name, root)
+}
+
+/// Build a `ResolvedClosure` from a precomputed closure file.
+///
+/// Looks up each member hash in the registry to get its `PackageMeta`.
+/// Members that can't be resolved (e.g. system libraries) are skipped.
+fn resolve_from_closure_file(
+    registries: &RegistrySet,
+    registry_name: &str,
+    root: PackageMeta,
+    closure_meta: &super::types::ClosureMeta,
+) -> Result<ResolvedClosure> {
+    let root_hash = store_path_hash(&root.store_path).to_string();
+    let mut closure: Vec<PackageMeta> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // Walk the closure members in file order (deps before dependents).
+    for member_hash in &closure_meta.members {
+        if !seen.insert(member_hash.clone()) {
+            continue;
+        }
+
+        if *member_hash == root_hash {
+            // Root is always included — use the already-resolved meta.
+            closure.push(root.clone());
+        } else if let Some(dep) =
+            registries.resolve_hash_in(registry_name, member_hash)
+        {
+            closure.push(dep.clone());
+        }
+        // Skip unresolvable hashes (system libraries, etc.)
+    }
+
+    // Ensure root is in the closure even if not in the file.
+    if !seen.contains(&root_hash) {
+        closure.push(root.clone());
+    }
+
+    let total_download_size: u64 = closure.iter().map(|m| m.download_size).sum();
+
+    Ok(ResolvedClosure {
+        registry_name: registry_name.to_string(),
+        root,
+        closure,
+        total_download_size,
+    })
+}
+
+/// BFS fallback: walk `references` fields to build the closure.
+fn resolve_via_bfs(
+    registries: &RegistrySet,
+    registry_name: &str,
+    root: PackageMeta,
+) -> Result<ResolvedClosure> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<PackageMeta> = VecDeque::new();
     let mut closure: Vec<PackageMeta> = Vec::new();
@@ -74,7 +144,7 @@ pub fn resolve_closure(
             // Resolve within the same registry.  If a reference hash can't
             // be resolved, skip it -- it may be a system library or a
             // self-reference that doesn't correspond to a registry package.
-            if let Some(dep) = registries.resolve_hash_in(&registry_name, ref_hash) {
+            if let Some(dep) = registries.resolve_hash_in(registry_name, ref_hash) {
                 // Guard against false matches: the hash_index may map an
                 // unknown reference hash back to the referencing package
                 // itself.  Deduplicate on the resolved package's actual
@@ -98,7 +168,7 @@ pub fn resolve_closure(
     let total_download_size: u64 = closure.iter().map(|m| m.download_size).sum();
 
     Ok(ResolvedClosure {
-        registry_name,
+        registry_name: registry_name.to_string(),
         root,
         closure,
         total_download_size,
@@ -158,43 +228,12 @@ pub fn collect_unique_metas(closures: &[ResolvedClosure]) -> Vec<&PackageMeta> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile::TempDir;
 
+    use crate::registry::closures::{CURL_CLOSURE, ZLIB_CLOSURE};
     use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
-    use crate::registry::{Registry, RegistrySet};
-    use crate::types::RegistryConfig;
-
-    /// Helper: create a registry in a temp directory from TOML test fixtures.
-    fn make_registry(
-        tmp: &TempDir,
-        name: &str,
-        priority: u32,
-        toml_files: &[(&str, &str)],
-    ) -> Registry {
-        let reg_dir = tmp.path().join(name).join("packages");
-        for (pkg_name, content) in toml_files {
-            let first_letter = &pkg_name[..1];
-            let dir = reg_dir.join(first_letter);
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join(format!("{pkg_name}.toml")), content).unwrap();
-        }
-
-        let config = RegistryConfig {
-            name: name.to_string(),
-            url: format!("https://registry.example.com/{name}"),
-            priority,
-            enabled: true,
-            commit: None,
-            branch: None,
-            tag: None,
-            version: None,
-            pin: None,
-            signing: None,
-        };
-
-        Registry::load(tmp.path(), &config, "x86_64-linux").unwrap()
-    }
+    use crate::registry::tests::{make_registry, make_registry_with_closures};
+    use crate::registry::RegistrySet;
 
     // 1. Resolving a single package with deps produces a closure containing
     //    both the root and its resolvable dependency.
@@ -363,5 +402,76 @@ mod tests {
         let expected: u64 = resolved.closure.iter().map(|m| m.download_size).sum();
         assert_eq!(resolved.total_download_size, expected);
         assert!(resolved.total_download_size > 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Closure-file-based resolution
+    // -----------------------------------------------------------------------
+
+    // 11. When closure files are present, resolution uses them instead of BFS.
+    #[test]
+    fn resolve_uses_closure_file() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry_with_closures(
+            &tmp,
+            "aos-core",
+            500,
+            &[("curl", CURL_TOML), ("zlib", ZLIB_TOML)],
+            &[
+                ("h7j3k8l2m9n4", CURL_CLOSURE),
+                ("r4q1m2kp8v3x", ZLIB_CLOSURE),
+            ],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let resolved = resolve_closure(&set, "curl", None).unwrap();
+        assert_eq!(resolved.registry_name, "aos-core");
+        assert_eq!(resolved.root.name, "curl");
+
+        // Closure file has 5 members, but only curl and zlib are in the
+        // registry — the other 3 hashes are unresolvable and skipped.
+        let names: Vec<&str> = resolved.closure.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"curl"));
+        assert!(names.contains(&"zlib"));
+        assert!(resolved.total_download_size > 0);
+    }
+
+    // 12. Leaf package with closure file resolves to just itself.
+    #[test]
+    fn resolve_leaf_with_closure_file() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry_with_closures(
+            &tmp,
+            "aos-core",
+            500,
+            &[("zlib", ZLIB_TOML)],
+            &[("r4q1m2kp8v3x", ZLIB_CLOSURE)],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let resolved = resolve_closure(&set, "zlib", None).unwrap();
+        assert_eq!(resolved.closure.len(), 1);
+        assert_eq!(resolved.closure[0].name, "zlib");
+    }
+
+    // 13. Falls back to BFS when no closure file exists.
+    #[test]
+    fn resolve_falls_back_to_bfs() {
+        let tmp = TempDir::new().unwrap();
+        // Create registry with closure file only for zlib, not curl.
+        let core = make_registry_with_closures(
+            &tmp,
+            "aos-core",
+            500,
+            &[("curl", CURL_TOML), ("zlib", ZLIB_TOML)],
+            &[("r4q1m2kp8v3x", ZLIB_CLOSURE)],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        // curl has no closure file — should fall back to BFS.
+        let resolved = resolve_closure(&set, "curl", None).unwrap();
+        let names: Vec<&str> = resolved.closure.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"curl"));
+        assert!(names.contains(&"zlib"));
     }
 }
