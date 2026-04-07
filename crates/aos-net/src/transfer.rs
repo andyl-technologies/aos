@@ -2,12 +2,17 @@
 //!
 //! Orchestrates downloads/uploads using the connection pool, protocol layer,
 //! retry logic, hash verification, progress tracking, and bandwidth limiting.
+//! All transfers use a streaming/chunked architecture: hash verification,
+//! bandwidth limiting, and progress tracking happen per-chunk during the
+//! transfer rather than after it completes.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use futures_util::StreamExt;
+use tokio::io::AsyncWriteExt;
 
 use crate::auth::AuthStore;
 use crate::bandwidth::BandwidthLimiter;
@@ -16,7 +21,7 @@ use crate::pool::{ConnectionPool, PoolConfig};
 use crate::progress::{BatchProgressHandler, NoopProgress, ProgressHandler};
 use crate::protocol;
 use crate::retry::{self, classify_error, ErrorClass, RetryConfig};
-use crate::types::{TransferOutput, TransferRequest, TransferResult};
+use crate::types::{Method, TransferOutput, TransferRequest, TransferResult};
 
 /// Configuration for the transfer engine.
 #[derive(Debug, Clone)]
@@ -48,12 +53,15 @@ impl Default for TransferEngineConfig {
 /// The transfer engine -- primary interface for all network operations.
 ///
 /// Manages connection pooling, retry logic, hash verification, progress
-/// reporting, and bandwidth limiting.
+/// reporting, and bandwidth limiting. All transfers use streaming I/O:
+/// hash, bandwidth, and progress are applied per-chunk.
 pub struct TransferEngine {
     pool: ConnectionPool,
     auth: AuthStore,
     bandwidth: Option<BandwidthLimiter>,
     retry: RetryConfig,
+    min_speed: Option<u64>,
+    min_speed_duration: Duration,
     progress: Box<dyn ProgressHandler>,
 }
 
@@ -67,6 +75,8 @@ impl TransferEngine {
             auth: AuthStore::new(),
             bandwidth,
             retry: config.retry,
+            min_speed: config.min_speed,
+            min_speed_duration: config.min_speed_duration,
             progress: Box::new(NoopProgress),
         }
     }
@@ -86,18 +96,15 @@ impl TransferEngine {
         &self.pool
     }
 
-    /// Execute a single transfer with retry, hash verification, and progress.
+    /// Execute a single transfer with streaming hash, bandwidth, progress, and retry.
     pub async fn execute(&self, request: TransferRequest) -> Result<TransferResult> {
         let url = request.url.clone();
         let hash_spec = request.hash.clone();
         let host = extract_host(&url).unwrap_or_else(|| "unknown".to_string());
-        let credential = self.auth.get(&url);
         let proto = protocol::for_url(&url)?;
 
-        self.progress.on_start(&url, None);
-
-        // Manual retry loop (avoids closure lifetime issues with &self).
         let mut last_err: Option<anyhow::Error> = None;
+        let mut token_refreshed = false;
 
         for attempt in 0..self.retry.max_attempts {
             if attempt > 0 {
@@ -107,34 +114,26 @@ impl TransferEngine {
             }
 
             let _permit = self.pool.acquire(&host).await;
+            let credential = self.auth.get(&url);
 
-            let exec_request = TransferRequest {
-                url: url.clone(),
-                method: request.method,
-                headers: request.headers.clone(),
-                body: None, // Body can't be cloned for retries.
-                hash: None, // Hash is checked after protocol execution.
-                resume: request.resume,
-                output: TransferOutput::Memory,
-            };
+            // Use the streaming path for GET requests, legacy path for others.
+            let stream_result = if request.method == Method::Get {
+                proto.stream(&request, credential.as_ref()).await
+            } else {
+                // Non-GET: use execute directly (PUT/HEAD/DELETE don't stream response).
+                match proto.execute(&request, credential.as_ref()).await {
+                    Ok(result) => {
+                        // Apply bandwidth limiting for the bytes transferred.
+                        if let Some(ref limiter) = self.bandwidth {
+                            limiter.consume(result.bytes_transferred).await;
+                        }
 
-            match proto.execute(&exec_request, credential.as_ref()).await {
-                Ok(mut result) => {
-                    // Apply bandwidth limiting.
-                    if let Some(ref limiter) = self.bandwidth {
-                        limiter.consume(result.bytes_transferred).await;
-                    }
-
-                    // Verify hash if specified.
-                    if let Some(ref spec) = hash_spec {
-                        if let Some(ref body) = result.body {
-                            let mut hasher = StreamingHasher::with_expected(
-                                spec.algorithm,
-                                &spec.expected,
-                            );
+                        // Hash verification on body if available.
+                        if let (Some(ref spec), Some(ref body)) = (&hash_spec, &result.body) {
+                            let mut hasher =
+                                StreamingHasher::with_expected(spec.algorithm, &spec.expected);
                             hasher.update(body);
                             let hash_result = hasher.finalize();
-                            result.hash = Some(hash_result.hex.clone());
 
                             if let Some(false) = hash_result.matched {
                                 let err = anyhow::anyhow!(
@@ -147,14 +146,161 @@ impl TransferEngine {
                                 return Err(err);
                             }
                         }
+
+                        self.progress
+                            .on_progress(&url, result.bytes_transferred, result.content_length);
+                        self.progress.on_complete(&url, result.bytes_transferred);
+                        return Ok(result);
+                    }
+                    Err(e) => Err(e),
+                }
+            };
+
+            match stream_result {
+                Ok((mut result, mut stream)) => {
+                    // Set up the streaming pipeline.
+                    let mut hasher = hash_spec.as_ref().map(|h| {
+                        StreamingHasher::with_expected(h.algorithm, &h.expected)
+                    });
+                    let mut bytes_transferred: u64 = result.bytes_transferred;
+                    let transfer_start = Instant::now();
+
+                    self.progress.on_start(&url, result.content_length);
+
+                    // Open output destination.
+                    let mut file_sink: Option<tokio::fs::File> = None;
+                    let mut memory_sink: Option<Vec<u8>> = None;
+
+                    match &request.output {
+                        TransferOutput::File(path) => {
+                            if let Some(parent) = path.parent() {
+                                tokio::fs::create_dir_all(parent).await?;
+                            }
+                            let file = if result.resumed {
+                                tokio::fs::OpenOptions::new()
+                                    .append(true)
+                                    .open(path)
+                                    .await?
+                            } else {
+                                tokio::fs::File::create(path).await?
+                            };
+                            file_sink = Some(file);
+                        }
+                        TransferOutput::Memory => {
+                            memory_sink = Some(Vec::new());
+                        }
+                        TransferOutput::Callback(_) => {
+                            // Callback is handled inline below.
+                        }
                     }
 
-                    self.progress
-                        .on_progress(&url, result.bytes_transferred, result.content_length);
-                    self.progress.on_complete(&url, result.bytes_transferred);
+                    // Stream chunks with per-chunk hash/bandwidth/progress.
+                    while let Some(chunk_result) = stream.next().await {
+                        let chunk = chunk_result?;
+
+                        // Hash update.
+                        if let Some(ref mut h) = hasher {
+                            h.update(&chunk);
+                        }
+
+                        // Bandwidth limiting (may block).
+                        if let Some(ref limiter) = self.bandwidth {
+                            limiter.consume(chunk.len() as u64).await;
+                        }
+
+                        // Write to output.
+                        if let Some(ref mut f) = file_sink {
+                            f.write_all(&chunk).await?;
+                        } else if let Some(ref mut buf) = memory_sink {
+                            buf.extend_from_slice(&chunk);
+                        } else if let TransferOutput::Callback(ref cb) = request.output {
+                            cb(&chunk)?;
+                        }
+
+                        // Track progress.
+                        bytes_transferred += chunk.len() as u64;
+                        self.progress
+                            .on_progress(&url, bytes_transferred, result.content_length);
+
+                        // Min speed enforcement.
+                        if let Some(min_speed) = self.min_speed {
+                            let elapsed = transfer_start.elapsed();
+                            if elapsed > self.min_speed_duration {
+                                let speed =
+                                    bytes_transferred as f64 / elapsed.as_secs_f64();
+                                if speed < min_speed as f64 {
+                                    let err = anyhow::anyhow!(
+                                        "transfer speed {:.0} B/s below minimum {} B/s for {}",
+                                        speed,
+                                        min_speed,
+                                        url
+                                    );
+                                    self.progress.on_error(&url, &err);
+                                    return Err(err);
+                                }
+                            }
+                        }
+                    }
+
+                    // Flush file output.
+                    if let Some(ref mut f) = file_sink {
+                        f.flush().await?;
+                    }
+
+                    // Finalize hash.
+                    if let Some(hasher) = hasher {
+                        let hash_result = hasher.finalize();
+                        result.hash = Some(hash_result.hex.clone());
+
+                        if let Some(false) = hash_result.matched {
+                            let err = anyhow::anyhow!(
+                                "hash mismatch for {}: expected {}, got {}",
+                                url,
+                                hash_spec.as_ref().map(|h| h.expected.as_str()).unwrap_or("?"),
+                                hash_result.hex
+                            );
+                            self.progress.on_error(&url, &err);
+                            return Err(err);
+                        }
+                    }
+
+                    result.bytes_transferred = bytes_transferred;
+                    result.body = memory_sink;
+
+                    self.progress.on_complete(&url, bytes_transferred);
                     return Ok(result);
                 }
                 Err(err) => {
+                    // Check for 401 and attempt token refresh.
+                    if !token_refreshed {
+                        let err_msg = format!("{err}");
+                        let is_401 = err
+                            .downcast_ref::<reqwest::Error>()
+                            .and_then(|e| e.status())
+                            .map(|s| s == reqwest::StatusCode::UNAUTHORIZED)
+                            .unwrap_or(false)
+                            || err_msg.contains("HTTP 401");
+
+                        if is_401 {
+                            if let Some(ref host_str) = extract_host(&url) {
+                                let http_client = reqwest::Client::new();
+                                if self
+                                    .auth
+                                    .refresh_token(host_str, &http_client)
+                                    .await
+                                    .unwrap_or(false)
+                                {
+                                    tracing::info!(
+                                        "refreshed auth token for {host_str}, retrying"
+                                    );
+                                    token_refreshed = true;
+                                    last_err = Some(err);
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
                     let class = classify_error(None, &err);
                     if class == ErrorClass::Permanent {
                         self.progress.on_error(&url, &err);
@@ -219,7 +365,8 @@ impl TransferEngine {
     /// Execute multiple transfers in parallel.
     ///
     /// Concurrency is bounded by the connection pool's per-host and
-    /// global limits.
+    /// global limits. Uses the streaming architecture for per-chunk
+    /// hash/bandwidth/progress on each transfer.
     pub async fn execute_batch(
         &self,
         requests: Vec<TransferRequest>,
@@ -262,10 +409,9 @@ impl TransferEngine {
             let permit = self.pool.acquire(&host).await;
 
             let handle = tokio::spawn(async move {
-                let _permit = permit; // Hold permit until task completes.
+                let _permit = permit;
                 progress.on_transfer_start(index, &url, None);
 
-                // Manual retry loop inside the spawned task.
                 let mut last_err: Option<anyhow::Error> = None;
                 let mut success_result: Option<TransferResult> = None;
 
@@ -335,7 +481,6 @@ impl TransferEngine {
             handles.push(handle);
         }
 
-        // Collect results.
         let mut results = Vec::with_capacity(handles.len());
         for handle in handles {
             match handle.await {
@@ -411,6 +556,18 @@ mod tests {
     }
 
     #[test]
+    fn test_engine_with_min_speed() {
+        let config = TransferEngineConfig {
+            min_speed: Some(1024),
+            min_speed_duration: Duration::from_secs(10),
+            ..Default::default()
+        };
+        let engine = TransferEngine::new(config);
+        assert_eq!(engine.min_speed, Some(1024));
+        assert_eq!(engine.min_speed_duration, Duration::from_secs(10));
+    }
+
+    #[test]
     fn test_engine_auth() {
         let engine = TransferEngine::new(TransferEngineConfig::default());
         engine.auth().set(
@@ -464,5 +621,199 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.status, 404);
+    }
+
+    #[tokio::test]
+    async fn test_execute_file_get_memory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "hello world").unwrap();
+
+        let url = format!("file://{}", file_path.display());
+        let engine = TransferEngine::new(TransferEngineConfig::default());
+        let result = engine
+            .execute(TransferRequest::get(&url))
+            .await
+            .unwrap();
+        assert_eq!(result.status, 200);
+        assert_eq!(result.body.unwrap(), b"hello world");
+    }
+
+    #[tokio::test]
+    async fn test_execute_file_get_to_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src_path = dir.path().join("src.txt");
+        let dst_path = dir.path().join("dst.txt");
+        std::fs::write(&src_path, "file content").unwrap();
+
+        let url = format!("file://{}", src_path.display());
+        let engine = TransferEngine::new(TransferEngineConfig::default());
+        let result = engine
+            .execute(TransferRequest::get_to_file(&url, dst_path.clone()))
+            .await
+            .unwrap();
+        assert_eq!(result.status, 200);
+        assert!(result.body.is_none());
+        assert_eq!(std::fs::read_to_string(&dst_path).unwrap(), "file content");
+    }
+
+    #[tokio::test]
+    async fn test_execute_file_get_with_hash_correct() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+
+        let url = format!("file://{}", file_path.display());
+        let engine = TransferEngine::new(TransferEngineConfig::default());
+
+        let result = engine
+            .execute(
+                TransferRequest::get(&url).with_hash(
+                    crate::types::HashAlgorithm::Sha256,
+                    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.hash.as_deref(),
+            Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_file_get_with_hash_mismatch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+
+        let url = format!("file://{}", file_path.display());
+        let engine = TransferEngine::new(TransferEngineConfig::default());
+
+        let err = engine
+            .execute(
+                TransferRequest::get(&url).with_hash(
+                    crate::types::HashAlgorithm::Sha256,
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("hash mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_file_get_to_file_with_hash() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src_path = dir.path().join("src.txt");
+        let dst_path = dir.path().join("dst.txt");
+        std::fs::write(&src_path, "hello").unwrap();
+
+        let url = format!("file://{}", src_path.display());
+        let engine = TransferEngine::new(TransferEngineConfig::default());
+
+        // Correct hash with file output -- proves streaming hash works on file output.
+        let result = engine
+            .execute(
+                TransferRequest::get_to_file(&url, dst_path.clone()).with_hash(
+                    crate::types::HashAlgorithm::Sha256,
+                    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.hash.as_deref(),
+            Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+        );
+        assert_eq!(std::fs::read_to_string(&dst_path).unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn test_execute_file_get_callback() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "callback test").unwrap();
+
+        let url = format!("file://{}", file_path.display());
+        let engine = TransferEngine::new(TransferEngineConfig::default());
+
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received_clone = Arc::clone(&received);
+
+        let request = TransferRequest {
+            url: url.clone(),
+            method: crate::types::Method::Get,
+            headers: Vec::new(),
+            body: None,
+            hash: None,
+            resume: false,
+            output: TransferOutput::Callback(Box::new(move |data| {
+                received_clone.lock().unwrap().extend_from_slice(data);
+                Ok(())
+            })),
+        };
+
+        let result = engine.execute(request).await.unwrap();
+        assert_eq!(result.status, 200);
+        assert!(result.bytes_transferred > 0);
+        // Body should be None for callback output.
+        assert!(result.body.is_none());
+
+        let data = received.lock().unwrap();
+        assert_eq!(data.as_slice(), b"callback test");
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_bandwidth() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "bandwidth test data").unwrap();
+
+        let config = TransferEngineConfig {
+            max_bandwidth: Some(1024 * 1024), // 1MB/s (fast enough to not slow test)
+            ..Default::default()
+        };
+        let engine = TransferEngine::new(config);
+        let url = format!("file://{}", file_path.display());
+        let result = engine
+            .execute(TransferRequest::get(&url))
+            .await
+            .unwrap();
+        assert_eq!(result.body.unwrap(), b"bandwidth test data");
+    }
+
+    #[tokio::test]
+    async fn test_progress_fires_per_chunk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "progress data").unwrap();
+
+        let progress_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls = Arc::clone(&progress_calls);
+
+        struct TestProgress {
+            calls: Arc<std::sync::Mutex<Vec<(String, u64)>>>,
+        }
+        impl crate::progress::ProgressHandler for TestProgress {
+            fn on_start(&self, _url: &str, _total: Option<u64>) {}
+            fn on_progress(&self, url: &str, bytes: u64, _total: Option<u64>) {
+                self.calls.lock().unwrap().push((url.to_string(), bytes));
+            }
+            fn on_complete(&self, _url: &str, _bytes: u64) {}
+            fn on_error(&self, _url: &str, _error: &anyhow::Error) {}
+        }
+
+        let mut engine = TransferEngine::new(TransferEngineConfig::default());
+        engine.set_progress(Box::new(TestProgress { calls }));
+
+        let url = format!("file://{}", file_path.display());
+        let _result = engine.execute(TransferRequest::get(&url)).await.unwrap();
+
+        let calls = progress_calls.lock().unwrap();
+        // At least one progress call should have been made.
+        assert!(!calls.is_empty());
+        // The last call should have the total bytes.
+        assert_eq!(calls.last().unwrap().1, 13); // "progress data" = 13 bytes
     }
 }

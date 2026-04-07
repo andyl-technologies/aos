@@ -1,14 +1,17 @@
 //! S3 / S3-compatible protocol implementation.
 //!
 //! Uses `aws-sdk-s3` for S3 operations. Supports:
-//! - GetObject, PutObject, HeadObject, DeleteObject
-//! - Multi-part upload (CreateMultipartUpload, UploadPart, CompleteMultipartUpload)
+//! - GetObject with streaming body (no full-buffer)
+//! - PutObject with streaming / multi-part from file (chunked reads, no full-buffer)
+//! - HeadObject, DeleteObject
 //! - Custom endpoints (MinIO, B2, Wasabi)
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use bytes::Bytes;
+use tokio::io::AsyncReadExt;
 
-use super::Protocol;
+use super::{ByteStream, Protocol};
 use crate::auth::Credential;
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
 
@@ -92,7 +95,6 @@ impl S3Protocol {
 
         let mut get_builder = client.get_object().bucket(&bucket).key(&key);
 
-        // Handle resume with Range header.
         let mut resumed = false;
         let mut resume_offset: u64 = 0;
 
@@ -116,25 +118,29 @@ impl S3Protocol {
             .with_context(|| format!("S3 GetObject {bucket}/{key}"))?;
 
         let content_length = resp.content_length().map(|l| l as u64);
-        let body_bytes = resp
-            .body
-            .collect()
-            .await
-            .context("reading S3 object body")?
-            .to_vec();
 
-        let bytes_transferred = body_bytes.len() as u64 + resume_offset;
+        // Stream the body in chunks via the SDK's async reader.
+        let mut body_reader = resp.body.into_async_read();
 
         match &request.output {
-            TransferOutput::Memory => Ok(TransferResult {
-                status: 200,
-                headers: Vec::new(),
-                bytes_transferred,
-                content_length,
-                body: Some(body_bytes),
-                hash: None,
-                resumed,
-            }),
+            TransferOutput::Memory => {
+                let mut buf = Vec::new();
+                body_reader
+                    .read_to_end(&mut buf)
+                    .await
+                    .context("reading S3 object body")?;
+                let bytes_transferred = buf.len() as u64 + resume_offset;
+
+                Ok(TransferResult {
+                    status: 200,
+                    headers: Vec::new(),
+                    bytes_transferred,
+                    content_length,
+                    body: Some(buf),
+                    hash: None,
+                    resumed,
+                })
+            }
             TransferOutput::File(path) => {
                 use tokio::io::AsyncWriteExt;
 
@@ -142,37 +148,137 @@ impl S3Protocol {
                     tokio::fs::create_dir_all(parent).await?;
                 }
 
-                if resumed {
-                    let mut file = tokio::fs::OpenOptions::new()
+                let mut file = if resumed {
+                    tokio::fs::OpenOptions::new()
                         .append(true)
                         .open(path)
-                        .await?;
-                    file.write_all(&body_bytes).await?;
-                    file.flush().await?;
+                        .await?
                 } else {
-                    tokio::fs::write(path, &body_bytes).await?;
+                    tokio::fs::File::create(path).await?
+                };
+
+                let mut bytes_written: u64 = 0;
+                let mut chunk_buf = vec![0u8; 64 * 1024]; // 64KB chunks
+
+                loop {
+                    let n = body_reader
+                        .read(&mut chunk_buf)
+                        .await
+                        .context("reading S3 object chunk")?;
+                    if n == 0 {
+                        break;
+                    }
+                    file.write_all(&chunk_buf[..n]).await?;
+                    bytes_written += n as u64;
                 }
+
+                file.flush().await?;
 
                 Ok(TransferResult {
                     status: 200,
                     headers: Vec::new(),
-                    bytes_transferred,
+                    bytes_transferred: bytes_written + resume_offset,
                     content_length,
                     body: None,
                     hash: None,
                     resumed,
                 })
             }
-            TransferOutput::Callback(_) => Ok(TransferResult {
-                status: 200,
-                headers: Vec::new(),
-                bytes_transferred,
-                content_length,
-                body: Some(body_bytes),
-                hash: None,
-                resumed,
-            }),
+            TransferOutput::Callback(ref cb) => {
+                let mut bytes_transferred: u64 = 0;
+                let mut chunk_buf = vec![0u8; 64 * 1024];
+
+                loop {
+                    let n = body_reader
+                        .read(&mut chunk_buf)
+                        .await
+                        .context("reading S3 object chunk")?;
+                    if n == 0 {
+                        break;
+                    }
+                    cb(&chunk_buf[..n])?;
+                    bytes_transferred += n as u64;
+                }
+
+                Ok(TransferResult {
+                    status: 200,
+                    headers: Vec::new(),
+                    bytes_transferred: bytes_transferred + resume_offset,
+                    content_length,
+                    body: None,
+                    hash: None,
+                    resumed,
+                })
+            }
         }
+    }
+
+    /// Streaming GET -- returns metadata + byte stream.
+    async fn do_get_stream(
+        &self,
+        request: &TransferRequest,
+        auth: Option<&Credential>,
+    ) -> Result<(TransferResult, ByteStream)> {
+        let client = self.build_client(auth).await?;
+        let (bucket, key) = Self::parse_url(&request.url)?;
+
+        let mut get_builder = client.get_object().bucket(&bucket).key(&key);
+
+        let mut resumed = false;
+        let mut resume_offset: u64 = 0;
+
+        if request.resume {
+            if let TransferOutput::File(ref path) = request.output {
+                if let Ok(metadata) = tokio::fs::metadata(path).await {
+                    let existing_size = metadata.len();
+                    if existing_size > 0 {
+                        get_builder =
+                            get_builder.range(format!("bytes={}-", existing_size));
+                        resume_offset = existing_size;
+                        resumed = true;
+                    }
+                }
+            }
+        }
+
+        let resp = get_builder
+            .send()
+            .await
+            .with_context(|| format!("S3 GetObject {bucket}/{key}"))?;
+
+        let content_length = resp.content_length().map(|l| l as u64);
+
+        let result = TransferResult {
+            status: 200,
+            headers: Vec::new(),
+            bytes_transferred: resume_offset,
+            content_length,
+            body: None,
+            hash: None,
+            resumed,
+        };
+
+        // Convert SDK byte stream into our ByteStream.
+        let body_stream = resp.body;
+        let stream: ByteStream = Box::pin(futures_util::stream::unfold(
+            body_stream.into_async_read(),
+            |mut reader| async move {
+                let mut buf = vec![0u8; 64 * 1024];
+                match reader.read(&mut buf).await {
+                    Ok(0) => None,
+                    Ok(n) => {
+                        buf.truncate(n);
+                        Some((Ok(Bytes::from(buf)), reader))
+                    }
+                    Err(e) => Some((
+                        Err(anyhow::anyhow!("reading S3 object chunk: {e}")),
+                        reader,
+                    )),
+                }
+            },
+        ));
+
+        Ok((result, stream))
     }
 
     async fn do_put(
@@ -183,45 +289,86 @@ impl S3Protocol {
         let client = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
 
-        let data = match &request.body {
-            Some(TransferBody::Bytes(b)) => b.clone(),
+        match &request.body {
             Some(TransferBody::File(path)) => {
-                tokio::fs::read(path)
+                let metadata = tokio::fs::metadata(path)
                     .await
-                    .with_context(|| format!("reading {}", path.display()))?
+                    .with_context(|| format!("stat {}", path.display()))?;
+                let file_len = metadata.len();
+
+                if file_len > MULTIPART_THRESHOLD {
+                    self.do_multipart_upload_from_file(&client, &bucket, &key, path, file_len)
+                        .await?;
+                } else {
+                    // Small file: read and upload in one shot.
+                    let data = tokio::fs::read(path)
+                        .await
+                        .with_context(|| format!("reading {}", path.display()))?;
+                    client
+                        .put_object()
+                        .bucket(&bucket)
+                        .key(&key)
+                        .body(data.into())
+                        .send()
+                        .await
+                        .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
+                }
+
+                Ok(TransferResult {
+                    status: 200,
+                    headers: Vec::new(),
+                    bytes_transferred: file_len,
+                    content_length: Some(file_len),
+                    body: None,
+                    hash: None,
+                    resumed: false,
+                })
+            }
+            Some(TransferBody::Bytes(data)) => {
+                let data_len = data.len() as u64;
+                client
+                    .put_object()
+                    .bucket(&bucket)
+                    .key(&key)
+                    .body(data.clone().into())
+                    .send()
+                    .await
+                    .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
+
+                Ok(TransferResult {
+                    status: 200,
+                    headers: Vec::new(),
+                    bytes_transferred: data_len,
+                    content_length: Some(data_len),
+                    body: None,
+                    hash: None,
+                    resumed: false,
+                })
             }
             Some(TransferBody::Stream(_)) => {
-                anyhow::bail!("stream body not directly supported for S3 put");
+                anyhow::bail!("stream body not directly supported for S3 put via Protocol::execute(); use TransferEngine");
             }
-            None => Vec::new(),
-        };
+            None => {
+                client
+                    .put_object()
+                    .bucket(&bucket)
+                    .key(&key)
+                    .body(Vec::new().into())
+                    .send()
+                    .await
+                    .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
 
-        let data_len = data.len() as u64;
-
-        // Use multi-part upload for large files.
-        if data_len > MULTIPART_THRESHOLD {
-            self.do_multipart_upload(&client, &bucket, &key, &data)
-                .await?;
-        } else {
-            client
-                .put_object()
-                .bucket(&bucket)
-                .key(&key)
-                .body(data.into())
-                .send()
-                .await
-                .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
+                Ok(TransferResult {
+                    status: 200,
+                    headers: Vec::new(),
+                    bytes_transferred: 0,
+                    content_length: Some(0),
+                    body: None,
+                    hash: None,
+                    resumed: false,
+                })
+            }
         }
-
-        Ok(TransferResult {
-            status: 200,
-            headers: Vec::new(),
-            bytes_transferred: data_len,
-            content_length: Some(data_len),
-            body: None,
-            hash: None,
-            resumed: false,
-        })
     }
 
     async fn do_head(
@@ -298,15 +445,15 @@ impl S3Protocol {
         })
     }
 
-    /// Perform a multi-part upload.
-    async fn do_multipart_upload(
+    /// Multi-part upload reading from a file in chunks (no full-buffer).
+    async fn do_multipart_upload_from_file(
         &self,
         client: &aws_sdk_s3::Client,
         bucket: &str,
         key: &str,
-        data: &[u8],
+        path: &std::path::Path,
+        file_len: u64,
     ) -> Result<()> {
-        // 1. Create multipart upload.
         let create_resp = client
             .create_multipart_upload()
             .bucket(bucket)
@@ -320,14 +467,20 @@ impl S3Protocol {
             .ok_or_else(|| anyhow::anyhow!("no upload_id returned"))?
             .to_string();
 
-        // 2. Upload parts.
-        let mut parts = Vec::new();
-        let mut offset: usize = 0;
-        let mut part_number: i32 = 1;
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("opening {} for multipart upload", path.display()))?;
 
-        while offset < data.len() {
-            let end = (offset + self.part_size as usize).min(data.len());
-            let chunk = &data[offset..end];
+        let mut parts = Vec::new();
+        let mut part_number: i32 = 1;
+        let mut offset: u64 = 0;
+
+        while offset < file_len {
+            let chunk_size = ((file_len - offset) as usize).min(self.part_size as usize);
+            let mut chunk = vec![0u8; chunk_size];
+            file.read_exact(&mut chunk)
+                .await
+                .with_context(|| format!("reading part {} from {}", part_number, path.display()))?;
 
             let upload_resp = client
                 .upload_part()
@@ -335,7 +488,7 @@ impl S3Protocol {
                 .key(key)
                 .upload_id(&upload_id)
                 .part_number(part_number)
-                .body(chunk.to_vec().into())
+                .body(chunk.into())
                 .send()
                 .await
                 .with_context(|| {
@@ -354,11 +507,10 @@ impl S3Protocol {
                     .build(),
             );
 
-            offset = end;
+            offset += chunk_size as u64;
             part_number += 1;
         }
 
-        // 3. Complete multipart upload.
         let completed = aws_sdk_s3::types::CompletedMultipartUpload::builder()
             .set_parts(Some(parts))
             .build();
@@ -395,6 +547,25 @@ impl Protocol for S3Protocol {
             Method::Put => self.do_put(request, auth).await,
             Method::Head => self.do_head(request, auth).await,
             Method::Delete => self.do_delete(request, auth).await,
+        }
+    }
+
+    async fn stream(
+        &self,
+        request: &TransferRequest,
+        auth: Option<&Credential>,
+    ) -> Result<(TransferResult, ByteStream)> {
+        match request.method {
+            Method::Get => self.do_get_stream(request, auth).await,
+            _ => {
+                // Non-GET methods: execute then return empty stream.
+                let result = self.execute(request, auth).await?;
+                let body_bytes = result.body.clone().unwrap_or_default();
+                let stream: ByteStream = Box::pin(futures_util::stream::once(async move {
+                    Ok(Bytes::from(body_bytes))
+                }));
+                Ok((result, stream))
+            }
         }
     }
 

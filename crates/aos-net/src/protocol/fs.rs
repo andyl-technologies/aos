@@ -1,7 +1,7 @@
 //! Local filesystem (file://) protocol implementation.
 //!
 //! Uses `tokio::fs` for async file operations. Supports:
-//! - Async read/write
+//! - Async read/write with streaming chunks
 //! - File copy with progress
 //! - Atomic writes (write to temp file, rename)
 
@@ -9,11 +9,15 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use tokio::io::AsyncWriteExt;
+use bytes::Bytes;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::Protocol;
+use super::{ByteStream, Protocol};
 use crate::auth::Credential;
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
+
+/// Chunk size for streaming file reads.
+const FS_CHUNK_SIZE: usize = 64 * 1024; // 64KB
 
 /// Local filesystem protocol handler.
 pub struct FsProtocol;
@@ -69,7 +73,6 @@ impl Protocol for FsProtocol {
                         resumed: false,
                     }),
                     TransferOutput::File(dest) => {
-                        // Ensure parent directory exists.
                         if let Some(parent) = dest.parent() {
                             tokio::fs::create_dir_all(parent)
                                 .await
@@ -78,7 +81,6 @@ impl Protocol for FsProtocol {
                                 })?;
                         }
 
-                        // Atomic write: write to temp file, then rename.
                         let temp_path = dest.with_extension("tmp");
                         tokio::fs::write(&temp_path, &data)
                             .await
@@ -105,15 +107,21 @@ impl Protocol for FsProtocol {
                             resumed: false,
                         })
                     }
-                    TransferOutput::Callback(_) => Ok(TransferResult {
-                        status: 200,
-                        headers: Vec::new(),
-                        bytes_transferred,
-                        content_length: Some(bytes_transferred),
-                        body: Some(data),
-                        hash: None,
-                        resumed: false,
-                    }),
+                    TransferOutput::Callback(ref cb) => {
+                        // Deliver in chunks.
+                        for chunk in data.chunks(FS_CHUNK_SIZE) {
+                            cb(chunk)?;
+                        }
+                        Ok(TransferResult {
+                            status: 200,
+                            headers: Vec::new(),
+                            bytes_transferred,
+                            content_length: Some(bytes_transferred),
+                            body: None,
+                            hash: None,
+                            resumed: false,
+                        })
+                    }
                 }
             }
             Method::Put => {
@@ -132,7 +140,6 @@ impl Protocol for FsProtocol {
 
                 let data_len = data.len() as u64;
 
-                // Ensure parent directory exists.
                 if let Some(parent) = local_path.parent() {
                     tokio::fs::create_dir_all(parent)
                         .await
@@ -141,7 +148,6 @@ impl Protocol for FsProtocol {
                         })?;
                 }
 
-                // Atomic write.
                 let temp_path = local_path.with_extension("tmp");
                 let mut file = tokio::fs::File::create(&temp_path)
                     .await
@@ -214,6 +220,67 @@ impl Protocol for FsProtocol {
                     hash: None,
                     resumed: false,
                 })
+            }
+        }
+    }
+
+    async fn stream(
+        &self,
+        request: &TransferRequest,
+        _auth: Option<&Credential>,
+    ) -> Result<(TransferResult, ByteStream)> {
+        let local_path = Self::parse_url(&request.url)?;
+
+        match request.method {
+            Method::Get => {
+                let metadata = tokio::fs::metadata(&local_path)
+                    .await
+                    .with_context(|| format!("stat {}", local_path.display()))?;
+                let file_len = metadata.len();
+
+                let result = TransferResult {
+                    status: 200,
+                    headers: Vec::new(),
+                    bytes_transferred: 0,
+                    content_length: Some(file_len),
+                    body: None,
+                    hash: None,
+                    resumed: false,
+                };
+
+                // Stream the file in chunks.
+                let file = tokio::fs::File::open(&local_path)
+                    .await
+                    .with_context(|| format!("opening {}", local_path.display()))?;
+
+                let stream: ByteStream = Box::pin(futures_util::stream::unfold(
+                    file,
+                    |mut file| async move {
+                        let mut buf = vec![0u8; FS_CHUNK_SIZE];
+                        match file.read(&mut buf).await {
+                            Ok(0) => None,
+                            Ok(n) => {
+                                buf.truncate(n);
+                                Some((Ok(Bytes::from(buf)), file))
+                            }
+                            Err(e) => Some((
+                                Err(anyhow::anyhow!("reading file: {e}")),
+                                file,
+                            )),
+                        }
+                    },
+                ));
+
+                Ok((result, stream))
+            }
+            _ => {
+                // Non-GET: execute then return empty/single-chunk stream.
+                let result = self.execute(request, _auth).await?;
+                let body_bytes = result.body.clone().unwrap_or_default();
+                let stream: ByteStream = Box::pin(futures_util::stream::once(async move {
+                    Ok(Bytes::from(body_bytes))
+                }));
+                Ok((result, stream))
             }
         }
     }
@@ -293,5 +360,30 @@ mod tests {
         let head_req = TransferRequest::head(&url);
         let result = proto.execute(&head_req, None).await.unwrap();
         assert_eq!(result.status, 404);
+    }
+
+    #[tokio::test]
+    async fn test_stream_get() {
+        use futures_util::StreamExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("stream_test.txt");
+        let content = "streaming content here";
+        std::fs::write(&file_path, content).unwrap();
+
+        let url = format!("file://{}", file_path.display());
+        let proto = FsProtocol::new();
+
+        let request = TransferRequest::get(&url);
+        let (result, mut stream) = proto.stream(&request, None).await.unwrap();
+
+        assert_eq!(result.status, 200);
+        assert_eq!(result.content_length, Some(content.len() as u64));
+
+        let mut collected = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            collected.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(collected, content.as_bytes());
     }
 }

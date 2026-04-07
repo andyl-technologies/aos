@@ -33,8 +33,6 @@ pub enum Credential {
     },
     /// SSH password authentication.
     SshPassword { username: String, password: String },
-    /// FTP login credentials.
-    FtpLogin { username: String, password: String },
     /// Arbitrary HTTP header.
     Header { name: String, value: String },
 }
@@ -157,12 +155,11 @@ impl AuthStore {
             } => {
                 builder = builder.header(name.as_str(), value.as_str());
             }
-            // AWS SigV4, SSH, and FTP credentials are handled by their respective
+            // AWS SigV4 and SSH credentials are handled by their respective
             // protocol implementations, not by modifying HTTP requests.
             Credential::AwsSigV4 { .. }
             | Credential::SshKey { .. }
-            | Credential::SshPassword { .. }
-            | Credential::FtpLogin { .. } => {}
+            | Credential::SshPassword { .. } => {}
         }
 
         Ok(builder)

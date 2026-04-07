@@ -1,30 +1,56 @@
 //! Protocol trait and URL-scheme dispatch.
 //!
-//! Each protocol (HTTP, S3, SFTP, FTP, filesystem) implements the
+//! Each protocol (HTTP, S3, SFTP, filesystem) implements the
 //! `Protocol` trait. The `for_url()` function creates the appropriate
 //! implementation based on the URL scheme.
 
 pub mod fs;
-pub mod ftp;
 pub mod http;
 pub mod s3;
 pub mod sftp;
 
+use std::pin::Pin;
+
 use anyhow::Result;
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures_util::Stream;
 
 use crate::auth::Credential;
 use crate::types::{TransferRequest, TransferResult};
 
+/// A boxed stream of byte chunks yielded during a transfer.
+pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>;
+
 /// Trait for protocol-specific transfer implementations.
 #[async_trait]
 pub trait Protocol: Send + Sync {
-    /// Execute a transfer request.
+    /// Execute a transfer request (legacy non-streaming path).
     async fn execute(
         &self,
         request: &TransferRequest,
         auth: Option<&Credential>,
     ) -> Result<TransferResult>;
+
+    /// Stream response body as chunks. Returns headers/status metadata
+    /// plus a byte stream. The caller is responsible for writing chunks
+    /// to the output, computing hashes, enforcing bandwidth limits, and
+    /// reporting progress.
+    ///
+    /// The default implementation falls back to `execute()` and yields
+    /// the body as a single chunk.
+    async fn stream(
+        &self,
+        request: &TransferRequest,
+        auth: Option<&Credential>,
+    ) -> Result<(TransferResult, ByteStream)> {
+        let result = self.execute(request, auth).await?;
+        let body_bytes = result.body.clone().unwrap_or_default();
+        let stream: ByteStream = Box::pin(futures_util::stream::once(async move {
+            Ok(Bytes::from(body_bytes))
+        }));
+        Ok((result, stream))
+    }
 
     /// Whether this protocol supports resume (Range headers / REST command).
     fn supports_resume(&self) -> bool;
@@ -44,7 +70,6 @@ pub trait Protocol: Send + Sync {
 /// - `http://`, `https://` -> HTTP protocol
 /// - `s3://` -> S3 protocol
 /// - `sftp://`, `ssh://` -> SFTP protocol
-/// - `ftp://`, `ftps://` -> FTP protocol
 /// - `file://` -> Local filesystem protocol
 pub fn for_url(url: &str) -> Result<Box<dyn Protocol>> {
     let scheme = url
@@ -57,7 +82,6 @@ pub fn for_url(url: &str) -> Result<Box<dyn Protocol>> {
         "http" | "https" => Ok(Box::new(http::HttpProtocol::new())),
         "s3" => Ok(Box::new(s3::S3Protocol::new())),
         "sftp" | "ssh" => Ok(Box::new(sftp::SftpProtocol::new())),
-        "ftp" | "ftps" => Ok(Box::new(ftp::FtpProtocol::new())),
         "file" => Ok(Box::new(fs::FsProtocol::new())),
         other => anyhow::bail!("unsupported URL scheme: '{other}'"),
     }
@@ -83,12 +107,6 @@ mod tests {
     fn test_for_url_sftp() {
         let proto = for_url("sftp://host/path/file.tar.gz").unwrap();
         assert!(!proto.supports_resume());
-    }
-
-    #[test]
-    fn test_for_url_ftp() {
-        let proto = for_url("ftp://ftp.example.com/pub/file.tar.gz").unwrap();
-        assert!(proto.supports_resume());
     }
 
     #[test]
