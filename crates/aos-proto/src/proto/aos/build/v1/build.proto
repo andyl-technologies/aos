@@ -1,0 +1,50 @@
+syntax = "proto3";
+package aos.build.v1;
+
+service BuildService {
+  // POST /{view}/build — server streaming (replaces SSE)
+  rpc Build(BuildRequest) returns (stream BuildEvent);
+
+  // POST /{view}/build-closure — server streaming
+  rpc BuildClosure(ClosureRequest) returns (stream BuildEvent);
+}
+
+message BuildRequest {
+  string view = 1;
+  string derivation = 2;
+}
+
+message ClosureRequest {
+  string view = 1;
+  repeated string derivations = 2;
+}
+
+message BuildEvent {
+  // Event type: "status", "log", "complete", "error",
+  // "daemon-unavailable", "drain", "build-closure"
+  string event_type = 1;
+  string message = 2;
+  int64 timestamp = 3;
+  // Which derivation this event is for
+  string derivation = 4;
+
+  // Status-specific
+  string phase = 5;
+
+  // Complete-specific
+  bool success = 6;
+  repeated string outputs = 7;
+  uint64 duration_secs = 8;
+
+  // Error-specific
+  string error_code = 9;
+  optional int32 exit_code = 10;
+  string log_tail = 11;
+
+  // DaemonUnavailable-specific
+  uint32 attempt = 12;
+  uint32 max_attempts = 13;
+
+  // Event ID for replay
+  uint64 event_id = 14;
+}

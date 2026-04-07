@@ -1,0 +1,16 @@
+[package]
+name = "aos-proto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+connectrpc = "0.3"
+buffa = "0.3"
+prost = "0.13"
+prost-types = "0.13"
+serde = { version = "1", features = ["derive"] }
+futures = "0.3"
+http-body = "1"
+
+[build-dependencies]
+connectrpc-build = "0.3"
