@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -94,12 +95,21 @@ pub struct RegistryConfig {
     pub priority: u32,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Tag pin (both transports).
+    /// Exact commit hash to pin to (mutually exclusive with branch/tag/version).
     #[serde(default)]
-    pub pin: Option<String>,
-    /// Branch to track (git transport only).
+    pub commit: Option<String>,
+    /// Branch name to track HEAD of (mutually exclusive with commit/tag/version).
     #[serde(default)]
     pub branch: Option<String>,
+    /// Exact tag name to pin to (mutually exclusive with commit/branch/version).
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// Semver version constraint on tags (mutually exclusive with commit/branch/tag).
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Legacy alias: old `pin` field is treated as `tag` for backward compatibility.
+    #[serde(default)]
+    pub pin: Option<String>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
 }
@@ -144,6 +154,36 @@ pub enum Transport {
     Git,
 }
 
+/// How a registry tracks its upstream version.
+///
+/// Exactly one mode is active at a time; when none of the four tracking
+/// fields is set, the default mode (branch HEAD of "main") is used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackingMode {
+    /// Frozen to an exact commit hash.
+    Commit(String),
+    /// Track the HEAD of a named branch.
+    Branch(String),
+    /// Pinned to an exact tag name.
+    Tag(String),
+    /// Semver constraint applied to tags (e.g. `~2026.03`, `^2026`).
+    Version(semver::VersionReq),
+    /// No tracking field set -- use default branch HEAD.
+    Default,
+}
+
+impl std::fmt::Display for TrackingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TrackingMode::Commit(h) => write!(f, "commit:{}", &h[..h.len().min(12)]),
+            TrackingMode::Branch(b) => write!(f, "branch:{b}"),
+            TrackingMode::Tag(t) => write!(f, "tag:{t}"),
+            TrackingMode::Version(v) => write!(f, "version:{v}"),
+            TrackingMode::Default => write!(f, "default"),
+        }
+    }
+}
+
 impl RegistryConfig {
     /// Determine the transport from the URL scheme.
     pub fn transport(&self) -> Transport {
@@ -155,6 +195,61 @@ impl RegistryConfig {
         } else {
             Transport::HttpBundle
         }
+    }
+
+    /// Resolve the tracking mode from the config fields.
+    ///
+    /// Validates that at most one of `commit`, `branch`, `tag`, `version`
+    /// (and legacy `pin`) is set.  The legacy `pin` field is treated as
+    /// `tag` for backward compatibility.
+    pub fn tracking_mode(&self) -> Result<TrackingMode> {
+        // Merge legacy `pin` into `tag` if `tag` is not already set.
+        let effective_tag = self.tag.clone().or_else(|| self.pin.clone());
+
+        let mut count = 0u32;
+        if self.commit.is_some() {
+            count += 1;
+        }
+        if self.branch.is_some() {
+            count += 1;
+        }
+        if effective_tag.is_some() {
+            count += 1;
+        }
+        if self.version.is_some() {
+            count += 1;
+        }
+
+        if count > 1 {
+            bail!(
+                "registry '{}': only one of commit, branch, tag, version \
+                 may be set (found {})",
+                self.name,
+                count,
+            );
+        }
+
+        if let Some(ref hash) = self.commit {
+            return Ok(TrackingMode::Commit(hash.clone()));
+        }
+        if let Some(ref branch) = self.branch {
+            return Ok(TrackingMode::Branch(branch.clone()));
+        }
+        if let Some(ref tag) = effective_tag {
+            return Ok(TrackingMode::Tag(tag.clone()));
+        }
+        if let Some(ref constraint) = self.version {
+            let req = semver::VersionReq::parse(constraint)
+                .map_err(|e| anyhow::anyhow!(
+                    "registry '{}': invalid version constraint '{}': {}",
+                    self.name,
+                    constraint,
+                    e,
+                ))?;
+            return Ok(TrackingMode::Version(req));
+        }
+
+        Ok(TrackingMode::Default)
     }
 }
 
@@ -306,9 +401,16 @@ pub struct RegistryFileInner {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
-    pub pin: Option<String>,
+    pub commit: Option<String>,
     #[serde(default)]
     pub branch: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Legacy field: treated as `tag` for backward compatibility.
+    #[serde(default)]
+    pub pin: Option<String>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
     #[serde(default)]
@@ -414,8 +516,11 @@ mod tests {
             url: "https://registry.aos.dev/core".into(),
             priority: 500,
             enabled: true,
-            pin: None,
+            commit: None,
             branch: None,
+            tag: None,
+            version: None,
+            pin: None,
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::HttpBundle);
@@ -428,8 +533,11 @@ mod tests {
             url: "http://local.dev/core".into(),
             priority: 500,
             enabled: true,
-            pin: None,
+            commit: None,
             branch: None,
+            tag: None,
+            version: None,
+            pin: None,
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::HttpBundle);
@@ -442,8 +550,11 @@ mod tests {
             url: "git+https://github.com/andyl/registry.git".into(),
             priority: 500,
             enabled: true,
-            pin: None,
+            commit: None,
             branch: None,
+            tag: None,
+            version: None,
+            pin: None,
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -456,8 +567,11 @@ mod tests {
             url: "git://github.com/andyl/registry.git".into(),
             priority: 500,
             enabled: true,
-            pin: None,
+            commit: None,
             branch: None,
+            tag: None,
+            version: None,
+            pin: None,
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -470,8 +584,11 @@ mod tests {
             url: "git+ssh://git@github.com/andyl/registry.git".into(),
             priority: 500,
             enabled: true,
-            pin: None,
+            commit: None,
             branch: None,
+            tag: None,
+            version: None,
+            pin: None,
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -603,5 +720,218 @@ last_update = "2026-02-13T10:30:00Z"
         let meta: InstalledMeta = serde_json::from_str(json).unwrap();
         assert!(meta.apm.is_none());
         assert_eq!(meta.access_count, 42);
+    }
+
+    // -----------------------------------------------------------------------
+    // TrackingMode tests
+    // -----------------------------------------------------------------------
+
+    fn base_cfg() -> RegistryConfig {
+        RegistryConfig {
+            name: "test".into(),
+            url: "https://example.com".into(),
+            priority: 500,
+            enabled: true,
+            commit: None,
+            branch: None,
+            tag: None,
+            version: None,
+            pin: None,
+            signing: None,
+        }
+    }
+
+    #[test]
+    fn tracking_mode_default_when_nothing_set() {
+        let cfg = base_cfg();
+        assert_eq!(cfg.tracking_mode().unwrap(), TrackingMode::Default);
+    }
+
+    #[test]
+    fn tracking_mode_commit() {
+        let mut cfg = base_cfg();
+        cfg.commit = Some("abc123def456".into());
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Commit(h) => assert_eq!(h, "abc123def456"),
+            other => panic!("expected Commit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_branch() {
+        let mut cfg = base_cfg();
+        cfg.branch = Some("stable".into());
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Branch(b) => assert_eq!(b, "stable"),
+            other => panic!("expected Branch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_tag() {
+        let mut cfg = base_cfg();
+        cfg.tag = Some("v2026.03".into());
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Tag(t) => assert_eq!(t, "v2026.03"),
+            other => panic!("expected Tag, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_version() {
+        let mut cfg = base_cfg();
+        cfg.version = Some("~2026.3".into());
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Version(req) => {
+                assert!(req.matches(&semver::Version::new(2026, 3, 5)));
+                assert!(!req.matches(&semver::Version::new(2026, 4, 0)));
+            }
+            other => panic!("expected Version, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_legacy_pin_as_tag() {
+        let mut cfg = base_cfg();
+        cfg.pin = Some("v2026.02".into());
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Tag(t) => assert_eq!(t, "v2026.02"),
+            other => panic!("expected Tag from legacy pin, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_tag_takes_precedence_over_pin() {
+        let mut cfg = base_cfg();
+        cfg.tag = Some("v2026.03".into());
+        cfg.pin = Some("v2026.02".into());
+        // tag and pin both contribute to the same "effective_tag" slot,
+        // but tag wins. Only one slot is counted.
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Tag(t) => assert_eq!(t, "v2026.03"),
+            other => panic!("expected Tag, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_error_multiple_set() {
+        let mut cfg = base_cfg();
+        cfg.branch = Some("main".into());
+        cfg.tag = Some("v1.0".into());
+        let err = cfg.tracking_mode().unwrap_err();
+        assert!(err.to_string().contains("only one of"), "got: {err}");
+    }
+
+    #[test]
+    fn tracking_mode_error_commit_and_version() {
+        let mut cfg = base_cfg();
+        cfg.commit = Some("abc123".into());
+        cfg.version = Some("^2026".into());
+        let err = cfg.tracking_mode().unwrap_err();
+        assert!(err.to_string().contains("only one of"), "got: {err}");
+    }
+
+    #[test]
+    fn tracking_mode_invalid_version_constraint() {
+        let mut cfg = base_cfg();
+        cfg.version = Some("not a valid constraint!!!".into());
+        let err = cfg.tracking_mode().unwrap_err();
+        assert!(err.to_string().contains("invalid version constraint"), "got: {err}");
+    }
+
+    #[test]
+    fn tracking_mode_version_exact() {
+        let mut cfg = base_cfg();
+        cfg.version = Some("=2026.4.0".into());
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Version(req) => {
+                assert!(req.matches(&semver::Version::new(2026, 4, 0)));
+                assert!(!req.matches(&semver::Version::new(2026, 4, 1)));
+            }
+            other => panic!("expected Version, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_version_caret() {
+        let mut cfg = base_cfg();
+        cfg.version = Some("^2026".into());
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Version(req) => {
+                assert!(req.matches(&semver::Version::new(2026, 0, 0)));
+                assert!(req.matches(&semver::Version::new(2026, 12, 99)));
+                assert!(!req.matches(&semver::Version::new(2027, 0, 0)));
+            }
+            other => panic!("expected Version, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_version_range() {
+        let mut cfg = base_cfg();
+        cfg.version = Some(">=2026.3, <2026.5".into());
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Version(req) => {
+                assert!(req.matches(&semver::Version::new(2026, 3, 0)));
+                assert!(req.matches(&semver::Version::new(2026, 4, 9)));
+                assert!(!req.matches(&semver::Version::new(2026, 5, 0)));
+                assert!(!req.matches(&semver::Version::new(2026, 2, 0)));
+            }
+            other => panic!("expected Version, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_display() {
+        let mut cfg = base_cfg();
+        cfg.branch = Some("stable".into());
+        assert_eq!(cfg.tracking_mode().unwrap().to_string(), "branch:stable");
+
+        cfg.branch = None;
+        cfg.tag = Some("v2026.03".into());
+        assert_eq!(cfg.tracking_mode().unwrap().to_string(), "tag:v2026.03");
+
+        cfg.tag = None;
+        assert_eq!(cfg.tracking_mode().unwrap().to_string(), "default");
+    }
+
+    #[test]
+    fn parse_registry_file_with_tracking_fields() {
+        let toml_str = r#"
+[registry]
+name = "aos-core"
+url = "https://registry.aos.dev/core"
+branch = "stable"
+"#;
+        let rf: RegistryFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(rf.registry.branch.as_deref(), Some("stable"));
+        assert!(rf.registry.tag.is_none());
+        assert!(rf.registry.commit.is_none());
+        assert!(rf.registry.version.is_none());
+    }
+
+    #[test]
+    fn parse_registry_file_with_version_field() {
+        let toml_str = r#"
+[registry]
+name = "test"
+url = "https://example.com"
+version = "~2026.3"
+"#;
+        let rf: RegistryFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(rf.registry.version.as_deref(), Some("~2026.3"));
+    }
+
+    #[test]
+    fn parse_registry_file_backward_compat_pin() {
+        // Old config files with `pin` should still parse
+        let toml_str = r#"
+[registry]
+name = "test"
+url = "https://example.com"
+pin = "v2026.02"
+"#;
+        let rf: RegistryFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(rf.registry.pin.as_deref(), Some("v2026.02"));
     }
 }

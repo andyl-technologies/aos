@@ -521,8 +521,11 @@ mod tests {
             url: format!("https://registry.example.com/{name}"),
             priority,
             enabled: true,
-            pin: None,
+            commit: None,
             branch: None,
+            tag: None,
+            version: None,
+            pin: None,
             signing: None,
         };
 

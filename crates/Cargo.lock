@@ -205,6 +205,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-net"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
+ "futures-util",
+ "hex",
+ "indicatif",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ssh2",
+ "suppaftp",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "aos-package"
 version = "0.1.0"
 dependencies = [
@@ -223,6 +247,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
