@@ -15,6 +15,7 @@ pub mod security;
 pub mod source;
 pub mod store;
 pub mod sysroot;
+pub mod sysroot_lock;
 pub mod types;
 pub mod update;
 pub mod upgrade;
@@ -57,6 +58,9 @@ pub enum PackageCommand {
         /// Output path for a downloaded image (with --image)
         #[arg(long)]
         output: Option<String>,
+        /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
+        #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
+        ignore_sysroot_lock: Option<String>,
     },
     /// Remove packages (keep deps)
     Remove {
@@ -72,6 +76,9 @@ pub enum PackageCommand {
     Reinstall {
         /// Package names to reinstall
         packages: Vec<String>,
+        /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
+        #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
+        ignore_sysroot_lock: Option<String>,
     },
     /// Fetch latest registry metadata
     Update {
@@ -89,6 +96,9 @@ pub enum PackageCommand {
         /// Upgrade the system sysroot
         #[arg(long)]
         system: bool,
+        /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
+        #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
+        ignore_sysroot_lock: Option<String>,
     },
     /// Upgrade all packages with dependency resolution changes
     FullUpgrade,
@@ -642,8 +652,12 @@ pub async fn run(
             system: install_system,
             image: image_fmt,
             output: image_output,
+            ignore_sysroot_lock,
             ..
         } => {
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
+                ignore_sysroot_lock.as_deref(),
+            );
             if *install_system || image_fmt.is_some() {
                 sysroot::install_system(
                     &config,
@@ -657,7 +671,7 @@ pub async fn run(
                 )
                 .await
             } else {
-                install::run(&config, packages, registry.as_deref(), dry_run, yes, printer).await
+                install::run(&config, packages, registry.as_deref(), dry_run, yes, &ignore, printer).await
             }
         }
         PackageCommand::Remove {
@@ -667,8 +681,14 @@ pub async fn run(
         PackageCommand::Autoremove => {
             remove::run_autoremove(&config, dry_run, yes, printer).await
         }
-        PackageCommand::Reinstall { packages, .. } => {
-            install::run(&config, packages, None, dry_run, yes, printer).await
+        PackageCommand::Reinstall {
+            packages,
+            ignore_sysroot_lock,
+        } => {
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
+                ignore_sysroot_lock.as_deref(),
+            );
+            install::run(&config, packages, None, dry_run, yes, &ignore, printer).await
         }
         PackageCommand::Update { registry } => {
             update::run(&config, registry.as_deref(), printer).await
@@ -677,15 +697,20 @@ pub async fn run(
             packages,
             exclude,
             system: upgrade_system,
+            ignore_sysroot_lock,
         } => {
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
+                ignore_sysroot_lock.as_deref(),
+            );
             if *upgrade_system {
                 sysroot::upgrade_system(&config, dry_run, printer).await
             } else {
-                upgrade::run(&config, packages, exclude, dry_run, yes, printer).await
+                upgrade::run(&config, packages, exclude, dry_run, yes, &ignore, printer).await
             }
         }
         PackageCommand::FullUpgrade => {
-            upgrade::run(&config, &[], &[], dry_run, yes, printer).await
+            let ignore = sysroot_lock::IgnoreSysrootLock::Enforce;
+            upgrade::run(&config, &[], &[], dry_run, yes, &ignore, printer).await
         }
         PackageCommand::Search {
             pattern,

@@ -11,6 +11,7 @@ use super::profile::Profile;
 use super::registry::{store_path_hash, RegistrySet};
 use super::resolve::{collect_unique_metas, resolve_multiple, ResolvedClosure};
 use super::store::{create_gc_roots, filter_missing, import_nar};
+use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
 use aos_core::error::AosError;
@@ -29,6 +30,7 @@ pub async fn run(
     registry_filter: Option<&str>,
     dry_run: bool,
     yes: bool,
+    ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
 ) -> Result<()> {
     if packages.is_empty() {
@@ -54,6 +56,35 @@ pub async fn run(
                 closure.root.name, closure.root.version, sys_name, sys_ver,
             ));
             return Ok(());
+        }
+    }
+
+    // Sysroot-lock check: verify package closures don't diverge from sysroot.
+    if !matches!(ignore_lock, IgnoreSysrootLock::All) {
+        if let Some((sysroot_refs, sys_name, sys_version)) =
+            sysroot_lock::get_sysroot_references(config)
+        {
+            let lookup = sysroot_lock::build_registry_lookup(config);
+            for closure in &closures {
+                let pkg_refs: Vec<String> = closure
+                    .closure
+                    .iter()
+                    .map(|m| store_path_hash(&m.store_path).to_string())
+                    .collect();
+
+                let violations =
+                    sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
+                let remaining = ignore_lock.filter(violations);
+
+                if !remaining.is_empty() {
+                    let msg = sysroot_lock::format_violation_error(
+                        &remaining,
+                        &sys_name,
+                        &sys_version,
+                    );
+                    anyhow::bail!(msg);
+                }
+            }
         }
     }
 
