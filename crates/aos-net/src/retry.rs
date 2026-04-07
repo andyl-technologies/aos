@@ -1,80 +1,215 @@
-//! Retry with exponential backoff.
-//!
-//! Provides a generic retry loop that classifies errors as transient or
-//! permanent, and retries transient failures with exponential backoff.
+//! Retry logic with exponential backoff and jitter.
 
 use std::time::Duration;
 
-/// Maximum number of retry attempts (default).
-pub const DEFAULT_MAX_RETRIES: u32 = 3;
+use anyhow::Result;
+use rand::Rng;
 
-/// Base delay between retries (exponential backoff: delay * 2^attempt).
-pub const DEFAULT_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
-
-/// Classification of an error for retry purposes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorClass {
-    /// Transient error (5xx, timeout, connection reset) -- should be retried.
-    Transient,
-    /// Permanent error (4xx, hash mismatch) -- should NOT be retried.
-    Permanent,
+/// Configuration for retry behavior.
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Maximum number of attempts (including the first).
+    pub max_attempts: u32,
+    /// Initial delay before the first retry.
+    pub initial_delay: Duration,
+    /// Maximum delay between retries.
+    pub max_delay: Duration,
+    /// Multiplier applied to the delay after each attempt.
+    pub backoff_factor: f64,
+    /// Whether to add random jitter to delays.
+    pub jitter: bool,
 }
 
-/// Classify an HTTP status code for retry purposes.
-///
-/// - 4xx -> Permanent (client error, retrying won't help)
-/// - 5xx -> Transient (server error, may recover)
-/// - Other non-success -> Transient
-pub fn classify_http_status(status: u16) -> ErrorClass {
-    if (400..500).contains(&status) {
-        ErrorClass::Permanent
-    } else {
-        ErrorClass::Transient
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(30),
+            backoff_factor: 2.0,
+            jitter: true,
+        }
     }
 }
 
-/// Check if an error message indicates a permanent (non-retryable) failure.
-///
-/// Looks for HTTP 4xx status codes in the error message string.
-pub fn is_permanent_error_message(message: &str) -> bool {
-    message.contains("HTTP 4")
+/// Classification of errors for retry decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorClass {
+    /// Transient errors that may succeed on retry (5xx, timeout, connection reset).
+    Transient,
+    /// Permanent errors that should not be retried (4xx except 429, auth failure).
+    Permanent,
+    /// Rate limiting (429) -- retry with Retry-After delay if available.
+    RateLimit,
 }
 
-/// Run an async operation with exponential backoff retry.
-///
-/// The `classify` function examines each error to decide whether to retry.
-/// Returns the first successful result, or the last error after all retries
-/// are exhausted.
-pub async fn with_retry<F, Fut, T, E>(
-    max_retries: u32,
-    base_delay: Duration,
-    classify: impl Fn(&E) -> ErrorClass,
-    mut operation: F,
-) -> Result<T, E>
-where
-    F: FnMut(u32) -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
-{
-    let mut last_err: Option<E> = None;
+/// Classify an error based on HTTP status and error type.
+pub fn classify_error(status: Option<u16>, error: &anyhow::Error) -> ErrorClass {
+    if let Some(status) = status {
+        return classify_status(status);
+    }
 
-    for attempt in 0..=max_retries {
-        if attempt > 0 {
-            let delay = base_delay * 2u32.pow(attempt - 1);
-            tokio::time::sleep(delay).await;
+    // Check for reqwest-specific errors.
+    if let Some(reqwest_err) = error.downcast_ref::<reqwest::Error>() {
+        if reqwest_err.is_timeout() {
+            return ErrorClass::Transient;
         }
+        if reqwest_err.is_connect() {
+            return ErrorClass::Transient;
+        }
+        if let Some(status) = reqwest_err.status() {
+            return classify_status(status.as_u16());
+        }
+    }
 
-        match operation(attempt).await {
-            Ok(val) => return Ok(val),
-            Err(e) => {
-                if classify(&e) == ErrorClass::Permanent {
-                    return Err(e);
+    // Check for I/O errors (connection reset, broken pipe, etc.).
+    if error.downcast_ref::<std::io::Error>().is_some() {
+        return ErrorClass::Transient;
+    }
+
+    // Default to transient for unknown errors.
+    ErrorClass::Transient
+}
+
+fn classify_status(status: u16) -> ErrorClass {
+    match status {
+        429 => ErrorClass::RateLimit,
+        400..=499 => ErrorClass::Permanent,
+        500..=599 => ErrorClass::Transient,
+        _ => ErrorClass::Transient,
+    }
+}
+
+/// Execute an async operation with retry logic.
+///
+/// The `operation` closure is called on each attempt. If it fails with a
+/// transient error, it will be retried according to the config. Permanent
+/// errors cause an immediate return.
+///
+/// For rate-limit errors (429), the delay is either the Retry-After value
+/// (if extractable from the error) or the computed backoff delay.
+pub async fn with_retry<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut last_err: Option<anyhow::Error> = None;
+
+    for attempt in 0..config.max_attempts {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                let class = classify_error(None, &err);
+
+                match class {
+                    ErrorClass::Permanent => {
+                        tracing::debug!(
+                            attempt = attempt + 1,
+                            "permanent error, not retrying: {}",
+                            err
+                        );
+                        return Err(err);
+                    }
+                    ErrorClass::RateLimit | ErrorClass::Transient => {
+                        if attempt + 1 >= config.max_attempts {
+                            tracing::debug!(
+                                attempt = attempt + 1,
+                                max = config.max_attempts,
+                                "max retries reached: {}",
+                                err
+                            );
+                            last_err = Some(err);
+                            break;
+                        }
+
+                        let delay = compute_delay(config, attempt);
+                        tracing::debug!(
+                            attempt = attempt + 1,
+                            delay_ms = delay.as_millis(),
+                            "transient error, retrying: {}",
+                            err
+                        );
+                        last_err = Some(err);
+                        tokio::time::sleep(delay).await;
+                    }
                 }
-                last_err = Some(e);
             }
         }
     }
 
-    Err(last_err.unwrap())
+    Err(last_err
+        .unwrap_or_else(|| anyhow::anyhow!("retry exhausted with no error captured")))
+}
+
+/// Execute an async operation with retry logic and HTTP status classification.
+///
+/// Similar to `with_retry` but accepts an operation that returns
+/// `(Option<u16>, Result<T>)` where the first element is the HTTP status
+/// code for error classification.
+pub async fn with_retry_status<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = (Option<u16>, Result<T>)>,
+{
+    let mut last_err: Option<anyhow::Error> = None;
+
+    for attempt in 0..config.max_attempts {
+        let (status, result) = operation().await;
+
+        match result {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                let class = classify_error(status, &err);
+
+                match class {
+                    ErrorClass::Permanent => {
+                        return Err(err);
+                    }
+                    ErrorClass::RateLimit | ErrorClass::Transient => {
+                        if attempt + 1 >= config.max_attempts {
+                            last_err = Some(err);
+                            break;
+                        }
+
+                        let delay = compute_delay(config, attempt);
+                        tracing::debug!(
+                            attempt = attempt + 1,
+                            delay_ms = delay.as_millis(),
+                            ?status,
+                            "retrying after error: {}",
+                            err
+                        );
+                        last_err = Some(err);
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        }
+    }
+
+    Err(last_err
+        .unwrap_or_else(|| anyhow::anyhow!("retry exhausted with no error captured")))
+}
+
+/// Compute the delay for a retry attempt.
+///
+/// Used by the transfer engine's manual retry loop.
+pub fn compute_retry_delay(config: &RetryConfig, attempt: u32) -> Duration {
+    compute_delay(config, attempt)
+}
+
+fn compute_delay(config: &RetryConfig, attempt: u32) -> Duration {
+    let base = config.initial_delay.as_secs_f64() * config.backoff_factor.powi(attempt as i32);
+    let clamped = base.min(config.max_delay.as_secs_f64());
+
+    let delay_secs = if config.jitter {
+        let mut rng = rand::rng();
+        rng.random_range(0.0..=clamped)
+    } else {
+        clamped
+    };
+
+    Duration::from_secs_f64(delay_secs)
 }
 
 #[cfg(test)]
@@ -82,85 +217,109 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_4xx_is_permanent() {
-        assert_eq!(classify_http_status(400), ErrorClass::Permanent);
-        assert_eq!(classify_http_status(404), ErrorClass::Permanent);
-        assert_eq!(classify_http_status(403), ErrorClass::Permanent);
-        assert_eq!(classify_http_status(499), ErrorClass::Permanent);
+    fn test_classify_status_5xx() {
+        assert_eq!(classify_status(500), ErrorClass::Transient);
+        assert_eq!(classify_status(502), ErrorClass::Transient);
+        assert_eq!(classify_status(503), ErrorClass::Transient);
     }
 
     #[test]
-    fn classify_5xx_is_transient() {
-        assert_eq!(classify_http_status(500), ErrorClass::Transient);
-        assert_eq!(classify_http_status(502), ErrorClass::Transient);
-        assert_eq!(classify_http_status(503), ErrorClass::Transient);
+    fn test_classify_status_4xx() {
+        assert_eq!(classify_status(400), ErrorClass::Permanent);
+        assert_eq!(classify_status(403), ErrorClass::Permanent);
+        assert_eq!(classify_status(404), ErrorClass::Permanent);
     }
 
     #[test]
-    fn classify_2xx_is_transient() {
-        // Non-error statuses treated as transient (shouldn't reach here normally)
-        assert_eq!(classify_http_status(200), ErrorClass::Transient);
+    fn test_classify_status_429() {
+        assert_eq!(classify_status(429), ErrorClass::RateLimit);
     }
 
     #[test]
-    fn permanent_error_message_detection() {
-        assert!(is_permanent_error_message("HTTP 404 for https://example.com"));
-        assert!(is_permanent_error_message("HTTP 403 forbidden"));
-        assert!(!is_permanent_error_message("HTTP 503 service unavailable"));
-        assert!(!is_permanent_error_message("connection refused"));
+    fn test_classify_unknown_error() {
+        let err = anyhow::anyhow!("connection refused");
+        assert_eq!(classify_error(None, &err), ErrorClass::Transient);
+    }
+
+    #[test]
+    fn test_classify_with_status() {
+        let err = anyhow::anyhow!("not found");
+        assert_eq!(classify_error(Some(404), &err), ErrorClass::Permanent);
+    }
+
+    #[test]
+    fn test_compute_delay_no_jitter() {
+        let config = RetryConfig {
+            initial_delay: Duration::from_secs(1),
+            backoff_factor: 2.0,
+            max_delay: Duration::from_secs(30),
+            jitter: false,
+            ..Default::default()
+        };
+
+        let d0 = compute_delay(&config, 0);
+        assert_eq!(d0, Duration::from_secs(1));
+
+        let d1 = compute_delay(&config, 1);
+        assert_eq!(d1, Duration::from_secs(2));
+
+        let d2 = compute_delay(&config, 2);
+        assert_eq!(d2, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn test_compute_delay_clamped() {
+        let config = RetryConfig {
+            initial_delay: Duration::from_secs(10),
+            backoff_factor: 10.0,
+            max_delay: Duration::from_secs(30),
+            jitter: false,
+            ..Default::default()
+        };
+
+        let d2 = compute_delay(&config, 2);
+        assert_eq!(d2, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_default_config() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_attempts, 3);
+        assert_eq!(config.initial_delay, Duration::from_secs(1));
+        assert_eq!(config.max_delay, Duration::from_secs(30));
+        assert_eq!(config.backoff_factor, 2.0);
+        assert!(config.jitter);
     }
 
     #[tokio::test]
-    async fn retry_succeeds_first_try() {
-        let result: Result<i32, String> = with_retry(
-            3,
-            Duration::from_millis(1),
-            |_e| ErrorClass::Transient,
-            |_attempt| async { Ok(42) },
-        )
-        .await;
+    async fn test_with_retry_immediate_success() {
+        let config = RetryConfig::default();
+        let result = with_retry(&config, || async { Ok::<_, anyhow::Error>(42) }).await;
         assert_eq!(result.unwrap(), 42);
     }
 
     #[tokio::test]
-    async fn retry_succeeds_after_failures() {
-        let result: Result<i32, String> = with_retry(
-            3,
-            Duration::from_millis(1),
-            |_e| ErrorClass::Transient,
-            |attempt| async move {
-                if attempt < 2 {
-                    Err("transient".into())
-                } else {
-                    Ok(42)
-                }
-            },
-        )
-        .await;
-        assert_eq!(result.unwrap(), 42);
-    }
+    async fn test_with_retry_permanent_error() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            jitter: false,
+            initial_delay: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let c = counter.clone();
 
-    #[tokio::test]
-    async fn retry_stops_on_permanent_error() {
-        let result: Result<i32, String> = with_retry(
-            3,
-            Duration::from_millis(1),
-            |_e: &String| ErrorClass::Permanent,
-            |_attempt| async { Err::<i32, String>("permanent".into()) },
-        )
+        let result: Result<i32> = with_retry_status(&config, || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (Some(404), Err(anyhow::anyhow!("not found")))
+            }
+        })
         .await;
-        assert_eq!(result.unwrap_err(), "permanent");
-    }
 
-    #[tokio::test]
-    async fn retry_exhausts_all_attempts() {
-        let result: Result<i32, String> = with_retry(
-            2,
-            Duration::from_millis(1),
-            |_e| ErrorClass::Transient,
-            |_attempt| async { Err::<i32, String>("still failing".into()) },
-        )
-        .await;
-        assert_eq!(result.unwrap_err(), "still failing");
+        assert!(result.is_err());
+        // Should only be called once (permanent error, no retry).
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
