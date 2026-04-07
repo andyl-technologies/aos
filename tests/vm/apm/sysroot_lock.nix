@@ -242,6 +242,8 @@ CFGEOF
     ];
   };
 
+  stateJsonFile = builtins.toFile "state.json" sysrootStateJson;
+
   preamble = mkPreamble {
     registryPath = testRegistry;
     sysrootState = sysrootStateJson;
@@ -255,7 +257,7 @@ in
   # Install nginx whose closure has divergent openssl => blocked
   sysroot-lock-blocked = testing.mkVMTest {
     name = "apm-sysroot-lock-blocked";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ testRegistry stateJsonFile ];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -301,7 +303,7 @@ in
   # Ignoring both openssl and zlib succeeds.
   sysroot-lock-ignore-specific = testing.mkVMTest {
     name = "apm-sysroot-lock-ignore-specific";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ testRegistry stateJsonFile ];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -347,7 +349,7 @@ in
   # --ignore-sysroot-lock (no value) bypasses the entire check
   sysroot-lock-ignore-all = testing.mkVMTest {
     name = "apm-sysroot-lock-ignore-all";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ testRegistry stateJsonFile ];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -373,7 +375,7 @@ in
   # Install a package whose closure fully overlaps with sysroot — no violations
   sysroot-lock-clean = testing.mkVMTest {
     name = "apm-sysroot-lock-clean";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ testRegistry stateJsonFile ];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -399,7 +401,7 @@ in
   # After installing with --ignore-sysroot-lock, list and show display violation info
   sysroot-lock-list-display = testing.mkVMTest {
     name = "apm-sysroot-lock-list-display";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ testRegistry stateJsonFile ];
     memory = 1024;
     testScript = ''
       ${preamble}
