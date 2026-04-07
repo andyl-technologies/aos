@@ -83,30 +83,41 @@ let
             mkdir -p $out/packages
             ${builtins.concatStringsSep "\n" (
               builtins.map (
-                pkg: ''
-                  mkdir -p $out/packages/${pkg.name}
-                  cat > $out/packages/${pkg.name}/x86_64-linux.toml << 'PKGEOF'
-                  [package]
-                  name = "${pkg.name}"
-                  version = "${pkg.version}"
-                  store_path = "${pkg.storePath}"
-                  nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                  nar_size = 1024
-                  download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                  download_size = 512
-                  sysroot = ${if pkg.sysroot or false then "true" else "false"}
-                  references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
-                  ${builtins.concatStringsSep "\n" (builtins.map (img: ''
+                pkg:
+                let letter = builtins.substring 0 1 pkg.name;
+                in ''
+                  mkdir -p $out/packages/${letter}
+                  cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
+[package]
+name = "${pkg.name}"
+description = "mock ${pkg.name}"
+license = "MIT"
+maintainer = "test"
+${if pkg.sysroot or false then "sysroot = true" else ""}
 
-                  [[package.images]]
-                  format = "${img.format}"
-                  store_path = "${img.storePath}"
-                  nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                  nar_size = ${builtins.toString img.narSize}
-                  download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                  download_size = ${builtins.toString img.downloadSize}
-                  '') (pkg.images or []))}
-                  PKGEOF
+[[versions]]
+version = "${pkg.version}"
+
+[versions.platforms.x86_64-linux]
+store_path = "${pkg.storePath}"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+nar_size = 1024
+download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+download_size = 512
+closure_size = 2048
+source_drv = ""
+source_nar_hash = ""
+references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
+${builtins.concatStringsSep "\n" (builtins.map (img: ''
+[[versions.platforms.x86_64-linux.images]]
+format = "${img.format}"
+store_path = "${img.storePath}"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+nar_size = ${builtins.toString img.narSize}
+download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+download_size = ${builtins.toString img.downloadSize}
+'') (pkg.images or []))}
+PKGEOF
                 ''
               ) packages
             )}
@@ -169,6 +180,7 @@ enabled = true
 CFGEOF
 
     ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
+    ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
   '';
 
 in
