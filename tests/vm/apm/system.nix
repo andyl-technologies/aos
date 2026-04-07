@@ -52,7 +52,7 @@ let
               builtins.attrValues (
                 builtins.mapAttrs (
                   name: content: ''
-                    printf '%s\n' '${content}' > $out/etc/systemd/system/${name}
+                    cp ${builtins.toFile name content} $out/etc/systemd/system/${name}
                     ln -sfn ../../../etc/systemd/system/${name} \
                       $out/etc/systemd/system/multi-user.target.wants/${name}
                   ''
@@ -66,14 +66,20 @@ let
                 builtins.mapAttrs (
                   path: content: ''
                     mkdir -p $out/etc/$(dirname ${path})
-                    printf '%s\n' '${content}' > $out/etc/${path}
+                    cp ${builtins.toFile (builtins.replaceStrings ["/"] ["-"] path) content} $out/etc/${path}
                   ''
                 ) etcFiles
               )
             )}
 
-            # Activation script — creates a marker file at /tmp/activated-<version>
-            printf '%s\n' '#!/bin/sh' 'echo "Activating ${pname} ${version}"' 'mkdir -p /tmp' 'echo "${version}" > /tmp/activated-${version}' 'echo "${version}" > /tmp/activated-current' > $out/activate
+            # Activation script
+            cp ${builtins.toFile "activate" ''
+              #!/bin/sh
+              echo "Activating ${pname} ${version}"
+              mkdir -p /tmp
+              echo "${version}" > /tmp/activated-${version}
+              echo "${version}" > /tmp/activated-current
+            ''} $out/activate
             chmod +x $out/activate
 
             ${
@@ -88,7 +94,7 @@ let
             ${
               if drainScript != null
               then ''
-                printf '%s\n' ${drainScript} > $out/drain
+                cp ${builtins.toFile "drain" drainScript} $out/drain
                 chmod +x $out/drain
               ''
               else ""
@@ -222,20 +228,32 @@ let
             mkdir -p $out/packages
             ${builtins.concatStringsSep "\n" (
               builtins.map (
-                pkg: ''
-                  mkdir -p $out/packages/${pkg.name}
-                  cat > $out/packages/${pkg.name}/x86_64-linux.toml << 'PKGEOF'
-                  [package]
-                  name = "${pkg.name}"
-                  version = "${pkg.version}"
-                  store_path = "${pkg.storePath}"
-                  nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                  nar_size = 1024
-                  download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                  download_size = 512
-                  sysroot = ${if pkg.sysroot or false then "true" else "false"}
-                  references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
-                  PKGEOF
+                pkg:
+                let letter = builtins.substring 0 1 pkg.name;
+                in ''
+                  mkdir -p $out/packages/${letter}
+                  cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
+[package]
+name = "${pkg.name}"
+description = "mock ${pkg.name}"
+license = "MIT"
+maintainer = "test"
+${if pkg.sysroot or false then "sysroot = true" else ""}
+
+[[versions]]
+version = "${pkg.version}"
+
+[versions.platforms.x86_64-linux]
+store_path = "${pkg.storePath}"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+nar_size = 1024
+download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+download_size = 512
+closure_size = 2048
+source_drv = ""
+source_nar_hash = ""
+references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
+PKGEOF
                 ''
               ) packages
             )}
@@ -331,9 +349,10 @@ enabled = true
 CFGEOF
 
     ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
+    ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
 
     ${if stateJson != null then ''
-      printf '%s\n' '${stateJson}' > /var/lib/profiles/system/state.json
+      cp ${builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateJson)} /var/lib/profiles/system/state.json
     '' else ""}
   '';
 
