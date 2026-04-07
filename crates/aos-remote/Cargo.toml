@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 aos-core = { workspace = true }
+aos-proto = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -12,3 +13,7 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 futures-util = { workspace = true }
 tokio-stream = { workspace = true }
+connectrpc = { workspace = true }
+buffa = { workspace = true }
+prost = { workspace = true }
+futures = { workspace = true }
