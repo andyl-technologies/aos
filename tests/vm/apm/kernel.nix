@@ -253,7 +253,7 @@ CFGEOF
     ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
     ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
 
-    cp ${builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateJson)} /var/lib/profiles/system/state.json
+    echo '${stateJson}' > /var/lib/profiles/system/state.json
 
     # Create mock kexec and systemctl commands that log their invocations
     # instead of actually rebooting
@@ -316,7 +316,7 @@ in
   # Default mode: advise reboot when kernel changed, don't actually reboot
   kernel-advisory = testing.mkVMTest {
     name = "apm-kernel-advisory";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryKV2 toplevelKV1 toplevelKV2 ];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
@@ -372,7 +372,7 @@ in
   # --kexec flag: kexec -l + kexec -e when kernel changed
   kernel-kexec = testing.mkVMTest {
     name = "apm-kernel-kexec";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryKV2 toplevelKV1 toplevelKV2 ];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
@@ -413,7 +413,7 @@ in
   # --reboot flag: systemctl reboot after activation
   kernel-reboot = testing.mkVMTest {
     name = "apm-kernel-reboot";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryKV2 toplevelKV1 toplevelKV2 ];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
@@ -454,7 +454,7 @@ in
   # --live flag: update bootloader but don't reboot, stage for next boot
   kernel-live = testing.mkVMTest {
     name = "apm-kernel-live";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryKV2 toplevelKV1 toplevelKV2 ];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
@@ -502,7 +502,7 @@ in
   # When kernel is the same, no kernel handling should trigger
   kernel-unchanged = testing.mkVMTest {
     name = "apm-kernel-unchanged";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryKV1b toplevelKV1 toplevelKV1b ];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
@@ -554,7 +554,7 @@ in
   # --drain flag executes the toplevel's drain script before kernel switch
   kernel-drain = testing.mkVMTest {
     name = "apm-kernel-drain";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryKV2Drain toplevelKV1 toplevelKV2Drain ];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
