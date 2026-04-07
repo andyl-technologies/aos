@@ -55,6 +55,10 @@ builtins.derivation {
       # Provide .c as a copy of the pre-generated scan.c so the rule succeeds.
       cp scan.c .c
 
+      # Touch pre-generated parser outputs so make doesn't try to regenerate
+      # them from parse.y (which requires yacc/bison, not available yet).
+      touch parse.c parse.h
+
       make -j"$NIX_BUILD_CORES"
       make install
 

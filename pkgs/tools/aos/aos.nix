@@ -4,6 +4,10 @@
   fetchCargoDeps,
   git,
   nix,
+  perl,
+  openssl,
+  pkg-config,
+  protobuf,
 }:
 let
   version = "0.1.0";
@@ -26,8 +30,20 @@ mkCargoPackage {
 
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    hash = "sha256-1UmCKeVyazA2sLpFU/yzjBYnKukp86xFWUUVAalRr1c=";
   };
+
+  buildDeps = [ perl pkg-config openssl protobuf ];
+  runtimeDeps = [ openssl ];
+
+  preBuild = ''
+    export OPENSSL_DIR="${openssl}"
+    export OPENSSL_LIB_DIR="${openssl}/lib"
+    export OPENSSL_INCLUDE_DIR="${openssl}/include"
+    export OPENSSL_NO_VENDOR=1
+    export OPENSSL_STATIC=0
+    export PROTOC="${protobuf}/bin/protoc"
+  '';
 
   doCheck = false;
 
