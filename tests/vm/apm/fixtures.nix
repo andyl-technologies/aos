@@ -234,6 +234,99 @@ download_size = 2048
 TOMLEOF
     }
 
+    # Write a closure file for a store path hash.
+    # Args: reg_dir root_hash [dep_hash dep_hash ...]
+    # Creates closures/<root_hash> with an adjacency list.
+    write_closure_file() {
+      local reg_dir="$1"
+      local root_hash="$2"
+      shift 2
+      local closures_dir="$reg_dir/closures"
+      mkdir -p "$closures_dir"
+
+      # First line: root + its direct deps (all remaining args)
+      local line="$root_hash"
+      for dep in "$@"; do
+        line="$line $dep"
+      done
+      echo "$line" > "$closures_dir/$root_hash"
+
+      # Add leaf lines for each dep (no deps of their own)
+      for dep in "$@"; do
+        echo "$dep" >> "$closures_dir/$root_hash"
+      done
+    }
+
+    # Write a multi-level closure file with an explicit adjacency list.
+    # Args: reg_dir root_hash content
+    # content is the raw adjacency list text.
+    write_closure_file_raw() {
+      local reg_dir="$1"
+      local root_hash="$2"
+      local content="$3"
+      local closures_dir="$reg_dir/closures"
+      mkdir -p "$closures_dir"
+      echo "$content" > "$closures_dir/$root_hash"
+    }
+
+    # Ensure .gitattributes has the closures entry.
+    ensure_gitattributes() {
+      local reg_dir="$1"
+      local ga="$reg_dir/.gitattributes"
+      if [ -f "$ga" ] && grep -q "closures/\*\* -diff" "$ga" 2>/dev/null; then
+        return 0
+      fi
+      echo "closures/** -diff" >> "$ga"
+    }
+
+    # Write a package TOML with references to other hashes (for closure tests)
+    write_package_toml_with_refs() {
+      local reg_dir="$1"
+      local pkg_name="$2"
+      local pkg_version="$3"
+      local store_hash="$4"
+      shift 4
+      local letter
+      letter=$(echo "$pkg_name" | cut -c1 | tr '[:upper:]' '[:lower:]')
+      local pkg_dir="$reg_dir/packages/$letter"
+      mkdir -p "$pkg_dir"
+
+      # Build references array
+      local refs="["
+      local first=1
+      for ref in "$@"; do
+        if [ "$first" -eq 1 ]; then
+          refs="$refs\"$ref\""
+          first=0
+        else
+          refs="$refs, \"$ref\""
+        fi
+      done
+      refs="$refs]"
+
+      cat > "$pkg_dir/$pkg_name.toml" << TOMLEOF
+[package]
+name = "$pkg_name"
+description = "Test package $pkg_name"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "$pkg_version"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/$store_hash-$pkg_name-$pkg_version"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+nar_size = 1024
+download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+download_size = 512
+closure_size = 2048
+source_drv = ""
+source_nar_hash = ""
+references = $refs
+TOMLEOF
+    }
+
     # Commit all changes in a registry directory
     commit_registry() {
       local reg_dir="$1"

@@ -1,4 +1,4 @@
-# tests/vm/apm/registry.nix — Registry management VM tests (9 tests)
+# tests/vm/apm/registry.nix — Registry management VM tests (11 tests)
 #
 # Tests for `apr` registry lifecycle commands: create, add, remove, publish,
 # unpublish, branch workflow, validate, and bundle generation.
@@ -388,6 +388,158 @@ in
         cd "$REG_DIR"
         assert_cmd_success "git bundle verify $BUNDLE_FILE" "bundle is valid"
         cd /tmp
+      fi
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 10. closure-generate — Closure files created and well-formed
+  # -------------------------------------------------------------------------
+  closure-generate = testing.mkVMTest {
+    name = "apm-closure-generate";
+    rootfsDeps = fixtures.commonDeps;
+    memory = 512;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${fixtures.mkFakePackageToml}
+
+      echo "==> Test: closure file generation and structure"
+
+      # Create registry
+      $APR create test-reg
+      REG_DIR="$REG_STORAGE/test-reg"
+
+      # Publish two packages: libfoo (leaf) and app (depends on libfoo)
+      LIBFOO_HASH="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      APP_HASH="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+      write_package_toml_with_refs "$REG_DIR" "libfoo" "1.0.0" \
+        "$LIBFOO_HASH"
+      write_package_toml_with_refs "$REG_DIR" "app" "2.0.0" \
+        "$APP_HASH" "$LIBFOO_HASH"
+
+      # Write closure files
+      # libfoo: leaf (just itself)
+      write_closure_file "$REG_DIR" "$LIBFOO_HASH"
+
+      # app: depends on libfoo
+      write_closure_file "$REG_DIR" "$APP_HASH" "$LIBFOO_HASH"
+
+      # Write .gitattributes
+      ensure_gitattributes "$REG_DIR"
+
+      commit_registry "$REG_DIR" "publish libfoo and app with closures"
+
+      # Verify closure files exist
+      assert_file_exists "$REG_DIR/closures/$LIBFOO_HASH" \
+        "libfoo closure file exists"
+      assert_file_exists "$REG_DIR/closures/$APP_HASH" \
+        "app closure file exists"
+
+      # Verify libfoo closure is just itself (leaf)
+      LIBFOO_LINES=$(wc -l < "$REG_DIR/closures/$LIBFOO_HASH")
+      if [ "$LIBFOO_LINES" -eq 1 ]; then
+        pass "libfoo closure has 1 line (leaf)"
+      else
+        fail "libfoo closure should have 1 line, got $LIBFOO_LINES"
+        cat "$REG_DIR/closures/$LIBFOO_HASH"
+      fi
+
+      # Verify app closure has root first
+      FIRST_LINE=$(head -1 "$REG_DIR/closures/$APP_HASH")
+      FIRST_TOKEN=$(echo "$FIRST_LINE" | cut -d' ' -f1)
+      if [ "$FIRST_TOKEN" = "$APP_HASH" ]; then
+        pass "app closure starts with root hash"
+      else
+        fail "app closure should start with $APP_HASH, got $FIRST_TOKEN"
+        cat "$REG_DIR/closures/$APP_HASH"
+      fi
+
+      # Verify app closure contains libfoo as a dep on root line
+      if echo "$FIRST_LINE" | grep -q "$LIBFOO_HASH"; then
+        pass "app closure root line lists libfoo as dep"
+      else
+        fail "app closure root line missing libfoo dep"
+        cat "$REG_DIR/closures/$APP_HASH"
+      fi
+
+      # Verify app closure has libfoo as a member (leaf line)
+      if grep -q "^$LIBFOO_HASH" "$REG_DIR/closures/$APP_HASH"; then
+        pass "app closure has libfoo as member"
+      else
+        fail "app closure missing libfoo member line"
+        cat "$REG_DIR/closures/$APP_HASH"
+      fi
+
+      # Verify .gitattributes has closures entry
+      assert_file_contains "$REG_DIR/.gitattributes" \
+        "closures/" ".gitattributes has closures entry"
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 11. closure-verify — apr verify validates closure consistency
+  # -------------------------------------------------------------------------
+  closure-verify = testing.mkVMTest {
+    name = "apm-closure-verify";
+    rootfsDeps = fixtures.commonDeps;
+    memory = 512;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${fixtures.mkFakePackageToml}
+
+      echo "==> Test: apr verify with closure validation"
+
+      # Create registry with packages and valid closures
+      $APR create test-reg
+      REG_DIR="$REG_STORAGE/test-reg"
+
+      LEAF_HASH="cccccccccccccccccccccccccccccccccc"
+      ROOT_HASH="dddddddddddddddddddddddddddddddd"
+
+      write_package_toml_with_refs "$REG_DIR" "leaf" "1.0.0" \
+        "$LEAF_HASH"
+      write_package_toml_with_refs "$REG_DIR" "root" "1.0.0" \
+        "$ROOT_HASH" "$LEAF_HASH"
+
+      # Write correct closure files
+      write_closure_file "$REG_DIR" "$LEAF_HASH"
+      write_closure_file "$REG_DIR" "$ROOT_HASH" "$LEAF_HASH"
+      ensure_gitattributes "$REG_DIR"
+      commit_registry "$REG_DIR" "publish with valid closures"
+
+      # Verify should pass with valid closures
+      assert_cmd_success "$APR verify --registry test-reg" \
+        "apr verify passes with valid closures"
+
+      # Now break a closure: remove leaf from root's closure
+      echo "$ROOT_HASH" > "$REG_DIR/closures/$ROOT_HASH"
+      commit_registry "$REG_DIR" "break closure"
+
+      # Verify should detect the inconsistency
+      $APR verify --registry test-reg > /tmp/verify-out 2>&1 || true
+      if grep -q "error\|not found\|missing" /tmp/verify-out 2>/dev/null; then
+        pass "apr verify detects broken closure (missing reference)"
+      else
+        fail "apr verify should detect broken closure"
+        cat /tmp/verify-out 2>/dev/null || true
+      fi
+
+      # Fix by removing the closure file entirely (missing closure)
+      rm -f "$REG_DIR/closures/$ROOT_HASH"
+      commit_registry "$REG_DIR" "remove closure"
+
+      # Verify should report missing closure
+      $APR verify --registry test-reg > /tmp/verify-out2 2>&1 || true
+      if grep -q "error\|missing" /tmp/verify-out2 2>/dev/null; then
+        pass "apr verify detects missing closure file"
+      else
+        fail "apr verify should detect missing closure file"
+        cat /tmp/verify-out2 2>/dev/null || true
       fi
 
       check_fail
