@@ -434,6 +434,11 @@ CFGEOF
     ];
   };
 
+  # Named state file derivations for rootfsDeps inclusion
+  stateV1File = builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateV1);
+  stateV1V2File = builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateV1V2);
+  stateV1V2V3File = builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateV1V2V3);
+
 in
 {
   # --------------------------------------------------------------------------
@@ -441,7 +446,7 @@ in
   # --------------------------------------------------------------------------
   system-install = testing.mkVMTest {
     name = "apm-system-install";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryV1 toplevelV1 ];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
@@ -498,7 +503,7 @@ in
   # --------------------------------------------------------------------------
   system-upgrade = testing.mkVMTest {
     name = "apm-system-upgrade";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryV2 toplevelV1 toplevelV2 stateV1File ];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
@@ -542,7 +547,7 @@ in
   # --------------------------------------------------------------------------
   system-rollback = testing.mkVMTest {
     name = "apm-system-rollback";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryV2 toplevelV1 toplevelV2 stateV1V2File ];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
@@ -594,7 +599,7 @@ in
   # --------------------------------------------------------------------------
   system-rollback-generation = testing.mkVMTest {
     name = "apm-system-rollback-generation";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryV3 toplevelV1 toplevelV2 toplevelV3 stateV1V2V3File ];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
@@ -640,7 +645,7 @@ in
   # --------------------------------------------------------------------------
   system-activation-services = testing.mkVMTest {
     name = "apm-system-activation-services";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryV2 toplevelV1 toplevelV2 stateV1V2File ];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
@@ -720,7 +725,7 @@ in
   # --------------------------------------------------------------------------
   system-activation-etc = testing.mkVMTest {
     name = "apm-system-activation-etc";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryV2 toplevelV1 toplevelV2 stateV1V2File ];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
@@ -781,7 +786,7 @@ in
   # --------------------------------------------------------------------------
   system-containment-after-upgrade = testing.mkVMTest {
     name = "apm-system-containment";
-    rootfsDeps = testDeps;
+    rootfsDeps = testDeps ++ [ registryWithPkgX toplevelV1 toplevelV2 stateV1File ];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
