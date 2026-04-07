@@ -11,6 +11,7 @@ use super::profile::Profile;
 use super::registry::{store_path_hash, RegistrySet};
 use super::resolve::resolve_closure;
 use super::store::{create_gc_roots, filter_missing, import_nar};
+use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
 use aos_core::error::AosError;
@@ -44,6 +45,7 @@ pub async fn run(
     exclude: &[String],
     dry_run: bool,
     yes: bool,
+    ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
 ) -> Result<()> {
     // Step 1: Open profile and load installed metadata.
@@ -97,6 +99,34 @@ pub async fn run(
             }
         }
         upgrade_closures.push((closure.registry_name, closure.closure));
+    }
+
+    // Sysroot-lock check for upgraded packages.
+    if !matches!(ignore_lock, IgnoreSysrootLock::All) {
+        if let Some((sysroot_refs, sys_name, sys_version)) =
+            sysroot_lock::get_sysroot_references(config)
+        {
+            let lookup = sysroot_lock::build_registry_lookup(config);
+            for (_reg_name, closure_metas) in &upgrade_closures {
+                let pkg_refs: Vec<String> = closure_metas
+                    .iter()
+                    .map(|m| store_path_hash(&m.store_path).to_string())
+                    .collect();
+
+                let violations =
+                    sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
+                let remaining = ignore_lock.filter(violations);
+
+                if !remaining.is_empty() {
+                    let msg = sysroot_lock::format_violation_error(
+                        &remaining,
+                        &sys_name,
+                        &sys_version,
+                    );
+                    anyhow::bail!(msg);
+                }
+            }
+        }
     }
 
     // Filter to only missing store paths.
