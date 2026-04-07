@@ -2,9 +2,9 @@
 //!
 //! Uses `reqwest` with HTTP/1.1 + HTTP/2 via ALPN negotiation. Supports:
 //! - GET with Range headers (resume)
-//! - PUT with Content-Length
+//! - PUT with Content-Length / streaming body
 //! - HEAD for existence/size checks
-//! - Streaming request/response bodies
+//! - Streaming response bodies (bytes_stream)
 
 use std::path::PathBuf;
 
@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Client;
 
-use super::Protocol;
+use super::{ByteStream, Protocol};
 use crate::auth::Credential;
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
 
@@ -38,6 +38,11 @@ impl HttpProtocol {
     /// Create an HTTP protocol handler with a custom client.
     pub fn with_client(client: Client) -> Self {
         Self { client }
+    }
+
+    /// Get a reference to the underlying reqwest client (for token refresh).
+    pub fn client(&self) -> &Client {
+        &self.client
     }
 
     fn apply_auth(
@@ -82,6 +87,35 @@ impl Protocol for HttpProtocol {
         }
     }
 
+    async fn stream(
+        &self,
+        request: &TransferRequest,
+        auth: Option<&Credential>,
+    ) -> Result<(TransferResult, ByteStream)> {
+        match request.method {
+            Method::Get => self.do_get_stream(request, auth).await,
+            Method::Put => {
+                // PUT returns metadata + empty stream (upload direction).
+                let result = self.do_put(request, auth).await?;
+                let stream: ByteStream =
+                    Box::pin(futures_util::stream::empty());
+                Ok((result, stream))
+            }
+            Method::Head => {
+                let result = self.do_head(request, auth).await?;
+                let stream: ByteStream =
+                    Box::pin(futures_util::stream::empty());
+                Ok((result, stream))
+            }
+            Method::Delete => {
+                let result = self.do_delete(request, auth).await?;
+                let stream: ByteStream =
+                    Box::pin(futures_util::stream::empty());
+                Ok((result, stream))
+            }
+        }
+    }
+
     fn supports_resume(&self) -> bool {
         true
     }
@@ -92,6 +126,77 @@ impl Protocol for HttpProtocol {
 }
 
 impl HttpProtocol {
+    /// GET that returns headers/status + a byte stream (no buffering).
+    async fn do_get_stream(
+        &self,
+        request: &TransferRequest,
+        auth: Option<&Credential>,
+    ) -> Result<(TransferResult, ByteStream)> {
+        let mut builder = self.client.get(&request.url);
+        builder = self.apply_auth(builder, auth);
+
+        for (name, value) in &request.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+
+        // Handle resume.
+        let mut resume_offset: u64 = 0;
+        let mut resumed = false;
+
+        if request.resume {
+            if let TransferOutput::File(ref path) = request.output {
+                if let Ok(metadata) = tokio::fs::metadata(path).await {
+                    let existing_size = metadata.len();
+                    if existing_size > 0 {
+                        builder =
+                            builder.header("Range", format!("bytes={}-", existing_size));
+                        resume_offset = existing_size;
+                        resumed = true;
+                    }
+                }
+            }
+        }
+
+        let response = builder
+            .send()
+            .await
+            .with_context(|| format!("GET {}", request.url))?;
+
+        let status = response.status().as_u16();
+
+        if resumed && status == 200 {
+            resume_offset = 0;
+            resumed = false;
+        }
+
+        if status >= 400 {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("HTTP {} for {}: {}", status, request.url, body);
+        }
+
+        let content_length = response.content_length();
+        let response_headers = collect_headers(&response);
+
+        let result = TransferResult {
+            status,
+            headers: response_headers,
+            bytes_transferred: resume_offset, // Will be updated by the caller as chunks arrive.
+            content_length,
+            body: None,
+            hash: None,
+            resumed,
+        };
+
+        // Return the raw byte stream from reqwest.
+        let stream: ByteStream = Box::pin(
+            response
+                .bytes_stream()
+                .map(|r| r.map_err(|e| anyhow::anyhow!("reading response chunk: {e}"))),
+        );
+
+        Ok((result, stream))
+    }
+
     async fn do_get(
         &self,
         request: &TransferRequest,
@@ -177,21 +282,22 @@ impl HttpProtocol {
                     resumed,
                 })
             }
-            TransferOutput::Callback(ref _cb) => {
-                // We need &mut for the callback, but the request is &.
-                // The transfer engine handles callbacks at a higher level.
-                // For direct protocol use, stream to memory.
-                let bytes = response
-                    .bytes()
-                    .await
-                    .with_context(|| format!("reading body from {}", request.url))?;
+            TransferOutput::Callback(ref cb) => {
+                let mut bytes_transferred: u64 = 0;
+                let mut stream = response.bytes_stream();
+
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.with_context(|| "reading response chunk")?;
+                    cb(&chunk)?;
+                    bytes_transferred += chunk.len() as u64;
+                }
 
                 Ok(TransferResult {
                     status,
                     headers: response_headers,
-                    bytes_transferred: bytes.len() as u64,
+                    bytes_transferred,
                     content_length,
-                    body: Some(bytes.to_vec()),
+                    body: None,
                     hash: None,
                     resumed,
                 })
@@ -219,17 +325,22 @@ impl HttpProtocol {
                     .body(data.clone());
             }
             Some(TransferBody::File(path)) => {
-                let data = tokio::fs::read(path)
+                let file = tokio::fs::File::open(path)
                     .await
-                    .with_context(|| format!("reading file {}", path.display()))?;
+                    .with_context(|| format!("opening file {}", path.display()))?;
+                let metadata = file.metadata().await?;
+                let file_len = metadata.len();
+                let stream = tokio_util::io::ReaderStream::new(file);
+                let body = reqwest::Body::wrap_stream(stream);
                 builder = builder
-                    .header("Content-Length", data.len().to_string())
-                    .body(data);
+                    .header("Content-Length", file_len.to_string())
+                    .body(body);
             }
-            Some(TransferBody::Stream(_)) => {
-                // Stream bodies need special handling -- read to bytes.
-                // The transfer engine handles true streaming at a higher level.
-                anyhow::bail!("stream body upload not directly supported; use TransferBody::File or TransferBody::Bytes");
+            Some(TransferBody::Stream(_reader)) => {
+                // We cannot consume the reader through a shared reference, so for
+                // the direct protocol path we fall back to reading to bytes.
+                // The transfer engine's streaming path handles this properly.
+                anyhow::bail!("stream body upload not directly supported via Protocol::execute(); use TransferEngine");
             }
             None => {}
         }
@@ -389,4 +500,3 @@ fn collect_headers(response: &reqwest::Response) -> Vec<(String, String)> {
         })
         .collect()
 }
-

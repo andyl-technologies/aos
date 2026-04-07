@@ -1,5 +1,4 @@
 pub mod fs;
-pub mod ftp;
 pub mod http;
 pub mod s3;
 pub mod sftp;
@@ -67,9 +66,6 @@ pub struct AuthOptions {
     pub ssh_password: Option<String>,
     pub ssh_ask_pass: bool,
 
-    // FTP
-    pub ftp_user: Option<String>,
-    pub ftp_password: Option<String>,
 }
 
 /// Map `AuthOptions` to `aos_net` credentials and register them on the engine's auth store.
@@ -166,23 +162,6 @@ fn apply_auth_to_engine(engine: &TransferEngine, url: &str, auth: &AuthOptions) 
                 );
             }
         }
-        "ftp" | "ftps" => {
-            let user = auth
-                .ftp_user
-                .clone()
-                .unwrap_or_else(|| "anonymous".to_string());
-            let password = auth
-                .ftp_password
-                .clone()
-                .unwrap_or_else(|| "aos@".to_string());
-            engine.auth().set(
-                &host,
-                aos_net::Credential::FtpLogin {
-                    username: user,
-                    password,
-                },
-            );
-        }
         _ => {}
     }
 }
@@ -223,12 +202,6 @@ pub async fn from_url(url_str: &str, auth: &AuthOptions) -> Result<Box<dyn Cache
         "sftp" | "ssh" => {
             let path = parsed.path().to_string();
             Ok(Box::new(sftp::SftpBackend::new(
-                url_str, &path, engine,
-            )))
-        }
-        "ftp" | "ftps" => {
-            let path = parsed.path().to_string();
-            Ok(Box::new(ftp::FtpBackend::new(
                 url_str, &path, engine,
             )))
         }

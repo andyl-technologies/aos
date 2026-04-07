@@ -175,12 +175,4 @@ pub struct CacheAuthArgs {
     /// Prompt for SSH password interactively
     #[arg(long)]
     pub ssh_ask_pass: bool,
-
-    // --- FTP ---
-    /// FTP username
-    #[arg(long)]
-    pub ftp_user: Option<String>,
-    /// FTP password (AOS_FTP_PASSWORD env)
-    #[arg(long, env = "AOS_FTP_PASSWORD")]
-    pub ftp_password: Option<String>,
 }
