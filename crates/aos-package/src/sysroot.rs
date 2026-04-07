@@ -623,6 +623,11 @@ async fn download_image(
 // Generation state management
 // ---------------------------------------------------------------------------
 
+/// Load system generation state from disk (public wrapper for cross-module use).
+pub fn load_generation_state_pub(profile_path: &Path) -> Result<SystemGenerationState> {
+    load_generation_state(profile_path)
+}
+
 /// Load system generation state from disk.
 fn load_generation_state(profile_path: &Path) -> Result<SystemGenerationState> {
     let state_path = profile_path.join(SYSTEM_STATE_FILE);
