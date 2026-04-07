@@ -35,7 +35,7 @@ builtins.derivation {
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
-      cp -r ${src} automake-1.13.4
+      mkdir -p automake-1.13.4 && (cd ${src} && tar cf - .) | (cd automake-1.13.4 && tar xf -)
       cd automake-1.13.4
       chmod -R u+w .
 

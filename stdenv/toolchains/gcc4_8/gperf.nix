@@ -31,7 +31,7 @@ builtins.derivation {
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
-      cp -r ${src} gperf-3.0.4
+      mkdir -p gperf-3.0.4 && (cd ${src} && tar cf - .) | (cd gperf-3.0.4 && tar xf -)
       cd gperf-3.0.4
       chmod -R u+w .
 
