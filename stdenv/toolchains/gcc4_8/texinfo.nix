@@ -32,7 +32,7 @@ builtins.derivation {
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
-      cp -r ${src} texinfo-5.1
+      mkdir -p texinfo-5.1 && (cd ${src} && tar cf - .) | (cd texinfo-5.1 && tar xf -)
       cd texinfo-5.1
       chmod -R u+w .
 

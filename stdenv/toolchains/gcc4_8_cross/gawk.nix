@@ -14,7 +14,7 @@
 let
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gawk/gawk-4.0.2.tar.xz";
-    sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: fix hash
+    sha256 = "19jnai55cpxajnaxkw9iwxxsc8smczh27jwi7hslq5bnmx2nlvy2";
   };
 in
 builtins.derivation {

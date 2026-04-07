@@ -12,7 +12,7 @@
 let
   src = builtins.fetchTarball {
     url = "https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-3.10.108.tar.gz";
-    sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: fix hash
+    sha256 = "1kggmp8gdbsaixp2qjj86jzzgz4kjvcnx8w7i1fbwr2bifaz0hzi";
   };
 in
 builtins.derivation {
