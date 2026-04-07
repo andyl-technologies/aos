@@ -1,193 +1,157 @@
-use std::io::Cursor;
-use std::sync::Mutex;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use suppaftp::FtpStream;
 
-use super::{AuthOptions, CacheBackend};
+use aos_net::{TransferEngine, TransferRequest};
 
-/// FTP cache backend (plain FTP, no TLS).
+use super::CacheBackend;
+
+/// FTP cache backend.
 ///
 /// Standard binary cache layout on a remote FTP server.
-/// Primarily useful for pulling from FTP mirrors (anonymous read).
-/// All operations use the synchronous FTP client behind a Mutex,
-/// similar to the SFTP backend pattern.
+/// Uses `aos_net::TransferEngine` with ftp:// URLs internally.
 pub struct FtpBackend {
-    host: String,
-    port: u16,
-    user: String,
-    password: String,
+    engine: Arc<TransferEngine>,
+    /// The base ftp:// URL (e.g. `ftp://host:port`).
+    base_url: String,
+    /// Remote root directory path.
     root: String,
-    /// Cached connection. Re-created if stale.
-    conn: Mutex<Option<FtpStream>>,
 }
 
 impl FtpBackend {
-    pub fn new(host: &str, port: u16, path: &str, secure: bool, auth: &AuthOptions) -> Result<Self> {
-        if secure {
-            anyhow::bail!(
-                "FTPS (ftps://) requires the 'native-tls' or 'rustls' feature. \
-                 Use plain ftp:// or a different backend."
-            );
+    pub fn new(
+        url: &str,
+        path: &str,
+        engine: Arc<TransferEngine>,
+    ) -> Self {
+        // Strip the path from the original URL to get the base.
+        let base_url = url
+            .strip_suffix(path)
+            .unwrap_or(url)
+            .trim_end_matches('/')
+            .to_string();
+
+        Self {
+            engine,
+            base_url,
+            root: path
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .to_string(),
         }
-
-        let user = auth
-            .ftp_user
-            .clone()
-            .unwrap_or_else(|| "anonymous".to_string());
-        let password = auth
-            .ftp_password
-            .clone()
-            .unwrap_or_else(|| "aos@".to_string());
-
-        Ok(Self {
-            host: host.to_string(),
-            port,
-            user,
-            password,
-            root: path.trim_start_matches('/').trim_end_matches('/').to_string(),
-            conn: Mutex::new(None),
-        })
     }
 
-    /// Get or create an FTP connection.
-    fn get_conn(&self) -> Result<std::sync::MutexGuard<'_, Option<FtpStream>>> {
-        let mut guard = self.conn.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-
-        if guard.is_none() {
-            let addr = format!("{}:{}", self.host, self.port);
-            let mut ftp = FtpStream::connect(&addr)
-                .map_err(|e| anyhow::anyhow!("FTP connect to {addr}: {e}"))?;
-
-            ftp.login(&self.user, &self.password)
-                .map_err(|e| anyhow::anyhow!("FTP login as {}: {e}", self.user))?;
-
-            ftp.transfer_type(suppaftp::types::FileType::Binary)
-                .map_err(|e| anyhow::anyhow!("FTP binary mode: {e}"))?;
-
-            *guard = Some(ftp);
-        }
-
-        Ok(guard)
-    }
-
-    fn remote_path(&self, relative: &str) -> String {
+    fn remote_url(&self, relative: &str) -> String {
         if self.root.is_empty() {
-            format!("/{relative}")
+            format!("{}/{}", self.base_url, relative)
         } else {
-            format!("/{}/{}", self.root, relative)
+            format!("{}/{}/{}", self.base_url, self.root, relative)
         }
     }
 
-    fn ftp_read(&self, path: &str) -> Result<Vec<u8>> {
-        let mut guard = self.get_conn()?;
-        let ftp = guard.as_mut().unwrap();
-        let cursor = ftp
-            .retr_as_buffer(path)
-            .map_err(|e| anyhow::anyhow!("FTP RETR {path}: {e}"))?;
-        Ok(cursor.into_inner())
+    fn narinfo_url(&self, store_hash: &str) -> String {
+        self.remote_url(&format!("{store_hash}.narinfo"))
     }
 
-    fn ftp_write(&self, path: &str, data: &[u8]) -> Result<()> {
-        let mut guard = self.get_conn()?;
-        let ftp = guard.as_mut().unwrap();
-        let mut cursor = Cursor::new(data.to_vec());
-        ftp.put_file(path, &mut cursor)
-            .map_err(|e| anyhow::anyhow!("FTP STOR {path}: {e}"))?;
-        Ok(())
-    }
-
-    fn ftp_exists(&self, path: &str) -> Result<bool> {
-        let mut guard = self.get_conn()?;
-        let ftp = guard.as_mut().unwrap();
-        match ftp.size(path) {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
-    }
-
-    fn ftp_mkdir(&self, path: &str) -> Result<()> {
-        let mut guard = self.get_conn()?;
-        let ftp = guard.as_mut().unwrap();
-        let _ = ftp.mkdir(path); // Ignore error if already exists.
-        Ok(())
-    }
-}
-
-impl Drop for FtpBackend {
-    fn drop(&mut self) {
-        if let Ok(mut guard) = self.conn.lock() {
-            if let Some(ref mut ftp) = *guard {
-                let _ = ftp.quit();
-            }
-        }
+    fn nar_url(&self, filename: &str) -> String {
+        self.remote_url(&format!("nar/{filename}"))
     }
 }
 
 #[async_trait]
 impl CacheBackend for FtpBackend {
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
-        let path = self.remote_path(&format!("{store_hash}.narinfo"));
-        self.ftp_exists(&path)
+        let url = self.narinfo_url(store_hash);
+        let result = self.engine.head(&url).await?;
+        Ok(result.status != 404)
     }
 
     async fn get_narinfo(&self, store_hash: &str) -> Result<String> {
-        let path = self.remote_path(&format!("{store_hash}.narinfo"));
-        let data = self.ftp_read(&path)?;
-        String::from_utf8(data).context("narinfo is not valid UTF-8")
+        let url = self.narinfo_url(store_hash);
+        let result = self
+            .engine
+            .execute(TransferRequest::get(&url))
+            .await
+            .with_context(|| format!("fetching narinfo via FTP: {url}"))?;
+
+        let body = result
+            .body
+            .ok_or_else(|| anyhow::anyhow!("empty FTP response for {url}"))?;
+        String::from_utf8(body).context("narinfo is not valid UTF-8")
     }
 
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
-        // Ensure directories exist.
-        if !self.root.is_empty() {
-            self.ftp_mkdir(&format!("/{}", self.root))?;
-        }
-        let path = self.remote_path(&format!("{store_hash}.narinfo"));
-        self.ftp_write(&path, content.as_bytes())
+        let url = self.narinfo_url(store_hash);
+        let req = TransferRequest::put(&url, content.as_bytes().to_vec());
+        self.engine
+            .execute(req)
+            .await
+            .with_context(|| format!("uploading narinfo via FTP: {url}"))?;
+        Ok(())
     }
 
-    async fn get_nar(&self, url: &str) -> Result<Vec<u8>> {
-        let path = self.remote_path(url);
-        self.ftp_read(&path)
+    async fn get_nar(&self, path: &str) -> Result<Vec<u8>> {
+        let url = self.remote_url(path);
+        let result = self
+            .engine
+            .execute(TransferRequest::get(&url))
+            .await
+            .with_context(|| format!("downloading NAR via FTP: {url}"))?;
+
+        result
+            .body
+            .ok_or_else(|| anyhow::anyhow!("empty FTP NAR response for {url}"))
     }
 
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
-        // Ensure directories exist.
-        if !self.root.is_empty() {
-            self.ftp_mkdir(&format!("/{}", self.root))?;
-        }
-        self.ftp_mkdir(&self.remote_path("nar"))?;
-        let path = self.remote_path(&format!("nar/{filename}"));
-        self.ftp_write(&path, data)
+        let url = self.nar_url(filename);
+        let req = TransferRequest::put(&url, data.to_vec());
+        self.engine
+            .execute(req)
+            .await
+            .with_context(|| format!("uploading NAR via FTP: {url}"))?;
+        Ok(())
     }
 
     async fn query_missing(&self, store_hashes: &[&str]) -> Result<Vec<String>> {
+        let urls: Vec<String> = store_hashes
+            .iter()
+            .map(|h| self.narinfo_url(h))
+            .collect();
+        let url_refs: Vec<&str> = urls.iter().map(String::as_str).collect();
+        let results = self.engine.head_batch(&url_refs).await;
+
         let mut missing = Vec::new();
-        for hash in store_hashes {
-            let path = self.remote_path(&format!("{hash}.narinfo"));
-            if !self.ftp_exists(&path)? {
-                missing.push(hash.to_string());
+        for (i, result) in results.into_iter().enumerate() {
+            let is_present = match result {
+                Ok(r) => r.status != 404,
+                Err(_) => false,
+            };
+            if !is_present {
+                missing.push(store_hashes[i].to_string());
             }
         }
         Ok(missing)
     }
 
     async fn ensure_cache_info(&self, store_dir: &str) -> Result<()> {
-        let info_path = self.remote_path("nix-cache-info");
-        if self.ftp_exists(&info_path)? {
+        let info_url = self.remote_url("nix-cache-info");
+
+        // Check if it already exists.
+        let result = self.engine.head(&info_url).await?;
+        if result.status == 200 {
             return Ok(());
         }
-
-        // Ensure directories.
-        if !self.root.is_empty() {
-            self.ftp_mkdir(&format!("/{}", self.root))?;
-        }
-        self.ftp_mkdir(&self.remote_path("nar"))?;
 
         let content = format!(
             "StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n"
         );
-        self.ftp_write(&info_path, content.as_bytes())
+        let req = TransferRequest::put(&info_url, content.into_bytes());
+        self.engine
+            .execute(req)
+            .await
+            .context("writing nix-cache-info via FTP")?;
+        Ok(())
     }
 }
