@@ -247,6 +247,18 @@ impl ProfileScope {
         }
     }
 
+    /// Path for local registry git clones (both read-only and read-write).
+    pub fn registries_path(&self) -> PathBuf {
+        match self {
+            ProfileScope::User => {
+                let home =
+                    std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
+                PathBuf::from(home).join(".local/share/apm/registries")
+            }
+            ProfileScope::System => PathBuf::from("/var/lib/apm/registries"),
+        }
+    }
+
     /// Path for trusted key storage.
     pub fn trusted_keys_dirs(&self) -> Vec<PathBuf> {
         match self {
@@ -299,6 +311,123 @@ pub struct RegistryFileInner {
 pub struct ApmConfFile {
     #[serde(default)]
     pub settings: ApmSettings,
+}
+
+// ---------------------------------------------------------------------------
+// Registry root config — from `registry.toml` inside a registry repo
+// ---------------------------------------------------------------------------
+
+/// Top-level structure of a registry's `registry.toml` file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryRootConfig {
+    pub registry: RegistryRootMeta,
+    #[serde(default)]
+    pub caches: Vec<CacheEntry>,
+    #[serde(default)]
+    pub signing: Option<RegistrySigningConfig>,
+}
+
+/// Registry metadata in `registry.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryRootMeta {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// A binary cache entry in `registry.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEntry {
+    pub url: String,
+    #[serde(default = "default_cache_priority")]
+    pub priority: u32,
+}
+
+fn default_cache_priority() -> u32 {
+    100
+}
+
+/// Signing configuration in `registry.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistrySigningConfig {
+    pub public_key: String,
+}
+
+// ---------------------------------------------------------------------------
+// Image metadata — an image as described in a registry TOML file
+// ---------------------------------------------------------------------------
+
+/// Top-level image TOML file from a registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageToml {
+    pub image: ImageHeader,
+    #[serde(default)]
+    pub versions: Vec<ImageVersionEntry>,
+}
+
+/// Image header metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageHeader {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub maintainer: Option<String>,
+}
+
+/// A version entry for an image.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageVersionEntry {
+    pub version: String,
+    #[serde(default)]
+    pub definition: Option<String>,
+    #[serde(default)]
+    pub config: Option<ImageConfig>,
+    #[serde(default)]
+    pub platforms: std::collections::HashMap<String, ImagePlatformEntry>,
+}
+
+/// Optional image configuration metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageConfig {
+    #[serde(default)]
+    pub profiles: Vec<String>,
+    #[serde(default)]
+    pub kernel: Option<String>,
+    #[serde(default)]
+    pub filesystem: Option<String>,
+}
+
+/// Platform-specific image entry (same shape as package platform entries).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImagePlatformEntry {
+    pub store_path: String,
+    pub nar_hash: String,
+    pub nar_size: u64,
+    pub download_hash: String,
+    pub download_size: u64,
+    #[serde(default)]
+    pub references: Vec<String>,
+    #[serde(default)]
+    pub closure_size: u64,
+}
+
+/// A resolved image version for a specific platform.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageMeta {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub maintainer: String,
+    pub definition: Option<String>,
+    pub platform: String,
+    pub store_path: String,
+    pub nar_hash: String,
+    pub nar_size: u64,
+    pub download_hash: String,
+    pub download_size: u64,
+    pub references: Vec<String>,
+    pub closure_size: u64,
 }
 
 #[cfg(test)]
