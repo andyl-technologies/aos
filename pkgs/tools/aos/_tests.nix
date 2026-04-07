@@ -12,12 +12,13 @@ let
   # write server config, start aos serve in background.
   serverPreamble = ''
     # Bring up loopback interface (needed for 127.0.0.1 binding)
-    ${pkgs.iproute2}/sbin/ip link set lo up
-    ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo
+    ${pkgs.iproute2}/sbin/ip link set lo up || true
+    ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
     # Use /tmp (tmpfs, writable) for all server state.
     # The rootfs is mounted read-only so /run and other paths on the
     # root filesystem are not writable.
+    echo "==> Setting up test environment"
     export AOS_ROOT=/tmp/aos
     mkdir -p $AOS_ROOT/var/nix/db
     mkdir -p $AOS_ROOT/store
@@ -25,6 +26,7 @@ let
     mkdir -p /tmp/run/aos
 
     # Create a minimal SQLite DB matching the Nix schema
+    echo "==> Creating mock Nix store DB"
     ${pkgs.sqlite}/bin/sqlite3 $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
     CREATE TABLE IF NOT EXISTS ValidPaths (
       id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -48,6 +50,7 @@ let
     SQL
     chmod 666 $AOS_ROOT/var/nix/db/db.sqlite
     chmod 777 $AOS_ROOT/var/nix/db
+    echo "==> Test environment ready"
   '';
 
   # Common rootfsDeps for server tests
@@ -177,7 +180,7 @@ in
 
       # Test 1: nix-cache-info returns 200 with expected fields
       echo "==> Test: nix-cache-info endpoint"
-      BODY=$(curl -sf http://127.0.0.1:15000/test/nix-cache-info)
+      BODY=$(curl -s http://127.0.0.1:15000/test/nix-cache-info)
       echo "$BODY"
 
       echo "$BODY" | grep -q "StoreDir:" || { echo "FAIL: missing StoreDir"; FAIL=1; }
@@ -258,12 +261,12 @@ in
 
       # Test 1: Create a token via bootstrap socket
       echo "==> Test: create token via bootstrap socket"
-      RESPONSE=$(echo '{"command":"create","views":["test"],"permissions":["read","build"],"comment":"integration test"}' | \
+      RESPONSE=$(echo '{"action":"create","views":["test"],"permissions":["read","build"],"comment":"integration test"}' | \
         ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
       echo "Create response: $RESPONSE"
 
-      TOKEN=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.token // empty')
-      TOKEN_ID=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.id // empty')
+      TOKEN=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.data.token // empty')
+      TOKEN_ID=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.data.id // empty')
 
       test -n "$TOKEN" || { echo "FAIL: no token in create response"; FAIL=1; }
       test -n "$TOKEN_ID" || { echo "FAIL: no token ID in create response"; FAIL=1; }
@@ -271,16 +274,16 @@ in
 
       # Test 2: List tokens via bootstrap socket
       echo "==> Test: list tokens via bootstrap socket"
-      LIST_RESPONSE=$(echo '{"command":"list"}' | \
+      LIST_RESPONSE=$(echo '{"action":"list"}' | \
         ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
       echo "List response: $LIST_RESPONSE"
 
-      COUNT=$(echo "$LIST_RESPONSE" | ${pkgs.jq}/bin/jq '.tokens | length')
+      COUNT=$(echo "$LIST_RESPONSE" | ${pkgs.jq}/bin/jq '.data.tokens | length')
       test "$COUNT" -ge 1 || { echo "FAIL: expected at least 1 token, got $COUNT"; FAIL=1; }
 
       # Test 3: Exchange token for JWT via oauth2 endpoint
       echo "==> Test: exchange token for JWT"
-      JWT_RESPONSE=$(curl -sf \
+      JWT_RESPONSE=$(curl -s \
         -X POST \
         -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: application/x-www-form-urlencoded" \
@@ -294,7 +297,7 @@ in
 
       # Test 4: Use JWT to call authenticated endpoint (query-missing)
       echo "==> Test: query-missing with JWT auth"
-      QM_RESPONSE=$(curl -sf \
+      QM_RESPONSE=$(curl -s \
         -X POST \
         -H "Authorization: Bearer $ACCESS_TOKEN" \
         -H "Content-Type: application/json" \
@@ -307,7 +310,7 @@ in
 
       # Test 5: Revoke token via bootstrap socket
       echo "==> Test: revoke token via bootstrap socket"
-      REVOKE_RESPONSE=$(echo "{\"command\":\"revoke\",\"token_id\":\"$TOKEN_ID\"}" | \
+      REVOKE_RESPONSE=$(echo "{\"action\":\"revoke\",\"token_id\":\"$TOKEN_ID\"}" | \
         ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
       echo "Revoke response: $REVOKE_RESPONSE"
 
@@ -376,16 +379,18 @@ in
 
       # Test 3: Create token scoped to "public" only
       echo "==> Test: view-scoped token"
-      RESPONSE=$(echo '{"command":"create","views":["public"],"permissions":["read","build"]}' | \
+      RESPONSE=$(echo '{"action":"create","views":["public"],"permissions":["read","build"]}' | \
         ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
-      TOKEN=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.token')
+      TOKEN=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.data.token // empty')
 
-      JWT_RESPONSE=$(curl -sf \
+      JWT_RESPONSE=$(curl -s \
         -X POST -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "grant_type=client_credentials" \
         http://127.0.0.1:15000/oauth2/token)
-      ACCESS_TOKEN=$(echo "$JWT_RESPONSE" | ${pkgs.jq}/bin/jq -r '.access_token')
+      echo "JWT response: $JWT_RESPONSE"
+      ACCESS_TOKEN=$(echo "$JWT_RESPONSE" | ${pkgs.jq}/bin/jq -r '.access_token // empty')
+      echo "ACCESS_TOKEN length: ''${#ACCESS_TOKEN}"
 
       # Test 4: Token can access authorized view
       echo "==> Test: token can access authorized view"
@@ -407,16 +412,16 @@ in
 
       # Test 6: Create read-only token (no build permission)
       echo "==> Test: read-only token cannot upload"
-      RESPONSE2=$(echo '{"command":"create","views":["public"],"permissions":["read"]}' | \
+      RESPONSE2=$(echo '{"action":"create","views":["public"],"permissions":["read"]}' | \
         ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
-      TOKEN2=$(echo "$RESPONSE2" | ${pkgs.jq}/bin/jq -r '.token')
+      TOKEN2=$(echo "$RESPONSE2" | ${pkgs.jq}/bin/jq -r '.data.token // empty')
 
-      JWT2_RESPONSE=$(curl -sf \
+      JWT2_RESPONSE=$(curl -s \
         -X POST -H "Authorization: Bearer $TOKEN2" \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "grant_type=client_credentials" \
         http://127.0.0.1:15000/oauth2/token)
-      ACCESS_TOKEN2=$(echo "$JWT2_RESPONSE" | ${pkgs.jq}/bin/jq -r '.access_token')
+      ACCESS_TOKEN2=$(echo "$JWT2_RESPONSE" | ${pkgs.jq}/bin/jq -r '.access_token // empty')
 
       HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
         -X PUT -H "Authorization: Bearer $ACCESS_TOKEN2" \
@@ -468,19 +473,19 @@ in
       test "$HTTP_CODE" = "200" || { echo "FAIL: server not responding"; FAIL=1; }
 
       # Get a token for build requests
-      RESPONSE=$(echo '{"command":"create","views":["test"],"permissions":["read","build"]}' | \
+      RESPONSE=$(echo '{"action":"create","views":["test"],"permissions":["read","build"]}' | \
         ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
-      TOKEN=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.token')
-      JWT_RESPONSE=$(curl -sf \
+      TOKEN=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.data.token // empty')
+      JWT_RESPONSE=$(curl -s \
         -X POST -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "grant_type=client_credentials" \
         http://127.0.0.1:15000/oauth2/token)
-      ACCESS_TOKEN=$(echo "$JWT_RESPONSE" | ${pkgs.jq}/bin/jq -r '.access_token')
+      ACCESS_TOKEN=$(echo "$JWT_RESPONSE" | ${pkgs.jq}/bin/jq -r '.access_token // empty')
 
       # Send SIGTERM to trigger drain
       echo "==> Sending SIGTERM to trigger drain"
-      kill -TERM $SERVER_PID
+      kill -TERM $SERVER_PID || true
 
       # Give drain time to activate
       sleep 1
