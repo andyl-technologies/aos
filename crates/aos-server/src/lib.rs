@@ -10,6 +10,7 @@ pub mod gc;
 pub mod narinfo;
 pub mod pack;
 pub mod routes;
+pub mod services;
 pub mod sign;
 pub mod store;
 pub mod tokens;

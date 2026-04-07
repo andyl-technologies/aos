@@ -48,7 +48,11 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
-                .context("spawning nix-store --dump")?;
+                .context("spawning nix-store --dump")
+                .map_err(|e| {
+                    tracing::error!(store_path = %store_path, error = %e, "NAR dump failed to spawn");
+                    e
+                })?;
 
             let stdout = child.stdout.take().context("no stdout")?;
             let stream = ReaderStream::new(stdout);
@@ -62,7 +66,11 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
-                .context("spawning nix-store --dump")?;
+                .context("spawning nix-store --dump")
+                .map_err(|e| {
+                    tracing::error!(store_path = %store_path, error = %e, "NAR dump failed to spawn");
+                    e
+                })?;
 
             let dump_stdout: Stdio = dump.stdout.take().context("no stdout")?.into();
 
@@ -73,7 +81,11 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
-                .context("spawning zstd compressor")?;
+                .context("spawning zstd compressor")
+                .map_err(|e| {
+                    tracing::error!(store_path = %store_path, error = %e, "zstd compressor failed to spawn");
+                    e
+                })?;
 
             let zstd_stdout = zstd_child.stdout.take().context("no stdout from zstd")?;
             let stream = ReaderStream::new(zstd_stdout);
@@ -85,7 +97,11 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
-                .context("spawning nix-store --dump")?;
+                .context("spawning nix-store --dump")
+                .map_err(|e| {
+                    tracing::error!(store_path = %store_path, error = %e, "NAR dump failed to spawn");
+                    e
+                })?;
 
             let dump_stdout: Stdio = dump.stdout.take().context("no stdout")?.into();
 
@@ -96,7 +112,11 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
-                .context("spawning xz compressor")?;
+                .context("spawning xz compressor")
+                .map_err(|e| {
+                    tracing::error!(store_path = %store_path, error = %e, "xz compressor failed to spawn");
+                    e
+                })?;
 
             let xz_stdout = xz_child.stdout.take().context("no stdout from xz")?;
             let stream = ReaderStream::new(xz_stdout);

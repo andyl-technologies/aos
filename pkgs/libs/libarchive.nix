@@ -21,6 +21,7 @@ mkDerivation {
   src = fetchurl {
     urls = [
       "https://www.libarchive.org/downloads/libarchive-${version}.tar.xz"
+      "https://github.com/libarchive/libarchive/releases/download/v${version}/libarchive-${version}.tar.xz"
     ];
     hash = "sha256-1oBo50vu46DsDdBK7pA31XV/zGUVkabc8bbVQvsVpwM=";
   };

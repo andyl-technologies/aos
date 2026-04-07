@@ -1,0 +1,75 @@
+# tests/vm/apm/default.nix — APM/APR VM test suite
+#
+# Exposes all registry, tracking, package management, sysroot-lock,
+# system update, kernel upgrade, image download, binary cache,
+# multi-registry, ConnectRPC, and end-to-end lifecycle tests as a flat
+# attribute set of derivations.  Each test is a headless Firecracker microVM
+# derivation that exits 0 on PASS.
+#
+# Usage:
+#   nix-build -A checks.vm.apm.registry-create
+#   nix-build -A checks.vm.apm.tracking-branch
+#   nix-build -A checks.vm.apm.install-basic
+#   nix-build -A checks.vm.apm.sysroot-lock-blocked
+#   nix-build -A checks.vm.apm.system-install
+#   nix-build -A checks.vm.apm.kernel-advisory
+#   nix-build -A checks.vm.apm.image-pull-raw
+#   nix-build -A checks.vm.apm.cache-push-pull
+#   nix-build -A checks.vm.apm.rpc-cache-query-missing
+#   nix-build -A checks.vm.apm.e2e-full-lifecycle
+{
+  testing,
+  pkgs,
+}:
+let
+  aosPkg = pkgs.aos;
+
+  registryTests = import ./registry.nix {inherit testing pkgs aosPkg;};
+  trackingTests = import ./tracking.nix {inherit testing pkgs aosPkg;};
+  packageTests = import ./packages.nix {inherit testing pkgs aosPkg;};
+  sysrootLockTests = import ./sysroot_lock.nix {
+    inherit testing pkgs;
+    apm = aosPkg;
+  };
+  systemTests = import ./system.nix {
+    inherit testing pkgs;
+    apm = aosPkg;
+  };
+  kernelTests = import ./kernel.nix {
+    inherit testing pkgs;
+    apm = aosPkg;
+  };
+  imageTests = import ./image.nix {
+    inherit testing pkgs;
+    apm = aosPkg;
+  };
+
+  # Binary cache, multi-registry, ConnectRPC, and end-to-end tests
+  cacheTests = import ./cache.nix {
+    inherit testing pkgs;
+    self = aosPkg;
+  };
+  multiRegistryTests = import ./multi_registry.nix {
+    inherit testing pkgs;
+    self = aosPkg;
+  };
+  rpcTests = import ./rpc.nix {
+    inherit testing pkgs;
+    self = aosPkg;
+  };
+  e2eTests = import ./e2e.nix {
+    inherit testing pkgs;
+    self = aosPkg;
+  };
+in
+  registryTests
+  // trackingTests
+  // packageTests
+  // sysrootLockTests
+  // systemTests
+  // kernelTests
+  // imageTests
+  // cacheTests
+  // multiRegistryTests
+  // rpcTests
+  // e2eTests

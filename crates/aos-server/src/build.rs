@@ -229,6 +229,7 @@ impl BuildManager {
         {
             let builds = self.builds.read().unwrap();
             if let Some(handle) = builds.get(drv_path) {
+                tracing::debug!(view = %view, drv = %drv_path, "build deduplicated, joining existing");
                 return Arc::clone(handle);
             }
         }
@@ -239,6 +240,7 @@ impl BuildManager {
             let mut builds = self.builds.write().unwrap();
             // Double-check after acquiring write lock.
             if let Some(existing) = builds.get(drv_path) {
+                tracing::debug!(view = %view, drv = %drv_path, "build deduplicated, joining existing");
                 return Arc::clone(existing);
             }
             builds.insert(drv_path.to_string(), Arc::clone(&handle));
@@ -316,6 +318,8 @@ async fn run_build(
     // Acquire the per-view semaphore.
     let _permit = sem.acquire().await.expect("semaphore closed");
 
+    tracing::info!(view = %view, drv = %drv_path, "build started");
+
     handle.emit(BuildEventKind::Status {
         phase: "building".to_string(),
         drv: drv_path.to_string(),
@@ -340,6 +344,7 @@ async fn run_build(
             {
                 Ok(c) => c,
                 Err(e) if attempt < MAX_DAEMON_RETRIES => {
+                    tracing::warn!(view = %view, drv = %drv_path, attempt, max_attempts = MAX_DAEMON_RETRIES, error = %e, "daemon unavailable, retrying");
                     handle.emit(BuildEventKind::DaemonUnavailable {
                         attempt,
                         max_attempts: MAX_DAEMON_RETRIES,
@@ -349,6 +354,7 @@ async fn run_build(
                     continue;
                 }
                 Err(e) => {
+                    tracing::error!(view = %view, drv = %drv_path, error = %e, "build failed after all daemon retries");
                     handle.emit(BuildEventKind::Error {
                         drv: drv_path.to_string(),
                         exit_code: None,
@@ -395,6 +401,7 @@ async fn run_build(
                         && stderr_text.contains("daemon-socket");
 
                 if is_daemon_error && attempt < MAX_DAEMON_RETRIES {
+                    tracing::warn!(view = %view, drv = %drv_path, attempt, "daemon connection error, retrying");
                     handle.emit(BuildEventKind::DaemonUnavailable {
                         attempt,
                         max_attempts: MAX_DAEMON_RETRIES,
@@ -415,6 +422,8 @@ async fn run_build(
     let duration_secs = start.elapsed().as_secs();
 
     if !status.success() {
+        tracing::error!(view = %view, drv = %drv_path, exit_code = ?status.code(), duration_secs, "build failed");
+
         let tail: String = log_lines
             .iter()
             .rev()
@@ -475,10 +484,13 @@ async fn run_build(
     closure.sort();
     closure.dedup();
 
+    tracing::debug!(view = %view, drv = %drv_path, closure_size = closure.len(), "creating GC roots");
+
     if let Err(e) = state
         .views
         .create_roots_for_closure(view, "bin", &closure)
     {
+        tracing::error!(view = %view, drv = %drv_path, error = %e, "failed to create GC roots");
         handle.emit(BuildEventKind::Error {
             drv: drv_path.to_string(),
             exit_code: None,
@@ -488,6 +500,11 @@ async fn run_build(
         handle.done.notify_waiters();
         schedule_cleanup(mgr, drv_path);
         return;
+    }
+
+    // Clean up temporary GC roots now that proper bin/ roots exist.
+    if let Err(e) = state.views.remove_tmp_roots(view) {
+        tracing::warn!(view = %view, drv = %drv_path, error = %e, "failed to clean up tmp GC roots");
     }
 
     // Create source roots if source_mirror is enabled for this view.
@@ -500,6 +517,8 @@ async fn run_build(
             });
         }
     }
+
+    tracing::info!(view = %view, drv = %drv_path, duration_secs, outputs = ?outputs, "build completed");
 
     handle.emit(BuildEventKind::Complete {
         success: true,

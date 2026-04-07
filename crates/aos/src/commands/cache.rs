@@ -131,7 +131,5 @@ fn auth_from_args(args: &CacheAuthArgs) -> AuthOptions {
         ssh_key: args.ssh_key.clone(),
         ssh_password: args.ssh_password.clone(),
         ssh_ask_pass: args.ssh_ask_pass,
-        ftp_user: args.ftp_user.clone(),
-        ftp_password: args.ftp_password.clone(),
     }
 }

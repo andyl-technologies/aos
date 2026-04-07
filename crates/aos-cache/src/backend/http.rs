@@ -1,19 +1,22 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use reqwest::Client;
 use serde::Deserialize;
+
+use aos_net::{TransferEngine, TransferRequest};
 
 use super::{AuthOptions, CacheBackend};
 
 /// HTTP(S) cache backend.
 ///
-/// For push to AOS serve: uses RemoteClient-style API (auth, query-missing, upload).
+/// For push to AOS server: uses AOS server API (auth, query-missing, upload).
 /// For pull from any binary cache: standard GET on narinfo + NAR URLs.
 pub struct HttpBackend {
-    client: Client,
+    engine: Arc<TransferEngine>,
     base_url: String,
     view: String,
-    token: Option<String>,
+    /// Extra headers added to every request.
     headers: Vec<(String, String)>,
     is_aos: bool,
 }
@@ -29,11 +32,11 @@ struct QueryMissingResponse {
 }
 
 impl HttpBackend {
-    pub async fn new(url: &str, auth: &AuthOptions) -> Result<Self> {
-        let client = Client::builder()
-            .build()
-            .context("failed to build HTTP client")?;
-
+    pub async fn new(
+        url: &str,
+        auth: &AuthOptions,
+        engine: Arc<TransferEngine>,
+    ) -> Result<Self> {
         let base_url = url.trim_end_matches('/').to_string();
         let view = auth.view.clone();
 
@@ -45,24 +48,19 @@ impl HttpBackend {
             }
         }
 
+        let is_aos = auth.token.is_some();
+
         let mut backend = Self {
-            client,
+            engine,
             base_url,
             view,
-            token: auth.token.clone(),
             headers,
-            is_aos: auth.token.is_some(),
+            is_aos,
         };
 
         // If we have an AOS token, authenticate to get a JWT.
         if let Some(ref provisioning_token) = auth.token {
             backend.authenticate(provisioning_token).await?;
-        } else if let (Some(user), Some(pass)) =
-            (&auth.http_user, &auth.http_password)
-        {
-            // Basic auth: we store credentials and add them per-request.
-            // The token field doubles as basic-auth storage.
-            backend.token = Some(format!("basic:{user}:{pass}"));
         }
 
         Ok(backend)
@@ -70,39 +68,49 @@ impl HttpBackend {
 
     async fn authenticate(&mut self, provisioning_token: &str) -> Result<()> {
         let url = format!("{}/oauth2/token", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(provisioning_token)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body("grant_type=client_credentials")
-            .send()
+        let mut req = TransferRequest::put(&url, b"grant_type=client_credentials".to_vec());
+        req.headers
+            .push(("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string()));
+        req.headers
+            .push(("Authorization".to_string(), format!("Bearer {provisioning_token}")));
+
+        let result = self
+            .engine
+            .execute(req)
             .await
             .context("authentication request failed")?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("authentication failed (HTTP {status}): {body}");
+        if result.status >= 400 {
+            let body = result.body_string().unwrap_or_default();
+            anyhow::bail!("authentication failed (HTTP {}): {body}", result.status);
         }
 
-        let token_resp: TokenResponse = resp.json().await.context("parsing token response")?;
-        self.token = Some(token_resp.access_token);
+        let body = result
+            .body
+            .ok_or_else(|| anyhow::anyhow!("empty authentication response"))?;
+        let token_resp: TokenResponse =
+            serde_json::from_slice(&body).context("parsing token response")?;
+
+        // Update the auth store with the JWT.
+        let host = url::Url::parse(&self.base_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_string()));
+        if let Some(host) = host {
+            self.engine.auth().set(
+                &host,
+                aos_net::Credential::Bearer {
+                    token: token_resp.access_token,
+                    refresh: None,
+                },
+            );
+        }
+
         Ok(())
     }
 
-    fn apply_auth(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(ref token) = self.token {
-            if let Some(basic) = token.strip_prefix("basic:") {
-                if let Some((user, pass)) = basic.split_once(':') {
-                    req = req.basic_auth(user, Some(pass));
-                }
-            } else {
-                req = req.bearer_auth(token);
-            }
-        }
+    fn add_headers(&self, mut req: TransferRequest) -> TransferRequest {
         for (k, v) in &self.headers {
-            req = req.header(k.as_str(), v.as_str());
+            req.headers.push((k.clone(), v.clone()));
         }
         req
     }
@@ -128,103 +136,97 @@ impl HttpBackend {
 impl CacheBackend for HttpBackend {
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
         let url = self.narinfo_url(store_hash);
-        let req = self.client.head(&url);
-        let resp = self.apply_auth(req).send().await?;
-        Ok(resp.status().is_success())
+        let req = self.add_headers(TransferRequest::head(&url));
+        let result = self.engine.execute(req).await?;
+        Ok(result.status < 400)
     }
 
     async fn get_narinfo(&self, store_hash: &str) -> Result<String> {
         let url = self.narinfo_url(store_hash);
-        let req = self.client.get(&url);
-        let resp = self
-            .apply_auth(req)
-            .send()
+        let req = self.add_headers(TransferRequest::get(&url));
+        let result = self
+            .engine
+            .execute(req)
             .await
             .context("fetching narinfo")?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            anyhow::bail!("GET {url} failed (HTTP {status})");
-        }
-        resp.text().await.context("reading narinfo body")
+        result
+            .body_string()
+            .ok_or_else(|| anyhow::anyhow!("empty narinfo response for {store_hash}"))
     }
 
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
         let url = self.narinfo_url(store_hash);
-        let req = self
-            .client
-            .put(&url)
-            .header("Content-Type", "text/x-nix-narinfo")
-            .body(content.to_string());
-        let resp = self.apply_auth(req).send().await.context("uploading narinfo")?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("PUT narinfo failed (HTTP {status}): {body}");
-        }
+        let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
+        req.headers.push((
+            "Content-Type".to_string(),
+            "text/x-nix-narinfo".to_string(),
+        ));
+        let req = self.add_headers(req);
+        self.engine
+            .execute(req)
+            .await
+            .context("uploading narinfo")?;
         Ok(())
     }
 
     async fn get_nar(&self, url: &str) -> Result<Vec<u8>> {
         let full_url = self.nar_url(url);
-        let req = self.client.get(&full_url);
-        let resp = self.apply_auth(req).send().await.context("fetching NAR")?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            anyhow::bail!("GET {full_url} failed (HTTP {status})");
-        }
-        resp.bytes()
+        let req = self.add_headers(TransferRequest::get(&full_url));
+        let result = self
+            .engine
+            .execute(req)
             .await
-            .map(|b| b.to_vec())
-            .context("reading NAR body")
+            .context("fetching NAR")?;
+
+        result
+            .body
+            .ok_or_else(|| anyhow::anyhow!("empty NAR response for {url}"))
     }
 
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
         let url = self.nar_url(&format!("nar/{filename}"));
-        let req = self
-            .client
-            .put(&url)
-            .header("Content-Type", "application/x-nix-nar")
-            .body(data.to_vec());
-        let resp = self.apply_auth(req).send().await.context("uploading NAR")?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("PUT NAR failed (HTTP {status}): {body}");
-        }
+        let mut req = TransferRequest::put(&url, data.to_vec());
+        req.headers.push((
+            "Content-Type".to_string(),
+            "application/x-nix-nar".to_string(),
+        ));
+        let req = self.add_headers(req);
+        self.engine
+            .execute(req)
+            .await
+            .context("uploading NAR")?;
         Ok(())
     }
 
     async fn query_missing(&self, store_hashes: &[&str]) -> Result<Vec<String>> {
         if self.is_aos {
-            // AOS serve has a batch endpoint.
+            // AOS server has a batch endpoint.
             let url = format!("{}/{}/query-missing", self.base_url, self.view);
             let paths: Vec<String> = store_hashes.iter().map(|h| h.to_string()).collect();
-            let req = self
-                .client
-                .post(&url)
-                .json(&serde_json::json!({ "paths": paths }));
-            let resp = self
-                .apply_auth(req)
-                .send()
+            let body = serde_json::to_vec(&serde_json::json!({ "paths": paths }))?;
+            let mut req = TransferRequest::put(&url, body);
+            req.method = aos_net::Method::Put; // POST semantics via PUT
+            req.headers.push((
+                "Content-Type".to_string(),
+                "application/json".to_string(),
+            ));
+            let req = self.add_headers(req);
+            let result = self
+                .engine
+                .execute(req)
                 .await
                 .context("query-missing request")?;
 
-            let status = resp.status();
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                anyhow::bail!("query-missing failed (HTTP {status}): {body}");
-            }
-
+            let resp_body = result
+                .body
+                .ok_or_else(|| anyhow::anyhow!("empty query-missing response"))?;
             let parsed: QueryMissingResponse =
-                resp.json().await.context("parsing query-missing response")?;
+                serde_json::from_slice(&resp_body).context("parsing query-missing response")?;
             return Ok(parsed.missing);
         }
 
-        // Generic cache: batch HEAD requests.
+        // Generic cache: sequential HEAD requests.
         let mut missing = Vec::new();
         for hash in store_hashes {
             if !self.has_narinfo(hash).await? {
@@ -245,23 +247,21 @@ impl CacheBackend for HttpBackend {
 
     async fn upload_pack(&self, data: &[u8]) -> Result<Vec<String>> {
         let url = format!("{}/{}/upload-pack", self.base_url, self.view);
-        let req = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/octet-stream")
-            .body(data.to_vec());
-        let resp = self
-            .apply_auth(req)
-            .send()
+        let mut req = TransferRequest::put(&url, data.to_vec());
+        req.headers.push((
+            "Content-Type".to_string(),
+            "application/octet-stream".to_string(),
+        ));
+        let req = self.add_headers(req);
+        let result = self
+            .engine
+            .execute(req)
             .await
             .context("upload-pack request")?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("upload-pack failed (HTTP {status}): {body}");
-        }
-
-        resp.json().await.context("parsing upload-pack response")
+        let resp_body = result
+            .body
+            .ok_or_else(|| anyhow::anyhow!("empty upload-pack response"))?;
+        serde_json::from_slice(&resp_body).context("parsing upload-pack response")
     }
 }

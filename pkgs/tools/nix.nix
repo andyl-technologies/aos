@@ -110,6 +110,15 @@ mkDerivation {
       name = "install";
       script = ''
         ninja install
+
+        # Create legacy command symlinks (multi-call binary)
+        for cmd in nix-store nix-build nix-instantiate nix-env \
+                   nix-collect-garbage nix-copy-closure nix-daemon \
+                   nix-hash nix-prefetch-url nix-channel; do
+          if [ ! -e "$out/bin/$cmd" ]; then
+            ln -s nix "$out/bin/$cmd"
+          fi
+        done
       '';
     }
   ];

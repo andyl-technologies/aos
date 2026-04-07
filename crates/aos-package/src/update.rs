@@ -13,7 +13,7 @@ use aos_core::output::Printer;
 use crate::config::ApmConfig;
 use crate::registry::{bundle, git};
 use crate::registry::state;
-use crate::types::{RegistryConfig, RegistryState, Transport};
+use crate::types::{RegistryConfig, RegistryState, TrackingMode, Transport};
 
 // ---------------------------------------------------------------------------
 // Sync result
@@ -69,14 +69,55 @@ pub async fn run(
         any_synced = true;
         let mut current_state = existing_state.clone().unwrap_or_default();
 
-        printer.header(&format!("Fetching registry '{}'...", reg_config.name));
+        // Resolve tracking mode from config.
+        let tracking_mode = match reg_config.tracking_mode() {
+            Ok(m) => m,
+            Err(e) => {
+                printer.error(&format!(
+                    "Registry '{}': invalid tracking config: {}",
+                    reg_config.name, e
+                ));
+                if registry_filter.is_some() {
+                    return Err(e);
+                }
+                continue;
+            }
+        };
+
+        // For commit and tag modes, check if already at target.
+        match &tracking_mode {
+            TrackingMode::Commit(hash) => {
+                if current_state.last_commit.as_deref() == Some(hash.as_str()) {
+                    printer.info(&format!(
+                        "Registry '{}': already at commit {}",
+                        reg_config.name,
+                        &hash[..hash.len().min(12)],
+                    ));
+                    continue;
+                }
+            }
+            TrackingMode::Tag(tag) => {
+                // If we have a last_commit, we need to check if that commit
+                // corresponds to this tag. We can't easily check without
+                // the repo, so we proceed with the sync which will be a
+                // no-op if already up to date.
+                let _ = tag; // proceed to sync
+            }
+            _ => {}
+        }
+
+        printer.header(&format!(
+            "Fetching registry '{}' ({})...",
+            reg_config.name,
+            tracking_mode,
+        ));
 
         let result = match reg_config.transport() {
             Transport::HttpBundle => {
-                sync_bundle(reg_config, &mut current_state, &cache_dir, printer).await
+                sync_bundle(reg_config, &tracking_mode, &mut current_state, &cache_dir, printer).await
             }
             Transport::Git => {
-                git::sync_git(reg_config, &cache_dir, &mut current_state, printer)
+                git::sync_git(reg_config, &tracking_mode, &cache_dir, &mut current_state, printer)
                     .await
                     .map(|r| SyncResult {
                         new_commit: r.new_commit,
@@ -151,21 +192,19 @@ pub async fn run(
 ///    c. Fall back to the latest snapshot if deltas are unavailable.
 async fn sync_bundle(
     config: &RegistryConfig,
+    tracking_mode: &TrackingMode,
     reg_state: &mut RegistryState,
     cache_dir: &Path,
     printer: &Printer,
 ) -> Result<SyncResult> {
-    let client = reqwest::Client::builder()
-        .user_agent("apm/0.1")
-        .build()
-        .context("creating HTTP client")?;
+    let engine = crate::download::default_engine();
 
     // Fetch the bundle manifest.
     let manifest =
-        bundle::BundleManifest::fetch(&client, &config.url, &config.name).await?;
+        bundle::BundleManifest::fetch(&engine, &config.url, &config.name).await?;
 
     // Determine which bundles to download.
-    let bundles_to_apply = pick_bundles(&manifest, reg_state, config)?;
+    let bundles_to_apply = pick_bundles(&manifest, reg_state, tracking_mode)?;
 
     if bundles_to_apply.is_empty() {
         printer.info("Already up to date.");
@@ -195,7 +234,7 @@ async fn sync_bundle(
         let bundle_dir = cache_dir.join(&config.name).join("bundles");
         let dest = bundle_dir.join(&entry.uri);
 
-        bundle::download_bundle(&client, entry, &config.url, &config.name, &dest, printer)
+        bundle::download_bundle(&engine, entry, &config.url, &config.name, &dest, printer)
             .await?;
         bundle::verify_bundle(&dest, &entry.sha256, &repo_dir).await?;
         bundle::unbundle(&dest, &repo_dir).await?;
@@ -253,17 +292,52 @@ async fn sync_bundle(
 fn pick_bundles<'a>(
     manifest: &'a bundle::BundleManifest,
     reg_state: &RegistryState,
-    config: &RegistryConfig,
+    tracking_mode: &TrackingMode,
 ) -> Result<Vec<&'a bundle::BundleEntry>> {
-    // If pinned to a specific tag, find its snapshot or delta.
-    if let Some(ref pin) = config.pin {
-        // Find the snapshot for this pin, or a delta to it.
-        if let Some(entry) = manifest.entries.iter().find(|e| {
-            e.bundle_type == bundle::BundleType::Snapshot && e.target_tag == *pin
-        }) {
-            return Ok(vec![entry]);
+    // Handle tag/commit/version tracking modes that pin to a specific tag.
+    match tracking_mode {
+        TrackingMode::Tag(tag) => {
+            // Find the snapshot for this exact tag, or a delta to it.
+            if let Some(entry) = manifest.entries.iter().find(|e| {
+                e.bundle_type == bundle::BundleType::Snapshot && e.target_tag == *tag
+            }) {
+                return Ok(vec![entry]);
+            }
+            // Try finding a delta that targets this tag.
+            if let Some(entry) = manifest.entries.iter().find(|e| {
+                e.target_tag == *tag
+            }) {
+                return Ok(vec![entry]);
+            }
+            bail!("tag '{tag}' not found in bundle manifest");
         }
-        bail!("pinned tag '{pin}' not found in bundle manifest");
+        TrackingMode::Commit(_hash) => {
+            // Bundle transport doesn't support arbitrary commit lookup.
+            // Fall through to default behavior (fetch latest).
+        }
+        TrackingMode::Version(req) => {
+            // Find all tags, parse as semver, filter by constraint, pick latest.
+            let best = find_best_version_tag_in_manifest(manifest, req);
+            if let Some(tag) = best {
+                if let Some(entry) = manifest.entries.iter().find(|e| {
+                    e.bundle_type == bundle::BundleType::Snapshot && e.target_tag == tag
+                }) {
+                    return Ok(vec![entry]);
+                }
+                // Try delta targeting this tag.
+                if let Some(entry) = manifest.entries.iter().rev().find(|e| {
+                    e.target_tag == tag
+                }) {
+                    return Ok(vec![entry]);
+                }
+                bail!("matched version tag '{tag}' not available as bundle");
+            } else {
+                bail!("no tags matching version constraint '{req}' found in bundle manifest");
+            }
+        }
+        TrackingMode::Branch(_) | TrackingMode::Default => {
+            // Fall through to incremental sync logic below.
+        }
     }
 
     // No existing state -> download latest snapshot.
@@ -314,6 +388,65 @@ fn pick_bundles<'a>(
         Some(entry) => Ok(vec![entry]),
         None => bail!("no snapshot bundles available in manifest"),
     }
+}
+
+/// Find the best matching tag in a bundle manifest for a semver constraint.
+///
+/// Parses tag names as semver (stripping a leading `v` prefix), filters by
+/// the constraint, and returns the latest matching tag name.
+///
+/// Two-component versions like `2026.02` are normalized to `2026.2.0` for
+/// semver parsing.  Tags that don't parse as semver are silently skipped.
+fn find_best_version_tag_in_manifest(
+    manifest: &bundle::BundleManifest,
+    req: &semver::VersionReq,
+) -> Option<String> {
+    let mut best: Option<(semver::Version, String)> = None;
+
+    for entry in &manifest.entries {
+        let tag = &entry.target_tag;
+        if let Some(ver) = parse_tag_as_semver(tag) {
+            if req.matches(&ver) {
+                match &best {
+                    Some((best_ver, _)) if ver > *best_ver => {
+                        best = Some((ver, tag.clone()));
+                    }
+                    None => {
+                        best = Some((ver, tag.clone()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    best.map(|(_, tag)| tag)
+}
+
+/// Parse a tag string as a semver `Version`, stripping a leading `v` prefix,
+/// removing leading zeros from components (e.g. `02` -> `2`), and appending
+/// `.0` for two-component versions like `2026.02`.
+fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
+    let stripped = tag.strip_prefix('v').unwrap_or(tag);
+    // Normalize leading zeros: "2026.02.3" -> "2026.2.3"
+    let parts: Vec<&str> = stripped.split('.').collect();
+    let normalized: Vec<String> = parts
+        .iter()
+        .map(|p| {
+            // Parse as u64 to strip leading zeros, then convert back
+            p.parse::<u64>().map(|n| n.to_string()).unwrap_or_else(|_| p.to_string())
+        })
+        .collect();
+
+    let semver_str = if normalized.len() == 2 {
+        format!("{}.{}.0", normalized[0], normalized[1])
+    } else if normalized.len() == 3 {
+        format!("{}.{}.{}", normalized[0], normalized[1], normalized[2])
+    } else {
+        return None;
+    };
+
+    semver::Version::parse(&semver_str).ok()
 }
 
 /// Extract the minor base from a version tag.
@@ -491,25 +624,13 @@ size = 6144
 sha256 = "012def"
 "#;
 
-    fn make_config() -> RegistryConfig {
-        RegistryConfig {
-            name: "aos-core".into(),
-            url: "https://registry.aos.dev/core".into(),
-            priority: 500,
-            enabled: true,
-            pin: None,
-            branch: None,
-            signing: None,
-        }
-    }
-
     #[test]
     fn pick_bundles_first_sync_gets_snapshot() {
         let manifest = BundleManifest::parse(SAMPLE_MANIFEST).unwrap();
         let state = RegistryState::default();
-        let config = make_config();
+        let mode = TrackingMode::Default;
 
-        let bundles = pick_bundles(&manifest, &state, &config).unwrap();
+        let bundles = pick_bundles(&manifest, &state, &mode).unwrap();
         assert_eq!(bundles.len(), 1);
         assert_eq!(bundles[0].target_tag, "v2026.02");
         assert_eq!(
@@ -526,9 +647,9 @@ sha256 = "012def"
             last_creation_token: Some(2026020002),
             last_update: None,
         };
-        let config = make_config();
+        let mode = TrackingMode::Default;
 
-        let bundles = pick_bundles(&manifest, &state, &config).unwrap();
+        let bundles = pick_bundles(&manifest, &state, &mode).unwrap();
         assert!(bundles.is_empty());
     }
 
@@ -541,9 +662,9 @@ sha256 = "012def"
             last_creation_token: Some(2026020000),
             last_update: None,
         };
-        let config = make_config();
+        let mode = TrackingMode::Default;
 
-        let bundles = pick_bundles(&manifest, &state, &config).unwrap();
+        let bundles = pick_bundles(&manifest, &state, &mode).unwrap();
         assert_eq!(bundles.len(), 1);
         // Should pick the skip delta from v2026.02 to v2026.02.2.
         assert_eq!(bundles[0].base_tag.as_deref(), Some("v2026.02"));
@@ -560,36 +681,120 @@ sha256 = "012def"
             last_creation_token: Some(2026020001),
             last_update: None,
         };
-        let config = make_config();
+        let mode = TrackingMode::Default;
 
-        let bundles = pick_bundles(&manifest, &state, &config).unwrap();
+        let bundles = pick_bundles(&manifest, &state, &mode).unwrap();
         assert_eq!(bundles.len(), 1);
         assert_eq!(bundles[0].target_tag, "v2026.02.2");
     }
 
     #[test]
-    fn pick_bundles_pinned_tag() {
+    fn pick_bundles_tag_mode() {
         let manifest = BundleManifest::parse(SAMPLE_MANIFEST).unwrap();
         let state = RegistryState::default();
-        let mut config = make_config();
-        config.pin = Some("v2026.02".into());
+        let mode = TrackingMode::Tag("v2026.02".into());
 
-        let bundles = pick_bundles(&manifest, &state, &config).unwrap();
+        let bundles = pick_bundles(&manifest, &state, &mode).unwrap();
         assert_eq!(bundles.len(), 1);
         assert_eq!(bundles[0].target_tag, "v2026.02");
     }
 
     #[test]
-    fn pick_bundles_pinned_tag_not_found() {
+    fn pick_bundles_tag_not_found() {
         let manifest = BundleManifest::parse(SAMPLE_MANIFEST).unwrap();
         let state = RegistryState::default();
-        let mut config = make_config();
-        config.pin = Some("v2025.01".into());
+        let mode = TrackingMode::Tag("v2025.01".into());
 
-        let result = pick_bundles(&manifest, &state, &config);
+        let result = pick_bundles(&manifest, &state, &mode);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("v2025.01"), "got: {err}");
+    }
+
+    #[test]
+    fn pick_bundles_version_mode() {
+        let manifest = BundleManifest::parse(SAMPLE_MANIFEST).unwrap();
+        let state = RegistryState::default();
+        let req = semver::VersionReq::parse("~2026.2").unwrap();
+        let mode = TrackingMode::Version(req);
+
+        let bundles = pick_bundles(&manifest, &state, &mode).unwrap();
+        assert_eq!(bundles.len(), 1);
+        // Should pick the latest tag matching ~2026.2, which is v2026.02.2
+        // (a skip delta from v2026.02 to v2026.02.2).
+        assert_eq!(bundles[0].target_tag, "v2026.02.2");
+    }
+
+    #[test]
+    fn pick_bundles_version_no_match() {
+        let manifest = BundleManifest::parse(SAMPLE_MANIFEST).unwrap();
+        let state = RegistryState::default();
+        let req = semver::VersionReq::parse(">=2027").unwrap();
+        let mode = TrackingMode::Version(req);
+
+        let result = pick_bundles(&manifest, &state, &mode);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("no tags matching"), "got: {err}");
+    }
+
+    #[test]
+    fn pick_bundles_branch_mode_same_as_default() {
+        // Branch mode with no state should get the latest snapshot
+        let manifest = BundleManifest::parse(SAMPLE_MANIFEST).unwrap();
+        let state = RegistryState::default();
+        let mode = TrackingMode::Branch("main".into());
+
+        let bundles = pick_bundles(&manifest, &state, &mode).unwrap();
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].target_tag, "v2026.02");
+    }
+
+    #[test]
+    fn find_best_version_tag_in_manifest_tilde() {
+        let manifest = BundleManifest::parse(SAMPLE_MANIFEST).unwrap();
+        let req = semver::VersionReq::parse("~2026.2").unwrap();
+        let best = find_best_version_tag_in_manifest(&manifest, &req);
+        // v2026.02 parses as 2026.2.0, v2026.02.1 as 2026.2.1, v2026.02.2 as 2026.2.2
+        // All match ~2026.2, so the best (latest) is v2026.02.2
+        assert_eq!(best.unwrap(), "v2026.02.2");
+    }
+
+    #[test]
+    fn find_best_version_tag_no_match() {
+        let manifest = BundleManifest::parse(SAMPLE_MANIFEST).unwrap();
+        let req = semver::VersionReq::parse(">=2027").unwrap();
+        assert!(find_best_version_tag_in_manifest(&manifest, &req).is_none());
+    }
+
+    #[test]
+    fn find_best_version_tag_non_semver_ignored() {
+        // Tags that don't parse as semver should be silently skipped
+        let toml = r#"
+[manifest]
+registry = "test"
+version = 1
+
+[[bundles]]
+tag = "release-candidate"
+type = "snapshot"
+uri = "test.bundle"
+creation_token = 1000
+size = 1024
+sha256 = "abc"
+
+[[bundles]]
+tag = "v1.2.3"
+type = "snapshot"
+uri = "test2.bundle"
+creation_token = 2000
+size = 1024
+sha256 = "def"
+"#;
+        let manifest = BundleManifest::parse(toml).unwrap();
+        let req = semver::VersionReq::parse(">=1").unwrap();
+        let best = find_best_version_tag_in_manifest(&manifest, &req);
+        assert_eq!(best.unwrap(), "v1.2.3");
     }
 
     #[test]

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 aos-core = { workspace = true }
+aos-net = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -22,6 +23,7 @@ humantime = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
 clap = { workspace = true }
+semver = { workspace = true }
 zstd = { workspace = true }
 url = { workspace = true }
 futures-util = { workspace = true }

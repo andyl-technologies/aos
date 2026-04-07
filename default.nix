@@ -31,7 +31,7 @@
   crossSystem ? null,
 }:
 let
-  lib = import ./lib { inherit system; };
+  lib = import ./lib { inherit system; bash = stdenv.bash; };
   buildPlatform = lib.platform;
   hostPlatform = if crossSystem != null then lib.mkPlatform crossSystem else buildPlatform;
 
@@ -135,6 +135,11 @@ let
         value = attrs.${name};
       }) (builtins.attrNames attrs)
     );
+
+  # ---------------------------------------------------------------------------
+  # APM/APR VM tests (headless Firecracker, registry + tracking + packages)
+  # ---------------------------------------------------------------------------
+  apmTests = import ./tests/vm/apm { inherit testing pkgs; };
 
   # ---------------------------------------------------------------------------
   # Package integration checks (Firecracker-based, defined on packages)
@@ -246,7 +251,9 @@ in
     build = import ./lib/testing/build.nix { inherit pkgs lib; };
     tla = import ./lib/testing/tla.nix { inherit pkgs lib; };
     # Module-level VM checks (from server system, for backwards compat)
-    vm = serverSystem.config.system.build.checks;
+    vm = serverSystem.config.system.build.checks // {
+      apm = apmTests;
+    };
     integration = packageChecks // stdenvChecks;
   };
 

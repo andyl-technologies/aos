@@ -46,19 +46,21 @@ builtins.derivation {
       sleep 1
       find . \( -name 'configure' -o -name 'Makefile.in' -o -name 'aclocal.m4' -o -name 'config.h.in' \) -exec touch {} + 2>/dev/null || true
 
-      mkdir -p "$TMPDIR/build"
-      cd "$TMPDIR/build"
-
+      # Build in-tree (out-of-tree has -j race on .deps/*.Tpo files in src/)
       CC="${gcc}/bin/gcc -static" \
       CFLAGS="-O2 -I${prev.glibc}/include" \
       LDFLAGS="-L${prev.glibc}/lib -static -Wl,--whole-archive ${prev.glibc}/lib/libnss_files.a ${prev.glibc}/lib/libnss_dns.a ${prev.glibc}/lib/libresolv.a -Wl,--no-whole-archive -Wl,--defsym=__res_iclose=0 -Wl,-u,dl_iterate_phdr" \
-      "$TMPDIR/bison-2.4.3/configure" \
+      ./configure \
         --prefix="$out" \
         --build=${hostPlatform.config} --host=${hostPlatform.config} \
         --disable-nls
 
       # Fix gnulib 'gets' issue (glibc removed gets() declaration)
       ${prev.sed}/bin/sed -i '/gets is a security hole/d' lib/stdio.in.h 2>/dev/null || true
+
+      # doc/local.mk rebuilds cross-options.texi (needs perl) and bison.1
+      # (needs help2man). Pre-touch these so make skips regeneration.
+      touch doc/cross-options.texi doc/bison.1
 
       make -j"$NIX_BUILD_CORES" MAKEINFO=true
       make install MAKEINFO=true

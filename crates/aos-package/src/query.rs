@@ -6,6 +6,7 @@ use super::config::ApmConfig;
 use super::profile::meta::list_meta;
 use super::profile::Profile;
 use super::registry::{store_path_hash, Registry, RegistrySet};
+use super::sysroot_lock;
 use super::types::{InstalledMeta, PackageMeta};
 use aos_core::output::{OutputMode, Printer};
 
@@ -176,6 +177,35 @@ pub async fn show(
         }
         printer.kv("Source drv", &meta.source_drv);
         printer.kv("Maintainer", &meta.maintainer);
+
+        // Show sysroot-specific information.
+        crate::sysroot::show_sysroot_info(meta, printer);
+
+        // Show sysroot-lock violations if installed.
+        if is_installed {
+            if let Some((sysroot_refs, _sys_name, _sys_version)) =
+                sysroot_lock::get_sysroot_references(config)
+            {
+                let lookup = sysroot_lock::build_registry_lookup(config);
+                let pkg_refs: Vec<String> = meta
+                    .references
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(store_path_hash(&meta.store_path).to_string()))
+                    .collect();
+                let violations =
+                    sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
+                if !violations.is_empty() {
+                    printer.kv("Sysroot-lock violations", "");
+                    for v in &violations {
+                        printer.plain(&format!(
+                            "  {:<16} sysroot: {:<12}  installed: {}",
+                            v.name, v.sysroot_version, v.package_version,
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
@@ -209,6 +239,14 @@ pub async fn list(
                 .map(|apm| (apm.name.clone(), m))
         })
         .collect();
+
+    // Pre-load sysroot references and registry lookup for sysroot-lock checks.
+    let sysroot_info_for_lock = sysroot_lock::get_sysroot_references(config);
+    let registry_lookup = if sysroot_info_for_lock.is_some() {
+        sysroot_lock::build_registry_lookup(config)
+    } else {
+        HashMap::new()
+    };
 
     // Collect entries: (name, registry_name, version, status).
     let mut entries: Vec<(String, String, String, String)> = Vec::new();
@@ -258,17 +296,60 @@ pub async fn list(
                 continue;
             }
 
-            // Build status string.
-            let status = build_status_string(
-                is_installed,
-                is_upgradable,
-                is_held,
-                if is_upgradable {
-                    Some(&meta.version)
+            // Check sysroot containment for non-installed packages.
+            let sysroot_info = if !is_installed && installed_only {
+                crate::sysroot::check_sysroot_containment(&meta.references, config)
+            } else {
+                None
+            };
+
+            // Check sysroot-lock violations for installed explicit packages.
+            let lock_violation_names: Vec<String> = if is_installed {
+                if let Some((ref sysroot_refs, _, _)) = sysroot_info_for_lock {
+                    let pkg_refs: Vec<String> = meta
+                        .references
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(store_path_hash(&meta.store_path).to_string()))
+                        .collect();
+                    let violations = sysroot_lock::check_sysroot_lock(
+                        sysroot_refs,
+                        &pkg_refs,
+                        &registry_lookup,
+                    );
+                    violations.iter().map(|v| v.name.clone()).collect()
                 } else {
-                    None
-                },
-            );
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            // Build status string.
+            let status = if let Some((sys_name, sys_ver)) = &sysroot_info {
+                format!("via {} {}", sys_name, sys_ver)
+            } else {
+                let mut base = build_status_string(
+                    is_installed,
+                    is_upgradable,
+                    is_held,
+                    if is_upgradable {
+                        Some(&meta.version)
+                    } else {
+                        None
+                    },
+                );
+                if !lock_violation_names.is_empty() {
+                    if !base.is_empty() {
+                        base.push_str(", ");
+                    }
+                    base.push_str(&format!(
+                        "sysroot-locked: {}",
+                        lock_violation_names.join(", "),
+                    ));
+                }
+                base
+            };
 
             let display_version = if let Some(inst) = installed {
                 inst.apm
@@ -459,8 +540,11 @@ mod tests {
             url: format!("https://registry.example.com/{name}"),
             priority,
             enabled: true,
-            pin: None,
+            commit: None,
             branch: None,
+            tag: None,
+            version: None,
+            pin: None,
             signing: None,
         };
 

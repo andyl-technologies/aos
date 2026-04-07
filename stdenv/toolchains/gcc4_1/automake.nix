@@ -44,9 +44,12 @@ builtins.derivation {
         --prefix="$out" \
         --build=${hostPlatform.config} --host=${hostPlatform.config}
 
-      # Remove tests subdirectory from top-level Makefile (runs autoreconf
-      # which invokes extremely slow m4 processing)
-      ${prev.sed}/bin/sed -i '/^SUBDIRS/s/ tests//' Makefile
+      # Remove tests and doc subdirectories from top-level Makefile.
+      # tests: runs extremely slow m4 processing.
+      # doc: rebuilds amhello-1.0.tar.gz via autoreconf, which fails because
+      # AUTOMAKE=true (needed to prevent top-level regeneration) poisons
+      # autoreconf into using 'true' as the automake binary.
+      ${prev.sed}/bin/sed -i '/^SUBDIRS/s/ tests//; /^SUBDIRS/s/ doc//' Makefile
 
       # Prevent make from re-running autotools (we use pre-generated files)
       make -j"$NIX_BUILD_CORES" \

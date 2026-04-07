@@ -27,6 +27,9 @@ struct DepNode {
 // ---------------------------------------------------------------------------
 
 /// `apm depends <package>` -- walk store references and display as a tree.
+///
+/// Uses precomputed closure files when available for the dependency graph.
+/// Falls back to walking `references` fields when no closure file exists.
 pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
 
@@ -35,12 +38,17 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
         .ok_or_else(|| anyhow::anyhow!("package not found in any registry: {package}"))?;
     let registry_name = reg.config.name.clone();
 
+    let hash = store_path_hash(&meta.store_path);
+    let closure_meta = registries.get_closure_in(&registry_name, hash);
+
     let mut visited = HashSet::new();
     let mut ancestors = HashSet::new();
-    let root = build_dep_tree(meta, &registry_name, &registries, &mut visited, &mut ancestors);
+    let root = build_dep_tree(
+        meta, &registry_name, &registries, closure_meta,
+        &mut visited, &mut ancestors,
+    );
 
     // Print root line.
-    let hash = store_path_hash(&meta.store_path);
     printer.plain(&format!(
         "{} ({}){}",
         root.name,
@@ -69,6 +77,9 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
 
 /// `apm rdepends <package>` -- find installed packages whose closure
 /// includes the given package.
+///
+/// Uses precomputed closure files for O(1) membership checks when available.
+/// Falls back to recursive `references` traversal otherwise.
 pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
 
@@ -93,12 +104,22 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
             continue;
         }
 
-        // Resolve the installed package from its registry to get references.
+        let inst_hash = store_path_hash(&inst.store_path);
+
+        // Try closure file first for O(1) membership check.
+        if let Some(closure) = registries.get_closure_in(&apm.registry, inst_hash) {
+            if closure.contains(&target_hash) {
+                dependents.push((apm.name.clone(), apm.version.clone()));
+            }
+            continue;
+        }
+
+        // Fall back to recursive references traversal.
         if let Some(pkg_meta) = registries.resolve_hash_in(
             &apm.registry,
-            store_path_hash(&inst.store_path),
+            inst_hash,
         ) {
-            if closure_contains(&pkg_meta, &apm.registry, &registries, &target_hash) {
+            if closure_contains(pkg_meta, &apm.registry, &registries, &target_hash) {
                 dependents.push((apm.name.clone(), apm.version.clone()));
             }
         }
@@ -211,7 +232,10 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
 }
 
-/// Build a dependency tree recursively from a package's references.
+/// Build a dependency tree recursively.
+///
+/// When `closure_meta` is provided, uses its adjacency list for direct deps.
+/// Otherwise falls back to `meta.references`.
 ///
 /// `visited` tracks all unique store path hashes seen (for counting).
 /// `ancestors` tracks the current recursion path (for cycle detection).
@@ -219,6 +243,7 @@ fn build_dep_tree(
     meta: &PackageMeta,
     registry_name: &str,
     registries: &RegistrySet,
+    closure_meta: Option<&super::types::ClosureMeta>,
     visited: &mut HashSet<String>,
     ancestors: &mut HashSet<String>,
 ) -> DepNode {
@@ -226,12 +251,15 @@ fn build_dep_tree(
     visited.insert(hash.clone());
     ancestors.insert(hash.clone());
 
+    // Get direct deps from closure file if available, otherwise from references.
+    let direct_deps: Vec<String> = if let Some(cm) = closure_meta {
+        cm.direct_deps(&hash).to_vec()
+    } else {
+        meta.references.clone()
+    };
+
     let mut children = Vec::new();
-    for ref_hash in &meta.references {
-        // If this reference resolves to a package we already have on the
-        // current recursion stack, skip it to avoid infinite loops. This
-        // happens when the hash_index maps an unknown reference hash back
-        // to its parent package.
+    for ref_hash in &direct_deps {
         if let Some(ref_meta) = registries.resolve_hash_in(registry_name, ref_hash) {
             let child_hash = store_path_hash(&ref_meta.store_path).to_string();
             visited.insert(child_hash.clone());
@@ -248,6 +276,7 @@ fn build_dep_tree(
                     ref_meta,
                     registry_name,
                     registries,
+                    closure_meta,
                     visited,
                     ancestors,
                 ));
@@ -396,39 +425,11 @@ fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
-    use crate::registry::{Registry, RegistrySet};
-    use crate::types::RegistryConfig;
     use std::fs;
+    use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
+    use crate::registry::tests::make_registry;
+    use crate::registry::RegistrySet;
     use tempfile::TempDir;
-
-    // Helper: create a registry from TOML fixtures.
-    fn make_registry(
-        tmp: &TempDir,
-        name: &str,
-        priority: u32,
-        toml_files: &[(&str, &str)],
-    ) -> Registry {
-        let reg_dir = tmp.path().join(name).join("packages");
-        for (pkg_name, content) in toml_files {
-            let first_letter = &pkg_name[..1];
-            let dir = reg_dir.join(first_letter);
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join(format!("{pkg_name}.toml")), content).unwrap();
-        }
-
-        let config = RegistryConfig {
-            name: name.to_string(),
-            url: format!("https://registry.example.com/{name}"),
-            priority,
-            enabled: true,
-            pin: None,
-            branch: None,
-            signing: None,
-        };
-
-        Registry::load(tmp.path(), &config, "x86_64-linux").unwrap()
-    }
 
     // 1. Package with no references shows just itself.
     #[test]
@@ -440,7 +441,7 @@ mod tests {
         let (_, meta) = set.resolve("zlib").unwrap();
         let mut visited = HashSet::new();
         let mut ancestors = HashSet::new();
-        let root = build_dep_tree(meta, "aos-core", &set, &mut visited, &mut ancestors);
+        let root = build_dep_tree(meta, "aos-core", &set, None, &mut visited, &mut ancestors);
 
         assert_eq!(root.name, "zlib");
         assert_eq!(root.version, "1.3.1");
@@ -465,7 +466,7 @@ mod tests {
         let (_, meta) = set.resolve("curl").unwrap();
         let mut visited = HashSet::new();
         let mut ancestors = HashSet::new();
-        let root = build_dep_tree(meta, "aos-core", &set, &mut visited, &mut ancestors);
+        let root = build_dep_tree(meta, "aos-core", &set, None, &mut visited, &mut ancestors);
 
         assert_eq!(root.name, "curl");
         assert_eq!(root.children.len(), 4); // 4 references in CURL_TOML
@@ -504,7 +505,7 @@ mod tests {
         let (_, meta) = set.resolve("curl").unwrap();
         let mut visited = HashSet::new();
         let mut ancestors = HashSet::new();
-        let _root = build_dep_tree(meta, "aos-core", &set, &mut visited, &mut ancestors);
+        let _root = build_dep_tree(meta, "aos-core", &set, None, &mut visited, &mut ancestors);
 
         // curl's hash + zlib's hash = 2 unique package hashes.
         // The 3 unknown reference hashes also resolve to curl's PackageMeta

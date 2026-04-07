@@ -1,7 +1,10 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+
+use aos_net::{TransferEngine, TransferRequest};
 
 use super::CacheBackend;
 
@@ -9,17 +12,24 @@ use super::CacheBackend;
 ///
 /// Stores narinfos and NARs in a local directory, producing a layout directly
 /// usable as `--substituters file:///path`.
+/// Uses `aos_net::TransferEngine` with file:// URLs internally.
 pub struct FsBackend {
+    engine: Arc<TransferEngine>,
     root: PathBuf,
 }
 
 impl FsBackend {
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(root: PathBuf, engine: Arc<TransferEngine>) -> Self {
+        Self { engine, root }
     }
 
-    fn narinfo_path(&self, store_hash: &str) -> PathBuf {
-        self.root.join(format!("{store_hash}.narinfo"))
+    fn file_url(&self, relative: &str) -> String {
+        let path = self.root.join(relative);
+        format!("file://{}", path.display())
+    }
+
+    fn narinfo_url(&self, store_hash: &str) -> String {
+        self.file_url(&format!("{store_hash}.narinfo"))
     }
 
     fn nar_dir(&self) -> PathBuf {
@@ -30,32 +40,52 @@ impl FsBackend {
 #[async_trait]
 impl CacheBackend for FsBackend {
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
-        Ok(self.narinfo_path(store_hash).exists())
+        let url = self.narinfo_url(store_hash);
+        let result = self.engine.head(&url).await?;
+        Ok(result.status == 200)
     }
 
     async fn get_narinfo(&self, store_hash: &str) -> Result<String> {
-        let path = self.narinfo_path(store_hash);
-        tokio::fs::read_to_string(&path)
+        let url = self.narinfo_url(store_hash);
+        let result = self
+            .engine
+            .execute(TransferRequest::get(&url))
             .await
-            .with_context(|| format!("reading narinfo {}", path.display()))
+            .with_context(|| format!("reading narinfo {url}"))?;
+
+        let body = result
+            .body
+            .ok_or_else(|| anyhow::anyhow!("empty response for {url}"))?;
+        String::from_utf8(body).context("narinfo is not valid UTF-8")
     }
 
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
+        // Ensure cache directory exists (TransferEngine's file:// protocol
+        // creates parent dirs, but we need the root).
         tokio::fs::create_dir_all(&self.root)
             .await
             .context("creating cache directory")?;
 
-        let path = self.narinfo_path(store_hash);
-        tokio::fs::write(&path, content)
+        let url = self.narinfo_url(store_hash);
+        let req = TransferRequest::put(&url, content.as_bytes().to_vec());
+        self.engine
+            .execute(req)
             .await
-            .with_context(|| format!("writing narinfo {}", path.display()))
+            .with_context(|| format!("writing narinfo {url}"))?;
+        Ok(())
     }
 
-    async fn get_nar(&self, url: &str) -> Result<Vec<u8>> {
-        let path = self.root.join(url);
-        tokio::fs::read(&path)
+    async fn get_nar(&self, relative_path: &str) -> Result<Vec<u8>> {
+        let url = self.file_url(relative_path);
+        let result = self
+            .engine
+            .execute(TransferRequest::get(&url))
             .await
-            .with_context(|| format!("reading NAR {}", path.display()))
+            .with_context(|| format!("reading NAR {url}"))?;
+
+        result
+            .body
+            .ok_or_else(|| anyhow::anyhow!("empty response for {url}"))
     }
 
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
@@ -64,16 +94,21 @@ impl CacheBackend for FsBackend {
             .await
             .context("creating nar directory")?;
 
-        let path = nar_dir.join(filename);
-        tokio::fs::write(&path, data)
+        let url = self.file_url(&format!("nar/{filename}"));
+        let req = TransferRequest::put(&url, data.to_vec());
+        self.engine
+            .execute(req)
             .await
-            .with_context(|| format!("writing NAR {}", path.display()))
+            .with_context(|| format!("writing NAR {url}"))?;
+        Ok(())
     }
 
     async fn query_missing(&self, store_hashes: &[&str]) -> Result<Vec<String>> {
+        // For filesystem, simple stat check is faster than going through engine.
         let mut missing = Vec::new();
         for hash in store_hashes {
-            if !self.narinfo_path(hash).exists() {
+            let path = self.root.join(format!("{hash}.narinfo"));
+            if !path.exists() {
                 missing.push(hash.to_string());
             }
         }
@@ -90,7 +125,10 @@ impl CacheBackend for FsBackend {
             let content = format!(
                 "StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n"
             );
-            tokio::fs::write(&info_path, content)
+            let url = self.file_url("nix-cache-info");
+            let req = TransferRequest::put(&url, content.into_bytes());
+            self.engine
+                .execute(req)
                 .await
                 .context("writing nix-cache-info")?;
         }

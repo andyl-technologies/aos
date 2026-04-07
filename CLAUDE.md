@@ -19,6 +19,12 @@ previously-built AOS packages. **No host tools. No upstream nixpkgs.**
 - The entire build system is fully self-hosted. **No nixpkgs dependencies
   exist** — not in packages, not in test tools (QEMU is built from source),
   not in the flake, and not in the dev shell.
+- **No `/bin/sh`, `/bin/bash`, or `/usr/bin/env` paths.** All shell references
+  must use AOS-built bash from the stdenv (`${bash}/bin/bash` or the `shell`
+  parameter). The only exception is inside the source bootstrap chain
+  (`stdenv/bootstrap/`) where the Nix sandbox's `/bin/sh` is the only option.
+  Shebangs inside VM rootfs init scripts may use `/bin/sh` since the rootfs
+  builder creates that symlink pointing to the AOS bash.
 
 ## Package structure
 

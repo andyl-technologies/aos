@@ -7,12 +7,15 @@ pub mod install;
 pub mod profile;
 pub mod query;
 pub mod registry;
+pub mod registry_ops;
 pub mod remove;
 pub mod resolve;
 pub mod rollback;
 pub mod security;
 pub mod source;
 pub mod store;
+pub mod sysroot;
+pub mod sysroot_lock;
 pub mod types;
 pub mod update;
 pub mod upgrade;
@@ -25,6 +28,7 @@ use clap::Subcommand;
 
 use aos_core::error::AosError;
 use aos_core::output::Printer;
+use sysroot::KernelUpgradeMode;
 use types::ProfileScope;
 
 /// Clap subcommand enum for `aos package` / `apm`.
@@ -46,6 +50,30 @@ pub enum PackageCommand {
         /// Skip automatic dependency installation
         #[arg(long)]
         no_deps: bool,
+        /// Install as system sysroot (generation switching)
+        #[arg(long)]
+        system: bool,
+        /// Download a pre-compiled image instead of the toplevel
+        #[arg(long)]
+        image: Option<String>,
+        /// Output path for a downloaded image (with --image)
+        #[arg(long)]
+        output: Option<String>,
+        /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
+        #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
+        ignore_sysroot_lock: Option<String>,
+        /// Use kexec to hot-load new kernel (with --system)
+        #[arg(long, group = "kernel_mode")]
+        kexec: bool,
+        /// Full reboot after activation (with --system)
+        #[arg(long, group = "kernel_mode")]
+        reboot: bool,
+        /// Userspace only, defer kernel to next reboot (with --system)
+        #[arg(long, group = "kernel_mode")]
+        live: bool,
+        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        #[arg(long)]
+        drain: bool,
     },
     /// Remove packages (keep deps)
     Remove {
@@ -61,6 +89,9 @@ pub enum PackageCommand {
     Reinstall {
         /// Package names to reinstall
         packages: Vec<String>,
+        /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
+        #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
+        ignore_sysroot_lock: Option<String>,
     },
     /// Fetch latest registry metadata
     Update {
@@ -75,6 +106,24 @@ pub enum PackageCommand {
         /// Skip specific packages
         #[arg(long)]
         exclude: Vec<String>,
+        /// Upgrade the system sysroot
+        #[arg(long)]
+        system: bool,
+        /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
+        #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
+        ignore_sysroot_lock: Option<String>,
+        /// Use kexec to hot-load new kernel (with --system)
+        #[arg(long, group = "kernel_mode")]
+        kexec: bool,
+        /// Full reboot after activation (with --system)
+        #[arg(long, group = "kernel_mode")]
+        reboot: bool,
+        /// Userspace only, defer kernel to next reboot (with --system)
+        #[arg(long, group = "kernel_mode")]
+        live: bool,
+        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        #[arg(long)]
+        drain: bool,
     },
     /// Upgrade all packages with dependency resolution changes
     FullUpgrade,
@@ -179,6 +228,24 @@ pub enum PackageCommand {
         /// Roll back to a specific generation number
         #[arg(long)]
         generation: Option<u32>,
+        /// Roll back the system sysroot
+        #[arg(long)]
+        system: bool,
+        /// List all system generations
+        #[arg(long)]
+        list: bool,
+        /// Use kexec to hot-load old kernel (with --system)
+        #[arg(long, group = "kernel_mode")]
+        kexec: bool,
+        /// Full reboot after rollback (with --system)
+        #[arg(long, group = "kernel_mode")]
+        reboot: bool,
+        /// Userspace only, defer kernel to next reboot (with --system)
+        #[arg(long, group = "kernel_mode")]
+        live: bool,
+        /// Drain workloads before kernel switch (with --kexec or --reboot)
+        #[arg(long)]
+        drain: bool,
     },
     /// Manage registries
     Registry {
@@ -187,34 +254,452 @@ pub enum PackageCommand {
     },
 }
 
-/// Clap subcommand enum for `apm registry`.
+impl PackageCommand {
+    /// Returns `true` when the user passed `--system` on a subcommand that
+    /// supports it (Install, Upgrade, Rollback).
+    pub fn is_system(&self) -> bool {
+        match self {
+            PackageCommand::Install { system, .. } => *system,
+            PackageCommand::Upgrade { system, .. } => *system,
+            PackageCommand::Rollback { system, .. } => *system,
+            _ => false,
+        }
+    }
+}
+
+/// Clap subcommand enum for `apm registry` / `apr`.
 #[derive(Subcommand)]
 pub enum RegistryCommand {
+    // ----- Registry Lifecycle -----
+    /// Initialize a new empty registry
+    Create {
+        /// Registry name
+        name: String,
+        /// Remote URL to set as origin
+        #[arg(long)]
+        remote: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
     /// List configured registries and priorities
     List,
-    /// Add a registry
+    /// Add a registry (clone remote into storage)
     Add {
         /// Registry URL
         url: String,
+        /// Registry name (derived from URL if omitted)
+        #[arg(long)]
+        name: Option<String>,
         /// Priority (higher = preferred)
         #[arg(long, default_value = "500")]
         priority: u32,
+        /// Pin to exact commit hash (mutually exclusive with --branch/--tag/--version)
+        #[arg(long, group = "tracking")]
+        commit: Option<String>,
+        /// Track a branch HEAD (mutually exclusive with --commit/--tag/--version)
+        #[arg(long, group = "tracking")]
+        branch: Option<String>,
+        /// Pin to exact tag name (mutually exclusive with --commit/--branch/--version)
+        #[arg(long, group = "tracking")]
+        tag: Option<String>,
+        /// Semver version constraint on tags (mutually exclusive with --commit/--branch/--tag)
+        #[arg(long, group = "tracking")]
+        version: Option<String>,
     },
-    /// Remove a registry (fails if packages still installed)
+    /// Remove a registry
     Remove {
         /// Registry name
         name: String,
+        /// Keep local clone on disk
+        #[arg(long)]
+        keep_local: bool,
     },
+
+    // ----- Package Entries -----
+    /// Publish a package to the registry from a store path
+    Publish {
+        /// Nix store path to publish
+        store_path: String,
+        /// Package name override
+        #[arg(long)]
+        name: Option<String>,
+        /// Version override
+        #[arg(long)]
+        version: Option<String>,
+        /// Platform override
+        #[arg(long)]
+        platform: Option<String>,
+        /// Package description
+        #[arg(long)]
+        description: Option<String>,
+        /// Package homepage
+        #[arg(long)]
+        homepage: Option<String>,
+        /// Package license
+        #[arg(long)]
+        license: Option<String>,
+        /// Package maintainer
+        #[arg(long)]
+        maintainer: Option<String>,
+        /// Mark this package as a system toplevel (sysroot)
+        #[arg(long)]
+        sysroot: bool,
+        /// Previous version in the version chain
+        #[arg(long)]
+        previous: Option<String>,
+        /// Pre-compiled image store path (repeatable, paired with --image-format)
+        #[arg(long = "image")]
+        images: Vec<String>,
+        /// Image format for each --image (repeatable, paired with --image)
+        #[arg(long = "image-format")]
+        image_formats: Vec<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Remove a package entry from the registry
+    Unpublish {
+        /// Package name
+        package: String,
+        /// Specific version to remove (removes all if omitted)
+        version: Option<String>,
+        /// Platform to remove
+        #[arg(long)]
+        platform: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Custom commit message
+        #[arg(long)]
+        message: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+
+    // ----- Registry Query -----
+    /// Show a package entry from the registry
+    Show {
+        /// Package name
+        package: String,
+        /// Specific version
+        #[arg(long)]
+        version: Option<String>,
+        /// Show raw TOML
+        #[arg(long)]
+        raw: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// List packages in the registry
+    Packages {
+        /// Filter by platform
+        #[arg(long)]
+        platform: Option<String>,
+        /// Show only packages with newer versions available
+        #[arg(long)]
+        outdated: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Validate TOML schema and hashes
+    Verify {
+        /// Verify only this package
+        #[arg(long)]
+        package: Option<String>,
+        /// Attempt to fix validation errors
+        #[arg(long)]
+        fix: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show pending changes vs HEAD or remote
+    Diff {
+        /// Show only file stats
+        #[arg(long)]
+        stat: bool,
+        /// Diff against remote
+        #[arg(long)]
+        remote: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Validate cache has all referenced store paths
+    Validate {
+        /// Validate only this package
+        #[arg(long)]
+        package: Option<String>,
+        /// Filter by platform
+        #[arg(long)]
+        platform: Option<String>,
+        /// Remove entries whose paths are missing
+        #[arg(long)]
+        fix: bool,
+        /// Number of parallel HEAD requests
+        #[arg(short, long, default_value = "32")]
+        jobs: u32,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+
+    // ----- Git Workflow -----
+    /// Show working tree status
+    Status {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show commit history
+    Log {
+        /// Filter log by package
+        #[arg(long)]
+        package: Option<String>,
+        /// Number of commits to show
+        #[arg(short, default_value = "20")]
+        n: u32,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Branch operations
+    Branch {
+        #[command(subcommand)]
+        command: BranchCommand,
+    },
+    /// Push to remote
+    Push {
+        /// Branch to push
+        #[arg(long)]
+        branch: Option<String>,
+        /// Set upstream tracking
+        #[arg(long)]
+        set_upstream: bool,
+        /// Force push
+        #[arg(long)]
+        force: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Fetch and fast-forward from remote
+    Pull {
+        /// Use rebase instead of merge
+        #[arg(long)]
+        rebase: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Merge a branch
+    Merge {
+        /// Branch to merge
+        branch: String,
+        /// Create a merge commit even for fast-forward
+        #[arg(long)]
+        no_ff: bool,
+        /// Squash commits
+        #[arg(long)]
+        squash: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+
+    // ----- GitHub Integration -----
+    /// GitHub Pull Request operations
+    Pr {
+        #[command(subcommand)]
+        command: PrCommand,
+    },
+
+    // ----- Release -----
+    /// Create a git tag
+    Tag {
+        /// Tag name
+        name: String,
+        /// Tag message
+        #[arg(long)]
+        message: Option<String>,
+        /// Signing key
+        #[arg(long)]
+        key: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Generate git bundles for HTTP distribution
+    Bundle {
+        /// Output directory
+        #[arg(long)]
+        output: Option<String>,
+        /// Tag to bundle
+        #[arg(long)]
+        tag: Option<String>,
+        /// Create delta from this tag
+        #[arg(long)]
+        delta_from: Option<String>,
+        /// Update the bundle-list.toml manifest
+        #[arg(long)]
+        update_manifest: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Sign a commit
+    Sign {
+        /// Commit to sign (default: HEAD)
+        commit: Option<String>,
+        /// Signing key
+        #[arg(long)]
+        key: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Branch subcommands.
+#[derive(Subcommand)]
+pub enum BranchCommand {
+    /// List branches
+    List {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Create a new branch
+    Create {
+        /// Branch name
+        name: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Switch to a branch
+    Switch {
+        /// Branch name
+        name: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Delete a branch
+    Delete {
+        /// Branch name
+        name: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// GitHub PR subcommands.
+#[derive(Subcommand)]
+pub enum PrCommand {
+    /// Create a pull request
+    Create {
+        /// PR title
+        #[arg(long)]
+        title: Option<String>,
+        /// PR body
+        #[arg(long)]
+        body: Option<String>,
+        /// Base branch
+        #[arg(long)]
+        base: Option<String>,
+        /// Create as draft
+        #[arg(long)]
+        draft: bool,
+        /// Request review from
+        #[arg(long)]
+        reviewer: Vec<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// List pull requests
+    List {
+        /// Filter by author
+        #[arg(long)]
+        author: Option<String>,
+        /// Show only my PRs
+        #[arg(long)]
+        mine: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show a pull request
+    Show {
+        /// PR number
+        number: u32,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Merge a pull request
+    Merge {
+        /// PR number
+        number: u32,
+        /// Squash merge
+        #[arg(long)]
+        squash: bool,
+        /// Rebase merge
+        #[arg(long)]
+        rebase: bool,
+        /// Regular merge
+        #[arg(long)]
+        merge: bool,
+        /// Delete branch after merge
+        #[arg(long)]
+        delete_branch: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show PR diff
+    Diff {
+        /// PR number
+        number: u32,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Convert mutually-exclusive kernel mode flags into a `KernelUpgradeMode`.
+fn parse_kernel_mode(kexec: bool, reboot: bool, live: bool) -> KernelUpgradeMode {
+    if kexec {
+        KernelUpgradeMode::Kexec
+    } else if reboot {
+        KernelUpgradeMode::Reboot
+    } else if live {
+        KernelUpgradeMode::Live
+    } else {
+        KernelUpgradeMode::Advisory
+    }
 }
 
 /// Main entry point for `aos package` / `apm`.
 pub async fn run(
-    system: bool,
     command: &PackageCommand,
     dry_run: bool,
     yes: bool,
     printer: &Printer,
 ) -> Result<()> {
+    let system = command.is_system();
     let scope = if system {
         ProfileScope::System
     } else {
@@ -225,9 +710,39 @@ pub async fn run(
 
     match command {
         PackageCommand::Install {
-            packages, registry, ..
+            packages,
+            registry,
+            system: install_system,
+            image: image_fmt,
+            output: image_output,
+            ignore_sysroot_lock,
+            kexec,
+            reboot,
+            live,
+            drain,
+            ..
         } => {
-            install::run(&config, packages, registry.as_deref(), dry_run, yes, printer).await
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
+                ignore_sysroot_lock.as_deref(),
+            );
+            if *install_system || image_fmt.is_some() {
+                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
+                sysroot::install_system(
+                    &config,
+                    packages,
+                    registry.as_deref(),
+                    image_fmt.as_deref(),
+                    image_output.as_deref(),
+                    dry_run,
+                    yes,
+                    kernel_mode,
+                    *drain,
+                    printer,
+                )
+                .await
+            } else {
+                install::run(&config, packages, registry.as_deref(), dry_run, yes, &ignore, printer).await
+            }
         }
         PackageCommand::Remove {
             packages,
@@ -236,17 +751,41 @@ pub async fn run(
         PackageCommand::Autoremove => {
             remove::run_autoremove(&config, dry_run, yes, printer).await
         }
-        PackageCommand::Reinstall { packages, .. } => {
-            install::run(&config, packages, None, dry_run, yes, printer).await
+        PackageCommand::Reinstall {
+            packages,
+            ignore_sysroot_lock,
+        } => {
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
+                ignore_sysroot_lock.as_deref(),
+            );
+            install::run(&config, packages, None, dry_run, yes, &ignore, printer).await
         }
         PackageCommand::Update { registry } => {
             update::run(&config, registry.as_deref(), printer).await
         }
-        PackageCommand::Upgrade { packages, exclude } => {
-            upgrade::run(&config, packages, exclude, dry_run, yes, printer).await
+        PackageCommand::Upgrade {
+            packages,
+            exclude,
+            system: upgrade_system,
+            ignore_sysroot_lock,
+            kexec,
+            reboot,
+            live,
+            drain,
+        } => {
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
+                ignore_sysroot_lock.as_deref(),
+            );
+            if *upgrade_system {
+                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
+                sysroot::upgrade_system(&config, dry_run, kernel_mode, *drain, printer).await
+            } else {
+                upgrade::run(&config, packages, exclude, dry_run, yes, &ignore, printer).await
+            }
         }
         PackageCommand::FullUpgrade => {
-            upgrade::run(&config, &[], &[], dry_run, yes, printer).await
+            let ignore = sysroot_lock::IgnoreSysrootLock::Enforce;
+            upgrade::run(&config, &[], &[], dry_run, yes, &ignore, printer).await
         }
         PackageCommand::Search {
             pattern,
@@ -301,8 +840,30 @@ pub async fn run(
         } => {
             source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await
         }
-        PackageCommand::Rollback { generation } => {
-            rollback::run(&config, *generation, dry_run, printer).await
+        PackageCommand::Rollback {
+            generation,
+            system: rollback_system,
+            list: rollback_list,
+            kexec,
+            reboot,
+            live,
+            drain,
+        } => {
+            if *rollback_system || *rollback_list {
+                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
+                sysroot::rollback_system(
+                    &config,
+                    *generation,
+                    *rollback_list,
+                    dry_run,
+                    kernel_mode,
+                    *drain,
+                    printer,
+                )
+                .await
+            } else {
+                rollback::run(&config, *generation, dry_run, printer).await
+            }
         }
         PackageCommand::Registry { command } => {
             run_registry(&config, command, printer).await
@@ -321,11 +882,270 @@ async fn run_registry(
 ) -> Result<()> {
     match command {
         RegistryCommand::List => registry_list(config, printer).await,
-        RegistryCommand::Add { url, priority } => {
-            registry_add(config, url, *priority, printer).await
+        RegistryCommand::Add {
+            url,
+            name,
+            priority,
+            commit,
+            branch,
+            tag,
+            version,
+        } => registry_add(
+            config,
+            url,
+            name.as_deref(),
+            *priority,
+            commit.as_deref(),
+            branch.as_deref(),
+            tag.as_deref(),
+            version.as_deref(),
+            printer,
+        ).await,
+        RegistryCommand::Remove { name, keep_local } => {
+            registry_remove(config, name, *keep_local, printer).await
         }
-        RegistryCommand::Remove { name } => {
-            registry_remove(config, name, printer).await
+        RegistryCommand::Create {
+            name, remote, ..
+        } => registry_ops::create(config, name, remote.as_deref(), printer).await,
+        RegistryCommand::Publish {
+            store_path,
+            name,
+            version,
+            platform,
+            description,
+            homepage,
+            license,
+            maintainer,
+            sysroot,
+            previous,
+            images,
+            image_formats,
+            no_commit,
+            message,
+            registry,
+        } => {
+            registry_ops::publish(
+                config,
+                store_path,
+                name.as_deref(),
+                version.as_deref(),
+                platform.as_deref(),
+                description.as_deref(),
+                homepage.as_deref(),
+                license.as_deref(),
+                maintainer.as_deref(),
+                *sysroot,
+                previous.as_deref(),
+                images,
+                image_formats,
+                *no_commit,
+                message.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Unpublish {
+            package,
+            version,
+            platform,
+            no_commit,
+            message,
+            registry,
+        } => {
+            registry_ops::unpublish(
+                config,
+                package,
+                version.as_deref(),
+                platform.as_deref(),
+                *no_commit,
+                message.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Show {
+            package,
+            version,
+            raw,
+            registry,
+        } => {
+            registry_ops::show(
+                config,
+                package,
+                version.as_deref(),
+                *raw,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Packages {
+            platform,
+            outdated,
+            registry,
+        } => {
+            registry_ops::packages(
+                config,
+                platform.as_deref(),
+                *outdated,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Verify {
+            package,
+            fix,
+            registry,
+        } => {
+            registry_ops::verify(
+                config,
+                package.as_deref(),
+                *fix,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Diff {
+            stat,
+            remote,
+            registry,
+        } => {
+            registry_ops::diff(
+                config,
+                *stat,
+                *remote,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Validate {
+            package,
+            platform,
+            fix,
+            jobs,
+            registry,
+        } => {
+            registry_ops::validate(
+                config,
+                package.as_deref(),
+                platform.as_deref(),
+                *fix,
+                *jobs,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Status { registry } => {
+            registry_ops::status(config, registry.as_deref(), printer).await
+        }
+        RegistryCommand::Log {
+            package,
+            n,
+            registry,
+        } => {
+            registry_ops::log(
+                config,
+                package.as_deref(),
+                *n,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Branch { command } => {
+            registry_ops::run_branch(config, command, printer).await
+        }
+        RegistryCommand::Push {
+            branch,
+            set_upstream,
+            force,
+            registry,
+        } => {
+            registry_ops::push(
+                config,
+                branch.as_deref(),
+                *set_upstream,
+                *force,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Pull { rebase, registry } => {
+            registry_ops::pull(config, *rebase, registry.as_deref(), printer).await
+        }
+        RegistryCommand::Merge {
+            branch,
+            no_ff,
+            squash,
+            registry,
+        } => {
+            registry_ops::merge(
+                config,
+                branch,
+                *no_ff,
+                *squash,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Pr { command } => {
+            registry_ops::run_pr(config, command, printer).await
+        }
+        RegistryCommand::Tag {
+            name,
+            message,
+            key,
+            registry,
+        } => {
+            registry_ops::tag(
+                config,
+                name,
+                message.as_deref(),
+                key.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Bundle {
+            output,
+            tag: tag_name,
+            delta_from,
+            update_manifest,
+            registry,
+        } => {
+            registry_ops::bundle(
+                config,
+                output.as_deref(),
+                tag_name.as_deref(),
+                delta_from.as_deref(),
+                *update_manifest,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        RegistryCommand::Sign {
+            commit,
+            key,
+            registry,
+        } => {
+            registry_ops::sign(
+                config,
+                commit.as_deref(),
+                key.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
         }
     }
 }
@@ -349,10 +1169,16 @@ async fn registry_list(
             "disabled"
         };
 
+        let tracking = reg_config
+            .tracking_mode()
+            .map(|m| m.to_string())
+            .unwrap_or_else(|_| "invalid".to_string());
+
         printer.header(&format!("  {} (priority {})", reg_config.name, reg_config.priority));
         printer.kv("URL", &reg_config.url);
         printer.kv("Status", status);
         printer.kv("Transport", &format!("{:?}", reg_config.transport()));
+        printer.kv("Tracking", &tracking);
 
         let cache_dir = config.cache_path();
         let packages_dir = cache_dir.join(&reg_config.name).join("packages");
@@ -384,10 +1210,17 @@ async fn registry_list(
 async fn registry_add(
     config: &config::ApmConfig,
     url: &str,
+    name_override: Option<&str>,
     priority: u32,
+    commit: Option<&str>,
+    branch: Option<&str>,
+    tag: Option<&str>,
+    version: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
-    let name = derive_registry_name(url);
+    let name = name_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| derive_registry_name(url));
 
     if config.find_registry(&name).is_some() {
         bail!(
@@ -395,6 +1228,12 @@ async fn registry_add(
             name,
             name
         );
+    }
+
+    // Validate version constraint if provided.
+    if let Some(v) = version {
+        semver::VersionReq::parse(v)
+            .map_err(|e| anyhow::anyhow!("invalid version constraint '{}': {}", v, e))?;
     }
 
     printer.header(&format!("Adding registry '{name}'..."));
@@ -407,7 +1246,7 @@ async fn registry_add(
         .with_context(|| format!("creating {}", registries_dir.display()))?;
 
     let toml_path = registries_dir.join(format!("{name}.toml"));
-    let toml_content = format!(
+    let mut toml_content = format!(
         r#"[registry]
 name = "{name}"
 url = "{url}"
@@ -415,6 +1254,21 @@ priority = {priority}
 enabled = true
 "#,
     );
+
+    // Add tracking mode field if specified.
+    if let Some(c) = commit {
+        toml_content.push_str(&format!("commit = \"{c}\"\n"));
+        printer.kv("Tracking", &format!("commit:{}", &c[..c.len().min(12)]));
+    } else if let Some(b) = branch {
+        toml_content.push_str(&format!("branch = \"{b}\"\n"));
+        printer.kv("Tracking", &format!("branch:{b}"));
+    } else if let Some(t) = tag {
+        toml_content.push_str(&format!("tag = \"{t}\"\n"));
+        printer.kv("Tracking", &format!("tag:{t}"));
+    } else if let Some(v) = version {
+        toml_content.push_str(&format!("version = \"{v}\"\n"));
+        printer.kv("Tracking", &format!("version:{v}"));
+    }
 
     fs::write(&toml_path, &toml_content)
         .with_context(|| format!("writing {}", toml_path.display()))?;
@@ -429,6 +1283,7 @@ enabled = true
 async fn registry_remove(
     config: &config::ApmConfig,
     name: &str,
+    keep_local: bool,
     printer: &Printer,
 ) -> Result<()> {
     if config.find_registry(name).is_none() {
@@ -474,9 +1329,16 @@ async fn registry_remove(
             .with_context(|| format!("removing {}", toml_path.display()))?;
     }
 
-    let cache_dir = config.cache_path().join(name);
-    if cache_dir.exists() {
-        let _ = fs::remove_dir_all(&cache_dir);
+    if !keep_local {
+        let cache_dir = config.cache_path().join(name);
+        if cache_dir.exists() {
+            let _ = fs::remove_dir_all(&cache_dir);
+        }
+
+        let registries_dir = config.scope.registries_path().join(name);
+        if registries_dir.exists() {
+            let _ = fs::remove_dir_all(&registries_dir);
+        }
     }
 
     let key_store = security::KeyStore::new(config.scope.trusted_keys_dirs());
@@ -580,8 +1442,11 @@ mod tests {
             url: format!("https://registry.example.com/{name}"),
             priority,
             enabled: true,
-            pin: None,
+            commit: None,
             branch: None,
+            tag: None,
+            version: None,
+            pin: None,
             signing: None,
         }
     }
@@ -675,7 +1540,12 @@ mod tests {
         let result = registry_add(
             &config,
             "https://registry.aos.dev/core",
+            None,
             500,
+            None,
+            None,
+            None,
+            None,
             &printer,
         )
         .await;
@@ -690,7 +1560,7 @@ mod tests {
         let config = make_config(&tmp, vec![]);
 
         let printer = Printer::new(0, true, false);
-        let result = registry_remove(&config, "nonexistent", &printer).await;
+        let result = registry_remove(&config, "nonexistent", false, &printer).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "got: {err}");
