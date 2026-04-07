@@ -148,25 +148,25 @@ let
 
   mkImagePreamble = { registryPath }: ''
     export HOME=/tmp/home
-    mkdir -p $HOME/.config/apm
+    mkdir -p $HOME/.config/apm/registries.d
     mkdir -p $HOME/.local/share/apm/registries
     mkdir -p $HOME/.local/share/apm/remote
     mkdir -p $HOME/.cache/apm
     mkdir -p /var/lib/profiles/system
     mkdir -p /var/lib/apm/remote
     mkdir -p /var/lib/apm/registries
-    mkdir -p /etc/apm
+    mkdir -p /etc/apm/registries.d
 
     cp -r ${registryPath} /var/lib/apm/registries/test
     chmod -R u+w /var/lib/apm/registries/test
 
-    cat > /etc/apm/registries.toml << 'CFGEOF'
-    [[registry]]
-    name = "test"
-    url = "file:///var/lib/apm/registries/test"
-    priority = 500
-    enabled = true
-    CFGEOF
+    cat > /etc/apm/registries.d/test.toml << 'CFGEOF'
+[registry]
+name = "test"
+url = "file:///var/lib/apm/registries/test"
+priority = 500
+enabled = true
+CFGEOF
 
     ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
   '';
