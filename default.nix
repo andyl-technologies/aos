@@ -137,6 +137,11 @@ let
     );
 
   # ---------------------------------------------------------------------------
+  # APM/APR VM tests (headless Firecracker, registry + tracking + packages)
+  # ---------------------------------------------------------------------------
+  apmTests = import ./tests/vm/apm { inherit testing pkgs; };
+
+  # ---------------------------------------------------------------------------
   # Package integration checks (Firecracker-based, defined on packages)
   # ---------------------------------------------------------------------------
   packageChecks = builtins.foldl' (
@@ -246,7 +251,9 @@ in
     build = import ./lib/testing/build.nix { inherit pkgs lib; };
     tla = import ./lib/testing/tla.nix { inherit pkgs lib; };
     # Module-level VM checks (from server system, for backwards compat)
-    vm = serverSystem.config.system.build.checks;
+    vm = serverSystem.config.system.build.checks // {
+      apm = apmTests;
+    };
     integration = packageChecks // stdenvChecks;
   };
 
