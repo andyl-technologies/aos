@@ -1,87 +1,101 @@
-//! Progress bar helpers (indicatif wrappers).
+//! Progress tracking via callbacks.
 //!
-//! Shared progress bar creation patterns used by download, upload, and
-//! other network operations.
+//! Provides traits for reporting transfer progress. The calling crate
+//! brings its own UI (indicatif, ratatui, etc.) -- this module only
+//! defines the callback interface.
 
-use std::time::Duration;
+use anyhow;
 
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+/// Callback trait for tracking progress of a single transfer.
+pub trait ProgressHandler: Send + Sync {
+    /// Called when a transfer begins.
+    fn on_start(&self, url: &str, total_bytes: Option<u64>);
 
-/// Create a progress bar for tracking individual file downloads/uploads.
-///
-/// Shows: spinner, label, progress bar, bytes transferred, and transfer speed.
-pub fn create_transfer_bar(total: u64, label: &str) -> ProgressBar {
-    let pb = ProgressBar::new(total);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("  {spinner:.cyan} {msg} [{bar:20.cyan/dim}] {bytes}/{total_bytes} ({bytes_per_sec})")
-            .expect("valid download bar template")
-            .progress_chars("=> "),
-    );
-    pb.set_message(label.to_string());
-    pb.enable_steady_tick(Duration::from_millis(120));
-    pb
+    /// Called on each chunk received/sent.
+    fn on_progress(&self, url: &str, bytes: u64, total: Option<u64>);
+
+    /// Called when a transfer completes successfully.
+    fn on_complete(&self, url: &str, bytes: u64);
+
+    /// Called when a transfer fails.
+    fn on_error(&self, url: &str, error: &anyhow::Error);
 }
 
-/// Create an overall progress bar for batch operations.
-///
-/// Shows: message, progress bar, position/total count.
-pub fn create_overall_bar(total: u64, message: &str) -> ProgressBar {
-    let pb = ProgressBar::new(total);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{msg} [{bar:30.cyan/dim}] {pos}/{len}")
-            .expect("valid template")
-            .progress_chars("=> "),
-    );
-    pb.set_message(message.to_string());
-    pb
+/// Callback trait for tracking progress of a batch of transfers.
+pub trait BatchProgressHandler: Send + Sync {
+    /// Called when an individual transfer in the batch starts.
+    fn on_transfer_start(&self, index: usize, url: &str, total_bytes: Option<u64>);
+
+    /// Called on each chunk received/sent for an individual transfer.
+    fn on_transfer_progress(&self, index: usize, bytes: u64, total: Option<u64>);
+
+    /// Called when an individual transfer completes.
+    fn on_transfer_complete(&self, index: usize, bytes: u64);
+
+    /// Called when an individual transfer fails.
+    fn on_transfer_error(&self, index: usize, error: &anyhow::Error);
+
+    /// Called periodically with overall batch progress.
+    fn on_batch_progress(&self, completed: usize, total: usize, bytes: u64);
 }
 
-/// Create a new `MultiProgress` container for grouping progress bars.
-pub fn create_multi_progress() -> MultiProgress {
-    MultiProgress::new()
+/// A no-op progress handler that discards all progress events.
+pub struct NoopProgress;
+
+impl ProgressHandler for NoopProgress {
+    fn on_start(&self, _url: &str, _total_bytes: Option<u64>) {}
+    fn on_progress(&self, _url: &str, _bytes: u64, _total: Option<u64>) {}
+    fn on_complete(&self, _url: &str, _bytes: u64) {}
+    fn on_error(&self, _url: &str, _error: &anyhow::Error) {}
 }
 
-/// Extract a short label from a store path for progress display.
-///
-/// Input:  `"/var/lib/store/abc123...-curl-8.5.0"`
-/// Output: `"curl-8.5.0"`
-pub fn short_label(store_path: &str) -> String {
-    store_path
-        .rsplit('/')
-        .next()
-        .and_then(|basename| {
-            // Strip the hash prefix (32 chars + dash).
-            if basename.len() > 33 {
-                Some(basename[33..].to_string())
-            } else {
-                Some(basename.to_string())
-            }
-        })
-        .unwrap_or_else(|| store_path.to_string())
+impl BatchProgressHandler for NoopProgress {
+    fn on_transfer_start(&self, _index: usize, _url: &str, _total_bytes: Option<u64>) {}
+    fn on_transfer_progress(&self, _index: usize, _bytes: u64, _total: Option<u64>) {}
+    fn on_transfer_complete(&self, _index: usize, _bytes: u64) {}
+    fn on_transfer_error(&self, _index: usize, _error: &anyhow::Error) {}
+    fn on_batch_progress(&self, _completed: usize, _total: usize, _bytes: u64) {}
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// A progress handler that logs events via tracing.
+pub struct TracingProgress;
 
-    #[test]
-    fn short_label_full_store_path() {
-        let label =
-            short_label("/var/lib/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-8.5.0");
-        assert_eq!(label, "curl-8.5.0");
+impl ProgressHandler for TracingProgress {
+    fn on_start(&self, url: &str, total_bytes: Option<u64>) {
+        tracing::info!(url, total_bytes, "transfer started");
     }
 
-    #[test]
-    fn short_label_short_path() {
-        let label = short_label("short");
-        assert_eq!(label, "short");
+    fn on_progress(&self, url: &str, bytes: u64, total: Option<u64>) {
+        tracing::trace!(url, bytes, total, "transfer progress");
     }
 
-    #[test]
-    fn short_label_just_basename() {
-        let label = short_label("/some/path/x");
-        assert_eq!(label, "x");
+    fn on_complete(&self, url: &str, bytes: u64) {
+        tracing::info!(url, bytes, "transfer complete");
+    }
+
+    fn on_error(&self, url: &str, error: &anyhow::Error) {
+        tracing::error!(url, %error, "transfer failed");
+    }
+}
+
+impl BatchProgressHandler for TracingProgress {
+    fn on_transfer_start(&self, index: usize, url: &str, total_bytes: Option<u64>) {
+        tracing::info!(index, url, total_bytes, "batch transfer started");
+    }
+
+    fn on_transfer_progress(&self, index: usize, bytes: u64, total: Option<u64>) {
+        tracing::trace!(index, bytes, total, "batch transfer progress");
+    }
+
+    fn on_transfer_complete(&self, index: usize, bytes: u64) {
+        tracing::info!(index, bytes, "batch transfer complete");
+    }
+
+    fn on_transfer_error(&self, index: usize, error: &anyhow::Error) {
+        tracing::error!(index, %error, "batch transfer failed");
+    }
+
+    fn on_batch_progress(&self, completed: usize, total: usize, bytes: u64) {
+        tracing::info!(completed, total, bytes, "batch progress");
     }
 }

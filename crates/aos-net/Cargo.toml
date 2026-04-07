@@ -1,39 +1,44 @@
 [package]
 name = "aos-net"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 # HTTP
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["stream"] }
 url = { workspace = true }
 
 # Async
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util"] }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
-tokio-util = { workspace = true }
 
 # Hashing
 sha2 = { workspace = true }
+digest = "0.10"
 hex = { workspace = true }
 
-# Serialization
-serde = { workspace = true }
-serde_json = { workspace = true }
-toml = { workspace = true }
-
-# Progress
-indicatif = { workspace = true }
-
-# Backends
-ssh2 = { workspace = true }
+# S3
 aws-sdk-s3 = { workspace = true }
 aws-config = { workspace = true }
+
+# SSH/SFTP
+ssh2 = { workspace = true }
+
+# FTP
 suppaftp = { workspace = true }
+
+# Serialization (for auth token refresh)
+serde_json = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
+
+# Misc
+rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
