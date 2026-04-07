@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use tokio::process::Command;
 
 use aos_core::output::Printer;
-use crate::types::{RegistryConfig, RegistryState, SigningConfig};
+use crate::types::{RegistryConfig, RegistryState, SigningConfig, TrackingMode};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,6 +44,7 @@ pub struct SyncResult {
 /// 5. Extract package TOML files into the cache directory
 pub async fn sync_git(
     config: &RegistryConfig,
+    tracking_mode: &TrackingMode,
     cache_dir: &Path,
     state: &mut RegistryState,
     printer: &Printer,
@@ -56,10 +57,10 @@ pub async fn sync_git(
     ensure_repo(&repo_dir, &git_url).await?;
 
     // Step 2: Fetch refs.
-    fetch_refs(&repo_dir, &git_url, config).await?;
+    fetch_refs(&repo_dir, &git_url, tracking_mode).await?;
 
     // Step 3: Determine the new HEAD commit.
-    let new_commit = resolve_fetch_head(&repo_dir, config).await?;
+    let new_commit = resolve_fetch_head(&repo_dir, tracking_mode).await?;
 
     // Step 4: Verify commit signature if signing.required.
     if let Some(ref signing) = config.signing {
@@ -160,35 +161,37 @@ async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run `git fetch` with the appropriate refspec.
-///
-/// - If `pin` is set and looks like a tag (starts with 'v'), fetch that tag.
-/// - If `pin` is set and looks like a SHA, fetch it directly.
-/// - If `branch` is set, fetch that branch.
-/// - Otherwise, fetch all refs.
+/// Run `git fetch` with the appropriate refspec based on tracking mode.
 async fn fetch_refs(
     repo_dir: &Path,
     url: &str,
-    config: &RegistryConfig,
+    tracking_mode: &TrackingMode,
 ) -> Result<()> {
     let mut args = vec!["fetch".to_string(), url.to_string()];
 
-    if let Some(ref pin) = config.pin {
-        if pin.starts_with('v') {
-            // Tag pin: fetch the specific tag.
-            args.push(format!("refs/tags/{pin}:refs/tags/{pin}"));
-        } else {
-            // SHA pin: fetch the specific commit.
-            args.push(pin.clone());
+    match tracking_mode {
+        TrackingMode::Commit(hash) => {
+            // Fetch the specific commit.
+            args.push(hash.clone());
         }
-    } else if let Some(ref branch) = config.branch {
-        // Branch tracking: fetch the branch.
-        args.push(format!(
-            "refs/heads/{branch}:refs/remotes/origin/{branch}"
-        ));
-    } else {
-        // Default: fetch all tags.
-        args.push("refs/tags/*:refs/tags/*".to_string());
+        TrackingMode::Branch(branch) => {
+            // Fetch the branch.
+            args.push(format!(
+                "refs/heads/{branch}:refs/remotes/origin/{branch}"
+            ));
+        }
+        TrackingMode::Tag(tag) => {
+            // Fetch the specific tag.
+            args.push(format!("refs/tags/{tag}:refs/tags/{tag}"));
+        }
+        TrackingMode::Version(_) => {
+            // Need all tags to do semver matching.
+            args.push("refs/tags/*:refs/tags/*".to_string());
+        }
+        TrackingMode::Default => {
+            // Fetch all tags.
+            args.push("refs/tags/*:refs/tags/*".to_string());
+        }
     }
 
     // Add --force to allow tag updates.
@@ -212,21 +215,28 @@ async fn fetch_refs(
 /// Resolve the commit SHA to use after fetching.
 async fn resolve_fetch_head(
     repo_dir: &Path,
-    config: &RegistryConfig,
+    tracking_mode: &TrackingMode,
 ) -> Result<String> {
-    let ref_to_resolve = if let Some(ref pin) = config.pin {
-        if pin.starts_with('v') {
-            format!("refs/tags/{pin}")
-        } else {
-            // SHA pin: already a commit hash.
-            return Ok(pin.clone());
+    let ref_to_resolve = match tracking_mode {
+        TrackingMode::Commit(hash) => {
+            // Already a commit hash.
+            return Ok(hash.clone());
         }
-    } else if let Some(ref branch) = config.branch {
-        format!("refs/remotes/origin/{branch}")
-    } else {
-        // Find the latest tag by listing all tags and picking the last one
-        // (lexicographically, which works for our YYYY.MM.patch format).
-        return resolve_latest_tag(repo_dir).await;
+        TrackingMode::Branch(branch) => {
+            format!("refs/remotes/origin/{branch}")
+        }
+        TrackingMode::Tag(tag) => {
+            format!("refs/tags/{tag}")
+        }
+        TrackingMode::Version(req) => {
+            // List all tags, parse as semver, pick the best match.
+            return resolve_best_version_tag(repo_dir, req).await;
+        }
+        TrackingMode::Default => {
+            // Find the latest tag by listing all tags and picking the last one
+            // (lexicographically, which works for our YYYY.MM.patch format).
+            return resolve_latest_tag(repo_dir).await;
+        }
     };
 
     let output = Command::new("git")
@@ -275,6 +285,95 @@ async fn resolve_latest_tag(repo_dir: &Path) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Find the best tag matching a semver constraint.
+///
+/// Lists all tags in the repo, parses each as semver (stripping `v` prefix),
+/// filters by the constraint, and resolves the latest matching tag's commit.
+async fn resolve_best_version_tag(
+    repo_dir: &Path,
+    req: &semver::VersionReq,
+) -> Result<String> {
+    let output = Command::new("git")
+        .args(["tag", "-l"])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .context("listing tags for version matching")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git tag -l failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut best: Option<(semver::Version, String)> = None;
+
+    for tag in stdout.lines() {
+        let tag = tag.trim();
+        if tag.is_empty() {
+            continue;
+        }
+        if let Some(ver) = parse_tag_as_semver(tag) {
+            if req.matches(&ver) {
+                match &best {
+                    Some((best_ver, _)) if ver > *best_ver => {
+                        best = Some((ver, tag.to_string()));
+                    }
+                    None => {
+                        best = Some((ver, tag.to_string()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let (_, best_tag) = best.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no tags matching version constraint '{}' found in registry",
+            req,
+        )
+    })?;
+
+    // Resolve tag to commit.
+    let output = Command::new("git")
+        .args(["rev-parse", &format!("refs/tags/{best_tag}")])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .with_context(|| format!("resolving tag {best_tag}"))?;
+
+    if !output.status.success() {
+        bail!("git rev-parse refs/tags/{best_tag} failed");
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Parse a tag string as a semver `Version`, stripping a leading `v` prefix,
+/// removing leading zeros from components (e.g. `02` -> `2`), and appending
+/// `.0` for two-component versions like `2026.02`.
+fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
+    let stripped = tag.strip_prefix('v').unwrap_or(tag);
+    let parts: Vec<&str> = stripped.split('.').collect();
+    let normalized: Vec<String> = parts
+        .iter()
+        .map(|p| {
+            p.parse::<u64>().map(|n| n.to_string()).unwrap_or_else(|_| p.to_string())
+        })
+        .collect();
+
+    let semver_str = if normalized.len() == 2 {
+        format!("{}.{}.0", normalized[0], normalized[1])
+    } else if normalized.len() == 3 {
+        format!("{}.{}.{}", normalized[0], normalized[1], normalized[2])
+    } else {
+        return None;
+    };
+
+    semver::Version::parse(&semver_str).ok()
 }
 
 /// Verify the commit signature using `git verify-commit`.
