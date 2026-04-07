@@ -76,10 +76,12 @@ CFGEOF
   startServer = ''
     ${aosBin} serve --config /tmp/aos-config.toml &
     SERVER_PID=$!
-    sleep 2
-
-    HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
-      http://127.0.0.1:15000/default/nix-cache-info)
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+      HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
+        http://127.0.0.1:15000/default/nix-cache-info 2>/dev/null) || true
+      if [ "$HTTP_CODE" = "200" ]; then break; fi
+      sleep 1
+    done
     if [ "$HTTP_CODE" != "200" ]; then
       echo "FAIL: server not responding (HTTP $HTTP_CODE)"
       exit 1
