@@ -88,11 +88,9 @@ pub async fn run(
         printer.step(3, 7, "Downloading packages...");
 
         let requests = build_download_requests(&closures, &to_download, config)?;
-        let client = reqwest::Client::new();
         let cache_dir = config.nar_cache_path();
 
         let results = download_nars(
-            &client,
             &requests,
             &cache_dir,
             config.settings.parallel_downloads,

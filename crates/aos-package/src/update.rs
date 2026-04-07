@@ -197,14 +197,11 @@ async fn sync_bundle(
     cache_dir: &Path,
     printer: &Printer,
 ) -> Result<SyncResult> {
-    let client = reqwest::Client::builder()
-        .user_agent("apm/0.1")
-        .build()
-        .context("creating HTTP client")?;
+    let engine = crate::download::default_engine();
 
     // Fetch the bundle manifest.
     let manifest =
-        bundle::BundleManifest::fetch(&client, &config.url, &config.name).await?;
+        bundle::BundleManifest::fetch(&engine, &config.url, &config.name).await?;
 
     // Determine which bundles to download.
     let bundles_to_apply = pick_bundles(&manifest, reg_state, tracking_mode)?;
@@ -237,7 +234,7 @@ async fn sync_bundle(
         let bundle_dir = cache_dir.join(&config.name).join("bundles");
         let dest = bundle_dir.join(&entry.uri);
 
-        bundle::download_bundle(&client, entry, &config.url, &config.name, &dest, printer)
+        bundle::download_bundle(&engine, entry, &config.url, &config.name, &dest, printer)
             .await?;
         bundle::verify_bundle(&dest, &entry.sha256, &repo_dir).await?;
         bundle::unbundle(&dest, &repo_dir).await?;

@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
 use aos_core::output::Printer;
+use aos_net::{HashAlgorithm, TransferEngine, TransferRequest};
 
 // ---------------------------------------------------------------------------
 // Bundle manifest types (parsed from bundle-list.toml)
@@ -97,7 +98,7 @@ impl BundleManifest {
     /// but callers construct the full base URL, so we just append
     /// `/bundle-list.toml`.
     pub async fn fetch(
-        client: &reqwest::Client,
+        engine: &TransferEngine,
         base_url: &str,
         registry_name: &str,
     ) -> Result<Self> {
@@ -107,18 +108,14 @@ impl BundleManifest {
             registry_name,
         );
 
-        let response = client
-            .get(&manifest_url)
-            .send()
+        let result = engine
+            .execute(TransferRequest::get(&manifest_url))
             .await
-            .with_context(|| format!("fetching bundle manifest from {manifest_url}"))?
-            .error_for_status()
-            .with_context(|| format!("HTTP error fetching {manifest_url}"))?;
+            .with_context(|| format!("fetching bundle manifest from {manifest_url}"))?;
 
-        let body = response
-            .text()
-            .await
-            .with_context(|| format!("reading body of {manifest_url}"))?;
+        let body = result
+            .body_string()
+            .ok_or_else(|| anyhow::anyhow!("empty response from {manifest_url}"))?;
 
         Self::parse(&body)
     }
@@ -252,7 +249,7 @@ fn classify_delta(from: &str, _to: &str) -> bool {
 /// Download a bundle file from `{base_url}/bundles/{registry}/{entry.uri}`,
 /// verify its SHA-256 hash, and write it to `dest`.
 pub async fn download_bundle(
-    client: &reqwest::Client,
+    engine: &TransferEngine,
     entry: &BundleEntry,
     base_url: &str,
     registry_name: &str,
@@ -268,14 +265,6 @@ pub async fn download_bundle(
 
     printer.info(&format!("Downloading bundle: {}", entry.uri));
 
-    let mut response = client
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("fetching bundle {url}"))?
-        .error_for_status()
-        .with_context(|| format!("HTTP error fetching bundle {url}"))?;
-
     // Create parent directory if needed.
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent)
@@ -283,38 +272,24 @@ pub async fn download_bundle(
             .with_context(|| format!("creating directory {}", parent.display()))?;
     }
 
-    let mut hasher = Sha256::new();
-    let mut file = tokio::fs::File::create(dest)
+    // Use TransferEngine with SHA-256 verification.
+    let transfer_req = TransferRequest::get(&url)
+        .with_hash(HashAlgorithm::Sha256, &entry.sha256);
+
+    let result = engine
+        .execute(transfer_req)
         .await
-        .with_context(|| format!("creating {}", dest.display()))?;
-    let mut downloaded: u64 = 0;
+        .with_context(|| format!("downloading bundle {url}"))?;
 
-    while let Some(chunk) = response
-        .chunk()
+    let body = result
+        .body
+        .ok_or_else(|| anyhow::anyhow!("empty response for bundle {url}"))?;
+
+    let downloaded = body.len() as u64;
+
+    tokio::fs::write(dest, &body)
         .await
-        .with_context(|| format!("reading bundle {url}"))?
-    {
-        hasher.update(&chunk);
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
-            .await
-            .with_context(|| format!("writing to {}", dest.display()))?;
-        downloaded += chunk.len() as u64;
-    }
-
-    drop(file);
-
-    // Verify SHA-256.
-    let digest = hex::encode(hasher.finalize());
-    if digest != entry.sha256 {
-        // Clean up the corrupt file.
-        let _ = tokio::fs::remove_file(dest).await;
-        bail!(
-            "SHA-256 mismatch for bundle '{}': expected {}, got {}",
-            entry.uri,
-            entry.sha256,
-            digest,
-        );
-    }
+        .with_context(|| format!("writing to {}", dest.display()))?;
 
     printer.info(&format!(
         "Bundle verified: {} ({} bytes)",
