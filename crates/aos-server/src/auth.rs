@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,13 +21,25 @@ pub struct Claims {
     /// Token ID (UUID).
     pub sub: String,
     /// Authorized views.
-    pub views: Vec<String>,
+    pub views: HashSet<String>,
     /// Granted permissions, e.g. `["read", "build"]`.
-    pub permissions: Vec<String>,
+    pub permissions: HashSet<String>,
     /// Issued-at timestamp (Unix seconds).
     pub iat: usize,
     /// Expiry timestamp (Unix seconds).
     pub exp: usize,
+}
+
+impl Claims {
+    /// Check if the claims authorize access to the given view.
+    pub fn has_view(&self, view: &str) -> bool {
+        self.views.contains(view) || self.views.contains("*")
+    }
+
+    /// Check if the claims include a specific permission.
+    pub fn has_permission(&self, perm: &str) -> bool {
+        self.permissions.contains(perm)
+    }
 }
 
 /// Create a signed JWT access token from a validated provisioning token record.
@@ -42,8 +55,8 @@ pub fn create_access_token(
 
     let claims = Claims {
         sub: token_record.id.to_string(),
-        views: token_record.views.clone(),
-        permissions: token_record.permissions.clone(),
+        views: token_record.views.iter().cloned().collect(),
+        permissions: token_record.permissions.iter().cloned().collect(),
         iat: now,
         exp: now + ttl_secs as usize,
     };
@@ -95,6 +108,7 @@ impl FromRequestParts<Arc<AppState>> for AuthClaims {
             &validation,
         )
         .map_err(|e| {
+            tracing::warn!(error = %e, "JWT validation failed");
             (
                 StatusCode::UNAUTHORIZED,
                 format!("invalid token: {e}"),
@@ -153,6 +167,7 @@ impl FromRequestParts<Arc<AppState>> for AuthResult {
             &validation,
         )
         .map_err(|e| {
+            tracing::warn!(error = %e, "JWT validation failed (anonymous-capable endpoint)");
             (
                 StatusCode::UNAUTHORIZED,
                 format!("invalid token: {e}"),
@@ -207,9 +222,11 @@ pub async fn oauth2_token_handler(
     let token_record = match state.tokens.validate_token(secret) {
         Ok(Some(record)) => record,
         Ok(None) => {
+            tracing::warn!("oauth2 token exchange failed: invalid provisioning secret");
             return (StatusCode::UNAUTHORIZED, "invalid provisioning secret").into_response();
         }
         Err(e) => {
+            tracing::error!(error = %e, "oauth2 token validation error");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("token validation error: {e}"),
@@ -223,6 +240,7 @@ pub async fn oauth2_token_handler(
     let access_token = match create_access_token(&state.jwt_secret, &token_record, ttl) {
         Ok(t) => t,
         Err(e) => {
+            tracing::error!(error = %e, token_id = %token_record.id, "oauth2 token creation error");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("token creation error: {e}"),
@@ -231,7 +249,9 @@ pub async fn oauth2_token_handler(
         }
     };
 
-    let scope = token_record.permissions.join(" ");
+    tracing::info!(token_id = %token_record.id, ttl, "access token issued");
+
+    let scope = token_record.permissions.join(" "); // Vec from token store
 
     Json(TokenResponse {
         access_token,

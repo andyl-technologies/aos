@@ -3,8 +3,7 @@ use anyhow::{bail, Context, Result};
 use aos_core::error::AosError;
 use aos_core::nix::NixRunner;
 use aos_core::output::{create_spinner, Printer};
-use aos_remote::build::RemoteClient;
-use aos_remote::sse::EventAction;
+use aos_remote::AosClient;
 
 /// `aos build <package>` or `aos build --all`.
 pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>, all: bool) -> Result<()> {
@@ -71,9 +70,10 @@ pub async fn run_remote(
     printer.info(&format!("Derivation: {drv_str}"));
 
     // Step 2: Authenticate with the remote server.
-    let mut client = RemoteClient::new(remote_url, view, token)?;
     let spinner = create_spinner("authenticating");
-    client.authenticate().await.context("authenticating with remote server")?;
+    let client = AosClient::connect(remote_url, view, token)
+        .await
+        .context("authenticating with remote server")?;
     spinner.finish_and_clear();
 
     // Step 3: Query runtime closure and find missing paths.
@@ -143,37 +143,37 @@ pub async fn run_remote(
         if !large_paths.is_empty() {
             let spinner = create_spinner(&format!("uploading {} large paths", large_paths.len()));
             for (hash, data) in &large_paths {
-                client.upload_path(hash, data).await
+                client.upload(hash, data).await
                     .with_context(|| format!("uploading {hash}"))?;
             }
             spinner.finish_and_clear();
         }
     }
 
-    // Step 5: Request remote build and stream logs via SSE with reconnection.
+    // Step 5: Request remote build and stream events via ConnectRPC.
     printer.info("Starting remote build...");
 
-    client.build(&drv_str, 5, |event| {
-        match event.event.as_deref() {
-            Some("log") => printer.plain(&event.data),
-            Some("status") => printer.info(&format!("[status] {}", event.data)),
-            Some("complete") => {
-                printer.success(&format!("Build complete: {}", event.data));
-                return EventAction::Stop;
+    client.build(&drv_str, |event| {
+        match event.event_type.as_str() {
+            "log" => printer.plain(&event.message),
+            "status" => printer.info(&format!("[status] {}", event.message)),
+            "complete" => {
+                printer.success(&format!("Build complete: {}", event.message));
+                return false;
             }
-            Some("error") => {
-                printer.error(&format!("Build error: {}", event.data));
-                return EventAction::Stop;
+            "error" => {
+                printer.error(&format!("Build error: {}", event.message));
+                return false;
             }
-            Some("daemon-unavailable") => {
-                printer.warning(&format!("[daemon] {}", event.data));
+            "daemon-unavailable" => {
+                printer.warning(&format!("[daemon] {}", event.message));
             }
-            Some("drain") => {
+            "drain" => {
                 printer.warning("Server is draining; will reconnect if disconnected");
             }
             _ => {}
         }
-        EventAction::Continue
+        true
     }).await?;
 
     Ok(())

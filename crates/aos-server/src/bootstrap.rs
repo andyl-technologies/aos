@@ -81,7 +81,7 @@ pub async fn run_bootstrap_listener(state: Arc<AppState>, socket_path: &Path) ->
         let cred = match stream.peer_cred() {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("bootstrap: failed to get peer credentials: {e}");
+                tracing::warn!(error = %e, "bootstrap: failed to get peer credentials");
                 continue;
             }
         };
@@ -94,17 +94,21 @@ pub async fn run_bootstrap_listener(state: Arc<AppState>, socket_path: &Path) ->
             let required_gid = match resolve_group_gid(&state.config.bootstrap.socket_group) {
                 Some(gid) => gid,
                 None => {
-                    eprintln!(
-                        "bootstrap: cannot resolve group '{}', rejecting uid={uid}",
-                        state.config.bootstrap.socket_group
+                    tracing::warn!(
+                        uid,
+                        group = %state.config.bootstrap.socket_group,
+                        "bootstrap: cannot resolve group, rejecting connection"
                     );
                     continue;
                 }
             };
             if peer_gid != required_gid {
-                eprintln!(
-                    "bootstrap: uid={uid} gid={peer_gid} not in group '{}' (gid={required_gid}), rejecting",
-                    state.config.bootstrap.socket_group
+                tracing::warn!(
+                    uid,
+                    peer_gid,
+                    required_gid,
+                    group = %state.config.bootstrap.socket_group,
+                    "bootstrap: peer not in required group, rejecting"
                 );
                 continue;
             }
@@ -113,7 +117,7 @@ pub async fn run_bootstrap_listener(state: Arc<AppState>, socket_path: &Path) ->
         let state = Arc::clone(&state);
         tokio::spawn(async move {
             if let Err(e) = handle_bootstrap_connection(stream, &state, uid).await {
-                eprintln!("bootstrap: connection error: {e}");
+                tracing::error!(error = %e, "bootstrap: connection error");
             }
         });
     }
@@ -153,6 +157,8 @@ async fn handle_request(
             expires_in,
             comment,
         } => {
+            tracing::info!(uid = caller_uid, views = ?views, permissions = ?permissions, "bootstrap: token create requested");
+
             let expires_at = expires_in.map(|secs| {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -175,7 +181,10 @@ async fn handle_request(
                     "permissions": record.permissions,
                     "expires_at": record.expires_at,
                 })),
-                Err(e) => BootstrapResponse::error(format!("creating token: {e}")),
+                Err(e) => {
+                    tracing::error!(uid = caller_uid, error = %e, "bootstrap: token creation failed");
+                    BootstrapResponse::error(format!("creating token: {e}"))
+                }
             }
         }
         BootstrapRequest::List => match state.tokens.list_tokens() {
@@ -195,25 +204,40 @@ async fn handle_request(
                     .collect();
                 BootstrapResponse::success(serde_json::json!({ "tokens": items }))
             }
-            Err(e) => BootstrapResponse::error(format!("listing tokens: {e}")),
+            Err(e) => {
+                tracing::error!(uid = caller_uid, error = %e, "bootstrap: token listing failed");
+                BootstrapResponse::error(format!("listing tokens: {e}"))
+            }
         },
-        BootstrapRequest::Revoke { token_id } => match state.tokens.revoke_token(&token_id) {
-            Ok(true) => BootstrapResponse::success(serde_json::json!({ "revoked": token_id })),
-            Ok(false) => BootstrapResponse::error("token not found"),
-            Err(e) => BootstrapResponse::error(format!("revoking token: {e}")),
-        },
-        BootstrapRequest::Rotate { token_id } => match state.tokens.rotate_token(&token_id) {
-            Ok(Some((secret, record))) => BootstrapResponse::success(serde_json::json!({
-                "token": secret,
-                "id": record.id,
-                "old_id": token_id,
-                "views": record.views,
-                "permissions": record.permissions,
-                "expires_at": record.expires_at,
-            })),
-            Ok(None) => BootstrapResponse::error("token not found"),
-            Err(e) => BootstrapResponse::error(format!("rotating token: {e}")),
-        },
+        BootstrapRequest::Revoke { token_id } => {
+            tracing::info!(uid = caller_uid, token_id = %token_id, "bootstrap: token revoke requested");
+            match state.tokens.revoke_token(&token_id) {
+                Ok(true) => BootstrapResponse::success(serde_json::json!({ "revoked": token_id })),
+                Ok(false) => BootstrapResponse::error("token not found"),
+                Err(e) => {
+                    tracing::error!(uid = caller_uid, token_id = %token_id, error = %e, "bootstrap: token revocation failed");
+                    BootstrapResponse::error(format!("revoking token: {e}"))
+                }
+            }
+        }
+        BootstrapRequest::Rotate { token_id } => {
+            tracing::info!(uid = caller_uid, token_id = %token_id, "bootstrap: token rotate requested");
+            match state.tokens.rotate_token(&token_id) {
+                Ok(Some((secret, record))) => BootstrapResponse::success(serde_json::json!({
+                    "token": secret,
+                    "id": record.id,
+                    "old_id": token_id,
+                    "views": record.views,
+                    "permissions": record.permissions,
+                    "expires_at": record.expires_at,
+                })),
+                Ok(None) => BootstrapResponse::error("token not found"),
+                Err(e) => {
+                    tracing::error!(uid = caller_uid, token_id = %token_id, error = %e, "bootstrap: token rotation failed");
+                    BootstrapResponse::error(format!("rotating token: {e}"))
+                }
+            }
+        }
     }
 }
 

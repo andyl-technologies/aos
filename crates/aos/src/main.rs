@@ -34,15 +34,31 @@ async fn main() {
         eprintln!("This is a bug. Please report it.");
     }));
 
-    // Detect argv[0]: if invoked as "apm", implicitly prepend "package".
+    // Detect argv[0]:
+    // - "apm" -> implicitly prepend "package"
+    // - "apr" -> implicitly prepend "package registry"
     let cli = {
         let argv0 = std::env::args().next().unwrap_or_default();
-        let is_apm = Path::new(&argv0)
+        let raw_bin_name = Path::new(&argv0)
             .file_name()
-            .map(|n| n == "apm")
-            .unwrap_or(false);
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-        if is_apm {
+        // Normalise the binary name: strip leading '.' and trailing
+        // '-unwrapped' so that wrapper scripts that `exec .apm-unwrapped`
+        // are still detected correctly as "apm".
+        let bin_name = raw_bin_name
+            .strip_prefix('.')
+            .unwrap_or(&raw_bin_name)
+            .strip_suffix("-unwrapped")
+            .unwrap_or(&raw_bin_name);
+
+        if bin_name == "apr" {
+            let mut args: Vec<String> = std::env::args().collect();
+            args.insert(1, "package".to_string());
+            args.insert(2, "registry".to_string());
+            Cli::parse_from(args)
+        } else if bin_name == "apm" {
             let mut args: Vec<String> = std::env::args().collect();
             args.insert(1, "package".to_string());
             Cli::parse_from(args)
