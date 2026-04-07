@@ -14,9 +14,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz";
-    sha256 = "05gbq5hklzdfvjjc3hyr98hrm8wkr20ds0y3l7c825va798c04qw";
+    hash = "05gbq5hklzdfvjjc3hyr98hrm8wkr20ds0y3l7c825va798c04qw";
   };
 in
 builtins.derivation {

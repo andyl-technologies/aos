@@ -15,14 +15,16 @@
   ...
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.3.4.tar.bz2";
-    sha256 = "13cg3l7szdf0ardqi13gxgg2z9v5yvzv7xpizrg9mcrk125vjx5y";
+    hash = "13cg3l7szdf0ardqi13gxgg2z9v5yvzv7xpizrg9mcrk125vjx5y";
   };
 
-  linuxpthreads = builtins.fetchTarball {
+  linuxpthreads = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-linuxthreads-2.3.4.tar.bz2";
-    sha256 = "1zlv8zql09fyicf9lh27z73f9afyr3mismhkngnybgqvcfgp7zgj";
+    hash = "1zlv8zql09fyicf9lh27z73f9afyr3mismhkngnybgqvcfgp7zgj";
   };
 in
 builtins.derivation {

@@ -12,16 +12,18 @@
   ...
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gcc/gcc-3.4.6/gcc-3.4.6.tar.bz2";
-    sha256 = "09v2s3ij1pxng9k3z4w98058lvd2m98jywiv5xfiwzxvnp1n5jwq";
+    hash = "09v2s3ij1pxng9k3z4w98058lvd2m98jywiv5xfiwzxvnp1n5jwq";
   };
 
   # Linux kernel headers for CRT compilation — glibc headers reference
   # linux/*.h which must be available when xgcc compiles crtstuff.c.
-  linuxSrc = builtins.fetchTarball {
+  linuxSrc = fetchTarball {
     url = "https://cdn.kernel.org/pub/linux/kernel/v2.6/linux-2.6.9.tar.bz2";
-    sha256 = "1hrnvjlgr4alcs1xcvc98c4vx3bmnc42idp3bav8jnvd0n4kwmq2";
+    hash = "1hrnvjlgr4alcs1xcvc98c4vx3bmnc42idp3bav8jnvd0n4kwmq2";
   };
 in
 builtins.derivation {

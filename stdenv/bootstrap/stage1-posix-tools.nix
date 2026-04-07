@@ -31,12 +31,14 @@
   ...
 }:
 let
+  inherit (import ../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
   system = buildPlatform.system;
-  src = builtins.fetchGit {
-    url = "https://github.com/oriansj/stage0-posix.git";
-    ref = "refs/tags/Release_1.9.1";
-    rev = "45d90f5955b6907dc6cdea9ebafce558359edcd3";
-    submodules = true;
+  # TODO: The old builtins.fetchGit used submodules = true. GitHub tarballs do
+  # not include submodules. This needs a tarball that bundles all submodules
+  # (e.g. a release tarball or a custom archive). Compute hash on builder.
+  src = fetchTarball {
+    url = "https://github.com/oriansj/stage0-posix/archive/45d90f5955b6907dc6cdea9ebafce558359edcd3.tar.gz";
+    hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
   };
 
   # ── Install script (run by freshly-built full kaem) ──────────────────

@@ -17,9 +17,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/automake/automake-1.13.4.tar.xz";
-    sha256 = "sha256-cHpdXUTmAeF89dLm8Rx9gPPSQoSOr7mBKKM76uoXuS4=";
+    hash = "hash-cHpdXUTmAeF89dLm8Rx9gPPSQoSOr7mBKKM76uoXuS4=";
   };
 in
 builtins.derivation {

@@ -13,9 +13,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/texinfo/texinfo-6.5.tar.xz";
-    sha256 = "sha256-s2LpZW+c3AqrrPmpTIf2lIgEGropkZOTSOOyJxn1jxg=";
+    hash = "hash-s2LpZW+c3AqrrPmpTIf2lIgEGropkZOTSOOyJxn1jxg=";
   };
 in
 builtins.derivation {

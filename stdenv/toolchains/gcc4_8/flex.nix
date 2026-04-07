@@ -16,9 +16,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://sourceforge.net/projects/flex/files/flex-2.5.37.tar.bz2";
-    sha256 = "sha256-yKmh5Z+bOWMv24D7dKJyHHArIlu+fdQ79+c5UvjfqRw=";
+    hash = "hash-yKmh5Z+bOWMv24D7dKJyHHArIlu+fdQ79+c5UvjfqRw=";
   };
 in
 builtins.derivation {

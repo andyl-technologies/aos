@@ -12,9 +12,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz";
-    sha256 = "1a0pl9gq1iny210b0vkrf4lp0hjcks3cmf19hfvi44fgjcjviy2j";
+    hash = "1a0pl9gq1iny210b0vkrf4lp0hjcks3cmf19hfvi44fgjcjviy2j";
   };
 in
 builtins.derivation {

@@ -12,9 +12,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://github.com/tukaani-project/xz/releases/download/v5.6.4/xz-5.6.4.tar.gz";
-    sha256 = "0m3a18rpv93z6qwxqgiad1a5xrchv9ssx2j3kqd5igxanlg9k6kc";
+    hash = "0m3a18rpv93z6qwxqgiad1a5xrchv9ssx2j3kqd5igxanlg9k6kc";
   };
 in
 builtins.derivation {

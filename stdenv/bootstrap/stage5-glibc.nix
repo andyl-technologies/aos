@@ -34,18 +34,20 @@
   ...
 }:
 let
+  inherit (import ../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
   system = buildPlatform.system;
 
   sources = import ./sources.nix;
 
-  src = builtins.fetchTarball {
+  src = fetchTarball {
     url = sources.glibc.url;
-    sha256 = sources.glibc.sha256;
+    hash = sources.glibc.hash;
   };
 
-  glibc-linuxthreads-src = builtins.fetchTarball {
+  glibc-linuxthreads-src = fetchTarball {
     url = sources.glibc.linuxthreads.url;
-    sha256 = sources.glibc.linuxthreads.sha256;
+    hash = sources.glibc.linuxthreads.hash;
   };
 
   patchBootFile = ./patches/glibc-boot-2.2.5.patch;

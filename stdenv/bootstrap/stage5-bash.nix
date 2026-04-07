@@ -29,14 +29,16 @@
   ...
 }:
 let
+  inherit (import ../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
   system = buildPlatform.system;
   lib = import ./lib.nix;
 
   sources = import ./sources.nix;
 
-  src = builtins.fetchTarball {
+  src = fetchTarball {
     url = sources.bash.url;
-    sha256 = sources.bash.sha256;
+    hash = sources.bash.hash;
   };
 
   # Replacement for psize.sh — the original runs psize.aux which hangs because

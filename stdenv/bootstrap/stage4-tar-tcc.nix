@@ -14,12 +14,14 @@
   ...
 }:
 let
+  inherit (import ../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
   system = buildPlatform.system;
   sources = import ./sources.nix;
 
-  src = builtins.fetchTarball {
+  src = fetchTarball {
     url = sources.tar.url;
-    sha256 = sources.tar.sha256;
+    hash = sources.tar.hash;
   };
 
   # Stub for getdate.y — the real getdate needs yacc which we don't have

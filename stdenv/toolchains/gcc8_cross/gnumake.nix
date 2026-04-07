@@ -12,9 +12,11 @@
   ...
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/make/make-4.2.1.tar.gz";
-    sha256 = "00m1xnm0yzgalw26vgwnky5cjk0j8v2jvxxaf3p67gpgbisw5xq2";
+    hash = "00m1xnm0yzgalw26vgwnky5cjk0j8v2jvxxaf3p67gpgbisw5xq2";
   };
 in
 builtins.derivation {

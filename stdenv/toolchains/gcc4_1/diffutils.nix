@@ -13,9 +13,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/diffutils/diffutils-2.8.1.tar.gz";
-    sha256 = "198ja157yardrjq27pr5whbv73mn6hld0s9dfv1lkwdisd7y0k37";
+    hash = "198ja157yardrjq27pr5whbv73mn6hld0s9dfv1lkwdisd7y0k37";
   };
 in
 builtins.derivation {

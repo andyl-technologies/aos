@@ -27,14 +27,16 @@
   ...
 }:
 let
+  inherit (import ../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
   system = buildPlatform.system;
   lib = import ./lib.nix;
 
   sources = import ./sources.nix;
 
-  src = builtins.fetchTarball {
+  src = fetchTarball {
     url = sources.sed.url;
-    sha256 = sources.sed.sha256;
+    hash = sources.sed.hash;
   };
 in
 builtins.derivation {

@@ -11,24 +11,26 @@
   ...
 }:
 let
-  gccSrc = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  gccSrc = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2";
-    sha256 = "0d9dzzhp8v0wbiiyy13jymq0dh23qdk8zkh1i3kfqjqb5b96rjf6";
+    hash = "0d9dzzhp8v0wbiiyy13jymq0dh23qdk8zkh1i3kfqjqb5b96rjf6";
   };
 
-  gmpSrc = builtins.fetchTarball {
+  gmpSrc = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gmp/gmp-5.1.3.tar.bz2";
-    sha256 = "1ywxm99myn8qny788sb7b2vq7kvmqhmc808na2a0v08nvz5sfx97";
+    hash = "1ywxm99myn8qny788sb7b2vq7kvmqhmc808na2a0v08nvz5sfx97";
   };
 
-  mpfrSrc = builtins.fetchTarball {
+  mpfrSrc = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/mpfr/mpfr-3.1.2.tar.bz2";
-    sha256 = "1rk77zyqykqh6m425ig547lc8b1wd5z3jsb1046g5mpmv7904gr3";
+    hash = "1rk77zyqykqh6m425ig547lc8b1wd5z3jsb1046g5mpmv7904gr3";
   };
 
-  mpcSrc = builtins.fetchTarball {
+  mpcSrc = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/mpc/mpc-1.0.3.tar.gz";
-    sha256 = "1scdw4gm8hfgkxpnhh33wvgcvh26zzkhza37wxilwwl8kkhn867p";
+    hash = "1scdw4gm8hfgkxpnhh33wvgcvh26zzkhza37wxilwwl8kkhn867p";
   };
 in
 builtins.derivation {

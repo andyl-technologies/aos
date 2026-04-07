@@ -10,9 +10,11 @@
   ...
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.18.tar.xz";
-    sha256 = "19rb2q5i5kcq0wd1apqmcypz7lhd4x2admzndvg4iyv3hg5i4wlp";
+    hash = "19rb2q5i5kcq0wd1apqmcypz7lhd4x2admzndvg4iyv3hg5i4wlp";
   };
 in
 builtins.derivation {

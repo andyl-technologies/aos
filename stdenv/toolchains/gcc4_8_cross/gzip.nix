@@ -12,9 +12,11 @@
   ...
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gzip/gzip-1.5.tar.xz";
-    sha256 = "0r41b8dgrda1v305grzs8clg515gnnxc86jg8qx5xn206mjckh84";
+    hash = "0r41b8dgrda1v305grzs8clg515gnnxc86jg8qx5xn206mjckh84";
   };
 in
 builtins.derivation {

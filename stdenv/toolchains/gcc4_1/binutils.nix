@@ -13,9 +13,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/binutils/binutils-2.17.tar.bz2";
-    sha256 = "054ilydpm1i4clgm2f2ffddwl0047n0cnibyqm60rwa1vizgxw2i";
+    hash = "054ilydpm1i4clgm2f2ffddwl0047n0cnibyqm60rwa1vizgxw2i";
   };
 in
 builtins.derivation {

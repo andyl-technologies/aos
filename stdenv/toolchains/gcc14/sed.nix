@@ -18,9 +18,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/sed/sed-4.9.tar.xz";
-    sha256 = "170m9hyxnhnxisvmii5z7m8i446ab97kam10rqjylj70dk8wh169";
+    hash = "170m9hyxnhnxisvmii5z7m8i446ab97kam10rqjylj70dk8wh169";
   };
 in
 builtins.derivation {

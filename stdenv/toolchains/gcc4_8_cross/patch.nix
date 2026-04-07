@@ -12,9 +12,11 @@
   ...
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/patch/patch-2.7.1.tar.xz";
-    sha256 = "1ccdc5kiwpdjwp3b2k55a4xvkz6gd2vr2k0jg1hgn3g8ssmy57zw";
+    hash = "1ccdc5kiwpdjwp3b2k55a4xvkz6gd2vr2k0jg1hgn3g8ssmy57zw";
   };
 in
 builtins.derivation {

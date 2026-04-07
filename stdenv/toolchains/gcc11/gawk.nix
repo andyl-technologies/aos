@@ -18,9 +18,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gawk/gawk-5.1.0.tar.xz";
-    sha256 = "0nzwgfhcds1jgijx4181h1nlahzznncd3bq9n4xn6d2lvagqr4qb";
+    hash = "0nzwgfhcds1jgijx4181h1nlahzznncd3bq9n4xn6d2lvagqr4qb";
   };
 in
 builtins.derivation {

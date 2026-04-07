@@ -25,12 +25,14 @@
   ...
 }:
 let
+  inherit (import ../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
   system = buildPlatform.system;
   sources = import ./sources.nix;
 
-  src = builtins.fetchTarball {
+  src = fetchTarball {
     url = sources.gcc.url;
-    sha256 = sources.gcc.sha256;
+    hash = sources.gcc.hash;
   };
 
   target = "i686-unknown-linux-gnu";

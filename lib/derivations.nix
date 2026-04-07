@@ -5,6 +5,7 @@
 ##!     mkDerivation   — build a package from source
 ##!     mkShell        — development shell environment
 ##!     fetchurl       — fetch a file by URL (fixed-output derivation)
+##!     fetchTarball   — fetch and unpack a tarball (fixed-output derivation)
 ##!     fetchgit       — fetch a Git repository (fixed-output derivation)
 ##!     fetchCargoDeps — vendor Cargo dependencies (fixed-output derivation)
 ##!     fetchGoModules — download Go module dependencies (fixed-output derivation)
@@ -690,6 +691,48 @@ let
     };
 
   # ---------------------------------------------------------------------------
+  # fetchTarball
+  # ---------------------------------------------------------------------------
+  # fetchTarball { url; hash; name?; }
+  #
+  # Lazy replacement for builtins.fetchTarball. Downloads and unpacks a tarball
+  # into the Nix store as a directory. Uses the Nix daemon's built-in fetcher --
+  # no external tools needed.
+  #
+  # The hash is a hash of the UNPACKED content (same as builtins.fetchTarball).
+  # Returns a store path to the unpacked directory.
+  fetchTarball =
+    {
+      url ? "",
+      urls ? [],
+      hash,
+      name ? null,
+    }:
+    let
+      resolvedUrls =
+        if urls != [] && url == "" then urls
+        else if urls == [] && url != "" then [ url ]
+        else throw "fetchTarball requires either 'url' or 'urls' to be set, not both";
+      derivedName = if name != null then name else
+        let
+          parts = builtins.split "/" (builtins.head resolvedUrls);
+          filename = builtins.elemAt parts (builtins.length parts - 1);
+        in
+        builtins.replaceStrings [".tar.gz" ".tar.xz" ".tar.bz2" ".tgz" ".tar.zst"] ["" "" "" "" ""] filename;
+    in
+    builtins.derivation {
+      name = derivedName;
+      system = "builtin";
+      builder = "builtin:fetchurl";
+      url = builtins.head resolvedUrls;
+      outputHash = hash;
+      outputHashAlgo = "sha256";
+      outputHashMode = "recursive";
+      unpack = true;
+      preferLocalBuild = true;
+    };
+
+  # ---------------------------------------------------------------------------
   # fetchgit
   # ---------------------------------------------------------------------------
   # fetchgit { url; rev; hash; }
@@ -772,6 +815,8 @@ let
         builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
       );
 
+      # TODO: builtins.fetchGit is eager (downloads during eval). Consider replacing
+      # with fetchTarball using GitHub archive URLs, or a FOD-based git fetcher.
       # Fetch each git dependency via builtins.fetchGit (Nix builtin, no git binary)
       fetchedGitDeps = builtins.map (
         dep:
@@ -1125,6 +1170,7 @@ in
     mkDerivation
     mkShell
     fetchurl
+    fetchTarball
     fetchgit
     fetchCargoDeps
     fetchGoModules

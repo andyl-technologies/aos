@@ -13,9 +13,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/help2man/help2man-1.49.3.tar.xz";
-    sha256 = "1hz5jzvgp025wcqlifv23mgb6m8wvk22kgz03g92ha13ympa2i03";
+    hash = "1hz5jzvgp025wcqlifv23mgb6m8wvk22kgz03g92ha13ympa2i03";
   };
 in
 builtins.derivation {

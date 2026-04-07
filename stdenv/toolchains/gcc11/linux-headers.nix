@@ -10,9 +10,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.14.tar.xz";
-    sha256 = "15c91flxhankd62xwv02azjxy4hqll4s3jsl5kq8vbhjrz57lcl0";
+    hash = "15c91flxhankd62xwv02azjxy4hqll4s3jsl5kq8vbhjrz57lcl0";
   };
 in
 builtins.derivation {

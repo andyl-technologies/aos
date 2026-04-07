@@ -16,9 +16,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/autoconf/autoconf-2.71.tar.xz";
-    sha256 = "048zp73c7gczz1ms5jx8nphgc8xr6xpyb56dbqixcan5a1psh4hm";
+    hash = "048zp73c7gczz1ms5jx8nphgc8xr6xpyb56dbqixcan5a1psh4hm";
   };
 in
 builtins.derivation {

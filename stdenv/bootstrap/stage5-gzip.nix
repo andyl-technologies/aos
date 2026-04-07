@@ -26,13 +26,15 @@
   ...
 }:
 let
+  inherit (import ../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
   system = buildPlatform.system;
 
   sources = import ./sources.nix;
 
-  src = builtins.fetchTarball {
+  src = fetchTarball {
     url = sources.gzip.url;
-    sha256 = sources.gzip.sha256;
+    hash = sources.gzip.hash;
   };
 in
 builtins.derivation {

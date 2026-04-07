@@ -10,16 +10,18 @@
   targetPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gcc/gcc-4.1.2/gcc-core-4.1.2.tar.bz2";
-    sha256 = "0fzi14bjj39lx9s8ppkrlarbmga8j51p7f4qnm3w4rh13z6gnz87";
+    hash = "0fzi14bjj39lx9s8ppkrlarbmga8j51p7f4qnm3w4rh13z6gnz87";
   };
 
   # Linux kernel headers for CRT compilation — glibc headers reference
   # linux/*.h which must be available when xgcc compiles crtstuff.c.
-  linuxSrc = builtins.fetchTarball {
+  linuxSrc = fetchTarball {
     url = "https://cdn.kernel.org/pub/linux/kernel/v2.6/linux-2.6.18.tar.bz2";
-    sha256 = "0ad6d97c1z5z79gafbxsd9d9wq4f21hmvp52s91dysqk24fkbdbx";
+    hash = "0ad6d97c1z5z79gafbxsd9d9wq4f21hmvp52s91dysqk24fkbdbx";
   };
 
   # Linux 2.6.18 uses asm-<arch> directory names (pre-2.6.24 unification)

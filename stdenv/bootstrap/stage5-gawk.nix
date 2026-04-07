@@ -25,13 +25,15 @@
   ...
 }:
 let
+  inherit (import ../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
   system = buildPlatform.system;
   lib = import ./lib.nix;
   sources = import ./sources.nix;
 
-  src = builtins.fetchTarball {
+  src = fetchTarball {
     url = sources.gawk.url;
-    sha256 = sources.gawk.sha256;
+    hash = sources.gawk.hash;
   };
 in
 builtins.derivation {

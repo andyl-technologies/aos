@@ -13,9 +13,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gperf/gperf-3.1.tar.gz";
-    sha256 = "1cdivawkjb635zkq5qd512d533b47w16bg1xm4sybpzcy65xn37k";
+    hash = "1cdivawkjb635zkq5qd512d533b47w16bg1xm4sybpzcy65xn37k";
   };
 in
 builtins.derivation {

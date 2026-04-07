@@ -13,9 +13,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://www.cpan.org/src/5.0/perl-5.16.3.tar.bz2";
-    sha256 = "sha256-xv8frhbCXKsvmg5eilzs0UO+grSmVm4ujjpRA5v9GvY=";
+    hash = "hash-xv8frhbCXKsvmg5eilzs0UO+grSmVm4ujjpRA5v9GvY=";
   };
 in
 builtins.derivation {

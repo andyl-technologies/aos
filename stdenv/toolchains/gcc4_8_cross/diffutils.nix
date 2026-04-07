@@ -12,9 +12,11 @@
   ...
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/diffutils/diffutils-3.3.tar.xz";
-    sha256 = "15h9skk6vhb6299kkk2qkhqbjmmlij8ql92pxldkj13iqrd1983s";
+    hash = "15h9skk6vhb6299kkk2qkhqbjmmlij8ql92pxldkj13iqrd1983s";
   };
 in
 builtins.derivation {

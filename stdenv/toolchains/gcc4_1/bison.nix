@@ -15,9 +15,11 @@
   hostPlatform,
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/bison/bison-2.4.3.tar.gz";
-    sha256 = "0754bvjsakji89lpvc4yhilgfpqdldz2gbcazqqhmr1ygvgz3m1m";
+    hash = "0754bvjsakji89lpvc4yhilgfpqdldz2gbcazqqhmr1ygvgz3m1m";
   };
 in
 builtins.derivation {

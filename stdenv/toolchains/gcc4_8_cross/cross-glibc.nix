@@ -13,9 +13,11 @@
   ...
 }:
 let
-  src = builtins.fetchTarball {
+  inherit (import ../../../lib/derivations.nix { system = builtins.currentSystem; }) fetchTarball;
+
+  src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.17.tar.bz2";
-    sha256 = "10dmn1l45hcpsm5m063ajdmmwrc4wfm6sn8f7wqxlyhywf60yqcd";
+    hash = "10dmn1l45hcpsm5m063ajdmmwrc4wfm6sn8f7wqxlyhywf60yqcd";
   };
 
   elfClass = if hostPlatform.is64bit then "64" else "32";
