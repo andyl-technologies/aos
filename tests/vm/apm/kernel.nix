@@ -73,7 +73,11 @@ let
             ln -sfn ${kernel} $out/kernel
 
             # Activation script
-            printf '%s\n' '#!/bin/sh' 'mkdir -p /tmp' 'echo "activated-${version}" > /tmp/activated-current' > $out/activate
+            cp ${builtins.toFile "activate" ''
+              #!/bin/sh
+              mkdir -p /tmp
+              echo "activated-${version}" > /tmp/activated-current
+            ''} $out/activate
             chmod +x $out/activate
 
             # Boot loader entry directory (for update_boot_loader)
@@ -82,7 +86,7 @@ let
             ${
               if drainScript != null
               then ''
-                printf '%s\n' ${drainScript} > $out/drain
+                cp ${builtins.toFile "drain" drainScript} $out/drain
                 chmod +x $out/drain
               ''
               else ""
@@ -148,20 +152,32 @@ let
             mkdir -p $out/packages
             ${builtins.concatStringsSep "\n" (
               builtins.map (
-                pkg: ''
-                  mkdir -p $out/packages/${pkg.name}
-                  cat > $out/packages/${pkg.name}/x86_64-linux.toml << 'PKGEOF'
-                  [package]
-                  name = "${pkg.name}"
-                  version = "${pkg.version}"
-                  store_path = "${pkg.storePath}"
-                  nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                  nar_size = 1024
-                  download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                  download_size = 512
-                  sysroot = ${if pkg.sysroot or false then "true" else "false"}
-                  references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
-                  PKGEOF
+                pkg:
+                let letter = builtins.substring 0 1 pkg.name;
+                in ''
+                  mkdir -p $out/packages/${letter}
+                  cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
+[package]
+name = "${pkg.name}"
+description = "mock ${pkg.name}"
+license = "MIT"
+maintainer = "test"
+${if pkg.sysroot or false then "sysroot = true" else ""}
+
+[[versions]]
+version = "${pkg.version}"
+
+[versions.platforms.x86_64-linux]
+store_path = "${pkg.storePath}"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+nar_size = 1024
+download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+download_size = 512
+closure_size = 2048
+source_drv = ""
+source_nar_hash = ""
+references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
+PKGEOF
                 ''
               ) packages
             )}
@@ -235,8 +251,9 @@ enabled = true
 CFGEOF
 
     ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
+    ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
 
-    printf '%s\n' '${stateJson}' > /var/lib/profiles/system/state.json
+    cp ${builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateJson)} /var/lib/profiles/system/state.json
 
     # Create mock kexec and systemctl commands that log their invocations
     # instead of actually rebooting

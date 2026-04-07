@@ -48,14 +48,14 @@ SQL
 
   serverConfig = ''
     cat > /tmp/aos-config.toml << 'CFGEOF'
-    listen = "127.0.0.1:15000"
-    [[views]]
-    name = "default"
-    anonymous_read = true
-    max_concurrent_builds = 2
-    [bootstrap]
-    socket = "/tmp/run/aos/bootstrap.sock"
-    socket_group = "root"
+listen = "127.0.0.1:15000"
+[[views]]
+name = "default"
+anonymous_read = true
+max_concurrent_builds = 2
+[bootstrap]
+socket = "/tmp/run/aos/bootstrap.sock"
+socket_group = "root"
 CFGEOF
   '';
 

@@ -254,6 +254,19 @@ pub enum PackageCommand {
     },
 }
 
+impl PackageCommand {
+    /// Returns `true` when the user passed `--system` on a subcommand that
+    /// supports it (Install, Upgrade, Rollback).
+    pub fn is_system(&self) -> bool {
+        match self {
+            PackageCommand::Install { system, .. } => *system,
+            PackageCommand::Upgrade { system, .. } => *system,
+            PackageCommand::Rollback { system, .. } => *system,
+            _ => false,
+        }
+    }
+}
+
 /// Clap subcommand enum for `apm registry` / `apr`.
 #[derive(Subcommand)]
 pub enum RegistryCommand {
@@ -681,12 +694,12 @@ fn parse_kernel_mode(kexec: bool, reboot: bool, live: bool) -> KernelUpgradeMode
 
 /// Main entry point for `aos package` / `apm`.
 pub async fn run(
-    system: bool,
     command: &PackageCommand,
     dry_run: bool,
     yes: bool,
     printer: &Printer,
 ) -> Result<()> {
+    let system = command.is_system();
     let scope = if system {
         ProfileScope::System
     } else {

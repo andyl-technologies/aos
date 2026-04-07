@@ -383,10 +383,11 @@ in
         ls -la /tmp/bundles/ 2>/dev/null || true
       fi
 
-      # Verify bundle is a valid git bundle
+      # Verify bundle is a valid git bundle (must be in a git repo context)
       if [ -n "$BUNDLE_FILE" ]; then
-        cd /tmp
+        cd "$REG_DIR"
         assert_cmd_success "git bundle verify $BUNDLE_FILE" "bundle is valid"
+        cd /tmp
       fi
 
       check_fail
