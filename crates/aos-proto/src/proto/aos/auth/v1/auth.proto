@@ -1,0 +1,18 @@
+syntax = "proto3";
+package aos.auth.v1;
+
+service AuthService {
+  // POST /oauth2/token — exchange provisioning token for JWT
+  rpc GetToken(TokenRequest) returns (TokenResponse);
+}
+
+message TokenRequest {
+  string provisioning_token = 1;
+}
+
+message TokenResponse {
+  string access_token = 1;
+  string token_type = 2;
+  uint64 expires_in = 3;
+  string scope = 4;
+}

@@ -1,0 +1,96 @@
+syntax = "proto3";
+package aos.cache.v1;
+
+service CacheService {
+  // GET /{view}/nix-cache-info
+  rpc GetCacheInfo(GetCacheInfoRequest) returns (CacheInfo);
+
+  // GET /{view}/{hash}.narinfo
+  rpc GetNarInfo(GetNarInfoRequest) returns (NarInfo);
+
+  // POST /{view}/query-missing
+  rpc QueryMissing(QueryMissingRequest) returns (QueryMissingResponse);
+
+  // PUT /{view}/store/{hash} — client streaming (chunked upload)
+  rpc Upload(stream UploadChunk) returns (UploadResponse);
+
+  // GET /{view}/nar/{filename} — server streaming (chunked download)
+  rpc Download(DownloadRequest) returns (stream DownloadChunk);
+
+  // POST /{view}/upload-pack — client streaming
+  rpc UploadPack(stream PackChunk) returns (UploadPackResponse);
+}
+
+message GetCacheInfoRequest {
+  string view = 1;
+}
+
+message CacheInfo {
+  string store_dir = 1;
+  bool want_mass_query = 2;
+  int32 priority = 3;
+  repeated string capabilities = 4;
+}
+
+message GetNarInfoRequest {
+  string view = 1;
+  string store_hash = 2;
+}
+
+message NarInfo {
+  string store_path = 1;
+  string url = 2;
+  string compression = 3;
+  string file_hash = 4;
+  int64 file_size = 5;
+  string nar_hash = 6;
+  int64 nar_size = 7;
+  repeated string references = 8;
+  string deriver = 9;
+  repeated string signatures = 10;
+}
+
+message QueryMissingRequest {
+  string view = 1;
+  repeated string store_paths = 2;
+}
+
+message QueryMissingResponse {
+  repeated string missing = 1;
+}
+
+message UploadChunk {
+  string view = 1;
+  string store_hash = 2;
+  bytes data = 3;
+  int64 offset = 4;
+  bool is_final = 5;
+}
+
+message UploadResponse {
+  string store_path = 1;
+}
+
+message DownloadRequest {
+  string view = 1;
+  string filename = 2;
+  int64 offset = 3;
+}
+
+message DownloadChunk {
+  bytes data = 1;
+  int64 offset = 2;
+  int64 total_size = 3;
+}
+
+message PackChunk {
+  string view = 1;
+  bytes data = 2;
+  bool is_final = 3;
+}
+
+message UploadPackResponse {
+  int32 accepted = 1;
+  int32 rejected = 2;
+  repeated string paths = 3;
+}

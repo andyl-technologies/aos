@@ -4,6 +4,7 @@ members = [
     "aos",
     "aos-core",
     "aos-net",
+    "aos-proto",
     "aos-server",
     "aos-cache",
     "aos-remote",
@@ -71,9 +72,16 @@ semver = "1"
 # Dev
 tempfile = "3"
 
+# ConnectRPC
+connectrpc = { version = "0.3", features = ["server", "client", "axum"] }
+buffa = "0.3"
+prost = "0.13"
+futures = "0.3"
+
 # Internal crates
 aos-core = { path = "aos-core" }
 aos-net = { path = "aos-net" }
+aos-proto = { path = "aos-proto" }
 aos-server = { path = "aos-server" }
 aos-cache = { path = "aos-cache" }
 aos-remote = { path = "aos-remote" }

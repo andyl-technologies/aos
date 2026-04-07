@@ -1,0 +1,31 @@
+syntax = "proto3";
+package aos.gc.v1;
+
+service GcService {
+  rpc Collect(GcRequest) returns (GcResponse);
+}
+
+message GcRequest {
+  string view = 1;
+  bool dry_run = 2;
+  bool collect_store = 3;
+  // Maximum budget in bytes; evict until under this size.
+  optional uint64 max_size = 4;
+}
+
+message GcResponse {
+  uint64 expired = 1;
+  uint64 evicted = 2;
+  repeated EvictionCandidate eviction_candidates = 3;
+  bool dry_run = 4;
+  // Bytes freed by nix-store --gc, if collect_store was true.
+  optional uint64 collected_bytes = 5;
+}
+
+message EvictionCandidate {
+  string hash = 1;
+  string store_path = 2;
+  uint64 unique_size = 3;
+  double age_days = 4;
+  double score = 5;
+}
