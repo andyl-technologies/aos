@@ -1,9 +1,7 @@
 //! ConnectRPC client for communicating with the AOS cache server.
 //!
-//! This module replaces the REST+SSE client in `build.rs` and `sse.rs`
-//! with a typed ConnectRPC client backed by the proto definitions in
-//! `aos-proto`. The old `RemoteClient` and `SseStream` are preserved
-//! for backward compatibility but are deprecated.
+//! Typed ConnectRPC client backed by the proto definitions in `aos-proto`.
+//! Provides access to all four services: cache, build, GC, and auth.
 
 use std::time::Duration;
 
@@ -233,7 +231,6 @@ impl AosClient {
 
     /// Trigger a remote build and return a stream of build events.
     ///
-    /// This replaces the SSE-based `RemoteClient.build()` method.
     /// The callback receives each `BuildEvent` and returns `true` to
     /// continue or `false` to stop.
     pub async fn build(
@@ -269,8 +266,6 @@ impl AosClient {
     }
 
     /// Trigger a closure build (multiple derivations) and stream events.
-    ///
-    /// This replaces the SSE-based `RemoteClient.build_closure()` method.
     pub async fn build_closure(
         &self,
         drvs: &[String],
