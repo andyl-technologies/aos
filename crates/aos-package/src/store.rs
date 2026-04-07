@@ -338,6 +338,9 @@ mod tests {
             source_drv: source_drv.into(),
             source_nar_hash: "sha256:2222".into(),
             closure_size: 2048,
+            sysroot: false,
+            previous: None,
+            images: vec![],
         }
     }
 

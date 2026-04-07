@@ -3,7 +3,6 @@ pub mod config;
 pub mod deps;
 pub mod download;
 pub mod hold;
-pub mod image;
 pub mod install;
 pub mod profile;
 pub mod query;
@@ -15,6 +14,7 @@ pub mod rollback;
 pub mod security;
 pub mod source;
 pub mod store;
+pub mod sysroot;
 pub mod types;
 pub mod update;
 pub mod upgrade;
@@ -48,6 +48,15 @@ pub enum PackageCommand {
         /// Skip automatic dependency installation
         #[arg(long)]
         no_deps: bool,
+        /// Install as system sysroot (generation switching)
+        #[arg(long)]
+        system: bool,
+        /// Download a pre-compiled image instead of the toplevel
+        #[arg(long)]
+        image: Option<String>,
+        /// Output path for a downloaded image (with --image)
+        #[arg(long)]
+        output: Option<String>,
     },
     /// Remove packages (keep deps)
     Remove {
@@ -77,6 +86,9 @@ pub enum PackageCommand {
         /// Skip specific packages
         #[arg(long)]
         exclude: Vec<String>,
+        /// Upgrade the system sysroot
+        #[arg(long)]
+        system: bool,
     },
     /// Upgrade all packages with dependency resolution changes
     FullUpgrade,
@@ -181,69 +193,17 @@ pub enum PackageCommand {
         /// Roll back to a specific generation number
         #[arg(long)]
         generation: Option<u32>,
-    },
-    /// Manage images
-    Image {
-        #[command(subcommand)]
-        command: ImageCommand,
+        /// Roll back the system sysroot
+        #[arg(long)]
+        system: bool,
+        /// List all system generations
+        #[arg(long)]
+        list: bool,
     },
     /// Manage registries
     Registry {
         #[command(subcommand)]
         command: RegistryCommand,
-    },
-}
-
-/// Clap subcommand enum for `apm image`.
-#[derive(Subcommand)]
-pub enum ImageCommand {
-    /// List available images across registries
-    List {
-        /// Filter by registry
-        #[arg(long)]
-        registry: Option<String>,
-        /// Filter by platform
-        #[arg(long)]
-        platform: Option<String>,
-        /// Output format (table, json)
-        #[arg(long, default_value = "table")]
-        format: String,
-    },
-    /// Show image details
-    Show {
-        /// Image name
-        name: String,
-        /// Specific version
-        #[arg(long)]
-        version: Option<String>,
-    },
-    /// Download a pre-built image
-    Pull {
-        /// Image name
-        name: String,
-        /// Specific version
-        #[arg(long)]
-        version: Option<String>,
-        /// Platform
-        #[arg(long)]
-        platform: Option<String>,
-        /// Output path for the downloaded image
-        #[arg(long)]
-        output: Option<String>,
-        /// Verify hash after download
-        #[arg(long)]
-        verify: bool,
-    },
-    /// Download the .nix definition for an image
-    Definition {
-        /// Image name
-        name: String,
-        /// Specific version
-        #[arg(long)]
-        version: Option<String>,
-        /// Output path
-        #[arg(long)]
-        output: Option<String>,
     },
 }
 
@@ -310,6 +270,18 @@ pub enum RegistryCommand {
         /// Package maintainer
         #[arg(long)]
         maintainer: Option<String>,
+        /// Mark this package as a system toplevel (sysroot)
+        #[arg(long)]
+        sysroot: bool,
+        /// Previous version in the version chain
+        #[arg(long)]
+        previous: Option<String>,
+        /// Pre-compiled image store path (repeatable, paired with --image-format)
+        #[arg(long = "image")]
+        images: Vec<String>,
+        /// Image format for each --image (repeatable, paired with --image)
+        #[arg(long = "image-format")]
+        image_formats: Vec<String>,
         /// Skip creating a git commit
         #[arg(long)]
         no_commit: bool,
@@ -338,13 +310,6 @@ pub enum RegistryCommand {
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
-    },
-
-    // ----- Image Entries -----
-    /// Image registry operations
-    ImageOps {
-        #[command(subcommand)]
-        command: RegistryImageCommand,
     },
 
     // ----- Registry Query -----
@@ -403,9 +368,6 @@ pub enum RegistryCommand {
         /// Validate only this package
         #[arg(long)]
         package: Option<String>,
-        /// Validate only this image
-        #[arg(long)]
-        image: Option<String>,
         /// Filter by platform
         #[arg(long)]
         platform: Option<String>,
@@ -432,9 +394,6 @@ pub enum RegistryCommand {
         /// Filter log by package
         #[arg(long)]
         package: Option<String>,
-        /// Filter log by image
-        #[arg(long)]
-        image: Option<String>,
         /// Number of commits to show
         #[arg(short, default_value = "20")]
         n: u32,
@@ -533,88 +492,6 @@ pub enum RegistryCommand {
         /// Signing key
         #[arg(long)]
         key: Option<String>,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-}
-
-/// Subcommands for `apr image` (registry-side image operations).
-#[derive(Subcommand)]
-pub enum RegistryImageCommand {
-    /// Publish an image to the registry
-    Publish {
-        /// Nix store path to publish
-        store_path: String,
-        /// Image name override
-        #[arg(long)]
-        name: Option<String>,
-        /// Version override
-        #[arg(long)]
-        version: Option<String>,
-        /// Platform override
-        #[arg(long)]
-        platform: Option<String>,
-        /// Path to .nix definition file
-        #[arg(long)]
-        definition: Option<String>,
-        /// Base image for lineage tracking
-        #[arg(long)]
-        base: Option<String>,
-        /// Image description
-        #[arg(long)]
-        description: Option<String>,
-        /// Image maintainer
-        #[arg(long)]
-        maintainer: Option<String>,
-        /// Skip creating a git commit
-        #[arg(long)]
-        no_commit: bool,
-        /// Custom commit message
-        #[arg(long)]
-        message: Option<String>,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Remove an image entry from the registry
-    Unpublish {
-        /// Image name
-        name: String,
-        /// Specific version to remove
-        version: Option<String>,
-        /// Platform to remove
-        #[arg(long)]
-        platform: Option<String>,
-        /// Skip creating a git commit
-        #[arg(long)]
-        no_commit: bool,
-        /// Custom commit message
-        #[arg(long)]
-        message: Option<String>,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Show an image entry from the registry
-    Show {
-        /// Image name
-        name: String,
-        /// Specific version
-        #[arg(long)]
-        version: Option<String>,
-        /// Show raw TOML
-        #[arg(long)]
-        raw: bool,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// List images in the registry
-    List {
-        /// Filter by platform
-        #[arg(long)]
-        platform: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -748,9 +625,28 @@ pub async fn run(
 
     match command {
         PackageCommand::Install {
-            packages, registry, ..
+            packages,
+            registry,
+            system: install_system,
+            image: image_fmt,
+            output: image_output,
+            ..
         } => {
-            install::run(&config, packages, registry.as_deref(), dry_run, yes, printer).await
+            if *install_system || image_fmt.is_some() {
+                sysroot::install_system(
+                    &config,
+                    packages,
+                    registry.as_deref(),
+                    image_fmt.as_deref(),
+                    image_output.as_deref(),
+                    dry_run,
+                    yes,
+                    printer,
+                )
+                .await
+            } else {
+                install::run(&config, packages, registry.as_deref(), dry_run, yes, printer).await
+            }
         }
         PackageCommand::Remove {
             packages,
@@ -765,8 +661,16 @@ pub async fn run(
         PackageCommand::Update { registry } => {
             update::run(&config, registry.as_deref(), printer).await
         }
-        PackageCommand::Upgrade { packages, exclude } => {
-            upgrade::run(&config, packages, exclude, dry_run, yes, printer).await
+        PackageCommand::Upgrade {
+            packages,
+            exclude,
+            system: upgrade_system,
+        } => {
+            if *upgrade_system {
+                sysroot::upgrade_system(&config, dry_run, printer).await
+            } else {
+                upgrade::run(&config, packages, exclude, dry_run, yes, printer).await
+            }
         }
         PackageCommand::FullUpgrade => {
             upgrade::run(&config, &[], &[], dry_run, yes, printer).await
@@ -824,11 +728,17 @@ pub async fn run(
         } => {
             source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await
         }
-        PackageCommand::Rollback { generation } => {
-            rollback::run(&config, *generation, dry_run, printer).await
-        }
-        PackageCommand::Image { command } => {
-            image::run(command, &config, printer).await
+        PackageCommand::Rollback {
+            generation,
+            system: rollback_system,
+            list: rollback_list,
+        } => {
+            if *rollback_system || *rollback_list {
+                sysroot::rollback_system(&config, *generation, *rollback_list, dry_run, printer)
+                    .await
+            } else {
+                rollback::run(&config, *generation, dry_run, printer).await
+            }
         }
         PackageCommand::Registry { command } => {
             run_registry(&config, command, printer).await
@@ -867,6 +777,10 @@ async fn run_registry(
             homepage,
             license,
             maintainer,
+            sysroot,
+            previous,
+            images,
+            image_formats,
             no_commit,
             message,
             registry,
@@ -881,6 +795,10 @@ async fn run_registry(
                 homepage.as_deref(),
                 license.as_deref(),
                 maintainer.as_deref(),
+                *sysroot,
+                previous.as_deref(),
+                images,
+                image_formats,
                 *no_commit,
                 message.as_deref(),
                 registry.as_deref(),
@@ -907,9 +825,6 @@ async fn run_registry(
                 printer,
             )
             .await
-        }
-        RegistryCommand::ImageOps { command } => {
-            registry_ops::run_image_ops(config, command, printer).await
         }
         RegistryCommand::Show {
             package,
@@ -971,7 +886,6 @@ async fn run_registry(
         }
         RegistryCommand::Validate {
             package,
-            image: img,
             platform,
             fix,
             jobs,
@@ -980,7 +894,6 @@ async fn run_registry(
             registry_ops::validate(
                 config,
                 package.as_deref(),
-                img.as_deref(),
                 platform.as_deref(),
                 *fix,
                 *jobs,
@@ -994,14 +907,12 @@ async fn run_registry(
         }
         RegistryCommand::Log {
             package,
-            image: img,
             n,
             registry,
         } => {
             registry_ops::log(
                 config,
                 package.as_deref(),
-                img.as_deref(),
                 *n,
                 registry.as_deref(),
                 printer,

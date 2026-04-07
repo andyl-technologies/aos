@@ -32,6 +32,15 @@ pub struct PackageMeta {
     pub source_nar_hash: String,
     /// Total NAR size of the full closure.
     pub closure_size: u64,
+    /// Whether this package is a system toplevel (sysroot).
+    #[serde(default)]
+    pub sysroot: bool,
+    /// Previous version in the version chain (for sysroot packages).
+    #[serde(default)]
+    pub previous: Option<String>,
+    /// Pre-compiled images (only for sysroot packages).
+    #[serde(default)]
+    pub images: Vec<SysrootImageEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -354,80 +363,44 @@ pub struct RegistrySigningConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Image metadata — an image as described in a registry TOML file
+// Sysroot image entry — a pre-compiled image attached to a sysroot package
 // ---------------------------------------------------------------------------
 
-/// Top-level image TOML file from a registry.
+/// A pre-compiled image format entry within a sysroot package version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageToml {
-    pub image: ImageHeader,
-    #[serde(default)]
-    pub versions: Vec<ImageVersionEntry>,
-}
-
-/// Image header metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageHeader {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub maintainer: Option<String>,
-}
-
-/// A version entry for an image.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageVersionEntry {
-    pub version: String,
-    #[serde(default)]
-    pub definition: Option<String>,
-    #[serde(default)]
-    pub config: Option<ImageConfig>,
-    #[serde(default)]
-    pub platforms: std::collections::HashMap<String, ImagePlatformEntry>,
-}
-
-/// Optional image configuration metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageConfig {
-    #[serde(default)]
-    pub profiles: Vec<String>,
-    #[serde(default)]
-    pub kernel: Option<String>,
-    #[serde(default)]
-    pub filesystem: Option<String>,
-}
-
-/// Platform-specific image entry (same shape as package platform entries).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImagePlatformEntry {
+pub struct SysrootImageEntry {
+    pub format: String,
     pub store_path: String,
     pub nar_hash: String,
     pub nar_size: u64,
     pub download_hash: String,
     pub download_size: u64,
-    #[serde(default)]
-    pub references: Vec<String>,
-    #[serde(default)]
-    pub closure_size: u64,
 }
 
-/// A resolved image version for a specific platform.
+// ---------------------------------------------------------------------------
+// System generation state — persisted in /var/lib/profiles/system/state.json
+// ---------------------------------------------------------------------------
+
+/// Metadata about a single system generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageMeta {
-    pub name: String,
+pub struct SystemGeneration {
+    pub number: u32,
+    pub toplevel: String,
     pub version: String,
-    pub description: String,
-    pub maintainer: String,
-    pub definition: Option<String>,
-    pub platform: String,
-    pub store_path: String,
-    pub nar_hash: String,
-    pub nar_size: u64,
-    pub download_hash: String,
-    pub download_size: u64,
-    pub references: Vec<String>,
-    pub closure_size: u64,
+    pub package_name: String,
+    pub registry: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub kernel_path: Option<String>,
+}
+
+/// Persistent state for system generations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemGenerationState {
+    pub current: u32,
+    pub next: u32,
+    #[serde(default)]
+    pub generations: Vec<SystemGeneration>,
 }
 
 #[cfg(test)]

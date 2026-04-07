@@ -4,7 +4,6 @@
 //! registries. It operates on local git clones stored at
 //! `~/.local/share/apm/registries/<name>/`.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -15,10 +14,9 @@ use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
 use crate::types::{
-    CacheEntry, ImageHeader, ImagePlatformEntry, ImageToml, ImageVersionEntry,
-    RegistryRootConfig,
+    CacheEntry, RegistryRootConfig,
 };
-use crate::{BranchCommand, PrCommand, RegistryImageCommand};
+use crate::{BranchCommand, PrCommand};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -311,8 +309,6 @@ pub async fn create(
 
     // Create initial directory structure.
     std::fs::create_dir_all(dir.join("packages"))?;
-    std::fs::create_dir_all(dir.join("images"))?;
-    std::fs::create_dir_all(dir.join("definitions"))?;
 
     // Write a default registry.toml.
     let registry_toml = format!(
@@ -357,6 +353,10 @@ pub async fn publish(
     homepage: Option<&str>,
     license: Option<&str>,
     maintainer: Option<&str>,
+    sysroot: bool,
+    previous: Option<&str>,
+    image_paths: &[String],
+    image_formats: &[String],
     no_commit: bool,
     message: Option<&str>,
     registry: Option<&str>,
@@ -367,8 +367,24 @@ pub async fn publish(
         bail!("registry directory does not exist: {}", dir.display());
     }
 
+    // Validate image pairs.
+    if image_paths.len() != image_formats.len() {
+        bail!(
+            "--image and --image-format must be specified in pairs ({} images, {} formats)",
+            image_paths.len(),
+            image_formats.len()
+        );
+    }
+
     printer.step(1, 3, "Introspecting store path...");
     let info = introspect_store_path(store_path)?;
+
+    // Introspect image store paths if provided.
+    let mut image_infos: Vec<(String, StorePathInfo)> = Vec::new();
+    for (img_path, img_fmt) in image_paths.iter().zip(image_formats.iter()) {
+        let img_info = introspect_store_path(img_path)?;
+        image_infos.push((img_fmt.clone(), img_info));
+    }
 
     let (parsed_name, parsed_version) = parse_store_path(&info.path);
     let pkg_name = name_override.unwrap_or(&parsed_name);
@@ -401,6 +417,9 @@ pub async fn publish(
         homepage,
         license,
         maintainer,
+        sysroot,
+        previous,
+        &image_infos,
     )?;
 
     std::fs::write(&toml_path, &new_content)?;
@@ -413,6 +432,15 @@ pub async fn publish(
     printer.kv("NAR hash", &info.nar_hash);
     printer.kv("NAR size", &format_size(info.nar_size));
     printer.kv("Closure size", &format_size(info.closure_size));
+    if sysroot {
+        printer.kv("Sysroot", "true");
+    }
+    if let Some(prev) = previous {
+        printer.kv("Previous", prev);
+    }
+    for (fmt, img_info) in &image_infos {
+        printer.kv(&format!("Image ({fmt})"), &img_info.path);
+    }
 
     if !no_commit {
         let default_msg = format!(
@@ -429,6 +457,7 @@ pub async fn publish(
 }
 
 /// Build package TOML content, merging with existing content if present.
+#[allow(clippy::too_many_arguments)]
 fn build_package_toml(
     existing: &str,
     name: &str,
@@ -439,6 +468,9 @@ fn build_package_toml(
     homepage: Option<&str>,
     license: Option<&str>,
     maintainer: Option<&str>,
+    sysroot: bool,
+    previous: Option<&str>,
+    image_infos: &[(String, StorePathInfo)],
 ) -> Result<String> {
     let desc = description.unwrap_or("No description");
     let lic = license.unwrap_or("unknown");
@@ -449,13 +481,19 @@ fn build_package_toml(
         let mut content = format!(
             "[package]\nname = \"{name}\"\ndescription = \"{desc}\"\n"
         );
+        if sysroot {
+            content.push_str("sysroot = true\n");
+        }
         if let Some(hp) = homepage {
             content.push_str(&format!("homepage = \"{hp}\"\n"));
         }
         content.push_str(&format!("license = \"{lic}\"\nmaintainer = \"{maint}\"\n\n"));
-        content.push_str(&format!("[[versions]]\nversion = \"{version}\"\n\n"));
+        content.push_str(&format!("[[versions]]\nversion = \"{version}\"\n"));
+        if let Some(prev) = previous {
+            content.push_str(&format!("previous = \"{prev}\"\n"));
+        }
         content.push_str(&format!(
-            "[versions.platforms.{platform}]\n\
+            "\n[versions.platforms.{platform}]\n\
              store_path = \"{}\"\n\
              nar_hash = \"{}\"\n\
              nar_size = {}\n\
@@ -477,13 +515,35 @@ fn build_package_toml(
                 .collect::<Vec<_>>()
                 .join(", "),
         ));
+        // Append image entries if provided.
+        for (fmt, img_info) in image_infos {
+            content.push_str(&format!(
+                "\n[[versions.platforms.{platform}.images]]\n\
+                 format = \"{fmt}\"\n\
+                 store_path = \"{}\"\n\
+                 nar_hash = \"{}\"\n\
+                 nar_size = {}\n\
+                 download_hash = \"{}\"\n\
+                 download_size = {}\n",
+                img_info.path,
+                img_info.nar_hash,
+                img_info.nar_size,
+                img_info.nar_hash,
+                img_info.nar_size,
+            ));
+        }
         Ok(content)
     } else {
         // Parse existing, add/update the version+platform entry.
-        // For simplicity, if the version already exists, we replace the
-        // platform entry. Otherwise, we append a new version block.
         let mut toml_val: toml::Value = toml::from_str(existing)
             .context("parsing existing package TOML")?;
+
+        // Set sysroot flag on the [package] section if requested.
+        if sysroot {
+            if let Some(pkg) = toml_val.get_mut("package").and_then(|v| v.as_table_mut()) {
+                pkg.insert("sysroot".into(), toml::Value::Boolean(true));
+            }
+        }
 
         // Ensure versions array exists.
         let versions = toml_val
@@ -506,6 +566,23 @@ fn build_package_toml(
                 .map(|r| toml::Value::String(r.clone()))
                 .collect();
             t.insert("references".into(), toml::Value::Array(refs));
+            // Add images if provided.
+            if !image_infos.is_empty() {
+                let images: Vec<toml::Value> = image_infos
+                    .iter()
+                    .map(|(fmt, img)| {
+                        let mut m = toml::map::Map::new();
+                        m.insert("format".into(), toml::Value::String(fmt.clone()));
+                        m.insert("store_path".into(), toml::Value::String(img.path.clone()));
+                        m.insert("nar_hash".into(), toml::Value::String(img.nar_hash.clone()));
+                        m.insert("nar_size".into(), toml::Value::Integer(img.nar_size as i64));
+                        m.insert("download_hash".into(), toml::Value::String(img.nar_hash.clone()));
+                        m.insert("download_size".into(), toml::Value::Integer(img.nar_size as i64));
+                        toml::Value::Table(m)
+                    })
+                    .collect();
+                t.insert("images".into(), toml::Value::Array(images));
+            }
             toml::Value::Table(t)
         };
 
@@ -521,6 +598,12 @@ fn build_package_toml(
             if let Some(idx) = existing_idx {
                 // Update existing version entry.
                 let ver_entry = &mut versions[idx];
+                if let Some(prev) = previous {
+                    ver_entry.as_table_mut().unwrap().insert(
+                        "previous".into(),
+                        toml::Value::String(prev.to_string()),
+                    );
+                }
                 let platforms = ver_entry
                     .as_table_mut()
                     .unwrap()
@@ -534,6 +617,9 @@ fn build_package_toml(
                 // Add new version entry.
                 let mut ver_table = toml::map::Map::new();
                 ver_table.insert("version".into(), toml::Value::String(version.to_string()));
+                if let Some(prev) = previous {
+                    ver_table.insert("previous".into(), toml::Value::String(prev.to_string()));
+                }
                 let mut platforms = toml::map::Map::new();
                 platforms.insert(platform.to_string(), platform_table);
                 ver_table.insert("platforms".into(), toml::Value::Table(platforms));
@@ -543,6 +629,9 @@ fn build_package_toml(
             // No versions array yet - add one.
             let mut ver_table = toml::map::Map::new();
             ver_table.insert("version".into(), toml::Value::String(version.to_string()));
+            if let Some(prev) = previous {
+                ver_table.insert("previous".into(), toml::Value::String(prev.to_string()));
+            }
             let mut platforms = toml::map::Map::new();
             platforms.insert(platform.to_string(), platform_table);
             ver_table.insert("platforms".into(), toml::Value::Table(platforms));
@@ -650,353 +739,6 @@ pub async fn unpublish(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Image operations (registry side)
-// ---------------------------------------------------------------------------
-
-pub async fn run_image_ops(
-    config: &ApmConfig,
-    command: &RegistryImageCommand,
-    printer: &Printer,
-) -> Result<()> {
-    match command {
-        RegistryImageCommand::Publish {
-            store_path,
-            name,
-            version,
-            platform,
-            definition,
-            base: _,
-            description,
-            maintainer,
-            no_commit,
-            message,
-            registry,
-        } => {
-            image_publish(
-                config,
-                store_path,
-                name.as_deref(),
-                version.as_deref(),
-                platform.as_deref(),
-                definition.as_deref(),
-                description.as_deref(),
-                maintainer.as_deref(),
-                *no_commit,
-                message.as_deref(),
-                registry.as_deref(),
-                printer,
-            )
-            .await
-        }
-        RegistryImageCommand::Unpublish {
-            name,
-            version,
-            platform,
-            no_commit,
-            message,
-            registry,
-        } => {
-            image_unpublish(
-                config,
-                name,
-                version.as_deref(),
-                platform.as_deref(),
-                *no_commit,
-                message.as_deref(),
-                registry.as_deref(),
-                printer,
-            )
-            .await
-        }
-        RegistryImageCommand::Show {
-            name,
-            version,
-            raw,
-            registry,
-        } => image_show(config, name, version.as_deref(), *raw, registry.as_deref(), printer).await,
-        RegistryImageCommand::List { platform, registry } => {
-            image_list(config, platform.as_deref(), registry.as_deref(), printer).await
-        }
-    }
-}
-
-/// `apr image publish <STORE_PATH>`
-#[allow(clippy::too_many_arguments)]
-async fn image_publish(
-    config: &ApmConfig,
-    store_path: &str,
-    name_override: Option<&str>,
-    version_override: Option<&str>,
-    platform_override: Option<&str>,
-    definition: Option<&str>,
-    description: Option<&str>,
-    maintainer: Option<&str>,
-    no_commit: bool,
-    message: Option<&str>,
-    registry: Option<&str>,
-    printer: &Printer,
-) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
-
-    printer.step(1, 3, "Introspecting store path...");
-    let info = introspect_store_path(store_path)?;
-
-    let (parsed_name, parsed_version) = parse_store_path(&info.path);
-    let img_name = name_override.unwrap_or(&parsed_name);
-    let img_version = version_override.unwrap_or(&parsed_version);
-    let platform = platform_override
-        .map(|s| s.to_string())
-        .unwrap_or_else(default_platform);
-
-    printer.step(2, 3, "Writing image TOML...");
-    let letter = first_letter(img_name);
-    let img_dir = dir.join("images").join(&letter);
-    std::fs::create_dir_all(&img_dir)?;
-
-    let toml_path = img_dir.join(format!("{img_name}.toml"));
-
-    // Copy definition file if provided.
-    let mut def_path = None;
-    if let Some(src) = definition {
-        let def_dir = dir.join("definitions").join(&letter);
-        std::fs::create_dir_all(&def_dir)?;
-        let dest = def_dir.join(format!("{img_name}.nix"));
-        std::fs::copy(src, &dest)
-            .with_context(|| format!("copying definition from {src}"))?;
-        def_path = Some(format!("definitions/{letter}/{img_name}.nix"));
-    }
-
-    // Build image TOML.
-    let plat_entry = ImagePlatformEntry {
-        store_path: info.path.clone(),
-        nar_hash: info.nar_hash.clone(),
-        nar_size: info.nar_size,
-        download_hash: info.nar_hash.clone(),
-        download_size: info.nar_size,
-        references: info.references.clone(),
-        closure_size: info.closure_size,
-    };
-
-    if toml_path.exists() {
-        let content = std::fs::read_to_string(&toml_path)?;
-        let mut image_toml: ImageToml = toml::from_str(&content)?;
-
-        // Find or create version entry.
-        let ver_idx = image_toml
-            .versions
-            .iter()
-            .position(|v| v.version == img_version);
-
-        if let Some(idx) = ver_idx {
-            image_toml.versions[idx]
-                .platforms
-                .insert(platform.clone(), plat_entry);
-            if def_path.is_some() {
-                image_toml.versions[idx].definition = def_path;
-            }
-        } else {
-            let mut platforms = HashMap::new();
-            platforms.insert(platform.clone(), plat_entry);
-            image_toml.versions.push(ImageVersionEntry {
-                version: img_version.to_string(),
-                definition: def_path,
-                config: None,
-                platforms,
-            });
-        }
-
-        std::fs::write(&toml_path, toml::to_string_pretty(&image_toml)?)?;
-    } else {
-        let mut platforms = HashMap::new();
-        platforms.insert(platform.clone(), plat_entry);
-        let image_toml = ImageToml {
-            image: ImageHeader {
-                name: img_name.to_string(),
-                description: description.map(|s| s.to_string()),
-                maintainer: maintainer.map(|s| s.to_string()),
-            },
-            versions: vec![ImageVersionEntry {
-                version: img_version.to_string(),
-                definition: def_path,
-                config: None,
-                platforms,
-            }],
-        };
-        std::fs::write(&toml_path, toml::to_string_pretty(&image_toml)?)?;
-    }
-
-    printer.step(3, 3, "Done.");
-    printer.kv("Image", img_name);
-    printer.kv("Version", img_version);
-    printer.kv("Platform", &platform);
-    printer.kv("Store path", &info.path);
-
-    if !no_commit {
-        let default_msg = format!(
-            "publish image {img_name} {img_version} ({platform})"
-        );
-        let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg)?;
-        printer.success(&format!("Committed: {msg}"));
-    }
-
-    Ok(())
-}
-
-/// `apr image unpublish <NAME> [VERSION]`
-#[allow(clippy::too_many_arguments)]
-async fn image_unpublish(
-    config: &ApmConfig,
-    name: &str,
-    version: Option<&str>,
-    platform: Option<&str>,
-    no_commit: bool,
-    message: Option<&str>,
-    registry: Option<&str>,
-    printer: &Printer,
-) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
-    let letter = first_letter(name);
-    let toml_path = dir.join("images").join(&letter).join(format!("{name}.toml"));
-
-    if !toml_path.exists() {
-        bail!("image '{name}' not found in registry");
-    }
-
-    if version.is_none() && platform.is_none() {
-        std::fs::remove_file(&toml_path)?;
-        printer.info(&format!("Removed image '{name}' entirely."));
-    } else {
-        let content = std::fs::read_to_string(&toml_path)?;
-        let mut image_toml: ImageToml = toml::from_str(&content)?;
-
-        if let Some(ver) = version {
-            if let Some(plat) = platform {
-                if let Some(v) = image_toml.versions.iter_mut().find(|v| v.version == ver) {
-                    v.platforms.remove(plat);
-                }
-                image_toml.versions.retain(|v| !v.platforms.is_empty());
-            } else {
-                image_toml.versions.retain(|v| v.version != ver);
-            }
-        } else if let Some(plat) = platform {
-            for v in &mut image_toml.versions {
-                v.platforms.remove(plat);
-            }
-            image_toml.versions.retain(|v| !v.platforms.is_empty());
-        }
-
-        if image_toml.versions.is_empty() {
-            std::fs::remove_file(&toml_path)?;
-            printer.info(&format!("Removed image '{name}' (no versions remaining)."));
-        } else {
-            std::fs::write(&toml_path, toml::to_string_pretty(&image_toml)?)?;
-            printer.info(&format!("Updated image '{name}'."));
-        }
-    }
-
-    if !no_commit {
-        let default_msg = format!("unpublish image {name}");
-        let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg)?;
-        printer.success(&format!("Committed: {msg}"));
-    }
-
-    Ok(())
-}
-
-/// `apr image show <NAME>`
-async fn image_show(
-    config: &ApmConfig,
-    name: &str,
-    _version: Option<&str>,
-    raw: bool,
-    registry: Option<&str>,
-    printer: &Printer,
-) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
-    let letter = first_letter(name);
-    let toml_path = dir.join("images").join(&letter).join(format!("{name}.toml"));
-
-    if !toml_path.exists() {
-        bail!("image '{name}' not found in registry");
-    }
-
-    let content = std::fs::read_to_string(&toml_path)?;
-
-    if raw {
-        printer.plain(&content);
-    } else {
-        let image_toml: ImageToml = toml::from_str(&content)?;
-        printer.header(&format!("Image: {}", image_toml.image.name));
-        if let Some(ref desc) = image_toml.image.description {
-            printer.kv("Description", desc);
-        }
-        if let Some(ref maint) = image_toml.image.maintainer {
-            printer.kv("Maintainer", maint);
-        }
-        for ver in &image_toml.versions {
-            printer.kv("Version", &ver.version);
-            if let Some(ref def) = ver.definition {
-                printer.kv("Definition", def);
-            }
-            for (plat, entry) in &ver.platforms {
-                printer.kv(&format!("  {plat}"), &entry.store_path);
-                printer.kv("    NAR size", &format_size(entry.nar_size));
-                printer.kv("    Closure size", &format_size(entry.closure_size));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// `apr image list`
-async fn image_list(
-    config: &ApmConfig,
-    _platform: Option<&str>,
-    registry: Option<&str>,
-    printer: &Printer,
-) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
-    let images_dir = dir.join("images");
-
-    if !images_dir.is_dir() {
-        printer.info("No images found.");
-        return Ok(());
-    }
-
-    let mut names = Vec::new();
-    for letter_entry in std::fs::read_dir(&images_dir)?.flatten() {
-        if !letter_entry.path().is_dir() {
-            continue;
-        }
-        for entry in std::fs::read_dir(letter_entry.path())?.flatten() {
-            let path = entry.path();
-            if path.extension().map(|e| e == "toml").unwrap_or(false) {
-                let content = std::fs::read_to_string(&path)?;
-                if let Ok(img) = toml::from_str::<ImageToml>(&content) {
-                    let versions: Vec<&str> = img.versions.iter().map(|v| v.version.as_str()).collect();
-                    names.push((img.image.name, versions.join(", ")));
-                }
-            }
-        }
-    }
-
-    names.sort_by(|a, b| a.0.cmp(&b.0));
-
-    if names.is_empty() {
-        printer.info("No images found.");
-    } else {
-        printer.header("Images:");
-        for (name, versions) in &names {
-            printer.plain(&format!("  {name} ({versions})"));
-        }
-    }
-
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Registry Query
@@ -1035,6 +777,9 @@ pub async fn show(
             if let Some(desc) = pkg.get("description").and_then(|v| v.as_str()) {
                 printer.kv("Description", desc);
             }
+            if pkg.get("sysroot").and_then(|v| v.as_bool()).unwrap_or(false) {
+                printer.kv("Sysroot", "yes");
+            }
             if let Some(hp) = pkg.get("homepage").and_then(|v| v.as_str()) {
                 printer.kv("Homepage", hp);
             }
@@ -1050,6 +795,9 @@ pub async fn show(
                 if let Some(v) = ver.get("version").and_then(|v| v.as_str()) {
                     printer.kv("Version", v);
                 }
+                if let Some(prev) = ver.get("previous").and_then(|v| v.as_str()) {
+                    printer.kv("Previous", prev);
+                }
                 if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table()) {
                     for (plat, entry) in platforms {
                         printer.kv(&format!("  {plat}"), "");
@@ -1058,6 +806,15 @@ pub async fn show(
                         }
                         if let Some(ns) = entry.get("nar_size").and_then(|v| v.as_integer()) {
                             printer.kv("    NAR size", &format_size(ns as u64));
+                        }
+                        if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
+                            for img in images {
+                                if let Some(fmt) = img.get("format").and_then(|v| v.as_str()) {
+                                    let img_path = img.get("store_path").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let img_size = img.get("nar_size").and_then(|v| v.as_integer()).unwrap_or(0);
+                                    printer.kv(&format!("    Image ({fmt})"), &format!("{img_path} ({})", format_size(img_size as u64)));
+                                }
+                            }
                         }
                     }
                 }
@@ -1135,7 +892,6 @@ pub async fn verify(
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let packages_dir = dir.join("packages");
-    let images_dir = dir.join("images");
 
     let mut errors = 0u32;
     let mut checked = 0u32;
@@ -1161,29 +917,6 @@ pub async fn verify(
                                 errors += 1;
                             }
                         }
-                        Err(e) => {
-                            printer.error(&format!("{}: {e}", path.display()));
-                            errors += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Verify image TOML files.
-    if images_dir.is_dir() {
-        for letter_entry in std::fs::read_dir(&images_dir)?.flatten() {
-            if !letter_entry.path().is_dir() {
-                continue;
-            }
-            for entry in std::fs::read_dir(letter_entry.path())?.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "toml").unwrap_or(false) {
-                    checked += 1;
-                    let content = std::fs::read_to_string(&path)?;
-                    match toml::from_str::<ImageToml>(&content) {
-                        Ok(_) => {}
                         Err(e) => {
                             printer.error(&format!("{}: {e}", path.display()));
                             errors += 1;
@@ -1243,7 +976,6 @@ pub async fn diff(
 pub async fn validate(
     config: &ApmConfig,
     _package: Option<&str>,
-    _image: Option<&str>,
     _platform: Option<&str>,
     _fix: bool,
     jobs: u32,
@@ -1285,28 +1017,6 @@ pub async fn validate(
                                         store_paths.push((name.to_string(), nar_hash.to_string()));
                                     }
                                 }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let images_dir = dir.join("images");
-    if images_dir.is_dir() {
-        for letter_entry in std::fs::read_dir(&images_dir)?.flatten() {
-            if !letter_entry.path().is_dir() {
-                continue;
-            }
-            for entry in std::fs::read_dir(letter_entry.path())?.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "toml").unwrap_or(false) {
-                    let content = std::fs::read_to_string(&path)?;
-                    if let Ok(img) = toml::from_str::<ImageToml>(&content) {
-                        for ver in &img.versions {
-                            for (_plat, entry) in &ver.platforms {
-                                store_paths.push((img.image.name.clone(), entry.nar_hash.clone()));
                             }
                         }
                     }
@@ -1401,7 +1111,6 @@ pub async fn status(
 pub async fn log(
     config: &ApmConfig,
     package: Option<&str>,
-    _image: Option<&str>,
     n: u32,
     registry: Option<&str>,
     printer: &Printer,
@@ -1908,6 +1617,9 @@ mod tests {
             Some("https://curl.se"),
             Some("MIT"),
             Some("aos-team"),
+            false,
+            None,
+            &[],
         )
         .unwrap();
         assert!(content.contains("name = \"curl\""));
@@ -1955,12 +1667,52 @@ references = []
             None,
             None,
             None,
+            false,
+            None,
+            &[],
         )
         .unwrap();
         // Should contain both platforms.
         assert!(content.contains("x86_64-linux"));
         assert!(content.contains("aarch64-linux"));
         assert!(content.contains("sha256:new"));
+    }
+
+    #[test]
+    fn build_package_toml_with_sysroot() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-server-2026.04".into(),
+            nar_hash: "sha256:aabb".into(),
+            nar_size: 12345678,
+            references: vec!["ref1".into()],
+            closure_size: 52428800,
+        };
+        let img_info = StorePathInfo {
+            path: "/nix/store/def456-server-2026.04-raw".into(),
+            nar_hash: "sha256:ccdd".into(),
+            nar_size: 8589934592,
+            references: vec![],
+            closure_size: 0,
+        };
+        let content = build_package_toml(
+            "",
+            "server",
+            "2026.04",
+            "x86_64-linux",
+            &info,
+            Some("AOS server"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            true,
+            Some("2026.03"),
+            &[("raw".to_string(), img_info)],
+        )
+        .unwrap();
+        assert!(content.contains("sysroot = true"));
+        assert!(content.contains("previous = \"2026.03\""));
+        assert!(content.contains("format = \"raw\""));
+        assert!(content.contains("sha256:ccdd"));
     }
 
     #[test]
