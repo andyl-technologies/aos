@@ -7,15 +7,75 @@
   self,
   pkgs,
 }:
+let
+  # Shared preamble for server tests: bring up loopback, create mock Nix DB,
+  # write server config, start aos serve in background.
+  serverPreamble = ''
+    # Bring up loopback interface (needed for 127.0.0.1 binding)
+    ${pkgs.iproute2}/sbin/ip link set lo up
+    ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo
+
+    # Use /tmp (tmpfs, writable) for all server state.
+    # The rootfs is mounted read-only so /run and other paths on the
+    # root filesystem are not writable.
+    export AOS_ROOT=/tmp/aos
+    mkdir -p $AOS_ROOT/var/nix/db
+    mkdir -p $AOS_ROOT/store
+    mkdir -p $AOS_ROOT/meta
+    mkdir -p /tmp/run/aos
+
+    # Create a minimal SQLite DB matching the Nix schema
+    ${pkgs.sqlite}/bin/sqlite3 $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
+    CREATE TABLE IF NOT EXISTS ValidPaths (
+      id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+      path TEXT UNIQUE NOT NULL,
+      hash TEXT NOT NULL,
+      registrationTime INTEGER NOT NULL,
+      deriver TEXT,
+      narSize INTEGER,
+      ultimate INTEGER,
+      sigs TEXT,
+      ca TEXT
+    );
+    CREATE TABLE IF NOT EXISTS Refs (
+      referrer INTEGER NOT NULL,
+      reference INTEGER NOT NULL,
+      PRIMARY KEY (referrer, reference),
+      FOREIGN KEY (referrer) REFERENCES ValidPaths(id) ON DELETE CASCADE,
+      FOREIGN KEY (reference) REFERENCES ValidPaths(id) ON DELETE CASCADE
+    );
+    PRAGMA journal_mode=WAL;
+    SQL
+    chmod 666 $AOS_ROOT/var/nix/db/db.sqlite
+    chmod 777 $AOS_ROOT/var/nix/db
+  '';
+
+  # Common rootfsDeps for server tests
+  serverDeps = [
+    self
+    pkgs.curl
+    pkgs.coreutils
+    pkgs.socat
+    pkgs.jq
+    pkgs.sqlite
+    pkgs.iproute2
+    pkgs.grep
+  ];
+in
 {
   # ---------------------------------------------------------------------------
   # CLI basics
   # ---------------------------------------------------------------------------
 
-  help = testing.mkToolCheck {
-    pname = "aos-help";
-    tool = self;
-    command = "${self}/bin/aos --help";
+  help = testing.mkVMTest {
+    name = "aos-help";
+    rootfsDeps = [ self ];
+    memory = 1024;
+    testScript = ''
+      echo "==> Testing aos --help"
+      ${self}/bin/aos --help
+      echo "==> aos --help passed"
+    '';
   };
 
   version = testing.mkVMTest {
@@ -54,106 +114,46 @@
 
   server-startup = testing.mkVMTest {
     name = "aos-server-startup";
-    rootfsDeps = [
-      self
-      pkgs.curl
-      pkgs.coreutils
-    ];
-    memory = 512;
+    rootfsDeps = serverDeps;
+    memory = 1024;
     testScript = ''
-      export AOS_ROOT=/tmp/aos
-      mkdir -p $AOS_ROOT/var/nix/db
-      mkdir -p $AOS_ROOT/store
-      mkdir -p $AOS_ROOT/meta
-      mkdir -p /run/aos
+      ${serverPreamble}
 
-      # Create a minimal config
       cat > /tmp/aos-config.toml << 'EOF'
       listen = "127.0.0.1:15000"
 
       [[views]]
       name = "test"
       anonymous_read = true
-      max_concurrent_builds = 2
 
       [bootstrap]
-      socket = "/run/aos/bootstrap.sock"
+      socket = "/tmp/run/aos/bootstrap.sock"
       socket_group = "root"
       EOF
 
-      # Start the server in background; it will fail to open the Nix DB
-      # but we test that the binary loads and attempts to start.
+      # Start server and verify it responds
       ${self}/bin/aos serve --config /tmp/aos-config.toml &
       SERVER_PID=$!
+      sleep 2
 
-      # Give it a moment to bind
-      sleep 1
+      HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+        http://127.0.0.1:15000/test/nix-cache-info)
+      echo "==> nix-cache-info HTTP code: $HTTP_CODE"
 
-      # Check if the process is still running (it may have exited due to
-      # missing Nix DB, which is expected in headless mode)
-      if kill -0 $SERVER_PID 2>/dev/null; then
-        echo "==> Server process is running (PID $SERVER_PID)"
+      kill $SERVER_PID 2>/dev/null || true
+      wait $SERVER_PID 2>/dev/null || true
 
-        # Try the cache-info endpoint
-        HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-          http://127.0.0.1:15000/test/nix-cache-info || true)
-        echo "==> nix-cache-info HTTP code: $HTTP_CODE"
-
-        kill $SERVER_PID 2>/dev/null || true
-        wait $SERVER_PID 2>/dev/null || true
-
-        if [ "$HTTP_CODE" = "200" ]; then
-          echo "==> Server responded to cache-info request"
-        else
-          echo "==> Server started but cache-info returned $HTTP_CODE (may need Nix DB)"
-        fi
-      else
-        # Server exited — expected without a real Nix store DB
-        echo "==> Server exited (expected without Nix store DB)"
-      fi
-
-      echo "==> aos server startup test passed"
+      test "$HTTP_CODE" = "200" || { echo "FAIL: expected 200, got $HTTP_CODE"; exit 1; }
+      echo "==> Server startup test passed"
     '';
   };
 
   cache-info = testing.mkVMTest {
     name = "aos-cache-info";
-    rootfsDeps = [
-      self
-      pkgs.curl
-      pkgs.coreutils
-      pkgs.nix
-      pkgs.sqlite
-    ];
-    memory = 512;
+    rootfsDeps = serverDeps;
+    memory = 1024;
     testScript = ''
-      export AOS_ROOT=/tmp/aos
-      mkdir -p $AOS_ROOT/var/nix/db
-      mkdir -p $AOS_ROOT/store
-      mkdir -p $AOS_ROOT/meta
-      mkdir -p /run/aos
-
-      # Create a minimal SQLite DB matching the Nix schema
-      ${pkgs.sqlite}/bin/sqlite3 $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
-      CREATE TABLE IF NOT EXISTS ValidPaths (
-        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-        path TEXT UNIQUE NOT NULL,
-        hash TEXT NOT NULL,
-        registrationTime INTEGER NOT NULL,
-        deriver TEXT,
-        narSize INTEGER,
-        ultimate INTEGER,
-        sigs TEXT,
-        ca TEXT
-      );
-      CREATE TABLE IF NOT EXISTS Refs (
-        referrer INTEGER NOT NULL,
-        reference INTEGER NOT NULL,
-        PRIMARY KEY (referrer, reference),
-        FOREIGN KEY (referrer) REFERENCES ValidPaths(id) ON DELETE CASCADE,
-        FOREIGN KEY (reference) REFERENCES ValidPaths(id) ON DELETE CASCADE
-      );
-      SQL
+      ${serverPreamble}
 
       cat > /tmp/aos-config.toml << 'EOF'
       listen = "127.0.0.1:15000"
@@ -164,7 +164,7 @@
       max_concurrent_builds = 2
 
       [bootstrap]
-      socket = "/run/aos/bootstrap.sock"
+      socket = "/tmp/run/aos/bootstrap.sock"
       socket_group = "root"
       EOF
 
@@ -231,43 +231,10 @@
 
   token-management = testing.mkVMTest {
     name = "aos-token-management";
-    rootfsDeps = [
-      self
-      pkgs.curl
-      pkgs.coreutils
-      pkgs.socat
-      pkgs.jq
-      pkgs.sqlite
-    ];
-    memory = 512;
+    rootfsDeps = serverDeps;
+    memory = 1024;
     testScript = ''
-      export AOS_ROOT=/tmp/aos
-      mkdir -p $AOS_ROOT/var/nix/db
-      mkdir -p $AOS_ROOT/store
-      mkdir -p $AOS_ROOT/meta
-      mkdir -p /run/aos
-
-      # Create the Nix DB
-      ${pkgs.sqlite}/bin/sqlite3 $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
-      CREATE TABLE IF NOT EXISTS ValidPaths (
-        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-        path TEXT UNIQUE NOT NULL,
-        hash TEXT NOT NULL,
-        registrationTime INTEGER NOT NULL,
-        deriver TEXT,
-        narSize INTEGER,
-        ultimate INTEGER,
-        sigs TEXT,
-        ca TEXT
-      );
-      CREATE TABLE IF NOT EXISTS Refs (
-        referrer INTEGER NOT NULL,
-        reference INTEGER NOT NULL,
-        PRIMARY KEY (referrer, reference),
-        FOREIGN KEY (referrer) REFERENCES ValidPaths(id) ON DELETE CASCADE,
-        FOREIGN KEY (reference) REFERENCES ValidPaths(id) ON DELETE CASCADE
-      );
-      SQL
+      ${serverPreamble}
 
       cat > /tmp/aos-config.toml << 'EOF'
       listen = "127.0.0.1:15000"
@@ -278,7 +245,7 @@
       max_concurrent_builds = 2
 
       [bootstrap]
-      socket = "/run/aos/bootstrap.sock"
+      socket = "/tmp/run/aos/bootstrap.sock"
       socket_group = "root"
       EOF
 
@@ -292,7 +259,7 @@
       # Test 1: Create a token via bootstrap socket
       echo "==> Test: create token via bootstrap socket"
       RESPONSE=$(echo '{"command":"create","views":["test"],"permissions":["read","build"],"comment":"integration test"}' | \
-        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/run/aos/bootstrap.sock)
+        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
       echo "Create response: $RESPONSE"
 
       TOKEN=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.token // empty')
@@ -305,7 +272,7 @@
       # Test 2: List tokens via bootstrap socket
       echo "==> Test: list tokens via bootstrap socket"
       LIST_RESPONSE=$(echo '{"command":"list"}' | \
-        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/run/aos/bootstrap.sock)
+        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
       echo "List response: $LIST_RESPONSE"
 
       COUNT=$(echo "$LIST_RESPONSE" | ${pkgs.jq}/bin/jq '.tokens | length')
@@ -341,7 +308,7 @@
       # Test 5: Revoke token via bootstrap socket
       echo "==> Test: revoke token via bootstrap socket"
       REVOKE_RESPONSE=$(echo "{\"command\":\"revoke\",\"token_id\":\"$TOKEN_ID\"}" | \
-        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/run/aos/bootstrap.sock)
+        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
       echo "Revoke response: $REVOKE_RESPONSE"
 
       # Test 6: Revoked token should fail JWT exchange
@@ -367,42 +334,10 @@
 
   auth-enforcement = testing.mkVMTest {
     name = "aos-auth-enforcement";
-    rootfsDeps = [
-      self
-      pkgs.curl
-      pkgs.coreutils
-      pkgs.socat
-      pkgs.jq
-      pkgs.sqlite
-    ];
-    memory = 512;
+    rootfsDeps = serverDeps;
+    memory = 1024;
     testScript = ''
-      export AOS_ROOT=/tmp/aos
-      mkdir -p $AOS_ROOT/var/nix/db
-      mkdir -p $AOS_ROOT/store
-      mkdir -p $AOS_ROOT/meta
-      mkdir -p /run/aos
-
-      ${pkgs.sqlite}/bin/sqlite3 $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
-      CREATE TABLE IF NOT EXISTS ValidPaths (
-        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-        path TEXT UNIQUE NOT NULL,
-        hash TEXT NOT NULL,
-        registrationTime INTEGER NOT NULL,
-        deriver TEXT,
-        narSize INTEGER,
-        ultimate INTEGER,
-        sigs TEXT,
-        ca TEXT
-      );
-      CREATE TABLE IF NOT EXISTS Refs (
-        referrer INTEGER NOT NULL,
-        reference INTEGER NOT NULL,
-        PRIMARY KEY (referrer, reference),
-        FOREIGN KEY (referrer) REFERENCES ValidPaths(id) ON DELETE CASCADE,
-        FOREIGN KEY (reference) REFERENCES ValidPaths(id) ON DELETE CASCADE
-      );
-      SQL
+      ${serverPreamble}
 
       # Configure two views: "public" (anon read) and "private" (no anon read)
       cat > /tmp/aos-config.toml << 'EOF'
@@ -417,7 +352,7 @@
       anonymous_read = false
 
       [bootstrap]
-      socket = "/run/aos/bootstrap.sock"
+      socket = "/tmp/run/aos/bootstrap.sock"
       socket_group = "root"
       EOF
 
@@ -442,7 +377,7 @@
       # Test 3: Create token scoped to "public" only
       echo "==> Test: view-scoped token"
       RESPONSE=$(echo '{"command":"create","views":["public"],"permissions":["read","build"]}' | \
-        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/run/aos/bootstrap.sock)
+        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
       TOKEN=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.token')
 
       JWT_RESPONSE=$(curl -sf \
@@ -473,7 +408,7 @@
       # Test 6: Create read-only token (no build permission)
       echo "==> Test: read-only token cannot upload"
       RESPONSE2=$(echo '{"command":"create","views":["public"],"permissions":["read"]}' | \
-        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/run/aos/bootstrap.sock)
+        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
       TOKEN2=$(echo "$RESPONSE2" | ${pkgs.jq}/bin/jq -r '.token')
 
       JWT2_RESPONSE=$(curl -sf \
@@ -503,42 +438,10 @@
 
   drain = testing.mkVMTest {
     name = "aos-drain";
-    rootfsDeps = [
-      self
-      pkgs.curl
-      pkgs.coreutils
-      pkgs.socat
-      pkgs.jq
-      pkgs.sqlite
-    ];
-    memory = 512;
+    rootfsDeps = serverDeps;
+    memory = 1024;
     testScript = ''
-      export AOS_ROOT=/tmp/aos
-      mkdir -p $AOS_ROOT/var/nix/db
-      mkdir -p $AOS_ROOT/store
-      mkdir -p $AOS_ROOT/meta
-      mkdir -p /run/aos
-
-      ${pkgs.sqlite}/bin/sqlite3 $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
-      CREATE TABLE IF NOT EXISTS ValidPaths (
-        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-        path TEXT UNIQUE NOT NULL,
-        hash TEXT NOT NULL,
-        registrationTime INTEGER NOT NULL,
-        deriver TEXT,
-        narSize INTEGER,
-        ultimate INTEGER,
-        sigs TEXT,
-        ca TEXT
-      );
-      CREATE TABLE IF NOT EXISTS Refs (
-        referrer INTEGER NOT NULL,
-        reference INTEGER NOT NULL,
-        PRIMARY KEY (referrer, reference),
-        FOREIGN KEY (referrer) REFERENCES ValidPaths(id) ON DELETE CASCADE,
-        FOREIGN KEY (reference) REFERENCES ValidPaths(id) ON DELETE CASCADE
-      );
-      SQL
+      ${serverPreamble}
 
       cat > /tmp/aos-config.toml << 'EOF'
       listen = "127.0.0.1:15000"
@@ -548,7 +451,7 @@
       anonymous_read = true
 
       [bootstrap]
-      socket = "/run/aos/bootstrap.sock"
+      socket = "/tmp/run/aos/bootstrap.sock"
       socket_group = "root"
       EOF
 
@@ -566,7 +469,7 @@
 
       # Get a token for build requests
       RESPONSE=$(echo '{"command":"create","views":["test"],"permissions":["read","build"]}' | \
-        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/run/aos/bootstrap.sock)
+        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/run/aos/bootstrap.sock)
       TOKEN=$(echo "$RESPONSE" | ${pkgs.jq}/bin/jq -r '.token')
       JWT_RESPONSE=$(curl -sf \
         -X POST -H "Authorization: Bearer $TOKEN" \

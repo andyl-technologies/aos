@@ -129,7 +129,7 @@ let
 
       exportReferencesGraph = flatGraphPairs;
 
-      BASH = builtins.toString bashPkg;
+      AOS_BASH = builtins.toString bashPkg;
       COREUTILS = builtins.toString coreutilsPkg;
       UTIL_LINUX = builtins.toString utilLinuxPkg;
       BOOTSTRAP = builtins.toString bootstrapTools;
@@ -164,8 +164,8 @@ let
                         echo ""
 
                         # /bin/sh -> bash (required for shell scripts)
-                        ln -sfn $BASH/bin/bash rootfs/bin/sh
-                        ln -sfn $BASH/bin/bash rootfs/bin/bash
+                        ln -sfn $AOS_BASH/bin/bash rootfs/bin/sh
+                        ln -sfn $AOS_BASH/bin/bash rootfs/bin/bash
 
                         # coreutils in /bin and /usr/bin
                         for bin in $COREUTILS/bin/*; do
@@ -212,12 +212,21 @@ let
                         # Raw bootstrap gcc doesn't know about our glibc or dynamic linker paths
 
                         # Discover C++ include paths (same logic as pkgs/default.nix ccWrapper)
+                        # Guard: only probe if include/c++ exists (cc-wrapper may not have it)
                         BT_ROOT=$(dirname $BOOTSTRAP/lib)
-                        CXX_VER=$(ls "$BT_ROOT/include/c++")
-                        BT_CXX="$BT_ROOT/include/c++/$CXX_VER"
-                        BT_CXX_ARCH=$(ls -d "$BT_CXX"/*-linux-gnu 2>/dev/null | head -1)
-                        BT_CXX_BACKWARD="$BT_CXX/backward"
-                        BT_GCC_LIB=$(ls -d "$BOOTSTRAP/lib/gcc"/*/*/ 2>/dev/null | head -1)
+                        BT_CXX=""
+                        BT_CXX_ARCH=""
+                        BT_CXX_BACKWARD=""
+                        BT_GCC_LIB=""
+                        if [ -d "$BT_ROOT/include/c++" ]; then
+                          CXX_VER=$(ls "$BT_ROOT/include/c++")
+                          BT_CXX="$BT_ROOT/include/c++/$CXX_VER"
+                          BT_CXX_ARCH=$(ls -d "$BT_CXX"/*-linux-gnu 2>/dev/null | head -1 || true)
+                          BT_CXX_BACKWARD="$BT_CXX/backward"
+                        fi
+                        if [ -d "$BOOTSTRAP/lib/gcc" ]; then
+                          BT_GCC_LIB=$(ls -d "$BOOTSTRAP/lib/gcc"/*/*/ 2>/dev/null | head -1 || true)
+                        fi
 
                         cat > rootfs/usr/local/bin/gcc << GCCWRAP
             #!/bin/sh
@@ -299,6 +308,9 @@ let
                         if [ "$IMAGE_MB" -lt 512 ]; then IMAGE_MB=512; fi
 
                         echo "==> Rootfs closure: ''${STORE_MB}MB, image: ''${IMAGE_MB}MB"
+                        # stdenv setup.sh creates $out as a directory; remove it so
+                        # mkfs.ext4 can write a flat image file there.
+                        rm -rf "$out"
                         mkfs.ext4 -d rootfs -L rootfs -m 1 -q $out ''${IMAGE_MB}M
           '';
         }
