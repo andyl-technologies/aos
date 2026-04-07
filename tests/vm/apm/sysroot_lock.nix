@@ -114,9 +114,7 @@ CFGEOF
 
     ${if sysrootState != null then ''
       # Write system generation state
-      cat > /var/lib/profiles/system/state.json << 'STATEEOF'
-      ${sysrootState}
-      STATEEOF
+      printf '%s\n' '${sysrootState}' > /var/lib/profiles/system/state.json
       # Create generation directories
       mkdir -p /var/lib/profiles/system/gen-1
     '' else ""}

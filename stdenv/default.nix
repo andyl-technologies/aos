@@ -24,7 +24,7 @@
 }:
 let
   system = buildPlatform.system;
-  lib = import ../lib { inherit system; };
+  lib = import ../lib { inherit system; bash = tier.bash; };
 
   # ── Bootstrap: hex0 → GCC 2.95.3 + glibc 2.2.5 (i686) ─────────────
   bootstrap = import ./bootstrap { inherit buildPlatform; };

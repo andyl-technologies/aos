@@ -11,14 +11,14 @@
   lib,
   system,
 }:
-# Use a raw derivation with /bin/sh so we don't need to build coreutils.
+# Use a raw derivation with AOS bash so we don't pull in host tools.
 # The real verification happens at Nix eval time: the builtins.toJSON calls
 # force the system config, so any module error causes an instantiation
 # failure before the builder even runs.
 builtins.derivation {
   name = "aos-eval-checks-0";
   system = lib.system;
-  builder = "/bin/sh";
+  builder = "${pkgs.bash}/bin/bash";
   args = [
     "-c"
     ''

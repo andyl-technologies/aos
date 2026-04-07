@@ -52,9 +52,7 @@ let
               builtins.attrValues (
                 builtins.mapAttrs (
                   name: content: ''
-                    cat > $out/etc/systemd/system/${name} << 'UNITEOF'
-                    ${content}
-                    UNITEOF
+                    printf '%s\n' '${content}' > $out/etc/systemd/system/${name}
                     ln -sfn ../../../etc/systemd/system/${name} \
                       $out/etc/systemd/system/multi-user.target.wants/${name}
                   ''
@@ -68,22 +66,14 @@ let
                 builtins.mapAttrs (
                   path: content: ''
                     mkdir -p $out/etc/$(dirname ${path})
-                    cat > $out/etc/${path} << 'ETCEOF'
-                    ${content}
-                    ETCEOF
+                    printf '%s\n' '${content}' > $out/etc/${path}
                   ''
                 ) etcFiles
               )
             )}
 
             # Activation script — creates a marker file at /tmp/activated-<version>
-            cat > $out/activate << ACTIVATEEOF
-            #!/bin/sh
-            echo "Activating ${pname} ${version}"
-            mkdir -p /tmp
-            echo "${version}" > /tmp/activated-${version}
-            echo "${version}" > /tmp/activated-current
-            ACTIVATEEOF
+            printf '%s\n' '#!/bin/sh' 'echo "Activating ${pname} ${version}"' 'mkdir -p /tmp' 'echo "${version}" > /tmp/activated-${version}' 'echo "${version}" > /tmp/activated-current' > $out/activate
             chmod +x $out/activate
 
             ${
@@ -98,9 +88,7 @@ let
             ${
               if drainScript != null
               then ''
-                cat > $out/drain << 'DRAINEOF'
-                ${drainScript}
-                DRAINEOF
+                printf '%s\n' ${drainScript} > $out/drain
                 chmod +x $out/drain
               ''
               else ""
@@ -345,9 +333,7 @@ CFGEOF
     ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
 
     ${if stateJson != null then ''
-      cat > /var/lib/profiles/system/state.json << 'STATEEOF'
-      ${stateJson}
-      STATEEOF
+      printf '%s\n' '${stateJson}' > /var/lib/profiles/system/state.json
     '' else ""}
   '';
 

@@ -73,11 +73,7 @@ let
             ln -sfn ${kernel} $out/kernel
 
             # Activation script
-            cat > $out/activate << 'ACTIVATEEOF'
-            #!/bin/sh
-            mkdir -p /tmp
-            echo "activated-${version}" > /tmp/activated-current
-            ACTIVATEEOF
+            printf '%s\n' '#!/bin/sh' 'mkdir -p /tmp' 'echo "activated-${version}" > /tmp/activated-current' > $out/activate
             chmod +x $out/activate
 
             # Boot loader entry directory (for update_boot_loader)
@@ -86,9 +82,7 @@ let
             ${
               if drainScript != null
               then ''
-                cat > $out/drain << 'DRAINEOF'
-                ${drainScript}
-                DRAINEOF
+                printf '%s\n' ${drainScript} > $out/drain
                 chmod +x $out/drain
               ''
               else ""
@@ -242,37 +236,18 @@ CFGEOF
 
     ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
 
-    cat > /var/lib/profiles/system/state.json << 'STATEEOF'
-    ${stateJson}
-    STATEEOF
+    printf '%s\n' '${stateJson}' > /var/lib/profiles/system/state.json
 
     # Create mock kexec and systemctl commands that log their invocations
     # instead of actually rebooting
     mkdir -p /tmp/mock-bin
-    cat > /tmp/mock-bin/kexec << 'MOCKEOF'
-    #!/bin/sh
-    echo "MOCK-KEXEC: $@" >> /tmp/kexec-invocations.log
-    echo "kexec: $@"
-    # -l loads the kernel, -e executes it
-    # Mock both successfully
-    exit 0
-    MOCKEOF
+    printf '%s\n' '#!/bin/sh' 'echo "MOCK-KEXEC: $@" >> /tmp/kexec-invocations.log' 'echo "kexec: $@"' 'exit 0' > /tmp/mock-bin/kexec
     chmod +x /tmp/mock-bin/kexec
 
-    cat > /tmp/mock-bin/systemctl << 'MOCKEOF'
-    #!/bin/sh
-    echo "MOCK-SYSTEMCTL: $@" >> /tmp/systemctl-invocations.log
-    echo "systemctl: $@"
-    # Don't actually reboot
-    exit 0
-    MOCKEOF
+    printf '%s\n' '#!/bin/sh' 'echo "MOCK-SYSTEMCTL: $@" >> /tmp/systemctl-invocations.log' 'echo "systemctl: $@"' 'exit 0' > /tmp/mock-bin/systemctl
     chmod +x /tmp/mock-bin/systemctl
 
-    cat > /tmp/mock-bin/sync << 'MOCKEOF'
-    #!/bin/sh
-    echo "MOCK-SYNC" >> /tmp/sync-invocations.log
-    exit 0
-    MOCKEOF
+    printf '%s\n' '#!/bin/sh' 'echo "MOCK-SYNC" >> /tmp/sync-invocations.log' 'exit 0' > /tmp/mock-bin/sync
     chmod +x /tmp/mock-bin/sync
 
     # Prepend mock binaries to PATH

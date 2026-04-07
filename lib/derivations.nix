@@ -16,9 +16,19 @@
 ##!
 ##! The `system` parameter must be provided by the caller (lib/default.nix)
 ##! and is used as the default for all derivation builders.
-{ system }:
+##!
+##! The optional `bash` parameter (a derivation) specifies the AOS-built bash
+##! to use as the builder for all derivations. When `null` (early bootstrap),
+##! `/bin/sh` is used as a fallback.
+{ system, bash ? null }:
 let
   defaultSystem = system;
+
+  # When an AOS-built bash is available, use it as the builder for all
+  # derivations (FODs, mkDerivation default, mkShell).  Falls back to
+  # /bin/sh for early bootstrap stages where bash hasn't been built yet.
+  builderPath = if bash != null then "${bash}/bin/bash" else "/bin/sh";
+
   inherit (import ./trivial.nix) throwIfNot;
   inherit (import ./platform.nix)
     satisfies
@@ -311,7 +321,7 @@ let
       meta ? { },
       storeDir ? "/nix/store",
       system ? defaultSystem,
-      shell ? "/bin/sh",
+      shell ? builderPath,
       outputs ? [ "out" ],
       configureFlags ? "",
       makeFlags ? "",
@@ -579,7 +589,7 @@ let
       shellHook ? "",
       name ? "aos-dev-shell",
       system ? defaultSystem,
-      shell ? "/bin/sh",
+      shell ? builderPath,
       ...
     }:
     let
@@ -700,7 +710,7 @@ let
     }:
     builtins.derivation {
       inherit name system;
-      builder = "/bin/sh";
+      builder = builderPath;
       args = [
         "-c"
         ''
@@ -807,7 +817,7 @@ let
     in
     builtins.derivation {
       inherit name system;
-      builder = "/bin/sh";
+      builder = builderPath;
       args = [
         "-c"
         ''
@@ -864,7 +874,7 @@ let
     }:
     builtins.derivation {
       inherit name system;
-      builder = "/bin/sh";
+      builder = builderPath;
       args = [
         "-c"
         ''
@@ -978,7 +988,7 @@ let
     in
     builtins.derivation {
       inherit name system;
-      builder = "/bin/sh";
+      builder = builderPath;
       args = [
         "-c"
         ''

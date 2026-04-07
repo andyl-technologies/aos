@@ -31,7 +31,7 @@
   crossSystem ? null,
 }:
 let
-  lib = import ./lib { inherit system; };
+  lib = import ./lib { inherit system; bash = stdenv.bash; };
   buildPlatform = lib.platform;
   hostPlatform = if crossSystem != null then lib.mkPlatform crossSystem else buildPlatform;
 
