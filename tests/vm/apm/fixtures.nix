@@ -150,6 +150,7 @@ description = "Test remote registry"
 REGEOF
       git add -A
       git commit -m "Initialize remote registry"
+      git push --set-upstream origin "$(git branch --show-current)"
       cd /tmp
       rm -rf /tmp/remote-setup
     }

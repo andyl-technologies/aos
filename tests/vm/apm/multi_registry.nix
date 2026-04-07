@@ -30,8 +30,11 @@ let
       referrer INTEGER NOT NULL, reference INTEGER NOT NULL,
       PRIMARY KEY (referrer, reference)
     );
+    PRAGMA journal_mode=WAL;
 SQL
     chmod 666 ${dir}/var/nix/db/db.sqlite
+    chmod 666 ${dir}/var/nix/db/db.sqlite-wal 2>/dev/null || true
+    chmod 666 ${dir}/var/nix/db/db.sqlite-shm 2>/dev/null || true
     chmod 777 ${dir}/var/nix/db
   '';
 
@@ -110,14 +113,18 @@ CFGEOF
       AOS_ROOT=/tmp/reg-b ${aosBin} serve --config /tmp/reg-b-config.toml &
       REG_B_PID=$!
 
-      sleep 2
+      echo "==> Waiting for registries to start"
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        HTTP_A=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15001/default/nix-cache-info 2>/dev/null) || true
+        HTTP_B=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/default/nix-cache-info 2>/dev/null) || true
+        if [ "$HTTP_A" = "200" ] && [ "$HTTP_B" = "200" ]; then break; fi
+        sleep 1
+      done
 
       echo "==> Verifying registry A"
-      HTTP_A=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15001/default/nix-cache-info)
       test "$HTTP_A" = "200" || { echo "FAIL: registry A not responding"; FAIL=1; }
 
       echo "==> Verifying registry B"
-      HTTP_B=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/default/nix-cache-info)
       test "$HTTP_B" = "200" || { echo "FAIL: registry B not responding"; FAIL=1; }
 
       echo "==> Reading cache-info from both"
@@ -216,10 +223,12 @@ CFGEOF
       AOS_ROOT=/tmp/reg-b ${aosBin} serve --config /tmp/reg-b-config.toml &
       REG_B_PID=$!
 
-      sleep 2
-
-      HTTP_A=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15001/default/nix-cache-info)
-      HTTP_B=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/default/nix-cache-info)
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        HTTP_A=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15001/default/nix-cache-info 2>/dev/null) || true
+        HTTP_B=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/default/nix-cache-info 2>/dev/null) || true
+        if [ "$HTTP_A" = "200" ] && [ "$HTTP_B" = "200" ]; then break; fi
+        sleep 1
+      done
       test "$HTTP_A" = "200" || { echo "FAIL: registry A not up"; FAIL=1; }
       test "$HTTP_B" = "200" || { echo "FAIL: registry B not up"; FAIL=1; }
 
@@ -301,10 +310,12 @@ CFGEOF
       AOS_ROOT=/tmp/mirror ${aosBin} serve --config /tmp/mirror-config.toml &
       MIRROR_PID=$!
 
-      sleep 2
-
-      HTTP_UP=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15001/default/nix-cache-info)
-      HTTP_MR=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/default/nix-cache-info)
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        HTTP_UP=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15001/default/nix-cache-info 2>/dev/null) || true
+        HTTP_MR=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/default/nix-cache-info 2>/dev/null) || true
+        if [ "$HTTP_UP" = "200" ] && [ "$HTTP_MR" = "200" ]; then break; fi
+        sleep 1
+      done
       test "$HTTP_UP" = "200" || { echo "FAIL: upstream not responding"; FAIL=1; }
       test "$HTTP_MR" = "200" || { echo "FAIL: mirror not responding"; FAIL=1; }
 
