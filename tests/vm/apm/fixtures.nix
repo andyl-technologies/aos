@@ -91,7 +91,8 @@ rec {
 
     assert_cmd_output_contains() {
       eval "$1" > /tmp/cmd-stdout 2>/tmp/cmd-stderr || true
-      if grep -q "$2" /tmp/cmd-stdout 2>/dev/null; then
+      cat /tmp/cmd-stdout /tmp/cmd-stderr > /tmp/cmd-combined 2>/dev/null || true
+      if grep -q "$2" /tmp/cmd-combined 2>/dev/null; then
         pass "$3"
       else
         fail "$3 (output of '$1' does not contain '$2')"

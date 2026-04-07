@@ -42,31 +42,43 @@ let
           name = "build";
           script = ''
             mkdir -p $out/packages
-            ${builtins.concatStringsSep "\n" (builtins.map (pkg: ''
-              mkdir -p $out/packages/${pkg.name}
-              cat > $out/packages/${pkg.name}/x86_64-linux.toml << 'PKGEOF'
-            [package]
-            name = "${pkg.name}"
-            version = "${pkg.version}"
-            store_path = "${pkg.storePath}"
-            nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-            nar_size = 1024
-            download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-            download_size = 512
-            sysroot = ${if pkg.sysroot or false then "true" else "false"}
-            references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
-            ${if (pkg.images or []) != [] then
-              builtins.concatStringsSep "\n" (builtins.map (img: ''
-            [[package.images]]
-            format = "${img.format}"
-            store_path = "${img.storePath}"
-            nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-            nar_size = ${builtins.toString img.narSize}
-            download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-            download_size = ${builtins.toString img.downloadSize}
-              '') (pkg.images or []))
-            else ""}
-            PKGEOF
+            ${builtins.concatStringsSep "\n" (builtins.map (pkg:
+              let letter = builtins.substring 0 1 pkg.name;
+              in ''
+              mkdir -p $out/packages/${letter}
+              cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
+[package]
+name = "${pkg.name}"
+description = "mock ${pkg.name}"
+license = "MIT"
+maintainer = "test"
+${if pkg.sysroot or false then "sysroot = true" else ""}
+
+[[versions]]
+version = "${pkg.version}"
+
+[versions.platforms.x86_64-linux]
+store_path = "${pkg.storePath}"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+nar_size = 1024
+download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+download_size = 512
+closure_size = 2048
+source_drv = ""
+source_nar_hash = ""
+references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
+${if (pkg.images or []) != [] then
+  builtins.concatStringsSep "\n" (builtins.map (img: ''
+[[versions.platforms.x86_64-linux.images]]
+format = "${img.format}"
+store_path = "${img.storePath}"
+nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+nar_size = ${builtins.toString img.narSize}
+download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+download_size = ${builtins.toString img.downloadSize}
+'') (pkg.images or []))
+else ""}
+PKGEOF
             '') packages)}
 
             # Initialize as a git repo (apm expects this)
@@ -111,10 +123,12 @@ CFGEOF
 
     # Symlink the registry into the remote cache (apm reads from here)
     ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
+    # Also link into user-level cache so user-scope commands find it
+    ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
 
     ${if sysrootState != null then ''
       # Write system generation state
-      printf '%s\n' '${sysrootState}' > /var/lib/profiles/system/state.json
+      cp ${builtins.toFile "state.json" sysrootState} /var/lib/profiles/system/state.json
       # Create generation directories
       mkdir -p /var/lib/profiles/system/gen-1
     '' else ""}
