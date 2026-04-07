@@ -1,0 +1,201 @@
+//! Core types for the transfer engine.
+
+use std::path::PathBuf;
+
+use tokio::io::AsyncRead;
+
+/// HTTP-like method for transfers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    Get,
+    Put,
+    Head,
+    Delete,
+}
+
+/// The body to send with a transfer request.
+pub enum TransferBody {
+    /// Upload from a local file.
+    File(PathBuf),
+    /// Upload raw bytes.
+    Bytes(Vec<u8>),
+    /// Upload from an async stream.
+    Stream(Box<dyn AsyncRead + Send + Sync + Unpin>),
+}
+
+impl std::fmt::Debug for TransferBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(p) => f.debug_tuple("File").field(p).finish(),
+            Self::Bytes(b) => f.debug_tuple("Bytes").field(&b.len()).finish(),
+            Self::Stream(_) => f.debug_tuple("Stream").finish(),
+        }
+    }
+}
+
+/// Where to write the transfer output.
+pub enum TransferOutput {
+    /// Write to a local file (supports resume).
+    File(PathBuf),
+    /// Buffer the entire response in memory and return in `TransferResult::body`.
+    Memory,
+    /// Stream chunks to a callback.
+    Callback(Box<dyn Fn(&[u8]) -> anyhow::Result<()> + Send + Sync>),
+}
+
+impl std::fmt::Debug for TransferOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(p) => f.debug_tuple("File").field(p).finish(),
+            Self::Memory => write!(f, "Memory"),
+            Self::Callback(_) => write!(f, "Callback"),
+        }
+    }
+}
+
+/// Hash algorithm for verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HashAlgorithm {
+    Sha256,
+    Sha512,
+}
+
+/// Expected hash for verification during transfer.
+#[derive(Debug, Clone)]
+pub struct HashSpec {
+    /// The hash algorithm to use.
+    pub algorithm: HashAlgorithm,
+    /// Hex-encoded expected hash value.
+    pub expected: String,
+}
+
+/// A request to transfer data.
+#[derive(Debug)]
+pub struct TransferRequest {
+    /// The URL to transfer to/from.
+    pub url: String,
+    /// The HTTP method (or equivalent for non-HTTP protocols).
+    pub method: Method,
+    /// Additional headers to send.
+    pub headers: Vec<(String, String)>,
+    /// Request body for PUT requests.
+    pub body: Option<TransferBody>,
+    /// Expected hash for download verification.
+    pub hash: Option<HashSpec>,
+    /// Whether to attempt resuming a partial download.
+    pub resume: bool,
+    /// Where to write the output.
+    pub output: TransferOutput,
+}
+
+impl TransferRequest {
+    /// Create a simple GET request that buffers the response in memory.
+    pub fn get(url: &str) -> Self {
+        Self {
+            url: url.to_string(),
+            method: Method::Get,
+            headers: Vec::new(),
+            body: None,
+            hash: None,
+            resume: false,
+            output: TransferOutput::Memory,
+        }
+    }
+
+    /// Create a GET request that writes to a file.
+    pub fn get_to_file(url: &str, path: PathBuf) -> Self {
+        Self {
+            url: url.to_string(),
+            method: Method::Get,
+            headers: Vec::new(),
+            body: None,
+            hash: None,
+            resume: false,
+            output: TransferOutput::File(path),
+        }
+    }
+
+    /// Create a PUT request with bytes body.
+    pub fn put(url: &str, data: Vec<u8>) -> Self {
+        Self {
+            url: url.to_string(),
+            method: Method::Put,
+            headers: Vec::new(),
+            body: Some(TransferBody::Bytes(data)),
+            hash: None,
+            resume: false,
+            output: TransferOutput::Memory,
+        }
+    }
+
+    /// Create a HEAD request.
+    pub fn head(url: &str) -> Self {
+        Self {
+            url: url.to_string(),
+            method: Method::Head,
+            headers: Vec::new(),
+            body: None,
+            hash: None,
+            resume: false,
+            output: TransferOutput::Memory,
+        }
+    }
+
+    /// Enable resume for this request.
+    pub fn with_resume(mut self) -> Self {
+        self.resume = true;
+        self
+    }
+
+    /// Set hash verification for this request.
+    pub fn with_hash(mut self, algorithm: HashAlgorithm, expected: &str) -> Self {
+        self.hash = Some(HashSpec {
+            algorithm,
+            expected: expected.to_string(),
+        });
+        self
+    }
+
+    /// Add a header to this request.
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+}
+
+/// The result of a completed transfer.
+#[derive(Debug)]
+pub struct TransferResult {
+    /// HTTP status code (or equivalent).
+    pub status: u16,
+    /// Response headers.
+    pub headers: Vec<(String, String)>,
+    /// Total bytes transferred.
+    pub bytes_transferred: u64,
+    /// Content-Length from the response, if available.
+    pub content_length: Option<u64>,
+    /// Response body bytes (populated when output is `Memory`).
+    pub body: Option<Vec<u8>>,
+    /// Computed hash hex string (if `HashSpec` was provided).
+    pub hash: Option<String>,
+    /// Whether this transfer was resumed from a partial file.
+    pub resumed: bool,
+}
+
+impl TransferResult {
+    /// Get the body as a UTF-8 string, if available.
+    pub fn body_string(&self) -> Option<String> {
+        self.body
+            .as_ref()
+            .and_then(|b| String::from_utf8(b.clone()).ok())
+    }
+
+    /// Get a response header value by name (case-insensitive).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        let lower = name.to_lowercase();
+        self.headers
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == lower)
+            .map(|(_, v)| v.as_str())
+    }
+}

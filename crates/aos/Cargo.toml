@@ -7,6 +7,10 @@ edition = "2024"
 name = "aos"
 path = "src/main.rs"
 
+[[bin]]
+name = "apr"
+path = "src/main.rs"
+
 [dependencies]
 aos-core = { workspace = true }
 aos-server = { workspace = true }

@@ -23,7 +23,7 @@ impl ViewManager {
     /// Create the directory tree for all configured views.
     pub fn init_directories(&self) -> Result<()> {
         for name in self.views.keys() {
-            for ns in &["bin", "src"] {
+            for ns in &["bin", "src", "tmp"] {
                 let gcroot_dir = self.root.join("gcroots").join(name).join(ns);
                 fs::create_dir_all(&gcroot_dir)
                     .with_context(|| format!("creating {}", gcroot_dir.display()))?;
@@ -89,6 +89,7 @@ impl ViewManager {
         fs::rename(&tmp, &link)
             .with_context(|| format!("renaming {} -> {}", tmp.display(), link.display()))?;
 
+        tracing::debug!(view = %view, ns = %ns, hash = %hash, store_path = %store_path, "GC root created");
         Ok(())
     }
 
@@ -155,6 +156,8 @@ impl ViewManager {
             .map(String::from)
             .collect();
 
+        tracing::debug!(view = %view, drv = %drv_path, count = paths.len(), "creating source roots");
+
         for path in &paths {
             let hash = Self::store_path_hash(path)
                 .with_context(|| format!("extracting hash from {path}"))?;
@@ -176,6 +179,80 @@ impl ViewManager {
         }
 
         Ok(())
+    }
+
+    /// Create a temporary GC root for a freshly-imported store path.
+    ///
+    /// These roots live in the `tmp/` namespace and prevent GC from reclaiming
+    /// uploaded paths before their build starts. Call `remove_tmp_roots` after
+    /// the build creates proper `bin/` roots.
+    pub fn create_tmp_root(
+        &self,
+        view: &str,
+        hash: &str,
+        store_path: &str,
+    ) -> Result<()> {
+        self.create_gc_root(view, "tmp", hash, store_path)?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let meta = serde_json::json!({
+            "store_path": store_path,
+            "pushed_at": now,
+            "temporary": true,
+        });
+        self.write_metadata(view, "tmp", hash, &meta)?;
+        Ok(())
+    }
+
+    /// Remove all temporary GC roots for a view.
+    ///
+    /// Called after a build completes and proper `bin/` roots have been created.
+    pub fn remove_tmp_roots(&self, view: &str) -> Result<()> {
+        let gcroot_dir = self.root.join("gcroots").join(view).join("tmp");
+        let meta_dir = self.root.join("meta").join(view).join("tmp");
+
+        if !gcroot_dir.exists() {
+            return Ok(());
+        }
+
+        let entries = fs::read_dir(&gcroot_dir)
+            .with_context(|| format!("reading {}", gcroot_dir.display()))?;
+
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let _ = fs::remove_file(entry.path());
+            let _ = fs::remove_file(meta_dir.join(format!("{}.json", name.to_string_lossy())));
+        }
+
+        Ok(())
+    }
+
+    /// Count the total number of GC-rooted paths across all namespaces in a view.
+    pub fn count_roots(&self, view: &str) -> Result<u64> {
+        let mut count = 0u64;
+        for ns in &["bin", "src", "tmp"] {
+            let gcroot_dir = self.root.join("gcroots").join(view).join(ns);
+            if !gcroot_dir.exists() {
+                continue;
+            }
+            for entry in fs::read_dir(&gcroot_dir)
+                .with_context(|| format!("reading {}", gcroot_dir.display()))?
+            {
+                let entry = entry?;
+                if !entry.file_name().to_string_lossy().starts_with('.') {
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
     }
 
     /// Create GC roots for all paths in a closure within the given view/namespace.
