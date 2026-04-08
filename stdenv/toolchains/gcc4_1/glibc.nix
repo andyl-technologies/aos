@@ -87,14 +87,25 @@ WRAPPER
         libc_cv_forced_unwind=yes \
         libc_cv_c_cleanup=yes
 
-      make -j"$NIX_BUILD_CORES"
-      make install
+      # PERL=true: configure sets PERL=no without perl in PATH, causing
+      # locale/Makefile to run "no gen-translit.pl ..." which fails.
+      make -j"$NIX_BUILD_CORES" PERL=true || true
+      test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
+      # -k: keep going past locale subdirectory failure.  libc.a, headers,
+      # and crt files are all installed before locale runs.
+      make -k install PERL=true || true
+      test -f "$out/lib/libc.a" || { echo "FATAL: libc.a not installed"; exit 1; }
+      test -f "$out/include/stdio.h" || { echo "FATAL: headers not installed"; exit 1; }
 
       # Fix stubs file: static-only build generates stubs-.h (empty ABI suffix)
-      # instead of stubs-32.h. Rename so stubs.h can find it.
+      # instead of stubs-32.h/stubs-64.h. Rename so stubs.h can find it.
       if [ -f "$out/include/gnu/stubs-.h" ] && [ ! -f "$out/include/gnu/stubs-${stubsSuffix}.h" ]; then
         mv "$out/include/gnu/stubs-.h" "$out/include/gnu/stubs-${stubsSuffix}.h"
       fi
+      # The per-arch stubs-{32,64}.h is generated in the locale stub pass
+      # which fails.  Create an empty one — downstream GCC needs it to exist.
+      mkdir -p "$out/include/gnu"
+      touch "$out/include/gnu/stubs-${stubsSuffix}.h"
 
       # Copy linux headers into glibc output for downstream use
       cp -r "${linuxHeaders}/include/linux" "$out/include/" 2>/dev/null || true

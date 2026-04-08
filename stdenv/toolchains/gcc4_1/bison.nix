@@ -39,12 +39,8 @@ builtins.derivation {
       cd bison-2.4.3
       chmod -R u+w .
 
-      # Touch .y/.l sources first, then pre-generated .c/.h, then autotools files
-      find . -type f \( -name '*.y' -o -name '*.l' \) -exec touch {} + 2>/dev/null || true
-      sleep 1
-      find . -type f \( -name '*.c' -o -name '*.h' \) -exec touch {} + 2>/dev/null || true
-      sleep 1
-      find . \( -name 'configure' -o -name 'Makefile.in' -o -name 'aclocal.m4' -o -name 'config.h.in' \) -exec touch {} + 2>/dev/null || true
+      # Touch all files to uniform timestamp after cp -r
+      find . -type f -exec touch {} + 2>/dev/null || true
 
       # Build in-tree (out-of-tree has -j race on .deps/*.Tpo files in src/)
       CC="${gcc}/bin/gcc -static" \
@@ -61,6 +57,28 @@ builtins.derivation {
       # doc/local.mk rebuilds cross-options.texi (needs perl) and bison.1
       # (needs help2man). Pre-touch these so make skips regeneration.
       touch doc/cross-options.texi doc/bison.1
+
+      # Strip regeneration rules from ALL Makefiles — bison needs
+      # itself to rebuild parse-gram.c from parse-gram.y but hasn't
+      # been built yet.  The tarball ships pre-generated .c/.h files.
+      find . -name Makefile | while read f; do
+        sed -i \
+          -e 's/^Makefile:.*/Makefile:/' \
+          -e 's/^config\.status:.*/config.status:/' \
+          -e 's/^configure:.*/configure:/' \
+          "$f"
+      done
+      # Blank out yacc/lex rules in src/Makefile — handles both
+      # single-target and multi-target rule formats.
+      sed -i \
+        -e '/parse-gram\.y/s/:.*/: ;/' \
+        -e '/scan-code\.l/s/:.*/: ;/' \
+        -e '/scan-gram\.l/s/:.*/: ;/' \
+        -e '/scan-skel\.l/s/:.*/: ;/' \
+        src/Makefile
+      # Touch pre-generated parser/lexer files right before make
+      touch src/parse-gram.c src/parse-gram.h \
+            src/scan-code.c src/scan-gram.c src/scan-skel.c
 
       make -j"$NIX_BUILD_CORES" MAKEINFO=true
       make install MAKEINFO=true

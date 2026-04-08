@@ -99,7 +99,8 @@ exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
         --prefix="$out" \
         --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
         --disable-nls \
-        --enable-no-install-program=stdbuf
+        --enable-no-install-program=stdbuf \
+        ac_cv_func_lchmod=no
 
       # Remove libstdbuf.so from build targets — our static toolchain
       # doesn't have PIC CRT objects needed for shared libraries on x86_64
