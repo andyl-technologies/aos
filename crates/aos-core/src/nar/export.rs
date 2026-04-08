@@ -19,7 +19,6 @@ const EXPORT_MAGIC: u64 = 0x4558504f52540000;
 /// ```
 ///
 /// Where nix-string = `u64 length + bytes + \0 padding to 8-byte boundary`.
-#[allow(dead_code)]
 pub fn build_export(
     nar_data: &[u8],
     store_path: &str,
@@ -76,7 +75,6 @@ fn write_nix_string(buf: &mut Vec<u8>, s: &str) -> Result<()> {
 
 /// Build a Nix export stream incrementally — writes the trailer after NAR data
 /// has been streamed through a writer.
-#[allow(dead_code)]
 pub struct ExportTrailer {
     store_path: String,
     references: Vec<String>,
@@ -122,7 +120,6 @@ impl ExportTrailer {
 }
 
 /// Write a Nix-format string to a generic writer.
-#[allow(dead_code)]
 fn write_nix_string_to<W: Write>(w: &mut W, s: &str) -> Result<()> {
     let bytes = s.as_bytes();
     let len = bytes.len() as u64;
