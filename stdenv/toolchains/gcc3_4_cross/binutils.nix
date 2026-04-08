@@ -32,9 +32,9 @@ builtins.derivation {
 
       # Dummy lex/flex/makeinfo for configure and install
       mkdir -p "$TMPDIR/fakebin"
-      printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
-      printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
-      printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/fakebin/makeinfo"
+      printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
+      printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
+      printf '#!${prev.bash}/bin/bash\nexit 0\n' > "$TMPDIR/fakebin/makeinfo"
       chmod +x "$TMPDIR/fakebin/lex" "$TMPDIR/fakebin/flex" "$TMPDIR/fakebin/makeinfo"
       export PATH="$TMPDIR/fakebin:$PATH"
 

@@ -171,7 +171,7 @@ mkDerivation {
         TOOLS=$(pwd)/tools-bin
         mkdir -p $TOOLS
         cat > $TOOLS/getconf << 'GETCONFEOF'
-        #!/bin/sh
+        #!${bash}/bin/bash
         case "$1" in
           _NPROCESSORS_ONLN|NPROCESSORS_ONLN)
             nproc 2>/dev/null || echo 1
@@ -187,7 +187,7 @@ GETCONFEOF
         chmod +x $TOOLS/getconf
         # Create ldd wrapper
         cat > $TOOLS/ldd << 'LDDEOF'
-        #!/bin/sh
+        #!${bash}/bin/bash
         echo "not a dynamic executable"
 LDDEOF
         chmod +x $TOOLS/ldd

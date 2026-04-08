@@ -32,8 +32,8 @@ builtins.derivation {
       # Dummy lex/flex to satisfy configure checks — the actual build
       # uses pre-generated parser files and never invokes lex.
       mkdir -p "$TMPDIR/fakebin"
-      printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
-      printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
+      printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
+      printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
       chmod +x "$TMPDIR/fakebin/lex" "$TMPDIR/fakebin/flex"
       export PATH="$TMPDIR/fakebin:$PATH"
 

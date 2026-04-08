@@ -88,7 +88,7 @@ mkDerivation {
 
         # Create ant wrapper script
         cat > $out/bin/ant << 'WRAPPER'
-#!/bin/sh
+#!${bash}/bin/bash
 export JAVA_HOME="JDK_PATH"
 export ANT_HOME="ANT_HOME_PATH"
 exec "JDK_PATH/bin/java" -cp "ANT_HOME_PATH/lib/ant-launcher.jar" org.apache.tools.ant.launch.Launcher "$@"

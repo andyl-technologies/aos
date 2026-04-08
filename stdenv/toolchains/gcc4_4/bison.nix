@@ -71,6 +71,7 @@ fi
 exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
 ''} "$TMPDIR/ccwrap/gcc"
       ${prev.sed}/bin/sed -i \
+        -e "s|#!/bin/sh|#!${prev.bash}/bin/bash|" \
         -e "s|REAL_GCC|${gcc}/bin/gcc|g" \
         -e "s|NSS_FILES|${prev.glibc}/lib/libnss_files.a|g" \
         -e "s|NSS_DNS|${prev.glibc}/lib/libnss_dns.a|g" \
@@ -104,7 +105,7 @@ exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
         MAKEINFO=true AUTOHEADER=true AUTOCONF=true ACLOCAL=true AUTOMAKE=true
 
       # Create yacc compatibility wrapper
-      printf '#!/bin/sh\nexec %s/bin/bison -y "$@"\n' "$out" > "$out/bin/yacc"
+      printf '#!${prev.bash}/bin/bash\nexec %s/bin/bison -y "$@"\n' "$out" > "$out/bin/yacc"
       chmod +x "$out/bin/yacc"
 
       echo "GNU Bison 3.0.4 installed to $out"

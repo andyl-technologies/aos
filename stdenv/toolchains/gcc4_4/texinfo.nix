@@ -50,6 +50,7 @@ fi
 exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
 ''} "$TMPDIR/ccwrap/gcc"
       ${prev.sed}/bin/sed -i \
+        -e "s|#!/bin/sh|#!${prev.bash}/bin/bash|" \
         -e "s|REAL_GCC|${gcc}/bin/gcc|g" \
         -e "s|NSS_FILES|${prev.glibc}/lib/libnss_files.a|g" \
         -e "s|NSS_DNS|${prev.glibc}/lib/libnss_dns.a|g" \

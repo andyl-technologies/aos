@@ -72,6 +72,7 @@ fi
 exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
 ''} "$TMPDIR/ccwrap/gcc"
       ${prev.sed}/bin/sed -i \
+        -e "s|#!/bin/sh|#!${prev.bash}/bin/bash|" \
         -e "s|REAL_GCC|${gcc}/bin/gcc|g" \
         -e "s|GLIBC_INCLUDE|${prev.glibc}/include|g" \
         -e "s|GLIBC_LIB|${prev.glibc}/lib|g" \

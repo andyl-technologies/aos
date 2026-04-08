@@ -36,7 +36,7 @@ builtins.derivation {
       # Stub autotools — prevents Makefiles from re-running real autoconf/automake
       mkdir -p "$TMPDIR/fakebin"
       for tool in autoconf autoheader aclocal automake autoreconf autom4te; do
-        printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/fakebin/$tool"
+        printf '#!${prev.bash}/bin/bash\nexit 0\n' > "$TMPDIR/fakebin/$tool"
         chmod +x "$TMPDIR/fakebin/$tool"
       done
       export PATH="$TMPDIR/fakebin:$PATH"
@@ -75,6 +75,7 @@ BEGIN {
   printf ", %d,\n", d
 }'
 WHEELEOF
+      ${prev.sed}/bin/sed -i "s|#!/bin/sh|#!${prev.bash}/bin/bash|" src/wheel-gen.pl
       chmod +x src/wheel-gen.pl
 
       # Replace extract-magic (Perl) with awk implementation
@@ -92,6 +93,7 @@ gawk '
   }
 }' "$@"
 EMEOF
+      ${prev.sed}/bin/sed -i "s|#!/bin/sh|#!${prev.bash}/bin/bash|" src/extract-magic
       chmod +x src/extract-magic
 
       # Replace help2man (Perl) with a dummy that creates the output file
@@ -118,6 +120,7 @@ if test -n "$out"; then
 fi
 exit 0
 ''} man/help2man
+      ${prev.sed}/bin/sed -i "s|#!/bin/sh|#!${prev.bash}/bin/bash|" man/help2man
       chmod +x man/help2man
 
       # Replace Makefile.in for man/tests BEFORE configure so config.status

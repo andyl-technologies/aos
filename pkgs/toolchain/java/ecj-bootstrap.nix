@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   jikes,
   fastjar,
   jamvm-1_5,
@@ -93,7 +94,7 @@ mkDerivation {
         # Create wrapper script to invoke ECJ via JamVM
         # JamVM already has correct boot classpath from --with-classpath-install-dir
         # -J flags from callers are silently ignored (we set -Xmx768M directly)
-        printf '#!/bin/sh\nexec %s -Xmx768M -cp %s org.eclipse.jdt.internal.compiler.batch.Main "$@"\n' \
+        printf '#!${bash}/bin/bash\nexec %s -Xmx768M -cp %s org.eclipse.jdt.internal.compiler.batch.Main "$@"\n' \
           "${jamvm-1_5}/bin/jamvm" \
           "$out/lib/ecj.jar" \
           > $out/bin/ecj

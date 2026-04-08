@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   gnumake,
   pkg-config,
   gawk,
@@ -106,7 +107,7 @@ mkDerivation {
                 # the expected entries for standard system accounts.
                 mkdir -p .shim-bin
                 cat > .shim-bin/getent << 'GETENT'
-        #!/bin/sh
+        #!${bash}/bin/bash
         db="$1"; key="$2"
         case "$db" in
           passwd)

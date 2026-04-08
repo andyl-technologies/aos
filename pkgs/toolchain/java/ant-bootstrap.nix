@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   gnumake,
   jikes,
   fastjar,
@@ -97,7 +98,7 @@ mkDerivation {
         ln -s ${jamvm-1_5}/bin/jamvm $out/jre/bin/java
 
         # Create ant wrapper
-        printf '#!/bin/sh\nexport JAVA_HOME="%s/jre"\nexport ANT_HOME="%s"\nexport CLASSPATH="%s/lib/ant.jar:%s/lib/ant-launcher.jar"\nexec %s/jre/bin/java -cp "$CLASSPATH" org.apache.tools.ant.launch.Launcher "$@"\n' \
+        printf '#!${bash}/bin/bash\nexport JAVA_HOME="%s/jre"\nexport ANT_HOME="%s"\nexport CLASSPATH="%s/lib/ant.jar:%s/lib/ant-launcher.jar"\nexec %s/jre/bin/java -cp "$CLASSPATH" org.apache.tools.ant.launch.Launcher "$@"\n' \
           "$out" "$out" "$out" "$out" "$out" \
           > $out/bin/ant
         chmod +x $out/bin/ant

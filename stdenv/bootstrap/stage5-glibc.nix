@@ -163,7 +163,7 @@ builtins.derivation {
       # The gen-sorted input: "depend X Y" (dep pairs) and bare subdir names.
       # We ignore deps (input order from all-subdirs already has csu first).
       {
-        echo '#!/bin/sh'
+        echo '#!${bash}/bin/bash'
         echo 'printf "sorted-subdirs ="'
         echo 'while read first rest; do'
         echo '  case "$first" in depend) ;; *) printf " %s" "$first" ;; esac'
@@ -179,7 +179,7 @@ builtins.derivation {
       # directives. gawk-tcc's broken arithmetic/comparison means it
       # produces wrong output. Replace with shell script.
       {
-        echo '#!/bin/sh'
+        echo '#!${bash}/bin/bash'
         echo 'max=0'
         echo 'need_end=0'
         echo 'need_endp=0'

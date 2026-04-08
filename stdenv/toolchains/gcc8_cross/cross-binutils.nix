@@ -42,8 +42,8 @@ builtins.derivation {
 
       # CC wrapper: pass glibc lib path + -static
       mkdir -p "$TMPDIR/ccwrap"
-      printf '#!/bin/sh\nexec ${prev.gcc}/bin/gcc -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/gcc"
-      printf '#!/bin/sh\nexec ${prev.gcc}/bin/g++ -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/g++"
+      printf '#!${prev.bash}/bin/bash\nexec ${prev.gcc}/bin/gcc -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/gcc"
+      printf '#!${prev.bash}/bin/bash\nexec ${prev.gcc}/bin/g++ -L${prev.glibc}/lib -static "$@"\n' > "$TMPDIR/ccwrap/g++"
       chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
       ln -sf gcc "$TMPDIR/ccwrap/cc"
       ln -sf g++ "$TMPDIR/ccwrap/c++"

@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   gnumake,
   pkg-config,
   linux-headers,
@@ -50,7 +51,7 @@ mkDerivation {
       name = "build";
       script = ''
         cat > soelim-wrapper <<'SCRIPT'
-        #!/bin/sh
+        #!${bash}/bin/bash
         cat "$@"
         SCRIPT
         chmod +x soelim-wrapper

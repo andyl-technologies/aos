@@ -47,7 +47,7 @@ mkDerivation {
       script = ''
         # Patch shebangs: /usr/bin/env doesn't exist in the Nix sandbox
         find . -type f \( -name "*.sh" -o -name "bootstrap*" \) -print0 | \
-          xargs -0 sed -i "1s|^#!/usr/bin/env sh|#!/bin/sh|"
+          xargs -0 sed -i "1s|^#!/usr/bin/env sh|#!${bash}/bin/bash|"
         find . -type f \( -name "*.sh" -o -name "bootstrap*" \) -print0 | \
           xargs -0 sed -i "1s|^#!/usr/bin/env bash|#!${bash}/bin/bash|"
         find . -type f \( -name "*.sh" -o -name "bootstrap*" \) -print0 | \

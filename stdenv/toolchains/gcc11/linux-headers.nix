@@ -30,7 +30,7 @@ builtins.derivation {
       # Linux 5.3+ uses rsync for headers_install. Provide a minimal replacement.
       mkdir -p "$TMPDIR/fakebin"
       cat > "$TMPDIR/fakebin/rsync" << 'RSYNC_EOF'
-#!/bin/sh
+#!/PLACEHOLDER_SHELL
 # Minimal rsync replacement for kernel headers_install.
 # Handles: rsync -mrl --include='*.h' --exclude='*' src/ dst/
 shift_flags() { while [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) break ;; esac; done; echo "$@"; }
@@ -47,6 +47,7 @@ if [ -d "$src" ]; then
   done
 fi
 RSYNC_EOF
+      ${prev.sed}/bin/sed -i "1s|#!/PLACEHOLDER_SHELL|#!${prev.bash}/bin/bash|" "$TMPDIR/fakebin/rsync"
       chmod +x "$TMPDIR/fakebin/rsync"
       export PATH="$TMPDIR/fakebin:$PATH"
 

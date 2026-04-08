@@ -86,7 +86,7 @@ builtins.derivation {
       make install MAKEINFO=true
 
       # Create yacc compatibility wrapper
-      printf '#!/bin/sh\nexec %s/bin/bison -y "$@"\n' "$out" > "$out/bin/yacc"
+      printf '#!${prev.bash}/bin/bash\nexec %s/bin/bison -y "$@"\n' "$out" > "$out/bin/yacc"
       chmod +x "$out/bin/yacc"
 
       echo "GNU Bison 2.4.3 installed to $out"

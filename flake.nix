@@ -79,7 +79,7 @@
           default = builtins.derivation {
             name = "aos-dev";
             inherit system;
-            builder = "/bin/bash";
+            builder = "${aos.stdenv.bash}/bin/bash";
             args = [
               "-c"
               "echo 'Use nix develop, not nix build'; exit 1"

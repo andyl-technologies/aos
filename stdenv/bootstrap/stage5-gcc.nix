@@ -230,7 +230,7 @@ builtins.derivation {
       # ── Dummy autotools (not available in bootstrap) ──────────────────
       mkdir -p $TMPDIR/fakebin
       for cmd in autoheader aclocal automake autoconf makeinfo help2man; do
-        printf '#!/bin/sh\nexit 0\n' > $TMPDIR/fakebin/$cmd
+        printf '#!${bash}/bin/bash\nexit 0\n' > $TMPDIR/fakebin/$cmd
         chmod +x $TMPDIR/fakebin/$cmd
       done
       export PATH="$TMPDIR/fakebin:$PATH"

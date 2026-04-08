@@ -81,28 +81,28 @@ mkDerivation {
 
         # Create wrapper scripts
         cat > $out/bin/tlc << 'WRAPPER'
-#!/bin/sh
+#!${bash}/bin/bash
 exec JAVA_BIN -XX:+UseParallelGC -cp JAR_PATH tlc2.TLC "$@"
 WRAPPER
         sed -i "s|JAVA_BIN|${jdk}/bin/java|;s|JAR_PATH|$out/lib/tla2tools.jar|" $out/bin/tlc
         chmod +x $out/bin/tlc
 
         cat > $out/bin/sany << 'WRAPPER'
-#!/bin/sh
+#!${bash}/bin/bash
 exec JAVA_BIN -cp JAR_PATH tla2sany.SANY "$@"
 WRAPPER
         sed -i "s|JAVA_BIN|${jdk}/bin/java|;s|JAR_PATH|$out/lib/tla2tools.jar|" $out/bin/sany
         chmod +x $out/bin/sany
 
         cat > $out/bin/pcal << 'WRAPPER'
-#!/bin/sh
+#!${bash}/bin/bash
 exec JAVA_BIN -cp JAR_PATH pcal.trans "$@"
 WRAPPER
         sed -i "s|JAVA_BIN|${jdk}/bin/java|;s|JAR_PATH|$out/lib/tla2tools.jar|" $out/bin/pcal
         chmod +x $out/bin/pcal
 
         cat > $out/bin/tlatex << 'WRAPPER'
-#!/bin/sh
+#!${bash}/bin/bash
 exec JAVA_BIN -cp JAR_PATH tla2tex.TLA "$@"
 WRAPPER
         sed -i "s|JAVA_BIN|${jdk}/bin/java|;s|JAR_PATH|$out/lib/tla2tools.jar|" $out/bin/tlatex

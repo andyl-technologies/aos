@@ -32,7 +32,7 @@ builtins.derivation {
 
       # CC wrapper: always pass -static (libtool strips -static from LDFLAGS)
       mkdir -p "$TMPDIR/ccwrap"
-      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
+      printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -L${glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
       chmod +x "$TMPDIR/ccwrap/gcc"
       export PATH="$TMPDIR/ccwrap:$PATH"
 

@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   gnumake,
 }:
 let
@@ -46,7 +47,7 @@ mkDerivation {
                 #   $,$d          — delete last (empty) line
                 #   $,$s/,$/,0}/  — replace trailing , with ,0} on last line
                 cat > bc/fix-libmath_h << 'FIXSCRIPT'
-        #!/bin/sh
+        #!${bash}/bin/bash
         # Remove trailing empty lines
         sed -i -e :a -e '/^[[:space:]]*$/{ $d; N; ba; }' libmath.h
         # Transform into C char* array initializer: {"line1","line2",...,0}

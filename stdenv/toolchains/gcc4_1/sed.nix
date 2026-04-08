@@ -35,7 +35,7 @@ builtins.derivation {
       # Stub autotools — prevents Makefiles from re-running real autoconf/automake
       mkdir -p "$TMPDIR/fakebin"
       for tool in autoconf autoheader aclocal automake autoreconf autom4te; do
-        printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/fakebin/$tool"
+        printf '#!${prev.bash}/bin/bash\nexit 0\n' > "$TMPDIR/fakebin/$tool"
         chmod +x "$TMPDIR/fakebin/$tool"
       done
       export PATH="$TMPDIR/fakebin:$PATH"

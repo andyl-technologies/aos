@@ -67,7 +67,7 @@ mkDerivation {
         # The Makefile uses $(shell git ...) to embed version metadata
         # into version.o — without .git these would fail.
         mkdir -p .fake-bin
-        printf '%s\n' '#!/bin/sh' \
+        printf '%s\n' '#!${bash}/bin/bash' \
           'case "$1" in' \
           'show)         echo "v${mrustcVersion}" ;;' \
           'symbolic-ref) echo "v${mrustcVersion}" ;;' \
@@ -173,7 +173,7 @@ mkDerivation {
             if head -c4 "$f" | grep -q "ELF"; then
               mv "$f" "$f.unwrapped"
               cat > "$f" <<WRAP
-#!/bin/sh
+#!${bash}/bin/bash
 export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
 exec "$f.unwrapped" "\$@"
 WRAP

@@ -168,7 +168,7 @@ mkDerivation {
         # Create java wrapper that filters HotSpot flags and converts
         # -Xbootclasspath/p: + -jar into -cp + MainClass for JamVM
         cat > $FAKE_JDK/bin/java << 'JAVAEOF'
-#!/bin/sh
+#!${bash}/bin/bash
 JAMVM=JAMVM_PLACEHOLDER
 UNZIP=UNZIP_PLACEHOLDER
 
@@ -254,7 +254,7 @@ JAVAEOF
         # before calling ECJ. JamVM's File.mkdirs() creates intermediate
         # paths as files instead of directories, breaking ECJ's output.
         cat > $FAKE_JDK/bin/javac << JAVACEOF
-#!/bin/sh
+#!${bash}/bin/bash
 # Parse args: extract -d <outdir>, -sourcepath, source files, filter flags
 OUTDIR=""
 SOURCEPATH=""
@@ -367,7 +367,7 @@ JAVACEOF
         ln -sf ${classpath-0_99}/share/classpath/glibj.zip $FAKE_JDK/jre/lib/rt.jar
 
         # Add rmic dummy to fake JDK (configure checks $JDK_HOME/bin/rmic)
-        printf '#!/bin/sh\nexit 0\n' > $FAKE_JDK/bin/rmic
+        printf '#!${bash}/bin/bash\nexit 0\n' > $FAKE_JDK/bin/rmic
         chmod +x $FAKE_JDK/bin/rmic
 
         # Create dummy tools — IcedTea checks for these but they're not needed
@@ -376,15 +376,15 @@ JAVACEOF
         # getconf (only used for _NPROCESSORS_ONLN),
         # rmic/native2ascii (IcedTea bootstrap builds its own from OpenJDK source)
         mkdir -p dummy-bin
-        printf '#!/bin/sh\nexit 1\n' > dummy-bin/wget
+        printf '#!${bash}/bin/bash\nexit 1\n' > dummy-bin/wget
         ln -sf ${libxslt}/bin/xsltproc dummy-bin/xsltproc
-        printf '#!/bin/sh\nexit 0\n' > dummy-bin/rmic
-        printf '#!/bin/sh\ncat "$@" 2>/dev/null\n' > dummy-bin/native2ascii
-        printf '#!/bin/sh\ncase "$1" in _NPROCESSORS_ONLN) echo %s;; *) echo 1;; esac\n' \
+        printf '#!${bash}/bin/bash\nexit 0\n' > dummy-bin/rmic
+        printf '#!${bash}/bin/bash\ncat "$@" 2>/dev/null\n' > dummy-bin/native2ascii
+        printf '#!${bash}/bin/bash\ncase "$1" in _NPROCESSORS_ONLN) echo %s;; *) echo 1;; esac\n' \
           "$NIX_BUILD_CORES" > dummy-bin/getconf
-        printf '#!/bin/sh\necho localhost\n' > dummy-bin/hostname
-        printf '#!/bin/sh\necho "             total       used       free"\necho "Mem:       8000000    4000000    4000000"\n' > dummy-bin/free
-        printf '#!/bin/sh\necho "builder"\n' > dummy-bin/logname
+        printf '#!${bash}/bin/bash\necho localhost\n' > dummy-bin/hostname
+        printf '#!${bash}/bin/bash\necho "             total       used       free"\necho "Mem:       8000000    4000000    4000000"\n' > dummy-bin/free
+        printf '#!${bash}/bin/bash\necho "builder"\n' > dummy-bin/logname
         for f in dummy-bin/*; do
           if [ ! -L "$f" ]; then
             chmod +x "$f"
@@ -813,7 +813,7 @@ JAVACEOF
         ln -sf $(which xargs) $TOOLS/xargs
         # ldd — create a wrapper that uses the bootstrap dynamic linker
         cat > $TOOLS/ldd << 'LDDEOF'
-#!/bin/sh
+#!${bash}/bin/bash
 # Minimal ldd wrapper for OpenJDK build
 for f in "$@"; do
   echo "	not a dynamic executable"
@@ -839,7 +839,7 @@ LDDEOF
         # Create helper script for copying .properties-template files
         # (replaces ant's <copy> task which is broken under JamVM/GNU Classpath)
         cat > $TOOLS/copy-props.sh << 'COPYEOF'
-#!/bin/sh
+#!${bash}/bin/bash
 # Usage: copy-props.sh <srcdir> <destdir> <includes> <jdk_version> <release> <full_version>
 srcdir="$1"; destdir="$2"; includes="$3"
 jdk_version="$4"; release="$5"; full_version="$6"
@@ -866,7 +866,7 @@ COPYEOF
         # File.canWrite(). Using Java-based ant is impossible. This script
         # handles the langtools/corba/jaxp/jaxws "build" targets directly.
         cat > $TOOLS/ant << 'ANTEOF'
-#!/bin/sh
+#!${bash}/bin/bash
 set -e
 
 # Parse -D properties, options, and target from ant command line
@@ -1091,7 +1091,7 @@ case "$COMPONENT" in
     # Create launcher scripts
     for tool in javac javah javadoc; do
       cat > "$BUILD_DIR/bootstrap/bin/$tool" << LAUNCHEOF
-#!/bin/sh
+#!${bash}/bin/bash
 mydir="\$(dirname "\$0")"
 mylib="\$mydir/../lib"
 exec "$BOOT_JAVA_HOME/bin/java" -jar "\$mylib/$tool.jar" "\$@"
@@ -1181,7 +1181,7 @@ ANTEOF2
         # the module's classes dir from the -d argument (CClassHeaders →
         # classes sibling) and adds it via -classpath.
         cat > $TOOLS/gjavah-wrapper << 'GJAVAHEOF'
-#!/bin/sh
+#!${bash}/bin/bash
 PREV=""
 for arg in "$@"; do
   if [ "$PREV" = "-d" ]; then
@@ -1225,7 +1225,7 @@ GJAVAHEOF
         # StackOverflowError (MALFORMED zip entry in isExemptPackage recursion)
         if [ -f bootstrap/jdk1.6.0/bin/rmic ]; then
           cat > bootstrap/jdk1.6.0/bin/rmic << 'RMICEOF'
-#!/bin/sh
+#!${bash}/bin/bash
 # No-op rmic wrapper — SA rmic crashes under JamVM
 exit 0
 RMICEOF

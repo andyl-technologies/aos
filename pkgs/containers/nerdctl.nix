@@ -3,6 +3,7 @@
   mkGoPackage,
   fetchurl,
   fetchGoModules,
+  bash,
   cni-plugins,
 }:
 let
@@ -34,7 +35,7 @@ mkGoPackage {
         # Wrap nerdctl to set CNI_PATH
         mv "$out/bin/nerdctl" "$out/bin/.nerdctl-unwrapped"
         cat > "$out/bin/nerdctl" << WRAPPER
-    #!/bin/sh
+    #!${bash}/bin/bash
     export CNI_PATH="${cni-plugins}/bin"
     exec "\$(dirname "\$0")/.nerdctl-unwrapped" "\$@"
     WRAPPER

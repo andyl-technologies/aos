@@ -502,6 +502,11 @@ let
               # Environment variables for the build
               PATH = makePath allBuildDeps;
 
+              # Hermetic shell path — used by stdenv helpers (wrapProgram,
+              # makeWrapper, patchShebangs) so generated scripts never
+              # reference /bin/sh from the host.
+              AOS_SHELL = shell;
+
               # Configuration flags
               inherit
                 configureFlags
@@ -619,6 +624,7 @@ let
 
         # Environment setup
         PATH = makePath allDeps;
+        AOS_SHELL = shell;
         C_INCLUDE_PATH = makeIncPath runtimeDeps;
         LIBRARY_PATH = makeLibPath runtimeDeps;
         inherit shellHook;

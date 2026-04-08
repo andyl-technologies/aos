@@ -127,6 +127,7 @@ builtins.derivation {
       # psize.sh lives in builtins/, not the top-level directory.
       cp ${psizeScript} builtins/psize.sh
       chmod +x builtins/psize.sh
+      ${sed}/bin/sed -i "1s|#!/bin/sh|#!${bash}/bin/bash|" builtins/psize.sh
 
       make
       make install

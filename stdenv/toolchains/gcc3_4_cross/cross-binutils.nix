@@ -30,8 +30,8 @@ builtins.derivation {
 
       # Dummy lex/flex for configure checks
       mkdir -p "$TMPDIR/fakebin"
-      printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
-      printf '#!/bin/sh\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
+      printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/lex"
+      printf '#!${prev.bash}/bin/bash\nprintf "int main(){return 0;}\nint yywrap(){return 1;}\n" > lex.yy.c\n' > "$TMPDIR/fakebin/flex"
       chmod +x "$TMPDIR/fakebin/lex" "$TMPDIR/fakebin/flex"
       export PATH="$TMPDIR/fakebin:$PATH"
 
@@ -70,7 +70,7 @@ builtins.derivation {
       # Wrapper gcc that always links statically against our glibc.
       # Needed because libtool and bfd/doc sub-Makefiles drop LDFLAGS.
       mkdir -p "$TMPDIR/cc-wrapper"
-      printf '%s\n' '#!/bin/sh' \
+      printf '%s\n' '#!${prev.bash}/bin/bash' \
         "exec ${prev.gcc}/bin/gcc -L$TMPDIR/static-lib -static \"\$@\"" \
         > "$TMPDIR/cc-wrapper/gcc"
       chmod +x "$TMPDIR/cc-wrapper/gcc"

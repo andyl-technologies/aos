@@ -30,12 +30,12 @@ builtins.derivation {
       # GCC 14 defaults to PIE, but Scrt1.o isn't in the specs dir.
       # Wrap gcc to disable PIE for the kernel host tools (fixdep etc.)
       mkdir -p "$TMPDIR/fakebin"
-      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -no-pie -L${prev.glibc}/lib "$@"\n' > "$TMPDIR/fakebin/gcc"
+      printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -static -no-pie -L${prev.glibc}/lib "$@"\n' > "$TMPDIR/fakebin/gcc"
       chmod +x "$TMPDIR/fakebin/gcc"
 
       # Linux 5.3+ uses rsync for headers_install. Provide a minimal replacement.
       cat > "$TMPDIR/fakebin/rsync" << 'RSYNC_EOF'
-#!/bin/sh
+#!/PLACEHOLDER_SHELL
 # Minimal rsync replacement for kernel headers_install.
 # Handles: rsync -mrl --include='*.h' --exclude='*' src/ dst/
 src="" dst=""
@@ -51,6 +51,7 @@ if [ -d "$src" ]; then
   done
 fi
 RSYNC_EOF
+      ${prev.sed}/bin/sed -i "1s|#!/PLACEHOLDER_SHELL|#!${prev.bash}/bin/bash|" "$TMPDIR/fakebin/rsync"
       chmod +x "$TMPDIR/fakebin/rsync"
       export PATH="$TMPDIR/fakebin:$PATH"
 

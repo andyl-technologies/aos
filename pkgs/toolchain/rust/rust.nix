@@ -62,7 +62,7 @@ mkDerivation {
 
         # Fake git — must return exit 1 to avoid canonicalize("") panic
         mkdir -p .fake-bin
-        printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
+        printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
         chmod +x .fake-bin/git
         export PATH="$PWD/.fake-bin:$PATH"
         cat > bootstrap.toml << TOML
@@ -132,7 +132,7 @@ mkDerivation {
             if head -c4 "$f" | grep -q "ELF"; then
               mv "$f" "$f.unwrapped"
               cat > "$f" <<WRAP
-#!/bin/sh
+#!${bash}/bin/bash
 export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
 exec "$f.unwrapped" "\$@"
 WRAP

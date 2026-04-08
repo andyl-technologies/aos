@@ -164,7 +164,10 @@ for arg; do
 done
 exec REAL_AS $nargs
 ''} "$TMPDIR/aswrap/as"
-      ${prev.sed}/bin/sed -i "s|REAL_AS|${binutils}/bin/as|g" "$TMPDIR/aswrap/as"
+      ${prev.sed}/bin/sed -i \
+        -e "s|#!/bin/sh|#!${prev.bash}/bin/bash|" \
+        -e "s|REAL_AS|${binutils}/bin/as|g" \
+        "$TMPDIR/aswrap/as"
       chmod +x "$TMPDIR/aswrap/as"
 
       ${

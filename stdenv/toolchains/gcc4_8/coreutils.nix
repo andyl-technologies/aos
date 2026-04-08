@@ -84,7 +84,7 @@ builtins.derivation {
         --enable-no-install-program=stdbuf
 
       # Replace dummy-man with a working stub (no help2man/perl)
-      printf '#!/bin/sh\necho ".TH dummy 1"\n' > man/dummy-man
+      printf '#!${prev.bash}/bin/bash\necho ".TH dummy 1"\n' > man/dummy-man
       chmod +x man/dummy-man
       touch -t 200001010200.00 man/*.1 man/*.x 2>/dev/null || true
 

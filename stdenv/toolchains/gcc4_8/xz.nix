@@ -117,6 +117,7 @@ fi
 exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
 ''} "$TMPDIR/ccwrap/gcc"
       ${prev.sed}/bin/sed -i \
+        -e "s|#!/bin/sh|#!${prev.bash}/bin/bash|" \
         -e "s|REAL_GCC|${prev.gcc}/bin/gcc|g" \
         -e "s|SYNC_OBJ|$TMPDIR/sync_builtins.o|g" \
         -e "s|GLIBC_INCLUDE|${prev.glibc}/include|g" \

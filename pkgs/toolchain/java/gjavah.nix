@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   ecj-bootstrap,
   fastjar,
   jamvm-1_5,
@@ -105,7 +106,7 @@ mkDerivation {
         ${fastjar}/bin/fastjar cf $out/lib/tools.zip .
 
         # Create gjavah wrapper using JamVM 2.0 (which uses classpath-0.99)
-        printf '#!/bin/sh\nexec %s -cp %s gnu.classpath.tools.javah.Main "$@"\n' \
+        printf '#!${bash}/bin/bash\nexec %s -cp %s gnu.classpath.tools.javah.Main "$@"\n' \
           "${jamvm-2_0}/bin/jamvm" \
           "$out/lib/tools.zip" \
           > $out/bin/gjavah

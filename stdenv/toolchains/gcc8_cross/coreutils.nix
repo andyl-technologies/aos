@@ -58,7 +58,7 @@ builtins.derivation {
         --disable-nls
 
       # Replace dummy-man with a working stub
-      printf '#!/bin/sh\necho ".TH dummy 1"\n' > man/dummy-man 2>/dev/null || true
+      printf '#!${prev.bash}/bin/bash\necho ".TH dummy 1"\n' > man/dummy-man 2>/dev/null || true
       chmod +x man/dummy-man 2>/dev/null || true
       touch man/*.1 man/*.x 2>/dev/null || true
 

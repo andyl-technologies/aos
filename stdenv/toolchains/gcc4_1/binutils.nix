@@ -41,9 +41,9 @@ builtins.derivation {
 
       # GCC wrapper that always passes -static — libtool strips -static
       # from CC args, but the wrapper ensures it's always present.
-      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -L'"$TMPDIR"'/static-lib "$@"\n' \
+      printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -static -L'"$TMPDIR"'/static-lib "$@"\n' \
         > "$TMPDIR/fakebin/gcc"
-      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -L'"$TMPDIR"'/static-lib "$@"\n' \
+      printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -static -L'"$TMPDIR"'/static-lib "$@"\n' \
         > "$TMPDIR/fakebin/cc"
       chmod +x "$TMPDIR/fakebin/gcc" "$TMPDIR/fakebin/cc"
 

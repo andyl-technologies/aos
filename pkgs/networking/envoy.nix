@@ -407,7 +407,7 @@ mkBazelPackage {
 
     # Provide a fake git — bazel/get_workspace_status calls git for revision info
     cat > "$TMPDIR/fake-bin/git" << 'FAKEGIT'
-#!/bin/sh
+#!${bash}/bin/bash
 # Fake git for workspace status — return empty/dummy values
 case "$*" in
   *rev-parse*HEAD*) echo "0000000000000000000000000000000000000000" ;;

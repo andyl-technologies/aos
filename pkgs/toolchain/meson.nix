@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   python3,
 }:
 let
@@ -55,7 +56,7 @@ mkDerivation {
 
                 # Create wrapper script that invokes meson via python3
                 cat > $out/bin/meson << EOF
-        #!/bin/sh
+        #!${bash}/bin/bash
         PYTHONPATH=$out/lib/python3/site-packages exec ${python3}/bin/python3 -m mesonbuild.mesonmain "\$@"
         EOF
                 chmod +x $out/bin/meson

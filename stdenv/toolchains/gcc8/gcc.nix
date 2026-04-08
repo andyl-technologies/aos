@@ -70,8 +70,8 @@ builtins.derivation {
 
       # CC wrapper: add -std=gnu99 (GCC 4.8.5 defaults to C89)
       mkdir -p "$TMPDIR/ccwrap"
-      printf '#!/bin/sh\nexec ${prev.gcc}/bin/gcc -std=gnu99 "$@"\n' > "$TMPDIR/ccwrap/gcc"
-      printf '#!/bin/sh\nexec ${prev.gcc}/bin/g++ "$@"\n' > "$TMPDIR/ccwrap/g++"
+      printf '#!${prev.bash}/bin/bash\nexec ${prev.gcc}/bin/gcc -std=gnu99 "$@"\n' > "$TMPDIR/ccwrap/gcc"
+      printf '#!${prev.bash}/bin/bash\nexec ${prev.gcc}/bin/g++ "$@"\n' > "$TMPDIR/ccwrap/g++"
       chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
       ln -sf gcc "$TMPDIR/ccwrap/cc"
       ln -sf g++ "$TMPDIR/ccwrap/c++"

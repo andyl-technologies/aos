@@ -32,8 +32,8 @@ builtins.derivation {
 
       # Dummy size/makeinfo — i686 `size` can't read x86_64 ELF binaries
       mkdir -p "$TMPDIR/fakebin"
-      printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/fakebin/size"
-      printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/fakebin/makeinfo"
+      printf '#!${prev.bash}/bin/bash\nexit 0\n' > "$TMPDIR/fakebin/size"
+      printf '#!${prev.bash}/bin/bash\nexit 0\n' > "$TMPDIR/fakebin/makeinfo"
       chmod +x "$TMPDIR/fakebin/size" "$TMPDIR/fakebin/makeinfo"
       export PATH="$TMPDIR/fakebin:$PATH"
 

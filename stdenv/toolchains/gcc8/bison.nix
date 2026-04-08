@@ -71,9 +71,9 @@ builtins.derivation {
 
       # Create yacc wrapper
       mkdir -p "$out/bin"
-      cat > "$out/bin/yacc" <<'YACC'
-      #!/bin/sh
-      exec bison -y "$@"
+      cat > "$out/bin/yacc" <<YACC
+      #!${prev.bash}/bin/bash
+      exec bison -y "\$@"
       YACC
       chmod +x "$out/bin/yacc"
 

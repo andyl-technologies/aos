@@ -6,6 +6,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
 }:
 let
   version = "2.25.1";
@@ -26,7 +27,7 @@ mkDerivation {
       script = ''
                 mkdir -p $out/bin
                 cat > $out/bin/ignition << 'STUB'
-        #!/bin/sh
+        #!${bash}/bin/bash
         echo "ignition: stub — Go bootstrap not yet implemented" >&2
         exit 1
         STUB

@@ -77,7 +77,7 @@ builtins.derivation {
 
       # Create yacc wrapper
       if [ -f "$out/bin/bison" ] && [ ! -f "$out/bin/yacc" ]; then
-        echo '#!/bin/sh' > "$out/bin/yacc"
+        echo '#!${prev.bash}/bin/bash' > "$out/bin/yacc"
         echo "exec \"$out/bin/bison\" -y \"\$@\"" >> "$out/bin/yacc"
         chmod +x "$out/bin/yacc"
       fi

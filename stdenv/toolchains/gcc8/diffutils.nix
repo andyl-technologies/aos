@@ -44,7 +44,7 @@ builtins.derivation {
 
       # Replace source help2man (Perl script with #!/usr/bin/perl) with dummy
       if [ -f man/help2man ]; then
-        printf '#!/bin/sh\nexit 0\n' > man/help2man
+        printf '#!${prev.bash}/bin/bash\nexit 0\n' > man/help2man
         chmod +x man/help2man
         # Pre-touch man pages so make doesn't try to regenerate them
         find . -name '*.1' -exec touch {} + 2>/dev/null || true

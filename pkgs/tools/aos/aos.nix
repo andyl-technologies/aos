@@ -2,6 +2,7 @@
 {
   mkCargoPackage,
   fetchCargoDeps,
+  bash,
   git,
   nix,
   perl,
@@ -52,7 +53,7 @@ mkCargoPackage {
         # Remove the duplicate apr binary (same binary, detected via argv[0])
         rm -f $out/bin/apr
         cat > $out/bin/aos << 'WRAPPER'
-    #!/bin/sh
+    #!${bash}/bin/bash
     export PATH="${git}/bin:${nix}/bin''${PATH:+:$PATH}"
     exec "$(dirname "$0")/.aos-unwrapped" "$@"
     WRAPPER
@@ -60,7 +61,7 @@ mkCargoPackage {
         # apm = aos package (detected via argv[0])
         ln -s .aos-unwrapped $out/bin/.apm-unwrapped
         cat > $out/bin/apm << 'WRAPPER'
-    #!/bin/sh
+    #!${bash}/bin/bash
     export PATH="${git}/bin:${nix}/bin''${PATH:+:$PATH}"
     exec "$(dirname "$0")/.apm-unwrapped" "$@"
     WRAPPER
@@ -68,7 +69,7 @@ mkCargoPackage {
         # apr = apm registry (detected via argv[0])
         ln -s .aos-unwrapped $out/bin/.apr-unwrapped
         cat > $out/bin/apr << 'WRAPPER'
-    #!/bin/sh
+    #!${bash}/bin/bash
     export PATH="${git}/bin:${nix}/bin''${PATH:+:$PATH}"
     exec "$(dirname "$0")/.apr-unwrapped" "$@"
     WRAPPER

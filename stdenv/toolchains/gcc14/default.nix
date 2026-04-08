@@ -46,12 +46,12 @@ let
           export PATH="${prev.coreutils}/bin"
           mkdir -p $out/bin
 
-          echo '#!/bin/sh' > $out/bin/gcc
+          echo '#!${prev.bash}/bin/bash' > $out/bin/gcc
           echo 'exec ${gccRaw}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc}/include "$@"' >> $out/bin/gcc
           chmod +x $out/bin/gcc
 
           if [ -f "${gccRaw}/bin/g++" ]; then
-            echo '#!/bin/sh' > $out/bin/g++
+            echo '#!${prev.bash}/bin/bash' > $out/bin/g++
             echo 'exec ${gccRaw}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc}/include "$@"' >> $out/bin/g++
             chmod +x $out/bin/g++
           fi

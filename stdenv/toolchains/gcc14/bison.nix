@@ -73,9 +73,9 @@ builtins.derivation {
       make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
 
       # Create yacc wrapper
-      cat > "$out/bin/yacc" <<'YACC'
-      #!/bin/sh
-      exec bison -y "$@"
+      cat > "$out/bin/yacc" <<YACC
+      #!${prev.bash}/bin/bash
+      exec bison -y "\$@"
       YACC
       chmod +x "$out/bin/yacc"
 

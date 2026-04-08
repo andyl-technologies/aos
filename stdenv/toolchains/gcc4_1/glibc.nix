@@ -68,7 +68,7 @@ else
   exec REAL_GCC "$@"
 fi
 WRAPPER
-      sed -i "s|REAL_GCC|${gcc}/bin/gcc|g" "$TMPDIR/fakebin/gcc-wrap"
+      sed -i -e "s|#!/bin/sh|#!${prev.bash}/bin/bash|" -e "s|REAL_GCC|${gcc}/bin/gcc|g" "$TMPDIR/fakebin/gcc-wrap"
       chmod +x "$TMPDIR/fakebin/gcc-wrap"
 
       CC="$TMPDIR/fakebin/gcc-wrap" \

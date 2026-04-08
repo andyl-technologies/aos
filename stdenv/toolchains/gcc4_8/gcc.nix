@@ -188,6 +188,7 @@ fi
 exec REAL_GCC -isystem HEADER_OVERLAY -isystem GLIBC_INCLUDE "$@"
 ''} "$TMPDIR/ccwrap/gcc"
       ${prev.sed}/bin/sed -i \
+        -e "s|#!/bin/sh|#!${prev.bash}/bin/bash|" \
         -e "s|REAL_GCC|${prev.gcc}/bin/gcc|g" \
         -e "s|SYNC_OBJ|$TMPDIR/sync_builtins.o|g" \
         -e "s|HEADER_OVERLAY|$TMPDIR/header-overlay|g" \
