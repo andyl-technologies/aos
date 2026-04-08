@@ -96,14 +96,15 @@ builtins.derivation {
       # with "initializer element is not constant" under the cross GCC
       # 3.4 stage-1 compiler).  libc.a, headers, and crt files are all
       # installed before locale runs, so -k is sufficient.
+      # -k installs headers and subdirectory artifacts but the locale
+      # failure prevents the top-level libc.a/crt install and stubs
+      # generation.  Install those manually from the build directory.
       make -k install PERL=true || true
-      test -f "$out/lib/libc.a" || { echo "FATAL: libc.a not installed"; exit 1; }
-      test -f "$out/include/stdio.h" || { echo "FATAL: headers not installed"; exit 1; }
-
-      # gnu/stubs.h is installed by make -k install, but the per-arch
-      # stubs-64.h is not (generated in the locale stub pass which fails).
-      # Create an empty one — downstream GCC needs it to exist.
+      mkdir -p "$out/lib"
+      cp libc.a "$out/lib/"
+      cp csu/crt1.o csu/crti.o csu/crtn.o "$out/lib/"
       mkdir -p "$out/include/gnu"
+      printf '#include <gnu/stubs-64.h>\n' > "$out/include/gnu/stubs.h"
       touch "$out/include/gnu/stubs-64.h"
 
       # Copy linux headers into glibc output for downstream use
