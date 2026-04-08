@@ -235,10 +235,14 @@ fn atomic_symlink(target: &str, link_path: &Path) -> Result<()> {
     let tmp_name = format!(".{file_name}.tmp.{}", std::process::id());
     let tmp_path = parent.join(&tmp_name);
 
-    // Remove stale temp file if it exists.
+    // Remove stale temp file if it exists.  There is a brief window between
+    // this removal and the symlink creation below where another process with
+    // the same PID could race; however, the subsequent `rename` is atomic on
+    // POSIX filesystems, so the final link path is always either the old
+    // target or the new target — never a partially-written state.
     let _ = std::fs::remove_file(&tmp_path);
 
-    // Create temp symlink and rename over the final path.
+    // Create temp symlink and atomically rename over the final path.
     symlink(target, &tmp_path)
         .with_context(|| format!("creating temp symlink {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, link_path)
