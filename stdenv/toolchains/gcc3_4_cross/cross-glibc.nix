@@ -92,49 +92,19 @@ builtins.derivation {
       # for a bootstrap glibc).
       make -j"$NIX_BUILD_CORES" PERL=true || true
       test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
-      # -k: keep going past subdirectory failures (e.g. locale's
-      # C-ctype.c fails with "initializer element is not constant"
-      # under the cross GCC 3.4 stage-1 compiler).
+      # -k: keep going past locale subdirectory failure (C-ctype.c fails
+      # with "initializer element is not constant" under the cross GCC
+      # 3.4 stage-1 compiler).  libc.a, headers, and crt files are all
+      # installed before locale runs, so -k is sufficient.
       make -k install PERL=true || true
-
-      # Fallback: if make install didn't reach libc.a (locale failure
-      # can block the top-level install target), install critical files
-      # manually from the build directory.
-      if [ ! -f "$out/lib/libc.a" ]; then
-        mkdir -p "$out/lib" "$out/include"
-        cp libc.a "$out/lib/"
-        cp csu/crt1.o csu/crti.o csu/crtn.o "$out/lib/"
-        # libpthread and librt if built
-        for lib in libpthread.a libc_nonshared.a; do
-          find . -name "$lib" -exec cp {} "$out/lib/" \; 2>/dev/null || true
-        done
-      fi
-
-      # Fallback: install headers from source if make install missed them
-      if [ ! -f "$out/include/stdio.h" ]; then
-        make -k install-headers PERL=true || true
-        # If still missing, copy manually from source
-        if [ ! -f "$out/include/stdio.h" ]; then
-          cp -r "$SRC/include/"* "$out/include/" 2>/dev/null || true
-          # Install generated headers from the build tree
-          find . -path '*/bits/*.h' -exec sh -c 'mkdir -p "$0/include/bits" && cp "$1" "$0/include/bits/"' "$out" {} \; 2>/dev/null || true
-          cp -r "$SRC/sysdeps/unix/sysv/linux/x86_64/bits/"*.h "$out/include/bits/" 2>/dev/null || true
-          cp -r "$SRC/sysdeps/x86_64/bits/"*.h "$out/include/bits/" 2>/dev/null || true
-          cp -r "$SRC/sysdeps/generic/bits/"*.h "$out/include/bits/" 2>/dev/null || true
-        fi
-      fi
-
-      # gnu/stubs.h is generated during make install's stub pass.
-      # If the install was incomplete, create a minimal version —
-      # downstream GCC needs it to exist even if empty.
-      if [ ! -f "$out/include/gnu/stubs.h" ]; then
-        mkdir -p "$out/include/gnu"
-        printf '#ifndef __GNU_STUBS_H\n#define __GNU_STUBS_H\n#endif\n' \
-          > "$out/include/gnu/stubs.h"
-      fi
-
       test -f "$out/lib/libc.a" || { echo "FATAL: libc.a not installed"; exit 1; }
       test -f "$out/include/stdio.h" || { echo "FATAL: headers not installed"; exit 1; }
+
+      # gnu/stubs.h is installed by make -k install, but the per-arch
+      # stubs-64.h is not (generated in the locale stub pass which fails).
+      # Create an empty one — downstream GCC needs it to exist.
+      mkdir -p "$out/include/gnu"
+      touch "$out/include/gnu/stubs-64.h"
 
       # Copy linux headers into glibc output for downstream use
       cp -r "${linuxHeaders}/include/linux" "$out/include/" 2>/dev/null || true
