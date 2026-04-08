@@ -199,15 +199,27 @@ pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
             .ok_or_else(|| format!("entry {i}: no stdin on child process"))?;
 
         let nar_data = entry.nar_data.clone();
-        tokio::spawn(async move {
-            let _ = stdin.write_all(&nar_data).await;
-            let _ = stdin.shutdown().await;
+        let stdin_task = tokio::spawn(async move {
+            stdin.write_all(&nar_data).await?;
+            stdin.shutdown().await?;
+            Ok::<(), std::io::Error>(())
         });
 
         let output = child
             .wait_with_output()
             .await
             .map_err(|e| format!("entry {i}: waiting for nix-store --import: {e}"))?;
+
+        // Join the stdin writer task and propagate errors.
+        match stdin_task.await {
+            Ok(Err(e)) => {
+                tracing::warn!(entry = i, hash = %entry.hash, error = %e, "stdin write error during pack import");
+            }
+            Err(e) => {
+                tracing::warn!(entry = i, hash = %entry.hash, error = %e, "stdin writer task panicked during pack import");
+            }
+            Ok(Ok(())) => {}
+        }
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
