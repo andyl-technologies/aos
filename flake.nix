@@ -53,6 +53,8 @@
         builtins.foldl' (acc: name: acc // forSystem name) { } sysNames;
     in
     {
+      aosSystems = genAttrs systems (system: (aosFor system).systems);
+
       packages = genAttrs systems (
         system:
         let
