@@ -4,6 +4,38 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// Well-known paths
+// ---------------------------------------------------------------------------
+
+/// Base directory for per-user and system profiles.
+const PROFILES_BASE: &str = "/var/lib/profiles";
+
+/// Base directory for system-wide APM state.
+const APM_STATE_DIR: &str = "/var/lib/apm";
+
+/// System-wide APM configuration directory.
+const APM_SYSTEM_CONFIG_DIR: &str = "/etc/apm";
+
+/// Resolve the current user's home directory.
+///
+/// Tries `$HOME` first, then falls back to `/etc/passwd` via
+/// `std::env::home_dir` (deprecated but functional for this purpose).
+/// Panics only if no home directory can be determined at all.
+fn resolve_home() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home);
+        }
+    }
+    // Last-resort fallback: construct from /tmp with a warning.  This is
+    // better than silently scattering state into /tmp directly.
+    eprintln!(
+        "warning: $HOME is not set; falling back to /tmp for user-scoped APM paths"
+    );
+    PathBuf::from("/tmp")
+}
+
+// ---------------------------------------------------------------------------
 // Package metadata — a package as described in a registry TOML file
 // ---------------------------------------------------------------------------
 
@@ -274,6 +306,12 @@ impl std::fmt::Display for TrackingMode {
 
 impl RegistryConfig {
     /// Determine the transport from the URL scheme.
+    ///
+    /// Returns `Git` for `git://`, `git+https://`, or `git+ssh://` URLs.
+    /// Returns `HttpBundle` for all other URLs (including `https://` and
+    /// `http://`).  Bare scheme-only URLs (e.g. `https://` with no host)
+    /// are not rejected here — callers that need a reachable URL should
+    /// validate separately via [`Self::validate_url`].
     pub fn transport(&self) -> Transport {
         if self.url.starts_with("git://")
             || self.url.starts_with("git+https://")
@@ -283,6 +321,27 @@ impl RegistryConfig {
         } else {
             Transport::HttpBundle
         }
+    }
+
+    /// Basic validation that `self.url` has meaningful content after the
+    /// scheme (i.e. it is not just `"https://"` or empty).
+    pub fn validate_url(&self) -> Result<()> {
+        if self.url.is_empty() {
+            bail!("registry URL is empty");
+        }
+        // Strip the scheme prefix and check that something remains.
+        let after_scheme = self
+            .url
+            .find("://")
+            .map(|pos| &self.url[pos + 3..])
+            .unwrap_or(&self.url);
+        if after_scheme.is_empty() || after_scheme == "/" {
+            bail!(
+                "registry URL {:?} contains only a scheme with no host",
+                self.url
+            );
+        }
+        Ok(())
     }
 
     /// Resolve the tracking mode from the config fields.
@@ -397,9 +456,9 @@ impl ProfileScope {
             ProfileScope::User => {
                 let user =
                     std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
-                PathBuf::from("/var/lib/profiles/per-user").join(user)
+                PathBuf::from(PROFILES_BASE).join("per-user").join(user)
             }
-            ProfileScope::System => PathBuf::from("/var/lib/profiles/system"),
+            ProfileScope::System => PathBuf::from(PROFILES_BASE).join("system"),
         }
     }
 
@@ -407,35 +466,25 @@ impl ProfileScope {
     pub fn cache_path(&self) -> PathBuf {
         match self {
             ProfileScope::User => {
-                let home =
-                    std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
-                PathBuf::from(home).join(".local/share/apm/remote")
+                resolve_home().join(".local/share/apm/remote")
             }
-            ProfileScope::System => PathBuf::from("/var/lib/apm/remote"),
+            ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("remote"),
         }
     }
 
     /// Path for NAR download cache.
     pub fn nar_cache_path(&self) -> PathBuf {
         match self {
-            ProfileScope::User => {
-                let home =
-                    std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
-                PathBuf::from(home).join(".cache/apm")
-            }
-            ProfileScope::System => PathBuf::from("/var/lib/apm/cache"),
+            ProfileScope::User => resolve_home().join(".cache/apm"),
+            ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("cache"),
         }
     }
 
     /// Path for registry config files.
     pub fn config_dir(&self) -> PathBuf {
         match self {
-            ProfileScope::User => {
-                let home =
-                    std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
-                PathBuf::from(home).join(".config/apm")
-            }
-            ProfileScope::System => PathBuf::from("/etc/apm"),
+            ProfileScope::User => resolve_home().join(".config/apm"),
+            ProfileScope::System => PathBuf::from(APM_SYSTEM_CONFIG_DIR),
         }
     }
 
@@ -443,11 +492,9 @@ impl ProfileScope {
     pub fn registries_path(&self) -> PathBuf {
         match self {
             ProfileScope::User => {
-                let home =
-                    std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
-                PathBuf::from(home).join(".local/share/apm/registries")
+                resolve_home().join(".local/share/apm/registries")
             }
-            ProfileScope::System => PathBuf::from("/var/lib/apm/registries"),
+            ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("registries"),
         }
     }
 
@@ -455,16 +502,15 @@ impl ProfileScope {
     pub fn trusted_keys_dirs(&self) -> Vec<PathBuf> {
         match self {
             ProfileScope::User => {
-                let home =
-                    std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
+                let home = resolve_home();
                 vec![
-                    PathBuf::from(home).join(".config/apm/trusted-keys.d"),
-                    PathBuf::from("/etc/apm/trusted-keys.d"),
+                    home.join(".config/apm/trusted-keys.d"),
+                    PathBuf::from(APM_SYSTEM_CONFIG_DIR).join("trusted-keys.d"),
                 ]
             }
             ProfileScope::System => vec![
-                PathBuf::from("/etc/apm/trusted-keys.d"),
-                PathBuf::from("/var/lib/apm/trusted-keys.d"),
+                PathBuf::from(APM_SYSTEM_CONFIG_DIR).join("trusted-keys.d"),
+                PathBuf::from(APM_STATE_DIR).join("trusted-keys.d"),
             ],
         }
     }
