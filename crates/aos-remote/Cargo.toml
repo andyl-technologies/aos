@@ -8,4 +8,7 @@ aos-proto = { workspace = true }
 anyhow = { workspace = true }
 connectrpc = { workspace = true }
 buffa = { workspace = true }
+http = { workspace = true }
 prost = { workspace = true }
+webpki-roots = { workspace = true }
+rustls-native-certs = { workspace = true }
