@@ -16,7 +16,7 @@ let
 
   src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gperf/gperf-3.1.tar.gz";
-    hash = "hash-8wzbi/Hs3+U1qT28ZQI/ZI1Rmgil4YLnL8MsObnasbE=";
+    hash = "sha256-8wzbi/Hs3+U1qT28ZQI/ZI1Rmgil4YLnL8MsObnasbE=";
   };
 in
 builtins.derivation {

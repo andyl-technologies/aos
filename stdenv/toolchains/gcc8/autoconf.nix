@@ -20,7 +20,7 @@ let
 
   src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/autoconf/autoconf-2.69.tar.xz";
-    hash = "hash-tpVLeuvm1/He9UvOAGzup4fc7YTQYp1xWTowDs1rR4I=";
+    hash = "sha256-tpVLeuvm1/He9UvOAGzup4fc7YTQYp1xWTowDs1rR4I=";
   };
 in
 builtins.derivation {

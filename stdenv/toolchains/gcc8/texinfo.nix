@@ -17,7 +17,7 @@ let
 
   src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/texinfo/texinfo-6.5.tar.xz";
-    hash = "hash-s2LpZW+c3AqrrPmpTIf2lIgEGropkZOTSOOyJxn1jxg=";
+    hash = "sha256-s2LpZW+c3AqrrPmpTIf2lIgEGropkZOTSOOyJxn1jxg=";
   };
 in
 builtins.derivation {

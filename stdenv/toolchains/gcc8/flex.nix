@@ -18,7 +18,7 @@ let
 
   src = fetchTarball {
     url = "https://github.com/westes/flex/releases/download/v2.6.1/flex-2.6.1.tar.xz";
-    hash = "hash-Q6xMKCZM24E6qIndXVII38cTQstowhHt+ee/I+K7IfI=";
+    hash = "sha256-Q6xMKCZM24E6qIndXVII38cTQstowhHt+ee/I+K7IfI=";
   };
 in
 builtins.derivation {

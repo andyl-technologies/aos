@@ -21,7 +21,7 @@ let
 
   src = fetchTarball {
     url = "https://mirrors.kernel.org/gnu/automake/automake-1.13.4.tar.xz";
-    hash = "hash-cHpdXUTmAeF89dLm8Rx9gPPSQoSOr7mBKKM76uoXuS4=";
+    hash = "sha256-cHpdXUTmAeF89dLm8Rx9gPPSQoSOr7mBKKM76uoXuS4=";
   };
 in
 builtins.derivation {

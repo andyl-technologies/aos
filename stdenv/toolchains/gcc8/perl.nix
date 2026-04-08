@@ -16,7 +16,7 @@ let
 
   src = fetchTarball {
     url = "https://www.cpan.org/src/5.0/perl-5.26.3.tar.xz";
-    hash = "hash-dlX8a0Hmw4GPvxGerkHE5IgRhh1u9nRMwXgVHZHP9q4=";
+    hash = "sha256-dlX8a0Hmw4GPvxGerkHE5IgRhh1u9nRMwXgVHZHP9q4=";
   };
 in
 builtins.derivation {
