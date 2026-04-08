@@ -142,6 +142,11 @@ async fn fetch_hash(
     min_speed: u64,
     speed_window: Duration,
 ) -> Result<FetchOk> {
+    if urls.is_empty() {
+        pb.finish_and_clear();
+        anyhow::bail!("no URLs provided for {name}");
+    }
+
     let mut last_err = None;
 
     for (i, url) in urls.iter().enumerate() {
@@ -188,7 +193,8 @@ fn update_package_hash(
     old_hash: Option<&str>,
     new_hash: &str,
 ) -> Result<bool> {
-    let pattern = format!("{}/pkgs/**/{}.nix", nix.root().display(), name);
+    let escaped_name = glob::Pattern::escape(name);
+    let pattern = format!("{}/pkgs/**/{}.nix", nix.root().display(), escaped_name);
     let matches: Vec<_> = glob(&pattern)
         .with_context(|| format!("invalid glob pattern for package '{name}'"))?
         .filter_map(|entry| entry.ok())
@@ -338,7 +344,11 @@ pub fn run(
         let mut handles = Vec::new();
 
         for (name, info) in &entries {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let permit = semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("prefetch semaphore closed unexpectedly");
             let client = client.clone();
             let urls = info.urls.clone();
             let name = name.clone();
@@ -360,7 +370,17 @@ pub fn run(
 
         let mut results = Vec::new();
         for handle in handles {
-            results.push(handle.await.unwrap());
+            match handle.await {
+                Ok(result) => results.push(result),
+                Err(join_err) => {
+                    // A JoinError means the spawned task panicked or was
+                    // cancelled. Surface it as a failed fetch result.
+                    results.push((
+                        "<unknown>".to_string(),
+                        Err(anyhow::anyhow!("prefetch task panicked: {join_err}")),
+                    ));
+                }
+            }
         }
 
         overall.finish_and_clear();
