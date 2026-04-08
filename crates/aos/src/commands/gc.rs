@@ -4,6 +4,9 @@ use aos_core::nix::NixRunner;
 use aos_core::output::{create_spinner, Printer};
 use aos_remote::AosClient;
 
+/// Default retention period for local garbage collection.
+const DEFAULT_GC_RETENTION: &str = "7d";
+
 /// `aos gc` — garbage collection with local, view-based, or remote modes.
 pub async fn run(
     nix: &NixRunner,
@@ -154,8 +157,12 @@ fn run_view_gc(
             for root_info in &roots {
                 let link = view_mgr.root().join("gcroots").join(view).join("bin").join(&root_info.hash);
                 let meta = view_mgr.root().join("meta").join(view).join("bin").join(format!("{}.json", root_info.hash));
-                let _ = std::fs::remove_file(&link);
-                let _ = std::fs::remove_file(&meta);
+                if let Err(e) = std::fs::remove_file(&link) {
+                    eprintln!("warning: failed to remove gc root {}: {e}", link.display());
+                }
+                if let Err(e) = std::fs::remove_file(&meta) {
+                    eprintln!("warning: failed to remove gc metadata {}: {e}", meta.display());
+                }
             }
             printer.success(&format!("Removed {} roots from view '{view}'", roots.len()));
         }
@@ -193,16 +200,18 @@ fn run_view_gc(
 }
 
 fn collect_default(nix: &NixRunner, printer: &Printer) -> Result<()> {
-    printer.info("Collecting garbage (deleting generations older than 7 days)...");
+    printer.info(&format!(
+        "Collecting garbage (deleting generations older than {DEFAULT_GC_RETENTION})..."
+    ));
 
     let spinner = create_spinner("collecting garbage");
-    nix.collect_garbage(Some("7d"))
+    nix.collect_garbage(Some(DEFAULT_GC_RETENTION))
         .context("garbage collection")?;
     spinner.finish_and_clear();
 
     if printer.json_if_active(&serde_json::json!({
         "action": "gc",
-        "older_than": "7d",
+        "older_than": DEFAULT_GC_RETENTION,
         "status": "complete",
     })) {
         return Ok(());
@@ -246,7 +255,7 @@ fn pin_root(
     // Write metadata with no expires_at (permanent).
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .context("system clock error")?
         .as_secs() as i64;
 
     let meta = serde_json::json!({
