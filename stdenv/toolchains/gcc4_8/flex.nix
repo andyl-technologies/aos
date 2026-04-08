@@ -59,9 +59,8 @@ builtins.derivation {
       # Provide .c as a copy of the pre-generated scan.c so the rule succeeds.
       cp scan.c .c
 
-      make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
-
-      # Skip doc/examples/po during install — doc tries to build PDFs with TeX
+      # Skip doc/examples/po — doc tries to build PDFs with TeX
+      make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true SUBDIRS="lib ."
       make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true SUBDIRS="lib ."
 
       # Create lex compatibility symlink
