@@ -23,7 +23,7 @@
       prefixAttrs =
         prefix: attrs:
         builtins.listToAttrs (
-          builtins.map (name: {
+          map (name: {
             name = "${prefix}-${name}";
             value = attrs.${name};
           }) (builtins.attrNames attrs)
@@ -44,7 +44,7 @@
               formats = builtins.attrNames aos.systems.${name}.build.image;
             in
             builtins.listToAttrs (
-              builtins.map (fmt: {
+              map (fmt: {
                 name = "${name}-image-${fmt}";
                 value = aos.systems.${name}.build.image.${fmt};
               }) formats
