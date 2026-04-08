@@ -93,17 +93,17 @@ WRAPPER
       test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
       # -k: keep going past locale subdirectory failure.  libc.a, headers,
       # and crt files are all installed before locale runs.
+      # -k installs headers and subdirectory artifacts but the locale
+      # failure prevents the top-level libc.a/crt install and stubs
+      # generation.  Install those manually from the build directory.
       make -k install PERL=true || true
-      test -f "$out/lib/libc.a" || { echo "FATAL: libc.a not installed"; exit 1; }
-      test -f "$out/include/stdio.h" || { echo "FATAL: headers not installed"; exit 1; }
-
+      mkdir -p "$out/lib"
+      cp libc.a "$out/lib/"
+      cp csu/crt1.o csu/crti.o csu/crtn.o "$out/lib/"
       # Fix stubs file: static-only build generates stubs-.h (empty ABI suffix)
-      # instead of stubs-32.h/stubs-64.h. Rename so stubs.h can find it.
       if [ -f "$out/include/gnu/stubs-.h" ] && [ ! -f "$out/include/gnu/stubs-${stubsSuffix}.h" ]; then
         mv "$out/include/gnu/stubs-.h" "$out/include/gnu/stubs-${stubsSuffix}.h"
       fi
-      # The per-arch stubs-{32,64}.h is generated in the locale stub pass
-      # which fails.  Create an empty one — downstream GCC needs it to exist.
       mkdir -p "$out/include/gnu"
       touch "$out/include/gnu/stubs-${stubsSuffix}.h"
 
