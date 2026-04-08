@@ -83,7 +83,7 @@ let
       ) (builtins.attrNames entries);
     in
     builtins.listToAttrs (
-      builtins.map (name: {
+      map (name: {
         name = lib.removeSuffix ".nix" name;
         value =
           let
@@ -124,13 +124,10 @@ let
     testTools = { };
   };
 
-  # Testing harness (full mode for fleet tests and validation)
-  harness = import ./lib/testing { inherit pkgs lib testTools; };
-
   prefixAttrs =
     prefix: attrs:
     builtins.listToAttrs (
-      builtins.map (name: {
+      map (name: {
         name = "${prefix}-${name}";
         value = attrs.${name};
       }) (builtins.attrNames attrs)
@@ -213,11 +210,11 @@ let
         && builtins.substring 0 1 name != "_"
       ) (builtins.attrNames entries);
 
-      specs = builtins.map (name: import (./systems/tests + "/${name}") { inherit lib; }) fleetFiles;
+      specs = map (name: import (./systems/tests + "/${name}") { inherit lib; }) fleetFiles;
       fleetSpecs = builtins.filter (spec: (spec.type or "vm") == "fleet") specs;
     in
     builtins.listToAttrs (
-      builtins.map (spec: {
+      map (spec: {
         name = spec.name;
         value = fleetHarness.mkFleetTest {
           name = spec.name;
