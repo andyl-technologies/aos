@@ -104,12 +104,14 @@ impl BuildEvent {
 }
 
 /// Ring buffer for replay of build events to late joiners.
-/// Caps at `MAX_EVENTS`; oldest events are dropped when full.
+/// Caps at `MAX_LOG_EVENTS`; oldest events are dropped when full.
 pub struct LogBuffer {
     events: RwLock<VecDeque<BuildEvent>>,
 }
 
-const MAX_EVENTS: usize = 100_000;
+/// Maximum number of events retained in the log replay buffer.
+/// Oldest events are dropped when this limit is reached.
+const MAX_LOG_EVENTS: usize = 100_000;
 
 impl LogBuffer {
     fn new() -> Self {
@@ -119,8 +121,11 @@ impl LogBuffer {
     }
 
     fn append(&self, event: BuildEvent) {
-        let mut events = self.events.write().unwrap();
-        if events.len() >= MAX_EVENTS {
+        let Ok(mut events) = self.events.write() else {
+            tracing::warn!("log buffer write lock poisoned, dropping event");
+            return;
+        };
+        if events.len() >= MAX_LOG_EVENTS {
             events.pop_front();
         }
         events.push_back(event);
@@ -128,7 +133,10 @@ impl LogBuffer {
 
     /// Get all events from `start_id` onward.
     pub fn events_from(&self, start_id: u64) -> Vec<BuildEvent> {
-        let events = self.events.read().unwrap();
+        let Ok(events) = self.events.read() else {
+            tracing::warn!("log buffer read lock poisoned, returning empty");
+            return Vec::new();
+        };
         // Binary search on the contiguous slices since IDs are monotonically increasing.
         let (front, back) = events.as_slices();
         let skip_front = front.partition_point(|e| e.id < start_id);
@@ -142,7 +150,11 @@ impl LogBuffer {
 
     /// Get all events.
     pub fn all_events(&self) -> Vec<BuildEvent> {
-        self.events.read().unwrap().iter().cloned().collect()
+        let Ok(events) = self.events.read() else {
+            tracing::warn!("log buffer read lock poisoned, returning empty");
+            return Vec::new();
+        };
+        events.iter().cloned().collect()
     }
 }
 
@@ -203,12 +215,18 @@ impl BuildManager {
     /// Get the semaphore for a view, creating it with `max` permits if needed.
     fn view_semaphore(&self, view: &str, max: u32) -> Arc<Semaphore> {
         {
-            let sems = self.semaphores.read().unwrap();
+            let Ok(sems) = self.semaphores.read() else {
+                tracing::warn!("semaphore lock poisoned, creating ephemeral semaphore");
+                return Arc::new(Semaphore::new(max as usize));
+            };
             if let Some(s) = sems.get(view) {
                 return Arc::clone(s);
             }
         }
-        let mut sems = self.semaphores.write().unwrap();
+        let Ok(mut sems) = self.semaphores.write() else {
+            tracing::warn!("semaphore lock poisoned, creating ephemeral semaphore");
+            return Arc::new(Semaphore::new(max as usize));
+        };
         Arc::clone(
             sems.entry(view.to_string())
                 .or_insert_with(|| Arc::new(Semaphore::new(max as usize))),
@@ -227,7 +245,10 @@ impl BuildManager {
     ) -> Arc<BuildHandle> {
         // Check for existing build.
         {
-            let builds = self.builds.read().unwrap();
+            let Ok(builds) = self.builds.read() else {
+                tracing::warn!("builds lock poisoned, starting fresh build handle");
+                return Arc::new(BuildHandle::new(drv_path.to_string()));
+            };
             if let Some(handle) = builds.get(drv_path) {
                 tracing::debug!(view = %view, drv = %drv_path, "build deduplicated, joining existing");
                 return Arc::clone(handle);
@@ -237,7 +258,10 @@ impl BuildManager {
         // Create a new build handle.
         let handle = Arc::new(BuildHandle::new(drv_path.to_string()));
         {
-            let mut builds = self.builds.write().unwrap();
+            let Ok(mut builds) = self.builds.write() else {
+                tracing::warn!("builds lock poisoned, starting fresh build handle");
+                return handle;
+            };
             // Double-check after acquiring write lock.
             if let Some(existing) = builds.get(drv_path) {
                 tracing::debug!(view = %view, drv = %drv_path, "build deduplicated, joining existing");
@@ -262,13 +286,19 @@ impl BuildManager {
 
     /// Remove a completed build from the map (after a delay for late joiners).
     fn remove_build(&self, drv_path: &str) {
-        let mut builds = self.builds.write().unwrap();
+        let Ok(mut builds) = self.builds.write() else {
+            tracing::warn!("builds lock poisoned, cannot remove completed build");
+            return;
+        };
         builds.remove(drv_path);
     }
 
     /// Broadcast a drain event to all active builds.
     pub fn broadcast_drain(&self) {
-        let builds = self.builds.read().unwrap();
+        let Ok(builds) = self.builds.read() else {
+            tracing::warn!("builds lock poisoned, cannot broadcast drain");
+            return;
+        };
         for handle in builds.values() {
             handle.emit(BuildEventKind::Drain {
                 message: "server shutting down".to_string(),
@@ -316,7 +346,21 @@ async fn run_build(
     }
 
     // Acquire the per-view semaphore.
-    let _permit = sem.acquire().await.expect("semaphore closed");
+    let _permit = match sem.acquire().await {
+        Ok(permit) => permit,
+        Err(_) => {
+            tracing::error!(view = %view, drv = %drv_path, "build semaphore closed");
+            handle.emit(BuildEventKind::Error {
+                drv: drv_path.to_string(),
+                exit_code: None,
+                log_tail: "build semaphore closed".to_string(),
+            });
+            build_cleanup!(build_state, &root, mgr, state, "failed");
+            handle.done.notify_waiters();
+            schedule_cleanup(mgr, drv_path);
+            return;
+        }
+    };
 
     tracing::info!(view = %view, drv = %drv_path, "build started");
 
@@ -368,7 +412,18 @@ async fn run_build(
             };
 
             // Stream stderr lines as log events.
-            let stderr = child.stderr.take().unwrap();
+            let Some(stderr) = child.stderr.take() else {
+                tracing::error!(view = %view, drv = %drv_path, "failed to capture stderr from nix-store");
+                handle.emit(BuildEventKind::Error {
+                    drv: drv_path.to_string(),
+                    exit_code: None,
+                    log_tail: "failed to capture stderr from nix-store".to_string(),
+                });
+                build_cleanup!(build_state, &root, mgr, state, "failed");
+                handle.done.notify_waiters();
+                schedule_cleanup(mgr, drv_path);
+                return;
+            };
             let mut lines = BufReader::new(stderr).lines();
             log_lines.clear();
 
@@ -415,8 +470,10 @@ async fn run_build(
             break 'build exit;
         }
 
-        // Should not reach here, but satisfy the type system.
-        unreachable!()
+        // Every iteration of the loop either `continue`s (retry) or `break 'build exit`s.
+        // The final iteration (attempt == MAX_DAEMON_RETRIES) always breaks or returns,
+        // so this point is structurally unreachable.
+        unreachable!("all loop iterations break or return")
     };
 
     let duration_secs = start.elapsed().as_secs();

@@ -144,7 +144,7 @@ impl ViewManager {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .context("system clock error")?
             .as_secs() as i64;
 
         let expires_at = source_ttl.map(|d| now + d.as_secs() as i64);
@@ -196,7 +196,7 @@ impl ViewManager {
 
         let now = std::time::SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .context("system clock error")?
             .as_secs() as i64;
 
         let meta = serde_json::json!({
@@ -264,7 +264,7 @@ impl ViewManager {
     ) -> Result<()> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .context("system clock error")?
             .as_secs() as i64;
 
         for path in paths {

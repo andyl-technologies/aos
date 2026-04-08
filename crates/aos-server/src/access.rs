@@ -9,7 +9,7 @@ use crate::views::ViewManager;
 pub fn update_access(views: &ViewManager, view: &str, hash: &str) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .context("system clock error")?
         .as_secs() as i64;
 
     // Try bin/ first, then src/
