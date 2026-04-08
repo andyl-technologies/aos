@@ -13,6 +13,7 @@ pub mod routes;
 pub mod services;
 pub mod sign;
 pub mod store;
+pub mod tls;
 pub mod tokens;
 pub mod views;
 

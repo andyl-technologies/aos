@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use aos_core::output::Printer;
-use aos_server::{self, bootstrap, build, config, drain, routes, sign, store, tokens, views};
+use aos_server::{self, bootstrap, build, config, drain, routes, sign, store, tls, tokens, views};
 
 /// `aos serve` — start the HTTP binary cache server.
 pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
@@ -66,7 +66,7 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
     // Load narinfo signing key (if configured).
     let signer = sign::NarInfoSigner::load(cfg.signing.secret_key_file.as_deref())?;
     if signer.is_configured() {
-        printer.info(&format!("Signing narinfo with key: {}", signer.key_name().unwrap()));
+        printer.info(&format!("Signing narinfo with key: {}", signer.key_name().unwrap_or("unknown")));
     }
 
     let build_mgr = Arc::new(build::BuildManager::new());
@@ -99,25 +99,52 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
         .await
         .with_context(|| format!("binding to {}", cfg.listen))?;
 
-    printer.success(&format!("Serving on http://{}", cfg.listen));
+    let shutdown = async move {
+        drain::wait_for_shutdown_signal().await;
+        eprintln!("Shutdown signal received, draining...");
+        drain_state.start_drain();
+        state.build_mgr.broadcast_drain();
+        let completed = drain_state.wait_for_completion(Duration::from_secs(75)).await;
+        if completed {
+            eprintln!("All builds complete, shutting down");
+        } else {
+            eprintln!("Drain timeout reached, forcing shutdown");
+        }
+    };
 
-    // Run the server with graceful shutdown on SIGTERM/SIGINT.
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            drain::wait_for_shutdown_signal().await;
-            eprintln!("Shutdown signal received, draining...");
-            drain_state.start_drain();
-            state.build_mgr.broadcast_drain();
-            // Wait up to 75s for in-flight builds.
-            let completed = drain_state.wait_for_completion(Duration::from_secs(75)).await;
-            if completed {
-                eprintln!("All builds complete, shutting down");
-            } else {
-                eprintln!("Drain timeout reached, forcing shutdown");
-            }
-        })
-        .await
-        .context("server error")?;
+    let tls_acceptor = if cfg.tls.enabled {
+        let cert_path = cfg
+            .tls
+            .cert_file
+            .clone()
+            .unwrap_or_else(tls::default_cert_path);
+        let key_path = cfg
+            .tls
+            .key_file
+            .clone()
+            .unwrap_or_else(tls::default_key_path);
+
+        let acceptor = if cert_path.exists() && key_path.exists() {
+            printer.info(&format!(
+                "Loading TLS cert from {}",
+                cert_path.display()
+            ));
+            tls::acceptor_from_pem(&cert_path, &key_path)
+                .context("loading TLS certificates")?
+        } else {
+            printer.info("Generating self-signed TLS certificate");
+            tls::generate_self_signed(&cert_path, &key_path, &cfg.tls.san)
+                .context("generating self-signed certificate")?
+        };
+
+        printer.success(&format!("Serving on https://{} (h2 + http/1.1)", cfg.listen));
+        Some(acceptor)
+    } else {
+        printer.success(&format!("Serving on http://{} (h2c + http/1.1)", cfg.listen));
+        None
+    };
+
+    serve_h2(listener, app, tls_acceptor, shutdown).await?;
 
     Ok(())
 }
@@ -138,6 +165,86 @@ fn load_jwt_secret(cfg: &config::ServerConfig) -> Result<Vec<u8>> {
             Ok(secret.to_vec())
         }
     }
+}
+
+/// Accept connections and serve with HTTP/1.1 + HTTP/2 support.
+///
+/// When `tls_acceptor` is `Some`, each TCP connection is wrapped with TLS
+/// (ALPN-negotiated h2 / http/1.1). When `None`, connections are served in
+/// cleartext with h2c (HTTP/2 upgrade / prior-knowledge) and HTTP/1.1.
+async fn serve_h2(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let token = tokio_util::sync::CancellationToken::new();
+    let child_token = token.clone();
+
+    tokio::spawn(async move {
+        shutdown.await;
+        child_token.cancel();
+    });
+
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => break,
+            result = listener.accept() => {
+                let (stream, _addr) = result.context("accepting TCP connection")?;
+                let tls = tls_acceptor.clone();
+                let app = app.clone();
+                let cancel = token.clone();
+                tokio::spawn(async move {
+                    let builder = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    );
+                    let hyper_svc = hyper_util::service::TowerToHyperService::new(app);
+
+                    if let Some(acceptor) = tls {
+                        // TLS path: ALPN-negotiated h2 / http/1.1.
+                        let tls_stream = match acceptor.accept(stream).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                eprintln!("TLS handshake failed: {e}");
+                                return;
+                            }
+                        };
+                        let io = hyper_util::rt::TokioIo::new(tls_stream);
+                        let conn = builder.serve_connection(io, hyper_svc);
+                        tokio::pin!(conn);
+                        tokio::select! {
+                            result = &mut conn => {
+                                if let Err(e) = result {
+                                    eprintln!("connection error: {e}");
+                                }
+                            }
+                            _ = cancel.cancelled() => {
+                                conn.as_mut().graceful_shutdown();
+                                let _ = conn.await;
+                            }
+                        }
+                    } else {
+                        // Cleartext path: h2c (prior-knowledge + upgrade) and HTTP/1.1.
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        let conn = builder.serve_connection_with_upgrades(io, hyper_svc);
+                        tokio::pin!(conn);
+                        tokio::select! {
+                            result = &mut conn => {
+                                if let Err(e) = result {
+                                    eprintln!("connection error: {e}");
+                                }
+                            }
+                            _ = cancel.cancelled() => {
+                                conn.as_mut().graceful_shutdown();
+                                let _ = conn.await;
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Check whether a derivation's outputs are valid in the Nix store.
