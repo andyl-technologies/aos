@@ -33,6 +33,7 @@ tracing = "0.1"
 alejandra = "3.1.0"
 
 # HTTP / networking
+http = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 url = "2"
 async-trait = "0.1"
@@ -49,6 +50,8 @@ ed25519-dalek = { version = "2", features = ["pkcs8"] }
 zstd = "0.13"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2", "service"] }
+tower = { version = "0.5", features = ["util"] }
 
 # Cache backends
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
@@ -73,10 +76,17 @@ semver = "1"
 tempfile = "3"
 
 # ConnectRPC
-connectrpc = { version = "0.3", features = ["server", "client", "axum"] }
+connectrpc = { version = "0.3", features = ["server", "client", "client-tls", "axum"] }
 buffa = "0.3"
 prost = "0.13"
 futures = "0.3"
+webpki-roots = "1"
+rustls-native-certs = "0.8"
+rustls = "0.23"
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+tokio-rustls = "0.26"
+rcgen = "0.14"
 
 # Internal crates
 aos-core = { path = "aos-core" }
