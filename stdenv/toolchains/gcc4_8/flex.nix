@@ -34,7 +34,7 @@ builtins.derivation {
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
-      mkdir -p flex-2.5.37 && (cd ${src} && tar cf - .) | (cd flex-2.5.37 && tar xf -)
+      cp -r ${src} flex-2.5.37
       cd flex-2.5.37
       chmod -R u+w .
 

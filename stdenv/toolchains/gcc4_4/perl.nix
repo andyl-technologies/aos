@@ -29,7 +29,7 @@ builtins.derivation {
       export CONFIG_SHELL="${prev.bash}/bin/bash"
 
       cd "$TMPDIR"
-      mkdir -p perl-5.10.1 && (cd ${src} && tar cf - .) | (cd perl-5.10.1 && tar xf -)
+      cp -r ${src} perl-5.10.1
       cd perl-5.10.1
       chmod -R u+w .
 

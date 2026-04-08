@@ -38,7 +38,7 @@ builtins.derivation {
       export M4="${m4}/bin/m4"
 
       cd "$TMPDIR"
-      mkdir -p bison-3.0.4 && (cd ${src} && tar cf - .) | (cd bison-3.0.4 && tar xf -)
+      cp -r ${src} bison-3.0.4
       cd bison-3.0.4
       chmod -R u+w .
 
