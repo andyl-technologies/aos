@@ -47,8 +47,6 @@ in
         "console=ttyS0,115200"
         "console=tty0"
         "systemd.unified_cgroup_hierarchy=1"
-        "selinux=1"
-        "security=selinux"
       ];
       description = ''
         Kernel command line parameters. These are written to the boot loader

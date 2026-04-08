@@ -25,6 +25,8 @@
   libselinux,
   libsepol,
   libseccomp,
+  coreutils,
+  bash,
 }:
 let
   version = "259.1";
@@ -39,6 +41,22 @@ mkDerivation {
     ];
     hash = "sha256-evTzbbUSrS8PdJoPmIY3Dt6yu1EoAU/EfN9zcCx+GRE=";
   };
+
+  # Patches applied after unpack (via mkDerivation's built-in patch phase):
+  #   0001 — Remove /usr/lib, /usr/local/lib, /lib fallback paths from
+  #          path-lookup.c so systemd only searches SYSTEM_DATA_UNIT_DIR
+  #          (= $out/lib/systemd/system with --prefix=$out) and /etc.
+  #   0002 — Add PREFIX "/lib/" to CONF_PATHS macro in constants.h so
+  #          systemd finds tmpfiles.d, sysctl.d, modules-load.d etc. in
+  #          the Nix store.
+  #   0003 — Remove install_emptydir(systemdstatedir) from meson.build
+  #          (resolves to /var/lib/systemd which can't be created in the
+  #          sandbox; created at system activation time instead).
+  patches = [
+    ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
+    ./patches/0002-add-prefix-to-conf-paths.patch
+    ./patches/0003-remove-install-emptydir-systemdstatedir.patch
+  ];
 
   buildDeps = [
     gnumake
@@ -78,7 +96,7 @@ mkDerivation {
       '';
     }
     {
-      name = "patch-shebangs";
+      name = "patch-source";
       script = ''
         # Fix shebangs: /usr/bin/env and /bin/bash don't exist in the sandbox
         for f in $(find . -type f \( -name '*.sh' -o -name '*.py' \)); do
@@ -95,6 +113,11 @@ mkDerivation {
         # glibc 2.39's linux/vm_sockets.h doesn't include it automatically.
         sed -i 's|#include <linux/vm_sockets.h>|#include <sys/socket.h>\n#include <linux/vm_sockets.h>|' \
           src/basic/socket-util.h
+
+        # Rewrite hardcoded binary paths to Nix store paths.
+        sed -i 's|/sbin/modprobe|${kmod}/sbin/modprobe|g' units/modprobe@.service
+        sed -i "s|/usr/lib/systemd/catalog/|$out/lib/systemd/catalog/|g" \
+          src/libsystemd/sd-journal/catalog.c
       '';
     }
     {
@@ -138,22 +161,26 @@ mkDerivation {
                 # (ninja invokes python3 -m mesonbuild.mesonmain directly)
                 export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
 
-                # Set RPATH so systemd binaries can find their own shared libs
-                # (meson uses --prefix=/ with DESTDIR=$out, so RPATH would point
-                # to /lib instead of $out/lib without this)
+                # Explicit RPATH so systemd binaries find their own shared libs
                 export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib -Wl,-rpath,$out/lib/systemd"
+
+                # Override compiled-in binary paths so systemd references its
+                # own store path at runtime (not /lib/systemd/systemd).
+                export CFLAGS="''${CFLAGS:-} \
+                  -Wno-error=missing-prototypes -Wno-error=return-type \
+                  -DSYSTEMD_BINARY_PATH=\"\\\"$out/lib/systemd/systemd\\\"\" \
+                  -DSYSTEMD_CGROUP_AGENTS_PATH=\"\\\"$out/lib/systemd/systemd-cgroups-agent\\\"\""
 
                 # Strip linux-headers from C_INCLUDE_PATH so we can add it as
                 # -I in build.ninja with controlled ordering (GCC ignores -I for
                 # dirs already in C_INCLUDE_PATH, which is treated as -isystem).
                 export C_INCLUDE_PATH="$(echo "$C_INCLUDE_PATH" | tr ':' '\n' | grep -v linux-headers | tr '\n' ':' | sed 's/:$//')"
-                export CFLAGS="''${CFLAGS:-} -Wno-error=missing-prototypes -Wno-error=return-type"
 
                 mkdir -p build && cd build
                 meson setup .. \
-                  --prefix=/ \
+                  --prefix=$out \
+                  --sysconfdir=$out/etc \
                   -Dwerror=false \
-                  --sysconfdir=/etc \
                   --buildtype=release \
                   -Dmode=release \
                   -Dsysvinit-path="" \
@@ -201,6 +228,9 @@ mkDerivation {
                   -Dhtml=disabled \
                   -Dtranslations=false \
                   -Dinstall-sysconfdir=false \
+                  -Dcreate-log-dirs=false \
+                  -Dsshconfdir=no \
+                  -Dsshdconfdir=no \
                   -Dseccomp=enabled \
                   -Dselinux=enabled \
                   -Dapparmor=disabled \
@@ -248,6 +278,13 @@ mkDerivation {
                 sed -i 's|-isystem\.\./src/include/override|-I../src/include/override|g' build.ninja
                 sed -i 's|-isystemsrc/include/override|-Isrc/include/override|g' build.ninja
                 sed -i 's|-isystem\.\./src/include/uapi|-I../src/include/uapi -I${linux-headers}/include|g' build.ninja
+
+                # Rename conflicting defines in config.h so our CFLAGS
+                # -DSYSTEMD_BINARY_PATH etc. take effect without warnings.
+                sed -i \
+                  -e 's/SYSTEMD_BINARY_PATH/_SYSTEMD_BINARY_PATH_MESON/' \
+                  -e 's/SYSTEMD_CGROUP_AGENTS_PATH/_SYSTEMD_CGROUP_AGENTS_PATH_MESON/' \
+                  config.h
       '';
     }
     {
@@ -258,8 +295,12 @@ mkDerivation {
     }
     {
       name = "install";
+      # DESTDIR=/ satisfies systemd's "test -n $DESTDIR" guard that skips
+      # live-system mutations during packaging.  With --prefix=$out, all
+      # install paths are already absolute Nix store paths, so DESTDIR=/
+      # is effectively a no-op for prefix-relative targets.
       script = ''
-        DESTDIR=$out ninja install
+        DESTDIR=/ ninja install
       '';
     }
   ];

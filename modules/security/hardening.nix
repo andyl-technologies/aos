@@ -257,17 +257,7 @@ in
     # Kernel lockdown parameter — added to boot command line.
     # Only add the parameter if lockdown is not "none".
     aos.boot.kernelParams =
-      let
-        baseCmdline = [
-          "console=ttyS0,115200"
-          "console=tty0"
-          "systemd.unified_cgroup_hierarchy=1"
-          "selinux=1"
-          "security=selinux"
-        ];
-        lockdownParam = if cfg.kernelLockdown != "none" then [ "lockdown=${cfg.kernelLockdown}" ] else [ ];
-      in
-      baseCmdline ++ lockdownParam;
+      lib.optional (cfg.kernelLockdown != "none") "lockdown=${cfg.kernelLockdown}";
 
     # Resource limits to prevent core dumps at the process level.
     environment.etc."security/limits.d/aos-hardening.conf" = lib.mkIf (!cfg.coreDump.enable) {
