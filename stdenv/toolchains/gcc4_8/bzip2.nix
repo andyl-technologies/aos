@@ -28,7 +28,7 @@ builtins.derivation {
       export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
 
       cd "$TMPDIR"
-      mkdir -p bzip2-1.0.6 && (cd ${src} && tar cf - .) | (cd bzip2-1.0.6 && tar xf -)
+      cp -r ${src} bzip2-1.0.6
       cd bzip2-1.0.6
       chmod -R u+w .
 
