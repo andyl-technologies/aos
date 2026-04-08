@@ -122,7 +122,7 @@ impl NixRunner {
         let output = self.run_nix("nix-instantiate", &args)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let value: serde_json::Value = serde_json::from_str(stdout.trim())
-            .with_context(|| format!("failed to parse JSON from nix-instantiate expression"))?;
+            .context("failed to parse JSON from nix-instantiate expression")?;
 
         Ok(value)
     }
@@ -155,7 +155,6 @@ impl NixRunner {
     }
 
     /// Instantiate (but do not build) a derivation, returning the .drv path.
-    #[allow(dead_code)]
     pub fn instantiate(&self, attr: &str) -> Result<PathBuf> {
         let args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
@@ -354,16 +353,14 @@ impl NixRunner {
     /// Stream a child process's stdout and stderr line-by-line to the
     /// terminal.  Used for interactive / long-running commands where the user
     /// wants to see real-time output.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // intended for future use by interactive commands
     fn stream_output(&self, child: &mut Child) -> Result<ExitStatus> {
         // Drain stderr in a background thread so we don't deadlock.
         let stderr_handle = child.stderr.take().map(|stderr| {
             std::thread::spawn(move || {
                 let reader = BufReader::new(stderr);
-                for line in reader.lines() {
-                    if let Ok(line) = line {
-                        eprintln!("{line}");
-                    }
+                for line in reader.lines().flatten() {
+                    eprintln!("{line}");
                 }
             })
         });
@@ -371,10 +368,8 @@ impl NixRunner {
         // Drain stdout on the main thread.
         if let Some(stdout) = child.stdout.take() {
             let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    println!("{line}");
-                }
+            for line in reader.lines().flatten() {
+                println!("{line}");
             }
         }
 
