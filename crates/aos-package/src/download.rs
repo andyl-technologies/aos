@@ -245,7 +245,7 @@ fn short_label(store_path: &str) -> String {
         .next()
         .and_then(|basename| {
             // Strip the hash prefix (32 chars + dash).
-            if basename.len() > 33 {
+            if basename.len() >= 33 {
                 Some(basename[33..].to_string())
             } else {
                 Some(basename.to_string())
