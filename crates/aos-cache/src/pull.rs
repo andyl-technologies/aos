@@ -87,7 +87,8 @@ pub async fn run_pull(
     );
     overall.set_message("Downloading");
 
-    let semaphore = Arc::new(Semaphore::new(jobs));
+    let effective_jobs = if jobs == 0 { 1 } else { jobs };
+    let semaphore = Arc::new(Semaphore::new(effective_jobs));
     let mut total_bytes: u64 = 0;
     let mut downloaded = 0u64;
 
@@ -123,8 +124,17 @@ pub async fn run_pull(
         )?;
 
         // Verify the import succeeded.
-        if !nix.is_valid(&ni.store_path).unwrap_or(false) {
-            printer.warning(&format!("import may have failed for {}", ni.store_path));
+        match nix.is_valid(&ni.store_path) {
+            Ok(true) => {}
+            Ok(false) => {
+                printer.warning(&format!("import may have failed for {}", ni.store_path));
+            }
+            Err(e) => {
+                printer.warning(&format!(
+                    "could not verify import of {}: {e}",
+                    ni.store_path
+                ));
+            }
         }
 
         total_bytes += nar_compressed.len() as u64;
