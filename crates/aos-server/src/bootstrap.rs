@@ -159,13 +159,17 @@ async fn handle_request(
         } => {
             tracing::info!(uid = caller_uid, views = ?views, permissions = ?permissions, "bootstrap: token create requested");
 
-            let expires_at = expires_in.map(|secs| {
-                std::time::SystemTime::now()
+            let expires_at = match expires_in {
+                Some(secs) => match std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64
-                    + secs
-            });
+                {
+                    Ok(d) => Some(d.as_secs() as i64 + secs),
+                    Err(_) => {
+                        return BootstrapResponse::error("system clock error");
+                    }
+                },
+                None => None,
+            };
 
             match state.tokens.create_token(
                 &views,
