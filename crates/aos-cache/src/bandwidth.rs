@@ -50,13 +50,11 @@ impl BandwidthLimiter {
     }
 
     /// Whether this limiter is active (rate > 0).
-    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         self.rate > 0
     }
 
     /// Async wait until n bytes of bandwidth are available.
-    #[allow(dead_code)]
     pub async fn acquire(&self, n: u64) {
         if self.rate == 0 {
             return;
@@ -87,6 +85,8 @@ impl BandwidthLimiter {
     }
 
     /// Wrap an AsyncRead with rate limiting.
+    ///
+    /// Part of the public API for streaming rate-limited I/O (not yet used internally).
     #[allow(dead_code)]
     pub fn wrap_read<R: AsyncRead + Unpin>(self: &Arc<Self>, r: R) -> RateLimitedRead<R> {
         RateLimitedRead {
@@ -96,6 +96,8 @@ impl BandwidthLimiter {
     }
 
     /// Wrap an AsyncWrite with rate limiting.
+    ///
+    /// Part of the public API for streaming rate-limited I/O (not yet used internally).
     #[allow(dead_code)]
     pub fn wrap_write<W: AsyncWrite + Unpin>(self: &Arc<Self>, w: W) -> RateLimitedWrite<W> {
         RateLimitedWrite {
@@ -231,11 +233,14 @@ pub fn parse_bandwidth(s: &str) -> anyhow::Result<u64> {
         .parse::<f64>()
         .map_err(|_| anyhow::anyhow!("invalid bandwidth value: {num_str}"))?;
 
-    Ok((num * multiplier as f64) as u64)
+    let result = num * multiplier as f64;
+    if result < 0.0 || result > u64::MAX as f64 {
+        anyhow::bail!("bandwidth value out of range: {num_str}{}", if multiplier > 1 { " (with unit)" } else { "" });
+    }
+    Ok(result as u64)
 }
 
 /// Parse a human-readable size string like "1MB" into bytes.
-#[allow(dead_code)]
 pub fn parse_size(s: &str) -> anyhow::Result<u64> {
     parse_bandwidth(s)
 }

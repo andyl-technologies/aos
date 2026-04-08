@@ -45,8 +45,20 @@ pub async fn run_list(
         let hash = narinfo::store_hash(path);
         let basename = narinfo::basename(path);
 
-        let in_local = nix.is_valid(path).unwrap_or(false);
-        let in_cache = backend.has_narinfo(hash).await.unwrap_or(false);
+        let in_local = match nix.is_valid(path) {
+            Ok(v) => v,
+            Err(e) => {
+                printer.warning(&format!("failed to check local validity of {path}: {e}"));
+                false
+            }
+        };
+        let in_cache = match backend.has_narinfo(hash).await {
+            Ok(v) => v,
+            Err(e) => {
+                printer.warning(&format!("failed to check cache for {hash}: {e}"));
+                false
+            }
+        };
 
         let local_str = if in_local { "yes" } else { "no" };
         let cached_str = if in_cache { "yes" } else { "no" };
@@ -65,8 +77,9 @@ pub async fn run_list(
             cached_count += 1;
         }
 
-        let display_name = if basename.len() > 42 {
-            format!("{}...", &basename[..39])
+        let display_name = if basename.chars().count() > 42 {
+            let truncated: String = basename.chars().take(39).collect();
+            format!("{truncated}...")
         } else {
             basename.to_string()
         };
