@@ -14,7 +14,7 @@
 let
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/diffutils/diffutils-3.3.tar.xz";
-    sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: fix hash
+    sha256 = "15h9skk6vhb6299kkk2qkhqbjmmlij8ql92pxldkj13iqrd1983s";
   };
 in
 builtins.derivation {

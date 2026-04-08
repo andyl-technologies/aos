@@ -85,11 +85,26 @@ builtins.derivation {
         ac_cv_type_long_double=yes \
         ac_cv_sizeof_long_double=16
 
-      make -j"$NIX_BUILD_CORES" || true
+      # PERL=true: configure sets PERL=no when perl isn't available,
+      # causing locale/Makefile to run "no gen-translit.pl ..." which
+      # fails with "no: not found".  Overriding to "true" makes those
+      # rules succeed with empty output (no transliteration data, fine
+      # for a bootstrap glibc).
+      make -j"$NIX_BUILD_CORES" PERL=true || true
       test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
-      make install || true
+      # -k: keep going past locale subdirectory failure (C-ctype.c fails
+      # with "initializer element is not constant" under the cross GCC
+      # 3.4 stage-1 compiler).  libc.a, headers, and crt files are all
+      # installed before locale runs, so -k is sufficient.
+      make -k install PERL=true || true
       test -f "$out/lib/libc.a" || { echo "FATAL: libc.a not installed"; exit 1; }
       test -f "$out/include/stdio.h" || { echo "FATAL: headers not installed"; exit 1; }
+
+      # gnu/stubs.h is installed by make -k install, but the per-arch
+      # stubs-64.h is not (generated in the locale stub pass which fails).
+      # Create an empty one — downstream GCC needs it to exist.
+      mkdir -p "$out/include/gnu"
+      touch "$out/include/gnu/stubs-64.h"
 
       # Copy linux headers into glibc output for downstream use
       cp -r "${linuxHeaders}/include/linux" "$out/include/" 2>/dev/null || true

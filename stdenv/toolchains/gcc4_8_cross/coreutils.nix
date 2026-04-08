@@ -14,7 +14,7 @@
 let
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/coreutils/coreutils-8.22.tar.xz";
-    sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: fix hash
+    sha256 = "0zxylqyx4rk2b84qjg7mfwckfvad3a64sgh4vpp2fyfrhqlmp0h9";
   };
 in
 builtins.derivation {

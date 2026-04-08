@@ -14,7 +14,7 @@
 let
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/patch/patch-2.7.1.tar.xz";
-    sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: fix hash
+    sha256 = "1ccdc5kiwpdjwp3b2k55a4xvkz6gd2vr2k0jg1hgn3g8ssmy57zw";
   };
 in
 builtins.derivation {
