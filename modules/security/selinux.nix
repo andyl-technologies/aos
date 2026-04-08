@@ -166,9 +166,6 @@ in
     # The boot module handles the actual cmdline; we just declare what
     # we need here and the system compositor merges it.
     aos.boot.kernelParams = [
-      "console=ttyS0,115200"
-      "console=tty0"
-      "systemd.unified_cgroup_hierarchy=1"
       "selinux=1"
       "security=selinux"
     ];
