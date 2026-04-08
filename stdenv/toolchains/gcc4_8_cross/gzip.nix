@@ -14,7 +14,7 @@
 let
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gzip/gzip-1.5.tar.xz";
-    sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: fix hash
+    sha256 = "0r41b8dgrda1v305grzs8clg515gnnxc86jg8qx5xn206mjckh84";
   };
 in
 builtins.derivation {

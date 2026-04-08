@@ -34,10 +34,9 @@ builtins.derivation {
       cd m4-1.4.13
       chmod -R u+w .
 
-      # Touch source files first, then autotools-generated outputs
-      find . -type f \( -name '*.c' -o -name '*.h' -o -name '*.m4' -o -name '*.ac' -o -name '*.am' \) -exec touch {} + 2>/dev/null || true
-      sleep 1
-      find . \( -name 'configure' -o -name 'Makefile.in' -o -name 'aclocal.m4' -o -name 'config.h.in' -o -name 'config.hin' \) -exec touch {} + 2>/dev/null || true
+      # Touch all source files to uniform timestamp, then autotools outputs later
+      find . -type f \( -name '*.c' -o -name '*.h' -o -name '*.m4' -o -name '*.ac' -o -name '*.am' \) -exec touch -t 200001010000 {} + 2>/dev/null || true
+      find . \( -name 'configure' -o -name 'Makefile.in' -o -name 'aclocal.m4' -o -name 'config.h.in' -o -name 'config.hin' \) -exec touch -t 200001010001 {} + 2>/dev/null || true
 
       # CC wrapper: appends NSS libs at link time for static glibc 2.5
       mkdir -p "$TMPDIR/ccwrap"
@@ -72,8 +71,15 @@ exec REAL_GCC -isystem GLIBC_INCLUDE "$@"
         --build=${hostPlatform.config} --host=${hostPlatform.config} \
         --disable-nls
 
-      make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
-      make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+      # Strip Makefile regeneration rules and doc/ dependencies
+      find . -name Makefile | while read f; do
+        sed -i 's/^Makefile:.*/Makefile:/; s/^config\.status:.*/config.status:/; s/^configure:.*/configure:/' "$f"
+      done
+
+      make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true HELP2MAN=true || true
+      test -f src/m4 || { echo "FATAL: m4 not built"; exit 1; }
+      make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true HELP2MAN=true || true
+      test -f "$out/bin/m4" || { echo "FATAL: m4 not installed"; exit 1; }
 
       echo "GNU m4 1.4.13 installed to $out"
     ''

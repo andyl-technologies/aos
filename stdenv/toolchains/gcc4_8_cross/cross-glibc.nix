@@ -15,7 +15,7 @@
 let
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.17.tar.bz2";
-    sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: fix hash
+    sha256 = "10dmn1l45hcpsm5m063ajdmmwrc4wfm6sn8f7wqxlyhywf60yqcd";
   };
 
   elfClass = if hostPlatform.is64bit then "64" else "32";

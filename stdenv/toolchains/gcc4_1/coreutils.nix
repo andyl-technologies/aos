@@ -134,10 +134,10 @@ exit 0
         --build=${hostPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
         --disable-nls
 
-      # Touch pre-generated Perl output files AFTER configure (configure
-      # creates Makefile/config.status which would be newer, triggering
-      # rebuild). This prevents make from trying to regenerate them with perl.
+      # Touch pre-generated files AFTER configure so they're newer than
+      # their sources. Prevents make from regenerating them with perl/bison.
       touch src/dircolors.h src/fs.h src/wheel.h
+      touch lib/getdate.c lib/getdate.h
 
       # Strip prerequisites from autotools regeneration rules
       find . -name Makefile | while read f; do

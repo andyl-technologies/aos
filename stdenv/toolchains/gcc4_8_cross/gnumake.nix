@@ -14,7 +14,7 @@
 let
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/make/make-4.2.1.tar.bz2";
-    sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: fix hash
+    sha256 = "00m1xnm0yzgalw26vgwnky5cjk0j8v2jvxxaf3p67gpgbisw5xq2";
   };
 in
 builtins.derivation {

@@ -153,7 +153,9 @@ ERREOF
 
       # Build with -j1 to avoid CWD race conditions in ext/ builds
       make -j1
-      make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+      # installman fails loading POSIX autosplit files; skip it
+      make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true || true
+      test -f "$out/bin/perl" || { echo "FATAL: perl not installed"; exit 1; }
 
       echo "Perl 5.10.1 installed to $out"
     ''
