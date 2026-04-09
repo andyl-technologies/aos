@@ -43,15 +43,12 @@ in
     ## ```
     kernelParams = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [
-        "console=ttyS0,115200"
-        "console=tty0"
-        "systemd.unified_cgroup_hierarchy=1"
-      ];
+      default = [ ];
       description = ''
         Kernel command line parameters. These are written to the boot loader
-        entry and passed to the kernel at boot time. The default includes
-        serial console output, unified cgroup v2, and SELinux enablement.
+        entry and passed to the kernel at boot time. Base parameters
+        (console, cgroup v2) are set in the config section below; other
+        modules append their own.
       '';
     };
 
@@ -114,6 +111,13 @@ in
   };
 
   config = {
+    # Base kernel command line — always present.
+    aos.boot.kernelParams = [
+      "console=ttyS0,115200"
+      "console=tty0"
+      "systemd.unified_cgroup_hierarchy=1"
+    ];
+
     # systemd-boot loader entry for the current generation.
     # Written to /boot/loader/entries/aos.conf
     environment.etc."boot/loader/entries/aos.conf" = {
