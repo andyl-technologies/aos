@@ -2,6 +2,7 @@
 {
   mkDerivation,
   linuxSource,
+  stdenv,
   gnumake,
   perl,
   bash,
@@ -19,6 +20,22 @@
   # config fragments. Like NixOS structuredExtraConfig but as raw kconfig text.
   extraConfig ? "",
 }:
+let
+  archMap = {
+    "x86_64-linux" = {
+      karch = "x86_64";
+      target = "bzImage";
+      imgPath = "arch/x86/boot/bzImage";
+    };
+    "aarch64-linux" = {
+      karch = "arm64";
+      target = "Image";
+      imgPath = "arch/arm64/boot/Image";
+    };
+  };
+  kernelArch = archMap.${stdenv.system}
+    or (throw "linux: unsupported system '${stdenv.system}'");
+in
 mkDerivation {
   pname = "linux";
   inherit (linuxSource) version src;
@@ -53,8 +70,8 @@ mkDerivation {
     {
       name = "configure";
       script = ''
-        # Start with a default x86_64 config
-        make defconfig ARCH=x86_64
+        # Start with a default config for the target architecture
+        make defconfig ARCH=${kernelArch.karch}
 
         # Merge our config fragments on top
         for frag in $configDir/*.config; do
@@ -75,7 +92,7 @@ mkDerivation {
         }
 
         # Finalize — fill in defaults for any new symbols
-        make olddefconfig ARCH=x86_64
+        make olddefconfig ARCH=${kernelArch.karch}
       '';
     }
     {
@@ -84,7 +101,7 @@ mkDerivation {
         # sorttable (host tool) uses pthreads; glibc's pthread_exit needs
         # libgcc_s.so.1 for stack unwinding at runtime.
         export LD_LIBRARY_PATH="${gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-        make -j$NIX_BUILD_CORES ARCH=x86_64 bzImage modules
+        make -j$NIX_BUILD_CORES ARCH=${kernelArch.karch} ${kernelArch.target} modules
       '';
     }
     {
@@ -93,7 +110,7 @@ mkDerivation {
         mkdir -p $out/boot $out/lib/modules
 
         # Install kernel image
-        cp arch/x86/boot/bzImage $out/boot/vmlinuz-${linuxSource.version}
+        cp ${kernelArch.imgPath} $out/boot/vmlinuz-${linuxSource.version}
         cp vmlinux $out/boot/vmlinux-${linuxSource.version}
         cp System.map $out/boot/System.map-${linuxSource.version}
         cp .config $out/boot/config-${linuxSource.version}
@@ -102,7 +119,7 @@ mkDerivation {
         make modules_install \
           INSTALL_MOD_PATH=$out \
           DEPMOD=${kmod}/sbin/depmod \
-          ARCH=x86_64
+          ARCH=${kernelArch.karch}
 
         # Remove build/source symlinks (they point to the build dir)
         rm -f $out/lib/modules/*/build $out/lib/modules/*/source
