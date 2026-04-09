@@ -118,6 +118,18 @@ mkDerivation {
         sed -i 's|/sbin/modprobe|${kmod}/sbin/modprobe|g' units/modprobe@.service
         sed -i "s|/usr/lib/systemd/catalog/|$out/lib/systemd/catalog/|g" \
           src/libsystemd/sd-journal/catalog.c
+
+        # Replace DEFAULT_PATH macros with the Nix store bin path.
+        # systemd uses these to resolve bare names in ExecStart= (e.g.
+        # systemd-tmpfiles, udevadm, journalctl).  Upstream defaults to
+        # /usr/{,local/}{s,}bin which don't exist on AOS.
+        # (Same approach as NixOS: single $out/bin, no FHS paths.)
+        sed -i \
+          -e 's|#define DEFAULT_PATH_WITH_FULL_SBIN .*|#define DEFAULT_PATH_WITH_FULL_SBIN "'"$out"'/bin:'"$out"'/lib/systemd"|' \
+          -e 's|#define DEFAULT_PATH_WITH_LOCAL_SBIN .*|#define DEFAULT_PATH_WITH_LOCAL_SBIN DEFAULT_PATH_WITH_FULL_SBIN|' \
+          -e 's|#define DEFAULT_PATH_WITHOUT_SBIN .*|#define DEFAULT_PATH_WITHOUT_SBIN DEFAULT_PATH_WITH_FULL_SBIN|' \
+          -e 's|#define DEFAULT_PATH_COMPAT .*|#define DEFAULT_PATH_COMPAT DEFAULT_PATH_WITH_FULL_SBIN|' \
+          src/basic/path-util.h
       '';
     }
     {
@@ -256,6 +268,8 @@ mkDerivation {
                   -Ddefault-dnssec=no \
                   -Ddefault-mdns=no \
                   -Ddefault-llmnr=no \
+                  -Dmount-path=${util-linux}/bin/mount \
+                  -Dumount-path=${util-linux}/bin/umount \
                   -Ddbuspolicydir=$out/share/dbus-1/system.d \
                   -Ddbussessionservicedir=$out/share/dbus-1/services \
                   -Ddbussystemservicedir=$out/share/dbus-1/system-services \
