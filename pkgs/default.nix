@@ -112,13 +112,13 @@ let
     let
       # Extract cargo-specific attrs for the phase generator
       cargoArgs = builtins.intersectAttrs (builtins.listToAttrs (
-        builtins.map (n: {
+        map (n: {
           name = n;
           value = true;
         }) cargoSpecificAttrs
       )) args;
       # Remove cargo-specific attrs before passing to mkDerivation
-      restArgs = builtins.removeAttrs args cargoSpecificAttrs;
+      restArgs = removeAttrs args cargoSpecificAttrs;
     in
     mkDerivation (
       restArgs
@@ -132,7 +132,7 @@ let
     args:
     let
       goArgs = builtins.intersectAttrs (builtins.listToAttrs (
-        builtins.map (n: {
+        map (n: {
           name = n;
           value = true;
         }) goSpecificAttrs
@@ -141,7 +141,7 @@ let
       goArgsWithDefaults = goArgs // {
         goOutput = args.goOutput or args.pname or (throw "mkGoPackage: goOutput or pname required");
       };
-      restArgs = builtins.removeAttrs args goSpecificAttrs;
+      restArgs = removeAttrs args goSpecificAttrs;
     in
     mkDerivation (
       restArgs
@@ -201,7 +201,7 @@ let
         });
 
       # Remove bazel-specific attrs before passing to mkDerivation
-      restArgs = builtins.removeAttrs args bazelSpecificAttrs;
+      restArgs = removeAttrs args bazelSpecificAttrs;
     in
     mkDerivation (
       restArgs
@@ -279,7 +279,7 @@ let
       ) names;
 
       filePackages = builtins.listToAttrs (
-        builtins.map (name: {
+        map (name: {
           name = lib.removeSuffix ".nix" name;
           value = callPackage (dir + "/${name}") { };
         }) nixFiles

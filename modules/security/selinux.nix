@@ -29,7 +29,7 @@ in
     ## - `aos.security.selinux.mode`, `aos.security.selinux.policy`
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = false;
       description = ''
         Enable SELinux mandatory access control. When enabled, the kernel
         enforces the configured policy on all processes. Requires kernel
@@ -166,9 +166,6 @@ in
     # The boot module handles the actual cmdline; we just declare what
     # we need here and the system compositor merges it.
     aos.boot.kernelParams = [
-      "console=ttyS0,115200"
-      "console=tty0"
-      "systemd.unified_cgroup_hierarchy=1"
       "selinux=1"
       "security=selinux"
     ];

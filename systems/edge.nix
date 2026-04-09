@@ -7,7 +7,7 @@
 ##! Profiles: edge, k8s.edge
 ##!
 ##! Buildable with empty config root — all required options have defaults.
-{ config, pkgs, lib, ... }:
+{ ... }:
 {
   # Enable edge profiles
   aos.profiles.edge.enable = true;
