@@ -54,8 +54,8 @@ in
     })
 
     (lib.mkIf (cfg.level == "standard") {
-      aos.security.selinux.enable = lib.mkDefault true;
-      aos.security.selinux.mode = lib.mkDefault "enforcing";
+      # SELinux disabled until a policy package is built.
+      aos.security.selinux.enable = lib.mkDefault false;
       aos.security.audit.enable = lib.mkDefault true;
       aos.security.hardening.enable = lib.mkDefault true;
       aos.security.hardening.kernelLockdown = lib.mkDefault "integrity";
@@ -64,8 +64,8 @@ in
     })
 
     (lib.mkIf (cfg.level == "hardened") {
-      aos.security.selinux.enable = lib.mkDefault true;
-      aos.security.selinux.mode = lib.mkDefault "enforcing";
+      # SELinux disabled until a policy package is built.
+      aos.security.selinux.enable = lib.mkDefault false;
       aos.security.audit.enable = lib.mkDefault true;
       aos.security.hardening.enable = lib.mkDefault true;
       aos.security.hardening.kernelLockdown = lib.mkDefault "confidentiality";
@@ -74,8 +74,8 @@ in
     })
 
     (lib.mkIf (cfg.level == "debug") {
-      aos.security.selinux.enable = lib.mkDefault true;
-      aos.security.selinux.mode = lib.mkDefault "permissive";
+      # SELinux disabled until a policy package is built.
+      aos.security.selinux.enable = lib.mkDefault false;
       aos.security.audit.enable = lib.mkDefault false;
       aos.security.hardening.enable = lib.mkDefault true;
       aos.security.hardening.kernelLockdown = lib.mkDefault "none";
