@@ -30,7 +30,7 @@ mkCargoPackage {
 
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-1UmCKeVyazA2sLpFU/yzjBYnKukp86xFWUUVAalRr1c=";
+    hash = "sha256-hONL9ueIdOQdr4RlpRLuZ/mpCQ6RGiH7gL+1FOuHbz4=";
   };
 
   buildDeps = [ perl pkg-config openssl protobuf ];

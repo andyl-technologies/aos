@@ -1,0 +1,12 @@
+diff --git i/meson.build w/meson.build
+index 4746146a98..c13b72af56 100644
+--- i/meson.build
++++ w/meson.build
+@@ -2859,7 +2859,6 @@ install_data('LICENSE.GPL2',
+ install_subdir('LICENSES',
+                install_dir : docdir)
+ 
+-install_emptydir(systemdstatedir)
+ 
+ #####################################################################
+ 

@@ -127,6 +127,16 @@ pkgs.mkDerivation {
         # Empty machine-id signals systemd to generate one on first boot
         touch rootfs/etc/machine-id
 
+        # Install /etc from the toplevel derivation.
+        # The toplevel's /etc contains config files (passwd, fstab,
+        # os-release, systemd units, etc.) that systemd needs at boot.
+        # --no-clobber preserves the empty machine-id created above.
+        echo "    Installing /etc from toplevel"
+        toplevel=${system.config.system.build.toplevel}
+        if [ -d "$toplevel/etc" ]; then
+          cp -a --no-clobber "$toplevel/etc/." rootfs/etc/
+        fi
+
         # ── 2. Create ext4 root partition image ────────────────────────────
         echo "==> Creating ext4 root image (${rootSize})"
         truncate -s ${toString rootBytes} root.img
