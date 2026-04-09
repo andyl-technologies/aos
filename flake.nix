@@ -23,7 +23,7 @@
       prefixAttrs =
         prefix: attrs:
         builtins.listToAttrs (
-          builtins.map (name: {
+          map (name: {
             name = "${prefix}-${name}";
             value = attrs.${name};
           }) (builtins.attrNames attrs)
@@ -44,7 +44,7 @@
               formats = builtins.attrNames aos.systems.${name}.build.image;
             in
             builtins.listToAttrs (
-              builtins.map (fmt: {
+              map (fmt: {
                 name = "${name}-image-${fmt}";
                 value = aos.systems.${name}.build.image.${fmt};
               }) formats
@@ -53,6 +53,8 @@
         builtins.foldl' (acc: name: acc // forSystem name) { } sysNames;
     in
     {
+      aosSystems = genAttrs systems (system: (aosFor system).systems);
+
       packages = genAttrs systems (
         system:
         let
@@ -69,7 +71,7 @@
         system:
         let
           aos = aosFor system;
-          packages = builtins.filter (p: p != null) [
+          packages = [
             aos.pkgs.aos
             aos.pkgs.just
           ];
@@ -79,10 +81,11 @@
           default = builtins.derivation {
             name = "aos-dev";
             inherit system;
-            builder = "/bin/bash";
+            outputs = ["out"];
+            builder = "${aos.pkgs.bash}/bin/bash";
             args = [
               "-c"
-              "echo 'Use nix develop, not nix build'; exit 1"
+              "echo 'Use nix develop, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
             ];
             shellHook =
               (

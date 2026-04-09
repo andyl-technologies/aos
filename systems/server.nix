@@ -7,7 +7,7 @@
 ##! Profiles: server, k8s.control, k8s.worker, debug
 ##!
 ##! Buildable with empty config root — all required options have defaults.
-{ config, pkgs, lib, ... }:
+{ ... }:
 {
   # Enable server profiles — cloud-init selects the active role at boot
   aos.profiles.server.enable = true;
