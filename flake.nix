@@ -71,7 +71,7 @@
         system:
         let
           aos = aosFor system;
-          packages = builtins.filter (p: p != null) [
+          packages = [
             aos.pkgs.aos
             aos.pkgs.just
           ];
@@ -81,10 +81,11 @@
           default = builtins.derivation {
             name = "aos-dev";
             inherit system;
-            builder = "/bin/bash";
+            outputs = ["out"];
+            builder = "${aos.pkgs.bash}/bin/bash";
             args = [
               "-c"
-              "echo 'Use nix develop, not nix build'; exit 1"
+              "echo 'Use nix develop, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
             ];
             shellHook =
               (
