@@ -13,13 +13,19 @@
 ##!     def  = { file :: string; value :: a; }  — a single definition with its source file
 ##!
 ##! Parameterized types (listOf, attrsOf, etc.) are functions returning a type.
-let
+##!
+##! `evalSubmodule` is an optional callback supplied by `lib/default.nix`. When
+##! present, `submodule`'s merge function delegates to it so that nested
+##! modules are evaluated with full nixpkgs semantics (defaults fire,
+##! `mkIf`/`mkMerge`/`mkDefault` inside submodules take effect, per-option
+##! type checking runs). When `null` (only during bootstrap, before the
+##! modules engine is available), submodules fall back to a permissive deep
+##! merge that preserves the definitions but skips option processing.
+{evalSubmodule ? null}: let
   # Helper: take the last definition's value (last-writer-wins semantics).
-  lastValue =
-    _loc: defs:
-    let
-      last = builtins.elemAt defs (builtins.length defs - 1);
-    in
+  lastValue = _loc: defs: let
+    last = builtins.elemAt defs (builtins.length defs - 1);
+  in
     last.value;
 
   # Helper: format an option location for error messages.
@@ -34,44 +40,118 @@ let
   # Helper: check if a value is an order marker
   isOrder = v: builtins.isAttrs v && v ? _type && v._type == "order";
 
-  # Helper: deep merge for submodules
-  deepMergeSub =
-    lhs: rhs:
-    if builtins.isAttrs lhs && builtins.isAttrs rhs then
-      let
-        allNames = builtins.attrNames (lhs // rhs);
-      in
+  # Helper: check if a value is an override (mkDefault / mkForce / mkOverride)
+  # marker, matching the convention used by lib/modules.nix.
+  isOverride = v: builtins.isAttrs v && v ? _type && v._type == "override";
+
+  # Helper: given a list of defs whose values may or may not be wrapped in
+  # override markers (`mkDefault` / `mkForce` / …), unwrap each one, tag it
+  # with its effective priority (normal = 100), then drop every def that
+  # isn't at the minimum (winning) priority. The result is a list of defs
+  # ready for a type's merge function — matching what `lib/modules.nix`
+  # does at the top level of each option, but applied here so that nested
+  # override markers inside an `attrsOf` / `listOf` get processed on the
+  # way down. Without this, patterns like
+  #   `serviceConfig.ExecStart = lib.mkDefault "…";`
+  # inside a submodule's `config = mkMerge [ (mkIf …) ]` block would leak
+  # the override wrapper into the final value.
+  dischargeProperties = defs: let
+    unwrapped =
+      builtins.map (
+        d:
+          if isOverride d.value
+          then
+            d
+            // {
+              value = d.value._value;
+              _priority = d.value._priority;
+            }
+          else d // {_priority = 100;}
+      )
+      defs;
+    minPriority =
+      builtins.foldl' (
+        acc: d:
+          if d._priority < acc
+          then d._priority
+          else acc
+      )
+      9999
+      unwrapped;
+  in
+    builtins.filter (d: d._priority == minPriority) unwrapped;
+
+  # Helper: deep merge two attrsets (used as the submodule bootstrap fallback
+  # and as the final deep-merge step for submodule definitions).
+  deepMergeSub = lhs: rhs:
+    if builtins.isAttrs lhs && builtins.isAttrs rhs
+    then let
+      allNames = builtins.attrNames (lhs // rhs);
+    in
       builtins.listToAttrs (
         builtins.map (name: {
           inherit name;
-          value =
-            let
-              lHas = builtins.hasAttr name lhs;
-              rHas = builtins.hasAttr name rhs;
-            in
-            if lHas && rHas then
-              deepMergeSub lhs.${name} rhs.${name}
-            else if rHas then
-              rhs.${name}
-            else
-              lhs.${name};
-        }) allNames
+          value = let
+            lHas = builtins.hasAttr name lhs;
+            rHas = builtins.hasAttr name rhs;
+          in
+            if lHas && rHas
+            then deepMergeSub lhs.${name} rhs.${name}
+            else if rHas
+            then rhs.${name}
+            else lhs.${name};
+        })
+        allNames
       )
-    else
-      rhs;
-in
-{
+    else rhs;
+in {
+  ## # Type construction helpers
+  ##
+  ## These are not types themselves; they help build custom types that
+  ## plug into the merge pipeline. Exposed so ported nixpkgs code that
+  ## uses `lib.mkOptionType` / `lib.mergeEqualOption` keeps working.
+
+  ## Build a type from its fields. Missing fields get sensible defaults:
+  ##   description defaults to `name`
+  ##   check defaults to `_: true` (accepts anything)
+  ##   merge defaults to `lastValue`
+  ## # Type
+  ## `{ name, description?, check?, merge?, ... } -> type`
+  mkOptionType = {
+    name,
+    description ? name,
+    check ? (_: true),
+    merge ? lastValue,
+    ...
+  }: {
+    inherit name description check merge;
+  };
+
+  ## Merge function that insists all definitions agree. Used by ported
+  ## nixpkgs code (`systemd-unit-options.nix`'s `unitOption` type) as the
+  ## fallback merge when definitions are not lists.
+  ## # Type
+  ## `loc -> [def] -> a`
+  mergeEqualOption = loc: defs:
+    if defs == []
+    then throw "mergeEqualOption: no definitions for option '${showLoc loc}'"
+    else let
+      first = (builtins.head defs).value;
+      allEqual = builtins.all (d: d.value == first) defs;
+    in
+      if allEqual
+      then first
+      else throw "The option '${showLoc loc}' has conflicting definitions: ${showDefs defs}";
+
   ## # Primitive types
 
   bool = {
     name = "bool";
     description = "boolean";
     check = builtins.isBool;
-    merge =
-      _loc: defs:
-      let
-        val = builtins.elemAt defs (builtins.length defs - 1);
-      in
+    merge = _loc: defs: let
+      val = builtins.elemAt defs (builtins.length defs - 1);
+    in
       val.value;
   };
 
@@ -108,15 +188,26 @@ in
     name = "nonEmptyStr";
     description = "non-empty string";
     check = v: builtins.isString v && builtins.stringLength v > 0;
-    merge =
-      loc: defs:
-      let
-        val = lastValue loc defs;
-      in
-      if builtins.stringLength val == 0 then
-        throw "The option '${showLoc loc}' must be a non-empty string, but is empty."
-      else
-        val;
+    merge = loc: defs: let
+      val = lastValue loc defs;
+    in
+      if builtins.stringLength val == 0
+      then throw "The option '${showLoc loc}' must be a non-empty string, but is empty."
+      else val;
+  };
+
+  ## Single-line string: any string that does not contain an embedded
+  ## newline. Used for systemd unit Description= fields.
+  singleLineStr = {
+    name = "singleLineStr";
+    description = "single-line string";
+    check = v: builtins.isString v && builtins.match ".*\n.*" v == null;
+    merge = loc: defs: let
+      val = lastValue loc defs;
+    in
+      if builtins.match ".*\n.*" val != null
+      then throw "The option '${showLoc loc}' must be a single-line string (no embedded newlines)."
+      else val;
   };
 
   path = {
@@ -137,25 +228,22 @@ in
     name = "attrs";
     description = "attribute set";
     check = builtins.isAttrs;
-    merge = _loc: defs: builtins.foldl' (acc: def: acc // def.value) { } defs;
+    merge = _loc: defs: builtins.foldl' (acc: def: acc // def.value) {} defs;
   };
 
   anything = {
     name = "anything";
     description = "any value";
     check = _: true;
-    merge =
-      _loc: defs:
-      let
-        last = builtins.elemAt defs (builtins.length defs - 1);
-      in
+    merge = _loc: defs: let
+      last = builtins.elemAt defs (builtins.length defs - 1);
+    in
       # If all defs are attrsets, merge them; otherwise last wins.
-      if builtins.all (d: builtins.isAttrs d.value) defs then
-        builtins.foldl' (acc: def: acc // def.value) { } defs
-      else if builtins.all (d: builtins.isList d.value) defs then
-        builtins.concatLists (builtins.map (d: d.value) defs)
-      else
-        last.value;
+      if builtins.all (d: builtins.isAttrs d.value) defs
+      then builtins.foldl' (acc: def: acc // def.value) {} defs
+      else if builtins.all (d: builtins.isList d.value) defs
+      then builtins.concatLists (builtins.map (d: d.value) defs)
+      else last.value;
   };
 
   ## # Network types
@@ -164,15 +252,12 @@ in
     name = "port";
     description = "TCP/UDP port number (1-65535)";
     check = v: builtins.isInt v && v >= 1 && v <= 65535;
-    merge =
-      loc: defs:
-      let
-        val = lastValue loc defs;
-      in
-      if val < 1 || val > 65535 then
-        throw "The option '${showLoc loc}' must be a port (1-65535), but is ${builtins.toString val}."
-      else
-        val;
+    merge = loc: defs: let
+      val = lastValue loc defs;
+    in
+      if val < 1 || val > 65535
+      then throw "The option '${showLoc loc}' must be a port (1-65535), but is ${builtins.toString val}."
+      else val;
   };
 
   ## # Parameterized types
@@ -183,45 +268,58 @@ in
     name = "enum";
     description = "one of ${builtins.toJSON allowedValues}";
     check = v: builtins.any (a: a == v) allowedValues;
-    merge =
-      loc: defs:
-      let
-        val = lastValue loc defs;
-      in
-      if builtins.any (a: a == val) allowedValues then
-        val
-      else
-        throw "The option '${showLoc loc}' must be one of ${builtins.toJSON allowedValues}, but is '${builtins.toJSON val}'.";
+    merge = loc: defs: let
+      val = lastValue loc defs;
+    in
+      if builtins.any (a: a == val) allowedValues
+      then val
+      else throw "The option '${showLoc loc}' must be one of ${builtins.toJSON allowedValues}, but is '${builtins.toJSON val}'.";
   };
 
   ## Supports mkBefore/mkAfter ordering markers on individual list elements.
+  ## Runs `elemType.merge` on each list element individually with a single-
+  ## definition wrapper, so element types with non-trivial merges (notably
+  ## `submodule`) get per-element evaluation. For simple element types
+  ## whose merge is `lastValue`, behaviour is unchanged vs. the pre-upgrade
+  ## version.
   ## # Type
   ## `type -> type`
   listOf = elemType: {
     name = "listOf(${elemType.name})";
     description = "list of ${elemType.description}";
     check = v: builtins.isList v;
-    merge =
-      _loc: defs:
-      let
-        # Collect all elements from all definitions, unwrapping order markers
-        processElem =
-          elem:
-          if isOrder elem then
-            {
-              value = elem._value;
-              priority = elem._priority;
-            }
-          else
-            {
-              value = elem;
-              priority = 1000;
-            };
-        allElems = builtins.concatLists (builtins.map (d: builtins.map processElem d.value) defs);
-        # Sort by priority (lower = earlier in list)
-        sorted = builtins.sort (a: b: a.priority < b.priority) allElems;
-      in
-      builtins.map (e: e.value) sorted;
+    merge = loc: defs: let
+      # Unwrap mkBefore/mkAfter priority markers on individual elements.
+      processElem = file: elem:
+        if isOrder elem
+        then {
+          inherit file;
+          value = elem._value;
+          priority = elem._priority;
+        }
+        else {
+          inherit file;
+          value = elem;
+          priority = 1000;
+        };
+      allElems = builtins.concatLists (
+        builtins.map (d: builtins.map (processElem d.file) d.value) defs
+      );
+      # Stable sort by priority (lower = earlier in the list).
+      sorted = builtins.sort (a: b: a.priority < b.priority) allElems;
+      resolveOne = i: e:
+        elemType.merge
+        (loc ++ ["[${builtins.toString i}]"])
+        [
+          {
+            inherit (e) file;
+            inherit (e) value;
+          }
+        ];
+    in
+      builtins.genList
+      (i: resolveOne i (builtins.elemAt sorted i))
+      (builtins.length sorted);
   };
 
   ## # Type
@@ -230,45 +328,49 @@ in
     name = "attrsOf(${elemType.name})";
     description = "attribute set of ${elemType.description}";
     check = v: builtins.isAttrs v && builtins.all elemType.check (builtins.attrValues v);
-    merge =
-      loc: defs:
-      let
-        allKeys = builtins.concatLists (builtins.map (d: builtins.attrNames d.value) defs);
-        uniqueKeys =
-          let
-            go =
-              acc: remaining:
-              if remaining == [ ] then
-                acc
-              else
-                let
-                  h = builtins.elemAt remaining 0;
-                  t = builtins.genList (i: builtins.elemAt remaining (i + 1)) (builtins.length remaining - 1);
-                in
-                if builtins.any (x: x == h) acc then go acc t else go (acc ++ [ h ]) t;
+    merge = loc: defs: let
+      allKeys = builtins.concatLists (builtins.map (d: builtins.attrNames d.value) defs);
+      uniqueKeys = let
+        go = acc: remaining:
+          if remaining == []
+          then acc
+          else let
+            h = builtins.elemAt remaining 0;
+            t = builtins.genList (i: builtins.elemAt remaining (i + 1)) (builtins.length remaining - 1);
           in
-          go [ ] allKeys;
+            if builtins.any (x: x == h) acc
+            then go acc t
+            else go (acc ++ [h]) t;
       in
+        go [] allKeys;
+    in
       builtins.listToAttrs (
         builtins.map (
-          key:
-          let
+          key: let
             keyDefs = builtins.filter (d: builtins.hasAttr key d.value) (
               builtins.map (d: {
                 file = d.file;
                 value = d.value;
-              }) defs
+              })
+              defs
             );
-            valueDefs = builtins.map (d: {
-              file = d.file;
-              value = d.value.${key};
-            }) keyDefs;
-          in
-          {
+            valueDefs =
+              builtins.map (d: {
+                file = d.file;
+                value = d.value.${key};
+              })
+              keyDefs;
+            # Unwrap override markers at the sub-attribute level and keep
+            # only defs at the winning priority. This lets
+            #   `some.nested.field = lib.mkDefault "…";`
+            # work exactly like a top-level option definition.
+            filteredDefs = dischargeProperties valueDefs;
+          in {
             name = key;
-            value = elemType.merge (loc ++ [ key ]) valueDefs;
+            value = elemType.merge (loc ++ [key]) filteredDefs;
           }
-        ) uniqueKeys
+        )
+        uniqueKeys
       );
   };
 
@@ -278,13 +380,11 @@ in
     name = "nullOr(${elemType.name})";
     description = "${elemType.description} or null";
     check = v: v == null || elemType.check v;
-    merge =
-      loc: defs:
-      let
-        val = lastValue loc defs;
-      in
-      if val == null then
-        null
+    merge = loc: defs: let
+      val = lastValue loc defs;
+    in
+      if val == null
+      then null
       else
         elemType.merge loc [
           {
@@ -300,18 +400,15 @@ in
     name = "either(${type1.name},${type2.name})";
     description = "${type1.description} or ${type2.description}";
     check = v: type1.check v || type2.check v;
-    merge =
-      loc: defs:
-      let
-        val = lastValue loc defs;
-        lastDef = builtins.elemAt defs (builtins.length defs - 1);
-      in
-      if type1.check val then
-        type1.merge loc [ lastDef ]
-      else if type2.check val then
-        type2.merge loc [ lastDef ]
-      else
-        throw "The option '${showLoc loc}' does not match either ${type1.name} or ${type2.name}.";
+    merge = loc: defs: let
+      val = lastValue loc defs;
+      lastDef = builtins.elemAt defs (builtins.length defs - 1);
+    in
+      if type1.check val
+      then type1.merge loc [lastDef]
+      else if type2.check val
+      then type2.merge loc [lastDef]
+      else throw "The option '${showLoc loc}' does not match either ${type1.name} or ${type2.name}.";
   };
 
   ## # Type
@@ -320,36 +417,96 @@ in
     name = "oneOf(${builtins.concatStringsSep "," (builtins.map (t: t.name) types)})";
     description = "one of ${builtins.concatStringsSep ", " (builtins.map (t: t.description) types)}";
     check = v: builtins.any (t: t.check v) types;
-    merge =
-      loc: defs:
-      let
-        val = lastValue loc defs;
-        lastDef = builtins.elemAt defs (builtins.length defs - 1);
-        matchingType = builtins.foldl' (
+    merge = loc: defs: let
+      val = lastValue loc defs;
+      lastDef = builtins.elemAt defs (builtins.length defs - 1);
+      matchingType =
+        builtins.foldl' (
           acc: t:
-          if acc != null then
-            acc
-          else if t.check val then
-            t
-          else
-            null
-        ) null types;
-      in
-      if matchingType != null then
-        matchingType.merge loc [ lastDef ]
-      else
-        throw "The option '${showLoc loc}' does not match any of the expected types.";
+            if acc != null
+            then acc
+            else if t.check val
+            then t
+            else null
+        )
+        null
+        types;
+    in
+      if matchingType != null
+      then matchingType.merge loc [lastDef]
+      else throw "The option '${showLoc loc}' does not match any of the expected types.";
   };
 
-  ## Uses recursive deep merge instead of shallow (//) merge.
+  ## A submodule type: a typed attrset of options declared in a nested
+  ## module. When `evalSubmodule` is available (i.e. after bootstrap), the
+  ## merge function delegates to it and the submodule is evaluated with
+  ## full nixpkgs semantics — defaults from nested mkOption fire, `mkIf`
+  ## / `mkMerge` / `mkDefault` / `mkForce` inside the submodule take
+  ## effect, and per-option type checking runs. The submodule argument
+  ## may be a single module (attrset or function) or a list of modules,
+  ## matching nixpkgs' calling convention.
+  ##
+  ## When `evalSubmodule` is null (bootstrap phase, before the modules
+  ## engine has been constructed), falls back to a permissive deep merge
+  ## — enough to get lib/default.nix's fixpoint wire-up off the ground
+  ## and nothing more.
   ## # Type
-  ## `(attrset | function) -> type`
-  submodule = moduleOrFn: {
+  ## `(module | [module]) -> type`
+  submodule = moduleArgs: {
     name = "submodule";
     description = "submodule";
     check = builtins.isAttrs;
-    merge = loc: defs: builtins.foldl' (acc: def: deepMergeSub acc def.value) { } defs;
-    _submodule = moduleOrFn;
+    merge = loc: defs:
+      if evalSubmodule != null
+      then evalSubmodule moduleArgs loc defs
+      else builtins.foldl' (acc: def: deepMergeSub acc def.value) {} defs;
+    _submodule = moduleArgs;
+  };
+
+  ## Wrap a type with an additional check predicate. The inner type's
+  ## check runs first, then the extra check. Ported nixpkgs code uses
+  ## this to attach systemd-specific service validation (`checkService`)
+  ## to an `attrsOf unitOption` type.
+  ## # Type
+  ## `type -> (a -> bool) -> type`
+  addCheck = type: check:
+    type
+    // {
+      check = v: type.check v && check v;
+    };
+
+  ## A string that matches a regular expression (POSIX ERE).
+  ## # Type
+  ## `string -> type`
+  strMatching = regex: {
+    name = "strMatching";
+    description = "string matching ${regex}";
+    check = v: builtins.isString v && builtins.match regex v != null;
+    merge = loc: defs: let
+      val = lastValue loc defs;
+    in
+      if builtins.match regex val == null
+      then throw "The option '${showLoc loc}' must match the regex '${regex}' but is '${val}'."
+      else val;
+  };
+
+  ## A string whose merge concatenates all definitions with a separator.
+  ## # Type
+  ## `string -> type`
+  separatedString = sep: {
+    name = "separatedString";
+    description = "string merged with '${sep}'";
+    check = builtins.isString;
+    merge = _loc: defs: builtins.concatStringsSep sep (builtins.map (d: d.value) defs);
+  };
+
+  ## A comma-separated string. Multiple definitions concatenate with
+  ## commas. Used for mount option lists.
+  commas = {
+    name = "commas";
+    description = "comma-separated string";
+    check = builtins.isString;
+    merge = _loc: defs: builtins.concatStringsSep "," (builtins.map (d: d.value) defs);
   };
 
   ## # Type combinators
@@ -360,13 +517,16 @@ in
     name = "coercedTo(${fromType.name},${toType.name})";
     description = "${fromType.description} convertible to ${toType.description}";
     check = v: fromType.check v || toType.check v;
-    merge =
-      loc: defs:
-      let
-        coerced = builtins.map (
-          d: if fromType.check d.value then d // { value = coercion d.value; } else d
-        ) defs;
-      in
+    merge = loc: defs: let
+      coerced =
+        builtins.map (
+          d:
+            if fromType.check d.value
+            then d // {value = coercion d.value;}
+            else d
+        )
+        defs;
+    in
       toType.merge loc coerced;
   };
 
@@ -376,18 +536,15 @@ in
     name = "uniq(${elemType.name})";
     description = "unique ${elemType.description}";
     check = elemType.check;
-    merge =
-      loc: defs:
-      if builtins.length defs == 1 then
-        (builtins.elemAt defs 0).value
-      else
-        let
-          val = (builtins.elemAt defs 0).value;
-          allSame = builtins.all (d: d.value == val) defs;
-        in
-        if allSame then
-          val
-        else
-          throw "The option '${showLoc loc}' has conflicting definitions. It must have a unique value.";
+    merge = loc: defs:
+      if builtins.length defs == 1
+      then (builtins.elemAt defs 0).value
+      else let
+        val = (builtins.elemAt defs 0).value;
+        allSame = builtins.all (d: d.value == val) defs;
+      in
+        if allSame
+        then val
+        else throw "The option '${showLoc loc}' has conflicting definitions. It must have a unique value.";
   };
 }
