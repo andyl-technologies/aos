@@ -10,8 +10,10 @@
 ##! The optional `bash` parameter (a derivation) causes all builders to use
 ##! the AOS-built bash instead of `/bin/sh`. When `null` (early bootstrap),
 ##! `/bin/sh` is used as a fallback.
-{ system, bash ? null }:
-let
+{
+  system,
+  bash ? null,
+}: let
   trivial = import ./trivial.nix;
   lists = import ./lists.nix;
   attrsets = import ./attrsets.nix;
@@ -27,75 +29,89 @@ let
       ;
   };
   platformMod = import ./platform.nix;
-  derivations = import ./derivations.nix { inherit system bash; };
+  derivations = import ./derivations.nix {inherit system bash;};
   checks = import ./testing/checks.nix;
 in
-trivial
-// lists
-// attrsets
-// strings
-// {
-  inherit types system;
-  inherit (platformMod)
-    mkPlatform
-    cpus
-    satisfies
-    canRun
-    canBuildOn
-    platformIsCompatible
-    constraintsCompatible
-    executionTargets
-    resolveTarget
-    mkPlatformFromConstraints
-    ;
-  platform = platformMod.mkPlatform system;
-  inherit (modules)
-    evalModules
-    mkOption
-    mkIf
-    mkMerge
-    mkOverride
-    mkDefault
-    mkForce
-    mkOrder
-    mkBefore
-    mkAfter
-    ;
-  inherit (derivations)
-    mkDerivation
-    mkShell
-    fetchurl
-    fetchgit
-    fetchCargoDeps
-    fetchGoModules
-    fetchBazelDeps
-    fakeHash
-    ;
+  trivial
+  // lists
+  // attrsets
+  // strings
+  // {
+    inherit types system;
+    inherit
+      (platformMod)
+      mkPlatform
+      cpus
+      satisfies
+      canRun
+      canBuildOn
+      platformIsCompatible
+      constraintsCompatible
+      executionTargets
+      resolveTarget
+      mkPlatformFromConstraints
+      ;
+    platform = platformMod.mkPlatform system;
+    inherit
+      (modules)
+      evalModules
+      mkOption
+      mkIf
+      mkMerge
+      mkOverride
+      mkDefault
+      mkForce
+      mkOrder
+      mkBefore
+      mkAfter
+      ;
+    inherit
+      (derivations)
+      mkDerivation
+      mkShell
+      fetchurl
+      fetchgit
+      fetchCargoDeps
+      fetchGoModules
+      fetchBazelDeps
+      fakeHash
+      ;
 
-  # Phase manipulation helpers from derivations module
-  inherit (derivations)
-    replacePhase
-    addPhaseAfter
-    addPhaseBefore
-    removePhase
-    ;
+    # Phase manipulation helpers from derivations module
+    inherit
+      (derivations)
+      replacePhase
+      addPhaseAfter
+      addPhaseBefore
+      removePhase
+      ;
 
-  # Check constructors (pure data, no deps) for use in modules
-  inherit (checks)
-    mkCheck
-    mkCheckGroup
-    flattenChecks
-    composeChecks
-    ;
+    # Derivation path helpers (isDerivation is already pulled in via the
+    # `trivial //` spread above, so no extra inherit is needed for it).
+    inherit
+      (derivations)
+      getBin
+      getExe
+      getExe'
+      ;
 
-  # Re-export submodules for direct access when needed
-  inherit
-    trivial
-    lists
-    attrsets
-    strings
-    modules
-    derivations
-    checks
-    ;
-}
+    # Check constructors (pure data, no deps) for use in modules
+    inherit
+      (checks)
+      mkCheck
+      mkCheckGroup
+      flattenChecks
+      composeChecks
+      ;
+
+    # Re-export submodules for direct access when needed
+    inherit
+      trivial
+      lists
+      attrsets
+      strings
+      modules
+      derivations
+      checks
+      ;
+  }
