@@ -103,40 +103,13 @@ in
           };
         }
       );
-      default = {
-        root = {
-          uid = 0;
-          group = "root";
-          home = "/root";
-          shell = "/bin/bash";
-          description = "System Administrator";
-          extraGroups = [ ];
-        };
-        nobody = {
-          uid = 65534;
-          group = "nobody";
-          home = "/";
-          shell = "/sbin/nologin";
-          description = "Nobody";
-          extraGroups = [ ];
-        };
-        systemd-journal = {
-          uid = 190;
-          group = "systemd-journal";
-          home = "/";
-          shell = "/sbin/nologin";
-          description = "systemd Journal";
-          extraGroups = [ ];
-        };
-        systemd-network = {
-          uid = 192;
-          group = "systemd-network";
-          home = "/";
-          shell = "/sbin/nologin";
-          description = "systemd Network Management";
-          extraGroups = [ ];
-        };
-      };
+      # Base system accounts are populated from `config` below (not from
+      # `default =`) so that other modules setting
+      # `aos.users.users.<name>` (e.g. chrony, opkssh) merge instead of
+      # replacing the defaults. A module-system `default` on an attrset
+      # option is only used when no other module sets the option at all;
+      # any contribution from a downstream module discards it entirely.
+      default = { };
       description = "System user accounts.";
     };
 
@@ -170,37 +143,135 @@ in
           };
         }
       );
-      default = {
-        root = {
-          gid = 0;
-          members = [ "root" ];
-        };
-        nobody = {
-          gid = 65534;
-          members = [ ];
-        };
-        utmp = {
-          gid = 22;
-          members = [ ];
-        };
-        wheel = {
-          gid = 10;
-          members = [ ];
-        };
-        systemd-journal = {
-          gid = 190;
-          members = [ ];
-        };
-        systemd-network = {
-          gid = 192;
-          members = [ ];
-        };
-      };
+      # Base system groups are populated from `config` below for the
+      # same reason as `users` above — attrset-option defaults are
+      # replaced (not merged) whenever any downstream module sets a
+      # sub-attribute, so we pour our baseline into config instead.
+      default = { };
       description = "System groups.";
     };
   };
 
   config = {
+    # Baseline system accounts. Individual sub-attr assignments compose
+    # with other modules' contributions (chrony, opkssh, user-managed
+    # systems) via the module system's attrset merge, unlike the option
+    # `default =` which is replaced wholesale on any downstream write.
+    aos.users.users = {
+      root = {
+        uid = 0;
+        group = "root";
+        home = "/root";
+        shell = "/bin/bash";
+        description = "System Administrator";
+        extraGroups = [ ];
+      };
+      nobody = {
+        uid = 65534;
+        group = "nobody";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "Nobody";
+        extraGroups = [ ];
+      };
+      systemd-journal = {
+        uid = 190;
+        group = "systemd-journal";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Journal";
+        extraGroups = [ ];
+      };
+      systemd-network = {
+        uid = 192;
+        group = "systemd-network";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Network Management";
+        extraGroups = [ ];
+      };
+      # UIDs 193–196 are consumed by systemd units that hard-code
+      # `User=systemd-<name>` in their shipped unit files — the
+      # accounts must exist even when the corresponding daemon isn't
+      # started by the active profile, otherwise unit activation
+      # fails at startup with "unknown user".
+      systemd-resolve = {
+        uid = 193;
+        group = "systemd-resolve";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Resolver";
+        extraGroups = [ ];
+      };
+      systemd-timesync = {
+        uid = 194;
+        group = "systemd-timesync";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Time Synchronization";
+        extraGroups = [ ];
+      };
+      systemd-oom = {
+        uid = 195;
+        group = "systemd-oom";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Userspace OOM Killer";
+        extraGroups = [ ];
+      };
+      systemd-coredump = {
+        uid = 196;
+        group = "systemd-coredump";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Core Dumper";
+        extraGroups = [ ];
+      };
+    };
+
+    aos.users.groups = {
+      root = {
+        gid = 0;
+        members = [ "root" ];
+      };
+      nobody = {
+        gid = 65534;
+        members = [ ];
+      };
+      utmp = {
+        gid = 22;
+        members = [ ];
+      };
+      wheel = {
+        gid = 10;
+        members = [ ];
+      };
+      systemd-journal = {
+        gid = 190;
+        members = [ ];
+      };
+      systemd-network = {
+        gid = 192;
+        members = [ ];
+      };
+      systemd-resolve = {
+        gid = 193;
+        members = [ ];
+      };
+      systemd-timesync = {
+        gid = 194;
+        members = [ ];
+      };
+      systemd-oom = {
+        gid = 195;
+        members = [ ];
+      };
+      systemd-coredump = {
+        gid = 196;
+        members = [ ];
+      };
+    };
+
     # /etc/passwd — user account database.
     environment.etc."passwd" = {
       text = builtins.concatStringsSep "\n" (lib.mapAttrsToList mkPasswdLine cfg.users) + "\n";
