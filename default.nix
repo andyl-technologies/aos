@@ -29,11 +29,16 @@
 {
   system ? builtins.currentSystem,
   crossSystem ? null,
-}:
-let
-  lib = import ./lib { inherit system; bash = stdenv.bash; };
+}: let
+  lib = import ./lib {
+    inherit system;
+    bash = stdenv.bash;
+  };
   buildPlatform = lib.platform;
-  hostPlatform = if crossSystem != null then lib.mkPlatform crossSystem else buildPlatform;
+  hostPlatform =
+    if crossSystem != null
+    then lib.mkPlatform crossSystem
+    else buildPlatform;
 
   # Self-contained stdenv: hex0 bootstrap → toolchain ladder → production stdenv.
   stdenv = import ./stdenv {
@@ -42,7 +47,7 @@ let
   };
 
   # All packages are built hermetically from source using only stdenv.
-  pkgs = import ./pkgs { inherit lib stdenv; };
+  pkgs = import ./pkgs {inherit lib stdenv;};
 
   # Auto-discovered module list.
   modules = import ./modules;
@@ -53,56 +58,54 @@ let
   #   mkSystem ./path.nix                              — single module path
   #   mkSystem [ ./a.nix ./b.nix ]                     — list of modules
   #   mkSystem { modules = [...]; specialArgs = {}; }   — full attrset
-  mkSystem =
-    args:
-    let
-      moduleList =
-        if builtins.isList args then
-          args
-        else if builtins.isAttrs args && args ? modules then
-          args.modules
-        else
-          [ args ];
-      specialArgs =
-        if builtins.isAttrs args && args ? specialArgs then args.specialArgs else { };
-    in
+  mkSystem = args: let
+    moduleList =
+      if builtins.isList args
+      then args
+      else if builtins.isAttrs args && args ? modules
+      then args.modules
+      else [args];
+    specialArgs =
+      if builtins.isAttrs args && args ? specialArgs
+      then args.specialArgs
+      else {};
+  in
     lib.evalModules {
       modules = modules ++ moduleList;
       inherit pkgs lib specialArgs;
     };
 
   # Auto-discover system definitions from ./systems/*.nix
-  discoverSystems =
-    let
-      entries = builtins.readDir ./systems;
-      nixFiles = builtins.filter (
-        name:
-        entries.${name} == "regular"
+  discoverSystems = let
+    entries = builtins.readDir ./systems;
+    nixFiles = builtins.filter (
+      name:
+        entries.${name}
+        == "regular"
         && builtins.match ".*\\.nix" name != null
         && builtins.substring 0 1 name != "_"
-      ) (builtins.attrNames entries);
-    in
+    ) (builtins.attrNames entries);
+  in
     builtins.listToAttrs (
       map (name: {
         name = lib.removeSuffix ".nix" name;
-        value =
-          let
-            evaluated = mkSystem (./systems + "/${name}");
-          in
-          {
-            config = evaluated.config;
-            options = evaluated.options;
-            build = {
-              toplevel = evaluated.config.system.build.toplevel;
-              kernel = evaluated.config.system.build.kernel;
-              initrd = evaluated.config.system.build.initrd;
-              image = evaluated.config.system.build.image;
-            };
-            # VM test derivations — produced inside the module system by
-            # modules/base/checks.nix, not by external collection scripts.
-            checks = evaluated.config.system.build.checks;
+        value = let
+          evaluated = mkSystem (./systems + "/${name}");
+        in {
+          config = evaluated.config;
+          options = evaluated.options;
+          build = {
+            toplevel = evaluated.config.system.build.toplevel;
+            kernel = evaluated.config.system.build.kernel;
+            initrd = evaluated.config.system.build.initrd;
+            image = evaluated.config.system.build.image;
           };
-      }) nixFiles
+          # VM test derivations — produced inside the module system by
+          # modules/base/checks.nix, not by external collection scripts.
+          checks = evaluated.config.system.build.checks;
+        };
+      })
+      nixFiles
     );
 
   # ---------------------------------------------------------------------------
@@ -121,11 +124,10 @@ let
   # Testing harness (headless mode for package integration tests)
   testing = import ./lib/testing {
     inherit pkgs lib;
-    testTools = { };
+    testTools = {};
   };
 
-  prefixAttrs =
-    prefix: attrs:
+  prefixAttrs = prefix: attrs:
     builtins.listToAttrs (
       map (name: {
         name = "${prefix}-${name}";
@@ -136,33 +138,32 @@ let
   # ---------------------------------------------------------------------------
   # APM/APR VM tests (headless Firecracker, registry + tracking + packages)
   # ---------------------------------------------------------------------------
-  apmTests = import ./tests/vm/apm { inherit testing pkgs; };
+  apmTests = import ./tests/vm/apm {inherit testing pkgs;};
 
   # ---------------------------------------------------------------------------
   # Package integration checks (Firecracker-based, defined on packages)
   # ---------------------------------------------------------------------------
   packageChecks = builtins.foldl' (
-    acc: name:
-    let
+    acc: name: let
       pkg = pkgs.${name};
     in
-    if builtins.isAttrs pkg && pkg ? checks && builtins.isFunction pkg.checks then
-      acc
-      // prefixAttrs name (
-        pkg.checks {
-          inherit testing pkgs;
-          self = pkg;
-        }
-      )
-    else
-      acc
-  ) { } (builtins.attrNames pkgs);
+      if builtins.isAttrs pkg && pkg ? checks && builtins.isFunction pkg.checks
+      then
+        acc
+        // prefixAttrs name (
+          pkg.checks {
+            inherit testing pkgs;
+            self = pkg;
+          }
+        )
+      else acc
+  ) {} (builtins.attrNames pkgs);
 
   # Stdenv cross-cutting integration check
   stdenvChecks = {
     cross-cutting-c-pipeline = testing.mkVMTest {
       name = "cross-cutting-c-pipeline";
-      rootfsDeps = [ pkgs.binutils ];
+      rootfsDeps = [pkgs.binutils];
       testScript = ''
         cat > /tmp/pipeline.c << 'EOF'
         #include <stdio.h>
@@ -197,41 +198,42 @@ let
   # ---------------------------------------------------------------------------
   # Fleet tests (multi-VM, inherently span multiple systems)
   # ---------------------------------------------------------------------------
-  fleetHarness = import ./lib/testing/fleet.nix { inherit pkgs lib testTools; };
+  fleetHarness = import ./lib/testing/fleet.nix {inherit pkgs lib testTools;};
 
-  discoverFleetTests =
-    let
-      entries = builtins.readDir ./systems/tests;
-      fleetFiles = builtins.filter (
-        name:
-        entries.${name} == "regular"
+  discoverFleetTests = let
+    entries = builtins.readDir ./systems/tests;
+    fleetFiles = builtins.filter (
+      name:
+        entries.${name}
+        == "regular"
         && builtins.match ".*\\.nix" name != null
         && name != "default.nix"
         && builtins.substring 0 1 name != "_"
-      ) (builtins.attrNames entries);
+    ) (builtins.attrNames entries);
 
-      specs = map (name: import (./systems/tests + "/${name}") { inherit lib; }) fleetFiles;
-      fleetSpecs = builtins.filter (spec: (spec.type or "vm") == "fleet") specs;
-    in
+    specs = map (name: import (./systems/tests + "/${name}") {inherit lib;}) fleetFiles;
+    fleetSpecs = builtins.filter (spec: (spec.type or "vm") == "fleet") specs;
+  in
     builtins.listToAttrs (
       map (spec: {
         name = spec.name;
         value = fleetHarness.mkFleetTest {
           name = spec.name;
-          machines = builtins.mapAttrs (
-            mname: mspec:
-            {
-              system = mkSystem (./systems + "/${mspec.system}.nix");
-              role = mspec.role or mname;
-            }
-          ) spec.machines;
+          machines =
+            builtins.mapAttrs (
+              mname: mspec: {
+                system = mkSystem (./systems + "/${mspec.system}.nix");
+                role = mspec.role or mname;
+              }
+            )
+            spec.machines;
           testScript = spec.testScript;
           timeout = spec.timeout or 300;
         };
-      }) fleetSpecs
+      })
+      fleetSpecs
     );
-in
-{
+in {
   inherit lib pkgs stdenv modules mkSystem;
 
   # Auto-discovered golden image systems.
@@ -245,12 +247,15 @@ in
       inherit pkgs lib;
       system = serverSystem;
     };
-    build = import ./lib/testing/build.nix { inherit pkgs lib; };
-    tla = import ./lib/testing/tla.nix { inherit pkgs lib; };
+    build = import ./lib/testing/build.nix {inherit pkgs lib;};
+    tla = import ./lib/testing/tla.nix {inherit pkgs lib;};
+    trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     # Module-level VM checks (from server system, for backwards compat)
-    vm = serverSystem.config.system.build.checks // {
-      apm = apmTests;
-    };
+    vm =
+      serverSystem.config.system.build.checks
+      // {
+        apm = apmTests;
+      };
     integration = packageChecks // stdenvChecks;
   };
 
@@ -259,14 +264,14 @@ in
 
   # Backwards compatibility: systemChecks as a flat namespace
   # Maps "server-boot-basics" -> systems.server.checks.boot-basics, etc.
-  systemChecks =
-    let
-      allSystems = discoverSystems;
-      sysNames = builtins.attrNames allSystems;
-    in
+  systemChecks = let
+    allSystems = discoverSystems;
+    sysNames = builtins.attrNames allSystems;
+  in
     builtins.foldl' (
       acc: sysName:
-      acc // prefixAttrs sysName allSystems.${sysName}.checks
-    ) { } sysNames
+        acc // prefixAttrs sysName allSystems.${sysName}.checks
+    ) {}
+    sysNames
     // discoverFleetTests;
 }
