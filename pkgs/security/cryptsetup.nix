@@ -37,7 +37,17 @@ mkDerivation {
     json-c
     openssl
   ];
-  propagatedDeps = [ ];
+  # libcryptsetup.pc has `Requires.private: uuid devmapper json-c openssl
+  # blkid`, so downstream pkg-config consumers (e.g. systemd's meson
+  # libcryptsetup probe) need those .pc files on their PKG_CONFIG_PATH.
+  # uuid/blkid come from util-linux and openssl is commonly a direct dep
+  # of cryptsetup's consumers, so only device-mapper and json-c need to
+  # be propagated here — transitive collection
+  # (lib/derivations.nix:collectPropagated) then reaches them.
+  propagatedDeps = [
+    device-mapper
+    json-c
+  ];
 
   phases = [
     {
