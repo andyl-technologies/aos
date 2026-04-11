@@ -135,6 +135,8 @@
         mkOrder
         mkBefore
         mkAfter
+        mkEnableOption
+        mkPackageOption
         ;
       inherit
         (derivations)
