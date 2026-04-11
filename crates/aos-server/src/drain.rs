@@ -55,6 +55,9 @@ impl DrainState {
 pub async fn wait_for_shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};
 
+    // Signal handler registration is a hard requirement for graceful shutdown.
+    // Panicking here during startup is intentional — the server cannot operate
+    // safely without signal handling.
     let mut sigterm = signal(SignalKind::terminate())
         .expect("failed to install SIGTERM handler");
     let mut sigint = signal(SignalKind::interrupt())
@@ -82,7 +85,7 @@ impl BuildState {
     pub fn new(drv: &str, view: &str) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
         Self {
             drv: drv.to_string(),

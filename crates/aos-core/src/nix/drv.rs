@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 
 /// A fixed-output derivation discovered from a .drv file.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FixedOutputDrv {
     pub drv_path: String,
     pub output_path: String,
@@ -79,7 +78,11 @@ fn parse_drv_env(content: &str) -> Result<std::collections::HashMap<String, Stri
                 i += 1;
                 while i < len {
                     if bytes[i] == b'\\' {
-                        i += 2;
+                        if i + 1 < len {
+                            i += 2;
+                        } else {
+                            i += 1;
+                        }
                         continue;
                     }
                     if bytes[i] == b'"' {
@@ -199,7 +202,11 @@ fn parse_drv_builder(content: &str) -> Result<String> {
                             pos += 1;
                             while pos < len {
                                 if bytes[pos] == b'\\' {
-                                    pos += 2;
+                                    if pos + 1 < len {
+                                        pos += 2;
+                                    } else {
+                                        pos += 1;
+                                    }
                                     continue;
                                 }
                                 if bytes[pos] == b'"' {
@@ -246,16 +253,17 @@ fn parse_aterm_string(content: &str, pos: &mut usize) -> Result<String> {
         match bytes[*pos] {
             b'\\' => {
                 *pos += 1;
-                if *pos < len {
-                    match bytes[*pos] {
-                        b'n' => result.push('\n'),
-                        b't' => result.push('\t'),
-                        b'\\' => result.push('\\'),
-                        b'"' => result.push('"'),
-                        other => {
-                            result.push('\\');
-                            result.push(other as char);
-                        }
+                if *pos >= len {
+                    anyhow::bail!("trailing backslash at end of string (position {})", *pos);
+                }
+                match bytes[*pos] {
+                    b'n' => result.push('\n'),
+                    b't' => result.push('\t'),
+                    b'\\' => result.push('\\'),
+                    b'"' => result.push('"'),
+                    other => {
+                        result.push('\\');
+                        result.push(other as char);
                     }
                 }
             }

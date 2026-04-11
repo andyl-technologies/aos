@@ -172,7 +172,10 @@ pub fn decompress_nar(data: &[u8], compression: &str) -> Result<Vec<u8>> {
                 .context("spawning xz -d")?;
 
             {
-                let stdin = child.stdin.as_mut().unwrap();
+                let stdin = child
+                    .stdin
+                    .as_mut()
+                    .context("failed to get stdin of xz decompression process")?;
                 stdin.write_all(data)?;
             }
 

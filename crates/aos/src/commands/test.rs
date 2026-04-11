@@ -4,6 +4,18 @@ use crate::cli::TestCmd;
 use aos_core::nix::NixRunner;
 use aos_core::output::{create_spinner, Printer};
 
+/// Validate that a test suite name contains only safe characters for
+/// interpolation into Nix attribute paths.
+fn validate_suite_name(suite: &str) -> Result<()> {
+    if !suite
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        anyhow::bail!("invalid test suite name: {suite}");
+    }
+    Ok(())
+}
+
 /// `aos test [subcommand]` — run test layers.
 pub fn run(nix: &NixRunner, printer: &Printer, cmd: &Option<TestCmd>) -> Result<()> {
     match cmd {
@@ -11,7 +23,10 @@ pub fn run(nix: &NixRunner, printer: &Printer, cmd: &Option<TestCmd>) -> Result<
         Some(TestCmd::Build) => run_layer(nix, printer, "checks.build", "build"),
         Some(TestCmd::Vm { suite }) => {
             let attr = match suite {
-                Some(s) => format!("checks.vm.{s}"),
+                Some(s) => {
+                    validate_suite_name(s)?;
+                    format!("checks.vm.{s}")
+                }
                 None => "checks.vm".to_string(),
             };
             let label = match suite {
@@ -22,7 +37,10 @@ pub fn run(nix: &NixRunner, printer: &Printer, cmd: &Option<TestCmd>) -> Result<
         }
         Some(TestCmd::Fleet { suite }) => {
             let attr = match suite {
-                Some(s) => format!("checks.fleet.{s}"),
+                Some(s) => {
+                    validate_suite_name(s)?;
+                    format!("checks.fleet.{s}")
+                }
                 None => "checks.fleet".to_string(),
             };
             let label = match suite {
