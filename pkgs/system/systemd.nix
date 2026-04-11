@@ -12,6 +12,7 @@
   zlib,
   xz,
   lz4,
+  zstd,
   openssl,
   perl,
   meson,
@@ -25,6 +26,10 @@
   libselinux,
   libsepol,
   libseccomp,
+  acl,
+  cryptsetup,
+  elfutils,
+  linux-pam,
   coreutils,
   bash,
 }:
@@ -76,6 +81,7 @@ mkDerivation {
     zlib
     xz
     lz4
+    zstd
     openssl
     libcap
     libxcrypt
@@ -84,6 +90,10 @@ mkDerivation {
     libsepol
     pcre2
     libseccomp
+    acl
+    cryptsetup
+    elfutils
+    linux-pam
   ];
   propagatedDeps = [ ];
 
@@ -152,6 +162,8 @@ mkDerivation {
               systemd-network)   echo "systemd-network:x:102:102:systemd Network:/:/sbin/nologin" ;;
               systemd-resolve)   echo "systemd-resolve:x:103:103:systemd Resolver:/:/sbin/nologin" ;;
               systemd-timesync)  echo "systemd-timesync:x:104:104:systemd Time Sync:/:/sbin/nologin" ;;
+              systemd-coredump)  echo "systemd-coredump:x:105:105:systemd Core Dumper:/:/sbin/nologin" ;;
+              systemd-oom)       echo "systemd-oom:x:106:106:systemd Userspace OOM Killer:/:/sbin/nologin" ;;
               *)                 exit 2 ;;
             esac ;;
           group)
@@ -161,6 +173,10 @@ mkDerivation {
               utmp)              echo "utmp:x:22:" ;;
               systemd-journal)   echo "systemd-journal:x:101:" ;;
               systemd-network)   echo "systemd-network:x:102:" ;;
+              systemd-resolve)   echo "systemd-resolve:x:193:" ;;
+              systemd-timesync)  echo "systemd-timesync:x:194:" ;;
+              systemd-coredump)  echo "systemd-coredump:x:105:" ;;
+              systemd-oom)       echo "systemd-oom:x:106:" ;;
               *)                 exit 2 ;;
             esac ;;
           *)                     exit 2 ;;
@@ -197,18 +213,18 @@ mkDerivation {
                   -Dmode=release \
                   -Dsysvinit-path="" \
                   -Dsysvrcnd-path="" \
-                  -Dutmp=false \
+                  -Dutmp=true \
                   -Dhibernate=false \
                   -Dldconfig=false \
-                  -Dresolve=false \
+                  -Dresolve=true \
                   -Defi=false \
                   -Dtpm=false \
                   -Denvironment-d=false \
                   -Dbinfmt=false \
                   -Drepart=disabled \
-                  -Dcoredump=false \
+                  -Dcoredump=true \
                   -Dpstore=false \
-                  -Doomd=false \
+                  -Doomd=true \
                   -Dlogind=true \
                   -Dhostnamed=true \
                   -Dlocaled=false \
@@ -218,12 +234,12 @@ mkDerivation {
                   -Duserdb=false \
                   -Dhomed=disabled \
                   -Dnetworkd=true \
-                  -Dtimedated=false \
-                  -Dtimesyncd=false \
+                  -Dtimedated=true \
+                  -Dtimesyncd=true \
                   -Dremote=disabled \
                   -Dnss-myhostname=true \
                   -Dnss-mymachines=disabled \
-                  -Dnss-resolve=disabled \
+                  -Dnss-resolve=enabled \
                   -Dnss-systemd=true \
                   -Dfirstboot=false \
                   -Drandomseed=true \
@@ -243,6 +259,10 @@ mkDerivation {
                   -Dcreate-log-dirs=false \
                   -Dsshconfdir=no \
                   -Dsshdconfdir=no \
+                  -Dacl=enabled \
+                  -Dpam=enabled \
+                  -Dlibcryptsetup=enabled \
+                  -Dlibcryptsetup-plugins=enabled \
                   -Dseccomp=enabled \
                   -Dselinux=enabled \
                   -Dapparmor=disabled \
@@ -261,10 +281,11 @@ mkDerivation {
                   -Dlibiptc=disabled \
                   -Dqrencode=disabled \
                   -Dgcrypt=disabled \
+                  -Delfutils=enabled \
                   -Dzlib=enabled \
                   -Dlz4=enabled \
                   -Dxz=enabled \
-                  -Dzstd=disabled \
+                  -Dzstd=enabled \
                   -Ddefault-dnssec=no \
                   -Ddefault-mdns=no \
                   -Ddefault-llmnr=no \
@@ -315,6 +336,39 @@ mkDerivation {
       # is effectively a no-op for prefix-relative targets.
       script = ''
         DESTDIR=/ ninja install
+      '';
+    }
+    {
+      name = "fixup";
+      # LUKS2 token plugins (libcryptsetup-token-*.so) are loaded via
+      # dlopen from $cryptsetup/lib/cryptsetup/. DT_RPATH on the binary
+      # does NOT propagate to libraries loaded via dlopen, so
+      # systemd-cryptsetup and systemd-cryptenroll need LD_LIBRARY_PATH
+      # extended at runtime to find them. nixpkgs handles this with
+      # wrapProgram (makeWrapper); AOS has no wrapProgram, so we inline
+      # the equivalent shell wrapper.
+      #
+      # Note on escapes: the heredoc body must contain the literal text
+      # `${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}` so the fallback is
+      # evaluated at wrapper RUNTIME, not at cat time. Both $ signs are
+      # escaped with \ so the unquoted heredoc doesn't expand them at
+      # cat time. (stdenv/setup.sh:47 sets LD_LIBRARY_PATH during the
+      # build from buildInputs, so an unescaped ${LD_LIBRARY_PATH:+...}
+      # would fire at cat time and produce a trailing-colon path — a
+      # classic ld.so CWD-search bug.)
+      script = ''
+        for f in bin/systemd-cryptsetup bin/systemd-cryptenroll; do
+          if [ -x "$out/$f" ]; then
+            wrapped="$out/$f"
+            mv "$wrapped" "$wrapped.unwrapped"
+            cat > "$wrapped" << EOF
+        #!${bash}/bin/bash
+        export LD_LIBRARY_PATH="$out/lib/cryptsetup\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+        exec "$wrapped.unwrapped" "\$@"
+        EOF
+            chmod +x "$wrapped"
+          fi
+        done
       '';
     }
   ];
