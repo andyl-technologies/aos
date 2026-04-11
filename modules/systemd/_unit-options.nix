@@ -16,11 +16,12 @@
 #   - `restartTriggers`, `reloadTriggers`, `restartIfChanged`,
 #     `reloadIfChanged`, `stopIfChanged`, `notSocketActivated`, `startAt`
 #     dropped (spec §5.2 / §5.3).
-#   - `startLimitBurst` / `startLimitIntervalSec` use `nullOr int` with
-#     a `null` default so `_lib.nix`'s `unitConfig` can check "was it
-#     set?" with a plain null check. AOS's module system does not pass
-#     an `options` tree to submodule functions, so upstream's
-#     `options.X.isDefined` pattern is unavailable.
+#   - `startLimitBurst` / `startLimitIntervalSec` use `types.int` with
+#     no default (matching upstream) and rely on `options.X.isDefined`
+#     inside `_lib.nix`'s `unitConfig` to tell whether a value was set.
+#     This requires AOS's module system to thread an `options` tree
+#     into submodule functions — which it now does after audit fix
+#     1.2 (see `lib/modules.nix`'s `mkOptionsTree` and `evalModule`).
 #   - `literalExpression` (nixpkgs doc-generation marker) is not
 #     referenced — the only usage was the dropped `enableStrictShellChecks`
 #     `defaultText`.
@@ -310,14 +311,8 @@ in rec {
           '';
         };
 
-        # AOS adaptation: these are `nullOr int` with a null default so
-        # `_lib.nix`'s `unitConfig` can check "was it set?" with a plain
-        # null comparison. Upstream uses `types.int` with no default and
-        # inspects `options.X.isDefined`, which AOS's module system does
-        # not expose to submodule functions.
         startLimitBurst = mkOption {
-          type = types.nullOr types.int;
-          default = null;
+          type = types.int;
           description = ''
             Configure unit start rate limiting. Units which are started
             more than startLimitBurst times within an interval time
@@ -326,8 +321,7 @@ in rec {
         };
 
         startLimitIntervalSec = mkOption {
-          type = types.nullOr types.int;
-          default = null;
+          type = types.int;
           description = ''
             Configure unit start rate limiting. Units which are started
             more than startLimitBurst times within an interval time

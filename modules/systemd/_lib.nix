@@ -712,6 +712,7 @@ in rec {
   unitConfig = {
     config,
     name,
+    options,
     ...
   }: {
     config = {
@@ -741,15 +742,15 @@ in rec {
         // optionalAttrs (config.onSuccess != []) {
           OnSuccess = builtins.toString config.onSuccess;
         }
-        # AOS adaptation: AOS's module system does not currently pass
-        # `options` to submodule functions, so `options.X.isDefined` is
-        # not available. The ported options declare `startLimitBurst` /
-        # `startLimitIntervalSec` with `default = null` and type
-        # `nullOr int`, and we check against null here.
-        // optionalAttrs (config.startLimitIntervalSec != null) {
+        # Matches upstream nixos/lib/systemd-lib.nix exactly, now that AOS's
+        # module system threads `options` into submodule functions (see
+        # audit fix 1.2). `startLimitBurst` and `startLimitIntervalSec`
+        # have `types.int` with no default, so accessing `config.X` when
+        # unset would throw — the `options.X.isDefined` guard avoids that.
+        // optionalAttrs options.startLimitIntervalSec.isDefined {
           StartLimitIntervalSec = builtins.toString config.startLimitIntervalSec;
         }
-        // optionalAttrs (config.startLimitBurst != null) {
+        // optionalAttrs options.startLimitBurst.isDefined {
           StartLimitBurst = builtins.toString config.startLimitBurst;
         };
     };
