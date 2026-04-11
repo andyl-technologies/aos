@@ -293,10 +293,56 @@
     else rhs;
 
   # ---------------------------------------------------------------------------
+  # Internal: build a nested options tree from a flat list of option
+  # declarations, so module functions can take an `options` argument and
+  # do things like `options.services.foo.isDefined`.
+  # ---------------------------------------------------------------------------
+  #
+  # Each leaf in the produced tree is the raw option declaration decorated
+  # with module-system metadata:
+  #   {
+  #     _type = "option";   # from the original mkOption call
+  #     type; default; description; ...;
+  #     isDefined = <bool>;                 # any definition beyond the default?
+  #     definitions = [<raw def values>];   # unprocessed defs (pre-merge)
+  #     value = <merged result>;            # lazy — same as config.<path>
+  #   }
+  #
+  # The tree is lazy: walking it or looking up a specific leaf does not
+  # force sibling leaves, and forcing a leaf only runs the merge for that
+  # specific option. Module functions that don't ask for `options` in
+  # their signature never pay the cost.
+  mkOptionsTree = entries: let
+    setAtPath = path: leaf: acc:
+      if path == []
+      then leaf
+      else let
+        key = builtins.head path;
+        rest = builtins.genList (i: builtins.elemAt path (i + 1)) (builtins.length path - 1);
+        existing = acc.${key} or {};
+      in
+        acc // {${key} = setAtPath rest leaf existing;};
+  in
+    builtins.foldl' (
+      tree: entry: let
+        leaf =
+          entry.option
+          // {
+            inherit (entry) path definitions;
+            isDefined = entry.definitions != [];
+            # `value` mirrors `config.<path>` — lazy, forced only on access.
+            value = entry.finalValue;
+          };
+      in
+        setAtPath entry.path leaf tree
+    ) {} (builtins.attrValues entries);
+
+  # ---------------------------------------------------------------------------
   # Internal: import and evaluate a single module
   # ---------------------------------------------------------------------------
   evalModule = {
     config,
+    options,
     pkgs,
     lib,
     extraArgs,
@@ -317,7 +363,7 @@
 
     args =
       {
-        inherit config pkgs lib;
+        inherit config options pkgs lib;
       }
       // extraArgs;
     evaluated =
@@ -395,6 +441,7 @@
               evaled =
                 evalModule {
                   config = finalConfig;
+                  options = optionsTree;
                   pkgs = pkgs;
                   lib = moduleLib;
                   extraArgs = extraArgs // specialArgs;
@@ -407,6 +454,14 @@
         );
 
       evaluatedModules = collectModules modules;
+
+      # Nested options tree, built from mergedOptions and fed back to
+      # module functions via evalModule's `options` arg. This is the
+      # AOS equivalent of nixpkgs' `{ config, options, ... }: …` pattern.
+      # The tree is lazy: module functions that don't take `options`
+      # never trigger its construction; modules that take it and access
+      # a specific leaf only force that one leaf.
+      optionsTree = mkOptionsTree mergedOptions;
 
       # --- Phase 2: Collect all option declarations ---
       allOptionDecls = builtins.concatLists (
@@ -539,7 +594,12 @@
       configWithFreeform = deepMerge allConfigMerged finalConfig;
     in {
       config = configWithFreeform;
-      options = optionMap;
+      # Exposed as the nested options tree (matching nixpkgs'
+      # `result.options` shape) so external consumers can introspect
+      # with the same `options.path.to.foo.isDefined` pattern that
+      # modules use. The flat option-name → declaration map is still
+      # available internally as `optionMap` for module-evaluation use.
+      options = optionsTree;
       _modules = evaluatedModules;
       _type = "evaluatedModules";
 
