@@ -862,7 +862,9 @@ fn update_boot_loader(kernel_path: &str, toplevel: &str) -> Result<()> {
     );
 
     // Only write if the boot loader directory exists.
-    let parent = Path::new(BOOT_LOADER_ENTRY).parent().unwrap();
+    let parent = Path::new(BOOT_LOADER_ENTRY)
+        .parent()
+        .context("BOOT_LOADER_ENTRY has no parent directory")?;
     if parent.exists() {
         std::fs::write(BOOT_LOADER_ENTRY, &entry)
             .with_context(|| format!("updating {BOOT_LOADER_ENTRY}"))?;
@@ -879,8 +881,9 @@ fn extract_kernel_version(path: &Option<String>) -> String {
     match path {
         Some(p) => {
             let base = p.rsplit('/').next().unwrap_or(p);
-            // Strip the Nix hash prefix (32 chars + '-').
-            let name = if base.len() > 33 && base.as_bytes()[32] == b'-' {
+            // Strip the Nix hash prefix (32 hash chars + '-').
+            // A valid store basename needs at least 33 chars (32 hash + dash).
+            let name = if base.len() >= 33 && base.as_bytes()[32] == b'-' {
                 &base[33..]
             } else {
                 base

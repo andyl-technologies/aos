@@ -107,7 +107,10 @@ pub async fn run_prefetch(
     printer.info("Realising sources...");
     for fod in &missing_fods {
         if let Err(e) = nix.realise(&fod.drv_path) {
-            printer.warning(&format!("failed to realise {}: {e}", fod.drv_path));
+            printer.warning(&format!(
+                "failed to realise {} (will skip upload): {e}",
+                fod.drv_path
+            ));
         }
     }
 
@@ -122,7 +125,13 @@ pub async fn run_prefetch(
 
         let info = match nix.path_info(&fod.output_path) {
             Ok(i) => i,
-            Err(_) => continue,
+            Err(e) => {
+                printer.warning(&format!(
+                    "failed to get path info for {}: {e}",
+                    fod.output_path
+                ));
+                continue;
+            }
         };
 
         // Streaming compression: nix-store --dump | zstd -> compressed bytes.
@@ -137,18 +146,19 @@ pub async fn run_prefetch(
             .map(|r| narinfo::basename(r).to_string())
             .collect();
 
-        let ni = narinfo::from_path_info(
-            &fod.output_path,
-            &info.nar_hash,
-            info.nar_size,
-            &ref_basenames,
-            info.deriver.as_deref().map(narinfo::basename),
-            &info.signatures,
-            &file_hash,
+        let nar_url = format!("nar/{nar_filename}");
+        let ni = narinfo::from_path_info(&narinfo::PathInfoParams {
+            path: &fod.output_path,
+            nar_hash: &info.nar_hash,
+            nar_size: info.nar_size,
+            references: &ref_basenames,
+            deriver: info.deriver.as_deref().map(narinfo::basename),
+            signatures: &info.signatures,
+            file_hash: &file_hash,
             file_size,
-            "zstd",
-            &format!("nar/{nar_filename}"),
-        );
+            compression: "zstd",
+            nar_url: &nar_url,
+        });
 
         let hash = narinfo::store_hash(&fod.output_path);
         backend.put_nar(&nar_filename, &compressed).await?;

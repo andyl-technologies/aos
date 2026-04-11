@@ -113,7 +113,8 @@ pub async fn run_push(
     );
     overall.set_message("Uploading");
 
-    let semaphore = Arc::new(Semaphore::new(jobs));
+    let effective_jobs = if jobs == 0 { 1 } else { jobs };
+    let semaphore = Arc::new(Semaphore::new(effective_jobs));
     let mut total_bytes: u64 = 0;
     let mut uploaded = 0u64;
 
@@ -158,18 +159,19 @@ pub async fn run_push(
             .collect();
         let deriver_basename = info.deriver.as_deref().map(narinfo::basename);
 
-        let ni = narinfo::from_path_info(
-            &info.path,
-            &info.nar_hash,
-            info.nar_size,
-            &ref_basenames,
-            deriver_basename,
-            &info.signatures,
-            &file_hash,
+        let nar_url = format!("nar/{nar_filename}");
+        let ni = narinfo::from_path_info(&narinfo::PathInfoParams {
+            path: &info.path,
+            nar_hash: &info.nar_hash,
+            nar_size: info.nar_size,
+            references: &ref_basenames,
+            deriver: deriver_basename,
+            signatures: &info.signatures,
+            file_hash: &file_hash,
             file_size,
-            compression_name(compression),
-            &format!("nar/{nar_filename}"),
-        );
+            compression: compression_name(compression),
+            nar_url: &nar_url,
+        });
         let narinfo_text = narinfo::format(&ni);
 
         // Batch small NARs into packs for HTTP backends.

@@ -71,6 +71,10 @@ pub struct ServerConfig {
     /// `[bootstrap]` section.
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
+
+    /// `[tls]` section.
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 /// Build-related settings — controls `nix-store --realise` behaviour.
@@ -198,6 +202,37 @@ impl Default for BootstrapConfig {
     }
 }
 
+/// TLS / HTTPS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfig {
+    /// Enable HTTPS. When `true`, the server listens with TLS.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Path to PEM-encoded certificate chain. If absent when `enabled` is
+    /// `true`, a self-signed certificate is generated automatically.
+    pub cert_file: Option<PathBuf>,
+
+    /// Path to PEM-encoded private key.
+    pub key_file: Option<PathBuf>,
+
+    /// Subject Alternative Names for the self-signed certificate.
+    /// Defaults to `["localhost", "127.0.0.1", "::1"]`.
+    #[serde(default)]
+    pub san: Vec<String>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_file: None,
+            key_file: None,
+            san: Vec::new(),
+        }
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -217,6 +252,7 @@ impl Default for ServerConfig {
             }],
             oauth2: OAuth2Config::default(),
             bootstrap: BootstrapConfig::default(),
+            tls: TlsConfig::default(),
         }
     }
 }
