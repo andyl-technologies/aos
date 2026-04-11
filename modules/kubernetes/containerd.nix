@@ -13,17 +13,18 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.kubernetes.containerd;
 
   # Build registry mirror host directory configuration (v2 format).
-  registryHostConfigs = lib.mapAttrsToList (registry: mirror: ''
-    [plugins."io.containerd.grpc.v1.cri".registry.configs."${registry}".tls]
-      insecure_skip_verify = false
-    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."${registry}"]
-      endpoint = ["${mirror}"]
-  '') cfg.registryMirrors;
+  registryHostConfigs =
+    lib.mapAttrsToList (registry: mirror: ''
+      [plugins."io.containerd.grpc.v1.cri".registry.configs."${registry}".tls]
+        insecure_skip_verify = false
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."${registry}"]
+        endpoint = ["${mirror}"]
+    '')
+    cfg.registryMirrors;
 
   # Full containerd config.toml (v2 format with CRI v2 plugin paths).
   containerdConfig = ''
@@ -46,22 +47,29 @@ let
         [plugins."io.containerd.grpc.v1.cri".containerd]
           snapshotter = "${cfg.snapshotter}"
           default_runtime_name = "runc"
-          discard_unpacked_layers = ${if cfg.discardUnpackedLayers then "true" else "false"}
+          discard_unpacked_layers = ${
+      if cfg.discardUnpackedLayers
+      then "true"
+      else "false"
+    }
           [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
             [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
               runtime_type = "${cfg.runtimeType}"
               [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
-                SystemdCgroup = ${if cfg.cgroupDriver == "systemd" then "true" else "false"}
+                SystemdCgroup = ${
+      if cfg.cgroupDriver == "systemd"
+      then "true"
+      else "false"
+    }
         [plugins."io.containerd.grpc.v1.cri".cni]
           bin_dir = "/opt/cni/bin"
           conf_dir = "/etc/cni/net.d"
-    ${lib.optionalString (cfg.registryMirrors != { }) ''
+    ${lib.optionalString (cfg.registryMirrors != {}) ''
           [plugins."io.containerd.grpc.v1.cri".registry]
       ${builtins.concatStringsSep "\n" registryHostConfigs}
     ''}
   '';
-in
-{
+in {
   options.aos.kubernetes.containerd = {
     ## Enable the containerd container runtime.
     ##
@@ -125,7 +133,7 @@ in
     ## ```
     registryMirrors = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = { };
+      default = {};
       description = ''
         Registry mirror mappings. Each key is the original registry
         (e.g. "docker.io") and the value is the mirror URL
@@ -243,27 +251,43 @@ in
     };
 
     # containerd.service — container runtime daemon.
+    #
+    # Stage 7 of the systemd refactor (spec v3.1 §7): the base unit
+    # file comes from `pkgs.containerd`'s upstream `containerd.service`
+    # (installed into `$out/lib/systemd/system/`, with `/usr/local/bin/
+    # containerd` and `/sbin/modprobe` path-fixed to the package's own
+    # store paths). This pulls in all of upstream's baseline:
+    # `Type=notify`, `Delegate=yes`, `KillMode=process`, `Restart=always`,
+    # `RestartSec=5`, `LimitNPROC=infinity`, `LimitCORE=infinity`,
+    # `TasksMax=infinity`, `OOMScoreAdjust=-999`, and the
+    # `ExecStartPre=-${kmod}/bin/modprobe overlay` hook.
+    #
+    # `generateUnits` picks up the file via `systemd.packages`, and the
+    # `asDropin` declaration below layers AOS-specific additions on top
+    # as `containerd.service.d/overrides.conf`:
+    #
+    #   * `after = [ "local-fs.target" ]` — needs `/var/lib/containerd`
+    #     mounted before start (upstream only orders after
+    #     `network.target dbus.service`)
+    #   * `ExecReload = kill -HUP $MAINPID` — reload on config change;
+    #     upstream doesn't declare one
+    #   * `LimitNOFILE = 1048576` — file-descriptor bump for busy
+    #     kubelets; upstream leaves the default
+    #
+    # `--config` is NOT passed because containerd's default config
+    # path is already `/etc/containerd/config.toml` (which is where we
+    # write via `environment.etc."containerd/config.toml"` above), and
+    # omitting the flag lets upstream's ExecStart pass through
+    # unchanged.
+    systemd.packages = [pkgs.containerd];
+
     systemd.services."containerd" = {
-      description = "containerd Container Runtime";
-      wantedBy = [ "multi-user.target" ];
-      after = [
-        "network.target"
-        "local-fs.target"
-      ];
+      overrideStrategy = "asDropin";
+      wantedBy = ["multi-user.target"];
+      after = ["local-fs.target"];
       serviceConfig = {
-        Type = "notify";
-        ExecStart = "${pkgs.containerd}/bin/containerd --config /etc/containerd/config.toml";
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
-        Restart = "always";
-        RestartSec = "5s";
-        # containerd needs broad capabilities for container management.
         LimitNOFILE = "1048576";
-        LimitNPROC = "infinity";
-        LimitCORE = "infinity";
-        TasksMax = "infinity";
-        OOMScoreAdjust = -999;
-        Delegate = true;
-        KillMode = "process";
       };
     };
 
