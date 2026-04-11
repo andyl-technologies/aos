@@ -173,7 +173,7 @@ impl NixCli {
     }
 
     /// Spawn `nix-store --dump <path>` with piped stdout.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // public API
     pub fn nar_dump(&self, path: &str) -> Result<Child> {
         Command::new("nix-store")
             .args(["--dump", path])
@@ -184,7 +184,7 @@ impl NixCli {
     }
 
     /// Spawn `nix-store --export <path>` with piped stdout.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // public API
     pub fn nar_export(&self, path: &str) -> Result<Child> {
         Command::new("nix-store")
             .args(["--export", path])
@@ -195,7 +195,7 @@ impl NixCli {
     }
 
     /// Pipe data to `nix-store --import` stdin, return imported paths.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // public API
     pub fn nar_import(&self, mut data: impl Read) -> Result<Vec<String>> {
         let mut child = Command::new("nix-store")
             .arg("--import")

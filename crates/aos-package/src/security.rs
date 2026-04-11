@@ -207,10 +207,11 @@ pub fn verify_commit_signature(
     // Format: <principal> <key-type> <base64-key>
     let signers_content = format!("registry ssh-ed25519 {pubkey}\n");
 
-    let tmp_dir = std::env::temp_dir();
-    let signers_path = tmp_dir.join(format!("apm-signers-{}", std::process::id()));
-    fs::write(&signers_path, &signers_content)
+    let mut signers_file = tempfile::NamedTempFile::new()
+        .context("creating temporary allowed-signers file")?;
+    std::io::Write::write_all(&mut signers_file, signers_content.as_bytes())
         .context("writing temporary allowed-signers file")?;
+    let signers_path = signers_file.path();
 
     // Configure git to use SSH signing verification with our signers file.
     let output = std::process::Command::new("git")
@@ -227,9 +228,7 @@ pub fn verify_commit_signature(
         .output()
         .context("running git verify-commit")?;
 
-    // Clean up the temporary file (best-effort).
-    let _ = fs::remove_file(&signers_path);
-
+    // signers_file is dropped here, which removes the temp file automatically.
     Ok(output.status.success())
 }
 

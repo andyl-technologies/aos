@@ -111,7 +111,7 @@ fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
 fn parse_store_path(store_path: &str) -> (String, String) {
     let basename = store_path.rsplit('/').next().unwrap_or(store_path);
     // Skip the hash prefix (32 chars + dash).
-    let name_version = if basename.len() > 33 {
+    let name_version = if basename.len() >= 33 {
         &basename[33..]
     } else {
         basename

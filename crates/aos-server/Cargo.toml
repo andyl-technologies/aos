@@ -37,6 +37,11 @@ connectrpc = { workspace = true }
 buffa = { workspace = true }
 prost = { workspace = true }
 futures = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
+tokio-rustls = { workspace = true }
+rcgen = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

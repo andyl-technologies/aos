@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     extract::{FromRequestParts, State},
     http::{header, request::Parts, StatusCode},
@@ -50,7 +50,7 @@ pub fn create_access_token(
 ) -> Result<String> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system clock before Unix epoch")
+        .context("system clock before Unix epoch")?
         .as_secs() as usize;
 
     let claims = Claims {

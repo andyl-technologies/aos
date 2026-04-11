@@ -31,6 +31,21 @@ use crate::views::ViewManager;
 
 use tracing;
 
+/// Validate that a view name extracted from a URL path is safe.
+/// Rejects names containing path traversal sequences, directory separators, or null bytes.
+fn validate_view_name(name: &str) -> Result<(), Response> {
+    if name.is_empty()
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        tracing::warn!(view = %name, "rejected invalid view name");
+        return Err((StatusCode::BAD_REQUEST, "invalid view name").into_response());
+    }
+    Ok(())
+}
+
 // ConnectRPC service extension traits for registration
 use aos_proto::aos::auth::v1::AuthServiceExt;
 use aos_proto::aos::build::v1::BuildServiceExt;
@@ -108,6 +123,9 @@ async fn cache_info_handler(
     State(state): State<Arc<AppState>>,
     auth: AuthResult,
 ) -> Response {
+    if let Err(resp) = validate_view_name(&view) {
+        return resp;
+    }
     let view_config = match state.views.get_view(&view) {
         Some(v) => v,
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
@@ -139,6 +157,9 @@ async fn narinfo_handler(
     State(state): State<Arc<AppState>>,
     auth: AuthResult,
 ) -> Response {
+    if let Err(resp) = validate_view_name(&view) {
+        return resp;
+    }
     let view_config = match state.views.get_view(&view) {
         Some(v) => v,
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
@@ -202,6 +223,9 @@ async fn nar_handler(
     State(state): State<Arc<AppState>>,
     auth: AuthResult,
 ) -> Response {
+    if let Err(resp) = validate_view_name(&view) {
+        return resp;
+    }
     let view_config = match state.views.get_view(&view) {
         Some(v) => v,
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
@@ -279,6 +303,9 @@ async fn query_missing_handler(
     AuthClaims(claims): AuthClaims,
     Json(body): Json<QueryMissingRequest>,
 ) -> Response {
+    if let Err(resp) = validate_view_name(&view) {
+        return resp;
+    }
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
@@ -335,6 +362,9 @@ async fn upload_path_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Err(resp) = validate_view_name(&view) {
+        return resp;
+    }
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
@@ -533,6 +563,9 @@ async fn upload_progress_handler(
     State(state): State<Arc<AppState>>,
     AuthClaims(_claims): AuthClaims,
 ) -> Response {
+    if let Err(resp) = validate_view_name(&view) {
+        return resp;
+    }
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
@@ -567,6 +600,9 @@ async fn build_handler(
     headers: HeaderMap,
     Query(query): Query<BuildQuery>,
 ) -> Response {
+    if let Err(resp) = validate_view_name(&view) {
+        return resp;
+    }
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
@@ -687,6 +723,9 @@ async fn build_closure_handler(
     headers: HeaderMap,
     Json(body): Json<BuildClosureRequest>,
 ) -> Response {
+    if let Err(resp) = validate_view_name(&view) {
+        return resp;
+    }
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
@@ -823,6 +862,9 @@ async fn upload_pack_handler(
     AuthClaims(claims): AuthClaims,
     body: Bytes,
 ) -> Response {
+    if let Err(resp) = validate_view_name(&view) {
+        return resp;
+    }
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
@@ -913,6 +955,9 @@ async fn gc_handler(
     AuthClaims(claims): AuthClaims,
     Json(body): Json<GcRequest>,
 ) -> Response {
+    if let Err(resp) = validate_view_name(&view) {
+        return resp;
+    }
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
