@@ -180,7 +180,9 @@ async fn run(cli: &Cli) -> Result<()> {
         } => {
             aos_doc::run(&nix, &printer, source, path, search, list, *rebuild).await
         }
-        // Already handled above, but the match must be exhaustive.
+        // These commands are handled in the early-return block above (before
+        // NixRunner construction) and will never reach this match arm.  The
+        // arms exist only to satisfy exhaustiveness checking.
         Commands::Completions { .. } => unreachable!(),
         Commands::Serve { .. } => unreachable!(),
         Commands::Token { .. } => unreachable!(),

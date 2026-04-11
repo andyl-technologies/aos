@@ -7,7 +7,6 @@ use thiserror::Error;
 ///   3 — nix not found
 
 #[derive(Error, Debug)]
-#[allow(dead_code)]
 pub enum AosError {
     #[error("nix-build failed (exit code {exit_code}): {stderr}")]
     NixBuild { exit_code: i32, stderr: String },

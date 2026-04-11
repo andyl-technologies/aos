@@ -77,7 +77,7 @@ impl TokenStore {
         let id = uuid::Uuid::new_v4().to_string();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .context("system clock error")?
             .as_secs() as i64;
 
         // Build the plaintext token: aos_{view}_{32 random hex chars}
@@ -143,7 +143,7 @@ impl TokenStore {
         let hash = sha256_hex(plaintext);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .context("system clock error")?
             .as_secs() as i64;
 
         let conn = self
@@ -237,7 +237,7 @@ impl TokenStore {
     pub fn revoke_token(&self, id: &str) -> Result<bool> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .context("system clock error")?
             .as_secs() as i64;
 
         let conn = self
@@ -266,7 +266,7 @@ impl TokenStore {
     pub fn rotate_token(&self, id: &str) -> Result<Option<(String, TokenRecord)>> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .context("system clock error")?
             .as_secs() as i64;
         let grace_expiry = now + ROTATION_GRACE_SECS;
 

@@ -110,30 +110,34 @@ pub fn format(info: &NarInfo) -> String {
     out
 }
 
+/// Parameters for constructing a NarInfo from path metadata and compressed NAR
+/// metadata.
+pub struct PathInfoParams<'a> {
+    pub path: &'a str,
+    pub nar_hash: &'a str,
+    pub nar_size: u64,
+    pub references: &'a [String],
+    pub deriver: Option<&'a str>,
+    pub signatures: &'a [String],
+    pub file_hash: &'a str,
+    pub file_size: u64,
+    pub compression: &'a str,
+    pub nar_url: &'a str,
+}
+
 /// Generate a NarInfo from PathInfo metadata + compressed NAR metadata.
-pub fn from_path_info(
-    path: &str,
-    nar_hash: &str,
-    nar_size: u64,
-    references: &[String],
-    deriver: Option<&str>,
-    signatures: &[String],
-    file_hash: &str,
-    file_size: u64,
-    compression: &str,
-    nar_url: &str,
-) -> NarInfo {
+pub fn from_path_info(params: &PathInfoParams<'_>) -> NarInfo {
     NarInfo {
-        store_path: path.to_string(),
-        url: nar_url.to_string(),
-        compression: compression.to_string(),
-        file_hash: Some(file_hash.to_string()),
-        file_size: Some(file_size),
-        nar_hash: nar_hash.to_string(),
-        nar_size,
-        references: references.to_vec(),
-        deriver: deriver.map(String::from),
-        signatures: signatures.to_vec(),
+        store_path: params.path.to_string(),
+        url: params.nar_url.to_string(),
+        compression: params.compression.to_string(),
+        file_hash: Some(params.file_hash.to_string()),
+        file_size: Some(params.file_size),
+        nar_hash: params.nar_hash.to_string(),
+        nar_size: params.nar_size,
+        references: params.references.to_vec(),
+        deriver: params.deriver.map(String::from),
+        signatures: params.signatures.to_vec(),
     }
 }
 

@@ -34,7 +34,7 @@ pub fn expire_ttl_roots(views: &ViewManager, view: &str) -> Result<Vec<String>> 
     let mut expired = Vec::new();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .context("system clock error")?
         .as_secs() as i64;
 
     for ns in &["bin", "src"] {
@@ -180,7 +180,7 @@ pub fn score_candidates(
 ) -> Result<Vec<EvictionCandidate>> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .context("system clock error")?
         .as_secs() as i64;
 
     // Only score push roots (is_root = true). If none are marked,
@@ -304,8 +304,12 @@ pub fn evict_source_lru(
         if !dry_run {
             let link = gcroot_dir.join(&hash);
             let meta_path = meta_dir.join(format!("{hash}.json"));
-            let _ = fs::remove_file(&link);
-            let _ = fs::remove_file(&meta_path);
+            if let Err(e) = fs::remove_file(&link) {
+                tracing::warn!(view = %view, hash = %hash, error = %e, "failed to remove source GC root symlink");
+            }
+            if let Err(e) = fs::remove_file(&meta_path) {
+                tracing::warn!(view = %view, hash = %hash, error = %e, "failed to remove source GC root metadata");
+            }
         }
         evicted.push(hash);
     }
@@ -361,8 +365,12 @@ pub fn evict_until_budget(
                 .join(view)
                 .join("bin")
                 .join(format!("{}.json", candidate.hash));
-            let _ = fs::remove_file(&link);
-            let _ = fs::remove_file(&meta);
+            if let Err(e) = fs::remove_file(&link) {
+                tracing::warn!(view = %view, hash = %candidate.hash, error = %e, "failed to remove evicted GC root symlink");
+            }
+            if let Err(e) = fs::remove_file(&meta) {
+                tracing::warn!(view = %view, hash = %candidate.hash, error = %e, "failed to remove evicted GC root metadata");
+            }
 
             // Also remove unique paths' roots.
             for path in &candidate.unique_paths {
@@ -379,8 +387,12 @@ pub fn evict_until_budget(
                         .join(view)
                         .join("bin")
                         .join(format!("{hash}.json"));
-                    let _ = fs::remove_file(&link);
-                    let _ = fs::remove_file(&meta);
+                    if let Err(e) = fs::remove_file(&link) {
+                        tracing::warn!(view = %view, hash = %hash, error = %e, "failed to remove unique path GC root symlink");
+                    }
+                    if let Err(e) = fs::remove_file(&meta) {
+                        tracing::warn!(view = %view, hash = %hash, error = %e, "failed to remove unique path GC root metadata");
+                    }
                 }
             }
         }

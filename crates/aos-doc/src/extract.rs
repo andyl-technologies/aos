@@ -469,6 +469,9 @@ fn enrich_options_from_eval(nix: &NixRunner, entries: &mut [DocEntry]) {
             candidates[0].1
         } else {
             // Try matching the last two components (e.g. "ssh.port").
+            // `rsplitn(3, '.')` splits from the right, so for "a.b.c" the
+            // result is ["c", "b", "a"] — index 0 is the leaf, index 1 is
+            // the penultimate component.
             let entry_parts: Vec<&str> = entry.path.rsplitn(3, '.').collect();
             let entry_tail2 = if entry_parts.len() >= 2 {
                 format!("{}.{}", entry_parts[1], entry_parts[0])
