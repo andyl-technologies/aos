@@ -13,22 +13,22 @@ let
     ./monitoring
     ./image
     ./profiles
+    ./systemd
     ./tests
   ];
 
   # Discover all .nix files in a directory (non-recursive).
   # Skips _-prefixed files (internal helpers, not modules).
-  discoverModules =
-    dir:
-    let
-      entries = builtins.readDir dir;
-      nixFileNames = builtins.filter (
-        name:
-        entries.${name} == "regular"
+  discoverModules = dir: let
+    entries = builtins.readDir dir;
+    nixFileNames = builtins.filter (
+      name:
+        entries.${name}
+        == "regular"
         && builtins.match ".*\\.nix" name != null
         && builtins.match "_.*" name == null
-      ) (builtins.attrNames entries);
-    in
+    ) (builtins.attrNames entries);
+  in
     map (name: dir + "/${name}") nixFileNames;
 in
-builtins.concatMap discoverModules moduleDirs
+  builtins.concatMap discoverModules moduleDirs
