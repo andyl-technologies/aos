@@ -36,8 +36,7 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.services.cloudInit;
 
   jqBin = "${pkgs.jq}/bin/jq";
@@ -51,10 +50,15 @@ let
 
   # Stage 1: local (before network)
   # Sets hostname and writes networkd config files.
+  #
+  # Script body only — `makeJobScript` prepends `#!${bash}/bin/bash` and
+  # `set -e` when it wraps this text into a derivation. `set -u` is
+  # added explicitly here to match the previous strict-mode behaviour.
+  # `path` is inherited from `stage2ServiceConfig`'s default
+  # (coreutils, findutils, grep, sed, systemd); additional tools are
+  # added via each service's `path` option below.
   localScript = ''
-    #!/bin/sh
-    set -eu
-    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    set -u
 
     USERDATA="${userDataFile}"
     STATE="${stateDir}"
@@ -110,9 +114,7 @@ let
   # Stage 2: network (after network-online)
   # Detects role and writes role marker.
   networkScript = ''
-    #!/bin/sh
-    set -eu
-    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    set -u
 
     USERDATA="${userDataFile}"
     STATE="${stateDir}"
@@ -135,9 +137,7 @@ let
   # Stage 3: config (after network stage)
   # Users/groups, SSH keys, firewall rules, k8s config, kernel prereqs.
   configScript = ''
-    #!/bin/sh
-    set -eu
-    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    set -u
 
     USERDATA="${userDataFile}"
     STATE="${stateDir}"
@@ -439,9 +439,7 @@ let
   # Stage 4: final (after config)
   # Reloads nftables if changed, writes boot-finished marker.
   finalScript = ''
-    #!/bin/sh
-    set -eu
-    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    set -u
 
     USERDATA="${userDataFile}"
     STATE="${stateDir}"
@@ -474,8 +472,7 @@ let
     echo "done" > "$STATE/boot-finished"
     echo "cloud-init-final: boot-finished"
   '';
-in
-{
+in {
   options.aos.services.cloudInit = {
     ## Enable the cloud-init service for runtime configuration.
     enable = lib.mkOption {
@@ -492,13 +489,13 @@ in
   config = lib.mkIf cfg.enable {
     system.cloudInitTests.ci-defaults = {
       userdata = null;
-      checks = import ./cloud-init-checks/ci-defaults.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-defaults.nix {inherit lib;};
     };
     system.cloudInitTests.ci-hostname = {
       userdata = builtins.toJSON {
         hostname = "test-webserver";
       };
-      checks = import ./cloud-init-checks/ci-hostname.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-hostname.nix {inherit lib;};
     };
     system.cloudInitTests.ci-networking = {
       userdata = builtins.toJSON {
@@ -513,7 +510,7 @@ in
           };
         };
       };
-      checks = import ./cloud-init-checks/ci-networking.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-networking.nix {inherit lib;};
     };
     system.cloudInitTests.ci-users = {
       userdata = builtins.toJSON {
@@ -521,11 +518,11 @@ in
           {
             name = "deploy";
             uid = 1000;
-            groups = [ "wheel" ];
+            groups = ["wheel"];
           }
         ];
       };
-      checks = import ./cloud-init-checks/ci-users.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-users.nix {inherit lib;};
     };
     system.cloudInitTests.ci-ssh-keys = {
       userdata = builtins.toJSON {
@@ -533,14 +530,14 @@ in
           {
             name = "deploy";
             uid = 1000;
-            groups = [ "wheel" ];
+            groups = ["wheel"];
             ssh_authorized_keys = [
               "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyForCloudInitVMTest deploy@test"
             ];
           }
         ];
       };
-      checks = import ./cloud-init-checks/ci-ssh-keys.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-ssh-keys.nix {inherit lib;};
     };
     system.cloudInitTests.ci-firewall-server = {
       userdata = builtins.toJSON {
@@ -551,18 +548,18 @@ in
             80
             443
           ];
-          allowed_udp = [ ];
+          allowed_udp = [];
           forward_policy = "drop";
         };
       };
-      checks = import ./cloud-init-checks/ci-firewall-server.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-firewall-server.nix {inherit lib;};
     };
     system.cloudInitTests.ci-firewall-k8s-worker = {
       userdata = builtins.toJSON {
         role = "k8s-worker";
         firewall = {
-          allowed_tcp = [ 22 ];
-          allowed_udp = [ ];
+          allowed_tcp = [22];
+          allowed_udp = [];
           forward_policy = "accept";
         };
         kubernetes = {
@@ -570,21 +567,21 @@ in
           token_file = "/etc/rancher/k3s/agent-token";
         };
       };
-      checks = import ./cloud-init-checks/ci-firewall-k8s-worker.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-firewall-k8s-worker.nix {inherit lib;};
     };
     system.cloudInitTests.ci-firewall-k8s-cp = {
       userdata = builtins.toJSON {
         role = "k8s-control-plane";
         firewall = {
-          allowed_tcp = [ 22 ];
-          allowed_udp = [ ];
+          allowed_tcp = [22];
+          allowed_udp = [];
           forward_policy = "accept";
         };
         kubernetes = {
           cluster_init = true;
         };
       };
-      checks = import ./cloud-init-checks/ci-firewall-k8s-cp.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-firewall-k8s-cp.nix {inherit lib;};
     };
     system.cloudInitTests.ci-server-role = {
       userdata = builtins.toJSON {
@@ -596,19 +593,19 @@ in
             80
             443
           ];
-          allowed_udp = [ ];
+          allowed_udp = [];
           forward_policy = "drop";
         };
       };
-      checks = import ./cloud-init-checks/ci-server-role.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-server-role.nix {inherit lib;};
     };
     system.cloudInitTests.ci-worker-role = {
       userdata = builtins.toJSON {
         role = "k8s-worker";
         hostname = "worker-01";
         firewall = {
-          allowed_tcp = [ 22 ];
-          allowed_udp = [ ];
+          allowed_tcp = [22];
+          allowed_udp = [];
           forward_policy = "accept";
         };
         kubernetes = {
@@ -616,15 +613,15 @@ in
           token_file = "/etc/rancher/k3s/agent-token";
         };
       };
-      checks = import ./cloud-init-checks/ci-worker-role.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-worker-role.nix {inherit lib;};
     };
     system.cloudInitTests.ci-control-plane-role = {
       userdata = builtins.toJSON {
         role = "k8s-control-plane";
         hostname = "cp-01";
         firewall = {
-          allowed_tcp = [ 22 ];
-          allowed_udp = [ ];
+          allowed_tcp = [22];
+          allowed_udp = [];
           forward_policy = "accept";
         };
         kubernetes = {
@@ -638,7 +635,7 @@ in
           ];
         };
       };
-      checks = import ./cloud-init-checks/ci-control-plane-role.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-control-plane-role.nix {inherit lib;};
     };
     system.cloudInitTests.ci-k3s-config = {
       userdata = builtins.toJSON {
@@ -656,12 +653,12 @@ in
           };
         };
         firewall = {
-          allowed_tcp = [ 22 ];
-          allowed_udp = [ ];
+          allowed_tcp = [22];
+          allowed_udp = [];
           forward_policy = "accept";
         };
       };
-      checks = import ./cloud-init-checks/ci-k3s-config.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-k3s-config.nix {inherit lib;};
     };
     system.cloudInitTests.ci-k8s-net-prereqs = {
       userdata = builtins.toJSON {
@@ -672,41 +669,26 @@ in
           token_file = "/etc/rancher/k3s/agent-token";
         };
         firewall = {
-          allowed_tcp = [ 22 ];
-          allowed_udp = [ ];
+          allowed_tcp = [22];
+          allowed_udp = [];
           forward_policy = "accept";
         };
       };
-      checks = import ./cloud-init-checks/ci-k8s-net-prereqs.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-k8s-net-prereqs.nix {inherit lib;};
     };
     system.cloudInitTests.ci-service-lifecycle = {
       userdata = builtins.toJSON {
         role = "server";
         hostname = "lifecycle-test";
       };
-      checks = import ./cloud-init-checks/ci-service-lifecycle.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-service-lifecycle.nix {inherit lib;};
     };
     system.cloudInitTests.ci-security = {
       userdata = null;
-      checks = import ./cloud-init-checks/ci-security.nix { inherit lib; };
+      checks = import ./cloud-init-checks/ci-security.nix {inherit lib;};
     };
 
-    environment.systemPackages = [ pkgs.jq ];
-
-    # Stage scripts in /etc/aos/cloud-init/
-    # Note: build module doesn't support mode, so ExecStart uses /bin/sh explicitly.
-    environment.etc."aos/cloud-init/local.sh" = {
-      text = localScript;
-    };
-    environment.etc."aos/cloud-init/network.sh" = {
-      text = networkScript;
-    };
-    environment.etc."aos/cloud-init/config.sh" = {
-      text = configScript;
-    };
-    environment.etc."aos/cloud-init/final.sh" = {
-      text = finalScript;
-    };
+    environment.systemPackages = [pkgs.jq];
 
     # Ensure cloud state directories exist.
     environment.etc."tmpfiles.d/aos-cloud-init.conf" = {
@@ -717,60 +699,73 @@ in
       '';
     };
 
+    # Four systemd service stages run the cloud-init logic.
+    #
+    # Migrated from `/bin/sh /etc/aos/cloud-init/<stage>.sh` (stage 6
+    # of the systemd refactor, spec v3.1 §6.2). Each service now uses
+    # the `script = ...;` option. At eval time `serviceOptions.config
+    # = mkMerge [...]` compiles each script into a derivation via
+    # `makeJobScript` and sets `serviceConfig.ExecStart` to that
+    # derivation's executable path. The `/etc/aos/cloud-init/*.sh`
+    # files are no longer staged — the rendered unit files reference
+    # the scripts by their /nix/store/.../unit-script-<name>-start/
+    # path directly. This also removes the CLAUDE.md rule violation
+    # of using `/bin/sh` outside the rootfs bootstrap chain.
+
     # Stage 1: cloud-init-local (before networking)
     systemd.services."cloud-init-local" = {
       description = "Cloud-Init Local Stage (hostname, network config)";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
       before = [
         "systemd-networkd.service"
         "cloud-init-network.service"
       ];
-      after = [ "local-fs.target" ];
+      after = ["local-fs.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "/bin/sh /etc/aos/cloud-init/local.sh";
       };
+      script = localScript;
     };
 
     # Stage 2: cloud-init-network (role detection)
     systemd.services."cloud-init-network" = {
       description = "Cloud-Init Network Stage (role detection)";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
       after = [
         "cloud-init-local.service"
         "network-online.target"
       ];
-      wants = [ "network-online.target" ];
+      wants = ["network-online.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "/bin/sh /etc/aos/cloud-init/network.sh";
       };
+      script = networkScript;
     };
 
     # Stage 3: cloud-init-config (users, ssh keys, firewall, k8s)
     systemd.services."cloud-init-config" = {
       description = "Cloud-Init Config Stage (users, firewall, k8s config)";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "cloud-init-network.service" ];
+      wantedBy = ["multi-user.target"];
+      after = ["cloud-init-network.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "/bin/sh /etc/aos/cloud-init/config.sh";
       };
+      script = configScript;
     };
 
     # Stage 4: cloud-init-final (reload services, boot-finished)
     systemd.services."cloud-init-final" = {
       description = "Cloud-Init Final Stage (service reload, boot marker)";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "cloud-init-config.service" ];
+      wantedBy = ["multi-user.target"];
+      after = ["cloud-init-config.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "/bin/sh /etc/aos/cloud-init/final.sh";
       };
+      script = finalScript;
     };
   };
 }
