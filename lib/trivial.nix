@@ -33,6 +33,14 @@
   compose = f: g: x:
     f (g x);
 
+  ## Compute the fixed point of a function `f : self -> self`. `fix f`
+  ## is `f (fix f)`. Used to build mutually-recursive data structures
+  ## (e.g. the module system's config ← modules ← config cycle) where
+  ## Nix's laziness provides the termination.
+  ## # Type
+  ## `(a -> a) -> a`
+  fix = f: let x = f x; in x;
+
   ## Apply a function if the value is not null, otherwise return null.
   ## # Type
   ## `(a -> b) -> a | null -> b | null`
