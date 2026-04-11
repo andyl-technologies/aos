@@ -251,6 +251,7 @@ in {
     tla = import ./lib/testing/tla.nix {inherit pkgs lib;};
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
+    module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
     # Module-level VM checks (from server system, for backwards compat)

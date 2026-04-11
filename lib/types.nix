@@ -237,6 +237,26 @@ in {
     merge = lastValue;
   };
 
+  ## A path that is known to live inside the Nix store. Matches nixpkgs'
+  ## `types.pathInStore` — used to harden options that should never
+  ## reference /etc, /home, or other host paths (since AOS is a
+  ## hermetic, image-based distribution those paths don't exist on the
+  ## target anyway, and accidentally embedding them in the closure
+  ## leaks non-store references).
+  ##
+  ## The check accepts both Nix path values and strings that begin
+  ## with `/nix/store/`. It does NOT validate that the referenced
+  ## store path exists (that's a build-time concern, not an
+  ## eval-time one).
+  pathInStore = {
+    name = "pathInStore";
+    description = "path inside the Nix store";
+    check = v:
+      (builtins.isPath v || builtins.isString v)
+      && builtins.match "/nix/store/[^/]+(/.*)?" (builtins.toString v) != null;
+    merge = lastValue;
+  };
+
   package = {
     name = "package";
     description = "package (derivation)";

@@ -116,6 +116,79 @@
   mkAfter = value: mkOrder 1500 value;
 
   # ---------------------------------------------------------------------------
+  # mkEnableOption — shorthand for `enable = mkOption { type = bool; ... };`
+  # ---------------------------------------------------------------------------
+  #
+  # Matches nixpkgs' `lib.mkEnableOption` (lib/options.nix). Produces a
+  # boolean option that defaults to `false` and has a `description`
+  # phrased as "Whether to enable <description>." — which is the
+  # conventional way NixOS modules introduce feature toggles.
+  mkEnableOption = nameOrDescription:
+    mkOption {
+      type = types.bool;
+      default = false;
+      example = true;
+      description = "Whether to enable ${nameOrDescription}.";
+    };
+
+  # ---------------------------------------------------------------------------
+  # mkPackageOption — shorthand for a typed package-valued option
+  # ---------------------------------------------------------------------------
+  #
+  # Matches nixpkgs' `lib.mkPackageOption` (lib/options.nix). Produces a
+  # `types.package` option whose default is `pkgs.<name>` (walking a
+  # list of path components if `name` is a list, to support nested
+  # package sets), with a description that spells out how to override.
+  #
+  # Arguments:
+  #   pkgs            — the package set to look the default up in.
+  #                     Typically the caller passes its own `pkgs`.
+  #   name            — string or list of strings identifying the default
+  #                     package, e.g. "coreutils" or [ "python3" "pkgs" "numpy" ].
+  #   default         — override the automatic pkgs.${name} default.
+  #   nullable        — when true, the option type becomes `nullOr package`
+  #                     and the default (if not provided) is `null`.
+  #   example         — example value shown in docs; defaults to the default.
+  #   extraDescription — extra prose appended to the generated description.
+  mkPackageOption = pkgsArg: name: {
+    default ? null,
+    nullable ? false,
+    example ? null,
+    extraDescription ? "",
+  }: let
+    nameList =
+      if builtins.isList name
+      then name
+      else [name];
+    displayName = builtins.concatStringsSep "." nameList;
+    resolveDefault = builtins.foldl' (acc: n: acc.${n}) pkgsArg nameList;
+    actualDefault =
+      if default != null
+      then default
+      else if nullable
+      then null
+      else resolveDefault;
+  in
+    mkOption {
+      type =
+        if nullable
+        then types.nullOr types.package
+        else types.package;
+      default = actualDefault;
+      example =
+        if example != null
+        then example
+        else actualDefault;
+      description = ''
+        The ${displayName} package to use.${
+          if extraDescription != ""
+          then "\n\n${extraDescription}"
+          else ""
+        }
+      '';
+    };
+
+  # ---------------------------------------------------------------------------
   # Internal: type predicates
   # ---------------------------------------------------------------------------
   isMkIf = v: builtins.isAttrs v && v ? _type && v._type == "if";
@@ -655,4 +728,5 @@ in {
     ;
   inherit mkOverride mkDefault mkForce;
   inherit mkOrder mkBefore mkAfter;
+  inherit mkEnableOption mkPackageOption;
 }
