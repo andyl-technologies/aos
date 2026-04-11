@@ -469,8 +469,25 @@
             # Keep only definitions at the winning priority
             priorityFilteredDefs = builtins.filter (d: d._priority == minPriority) unwrappedDefs;
 
-            # Determine the merged value
-            mergedValue =
+            # Enforce `readOnly`. Matches nixpkgs' behaviour at
+            # `lib/modules.nix:1132-1144`: a read-only option may have
+            # at most one definition — anything more is an error. This
+            # intentionally runs BEFORE the merge so the error message
+            # can list every conflicting def with its source file.
+            _readOnlyCheck =
+              if (decl.option.readOnly or false) && builtins.length priorityFilteredDefs > 1
+              then
+                throw ''
+                  The option '${pathStr}' is read-only, but it has ${builtins.toString (builtins.length priorityFilteredDefs)} definitions:
+                  ${builtins.concatStringsSep "\n" (
+                    builtins.map (d: "  - in ${d.file or "<unknown>"}: ${builtins.toJSON d.value}") priorityFilteredDefs
+                  )}
+                ''
+              else null;
+
+            # Determine the merged value. `_readOnlyCheck` is forced
+            # via `seq` so the throw above fires before the merge runs.
+            mergedValue = builtins.seq _readOnlyCheck (
               if priorityFilteredDefs == []
               then
                 if !(isNoDefault decl.option.default)
@@ -479,7 +496,8 @@
               else let
                 rawMerged = optType.merge decl.path priorityFilteredDefs;
               in
-                rawMerged;
+                rawMerged
+            );
 
             # Apply the apply function if present
             finalValue =
