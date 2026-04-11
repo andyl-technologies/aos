@@ -180,6 +180,45 @@ in {
         description = "systemd Network Management";
         extraGroups = [];
       };
+      # UIDs 193–196 are consumed by systemd units that hard-code
+      # `User=systemd-<name>` in their shipped unit files — the
+      # accounts must exist even when the corresponding daemon isn't
+      # started by the active profile, otherwise unit activation
+      # fails at startup with "unknown user". Added in the merge of
+      # the `systemd-features` branch, which enables `resolved`,
+      # `timesyncd`, `oomd`, and `coredump` in the systemd build.
+      systemd-resolve = {
+        uid = 193;
+        group = "systemd-resolve";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Resolver";
+        extraGroups = [];
+      };
+      systemd-timesync = {
+        uid = 194;
+        group = "systemd-timesync";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Time Synchronization";
+        extraGroups = [];
+      };
+      systemd-oom = {
+        uid = 195;
+        group = "systemd-oom";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Userspace OOM Killer";
+        extraGroups = [];
+      };
+      systemd-coredump = {
+        uid = 196;
+        group = "systemd-coredump";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Core Dumper";
+        extraGroups = [];
+      };
     };
 
     aos.users.groups = {
@@ -205,6 +244,22 @@ in {
       };
       systemd-network = {
         gid = 192;
+        members = [];
+      };
+      systemd-resolve = {
+        gid = 193;
+        members = [];
+      };
+      systemd-timesync = {
+        gid = 194;
+        members = [];
+      };
+      systemd-oom = {
+        gid = 195;
+        members = [];
+      };
+      systemd-coredump = {
+        gid = 196;
         members = [];
       };
     };
