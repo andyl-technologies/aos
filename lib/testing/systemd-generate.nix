@@ -1,9 +1,9 @@
 # lib/testing/systemd-generate.nix — Stage-3 full-pipeline check.
 #
 # Drives `modules/systemd/system.nix` end-to-end: declare a handful of
-# representative services / timers via the typed `systemdNew.*` options,
+# representative services / timers via the typed `systemd.*` options,
 # evalModules with the real system.nix module, force-build the resulting
-# `system.build.systemdNewSystemUnits` derivation, and inspect its output
+# `system.build.systemdSystemUnits` derivation, and inspect its output
 # directory to assert that every expected file and symlink was produced.
 #
 # Complements `lib/testing/systemd-lib.nix`, which tests the individual
@@ -28,7 +28,7 @@
   # system.nix / _lib.nix / _unit-options.nix, not at an unrelated
   # module deep in modules/services/.
   syntheticConfig = {
-    config.systemdNew = {
+    config.systemd = {
       # A plain service with a compiled script.
       services.hello-world = {
         description = "Hello world stage-3 service";
@@ -73,15 +73,15 @@
     inherit pkgs lib;
   };
 
-  systemUnits = result.config.system.build.systemdNewSystemUnits;
+  systemUnits = result.config.system.build.systemdSystemUnits;
 
   # Pull out the rendered unit texts at eval time so we can include
   # spot-checks at build time without having to grep the output dir
   # for every single assertion.
-  helloService = result.config.systemdNew.units."hello-world.service".text;
-  withRequiresService = result.config.systemdNew.units."with-requires.service".text;
-  periodicTimer = result.config.systemdNew.units."periodic.timer".text;
-  myTarget = result.config.systemdNew.units."my-target.target".text;
+  helloService = result.config.systemd.units."hello-world.service".text;
+  withRequiresService = result.config.systemd.units."with-requires.service".text;
+  periodicTimer = result.config.systemd.units."periodic.timer".text;
+  myTarget = result.config.systemd.units."my-target.target".text;
 
   containsStr = needle: haystack:
     builtins.match ".*${lib.escapeRegex needle}.*" haystack != null;
