@@ -398,35 +398,53 @@ in {
             else go (acc ++ [h]) t;
       in
         go [] allKeys;
-    in
-      builtins.listToAttrs (
+      # For each key, collect its raw defs, unwrap override / mkIf /
+      # mkMerge markers via dischargeProperties, and — critically —
+      # drop keys whose def list became empty after filtering. A key
+      # might be present in the outer attrset only as a `mkIf false`
+      # contribution; in that case the key should not appear in the
+      # final merged value at all, rather than hitting elemType.merge
+      # with `[]` (which crashes any merge using `lastValue`).
+      perKeyEntries = builtins.concatLists (
         builtins.map (
           key: let
-            keyDefs = builtins.filter (d: builtins.hasAttr key d.value) (
-              builtins.map (d: {
-                file = d.file;
-                value = d.value;
-              })
-              defs
-            );
+            keyDefs =
+              builtins.filter (d: builtins.hasAttr key d.value)
+              (
+                builtins.map (d: {
+                  file = d.file;
+                  value = d.value;
+                })
+                defs
+              );
             valueDefs =
               builtins.map (d: {
                 file = d.file;
                 value = d.value.${key};
               })
               keyDefs;
-            # Unwrap override markers at the sub-attribute level and keep
-            # only defs at the winning priority. This lets
+            # Unwrap override / mkIf / mkMerge markers at the sub-
+            # attribute level and keep only defs at the winning
+            # priority. This lets
             #   `some.nested.field = lib.mkDefault "…";`
-            # work exactly like a top-level option definition.
+            # and
+            #   `some.nested.field = lib.mkIf cond "…";`
+            # work exactly like top-level option definitions.
             filteredDefs = dischargeProperties valueDefs;
-          in {
-            name = key;
-            value = elemType.merge (loc ++ [key]) filteredDefs;
-          }
+          in
+            if filteredDefs == []
+            then []
+            else [
+              {
+                name = key;
+                value = elemType.merge (loc ++ [key]) filteredDefs;
+              }
+            ]
         )
         uniqueKeys
       );
+    in
+      builtins.listToAttrs perKeyEntries;
   };
 
   ## # Type
