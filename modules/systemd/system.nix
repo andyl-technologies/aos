@@ -1,26 +1,17 @@
-##! modules/systemd/system.nix — Stage 2 systemd module (parallel / stage 3)
+##! modules/systemd/system.nix — Stage 2 systemd module
 ##!
-##! Declares the typed systemd.* option tree (services, timers, sockets, …),
-##! wires `systemd.units` via the *-ToUnit rendering functions, and produces
-##! `system.build.systemdNewSystemUnits` — a derivation whose output is a
-##! directory matching /etc/systemd/system.
+##! Declares the typed `systemd.*` option tree (services, timers, sockets,
+##! targets, paths, slices, mounts, automounts, units, plus the package /
+##! packages / globalEnvironment plumbing), wires `systemd.units` via the
+##! *-ToUnit rendering functions in `_lib.nix`, and produces
+##! `system.build.systemdSystemUnits` — a derivation whose output is a
+##! directory matching `/etc/systemd/system/`.
 ##!
-##! Stage 3 only. For this stage the options and the derivation live under
-##! a *New*-suffixed namespace (`systemdNew.*` and
-##! `system.build.systemdNewSystemUnits`) so that the existing untyped
-##! `systemd.services` / `systemd.timers` options in modules/base/build.nix
-##! and the old `renderUnit` / `renderTimer` pipeline can coexist with the
-##! new typed pipeline. Stage 4 atomically:
-##!   * renames `systemdNew` to `systemd` here,
-##!   * deletes the old option declarations and renderers from build.nix,
-##!   * replaces `${unitScripts}` / `${timerScripts}` in the toplevel build
-##!     with a single `ln -s ${config.system.build.systemdSystemUnits}
-##!     $out/etc/systemd/system` line.
-##!
-##! Nothing consumes `systemdNew.*` yet (no module has been migrated over),
-##! so the generated `systemdNewSystemUnits` derivation is effectively empty
-##! — just the `systemd.packages`-contributed units, if any. The point of
-##! stage 3 is to prove the wiring eval-types, parses, and builds.
+##! `modules/base/build.nix` pulls the produced directory into the
+##! toplevel with one `ln -s ${config.system.build.systemdSystemUnits}
+##! $out/etc/systemd/system` line. The previous untyped `renderUnit` /
+##! `renderTimer` heredoc pipeline has been deleted as part of spec v3.1
+##! stage 4.
 {
   config,
   lib,
@@ -35,7 +26,7 @@
     inherit lib systemdLib systemdUnitOptions;
   };
 
-  cfg = config.systemdNew;
+  cfg = config.systemd;
 
   # --- globalEnvironment pre-merge (spec §4.2) --------------------------
   #
@@ -73,7 +64,7 @@
     // lib.listToAttrs (builtins.map (withName systemdLib.mountToUnit) cfg.mounts)
     // lib.listToAttrs (builtins.map (withName systemdLib.automountToUnit) cfg.automounts);
 in {
-  options.systemdNew = {
+  options.systemd = {
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.systemd;
@@ -95,7 +86,7 @@ in {
         Their unit files are symlinked into `/etc/systemd/system/` at
         image build time by `generateUnits`. This is how a module
         registers an upstream-provided unit without re-declaring it
-        via `systemdNew.services.<name>`.
+        via `systemd.services.<name>`.
       '';
     };
 
@@ -104,7 +95,7 @@ in {
       default = {};
       description = ''
         Environment variables merged into every
-        `systemdNew.services.<name>.environment`. Matches nixpkgs
+        `systemd.services.<name>.environment`. Matches nixpkgs
         semantics: per-service values win over globals. Applied as a
         pre-merge step in this module (see the module source), rather
         than inside `_lib.nix`, so the library stays a pure function
@@ -167,36 +158,47 @@ in {
         Generic escape-hatch unit type. Modules that want to ship raw
         unit text — e.g. to extend an upstream systemd.packages-provided
         unit via `overrideStrategy = "asDropin"` — can declare entries
-        here directly. The `systemdNew.services` / `systemdNew.targets`
+        here directly. The `systemd.services` / `systemd.targets`
         / etc. renderers feed into this attrset automatically in
-        `config.systemdNew.units` below.
+        `config.systemd.units` below.
       '';
     };
   };
 
+  # Declare `system.build.systemdSystemUnits` as a real option so
+  # `modules/base/build.nix` can read it via `config.system.build.
+  # systemdSystemUnits`. It's defined below in `config` and consumed
+  # by build.nix's toplevel script via a single `ln -s` line.
+  options.system.build.systemdSystemUnits = lib.mkOption {
+    type = lib.types.package;
+    description = ''
+      Derivation whose output is an assembled `/etc/systemd/system/`
+      directory produced by `generateUnits`. Staged into the toplevel
+      by `modules/base/build.nix`.
+    '';
+  };
+
   config = {
-    # Merge the rendered unit attrsets back into `systemdNew.units` so
+    # Merge the rendered unit attrsets back into `systemd.units` so
     # `generateUnits` can see everything (both raw unit text from
     # modules that bypassed the typed options and compiled text from
     # the *-ToUnit renderers) in a single place.
-    systemdNew.units = renderedUnits;
+    systemd.units = renderedUnits;
 
     # Expose the /etc/systemd/system directory as a single derivation.
-    # Stage 4 will wire this into `$out/etc/systemd/system` via one
-    # `ln -s` line in `modules/base/build.nix`'s toplevel script. For
-    # stage 3 the derivation just sits alongside the old `${unitScripts}`
-    # / `${timerScripts}` pipeline without being consumed.
-    system.build.systemdNewSystemUnits = systemdLib.generateUnits {
+    # `modules/base/build.nix` wires this into `$out/etc/systemd/system`
+    # via one `ln -s` line in its toplevel script.
+    system.build.systemdSystemUnits = systemdLib.generateUnits {
       type = "system";
-      units = config.systemdNew.units;
+      units = config.systemd.units;
       # AOS stage-2: systemd finds upstream units at
       # /lib/systemd/system/ natively (see spec §5.5 + the
       # `0001-remove-usr-lib-unit-lookup-paths.patch` in
       # `pkgs/system/systemd.nix`). Empty lists are fine here.
       upstreamUnits = [];
       upstreamWants = [];
-      packages = config.systemdNew.packages;
-      package = config.systemdNew.package;
+      packages = config.systemd.packages;
+      package = config.systemd.package;
     };
   };
 }

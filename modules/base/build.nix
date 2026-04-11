@@ -3,10 +3,16 @@
 ##! Declares the core options that the image builder and deploy bundle depend on:
 ##!   - environment.systemPackages  — runtime packages accumulated by all modules
 ##!   - environment.etc             — files to install in /etc
-##!   - systemd.services            — systemd unit definitions
 ##!   - system.build.toplevel       — the top-level system derivation
 ##!   - system.build.kernel         — the kernel derivation
 ##!   - system.build.initrd         — the initrd derivation
+##!
+##! systemd unit / timer / socket / etc. definitions now live in
+##! modules/systemd/system.nix under the typed `systemd.*` option tree.
+##! The toplevel build script below pulls them in as a single
+##! `ln -s ${config.system.build.systemdSystemUnits} $out/etc/systemd/system`
+##! line — the derivation behind `systemdSystemUnits` is assembled by
+##! the ported `generateUnits` function in modules/systemd/_lib.nix.
 {
   config,
   pkgs,
@@ -24,143 +30,6 @@
         else "# skipping ${name} (no text or source attribute)"
     )
     config.environment.etc
-  );
-
-  # --- Render systemd units ---
-  renderUnit = name: unit: let
-    section = secName: attrs:
-      "[${secName}]\n"
-      + lib.concatStringsSep "\n" (
-        lib.mapAttrsToList (
-          k: v:
-            if builtins.isBool v
-            then
-              (
-                if v
-                then "${k}=yes"
-                else "${k}=no"
-              )
-            else "${k}=${toString v}"
-        )
-        attrs
-      );
-    unitSection =
-      {
-        Description = unit.description;
-      }
-      // (
-        if unit ? after
-        then {After = lib.concatStringsSep " " unit.after;}
-        else {}
-      )
-      // (
-        if unit ? wants
-        then {Wants = lib.concatStringsSep " " unit.wants;}
-        else {}
-      )
-      // (
-        if unit ? before
-        then {Before = lib.concatStringsSep " " unit.before;}
-        else {}
-      );
-    installSection =
-      if unit ? wantedBy
-      then {WantedBy = lib.concatStringsSep " " unit.wantedBy;}
-      else {};
-  in ''
-    ${section "Unit" unitSection}
-    ${section "Service" unit.serviceConfig}
-    ${
-      if installSection != {}
-      then section "Install" installSection
-      else ""
-    }
-  '';
-
-  unitScripts = lib.concatStringsSep "\n" (
-    lib.mapAttrsToList (
-      name: unit:
-        if unit ? description && unit ? serviceConfig
-        then
-          ''
-            mkdir -p $out/etc/systemd/system
-            cat > $out/etc/systemd/system/${name}.service << 'UNITEOF'
-            ${renderUnit name unit}
-            UNITEOF
-          ''
-          + (
-            if unit ? wantedBy
-            then
-              lib.concatStringsSep "\n" (
-                builtins.map (target: ''
-                  mkdir -p $out/etc/systemd/system/${target}.wants
-                  ln -sfn ../${name}.service $out/etc/systemd/system/${target}.wants/${name}.service
-                '')
-                unit.wantedBy
-              )
-            else ""
-          )
-        else "# skipping unit ${name} (incomplete definition)"
-    )
-    config.systemd.services
-  );
-
-  # --- Render systemd timers ---
-  renderTimer = name: timer: let
-    timerSection = lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (
-        k: v:
-          if builtins.isBool v
-          then
-            (
-              if v
-              then "${k}=yes"
-              else "${k}=no"
-            )
-          else "${k}=${toString v}"
-      )
-      timer.timerConfig
-    );
-    installSection =
-      if timer ? wantedBy
-      then "[Install]\nWantedBy=${lib.concatStringsSep " " timer.wantedBy}"
-      else "";
-  in ''
-    [Unit]
-    Description=${timer.description}
-
-    [Timer]
-    ${timerSection}
-
-    ${installSection}
-  '';
-
-  timerScripts = lib.concatStringsSep "\n" (
-    lib.mapAttrsToList (
-      name: timer:
-        if timer ? description && timer ? timerConfig
-        then
-          ''
-            mkdir -p $out/etc/systemd/system
-            cat > $out/etc/systemd/system/${name}.timer << 'TIMEREOF'
-            ${renderTimer name timer}
-            TIMEREOF
-          ''
-          + (
-            if timer ? wantedBy
-            then
-              lib.concatStringsSep "\n" (
-                builtins.map (target: ''
-                  mkdir -p $out/etc/systemd/system/${target}.wants
-                  ln -sfn ../${name}.timer $out/etc/systemd/system/${target}.wants/${name}.timer
-                '')
-                timer.wantedBy
-              )
-            else ""
-          )
-        else "# skipping timer ${name} (incomplete definition)"
-    )
-    config.systemd.timers
   );
 
   # --- Build the system PATH from systemPackages ---
@@ -231,22 +100,10 @@ in {
       '';
     };
 
-    ## Systemd service unit definitions.
-    systemd.services = lib.mkOption {
-      type = lib.types.attrsOf lib.types.anything;
-      default = {};
-      description = ''
-        Set of systemd service units. Each attribute maps a unit name to an
-        attrset with description, serviceConfig, wantedBy, after, wants, etc.
-      '';
-    };
-
-    ## Systemd timer unit definitions.
-    systemd.timers = lib.mkOption {
-      type = lib.types.attrsOf lib.types.anything;
-      default = {};
-      description = "Set of systemd timer units.";
-    };
+    # `systemd.services` / `systemd.timers` and the rest of the
+    # typed systemd.* option tree live in modules/systemd/system.nix
+    # now (spec v3.1 stage 4). The stage-3 `systemdNew.*` alias has
+    # been renamed back to `systemd.*` in the same commit.
 
     system.build = {
       ## The top-level system derivation (image builder entry point).
@@ -311,16 +168,16 @@ in {
             {
               name = "build-toplevel";
               script = ''
-                mkdir -p $out/etc/aos $out/bin $out/sbin
+                mkdir -p $out/etc/aos $out/bin $out/sbin $out/etc/systemd
 
                 # Render /etc files
                 ${etcScript}
 
-                # Render systemd units
-                ${unitScripts}
-
-                # Render systemd timers
-                ${timerScripts}
+                # Stage the typed systemd unit directory produced by
+                # modules/systemd/system.nix's `generateUnits` call.
+                # Replaces the old renderUnit/renderTimer heredoc
+                # pipeline (spec v3.1 stage 4).
+                ln -sfn ${config.system.build.systemdSystemUnits} $out/etc/systemd/system
 
                 # Create system PATH manifest
                 cat > $out/etc/aos/system-path << 'PATHEOF'
