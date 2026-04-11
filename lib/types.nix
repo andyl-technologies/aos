@@ -44,31 +44,51 @@
   # marker, matching the convention used by lib/modules.nix.
   isOverride = v: builtins.isAttrs v && v ? _type && v._type == "override";
 
-  # Helper: given a list of defs whose values may or may not be wrapped in
-  # override markers (`mkDefault` / `mkForce` / …), unwrap each one, tag it
-  # with its effective priority (normal = 100), then drop every def that
-  # isn't at the minimum (winning) priority. The result is a list of defs
-  # ready for a type's merge function — matching what `lib/modules.nix`
-  # does at the top level of each option, but applied here so that nested
-  # override markers inside an `attrsOf` / `listOf` get processed on the
-  # way down. Without this, patterns like
-  #   `serviceConfig.ExecStart = lib.mkDefault "…";`
-  # inside a submodule's `config = mkMerge [ (mkIf …) ]` block would leak
-  # the override wrapper into the final value.
+  # Helper: check if a value is an `mkIf` conditional marker.
+  isMkIf = v: builtins.isAttrs v && v ? _type && v._type == "if";
+
+  # Helper: check if a value is an `mkMerge` marker.
+  isMkMerge = v: builtins.isAttrs v && v ? _type && v._type == "merge";
+
+  # Recursively peel mkIf / mkMerge / override markers off a single def
+  # value, accumulating priority and conditions as we go. Returns a list
+  # of sub-defs (one mkMerge can produce multiple). Each sub-def has the
+  # shape `{ file; value; _priority; _condition; }` where `_condition`
+  # is the logical AND of every mkIf condition seen along the way, and
+  # `_priority` is the innermost override priority (default 100).
+  #
+  # This is the sub-attribute equivalent of what `lib/modules.nix`'s
+  # `collectDefsAtPath` + `activeDefs` + `unwrappedDefs` pipeline does at
+  # the option level. Without it, nested patterns like
+  #     `serviceConfig.ExecStart = lib.mkDefault "…";`
+  # or
+  #     `environment.PATH = lib.mkIf (path != []) "…";`
+  # inside a submodule's `config` block would leak the raw marker into
+  # the final value and crash the type's merge function.
+  peelDef = file: condition: priority: value:
+    if isOverride value
+    then peelDef file condition value._priority value._value
+    else if isMkIf value
+    then peelDef file (condition && value._condition) priority value._value
+    else if isMkMerge value
+    then builtins.concatLists (builtins.map (v: peelDef file condition priority v) value._values)
+    else [
+      {
+        inherit file value;
+        _priority = priority;
+        _condition = condition;
+      }
+    ];
+
+  # Given a list of defs whose values may be wrapped in any combination
+  # of `mkIf` / `mkMerge` / `mkDefault` / `mkForce` / `mkOverride`, peel
+  # all markers off, drop defs whose mkIf conditions are false, and keep
+  # only the defs at the winning (lowest) override priority.
   dischargeProperties = defs: let
-    unwrapped =
-      builtins.map (
-        d:
-          if isOverride d.value
-          then
-            d
-            // {
-              value = d.value._value;
-              _priority = d.value._priority;
-            }
-          else d // {_priority = 100;}
-      )
-      defs;
+    peeled = builtins.concatLists (
+      builtins.map (d: peelDef d.file true 100 d.value) defs
+    );
+    active = builtins.filter (d: d._condition) peeled;
     minPriority =
       builtins.foldl' (
         acc: d:
@@ -77,9 +97,9 @@
           else acc
       )
       9999
-      unwrapped;
+      active;
   in
-    builtins.filter (d: d._priority == minPriority) unwrapped;
+    builtins.filter (d: d._priority == minPriority) active;
 
   # Helper: deep merge two attrsets (used as the submodule bootstrap fallback
   # and as the final deep-merge step for submodule definitions).
@@ -276,12 +296,19 @@ in {
       else throw "The option '${showLoc loc}' must be one of ${builtins.toJSON allowedValues}, but is '${builtins.toJSON val}'.";
   };
 
-  ## Supports mkBefore/mkAfter ordering markers on individual list elements.
-  ## Runs `elemType.merge` on each list element individually with a single-
-  ## definition wrapper, so element types with non-trivial merges (notably
-  ## `submodule`) get per-element evaluation. For simple element types
-  ## whose merge is `lastValue`, behaviour is unchanged vs. the pre-upgrade
-  ## version.
+  ## Supports `mkBefore` / `mkAfter` ordering markers at two levels:
+  ##   1. Wrapped around the whole definition value — `config.path =
+  ##      mkAfter [a b c];` — the marker's priority is distributed to
+  ##      every element in the inner list.
+  ##   2. Wrapped around individual list elements — `config.path =
+  ##      [ (mkBefore a) b (mkAfter c) ];` — each element carries its
+  ##      own priority.
+  ##
+  ## Runs `elemType.merge` on each list element individually with a
+  ## single-definition wrapper, so element types with non-trivial merges
+  ## (notably `submodule`) get per-element evaluation. For simple element
+  ## types whose merge is `lastValue`, behaviour is unchanged vs. the
+  ## pre-upgrade version.
   ## # Type
   ## `type -> type`
   listOf = elemType: {
@@ -289,8 +316,10 @@ in {
     description = "list of ${elemType.description}";
     check = v: builtins.isList v;
     merge = loc: defs: let
-      # Unwrap mkBefore/mkAfter priority markers on individual elements.
-      processElem = file: elem:
+      # Wrap a single list element into a priority-tagged record. Honours
+      # per-element `mkBefore` / `mkAfter` markers; otherwise inherits the
+      # def-level default priority (`defPriority`).
+      processElem = file: defPriority: elem:
         if isOrder elem
         then {
           inherit file;
@@ -300,11 +329,17 @@ in {
         else {
           inherit file;
           value = elem;
-          priority = 1000;
+          priority = defPriority;
         };
-      allElems = builtins.concatLists (
-        builtins.map (d: builtins.map (processElem d.file) d.value) defs
-      );
+      # Expand a def into its tagged element records. If the def's value
+      # is itself an order marker (`mkAfter [...]`), the inner list is
+      # extracted and the marker's priority becomes the default for every
+      # element inside it.
+      processDef = d:
+        if isOrder d.value
+        then builtins.map (processElem d.file d.value._priority) d.value._value
+        else builtins.map (processElem d.file 1000) d.value;
+      allElems = builtins.concatLists (builtins.map processDef defs);
       # Stable sort by priority (lower = earlier in the list).
       sorted = builtins.sort (a: b: a.priority < b.priority) allElems;
       resolveOne = i: e:
