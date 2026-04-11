@@ -366,16 +366,44 @@
         inherit config options pkgs lib;
       }
       // extraArgs;
+
+    # `_module.args` propagation, ported from nixpkgs'
+    # `lib/modules.nix:701-736` `applyModuleArgs` pattern.
+    #
+    # For each key the module function's argument pattern asks for,
+    # build a lazy thunk that first looks the key up in the already-
+    # built `args` attrset (which has caller-provided `extraArgs` /
+    # `specialArgs` and the standard `config` / `options` / `pkgs` /
+    # `lib`), and if absent, falls back to `config._module.args.${name}`.
+    #
+    # The critical trick is `mapAttrs` over `functionArgs loaded`: it
+    # iterates only the KEYS of the function's argument pattern
+    # (which are statically known — `functionArgs` does not force
+    # `config`), and produces an attrset whose VALUES are lazy. This
+    # breaks what would otherwise be an infinite recursion:
+    #   args ← config._module.args ← modules' config ← modules' args
+    # Only the specific module function body forcing `args.customPkg`
+    # forces `config._module.args.customPkg`, which in turn forces
+    # just the one setter module's contribution at that path.
+    #
+    # An older naive attempt — `args = … // (config._module.args or {})`
+    # — cycled because `//` forces both operands to enumerate their
+    # full key sets, which requires fully evaluating every module's
+    # config._module.args contribution before any module's args can
+    # be constructed.
+    proxyArgs =
+      if builtins.isFunction loaded
+      then
+        builtins.mapAttrs (
+          name: _:
+            args.${name}
+            or config._module.args.${name}
+        ) (builtins.functionArgs loaded)
+      else {};
+
     evaluated =
       if builtins.isFunction loaded
-      then let
-        fArgs = builtins.functionArgs loaded;
-        callArgs =
-          if fArgs == {}
-          then args
-          else builtins.intersectAttrs fArgs args // {};
-      in
-        loaded (args // {_file = file;})
+      then loaded (args // proxyArgs // {_file = file;})
       else loaded;
 
     result = {
@@ -572,6 +600,13 @@
       );
 
       # --- Phase 5: Build the final config attrset ---
+      #
+      # `_module.args` is seeded with the caller-provided `extraArgs` and
+      # `specialArgs` and extended with any module's `config._module.args.X`
+      # contribution via `allConfigMerged`. The proxy-args lookup in
+      # `evalModule` falls back through `config._module.args.<name>` to
+      # find either caller-provided or module-provided arguments.
+      # This enables the nixpkgs `_module.args` pattern (audit fix 1.3).
       finalConfig =
         builtins.foldl' (
           acc: key: let
@@ -581,7 +616,9 @@
         ) {} (builtins.attrNames mergedOptions)
         // {
           _module = {
-            args = extraArgs;
+            args =
+              extraArgs
+              // (allConfigMerged._module.args or {});
           };
         };
 
