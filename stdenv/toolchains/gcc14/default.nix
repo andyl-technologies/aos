@@ -21,9 +21,18 @@ let
     in
     fn (auto // overrides);
 
-  # Phase 1: Raw GCC 14.3.0 built with prev.gcc (11.5.0)
-  # Has prev.glibc (2.34) crt*.o in its specs dir.
+  # Phase 1: stage-1 GCC 14.3.0 built with prev.gcc (11.5.0).
+  # Has prev.glibc (2.34) crt*.o in its specs dir; pinned to prev because
+  # that is the only glibc that exists at this point. Consumed only by the
+  # tier-internal builds (binutils, linuxHeaders, glibc, bzip2) and as the
+  # host compiler for the stage-2 rebuild — never exposed downstream.
   gccRaw = callPackage ./gcc.nix { };
+
+  # Phase 4: stage-2 GCC 14.3.0 self-recompiled by gccRaw against THIS
+  # tier's glibc-2.39 / binutils-2.41 / linux-headers-6.12. This is what
+  # the wrapper (and therefore stdenv.gcc) points at, so the production
+  # compiler's closure is free of the pre-tier bootstrap chain.
+  gccStage2 = callPackage ./gcc-stage2.nix { gccStage1 = gccRaw; };
 
   scope = {
     inherit
@@ -33,8 +42,10 @@ let
       targetPlatform
       ;
 
-    # GCC wrapper: adds -B${glibc}/lib so gcc finds glibc 2.39's crt*.o
-    # instead of prev.glibc (2.34) crt*.o in GCC's specs dir.
+    # GCC wrapper around stage-2: passes -B${glibc}/lib / -idirafter
+    # ${glibc}/include for cc-wrapper-symmetry and for callers that probe
+    # `gcc -v`. Stage-2's own specs file already has these baked in, so
+    # these flags are belt-and-suspenders.
     gcc = builtins.derivation {
       name = "gcc-14.3.0-wrapped";
       system = buildPlatform.system;
@@ -47,27 +58,30 @@ let
           mkdir -p $out/bin
 
           echo '#!/bin/sh' > $out/bin/gcc
-          echo 'exec ${gccRaw}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc}/include "$@"' >> $out/bin/gcc
+          echo 'exec ${gccStage2}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc}/include "$@"' >> $out/bin/gcc
           chmod +x $out/bin/gcc
 
-          if [ -f "${gccRaw}/bin/g++" ]; then
+          if [ -f "${gccStage2}/bin/g++" ]; then
             echo '#!/bin/sh' > $out/bin/g++
-            echo 'exec ${gccRaw}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc}/include "$@"' >> $out/bin/g++
+            echo 'exec ${gccStage2}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc}/include "$@"' >> $out/bin/g++
             chmod +x $out/bin/g++
           fi
 
           [ -f "$out/bin/gcc" ] && [ ! -e "$out/bin/cc" ] && ln -sf gcc $out/bin/cc
           [ -f "$out/bin/g++" ] && [ ! -e "$out/bin/c++" ] && ln -sf g++ $out/bin/c++
 
-          # Symlink all other binaries from raw GCC
-          for f in ${gccRaw}/bin/*; do
+          # Symlink all other binaries from stage-2 GCC
+          for f in ${gccStage2}/bin/*; do
             bn=$(basename "$f")
             [ ! -e "$out/bin/$bn" ] && ln -s "$f" "$out/bin/$bn"
           done
 
-          # Symlink lib/libexec/include/share and target-specific directories
+          # Symlink lib/libexec/include/share and target-specific directories.
+          # `|| true` because ${targetPlatform.config} may not exist in stage2
+          # (Phase 2b removed the binutils-symlink subdir) and the trailing
+          # `[ -e ] && ln -s` would otherwise trip set -e.
           for d in lib lib64 libexec include share ${targetPlatform.config}; do
-            [ -e "${gccRaw}/$d" ] && ln -s "${gccRaw}/$d" "$out/$d"
+            [ -e "${gccStage2}/$d" ] && ln -s "${gccStage2}/$d" "$out/$d" || true
           done
         ''
       ];

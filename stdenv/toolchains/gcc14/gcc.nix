@@ -166,15 +166,21 @@ LIMITS_EOF
         ln -sf ${prev.binutils}/bin/$tool "$out/bin/$tool" 2>/dev/null || true
       done
 
-      # Set up so gcc finds glibc startfiles + libraries
+      # Set up so gcc finds glibc startfiles + libraries.
+      # Copy (install -m) rather than symlink: a symlink from $out into
+      # ${prev.glibc}/lib makes $out reference prev.glibc, which in turn
+      # drags the entire pre-tier chain (stage-0 glibc-2.2.5, old gccs,
+      # mes, tinycc, …) into every runtime closure that touches gcc14.
+      # Copying makes the bytes live inside $out; nix's scanner sees no
+      # store-path dependency in .o/.a files themselves.
       SPEC_DIR="$out/lib/gcc/${targetPlatform.config}/14.3.0"
       for f in ${prev.glibc}/lib/crt*.o ${prev.glibc}/lib/Scrt1.o ${prev.glibc}/lib/rcrt1.o ${prev.glibc}/lib/gcrt1.o; do
         bn="$(basename "$f")"
-        ln -sf "$f" "$SPEC_DIR/$bn" 2>/dev/null || true
+        install -m 644 "$f" "$SPEC_DIR/$bn" 2>/dev/null || true
       done
-      ln -sf ${prev.glibc}/lib/libc.a "$SPEC_DIR/libc.a" 2>/dev/null || true
-      ln -sf ${prev.glibc}/lib/libm.a "$SPEC_DIR/libm.a" 2>/dev/null || true
-      ln -sf ${prev.glibc}/lib/libpthread.a "$SPEC_DIR/libpthread.a" 2>/dev/null || true
+      install -m 644 ${prev.glibc}/lib/libc.a "$SPEC_DIR/libc.a" 2>/dev/null || true
+      install -m 644 ${prev.glibc}/lib/libm.a "$SPEC_DIR/libm.a" 2>/dev/null || true
+      install -m 644 ${prev.glibc}/lib/libpthread.a "$SPEC_DIR/libpthread.a" 2>/dev/null || true
       # Install specs file: add glibc header path.
       # Do NOT add forced -static to link specs — it conflicts with the PIE default
       # (GCC 14 has --enable-default-pie). The spec `%{!static:` condition checks
@@ -186,6 +192,17 @@ LIMITS_EOF
       # before C++ headers and breaks #include_next <stdlib.h> in cstdlib).
       ${prev.sed}/bin/sed -i '/^\*cpp:$/{n; s|^|-idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} |}' \
         "$SPEC_DIR/specs" 2>/dev/null || true
+      # Scrub the 32-char store-path hashes we just injected. The idirafter
+      # flags stay syntactically present (so bare `gcc` fails loudly on a
+      # nonexistent dir rather than silently resolving into prev's glibc),
+      # but the reference scanner no longer sees prev.glibc/prev.linuxHeaders
+      # as closure edges. Matches nixpkgs' `remove-references-to` idiom.
+      _hash_prev_glibc=$(echo "${prev.glibc}" | ${prev.sed}/bin/sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
+      _hash_prev_headers=$(echo "${prev.linuxHeaders}" | ${prev.sed}/bin/sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
+      ${prev.sed}/bin/sed -i \
+        -e "s|$_hash_prev_glibc|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" \
+        -e "s|$_hash_prev_headers|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" \
+        "$SPEC_DIR/specs"
 
       # Create libgcc_s.so linker script stub.
       # GCC was built with --disable-shared so libgcc_s.so doesn't exist,
