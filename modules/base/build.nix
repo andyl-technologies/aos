@@ -251,39 +251,8 @@ in {
       timeout = 300;
     };
 
-    system.build.initrd = pkgs.mkDerivation {
-      name = "aos-initrd";
-      src = null;
-
-      buildDeps = [
-        pkgs.coreutils
-      ];
-
-      phases = [
-        {
-          name = "build-initrd";
-          script = ''
-            mkdir -p $out
-
-            # Generate systemd-based initrd manifest.
-            # The initrd includes systemd, udevd, and modprobe for
-            # service-based boot ordering without dracut.
-            cat > $out/initrd-manifest << 'MANIFEST'
-            kernel=${pkgs.linux}
-            systemd=${pkgs.systemd}
-            modules=${lib.concatStringsSep " " config.aos.boot.initrd.modules}
-            type=systemd-initrd
-            MANIFEST
-
-            # Placeholder initrd.img — actual generation requires KVM
-            touch $out/initrd.img
-          '';
-        }
-      ];
-
-      meta = {
-        description = "AOS initrd (systemd-based initial ramdisk)";
-      };
-    };
+    # `system.build.initrd` is set by modules/systemd/initrd.nix (tier ii):
+    # it renders `boot.initrd.systemd.*` into a gzip+cpio initramfs via
+    # modules/base/initrd-builder.nix.
   };
 }

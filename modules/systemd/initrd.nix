@@ -1,31 +1,29 @@
-##! modules/systemd/initrd.nix — Stage 1 systemd module (tier i)
+##! modules/systemd/initrd.nix — Stage 1 systemd module (tier ii)
 ##!
-##! Declares the typed `boot.initrd.systemd.*` option tree for a
-##! future systemd-based initrd. Uses the `stage1*` option + type
-##! variants from `_unit-options.nix` / `_types.nix`, so modules that
-##! contribute initrd units declare them with real per-option
-##! validation exactly like stage-2 services.
+##! Declares the typed `boot.initrd.systemd.*` option tree for the
+##! systemd-based initrd and produces `system.build.initrd` by
+##! rendering the options through the stage-1 `*-ToUnit` helpers in
+##! `_lib.nix` and piping the result through `generateUnits` and then
+##! into the cpio assembler in `../base/initrd-builder.nix`.
 ##!
-##! **This is tier (i) per spec §11.3: type-level only.** No builder.
-##! `system.build.initrd` stays as the placeholder in
-##! `modules/base/build.nix`; modules can set
-##! `boot.initrd.systemd.services.<name>` today and the definitions
-##! will round-trip through `evalModules` with proper type checking,
-##! but the resulting config is not yet consumed by anything. When
-##! the real initrd builder lands (tier ii, §11.3), it will read from
-##! this option tree and produce a systemd initrd image at the
-##! `system.build.initrd` path.
+##! Uses the `stage1*` option + type variants from `_unit-options.nix`
+##! / `_types.nix`, so modules that contribute initrd units declare
+##! them with real per-option validation exactly like stage-2 services.
+##! The stage-1 option trees drop the switch-to-configuration knobs
+##! (`startAt`, `restartIfChanged`, ...) and otherwise mirror the
+##! stage-2 options.
 ##!
-##! Until then, this module exists so:
-##!   1. Modules like `modules/services/ignition.nix` can be migrated
-##!      from `systemd.services.*` (where they don't actually run,
-##!      see §6.11) to `boot.initrd.systemd.services.*` (where they
-##!      also don't run yet, but the structure is correct and the
-##!      migration is a one-line option-path rename when tier ii
-##!      lands).
-##!   2. The ported type tree is actually exercised for stage 1, so
-##!      any divergence between `stage1*` and `stage2*` options shows
-##!      up at eval time rather than during the tier-ii port.
+##! Unlike stage 2 (`system.nix`), this module does NOT fold the
+##! rendered units into a shared `systemd.units` attrset — the stage-2
+##! and stage-1 renderers produce a parallel set each, and the initrd
+##! has its own generateUnits invocation with `type = "initrd"`.
+##!
+##! Outputs (wired by the `config` block below):
+##!   * `system.build.systemdInitrdUnits` — directory matching
+##!     `/etc/systemd/system/` for the initrd, produced by
+##!     `generateUnits`. Consumed by the initrd builder.
+##!   * `system.build.initrd` — the final gzip+cpio initramfs
+##!     derivation produced by `../base/initrd-builder.nix`.
 {
   config,
   lib,
@@ -39,6 +37,30 @@
   systemdTypes = import ./_types.nix {
     inherit lib systemdLib systemdUnitOptions;
   };
+
+  cfg = config.boot.initrd.systemd;
+
+  # Render each initrd unit category through its stage-1 *-ToUnit
+  # renderer and key the result by unit file name (e.g. "foo.service").
+  # Mirrors `modules/systemd/system.nix`'s stage-2 pattern but without
+  # the `globalEnvironment` pre-merge — initrd services don't need it.
+  #
+  # The *-ToUnit renderers return `{ name; text; wantedBy; ...; }`
+  # without a `.unit` attribute; stage-2 relies on the `systemd.units`
+  # submodule type to run each entry through `makeUnit` and populate
+  # `.unit`. The initrd has no matching option tree so we call
+  # `makeUnit` ourselves — generateUnits reads `.unit` below.
+  withUnitDrv = entry: entry // {unit = systemdLib.makeUnit entry.name entry;};
+  withName = cfgToUnit: c: lib.nameValuePair c.name (withUnitDrv (cfgToUnit c));
+  renderedInitrdUnits =
+    lib.mapAttrs' (_: withName systemdLib.serviceToUnit) cfg.services
+    // lib.mapAttrs' (_: withName systemdLib.targetToUnit) cfg.targets
+    // lib.mapAttrs' (_: withName systemdLib.socketToUnit) cfg.sockets
+    // lib.mapAttrs' (_: withName systemdLib.timerToUnit) cfg.timers
+    // lib.mapAttrs' (_: withName systemdLib.pathToUnit) cfg.paths
+    // lib.mapAttrs' (_: withName systemdLib.sliceToUnit) cfg.slices
+    // lib.listToAttrs (builtins.map (withName systemdLib.mountToUnit) cfg.mounts)
+    // lib.listToAttrs (builtins.map (withName systemdLib.automountToUnit) cfg.automounts);
 in {
   options.boot.initrd.systemd = {
     enable = lib.mkEnableOption "a systemd-based initrd (tier ii, not yet implemented)";
@@ -98,8 +120,38 @@ in {
     };
   };
 
-  # No config block. When the tier-ii initrd builder arrives, this
-  # module will grow a `config = { system.build.initrd = ...; };`
-  # block that reads the option tree and produces a real initrd.
-  # See spec §11.3 for the sketch of what that builder should do.
+  # Declare `system.build.systemdInitrdUnits` as a real option so the
+  # initrd builder below (and any out-of-tree consumers) can read it.
+  options.system.build.systemdInitrdUnits = lib.mkOption {
+    type = lib.types.package;
+    description = ''
+      Derivation whose output is an assembled `/etc/systemd/system/`
+      directory for the initrd — produced by `generateUnits` over the
+      rendered `boot.initrd.systemd.*` option tree. Consumed by the
+      cpio assembler in `modules/base/initrd-builder.nix`.
+    '';
+  };
+
+  config = {
+    system.build.systemdInitrdUnits = systemdLib.generateUnits {
+      type = "initrd";
+      units = renderedInitrdUnits;
+      # AOS stage-1 symlinks upstream systemd units inside the cpio
+      # builder itself (it reads them directly from
+      # `${systemd}/lib/systemd/system/`). `generateUnits` would look
+      # under `$package/example/systemd/`, which AOS does not
+      # populate — see the TODO at `_lib.nix:510`.
+      upstreamUnits = [];
+      upstreamWants = [];
+      packages = [];
+    };
+
+    system.build.initrd = import ../base/_initrd-builder.nix {
+      inherit pkgs lib;
+      kernel = config.system.build.kernel;
+      kernelModules = config.aos.boot.initrd.modules;
+      initrdUnits = config.system.build.systemdInitrdUnits;
+      rootDevice = config.aos.filesystems.rootDevice;
+    };
+  };
 }

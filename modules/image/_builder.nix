@@ -77,6 +77,8 @@ pkgs.mkDerivation {
   buildDeps = [
     pkgs.util-linux # sfdisk
     pkgs.e2fsprogs # mkfs.ext4 -d
+    pkgs.dosfstools # mkfs.vfat
+    pkgs.mtools # mcopy to populate the vfat boot partition sandbox-free
     pkgs.coreutils # truncate, cp, mkdir, ln, cat, dd
     pkgs.grep # grep store paths from closure graph
   ];
@@ -123,6 +125,26 @@ pkgs.mkDerivation {
 
         # /sbin/init → systemd
         ln -sfn ${pkgs.systemd}/lib/systemd/systemd rootfs/sbin/init
+
+        # Runtime compatibility symlinks.
+        #
+        # /bin/bash and /bin/sh match CLAUDE.md's explicit allowance
+        # for "Shebangs inside VM rootfs init scripts" — the rootfs
+        # builder is allowed to create a /bin/sh pointing at AOS bash.
+        mkdir -p rootfs/bin
+        ln -sfn ${pkgs.bash}/bin/bash rootfs/bin/bash
+        ln -sfn ${pkgs.bash}/bin/sh rootfs/bin/sh
+
+        # /usr is populated with exactly one file: /usr/bin/env. That
+        # is the one widely-used shebang target (`#!/usr/bin/env python`
+        # etc.) and it is also what keeps systemd 259's
+        # `dir_is_empty("/usr")` check in src/core/main.c happy so
+        # stage-2 starts. Every other /usr/* path (e.g. /usr/sbin/sshd,
+        # /usr/sbin/agetty) must be replaced by an absolute Nix store
+        # path in the referring unit — we do NOT blanket /usr/* with
+        # compatibility symlinks.
+        mkdir -p rootfs/usr/bin
+        ln -sfn ${pkgs.coreutils}/bin/env rootfs/usr/bin/env
 
         # Empty machine-id signals systemd to generate one on first boot
         touch rootfs/etc/machine-id
@@ -176,10 +198,20 @@ menuentry "AOS ${name} ${version}" {
 }
 GRUB
 
-        # ── 4. Create ext4 boot partition image ───────────────────────────
-        echo "==> Creating ext4 boot image (${bootSize})"
+        # ── 4. Create vfat boot partition image ───────────────────────────
+        # FAT32 is what UEFI reads. mkfs.vfat has no -d flag, so we
+        # create an empty image, then use mtools' mcopy -s to populate
+        # it from the bootfs directory tree — sandbox-compatible, no
+        # loopback mount needed. MTOOLS_SKIP_CHECK=1 is required because
+        # mcopy otherwise refuses to write to a plain file that has no
+        # ~/.mtoolsrc entry.
+        echo "==> Creating vfat boot image (${bootSize})"
         truncate -s ${toString bootBytes} boot.img
-        mkfs.ext4 -L aos-boot -d bootfs -q boot.img
+        mkfs.vfat -F 32 -n AOSBOOT boot.img
+        export MTOOLS_SKIP_CHECK=1
+        for entry in bootfs/*; do
+          mcopy -s -i boot.img "$entry" "::"
+        done
 
         # ── 5. Assemble final GPT image ───────────────────────────────────
         echo "==> Assembling ${diskSize} GPT image"
