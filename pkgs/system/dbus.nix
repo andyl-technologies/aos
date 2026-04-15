@@ -8,6 +8,7 @@
   expat,
   libselinux,
   audit,
+  systemd,
 }:
 let
   version = "1.14.10";
@@ -31,6 +32,10 @@ mkDerivation {
     expat
     libselinux
     audit
+    # libsystemd for sd_notify + unit file installation. Systemd
+    # no longer depends on dbus at the pkg level (sd-bus replaces
+    # libdbus), so this direction is cycle-free.
+    systemd
   ];
   propagatedDeps = [ ];
 
@@ -44,15 +49,19 @@ mkDerivation {
     }
     {
       name = "configure";
+      # --enable-systemd so dbus installs lib/systemd/system/{dbus.service,dbus.socket}
+      # that AOS can pick up via systemd.packages. --sysconfdir=/etc so
+      # baked-in config lookups go to /etc/dbus-1 on the running system,
+      # not a read-only store path.
       script = ''
         ./configure \
           --prefix=$out \
-          --sysconfdir=$out/etc \
-          --localstatedir=$out/var \
+          --sysconfdir=/etc \
+          --localstatedir=/var \
           --disable-tests \
           --disable-doxygen-docs \
           --disable-xml-docs \
-          --disable-systemd \
+          --enable-systemd \
           --enable-user-session \
           --disable-apparmor \
           --enable-selinux \
@@ -68,8 +77,16 @@ mkDerivation {
     }
     {
       name = "install";
+      # DESTDIR=$out redirects /etc and /var install paths under $out
+      # (writable nix build dir) so the runtime paths stay as /etc/...
+      # and /var/... per the --sysconfdir/--localstatedir above.
       script = ''
-        make install DESTDIR=""
+        make install DESTDIR=$out
+        # Flatten $out/$out/... concat from DESTDIR + --prefix.
+        if [ -d "$out$out" ]; then
+          cp -a $out$out/. $out/
+          rm -rf $out/nix
+        fi
       '';
     }
   ];

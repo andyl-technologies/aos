@@ -29,7 +29,6 @@ let
 
     # Host keys (ed25519 preferred, RSA as fallback).
     HostKey /etc/ssh/ssh_host_ed25519_key
-    HostKey /etc/ssh/ssh_host_rsa_key
 
     # Authentication.
     PermitRootLogin ${cfg.permitRootLogin}
@@ -47,7 +46,10 @@ let
 
     # Disable unused authentication methods.
     ChallengeResponseAuthentication no
-    GSSAPIAuthentication no
+    # GSSAPIAuthentication intentionally omitted: AOS openssh is built
+    # without Kerberos/GSSAPI support, so sshd refuses to start if the
+    # directive appears at all ("Unsupported option GSSAPIAuthentication"
+    # at config parse time). Disabled at build time is the secure default.
     HostbasedAuthentication no
     PermitEmptyPasswords no
 
@@ -298,6 +300,25 @@ in
 
     environment.systemPackages = [ pkgs.openssh ];
 
+    # sshd's privilege-separation user. Required at startup — sshd
+    # aborts with "Privilege separation user sshd does not exist"
+    # if it's missing. The chroot dir is /var/empty (compiled in via
+    # --with-privsep-path=/var/empty in pkgs/networking/openssh.nix)
+    # and must be root-owned + not group/world-writable; it is
+    # created by the tmpfiles rule below.
+    aos.users.users.sshd = {
+      uid = 198;
+      group = "sshd";
+      home = "/var/empty";
+      shell = "/sbin/nologin";
+      description = "OpenSSH Privilege Separation";
+      extraGroups = [];
+    };
+    aos.users.groups.sshd = {
+      gid = 198;
+      members = [];
+    };
+
     # /etc/ssh/sshd_config — OpenSSH server configuration.
     environment.etc."ssh/sshd_config" = {
       text = sshdConfig;
@@ -324,27 +345,55 @@ in
       };
     };
 
-    # Generate SSH host keys if they do not exist.
-    # This runs once on first boot (via Ignition or this fallback).
+    # Generate SSH host keys on first boot, writing them directly to
+    # /var/etc/ssh/ (persistent ext4 root partition). The
+    # etc-overlay-setup service creates symlinks
+    # /etc/ssh/ssh_host_*_key → /var/etc/ssh/ssh_host_*_key, so sshd
+    # reads the correct files through the symlinks.
+    #
+    # Why not `ssh-keygen -A`? That generates into openssh's compiled-in
+    # sysconfdir (/etc/ssh), which AOS mounts as an overlay with a
+    # tmpfs upper layer — keys written there are wiped on reboot.
+    # Passing explicit -f targets forces writes to go to the root fs.
+    #
+    # Why not guard with `-N ""` only? `ssh-keygen -f path` aborts on
+    # interactive prompt if called without stdin redirection when the
+    # target file exists; the per-type `test ! -f` guard avoids that.
     systemd.services."sshd-keygen" = {
       description = "Generate SSH Host Keys";
-      wantedBy = [ "sshd-keygen.target" ];
-      before = [ "sshd-keygen.target" ];
+      # Hook the keygen into both `sshd-keygen.target` (the systemd
+      # idiom) and `sshd.service` directly. Without the `sshd.service`
+      # wantedBy, sshd-keygen.target is a stub target with no upstream
+      # ordering, so sshd.service's `Wants=sshd-keygen.target` doesn't
+      # pull the keygen into the transaction and sshd starts with no
+      # host keys on first boot.
+      wantedBy = [ "sshd-keygen.target" "sshd.service" ];
+      before = [ "sshd-keygen.target" "sshd.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = [
-          "${pkgs.openssh}/bin/ssh-keygen -A"
-        ];
-        ExecCondition = "${pkgs.coreutils}/bin/test ! -f /etc/ssh/ssh_host_ed25519_key";
       };
+      script = ''
+        set -euo pipefail
+        install -d -m 0755 -o root -g root /var/etc/ssh
+
+        key=/var/etc/ssh/ssh_host_ed25519_key
+        if [ ! -s "$key" ]; then
+          echo "sshd-keygen: generating ed25519 host key at $key"
+          ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$key" </dev/null
+        fi
+      '';
     };
 
-    # Ensure the authorized_keys directory exists.
+    # Ensure the authorized_keys directory and sshd privsep chroot exist.
     environment.etc."tmpfiles.d/aos-ssh.conf" = {
       text = ''
         # Ensure SSH authorized_keys directory exists.
         d /etc/ssh/authorized_keys 0755 root root -
+
+        # sshd privilege-separation chroot. Must be root-owned and
+        # NOT group/world-writable — sshd enforces both at startup.
+        d /var/empty 0755 root root -
       '';
     };
 
