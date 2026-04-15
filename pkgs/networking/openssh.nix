@@ -37,13 +37,19 @@ mkDerivation {
     }
     {
       name = "configure";
+      # --sysconfdir=/etc/ssh so the compiled-in default for every ssh
+      # tool (ssh-keygen -A, sshd default config lookup, etc.) points
+      # at the real runtime config dir. Using $out/etc/ssh bakes a
+      # store path into those defaults, which makes `ssh-keygen -A`
+      # refuse to regenerate keys because it sees the store's
+      # pre-staged files and short-circuits.
       script = ''
         ./configure \
           --prefix=$out \
-          --sysconfdir=$out/etc/ssh \
+          --sysconfdir=/etc/ssh \
           --with-ssl-dir=${openssl} \
           --with-zlib=${zlib} \
-          --with-privsep-path=$out/var/empty/sshd \
+          --with-privsep-path=/var/empty \
           --with-privsep-user=sshd \
           --without-pam \
           --disable-strip
@@ -57,10 +63,26 @@ mkDerivation {
     }
     {
       name = "install";
+      # `make install-nokeys` mirrors `install` but skips the
+      # `install-sysconf-keys` hook that runs `ssh-keygen -A` during
+      # the build. Without it, the package would ship the same host
+      # keys to every AOS install — a critical security problem, and
+      # also the reason `sshd-keygen.service` couldn't regenerate them
+      # at runtime (the compiled-in default saw the store's pre-staged
+      # keys as already-present). Pair with `--sysconfdir=/etc/ssh`
+      # above so the produced ssh tools write to the runtime config
+      # dir, not the (read-only) store path.
       script = ''
-        # Strip setuid bits from install (not available in Nix sandbox)
         sed -i 's/-m 4711/-m 0755/g' Makefile
-        make install
+        # DESTDIR redirects all install paths under $out, so the
+        # `install-sysconf` hook creates $out/etc/ssh/ (writable Nix
+        # build dir) rather than /etc/ssh/ (which only exists on the
+        # running system). Runtime binaries still look at /etc/ssh/
+        # because that's what was compiled in via --sysconfdir above.
+        make install-nokeys DESTDIR=$out
+        # Flatten $out/$out/... back to $out (DESTDIR concatenates).
+        cp -a $out$out/. $out/
+        rm -rf $out/nix
       '';
     }
   ];

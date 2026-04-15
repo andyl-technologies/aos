@@ -302,12 +302,13 @@ in {
             ln -sfn "/var/etc/$f" "$sysroot/etc/$f"
           done
 
-          # SSH host keys: sshd-keygen writes to these paths in stage 2.
-          # Pointing /etc/ssh/ssh_host_* at /var/etc/ssh/ keeps them
-          # persistent. sshd_config itself stays in the immutable lower
-          # layer, so we symlink per-leaf rather than the whole /etc/ssh.
-          for name in ssh_host_ed25519_key ssh_host_ed25519_key.pub \
-                      ssh_host_rsa_key ssh_host_rsa_key.pub; do
+          # SSH host keys: sshd-keygen writes these directly to
+          # /var/etc/ssh/ on first boot. Pointing /etc/ssh/ssh_host_*
+          # at /var/etc/ssh/ keeps them persistent. sshd_config itself
+          # stays in the immutable lower layer, so we symlink per-leaf
+          # rather than the whole /etc/ssh. Only ed25519 is used; RSA
+          # and ECDSA are disabled at the sshd_config level.
+          for name in ssh_host_ed25519_key ssh_host_ed25519_key.pub; do
             ln -sfn "/var/etc/ssh/$name" "$sysroot/etc/ssh/$name"
           done
 

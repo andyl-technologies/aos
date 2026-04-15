@@ -7,6 +7,7 @@
   zlib,
   ncurses,
   libselinux,
+  libxcrypt,
   audit,
 }:
 let
@@ -31,6 +32,11 @@ mkDerivation {
     zlib
     ncurses
     libselinux
+    # sulogin calls crypt(3) to compare root's shadow hash with the
+    # entered password; util-linux's configure fails with "required
+    # crypt function not available" if libxcrypt (or glibc's bundled
+    # libcrypt) isn't on the link line.
+    libxcrypt
     audit
   ];
   propagatedDeps = [ libselinux ];
@@ -78,8 +84,8 @@ mkDerivation {
           --disable-wall \
           --disable-login \
           --disable-su \
-          --disable-sulogin \
-          --disable-nologin \
+          --enable-sulogin \
+          --enable-nologin \
           --disable-runuser \
           --disable-chfn-chsh \
           --disable-newgrp \

@@ -8,7 +8,6 @@
   linux-headers,
   util-linux,
   kmod,
-  dbus,
   zlib,
   xz,
   lz4,
@@ -76,7 +75,6 @@ mkDerivation {
   runtimeDeps = [
     util-linux
     kmod
-    dbus
     linux-headers
     zlib
     xz
@@ -295,6 +293,8 @@ mkDerivation {
                   -Dagetty-path=${util-linux}/sbin/agetty \
                   -Dswapon-path=${util-linux}/sbin/swapon \
                   -Dswapoff-path=${util-linux}/sbin/swapoff \
+                  -Dsulogin-path=${util-linux}/sbin/sulogin \
+                  -Dnologin-path=${util-linux}/sbin/nologin \
                   -Dkmod-path=${kmod}/bin/kmod \
                   -Ddbuspolicydir=$out/share/dbus-1/system.d \
                   -Ddbussessionservicedir=$out/share/dbus-1/services \
