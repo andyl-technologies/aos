@@ -34,10 +34,15 @@ builtins.derivation {
       chmod -R u+w .
 
       export LIBRARY_PATH="${glibc}/lib"
+      # No -isystem ${glibc}/include here: the wrapped gcc already provides
+      # glibc headers via -idirafter (see toolchains/gcc14/default.nix:50).
+      # Using -isystem places glibc's stdlib.h *before* the C++ stdlib dir,
+      # which breaks #include_next <stdlib.h> in <cstdlib> once gccRaw's
+      # specs file no longer has a live -idirafter fallback.
       CC="${gcc}/bin/gcc" \
       CXX="${gcc}/bin/g++" \
-      CFLAGS="-O2 -isystem ${glibc}/include" \
-      CXXFLAGS="-O2 -isystem ${glibc}/include" \
+      CFLAGS="-O2" \
+      CXXFLAGS="-O2" \
       LDFLAGS="-L${glibc}/lib -static -no-pie" \
       ./configure \
         --prefix="$out" \

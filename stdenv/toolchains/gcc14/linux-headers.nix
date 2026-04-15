@@ -26,9 +26,13 @@ builtins.derivation {
       export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
 
       # GCC 14 defaults to PIE, but Scrt1.o isn't in the specs dir.
-      # Wrap gcc to disable PIE for the kernel host tools (fixdep etc.)
+      # Wrap gcc to disable PIE for the kernel host tools (fixdep etc.).
+      # -idirafter supplies stdio.h etc.: gccRaw's specs file no longer
+      # embeds the prev.glibc/prev.linuxHeaders include paths (scrubbed to
+      # keep gccRaw's $out free of the pre-tier chain), so this build must
+      # supply them itself at build time.
       mkdir -p "$TMPDIR/fakebin"
-      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -no-pie -L${prev.glibc}/lib "$@"\n' > "$TMPDIR/fakebin/gcc"
+      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -no-pie -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} "$@"\n' > "$TMPDIR/fakebin/gcc"
       chmod +x "$TMPDIR/fakebin/gcc"
 
       # Linux 5.3+ uses rsync for headers_install. Provide a minimal replacement.
