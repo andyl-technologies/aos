@@ -19,9 +19,12 @@
     "systemd-logind.service"
     "nftables.service"
     "auditd.service"
+    "audit-rules.service"
     "k8s-modules-load.service"
     "containerd.service"
     "kubelet.service"
+    "dbus.service"
+    "dbus.socket"
   ];
 in {
   options.aos.tests.stage2Diagnostics.enable = lib.mkOption {
@@ -50,6 +53,16 @@ in {
         echo "--- systemctl --failed ---"
         ${pkgs.systemd}/bin/systemctl --failed --no-pager || true
         echo
+
+        echo "--- ls -la /etc/ssh ---"
+        ${pkgs.coreutils}/bin/ls -la /etc/ssh/ || true
+        echo "--- ls -la /var/etc/ssh ---"
+        ${pkgs.coreutils}/bin/ls -la /var/etc/ssh/ || true
+        echo "--- stat symlink target for ssh_host_ed25519_key ---"
+        ${pkgs.coreutils}/bin/readlink /etc/ssh/ssh_host_ed25519_key || true
+        ${pkgs.coreutils}/bin/stat -L /etc/ssh/ssh_host_ed25519_key 2>&1 || true
+        echo
+
         ${lib.concatMapStringsSep "\n" (u: ''
           echo "--- status ${u} ---"
           ${pkgs.systemd}/bin/systemctl status --no-pager --lines=0 ${u} || true

@@ -56,7 +56,16 @@ in
       ];
     }
 
-    (lib.mkIf cfg.autologin {
+    (lib.mkIf cfg.autologin (let
+      # agetty invokes --login-program as `PROG -f USER`, matching
+      # /bin/login's calling convention. Passing bash directly makes
+      # bash interpret `-f` as its own flag and `USER` as a script
+      # path — it exits 126. Tiny shim drops the args and execs an
+      # interactive root shell instead.
+      autologinShell = pkgs.writeShellScriptBin "autologin-shell" ''
+        exec ${pkgs.bash}/bin/bash -l
+      '';
+    in {
       # Unlock root. The empty second field in shadow(5) means "no
       # password required" — login accepts a bare username.
       environment.etc."shadow" = lib.mkForce {
@@ -68,8 +77,11 @@ in
       };
 
       # Instance overrides for the upstream getty@.service and
-      # serial-getty@.service template units — tell agetty to skip
-      # the login prompt and start root's session immediately.
+      # serial-getty@.service template units. `--autologin root`
+      # would have agetty exec /bin/login, which AOS doesn't ship
+      # (util-linux is built with --disable-login), so we use
+      # `--login-program=${bash}` to exec bash directly as root —
+      # agetty already sets up the controlling TTY with euid 0.
       systemd.services."getty@tty1" = {
         description = "Autologin Getty on tty1";
         wantedBy = [ "getty.target" ];
@@ -78,7 +90,7 @@ in
           Type = "idle";
           ExecStart = [
             ""
-            "${pkgs.util-linux}/sbin/agetty --autologin root --noclear tty1 linux"
+            "${pkgs.util-linux}/sbin/agetty --autologin root --login-program=${autologinShell}/bin/autologin-shell --noclear tty1 linux"
           ];
           Restart = "always";
           RestartSec = "0";
@@ -98,7 +110,7 @@ in
           Type = "idle";
           ExecStart = [
             ""
-            "${pkgs.util-linux}/sbin/agetty --autologin root -s ttyS0 115200 vt100"
+            "${pkgs.util-linux}/sbin/agetty --autologin root --login-program=${autologinShell}/bin/autologin-shell -s ttyS0 115200 vt100"
           ];
           Restart = "always";
           RestartSec = "0";
@@ -107,6 +119,6 @@ in
           TTYVHangup = "yes";
         };
       };
-    })
+    }))
   ]);
 }
