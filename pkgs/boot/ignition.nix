@@ -49,7 +49,24 @@ mkDerivation {
     {
       name = "build";
       script = ''
-        ldflags="-s -w -X ${modPath}/internal/version.Raw=v${version}"
+        # Override the compiled-in "has ignition run" stamp path so it
+        # lives under /var/etc (ext4 root, persistent) instead of
+        # /etc (which is the immutable overlay lower layer in AOS, so
+        # the stamp would be invisible on subsequent boots and
+        # ignition-files' "previous report" detection would never see
+        # it). `resultFilePath` is declared `var` in internal/distro
+        # — see the comment at distro.go:22 — so `-X` sets it.
+        ldflags="-s -w"
+        ldflags="$ldflags -X ${modPath}/internal/version.Raw=v${version}"
+        ldflags="$ldflags -X ${modPath}/internal/distro.resultFilePath=/var/etc/.ignition-result.json"
+        # Disable SELinux file relabeling at every stage. Ignition's
+        # default (distro.go:74 `selinuxRelabel = "true"`) calls
+        # `setfiles -r /sysroot /etc/selinux/config …`, which crashes
+        # the `files` stage here because the initrd ships no
+        # /etc/selinux/config. AOS handles relabeling itself via the
+        # security/selinux.nix unit in stage 2, so skipping it inside
+        # ignition is correct.
+        ldflags="$ldflags -X ${modPath}/internal/distro.selinuxRelabel=false"
 
         echo "==> Building ignition"
         go build -buildmode=pie -ldflags "$ldflags" \
