@@ -66,8 +66,13 @@ in
     ## Boot partition size.
     bootSize = lib.mkOption {
       type = lib.types.str;
-      default = "512M";
-      description = "Boot partition size (kernel + initrd).";
+      default = "1500M";
+      description = ''
+        Boot partition size (kernel + initrd). Needs to hold the full
+        initramfs — today's tier-ii initrd is ~700 MiB compressed
+        because AOS packages carry bootstrap-toolchain references into
+        their runtime closures; shrinking the initrd is a follow-up.
+      '';
     };
     ## Root filesystem partition size.
     rootSize = lib.mkOption {

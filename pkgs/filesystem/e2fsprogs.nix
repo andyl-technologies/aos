@@ -37,7 +37,14 @@ mkDerivation {
     }
     {
       name = "configure";
+      # Binaries in $out/sbin link against libext2fs/libcom_err/libe2p
+      # shipped in $out/lib. Without an explicit -rpath, the produced
+      # binaries fall back on ld.so's default search path and fail with
+      # "libe2p.so.2: cannot open shared object file" at runtime —
+      # which manifests as systemd's "status=127/n/a" exit code because
+      # the dynamic loader aborts before `main` runs.
       script = ''
+        export LDFLAGS="-Wl,-rpath,$out/lib ''${LDFLAGS:-}"
         ./configure \
           --prefix=$out \
           --enable-elf-shlibs \

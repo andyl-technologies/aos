@@ -124,7 +124,8 @@ mkDerivation {
         sed -i 's|#include <linux/vm_sockets.h>|#include <sys/socket.h>\n#include <linux/vm_sockets.h>|' \
           src/basic/socket-util.h
 
-        # Rewrite hardcoded binary paths to Nix store paths.
+        # Rewrite hardcoded binary paths that don't have a meson
+        # `-D<tool>-path=` equivalent.
         sed -i 's|/sbin/modprobe|${kmod}/sbin/modprobe|g' units/modprobe@.service
         sed -i "s|/usr/lib/systemd/catalog/|$out/lib/systemd/catalog/|g" \
           src/libsystemd/sd-journal/catalog.c
@@ -291,6 +292,10 @@ mkDerivation {
                   -Ddefault-llmnr=no \
                   -Dmount-path=${util-linux}/bin/mount \
                   -Dumount-path=${util-linux}/bin/umount \
+                  -Dagetty-path=${util-linux}/sbin/agetty \
+                  -Dswapon-path=${util-linux}/sbin/swapon \
+                  -Dswapoff-path=${util-linux}/sbin/swapoff \
+                  -Dkmod-path=${kmod}/bin/kmod \
                   -Ddbuspolicydir=$out/share/dbus-1/system.d \
                   -Ddbussessionservicedir=$out/share/dbus-1/services \
                   -Ddbussystemservicedir=$out/share/dbus-1/system-services \
