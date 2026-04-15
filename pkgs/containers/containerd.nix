@@ -69,7 +69,7 @@ in
           # no-FHS environment:
           #
           #   /usr/local/bin/containerd -> $out/bin/containerd
-          #   /sbin/modprobe            -> ${kmod}/bin/modprobe
+          #   /sbin/modprobe            -> ${kmod}/sbin/modprobe
           #
           # Everything else (Delegate, KillMode, OOMScoreAdjust, the
           # standard Limit* values, Description, After, Documentation,
@@ -78,7 +78,7 @@ in
           # the consuming module.
           sed \
             -e 's|/usr/local/bin/containerd|'"$out/bin/containerd"'|g' \
-            -e 's|/sbin/modprobe|${kmod}/bin/modprobe|g' \
+            -e 's|/sbin/modprobe|${kmod}/sbin/modprobe|g' \
             containerd.service > $out/lib/systemd/system/containerd.service
         '';
       }

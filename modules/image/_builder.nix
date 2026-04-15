@@ -85,9 +85,15 @@ pkgs.mkDerivation {
 
   # exportReferencesGraph computes the store closure at eval time and
   # writes it as a file into the build directory — no nix-store needed.
+  # The kernel is included alongside the toplevel because the rootfs
+  # carries a /lib/modules symlink into ${kernel}/lib/modules; without
+  # the kernel's closure in /nix/store that symlink is dangling on the
+  # running system and modprobe reports "Module <name> not found".
   exportReferencesGraph = [
     "closure-toplevel"
     system.config.system.build.toplevel
+    "closure-kernel"
+    system.config.system.build.kernel
   ];
 
   phases = [
@@ -97,7 +103,10 @@ pkgs.mkDerivation {
         echo "==> Building sandbox-compatible disk image for AOS ${name}"
 
         # ── 0. Extract store paths from closure graph ──────────────────────
-        grep '^/nix/store/' closure-toplevel | sort -u > store-paths
+        # Merge toplevel + kernel closures, dedupe. Both need to land
+        # in /nix/store on the root partition (toplevel for stage-2,
+        # kernel's /lib/modules for modprobe lookups).
+        grep -h '^/nix/store/' closure-toplevel closure-kernel | sort -u > store-paths
         echo "    $(wc -l < store-paths) store paths in closure"
 
         # ── 1. Build root filesystem directory tree ────────────────────────
@@ -146,6 +155,21 @@ pkgs.mkDerivation {
         mkdir -p rootfs/usr/bin
         ln -sfn ${pkgs.coreutils}/bin/env rootfs/usr/bin/env
 
+        # /lib/modules → kernel's modules tree. kmod (modprobe/insmod)
+        # defaults to /lib/modules/$(uname -r) for module lookup;
+        # without this symlink services like k8s-modules-load fail
+        # with "Module <name> not found in directory /lib/modules/..."
+        # even though the .ko ships in the kernel's store path.
+        mkdir -p rootfs/lib
+        ln -sfn ${system.config.system.build.kernel}/lib/modules \
+          rootfs/lib/modules
+
+        # /var/run → /run. Standard modern-Linux convention: /run is
+        # a tmpfs and /var/run is a back-compat symlink. Many daemons
+        # (dbus-daemon's system.conf, various PID files) still use
+        # /var/run/... paths.
+        ln -sfn /run rootfs/var/run
+
         # Empty machine-id signals systemd to generate one on first boot
         touch rootfs/etc/machine-id
 
@@ -159,10 +183,40 @@ pkgs.mkDerivation {
           cp -a --no-clobber "$toplevel/etc/." rootfs/etc/
         fi
 
+        # Build a debugfs chown script for later (see the post-mkfs
+        # step below). Nix sandbox builds run as nixbld (uid 1000),
+        # which `cp -a` preserves into rootfs/etc — several daemons
+        # then refuse to start (auditd: `/etc/audit/auditd.conf isn't
+        # owned by root`). chown(2) from within the sandbox can't
+        # target uid 0 (unprivileged user-ns only maps nixbld→0 at the
+        # VFS layer, not on-disk), so we instead patch the on-disk
+        # inodes via debugfs after mkfs.ext4 writes the image.
+        #
+        # /nix/store paths must NOT be touched (shared between
+        # derivations at the Nix level). /bin, /sbin, /usr are
+        # symlinks (no uid the kernel enforces on access). Only
+        # /etc needs a post-pass. `sif <path> uid=0 gid=0` on every
+        # inode under /etc does the job in one debugfs invocation.
+        echo "    Generating /etc ownership reset script"
+        {
+          echo "sif /etc uid 0"
+          echo "sif /etc gid 0"
+          find rootfs/etc -mindepth 1 -printf '/etc/%P\n' | while IFS= read -r p; do
+            echo "sif \"$p\" uid 0"
+            echo "sif \"$p\" gid 0"
+          done
+        } > etc-chown.debugfs
+
         # ── 2. Create ext4 root partition image ────────────────────────────
         echo "==> Creating ext4 root image (${rootSize})"
         truncate -s ${toString rootBytes} root.img
         mkfs.ext4 -L aos-root -O ^has_journal -d rootfs -q root.img
+
+        # Apply the /etc ownership reset prepared above. debugfs's
+        # `sif` command sets inode fields on the live image; one
+        # invocation executes the whole script.
+        echo "    Resetting /etc ownership to root:root via debugfs"
+        debugfs -w -f etc-chown.debugfs root.img >/dev/null
 
         # ── 3. Build boot directory tree ───────────────────────────────────
         echo "==> Populating boot tree"
