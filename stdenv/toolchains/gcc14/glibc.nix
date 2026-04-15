@@ -39,11 +39,20 @@ builtins.derivation {
       cd glibc-2.39
       chmod -R u+w .
 
+      # CC wrapper: supplies the include paths that gccRaw's specs file
+      # used to embed (scrubbed to keep gccRaw's $out off the pre-tier
+      # chain). Glibc's configure compiles probe programs using stdio.h
+      # etc. — needed at build time only; none of this lands in $out.
+      mkdir -p "$TMPDIR/ccwrap"
+      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} "$@"\n' > "$TMPDIR/ccwrap/gcc"
+      printf '#!/bin/sh\nexec ${gcc}/bin/g++ -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} "$@"\n' > "$TMPDIR/ccwrap/g++"
+      chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
+
       # Out-of-tree build (required by glibc)
       mkdir -p "$TMPDIR/build"
       cd "$TMPDIR/build"
 
-      CC="${gcc}/bin/gcc" CXX="${gcc}/bin/g++" \
+      CC="$TMPDIR/ccwrap/gcc" CXX="$TMPDIR/ccwrap/g++" \
       AR="${binutils}/bin/ar" \
       RANLIB="${binutils}/bin/ranlib" \
       CFLAGS="-O2" \
