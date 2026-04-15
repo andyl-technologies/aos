@@ -41,10 +41,14 @@ builtins.derivation {
       find . -name '*.info' -exec touch -t 200001010200.00 {} + 2>/dev/null || true
       find . -name '*.1' -exec touch {} + 2>/dev/null || true
 
-      # CC wrapper: always pass -static (libtool strips -static from LDFLAGS)
+      # CC wrapper: always pass -static (libtool strips -static from LDFLAGS).
+      # Inject -idirafter for prev.glibc/prev.linuxHeaders here rather than via
+      # gccRaw's specs file — the specs file references are scrubbed so gccRaw's
+      # $out doesn't close over the prev tier, but this tier-internal build
+      # still needs headers at build time.
       mkdir -p "$TMPDIR/ccwrap"
-      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${prev.glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
-      printf '#!/bin/sh\nexec ${gcc}/bin/g++ -L${prev.glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/g++"
+      printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
+      printf '#!/bin/sh\nexec ${gcc}/bin/g++ -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/g++"
       chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
       ln -sf gcc "$TMPDIR/ccwrap/cc"
       ln -sf g++ "$TMPDIR/ccwrap/c++"
