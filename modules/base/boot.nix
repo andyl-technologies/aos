@@ -66,13 +66,18 @@ in
         default = [
           "virtio_blk"
           "virtio_pci"
+          "virtio_net"
           "ext4"
           "overlay"
+          "dm-crypt"
+          "qemu_fw_cfg"
         ];
         description = ''
           Kernel modules to include in the initrd. These are loaded early
           in boot before the root filesystem is mounted. The defaults cover
-          virtio (QEMU/KVM), ext4 root, and overlayfs for /etc.
+          virtio (QEMU/KVM block, PCI, net), ext4 root, overlayfs for /etc,
+          dm-crypt for encrypted swap, and qemu_fw_cfg so ignition can read
+          its config from the QEMU firmware config device.
         '';
       };
     };
@@ -116,6 +121,16 @@ in
       "console=ttyS0,115200"
       "console=tty0"
       "systemd.unified_cgroup_hierarchy=1"
+      # Turn off systemd-gpt-auto-generator — it synthesises .swap /
+      # .mount units at boot with `ExecStart=/usr/sbin/swapon`, a path
+      # AOS's rootfs doesn't populate. AOS owns swap (cryptswap.service)
+      # and root (/etc/fstab → systemd-fstab-generator) explicitly, so
+      # there's nothing for the auto-generator to contribute that's
+      # not already covered. Both `systemd.gpt-auto=` (hyphenated, the
+      # documented form) and `systemd.gpt_auto=` (underscored) are
+      # accepted by systemd's parameter parser; ship the hyphenated
+      # spelling to match the upstream man page.
+      "systemd.gpt-auto=0"
     ];
 
     # systemd-boot loader entry for the current generation.
