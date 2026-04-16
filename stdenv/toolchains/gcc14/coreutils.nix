@@ -65,7 +65,8 @@ builtins.derivation {
         --prefix="$out" \
         --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
         --disable-nls \
-        --enable-no-install-program=stdbuf
+        --enable-no-install-program=stdbuf \
+        --enable-single-binary=symlinks
 
       make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
       make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
