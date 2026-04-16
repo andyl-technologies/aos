@@ -6,7 +6,7 @@
   linux-headers,
 }:
 let
-  version = "6.12";
+  version = "6.18";
 in
 mkDerivation {
   pname = "strace";
@@ -16,7 +16,7 @@ mkDerivation {
     urls = [
       "https://github.com/strace/strace/releases/download/v${version}/strace-${version}.tar.xz"
     ];
-    hash = "sha256-xH2pO+RbYFX03HQdfyDvr1DKEBYKWxAMEJspT9nAvf4=";
+    hash = "sha256-CtXcupc6aed5ZQ7xyzNbEu5gcW/HMmYJiVvTPm0qcyU=";
   };
 
   buildDeps = [ gnumake linux-headers ];
