@@ -150,6 +150,11 @@
       // {
         buildDeps = [self.go] ++ (args.buildDeps or []);
         phases = phases.goPhases goArgsWithDefaults;
+        # Guard: the Go toolchain must not leak into the runtime closure.
+        # -trimpath (in goPhases) prevents source-path embedding; this
+        # disallowedReferences catches any residual leak at build time.
+        # Matches nixpkgs' buildGoModule pattern.
+        disallowedReferences = args.disallowedReferences or [self.go];
       }
     );
 

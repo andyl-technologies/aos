@@ -24,6 +24,7 @@ mkDerivation {
     go-1_24
   ];
   runtimeDeps = [ ];
+  dontStrip = true; # Go runtime metadata in custom ELF sections
 
   phases = [
     {

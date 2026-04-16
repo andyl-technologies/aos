@@ -65,6 +65,9 @@ mkDerivation {
       script = ''
         make install
         make install-libs
+        # e2initrd_helper embeds a build-time gcc store path — a text
+        # reference that drags ~230 MB of compiler into e2fsprogs' closure.
+        rm -f "$out/lib/e2initrd_helper"
       '';
     }
   ];

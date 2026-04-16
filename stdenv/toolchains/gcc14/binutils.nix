@@ -72,6 +72,18 @@ builtins.derivation {
       make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
       make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
 
+      # Phase 7: scrub prev.glibc from installed binaries. Binutils was
+      # built -static against prev.glibc, so no DT_NEEDED/RPATH linkage,
+      # but Go-style debug-info strings and libtool .la files embed the
+      # prev.glibc store path (~877 occurrences). The hash replacement is
+      # length-preserving so static-linked ELFs and archive headers survive.
+      _hash_prev_glibc=$(echo "${prev.glibc}" | ${prev.sed}/bin/sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
+      ${prev.findutils}/bin/find "$out" -type f | while read f; do
+        if ${prev.grep}/bin/grep -qF "$_hash_prev_glibc" "$f" 2>/dev/null; then
+          ${prev.sed}/bin/sed -i "s|$_hash_prev_glibc|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" "$f"
+        fi
+      done
+
       echo "binutils 2.41 installed to $out"
     ''
   ];
