@@ -59,6 +59,16 @@ mkDerivation {
       script = ''
         make install
 
+        # ncurses-config is an autotools-generated helper that prints
+        # `--libs`/`--cflags` for downstream consumers. It hardcodes the
+        # build-time binutils `/lib` paths (as "standard libdirs to
+        # skip"), which drags ~43 MB of binutils into the runtime closure
+        # of every package that consumes ncurses (and therefore the
+        # initrd). The script is dev tooling — any runtime consumer
+        # links against libncurses directly, not via the helper script.
+        rm -f "$out/bin/ncursesw6-config" "$out/bin/ncurses6-config" \
+              "$out/bin/ncurses5-config" "$out/bin/ncursesw5-config"
+
         # Create non-wide-char compatibility symlinks
         for lib in ncurses form panel menu; do
           ln -sf lib''${lib}w.so $out/lib/lib''${lib}.so
