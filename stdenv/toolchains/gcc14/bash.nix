@@ -72,6 +72,10 @@ builtins.derivation {
 
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
 
+      # bashbug embeds $CC for bug-report metadata — a text reference to
+      # gcc-wrapped that drags ~230 MB of compiler into bash's closure.
+      rm -f "$out/bin/bashbug"
+
       echo "Bash 5.2.37 installed to $out"
     ''
   ];

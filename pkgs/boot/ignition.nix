@@ -68,12 +68,20 @@ mkDerivation {
         # ignition is correct.
         ldflags="$ldflags -X ${modPath}/internal/distro.selinuxRelabel=false"
 
+        # -trimpath: strip all filesystem paths from the resulting binary.
+        # Without it Go embeds absolute paths into the runtime's PC→line
+        # tables for panic/stack traces — including /nix/store/.../go-*/src/
+        # for every stdlib file used. That drags the full Go toolchain
+        # (~231 MB) into ignition's runtime closure and therefore the
+        # initrd. -trimpath replaces those with relative module paths, so
+        # stack traces still show readable locations but the binary no
+        # longer references ${go}. Matches nixpkgs' go.buildGoModule.
         echo "==> Building ignition"
-        go build -buildmode=pie -ldflags "$ldflags" \
+        go build -trimpath -buildmode=pie -ldflags "$ldflags" \
           -o ignition ./internal
 
         echo "==> Building ignition-validate"
-        go build -ldflags "$ldflags" \
+        go build -trimpath -ldflags "$ldflags" \
           -o ignition-validate ./validate
       '';
     }
