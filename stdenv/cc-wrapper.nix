@@ -50,17 +50,22 @@ let
           esac
         done
 
-        extra_cflags="$extra_cflags -isystem ${libc}/include"
+        # Use -idirafter, not -isystem, for the glibc include dir. -isystem
+        # prepends to the system search path, which places glibc's stdlib.h
+        # BEFORE the C++ stdlib dir. GCC dedups include paths, so a later
+        # -idirafter for the same dir (baked into gcc-stage2's specs) gets
+        # dropped as redundant — leaving stdlib.h only at the prepended
+        # position, where <cstdlib>'s #include_next <stdlib.h> can't reach
+        # it (include_next searches dirs AFTER the one the current header
+        # was found in). Result: C++ builds fail with "stdlib.h: No such
+        # file". See gcc-stage2.nix + patchelf.nix for the same hazard.
+        extra_cflags="$extra_cflags -idirafter ${libc}/include"
 
         if [ "$linking" = true ]; then
           extra_ldflags="$extra_ldflags -L${libc}/lib"
           extra_ldflags="$extra_ldflags -Wl,-rpath,${libc}/lib"
           extra_ldflags="$extra_ldflags -Wl,--dynamic-linker=${dynamicLinker}"
           extra_ldflags="$extra_ldflags -Wl,-rpath-link,${libc}/lib"
-          extra_ldflags="$extra_ldflags -L${cc}/lib"
-          extra_ldflags="$extra_ldflags -L${cc}/lib64"
-          extra_ldflags="$extra_ldflags -Wl,-rpath,${cc}/lib"
-          extra_ldflags="$extra_ldflags -Wl,-rpath,${cc}/lib64"
           extra_ldflags="$extra_ldflags -B${libc}/lib"
         fi
 
@@ -90,18 +95,14 @@ let
           esac
         done
 
-        extra_cflags="$extra_cflags -isystem ${libc}/include"
-        extra_cflags="$extra_cflags -isystem ${cc}/include/c++/"
+        # See the gcc wrapper above for why -idirafter instead of -isystem.
+        extra_cflags="$extra_cflags -idirafter ${libc}/include"
 
         if [ "$linking" = true ]; then
           extra_ldflags="$extra_ldflags -L${libc}/lib"
           extra_ldflags="$extra_ldflags -Wl,-rpath,${libc}/lib"
           extra_ldflags="$extra_ldflags -Wl,--dynamic-linker=${dynamicLinker}"
           extra_ldflags="$extra_ldflags -Wl,-rpath-link,${libc}/lib"
-          extra_ldflags="$extra_ldflags -L${cc}/lib"
-          extra_ldflags="$extra_ldflags -L${cc}/lib64"
-          extra_ldflags="$extra_ldflags -Wl,-rpath,${cc}/lib"
-          extra_ldflags="$extra_ldflags -Wl,-rpath,${cc}/lib64"
           extra_ldflags="$extra_ldflags -B${libc}/lib"
         fi
 
@@ -130,10 +131,7 @@ let
         extra_flags="$extra_flags -rpath ${libc}/lib"
         extra_flags="$extra_flags --dynamic-linker ${dynamicLinker}"
         extra_flags="$extra_flags -rpath-link ${libc}/lib"
-        extra_flags="$extra_flags -L${cc}/lib"
-        extra_flags="$extra_flags -L${cc}/lib64"
-        extra_flags="$extra_flags -rpath ${cc}/lib"
-        extra_flags="$extra_flags -rpath ${cc}/lib64"
+        # Phase 3: no -L/-rpath for ${cc}/lib{,64} — see gcc wrapper.
         extra_flags="$extra_flags -z relro -z now"
 
         exec ${binutils_}/bin/ld $extra_flags "$@"
@@ -154,7 +152,7 @@ let
                 ${echo} "${libc}"      > $out/nix-support/orig-libc
                 ${echo} "${binutils_}" > $out/nix-support/orig-binutils
                 ${echo} "${system}"    > $out/nix-support/system
-                ${echo} "-isystem ${libc}/include" > $out/nix-support/cc-cflags
+                ${echo} "-idirafter ${libc}/include" > $out/nix-support/cc-cflags
                 ${echo} "-L${libc}/lib -Wl,-rpath,${libc}/lib" > $out/nix-support/cc-ldflags
                 ${echo} "${dynamicLinker}" > $out/nix-support/dynamic-linker
       ''

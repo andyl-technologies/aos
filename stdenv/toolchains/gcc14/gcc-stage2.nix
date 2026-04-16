@@ -163,11 +163,15 @@ builtins.derivation {
 
       mkdir -p "$TMPDIR/build/gcc/include-fixed"
       cat > "$TMPDIR/build/gcc/include-fixed/limits.h" <<'LIMITS_EOF'
-/* Generated for GCC 14 bootstrap — chains to system limits.h */
-#ifndef _GCC_LIMITS_H_
-#define _GCC_NEXT_LIMITS_H
+/* Generated for GCC 14 bootstrap — chains to system limits.h.
+ * See the matching comment in gcc.nix for why this uses a local guard
+ * rather than _GCC_LIMITS_H_: the latter is always set by the time this
+ * file is reached, so a guard on it would silently suppress the
+ * #include_next and leave MB_LEN_MAX at gcc's fallback of 1.
+ */
+#ifndef _GCC_BOOTSTRAP_INCLUDE_FIXED_LIMITS_H_
+#define _GCC_BOOTSTRAP_INCLUDE_FIXED_LIMITS_H_
 #include_next <limits.h>
-#undef _GCC_NEXT_LIMITS_H
 #endif
 LIMITS_EOF
 

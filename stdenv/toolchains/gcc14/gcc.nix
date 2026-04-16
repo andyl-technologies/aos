@@ -122,11 +122,21 @@ builtins.derivation {
       # system's limits.h. Create it manually.
       mkdir -p "$TMPDIR/build/gcc/include-fixed"
       cat > "$TMPDIR/build/gcc/include-fixed/limits.h" <<'LIMITS_EOF'
-/* Generated for GCC 14 bootstrap — chains to system limits.h */
-#ifndef _GCC_LIMITS_H_
-#define _GCC_NEXT_LIMITS_H
+/* Generated for GCC 14 bootstrap — chains to system limits.h.
+ *
+ * Do NOT guard this with #ifndef _GCC_LIMITS_H_: gcc's main limits.h
+ * (include/limits.h) defines that macro before including syslimits.h,
+ * which in turn triggers include-fixed/limits.h — so by the time we get
+ * here, _GCC_LIMITS_H_ is always set. A guard here would silently skip
+ * the #include_next below, leaving MB_LEN_MAX at gcc's fallback of 1
+ * instead of glibc's 16, which makes glibc's own bits/stdlib.h fail
+ * with `#error "Assumed value of MB_LEN_MAX wrong"` when a user
+ * includes <stdlib.h>. Use a local guard so the preprocessor still
+ * protects against degenerate re-includes of this same file.
+ */
+#ifndef _GCC_BOOTSTRAP_INCLUDE_FIXED_LIMITS_H_
+#define _GCC_BOOTSTRAP_INCLUDE_FIXED_LIMITS_H_
 #include_next <limits.h>
-#undef _GCC_NEXT_LIMITS_H
 #endif
 LIMITS_EOF
 
