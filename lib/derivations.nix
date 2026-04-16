@@ -129,6 +129,48 @@
     '';
   };
 
+  # Default fixup phase: strip and shrink-rpath. Runs after install in
+  # every derivation. Defined here (not imported from stdenv/phases.nix)
+  # so lib/ stays self-contained; stdenv/phases.nix has a matching copy
+  # used by the Cargo/Go/Bazel phase templates.
+  #
+  # Key for closure hygiene: `strip --strip-unneeded` on .so files removes
+  # DWARF .debug_line tables that embed gcc's include-dir store path, and
+  # `strip -s` on executables does the same. Without this, every compiled
+  # object drags ~230 MB of gcc into its runtime closure.
+  #
+  # Deliberately no `patchShebangs`: packages handle their own shebangs
+  # during their build phase, and a generic post-install rewriter here
+  # would turn harmless `#!/usr/bin/env ...` references into live
+  # `/nix/store/<hash>-python3/bin/python3` paths, pulling python/perl/etc.
+  # into closures that never needed them.
+  fixupPhase = {
+    name = "fixup";
+    script = ''
+      if [ -z "''${dontStrip:-}" ]; then
+        echo "stripping..."
+        find "$out" -type f -name '*.so*' -exec strip --strip-unneeded {} \; 2>/dev/null || true
+        find "$out" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
+        if [ -d "$out/bin" ]; then
+          find "$out/bin" -type f -exec strip -s {} \; 2>/dev/null || true
+        fi
+        if [ -d "$out/sbin" ]; then
+          find "$out/sbin" -type f -exec strip -s {} \; 2>/dev/null || true
+        fi
+        if [ -d "$out/libexec" ]; then
+          find "$out/libexec" -type f -exec strip -s {} \; 2>/dev/null || true
+        fi
+      fi
+
+      if [ -z "''${dontPatchELF:-}" ] && command -v patchelf >/dev/null 2>&1; then
+        echo "shrinking ELF RPATHs..."
+        find "$out" -type f \( -name '*.so*' -o -perm -u+x \) | while read f; do
+          patchelf --shrink-rpath "$f" 2>/dev/null || true
+        done
+      fi
+    '';
+  };
+
   defaultPhases = [
     defaultUnpackPhase
     defaultConfigurePhase
@@ -370,6 +412,31 @@
     postInstall ? "",
     passthru ? {},
     checks ? null,
+    # ── Reference-control attrs (Nix-enforced at build time) ──────────
+    # Pass-through to `builtins.derivation`. If set, Nix fails the build
+    # if the output's closure (or direct references) breaks the rule.
+    # Use to lock in Phase 2 closure-bloat wins: once a package builds
+    # clean, setting `allowedRequisites = [...]` to the expected list
+    # catches any future regression at build time rather than at initrd-
+    # size review.
+    #
+    #   allowedRequisites    — whitelist (null = unconstrained). Every
+    #                          path in the closure must appear here.
+    #   allowedReferences    — whitelist for *direct* references only.
+    #   disallowedRequisites — blacklist for closure (any path in this
+    #                          list appearing anywhere in the closure
+    #                          fails the build).
+    #   disallowedReferences — blacklist for direct references only.
+    #
+    # Typical rollout: flip on a canary package (e.g. pkgs.bash) with a
+    # minimal allowedRequisites of glibc/gcc/linux-headers/etc.; once it
+    # builds, promote the attr through the package set. Only set on the
+    # derivations you've actually audited — leaving these null means
+    # "no change from historical behavior."
+    allowedRequisites ? null,
+    allowedReferences ? null,
+    disallowedRequisites ? [],
+    disallowedReferences ? [],
     ...
   }: let
     # Accept either `name` (direct) or `pname` (computed as pname-version).
@@ -420,7 +487,17 @@
       )
       effectivePhases;
 
-    builder = phasesToScript finalPhases shell;
+    # Append the fixup phase (strip + shrink-rpath) defined above. The
+    # fixup must run after install for every derivation; without it,
+    # debug sections embed gcc store paths that drag the ~230 MB compiler
+    # into every package's closure. Skip if the caller already supplied
+    # a fixup — the cargo/go/bazel phase templates bundle their own.
+    allPhases =
+      if builtins.any (p: p.name == "fixup") finalPhases
+      then finalPhases
+      else finalPhases ++ [ fixupPhase ];
+
+    builder = phasesToScript allPhases shell;
 
     # Extra args to pass through to builtins.derivation
     extraArgs = builtins.removeAttrs args [
@@ -452,6 +529,10 @@
       "postInstall"
       "passthru"
       "checks"
+      "allowedRequisites"
+      "allowedReferences"
+      "disallowedRequisites"
+      "disallowedReferences"
     ];
 
     # ── Chaining constraint validation ────────────────────────────────
@@ -568,7 +649,25 @@
 
             # Prefer store dir parameter
             NIX_STORE_DIR = storeDir;
+
+            # Reference-control blacklists. Empty list = no constraint, so
+            # unconditional inclusion is safe. See the arg docstring above.
+            inherit disallowedRequisites disallowedReferences;
           }
+          # Reference-control whitelists. `null` = unconstrained; we only
+          # forward them to builtins.derivation when actually set, so the
+          # default path is a no-op (preserves historical behavior for any
+          # unaudited derivation).
+          // (
+            if allowedRequisites != null
+            then {inherit allowedRequisites;}
+            else {}
+          )
+          // (
+            if allowedReferences != null
+            then {inherit allowedReferences;}
+            else {}
+          )
           // extraArgs
         )
       )

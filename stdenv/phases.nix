@@ -45,10 +45,15 @@ let
   fixupPhase = {
     name = "fixup";
     script = ''
-      # Strip debug symbols
+      # Strip debug info. --strip-unneeded on .so removes debug sections
+      # (including DWARF .debug_line that embeds gcc include paths as
+      # /nix/store/<hash>-gcc-stage2/...) while preserving the dynamic
+      # symbol table needed for linking. -s on executables strips
+      # everything. Without this, every compiled object drags the ~230 MB
+      # gcc-stage2 into its runtime closure via Nix's reference scanner.
       if [ -z "''${dontStrip:-}" ]; then
-        echo "stripping debug symbols..."
-        find "$out" -type f -name '*.so*' -exec strip -S {} \; 2>/dev/null || true
+        echo "stripping..."
+        find "$out" -type f -name '*.so*' -exec strip --strip-unneeded {} \; 2>/dev/null || true
         find "$out" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
         if [ -d "$out/bin" ]; then
           find "$out/bin" -type f -exec strip -s {} \; 2>/dev/null || true

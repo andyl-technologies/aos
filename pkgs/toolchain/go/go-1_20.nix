@@ -20,6 +20,7 @@ mkDerivation {
 
   buildDeps = [ go-1_17 ];
   runtimeDeps = [ ];
+  dontStrip = true; # Go runtime metadata in custom ELF sections
 
   phases = [
     {
