@@ -322,6 +322,88 @@ in
           if [ -d ${initrdUnits} ]; then
             cp -a ${initrdUnits}/. root/etc/systemd/system/ || true
           fi
+
+          # ── 8. Trim: drop files that only exist in the store for build-
+          #    time or developer use. Packages keep these on disk systemwide;
+          #    this only removes them from the initrd's cpio. Nix's closure
+          #    tracking already ran, so trimming inside the store-path copies
+          #    doesn't affect the derivation's declared references.
+          #
+          #    Per-category rationale below. Each `find` is guarded with
+          #    `-print0 | xargs -0 -r` (Nix sandbox has nullsafe xargs).
+          echo "==> Trimming build-time and dev artifacts from initrd tree"
+
+          # `cp -a` preserves the store's read-only permissions. The trim
+          # steps below need write access to remove files; cpio later uses
+          # -R +0:+0 to force uid/gid 0 regardless of file mode, so making
+          # the copies writable here doesn't affect the archived perms.
+          chmod -R u+w root/nix/store 2>/dev/null || true
+
+          # glibc: headers, static archives, locale source files, gconv
+          # modules for obscure encodings (keep UTF-8 / UNICODE / ISO-8859-*).
+          find root/nix/store -maxdepth 2 -type d -name '*-glibc-*' -print0 \
+            | xargs -0 -r -I{} sh -c '
+                rm -rf "{}/include" "{}/share/i18n" "{}/var" "{}/share/doc" "{}/share/info"
+                find "{}/lib" -maxdepth 1 -name "*.a" -delete 2>/dev/null
+                # gconv: keep the frequently used converters, rm the rest.
+                # systemd + bash + coreutils only ever hit UTF-8 / ANSI_X3.4 /
+                # ISO-8859-1; other encodings are for i18n locale files we
+                # are not shipping anyway.
+                if [ -d "{}/lib/gconv" ]; then
+                  find "{}/lib/gconv" -type f \( -name "*.so" -o -name "gconv-modules*" \) \
+                    ! -name "UTF-8.so" ! -name "UTF-16.so" ! -name "UTF-32.so" \
+                    ! -name "UNICODE.so" ! -name "ISO8859-1.so" ! -name "ISO8859-15.so" \
+                    ! -name "ANSI_X3.110.so" ! -name "gconv-modules*" -delete 2>/dev/null
+                fi
+              ' _
+
+          # systemd: PAM modules (no login in initrd), kernel-install and
+          # firmware-update helpers, systemd-boot (different bootloader
+          # domain), portable/homed/nspawn/importd/repart (not relevant in
+          # initrd), hwdb bin (compiled database, regenerated at runtime),
+          # catalog message files, system-{sysusers,preset}/* defaults.
+          find root/nix/store -maxdepth 2 -type d -name '*-systemd-*' -print0 \
+            | xargs -0 -r -I{} sh -c '
+                rm -rf "{}/lib/security" \
+                       "{}/lib/systemd/boot" \
+                       "{}/lib/systemd/catalog" \
+                       "{}/lib/systemd/portable" \
+                       "{}/lib/sysusers.d" \
+                       "{}/lib/kernel" \
+                       "{}/share/doc" "{}/share/man" "{}/share/info" \
+                       "{}/share/factory" "{}/share/polkit-1" "{}/share/bash-completion" \
+                       "{}/share/zsh" "{}/share/dbus-1" "{}/share/locale" \
+                       "{}/include"
+                for tool in systemd-homed systemd-homework systemd-portabled \
+                            systemd-nspawn systemd-importd systemd-pull \
+                            systemd-firstboot systemd-repart systemd-confext \
+                            systemd-sysext systemd-mountfsd systemd-nsresourced \
+                            systemd-measure systemd-creds systemd-cryptenroll \
+                            systemd-analyze systemd-run systemd-stdio-bridge \
+                            systemd-vmspawn systemd-vpick systemd-ssh-generator \
+                            systemd-ssh-proxy systemd-update-utmp bootctl \
+                            coredumpctl hostnamectl localectl resolvectl \
+                            timedatectl userdbctl kernel-install; do
+                  rm -f "{}/bin/$tool" "{}/lib/systemd/$tool" \
+                        "{}/lib/systemd/system-generators/$tool"
+                done
+              ' _
+
+          # ignition-validate: pre-boot config validator. Not invoked at
+          # runtime; ignition itself does the actual provisioning.
+          rm -f root/nix/store/*-ignition-*/bin/ignition-validate
+
+          # util-linux: man pages, zsh completion, etc.
+          find root/nix/store -maxdepth 2 -type d -name '*-util-linux-*' -print0 \
+            | xargs -0 -r -I{} sh -c '
+                rm -rf "{}/share/man" "{}/share/doc" "{}/share/bash-completion" "{}/include"
+              ' _
+
+          # Everything else: kill shared doc/man/info/include. These are
+          # developer artifacts with zero runtime use.
+          find root/nix/store -maxdepth 3 -type d \( -name man -o -name info -o -name doc -o -name include \) \
+            ! -path 'root/nix/store/*/lib/systemd/*' -print0 \
+            | xargs -0 -r rm -rf
         '';
       }
       {
