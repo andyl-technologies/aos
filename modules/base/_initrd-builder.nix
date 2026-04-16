@@ -357,11 +357,10 @@ in
                 fi
               ' _
 
-          # systemd: PAM modules (no login in initrd), kernel-install and
-          # firmware-update helpers, systemd-boot (different bootloader
-          # domain), portable/homed/nspawn/importd/repart (not relevant in
-          # initrd), hwdb bin (compiled database, regenerated at runtime),
-          # catalog message files, system-{sysusers,preset}/* defaults.
+          # systemd: huge kitchen sink. The initrd needs PID 1 (systemd
+          # itself), systemd-udevd, fstab/cryptsetup/sysroot generators,
+          # tmpfiles, and a handful of cgroup/journal helpers — nothing
+          # else. Drop the long tail.
           find root/nix/store -maxdepth 2 -type d -name '*-systemd-*' -print0 \
             | xargs -0 -r -I{} sh -c '
                 rm -rf "{}/lib/security" \
@@ -370,10 +369,22 @@ in
                        "{}/lib/systemd/portable" \
                        "{}/lib/sysusers.d" \
                        "{}/lib/kernel" \
+                       "{}/lib/udev/hwdb.d" \
+                       "{}/lib/rpm" \
                        "{}/share/doc" "{}/share/man" "{}/share/info" \
                        "{}/share/factory" "{}/share/polkit-1" "{}/share/bash-completion" \
                        "{}/share/zsh" "{}/share/dbus-1" "{}/share/locale" \
                        "{}/include"
+                # NSS plugins: keep libnss_resolve (systemd-resolved DNS
+                # lookups) and libnss_myhostname (127.0.0.1/::1 → hostname).
+                # Drop the dynamic-user ones — initrd has no user database.
+                rm -f "{}/lib/libnss_systemd.so."* \
+                      "{}/lib/libnss_mymachines.so."*
+                # Keep: systemd (PID 1), systemd-udevd, systemd-journald,
+                #       systemd-executor, systemd-networkd + systemd-resolved
+                #       (ignition fetch needs HTTPS to platform metadata),
+                #       systemd-fsck, shutdown, and the generator helpers
+                #       invoked by the initrd units.
                 for tool in systemd-homed systemd-homework systemd-portabled \
                             systemd-nspawn systemd-importd systemd-pull \
                             systemd-firstboot systemd-repart systemd-confext \
@@ -383,10 +394,25 @@ in
                             systemd-vmspawn systemd-vpick systemd-ssh-generator \
                             systemd-ssh-proxy systemd-update-utmp bootctl \
                             coredumpctl hostnamectl localectl resolvectl \
-                            timedatectl userdbctl kernel-install; do
+                            timedatectl userdbctl kernel-install \
+                            systemd-logind systemd-timesyncd \
+                            systemd-journal-gatewayd systemd-journal-remote \
+                            systemd-journal-upload systemd-oomd systemd-pstore \
+                            systemd-boot systemd-coredump systemd-nsresourcework; do
                   rm -f "{}/bin/$tool" "{}/lib/systemd/$tool" \
                         "{}/lib/systemd/system-generators/$tool"
                 done
+              ' _
+
+          # openssl: static archives (libcrypto.a / libssl.a) are dev-only,
+          # c_rehash is a perl script, cmake/pkgconfig are dev metadata.
+          find root/nix/store -maxdepth 2 -type d -name '*-openssl-*' -print0 \
+            | xargs -0 -r -I{} sh -c '
+                rm -rf "{}/lib/cmake" "{}/lib/pkgconfig" \
+                       "{}/share/doc" "{}/share/man" \
+                       "{}/include"
+                find "{}/lib" -maxdepth 1 -name "*.a" -delete 2>/dev/null
+                rm -f "{}/bin/c_rehash"
               ' _
 
           # ignition-validate: pre-boot config validator. Not invoked at
