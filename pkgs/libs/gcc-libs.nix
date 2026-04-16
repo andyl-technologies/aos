@@ -110,10 +110,17 @@ mkDerivation {
         # CC_FOR_BUILD must include -static because GMP configure runs
         # $CC_FOR_BUILD conftest.c without CFLAGS — the resulting dynamic
         # executable can't run in the sandbox (linker path not available).
+        # No -isystem ${glibc}/include here: ${gcc} is the wrapped tier
+        # gcc which already injects -idirafter ${glibc}/include via its
+        # specs. -isystem would place stdlib.h before the C++ stdlib dir,
+        # and GCC dedups includes — so the later -idirafter is dropped
+        # as redundant, leaving stdlib.h only at the prepended position
+        # where <cstdlib>'s #include_next <stdlib.h> can't reach it.
+        # Same hazard fix as patchelf.nix / gcc-stage2.nix.
         CC="${gcc}/bin/gcc" CXX="${gcc}/bin/g++" \
         CC_FOR_BUILD="${gcc}/bin/gcc -static" \
-        CFLAGS="-O2 -static -isystem ${glibc}/include" \
-        CXXFLAGS="-O2 -static -isystem ${glibc}/include" \
+        CFLAGS="-O2 -static" \
+        CXXFLAGS="-O2 -static" \
         LDFLAGS="-L${glibc}/lib -static" \
         CFLAGS_FOR_BUILD="-O2 -static" \
         LDFLAGS_FOR_BUILD="-static" \
