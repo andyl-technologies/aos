@@ -66,6 +66,35 @@ in
         exec ${pkgs.bash}/bin/bash -l
       '';
     in {
+      # Initrd debug shells — start early so you can inspect systemd
+      # state before switch-root. One on the serial console (ttyS0)
+      # and one on the VGA console (tty0 / GTK window).
+      boot.initrd.systemd.services."debug-shell-serial" = {
+        description = "Initrd Debug Shell on ttyS0";
+        wantedBy = ["sysinit.target"];
+        unitConfig.DefaultDependencies = false;
+        serviceConfig = {
+          ExecStart = "${pkgs.util-linux}/sbin/agetty --autologin root --login-program=${autologinShell}/bin/autologin-shell -s ttyS0 115200 vt100";
+          Restart = "always";
+          RestartSec = "0";
+          TTYPath = "/dev/ttyS0";
+          TTYReset = "yes";
+          TTYVHangup = "yes";
+        };
+      };
+      boot.initrd.systemd.services."debug-shell-console" = {
+        description = "Initrd Debug Shell on tty0";
+        wantedBy = ["sysinit.target"];
+        unitConfig.DefaultDependencies = false;
+        serviceConfig = {
+          ExecStart = "${pkgs.util-linux}/sbin/agetty --autologin root --login-program=${autologinShell}/bin/autologin-shell --noclear tty0 linux";
+          Restart = "always";
+          RestartSec = "0";
+          TTYPath = "/dev/tty0";
+          TTYReset = "yes";
+          TTYVHangup = "yes";
+        };
+      };
       # Unlock root. The empty second field in shadow(5) means "no
       # password required" — login accepts a bare username.
       environment.etc."shadow" = lib.mkForce {

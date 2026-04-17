@@ -118,6 +118,17 @@ in {
       default = [];
       description = "Typed .automount units to include in the systemd initrd. Keyed by `where`, not by name.";
     };
+
+    maskedUnits = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      description = ''
+        Unit names to mask (symlink to /dev/null) in the initrd.
+        Needed because the initrd's /usr→. symlink collapses systemd's
+        unit search priority, making kernel-cmdline systemd.mask=
+        ineffective.
+      '';
+    };
   };
 
   # Declare `system.build.systemdInitrdUnits` as a real option so the
@@ -151,7 +162,7 @@ in {
       kernel = config.system.build.kernel;
       kernelModules = config.aos.boot.initrd.modules;
       initrdUnits = config.system.build.systemdInitrdUnits;
-      rootDevice = config.aos.filesystems.rootDevice;
+      maskedUnits = cfg.maskedUnits;
     };
   };
 }
