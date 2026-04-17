@@ -23,7 +23,7 @@ let
     inherit pkgs lib;
     system = { inherit config; };
     name = config.aos.system.name;
-    inherit (cfg) diskSize bootSize rootSize;
+    inherit (cfg) bootSize;
   };
 
   # Convert a raw image to another format via qemu-img
@@ -57,28 +57,14 @@ in
       default = true;
       description = "Whether to build disk images for this system variant.";
     };
-    ## Total raw disk image size.
-    diskSize = lib.mkOption {
-      type = lib.types.str;
-      default = "16G";
-      description = "Total raw disk image size.";
-    };
     ## Boot partition size.
     bootSize = lib.mkOption {
       type = lib.types.str;
-      default = "1500M";
+      default = "1G";
       description = ''
         Boot partition size (kernel + initrd). Needs to hold the full
-        initramfs — today's tier-ii initrd is ~700 MiB compressed
-        because AOS packages carry bootstrap-toolchain references into
-        their runtime closures; shrinking the initrd is a follow-up.
+        initramfs.
       '';
-    };
-    ## Root filesystem partition size.
-    rootSize = lib.mkOption {
-      type = lib.types.str;
-      default = "8G";
-      description = "Root filesystem partition size.";
     };
   };
 
