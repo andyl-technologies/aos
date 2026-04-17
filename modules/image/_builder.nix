@@ -107,6 +107,7 @@ pkgs.mkDerivation {
         echo "==> Populating root filesystem tree"
         mkdir -p rootfs/nix/store
         mkdir -p rootfs/{etc,var,run,tmp,proc,sys,dev,sbin,boot}
+        mkdir -m 0700 -p rootfs/root
         mkdir -p rootfs/var/{log,lib,tmp}
         mkdir -p rootfs/run/current-system
 
