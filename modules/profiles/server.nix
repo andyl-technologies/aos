@@ -4,10 +4,10 @@
 ##! first-boot provisioning in the initrd, encrypted swap, NTP via chrony,
 ##! SSH access, and standard security posture.
 ##!
-##! ZFS and cloud-init are disabled for this iteration. The tier-ii initrd
-##! story moves /var to the ext4 root partition (root is mounted rw) and
-##! uses ignition for first-boot configuration. Cloud-init and ZFS will
-##! come back in a later iteration.
+##! ZFS and cloud-init are disabled for this iteration. /var lives on its
+##! own ext4 partition (created by ignition at first boot), so the root
+##! filesystem is mounted read-only. Cloud-init and ZFS will come back
+##! in a later iteration.
 {
   config,
   pkgs,
@@ -30,14 +30,11 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # Storage: ext4 root partition, /var lives on the root partition
-    # for this iteration (ZFS deferred).
+    # Storage: ext4 root (read-only), /var on its own ext4 partition
+    # created by ignition at first boot. ZFS deferred.
     aos.filesystems.zfs.enable = lib.mkDefault false;
     aos.filesystems.rootFsType = lib.mkDefault "ext4";
-    # The /etc overlay is mutable, but /var needs to be a writable
-    # directory on the root partition — that means mounting root rw.
-    # When ZFS lands, /var moves to a ZFS dataset and this flips back.
-    aos.filesystems.rootReadOnly = lib.mkDefault false;
+    aos.filesystems.rootReadOnly = lib.mkDefault true;
 
     # Provisioning: ignition in the initrd; cloud-init disabled.
     aos.services.cloudInit.enable = lib.mkDefault false;
