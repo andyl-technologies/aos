@@ -12,8 +12,8 @@
 ##!      ExecStart paths can reference short names when needed.
 ##!   3. The active kernel's module tree at /lib/modules/<ver>/.
 ##!   4. `/etc/modules-load.d/initrd.conf` listing `aos.boot.initrd.modules`.
-##!   5. `/etc/fstab` with a single entry (rootDevice → /sysroot) so
-##!      systemd-fstab-generator synthesizes sysroot.mount.
+##!   5. Empty `/etc/fstab` (root device comes from the kernel cmdline
+##!      `root=` parameter; the fstab generator processes it).
 ##!   6. Minimal `/etc/{os-release,initrd-release,passwd,group,shadow}`.
 ##!   7. Upstream systemd initrd units symlinked from ${systemd}/lib/systemd/
 ##!      system/ into /etc/systemd/system/. (AOS systemd ships units at
@@ -30,7 +30,6 @@
 ##!   kernelModules — list of module names for /etc/modules-load.d/initrd.conf
 ##!   initrdUnits   — derivation whose output is the rendered
 ##!                   /etc/systemd/system directory (from generateUnits)
-##!   rootDevice    — block device mounted at /sysroot (e.g. "/dev/vda2")
 ##!
 ##! Output: $out/initrd.img (gzip-compressed newc cpio archive)
 {
@@ -39,7 +38,7 @@
   kernel,
   kernelModules,
   initrdUnits,
-  rootDevice,
+  maskedUnits ? [],
 }: let
   inherit
     (pkgs)
@@ -147,6 +146,11 @@
     "emergency.service"
     "rescue.target"
     "rescue.service"
+    "breakpoint-pre-switch-root.service"
+    "breakpoint-pre-mount.service"
+    "breakpoint-pre-basic.service"
+    "breakpoint-pre-udev.service"
+    "debug-shell.service"
     "kmod-static-nodes.service"
     "systemd-ask-password-console.path"
     "systemd-ask-password-console.service"
@@ -158,6 +162,7 @@
     "systemd-fstab-generator"
     "systemd-gpt-auto-generator"
     "systemd-run-generator"
+    "systemd-debug-generator"
   ];
 
   # Render the (pkg, binary, src) triples into `ln -sfn` invocations.
@@ -165,14 +170,17 @@
     "ln -sfn ${e.pkg}/${e.src}/${e.bin} root/bin/${e.bin}")
   initrdBinaries;
 
-  # Upstream unit symlinks, guarded so a missing upstream unit fails the
-  # build loudly rather than shipping a half-complete initrd.
+  # Upstream unit symlinks go into /lib/systemd/system/ (not /etc/)
+  # so that systemd.mask= on the kernel cmdline can override them.
+  # Generators write masks to /run/systemd/generator/ which sits
+  # between /etc/ (highest) and /lib/ (lowest) in systemd's unit
+  # search priority.
   unitSymlinks = lib.concatMapStringsSep "\n" (u: ''
     if [ ! -e ${systemd}/lib/systemd/system/${u} ]; then
       echo "initrd-builder: upstream systemd unit missing: ${u}" >&2
       exit 1
     fi
-    ln -sfn ${systemd}/lib/systemd/system/${u} root/etc/systemd/system/${u}
+    ln -sfn ${systemd}/lib/systemd/system/${u} root/lib/systemd/system/${u}
   '')
   initrdUpstreamUnits;
 
@@ -232,6 +240,7 @@ in
           mkdir -p root/sbin
           mkdir -p root/etc/systemd/system
           mkdir -p root/etc/modules-load.d
+          mkdir -p root/lib/systemd/system
           mkdir -p root/lib/systemd/system-generators
           mkdir -p root/lib/modules
           mkdir -p root/nix/store
@@ -276,12 +285,14 @@ in
           ${modulesLoadConf}
           MODULES
 
-          # systemd-fstab-generator reads /etc/fstab and synthesises
-          # sysroot.mount. Without this entry the initrd has no way to
-          # know which block device is the root filesystem.
-          cat > root/etc/fstab <<FSTAB
-          ${rootDevice}  /sysroot  ext4  rw,relatime  0  1
-          FSTAB
+          # The root device is specified via root= on the kernel cmdline.
+          # systemd-fstab-generator processes root= and synthesises
+          # sysroot.mount with proper initrd-root-fs.target linkage.
+          # An /etc/fstab entry for root would conflict (duplicate
+          # sysroot.mount) and make the generator exit 1, breaking the
+          # initrd target chain. Write an empty fstab so the generator
+          # has nothing to conflict with.
+          touch root/etc/fstab
 
           cat > root/etc/os-release <<OSREL
           NAME="AOS"
@@ -322,6 +333,13 @@ in
           if [ -d ${initrdUnits} ]; then
             cp -a ${initrdUnits}/. root/etc/systemd/system/ || true
           fi
+
+          # ── 8. Masked units ─────────────────────────────────────────────
+          chmod u+w root/etc/systemd/system
+          ${lib.concatMapStringsSep "\n" (u: ''
+            rm -f root/etc/systemd/system/${u} root/lib/systemd/system/${u}
+            ln -sfn /dev/null root/etc/systemd/system/${u}
+          '') maskedUnits}
 
           # ── 8. Trim: drop files that only exist in the store for build-
           #    time or developer use. Packages keep these on disk systemwide;
