@@ -106,10 +106,20 @@ pkgs.mkDerivation {
         # ── 1. Build root filesystem directory tree ────────────────────────
         echo "==> Populating root filesystem tree"
         mkdir -p rootfs/nix/store
-        mkdir -p rootfs/{etc,var,run,tmp,proc,sys,dev,sbin,boot}
+        mkdir -p rootfs/{etc,var,run,tmp,proc,sys,dev,boot}
         mkdir -m 0700 -p rootfs/root
         mkdir -p rootfs/var/{log,lib,tmp}
         mkdir -p rootfs/run/current-system
+
+        # Merged-usr layout: /usr/{bin,sbin,lib} are real directories,
+        # /{bin,sbin,lib} are symlinks into /usr/. This satisfies
+        # systemd 256+'s usr-merge check and is the standard layout
+        # adopted by all major distributions.
+        mkdir -p rootfs/usr/bin rootfs/usr/lib
+        ln -sfn bin rootfs/usr/sbin
+        ln -sfn usr/bin rootfs/bin
+        ln -sfn usr/bin rootfs/sbin
+        ln -sfn usr/lib rootfs/lib
 
         # Copy Nix store closure
         total=$(wc -l < store-paths)
@@ -127,37 +137,19 @@ pkgs.mkDerivation {
         ln -sfn ${system.config.system.build.toplevel} \
           rootfs/run/current-system
 
-        # /sbin/init → systemd
-        ln -sfn ${pkgs.systemd}/lib/systemd/systemd rootfs/sbin/init
+        # /sbin/init → systemd (lands in /usr/bin/ since /sbin → usr/bin)
+        ln -sfn ${pkgs.systemd}/lib/systemd/systemd rootfs/usr/bin/init
 
-        # Runtime compatibility symlinks.
-        #
-        # /bin/bash and /bin/sh match CLAUDE.md's explicit allowance
-        # for "Shebangs inside VM rootfs init scripts" — the rootfs
-        # builder is allowed to create a /bin/sh pointing at AOS bash.
-        mkdir -p rootfs/bin
-        ln -sfn ${pkgs.bash}/bin/bash rootfs/bin/bash
-        ln -sfn ${pkgs.bash}/bin/sh rootfs/bin/sh
-
-        # /usr is populated with exactly one file: /usr/bin/env. That
-        # is the one widely-used shebang target (`#!/usr/bin/env python`
-        # etc.) and it is also what keeps systemd 259's
-        # `dir_is_empty("/usr")` check in src/core/main.c happy so
-        # stage-2 starts. Every other /usr/* path (e.g. /usr/sbin/sshd,
-        # /usr/sbin/agetty) must be replaced by an absolute Nix store
-        # path in the referring unit — we do NOT blanket /usr/* with
-        # compatibility symlinks.
-        mkdir -p rootfs/usr/bin
+        # Compatibility symlinks in /usr/bin.
+        ln -sfn ${pkgs.bash}/bin/bash rootfs/usr/bin/bash
+        ln -sfn ${pkgs.bash}/bin/sh rootfs/usr/bin/sh
         ln -sfn ${pkgs.coreutils}/bin/env rootfs/usr/bin/env
 
-        # /lib/modules → kernel's modules tree. kmod (modprobe/insmod)
-        # defaults to /lib/modules/$(uname -r) for module lookup;
-        # without this symlink services like k8s-modules-load fail
-        # with "Module <name> not found in directory /lib/modules/..."
-        # even though the .ko ships in the kernel's store path.
-        mkdir -p rootfs/lib
+        # /lib/modules → kernel's modules tree (lands in /usr/lib/).
+        # kmod defaults to /lib/modules/$(uname -r) for module lookup;
+        # the /lib → usr/lib symlink makes this resolve correctly.
         ln -sfn ${system.config.system.build.kernel}/lib/modules \
-          rootfs/lib/modules
+          rootfs/usr/lib/modules
 
         # /var/run → /run. Standard modern-Linux convention: /run is
         # a tmpfs and /var/run is a back-compat symlink. Many daemons
