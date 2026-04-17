@@ -34,6 +34,9 @@
 
   # --- Build the system PATH from systemPackages ---
   makeBinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
+  makeSbinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/sbin") pkgsList);
+  systemPath = makeBinPath config.environment.systemPackages
+    + ":" + makeSbinPath config.environment.systemPackages;
 in {
   options = {
     ## Assertions checked during system build. If any assertion is
@@ -206,6 +209,50 @@ in {
       );
 
     system.build.kernel = pkgs.linux;
+
+    environment.systemPackages = [
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.findutils
+      pkgs.grep
+      pkgs.sed
+      pkgs.gawk
+      pkgs.util-linux
+      pkgs.systemd
+      pkgs.kmod
+      pkgs.e2fsprogs
+    ];
+
+    environment.etc."profile" = {
+      text = ''
+        if [ -n "$__ETC_PROFILE_SOURCED" ]; then return; fi
+        __ETC_PROFILE_SOURCED=1
+        export __ETC_PROFILE_DONE=1
+
+        export PATH="${systemPath}"
+
+        if [ -z "$HOME" ] && [ -f /etc/passwd ]; then
+          HOME=$(${pkgs.gawk}/bin/awk -F: -v u="$(${pkgs.coreutils}/bin/id -un)" '$1==u{print $6}' /etc/passwd)
+          export HOME
+        fi
+
+        if [ -f /etc/profile.local ]; then
+          . /etc/profile.local
+        fi
+
+        if [ -n "''${BASH_VERSION:-}" ]; then
+          . /etc/bashrc
+        fi
+      '';
+    };
+
+    environment.etc."bashrc" = {
+      text = ''
+        if [ -z "$__ETC_PROFILE_DONE" ]; then
+          . /etc/profile
+        fi
+      '';
+    };
 
     # Fleet test: verify rolling update across two servers (zero-downtime upgrade).
     system.fleetTests.rolling-update = {
