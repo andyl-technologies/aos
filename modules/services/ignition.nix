@@ -306,12 +306,12 @@ in {
             mount -o remount,ro "$sysroot"
           fi
 
-          # 2. Tmpfs for the overlay upper/work dirs. Mounted at the
-          #    mountpoint we created above so the overlay's write layer
-          #    is volatile. Stage-2 mounts its own tmpfs at /run but
-          #    this sub-mount at /run/etc-upper persists independently.
+          # 2. Tmpfs for the overlay upper/work dirs. The mountpoint
+          #    on the root ext4 means this appears as a sibling of /run
+          #    in findmnt rather than nested — cosmetic only, the overlay
+          #    functions correctly either way.
           if ! mountpoint -q "$sysroot/run/etc-upper"; then
-            mount -t tmpfs -o mode=755 tmpfs "$sysroot/run/etc-upper"
+            mount -t tmpfs -o nosuid,nodev,mode=755 tmpfs "$sysroot/run/etc-upper"
           fi
           mkdir -p "$sysroot/run/etc-upper/upper"
           mkdir -p "$sysroot/run/etc-upper/work"
@@ -322,7 +322,7 @@ in {
           # 4. Mount the overlay. /var/etc is listed first so its files
           #    shadow /etc.lower; the tmpfs upper captures runtime writes.
           ${pkgs.util-linux}/bin/mount -t overlay overlay \
-            -o lowerdir="$sysroot/var/etc:$sysroot/etc.lower",upperdir="$sysroot/run/etc-upper/upper",workdir="$sysroot/run/etc-upper/work" \
+            -o nosuid,nodev,lowerdir="$sysroot/var/etc:$sysroot/etc.lower",upperdir="$sysroot/run/etc-upper/upper",workdir="$sysroot/run/etc-upper/work" \
             "$sysroot/etc"
         '';
       };
