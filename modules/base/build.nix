@@ -221,6 +221,7 @@ in {
       pkgs.systemd
       pkgs.kmod
       pkgs.e2fsprogs
+      pkgs.less
     ];
 
     environment.etc."profile" = {
@@ -230,6 +231,7 @@ in {
         export __ETC_PROFILE_DONE=1
 
         export PATH="${systemPath}"
+        export PAGER=less
 
         if [ -z "$HOME" ] && [ -f /etc/passwd ]; then
           HOME=$(${pkgs.gawk}/bin/awk -F: -v u="$(${pkgs.coreutils}/bin/id -un)" '$1==u{print $6}' /etc/passwd)
