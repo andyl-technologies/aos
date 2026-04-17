@@ -234,7 +234,25 @@ let
                           # Use tar pipe to copy without preserving store permissions.
                           # tar extract applies umask, making files writable.
                           (cd "$TOPLEVEL/etc" && tar cf - .) | (cd rootfs/etc && tar xf -)
-                          # tar may preserve read-only store permissions; fix them
+                          # Make real dirs writable so the symlink-resolution pass
+                          # below can rm/replace entries inside them.
+                          chmod -R u+w rootfs/etc
+                          # Toplevel /etc can contain symlinks pointing into the read-only
+                          # /nix/store (e.g. /etc/systemd/system → a system-units derivation).
+                          # tar preserves those as symlinks, so subsequent writes underneath
+                          # would hit the store and fail with EACCES. Replace each such link
+                          # with a copy of its target — cp -a keeps internal relative symlinks
+                          # (.wants/*.service) intact, so systemd semantics are preserved.
+                          find rootfs/etc -type l | while IFS= read -r link; do
+                            target=$(readlink "$link")
+                            case "$target" in
+                              /nix/store/*)
+                                rm "$link"
+                                cp -a "$target" "$link"
+                                ;;
+                            esac
+                          done
+                          # Newly-copied trees may carry store read-only perms; re-apply.
                           chmod -R u+w rootfs/etc
                           echo "    toplevel /etc merged"
                           # Override SELinux to permissive for VM testing — the rootfs
@@ -476,10 +494,12 @@ let
             AGENT
                         chmod +x rootfs/opt/aos-test/bin/aos-test-agent
 
-                        # Mask serial-getty@ttyS0 — we use -serial file: in QEMU so there's
-                        # no real tty, and waiting for the device wastes 90 seconds.
+                        # Ensure the install dir exists for the agent symlink below.
+                        # We do NOT mask serial-getty@ttyS0 anymore — the drivers now
+                        # present a properly blocking serial backend, so a live getty
+                        # (e.g. the debug profile's autologin) can coexist with the
+                        # harness without respawn loops.
                         mkdir -p rootfs/etc/systemd/system/multi-user.target.wants
-                        ln -sfn /dev/null rootfs/etc/systemd/system/serial-getty@ttyS0.service
 
                         # Guest agent systemd service
                         cat > rootfs/etc/systemd/system/aos-test-agent.service << 'UNIT'
@@ -858,8 +878,19 @@ let
           # Clear LD_LIBRARY_PATH — AOS build libs can conflict
           unset LD_LIBRARY_PATH
 
+          # Firecracker wires the guest's ttyS0 to its own stdin/stdout. Feed
+          # stdin from a FIFO that has a permanent, silent writer (sleep holds
+          # the write end open RDWR but never writes). Guest reads from ttyS0
+          # then block indefinitely — no EOF → no agetty respawn — so the debug
+          # profile's autologin can coexist with the harness.
+          FC_STDIN="$TMPDIR/fc-stdin"
+          mkfifo "$FC_STDIN"
+          sleep infinity <>"$FC_STDIN" &
+          FC_STDIN_PID=$!
+
           # Launch Firecracker (serial output goes to stdout, redirected to file)
-          firecracker --no-api --config-file "$FC_CFG" > "$SERIAL_LOG" 2>"$FC_LOG" &
+          firecracker --no-api --config-file "$FC_CFG" \
+            < "$FC_STDIN" > "$SERIAL_LOG" 2>"$FC_LOG" &
           FC_PID=$!
           echo "Firecracker PID: $FC_PID"
           sleep 1
@@ -875,6 +906,8 @@ let
           cleanup() {
             kill "$FC_PID" 2>/dev/null || true
             wait "$FC_PID" 2>/dev/null || true
+            kill "$FC_STDIN_PID" 2>/dev/null || true
+            wait "$FC_STDIN_PID" 2>/dev/null || true
           }
           trap cleanup EXIT
 
@@ -971,6 +1004,7 @@ let
           set -eu
 
           AGENT_SOCK="$TMPDIR/agent.sock"
+          SERIAL_SOCK="$TMPDIR/serial.sock"
           SERIAL_LOG="$TMPDIR/serial.log"
 
           # Copy rootfs image to writable location
@@ -993,6 +1027,25 @@ let
 
           qemu-system-x86_64 --version || echo "QEMU version check failed"
 
+          # Serial console drain: socat listens on $SERIAL_SOCK and appends
+          # everything the guest writes to $SERIAL_LOG. -u makes it strictly
+          # one-way (socket → file), so any guest read from /dev/ttyS0 blocks
+          # on the socket — socat never writes back — matching the behavior
+          # of a real idle tty with no user typing. Must be up before QEMU
+          # connects as client, else early-boot output would be lost.
+          socat -u UNIX-LISTEN:"$SERIAL_SOCK",reuseaddr,fork \
+                   OPEN:"$SERIAL_LOG",creat,append &
+          DRAIN_PID=$!
+          SOCK_WAIT=0
+          while [ ! -S "$SERIAL_SOCK" ]; do
+            sleep 0.05
+            SOCK_WAIT=$((SOCK_WAIT + 1))
+            if [ "$SOCK_WAIT" -gt 100 ]; then
+              echo "ERROR: serial drain socket did not appear within 5s"
+              exit 1
+            fi
+          done
+
           # Launch QEMU with direct kernel boot
           qemu-system-x86_64 \
             -machine q35,accel=kvm \
@@ -1006,7 +1059,8 @@ let
             -device virtio-serial \
             -device virtserialport,chardev=agent,name=aos.test.agent \
             -chardev socket,id=agent,path="$AGENT_SOCK",server=on,wait=off \
-            -serial file:"$SERIAL_LOG" \
+            -chardev socket,id=ttyS0,path="$SERIAL_SOCK",server=off \
+            -serial chardev:ttyS0 \
             -no-reboot > "$QEMU_LOG" 2>&1 &
           QEMU_PID=$!
           echo "QEMU PID: $QEMU_PID"
@@ -1021,6 +1075,8 @@ let
           cleanup() {
             kill "$QEMU_PID" 2>/dev/null || true
             wait "$QEMU_PID" 2>/dev/null || true
+            kill "$DRAIN_PID" 2>/dev/null || true
+            wait "$DRAIN_PID" 2>/dev/null || true
           }
           trap cleanup EXIT
 

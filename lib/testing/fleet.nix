@@ -186,7 +186,16 @@ let
               }
               FCCFGEOF
 
+              # Per-machine silent stdin source — see vm.nix for rationale
+              # (prevents agetty respawn loops when the debug profile's
+              # autologin is active).
+              FC_STDIN_${m.name}="$FLEET_DIR/${m.name}-fc-stdin"
+              mkfifo "''${FC_STDIN_${m.name}}"
+              sleep infinity <>"''${FC_STDIN_${m.name}}" &
+              PIDS="$PIDS $!"
+
               firecracker --no-api --config-file "$FLEET_DIR/${m.name}-fc.json" \
+                < "''${FC_STDIN_${m.name}}" \
                 > "''${SERIAL_LOG_${m.name}}" 2>"''${FC_LOG_${m.name}}" &
               PIDS="$PIDS $!"
             ''
@@ -330,6 +339,7 @@ let
               echo "Starting machine: ${m.name} (role: ${m.machine.role or "worker"}, ip: ${m.ip})"
 
               AGENT_SOCK_${m.name}="$FLEET_DIR/${m.name}-agent.sock"
+              SERIAL_SOCK_${m.name}="$FLEET_DIR/${m.name}-serial.sock"
               SERIAL_LOG_${m.name}="$FLEET_DIR/${m.name}-serial.log"
 
               # Copy rootfs to writable location
@@ -338,6 +348,21 @@ let
 
               # Find kernel image
               VMLINUZ_${m.name}=$(ls ${mi.kernel}/boot/vmlinuz-* | head -1)
+
+              # Per-machine unidirectional serial drain — see vm.nix for the
+              # rationale (guest reads from /dev/ttyS0 must block, not EOF).
+              socat -u UNIX-LISTEN:"''${SERIAL_SOCK_${m.name}}",reuseaddr,fork \
+                       OPEN:"''${SERIAL_LOG_${m.name}}",creat,append &
+              PIDS="$PIDS $!"
+              SOCK_WAIT=0
+              while [ ! -S "''${SERIAL_SOCK_${m.name}}" ]; do
+                sleep 0.05
+                SOCK_WAIT=$((SOCK_WAIT + 1))
+                if [ "$SOCK_WAIT" -gt 100 ]; then
+                  echo "ERROR: serial drain socket for ${m.name} did not appear within 5s"
+                  exit 1
+                fi
+              done
 
               qemu-system-x86_64 \
                 -machine q35,accel=kvm \
@@ -351,7 +376,8 @@ let
                 -device virtio-serial \
                 -device virtserialport,chardev=agent,name=aos.test.agent \
                 -chardev socket,id=agent,path="$AGENT_SOCK_${m.name}",server=on,wait=off \
-                -serial file:"$SERIAL_LOG_${m.name}" \
+                -chardev socket,id=ttyS0,path="''${SERIAL_SOCK_${m.name}}",server=off \
+                -serial chardev:ttyS0 \
                 -netdev socket,id=net0,mcast=230.0.0.1:1234 \
                 -device virtio-net-pci,netdev=net0,mac=${m.mac} \
                 -no-reboot > "$FLEET_DIR/${m.name}-qemu.log" 2>&1 &
