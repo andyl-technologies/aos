@@ -324,51 +324,11 @@ in
       text = sshdConfig;
     };
 
-    # sshd.service — OpenSSH server daemon.
-    systemd.services."sshd" = {
-      description = "OpenSSH Daemon";
-      wantedBy = [ "multi-user.target" ];
-      after = [
-        "network.target"
-        "sshd-keygen.target"
-      ];
-      wants = [ "sshd-keygen.target" ];
-      serviceConfig = {
-        Type = "notify";
-        ExecStart = "${pkgs.openssh}/sbin/sshd -D -f /etc/ssh/sshd_config";
-        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
-        Restart = "on-failure";
-        RestartSec = "5s";
-        KillMode = "process";
-        RuntimeDirectory = "sshd";
-        RuntimeDirectoryMode = "0755";
-      };
-    };
-
-    # Generate SSH host keys on first boot, writing them directly to
-    # /var/etc/ssh/ (persistent ext4 root partition). The
-    # etc-overlay-setup service creates symlinks
-    # /etc/ssh/ssh_host_*_key → /var/etc/ssh/ssh_host_*_key, so sshd
-    # reads the correct files through the symlinks.
-    #
-    # Why not `ssh-keygen -A`? That generates into openssh's compiled-in
-    # sysconfdir (/etc/ssh), which AOS mounts as an overlay with a
-    # tmpfs upper layer — keys written there are wiped on reboot.
-    # Passing explicit -f targets forces writes to go to the root fs.
-    #
-    # Why not guard with `-N ""` only? `ssh-keygen -f path` aborts on
-    # interactive prompt if called without stdin redirection when the
-    # target file exists; the per-type `test ! -f` guard avoids that.
+    # Generate SSH host keys on first boot to /var/etc/ssh/ (persistent
+    # across reboots via the /var partition). The /etc overlay makes them
+    # visible at /etc/ssh/ for sshd.
     systemd.services."sshd-keygen" = {
       description = "Generate SSH Host Keys";
-      # Hook the keygen into both `sshd-keygen.target` (the systemd
-      # idiom) and `sshd.service` directly. Without the `sshd.service`
-      # wantedBy, sshd-keygen.target is a stub target with no upstream
-      # ordering, so sshd.service's `Wants=sshd-keygen.target` doesn't
-      # pull the keygen into the transaction and sshd starts with no
-      # host keys on first boot.
-      wantedBy = [ "sshd-keygen.target" "sshd.service" ];
-      before = [ "sshd-keygen.target" "sshd.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -383,6 +343,24 @@ in
           ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$key" </dev/null
         fi
       '';
+    };
+
+    # sshd.service — OpenSSH server daemon.
+    systemd.services."sshd" = {
+      description = "OpenSSH Daemon";
+      wantedBy = [ "multi-user.target" ];
+      requires = [ "sshd-keygen.service" ];
+      after = [ "network.target" "sshd-keygen.service" ];
+      serviceConfig = {
+        Type = "notify";
+        ExecStart = "${pkgs.openssh}/sbin/sshd -D -f /etc/ssh/sshd_config";
+        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
+        Restart = "on-failure";
+        RestartSec = "5s";
+        KillMode = "process";
+        RuntimeDirectory = "sshd";
+        RuntimeDirectoryMode = "0755";
+      };
     };
 
     # Ensure the authorized_keys directory and sshd privsep chroot exist.
