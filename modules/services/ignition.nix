@@ -11,10 +11,12 @@
 ##! re-execution: Ignition only runs when the marker is absent.
 ##!
 ##! Paired with:
-##!   - `growfs-root.service`       — resize2fs after Ignition extends
-##!                                    the root partition
-##!   - `etc-overlay-setup.service` — /etc overlay + persistent
-##!                                    machine-id/hostname/ssh links
+##!   - `mount-var.service`         — mounts /var partition (created by
+##!                                    Ignition) before ignition-files so
+##!                                    writes to /var/etc/* succeed; the
+##!                                    mount persists through switch-root
+##!   - `etc-overlay-setup.service` — /etc overlay with /var/etc as an
+##!                                    additional lower layer
 {
   config,
   pkgs,
@@ -210,40 +212,56 @@ in {
         };
       };
 
-      # Ignition resizes the GPT partition entry for the root partition
-      # (via `resize: true` in the storage.disks config) but does NOT
-      # run resize2fs on the ext4 filesystem when `wipeFilesystem: false`.
-      # Verified against internal/exec/stages/disks/filesystems.go:122-137
-      # in the ignition source: with an existing matching filesystem,
-      # ignition skips mkfs and leaves the filesystem at its original
-      # size. So we grow the ext4 ourselves after ignition finishes.
-      "growfs-root" = {
-        description = "Grow Root Filesystem to Fill Partition";
-        wantedBy = ["initrd-root-fs.target"];
+      # Mount the /var partition created by ignition-disks so that
+      # ignition-files can write to /sysroot/var/etc/* and the mount
+      # persists through switch-root into stage-2 (no ExecStop).
+      # Stage-2 systemd sees the existing mount and considers its
+      # fstab-generated var.mount unit already active.
+      "mount-var" = {
+        description = "Mount /var Partition";
+        wantedBy = ["initrd-fs.target"];
         before = [
-          "initrd-root-fs.target"
-          "sysroot.mount"
+          "ignition-files.service"
+          "etc-overlay-setup.service"
+          "initrd-fs.target"
         ];
         requires = [
+          "sysroot.mount"
           "ignition-disks.service"
-          "systemd-udev-settle.service"
         ];
         after = [
+          "sysroot.mount"
           "ignition-disks.service"
           "systemd-udev-settle.service"
         ];
+        unitConfig = {
+          ConditionPathExists = "/dev/disk/by-partlabel/var";
+        };
+        environment.PATH = ignitionPath;
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${pkgs.e2fsprogs}/sbin/resize2fs /dev/disk/by-partlabel/root";
         };
+        script = ''
+          set -euo pipefail
+          if ! mountpoint -q /sysroot/var; then
+            mkdir -p /sysroot/var
+            mount /dev/disk/by-partlabel/var /sysroot/var
+          fi
+          # Standard /var subdirectories expected by systemd and daemons.
+          mkdir -p /sysroot/var/{log,lib,tmp}
+          # /var/run → /run is the modern-Linux convention; many daemons
+          # (dbus, various PID files) still reference /var/run paths.
+          ln -sfn /run /sysroot/var/run
+        '';
       };
 
       # /etc overlay: moves the image's /etc → /etc.lower on first boot,
-      # mounts an overlayfs at /etc, and creates persistent symlinks for
-      # state that must survive reboots (machine-id, hostname, SSH
-      # host keys + authorized_keys). On subsequent boots /etc.lower
-      # already exists and the mv is skipped.
+      # then mounts an overlayfs at /etc with two lower layers:
+      #   1. /var/etc   — persistent state written by ignition (shadows)
+      #   2. /etc.lower — immutable image /etc
+      # The upper layer is a tmpfs under /run so runtime writes to /etc
+      # are not persisted across reboots.
       "etc-overlay-setup" = {
         description = "Set Up /etc Overlay Filesystem";
         wantedBy = ["initrd-fs.target"];
@@ -253,18 +271,15 @@ in {
         ];
         requires = [
           "sysroot.mount"
-          "growfs-root.service"
+          "mount-var.service"
+          "ignition-files.service"
         ];
         after = [
           "sysroot.mount"
-          "growfs-root.service"
+          "mount-var.service"
+          "ignition-files.service"
           "initrd-root-fs.target"
         ];
-        # The script below shells out to coreutils (mv, mkdir, ln) and
-        # util-linux (mount) without absolute paths, so PATH has to
-        # include both. Without this, systemd gives the service its
-        # default PATH (/usr/bin:/bin:/usr/sbin:/sbin) which doesn't
-        # find any AOS-built binary and each lookup returns 127.
         environment.PATH = ignitionPath;
         serviceConfig = {
           Type = "oneshot";
@@ -274,48 +289,41 @@ in {
           set -euo pipefail
           sysroot=/sysroot
 
-          # 1. Move the image's /etc aside on first boot.
-          if [ ! -d "$sysroot/etc.lower" ]; then
-            mv "$sysroot/etc" "$sysroot/etc.lower"
-            mkdir -p "$sysroot/etc"
+          # 1. First-boot setup: move /etc aside and create the
+          #    /run/etc-upper mountpoint. Root is read-only so we
+          #    remount rw briefly for these on-disk changes.
+          needs_rw=false
+          if [ ! -d "$sysroot/etc.lower" ]; then needs_rw=true; fi
+          if [ ! -d "$sysroot/run/etc-upper" ]; then needs_rw=true; fi
+
+          if [ "$needs_rw" = true ]; then
+            mount -o remount,rw "$sysroot"
+            if [ ! -d "$sysroot/etc.lower" ]; then
+              mv "$sysroot/etc" "$sysroot/etc.lower"
+              mkdir -p "$sysroot/etc"
+            fi
+            mkdir -p "$sysroot/run/etc-upper"
+            mount -o remount,ro "$sysroot"
           fi
 
-          # 2. Tmpfs upper-layer directories (inside the future /run).
+          # 2. Tmpfs for the overlay upper/work dirs. Mounted at the
+          #    mountpoint we created above so the overlay's write layer
+          #    is volatile. Stage-2 mounts its own tmpfs at /run but
+          #    this sub-mount at /run/etc-upper persists independently.
+          if ! mountpoint -q "$sysroot/run/etc-upper"; then
+            mount -t tmpfs -o mode=755 tmpfs "$sysroot/run/etc-upper"
+          fi
           mkdir -p "$sysroot/run/etc-upper/upper"
           mkdir -p "$sysroot/run/etc-upper/work"
 
-          # 3. Persistent storage skeleton on the root partition.
+          # 3. Ensure /var/etc exists on the persistent /var partition.
           mkdir -p "$sysroot/var/etc/ssh/authorized_keys"
 
-          # 4. Mount the overlay — /etc becomes a union of the immutable
-          #    image /etc.lower and the volatile /run/etc-upper/upper.
+          # 4. Mount the overlay. /var/etc is listed first so its files
+          #    shadow /etc.lower; the tmpfs upper captures runtime writes.
           ${pkgs.util-linux}/bin/mount -t overlay overlay \
-            -o lowerdir="$sysroot/etc.lower",upperdir="$sysroot/run/etc-upper/upper",workdir="$sysroot/run/etc-upper/work" \
+            -o lowerdir="$sysroot/var/etc:$sysroot/etc.lower",upperdir="$sysroot/run/etc-upper/upper",workdir="$sysroot/run/etc-upper/work" \
             "$sysroot/etc"
-
-          # 5. Persistent symlinks. Ignition writes the files directly
-          #    to /sysroot/var/etc/* (the JSON config uses /var/etc
-          #    paths), so all we do here is point the canonical /etc
-          #    names at them. Every file is one symlink target in
-          #    /var/etc/, which is persistent ext4 on the root part.
-          for f in machine-id hostname; do
-            ln -sfn "/var/etc/$f" "$sysroot/etc/$f"
-          done
-
-          # SSH host keys: sshd-keygen writes these directly to
-          # /var/etc/ssh/ on first boot. Pointing /etc/ssh/ssh_host_*
-          # at /var/etc/ssh/ keeps them persistent. sshd_config itself
-          # stays in the immutable lower layer, so we symlink per-leaf
-          # rather than the whole /etc/ssh. Only ed25519 is used; RSA
-          # and ECDSA are disabled at the sshd_config level.
-          for name in ssh_host_ed25519_key ssh_host_ed25519_key.pub; do
-            ln -sfn "/var/etc/ssh/$name" "$sysroot/etc/ssh/$name"
-          done
-
-          # authorized_keys: Ignition writes /var/etc/ssh/authorized_keys/root
-          # so sshd's `AuthorizedKeysFile /etc/ssh/authorized_keys/%u` resolves
-          # to the persistent copy via this directory-level symlink.
-          ln -sfn "/var/etc/ssh/authorized_keys" "$sysroot/etc/ssh/authorized_keys"
         '';
       };
     };
