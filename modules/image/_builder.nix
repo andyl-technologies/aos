@@ -3,29 +3,27 @@
 ##! Produces a bootable GPT disk image from an evaluated AOS system
 ##! configuration. The image contains:
 ##!
-##!   Partition 1 (Boot) — ext4, kernel + initrd + boot config
-##!   Partition 2 (Root) — ext4, Nix store closure + system symlinks
-##!   Remaining space    — unpartitioned (reserved for ZFS data pool at runtime)
+##!   Partition 1 (boot) — vfat, kernel + initrd + boot config
+##!   Partition 2 (root) — ext4, Nix store closure + system symlinks
+##!                         (sized to fit the root filesystem tree)
 ##!
-##! Boot method: BIOS boot via syslinux/extlinux (installed on the boot
-##! partition). EFI boot can be added later when systemd-boot EFI stub
-##! is available.
+##! Ignition adds swap + /var partitions at first boot in the
+##! unallocated space after the root partition.
 ##!
 ##! Build strategy (no losetup/mount — fully sandbox-compatible):
 ##!   1. Populate root directory tree on disk
 ##!   2. mkfs.ext4 -d root/ → creates ext4 image from directory
-##!   3. Populate boot directory tree on disk
-##!   4. mkfs.ext4 -d boot/ → creates ext4 boot image from directory
-##!   5. sfdisk + dd → assembles partitions into final GPT image
+##!   3. resize2fs -M → shrink to minimum, then grow by headroom
+##!   4. Populate boot directory tree on disk
+##!   5. mkfs.vfat + mcopy → creates FAT32 boot image
+##!   6. sfdisk + dd → assembles partitions into final GPT image
 ##!
 ##! Arguments:
 ##!   pkgs     — AOS package set
 ##!   lib      — AOS library
 ##!   system   — evaluated system configuration (from evalModules)
 ##!   name     — image name slug (used in derivation name and boot entry)
-##!   diskSize — total raw image size (e.g. "16G")
-##!   bootSize — boot partition size (e.g. "512M")
-##!   rootSize — root partition size (e.g. "8G")
+##!   bootSize — boot partition size (e.g. "1G")
 ##!
 ##! Output: $out/aos-${name}.img + $out/image-info.json
 {
@@ -33,11 +31,7 @@
   lib,
   system,
   name,
-  diskSize ? "16G",
-  bootSize ? "512M",
-  rootSize ? "8G",
-  # Legacy compat — espSize maps to bootSize
-  espSize ? bootSize,
+  bootSize ? "1G",
 }:
 let
   # Kernel command line parameters from the evaluated config.
@@ -60,13 +54,13 @@ let
       throw "Cannot parse size: ${s}";
 
   bootBytes = parseSize bootSize;
-  rootBytes = parseSize rootSize;
 
-  # Partition geometry (512-byte sectors)
+  # Partition geometry (512-byte sectors).
+  # Root partition size is computed at build time after measuring the
+  # rootfs tree — only boot geometry is known at eval time.
   bootStartSector = 2048; # 1 MiB alignment
   bootSectors = bootBytes / 512;
   rootStartSector = bootStartSector + bootSectors;
-  rootSectors = rootBytes / 512;
 in
 pkgs.mkDerivation {
   name = "aos-image-${name}";
@@ -207,9 +201,15 @@ pkgs.mkDerivation {
           done
         } > etc-chown.debugfs
 
-        # ── 2. Create ext4 root partition image ────────────────────────────
-        echo "==> Creating ext4 root image (${rootSize})"
-        truncate -s ${toString rootBytes} root.img
+        # ── 2. Create ext4 root partition image (sized to fit) ─────────────
+        echo "==> Measuring rootfs tree"
+        rootfs_bytes=$(du -sb rootfs | cut -f1)
+        # 2x data for initial mkfs headroom (resized down afterwards).
+        initial_bytes=$(( rootfs_bytes * 2 + 256 * 1024 * 1024 ))
+        echo "    rootfs data: $(( rootfs_bytes / 1048576 )) MiB"
+
+        echo "==> Creating ext4 root image"
+        truncate -s "$initial_bytes" root.img
         mkfs.ext4 -L aos-root -O ^has_journal -d rootfs -q root.img
 
         # Apply the /etc ownership reset prepared above. debugfs's
@@ -217,6 +217,22 @@ pkgs.mkDerivation {
         # invocation executes the whole script.
         echo "    Resetting /etc ownership to root:root via debugfs"
         debugfs -w -f etc-chown.debugfs root.img >/dev/null
+
+        # Shrink root.img to its minimum size + 64 MiB headroom.
+        echo "    Shrinking root image to fit"
+        e2fsck -f -y root.img >/dev/null
+        resize2fs -M root.img >/dev/null 2>&1
+        # Read the minimum block count, then grow by 64 MiB.
+        blk_size=$(dumpe2fs -h root.img 2>/dev/null | awk '/Block size:/{print $3}')
+        min_blocks=$(dumpe2fs -h root.img 2>/dev/null | awk '/Block count:/{print $3}')
+        headroom_blocks=$(( 64 * 1024 * 1024 / blk_size ))
+        final_blocks=$(( min_blocks + headroom_blocks ))
+        resize2fs root.img "$final_blocks" >/dev/null 2>&1
+        # Compute final byte size, round up to 1 MiB alignment.
+        root_bytes=$(( final_blocks * blk_size ))
+        root_bytes=$(( ((root_bytes + 1048575) / 1048576) * 1048576 ))
+        truncate -s "$root_bytes" root.img
+        echo "    root image: $(( root_bytes / 1048576 )) MiB"
 
         # ── 3. Build boot directory tree ───────────────────────────────────
         echo "==> Populating boot tree"
@@ -268,23 +284,30 @@ GRUB
         done
 
         # ── 5. Assemble final GPT image ───────────────────────────────────
-        echo "==> Assembling ${diskSize} GPT image"
-        truncate -s ${diskSize} image.raw
+        root_sectors=$(( root_bytes / 512 ))
+        # 1 MiB (2048 sectors) at the start for GPT header + alignment,
+        # plus 1 MiB at the end for the backup GPT header.
+        disk_sectors=$(( ${toString rootStartSector} + root_sectors + 2048 ))
+        disk_bytes=$(( disk_sectors * 512 ))
+        echo "==> Assembling $(( disk_bytes / 1048576 )) MiB GPT image"
+        truncate -s "$disk_bytes" image.raw
 
-        # Write GPT partition table
-        # Partition 1 has BIOS boot flag for legacy boot compatibility
+        # Write GPT partition table.
         sfdisk image.raw <<PTABLE
 label: gpt
-size=${toString bootSectors}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="Boot", attrs="LegacyBIOSBootable"
-size=${toString rootSectors}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="Root"
+size=${toString bootSectors}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="boot", attrs="LegacyBIOSBootable"
+size=$root_sectors, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root"
 PTABLE
 
-        # dd partition images into the correct offsets
+        # dd partition images into the correct offsets.
         echo "    Writing boot partition at sector ${toString bootStartSector}"
         dd if=boot.img of=image.raw bs=512 seek=${toString bootStartSector} conv=notrunc status=none
 
         echo "    Writing root partition at sector ${toString rootStartSector}"
         dd if=root.img of=image.raw bs=512 seek=${toString rootStartSector} conv=notrunc status=none
+
+        # Save root size for the install phase.
+        echo "$root_bytes" > root-size-bytes
 
         echo "==> Image assembly complete"
       '';
@@ -301,19 +324,23 @@ PTABLE
         ln -s ${system.config.system.build.initrd}/initrd.img $out/initrd.img
 
         # Write image metadata for downstream tooling.
+        root_size_bytes=$(cat root-size-bytes)
+        root_size_mib=$(( root_size_bytes / 1048576 ))
+        disk_size_bytes=$(stat -c %s "$out/aos-${name}.img")
+        disk_size_mib=$(( disk_size_bytes / 1048576 ))
         cat > $out/image-info.json <<META
 {
   "name": "${name}",
   "version": "${version}",
-  "diskSize": "${diskSize}",
+  "diskSizeMiB": $disk_size_mib,
   "bootSize": "${bootSize}",
-  "rootSize": "${rootSize}",
+  "rootSizeMiB": $root_size_mib,
   "format": "raw",
   "partitionTable": "gpt",
   "kernelParams": "${kernelParams}",
   "partitions": [
-    { "number": 1, "label": "Boot", "type": "linux", "filesystem": "ext4", "size": "${bootSize}" },
-    { "number": 2, "label": "Root", "type": "linux", "filesystem": "ext4", "size": "${rootSize}" }
+    { "number": 1, "label": "boot", "type": "linux", "filesystem": "vfat", "size": "${bootSize}" },
+    { "number": 2, "label": "root", "type": "linux", "filesystem": "ext4", "sizeMiB": $root_size_mib }
   ]
 }
 META
