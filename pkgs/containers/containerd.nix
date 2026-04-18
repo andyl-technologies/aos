@@ -53,6 +53,7 @@ in
           mkdir -p "$GOCACHE"
           make SHELL="$CONFIG_SHELL" VERSION=v${version} \
             REVISION=v${version} \
+            STATIC=1 \
             binaries
         '';
       }
