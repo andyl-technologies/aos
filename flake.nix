@@ -139,7 +139,7 @@
         # Package integration checks
         // prefixAttrs "integration" aos.checks.integration
         # Fleet tests (multi-VM)
-        // prefixAttrs "fleet" aos.fleetTests
+        // prefixAttrs "fleet" aos.checks.fleet
       );
     };
 }
