@@ -262,21 +262,6 @@ in {
         apm = apmTests;
       };
     integration = packageChecks // stdenvChecks;
+    fleet = discoverFleetTests;
   };
-
-  # Fleet tests (multi-VM, span multiple systems)
-  fleetTests = discoverFleetTests;
-
-  # Backwards compatibility: systemChecks as a flat namespace
-  # Maps "server-boot-basics" -> systems.server.checks.boot-basics, etc.
-  systemChecks = let
-    allSystems = discoverSystems;
-    sysNames = builtins.attrNames allSystems;
-  in
-    builtins.foldl' (
-      acc: sysName:
-        acc // prefixAttrs sysName allSystems.${sysName}.checks
-    ) {}
-    sysNames
-    // discoverFleetTests;
 }
