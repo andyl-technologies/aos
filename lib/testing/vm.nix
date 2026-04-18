@@ -36,7 +36,7 @@ let
   kernel = pkgs.linux;
 
   # Shared shell assertion helpers
-  assertions = import ./assertions.nix;
+  assertions = import ./assertions.nix { inherit (pkgs) aos-agent-rpc; };
 
   # ---------------------------------------------------------------------------
   # Build a rootfs ext4 image for VM testing
@@ -800,9 +800,9 @@ let
           if driver == "firecracker" then
             [
               pkgs.coreutils
-              hostSocat
               hostJq
               firecracker
+              pkgs.aos-agent-rpc
             ]
           else if driver == "qemu" then
             [
@@ -810,6 +810,7 @@ let
               hostSocat
               hostJq
               qemu
+              pkgs.aos-agent-rpc
             ]
           else
             throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
@@ -925,23 +926,8 @@ let
           done
           echo "vsock UDS ready."
 
-          # Import shared test helpers (assert_success, assert_output_contains).
-          # These call run_in_guest() which we override below for vsock.
-          ${assertions.vmHelpers}
-
-          # Override run_in_guest for Firecracker vsock CONNECT protocol.
-          # Each call: connect to the vsock UDS, send "CONNECT 52\n" to establish
-          # a connection to guest port 52, skip the "OK <port>\n" response line,
-          # then send the command and read the JSON response.
-          run_in_guest() {
-            local cmd="$1"
-            {
-              printf 'CONNECT 52\n'
-              sleep 0.1
-              printf '%s\n' "$cmd"
-              sleep 30
-            } | socat - UNIX-CONNECT:"$VSOCK_UDS" 2>/dev/null | tail -n +2 | head -1
-          }
+          # Import shared test helpers (run_in_guest, assert_success, assert_output_contains).
+          ${assertions.vmFirecrackerHelpers}
 
           # Wait for guest agent using PING/PONG
           echo "Waiting for guest agent..."

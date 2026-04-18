@@ -25,7 +25,7 @@
 }:
 let
   vmLib = import ./vm.nix { inherit pkgs lib testTools; };
-  assertions = import ./assertions.nix;
+  assertions = import ./assertions.nix { inherit (pkgs) aos-agent-rpc; };
 
   qemu = testTools.qemu;
   hostSocat = pkgs.socat;
@@ -89,9 +89,9 @@ let
         if driver == "firecracker" then
           [
             pkgs.coreutils
-            hostSocat
             hostJq
             firecracker
+            pkgs.aos-agent-rpc
           ]
         else if driver == "qemu" then
           [
@@ -99,6 +99,7 @@ let
             hostSocat
             hostJq
             qemu
+            pkgs.aos-agent-rpc
           ]
         else
           throw "mkFleetTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
@@ -223,18 +224,6 @@ let
         # ----------------------------------------------------------
         # Wait for all agents to become ready (PING/PONG via vsock)
         # ----------------------------------------------------------
-        # Helper to send a command via vsock CONNECT protocol
-        vsock_cmd() {
-          local uds="$1"
-          local cmd="$2"
-          {
-            printf 'CONNECT 52\n'
-            sleep 0.1
-            printf '%s\n' "$cmd"
-            sleep 5
-          } | socat - UNIX-CONNECT:"$uds" 2>/dev/null | tail -n +2 | head -1
-        }
-
         START_TIME=$(date +%s)
         DEADLINE=$((START_TIME + ${builtins.toString timeout}))
         ${lib.concatStringsSep "\n" (
@@ -242,7 +231,7 @@ let
             echo "Waiting for ${mi.m.name}..."
             while [ "$(date +%s)" -lt "$DEADLINE" ]; do
               if [ -S "''${VSOCK_UDS_${mi.m.name}}" ]; then
-                RESPONSE=$(vsock_cmd "''${VSOCK_UDS_${mi.m.name}}" "PING" || true)
+                RESPONSE=$(${assertions.rpcBin} --driver firecracker "''${VSOCK_UDS_${mi.m.name}}" "PING" || true)
                 if echo "$RESPONSE" | grep -q '"ready"'; then
                   echo "${mi.m.name} ready."
                   break
@@ -267,7 +256,7 @@ let
         fi
 
         # Import shared fleet test helpers (run_on, assert_on, assert_output_on)
-        ${assertions.mkFleetVsockHelpers "${hostSocat}/bin/socat"}
+        ${assertions.fleetVsockHelpers}
 
         # ----------------------------------------------------------
         # Run fleet test script
@@ -285,10 +274,16 @@ let
         echo "Shutting down fleet..."
         ${lib.concatStringsSep "\n" (
           builtins.map (mi: ''
-            vsock_cmd "''${VSOCK_UDS_${mi.m.name}}" "SHUTDOWN" || true
+            ${assertions.rpcBin} --driver firecracker "''${VSOCK_UDS_${mi.m.name}}" "SHUTDOWN" || true
           '') machineImages
         )}
         sleep 2
+        # Kill all backgrounded processes (sleep infinity + firecracker)
+        # so wait doesn't hang. The cleanup trap does the same, but the
+        # happy path reaches here before the trap fires.
+        for pid in $PIDS; do
+          kill "$pid" 2>/dev/null || true
+        done
         wait 2>/dev/null || true
         trap - EXIT
 
@@ -397,7 +392,7 @@ let
             echo "Waiting for ${mi.m.name}..."
             while [ "$SECONDS" -lt "$DEADLINE" ]; do
               if [ -S "''${AGENT_SOCK_${mi.m.name}}" ]; then
-                RESPONSE=$( (printf 'PING\n'; sleep 5) | socat - UNIX-CONNECT:"''${AGENT_SOCK_${mi.m.name}}" 2>/dev/null | head -1 || true)
+                RESPONSE=$(${assertions.rpcBin} --driver qemu "''${AGENT_SOCK_${mi.m.name}}" "PING" || true)
                 if echo "$RESPONSE" | grep -q '"ready"'; then
                   echo "${mi.m.name} ready."
                   break
@@ -422,7 +417,7 @@ let
         fi
 
         # Import shared fleet test helpers (run_on, assert_on, assert_output_on)
-        ${assertions.mkFleetHelpers "${hostSocat}/bin/socat"}
+        ${assertions.fleetHelpers}
 
         # ----------------------------------------------------------
         # Run fleet test script
@@ -440,10 +435,13 @@ let
         echo "Shutting down fleet..."
         ${lib.concatStringsSep "\n" (
           builtins.map (mi: ''
-            (printf 'SHUTDOWN\n'; sleep 2) | socat - UNIX-CONNECT:"''${AGENT_SOCK_${mi.m.name}}" 2>/dev/null || true
+            ${assertions.rpcBin} --driver qemu "''${AGENT_SOCK_${mi.m.name}}" "SHUTDOWN" || true
           '') machineImages
         )}
         sleep 2
+        for pid in $PIDS; do
+          kill "$pid" 2>/dev/null || true
+        done
         wait 2>/dev/null || true
         trap - EXIT
 
