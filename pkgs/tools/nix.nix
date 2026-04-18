@@ -92,6 +92,11 @@ mkDerivation {
         sed -i '/perl/d' meson.build
         sed -i '/nix-.*-test/d' meson.build
         sed -i '/nix-.*-tests/d' meson.build
+        # Fix SYSTEM define: meson build at 2.24.x only sets it to the OS name
+        # ("linux") instead of the full system pair ("x86_64-linux"). Fixed
+        # upstream in 2.28.0 (commit 6a1a3fa1c).
+        sed -i "s|configdata.set_quoted('SYSTEM', host_machine.system())|configdata.set_quoted('SYSTEM', host_machine.cpu_family() + '-' + host_machine.system())|" \
+          src/libstore/meson.build
         mkdir -p build && cd build
         meson setup .. \
           --prefix=$out \
