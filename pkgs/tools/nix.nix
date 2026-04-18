@@ -69,8 +69,6 @@ mkDerivation {
   ];
   propagatedDeps = [ ];
 
-  LDFLAGS = "-Wl,-rpath,$out/lib";
-
   phases = [
     {
       name = "unpack";
