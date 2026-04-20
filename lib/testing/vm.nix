@@ -55,6 +55,7 @@ let
     }:
     let
       toplevel = system.config.system.build.toplevel;
+      kernelPkg = system.config.system.build.kernel;
       systemdPkg = pkgs.systemd;
       coreutilsPkg = pkgs.coreutils;
       bashPkg = pkgs.bash;
@@ -69,12 +70,16 @@ let
       buildDeps = [
         pkgs.e2fsprogs
         pkgs.coreutils
+        pkgs.fakeroot
+        pkgs.openssh
       ];
 
       # Nix writes the transitive closure graphs before running the builder
       exportReferencesGraph = [
         "closure-toplevel"
         toplevel
+        "closure-kernel"
+        kernelPkg
         "closure-systemd"
         systemdPkg
         "closure-coreutils"
@@ -86,6 +91,7 @@ let
       ];
 
       TOPLEVEL = builtins.toString toplevel;
+      KERNEL = builtins.toString kernelPkg;
       SYSTEMD = builtins.toString systemdPkg;
       COREUTILS = builtins.toString coreutilsPkg;
       AOS_BASH = builtins.toString bashPkg;
@@ -104,7 +110,7 @@ let
                         mkdir -p rootfs/lib64
 
                         # Collect all unique store paths from the closure graphs
-                        cat closure-toplevel closure-systemd closure-coreutils closure-bash closure-socat \
+                        cat closure-toplevel closure-kernel closure-systemd closure-coreutils closure-bash closure-socat \
                           | grep '^/nix/store/' | sort -u > all-paths
 
                         echo "==> Copying $(wc -l < all-paths) store paths to rootfs"
@@ -156,6 +162,9 @@ let
                         for d in $SYSTEMD/lib/*; do
                           ln -sfn "$d" "rootfs/lib/$(basename $d)"
                         done
+
+                        # /lib/modules → kernel module tree so modprobe can find .ko files
+                        ln -sfn $KERNEL/lib/modules rootfs/lib/modules
 
                         # Populate /usr/bin, /usr/sbin, /bin, /sbin with essential binaries
                         # systemd's default PATH for services is /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
@@ -243,14 +252,27 @@ let
                           # would hit the store and fail with EACCES. Replace each such link
                           # with a copy of its target — cp -a keeps internal relative symlinks
                           # (.wants/*.service) intact, so systemd semantics are preserved.
-                          find rootfs/etc -type l | while IFS= read -r link; do
-                            target=$(readlink "$link")
-                            case "$target" in
-                              /nix/store/*)
-                                rm "$link"
-                                cp -a "$target" "$link"
-                                ;;
-                            esac
+                          #
+                          # Replacing a directory-symlink with cp -a can reveal new store
+                          # symlinks inside the copied tree (e.g. unit files inside the
+                          # system-units derivation). Loop until no store symlinks remain.
+                          while true; do
+                            found_any=0
+                            find rootfs/etc -type l | while IFS= read -r link; do
+                              target=$(readlink "$link")
+                              case "$target" in
+                                /nix/store/*)
+                                  rm "$link"
+                                  cp -a "$target" "$link"
+                                  found_any=1
+                                  ;;
+                              esac
+                            done
+                            # The subshell eats our variable; re-check with find.
+                            if ! find rootfs/etc -type l -exec readlink {} \; | grep -q '^/nix/store/'; then
+                              break
+                            fi
+                            chmod -R u+w rootfs/etc
                           done
                           # Newly-copied trees may carry store read-only perms; re-apply.
                           chmod -R u+w rootfs/etc
@@ -273,8 +295,20 @@ let
                         # Basic /etc for systemd
                         echo "${hostname}" > rootfs/etc/hostname
                         touch rootfs/etc/machine-id
-                        # fstab so systemd-remount-fs mounts root read-write
-                        printf '/dev/vda / ext4 defaults 0 1\n' > rootfs/etc/fstab
+                        # fstab for the test VM: flat ext4 on /dev/vda (rw) plus
+                        # tmpfs mounts that the module system expects.
+                        printf '%s\n' \
+                          '/dev/vda / ext4 rw,relatime 0 1' \
+                          'tmpfs /tmp tmpfs nosuid,nodev,noexec,mode=1777,size=50% 0 0' \
+                          'tmpfs /run tmpfs nosuid,nodev,noexec,mode=755,size=25% 0 0' \
+                          > rootfs/etc/fstab
+
+                        # Pre-generate SSH host key so sshd can start without
+                        # the keygen service (which expects /var/etc/ssh from
+                        # the production overlay setup).
+                        mkdir -p rootfs/etc/ssh
+                        ssh-keygen -q -t ed25519 -N "" -f rootfs/etc/ssh/ssh_host_ed25519_key </dev/null
+
                         ${
                           if hostsEntries != null then
                             ''
@@ -535,7 +569,11 @@ let
                         # stdenv setup.sh creates $out as a directory; mkfs.ext4
                         # needs a file. Write to temp file, then replace $out.
                         rm -rf $out
-                        mkfs.ext4 -d rootfs -L rootfs -m 1 -q $out ''${IMAGE_MB}M
+                        # fakeroot makes all files appear owned by root:root so
+                        # that mkfs.ext4 -d writes uid/gid 0 into the image.
+                        # Without this, files get the sandbox user's uid and
+                        # daemons like auditd refuse to start (ownership checks).
+                        fakeroot -- mkfs.ext4 -d rootfs -L rootfs -m 1 -q $out ''${IMAGE_MB}M
           '';
         }
       ];
