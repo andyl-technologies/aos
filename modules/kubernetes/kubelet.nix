@@ -352,7 +352,7 @@ in
           name = "kubelet-enabled";
           description = "kubelet service is enabled";
           script = ''
-            assert_success "systemctl is-enabled kubelet" \
+            assert_success "test -e /etc/systemd/system/multi-user.target.wants/kubelet.service" \
               "kubelet service is enabled"
           '';
         })
