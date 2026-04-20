@@ -158,6 +158,26 @@ in
       };
     };
 
+    # Apply bridge sysctls after br_netfilter is loaded. The
+    # net.bridge.bridge-nf-call-* parameters only exist in /proc once
+    # br_netfilter is present, so systemd-sysctl.service (which runs
+    # during sysinit) cannot apply them. This unit re-applies just the
+    # k8s sysctl file after the modules are in place.
+    systemd.services."k8s-sysctl" = {
+      description = "Apply Kubernetes Network Sysctls";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "k8s-modules-load.service" ];
+      before = [
+        "containerd.service"
+        "kubelet.service"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.systemd}/lib/systemd/systemd-sysctl /etc/sysctl.d/90-k8s-networking.conf";
+      };
+    };
+
     # Set the firewall forward policy to "accept" for Kubernetes nodes.
     # Pod-to-pod traffic traverses the forward chain and must be allowed.
     aos.firewall.forwardPolicy = "accept";
