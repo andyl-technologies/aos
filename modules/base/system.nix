@@ -124,10 +124,10 @@ in
         })
         (lib.mkCheck {
           name = "systemd-running";
-          description = "systemd reached running state";
+          description = "systemd reached multi-user.target";
           script = ''
-            assert_success "systemctl is-system-running --wait || true" \
-              "systemd reached running state"
+            assert_success "systemctl is-active multi-user.target" \
+              "systemd reached multi-user.target"
           '';
         })
         (lib.mkCheck {
