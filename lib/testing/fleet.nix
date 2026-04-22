@@ -69,10 +69,11 @@ let
           "Address=${m.ip}/24"
         ];
 
-      # Build per-machine rootfs images (shared by both drivers)
+      # Build per-machine GPT disk images (shared by both drivers).
+      # Each machine boots through the production-like initrd path.
       machineImages = builtins.map (m: {
         inherit m;
-        image = vmLib.mkTestRootfs {
+        image = vmLib.mkTestDisk {
           system = m.machine.system;
           name = m.name;
           hostname = m.name;
@@ -80,6 +81,7 @@ let
           hostsEntries = hostsEntries;
         };
         kernel = m.machine.system.config.system.build.kernel;
+        initrd = m.machine.system.config.system.build.initrd;
       }) machinesWithIndex;
 
       # -------------------------------------------------------------------
@@ -148,25 +150,29 @@ let
               SERIAL_LOG_${m.name}="$FLEET_DIR/${m.name}-serial.log"
               FC_LOG_${m.name}="$FLEET_DIR/${m.name}-fc.log"
 
-              # Copy rootfs to writable location
-              cp "${mi.image}" "$FLEET_DIR/${m.name}-rootfs.img"
-              chmod u+w "$FLEET_DIR/${m.name}-rootfs.img"
+              # Copy disk image to writable location
+              cp "${mi.image}/disk.img" "$FLEET_DIR/${m.name}-disk.img"
+              chmod u+w "$FLEET_DIR/${m.name}-disk.img"
 
               # Find the uncompressed kernel image (Firecracker requires vmlinux, not vmlinuz)
               VMLINUX_${m.name}=$(ls ${mi.kernel}/boot/vmlinux-* | head -1)
+              INITRD_${m.name}=${mi.initrd}/initrd.img
 
-              # Write Firecracker JSON config (no network interfaces — sandbox limitation)
+              # Write Firecracker JSON config (no network interfaces — sandbox limitation).
+              # is_root_device=false avoids Firecracker auto-appending
+              # root=/dev/vda rw; we set root=/dev/vda2 ro explicitly.
               cat > "$FLEET_DIR/${m.name}-fc.json" << FCCFGEOF
               {
                 "boot-source": {
                   "kernel_image_path": "''${VMLINUX_${m.name}}",
-                  "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/sbin/init systemd.journald.forward_to_console=1 enforcing=0"
+                  "initrd_path": "''${INITRD_${m.name}}",
+                  "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0"
                 },
                 "drives": [
                   {
                     "drive_id": "rootfs",
-                    "path_on_host": "$FLEET_DIR/${m.name}-rootfs.img",
-                    "is_root_device": true,
+                    "path_on_host": "$FLEET_DIR/${m.name}-disk.img",
+                    "is_root_device": false,
                     "is_read_only": false,
                     "cache_type": "Unsafe",
                     "io_engine": "Sync"
@@ -337,12 +343,13 @@ let
               SERIAL_SOCK_${m.name}="$FLEET_DIR/${m.name}-serial.sock"
               SERIAL_LOG_${m.name}="$FLEET_DIR/${m.name}-serial.log"
 
-              # Copy rootfs to writable location
-              cp "${mi.image}" "$FLEET_DIR/${m.name}-rootfs.img"
-              chmod u+w "$FLEET_DIR/${m.name}-rootfs.img"
+              # Copy disk image to writable location
+              cp "${mi.image}/disk.img" "$FLEET_DIR/${m.name}-disk.img"
+              chmod u+w "$FLEET_DIR/${m.name}-disk.img"
 
               # Find kernel image
               VMLINUZ_${m.name}=$(ls ${mi.kernel}/boot/vmlinuz-* | head -1)
+              INITRD_${m.name}=${mi.initrd}/initrd.img
 
               # Per-machine unidirectional serial drain — see vm.nix for the
               # rationale (guest reads from /dev/ttyS0 must block, not EOF).
@@ -366,8 +373,9 @@ let
                 -smp 2 \
                 -nographic \
                 -kernel "''${VMLINUZ_${m.name}}" \
-                -append "root=/dev/vda rw console=ttyS0 init=/sbin/init panic=1 net.ifnames=0" \
-                -drive file="$FLEET_DIR/${m.name}-rootfs.img",format=raw,if=virtio \
+                -initrd "''${INITRD_${m.name}}" \
+                -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0 net.ifnames=0" \
+                -drive file="$FLEET_DIR/${m.name}-disk.img",format=raw,if=virtio \
                 -device virtio-serial \
                 -device virtserialport,chardev=agent,name=aos.test.agent \
                 -chardev socket,id=agent,path="$AGENT_SOCK_${m.name}",server=on,wait=off \
