@@ -44,7 +44,25 @@ let
   # Uses exportReferencesGraph to discover the Nix store closure, then
   # creates an ext4 image populated via mkfs.ext4 -d (no mount needed).
 
-  mkTestRootfs =
+  # ---------------------------------------------------------------------------
+  # Build a GPT disk image for VM testing
+  # ---------------------------------------------------------------------------
+  # Produces a single $out/disk.img with three partitions matching the
+  # production layout closely enough for the production initrd + ignition
+  # services to run unchanged against it:
+  #
+  #   1  boot  — 4 MiB, unformatted. Vestigial — kernel + initrd come in
+  #              via `-kernel`/`-initrd`, partition 1 is never mounted.
+  #              Reserving 4 MiB keeps root at /dev/vda2 matching
+  #              production device naming.
+  #   2  root  — ext4, sized to fit. The system's /etc is pre-split
+  #              to /etc.lower at image-build time so the production
+  #              etc-overlay-setup.service skips its first-boot remount-rw
+  #              dance on ro root.
+  #   3  var   — 32 MiB ext4, empty (apart from an optional NoCloud seed
+  #              for cloudInitTests). Label `var` via GPT partlabel so
+  #              the production mount-var.service mounts it on every boot.
+  mkTestDisk =
     {
       system,
       name ? "aos-test",
@@ -63,7 +81,7 @@ let
       systemPackages = system.config.environment.systemPackages;
     in
     pkgs.mkDerivation {
-      pname = "vm-rootfs-${name}";
+      pname = "vm-disk-${name}";
       version = "0";
       src = null;
 
@@ -72,6 +90,7 @@ let
         pkgs.coreutils
         pkgs.fakeroot
         pkgs.openssh
+        pkgs.util-linux  # sfdisk
       ];
 
       # Nix writes the transitive closure graphs before running the builder
@@ -103,9 +122,22 @@ let
           name = "build-rootfs";
           script = ''
                         mkdir -p rootfs/nix/store
-                        mkdir -p rootfs/sbin rootfs/bin rootfs/etc rootfs/dev
+                        mkdir -p rootfs/sbin rootfs/bin rootfs/dev
+                        # /etc is an empty directory — the production
+                        # etc-overlay-setup.service mounts an overlayfs
+                        # on it in the initrd. /etc.lower holds the real
+                        # content (pre-split to skip first-boot remount-rw).
+                        mkdir -p rootfs/etc rootfs/etc.lower
                         mkdir -p rootfs/proc rootfs/sys rootfs/tmp rootfs/run
-                        mkdir -p rootfs/var/log rootfs/var/lib rootfs/var/tmp
+                        # /run/etc-upper is the mount point for the tmpfs
+                        # that etc-overlay-setup mounts as the overlay's
+                        # upper+work dirs. Pre-creating it keeps the first-
+                        # boot setup on the cold path.
+                        mkdir -p rootfs/run/etc-upper
+                        # /var is the mount point for partition 3 — the
+                        # production mount-var.service creates the /log,
+                        # /lib, /tmp subdirs on the mounted partition.
+                        mkdir -p rootfs/var rootfs/sysroot
                         mkdir -p rootfs/opt/aos-test/bin
                         mkdir -p rootfs/lib64
 
@@ -235,17 +267,20 @@ let
                         # /run/current-system -> toplevel
                         ln -sfn $TOPLEVEL rootfs/run/current-system
 
-                        # Merge toplevel's /etc into rootfs (service units, configs, etc.)
-                        # This copies unit files, .wants symlinks, and module-generated configs.
-                        # Files created below (hostname, passwd, etc.) will overwrite as needed.
+                        # Merge toplevel's /etc into rootfs/etc.lower (the
+                        # lower layer of the production overlay; /etc
+                        # itself is a mountpoint populated at boot).
+                        # This copies unit files, .wants symlinks, and
+                        # module-generated configs. Files created below
+                        # (hostname, passwd, etc.) will overwrite as needed.
                         if [ -d "$TOPLEVEL/etc" ]; then
-                          echo "==> Merging toplevel /etc into rootfs"
+                          echo "==> Merging toplevel /etc into rootfs/etc.lower"
                           # Use tar pipe to copy without preserving store permissions.
                           # tar extract applies umask, making files writable.
-                          (cd "$TOPLEVEL/etc" && tar cf - .) | (cd rootfs/etc && tar xf -)
+                          (cd "$TOPLEVEL/etc" && tar cf - .) | (cd rootfs/etc.lower && tar xf -)
                           # Make real dirs writable so the symlink-resolution pass
                           # below can rm/replace entries inside them.
-                          chmod -R u+w rootfs/etc
+                          chmod -R u+w rootfs/etc.lower
                           # Toplevel /etc can contain symlinks pointing into the read-only
                           # /nix/store (e.g. /etc/systemd/system → a system-units derivation).
                           # tar preserves those as symlinks, so subsequent writes underneath
@@ -258,7 +293,7 @@ let
                           # system-units derivation). Loop until no store symlinks remain.
                           while true; do
                             found_any=0
-                            find rootfs/etc -type l | while IFS= read -r link; do
+                            find rootfs/etc.lower -type l | while IFS= read -r link; do
                               target=$(readlink "$link")
                               case "$target" in
                                 /nix/store/*)
@@ -269,21 +304,21 @@ let
                               esac
                             done
                             # The subshell eats our variable; re-check with find.
-                            if ! find rootfs/etc -type l -exec readlink {} \; | grep -q '^/nix/store/'; then
+                            if ! find rootfs/etc.lower -type l -exec readlink {} \; | grep -q '^/nix/store/'; then
                               break
                             fi
-                            chmod -R u+w rootfs/etc
+                            chmod -R u+w rootfs/etc.lower
                           done
                           # Newly-copied trees may carry store read-only perms; re-apply.
-                          chmod -R u+w rootfs/etc
+                          chmod -R u+w rootfs/etc.lower
                           echo "    toplevel /etc merged"
                           # Override SELinux to permissive for VM testing — the rootfs
                           # has no policy files, and enforcing mode causes systemd to
                           # freeze when it can't load the policy.
                           echo "    checking selinux config..."
-                          if [ -f rootfs/etc/selinux/config ]; then
+                          if [ -f rootfs/etc.lower/selinux/config ]; then
                             echo "    overriding selinux to permissive"
-                            cat > rootfs/etc/selinux/config << 'SELINUXCFG'
+                            cat > rootfs/etc.lower/selinux/config << 'SELINUXCFG'
             SELINUX=disabled
             SELINUXTYPE=targeted
             SELINUXCFG
@@ -292,27 +327,28 @@ let
                         fi
 
                         echo "==> Writing basic /etc files"
-                        # Basic /etc for systemd
-                        echo "${hostname}" > rootfs/etc/hostname
-                        touch rootfs/etc/machine-id
-                        # fstab for the test VM: flat ext4 on /dev/vda (rw) plus
-                        # tmpfs mounts that the module system expects.
-                        printf '%s\n' \
-                          '/dev/vda / ext4 rw,relatime 0 1' \
-                          'tmpfs /tmp tmpfs nosuid,nodev,noexec,mode=1777,size=50% 0 0' \
-                          'tmpfs /run tmpfs nosuid,nodev,noexec,mode=755,size=25% 0 0' \
-                          > rootfs/etc/fstab
+                        # Basic /etc files land in /etc.lower (the lower
+                        # layer of the production overlay).
+                        echo "${hostname}" > rootfs/etc.lower/hostname
+                        touch rootfs/etc.lower/machine-id
+                        # fstab is empty — stage-1 systemd-fstab-generator
+                        # synthesizes sysroot.mount from root= on the
+                        # cmdline, and mount-var.service handles /var.
+                        # tmpfs mounts for /tmp and /run come from upstream
+                        # systemd's API filesystem setup in the initrd.
+                        : > rootfs/etc.lower/fstab
 
                         # Pre-generate SSH host key so sshd can start without
                         # the keygen service (which expects /var/etc/ssh from
-                        # the production overlay setup).
-                        mkdir -p rootfs/etc/ssh
-                        ssh-keygen -q -t ed25519 -N "" -f rootfs/etc/ssh/ssh_host_ed25519_key </dev/null
+                        # the production overlay setup). The key lives in
+                        # /etc.lower/ssh so sshd finds it via the overlay.
+                        mkdir -p rootfs/etc.lower/ssh
+                        ssh-keygen -q -t ed25519 -N "" -f rootfs/etc.lower/ssh/ssh_host_ed25519_key </dev/null
 
                         ${
                           if hostsEntries != null then
                             ''
-                              cat > rootfs/etc/hosts << 'HOSTS'
+                              cat > rootfs/etc.lower/hosts << 'HOSTS'
                               127.0.0.1 localhost
                               ${hostsEntries}
                               HOSTS
@@ -323,8 +359,8 @@ let
                         ${
                           if networkConfig != null then
                             ''
-                              mkdir -p rootfs/etc/systemd/network
-                              cat > rootfs/etc/systemd/network/10-eth0.network << 'NETCFG'
+                              mkdir -p rootfs/etc.lower/systemd/network
+                              cat > rootfs/etc.lower/systemd/network/10-eth0.network << 'NETCFG'
                               ${networkConfig}
                               NETCFG
                             ''
@@ -332,16 +368,19 @@ let
                             ""
                         }
 
+                        # Stage the /var partition contents. For cloudInitTests
+                        # the NoCloud seed files go on this partition so
+                        # cloud-init finds them once /var is mounted at boot.
+                        mkdir -p var
                         ${
                           if userdata != null then
                             ''
-                              # Inject cloud-init userdata (NoCloud seed)
-                              mkdir -p rootfs/var/lib/cloud/seed/nocloud
-                              mkdir -p rootfs/var/lib/cloud/state
-                              cat > rootfs/var/lib/cloud/seed/nocloud/user-data << 'USERDATAEOF'
+                              mkdir -p var/lib/cloud/seed/nocloud
+                              mkdir -p var/lib/cloud/state
+                              cat > var/lib/cloud/seed/nocloud/user-data << 'USERDATAEOF'
                               ${userdata}
                               USERDATAEOF
-                              cat > rootfs/var/lib/cloud/seed/nocloud/meta-data << 'METADATAEOF'
+                              cat > var/lib/cloud/seed/nocloud/meta-data << 'METADATAEOF'
                               {"instance-id":"test-vm","local-hostname":"aos-test"}
                               METADATAEOF
                             ''
@@ -349,7 +388,7 @@ let
                             ""
                         }
 
-                        cat > rootfs/etc/os-release << 'OSREL'
+                        cat > rootfs/etc.lower/os-release << 'OSREL'
             ID=aos
             NAME="ANDYL OS"
             PRETTY_NAME="ANDYL OS (test)"
@@ -359,16 +398,16 @@ let
                         # Only write fallback passwd/group/shadow if the toplevel
                         # etc merge didn't already provide them (the users module
                         # generates these with all module-defined users like chrony, sshd).
-                        if [ ! -s rootfs/etc/passwd ]; then
-                          cat > rootfs/etc/passwd << 'PASSWD'
+                        if [ ! -s rootfs/etc.lower/passwd ]; then
+                          cat > rootfs/etc.lower/passwd << 'PASSWD'
             root:x:0:0:root:/root:/bin/sh
             nobody:x:65534:65534:Nobody:/:/sbin/nologin
             systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin
             systemd-network:x:102:102:systemd Network:/:/sbin/nologin
             PASSWD
                         fi
-                        if [ ! -s rootfs/etc/group ]; then
-                          cat > rootfs/etc/group << 'GROUP'
+                        if [ ! -s rootfs/etc.lower/group ]; then
+                          cat > rootfs/etc.lower/group << 'GROUP'
             root:x:0:
             nobody:x:65534:
             utmp:x:22:
@@ -376,16 +415,16 @@ let
             systemd-network:x:102:
             GROUP
                         fi
-                        if [ ! -s rootfs/etc/shadow ]; then
-                          cat > rootfs/etc/shadow << 'SHADOW'
+                        if [ ! -s rootfs/etc.lower/shadow ]; then
+                          cat > rootfs/etc.lower/shadow << 'SHADOW'
             root:!:1::::::
             nobody:!:1::::::
             SHADOW
                         fi
-                        chmod 640 rootfs/etc/shadow
+                        chmod 640 rootfs/etc.lower/shadow
 
                         # Minimal nsswitch.conf for systemd
-                        cat > rootfs/etc/nsswitch.conf << 'NSS'
+                        cat > rootfs/etc.lower/nsswitch.conf << 'NSS'
             passwd: files
             group:  files
             shadow: files
@@ -537,10 +576,10 @@ let
                         # present a properly blocking serial backend, so a live getty
                         # (e.g. the debug profile's autologin) can coexist with the
                         # harness without respawn loops.
-                        mkdir -p rootfs/etc/systemd/system/multi-user.target.wants
+                        mkdir -p rootfs/etc.lower/systemd/system/multi-user.target.wants
 
                         # Guest agent systemd service
-                        cat > rootfs/etc/systemd/system/aos-test-agent.service << 'UNIT'
+                        cat > rootfs/etc.lower/systemd/system/aos-test-agent.service << 'UNIT'
             [Unit]
             Description=AOS VM Test Guest Agent
             After=systemd-udevd.service
@@ -556,28 +595,122 @@ let
             WantedBy=multi-user.target
             UNIT
                         ln -sfn ../aos-test-agent.service \
-                          rootfs/etc/systemd/system/multi-user.target.wants/aos-test-agent.service
+                          rootfs/etc.lower/systemd/system/multi-user.target.wants/aos-test-agent.service
 
-                        # Calculate image size: use --apparent-size because mkfs.ext4 -d
-                        # does NOT preserve hardlinks — each hardlinked file becomes a
-                        # separate copy, so apparent size is what matters.
+                        # ── Assemble the GPT disk image ─────────────────────
+                        # Calculate root image size: use --apparent-size because
+                        # mkfs.ext4 -d does NOT preserve hardlinks — each
+                        # hardlinked file becomes a separate copy, so apparent
+                        # size is what matters.
                         APPARENT_KB=$(du -sk --apparent-size rootfs | cut -f1)
                         SIZE_MB=$(( APPARENT_KB / 1024 ))
-                        # 50% overhead for ext4 metadata/journal + 256MB headroom
-                        IMAGE_MB=$(( SIZE_MB * 3 / 2 + 256 ))
-                        if [ "$IMAGE_MB" -lt 2048 ]; then
-                          IMAGE_MB=2048
+                        # 50% overhead for ext4 metadata + 256MB headroom
+                        ROOT_MB=$(( SIZE_MB * 3 / 2 + 256 ))
+                        if [ "$ROOT_MB" -lt 2048 ]; then
+                          ROOT_MB=2048
                         fi
+                        echo "==> Rootfs data: ''${SIZE_MB}MB, root image: ''${ROOT_MB}MB"
 
-                        echo "==> Rootfs data: ''${SIZE_MB}MB, image: ''${IMAGE_MB}MB"
-                        # stdenv setup.sh creates $out as a directory; mkfs.ext4
-                        # needs a file. Write to temp file, then replace $out.
-                        rm -rf $out
                         # fakeroot makes all files appear owned by root:root so
                         # that mkfs.ext4 -d writes uid/gid 0 into the image.
                         # Without this, files get the sandbox user's uid and
                         # daemons like auditd refuse to start (ownership checks).
-                        fakeroot -- mkfs.ext4 -d rootfs -L rootfs -m 1 -q $out ''${IMAGE_MB}M
+                        fakeroot -- mkfs.ext4 -d rootfs -L aos-root -m 1 -q root.img ''${ROOT_MB}M
+                        fakeroot -- mkfs.ext4 -d var   -L aos-var  -m 0 -q var.img  32M
+
+                        # Sizes in 512-byte sectors.
+                        BOOT_SECTORS=$(( 4 * 1024 * 1024 / 512 ))          # 4 MiB
+                        ROOT_SECTORS=$(( ROOT_MB * 1024 * 1024 / 512 ))
+                        VAR_SECTORS=$((  32 * 1024 * 1024 / 512 ))         # 32 MiB
+
+                        # 1 MiB alignment at start and end for GPT headers.
+                        BOOT_START=2048
+                        ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
+                        VAR_START=$(( ROOT_START + ROOT_SECTORS ))
+                        DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
+                        DISK_BYTES=$(( DISK_SECTORS * 512 ))
+
+                        echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
+                        truncate -s "$DISK_BYTES" disk.img
+
+                        # Using the standard Linux filesystem GUID
+                        # (0FC63DAF-...) for all three partitions. The
+                        # partlabel `var` is what mount-var.service binds
+                        # to via /dev/disk/by-partlabel/var; labels `boot`
+                        # and `root` are cosmetic here (the harness passes
+                        # kernel+initrd via -kernel/-initrd, and root is
+                        # selected by root=/dev/vda2).
+                        sfdisk disk.img <<PTABLE
+            label: gpt
+            size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="boot"
+            size=$ROOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root"
+            size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="var"
+            PTABLE
+
+                        dd if=root.img of=disk.img bs=512 seek="$ROOT_START" conv=notrunc status=none
+                        dd if=var.img  of=disk.img bs=512 seek="$VAR_START"  conv=notrunc status=none
+
+                        # stdenv setup.sh creates $out as a directory; emit
+                        # the assembled image into it.
+                        mkdir -p $out
+                        mv disk.img $out/disk.img
+          '';
+        }
+      ];
+    };
+
+  # ---------------------------------------------------------------------------
+  # Per-test metadata disk (virtio-blk, labelled aos-metadata)
+  # ---------------------------------------------------------------------------
+  # Produces a small ext4 image with one file — config.json — that the
+  # initrd-side aos-test-metadata units (see modules/services/ignition.nix)
+  # mount and serve over http://127.0.0.1:8080/config.json. The VM test
+  # harness attaches this as a second virtio-blk drive when
+  # `instanceMetadata != null`.
+  #
+  # `ignition-validate` runs inside the build so malformed configs fail
+  # `nix-build -A checks.vm.<name>` before a VM is ever launched.
+  mkMetadataDisk =
+    {
+      name,
+      ignitionConfig,
+    }:
+    let
+      json = builtins.toJSON ignitionConfig;
+    in
+    pkgs.mkDerivation {
+      pname = "vm-metadata-${name}";
+      version = "0";
+      src = null;
+
+      buildDeps = [
+        pkgs.e2fsprogs
+        pkgs.coreutils
+        pkgs.fakeroot
+        pkgs.ignition # provides ignition-validate
+      ];
+
+      IGNITION_JSON = json;
+
+      phases = [
+        {
+          name = "build-metadata";
+          script = ''
+            mkdir staging
+            printf '%s' "$IGNITION_JSON" > staging/config.json
+
+            # Fail fast on malformed configs — cheaper than booting a
+            # VM to discover the same error.
+            ignition-validate staging/config.json
+
+            # Right-size the image: config.json bytes plus 256 KiB of
+            # ext4 metadata headroom (superblock + inode table + small
+            # journal). Rounded up to whole KiB.
+            CFG_BYTES=$(wc -c < staging/config.json)
+            SIZE_KB=$(( (CFG_BYTES + 262144 + 1023) / 1024 ))
+
+            mkdir -p $out
+            fakeroot -- mkfs.ext4 -d staging -L aos-metadata -m 0 -q $out/metadata.img "''${SIZE_KB}K"
           '';
         }
       ];
@@ -823,8 +956,48 @@ let
       }
     else if system != null then
       let
-        systemRootfs = mkTestRootfs { inherit system userdata; };
+        systemDisk = mkTestDisk { inherit system userdata; };
         systemKernel = system.config.system.build.kernel;
+        systemInitrd = system.config.system.build.initrd;
+
+        # When instanceMetadata is set the harness must boot against a
+        # system that has ignition enabled, otherwise ignition-fetch is
+        # absent from the initrd and the metadata channel is dead.
+        # Assert at eval-time with a clear message.
+        _ignitionCheck =
+          if instanceMetadata != null && !(system.config.aos.services.ignition.enable or false)
+          then throw "mkVMTest '${name}': instanceMetadata requires aos.services.ignition.enable = true on the system under test"
+          else null;
+
+        systemMetadataDisk =
+          if instanceMetadata != null
+          then mkMetadataDisk { inherit name; ignitionConfig = instanceMetadata.config; }
+          else null;
+
+        hasMetadata = instanceMetadata != null;
+
+        # Extra cmdline fragment for the metadata HTTP channel. Empty
+        # string when no metadata disk is attached.
+        metadataKarg =
+          if hasMetadata
+          then " ignition.config.url=http://127.0.0.1:8080/config.json"
+          else "";
+
+        # Firecracker drives[] JSON fragment for the metadata disk —
+        # prepended as a second entry when metadata is present.
+        fcMetadataDrive =
+          if hasMetadata
+          then ''
+            ,
+              {
+                "drive_id": "metadata",
+                "path_on_host": "$(pwd)/metadata.img",
+                "is_root_device": false,
+                "is_read_only": true,
+                "cache_type": "Unsafe",
+                "io_engine": "Sync"
+              }''
+          else "";
         # Compose checks into script, then append testScript if provided
         checksScript =
           if checks != [ ]
@@ -865,6 +1038,13 @@ let
         # -----------------------------------------------------------------------
         # Firecracker driver test script (system mode)
         # -----------------------------------------------------------------------
+        # The VM boots through the production initrd path (stage-1 systemd
+        # → ignition stages → switch-root → stage-2 systemd), matching the
+        # real boot sequence. Firecracker's `boot_args` replaces the image's
+        # built-in cmdline, so `ignition.platform.id=metal` here overrides
+        # whatever the image was built with — metal is the only platform
+        # that reads `ignition.config.url=` from kargs, which is what the
+        # metadata-disk path (commit 6) relies on.
         firecrackerScript = ''
           set -eu
 
@@ -874,19 +1054,30 @@ let
           VSOCK_UDS="$TMPDIR/vm.vsock"
           FC_CFG="$TMPDIR/fc-config.json"
 
-          # Copy rootfs image to writable location (Firecracker needs rw for system tests)
-          cp $ROOTFS rootfs.img
-          chmod u+w rootfs.img
+          # Copy disk image to writable location (Firecracker needs rw for system tests)
+          cp $DISK/disk.img disk.img
+          chmod u+w disk.img
+
+          # Copy the metadata disk (when attached) to a writable location.
+          # virtio-blk backends open the file at launch and hold it for the
+          # run — a local copy isolates the run from any read-side caching
+          # quirks with store files on certain filesystems.
+          ${lib.optionalString hasMetadata ''
+            cp $METADATA/metadata.img metadata.img
+            chmod u+w metadata.img
+          ''}
 
           # Find the uncompressed kernel image (Firecracker requires vmlinux, not vmlinuz)
           VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
+          INITRD_IMG=$INITRD/initrd.img
 
           # Generate a unique CID from the builder PID (range 3-65535)
           GUEST_CID=$(( ($$ % 65533) + 3 ))
 
           echo "Driver: firecracker"
           echo "Kernel: $VMLINUX"
-          echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
+          echo "Initrd: $INITRD_IMG"
+          echo "Disk:   disk.img ($(ls -lh disk.img | awk '{print $5}'))"
           echo "CID: $GUEST_CID"
           echo "Vsock UDS: $VSOCK_UDS"
           ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
@@ -896,17 +1087,18 @@ let
           {
             "boot-source": {
               "kernel_image_path": "$VMLINUX",
-              "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/sbin/init systemd.journald.forward_to_console=1 enforcing=0"
+              "initrd_path": "$INITRD_IMG",
+              "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0${metadataKarg}"
             },
             "drives": [
               {
                 "drive_id": "rootfs",
-                "path_on_host": "$(pwd)/rootfs.img",
-                "is_root_device": true,
+                "path_on_host": "$(pwd)/disk.img",
+                "is_root_device": false,
                 "is_read_only": false,
                 "cache_type": "Unsafe",
                 "io_engine": "Sync"
-              }
+              }${fcMetadataDrive}
             ],
             "machine-config": {
               "vcpu_count": 2,
@@ -1040,18 +1232,26 @@ let
           SERIAL_SOCK="$TMPDIR/serial.sock"
           SERIAL_LOG="$TMPDIR/serial.log"
 
-          # Copy rootfs image to writable location
-          cp $ROOTFS rootfs.img
-          chmod u+w rootfs.img
+          # Copy disk image to writable location
+          cp $DISK/disk.img disk.img
+          chmod u+w disk.img
+
+          # Copy the metadata disk (when attached) to a writable location.
+          ${lib.optionalString hasMetadata ''
+            cp $METADATA/metadata.img metadata.img
+            chmod u+w metadata.img
+          ''}
 
           # Find the kernel image
           VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
+          INITRD_IMG=$INITRD/initrd.img
 
           # Pre-flight checks
           QEMU_LOG="$TMPDIR/qemu.log"
           echo "Driver: qemu"
           echo "Kernel: $VMLINUZ"
-          echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
+          echo "Initrd: $INITRD_IMG"
+          echo "Disk:   disk.img ($(ls -lh disk.img | awk '{print $5}'))"
           ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
 
           # Clear LD_LIBRARY_PATH — AOS build libs can conflict with QEMU
@@ -1079,7 +1279,10 @@ let
             fi
           done
 
-          # Launch QEMU with direct kernel boot
+          # Launch QEMU with direct kernel boot through the initrd. The
+          # -append cmdline replaces the image's built-in cmdline;
+          # ignition.platform.id=metal makes ignition-fetch consume
+          # ignition.config.url= from kargs (the metadata-disk channel).
           qemu-system-x86_64 \
             -machine q35,accel=kvm \
             -cpu host \
@@ -1087,8 +1290,10 @@ let
             -smp 2 \
             -nographic \
             -kernel "$VMLINUZ" \
-            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init panic=1 systemd.journald.forward_to_console=1 enforcing=0" \
-            -drive file=rootfs.img,format=raw,if=virtio \
+            -initrd "$INITRD_IMG" \
+            -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0${metadataKarg}" \
+            -drive file=disk.img,format=raw,if=virtio \
+            ${lib.optionalString hasMetadata ''-drive file=metadata.img,format=raw,if=virtio,readonly=on \''}
             -device virtio-serial \
             -device virtserialport,chardev=agent,name=aos.test.agent \
             -chardev socket,id=agent,path="$AGENT_SOCK",server=on,wait=off \
@@ -1171,8 +1376,10 @@ let
 
         buildDeps = driverBuildDeps;
 
-        ROOTFS = builtins.toString systemRootfs;
+        DISK = builtins.toString systemDisk;
         KERNEL = builtins.toString systemKernel;
+        INITRD = builtins.toString systemInitrd;
+        METADATA = lib.optionalString hasMetadata (builtins.toString systemMetadataDisk);
 
         phases = [
           {
@@ -1187,5 +1394,5 @@ let
       throw "mkVMTest '${name}': must provide either 'system' (for full VM tests) or 'rootfsDeps' (for headless tests)";
 in
 {
-  inherit mkVMTest mkTestRootfs;
+  inherit mkVMTest mkTestDisk;
 }
