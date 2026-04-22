@@ -1,10 +1,9 @@
 # tests/vm/checks/ci-hostname.nix — Cloud-init hostname configuration
 { lib }:
-lib.mkCheckGroup {
-  name = "ci-hostname";
+{
   description = "Cloud-init hostname configuration";
   checks = [
-    (lib.mkCheck {
+    {
       name = "hostname-file";
       description = "Hostname written to /etc/hostname";
       script = ''
@@ -20,6 +19,6 @@ lib.mkCheckGroup {
         assert_output_contains "cat /etc/hostname" "test-webserver" \
           "Hostname is test-webserver"
       '';
-    })
+    }
   ];
 }
