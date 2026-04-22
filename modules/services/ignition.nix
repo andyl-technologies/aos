@@ -47,6 +47,9 @@
     pkgs.systemd
     pkgs.coreutils
     pkgs.bash
+    # iproute2 for the test-metadata mount unit's `ip link set lo up`.
+    # Production boots skip that unit via ConditionPathExists.
+    pkgs.iproute2
   ];
   ignitionPath = lib.concatStringsSep ":" [
     (lib.makeBinPath ignitionTools)
@@ -95,12 +98,37 @@ in {
       # The enum is kept verbatim from ignition 2.25.1 so misspelling
       # a platform fails at eval time instead of at initrd boot.
       type = lib.types.enum [
-        "akamai" "aliyun" "applehv" "aws" "azure" "azurestack"
-        "brightbox" "cloudstack" "digitalocean" "exoscale" "file"
-        "gcp" "hetzner" "hyperv" "ibmcloud" "kubevirt" "metal"
-        "nutanix" "nvidiabluefield" "openstack" "oraclecloud"
-        "packet" "powervs" "proxmoxve" "qemu" "scaleway" "upcloud"
-        "virtualbox" "vmware" "vultr" "zvm"
+        "akamai"
+        "aliyun"
+        "applehv"
+        "aws"
+        "azure"
+        "azurestack"
+        "brightbox"
+        "cloudstack"
+        "digitalocean"
+        "exoscale"
+        "file"
+        "gcp"
+        "hetzner"
+        "hyperv"
+        "ibmcloud"
+        "kubevirt"
+        "metal"
+        "nutanix"
+        "nvidiabluefield"
+        "openstack"
+        "oraclecloud"
+        "packet"
+        "powervs"
+        "proxmoxve"
+        "qemu"
+        "scaleway"
+        "upcloud"
+        "virtualbox"
+        "vmware"
+        "vultr"
+        "zvm"
       ];
       default = "qemu";
       description = ''
@@ -356,6 +384,91 @@ in {
             -o nosuid,nodev,lowerdir="$sysroot/var/etc:$sysroot/etc.lower",upperdir="$sysroot/run/etc-upper/upper",workdir="$sysroot/run/etc-upper/work" \
             "$sysroot/etc"
         '';
+      };
+
+      # ── AOS test-metadata path (gated on /dev/disk/by-label/aos-metadata) ──
+      #
+      # These units exist in every ignition-enabled image but only fire when
+      # a disk labelled `aos-metadata` is present — which the test harness
+      # attaches as a second virtio-blk drive when `instanceMetadata != null`.
+      # On production boots the label never appears and the three units skip.
+
+      # Mount the per-test metadata ext4 disk read-only at /run/metadata, and
+      # bring the loopback interface up so ignition-fetch can reach the
+      # localhost HTTP handler below. Stage-2 `systemd-networkd` would
+      # normally handle lo, but that runs much later than ignition-fetch.
+      "aos-test-metadata-mount" = {
+        description = "Mount AOS test metadata disk";
+        wantedBy = ["initrd-fs.target"];
+        before = [
+          "aos-test-metadata.socket"
+          "ignition-fetch.service"
+        ];
+        after = ["systemd-udev-settle.service"];
+        requires = ["systemd-udev-settle.service"];
+        unitConfig = {
+          ConditionPathExists = "/dev/disk/by-label/aos-metadata";
+          DefaultDependencies = "no";
+        };
+        environment.PATH = ignitionPath;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -euo pipefail
+          mkdir -p /run/metadata
+          mount -o ro /dev/disk/by-label/aos-metadata /run/metadata
+          ip link set lo up
+        '';
+      };
+
+      # Templated handler invoked once per accepted connection on the
+      # `aos-test-metadata.socket` below (`Accept=yes`). systemd attaches
+      # the accepted connection to stdin/stdout so the script just writes
+      # the HTTP response to stdout. Using `script = ...` lets the AOS
+      # systemd-lib wrap the body in a proper store-path ExecStart.
+      #
+      # The handler uses absolute store paths rather than depending on
+      # PATH — the templated service has no PATH set, so shell builtins
+      # + explicit /nix/store/... references are the only portable way
+      # to read the JSON and emit the HTTP response.
+      "aos-test-metadata@" = {
+        description = "AOS test metadata HTTP handler";
+        unitConfig = {
+          DefaultDependencies = "no";
+        };
+        serviceConfig = {
+          StandardInput = "socket";
+          StandardOutput = "socket";
+          Type = "oneshot";
+        };
+        script = ''
+          body=$(${pkgs.coreutils}/bin/cat /run/metadata/config.json)
+          len=''${#body}
+          printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+            "$len" "$body"
+        '';
+      };
+    };
+
+    # Socket-activated metadata server. `Accept=yes` spawns one
+    # aos-test-metadata@<instance>.service per connection (systemd
+    # supplies the accepted fd on stdin/stdout). Same ConditionPathExists
+    # as the mount unit so the whole chain skips on production boots.
+    boot.initrd.systemd.sockets."aos-test-metadata" = {
+      description = "AOS test metadata HTTP socket";
+      wantedBy = ["sockets.target"];
+      before = ["ignition-fetch.service"];
+      after = ["aos-test-metadata-mount.service"];
+      requires = ["aos-test-metadata-mount.service"];
+      unitConfig = {
+        ConditionPathExists = "/dev/disk/by-label/aos-metadata";
+        DefaultDependencies = "no";
+      };
+      socketConfig = {
+        ListenStream = "127.0.0.1:8080";
+        Accept = "yes";
       };
     };
   };

@@ -53,10 +53,14 @@
         '';
       }
       {
-        name = "root-writable";
-        description = "root filesystem is mounted read-write";
+        name = "root-read-only";
+        description = "root filesystem is mounted read-only (immutable OS design)";
         script = ''
-          assert_success "test -w /" "root filesystem is writable"
+          # The immutable OS design mounts / as ext4 ro; mutable state
+          # lives on /var (rw) and /etc is an overlayfs with a tmpfs
+          # upper layer. A writable / would undermine the model.
+          assert_output_contains "findmnt -n -o OPTIONS /" "ro" \
+            "root filesystem is mounted read-only"
         '';
       }
     ];

@@ -49,6 +49,7 @@
     e2fsprogs
     findutils
     ignition
+    iproute2
     kmod
     pigz
     systemd
@@ -57,12 +58,20 @@
 
   # Packages whose full runtime closures are copied into the initrd's
   # /nix/store. See the docstring at the top of this file for why.
+  #
+  # `iproute2` is pulled in so the ignition test-metadata mount unit
+  # (modules/services/ignition.nix) can `ip link set lo up` before the
+  # socket-activated HTTP handler binds 127.0.0.1:8080. On production
+  # boots the condition-gated units skip and `ip` is never invoked, but
+  # it's in the closure either way — small enough that a conditional
+  # include isn't worth the complexity.
   initrdPackages = [
     bash
     coreutils
     cryptsetup
     e2fsprogs
     ignition
+    iproute2
     kmod
     systemd
     util-linux
@@ -100,6 +109,7 @@
     {pkg = e2fsprogs;  bin = "e2fsck";     src = "sbin";}
     {pkg = cryptsetup; bin = "cryptsetup"; src = "sbin";}
     {pkg = ignition;   bin = "ignition";   src = "bin";}
+    {pkg = iproute2;   bin = "ip";         src = "sbin";}
   ];
 
   # Upstream systemd units imported from ${systemd}/lib/systemd/system/

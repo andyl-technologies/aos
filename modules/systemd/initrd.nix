@@ -144,6 +144,20 @@ in {
   };
 
   config = {
+    # Stage-1 runs with an empty /etc (just /etc/os-release and a few
+    # basics from the cpio builder), so systemd-sysctl and
+    # systemd-tmpfiles read no config and exit successfully with
+    # nothing to do. systemd then serializes the "done" state across
+    # initrd→rootfs switch-root and stage-2 never re-runs them — so the
+    # real /etc/sysctl.d/* and /etc/tmpfiles.d/* on the rootfs are
+    # silently ignored. Mask both in the initrd to force stage-2 to run
+    # them fresh against the real /etc.
+    boot.initrd.systemd.maskedUnits = [
+      "systemd-sysctl.service"
+      "systemd-tmpfiles-setup.service"
+      "systemd-tmpfiles-setup-dev.service"
+    ];
+
     system.build.systemdInitrdUnits = systemdLib.generateUnits {
       type = "initrd";
       units = renderedInitrdUnits;
