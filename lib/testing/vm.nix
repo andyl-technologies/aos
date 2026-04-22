@@ -800,8 +800,10 @@ let
       driver ? "firecracker",
       # System mode (full systemd + agent):
       system ? null,
+      groupName ? name,
       checks ? [ ],
       userdata ? null,
+      instanceMetadata ? null,
       # Headless mode (test script IS init):
       rootfsDeps ? null,
       # Shared:
@@ -824,7 +826,10 @@ let
         systemRootfs = mkTestRootfs { inherit system userdata; };
         systemKernel = system.config.system.build.kernel;
         # Compose checks into script, then append testScript if provided
-        checksScript = if checks != [ ] then checksLib.composeChecks checks else "";
+        checksScript =
+          if checks != [ ]
+          then checksLib.composeChecks { inherit groupName checks; }
+          else "";
         composedScript =
           if checksScript != "" && testScript != null then
             checksScript + "\n" + testScript

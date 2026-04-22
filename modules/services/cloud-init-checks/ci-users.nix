@@ -1,10 +1,9 @@
 # tests/vm/checks/ci-users.nix — Cloud-init user creation
 { lib }:
-lib.mkCheckGroup {
-  name = "ci-users";
+{
   description = "Cloud-init user creation";
   checks = [
-    (lib.mkCheck {
+    {
       name = "user-exists";
       description = "Deploy user exists in /etc/passwd";
       script = ''
@@ -19,22 +18,22 @@ lib.mkCheckGroup {
         assert_output_contains "cat /etc/passwd" "deploy" \
           "deploy user exists in passwd"
       '';
-    })
-    (lib.mkCheck {
+    }
+    {
       name = "user-uid";
       description = "Deploy user has correct UID";
       script = ''
         assert_output_contains "cat /etc/passwd" "deploy:x:1000:" \
           "deploy user has UID 1000"
       '';
-    })
-    (lib.mkCheck {
+    }
+    {
       name = "user-group";
       description = "Deploy user has group entry";
       script = ''
         assert_output_contains "cat /etc/group" "deploy" \
           "deploy group exists"
       '';
-    })
+    }
   ];
 }

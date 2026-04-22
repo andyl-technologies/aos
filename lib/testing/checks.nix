@@ -1,143 +1,31 @@
-# lib/testing/checks.nix — Composable check module system
-#
-# Provides primitives for building reusable, composable test checks that
-# can be shared across VM tests. Checks are shell script fragments with
-# metadata (name, description, tags) that get composed into full test scripts.
-#
-# Primitives:
-#   mkCheck      — Create a single named check
-#   mkCheckGroup — Group checks under a common prefix
-#   flattenChecks — Flatten nested check groups into a flat list
-#   composeChecks — Flatten + wrap each check with echo banners
-#   validateChecks — Write checks to temp files and run sh -n syntax check
-let
-  # Flatten nested check groups into a flat list of { path, check } records.
-  flattenChecks =
-    let
-      go =
-        prefix: items:
-        builtins.concatMap (
-          item:
-          if item._type == "check" then
-            [
-              {
-                path = if prefix == "" then item.name else "${prefix}/${item.name}";
-                check = item;
-              }
-            ]
-          else if item._type == "checkGroup" then
-            go (if prefix == "" then item.name else "${prefix}/${item.name}") item.checks
-          else
-            throw "Unknown check type: ${item._type or "null"}"
-        ) items;
-    in
-    checks: go "" checks;
-in
+##! lib/testing/checks.nix — Compose a per-test check script
+##!
+##! A test group is `{ description; checks; instanceMetadata; }` where
+##! `checks` is a flat list of `{ name; description; script; }`. The
+##! submodule type in `modules/base/system.nix` validates the shape,
+##! so this file does no structural checking — it glues `script`
+##! fragments together with echo banners for log readability.
+##!
+##! Banners are `<groupName>/<checkName>` so a failure in the test log
+##! points at exactly one check without grepping surrounding journal
+##! output.
 {
-  mkCheck =
-    {
-      name,
-      description,
-      script,
-      tags ? [ ],
-    }:
-    {
-      _type = "check";
-      inherit
-        name
-        description
-        script
-        tags
-        ;
-    };
-
-  mkCheckGroup =
-    {
-      name,
-      description,
-      checks,
-    }:
-    {
-      _type = "checkGroup";
-      inherit name description checks;
-    };
-
-  inherit flattenChecks;
-
-  composeChecks =
-    checks:
-    let
-      flat = flattenChecks checks;
-    in
+  composeChecks = {
+    groupName,
+    checks,
+  }:
     builtins.concatStringsSep "\n" (
       builtins.map (
-        entry:
-        let
-          path = entry.path;
-          check = entry.check;
-        in
-        ''
+        check: let
+          path = "${groupName}/${check.name}";
+        in ''
           echo "--- check: ${path} ---"
           echo "    ${check.description}"
           ${check.script}
           echo "--- ok: ${path} ---"
           echo ""
         ''
-      ) flat
+      )
+      checks
     );
-
-  validateChecks =
-    {
-      pkgs,
-      checks,
-    }:
-    let
-      flat = flattenChecks checks;
-
-      validationScript = builtins.concatStringsSep "\n" (
-        builtins.map (
-          entry:
-          let
-            path = entry.path;
-            check = entry.check;
-            safeName = builtins.replaceStrings [ "/" ] [ "-" ] path;
-          in
-          ''
-            echo "  validating: ${path}"
-            cat > "$TMPDIR/check-${safeName}.sh" << 'CHECKEOF'
-            # Assertion stubs for syntax validation
-            run_in_guest() { :; }
-            assert_success() { :; }
-            assert_output_contains() { :; }
-            AGENT_SOCK="/dev/null"
-            SERIAL_LOG="/dev/null"
-
-            ${check.script}
-            CHECKEOF
-            sh -n "$TMPDIR/check-${safeName}.sh"
-          ''
-        ) flat
-      );
-    in
-    pkgs.mkDerivation {
-      pname = "aos-check-validate";
-      version = "0";
-      src = null;
-
-      buildDeps = [ pkgs.coreutils ];
-
-      phases = [
-        {
-          name = "validate";
-          script = ''
-            set -eu
-            echo "==> Validating ${builtins.toString (builtins.length flat)} check scripts..."
-            ${validationScript}
-            echo "==> All checks passed syntax validation."
-            mkdir -p $out
-            echo "PASS" > $out/result
-          '';
-        }
-      ];
-    };
 }
