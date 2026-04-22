@@ -123,11 +123,10 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    system.checks.chrony = lib.mkCheckGroup {
-      name = "chrony";
+    system.checks.chrony = {
       description = "NTP time sync checks";
       checks = [
-        (lib.mkCheck {
+        {
           name = "chronyd-active";
           description = "chronyd service is active";
           script = ''
@@ -152,15 +151,15 @@ in
             assert_success "systemctl is-active chronyd" \
               "chronyd service is active"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "chrony-config";
           description = "chrony.conf exists";
           script = ''
             assert_success "test -f /etc/chrony.conf" \
               "chrony.conf exists"
           '';
-        })
+        }
       ];
     };
 

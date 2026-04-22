@@ -158,26 +158,25 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    system.checks.firewall = lib.mkCheckGroup {
-      name = "firewall";
+    system.checks.firewall = {
       description = "nftables firewall checks";
       checks = [
-        (lib.mkCheck {
+        {
           name = "nftables-active";
           description = "nftables service is active";
           script = ''
             assert_success "systemctl is-active nftables" \
               "nftables service is active"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "ruleset-loaded";
           description = "nftables ruleset is loaded";
           script = ''
             assert_success "nft list ruleset" \
               "nftables ruleset is loaded"
           '';
-        })
+        }
       ];
     };
 

@@ -178,14 +178,8 @@
         mergeEqualOption
         ;
 
-      # Check constructors (pure data, no deps) for use in modules
-      inherit
-        (checks)
-        mkCheck
-        mkCheckGroup
-        flattenChecks
-        composeChecks
-        ;
+      # Check composition helper (pure data, no deps) for use in modules
+      inherit (checks) composeChecks;
 
       # Re-export submodules for direct access when needed
       inherit

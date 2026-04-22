@@ -1,10 +1,9 @@
 # tests/vm/checks/ci-networking.nix — Cloud-init static IP networking
 { lib }:
-lib.mkCheckGroup {
-  name = "ci-networking";
+{
   description = "Cloud-init static IP configuration";
   checks = [
-    (lib.mkCheck {
+    {
       name = "networkd-file";
       description = "Static network config file exists";
       script = ''
@@ -19,30 +18,30 @@ lib.mkCheckGroup {
         assert_success "test -f /etc/systemd/network/10-eth0.network" \
           "networkd config for eth0 exists"
       '';
-    })
-    (lib.mkCheck {
+    }
+    {
       name = "has-address";
       description = "Network config contains static address";
       script = ''
         assert_output_contains "cat /etc/systemd/network/10-eth0.network" "10.0.0.5/24" \
           "Network config has address 10.0.0.5/24"
       '';
-    })
-    (lib.mkCheck {
+    }
+    {
       name = "has-gateway";
       description = "Network config contains gateway";
       script = ''
         assert_output_contains "cat /etc/systemd/network/10-eth0.network" "10.0.0.1" \
           "Network config has gateway 10.0.0.1"
       '';
-    })
-    (lib.mkCheck {
+    }
+    {
       name = "has-dns";
       description = "Network config contains DNS";
       script = ''
         assert_output_contains "cat /etc/systemd/network/10-eth0.network" "10.0.0.1" \
           "Network config has DNS 10.0.0.1"
       '';
-    })
+    }
   ];
 }

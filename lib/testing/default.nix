@@ -44,11 +44,5 @@ in
     mkDynLinkerCheck
     ;
   inherit assertions;
-  inherit (checks)
-    mkCheck
-    mkCheckGroup
-    composeChecks
-    flattenChecks
-    validateChecks
-    ;
+  inherit (checks) composeChecks;
 }

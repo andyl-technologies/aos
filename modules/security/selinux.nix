@@ -81,26 +81,25 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    system.checks.selinux = lib.mkCheckGroup {
-      name = "selinux";
+    system.checks.selinux = {
       description = "SELinux checks";
       checks = [
-        (lib.mkCheck {
+        {
           name = "selinuxfs";
           description = "/sys/fs/selinux is present";
           script = ''
             assert_success "test -d /sys/fs/selinux" \
               "/sys/fs/selinux is present"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "enforce-file";
           description = "SELinux enforce file exists";
           script = ''
             assert_success "test -f /sys/fs/selinux/enforce" \
               "SELinux enforce file exists"
           '';
-        })
+        }
       ];
     };
 

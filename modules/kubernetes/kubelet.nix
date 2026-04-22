@@ -344,34 +344,33 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    system.checks.kubelet = lib.mkCheckGroup {
-      name = "kubelet";
+    system.checks.kubelet = {
       description = "Kubelet and CNI checks";
       checks = [
-        (lib.mkCheck {
+        {
           name = "kubelet-enabled";
           description = "kubelet service is enabled";
           script = ''
             assert_success "test -e /etc/systemd/system/multi-user.target.wants/kubelet.service" \
               "kubelet service is enabled"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "kubelet-config";
           description = "kubelet config.yaml exists";
           script = ''
             assert_success "test -f /etc/kubernetes/kubelet-config.yaml" \
               "kubelet config.yaml exists"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "cni-dir";
           description = "CNI config directory exists";
           script = ''
             assert_success "test -d /etc/cni/net.d" \
               "CNI config directory exists"
           '';
-        })
+        }
       ];
     };
 

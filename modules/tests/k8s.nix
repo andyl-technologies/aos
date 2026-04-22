@@ -13,46 +13,45 @@ let
 in
 {
   config = lib.mkIf hasK8s {
-    system.checks.system-k8s = lib.mkCheckGroup {
-      name = "system-k8s";
+    system.checks.system-k8s = {
       description = "Kubernetes component configuration";
       checks =
         # Containerd checks (both server and edge)
         [
-          (lib.mkCheck {
+          {
             name = "containerd-unit";
             description = "containerd service unit is installed";
             script = ''
               assert_success "systemctl cat containerd.service" "containerd.service exists"
             '';
-          })
-          (lib.mkCheck {
+          }
+          {
             name = "containerd-config";
             description = "containerd configuration is present";
             script = ''
               assert_success "test -f /etc/containerd/config.toml" "containerd config.toml exists"
             '';
-          })
+          }
         ]
         # Server-specific: kubelet
         ++ (
           if hasControlPlane || hasWorker then
             [
-              (lib.mkCheck {
+              {
                 name = "kubelet-unit";
                 description = "kubelet service unit is installed";
                 script = ''
                   assert_success "systemctl cat kubelet.service" "kubelet.service exists"
                 '';
-              })
-              (lib.mkCheck {
+              }
+              {
                 name = "kubelet-config";
                 description = "kubelet configuration is present";
                 script = ''
                   assert_success "test -f /etc/kubernetes/kubelet-config.yaml" \
                     "kubelet-config.yaml exists"
                 '';
-              })
+              }
             ]
           else
             [ ]
@@ -61,14 +60,14 @@ in
         ++ (
           if hasControlPlane then
             [
-              (lib.mkCheck {
+              {
                 name = "kubernetes-config-dir";
                 description = "kubernetes configuration directory exists";
                 script = ''
                   assert_success "test -d /etc/kubernetes" \
                     "kubernetes config directory exists"
                 '';
-              })
+              }
             ]
           else
             [ ]
@@ -77,21 +76,21 @@ in
         ++ (
           if hasEdgecore then
             [
-              (lib.mkCheck {
+              {
                 name = "edgecore-unit";
                 description = "edgecore service unit is installed";
                 script = ''
                   assert_success "systemctl cat edgecore.service" "edgecore.service exists"
                 '';
-              })
-              (lib.mkCheck {
+              }
+              {
                 name = "edgecore-config";
                 description = "edgecore configuration is present";
                 script = ''
                   assert_success "test -f /etc/kubeedge/config/edgecore.yaml" \
                     "edgecore.yaml exists"
                 '';
-              })
+              }
             ]
           else
             [ ]
@@ -100,13 +99,13 @@ in
         ++ (
           if hasControlPlane || hasWorker then
             [
-              (lib.mkCheck {
+              {
                 name = "cni-config-dir";
                 description = "CNI configuration directory exists";
                 script = ''
                   assert_success "test -d /etc/cni/net.d" "CNI config directory exists"
                 '';
-              })
+              }
             ]
           else
             [ ]

@@ -1,10 +1,9 @@
 # tests/vm/checks/ci-server-role.nix — Full server role via cloud-init
 { lib }:
-lib.mkCheckGroup {
-  name = "ci-server-role";
+{
   description = "Cloud-init server role full configuration";
   checks = [
-    (lib.mkCheck {
+    {
       name = "role-marker";
       description = "Active role is 'server'";
       script = ''
@@ -19,24 +18,24 @@ lib.mkCheckGroup {
         assert_output_contains "cat /var/lib/cloud/state/active-role" "server" \
           "Active role is server"
       '';
-    })
-    (lib.mkCheck {
+    }
+    {
       name = "sshd-active";
       description = "SSH is active";
       script = ''
         assert_success "systemctl is-active sshd" \
           "sshd is active"
       '';
-    })
-    (lib.mkCheck {
+    }
+    {
       name = "nftables-active";
       description = "nftables is active";
       script = ''
         assert_success "systemctl is-active nftables" \
           "nftables is active"
       '';
-    })
-    (lib.mkCheck {
+    }
+    {
       name = "chrony-active";
       description = "chronyd is active";
       script = ''
@@ -51,8 +50,8 @@ lib.mkCheckGroup {
         assert_success "systemctl is-active chronyd" \
           "chronyd is active"
       '';
-    })
-    (lib.mkCheck {
+    }
+    {
       name = "no-containerd";
       description = "No containerd config for server role";
       script = ''
@@ -64,6 +63,6 @@ lib.mkCheckGroup {
         fi
         echo "PASS: no containerd config for server role"
       '';
-    })
+    }
   ];
 }
