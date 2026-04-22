@@ -52,6 +52,27 @@
     (lib.makeBinPath ignitionTools)
     (lib.makeSearchPath "sbin" ignitionTools)
   ];
+
+  # Ignition 2.x requires `--platform=<name>` on the command line — it does
+  # not read `ignition.platform.id=` from /proc/cmdline itself (upstream's
+  # dracut module is what parses the karg and then invokes ignition with
+  # the flag). Mirror that behaviour here so the image's platform can be
+  # driven by the kernel cmdline (see `aos.boot.kernelParams`), which lets
+  # the VM test harness override it to `metal` without rebuilding the image.
+  ignitionWrapper = pkgs.writeShellScriptBin "ignition-platform-wrapper" ''
+    set -e
+    platform=""
+    for arg in $(cat /proc/cmdline); do
+      case "$arg" in
+        ignition.platform.id=*) platform="''${arg#ignition.platform.id=}" ;;
+      esac
+    done
+    if [ -z "$platform" ]; then
+      echo "ignition-platform-wrapper: ignition.platform.id= missing from /proc/cmdline" >&2
+      exit 2
+    fi
+    exec ${pkgs.ignition}/bin/ignition --platform="$platform" "$@"
+  '';
 in {
   options.aos.services.ignition = {
     ## Enable Ignition first-boot provisioning.
@@ -83,8 +104,10 @@ in {
       ];
       default = "qemu";
       description = ''
-        Ignition platform passed as `--platform=<name>`. Determines how
-        Ignition locates its config:
+        Ignition platform. Contributed to the image's kernel cmdline as
+        `ignition.platform.id=<name>`; ignition's initrd services read
+        it from /proc/cmdline (no --platform= flag on the ExecStart).
+        Determines how Ignition locates its config:
           - "qemu"      — QEMU fw_cfg device (used for VM testing)
           - "aws"/"gcp" — cloud instance metadata services
           - "metal"     — baremetal (systemd credentials or kargs)
@@ -98,6 +121,14 @@ in {
     # Ignition ships the binary in every stage-2 installation too so
     # operators can re-run or inspect state after first boot.
     environment.systemPackages = [pkgs.ignition];
+
+    # Ignition discovers its platform from the kernel cmdline when no
+    # --platform= flag is passed on the ExecStart — contribute the arg
+    # here so it flows through `aos.boot.kernelParams` into the image's
+    # boot loader entry. The VM test harness overrides this with
+    # `ignition.platform.id=metal` on its own cmdline (metal is the only
+    # platform that reads `ignition.config.url=` from kargs).
+    aos.boot.kernelParams = ["ignition.platform.id=${cfg.platform}"];
 
     # Initrd services. The cpio assembler in modules/base/initrd-builder.nix
     # picks these up via `system.build.systemdInitrdUnits`.
@@ -131,7 +162,7 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${pkgs.ignition}/bin/ignition --platform=${cfg.platform} --root=/sysroot --stage=fetch --log-to-stdout";
+          ExecStart = "${ignitionWrapper}/bin/ignition-platform-wrapper --root=/sysroot --stage=fetch --log-to-stdout";
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };
@@ -154,7 +185,7 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${pkgs.ignition}/bin/ignition --platform=${cfg.platform} --root=/sysroot --stage=disks --log-to-stdout";
+          ExecStart = "${ignitionWrapper}/bin/ignition-platform-wrapper --root=/sysroot --stage=disks --log-to-stdout";
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };
@@ -178,11 +209,11 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${pkgs.ignition}/bin/ignition --platform=${cfg.platform} --root=/sysroot --stage=mount --log-to-stdout";
+          ExecStart = "${ignitionWrapper}/bin/ignition-platform-wrapper --root=/sysroot --stage=mount --log-to-stdout";
           # Run umount on service stop (i.e. during initrd-cleanup)
           # so filesystems ignition mounted are torn down cleanly
           # before switch_root. Matches upstream's ignition-mount.service.
-          ExecStop = "${pkgs.ignition}/bin/ignition --platform=${cfg.platform} --root=/sysroot --stage=umount --log-to-stdout";
+          ExecStop = "${ignitionWrapper}/bin/ignition-platform-wrapper --root=/sysroot --stage=umount --log-to-stdout";
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };
@@ -206,7 +237,7 @@ in {
           # pkgs/boot/ignition.nix). That stamp lives on the persistent
           # ext4 root, and on subsequent boots ignition detects it and
           # runs idempotently. No external marker file needed.
-          ExecStart = "${pkgs.ignition}/bin/ignition --platform=${cfg.platform} --root=/sysroot --stage=files --log-to-stdout";
+          ExecStart = "${ignitionWrapper}/bin/ignition-platform-wrapper --root=/sysroot --stage=files --log-to-stdout";
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };
