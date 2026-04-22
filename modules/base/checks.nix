@@ -44,20 +44,26 @@ in
   config.system.build.checks =
     # Module-defined VM checks (system.checks.*)
     builtins.mapAttrs (
-      name: checkGroup:
+      name: spec:
       harness.mkVMTest {
         inherit name;
         system = systemProxy;
-        checks = [ checkGroup ];
+        groupName = name;
+        checks = spec.checks;
+        instanceMetadata = spec.instanceMetadata;
       }
     ) config.system.checks
-    # Cloud-init tests (system.cloudInitTests.*)
+    # Cloud-init tests (system.cloudInitTests.*) — the 15 files under
+    # modules/services/cloud-init-checks/ now return a plain attrset
+    # `{ description; checks = [ {name; description; script;} ... ]; }`,
+    # so `spec.checks.checks` is the flat list.
     // builtins.mapAttrs (
       name: spec:
       harness.mkVMTest {
         inherit name;
         system = systemProxy;
-        checks = [ spec.checks ];
+        groupName = name;
+        checks = spec.checks.checks;
         userdata = spec.userdata;
       }
     ) config.system.cloudInitTests;

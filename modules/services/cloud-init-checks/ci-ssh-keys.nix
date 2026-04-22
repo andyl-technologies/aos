@@ -1,10 +1,9 @@
 # tests/vm/checks/ci-ssh-keys.nix — Cloud-init SSH authorized keys
 { lib }:
-lib.mkCheckGroup {
-  name = "ci-ssh-keys";
+{
   description = "Cloud-init SSH key provisioning";
   checks = [
-    (lib.mkCheck {
+    {
       name = "authorized-keys-file";
       description = "Authorized keys file exists for deploy user";
       script = ''
@@ -19,14 +18,14 @@ lib.mkCheckGroup {
         assert_success "test -f /etc/ssh/authorized_keys/deploy" \
           "authorized_keys file exists for deploy"
       '';
-    })
-    (lib.mkCheck {
+    }
+    {
       name = "key-content";
       description = "Authorized keys file contains the SSH key";
       script = ''
         assert_output_contains "cat /etc/ssh/authorized_keys/deploy" "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI" \
           "authorized_keys contains ed25519 key"
       '';
-    })
+    }
   ];
 }
