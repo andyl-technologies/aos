@@ -34,6 +34,9 @@
   fcLib = import ./firecracker.nix {inherit pkgs lib;};
   kernel = pkgs.linux;
 
+  # Shared rootfs helper (lib/build/rootfs.nix) — produces root.img.
+  mkRootfs = import ../build/rootfs.nix;
+
   # Shared shell assertion helpers
   assertions = import ./assertions.nix {inherit (pkgs) aos-agent-rpc;};
 
@@ -69,13 +72,300 @@
     hostsEntries ? null,
     userdata ? null,
   }: let
-    toplevel = system.config.system.build.toplevel;
-    kernelPkg = system.config.system.build.kernel;
-    systemdPkg = pkgs.systemd;
-    coreutilsPkg = pkgs.coreutils;
-    bashPkg = pkgs.bash;
-    socatPkg = pkgs.socat;
     systemPackages = system.config.environment.systemPackages;
+
+    # Shell fragment spliced into the shared rootfs helper's populate
+    # phase after tree population, before mkfs. Runs with `rootfs/` as
+    # the populated tree and `$ETC_TARGET` pointing at `etc.lower` —
+    # the lower layer of the production /etc overlay (pre-split to skip
+    # the first-boot remount-rw dance).
+    postPopulate = ''
+      # ── systemd's /lib/* subdirs into merged-usr /usr/lib ──
+      # Provides udev rules, tmpfiles.d, sysctl.d, and systemd's own
+      # library-adjacent helpers that tools look up at /lib/... paths.
+      # Don't stomp on /usr/lib/modules which the helper already wired.
+      for d in "${pkgs.systemd}/lib/"*; do
+        n=$(basename "$d")
+        [ -e "rootfs/usr/lib/$n" ] || ln -sfn "$d" "rootfs/usr/lib/$n"
+      done
+
+      # /etc is the overlay mountpoint — the helper populated
+      # /etc.lower; leave /etc as an empty mountpoint.
+      mkdir -p rootfs/etc
+      # /run/etc-upper is where etc-overlay-setup mounts the tmpfs
+      # that carries the overlay's upper+work dirs. Pre-creating
+      # keeps the first-boot setup on the cold path.
+      mkdir -p rootfs/run/etc-upper
+      # /opt/aos-test/bin holds the test agent scripts.
+      mkdir -p rootfs/opt/aos-test/bin
+
+      # SELinux override — the test rootfs has no policy files and
+      # enforcing mode causes systemd to freeze when it can't load
+      # the policy. Only applies if the toplevel /etc had a config.
+      if [ -f "rootfs/$ETC_TARGET/selinux/config" ]; then
+        cat > "rootfs/$ETC_TARGET/selinux/config" << 'SELINUXCFG'
+      SELINUX=disabled
+      SELINUXTYPE=targeted
+      SELINUXCFG
+      fi
+
+      echo "${hostname}" > "rootfs/$ETC_TARGET/hostname"
+      # Empty fstab — systemd-fstab-generator synthesizes sysroot.mount
+      # from root= on the cmdline; mount-var.service handles /var.
+      : > "rootfs/$ETC_TARGET/fstab"
+
+      # Pre-generate SSH host key so sshd can start without the keygen
+      # service (which expects /var/etc/ssh from the production overlay
+      # setup). The key lives in the etc-overlay lower layer so sshd
+      # finds it via the overlay.
+      mkdir -p "rootfs/$ETC_TARGET/ssh"
+      ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
+        -f "rootfs/$ETC_TARGET/ssh/ssh_host_ed25519_key" </dev/null
+
+      ${
+        if hostsEntries != null
+        then ''
+          cat > "rootfs/$ETC_TARGET/hosts" << 'HOSTS'
+          127.0.0.1 localhost
+          ${hostsEntries}
+          HOSTS
+        ''
+        else ""
+      }
+      ${
+        if networkConfig != null
+        then ''
+          mkdir -p "rootfs/$ETC_TARGET/systemd/network"
+          cat > "rootfs/$ETC_TARGET/systemd/network/10-eth0.network" << 'NETCFG'
+          ${networkConfig}
+          NETCFG
+        ''
+        else ""
+      }
+
+      cat > "rootfs/$ETC_TARGET/os-release" << 'OSREL'
+      ID=aos
+      NAME="ANDYL OS"
+      PRETTY_NAME="ANDYL OS (test)"
+      VERSION_ID=0.1
+      OSREL
+
+      # Fallback passwd/group/shadow if toplevel didn't provide them.
+      # The users module generates these for module-defined users
+      # (chrony, sshd, etc.); writing fallbacks keeps early-boot
+      # systemd services functional when running a minimal system.
+      if [ ! -s "rootfs/$ETC_TARGET/passwd" ]; then
+        cat > "rootfs/$ETC_TARGET/passwd" << 'PASSWD'
+      root:x:0:0:root:/root:/bin/sh
+      nobody:x:65534:65534:Nobody:/:/sbin/nologin
+      systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin
+      systemd-network:x:102:102:systemd Network:/:/sbin/nologin
+      PASSWD
+      fi
+      if [ ! -s "rootfs/$ETC_TARGET/group" ]; then
+        cat > "rootfs/$ETC_TARGET/group" << 'GROUP'
+      root:x:0:
+      nobody:x:65534:
+      utmp:x:22:
+      systemd-journal:x:101:
+      systemd-network:x:102:
+      GROUP
+      fi
+      if [ ! -s "rootfs/$ETC_TARGET/shadow" ]; then
+        cat > "rootfs/$ETC_TARGET/shadow" << 'SHADOW'
+      root:!:1::::::
+      nobody:!:1::::::
+      SHADOW
+      fi
+      chmod 640 "rootfs/$ETC_TARGET/shadow"
+
+      cat > "rootfs/$ETC_TARGET/nsswitch.conf" << 'NSS'
+      passwd: files
+      group:  files
+      shadow: files
+      hosts:  files dns
+      NSS
+
+      # ── Guest agent handler: one command from stdin → JSON to stdout.
+      cat > rootfs/opt/aos-test/bin/agent-handler << 'HANDLER'
+      #!/bin/sh
+      set -u
+      export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      read -r cmd
+      if [ -z "$cmd" ]; then
+        exit 0
+      fi
+      echo "aos-test-agent: received: $cmd" >&2
+      if [ "$cmd" = "PING" ]; then
+        printf '{"status":"ready"}\n'
+        exit 0
+      fi
+      if [ "$cmd" = "SHUTDOWN" ]; then
+        printf '{"status":"shutdown"}\n'
+        # Firecracker needs reboot -f (poweroff hangs); QEMU uses poweroff -f.
+        if [ -e /dev/vsock ]; then
+          reboot -f
+        else
+          poweroff -f
+        fi
+        exit 0
+      fi
+      eval "$cmd" > /tmp/agent-stdout 2>/tmp/agent-stderr
+      exit_code=$?
+      stdout=$(cat /tmp/agent-stdout 2>/dev/null || true)
+      stderr=$(cat /tmp/agent-stderr 2>/dev/null || true)
+      NL='
+      '
+      escape_json() {
+        local s="$1"
+        s="''${s//\\/\\\\}"
+        s="''${s//\"/\\\"}"
+        s="''${s//$'\t'/\\t}"
+        s="''${s//$'\r'/\\r}"
+        s="''${s//$NL/\\n}"
+        printf '%s' "$s"
+      }
+      stdout_escaped=$(escape_json "$stdout")
+      stderr_escaped=$(escape_json "$stderr")
+      printf '{"exit_code":%d,"stdout":"%s","stderr":"%s"}\n' \
+        "$exit_code" "$stdout_escaped" "$stderr_escaped"
+      HANDLER
+      chmod +x rootfs/opt/aos-test/bin/agent-handler
+
+      # ── Guest agent: auto-detect vsock vs virtio-serial, listen.
+      cat > rootfs/opt/aos-test/bin/aos-test-agent << 'AGENT'
+      #!/bin/sh
+      set -u
+      export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+      if [ -e /dev/vsock ]; then
+        # vsock mode (Firecracker) — listen on port 52; each host CONNECT
+        # spawns a new agent-handler via socat EXEC.
+        echo "aos-test-agent: vsock mode, listening on port 52" >&2
+        sleep 0.5
+        exec socat VSOCK-LISTEN:52,reuseaddr,fork EXEC:/opt/aos-test/bin/agent-handler
+      fi
+
+      # virtio-serial mode (QEMU)
+      AGENT_PORT=""
+      echo "aos-test-agent: waiting for virtio port..." >&2
+      TRIES=0
+      while [ -z "$AGENT_PORT" ]; do
+        if [ -e "/dev/virtio-ports/aos.test.agent" ]; then
+          AGENT_PORT="/dev/virtio-ports/aos.test.agent"
+        elif [ -e "/dev/vport0p1" ]; then
+          AGENT_PORT="/dev/vport0p1"
+        else
+          TRIES=$((TRIES + 1))
+          if [ $((TRIES % 50)) -eq 0 ]; then
+            echo "aos-test-agent: still waiting ($TRIES attempts)..." >&2
+            ls /dev/vport* 2>&1 >&2 || true
+            ls /dev/virtio-ports/ 2>&1 >&2 || true
+          fi
+          sleep 0.1
+        fi
+      done
+      echo "aos-test-agent: using port $AGENT_PORT" >&2
+
+      while true; do
+        cmd=$(head -1 "$AGENT_PORT" 2>/dev/null) || true
+        if [ -z "$cmd" ]; then
+          sleep 0.1
+          continue
+        fi
+        echo "aos-test-agent: received: $cmd" >&2
+        if [ "$cmd" = "PING" ]; then
+          printf '{"status":"ready"}\n' > "$AGENT_PORT"
+          continue
+        fi
+        if [ "$cmd" = "SHUTDOWN" ]; then
+          printf '{"status":"shutdown"}\n' > "$AGENT_PORT"
+          poweroff -f
+          exit 0
+        fi
+        eval "$cmd" > /tmp/agent-stdout 2>/tmp/agent-stderr
+        exit_code=$?
+        stdout=$(cat /tmp/agent-stdout 2>/dev/null || true)
+        stderr=$(cat /tmp/agent-stderr 2>/dev/null || true)
+        NL='
+      '
+        escape_json() {
+          local s="$1"
+          s="''${s//\\/\\\\}"
+          s="''${s//\"/\\\"}"
+          s="''${s//$'\t'/\\t}"
+          s="''${s//$'\r'/\\r}"
+          s="''${s//$NL/\\n}"
+          printf '%s' "$s"
+        }
+        stdout_escaped=$(escape_json "$stdout")
+        stderr_escaped=$(escape_json "$stderr")
+        printf '{"exit_code":%d,"stdout":"%s","stderr":"%s"}\n' \
+          "$exit_code" "$stdout_escaped" "$stderr_escaped" > "$AGENT_PORT"
+      done
+      AGENT
+      chmod +x rootfs/opt/aos-test/bin/aos-test-agent
+
+      # Guest agent systemd service. Drivers present a properly blocking
+      # serial backend so a live getty can coexist with the harness;
+      # no masking of serial-getty@ttyS0 is needed.
+      mkdir -p "rootfs/$ETC_TARGET/systemd/system/multi-user.target.wants"
+      cat > "rootfs/$ETC_TARGET/systemd/system/aos-test-agent.service" << 'UNIT'
+      [Unit]
+      Description=AOS VM Test Guest Agent
+      After=systemd-udevd.service
+      Wants=systemd-udevd.service
+
+      [Service]
+      Type=simple
+      ExecStart=/opt/aos-test/bin/aos-test-agent
+      Restart=on-failure
+      RestartSec=1
+
+      [Install]
+      WantedBy=multi-user.target
+      UNIT
+      ln -sfn ../aos-test-agent.service \
+        "rootfs/$ETC_TARGET/systemd/system/multi-user.target.wants/aos-test-agent.service"
+    '';
+
+    rootfs = mkRootfs {
+      inherit pkgs lib system;
+      pname = "vm-disk-${name}-rootfs";
+      label = "aos-root";
+      # /etc.lower layout — stage-2 etc-overlay-setup.service mounts an
+      # overlayfs on /etc with /etc.lower as the base lower layer.
+      etcTarget = "etc.lower";
+      unwrapStoreSymlinks = true;
+      # Leave the image at its initial over-provisioned size — tests
+      # can write a lot during execution. 2048 MiB floor matches the
+      # pre-refactor behavior.
+      shrinkToFit = false;
+      minSizeMiB = 2048;
+      # Over and above toplevel + kernel: systemd/coreutils/bash/socat
+      # are depended on transitively by toplevel, but the agent scripts
+      # reference socat at a runtime-only path (not via environment.
+      # systemPackages), so include explicitly to guarantee its closure
+      # lands in /nix/store. The other three are no-ops if already in
+      # toplevel's closure.
+      extraClosures = [
+        pkgs.systemd
+        pkgs.coreutils
+        pkgs.bash
+        pkgs.socat
+      ];
+      # Symlink farm into /usr/bin, /usr/sbin, /usr/libexec. Ordering
+      # is first-wins for collisions — coreutils before systemd so
+      # coreutils' `env` / `ls` / etc. don't get shadowed.
+      symlinkFarmPkgs =
+        [
+          pkgs.coreutils
+          pkgs.systemd
+          pkgs.socat
+        ]
+        ++ systemPackages;
+      inherit postPopulate;
+    };
   in
     pkgs.mkDerivation {
       pname = "vm-disk-${name}";
@@ -86,288 +376,23 @@
         pkgs.e2fsprogs
         pkgs.coreutils
         pkgs.fakeroot
-        pkgs.openssh
         pkgs.util-linux # sfdisk
       ];
 
-      # Nix writes the transitive closure graphs before running the builder
-      exportReferencesGraph = [
-        "closure-toplevel"
-        toplevel
-        "closure-kernel"
-        kernelPkg
-        "closure-systemd"
-        systemdPkg
-        "closure-coreutils"
-        coreutilsPkg
-        "closure-bash"
-        bashPkg
-        "closure-socat"
-        socatPkg
-      ];
-
-      TOPLEVEL = builtins.toString toplevel;
-      KERNEL = builtins.toString kernelPkg;
-      SYSTEMD = builtins.toString systemdPkg;
-      COREUTILS = builtins.toString coreutilsPkg;
-      AOS_BASH = builtins.toString bashPkg;
-      SOCAT = builtins.toString socatPkg;
-      SYSTEM_PACKAGES = builtins.concatStringsSep " " (builtins.map builtins.toString systemPackages);
+      ROOT_IMG = "${rootfs}/root.img";
+      ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
 
       phases = [
         {
-          name = "build-rootfs";
+          name = "assemble";
           script = ''
-                        mkdir -p rootfs/nix/store
-                        mkdir -p rootfs/sbin rootfs/bin rootfs/dev
-                        # /etc is an empty directory — the production
-                        # etc-overlay-setup.service mounts an overlayfs
-                        # on it in the initrd. /etc.lower holds the real
-                        # content (pre-split to skip first-boot remount-rw).
-                        mkdir -p rootfs/etc rootfs/etc.lower
-                        mkdir -p rootfs/proc rootfs/sys rootfs/tmp rootfs/run
-                        # /run/etc-upper is the mount point for the tmpfs
-                        # that etc-overlay-setup mounts as the overlay's
-                        # upper+work dirs. Pre-creating it keeps the first-
-                        # boot setup on the cold path.
-                        mkdir -p rootfs/run/etc-upper
-                        # /var is the mount point for partition 3 — the
-                        # production mount-var.service creates the /log,
-                        # /lib, /tmp subdirs on the mounted partition.
-                        mkdir -p rootfs/var rootfs/sysroot
-                        mkdir -p rootfs/opt/aos-test/bin
-                        mkdir -p rootfs/lib64
+            set -eu
 
-                        # Collect all unique store paths from the closure graphs
-                        cat closure-toplevel closure-kernel closure-systemd closure-coreutils closure-bash closure-socat \
-                          | grep '^/nix/store/' | sort -u > all-paths
-
-                        echo "==> Copying $(wc -l < all-paths) store paths to rootfs"
-
-                        count=0
-                        failed=0
-                        total=$(wc -l < all-paths)
-                        while IFS= read -r p; do
-                          count=$((count + 1))
-                          if [ -e "$p" ]; then
-                            if ! cp -a "$p" rootfs/nix/store/ 2>/tmp/cp-err; then
-                              echo "    WARN: failed to copy $p: $(cat /tmp/cp-err)"
-                              failed=$((failed + 1))
-                            fi
-                          else
-                            echo "    WARN: path does not exist: $p"
-                            failed=$((failed + 1))
-                          fi
-                          if [ $((count % 10)) -eq 0 ]; then
-                            printf '\r    [%d/%d]' "$count" "$total"
-                          fi
-                        done < all-paths
-                        echo ""
-                        if [ "$failed" -gt 0 ]; then
-                          echo "    WARNING: $failed paths failed to copy"
-                        fi
-
-                        # /lib64/ld-linux-x86-64.so.2 — needed for PIE binaries
-                        # (e.g. containerd built with CGO) that reference the
-                        # system dynamic linker. Find the glibc ld-linux from
-                        # the copied store paths.
-                        LD_LINUX=$(find rootfs/nix/store -name 'ld-linux-x86-64.so.2' -path '*glibc-*/lib/*' 2>/dev/null | sort -V | tail -1)
-                        if [ -n "$LD_LINUX" ]; then
-                          # Convert rootfs-relative path to absolute guest path
-                          GUEST_LD="''${LD_LINUX#rootfs}"
-                          ln -sfn "$GUEST_LD" rootfs/lib64/ld-linux-x86-64.so.2
-                          echo "    /lib64/ld-linux-x86-64.so.2 -> $GUEST_LD"
-                        else
-                          echo "    WARNING: ld-linux-x86-64.so.2 not found in rootfs glibc"
-                        fi
-
-                        # /sbin/init -> systemd
-                        ln -sfn $SYSTEMD/lib/systemd/systemd rootfs/sbin/init
-
-                        # systemd was built with --prefix=/ so it looks for helpers,
-                        # unit files, and udev rules at /lib/systemd/, /lib/udev/, etc.
-                        # Symlink all of systemd's lib subdirectories to /lib/
-                        mkdir -p rootfs/lib
-                        for d in $SYSTEMD/lib/*; do
-                          ln -sfn "$d" "rootfs/lib/$(basename $d)"
-                        done
-
-                        # /lib/modules → kernel module tree so modprobe can find .ko files
-                        ln -sfn $KERNEL/lib/modules rootfs/lib/modules
-
-                        # Populate /usr/bin, /usr/sbin, /bin, /sbin with essential binaries
-                        # systemd's default PATH for services is /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-                        mkdir -p rootfs/usr/bin rootfs/usr/sbin
-                        # /bin/sh -> bash
-                        ln -sfn $AOS_BASH/bin/bash rootfs/bin/sh
-                        # coreutils (sleep, cat, echo, tr, sed, etc.)
-                        for bin in $COREUTILS/bin/*; do
-                          name=$(basename "$bin")
-                          ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
-                        done
-                        # systemd binaries (systemctl, journalctl, loginctl, etc.)
-                        for bin in $SYSTEMD/bin/*; do
-                          name=$(basename "$bin")
-                          ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
-                        done
-                        for bin in $SYSTEMD/sbin/*; do
-                          name=$(basename "$bin")
-                          ln -sfn "$bin" "rootfs/usr/sbin/$name" 2>/dev/null || true
-                        done
-                        # Also populate /bin and /sbin for convenience
-                        for bin in $COREUTILS/bin/*; do
-                          name=$(basename "$bin")
-                          if [ ! -e "rootfs/bin/$name" ]; then
-                            ln -sfn "$bin" "rootfs/bin/$name" 2>/dev/null || true
-                          fi
-                        done
-
-                        # socat — needed by the guest agent for vsock communication
-                        # (Firecracker driver). Always included so rootfs works with both drivers.
-                        if [ -d "$SOCAT/bin" ]; then
-                          for bin in "$SOCAT/bin/"*; do
-                            name=$(basename "$bin")
-                            ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
-                          done
-                        fi
-
-                        # Symlink binaries from all environment.systemPackages
-                        # so services can find them at /usr/bin and /usr/sbin
-                        for pkg in $SYSTEM_PACKAGES; do
-                          if [ -d "$pkg/bin" ]; then
-                            for bin in "$pkg/bin/"*; do
-                              name=$(basename "$bin")
-                              if [ ! -e "rootfs/usr/bin/$name" ]; then
-                                ln -sfn "$bin" "rootfs/usr/bin/$name" 2>/dev/null || true
-                              fi
-                            done
-                          fi
-                          if [ -d "$pkg/sbin" ]; then
-                            for bin in "$pkg/sbin/"*; do
-                              name=$(basename "$bin")
-                              if [ ! -e "rootfs/usr/sbin/$name" ]; then
-                                ln -sfn "$bin" "rootfs/usr/sbin/$name" 2>/dev/null || true
-                              fi
-                            done
-                          fi
-                          if [ -d "$pkg/libexec" ]; then
-                            mkdir -p rootfs/usr/libexec
-                            for bin in "$pkg/libexec/"*; do
-                              name=$(basename "$bin")
-                              if [ ! -e "rootfs/usr/libexec/$name" ]; then
-                                ln -sfn "$bin" "rootfs/usr/libexec/$name" 2>/dev/null || true
-                              fi
-                            done
-                          fi
-                        done
-
-                        # /run/current-system -> toplevel
-                        ln -sfn $TOPLEVEL rootfs/run/current-system
-
-                        # Merge toplevel's /etc into rootfs/etc.lower (the
-                        # lower layer of the production overlay; /etc
-                        # itself is a mountpoint populated at boot).
-                        # This copies unit files, .wants symlinks, and
-                        # module-generated configs. Files created below
-                        # (hostname, passwd, etc.) will overwrite as needed.
-                        if [ -d "$TOPLEVEL/etc" ]; then
-                          echo "==> Merging toplevel /etc into rootfs/etc.lower"
-                          # Use tar pipe to copy without preserving store permissions.
-                          # tar extract applies umask, making files writable.
-                          (cd "$TOPLEVEL/etc" && tar cf - .) | (cd rootfs/etc.lower && tar xf -)
-                          # Make real dirs writable so the symlink-resolution pass
-                          # below can rm/replace entries inside them.
-                          chmod -R u+w rootfs/etc.lower
-                          # Toplevel /etc can contain symlinks pointing into the read-only
-                          # /nix/store (e.g. /etc/systemd/system → a system-units derivation).
-                          # tar preserves those as symlinks, so subsequent writes underneath
-                          # would hit the store and fail with EACCES. Replace each such link
-                          # with a copy of its target — cp -a keeps internal relative symlinks
-                          # (.wants/*.service) intact, so systemd semantics are preserved.
-                          #
-                          # Replacing a directory-symlink with cp -a can reveal new store
-                          # symlinks inside the copied tree (e.g. unit files inside the
-                          # system-units derivation). Loop until no store symlinks remain.
-                          while true; do
-                            found_any=0
-                            find rootfs/etc.lower -type l | while IFS= read -r link; do
-                              target=$(readlink "$link")
-                              case "$target" in
-                                /nix/store/*)
-                                  rm "$link"
-                                  cp -a "$target" "$link"
-                                  found_any=1
-                                  ;;
-                              esac
-                            done
-                            # The subshell eats our variable; re-check with find.
-                            if ! find rootfs/etc.lower -type l -exec readlink {} \; | grep -q '^/nix/store/'; then
-                              break
-                            fi
-                            chmod -R u+w rootfs/etc.lower
-                          done
-                          # Newly-copied trees may carry store read-only perms; re-apply.
-                          chmod -R u+w rootfs/etc.lower
-                          echo "    toplevel /etc merged"
-                          # Override SELinux to permissive for VM testing — the rootfs
-                          # has no policy files, and enforcing mode causes systemd to
-                          # freeze when it can't load the policy.
-                          echo "    checking selinux config..."
-                          if [ -f rootfs/etc.lower/selinux/config ]; then
-                            echo "    overriding selinux to permissive"
-                            cat > rootfs/etc.lower/selinux/config << 'SELINUXCFG'
-            SELINUX=disabled
-            SELINUXTYPE=targeted
-            SELINUXCFG
-                            echo "    selinux override done"
-                          fi
-                        fi
-
-                        echo "==> Writing basic /etc files"
-                        # Basic /etc files land in /etc.lower (the lower
-                        # layer of the production overlay).
-                        echo "${hostname}" > rootfs/etc.lower/hostname
-                        touch rootfs/etc.lower/machine-id
-                        # fstab is empty — stage-1 systemd-fstab-generator
-                        # synthesizes sysroot.mount from root= on the
-                        # cmdline, and mount-var.service handles /var.
-                        # tmpfs mounts for /tmp and /run come from upstream
-                        # systemd's API filesystem setup in the initrd.
-                        : > rootfs/etc.lower/fstab
-
-                        # Pre-generate SSH host key so sshd can start without
-                        # the keygen service (which expects /var/etc/ssh from
-                        # the production overlay setup). The key lives in
-                        # /etc.lower/ssh so sshd finds it via the overlay.
-                        mkdir -p rootfs/etc.lower/ssh
-                        ssh-keygen -q -t ed25519 -N "" -f rootfs/etc.lower/ssh/ssh_host_ed25519_key </dev/null
-
-                        ${
-              if hostsEntries != null
-              then ''
-                cat > rootfs/etc.lower/hosts << 'HOSTS'
-                127.0.0.1 localhost
-                ${hostsEntries}
-                HOSTS
-              ''
-              else ""
-            }
-                        ${
-              if networkConfig != null
-              then ''
-                mkdir -p rootfs/etc.lower/systemd/network
-                cat > rootfs/etc.lower/systemd/network/10-eth0.network << 'NETCFG'
-                ${networkConfig}
-                NETCFG
-              ''
-              else ""
-            }
-
-                        # Stage the /var partition contents. For cloudInitTests
-                        # the NoCloud seed files go on this partition so
-                        # cloud-init finds them once /var is mounted at boot.
-                        mkdir -p var
-                        ${
+            # ── /var partition staging ──────────────────────────────────
+            # For cloudInitTests the NoCloud seed files live on this
+            # partition so cloud-init finds them once /var is mounted.
+            mkdir -p var
+            ${
               if userdata != null
               then ''
                 mkdir -p var/lib/cloud/seed/nocloud
@@ -382,272 +407,49 @@
               else ""
             }
 
-                        cat > rootfs/etc.lower/os-release << 'OSREL'
-            ID=aos
-            NAME="ANDYL OS"
-            PRETTY_NAME="ANDYL OS (test)"
-            VERSION_ID=0.1
-            OSREL
+            # fakeroot so the var partition's files land as uid/gid 0.
+            fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img 32M
 
-                        # Only write fallback passwd/group/shadow if the toplevel
-                        # etc merge didn't already provide them (the users module
-                        # generates these with all module-defined users like chrony, sshd).
-                        if [ ! -s rootfs/etc.lower/passwd ]; then
-                          cat > rootfs/etc.lower/passwd << 'PASSWD'
-            root:x:0:0:root:/root:/bin/sh
-            nobody:x:65534:65534:Nobody:/:/sbin/nologin
-            systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin
-            systemd-network:x:102:102:systemd Network:/:/sbin/nologin
-            PASSWD
-                        fi
-                        if [ ! -s rootfs/etc.lower/group ]; then
-                          cat > rootfs/etc.lower/group << 'GROUP'
-            root:x:0:
-            nobody:x:65534:
-            utmp:x:22:
-            systemd-journal:x:101:
-            systemd-network:x:102:
-            GROUP
-                        fi
-                        if [ ! -s rootfs/etc.lower/shadow ]; then
-                          cat > rootfs/etc.lower/shadow << 'SHADOW'
-            root:!:1::::::
-            nobody:!:1::::::
-            SHADOW
-                        fi
-                        chmod 640 rootfs/etc.lower/shadow
+            # ── Root image from the shared rootfs helper ────────────────
+            cp "$ROOT_IMG" root.img
+            chmod u+w root.img
+            root_bytes=$(cat "$ROOT_SIZE_FILE")
 
-                        # Minimal nsswitch.conf for systemd
-                        cat > rootfs/etc.lower/nsswitch.conf << 'NSS'
-            passwd: files
-            group:  files
-            shadow: files
-            hosts:  files dns
-            NSS
+            # ── Assemble the GPT disk image ─────────────────────────────
+            # Sizes in 512-byte sectors; 1 MiB alignment at start and end
+            # for GPT headers. Partition 1 (boot) is vestigial in tests
+            # — the harness passes kernel+initrd via -kernel/-initrd —
+            # but reserving it keeps root at /dev/vda2 matching production.
+            BOOT_SECTORS=$(( 4 * 1024 * 1024 / 512 ))   # 4 MiB
+            ROOT_SECTORS=$(( root_bytes / 512 ))
+            VAR_SECTORS=$((  32 * 1024 * 1024 / 512 )) # 32 MiB
 
-                        # Guest agent handler — processes a single command from stdin,
-                        # writes JSON response to stdout. Used by both vsock and virtio-serial modes.
-                        cat > rootfs/opt/aos-test/bin/agent-handler << 'HANDLER'
-            #!/bin/sh
-            set -u
-            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            # Read one command from stdin
-            read -r cmd
-            if [ -z "$cmd" ]; then
-              exit 0
-            fi
-            echo "aos-test-agent: received: $cmd" >&2
-            if [ "$cmd" = "PING" ]; then
-              printf '{"status":"ready"}\n'
-              exit 0
-            fi
-            if [ "$cmd" = "SHUTDOWN" ]; then
-              printf '{"status":"shutdown"}\n'
-              # Detect driver: Firecracker needs reboot -f (poweroff hangs),
-              # QEMU uses poweroff -f
-              if [ -e /dev/vsock ]; then
-                reboot -f
-              else
-                poweroff -f
-              fi
-              exit 0
-            fi
-            eval "$cmd" > /tmp/agent-stdout 2>/tmp/agent-stderr
-            exit_code=$?
-            stdout=$(cat /tmp/agent-stdout 2>/dev/null || true)
-            stderr=$(cat /tmp/agent-stderr 2>/dev/null || true)
-            # JSON-escape using bash builtins only (sed is not in the guest)
-            NL='
-            '
-            escape_json() {
-              local s="$1"
-              s="''${s//\\/\\\\}"
-              s="''${s//\"/\\\"}"
-              s="''${s//$'\t'/\\t}"
-              s="''${s//$'\r'/\\r}"
-              s="''${s//$NL/\\n}"
-              printf '%s' "$s"
-            }
-            stdout_escaped=$(escape_json "$stdout")
-            stderr_escaped=$(escape_json "$stderr")
-            printf '{"exit_code":%d,"stdout":"%s","stderr":"%s"}\n' \
-              "$exit_code" "$stdout_escaped" "$stderr_escaped"
-            HANDLER
-                        chmod +x rootfs/opt/aos-test/bin/agent-handler
+            BOOT_START=2048
+            ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
+            VAR_START=$(( ROOT_START + ROOT_SECTORS ))
+            DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
+            DISK_BYTES=$(( DISK_SECTORS * 512 ))
 
-                        # Guest agent script — auto-detects vsock (Firecracker) vs
-                        # virtio-serial (QEMU) and listens on the appropriate transport.
-                        cat > rootfs/opt/aos-test/bin/aos-test-agent << 'AGENT'
-            #!/bin/sh
-            set -u
-            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
+            truncate -s "$DISK_BYTES" disk.img
 
-            # Detect transport: vsock (Firecracker) or virtio-serial (QEMU)
-            if [ -e /dev/vsock ]; then
-              # ---------------------------------------------------------------
-              # vsock mode (Firecracker)
-              # ---------------------------------------------------------------
-              # Listen on vsock port 52. Each host CONNECT creates a new
-              # connection handled by agent-handler via socat EXEC.
-              echo "aos-test-agent: vsock mode, listening on port 52" >&2
-
-              # Wait briefly for /dev/vsock to be fully ready
-              sleep 0.5
-
-              # socat accepts connections and forks agent-handler for each one.
-              # reuseaddr allows rapid reconnect from the host side.
-              exec socat VSOCK-LISTEN:52,reuseaddr,fork EXEC:/opt/aos-test/bin/agent-handler
-            fi
-
-            # ---------------------------------------------------------------
-            # virtio-serial mode (QEMU)
-            # ---------------------------------------------------------------
-            AGENT_PORT=""
-            echo "aos-test-agent: waiting for virtio port..." >&2
-            TRIES=0
-            while [ -z "$AGENT_PORT" ]; do
-              if [ -e "/dev/virtio-ports/aos.test.agent" ]; then
-                AGENT_PORT="/dev/virtio-ports/aos.test.agent"
-              elif [ -e "/dev/vport0p1" ]; then
-                AGENT_PORT="/dev/vport0p1"
-              else
-                TRIES=$((TRIES + 1))
-                if [ $((TRIES % 50)) -eq 0 ]; then
-                  echo "aos-test-agent: still waiting ($TRIES attempts)..." >&2
-                  ls /dev/vport* 2>&1 >&2 || true
-                  ls /dev/virtio-ports/ 2>&1 >&2 || true
-                fi
-                sleep 0.1
-              fi
-            done
-            echo "aos-test-agent: using port $AGENT_PORT" >&2
-
-            # Process commands — each command is a fresh open/close of the port.
-            # The host sends a command, agent reads it, processes it, writes response.
-            while true; do
-              # Read one command (opens port, reads one line, closes)
-              cmd=$(head -1 "$AGENT_PORT" 2>/dev/null) || true
-              if [ -z "$cmd" ]; then
-                sleep 0.1
-                continue
-              fi
-              echo "aos-test-agent: received: $cmd" >&2
-              if [ "$cmd" = "PING" ]; then
-                printf '{"status":"ready"}\n' > "$AGENT_PORT"
-                continue
-              fi
-              if [ "$cmd" = "SHUTDOWN" ]; then
-                printf '{"status":"shutdown"}\n' > "$AGENT_PORT"
-                poweroff -f
-                exit 0
-              fi
-              eval "$cmd" > /tmp/agent-stdout 2>/tmp/agent-stderr
-              exit_code=$?
-              stdout=$(cat /tmp/agent-stdout 2>/dev/null || true)
-              stderr=$(cat /tmp/agent-stderr 2>/dev/null || true)
-              # JSON-escape using bash builtins only (sed is not in the guest)
-              NL='
-            '
-              escape_json() {
-                local s="$1"
-                s="''${s//\\/\\\\}"
-                s="''${s//\"/\\\"}"
-                s="''${s//$'\t'/\\t}"
-                s="''${s//$'\r'/\\r}"
-                s="''${s//$NL/\\n}"
-                printf '%s' "$s"
-              }
-              stdout_escaped=$(escape_json "$stdout")
-              stderr_escaped=$(escape_json "$stderr")
-              printf '{"exit_code":%d,"stdout":"%s","stderr":"%s"}\n' \
-                "$exit_code" "$stdout_escaped" "$stderr_escaped" > "$AGENT_PORT"
-            done
-            AGENT
-                        chmod +x rootfs/opt/aos-test/bin/aos-test-agent
-
-                        # Ensure the install dir exists for the agent symlink below.
-                        # We do NOT mask serial-getty@ttyS0 anymore — the drivers now
-                        # present a properly blocking serial backend, so a live getty
-                        # (e.g. the debug profile's autologin) can coexist with the
-                        # harness without respawn loops.
-                        mkdir -p rootfs/etc.lower/systemd/system/multi-user.target.wants
-
-                        # Guest agent systemd service
-                        cat > rootfs/etc.lower/systemd/system/aos-test-agent.service << 'UNIT'
-            [Unit]
-            Description=AOS VM Test Guest Agent
-            After=systemd-udevd.service
-            Wants=systemd-udevd.service
-
-            [Service]
-            Type=simple
-            ExecStart=/opt/aos-test/bin/aos-test-agent
-            Restart=on-failure
-            RestartSec=1
-
-            [Install]
-            WantedBy=multi-user.target
-            UNIT
-                        ln -sfn ../aos-test-agent.service \
-                          rootfs/etc.lower/systemd/system/multi-user.target.wants/aos-test-agent.service
-
-                        # ── Assemble the GPT disk image ─────────────────────
-                        # Calculate root image size: use --apparent-size because
-                        # mkfs.ext4 -d does NOT preserve hardlinks — each
-                        # hardlinked file becomes a separate copy, so apparent
-                        # size is what matters.
-                        APPARENT_KB=$(du -sk --apparent-size rootfs | cut -f1)
-                        SIZE_MB=$(( APPARENT_KB / 1024 ))
-                        # 50% overhead for ext4 metadata + 256MB headroom
-                        ROOT_MB=$(( SIZE_MB * 3 / 2 + 256 ))
-                        if [ "$ROOT_MB" -lt 2048 ]; then
-                          ROOT_MB=2048
-                        fi
-                        echo "==> Rootfs data: ''${SIZE_MB}MB, root image: ''${ROOT_MB}MB"
-
-                        # fakeroot makes all files appear owned by root:root so
-                        # that mkfs.ext4 -d writes uid/gid 0 into the image.
-                        # Without this, files get the sandbox user's uid and
-                        # daemons like auditd refuse to start (ownership checks).
-                        fakeroot -- mkfs.ext4 -d rootfs -L aos-root -m 1 -q root.img ''${ROOT_MB}M
-                        fakeroot -- mkfs.ext4 -d var   -L aos-var  -m 0 -q var.img  32M
-
-                        # Sizes in 512-byte sectors.
-                        BOOT_SECTORS=$(( 4 * 1024 * 1024 / 512 ))          # 4 MiB
-                        ROOT_SECTORS=$(( ROOT_MB * 1024 * 1024 / 512 ))
-                        VAR_SECTORS=$((  32 * 1024 * 1024 / 512 ))         # 32 MiB
-
-                        # 1 MiB alignment at start and end for GPT headers.
-                        BOOT_START=2048
-                        ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
-                        VAR_START=$(( ROOT_START + ROOT_SECTORS ))
-                        DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
-                        DISK_BYTES=$(( DISK_SECTORS * 512 ))
-
-                        echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
-                        truncate -s "$DISK_BYTES" disk.img
-
-                        # Using the standard Linux filesystem GUID
-                        # (0FC63DAF-...) for all three partitions. The
-                        # partlabel `var` is what mount-var.service binds
-                        # to via /dev/disk/by-partlabel/var; labels `boot`
-                        # and `root` are cosmetic here (the harness passes
-                        # kernel+initrd via -kernel/-initrd, and root is
-                        # selected by root=/dev/vda2).
-                        sfdisk disk.img <<PTABLE
+            # Standard Linux filesystem GUID for all three partitions.
+            # The partlabel `var` is what mount-var.service binds to via
+            # /dev/disk/by-partlabel/var. The root partition is labelled
+            # `root-a` to match the production A/B layout — aos-growfs
+            # triggers on ConditionPathExists=/dev/disk/by-partlabel/root-a.
+            sfdisk disk.img <<PTABLE
             label: gpt
             size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="boot"
-            size=$ROOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root"
+            size=$ROOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root-a"
             size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="var"
             PTABLE
 
-                        dd if=root.img of=disk.img bs=512 seek="$ROOT_START" conv=notrunc status=none
-                        dd if=var.img  of=disk.img bs=512 seek="$VAR_START"  conv=notrunc status=none
+            dd if=root.img of=disk.img bs=512 seek="$ROOT_START" conv=notrunc status=none
+            dd if=var.img  of=disk.img bs=512 seek="$VAR_START"  conv=notrunc status=none
 
-                        # stdenv setup.sh creates $out as a directory; emit
-                        # the assembled image into it.
-                        mkdir -p $out
-                        mv disk.img $out/disk.img
+            mkdir -p $out
+            mv disk.img $out/disk.img
           '';
         }
       ];
