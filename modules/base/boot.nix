@@ -99,13 +99,21 @@
       # Turn off systemd-gpt-auto-generator — it synthesises .swap /
       # .mount units at boot with `ExecStart=/usr/sbin/swapon`, a path
       # AOS's rootfs doesn't populate. AOS owns swap (cryptswap.service)
-      # and root (/etc/fstab → systemd-fstab-generator) explicitly, so
-      # there's nothing for the auto-generator to contribute that's
-      # not already covered. Both `systemd.gpt-auto=` (hyphenated, the
-      # documented form) and `systemd.gpt_auto=` (underscored) are
-      # accepted by systemd's parameter parser; ship the hyphenated
-      # spelling to match the upstream man page.
+      # and root (root=/dev/disk/by-partlabel/root-a → systemd-fstab-
+      # generator) explicitly, so there's nothing for the auto-generator
+      # to contribute that's not already covered. Both `systemd.gpt-auto=`
+      # (hyphenated) and `systemd.gpt_auto=` (underscored) are accepted
+      # by systemd's parameter parser; ship the hyphenated spelling to
+      # match the upstream man page.
       "systemd.gpt-auto=0"
+      # root= + ro for systemd-fstab-generator. The UKI's baked
+      # cmdline is the only cmdline the kernel sees (sd-boot passes
+      # no kargs of its own), so without an explicit root= systemd
+      # cannot synthesise sysroot.mount. Partition labels are stable
+      # across disk renaming (vda vs. nvme0n1) and match what the
+      # image builder writes via sfdisk (name="root-a").
+      "root=/dev/disk/by-partlabel/root-a"
+      "ro"
     ];
 
     # systemd-initrd kernel modules configuration.
