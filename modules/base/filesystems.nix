@@ -44,7 +44,7 @@
     "${cfg.espDevice}  /boot  vfat  ro,noatime,fmask=0077,dmask=0077  0  2"
     ""
     "# /var — persistent mutable state (partition created by ignition)"
-    "/dev/disk/by-partlabel/var  /var  ext4  rw,relatime  0  2"
+    "/dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev  0  2"
     ""
     "# tmpfs mounts"
     "tmpfs  /tmp  tmpfs  nosuid,nodev,noexec,mode=1777,size=50%  0  0"
