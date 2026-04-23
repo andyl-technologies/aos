@@ -456,17 +456,17 @@
     };
 
   # ---------------------------------------------------------------------------
-  # Per-test metadata disk (virtio-blk, labelled aos-metadata)
+  # Per-test metadata ISO (ISO9660, volume label aos-metadata)
   # ---------------------------------------------------------------------------
-  # Produces a small ext4 image with one file — config.json — that the
-  # initrd-side aos-test-metadata units (see modules/services/ignition.nix)
-  # mount and serve over http://127.0.0.1:8080/config.json. The VM test
-  # harness attaches this as a second virtio-blk drive when
-  # `instanceMetadata != null`.
+  # Produces a small ISO9660 image with one file — config.json — that the
+  # initrd-side aos-platform-detect.service mounts at /run/aos-metadata and
+  # reads via IGNITION_CONFIG_FILE. Same developer ergonomics as the old
+  # ext4 + HTTP channel, zero guest-side daemons, and the transport matches
+  # what bare-metal operators attach over IPMI virtual media.
   #
   # `ignition-validate` runs inside the build so malformed configs fail
   # `nix-build -A checks.vm.<name>` before a VM is ever launched.
-  mkMetadataDisk = {
+  mkMetadataIso = {
     name,
     ignitionConfig,
   }: let
@@ -478,9 +478,8 @@
       src = null;
 
       buildDeps = [
-        pkgs.e2fsprogs
         pkgs.coreutils
-        pkgs.fakeroot
+        pkgs.libisoburn # provides xorriso
         pkgs.ignition # provides ignition-validate
       ];
 
@@ -497,14 +496,14 @@
             # VM to discover the same error.
             ignition-validate staging/config.json
 
-            # Right-size the image: config.json bytes plus 256 KiB of
-            # ext4 metadata headroom (superblock + inode table + small
-            # journal). Rounded up to whole KiB.
-            CFG_BYTES=$(wc -c < staging/config.json)
-            SIZE_KB=$(( (CFG_BYTES + 262144 + 1023) / 1024 ))
-
             mkdir -p $out
-            fakeroot -- mkfs.ext4 -d staging -L aos-metadata -m 0 -q $out/metadata.img "''${SIZE_KB}K"
+            # Volume label `aos-metadata` is what blkid picks up via
+            # ISO9660's volume descriptor; the guest-side detector
+            # gates on /dev/disk/by-label/aos-metadata.
+            xorriso -as mkisofs \
+              -volid aos-metadata \
+              -output $out/metadata.iso \
+              -r staging/
           '';
         }
       ];
@@ -769,7 +768,7 @@
       systemMetadataDisk =
         if instanceMetadata != null
         then
-          mkMetadataDisk {
+          mkMetadataIso {
             inherit name;
             ignitionConfig = instanceMetadata.config;
           }
@@ -777,22 +776,17 @@
 
       hasMetadata = instanceMetadata != null;
 
-      # Extra cmdline fragment for the metadata HTTP channel. Empty
-      # string when no metadata disk is attached.
-      metadataKarg =
-        if hasMetadata
-        then " ignition.config.url=http://127.0.0.1:8080/config.json"
-        else "";
-
-      # Firecracker drives[] JSON fragment for the metadata disk —
-      # prepended as a second entry when metadata is present.
+      # Firecracker has no CD-ROM support, so the ISO is attached as a
+      # read-only virtio-blk drive. blkid probes the ISO9660 superblock
+      # regardless of transport, so the guest-side detector still finds
+      # /dev/disk/by-label/aos-metadata.
       fcMetadataDrive =
         if hasMetadata
         then ''
           ,
             {
               "drive_id": "metadata",
-              "path_on_host": "$(pwd)/metadata.img",
+              "path_on_host": "$(pwd)/metadata.iso",
               "is_root_device": false,
               "is_read_only": true,
               "cache_type": "Unsafe",
@@ -843,10 +837,10 @@
       # The VM boots through the production initrd path (stage-1 systemd
       # → ignition stages → switch-root → stage-2 systemd), matching the
       # real boot sequence. Firecracker's `boot_args` replaces the image's
-      # built-in cmdline, so `ignition.platform.id=metal` here overrides
-      # whatever the image was built with — metal is the only platform
-      # that reads `ignition.config.url=` from kargs, which is what the
-      # metadata-disk path (commit 6) relies on.
+      # built-in cmdline; no `ignition.platform.id=` or
+      # `ignition.config.url=` kargs — `aos-platform-detect.service`
+      # infers the platform from DMI (→ `qemu`) and mounts the ISO9660
+      # metadata channel when the test harness attaches one.
       firecrackerScript = ''
         set -eu
 
@@ -860,13 +854,13 @@
         cp $DISK/disk.img disk.img
         chmod u+w disk.img
 
-        # Copy the metadata disk (when attached) to a writable location.
+        # Copy the metadata ISO (when attached) to a writable location.
         # virtio-blk backends open the file at launch and hold it for the
         # run — a local copy isolates the run from any read-side caching
         # quirks with store files on certain filesystems.
         ${lib.optionalString hasMetadata ''
-          cp $METADATA/metadata.img metadata.img
-          chmod u+w metadata.img
+          cp $METADATA/metadata.iso metadata.iso
+          chmod u+w metadata.iso
         ''}
 
         # Find the uncompressed kernel image (Firecracker requires vmlinux, not vmlinuz)
@@ -890,7 +884,7 @@
           "boot-source": {
             "kernel_image_path": "$VMLINUX",
             "initrd_path": "$INITRD_IMG",
-            "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0${metadataKarg}"
+            "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0"
           },
           "drives": [
             {
@@ -1038,10 +1032,10 @@
         cp $DISK/disk.img disk.img
         chmod u+w disk.img
 
-        # Copy the metadata disk (when attached) to a writable location.
+        # Copy the metadata ISO (when attached) to a writable location.
         ${lib.optionalString hasMetadata ''
-          cp $METADATA/metadata.img metadata.img
-          chmod u+w metadata.img
+          cp $METADATA/metadata.iso metadata.iso
+          chmod u+w metadata.iso
         ''}
 
         # Find the kernel image
@@ -1082,9 +1076,13 @@
         done
 
         # Launch QEMU with direct kernel boot through the initrd. The
-        # -append cmdline replaces the image's built-in cmdline;
-        # ignition.platform.id=metal makes ignition-fetch consume
-        # ignition.config.url= from kargs (the metadata-disk channel).
+        # -append cmdline replaces the image's built-in cmdline; no
+        # `ignition.platform.id=` or `ignition.config.url=` —
+        # aos-platform-detect infers qemu from DMI and mounts the
+        # metadata ISO when attached.
+        # Metadata ISO (when attached) rides on a SCSI CD-ROM so the
+        # guest sees it as /dev/sr0; blkid then picks up the ISO9660
+        # volume label `aos-metadata` for the detector.
         qemu-system-x86_64 \
           -machine q35,accel=kvm \
           -cpu host \
@@ -1093,9 +1091,13 @@
           -nographic \
           -kernel "$VMLINUZ" \
           -initrd "$INITRD_IMG" \
-          -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0${metadataKarg}" \
+          -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0" \
           -drive file=disk.img,format=raw,if=virtio \
-          ${lib.optionalString hasMetadata ''-drive file=metadata.img,format=raw,if=virtio,readonly=on \''}
+          ${lib.optionalString hasMetadata ''
+            -drive id=metadata,file=metadata.iso,if=none,format=raw,readonly=on \
+            -device virtio-scsi-pci,id=scsi0 \
+            -device scsi-cd,drive=metadata,bus=scsi0.0 \
+          ''}
           -device virtio-serial \
           -device virtserialport,chardev=agent,name=aos.test.agent \
           -chardev socket,id=agent,path="$AGENT_SOCK",server=on,wait=off \
