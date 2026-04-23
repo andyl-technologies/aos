@@ -147,9 +147,14 @@ in
     TOPLEVEL = toString toplevel;
     KERNEL = toString kernel;
     SYSTEMD = toString pkgs.systemd;
-    BASH = toString pkgs.bash;
     COREUTILS = toString pkgs.coreutils;
     ETC_TARGET = etcTarget;
+    # `$BASH` is a bash built-in pointing at the bash executable
+    # currently running the script — setting it as a derivation env
+    # var has no effect at runtime. Use a dedicated name (AOS_BASH)
+    # so the ln -sfn targets resolve to the package directory, not
+    # to the already-executable path.
+    AOS_BASH = toString pkgs.bash;
 
     phases = [
       {
@@ -210,8 +215,8 @@ in
           # ── 4. PID 1 and compat symlinks ────────────────────────────────
           # /sbin/init (via merged-usr: /sbin → usr/bin) → systemd.
           ln -sfn "$SYSTEMD/lib/systemd/systemd" rootfs/usr/bin/init
-          ln -sfn "$BASH/bin/bash" rootfs/usr/bin/bash
-          ln -sfn "$BASH/bin/sh" rootfs/usr/bin/sh
+          ln -sfn "$AOS_BASH/bin/bash" rootfs/usr/bin/bash
+          ln -sfn "$AOS_BASH/bin/sh" rootfs/usr/bin/sh
           ln -sfn "$COREUTILS/bin/env" rootfs/usr/bin/env
 
           # ── 5. Kernel modules ───────────────────────────────────────────
