@@ -258,7 +258,7 @@ in {
           set -euo pipefail
           if ! mountpoint -q /sysroot/var; then
             mkdir -p /sysroot/var
-            mount /dev/disk/by-partlabel/var /sysroot/var
+            mount -o nosuid,nodev /dev/disk/by-partlabel/var /sysroot/var
           fi
           # Standard /var subdirectories expected by systemd and daemons.
           mkdir -p /sysroot/var/{log,lib,tmp}
