@@ -22,7 +22,6 @@
     inherit pkgs lib;
     system = {inherit config;};
     name = config.aos.system.name;
-    inherit (cfg) bootSize;
   };
 
   # Convert a raw image to another format via qemu-img
@@ -53,15 +52,6 @@ in {
       type = lib.types.bool;
       default = true;
       description = "Whether to build disk images for this system variant.";
-    };
-    ## Boot partition size.
-    bootSize = lib.mkOption {
-      type = lib.types.str;
-      default = "1G";
-      description = ''
-        Boot partition size (kernel + initrd). Needs to hold the full
-        initramfs.
-      '';
     };
   };
 
