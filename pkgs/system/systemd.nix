@@ -31,8 +31,15 @@
   linux-pam,
   coreutils,
   bash,
+  python3-pefile,
+  python3-pyelftools,
 }: let
   version = "259.1";
+
+  # PYTHONPATH that makes `import pefile` / `import elftools` succeed
+  # when ukify runs (both also needed during meson configure — see
+  # the configure phase's PYTHONPATH export). python3.nix pins 3.14.
+  ukifyPythonPath = "${python3-pefile}/lib/python3.14/site-packages:${python3-pyelftools}/lib/python3.14/site-packages";
 in
   mkDerivation {
     pname = "systemd";
@@ -183,9 +190,32 @@ in
                   chmod +x .shim-bin/getent
                   export PATH="$(pwd)/.shim-bin:$PATH"
 
-                  # Ensure meson's Python module is findable during build
-                  # (ninja invokes python3 -m mesonbuild.mesonmain directly)
-                  export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+                  # Ensure meson's Python module, pefile, and pyelftools
+                  # are findable both at meson-configure time and when
+                  # ninja later invokes patched python3 scripts (e.g.
+                  # src/boot/generate-hwids-section.py which imports
+                  # ukify → pefile).
+                  export PYTHONPATH="${meson}/lib/python3/site-packages:${ukifyPythonPath}''${PYTHONPATH:+:$PYTHONPATH}"
+
+                  # systemd's meson.build uses `pymod.find_installation(
+                  # 'python3', modules: ['elftools'])` — meson's python
+                  # module runs the probe through `subprocess.run` with
+                  # an env-sanitized child, so the parent's PYTHONPATH
+                  # export above does NOT reach that check. Wrap python3
+                  # with a shell script that re-exports PYTHONPATH and
+                  # exec's the real interpreter; put the wrapper first
+                  # in PATH so meson's `find_program('python3')` lands
+                  # on it. (The exported PYTHONPATH at phase level
+                  # still handles the ninja build path, which invokes
+                  # scripts by their pinned store-path shebangs.)
+                  mkdir -p .python-wrapper/bin
+                  cat > .python-wrapper/bin/python3 << PYW
+          #!$CONFIG_SHELL
+          export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
+          exec ${python3}/bin/python3 "\$@"
+          PYW
+                  chmod +x .python-wrapper/bin/python3
+                  export PATH="$(pwd)/.python-wrapper/bin:$PATH"
 
                   # Explicit RPATH so systemd binaries find their own shared libs
                   export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib -Wl,-rpath,$out/lib/systemd"
@@ -215,7 +245,15 @@ in
                     -Dhibernate=false \
                     -Dldconfig=false \
                     -Dresolve=true \
-                    -Defi=false \
+                    -Defi=true \
+                    -Dbootloader=enabled \
+                    -Dukify=enabled \
+                    -Dsbat-distro=aos \
+                    -Dsbat-distro-generation=1 \
+                    '-Dsbat-distro-summary=ANDYL OS' \
+                    -Dsbat-distro-pkgname=systemd \
+                    -Dsbat-distro-version=${version} \
+                    -Dsbat-distro-url=https://andyl.com \
                     -Dtpm=false \
                     -Denvironment-d=false \
                     -Dbinfmt=false \
@@ -373,6 +411,22 @@ in
               chmod +x "$wrapped"
             fi
           done
+
+          # ukify: pefile must be importable when the wrapped shebang
+          # runs. systemd's meson install lays the script down with a
+          # plain python3 shebang — we replace the entry on PATH with
+          # a bash wrapper that exports PYTHONPATH pointing at
+          # python3-pefile's site-packages before invoking python3 on
+          # the original script.
+          if [ -x "$out/bin/ukify" ]; then
+            mv "$out/bin/ukify" "$out/bin/.ukify-unwrapped"
+            cat > "$out/bin/ukify" << EOF
+          #!${bash}/bin/bash
+          export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
+          exec "${python3}/bin/python3" "$out/bin/.ukify-unwrapped" "\$@"
+          EOF
+            chmod +x "$out/bin/ukify"
+          fi
         '';
       }
     ];
