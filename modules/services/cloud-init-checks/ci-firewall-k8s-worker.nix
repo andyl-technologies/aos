@@ -1,6 +1,5 @@
 # tests/vm/checks/ci-firewall-k8s-worker.nix — Cloud-init k8s worker firewall
-{ lib }:
-{
+{lib}: {
   description = "Cloud-init k8s worker firewall rules";
   checks = [
     {

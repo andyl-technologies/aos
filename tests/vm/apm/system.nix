@@ -11,41 +11,51 @@
   testing,
   apm,
   pkgs,
-}:
-let
+}: let
   # nix runtime deps needed for LD_LIBRARY_PATH (RPATH doesn't cover all deps yet)
   nixRuntimeDeps = [
-    pkgs.nix pkgs.brotli pkgs.curl pkgs.openssl pkgs.sqlite pkgs.boost
-    pkgs.editline pkgs.libsodium pkgs.libarchive pkgs.gc pkgs.lowdown
-    pkgs.bzip2 pkgs.zlib
+    pkgs.nix
+    pkgs.brotli
+    pkgs.curl
+    pkgs.openssl
+    pkgs.sqlite
+    pkgs.boost
+    pkgs.editline
+    pkgs.libsodium
+    pkgs.libarchive
+    pkgs.gc
+    pkgs.lowdown
+    pkgs.bzip2
+    pkgs.zlib
   ];
 
-  testDeps = [
-    apm
-    pkgs.coreutils
-    pkgs.jq
-    pkgs.grep
-    pkgs.git
-  ] ++ nixRuntimeDeps;
+  testDeps =
+    [
+      apm
+      pkgs.coreutils
+      pkgs.jq
+      pkgs.grep
+      pkgs.git
+    ]
+    ++ nixRuntimeDeps;
 
   # --------------------------------------------------------------------------
   # Mock toplevels — real Nix derivations that simulate system toplevels
   # --------------------------------------------------------------------------
 
-  mkMockToplevel =
-    {
-      pname,
-      version,
-      services ? { },
-      etcFiles ? { },
-      kernelPath ? null,
-      drainScript ? null,
-    }:
+  mkMockToplevel = {
+    pname,
+    version,
+    services ? {},
+    etcFiles ? {},
+    kernelPath ? null,
+    drainScript ? null,
+  }:
     pkgs.mkDerivation {
       pname = "mock-toplevel-${pname}";
       inherit version;
       src = null;
-      buildDeps = [ pkgs.coreutils ];
+      buildDeps = [pkgs.coreutils];
       phases = [
         {
           name = "build";
@@ -62,7 +72,8 @@ let
                     ln -sfn ../../../etc/systemd/system/${name} \
                       $out/etc/systemd/system/multi-user.target.wants/${name}
                   ''
-                ) services
+                )
+                services
               )
             )}
 
@@ -74,7 +85,8 @@ let
                     mkdir -p $out/etc/$(dirname ${path})
                     cp ${builtins.toFile (builtins.replaceStrings ["/"] ["-"] path) content} $out/etc/${path}
                   ''
-                ) etcFiles
+                )
+                etcFiles
               )
             )}
 
@@ -215,10 +227,7 @@ let
   # --------------------------------------------------------------------------
   # Mock registry with multiple sysroot versions
   # --------------------------------------------------------------------------
-  mkSystemRegistry =
-    {
-      packages,
-    }:
+  mkSystemRegistry = {packages}:
     pkgs.mkDerivation {
       pname = "mock-registry-system";
       version = "0";
@@ -234,34 +243,39 @@ let
             mkdir -p $out/packages
             ${builtins.concatStringsSep "\n" (
               builtins.map (
-                pkg:
-                let letter = builtins.substring 0 1 pkg.name;
+                pkg: let
+                  letter = builtins.substring 0 1 pkg.name;
                 in ''
-                  mkdir -p $out/packages/${letter}
-                  cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
-[package]
-name = "${pkg.name}"
-description = "mock ${pkg.name}"
-license = "MIT"
-maintainer = "test"
-${if pkg.sysroot or false then "sysroot = true" else ""}
+                                    mkdir -p $out/packages/${letter}
+                                    cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
+                  [package]
+                  name = "${pkg.name}"
+                  description = "mock ${pkg.name}"
+                  license = "MIT"
+                  maintainer = "test"
+                  ${
+                    if pkg.sysroot or false
+                    then "sysroot = true"
+                    else ""
+                  }
 
-[[versions]]
-version = "${pkg.version}"
+                  [[versions]]
+                  version = "${pkg.version}"
 
-[versions.platforms.x86_64-linux]
-store_path = "${pkg.storePath}"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = 1024
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = 512
-closure_size = 2048
-source_drv = ""
-source_nar_hash = ""
-references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
-PKGEOF
+                  [versions.platforms.x86_64-linux]
+                  store_path = "${pkg.storePath}"
+                  nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                  nar_size = 1024
+                  download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                  download_size = 512
+                  closure_size = 2048
+                  source_drv = ""
+                  source_nar_hash = ""
+                  references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
+                  PKGEOF
                 ''
-              ) packages
+              )
+              packages
             )}
 
             cd $out
@@ -320,7 +334,7 @@ PKGEOF
         version = "2026.04";
         storePath = builtins.toString toplevelV2;
         sysroot = true;
-        references = [ (hashOf toplevelV1) ];
+        references = [(hashOf toplevelV1)];
       }
       {
         name = "pkg-x";
@@ -337,51 +351,70 @@ PKGEOF
   # succeeds for them (the VM has the files but no db by default).
   # nix-store needs its runtime libraries (RPATH doesn't cover all deps yet)
   nixLibPath = builtins.concatStringsSep ":" (map (p: "${p}/lib") [
-    pkgs.nix pkgs.brotli pkgs.curl pkgs.openssl pkgs.sqlite pkgs.boost
-    pkgs.editline pkgs.libsodium pkgs.libarchive pkgs.gc pkgs.lowdown
-    pkgs.bzip2 pkgs.zlib
+    pkgs.nix
+    pkgs.brotli
+    pkgs.curl
+    pkgs.openssl
+    pkgs.sqlite
+    pkgs.boost
+    pkgs.editline
+    pkgs.libsodium
+    pkgs.libarchive
+    pkgs.gc
+    pkgs.lowdown
+    pkgs.bzip2
+    pkgs.zlib
   ]);
 
-  mkSystemPreamble = { registryPath, stateJson ? null, storePaths ? [] }: ''
-    export HOME=/tmp/home
-    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    mkdir -p $HOME/.config/apm/registries.d
-    mkdir -p $HOME/.local/share/apm/registries
-    mkdir -p $HOME/.local/share/apm/remote
-    mkdir -p $HOME/.cache/apm
-    mkdir -p /var/lib/profiles/system
-    mkdir -p /var/lib/apm/remote
-    mkdir -p /var/lib/apm/registries
-    mkdir -p /etc/apm/registries.d
+  mkSystemPreamble = {
+    registryPath,
+    stateJson ? null,
+    storePaths ? [],
+  }: ''
+        export HOME=/tmp/home
+        export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        mkdir -p $HOME/.config/apm/registries.d
+        mkdir -p $HOME/.local/share/apm/registries
+        mkdir -p $HOME/.local/share/apm/remote
+        mkdir -p $HOME/.cache/apm
+        mkdir -p /var/lib/profiles/system
+        mkdir -p /var/lib/apm/remote
+        mkdir -p /var/lib/apm/registries
+        mkdir -p /etc/apm/registries.d
 
-    cp -r ${registryPath} /var/lib/apm/registries/test
-    chmod -R u+w /var/lib/apm/registries/test
+        cp -r ${registryPath} /var/lib/apm/registries/test
+        chmod -R u+w /var/lib/apm/registries/test
 
-    cat > /etc/apm/registries.d/test.toml << 'CFGEOF'
-[registry]
-name = "test"
-url = "file:///var/lib/apm/registries/test"
-priority = 500
-enabled = true
-CFGEOF
+        cat > /etc/apm/registries.d/test.toml << 'CFGEOF'
+    [registry]
+    name = "test"
+    url = "file:///var/lib/apm/registries/test"
+    priority = 500
+    enabled = true
+    CFGEOF
 
-    ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
-    ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
+        ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
+        ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
 
-    ${if stateJson != null then ''
-      cp ${builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateJson)} /var/lib/profiles/system/state.json
-    '' else ""}
+        ${
+      if stateJson != null
+      then ''
+        cp ${builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateJson)} /var/lib/profiles/system/state.json
+      ''
+      else ""
+    }
 
-    # Register real store paths in the Nix database so that
-    # nix-store --check-validity succeeds for them.
-    # The VM rootfs has /nix/store but no Nix database.
-    # First initialise the store DB, then register each path.
-    mkdir -p /nix/var/nix/db /nix/var/nix/gcroots /nix/var/nix/temproots /nix/var/nix/userpool
-    export NIX_REMOTE=""
-    nix-store --init
-    ${builtins.concatStringsSep "\n" (builtins.map (p: ''
-      printf '%s\n\n0\n' "${builtins.toString p}" | nix-store --register-validity
-    '') storePaths)}
+        # Register real store paths in the Nix database so that
+        # nix-store --check-validity succeeds for them.
+        # The VM rootfs has /nix/store but no Nix database.
+        # First initialise the store DB, then register each path.
+        mkdir -p /nix/var/nix/db /nix/var/nix/gcroots /nix/var/nix/temproots /nix/var/nix/userpool
+        export NIX_REMOTE=""
+        nix-store --init
+        ${builtins.concatStringsSep "\n" (builtins.map (p: ''
+        printf '%s\n\n0\n' "${builtins.toString p}" | nix-store --register-validity
+      '')
+      storePaths)}
   '';
 
   # State with v1 installed
@@ -466,20 +499,18 @@ CFGEOF
   stateV1File = builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateV1);
   stateV1V2File = builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateV1V2);
   stateV1V2V3File = builtins.toFile "state.json" (builtins.unsafeDiscardStringContext stateV1V2V3);
-
-in
-{
+in {
   # --------------------------------------------------------------------------
   # Test 1: system-install
   # --------------------------------------------------------------------------
   system-install = testing.mkVMTest {
     name = "apm-system-install";
-    rootfsDeps = testDeps ++ [ registryV1 toplevelV1 ];
+    rootfsDeps = testDeps ++ [registryV1 toplevelV1];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
         registryPath = registryV1;
-        storePaths = [ toplevelV1 ];
+        storePaths = [toplevelV1];
       }}
 
       echo "==> Test: apm install server --system creates a generation"
@@ -532,13 +563,13 @@ in
   # --------------------------------------------------------------------------
   system-upgrade = testing.mkVMTest {
     name = "apm-system-upgrade";
-    rootfsDeps = testDeps ++ [ registryV2 toplevelV1 toplevelV2 stateV1File ];
+    rootfsDeps = testDeps ++ [registryV2 toplevelV1 toplevelV2 stateV1File];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
         registryPath = registryV2;
         stateJson = stateV1;
-        storePaths = [ toplevelV1 toplevelV2 ];
+        storePaths = [toplevelV1 toplevelV2];
       }}
 
       # Set up gen-1 directory structure
@@ -577,7 +608,7 @@ in
   # --------------------------------------------------------------------------
   system-rollback = testing.mkVMTest {
     name = "apm-system-rollback";
-    rootfsDeps = testDeps ++ [ registryV2 toplevelV1 toplevelV2 stateV1V2File ];
+    rootfsDeps = testDeps ++ [registryV2 toplevelV1 toplevelV2 stateV1V2File];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
@@ -629,7 +660,7 @@ in
   # --------------------------------------------------------------------------
   system-rollback-generation = testing.mkVMTest {
     name = "apm-system-rollback-generation";
-    rootfsDeps = testDeps ++ [ registryV3 toplevelV1 toplevelV2 toplevelV3 stateV1V2V3File ];
+    rootfsDeps = testDeps ++ [registryV3 toplevelV1 toplevelV2 toplevelV3 stateV1V2V3File];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
@@ -675,7 +706,7 @@ in
   # --------------------------------------------------------------------------
   system-activation-services = testing.mkVMTest {
     name = "apm-system-activation-services";
-    rootfsDeps = testDeps ++ [ registryV2 toplevelV1 toplevelV2 stateV1V2File ];
+    rootfsDeps = testDeps ++ [registryV2 toplevelV1 toplevelV2 stateV1V2File];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
@@ -755,7 +786,7 @@ in
   # --------------------------------------------------------------------------
   system-activation-etc = testing.mkVMTest {
     name = "apm-system-activation-etc";
-    rootfsDeps = testDeps ++ [ registryV2 toplevelV1 toplevelV2 stateV1V2File ];
+    rootfsDeps = testDeps ++ [registryV2 toplevelV1 toplevelV2 stateV1V2File];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {
@@ -816,7 +847,7 @@ in
   # --------------------------------------------------------------------------
   system-containment-after-upgrade = testing.mkVMTest {
     name = "apm-system-containment";
-    rootfsDeps = testDeps ++ [ registryWithPkgX toplevelV1 toplevelV2 stateV1File ];
+    rootfsDeps = testDeps ++ [registryWithPkgX toplevelV1 toplevelV2 stateV1File];
     memory = 1024;
     testScript = ''
       ${mkSystemPreamble {

@@ -3,8 +3,7 @@
 # Boots a control plane node and a worker node (both server images),
 # verifies that both boot to multi-user.target, have the correct
 # K8s components configured, and can communicate over the network.
-{ lib }:
-{
+{lib}: {
   name = "k8s-cluster";
   description = "K8s cluster multi-VM bootstrap";
   type = "fleet";

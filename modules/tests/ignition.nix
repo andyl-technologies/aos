@@ -20,11 +20,9 @@
   config,
   lib,
   ...
-}:
-let
+}: let
   hasIgnition = config.aos.services.ignition.enable or false;
-in
-{
+in {
   config = lib.mkIf hasIgnition {
     system.checks.ignition-hostname = {
       description = "ignition first-boot provisioning via virtio-blk + localhost HTTP";
@@ -33,7 +31,7 @@ in
         config = {
           ignition.version = "3.4.0";
           storage = {
-            directories = [ { path = "/var/etc"; } ];
+            directories = [{path = "/var/etc";}];
             files = [
               {
                 path = "/var/etc/hostname";

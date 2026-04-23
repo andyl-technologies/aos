@@ -12,8 +12,7 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.system;
 
   # The helper functions referenced by `script` (`run_in_guest`,
@@ -52,7 +51,7 @@ let
   instanceMetadataType = lib.types.submodule {
     options = {
       format = lib.mkOption {
-        type = lib.types.enum [ "ignition" ];
+        type = lib.types.enum ["ignition"];
         default = "ignition";
         description = "Provisioner that will consume the metadata.";
       };
@@ -70,7 +69,7 @@ let
     };
   };
 
-  checkSpecType = lib.types.submodule ({ name, ... }: {
+  checkSpecType = lib.types.submodule ({name, ...}: {
     options = {
       description = lib.mkOption {
         type = lib.types.str;
@@ -95,11 +94,10 @@ let
       };
     };
   });
-in
-{
+in {
   options.system.checks = lib.mkOption {
     type = lib.types.attrsOf checkSpecType;
-    default = { };
+    default = {};
     description = ''
       VM checks contributed by modules, keyed by check-group name.
       Each entry produces one test derivation at
@@ -109,7 +107,7 @@ in
 
   options.system.cloudInitTests = lib.mkOption {
     type = lib.types.attrsOf lib.types.anything;
-    default = { };
+    default = {};
     description = ''
       Cloud-init VM test specifications, keyed by test name.
       Each value should be { userdata = null or JSON string; checks = mkCheckGroup {...}; }.
@@ -120,7 +118,7 @@ in
 
   options.system.fleetTests = lib.mkOption {
     type = lib.types.attrsOf lib.types.anything;
-    default = { };
+    default = {};
     description = ''
       Fleet (multi-VM) test specifications, keyed by test name.
       Each value should be { machines = {...}; testScript = "..."; timeout = int; }.

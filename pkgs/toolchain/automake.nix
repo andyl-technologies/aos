@@ -5,60 +5,59 @@
   gnumake,
   autoconf,
   perl,
-}:
-let
+}: let
   version = "1.18.1";
 in
-mkDerivation {
-  pname = "automake";
-  inherit version;
+  mkDerivation {
+    pname = "automake";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://mirrors.kernel.org/gnu/automake/automake-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://mirrors.kernel.org/gnu/automake/automake-${version}.tar.xz"
+      ];
+      hash = "sha256-FoqjYyeDUbia9WaERI9SWlvOUHnQtoQr2RD90/FkaIc=";
+    };
+
+    buildDeps = [gnumake];
+    runtimeDeps = [
+      autoconf
+      perl
     ];
-    hash = "sha256-FoqjYyeDUbia9WaERI9SWlvOUHnQtoQr2RD90/FkaIc=";
-  };
+    propagatedDeps = [];
 
-  buildDeps = [ gnumake ];
-  runtimeDeps = [
-    autoconf
-    perl
-  ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd automake-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd automake-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  meta = {
-    description = "GNU Automake — generates Makefile.in from Makefile.am templates";
-    homepage = "https://www.gnu.org/software/automake/";
-    license = "GPL-2.0-or-later";
-  };
-}
+    meta = {
+      description = "GNU Automake — generates Makefile.in from Makefile.am templates";
+      homepage = "https://www.gnu.org/software/automake/";
+      license = "GPL-2.0-or-later";
+    };
+  }

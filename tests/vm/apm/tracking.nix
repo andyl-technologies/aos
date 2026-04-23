@@ -9,11 +9,9 @@
   testing,
   pkgs,
   aosPkg,
-}:
-let
-  fixtures = import ./fixtures.nix { inherit pkgs aosPkg; };
-in
-{
+}: let
+  fixtures = import ./fixtures.nix {inherit pkgs aosPkg;};
+in {
   # -------------------------------------------------------------------------
   # 1. tracking-branch — Track a named branch HEAD
   # -------------------------------------------------------------------------
@@ -22,59 +20,59 @@ in
     rootfsDeps = fixtures.commonDeps;
     memory = 512;
     testScript = ''
-      ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
-      ${fixtures.mkRemoteRegistry}
+            ${fixtures.setupPreamble}
+            ${fixtures.mkFakePackageToml}
+            ${fixtures.mkRemoteRegistry}
 
-      echo "==> Test: branch tracking mode"
+            echo "==> Test: branch tracking mode"
 
-      # Create a remote with a 'stable' branch
-      create_remote_registry /tmp/remote-branch.git
+            # Create a remote with a 'stable' branch
+            create_remote_registry /tmp/remote-branch.git
 
-      # Clone, create stable branch with a package, push
-      git clone /tmp/remote-branch.git /tmp/branch-setup
-      cd /tmp/branch-setup
-      git checkout -b stable
-      mkdir -p packages/h
-      cat > packages/h/hello.toml << 'EOF'
-[package]
-name = "hello"
-description = "Hello package on stable"
-license = "MIT"
-maintainer = "test"
+            # Clone, create stable branch with a package, push
+            git clone /tmp/remote-branch.git /tmp/branch-setup
+            cd /tmp/branch-setup
+            git checkout -b stable
+            mkdir -p packages/h
+            cat > packages/h/hello.toml << 'EOF'
+      [package]
+      name = "hello"
+      description = "Hello package on stable"
+      license = "MIT"
+      maintainer = "test"
 
-[[versions]]
-version = "1.0.0"
+      [[versions]]
+      version = "1.0.0"
 
-[versions.platforms.x86_64-linux]
-store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hello-1.0.0"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = 1024
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = 512
-closure_size = 2048
-source_drv = ""
-source_nar_hash = ""
-references = []
-EOF
-      git add -A
-      git commit -m "add hello 1.0.0 on stable"
-      git push origin stable
-      cd /tmp
-      rm -rf /tmp/branch-setup
+      [versions.platforms.x86_64-linux]
+      store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hello-1.0.0"
+      nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+      nar_size = 1024
+      download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+      download_size = 512
+      closure_size = 2048
+      source_drv = ""
+      source_nar_hash = ""
+      references = []
+      EOF
+            git add -A
+            git commit -m "add hello 1.0.0 on stable"
+            git push origin stable
+            cd /tmp
+            rm -rf /tmp/branch-setup
 
-      # Add registry with branch tracking
-      $APM registry add file:///tmp/remote-branch.git --name branch-reg --branch stable
+            # Add registry with branch tracking
+            $APM registry add file:///tmp/remote-branch.git --name branch-reg --branch stable
 
-      # Verify config has branch field
-      assert_file_contains "$APM_CONFIG/registries.d/branch-reg.toml" \
-        'branch = "stable"' "config has branch = stable"
+            # Verify config has branch field
+            assert_file_contains "$APM_CONFIG/registries.d/branch-reg.toml" \
+              'branch = "stable"' "config has branch = stable"
 
-      # Verify apr list shows branch tracking
-      assert_cmd_output_contains "$APR list" "branch:stable" \
-        "apr list shows branch tracking mode"
+            # Verify apr list shows branch tracking
+            assert_cmd_output_contains "$APR list" "branch:stable" \
+              "apr list shows branch tracking mode"
 
-      check_fail
+            check_fail
     '';
   };
 

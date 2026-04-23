@@ -9,11 +9,9 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.profiles.debug;
-in
-{
+in {
   options.aos.profiles.debug = {
     enable = lib.mkOption {
       type = lib.types.bool;
@@ -113,8 +111,8 @@ in
       # agetty already sets up the controlling TTY with euid 0.
       systemd.services."getty@tty1" = {
         description = "Autologin Getty on tty1";
-        wantedBy = [ "getty.target" ];
-        after = [ "systemd-user-sessions.service" ];
+        wantedBy = ["getty.target"];
+        after = ["systemd-user-sessions.service"];
         serviceConfig = {
           Type = "idle";
           ExecStart = [
@@ -133,8 +131,8 @@ in
 
       systemd.services."serial-getty@ttyS0" = {
         description = "Autologin Serial Getty on ttyS0";
-        wantedBy = [ "getty.target" ];
-        after = [ "systemd-user-sessions.service" ];
+        wantedBy = ["getty.target"];
+        after = ["systemd-user-sessions.service"];
         serviceConfig = {
           Type = "idle";
           ExecStart = [

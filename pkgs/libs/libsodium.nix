@@ -3,79 +3,76 @@
   mkDerivation,
   fetchurl,
   gnumake,
-}:
-let
+}: let
   version = "1.0.21";
 in
-mkDerivation {
-  pname = "libsodium";
-  inherit version;
+  mkDerivation {
+    pname = "libsodium";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/jedisct1/libsodium/archive/refs/tags/${version}-RELEASE.tar.gz"
-      "https://download.libsodium.org/libsodium/releases/old/libsodium-${version}-RELEASE.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/jedisct1/libsodium/archive/refs/tags/${version}-RELEASE.tar.gz"
+        "https://download.libsodium.org/libsodium/releases/old/libsodium-${version}-RELEASE.tar.gz"
+      ];
+      hash = "sha256-QuDKlPquyQH0++2oSxuUsY9TCcNgxmNFz1Knq1FbJFs=";
+    };
+
+    buildDeps = [gnumake];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd libsodium-${version}-RELEASE
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --enable-shared \
+            --disable-static
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-QuDKlPquyQH0++2oSxuUsY9TCcNgxmNFz1Knq1FbJFs=";
-  };
 
-  buildDeps = [ gnumake ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
+    meta = {
+      description = "libsodium — modern, easy-to-use cryptography library";
+      homepage = "https://libsodium.org";
+      license = "ISC";
+    };
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd libsodium-${version}-RELEASE
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --enable-shared \
-          --disable-static
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  meta = {
-    description = "libsodium — modern, easy-to-use cryptography library";
-    homepage = "https://libsodium.org";
-    license = "ISC";
-  };
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       soname = testing.mkSONAMECheck {
         pkg = self;
-        libs = [ "libsodium.so" ];
+        libs = ["libsodium.so"];
       };
 
       link = testing.mkLinkCheck {
         pname = "lib-libsodium";
         library = self;
-        libs = [ "-lsodium" ];
+        libs = ["-lsodium"];
         testSource = ''
           #include <sodium.h>
           #include <stdio.h>
@@ -90,7 +87,7 @@ mkDerivation {
       roundtrip = testing.mkLinkCheck {
         pname = "lib-libsodium-roundtrip";
         library = self;
-        libs = [ "-lsodium" ];
+        libs = ["-lsodium"];
         testSource = ''
           #include <sodium.h>
           #include <string.h>
@@ -117,4 +114,4 @@ mkDerivation {
         '';
       };
     };
-}
+  }

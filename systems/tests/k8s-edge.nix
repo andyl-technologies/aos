@@ -4,8 +4,7 @@
 # as the remote edge node. Verifies that both systems boot correctly,
 # have the appropriate K8s/KubeEdge components configured, and can
 # communicate over the network.
-{ lib }:
-{
+{lib}: {
   name = "k8s-edge";
   description = "K8s edge cluster (server control + edge node)";
   type = "fleet";

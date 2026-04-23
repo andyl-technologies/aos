@@ -1,6 +1,5 @@
 # tests/vm/checks/ci-k8s-net-prereqs.nix — Kubernetes networking prerequisites
-{ lib }:
-{
+{lib}: {
   description = "Cloud-init k8s networking kernel prerequisites";
   checks = [
     {

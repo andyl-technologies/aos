@@ -1,6 +1,5 @@
 # tests/vm/checks/ci-hostname.nix — Cloud-init hostname configuration
-{ lib }:
-{
+{lib}: {
   description = "Cloud-init hostname configuration";
   checks = [
     {

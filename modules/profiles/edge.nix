@@ -8,11 +8,9 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.profiles.edge;
-in
-{
+in {
   options.aos.profiles.edge = {
     enable = lib.mkOption {
       type = lib.types.bool;

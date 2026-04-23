@@ -14,25 +14,23 @@
   lib,
   pkgs,
   ...
-}:
-let
+}: let
   cfg = config.aos.image;
   buildImage = import ./_builder.nix;
 
   rawImage = buildImage {
     inherit pkgs lib;
-    system = { inherit config; };
+    system = {inherit config;};
     name = config.aos.system.name;
     inherit (cfg) bootSize;
   };
 
   # Convert a raw image to another format via qemu-img
-  convertImage =
-    format: formatFlag:
+  convertImage = format: formatFlag:
     pkgs.mkDerivation {
       name = "aos-image-${config.aos.system.name}-${format}";
       src = null;
-      buildDeps = [ pkgs.qemu ];
+      buildDeps = [pkgs.qemu];
       phases = [
         {
           name = "convert";
@@ -48,8 +46,7 @@ let
         description = "AOS ${config.aos.system.name} image (${format})";
       };
     };
-in
-{
+in {
   options.aos.image = {
     ## Whether to build disk images for this system variant.
     enable = lib.mkOption {

@@ -20,11 +20,9 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.pam;
-in
-{
+in {
   options.aos.pam = {
     enable = lib.mkOption {
       type = lib.types.bool;

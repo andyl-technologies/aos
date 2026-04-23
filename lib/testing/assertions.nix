@@ -10,8 +10,7 @@
 #   ... ${assertions.vmFirecrackerHelpers} ...
 #   ... ${assertions.fleetHelpers} ...
 #   ... ${assertions.fleetVsockHelpers} ...
-{ aos-agent-rpc }:
-let
+{aos-agent-rpc}: let
   rpc = "${aos-agent-rpc}/bin/aos-agent-rpc";
 
   # Assertion helpers for single-VM tests.
@@ -87,8 +86,7 @@ let
       echo "PASS: $desc"
     }
   '';
-in
-{
+in {
   # Store path to the binary, for inline calls in vm.nix / fleet.nix.
   rpcBin = rpc;
 

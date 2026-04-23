@@ -20,8 +20,7 @@
   xorg-stubs,
   bootstrapTools,
   openjdk-9,
-}:
-let
+}: let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
     inherit
       fetchurl
@@ -46,10 +45,10 @@ let
       ;
   };
 in
-mkOpenJDKBootstrap {
-  major = 10;
-  version = "10.0.2";
-  build = "13";
-  srcHash = "sha256-Oc4SONWyBm/+HBoJ2HwXB2Ywn+GCkPJ6SrfRWETTTcE=";
-  prevJdk = openjdk-9;
-}
+  mkOpenJDKBootstrap {
+    major = 10;
+    version = "10.0.2";
+    build = "13";
+    srcHash = "sha256-Oc4SONWyBm/+HBoJ2HwXB2Ywn+GCkPJ6SrfRWETTTcE=";
+    prevJdk = openjdk-9;
+  }
