@@ -2,8 +2,11 @@
 ##!
 ##! Verifies that essential system services (SSH, chrony, systemd-networkd,
 ##! systemd-journald) are configured correctly.
-{ config, lib, ... }:
 {
+  config,
+  lib,
+  ...
+}: {
   system.checks.system-services = {
     description = "Core system services verification";
     checks = [

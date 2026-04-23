@@ -2,8 +2,11 @@
 ##!
 ##! Verifies security hardening: kernel parameters, firewall configuration,
 ##! user/group setup, and file permissions.
-{ config, lib, ... }:
 {
+  config,
+  lib,
+  ...
+}: {
   system.checks.system-security = {
     description = "Security configuration verification";
     checks = [

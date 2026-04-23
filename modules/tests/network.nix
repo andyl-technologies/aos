@@ -2,8 +2,11 @@
 ##!
 ##! Verifies networking: systemd-networkd, DNS resolution, firewall rules,
 ##! and network interfaces.
-{ config, lib, ... }:
 {
+  config,
+  lib,
+  ...
+}: {
   system.checks.system-network = {
     description = "Network configuration verification";
     checks = [

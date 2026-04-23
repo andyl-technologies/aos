@@ -13,8 +13,7 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.services.ssh;
 
   sshdConfig = ''
@@ -32,15 +31,22 @@ let
 
     # Authentication.
     PermitRootLogin ${cfg.permitRootLogin}
-    PasswordAuthentication ${if cfg.passwordAuthentication then "yes" else "no"}
-    KbdInteractiveAuthentication ${if cfg.kbdInteractiveAuthentication then "yes" else "no"}
+    PasswordAuthentication ${
+      if cfg.passwordAuthentication
+      then "yes"
+      else "no"
+    }
+    KbdInteractiveAuthentication ${
+      if cfg.kbdInteractiveAuthentication
+      then "yes"
+      else "no"
+    }
     PubkeyAuthentication yes
     AuthorizedKeysFile ${cfg.authorizedKeysFile}
     ${
-      if cfg.authorizedKeysCommand != null then
-        "AuthorizedKeysCommand ${cfg.authorizedKeysCommand}\n    AuthorizedKeysCommandUser ${cfg.authorizedKeysCommandUser}"
-      else
-        ""
+      if cfg.authorizedKeysCommand != null
+      then "AuthorizedKeysCommand ${cfg.authorizedKeysCommand}\n    AuthorizedKeysCommandUser ${cfg.authorizedKeysCommandUser}"
+      else ""
     }
     MaxAuthTries ${toString cfg.maxAuthTries}
 
@@ -59,7 +65,11 @@ let
     MACs ${builtins.concatStringsSep "," cfg.allowedMACs}
 
     # Session settings.
-    X11Forwarding ${if cfg.x11Forwarding then "yes" else "no"}
+    X11Forwarding ${
+      if cfg.x11Forwarding
+      then "yes"
+      else "no"
+    }
     PrintMotd no
     PrintLastLog yes
     TCPKeepAlive yes
@@ -86,8 +96,7 @@ let
     ClientAliveInterval 300
     ClientAliveCountMax 3
   '';
-in
-{
+in {
   options.aos.services.ssh = {
     ## Enable the OpenSSH server (sshd).
     ##
@@ -297,7 +306,7 @@ in
       ];
     };
 
-    environment.systemPackages = [ pkgs.openssh ];
+    environment.systemPackages = [pkgs.openssh];
 
     # sshd's privilege-separation user. Required at startup — sshd
     # aborts with "Privilege separation user sshd does not exist"
@@ -347,9 +356,9 @@ in
     # sshd.service — OpenSSH server daemon.
     systemd.services."sshd" = {
       description = "OpenSSH Daemon";
-      wantedBy = [ "multi-user.target" ];
-      requires = [ "sshd-keygen.service" ];
-      after = [ "network.target" "sshd-keygen.service" ];
+      wantedBy = ["multi-user.target"];
+      requires = ["sshd-keygen.service"];
+      after = ["network.target" "sshd-keygen.service"];
       serviceConfig = {
         Type = "notify";
         ExecStart = "${pkgs.openssh}/sbin/sshd -D -f /etc/ssh/sshd_config";
@@ -375,6 +384,6 @@ in
     };
 
     # Open the SSH port in the firewall.
-    aos.firewall.allowedTCP = [ cfg.port ];
+    aos.firewall.allowedTCP = [cfg.port];
   };
 }

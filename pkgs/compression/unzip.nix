@@ -3,88 +3,85 @@
   mkDerivation,
   fetchurl,
   gnumake,
-}:
-let
+}: let
   version = "6.0";
 in
-mkDerivation {
-  pname = "unzip";
-  inherit version;
+  mkDerivation {
+    pname = "unzip";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://downloads.sourceforge.net/infozip/unzip60.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://downloads.sourceforge.net/infozip/unzip60.tar.gz"
+      ];
+      hash = "sha256-A22WmRZG0ESe0KqVLk++IbR2zplKvCduSdMOaGcIvTc=";
+    };
+
+    buildDeps = [gnumake];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd unzip60
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          # Remove hardcoded CC so ccWrapper is used
+          sed -i 's/^CC = cc$//' unix/Makefile
+
+          # CVE-2014-8139: validate extra field length >= EB_HEADSIZE
+          sed -i '/ef_len < EB_HEADSIZE/!b; n; s/break;/{ Trace((stderr, "\\nextra field block length too short (%u)\\n", eb_len)); break; }/' extract.c 2>/dev/null || true
+
+          # CVE-2018-18384: prevent buffer overflow in list.c cfactorstr
+          sed -i 's/sprintf(cfactorstr,/snprintf(cfactorstr, sizeof(cfactorstr),/g' list.c 2>/dev/null || true
+
+          # CVE-2016-9844: prevent buffer overflow in zipinfo when method > 999
+          sed -i 's/sprintf(methbuf, "%03u"/snprintf(methbuf, sizeof(methbuf), "%03u"/g' zipinfo.c 2>/dev/null || true
+
+          # Fix implicit function declarations for modern compilers (C23/Clang16+)
+          # Add missing includes
+          sed -i '1i #include <dirent.h>' unix/unix.c 2>/dev/null || true
+          sed -i '1i #include <sys/types.h>' unix/unix.c 2>/dev/null || true
+
+          # Remove conflicting localtime() declaration from unxcfg.h (C23 fix)
+          sed -i '/^struct tm \*localtime/d' unix/unxcfg.h 2>/dev/null || true
+
+          # Large file support + no lchmod
+          sed -i 's/^CF = /CF = -DLARGE_FILE_SUPPORT -D_FILE_OFFSET_BITS=64 -DNO_LCHMOD /' unix/Makefile 2>/dev/null || true
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -f unix/Makefile linux_noasm -j$NIX_BUILD_CORES \
+            LFLAGS2="$NIX_LDFLAGS"
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make -f unix/Makefile prefix=$out install INSTALL=cp
+        '';
+      }
     ];
-    hash = "sha256-A22WmRZG0ESe0KqVLk++IbR2zplKvCduSdMOaGcIvTc=";
-  };
 
-  buildDeps = [ gnumake ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
+    meta = {
+      description = "unzip — extract files from ZIP archives";
+      homepage = "http://infozip.sourceforge.net/UnZip.html";
+      license = "Info-ZIP";
+    };
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd unzip60
-      '';
-    }
-    {
-      name = "patch";
-      script = ''
-        # Remove hardcoded CC so ccWrapper is used
-        sed -i 's/^CC = cc$//' unix/Makefile
-
-        # CVE-2014-8139: validate extra field length >= EB_HEADSIZE
-        sed -i '/ef_len < EB_HEADSIZE/!b; n; s/break;/{ Trace((stderr, "\\nextra field block length too short (%u)\\n", eb_len)); break; }/' extract.c 2>/dev/null || true
-
-        # CVE-2018-18384: prevent buffer overflow in list.c cfactorstr
-        sed -i 's/sprintf(cfactorstr,/snprintf(cfactorstr, sizeof(cfactorstr),/g' list.c 2>/dev/null || true
-
-        # CVE-2016-9844: prevent buffer overflow in zipinfo when method > 999
-        sed -i 's/sprintf(methbuf, "%03u"/snprintf(methbuf, sizeof(methbuf), "%03u"/g' zipinfo.c 2>/dev/null || true
-
-        # Fix implicit function declarations for modern compilers (C23/Clang16+)
-        # Add missing includes
-        sed -i '1i #include <dirent.h>' unix/unix.c 2>/dev/null || true
-        sed -i '1i #include <sys/types.h>' unix/unix.c 2>/dev/null || true
-
-        # Remove conflicting localtime() declaration from unxcfg.h (C23 fix)
-        sed -i '/^struct tm \*localtime/d' unix/unxcfg.h 2>/dev/null || true
-
-        # Large file support + no lchmod
-        sed -i 's/^CF = /CF = -DLARGE_FILE_SUPPORT -D_FILE_OFFSET_BITS=64 -DNO_LCHMOD /' unix/Makefile 2>/dev/null || true
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -f unix/Makefile linux_noasm -j$NIX_BUILD_CORES \
-          LFLAGS2="$NIX_LDFLAGS"
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make -f unix/Makefile prefix=$out install INSTALL=cp
-      '';
-    }
-  ];
-
-  meta = {
-    description = "unzip — extract files from ZIP archives";
-    homepage = "http://infozip.sourceforge.net/UnZip.html";
-    license = "Info-ZIP";
-  };
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       list = testing.mkVMTest {
         name = "tool-unzip-list";
         rootfsDeps = [
@@ -165,4 +162,4 @@ mkDerivation {
         '';
       };
     };
-}
+  }

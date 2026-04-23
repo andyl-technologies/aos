@@ -495,7 +495,7 @@
     allPhases =
       if builtins.any (p: p.name == "fixup") finalPhases
       then finalPhases
-      else finalPhases ++ [ fixupPhase ];
+      else finalPhases ++ [fixupPhase];
 
     builder = phasesToScript allPhases shell;
 

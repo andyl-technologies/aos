@@ -21,9 +21,8 @@
 {
   pkgs,
   lib,
-  testTools ? { },
-}:
-let
+  testTools ? {},
+}: let
   # QEMU is the sole host-tool exception (CLAUDE.md) — too complex to bootstrap.
   # socat, jq, and firecracker are AOS packages built from source.
   qemu = testTools.qemu;
@@ -32,11 +31,11 @@ let
   firecracker = pkgs.firecracker;
 
   # Headless rootfs builder (for integration tests without systemd/agent)
-  fcLib = import ./firecracker.nix { inherit pkgs lib; };
+  fcLib = import ./firecracker.nix {inherit pkgs lib;};
   kernel = pkgs.linux;
 
   # Shared shell assertion helpers
-  assertions = import ./assertions.nix { inherit (pkgs) aos-agent-rpc; };
+  assertions = import ./assertions.nix {inherit (pkgs) aos-agent-rpc;};
 
   # ---------------------------------------------------------------------------
   # Build a rootfs ext4 image for VM testing
@@ -62,24 +61,22 @@ let
   #   3  var   — 32 MiB ext4, empty (apart from an optional NoCloud seed
   #              for cloudInitTests). Label `var` via GPT partlabel so
   #              the production mount-var.service mounts it on every boot.
-  mkTestDisk =
-    {
-      system,
-      name ? "aos-test",
-      hostname ? "aos-test",
-      networkConfig ? null,
-      hostsEntries ? null,
-      userdata ? null,
-    }:
-    let
-      toplevel = system.config.system.build.toplevel;
-      kernelPkg = system.config.system.build.kernel;
-      systemdPkg = pkgs.systemd;
-      coreutilsPkg = pkgs.coreutils;
-      bashPkg = pkgs.bash;
-      socatPkg = pkgs.socat;
-      systemPackages = system.config.environment.systemPackages;
-    in
+  mkTestDisk = {
+    system,
+    name ? "aos-test",
+    hostname ? "aos-test",
+    networkConfig ? null,
+    hostsEntries ? null,
+    userdata ? null,
+  }: let
+    toplevel = system.config.system.build.toplevel;
+    kernelPkg = system.config.system.build.kernel;
+    systemdPkg = pkgs.systemd;
+    coreutilsPkg = pkgs.coreutils;
+    bashPkg = pkgs.bash;
+    socatPkg = pkgs.socat;
+    systemPackages = system.config.environment.systemPackages;
+  in
     pkgs.mkDerivation {
       pname = "vm-disk-${name}";
       version = "0";
@@ -90,7 +87,7 @@ let
         pkgs.coreutils
         pkgs.fakeroot
         pkgs.openssh
-        pkgs.util-linux  # sfdisk
+        pkgs.util-linux # sfdisk
       ];
 
       # Nix writes the transitive closure graphs before running the builder
@@ -346,47 +343,44 @@ let
                         ssh-keygen -q -t ed25519 -N "" -f rootfs/etc.lower/ssh/ssh_host_ed25519_key </dev/null
 
                         ${
-                          if hostsEntries != null then
-                            ''
-                              cat > rootfs/etc.lower/hosts << 'HOSTS'
-                              127.0.0.1 localhost
-                              ${hostsEntries}
-                              HOSTS
-                            ''
-                          else
-                            ""
-                        }
+              if hostsEntries != null
+              then ''
+                cat > rootfs/etc.lower/hosts << 'HOSTS'
+                127.0.0.1 localhost
+                ${hostsEntries}
+                HOSTS
+              ''
+              else ""
+            }
                         ${
-                          if networkConfig != null then
-                            ''
-                              mkdir -p rootfs/etc.lower/systemd/network
-                              cat > rootfs/etc.lower/systemd/network/10-eth0.network << 'NETCFG'
-                              ${networkConfig}
-                              NETCFG
-                            ''
-                          else
-                            ""
-                        }
+              if networkConfig != null
+              then ''
+                mkdir -p rootfs/etc.lower/systemd/network
+                cat > rootfs/etc.lower/systemd/network/10-eth0.network << 'NETCFG'
+                ${networkConfig}
+                NETCFG
+              ''
+              else ""
+            }
 
                         # Stage the /var partition contents. For cloudInitTests
                         # the NoCloud seed files go on this partition so
                         # cloud-init finds them once /var is mounted at boot.
                         mkdir -p var
                         ${
-                          if userdata != null then
-                            ''
-                              mkdir -p var/lib/cloud/seed/nocloud
-                              mkdir -p var/lib/cloud/state
-                              cat > var/lib/cloud/seed/nocloud/user-data << 'USERDATAEOF'
-                              ${userdata}
-                              USERDATAEOF
-                              cat > var/lib/cloud/seed/nocloud/meta-data << 'METADATAEOF'
-                              {"instance-id":"test-vm","local-hostname":"aos-test"}
-                              METADATAEOF
-                            ''
-                          else
-                            ""
-                        }
+              if userdata != null
+              then ''
+                mkdir -p var/lib/cloud/seed/nocloud
+                mkdir -p var/lib/cloud/state
+                cat > var/lib/cloud/seed/nocloud/user-data << 'USERDATAEOF'
+                ${userdata}
+                USERDATAEOF
+                cat > var/lib/cloud/seed/nocloud/meta-data << 'METADATAEOF'
+                {"instance-id":"test-vm","local-hostname":"aos-test"}
+                METADATAEOF
+              ''
+              else ""
+            }
 
                         cat > rootfs/etc.lower/os-release << 'OSREL'
             ID=aos
@@ -670,14 +664,12 @@ let
   #
   # `ignition-validate` runs inside the build so malformed configs fail
   # `nix-build -A checks.vm.<name>` before a VM is ever launched.
-  mkMetadataDisk =
-    {
-      name,
-      ignitionConfig,
-    }:
-    let
-      json = builtins.toJSON ignitionConfig;
-    in
+  mkMetadataDisk = {
+    name,
+    ignitionConfig,
+  }: let
+    json = builtins.toJSON ignitionConfig;
+  in
     pkgs.mkDerivation {
       pname = "vm-metadata-${name}";
       version = "0";
@@ -724,183 +716,183 @@ let
   # ---------------------------------------------------------------------------
   # Headless test: test script IS init (PID 1), serial PASS/FAIL markers
   # ---------------------------------------------------------------------------
-  mkHeadlessTest =
-    {
-      name,
-      testScript,
-      rootfsDeps ? [ ],
-      memory ? 256,
-      driver ? "firecracker",
-    }:
-    let
-      rootfs = fcLib.mkFirecrackerRootfs {
-        pname = name;
-        inherit testScript rootfsDeps;
-      };
-      kernelPath = builtins.toString kernel;
+  mkHeadlessTest = {
+    name,
+    testScript,
+    rootfsDeps ? [],
+    memory ? 256,
+    driver ? "firecracker",
+  }: let
+    rootfs = fcLib.mkFirecrackerRootfs {
+      pname = name;
+      inherit testScript rootfsDeps;
+    };
+    kernelPath = builtins.toString kernel;
 
-      headlessBuildDeps =
-        if driver == "firecracker" then
-          [
-            pkgs.coreutils
-            pkgs.grep
-            firecracker
-          ]
-        else if driver == "qemu" then
-          [
-            pkgs.coreutils
-            pkgs.grep
-            qemu
-          ]
-        else
-          throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
+    headlessBuildDeps =
+      if driver == "firecracker"
+      then [
+        pkgs.coreutils
+        pkgs.grep
+        firecracker
+      ]
+      else if driver == "qemu"
+      then [
+        pkgs.coreutils
+        pkgs.grep
+        qemu
+      ]
+      else throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
 
-      headlessFirecrackerScript = ''
-        set -eu
+    headlessFirecrackerScript = ''
+      set -eu
 
-        SERIAL_LOG="$TMPDIR/serial.log"
-        FC_LOG="$TMPDIR/fc.log"
-        CONFIG="$TMPDIR/vm_config.json"
+      SERIAL_LOG="$TMPDIR/serial.log"
+      FC_LOG="$TMPDIR/fc.log"
+      CONFIG="$TMPDIR/vm_config.json"
 
-        VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
-        if [ -z "$VMLINUX" ]; then
-          echo "ERROR: No vmlinux kernel image found in $KERNEL/boot/"
-          exit 1
-        fi
+      VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
+      if [ -z "$VMLINUX" ]; then
+        echo "ERROR: No vmlinux kernel image found in $KERNEL/boot/"
+        exit 1
+      fi
 
-        cp $ROOTFS rootfs.img
-        chmod u+w rootfs.img
+      cp $ROOTFS rootfs.img
+      chmod u+w rootfs.img
 
-        echo "Kernel: $VMLINUX"
-        echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
-        echo "Memory: ${builtins.toString memory} MiB"
-        ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
+      echo "Kernel: $VMLINUX"
+      echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
+      echo "Memory: ${builtins.toString memory} MiB"
+      ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
 
-        cat > "$CONFIG" << CFGEOF
-        {
-          "boot-source": {
-            "kernel_image_path": "$VMLINUX",
-            "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda ro init=/init quiet"
-          },
-          "drives": [
-            {
-              "drive_id": "rootfs",
-              "path_on_host": "$(pwd)/rootfs.img",
-              "is_root_device": true,
-              "is_read_only": false,
-              "cache_type": "Unsafe",
-              "io_engine": "Sync"
-            }
-          ],
-          "machine-config": {
-            "vcpu_count": 1,
-            "mem_size_mib": ${builtins.toString memory},
-            "smt": false,
-            "track_dirty_pages": false,
-            "huge_pages": "None"
+      cat > "$CONFIG" << CFGEOF
+      {
+        "boot-source": {
+          "kernel_image_path": "$VMLINUX",
+          "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda ro init=/init quiet"
+        },
+        "drives": [
+          {
+            "drive_id": "rootfs",
+            "path_on_host": "$(pwd)/rootfs.img",
+            "is_root_device": true,
+            "is_read_only": false,
+            "cache_type": "Unsafe",
+            "io_engine": "Sync"
           }
+        ],
+        "machine-config": {
+          "vcpu_count": 1,
+          "mem_size_mib": ${builtins.toString memory},
+          "smt": false,
+          "track_dirty_pages": false,
+          "huge_pages": "None"
         }
-        CFGEOF
+      }
+      CFGEOF
 
-        unset LD_LIBRARY_PATH || true
+      unset LD_LIBRARY_PATH || true
 
-        echo "==> Launching Firecracker for test: ${name}"
+      echo "==> Launching Firecracker for test: ${name}"
 
-        FC_EXIT=0
-        firecracker --no-api --config-file "$CONFIG" > "$SERIAL_LOG" 2>"$FC_LOG" || FC_EXIT=$?
+      FC_EXIT=0
+      firecracker --no-api --config-file "$CONFIG" > "$SERIAL_LOG" 2>"$FC_LOG" || FC_EXIT=$?
 
-        echo "Firecracker exited with code: $FC_EXIT"
+      echo "Firecracker exited with code: $FC_EXIT"
 
-        if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
-          echo ""
-          echo "==> TEST PASSED: ${name}"
-          mkdir -p $out
-          cp "$SERIAL_LOG" $out/serial.log
-          cp "$FC_LOG" $out/fc.log 2>/dev/null || true
-          echo "PASS" > $out/result
-        elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
-          echo ""
-          echo "==> TEST FAILED: ${name}"
-          echo "--- serial.log ---"
-          cat "$SERIAL_LOG"
-          echo "--- fc.log ---"
-          cat "$FC_LOG" 2>/dev/null || true
-          exit 1
-        else
-          echo ""
-          echo "==> ERROR: No test result marker found in serial output"
-          echo "--- serial.log ---"
-          cat "$SERIAL_LOG"
-          echo "--- fc.log ---"
-          cat "$FC_LOG" 2>/dev/null || true
-          exit 1
-        fi
-      '';
+      if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
+        echo ""
+        echo "==> TEST PASSED: ${name}"
+        mkdir -p $out
+        cp "$SERIAL_LOG" $out/serial.log
+        cp "$FC_LOG" $out/fc.log 2>/dev/null || true
+        echo "PASS" > $out/result
+      elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
+        echo ""
+        echo "==> TEST FAILED: ${name}"
+        echo "--- serial.log ---"
+        cat "$SERIAL_LOG"
+        echo "--- fc.log ---"
+        cat "$FC_LOG" 2>/dev/null || true
+        exit 1
+      else
+        echo ""
+        echo "==> ERROR: No test result marker found in serial output"
+        echo "--- serial.log ---"
+        cat "$SERIAL_LOG"
+        echo "--- fc.log ---"
+        cat "$FC_LOG" 2>/dev/null || true
+        exit 1
+      fi
+    '';
 
-      headlessQemuScript = ''
-        set -eu
+    headlessQemuScript = ''
+      set -eu
 
-        SERIAL_LOG="$TMPDIR/serial.log"
-        QEMU_LOG="$TMPDIR/qemu.log"
-        CONFIG="$TMPDIR/vm_config.json"
+      SERIAL_LOG="$TMPDIR/serial.log"
+      QEMU_LOG="$TMPDIR/qemu.log"
+      CONFIG="$TMPDIR/vm_config.json"
 
-        VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
-        if [ -z "$VMLINUZ" ]; then
-          echo "ERROR: No vmlinuz kernel image found in $KERNEL/boot/"
-          exit 1
-        fi
+      VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
+      if [ -z "$VMLINUZ" ]; then
+        echo "ERROR: No vmlinuz kernel image found in $KERNEL/boot/"
+        exit 1
+      fi
 
-        cp $ROOTFS rootfs.img
-        chmod u+w rootfs.img
+      cp $ROOTFS rootfs.img
+      chmod u+w rootfs.img
 
-        echo "Kernel: $VMLINUZ"
-        echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
-        echo "Memory: ${builtins.toString memory} MiB"
-        ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
+      echo "Kernel: $VMLINUZ"
+      echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
+      echo "Memory: ${builtins.toString memory} MiB"
+      ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
 
-        unset LD_LIBRARY_PATH || true
+      unset LD_LIBRARY_PATH || true
 
-        echo "==> Launching QEMU for test: ${name}"
+      echo "==> Launching QEMU for test: ${name}"
 
-        qemu-system-x86_64 \
-          -machine q35,accel=kvm \
-          -cpu host \
-          -m ${builtins.toString memory} \
-          -smp 1 \
-          -nographic \
-          -kernel "$VMLINUZ" \
-          -append "root=/dev/vda ro console=ttyS0 init=/init panic=1 quiet" \
-          -drive file=rootfs.img,format=raw,if=virtio \
-          -no-reboot > "$SERIAL_LOG" 2>"$QEMU_LOG" || true
+      qemu-system-x86_64 \
+        -machine q35,accel=kvm \
+        -cpu host \
+        -m ${builtins.toString memory} \
+        -smp 1 \
+        -nographic \
+        -kernel "$VMLINUZ" \
+        -append "root=/dev/vda ro console=ttyS0 init=/init panic=1 quiet" \
+        -drive file=rootfs.img,format=raw,if=virtio \
+        -no-reboot > "$SERIAL_LOG" 2>"$QEMU_LOG" || true
 
-        if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
-          echo ""
-          echo "==> TEST PASSED: ${name}"
-          mkdir -p $out
-          cp "$SERIAL_LOG" $out/serial.log
-          cp "$QEMU_LOG" $out/qemu.log 2>/dev/null || true
-          echo "PASS" > $out/result
-        elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
-          echo ""
-          echo "==> TEST FAILED: ${name}"
-          echo "--- serial.log ---"
-          cat "$SERIAL_LOG"
-          echo "--- qemu.log ---"
-          cat "$QEMU_LOG" 2>/dev/null || true
-          exit 1
-        else
-          echo ""
-          echo "==> ERROR: No test result marker found in serial output"
-          echo "--- serial.log ---"
-          cat "$SERIAL_LOG"
-          echo "--- qemu.log ---"
-          cat "$QEMU_LOG" 2>/dev/null || true
-          exit 1
-        fi
-      '';
+      if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
+        echo ""
+        echo "==> TEST PASSED: ${name}"
+        mkdir -p $out
+        cp "$SERIAL_LOG" $out/serial.log
+        cp "$QEMU_LOG" $out/qemu.log 2>/dev/null || true
+        echo "PASS" > $out/result
+      elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
+        echo ""
+        echo "==> TEST FAILED: ${name}"
+        echo "--- serial.log ---"
+        cat "$SERIAL_LOG"
+        echo "--- qemu.log ---"
+        cat "$QEMU_LOG" 2>/dev/null || true
+        exit 1
+      else
+        echo ""
+        echo "==> ERROR: No test result marker found in serial output"
+        echo "--- serial.log ---"
+        cat "$SERIAL_LOG"
+        echo "--- qemu.log ---"
+        cat "$QEMU_LOG" 2>/dev/null || true
+        exit 1
+      fi
+    '';
 
-      headlessScript = if driver == "firecracker" then headlessFirecrackerScript else headlessQemuScript;
-    in
+    headlessScript =
+      if driver == "firecracker"
+      then headlessFirecrackerScript
+      else headlessQemuScript;
+  in
     pkgs.mkDerivation {
       pname = "aos-vm-test-${name}";
       version = "0";
@@ -918,7 +910,7 @@ let
         }
       ];
 
-      requiredSystemFeatures = [ "kvm" ];
+      requiredSystemFeatures = ["kvm"];
     };
 
   # ---------------------------------------------------------------------------
@@ -927,24 +919,24 @@ let
   # Supports two modes:
   #   - System mode (system parameter): full systemd + agent, for module checks
   #   - Headless mode (rootfsDeps parameter): test script IS init, for package checks
-  mkVMTest =
-    {
-      name,
-      driver ? "firecracker",
-      # System mode (full systemd + agent):
-      system ? null,
-      groupName ? name,
-      checks ? [ ],
-      userdata ? null,
-      instanceMetadata ? null,
-      # Headless mode (test script IS init):
-      rootfsDeps ? null,
-      # Shared:
-      testScript ? null,
-      timeout ? 120,
-      memory ? null,
-    }:
-    if rootfsDeps != null then
+  mkVMTest = {
+    name,
+    driver ? "firecracker",
+    # System mode (full systemd + agent):
+    system ? null,
+    groupName ? name,
+    checks ? [],
+    userdata ? null,
+    instanceMetadata ? null,
+    # Headless mode (test script IS init):
+    rootfsDeps ? null,
+    # Shared:
+    testScript ? null,
+    timeout ? 120,
+    memory ? null,
+  }:
+    if rootfsDeps != null
+    then
       mkHeadlessTest {
         inherit
           name
@@ -952,423 +944,434 @@ let
           rootfsDeps
           driver
           ;
-        memory = if memory != null then memory else 256;
+        memory =
+          if memory != null
+          then memory
+          else 256;
       }
-    else if system != null then
-      let
-        systemDisk = mkTestDisk { inherit system userdata; };
-        systemKernel = system.config.system.build.kernel;
-        systemInitrd = system.config.system.build.initrd;
+    else if system != null
+    then let
+      systemDisk = mkTestDisk {inherit system userdata;};
+      systemKernel = system.config.system.build.kernel;
+      systemInitrd = system.config.system.build.initrd;
 
-        # When instanceMetadata is set the harness must boot against a
-        # system that has ignition enabled, otherwise ignition-fetch is
-        # absent from the initrd and the metadata channel is dead.
-        # Assert at eval-time with a clear message.
-        _ignitionCheck =
-          if instanceMetadata != null && !(system.config.aos.services.ignition.enable or false)
-          then throw "mkVMTest '${name}': instanceMetadata requires aos.services.ignition.enable = true on the system under test"
-          else null;
+      # When instanceMetadata is set the harness must boot against a
+      # system that has ignition enabled, otherwise ignition-fetch is
+      # absent from the initrd and the metadata channel is dead.
+      # Assert at eval-time with a clear message.
+      _ignitionCheck =
+        if instanceMetadata != null && !(system.config.aos.services.ignition.enable or false)
+        then throw "mkVMTest '${name}': instanceMetadata requires aos.services.ignition.enable = true on the system under test"
+        else null;
 
-        systemMetadataDisk =
-          if instanceMetadata != null
-          then mkMetadataDisk { inherit name; ignitionConfig = instanceMetadata.config; }
-          else null;
-
-        hasMetadata = instanceMetadata != null;
-
-        # Extra cmdline fragment for the metadata HTTP channel. Empty
-        # string when no metadata disk is attached.
-        metadataKarg =
-          if hasMetadata
-          then " ignition.config.url=http://127.0.0.1:8080/config.json"
-          else "";
-
-        # Firecracker drives[] JSON fragment for the metadata disk —
-        # prepended as a second entry when metadata is present.
-        fcMetadataDrive =
-          if hasMetadata
-          then ''
-            ,
-              {
-                "drive_id": "metadata",
-                "path_on_host": "$(pwd)/metadata.img",
-                "is_root_device": false,
-                "is_read_only": true,
-                "cache_type": "Unsafe",
-                "io_engine": "Sync"
-              }''
-          else "";
-        # Compose checks into script, then append testScript if provided
-        checksScript =
-          if checks != [ ]
-          then checksLib.composeChecks { inherit groupName checks; }
-          else "";
-        composedScript =
-          if checksScript != "" && testScript != null then
-            checksScript + "\n" + testScript
-          else if checksScript != "" then
-            checksScript
-          else if testScript != null then
-            testScript
-          else
-            throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
-
-        effectiveMemory = if memory != null then memory else 2048;
-
-        # Driver-specific build dependencies
-        driverBuildDeps =
-          if driver == "firecracker" then
-            [
-              pkgs.coreutils
-              hostJq
-              firecracker
-              pkgs.aos-agent-rpc
-            ]
-          else if driver == "qemu" then
-            [
-              pkgs.coreutils
-              hostSocat
-              hostJq
-              qemu
-              pkgs.aos-agent-rpc
-            ]
-          else
-            throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
-
-        # -----------------------------------------------------------------------
-        # Firecracker driver test script (system mode)
-        # -----------------------------------------------------------------------
-        # The VM boots through the production initrd path (stage-1 systemd
-        # → ignition stages → switch-root → stage-2 systemd), matching the
-        # real boot sequence. Firecracker's `boot_args` replaces the image's
-        # built-in cmdline, so `ignition.platform.id=metal` here overrides
-        # whatever the image was built with — metal is the only platform
-        # that reads `ignition.config.url=` from kargs, which is what the
-        # metadata-disk path (commit 6) relies on.
-        firecrackerScript = ''
-          set -eu
-
-          AGENT_SOCK="$TMPDIR/agent.sock"
-          SERIAL_LOG="$TMPDIR/serial.log"
-          FC_LOG="$TMPDIR/firecracker.log"
-          VSOCK_UDS="$TMPDIR/vm.vsock"
-          FC_CFG="$TMPDIR/fc-config.json"
-
-          # Copy disk image to writable location (Firecracker needs rw for system tests)
-          cp $DISK/disk.img disk.img
-          chmod u+w disk.img
-
-          # Copy the metadata disk (when attached) to a writable location.
-          # virtio-blk backends open the file at launch and hold it for the
-          # run — a local copy isolates the run from any read-side caching
-          # quirks with store files on certain filesystems.
-          ${lib.optionalString hasMetadata ''
-            cp $METADATA/metadata.img metadata.img
-            chmod u+w metadata.img
-          ''}
-
-          # Find the uncompressed kernel image (Firecracker requires vmlinux, not vmlinuz)
-          VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
-          INITRD_IMG=$INITRD/initrd.img
-
-          # Generate a unique CID from the builder PID (range 3-65535)
-          GUEST_CID=$(( ($$ % 65533) + 3 ))
-
-          echo "Driver: firecracker"
-          echo "Kernel: $VMLINUX"
-          echo "Initrd: $INITRD_IMG"
-          echo "Disk:   disk.img ($(ls -lh disk.img | awk '{print $5}'))"
-          echo "CID: $GUEST_CID"
-          echo "Vsock UDS: $VSOCK_UDS"
-          ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
-
-          # Write Firecracker JSON config
-          cat > "$FC_CFG" << FCCFGEOF
-          {
-            "boot-source": {
-              "kernel_image_path": "$VMLINUX",
-              "initrd_path": "$INITRD_IMG",
-              "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0${metadataKarg}"
-            },
-            "drives": [
-              {
-                "drive_id": "rootfs",
-                "path_on_host": "$(pwd)/disk.img",
-                "is_root_device": false,
-                "is_read_only": false,
-                "cache_type": "Unsafe",
-                "io_engine": "Sync"
-              }${fcMetadataDrive}
-            ],
-            "machine-config": {
-              "vcpu_count": 2,
-              "mem_size_mib": ${builtins.toString effectiveMemory},
-              "smt": false,
-              "track_dirty_pages": false,
-              "huge_pages": "None"
-            },
-            "vsock": {
-              "guest_cid": $GUEST_CID,
-              "uds_path": "$VSOCK_UDS"
-            },
-            "network-interfaces": []
+      systemMetadataDisk =
+        if instanceMetadata != null
+        then
+          mkMetadataDisk {
+            inherit name;
+            ignitionConfig = instanceMetadata.config;
           }
-          FCCFGEOF
+        else null;
 
-          # Clear LD_LIBRARY_PATH — AOS build libs can conflict
-          unset LD_LIBRARY_PATH
+      hasMetadata = instanceMetadata != null;
 
-          # Firecracker wires the guest's ttyS0 to its own stdin/stdout. Feed
-          # stdin from a FIFO that has a permanent, silent writer (sleep holds
-          # the write end open RDWR but never writes). Guest reads from ttyS0
-          # then block indefinitely — no EOF → no agetty respawn — so the debug
-          # profile's autologin can coexist with the harness.
-          FC_STDIN="$TMPDIR/fc-stdin"
-          mkfifo "$FC_STDIN"
-          sleep infinity <>"$FC_STDIN" &
-          FC_STDIN_PID=$!
+      # Extra cmdline fragment for the metadata HTTP channel. Empty
+      # string when no metadata disk is attached.
+      metadataKarg =
+        if hasMetadata
+        then " ignition.config.url=http://127.0.0.1:8080/config.json"
+        else "";
 
-          # Launch Firecracker (serial output goes to stdout, redirected to file)
-          firecracker --no-api --config-file "$FC_CFG" \
-            < "$FC_STDIN" > "$SERIAL_LOG" 2>"$FC_LOG" &
-          FC_PID=$!
-          echo "Firecracker PID: $FC_PID"
-          sleep 1
-          if ! kill -0 "$FC_PID" 2>/dev/null; then
-            echo "ERROR: Firecracker exited immediately!"
-            echo "--- Firecracker log ---"
-            cat "$FC_LOG" 2>/dev/null || true
-            echo "--- Serial log ---"
-            cat "$SERIAL_LOG" 2>/dev/null || true
-            exit 1
-          fi
+      # Firecracker drives[] JSON fragment for the metadata disk —
+      # prepended as a second entry when metadata is present.
+      fcMetadataDrive =
+        if hasMetadata
+        then ''
+          ,
+            {
+              "drive_id": "metadata",
+              "path_on_host": "$(pwd)/metadata.img",
+              "is_root_device": false,
+              "is_read_only": true,
+              "cache_type": "Unsafe",
+              "io_engine": "Sync"
+            }''
+        else "";
+      # Compose checks into script, then append testScript if provided
+      checksScript =
+        if checks != []
+        then checksLib.composeChecks {inherit groupName checks;}
+        else "";
+      composedScript =
+        if checksScript != "" && testScript != null
+        then checksScript + "\n" + testScript
+        else if checksScript != ""
+        then checksScript
+        else if testScript != null
+        then testScript
+        else throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
 
-          cleanup() {
-            kill "$FC_PID" 2>/dev/null || true
-            wait "$FC_PID" 2>/dev/null || true
-            kill "$FC_STDIN_PID" 2>/dev/null || true
-            wait "$FC_STDIN_PID" 2>/dev/null || true
-          }
-          trap cleanup EXIT
+      effectiveMemory =
+        if memory != null
+        then memory
+        else 2048;
 
-          # Wait for the vsock UDS to appear (Firecracker creates it on start)
-          echo "Waiting for vsock UDS..."
-          VSOCK_WAIT=0
-          while [ ! -S "$VSOCK_UDS" ]; do
-            sleep 0.1
-            VSOCK_WAIT=$((VSOCK_WAIT + 1))
-            if [ "$VSOCK_WAIT" -gt 100 ]; then
-              echo "ERROR: vsock UDS did not appear within 10s"
-              cat "$FC_LOG" 2>/dev/null || true
-              exit 1
-            fi
-          done
-          echo "vsock UDS ready."
+      # Driver-specific build dependencies
+      driverBuildDeps =
+        if driver == "firecracker"
+        then [
+          pkgs.coreutils
+          hostJq
+          firecracker
+          pkgs.aos-agent-rpc
+        ]
+        else if driver == "qemu"
+        then [
+          pkgs.coreutils
+          hostSocat
+          hostJq
+          qemu
+          pkgs.aos-agent-rpc
+        ]
+        else throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
 
-          # Import shared test helpers (run_in_guest, assert_success, assert_output_contains).
-          ${assertions.vmFirecrackerHelpers}
+      # -----------------------------------------------------------------------
+      # Firecracker driver test script (system mode)
+      # -----------------------------------------------------------------------
+      # The VM boots through the production initrd path (stage-1 systemd
+      # → ignition stages → switch-root → stage-2 systemd), matching the
+      # real boot sequence. Firecracker's `boot_args` replaces the image's
+      # built-in cmdline, so `ignition.platform.id=metal` here overrides
+      # whatever the image was built with — metal is the only platform
+      # that reads `ignition.config.url=` from kargs, which is what the
+      # metadata-disk path (commit 6) relies on.
+      firecrackerScript = ''
+        set -eu
 
-          # Wait for guest agent using PING/PONG
-          echo "Waiting for guest agent..."
-          START_TIME=$(date +%s)
-          DEADLINE=$((START_TIME + ${builtins.toString timeout}))
-          AGENT_READY=0
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            if kill -0 "$FC_PID" 2>/dev/null; then
-              RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
-              if echo "$RESPONSE" | grep -q '"ready"'; then
-                echo "Guest agent ready."
-                AGENT_READY=1
-                break
-              fi
-            else
-              echo "ERROR: Firecracker exited while waiting for agent"
-              echo "--- Firecracker log ---"
-              cat "$FC_LOG" 2>/dev/null || true
-              echo "--- Serial log ---"
-              cat "$SERIAL_LOG" 2>/dev/null || true
-              exit 1
-            fi
-            sleep 0.5
-          done
+        AGENT_SOCK="$TMPDIR/agent.sock"
+        SERIAL_LOG="$TMPDIR/serial.log"
+        FC_LOG="$TMPDIR/firecracker.log"
+        VSOCK_UDS="$TMPDIR/vm.vsock"
+        FC_CFG="$TMPDIR/fc-config.json"
 
-          if [ "$AGENT_READY" -ne 1 ]; then
-            echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
-            echo "--- Firecracker log ---"
-            cat "$FC_LOG" 2>/dev/null || true
-            echo "--- Serial log ---"
-            cat "$SERIAL_LOG" 2>/dev/null || true
-            exit 1
-          fi
+        # Copy disk image to writable location (Firecracker needs rw for system tests)
+        cp $DISK/disk.img disk.img
+        chmod u+w disk.img
 
-          echo ""
-          echo "==> Running test: ${name}"
-          echo ""
+        # Copy the metadata disk (when attached) to a writable location.
+        # virtio-blk backends open the file at launch and hold it for the
+        # run — a local copy isolates the run from any read-side caching
+        # quirks with store files on certain filesystems.
+        ${lib.optionalString hasMetadata ''
+          cp $METADATA/metadata.img metadata.img
+          chmod u+w metadata.img
+        ''}
 
-          ${composedScript}
+        # Find the uncompressed kernel image (Firecracker requires vmlinux, not vmlinuz)
+        VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
+        INITRD_IMG=$INITRD/initrd.img
 
-          echo ""
-          echo "Shutting down guest..."
-          run_in_guest "SHUTDOWN" || true
-          sleep 2
-          # Firecracker exits on reboot -f from guest
+        # Generate a unique CID from the builder PID (range 3-65535)
+        GUEST_CID=$(( ($$ % 65533) + 3 ))
+
+        echo "Driver: firecracker"
+        echo "Kernel: $VMLINUX"
+        echo "Initrd: $INITRD_IMG"
+        echo "Disk:   disk.img ($(ls -lh disk.img | awk '{print $5}'))"
+        echo "CID: $GUEST_CID"
+        echo "Vsock UDS: $VSOCK_UDS"
+        ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
+
+        # Write Firecracker JSON config
+        cat > "$FC_CFG" << FCCFGEOF
+        {
+          "boot-source": {
+            "kernel_image_path": "$VMLINUX",
+            "initrd_path": "$INITRD_IMG",
+            "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0${metadataKarg}"
+          },
+          "drives": [
+            {
+              "drive_id": "rootfs",
+              "path_on_host": "$(pwd)/disk.img",
+              "is_root_device": false,
+              "is_read_only": false,
+              "cache_type": "Unsafe",
+              "io_engine": "Sync"
+            }${fcMetadataDrive}
+          ],
+          "machine-config": {
+            "vcpu_count": 2,
+            "mem_size_mib": ${builtins.toString effectiveMemory},
+            "smt": false,
+            "track_dirty_pages": false,
+            "huge_pages": "None"
+          },
+          "vsock": {
+            "guest_cid": $GUEST_CID,
+            "uds_path": "$VSOCK_UDS"
+          },
+          "network-interfaces": []
+        }
+        FCCFGEOF
+
+        # Clear LD_LIBRARY_PATH — AOS build libs can conflict
+        unset LD_LIBRARY_PATH
+
+        # Firecracker wires the guest's ttyS0 to its own stdin/stdout. Feed
+        # stdin from a FIFO that has a permanent, silent writer (sleep holds
+        # the write end open RDWR but never writes). Guest reads from ttyS0
+        # then block indefinitely — no EOF → no agetty respawn — so the debug
+        # profile's autologin can coexist with the harness.
+        FC_STDIN="$TMPDIR/fc-stdin"
+        mkfifo "$FC_STDIN"
+        sleep infinity <>"$FC_STDIN" &
+        FC_STDIN_PID=$!
+
+        # Launch Firecracker (serial output goes to stdout, redirected to file)
+        firecracker --no-api --config-file "$FC_CFG" \
+          < "$FC_STDIN" > "$SERIAL_LOG" 2>"$FC_LOG" &
+        FC_PID=$!
+        echo "Firecracker PID: $FC_PID"
+        sleep 1
+        if ! kill -0 "$FC_PID" 2>/dev/null; then
+          echo "ERROR: Firecracker exited immediately!"
+          echo "--- Firecracker log ---"
+          cat "$FC_LOG" 2>/dev/null || true
+          echo "--- Serial log ---"
+          cat "$SERIAL_LOG" 2>/dev/null || true
+          exit 1
+        fi
+
+        cleanup() {
+          kill "$FC_PID" 2>/dev/null || true
           wait "$FC_PID" 2>/dev/null || true
-          trap - EXIT
+          kill "$FC_STDIN_PID" 2>/dev/null || true
+          wait "$FC_STDIN_PID" 2>/dev/null || true
+        }
+        trap cleanup EXIT
 
-          echo ""
-          echo "==> All tests passed for: ${name}"
-          mkdir -p $out
-          cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
-          echo "PASS" > $out/result
-        '';
-
-        # -----------------------------------------------------------------------
-        # QEMU driver test script (system mode)
-        # -----------------------------------------------------------------------
-        qemuScript = ''
-          set -eu
-
-          AGENT_SOCK="$TMPDIR/agent.sock"
-          SERIAL_SOCK="$TMPDIR/serial.sock"
-          SERIAL_LOG="$TMPDIR/serial.log"
-
-          # Copy disk image to writable location
-          cp $DISK/disk.img disk.img
-          chmod u+w disk.img
-
-          # Copy the metadata disk (when attached) to a writable location.
-          ${lib.optionalString hasMetadata ''
-            cp $METADATA/metadata.img metadata.img
-            chmod u+w metadata.img
-          ''}
-
-          # Find the kernel image
-          VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
-          INITRD_IMG=$INITRD/initrd.img
-
-          # Pre-flight checks
-          QEMU_LOG="$TMPDIR/qemu.log"
-          echo "Driver: qemu"
-          echo "Kernel: $VMLINUZ"
-          echo "Initrd: $INITRD_IMG"
-          echo "Disk:   disk.img ($(ls -lh disk.img | awk '{print $5}'))"
-          ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
-
-          # Clear LD_LIBRARY_PATH — AOS build libs can conflict with QEMU
-          # (QEMU is the sole nixpkgs binary; socat/jq are AOS packages)
-          unset LD_LIBRARY_PATH
-
-          qemu-system-x86_64 --version || echo "QEMU version check failed"
-
-          # Serial console drain: socat listens on $SERIAL_SOCK and appends
-          # everything the guest writes to $SERIAL_LOG. -u makes it strictly
-          # one-way (socket → file), so any guest read from /dev/ttyS0 blocks
-          # on the socket — socat never writes back — matching the behavior
-          # of a real idle tty with no user typing. Must be up before QEMU
-          # connects as client, else early-boot output would be lost.
-          socat -u UNIX-LISTEN:"$SERIAL_SOCK",reuseaddr,fork \
-                   OPEN:"$SERIAL_LOG",creat,append &
-          DRAIN_PID=$!
-          SOCK_WAIT=0
-          while [ ! -S "$SERIAL_SOCK" ]; do
-            sleep 0.05
-            SOCK_WAIT=$((SOCK_WAIT + 1))
-            if [ "$SOCK_WAIT" -gt 100 ]; then
-              echo "ERROR: serial drain socket did not appear within 5s"
-              exit 1
-            fi
-          done
-
-          # Launch QEMU with direct kernel boot through the initrd. The
-          # -append cmdline replaces the image's built-in cmdline;
-          # ignition.platform.id=metal makes ignition-fetch consume
-          # ignition.config.url= from kargs (the metadata-disk channel).
-          qemu-system-x86_64 \
-            -machine q35,accel=kvm \
-            -cpu host \
-            -m ${builtins.toString effectiveMemory} \
-            -smp 2 \
-            -nographic \
-            -kernel "$VMLINUZ" \
-            -initrd "$INITRD_IMG" \
-            -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0${metadataKarg}" \
-            -drive file=disk.img,format=raw,if=virtio \
-            ${lib.optionalString hasMetadata ''-drive file=metadata.img,format=raw,if=virtio,readonly=on \''}
-            -device virtio-serial \
-            -device virtserialport,chardev=agent,name=aos.test.agent \
-            -chardev socket,id=agent,path="$AGENT_SOCK",server=on,wait=off \
-            -chardev socket,id=ttyS0,path="$SERIAL_SOCK",server=off \
-            -serial chardev:ttyS0 \
-            -no-reboot > "$QEMU_LOG" 2>&1 &
-          QEMU_PID=$!
-          echo "QEMU PID: $QEMU_PID"
-          sleep 2
-          if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-            echo "ERROR: QEMU exited immediately!"
-            echo "--- QEMU log ---"
-            cat "$QEMU_LOG" 2>/dev/null || true
+        # Wait for the vsock UDS to appear (Firecracker creates it on start)
+        echo "Waiting for vsock UDS..."
+        VSOCK_WAIT=0
+        while [ ! -S "$VSOCK_UDS" ]; do
+          sleep 0.1
+          VSOCK_WAIT=$((VSOCK_WAIT + 1))
+          if [ "$VSOCK_WAIT" -gt 100 ]; then
+            echo "ERROR: vsock UDS did not appear within 10s"
+            cat "$FC_LOG" 2>/dev/null || true
             exit 1
           fi
+        done
+        echo "vsock UDS ready."
 
-          cleanup() {
-            kill "$QEMU_PID" 2>/dev/null || true
-            wait "$QEMU_PID" 2>/dev/null || true
-            kill "$DRAIN_PID" 2>/dev/null || true
-            wait "$DRAIN_PID" 2>/dev/null || true
-          }
-          trap cleanup EXIT
+        # Import shared test helpers (run_in_guest, assert_success, assert_output_contains).
+        ${assertions.vmFirecrackerHelpers}
 
-          # Import shared test helpers (run_in_guest, assert_success, assert_output_contains)
-          ${assertions.vmHelpers}
-
-          # Wait for guest agent using PING/PONG
-          echo "Waiting for guest agent..."
-          START_TIME=$(date +%s)
-          DEADLINE=$((START_TIME + ${builtins.toString timeout}))
-          AGENT_READY=0
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            if [ -S "$AGENT_SOCK" ]; then
-              RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
-              if echo "$RESPONSE" | grep -q '"ready"'; then
-                echo "Guest agent ready."
-                AGENT_READY=1
-                break
-              fi
+        # Wait for guest agent using PING/PONG
+        echo "Waiting for guest agent..."
+        START_TIME=$(date +%s)
+        DEADLINE=$((START_TIME + ${builtins.toString timeout}))
+        AGENT_READY=0
+        while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+          if kill -0 "$FC_PID" 2>/dev/null; then
+            RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
+            if echo "$RESPONSE" | grep -q '"ready"'; then
+              echo "Guest agent ready."
+              AGENT_READY=1
+              break
             fi
-            sleep 0.5
-          done
-
-          if [ "$AGENT_READY" -ne 1 ]; then
-            echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
-            echo "--- QEMU log ---"
-            cat "$QEMU_LOG" 2>/dev/null || true
+          else
+            echo "ERROR: Firecracker exited while waiting for agent"
+            echo "--- Firecracker log ---"
+            cat "$FC_LOG" 2>/dev/null || true
             echo "--- Serial log ---"
             cat "$SERIAL_LOG" 2>/dev/null || true
             exit 1
           fi
+          sleep 0.5
+        done
 
-          echo ""
-          echo "==> Running test: ${name}"
-          echo ""
+        if [ "$AGENT_READY" -ne 1 ]; then
+          echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
+          echo "--- Firecracker log ---"
+          cat "$FC_LOG" 2>/dev/null || true
+          echo "--- Serial log ---"
+          cat "$SERIAL_LOG" 2>/dev/null || true
+          exit 1
+        fi
 
-          ${composedScript}
+        echo ""
+        echo "==> Running test: ${name}"
+        echo ""
 
-          echo ""
-          echo "Shutting down guest..."
-          run_in_guest "SHUTDOWN" || true
-          sleep 2
+        ${composedScript}
+
+        echo ""
+        echo "Shutting down guest..."
+        run_in_guest "SHUTDOWN" || true
+        sleep 2
+        # Firecracker exits on reboot -f from guest
+        wait "$FC_PID" 2>/dev/null || true
+        trap - EXIT
+
+        echo ""
+        echo "==> All tests passed for: ${name}"
+        mkdir -p $out
+        cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
+        echo "PASS" > $out/result
+      '';
+
+      # -----------------------------------------------------------------------
+      # QEMU driver test script (system mode)
+      # -----------------------------------------------------------------------
+      qemuScript = ''
+        set -eu
+
+        AGENT_SOCK="$TMPDIR/agent.sock"
+        SERIAL_SOCK="$TMPDIR/serial.sock"
+        SERIAL_LOG="$TMPDIR/serial.log"
+
+        # Copy disk image to writable location
+        cp $DISK/disk.img disk.img
+        chmod u+w disk.img
+
+        # Copy the metadata disk (when attached) to a writable location.
+        ${lib.optionalString hasMetadata ''
+          cp $METADATA/metadata.img metadata.img
+          chmod u+w metadata.img
+        ''}
+
+        # Find the kernel image
+        VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
+        INITRD_IMG=$INITRD/initrd.img
+
+        # Pre-flight checks
+        QEMU_LOG="$TMPDIR/qemu.log"
+        echo "Driver: qemu"
+        echo "Kernel: $VMLINUZ"
+        echo "Initrd: $INITRD_IMG"
+        echo "Disk:   disk.img ($(ls -lh disk.img | awk '{print $5}'))"
+        ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
+
+        # Clear LD_LIBRARY_PATH — AOS build libs can conflict with QEMU
+        # (QEMU is the sole nixpkgs binary; socat/jq are AOS packages)
+        unset LD_LIBRARY_PATH
+
+        qemu-system-x86_64 --version || echo "QEMU version check failed"
+
+        # Serial console drain: socat listens on $SERIAL_SOCK and appends
+        # everything the guest writes to $SERIAL_LOG. -u makes it strictly
+        # one-way (socket → file), so any guest read from /dev/ttyS0 blocks
+        # on the socket — socat never writes back — matching the behavior
+        # of a real idle tty with no user typing. Must be up before QEMU
+        # connects as client, else early-boot output would be lost.
+        socat -u UNIX-LISTEN:"$SERIAL_SOCK",reuseaddr,fork \
+                 OPEN:"$SERIAL_LOG",creat,append &
+        DRAIN_PID=$!
+        SOCK_WAIT=0
+        while [ ! -S "$SERIAL_SOCK" ]; do
+          sleep 0.05
+          SOCK_WAIT=$((SOCK_WAIT + 1))
+          if [ "$SOCK_WAIT" -gt 100 ]; then
+            echo "ERROR: serial drain socket did not appear within 5s"
+            exit 1
+          fi
+        done
+
+        # Launch QEMU with direct kernel boot through the initrd. The
+        # -append cmdline replaces the image's built-in cmdline;
+        # ignition.platform.id=metal makes ignition-fetch consume
+        # ignition.config.url= from kargs (the metadata-disk channel).
+        qemu-system-x86_64 \
+          -machine q35,accel=kvm \
+          -cpu host \
+          -m ${builtins.toString effectiveMemory} \
+          -smp 2 \
+          -nographic \
+          -kernel "$VMLINUZ" \
+          -initrd "$INITRD_IMG" \
+          -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0${metadataKarg}" \
+          -drive file=disk.img,format=raw,if=virtio \
+          ${lib.optionalString hasMetadata ''-drive file=metadata.img,format=raw,if=virtio,readonly=on \''}
+          -device virtio-serial \
+          -device virtserialport,chardev=agent,name=aos.test.agent \
+          -chardev socket,id=agent,path="$AGENT_SOCK",server=on,wait=off \
+          -chardev socket,id=ttyS0,path="$SERIAL_SOCK",server=off \
+          -serial chardev:ttyS0 \
+          -no-reboot > "$QEMU_LOG" 2>&1 &
+        QEMU_PID=$!
+        echo "QEMU PID: $QEMU_PID"
+        sleep 2
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+          echo "ERROR: QEMU exited immediately!"
+          echo "--- QEMU log ---"
+          cat "$QEMU_LOG" 2>/dev/null || true
+          exit 1
+        fi
+
+        cleanup() {
+          kill "$QEMU_PID" 2>/dev/null || true
           wait "$QEMU_PID" 2>/dev/null || true
-          trap - EXIT
+          kill "$DRAIN_PID" 2>/dev/null || true
+          wait "$DRAIN_PID" 2>/dev/null || true
+        }
+        trap cleanup EXIT
 
-          echo ""
-          echo "==> All tests passed for: ${name}"
-          mkdir -p $out
-          cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
-          echo "PASS" > $out/result
-        '';
+        # Import shared test helpers (run_in_guest, assert_success, assert_output_contains)
+        ${assertions.vmHelpers}
 
-        testPhaseScript = if driver == "firecracker" then firecrackerScript else qemuScript;
-      in
+        # Wait for guest agent using PING/PONG
+        echo "Waiting for guest agent..."
+        START_TIME=$(date +%s)
+        DEADLINE=$((START_TIME + ${builtins.toString timeout}))
+        AGENT_READY=0
+        while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+          if [ -S "$AGENT_SOCK" ]; then
+            RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
+            if echo "$RESPONSE" | grep -q '"ready"'; then
+              echo "Guest agent ready."
+              AGENT_READY=1
+              break
+            fi
+          fi
+          sleep 0.5
+        done
+
+        if [ "$AGENT_READY" -ne 1 ]; then
+          echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
+          echo "--- QEMU log ---"
+          cat "$QEMU_LOG" 2>/dev/null || true
+          echo "--- Serial log ---"
+          cat "$SERIAL_LOG" 2>/dev/null || true
+          exit 1
+        fi
+
+        echo ""
+        echo "==> Running test: ${name}"
+        echo ""
+
+        ${composedScript}
+
+        echo ""
+        echo "Shutting down guest..."
+        run_in_guest "SHUTDOWN" || true
+        sleep 2
+        wait "$QEMU_PID" 2>/dev/null || true
+        trap - EXIT
+
+        echo ""
+        echo "==> All tests passed for: ${name}"
+        mkdir -p $out
+        cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
+        echo "PASS" > $out/result
+      '';
+
+      testPhaseScript =
+        if driver == "firecracker"
+        then firecrackerScript
+        else qemuScript;
+    in
       pkgs.mkDerivation {
         pname = "aos-vm-test-${name}";
         version = "0";
@@ -1388,11 +1391,9 @@ let
           }
         ];
 
-        requiredSystemFeatures = [ "kvm" ];
+        requiredSystemFeatures = ["kvm"];
       }
-    else
-      throw "mkVMTest '${name}': must provide either 'system' (for full VM tests) or 'rootfsDeps' (for headless tests)";
-in
-{
+    else throw "mkVMTest '${name}': must provide either 'system' (for full VM tests) or 'rootfsDeps' (for headless tests)";
+in {
   inherit mkVMTest mkTestDisk;
 }

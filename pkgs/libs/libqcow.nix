@@ -6,81 +6,78 @@
   pkg-config,
   zlib,
   openssl,
-}:
-let
+}: let
   version = "20240308";
 in
-mkDerivation {
-  pname = "libqcow";
-  inherit version;
+  mkDerivation {
+    pname = "libqcow";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/libyal/libqcow/releases/download/${version}/libqcow-alpha-${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/libyal/libqcow/releases/download/${version}/libqcow-alpha-${version}.tar.gz"
+      ];
+      hash = "sha256-94E7RvRtTWVoPyCvBz1zYvmSAs/bpzQhEmEWGAbXN7I=";
+    };
+
+    buildDeps = [
+      gnumake
+      pkg-config
     ];
-    hash = "sha256-94E7RvRtTWVoPyCvBz1zYvmSAs/bpzQhEmEWGAbXN7I=";
-  };
+    runtimeDeps = [
+      zlib
+      openssl
+    ];
+    propagatedDeps = [];
 
-  buildDeps = [
-    gnumake
-    pkg-config
-  ];
-  runtimeDeps = [
-    zlib
-    openssl
-  ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd libqcow-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --enable-shared \
+            --disable-static \
+            --with-zlib=${zlib} \
+            --with-openssl=${openssl} \
+            --disable-python
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd libqcow-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --enable-shared \
-          --disable-static \
-          --with-zlib=${zlib} \
-          --with-openssl=${openssl} \
-          --disable-python
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       soname = testing.mkSONAMECheck {
         pkg = self;
-        libs = [ "libqcow.so" ];
+        libs = ["libqcow.so"];
       };
 
       link = testing.mkLinkCheck {
         pname = "lib-libqcow";
         library = self;
-        libs = [ "-lqcow" ];
+        libs = ["-lqcow"];
         extraDeps = [
           pkgs.zlib
           pkgs.openssl
@@ -97,9 +94,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "libqcow — QEMU Copy-On-Write image file library";
-    homepage = "https://github.com/libyal/libqcow";
-    license = "LGPL-3.0-or-later";
-  };
-}
+    meta = {
+      description = "libqcow — QEMU Copy-On-Write image file library";
+      homepage = "https://github.com/libyal/libqcow";
+      license = "LGPL-3.0-or-later";
+    };
+  }

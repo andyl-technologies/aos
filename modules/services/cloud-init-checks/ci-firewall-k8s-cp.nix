@@ -1,6 +1,5 @@
 # tests/vm/checks/ci-firewall-k8s-cp.nix — Cloud-init k8s control plane firewall
-{ lib }:
-{
+{lib}: {
   description = "Cloud-init k8s control plane firewall rules";
   checks = [
     {

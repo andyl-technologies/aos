@@ -1,5 +1,5 @@
 ##! aos-agent-rpc — Single-shot RPC client for the AOS VM test agent
-{ mkDerivation }:
+{mkDerivation}:
 mkDerivation {
   pname = "aos-agent-rpc";
   version = "0";

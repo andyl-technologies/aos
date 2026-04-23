@@ -8,8 +8,7 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.kubernetes.edgecore;
 
   edgecoreConfig = ''
@@ -32,7 +31,11 @@ let
         remoteRuntimeEndpoint: unix:///run/containerd/containerd.sock
         remoteImageEndpoint: unix:///run/containerd/containerd.sock
       eventBus:
-        enable: ${if cfg.mqtt.enable then "true" else "false"}
+        enable: ${
+      if cfg.mqtt.enable
+      then "true"
+      else "false"
+    }
         mqttMode: ${toString cfg.mqtt.mode}
       metaManager:
         enable: true
@@ -41,8 +44,7 @@ let
       deviceTwin:
         enable: true
   '';
-in
-{
+in {
   options.aos.kubernetes.edgecore = {
     enable = lib.mkOption {
       type = lib.types.bool;
@@ -101,7 +103,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ pkgs.edgecore ];
+    environment.systemPackages = [pkgs.edgecore];
 
     # EdgeCore configuration
     environment.etc."kubeedge/config/edgecore.yaml" = {
@@ -109,12 +111,12 @@ in
     };
 
     # Firewall: edgecore websocket (10000), edgehub (10350)
-    aos.firewall.allowedTCP = [ 10000 10350 ];
+    aos.firewall.allowedTCP = [10000 10350];
 
     # edgecore.service — KubeEdge edge agent
     systemd.services."edgecore" = {
       description = "KubeEdge EdgeCore Agent";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
       after = [
         "network-online.target"
         "containerd.service"
