@@ -82,34 +82,146 @@
   # rather than as an absolute store path. Keep it conservative — the
   # store paths work anywhere.
   initrdBinaries = [
-    {pkg = bash;       bin = "bash";       src = "bin";}
-    {pkg = bash;       bin = "sh";         src = "bin";}
-    {pkg = coreutils;  bin = "cat";        src = "bin";}
-    {pkg = coreutils;  bin = "cp";         src = "bin";}
-    {pkg = coreutils;  bin = "ln";         src = "bin";}
-    {pkg = coreutils;  bin = "ls";         src = "bin";}
-    {pkg = coreutils;  bin = "mkdir";      src = "bin";}
-    {pkg = coreutils;  bin = "mv";         src = "bin";}
-    {pkg = coreutils;  bin = "rm";         src = "bin";}
-    {pkg = coreutils;  bin = "test";       src = "bin";}
-    {pkg = coreutils;  bin = "touch";      src = "bin";}
-    {pkg = coreutils;  bin = "sleep";      src = "bin";}
-    {pkg = util-linux; bin = "mount";      src = "bin";}
-    {pkg = util-linux; bin = "umount";     src = "bin";}
-    {pkg = util-linux; bin = "blkid";      src = "sbin";}
-    {pkg = util-linux; bin = "lsblk";      src = "bin";}
-    {pkg = util-linux; bin = "sfdisk";     src = "sbin";}
-    {pkg = util-linux; bin = "mkswap";     src = "sbin";}
-    {pkg = util-linux; bin = "swapon";     src = "sbin";}
-    {pkg = kmod;       bin = "modprobe";   src = "sbin";}
-    {pkg = kmod;       bin = "insmod";     src = "sbin";}
-    {pkg = kmod;       bin = "lsmod";      src = "sbin";}
-    {pkg = e2fsprogs;  bin = "mkfs.ext4";  src = "sbin";}
-    {pkg = e2fsprogs;  bin = "resize2fs";  src = "sbin";}
-    {pkg = e2fsprogs;  bin = "e2fsck";     src = "sbin";}
-    {pkg = cryptsetup; bin = "cryptsetup"; src = "sbin";}
-    {pkg = ignition;   bin = "ignition";   src = "bin";}
-    {pkg = iproute2;   bin = "ip";         src = "sbin";}
+    {
+      pkg = bash;
+      bin = "bash";
+      src = "bin";
+    }
+    {
+      pkg = bash;
+      bin = "sh";
+      src = "bin";
+    }
+    {
+      pkg = coreutils;
+      bin = "cat";
+      src = "bin";
+    }
+    {
+      pkg = coreutils;
+      bin = "cp";
+      src = "bin";
+    }
+    {
+      pkg = coreutils;
+      bin = "ln";
+      src = "bin";
+    }
+    {
+      pkg = coreutils;
+      bin = "ls";
+      src = "bin";
+    }
+    {
+      pkg = coreutils;
+      bin = "mkdir";
+      src = "bin";
+    }
+    {
+      pkg = coreutils;
+      bin = "mv";
+      src = "bin";
+    }
+    {
+      pkg = coreutils;
+      bin = "rm";
+      src = "bin";
+    }
+    {
+      pkg = coreutils;
+      bin = "test";
+      src = "bin";
+    }
+    {
+      pkg = coreutils;
+      bin = "touch";
+      src = "bin";
+    }
+    {
+      pkg = coreutils;
+      bin = "sleep";
+      src = "bin";
+    }
+    {
+      pkg = util-linux;
+      bin = "mount";
+      src = "bin";
+    }
+    {
+      pkg = util-linux;
+      bin = "umount";
+      src = "bin";
+    }
+    {
+      pkg = util-linux;
+      bin = "blkid";
+      src = "sbin";
+    }
+    {
+      pkg = util-linux;
+      bin = "lsblk";
+      src = "bin";
+    }
+    {
+      pkg = util-linux;
+      bin = "sfdisk";
+      src = "sbin";
+    }
+    {
+      pkg = util-linux;
+      bin = "mkswap";
+      src = "sbin";
+    }
+    {
+      pkg = util-linux;
+      bin = "swapon";
+      src = "sbin";
+    }
+    {
+      pkg = kmod;
+      bin = "modprobe";
+      src = "sbin";
+    }
+    {
+      pkg = kmod;
+      bin = "insmod";
+      src = "sbin";
+    }
+    {
+      pkg = kmod;
+      bin = "lsmod";
+      src = "sbin";
+    }
+    {
+      pkg = e2fsprogs;
+      bin = "mkfs.ext4";
+      src = "sbin";
+    }
+    {
+      pkg = e2fsprogs;
+      bin = "resize2fs";
+      src = "sbin";
+    }
+    {
+      pkg = e2fsprogs;
+      bin = "e2fsck";
+      src = "sbin";
+    }
+    {
+      pkg = cryptsetup;
+      bin = "cryptsetup";
+      src = "sbin";
+    }
+    {
+      pkg = ignition;
+      bin = "ignition";
+      src = "bin";
+    }
+    {
+      pkg = iproute2;
+      bin = "ip";
+      src = "sbin";
+    }
   ];
 
   # Upstream systemd units imported from ${systemd}/lib/systemd/system/
@@ -176,33 +288,35 @@
   ];
 
   # Render the (pkg, binary, src) triples into `ln -sfn` invocations.
-  binarySymlinks = lib.concatMapStringsSep "\n" (e:
-    "ln -sfn ${e.pkg}/${e.src}/${e.bin} root/bin/${e.bin}")
-  initrdBinaries;
+  binarySymlinks =
+    lib.concatMapStringsSep "\n" (e: "ln -sfn ${e.pkg}/${e.src}/${e.bin} root/bin/${e.bin}")
+    initrdBinaries;
 
   # Upstream unit symlinks go into /lib/systemd/system/ (not /etc/)
   # so that systemd.mask= on the kernel cmdline can override them.
   # Generators write masks to /run/systemd/generator/ which sits
   # between /etc/ (highest) and /lib/ (lowest) in systemd's unit
   # search priority.
-  unitSymlinks = lib.concatMapStringsSep "\n" (u: ''
-    if [ ! -e ${systemd}/lib/systemd/system/${u} ]; then
-      echo "initrd-builder: upstream systemd unit missing: ${u}" >&2
-      exit 1
-    fi
-    ln -sfn ${systemd}/lib/systemd/system/${u} root/lib/systemd/system/${u}
-  '')
-  initrdUpstreamUnits;
+  unitSymlinks =
+    lib.concatMapStringsSep "\n" (u: ''
+      if [ ! -e ${systemd}/lib/systemd/system/${u} ]; then
+        echo "initrd-builder: upstream systemd unit missing: ${u}" >&2
+        exit 1
+      fi
+      ln -sfn ${systemd}/lib/systemd/system/${u} root/lib/systemd/system/${u}
+    '')
+    initrdUpstreamUnits;
 
-  generatorSymlinks = lib.concatMapStringsSep "\n" (g: ''
-    if [ ! -e ${systemd}/lib/systemd/system-generators/${g} ]; then
-      echo "initrd-builder: upstream systemd generator missing: ${g}" >&2
-      exit 1
-    fi
-    ln -sfn ${systemd}/lib/systemd/system-generators/${g} \
-      root/lib/systemd/system-generators/${g}
-  '')
-  initrdGenerators;
+  generatorSymlinks =
+    lib.concatMapStringsSep "\n" (g: ''
+      if [ ! -e ${systemd}/lib/systemd/system-generators/${g} ]; then
+        echo "initrd-builder: upstream systemd generator missing: ${g}" >&2
+        exit 1
+      fi
+      ln -sfn ${systemd}/lib/systemd/system-generators/${g} \
+        root/lib/systemd/system-generators/${g}
+    '')
+    initrdGenerators;
 
   modulesLoadConf = lib.concatStringsSep "\n" kernelModules;
 in
@@ -347,9 +461,10 @@ in
           # ── 8. Masked units ─────────────────────────────────────────────
           chmod u+w root/etc/systemd/system
           ${lib.concatMapStringsSep "\n" (u: ''
-            rm -f root/etc/systemd/system/${u} root/lib/systemd/system/${u}
-            ln -sfn /dev/null root/etc/systemd/system/${u}
-          '') maskedUnits}
+              rm -f root/etc/systemd/system/${u} root/lib/systemd/system/${u}
+              ln -sfn /dev/null root/etc/systemd/system/${u}
+            '')
+            maskedUnits}
 
           # ── 8. Trim: drop files that only exist in the store for build-
           #    time or developer use. Packages keep these on disk systemwide;

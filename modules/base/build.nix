@@ -35,8 +35,10 @@
   # --- Build the system PATH from systemPackages ---
   makeBinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
   makeSbinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/sbin") pkgsList);
-  systemPath = makeBinPath config.environment.systemPackages
-    + ":" + makeSbinPath config.environment.systemPackages;
+  systemPath =
+    makeBinPath config.environment.systemPackages
+    + ":"
+    + makeSbinPath config.environment.systemPackages;
 in {
   options = {
     ## Assertions checked during system build. If any assertion is

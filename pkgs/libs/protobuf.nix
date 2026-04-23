@@ -9,58 +9,57 @@
   patchelf,
   python3,
   bootstrapTools,
-}:
-let
+}: let
   version = "29.5";
 in
-mkDerivation {
-  pname = "protobuf";
-  inherit version;
+  mkDerivation {
+    pname = "protobuf";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/protocolbuffers/protobuf/releases/download/v${version}/protoc-${version}-linux-x86_64.zip"
+    src = fetchurl {
+      urls = [
+        "https://github.com/protocolbuffers/protobuf/releases/download/v${version}/protoc-${version}-linux-x86_64.zip"
+      ];
+      hash = "sha256-o/CUNjzSBcb3rw0bkwXLTIUXBD8mXNsYjwmMrpPoshc=";
+    };
+
+    buildDeps = [
+      patchelf
+      python3
     ];
-    hash = "sha256-o/CUNjzSBcb3rw0bkwXLTIUXBD8mXNsYjwmMrpPoshc=";
-  };
+    runtimeDeps = [];
 
-  buildDeps = [
-    patchelf
-    python3
-  ];
-  runtimeDeps = [ ];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p $out
 
-  phases = [
-    {
-      name = "install";
-      script = ''
-        mkdir -p $out
+          # Extract zip using python3 (no unzip in AOS yet)
+          python3 -c "
+          import zipfile, sys
+          with zipfile.ZipFile(sys.argv[1]) as z:
+              z.extractall(sys.argv[2])
+          " $src $out
 
-        # Extract zip using python3 (no unzip in AOS yet)
-        python3 -c "
-        import zipfile, sys
-        with zipfile.ZipFile(sys.argv[1]) as z:
-            z.extractall(sys.argv[2])
-        " $src $out
+          chmod +x $out/bin/protoc
 
-        chmod +x $out/bin/protoc
+          # Patchelf if dynamically linked; skip if static
+          if readelf -l $out/bin/protoc 2>/dev/null | grep -q "INTERP"; then
+            INTERP=$(cat ${bootstrapTools}/nix-support/dynamic-linker)
+            RPATH="${bootstrapTools}/lib"
+            patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" $out/bin/protoc
+          fi
 
-        # Patchelf if dynamically linked; skip if static
-        if readelf -l $out/bin/protoc 2>/dev/null | grep -q "INTERP"; then
-          INTERP=$(cat ${bootstrapTools}/nix-support/dynamic-linker)
-          RPATH="${bootstrapTools}/lib"
-          patchelf --set-interpreter "$INTERP" --set-rpath "$RPATH" $out/bin/protoc
-        fi
+          # Verify it runs
+          $out/bin/protoc --version
+        '';
+      }
+    ];
 
-        # Verify it runs
-        $out/bin/protoc --version
-      '';
-    }
-  ];
-
-  meta = {
-    description = "Protocol Buffers compiler (pre-built binary)";
-    homepage = "https://protobuf.dev";
-    license = "BSD-3-Clause";
-  };
-}
+    meta = {
+      description = "Protocol Buffers compiler (pre-built binary)";
+      homepage = "https://protobuf.dev";
+      license = "BSD-3-Clause";
+    };
+  }

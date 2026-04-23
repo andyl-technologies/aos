@@ -12,8 +12,7 @@
   which,
   openssl,
   zlib,
-}:
-{
+}: {
   version,
   srcHash,
   changeId,
@@ -21,138 +20,148 @@
   needsDownloadRustc ? false,
   useBootstrapToml ? false,
   disableLld ? false,
-}:
-let
-  configFileName = if useBootstrapToml then "bootstrap.toml" else "config.toml";
+}: let
+  configFileName =
+    if useBootstrapToml
+    then "bootstrap.toml"
+    else "config.toml";
 in
-mkDerivation {
-  pname = "rust-${builtins.replaceStrings [ "." ] [ "_" ] (builtins.substring 0 4 version)}";
-  inherit version;
+  mkDerivation {
+    pname = "rust-${builtins.replaceStrings ["."] ["_"] (builtins.substring 0 4 version)}";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
+      ];
+      hash = srcHash;
+    };
+
+    buildDeps = [
+      gnumake
+      cmake
+      ninja
+      pkg-config
+      python3
+      bash
+      which
+      prevRust
+      openssl
     ];
-    hash = srcHash;
-  };
+    runtimeDeps = [zlib];
 
-  buildDeps = [
-    gnumake
-    cmake
-    ninja
-    pkg-config
-    python3
-    bash
-    which
-    prevRust
-    openssl
-  ];
-  runtimeDeps = [ zlib ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd rustc-${version}-src
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          # Fix arc4random: cmake detects it in glibc but the header doesn't
+          # declare it. Force the check result to 0.
+          sed -i 's/check_symbol_exists(arc4random "stdlib.h" HAVE_DECL_ARC4RANDOM)/set(HAVE_DECL_ARC4RANDOM 0 CACHE BOOL "")/' \
+            src/llvm-project/llvm/cmake/config-ix.cmake
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd rustc-${version}-src
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        # Fix arc4random: cmake detects it in glibc but the header doesn't
-        # declare it. Force the check result to 0.
-        sed -i 's/check_symbol_exists(arc4random "stdlib.h" HAVE_DECL_ARC4RANDOM)/set(HAVE_DECL_ARC4RANDOM 0 CACHE BOOL "")/' \
-          src/llvm-project/llvm/cmake/config-ix.cmake
+          # Fake git so x.py doesn't panic.
+          # Must return exit 1 for unknown commands (especially rev-parse),
+          # otherwise bootstrap tries canonicalize("") and panics.
+          mkdir -p .fake-bin
+          printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
+          chmod +x .fake-bin/git
+          export PATH="$PWD/.fake-bin:$PATH"
 
-        # Fake git so x.py doesn't panic.
-        # Must return exit 1 for unknown commands (especially rev-parse),
-        # otherwise bootstrap tries canonicalize("") and panics.
-        mkdir -p .fake-bin
-        printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
-        chmod +x .fake-bin/git
-        export PATH="$PWD/.fake-bin:$PATH"
+          cat > ${configFileName} << TOML
+          change-id = ${toString changeId}
 
-        cat > ${configFileName} << TOML
-        change-id = ${toString changeId}
+          [llvm]
+          download-ci-llvm = false
 
-        [llvm]
-        download-ci-llvm = false
+          [build]
+          docs = false
+          extended = true
+          tools = ["cargo"]
+          vendor = true
+          cargo = "${prevRust}/bin/cargo"
+          rustc = "${prevRust}/bin/rustc"
 
-        [build]
-        docs = false
-        extended = true
-        tools = ["cargo"]
-        vendor = true
-        cargo = "${prevRust}/bin/cargo"
-        rustc = "${prevRust}/bin/rustc"
+          [install]
+          prefix = "$out"
+          sysconfdir = "etc"
 
-        [install]
-        prefix = "$out"
-        sysconfdir = "etc"
+          [rust]
+          channel = "stable"
+          codegen-units = 0
+          rpath = true
+          omit-git-hash = true
+          ${
+            if needsDownloadRustc
+            then "download-rustc = false"
+            else ""
+          }
+          ${
+            if disableLld
+            then "lld = false\n        use-lld = false"
+            else ""
+          }
+          TOML
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          export PATH="$PWD/.fake-bin:$PATH"
+          export RUST_BACKTRACE=1
 
-        [rust]
-        channel = "stable"
-        codegen-units = 0
-        rpath = true
-        omit-git-hash = true
-        ${if needsDownloadRustc then "download-rustc = false" else ""}
-        ${if disableLld then "lld = false\n        use-lld = false" else ""}
-        TOML
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        export PATH="$PWD/.fake-bin:$PATH"
-        export RUST_BACKTRACE=1
+          # openssl-sys build script needs these to find OpenSSL
+          export OPENSSL_DIR=${openssl}
+          export OPENSSL_LIB_DIR=${openssl}/lib
+          export OPENSSL_INCLUDE_DIR=${openssl}/include
+          export OPENSSL_NO_VENDOR=1
+          export OPENSSL_STATIC=0
 
-        # openssl-sys build script needs these to find OpenSSL
-        export OPENSSL_DIR=${openssl}
-        export OPENSSL_LIB_DIR=${openssl}/lib
-        export OPENSSL_INCLUDE_DIR=${openssl}/include
-        export OPENSSL_NO_VENDOR=1
-        export OPENSSL_STATIC=0
+          python3 x.py build -j $NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+                  export PATH="$PWD/.fake-bin:$PATH"
+                  export OPENSSL_DIR=${openssl}
+                  export OPENSSL_LIB_DIR=${openssl}/lib
+                  export OPENSSL_INCLUDE_DIR=${openssl}/include
+                  export OPENSSL_NO_VENDOR=1
+                  export OPENSSL_STATIC=0
+                  python3 x.py install
 
-        python3 x.py build -j $NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        export PATH="$PWD/.fake-bin:$PATH"
-        export OPENSSL_DIR=${openssl}
-        export OPENSSL_LIB_DIR=${openssl}/lib
-        export OPENSSL_INCLUDE_DIR=${openssl}/include
-        export OPENSSL_NO_VENDOR=1
-        export OPENSSL_STATIC=0
-        python3 x.py install
+                  # No patchelf available — use wrapper scripts (same pattern as rust-1_74.nix)
+                  LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${zlib}/lib"
 
-        # No patchelf available — use wrapper scripts (same pattern as rust-1_74.nix)
-        LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${zlib}/lib"
+                  for f in $out/bin/*; do
+                    if [ -f "$f" ] && [ ! -L "$f" ]; then
+                      if head -c4 "$f" | grep -q "ELF"; then
+                        mv "$f" "$f.unwrapped"
+                        cat > "$f" <<WRAP
+          #!/bin/sh
+          export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
+          exec "$f.unwrapped" "\$@"
+          WRAP
+                        chmod +x "$f"
+                      elif head -1 "$f" | grep -q '^#!'; then
+                        sed -i "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" "$f"
+                      fi
+                    fi
+                  done
+        '';
+      }
+    ];
 
-        for f in $out/bin/*; do
-          if [ -f "$f" ] && [ ! -L "$f" ]; then
-            if head -c4 "$f" | grep -q "ELF"; then
-              mv "$f" "$f.unwrapped"
-              cat > "$f" <<WRAP
-#!/bin/sh
-export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
-exec "$f.unwrapped" "\$@"
-WRAP
-              chmod +x "$f"
-            elif head -1 "$f" | grep -q '^#!'; then
-              sed -i "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" "$f"
-            fi
-          fi
-        done
-      '';
-    }
-  ];
-
-  meta = {
-    description = "Rust ${version} — bootstrap chain intermediate";
-    homepage = "https://www.rust-lang.org";
-    license = "MIT OR Apache-2.0";
-  };
-}
+    meta = {
+      description = "Rust ${version} — bootstrap chain intermediate";
+      homepage = "https://www.rust-lang.org";
+      license = "MIT OR Apache-2.0";
+    };
+  }

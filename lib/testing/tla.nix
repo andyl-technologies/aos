@@ -13,27 +13,25 @@
 {
   pkgs,
   lib,
-}:
-let
+}: let
   tlaDir = builtins.path {
     name = "tla-specs";
     path = ../../tla;
   };
 
   # Build a TLC model-checking derivation for a single TLA+ spec.
-  mkTLACheck =
-    {
-      name,
-      invariants,
-      cfgBody,
-      extraFiles ? { },
-      moduleName ? name,
-      # Use simulation mode instead of exhaustive model checking.
-      # Much faster for specs with large state spaces.
-      simulate ? false,
-      # Number of simulation traces to run (only used if simulate=true)
-      simTraces ? 10000,
-    }:
+  mkTLACheck = {
+    name,
+    invariants,
+    cfgBody,
+    extraFiles ? {},
+    moduleName ? name,
+    # Use simulation mode instead of exhaustive model checking.
+    # Much faster for specs with large state spaces.
+    simulate ? false,
+    # Number of simulation traces to run (only used if simulate=true)
+    simTraces ? 10000,
+  }:
     pkgs.mkDerivation {
       pname = "tla-check-${name}";
       version = "0.1.0";
@@ -54,36 +52,41 @@ let
         }
         {
           name = "check";
-          script =
-            let
-              extraFileScript = builtins.concatStringsSep "\n" (
-                builtins.map (fname: ''
-                  cat > ${fname} << 'TLAEXTRAEOF'
-                  ${extraFiles.${fname}}
-                  TLAEXTRAEOF
-                '') (builtins.attrNames extraFiles)
-              );
-              simFlag = if simulate then "-simulate num=${toString simTraces}" else "";
-            in
-            ''
-              ${extraFileScript}
+          script = let
+            extraFileScript = builtins.concatStringsSep "\n" (
+              builtins.map (fname: ''
+                cat > ${fname} << 'TLAEXTRAEOF'
+                ${extraFiles.${fname}}
+                TLAEXTRAEOF
+              '') (builtins.attrNames extraFiles)
+            );
+            simFlag =
+              if simulate
+              then "-simulate num=${toString simTraces}"
+              else "";
+          in ''
+            ${extraFileScript}
 
-              cat > ${moduleName}.cfg << 'TLACFGEOF'
-              ${cfgBody}
-              TLACFGEOF
+            cat > ${moduleName}.cfg << 'TLACFGEOF'
+            ${cfgBody}
+            TLACFGEOF
 
-              echo "==> Running TLC ${if simulate then "(simulation)" else "(exhaustive)"} on ${moduleName}.tla"
-              cat ${moduleName}.cfg
-              echo ""
+            echo "==> Running TLC ${
+              if simulate
+              then "(simulation)"
+              else "(exhaustive)"
+            } on ${moduleName}.tla"
+            cat ${moduleName}.cfg
+            echo ""
 
-              tlc -config ${moduleName}.cfg \
-                -workers 1 \
-                -deadlock \
-                ${simFlag} ${moduleName}.tla 2>&1 | tee /tmp/tlc-output.txt
+            tlc -config ${moduleName}.cfg \
+              -workers 1 \
+              -deadlock \
+              ${simFlag} ${moduleName}.tla 2>&1 | tee /tmp/tlc-output.txt
 
-              echo ""
-              echo "==> TLC check passed: ${name}"
-            '';
+            echo ""
+            echo "==> TLC check passed: ${name}"
+          '';
         }
         {
           name = "install";
@@ -380,8 +383,7 @@ let
       INVARIANT StreamCancellationSafety
     '';
   };
-in
-{
+in {
   inherit
     statute
     jobs

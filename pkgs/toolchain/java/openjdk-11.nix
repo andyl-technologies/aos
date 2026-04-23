@@ -20,8 +20,7 @@
   xorg-stubs,
   bootstrapTools,
   openjdk-10,
-}:
-let
+}: let
   mkOpenJDKBootstrap = import ./_openjdk-bootstrap.nix {
     inherit
       fetchurl
@@ -46,14 +45,14 @@ let
       ;
   };
 in
-mkOpenJDKBootstrap {
-  major = 11;
-  version = "11.0.25";
-  build = "9";
-  srcHash = "sha256-pmnvno57buWNPlFZ31f9Eqp0KBn7voYvKLncdJ9H8E4=";
-  prevJdk = openjdk-10;
-  # JDK 10's javac server has a ConcurrentModificationException bug in
-  # jrtfs when multiple threads access the module system simultaneously.
-  # Disable the javac server to avoid the race condition.
-  extraConfigureFlags = [ "--enable-javac-server=no" ];
-}
+  mkOpenJDKBootstrap {
+    major = 11;
+    version = "11.0.25";
+    build = "9";
+    srcHash = "sha256-pmnvno57buWNPlFZ31f9Eqp0KBn7voYvKLncdJ9H8E4=";
+    prevJdk = openjdk-10;
+    # JDK 10's javac server has a ConcurrentModificationException bug in
+    # jrtfs when multiple threads access the module system simultaneously.
+    # Disable the javac server to avoid the race condition.
+    extraConfigureFlags = ["--enable-javac-server=no"];
+  }

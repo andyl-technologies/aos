@@ -12,11 +12,9 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.security.verity;
-in
-{
+in {
   options.aos.security.verity = {
     ## Enable dm-verity for root filesystem integrity verification.
     ##
@@ -73,10 +71,12 @@ in
     # Add dm-verity kernel command line parameters.
     # The kernel's dm-verity target uses these to set up the verified
     # root device before mounting the root filesystem.
-    aos.boot.kernelParams = [
-      "verity.data=${cfg.dataDevice}"
-      "verity.hash=${cfg.hashDevice}"
-    ] ++ lib.optional (cfg.rootHash != "") "verity.roothash=${cfg.rootHash}";
+    aos.boot.kernelParams =
+      [
+        "verity.data=${cfg.dataDevice}"
+        "verity.hash=${cfg.hashDevice}"
+      ]
+      ++ lib.optional (cfg.rootHash != "") "verity.roothash=${cfg.rootHash}";
 
     # Include dm-verity kernel module in the initrd so the verified
     # root device can be assembled before the root filesystem is mounted.

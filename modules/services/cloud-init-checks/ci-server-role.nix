@@ -1,6 +1,5 @@
 # tests/vm/checks/ci-server-role.nix — Full server role via cloud-init
-{ lib }:
-{
+{lib}: {
   description = "Cloud-init server role full configuration";
   checks = [
     {

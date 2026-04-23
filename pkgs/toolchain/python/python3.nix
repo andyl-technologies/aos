@@ -7,8 +7,7 @@
   zlib,
   openssl,
   xz,
-}:
-let
+}: let
   version = "3.14.3";
 
   markupsafeSrc = fetchurl {
@@ -25,92 +24,90 @@ let
     hash = "sha256-Sjruesu+cwOu3o6WSNE7i/iKQpKCqmEiqZPwrIAMs2k=";
   };
 in
-mkDerivation {
-  pname = "python3";
-  inherit version;
+  mkDerivation {
+    pname = "python3";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://www.python.org/ftp/python/${version}/Python-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://www.python.org/ftp/python/${version}/Python-${version}.tar.xz"
+      ];
+      hash = "sha256-qX1VSemtgf4XFZ7QLGh3StXSZscvjZoLWpw3H+hdkCs=";
+    };
+
+    buildDeps = [
+      gnumake
+      pkg-config
     ];
-    hash = "sha256-qX1VSemtgf4XFZ7QLGh3StXSZscvjZoLWpw3H+hdkCs=";
-  };
+    runtimeDeps = [
+      zlib
+      openssl
+      xz
+    ];
+    propagatedDeps = [];
 
-  buildDeps = [
-    gnumake
-    pkg-config
-  ];
-  runtimeDeps = [
-    zlib
-    openssl
-    xz
-  ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd Python-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" \
+          ./configure \
+            --prefix=$out \
+            --enable-shared \
+            --with-system-ffi=no \
+            --with-system-expat=no \
+            --with-ensurepip=no \
+            --without-static-libpython \
+            --disable-test-modules \
+            --with-openssl=${openssl}
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+          # Ensure 'python' symlink exists alongside 'python3'
+          if [ ! -e $out/bin/python ]; then
+            ln -sf python3 $out/bin/python
+          fi
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd Python-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib" \
-        ./configure \
-          --prefix=$out \
-          --enable-shared \
-          --with-system-ffi=no \
-          --with-system-expat=no \
-          --with-ensurepip=no \
-          --without-static-libpython \
-          --disable-test-modules \
-          --with-openssl=${openssl}
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-        # Ensure 'python' symlink exists alongside 'python3'
-        if [ ! -e $out/bin/python ]; then
-          ln -sf python3 $out/bin/python
-        fi
+          # Install jinja2 + markupsafe (needed by systemd's meson build)
+          # Manual install: copy pure-Python packages to site-packages
+          SITE=$out/lib/python3.14/site-packages
+          mkdir -p $SITE
 
-        # Install jinja2 + markupsafe (needed by systemd's meson build)
-        # Manual install: copy pure-Python packages to site-packages
-        SITE=$out/lib/python3.14/site-packages
-        mkdir -p $SITE
+          # MarkupSafe (jinja2 dependency) — pure Python fallback is sufficient
+          tar xf ${markupsafeSrc}
+          cp -r MarkupSafe-2.1.5/src/markupsafe $SITE/
 
-        # MarkupSafe (jinja2 dependency) — pure Python fallback is sufficient
-        tar xf ${markupsafeSrc}
-        cp -r MarkupSafe-2.1.5/src/markupsafe $SITE/
+          # Jinja2 — pure Python
+          tar xf ${jinja2Src}
+          cp -r jinja2-3.1.4/src/jinja2 $SITE/
+        '';
+      }
+    ];
 
-        # Jinja2 — pure Python
-        tar xf ${jinja2Src}
-        cp -r jinja2-3.1.4/src/jinja2 $SITE/
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       import = testing.mkVMTest {
         name = "cross-cutting-python-import";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           export PATH="${self}/bin:$PATH"
           export LD_LIBRARY_PATH="${self}/lib:$LD_LIBRARY_PATH"
@@ -172,9 +169,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "Python 3.14 interpreter";
-    homepage = "https://www.python.org/";
-    license = "PSF-2.0";
-  };
-}
+    meta = {
+      description = "Python 3.14 interpreter";
+      homepage = "https://www.python.org/";
+      license = "PSF-2.0";
+    };
+  }

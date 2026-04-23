@@ -12,12 +12,10 @@
 {
   pkgs,
   aosPkg,
-}:
-let
+}: let
   gitPkg = pkgs.git;
   grepPkg = pkgs.grep;
-in
-rec {
+in rec {
   # Packages needed in the VM rootfs for all APM tests
   commonDeps = [
     aosPkg
@@ -133,208 +131,208 @@ rec {
   # Create a bare git repo at a given path to act as a "remote" registry.
   # This is used by apr add (clone) tests.
   mkRemoteRegistry = ''
-    create_remote_registry() {
-      local path="$1"
-      mkdir -p "$path"
-      cd "$path"
-      git init --bare
-      cd /tmp
+        create_remote_registry() {
+          local path="$1"
+          mkdir -p "$path"
+          cd "$path"
+          git init --bare
+          cd /tmp
 
-      # Clone, add structure, push
-      git clone "$path" /tmp/remote-setup
-      cd /tmp/remote-setup
-      mkdir -p packages
-      cat > registry.toml << 'REGEOF'
-[registry]
-name = "remote-test"
-description = "Test remote registry"
-REGEOF
-      git add -A
-      git commit -m "Initialize remote registry"
-      git push --set-upstream origin "$(git branch --show-current)"
-      cd /tmp
-      rm -rf /tmp/remote-setup
-    }
+          # Clone, add structure, push
+          git clone "$path" /tmp/remote-setup
+          cd /tmp/remote-setup
+          mkdir -p packages
+          cat > registry.toml << 'REGEOF'
+    [registry]
+    name = "remote-test"
+    description = "Test remote registry"
+    REGEOF
+          git add -A
+          git commit -m "Initialize remote registry"
+          git push --set-upstream origin "$(git branch --show-current)"
+          cd /tmp
+          rm -rf /tmp/remote-setup
+        }
   '';
 
   # Create a fake store path that can be used for publish tests.
   # Since we can't create real Nix store paths in the VM, we create
   # fake paths and use --no-commit to avoid nix path-info calls.
   mkFakePackageToml = ''
-    # Write a package TOML directly (bypasses nix path-info introspection)
-    write_package_toml() {
-      local reg_dir="$1"
-      local pkg_name="$2"
-      local pkg_version="$3"
-      local letter
-      letter=$(echo "$pkg_name" | cut -c1 | tr '[:upper:]' '[:lower:]')
-      local pkg_dir="$reg_dir/packages/$letter"
-      mkdir -p "$pkg_dir"
-      cat > "$pkg_dir/$pkg_name.toml" << TOMLEOF
-[package]
-name = "$pkg_name"
-description = "Test package $pkg_name"
-license = "MIT"
-maintainer = "test"
+        # Write a package TOML directly (bypasses nix path-info introspection)
+        write_package_toml() {
+          local reg_dir="$1"
+          local pkg_name="$2"
+          local pkg_version="$3"
+          local letter
+          letter=$(echo "$pkg_name" | cut -c1 | tr '[:upper:]' '[:lower:]')
+          local pkg_dir="$reg_dir/packages/$letter"
+          mkdir -p "$pkg_dir"
+          cat > "$pkg_dir/$pkg_name.toml" << TOMLEOF
+    [package]
+    name = "$pkg_name"
+    description = "Test package $pkg_name"
+    license = "MIT"
+    maintainer = "test"
 
-[[versions]]
-version = "$pkg_version"
+    [[versions]]
+    version = "$pkg_version"
 
-[versions.platforms.x86_64-linux]
-store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-$pkg_name-$pkg_version"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = 1024
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = 512
-closure_size = 2048
-source_drv = ""
-source_nar_hash = ""
-references = []
-TOMLEOF
-    }
+    [versions.platforms.x86_64-linux]
+    store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-$pkg_name-$pkg_version"
+    nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+    nar_size = 1024
+    download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+    download_size = 512
+    closure_size = 2048
+    source_drv = ""
+    source_nar_hash = ""
+    references = []
+    TOMLEOF
+        }
 
-    # Write a sysroot package TOML with image entry
-    write_sysroot_package_toml() {
-      local reg_dir="$1"
-      local pkg_name="$2"
-      local pkg_version="$3"
-      local letter
-      letter=$(echo "$pkg_name" | cut -c1 | tr '[:upper:]' '[:lower:]')
-      local pkg_dir="$reg_dir/packages/$letter"
-      mkdir -p "$pkg_dir"
-      cat > "$pkg_dir/$pkg_name.toml" << TOMLEOF
-[package]
-name = "$pkg_name"
-description = "Test sysroot package"
-sysroot = true
-license = "MIT"
-maintainer = "test"
+        # Write a sysroot package TOML with image entry
+        write_sysroot_package_toml() {
+          local reg_dir="$1"
+          local pkg_name="$2"
+          local pkg_version="$3"
+          local letter
+          letter=$(echo "$pkg_name" | cut -c1 | tr '[:upper:]' '[:lower:]')
+          local pkg_dir="$reg_dir/packages/$letter"
+          mkdir -p "$pkg_dir"
+          cat > "$pkg_dir/$pkg_name.toml" << TOMLEOF
+    [package]
+    name = "$pkg_name"
+    description = "Test sysroot package"
+    sysroot = true
+    license = "MIT"
+    maintainer = "test"
 
-[[versions]]
-version = "$pkg_version"
+    [[versions]]
+    version = "$pkg_version"
 
-[versions.platforms.x86_64-linux]
-store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-$pkg_name-$pkg_version"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = 1024
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = 512
-closure_size = 2048
-source_drv = ""
-source_nar_hash = ""
-references = []
+    [versions.platforms.x86_64-linux]
+    store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-$pkg_name-$pkg_version"
+    nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+    nar_size = 1024
+    download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+    download_size = 512
+    closure_size = 2048
+    source_drv = ""
+    source_nar_hash = ""
+    references = []
 
-[[versions.platforms.x86_64-linux.images]]
-format = "raw"
-store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-$pkg_name-image-$pkg_version"
-nar_hash = "sha256:1111111111111111111111111111111111111111111111111111"
-nar_size = 4096
-download_hash = "sha256:1111111111111111111111111111111111111111111111111111"
-download_size = 2048
-TOMLEOF
-    }
+    [[versions.platforms.x86_64-linux.images]]
+    format = "raw"
+    store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-$pkg_name-image-$pkg_version"
+    nar_hash = "sha256:1111111111111111111111111111111111111111111111111111"
+    nar_size = 4096
+    download_hash = "sha256:1111111111111111111111111111111111111111111111111111"
+    download_size = 2048
+    TOMLEOF
+        }
 
-    # Write a closure file for a store path hash.
-    # Args: reg_dir root_hash [dep_hash dep_hash ...]
-    # Creates closures/<root_hash> with an adjacency list.
-    write_closure_file() {
-      local reg_dir="$1"
-      local root_hash="$2"
-      shift 2
-      local closures_dir="$reg_dir/closures"
-      mkdir -p "$closures_dir"
+        # Write a closure file for a store path hash.
+        # Args: reg_dir root_hash [dep_hash dep_hash ...]
+        # Creates closures/<root_hash> with an adjacency list.
+        write_closure_file() {
+          local reg_dir="$1"
+          local root_hash="$2"
+          shift 2
+          local closures_dir="$reg_dir/closures"
+          mkdir -p "$closures_dir"
 
-      # First line: root + its direct deps (all remaining args)
-      local line="$root_hash"
-      for dep in "$@"; do
-        line="$line $dep"
-      done
-      echo "$line" > "$closures_dir/$root_hash"
+          # First line: root + its direct deps (all remaining args)
+          local line="$root_hash"
+          for dep in "$@"; do
+            line="$line $dep"
+          done
+          echo "$line" > "$closures_dir/$root_hash"
 
-      # Add leaf lines for each dep (no deps of their own)
-      for dep in "$@"; do
-        echo "$dep" >> "$closures_dir/$root_hash"
-      done
-    }
+          # Add leaf lines for each dep (no deps of their own)
+          for dep in "$@"; do
+            echo "$dep" >> "$closures_dir/$root_hash"
+          done
+        }
 
-    # Write a multi-level closure file with an explicit adjacency list.
-    # Args: reg_dir root_hash content
-    # content is the raw adjacency list text.
-    write_closure_file_raw() {
-      local reg_dir="$1"
-      local root_hash="$2"
-      local content="$3"
-      local closures_dir="$reg_dir/closures"
-      mkdir -p "$closures_dir"
-      echo "$content" > "$closures_dir/$root_hash"
-    }
+        # Write a multi-level closure file with an explicit adjacency list.
+        # Args: reg_dir root_hash content
+        # content is the raw adjacency list text.
+        write_closure_file_raw() {
+          local reg_dir="$1"
+          local root_hash="$2"
+          local content="$3"
+          local closures_dir="$reg_dir/closures"
+          mkdir -p "$closures_dir"
+          echo "$content" > "$closures_dir/$root_hash"
+        }
 
-    # Ensure .gitattributes has the closures entry.
-    ensure_gitattributes() {
-      local reg_dir="$1"
-      local ga="$reg_dir/.gitattributes"
-      if [ -f "$ga" ] && grep -q "closures/\*\* -diff" "$ga" 2>/dev/null; then
-        return 0
-      fi
-      echo "closures/** -diff" >> "$ga"
-    }
+        # Ensure .gitattributes has the closures entry.
+        ensure_gitattributes() {
+          local reg_dir="$1"
+          local ga="$reg_dir/.gitattributes"
+          if [ -f "$ga" ] && grep -q "closures/\*\* -diff" "$ga" 2>/dev/null; then
+            return 0
+          fi
+          echo "closures/** -diff" >> "$ga"
+        }
 
-    # Write a package TOML with references to other hashes (for closure tests)
-    write_package_toml_with_refs() {
-      local reg_dir="$1"
-      local pkg_name="$2"
-      local pkg_version="$3"
-      local store_hash="$4"
-      shift 4
-      local letter
-      letter=$(echo "$pkg_name" | cut -c1 | tr '[:upper:]' '[:lower:]')
-      local pkg_dir="$reg_dir/packages/$letter"
-      mkdir -p "$pkg_dir"
+        # Write a package TOML with references to other hashes (for closure tests)
+        write_package_toml_with_refs() {
+          local reg_dir="$1"
+          local pkg_name="$2"
+          local pkg_version="$3"
+          local store_hash="$4"
+          shift 4
+          local letter
+          letter=$(echo "$pkg_name" | cut -c1 | tr '[:upper:]' '[:lower:]')
+          local pkg_dir="$reg_dir/packages/$letter"
+          mkdir -p "$pkg_dir"
 
-      # Build references array
-      local refs="["
-      local first=1
-      for ref in "$@"; do
-        if [ "$first" -eq 1 ]; then
-          refs="$refs\"$ref\""
-          first=0
-        else
-          refs="$refs, \"$ref\""
-        fi
-      done
-      refs="$refs]"
+          # Build references array
+          local refs="["
+          local first=1
+          for ref in "$@"; do
+            if [ "$first" -eq 1 ]; then
+              refs="$refs\"$ref\""
+              first=0
+            else
+              refs="$refs, \"$ref\""
+            fi
+          done
+          refs="$refs]"
 
-      cat > "$pkg_dir/$pkg_name.toml" << TOMLEOF
-[package]
-name = "$pkg_name"
-description = "Test package $pkg_name"
-license = "MIT"
-maintainer = "test"
+          cat > "$pkg_dir/$pkg_name.toml" << TOMLEOF
+    [package]
+    name = "$pkg_name"
+    description = "Test package $pkg_name"
+    license = "MIT"
+    maintainer = "test"
 
-[[versions]]
-version = "$pkg_version"
+    [[versions]]
+    version = "$pkg_version"
 
-[versions.platforms.x86_64-linux]
-store_path = "/nix/store/$store_hash-$pkg_name-$pkg_version"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = 1024
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = 512
-closure_size = 2048
-source_drv = ""
-source_nar_hash = ""
-references = $refs
-TOMLEOF
-    }
+    [versions.platforms.x86_64-linux]
+    store_path = "/nix/store/$store_hash-$pkg_name-$pkg_version"
+    nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+    nar_size = 1024
+    download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+    download_size = 512
+    closure_size = 2048
+    source_drv = ""
+    source_nar_hash = ""
+    references = $refs
+    TOMLEOF
+        }
 
-    # Commit all changes in a registry directory
-    commit_registry() {
-      local reg_dir="$1"
-      local message="$2"
-      cd "$reg_dir"
-      git add -A
-      git commit -m "$message"
-      cd /tmp
-    }
+        # Commit all changes in a registry directory
+        commit_registry() {
+          local reg_dir="$1"
+          local message="$2"
+          cd "$reg_dir"
+          git add -A
+          git commit -m "$message"
+          cd /tmp
+        }
   '';
 }

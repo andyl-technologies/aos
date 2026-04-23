@@ -13,11 +13,9 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.profiles.server;
-in
-{
+in {
   options.aos.profiles.server = {
     enable = lib.mkOption {
       type = lib.types.bool;
@@ -41,7 +39,7 @@ in
     aos.services.ignition.enable = lib.mkDefault true;
 
     # Kernel modules for encrypted swap in stage 2.
-    aos.kernel.modules = [ "dm-crypt" "aes" "xts" ];
+    aos.kernel.modules = ["dm-crypt" "aes" "xts"];
 
     # Time sync
     aos.services.chrony.enable = lib.mkDefault true;

@@ -2,8 +2,7 @@
 #
 # Verifies golden image behavior with no userdata: default hostname,
 # DHCP networking, SSH active, firewall active, boot-finished marker.
-{ lib }:
-{
+{lib}: {
   description = "Cloud-init default boot (no userdata)";
   checks = [
     {

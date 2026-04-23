@@ -1,6 +1,5 @@
 # tests/vm/checks/ci-users.nix — Cloud-init user creation
-{ lib }:
-{
+{lib}: {
   description = "Cloud-init user creation";
   checks = [
     {

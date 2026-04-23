@@ -13,8 +13,7 @@
   pkgs,
   lib,
   ...
-}:
-{
+}: {
   config = {
     # Base runtime directories and stale-lock cleanup.
     environment.etc."tmpfiles.d/aos-base.conf" = {

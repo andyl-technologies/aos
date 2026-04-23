@@ -23,9 +23,7 @@
 # see a parseable one) but Nix's reference scanner no longer sees the
 # target as a closure edge. Works on text files and on ELF DT_RUNPATH
 # byte strings alike — the replacement is byte-for-byte length-preserving.
-{
-  writeShellScriptBin,
-}:
+{writeShellScriptBin}:
 writeShellScriptBin "remove-references-to" ''
   set -e
 

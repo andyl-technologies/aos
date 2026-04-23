@@ -12,8 +12,7 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.security.audit;
 
   # Format the audit rules file.
@@ -35,8 +34,7 @@ let
     ## User-defined audit rules:
     ${builtins.concatStringsSep "\n" cfg.rules}
   '';
-in
-{
+in {
   options.aos.security.audit = {
     ## Enable the Linux audit framework (auditd).
     ##
@@ -140,7 +138,7 @@ in
     # kernel when `audit=1` appears on the command line. Without it
     # auditctl rejects those rules with EINVAL (observed on rules for
     # execve / init_module / mount / sethostname / adjtimex).
-    aos.boot.kernelParams = [ "audit=1" ];
+    aos.boot.kernelParams = ["audit=1"];
 
     system.checks.audit = {
       description = "Audit daemon checks";
@@ -164,7 +162,7 @@ in
       ];
     };
 
-    environment.systemPackages = [ pkgs.audit ];
+    environment.systemPackages = [pkgs.audit];
 
     # /etc/audit/audit.rules — audit rule definitions.
     # Loaded by auditd on startup via auditctl.
@@ -197,7 +195,7 @@ in
     # auditd.service — the audit daemon.
     systemd.services."auditd" = {
       description = "Linux Audit Daemon";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
       after = [
         "local-fs.target"
         "systemd-tmpfiles-setup.service"
@@ -225,9 +223,9 @@ in
     # clean in `systemctl --failed`.
     systemd.services."audit-rules" = {
       description = "Load Audit Rules";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "auditd.service" ];
-      requires = [ "auditd.service" ];
+      wantedBy = ["multi-user.target"];
+      after = ["auditd.service"];
+      requires = ["auditd.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

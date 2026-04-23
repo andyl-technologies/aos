@@ -22,14 +22,11 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
-}:
-let
-  callPackage =
-    path: overrides:
-    let
-      fn = import path;
-      auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
-    in
+}: let
+  callPackage = path: overrides: let
+    fn = import path;
+    auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
+  in
     fn (auto // overrides);
 
   scope = {
@@ -42,42 +39,42 @@ let
       ;
 
     # Phase 1: Cross binutils (x86_64 binary, targets target arch)
-    crossBinutils = callPackage ./cross-binutils.nix { };
+    crossBinutils = callPackage ./cross-binutils.nix {};
 
     # Phase 2: Cross GCC stage 1 (x86_64 binary, targets target arch, no libc)
-    crossGccStage1 = callPackage ./cross-gcc-stage1.nix { };
+    crossGccStage1 = callPackage ./cross-gcc-stage1.nix {};
 
     # Phase 3: target Linux headers
-    linuxHeaders = callPackage ./linux-headers.nix { };
+    linuxHeaders = callPackage ./linux-headers.nix {};
 
     # Phase 4: target glibc (cross-compiled)
-    crossGlibc = callPackage ./cross-glibc.nix { };
+    crossGlibc = callPackage ./cross-glibc.nix {};
 
     # Phase 5: Cross GCC stage 2 (x86_64 binary, targets target arch, with glibc)
-    crossGccStage2 = callPackage ./cross-gcc-stage2.nix { };
+    crossGccStage2 = callPackage ./cross-gcc-stage2.nix {};
 
     # Phase 6a: Native target binutils (cross-compiled)
-    binutils = callPackage ./binutils.nix { };
+    binutils = callPackage ./binutils.nix {};
 
     # Phase 6b: Native target GCC (Canadian cross)
-    gcc = callPackage ./gcc.nix { };
+    gcc = callPackage ./gcc.nix {};
 
     # Phase 7: Native target POSIX tools (cross-compiled)
-    bash = callPackage ./bash.nix { };
-    coreutils = callPackage ./coreutils.nix { };
-    gnumake = callPackage ./gnumake.nix { };
-    sed = callPackage ./sed.nix { };
-    grep = callPackage ./grep.nix { };
-    gawk = callPackage ./gawk.nix { };
-    findutils = callPackage ./findutils.nix { };
-    diffutils = callPackage ./diffutils.nix { };
-    tar = callPackage ./tar.nix { };
-    gzip = callPackage ./gzip.nix { };
-    patch = callPackage ./patch.nix { };
+    bash = callPackage ./bash.nix {};
+    coreutils = callPackage ./coreutils.nix {};
+    gnumake = callPackage ./gnumake.nix {};
+    sed = callPackage ./sed.nix {};
+    grep = callPackage ./grep.nix {};
+    gawk = callPackage ./gawk.nix {};
+    findutils = callPackage ./findutils.nix {};
+    diffutils = callPackage ./diffutils.nix {};
+    tar = callPackage ./tar.nix {};
+    gzip = callPackage ./gzip.nix {};
+    patch = callPackage ./patch.nix {};
   };
-in
-{
-  inherit (scope)
+in {
+  inherit
+    (scope)
     gcc
     binutils
     linuxHeaders

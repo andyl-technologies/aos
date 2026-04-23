@@ -18,8 +18,7 @@
   gawk, # GNU awk 3.0.6 from TCC
   buildPlatform,
   ...
-}:
-let
+}: let
   system = buildPlatform.system;
   sources = import ./sources.nix;
 
@@ -290,157 +289,157 @@ let
         fi
   '';
 in
-builtins.derivation {
-  name = "binutils-${sources.binutils.version}";
-  inherit system;
-  builder = "${bash}/bin/bash";
-  args = [
-    "-c"
-    ''
-      set -eu
+  builtins.derivation {
+    name = "binutils-${sources.binutils.version}";
+    inherit system;
+    builder = "${bash}/bin/bash";
+    args = [
+      "-c"
+      ''
+        set -eu
 
-      export PATH="${
-        builtins.concatStringsSep ":" (
-          builtins.map (p: "${p}/bin") [
-            coreutils
-            sed
-            grep
-            patch
-            diffutils
-            gawk
-            bash
-            tinycc
-            gnumake
-          ]
-        )
-      }"
-      export CONFIG_SHELL="${bash}/bin/bash"
-      export SHELL="${bash}/bin/bash"
+        export PATH="${
+          builtins.concatStringsSep ":" (
+            builtins.map (p: "${p}/bin") [
+              coreutils
+              sed
+              grep
+              patch
+              diffutils
+              gawk
+              bash
+              tinycc
+              gnumake
+            ]
+          )
+        }"
+        export CONFIG_SHELL="${bash}/bin/bash"
+        export SHELL="${bash}/bin/bash"
 
-      # ── Set up gawk wrapper (bypass TCC double-in-struct bug) ─────────
-      # gawk-tcc's split()/length()/substr() return 0 because TCC can't
-      # store doubles in structs. Install a bash-based wrapper that
-      # intercepts config.status's @VAR@ substitution calls and uses
-      # bash parameter expansion instead.
-      mkdir -p $TMPDIR/wrappers
-      {
-        echo "#!${bash}/bin/bash"
-        cat ${awkWrapper}
-      } > $TMPDIR/wrappers/gawk
-      sed -i "s|GAWK_REAL_PATH|${gawk}/bin/gawk|g" $TMPDIR/wrappers/gawk
-      chmod +x $TMPDIR/wrappers/gawk
-      ln -s gawk $TMPDIR/wrappers/awk
-      export PATH="$TMPDIR/wrappers:$PATH"
+        # ── Set up gawk wrapper (bypass TCC double-in-struct bug) ─────────
+        # gawk-tcc's split()/length()/substr() return 0 because TCC can't
+        # store doubles in structs. Install a bash-based wrapper that
+        # intercepts config.status's @VAR@ substitution calls and uses
+        # bash parameter expansion instead.
+        mkdir -p $TMPDIR/wrappers
+        {
+          echo "#!${bash}/bin/bash"
+          cat ${awkWrapper}
+        } > $TMPDIR/wrappers/gawk
+        sed -i "s|GAWK_REAL_PATH|${gawk}/bin/gawk|g" $TMPDIR/wrappers/gawk
+        chmod +x $TMPDIR/wrappers/gawk
+        ln -s gawk $TMPDIR/wrappers/awk
+        export PATH="$TMPDIR/wrappers:$PATH"
 
-      # Copy source to writable directory (store files are read-only)
-      cp -r ${src} $TMPDIR/src
-      chmod -R u+w $TMPDIR/src
-      cd $TMPDIR/src
+        # Copy source to writable directory (store files are read-only)
+        cp -r ${src} $TMPDIR/src
+        chmod -R u+w $TMPDIR/src
+        cd $TMPDIR/src
 
-      # ── Apply TCC compatibility patch (from Guix, verified upstream) ──
-      patch -p1 < ${./patches/binutils-boot-2.20.1a.patch}
+        # ── Apply TCC compatibility patch (from Guix, verified upstream) ──
+        patch -p1 < ${./patches/binutils-boot-2.20.1a.patch}
 
-      # ── Fix dwarf.c: Mes libc's unistd.h doesn't declare optarg ────────
-      # dwarf.c uses optarg but only includes sysdep.h→unistd.h, not getopt.h.
-      # POSIX allows optarg in unistd.h but Mes libc doesn't have it there.
-      # The bundled include/getopt.h does declare it.
-      {
-        echo '#include <getopt.h>'
-        cat binutils/dwarf.c
-      } > binutils/dwarf.c.tmp
-      mv binutils/dwarf.c.tmp binutils/dwarf.c
+        # ── Fix dwarf.c: Mes libc's unistd.h doesn't declare optarg ────────
+        # dwarf.c uses optarg but only includes sysdep.h→unistd.h, not getopt.h.
+        # POSIX allows optarg in unistd.h but Mes libc doesn't have it there.
+        # The bundled include/getopt.h does declare it.
+        {
+          echo '#include <getopt.h>'
+          cat binutils/dwarf.c
+        } > binutils/dwarf.c.tmp
+        mv binutils/dwarf.c.tmp binutils/dwarf.c
 
-      # ── Patch ALL configure scripts: replace broken sed pipeline ───────
-      # Our sed-tcc has bugs in hold space/branch/N commands that corrupt
-      # the autoconf substitution pipeline. Our gawk-tcc has broken numerics
-      # (TCC double-in-struct bug). Use pure bash for patching.
-      # Must patch ALL configure scripts (top-level + subdirectories like
-      # bfd, gas, ld, libiberty) since make invokes sub-configures.
-      REPLACEMENT='$CONFIG_SHELL ${fixSubsScript} "$ac_delim" <conf$$subs.awk >>$CONFIG_STATUS || ac_write_fail=1'
+        # ── Patch ALL configure scripts: replace broken sed pipeline ───────
+        # Our sed-tcc has bugs in hold space/branch/N commands that corrupt
+        # the autoconf substitution pipeline. Our gawk-tcc has broken numerics
+        # (TCC double-in-struct bug). Use pure bash for patching.
+        # Must patch ALL configure scripts (top-level + subdirectories like
+        # bfd, gas, ld, libiberty) since make invokes sub-configures.
+        REPLACEMENT='$CONFIG_SHELL ${fixSubsScript} "$ac_delim" <conf$$subs.awk >>$CONFIG_STATUS || ac_write_fail=1'
 
-      # Patch top-level configure
-      $CONFIG_SHELL ${patchConfigureScript} "$REPLACEMENT" \
-        < configure > configure.patched
-      mv configure.patched configure
-      chmod +x configure
-      echo "  patched: configure"
+        # Patch top-level configure
+        $CONFIG_SHELL ${patchConfigureScript} "$REPLACEMENT" \
+          < configure > configure.patched
+        mv configure.patched configure
+        chmod +x configure
+        echo "  patched: configure"
 
-      # Patch subdirectory configures (bash-tcc glob */configure is broken)
-      for d in */; do
-        if test -f "$d/configure"; then
-          $CONFIG_SHELL ${patchConfigureScript} "$REPLACEMENT" \
-            < "$d/configure" > "$d/configure.patched"
-          mv "$d/configure.patched" "$d/configure"
-          chmod +x "$d/configure"
-          echo "  patched: $d/configure"
-        fi
-      done
-
-      # ── Configure ──────────────────────────────────────────────────────
-      $CONFIG_SHELL ./configure \
-        CC=tcc \
-        CPPFLAGS="-D__GLIBC_MINOR__=6 -DMES_BOOTSTRAP=1" \
-        AR="tcc -ar" \
-        RANLIB=true \
-        LDFLAGS="-static" \
-        --build=i686-unknown-linux-gnu \
-        --host=i686-unknown-linux-gnu \
-        --disable-nls \
-        --disable-shared \
-        --disable-werror \
-        --prefix=$out
-
-      # ── Verify @VAR@ substitution worked ──────────────────────────────
-      echo "==> Verifying Makefile substitution"
-      for mf in Makefile bfd/Makefile gas/Makefile ld/Makefile libiberty/Makefile opcodes/Makefile binutils/Makefile gprof/Makefile; do
-        if test -f "$mf"; then
-          remaining=$(grep -c '@[A-Za-z_][A-Za-z_0-9]*@' "$mf" || true)
-          echo "  $mf: $remaining remaining @VAR@"
-        fi
-      done
-
-      # ── Build ──────────────────────────────────────────────────────────
-      make
-
-      # ── Install ────────────────────────────────────────────────────────
-      make install
-
-      # ── Post-install: symlink target-dir binaries into $out/bin ──────
-      # binutils installs some tools to $out/<target>/bin/ instead of $out/bin/.
-      # Create symlinks so they're all in PATH.
-      target=i686-unknown-linux-gnu
-      if test -d "$out/$target/bin"; then
-        for tool in $out/$target/bin/*; do
-          name=$(basename "$tool")
-          if ! test -e "$out/bin/$name"; then
-            ln -s "../$target/bin/$name" "$out/bin/$name"
+        # Patch subdirectory configures (bash-tcc glob */configure is broken)
+        for d in */; do
+          if test -f "$d/configure"; then
+            $CONFIG_SHELL ${patchConfigureScript} "$REPLACEMENT" \
+              < "$d/configure" > "$d/configure.patched"
+            mv "$d/configure.patched" "$d/configure"
+            chmod +x "$d/configure"
+            echo "  patched: $d/configure"
           fi
         done
-      fi
-      # Also create ld → ld-new symlink if needed
-      if test -f "$out/bin/ld-new" && ! test -e "$out/bin/ld"; then
-        ln -s ld-new "$out/bin/ld"
-      fi
 
-      echo "binutils 2.20.1 installed to $out"
-    ''
-  ];
-}
-// {
-  meta = {
-    description = "GNU tools for manipulating binaries (linker, assembler, etc.), version 2.20.1a";
-    homepage = "https://www.gnu.org/software/binutils/";
-    license = "GPL-3.0-or-later";
-    build = {
-      os = "linux";
-      cpu = [
-        "x86_64"
-        "i686"
-      ];
+        # ── Configure ──────────────────────────────────────────────────────
+        $CONFIG_SHELL ./configure \
+          CC=tcc \
+          CPPFLAGS="-D__GLIBC_MINOR__=6 -DMES_BOOTSTRAP=1" \
+          AR="tcc -ar" \
+          RANLIB=true \
+          LDFLAGS="-static" \
+          --build=i686-unknown-linux-gnu \
+          --host=i686-unknown-linux-gnu \
+          --disable-nls \
+          --disable-shared \
+          --disable-werror \
+          --prefix=$out
+
+        # ── Verify @VAR@ substitution worked ──────────────────────────────
+        echo "==> Verifying Makefile substitution"
+        for mf in Makefile bfd/Makefile gas/Makefile ld/Makefile libiberty/Makefile opcodes/Makefile binutils/Makefile gprof/Makefile; do
+          if test -f "$mf"; then
+            remaining=$(grep -c '@[A-Za-z_][A-Za-z_0-9]*@' "$mf" || true)
+            echo "  $mf: $remaining remaining @VAR@"
+          fi
+        done
+
+        # ── Build ──────────────────────────────────────────────────────────
+        make
+
+        # ── Install ────────────────────────────────────────────────────────
+        make install
+
+        # ── Post-install: symlink target-dir binaries into $out/bin ──────
+        # binutils installs some tools to $out/<target>/bin/ instead of $out/bin/.
+        # Create symlinks so they're all in PATH.
+        target=i686-unknown-linux-gnu
+        if test -d "$out/$target/bin"; then
+          for tool in $out/$target/bin/*; do
+            name=$(basename "$tool")
+            if ! test -e "$out/bin/$name"; then
+              ln -s "../$target/bin/$name" "$out/bin/$name"
+            fi
+          done
+        fi
+        # Also create ld → ld-new symlink if needed
+        if test -f "$out/bin/ld-new" && ! test -e "$out/bin/ld"; then
+          ln -s ld-new "$out/bin/ld"
+        fi
+
+        echo "binutils 2.20.1 installed to $out"
+      ''
+    ];
+  }
+  // {
+    meta = {
+      description = "GNU tools for manipulating binaries (linker, assembler, etc.), version 2.20.1a";
+      homepage = "https://www.gnu.org/software/binutils/";
+      license = "GPL-3.0-or-later";
+      build = {
+        os = "linux";
+        cpu = [
+          "x86_64"
+          "i686"
+        ];
+      };
+      execute = {
+        os = "linux";
+        cpu = "i686";
+      };
     };
-    execute = {
-      os = "linux";
-      cpu = "i686";
-    };
-  };
-}
+  }

@@ -1,6 +1,5 @@
 # tests/vm/checks/ci-k3s-config.nix — K3s advanced config (labels, mirrors)
-{ lib }:
-{
+{lib}: {
   description = "Cloud-init k3s advanced configuration (labels, registry mirrors)";
   checks = [
     {

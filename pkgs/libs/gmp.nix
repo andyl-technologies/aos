@@ -4,67 +4,66 @@
   fetchurl,
   gnumake,
   m4,
-}:
-let
+}: let
   version = "6.3.0";
 in
-mkDerivation {
-  pname = "gmp";
-  inherit version;
+  mkDerivation {
+    pname = "gmp";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://gmplib.org/download/gmp/gmp-${version}.tar.xz"
-      "https://mirrors.kernel.org/gnu/gmp/gmp-${version}.tar.xz"
-      "https://mirrors.kernel.org/gnu/gmp/gmp-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://gmplib.org/download/gmp/gmp-${version}.tar.xz"
+        "https://mirrors.kernel.org/gnu/gmp/gmp-${version}.tar.xz"
+        "https://mirrors.kernel.org/gnu/gmp/gmp-${version}.tar.xz"
+      ];
+      hash = "sha256-o8K4AgG4nmhhb0rTC8Zq7kknw85Q4zkpyoGdXENTiJg=";
+    };
+
+    buildDeps = [
+      gnumake
+      m4
     ];
-    hash = "sha256-o8K4AgG4nmhhb0rTC8Zq7kknw85Q4zkpyoGdXENTiJg=";
-  };
+    runtimeDeps = [];
+    propagatedDeps = [];
 
-  buildDeps = [
-    gnumake
-    m4
-  ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd gmp-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --enable-shared \
+            --disable-static \
+            --enable-cxx \
+            --with-pic \
+            CFLAGS=-std=c99
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd gmp-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --enable-shared \
-          --disable-static \
-          --enable-cxx \
-          --with-pic \
-          CFLAGS=-std=c99
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  meta = {
-    description = "GMP — GNU Multiple Precision Arithmetic Library";
-    homepage = "https://gmplib.org/";
-    license = "LGPL-3.0-or-later";
-  };
-}
+    meta = {
+      description = "GMP — GNU Multiple Precision Arithmetic Library";
+      homepage = "https://gmplib.org/";
+      license = "LGPL-3.0-or-later";
+    };
+  }

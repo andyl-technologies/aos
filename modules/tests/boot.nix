@@ -2,8 +2,11 @@
 ##!
 ##! Verifies that the system boots to multi-user.target with systemd as PID 1,
 ##! essential filesystems are mounted, and the system identity is correct.
-{ config, lib, ... }:
 {
+  config,
+  lib,
+  ...
+}: {
   system.checks.system-boot = {
     description = "Core system boot verification";
     checks = [

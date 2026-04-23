@@ -11,14 +11,11 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
-}:
-let
-  callPackage =
-    path: overrides:
-    let
-      fn = import path;
-      auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
-    in
+}: let
+  callPackage = path: overrides: let
+    fn = import path;
+    auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
+  in
     fn (auto // overrides);
 
   # Phase 1: stage-1 GCC 14.3.0 built with prev.gcc (11.5.0).
@@ -26,13 +23,13 @@ let
   # that is the only glibc that exists at this point. Consumed only by the
   # tier-internal builds (binutils, linuxHeaders, glibc, bzip2) and as the
   # host compiler for the stage-2 rebuild — never exposed downstream.
-  gccRaw = callPackage ./gcc.nix { };
+  gccRaw = callPackage ./gcc.nix {};
 
   # Phase 4: stage-2 GCC 14.3.0 self-recompiled by gccRaw against THIS
   # tier's glibc-2.39 / binutils-2.41 / linux-headers-6.12. This is what
   # the wrapper (and therefore stdenv.gcc) points at, so the production
   # compiler's closure is free of the pre-tier bootstrap chain.
-  gccStage2 = callPackage ./gcc-stage2.nix { gccStage1 = gccRaw; };
+  gccStage2 = callPackage ./gcc-stage2.nix {gccStage1 = gccRaw;};
 
   scope = {
     inherit
@@ -88,49 +85,49 @@ let
     };
 
     # Phase 2: binutils 2.41 built with raw GCC
-    binutils = callPackage ./binutils.nix { gcc = gccRaw; };
+    binutils = callPackage ./binutils.nix {gcc = gccRaw;};
 
     # Phase 3: linux-headers + glibc built with raw GCC + binutils
-    linuxHeaders = callPackage ./linux-headers.nix { gcc = gccRaw; };
-    glibc = callPackage ./glibc.nix { gcc = gccRaw; };
+    linuxHeaders = callPackage ./linux-headers.nix {gcc = gccRaw;};
+    glibc = callPackage ./glibc.nix {gcc = gccRaw;};
 
     # Phase 3.5: Autotools rebuilt with wrapped gcc + binutils + glibc
     # Order: perl/texinfo/help2man first (no m4/flex/bison deps),
     # then m4/flex/bison/autoconf/automake (can use real texinfo/help2man)
-    perl = callPackage ./perl.nix { };
-    texinfo = callPackage ./texinfo.nix { };
-    help2man = callPackage ./help2man.nix { };
-    m4 = callPackage ./m4.nix { };
-    flex = callPackage ./flex.nix { };
-    bison = callPackage ./bison.nix { };
-    autoconf = callPackage ./autoconf.nix { };
-    automake = callPackage ./automake.nix { };
-    gperf = callPackage ./gperf.nix { };
+    perl = callPackage ./perl.nix {};
+    texinfo = callPackage ./texinfo.nix {};
+    help2man = callPackage ./help2man.nix {};
+    m4 = callPackage ./m4.nix {};
+    flex = callPackage ./flex.nix {};
+    bison = callPackage ./bison.nix {};
+    autoconf = callPackage ./autoconf.nix {};
+    automake = callPackage ./automake.nix {};
+    gperf = callPackage ./gperf.nix {};
     python3 = prev.python3;
 
     # Compression tools (needed so tar can decompress .tar.xz/.tar.bz2 in the production stdenv)
-    xz = callPackage ./xz.nix { };
-    bzip2 = callPackage ./bzip2.nix { gcc = gccRaw; };
+    xz = callPackage ./xz.nix {};
+    bzip2 = callPackage ./bzip2.nix {gcc = gccRaw;};
 
     # Build tools
-    patchelf = callPackage ./patchelf.nix { };
+    patchelf = callPackage ./patchelf.nix {};
 
     # Phase 4: POSIX tools built with wrapped gcc + binutils + glibc
-    bash = callPackage ./bash.nix { };
-    coreutils = callPackage ./coreutils.nix { };
-    gnumake = callPackage ./gnumake.nix { };
-    sed = callPackage ./sed.nix { };
-    grep = callPackage ./grep.nix { };
-    gawk = callPackage ./gawk.nix { };
-    findutils = callPackage ./findutils.nix { };
-    diffutils = callPackage ./diffutils.nix { };
-    tar = callPackage ./tar.nix { };
-    gzip = callPackage ./gzip.nix { };
-    patch = callPackage ./patch.nix { };
+    bash = callPackage ./bash.nix {};
+    coreutils = callPackage ./coreutils.nix {};
+    gnumake = callPackage ./gnumake.nix {};
+    sed = callPackage ./sed.nix {};
+    grep = callPackage ./grep.nix {};
+    gawk = callPackage ./gawk.nix {};
+    findutils = callPackage ./findutils.nix {};
+    diffutils = callPackage ./diffutils.nix {};
+    tar = callPackage ./tar.nix {};
+    gzip = callPackage ./gzip.nix {};
+    patch = callPackage ./patch.nix {};
   };
-in
-{
-  inherit (scope)
+in {
+  inherit
+    (scope)
     gcc
     binutils
     glibc

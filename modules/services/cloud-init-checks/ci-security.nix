@@ -1,6 +1,5 @@
 # tests/vm/checks/ci-security.nix — Security hardening on golden image
-{ lib }:
-{
+{lib}: {
   description = "Golden image security hardening verification";
   checks = [
     {

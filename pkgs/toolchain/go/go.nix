@@ -4,70 +4,67 @@
   fetchurl,
   gnumake,
   go-1_24,
-}:
-let
+}: let
   version = "1.26.0";
 in
-mkDerivation {
-  pname = "go";
-  inherit version;
+  mkDerivation {
+    pname = "go";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://go.dev/dl/go${version}.src.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://go.dev/dl/go${version}.src.tar.gz"
+      ];
+      hash = "sha256-yRMqih9r0qpKrR10uCMdlSdJUEg6SVBlfubFbm6Bd5A=";
+    };
+
+    buildDeps = [
+      gnumake
+      go-1_24
     ];
-    hash = "sha256-yRMqih9r0qpKrR10uCMdlSdJUEg6SVBlfubFbm6Bd5A=";
-  };
+    runtimeDeps = [];
+    dontStrip = true; # Go runtime metadata in custom ELF sections
 
-  buildDeps = [
-    gnumake
-    go-1_24
-  ];
-  runtimeDeps = [ ];
-  dontStrip = true; # Go runtime metadata in custom ELF sections
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd go
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          export GOROOT_BOOTSTRAP=${go-1_24}
+          export GOROOT_FINAL=$out
+          export GOCACHE=$TMPDIR/go-cache
+          cd src
+          bash make.bash
+          cd ..
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p $out/bin $out/src $out/pkg
+          cp -a bin/* $out/bin/
+          cp -a src/* $out/src/
+          cp -a pkg/* $out/pkg/
+          cp -a lib $out/ 2>/dev/null || true
+          cp -a misc $out/ 2>/dev/null || true
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd go
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        export GOROOT_BOOTSTRAP=${go-1_24}
-        export GOROOT_FINAL=$out
-        export GOCACHE=$TMPDIR/go-cache
-        cd src
-        bash make.bash
-        cd ..
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        mkdir -p $out/bin $out/src $out/pkg
-        cp -a bin/* $out/bin/
-        cp -a src/* $out/src/
-        cp -a pkg/* $out/pkg/
-        cp -a lib $out/ 2>/dev/null || true
-        cp -a misc $out/ 2>/dev/null || true
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       hello = testing.mkVMTest {
         name = "toolchain-go-hello";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -101,7 +98,7 @@ mkDerivation {
 
       cgo = testing.mkVMTest {
         name = "toolchain-go-cgo";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -138,7 +135,7 @@ mkDerivation {
 
       test = testing.mkVMTest {
         name = "toolchain-go-test";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -182,7 +179,7 @@ mkDerivation {
 
       static = testing.mkVMTest {
         name = "toolchain-go-static";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -306,7 +303,7 @@ mkDerivation {
 
       vet = testing.mkVMTest {
         name = "toolchain-go-vet";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -360,7 +357,7 @@ mkDerivation {
 
       fmt = testing.mkVMTest {
         name = "toolchain-go-fmt";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/go"
@@ -404,7 +401,7 @@ mkDerivation {
 
       build = testing.mkVMTest {
         name = "cross-cutting-go-build";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export GOPATH="/tmp/gopath"
@@ -537,9 +534,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "Go programming language";
-    homepage = "https://go.dev";
-    license = "BSD-3-Clause";
-  };
-}
+    meta = {
+      description = "Go programming language";
+      homepage = "https://go.dev";
+      license = "BSD-3-Clause";
+    };
+  }

@@ -10,8 +10,7 @@
   testing,
   self,
   pkgs,
-}:
-let
+}: let
   iproute2Bin = "${pkgs.iproute2}/sbin/ip";
   sqliteBin = "${pkgs.sqlite}/bin/sqlite3";
   socatBin = "${pkgs.socat}/bin/socat";
@@ -21,42 +20,42 @@ let
   aosBin = "${self}/bin/aos";
 
   serverPreamble = ''
-    ${iproute2Bin} link set lo up || true
-    ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+        ${iproute2Bin} link set lo up || true
+        ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-    export AOS_ROOT=/tmp/aos
-    mkdir -p $AOS_ROOT/var/nix/db $AOS_ROOT/store $AOS_ROOT/meta /tmp/run/aos
+        export AOS_ROOT=/tmp/aos
+        mkdir -p $AOS_ROOT/var/nix/db $AOS_ROOT/store $AOS_ROOT/meta /tmp/run/aos
 
-    ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
-    CREATE TABLE IF NOT EXISTS ValidPaths (
-      id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-      path TEXT UNIQUE NOT NULL, hash TEXT NOT NULL,
-      registrationTime INTEGER NOT NULL,
-      deriver TEXT, narSize INTEGER, ultimate INTEGER, sigs TEXT, ca TEXT
-    );
-    CREATE TABLE IF NOT EXISTS Refs (
-      referrer INTEGER NOT NULL, reference INTEGER NOT NULL,
-      PRIMARY KEY (referrer, reference),
-      FOREIGN KEY (referrer) REFERENCES ValidPaths(id) ON DELETE CASCADE,
-      FOREIGN KEY (reference) REFERENCES ValidPaths(id) ON DELETE CASCADE
-    );
-    PRAGMA journal_mode=WAL;
-SQL
-    chmod 666 $AOS_ROOT/var/nix/db/db.sqlite
-    chmod 777 $AOS_ROOT/var/nix/db
+        ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
+        CREATE TABLE IF NOT EXISTS ValidPaths (
+          id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          path TEXT UNIQUE NOT NULL, hash TEXT NOT NULL,
+          registrationTime INTEGER NOT NULL,
+          deriver TEXT, narSize INTEGER, ultimate INTEGER, sigs TEXT, ca TEXT
+        );
+        CREATE TABLE IF NOT EXISTS Refs (
+          referrer INTEGER NOT NULL, reference INTEGER NOT NULL,
+          PRIMARY KEY (referrer, reference),
+          FOREIGN KEY (referrer) REFERENCES ValidPaths(id) ON DELETE CASCADE,
+          FOREIGN KEY (reference) REFERENCES ValidPaths(id) ON DELETE CASCADE
+        );
+        PRAGMA journal_mode=WAL;
+    SQL
+        chmod 666 $AOS_ROOT/var/nix/db/db.sqlite
+        chmod 777 $AOS_ROOT/var/nix/db
   '';
 
   serverConfig = ''
-    cat > /tmp/aos-config.toml << 'CFGEOF'
-listen = "127.0.0.1:15000"
-[[views]]
-name = "default"
-anonymous_read = true
-max_concurrent_builds = 2
-[bootstrap]
-socket = "/tmp/run/aos/bootstrap.sock"
-socket_group = "root"
-CFGEOF
+        cat > /tmp/aos-config.toml << 'CFGEOF'
+    listen = "127.0.0.1:15000"
+    [[views]]
+    name = "default"
+    anonymous_read = true
+    max_concurrent_builds = 2
+    [bootstrap]
+    socket = "/tmp/run/aos/bootstrap.sock"
+    socket_group = "root"
+    CFGEOF
   '';
 
   startServer = ''
@@ -101,8 +100,7 @@ CFGEOF
     pkgs.iproute2
     pkgs.grep
   ];
-in
-{
+in {
   # ---------------------------------------------------------------------------
   # Test 1: rpc-cache-query-missing
   # ---------------------------------------------------------------------------

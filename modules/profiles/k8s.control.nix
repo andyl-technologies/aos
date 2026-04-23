@@ -9,11 +9,9 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.profiles.k8s.control;
-in
-{
+in {
   options.aos.profiles.k8s.control = {
     enable = lib.mkOption {
       type = lib.types.bool;

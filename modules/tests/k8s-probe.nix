@@ -2,12 +2,14 @@
 ##!
 ##! Verifies that containerd, crictl, kubectl, kubelet config, and runc
 ##! are functional on nodes with kubelet enabled.
-{ config, lib, ... }:
-let
+{
+  config,
+  lib,
+  ...
+}: let
   hasKubelet = config.aos.kubernetes.kubelet.enable or false;
   cri = "crictl --runtime-endpoint unix:///run/containerd/containerd.sock";
-in
-{
+in {
   config = lib.mkIf hasKubelet {
     system.checks.k8s-probe = {
       description = "K8s container runtime and tools functional test";

@@ -11,8 +11,7 @@
   testing,
   apm,
   pkgs,
-}:
-let
+}: let
   testDeps = [
     apm
     pkgs.coreutils
@@ -25,13 +24,15 @@ let
   # --------------------------------------------------------------------------
   # Mock image store paths
   # --------------------------------------------------------------------------
-  mkMockImage =
-    { format, size ? 4096 }:
+  mkMockImage = {
+    format,
+    size ? 4096,
+  }:
     pkgs.mkDerivation {
       pname = "mock-image-${format}";
       version = "0";
       src = null;
-      buildDeps = [ pkgs.coreutils ];
+      buildDeps = [pkgs.coreutils];
       phases = [
         {
           name = "build";
@@ -60,14 +61,13 @@ let
       ];
     };
 
-  imageRaw = mkMockImage { format = "raw"; };
-  imageQcow2 = mkMockImage { format = "qcow2"; };
+  imageRaw = mkMockImage {format = "raw";};
+  imageQcow2 = mkMockImage {format = "qcow2";};
 
   # --------------------------------------------------------------------------
   # Mock registry with sysroot package that has image entries
   # --------------------------------------------------------------------------
-  mkImageRegistry =
-    { packages }:
+  mkImageRegistry = {packages}:
     pkgs.mkDerivation {
       pname = "mock-registry-image";
       version = "0";
@@ -83,43 +83,48 @@ let
             mkdir -p $out/packages
             ${builtins.concatStringsSep "\n" (
               builtins.map (
-                pkg:
-                let letter = builtins.substring 0 1 pkg.name;
+                pkg: let
+                  letter = builtins.substring 0 1 pkg.name;
                 in ''
-                  mkdir -p $out/packages/${letter}
-                  cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
-[package]
-name = "${pkg.name}"
-description = "mock ${pkg.name}"
-license = "MIT"
-maintainer = "test"
-${if pkg.sysroot or false then "sysroot = true" else ""}
+                                    mkdir -p $out/packages/${letter}
+                                    cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
+                  [package]
+                  name = "${pkg.name}"
+                  description = "mock ${pkg.name}"
+                  license = "MIT"
+                  maintainer = "test"
+                  ${
+                    if pkg.sysroot or false
+                    then "sysroot = true"
+                    else ""
+                  }
 
-[[versions]]
-version = "${pkg.version}"
+                  [[versions]]
+                  version = "${pkg.version}"
 
-[versions.platforms.x86_64-linux]
-store_path = "${pkg.storePath}"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = 1024
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = 512
-closure_size = 2048
-source_drv = ""
-source_nar_hash = ""
-references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
-${builtins.concatStringsSep "\n" (builtins.map (img: ''
-[[versions.platforms.x86_64-linux.images]]
-format = "${img.format}"
-store_path = "${img.storePath}"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = ${builtins.toString img.narSize}
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = ${builtins.toString img.downloadSize}
-'') (pkg.images or []))}
-PKGEOF
+                  [versions.platforms.x86_64-linux]
+                  store_path = "${pkg.storePath}"
+                  nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                  nar_size = 1024
+                  download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                  download_size = 512
+                  closure_size = 2048
+                  source_drv = ""
+                  source_nar_hash = ""
+                  references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
+                  ${builtins.concatStringsSep "\n" (builtins.map (img: ''
+                    [[versions.platforms.x86_64-linux.images]]
+                    format = "${img.format}"
+                    store_path = "${img.storePath}"
+                    nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                    nar_size = ${builtins.toString img.narSize}
+                    download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                    download_size = ${builtins.toString img.downloadSize}
+                  '') (pkg.images or []))}
+                  PKGEOF
                 ''
-              ) packages
+              )
+              packages
             )}
 
             cd $out
@@ -157,34 +162,32 @@ PKGEOF
     ];
   };
 
-  mkImagePreamble = { registryPath }: ''
-    export HOME=/tmp/home
-    mkdir -p $HOME/.config/apm/registries.d
-    mkdir -p $HOME/.local/share/apm/registries
-    mkdir -p $HOME/.local/share/apm/remote
-    mkdir -p $HOME/.cache/apm
-    mkdir -p /var/lib/profiles/system
-    mkdir -p /var/lib/apm/remote
-    mkdir -p /var/lib/apm/registries
-    mkdir -p /etc/apm/registries.d
+  mkImagePreamble = {registryPath}: ''
+        export HOME=/tmp/home
+        mkdir -p $HOME/.config/apm/registries.d
+        mkdir -p $HOME/.local/share/apm/registries
+        mkdir -p $HOME/.local/share/apm/remote
+        mkdir -p $HOME/.cache/apm
+        mkdir -p /var/lib/profiles/system
+        mkdir -p /var/lib/apm/remote
+        mkdir -p /var/lib/apm/registries
+        mkdir -p /etc/apm/registries.d
 
-    cp -r ${registryPath} /var/lib/apm/registries/test
-    chmod -R u+w /var/lib/apm/registries/test
+        cp -r ${registryPath} /var/lib/apm/registries/test
+        chmod -R u+w /var/lib/apm/registries/test
 
-    cat > /etc/apm/registries.d/test.toml << 'CFGEOF'
-[registry]
-name = "test"
-url = "file:///var/lib/apm/registries/test"
-priority = 500
-enabled = true
-CFGEOF
+        cat > /etc/apm/registries.d/test.toml << 'CFGEOF'
+    [registry]
+    name = "test"
+    url = "file:///var/lib/apm/registries/test"
+    priority = 500
+    enabled = true
+    CFGEOF
 
-    ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
-    ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
+        ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
+        ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
   '';
-
-in
-{
+in {
   # --------------------------------------------------------------------------
   # Test 1: image-pull-raw
   # --------------------------------------------------------------------------
@@ -194,7 +197,7 @@ in
     rootfsDeps = testDeps;
     memory = 1024;
     testScript = ''
-      ${mkImagePreamble { registryPath = imageRegistry; }}
+      ${mkImagePreamble {registryPath = imageRegistry;}}
 
       echo "==> Test: apm install server --system --image raw"
 
@@ -240,7 +243,7 @@ in
     rootfsDeps = testDeps;
     memory = 1024;
     testScript = ''
-      ${mkImagePreamble { registryPath = imageRegistry; }}
+      ${mkImagePreamble {registryPath = imageRegistry;}}
 
       echo "==> Test: apm install server --system --image qcow2"
 
@@ -286,7 +289,7 @@ in
     rootfsDeps = testDeps;
     memory = 1024;
     testScript = ''
-      ${mkImagePreamble { registryPath = imageRegistry; }}
+      ${mkImagePreamble {registryPath = imageRegistry;}}
 
       echo "==> Test: apm show server lists available image formats"
 

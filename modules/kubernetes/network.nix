@@ -13,16 +13,14 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.kubernetes.network;
 
   # Format sysctl entries for the drop-in file.
   sysctlText = builtins.concatStringsSep "\n" (
     lib.mapAttrsToList (key: value: "${key} = ${value}") cfg.sysctl
   );
-in
-{
+in {
   options.aos.kubernetes.network = {
     ## Enable Kubernetes networking prerequisites.
     ##
@@ -120,7 +118,7 @@ in
       ];
     };
 
-    environment.systemPackages = [ pkgs.cni-plugins ];
+    environment.systemPackages = [pkgs.cni-plugins];
 
     # /etc/modules-load.d/k8s.conf — kernel modules to load at boot.
     environment.etc."modules-load.d/k8s.conf" = {
@@ -144,12 +142,12 @@ in
     # systemd service to load kernel modules at boot.
     systemd.services."k8s-modules-load" = {
       description = "Load Kubernetes Networking Kernel Modules";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
       before = [
         "containerd.service"
         "kubelet.service"
       ];
-      after = [ "systemd-modules-load.service" ];
+      after = ["systemd-modules-load.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -164,8 +162,8 @@ in
     # k8s sysctl file after the modules are in place.
     systemd.services."k8s-sysctl" = {
       description = "Apply Kubernetes Network Sysctls";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "k8s-modules-load.service" ];
+      wantedBy = ["multi-user.target"];
+      after = ["k8s-modules-load.service"];
       before = [
         "containerd.service"
         "kubelet.service"

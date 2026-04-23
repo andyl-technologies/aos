@@ -13,15 +13,14 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   # Import the VM test harness. All test tools are AOS packages.
   testTools = {
     qemu = pkgs.qemu;
     socat = pkgs.socat;
     jq = pkgs.jq;
   };
-  harness = import ../../lib/testing/vm.nix { inherit pkgs lib testTools; };
+  harness = import ../../lib/testing/vm.nix {inherit pkgs lib testTools;};
 
   # Proxy object that satisfies mkVMTest's `system` parameter interface.
   # mkVMTest reads: system.config.system.build.{toplevel,kernel}
@@ -29,11 +28,10 @@ let
   systemProxy = {
     inherit config;
   };
-in
-{
+in {
   options.system.build.checks = lib.mkOption {
     type = lib.types.attrsOf lib.types.package;
-    default = { };
+    default = {};
     description = ''
       VM test derivations generated from system.checks and
       system.cloudInitTests specifications. Each check group becomes
@@ -45,26 +43,28 @@ in
     # Module-defined VM checks (system.checks.*)
     builtins.mapAttrs (
       name: spec:
-      harness.mkVMTest {
-        inherit name;
-        system = systemProxy;
-        groupName = name;
-        checks = spec.checks;
-        instanceMetadata = spec.instanceMetadata;
-      }
-    ) config.system.checks
+        harness.mkVMTest {
+          inherit name;
+          system = systemProxy;
+          groupName = name;
+          checks = spec.checks;
+          instanceMetadata = spec.instanceMetadata;
+        }
+    )
+    config.system.checks
     # Cloud-init tests (system.cloudInitTests.*) — the 15 files under
     # modules/services/cloud-init-checks/ now return a plain attrset
     # `{ description; checks = [ {name; description; script;} ... ]; }`,
     # so `spec.checks.checks` is the flat list.
     // builtins.mapAttrs (
       name: spec:
-      harness.mkVMTest {
-        inherit name;
-        system = systemProxy;
-        groupName = name;
-        checks = spec.checks.checks;
-        userdata = spec.userdata;
-      }
-    ) config.system.cloudInitTests;
+        harness.mkVMTest {
+          inherit name;
+          system = systemProxy;
+          groupName = name;
+          checks = spec.checks.checks;
+          userdata = spec.userdata;
+        }
+    )
+    config.system.cloudInitTests;
 }
