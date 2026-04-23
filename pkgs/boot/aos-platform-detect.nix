@@ -37,21 +37,21 @@ mkDerivation {
     {
       name = "install";
       script = ''
-        mkdir -p $out/bin $out/lib/systemd/system
+        mkdir -p $out/bin
 
         cat > $out/bin/aos-platform-detect << 'SCRIPT'
         #!${bash}/bin/bash
         set -eu
 
-        mkdir -p /run/ignition
+        ${coreutils}/bin/mkdir -p /run/ignition
 
         # 1. Operator-placed ISO9660 override. Mount the filesystem at
         #    /run/aos-metadata so ignition's `file` platform reader can
         #    slurp config.json via IGNITION_CONFIG_FILE.
         if [ -e /dev/disk/by-label/aos-metadata ]; then
-            mkdir -p /run/aos-metadata
+            ${coreutils}/bin/mkdir -p /run/aos-metadata
             ${util-linux}/bin/mount -o ro /dev/disk/by-label/aos-metadata /run/aos-metadata
-            cat >/run/ignition/platform.env <<EOF
+            ${coreutils}/bin/cat >/run/ignition/platform.env <<EOF
         PLATFORM_ID=file
         IGNITION_CONFIG_FILE=/run/aos-metadata/config.json
         EOF
@@ -121,30 +121,11 @@ mkDerivation {
             platform=metal
         fi
 
-        cat >/run/ignition/platform.env <<EOF
+        ${coreutils}/bin/cat >/run/ignition/platform.env <<EOF
         PLATFORM_ID=$platform
         EOF
         SCRIPT
         chmod +x $out/bin/aos-platform-detect
-
-        cat > $out/lib/systemd/system/aos-platform-detect.service << 'UNIT'
-        [Unit]
-        Description=AOS platform auto-detect (ignition)
-        DefaultDependencies=no
-        Requires=systemd-udev-settle.service
-        After=systemd-udev-settle.service
-        Before=ignition-fetch.service
-
-        [Service]
-        Type=oneshot
-        RemainAfterExit=yes
-        ExecStart=/bin/aos-platform-detect
-        StandardOutput=journal+console
-        StandardError=journal+console
-
-        [Install]
-        WantedBy=initrd-root-fs.target
-        UNIT
       '';
     }
   ];
