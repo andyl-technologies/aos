@@ -163,7 +163,7 @@
               "boot-source": {
                 "kernel_image_path": "''${VMLINUX_${m.name}}",
                 "initrd_path": "''${INITRD_${m.name}}",
-                "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0"
+                "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0"
               },
               "drives": [
                 {
@@ -375,7 +375,7 @@
               -nographic \
               -kernel "''${VMLINUZ_${m.name}}" \
               -initrd "''${INITRD_${m.name}}" \
-              -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 ignition.platform.id=metal enforcing=0 net.ifnames=0" \
+              -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0 net.ifnames=0" \
               -drive file="$FLEET_DIR/${m.name}-disk.img",format=raw,if=virtio \
               -device virtio-serial \
               -device virtserialport,chardev=agent,name=aos.test.agent \
