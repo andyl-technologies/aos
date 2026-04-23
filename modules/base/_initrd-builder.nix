@@ -42,6 +42,7 @@
 }: let
   inherit
     (pkgs)
+    aos-growfs
     aos-platform-detect
     bash
     coreutils
@@ -59,6 +60,7 @@
   # Packages whose full runtime closures are copied into the initrd's
   # /nix/store. See the docstring at the top of this file for why.
   initrdPackages = [
+    aos-growfs
     aos-platform-detect
     bash
     coreutils
@@ -215,15 +217,10 @@
       bin = "aos-platform-detect";
       src = "bin";
     }
-  ];
-
-  # AOS-owned unit files shipped inside AOS packages (not systemd). The
-  # symlink loop below doesn't gate on the systemd path — the unit lives
-  # in the referenced package itself.
-  initrdAosUnits = [
     {
-      pkg = aos-platform-detect;
-      name = "aos-platform-detect.service";
+      pkg = aos-growfs;
+      bin = "aos-growfs";
+      src = "bin";
     }
   ];
 
@@ -309,20 +306,6 @@
       ln -sfn ${systemd}/lib/systemd/system/${u} root/lib/systemd/system/${u}
     '')
     initrdUpstreamUnits;
-
-  # Render AOS-owned unit symlinks into /lib/systemd/system. The source
-  # package's lib/systemd/system/ hosts the unit file; the symlink lets
-  # systemd find it alongside the upstream units.
-  aosUnitSymlinks =
-    lib.concatMapStringsSep "\n" (u: ''
-      if [ ! -e ${u.pkg}/lib/systemd/system/${u.name} ]; then
-        echo "initrd-builder: AOS unit missing: ${u.name} (from ${u.pkg})" >&2
-        exit 1
-      fi
-      ln -sfn ${u.pkg}/lib/systemd/system/${u.name} \
-        root/lib/systemd/system/${u.name}
-    '')
-    initrdAosUnits;
 
   generatorSymlinks =
     lib.concatMapStringsSep "\n" (g: ''
@@ -467,7 +450,6 @@ in
           # ── 6. Upstream systemd units and generators ───────────────────
           ${unitSymlinks}
           ${generatorSymlinks}
-          ${aosUnitSymlinks}
 
           # ── 7. Rendered initrd units from boot.initrd.systemd.* ────────
           # Matches generateUnits output — a directory whose entries are
@@ -579,6 +561,47 @@ in
           # ignition-validate: pre-boot config validator. Not invoked at
           # runtime; ignition itself does the actual provisioning.
           rm -f root/nix/store/*-ignition-*/bin/ignition-validate
+
+          # ukify + its Python dependency closure: only needed at image-
+          # build time to assemble the UKI, never in the initrd. Since
+          # ukify's shebang references python3 directly, the systemd
+          # closure drags in python3-3.14 (~200 MiB), pefile, and
+          # pyelftools.
+          rm -f root/nix/store/*-systemd-*/bin/ukify \
+                root/nix/store/*-systemd-*/bin/.ukify-unwrapped \
+                root/nix/store/*-systemd-*/lib/systemd/ukify
+          rm -rf root/nix/store/*-python3-3.* \
+                 root/nix/store/*-python3-pefile-* \
+                 root/nix/store/*-python3-pyelftools-*
+
+          # Bootstrap toolchain leftovers — intermediate gcc/binutils/
+          # glibc/coreutils versions used to build the current stdenv
+          # but referenced only via embedded debug paths and old
+          # RPATHs. Nothing in the initrd actually exec's them: the
+          # runtime binaries resolve glibc through their current
+          # $out/lib RPATH. Purge aggressively — reclaims roughly
+          # 1 GiB of uncompressed tmpfs footprint, which is what
+          # makes the initramfs extract fit inside a 2 GiB VM.
+          #
+          # Keep: the currently-linked glibc-2.39 (runtime for
+          # everything in the initrd), and all the gcc-wrapped
+          # paths that chain to it.
+          rm -rf root/nix/store/*-gcc-3.*  \
+                 root/nix/store/*-gcc-4.*  \
+                 root/nix/store/*-gcc-8.*  \
+                 root/nix/store/*-gcc-11.* \
+                 root/nix/store/*-gcc-14.3.0-stage2 \
+                 root/nix/store/*-gcc-14.3.0-wrapped \
+                 root/nix/store/*-binutils-2.20* \
+                 root/nix/store/*-binutils-2.25* \
+                 root/nix/store/*-binutils-2.30* \
+                 root/nix/store/*-binutils-2.41* \
+                 root/nix/store/*-glibc-2.12 \
+                 root/nix/store/*-glibc-2.2.5 \
+                 root/nix/store/*-coreutils-8.32 \
+                 root/nix/store/*-bash-4.2 \
+                 root/nix/store/*-linux-headers-2.6.* \
+                 root/nix/store/*-source
 
           # util-linux: man pages, zsh completion, etc.
           find root/nix/store -maxdepth 2 -type d -name '*-util-linux-*' -print0 \

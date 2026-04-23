@@ -97,6 +97,44 @@ in {
     # — disks happens before, mount/files after. Mirror that here.
     # See ignition/dracut/30ignition/*.service in the ignition repo.
     boot.initrd.systemd.services = {
+      "aos-platform-detect" = {
+        description = "AOS platform auto-detect (ignition)";
+        wantedBy = ["initrd-root-fs.target"];
+        before = ["ignition-fetch.service"];
+        requires = ["systemd-udev-settle.service"];
+        after = ["systemd-udev-settle.service"];
+        unitConfig.DefaultDependencies = "no";
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${pkgs.aos-platform-detect}/bin/aos-platform-detect";
+          StandardOutput = "journal+console";
+          StandardError = "journal+console";
+        };
+      };
+
+      "aos-growfs" = {
+        description = "Grow root-a ext4 filesystem to fill its partition";
+        wantedBy = ["initrd-root-fs.target"];
+        before = [
+          "sysroot.mount"
+          "initrd-root-fs.target"
+        ];
+        requires = ["ignition-disks.service"];
+        after = ["ignition-disks.service"];
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "/dev/disk/by-partlabel/root-a";
+        };
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${pkgs.aos-growfs}/bin/aos-growfs";
+          StandardOutput = "journal+console";
+          StandardError = "journal+console";
+        };
+      };
+
       "ignition-fetch" = {
         description = "Ignition (fetch)";
         wantedBy = ["initrd-root-fs.target"];
@@ -127,10 +165,14 @@ in {
           "initrd-root-fs.target"
           "sysroot.mount"
         ];
-        requires = ["systemd-udevd.service"];
+        requires = [
+          "systemd-udevd.service"
+          "aos-platform-detect.service"
+        ];
         after = [
           "ignition-fetch.service"
           "systemd-udevd.service"
+          "aos-platform-detect.service"
         ];
         environment.PATH = ignitionPath;
         serviceConfig = stageServiceConfig "disks";
@@ -144,11 +186,15 @@ in {
           "initrd-switch-root.target"
           "initrd-fs.target"
         ];
-        requires = ["initrd-root-fs.target"];
+        requires = [
+          "initrd-root-fs.target"
+          "aos-platform-detect.service"
+        ];
         after = [
           "ignition-disks.service"
           "sysroot.mount"
           "initrd-root-fs.target"
+          "aos-platform-detect.service"
         ];
         environment.PATH = ignitionPath;
         serviceConfig =
@@ -169,7 +215,11 @@ in {
           "initrd-switch-root.target"
           "initrd-fs.target"
         ];
-        after = ["ignition-mount.service"];
+        requires = ["aos-platform-detect.service"];
+        after = [
+          "ignition-mount.service"
+          "aos-platform-detect.service"
+        ];
         environment.PATH = ignitionPath;
         serviceConfig = stageServiceConfig "files";
       };
