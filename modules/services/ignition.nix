@@ -2,21 +2,26 @@
 ##!
 ##! Configures the Ignition first-boot provisioning tool. Ignition runs
 ##! inside the systemd-based initrd (`boot.initrd.systemd.services`)
-##! before the real root is mounted at `/sysroot`. On a QEMU platform
-##! Ignition reads its JSON config from the firmware-config device
-##! (`/sys/firmware/qemu_fw_cfg/by_name/opt/com.coreos/config/raw`,
-##! delivered via QEMU's `-fw_cfg name=opt/com.coreos/config,file=...`).
+##! before the real root is mounted at `/sysroot`. The platform is
+##! auto-detected at initrd time by `aos-platform-detect.service`,
+##! which writes `/run/ignition/platform.env`; every ignition stage
+##! unit inherits that env file and invokes
+##! `ignition --platform=${PLATFORM_ID}`.
 ##!
-##! A marker file at `/sysroot/boot/ignition.complete` guards against
-##! re-execution: Ignition only runs when the marker is absent.
+##! When the detector finds a `/dev/disk/by-label/aos-metadata` ISO9660
+##! filesystem (test harness or operator IPMI virtual media), it mounts
+##! it at `/run/aos-metadata`, writes `PLATFORM_ID=file` +
+##! `IGNITION_CONFIG_FILE=/run/aos-metadata/config.json` — ignition's
+##! `file` provider reads the env var directly, so no HTTP plumbing.
+##!
+##! A marker file at `/sysroot/var/etc/.ignition-result.json` (compiled
+##! in as `resultFilePath`) guards against re-execution; ignition runs
+##! idempotently on subsequent boots.
 ##!
 ##! Paired with:
 ##!   - `mount-var.service`         — mounts /var partition (created by
-##!                                    Ignition) before ignition-files so
-##!                                    writes to /var/etc/* succeed; the
-##!                                    mount persists through switch-root
-##!   - `etc-overlay-setup.service` — /etc overlay with /var/etc as an
-##!                                    additional lower layer
+##!                                    Ignition) before ignition-files
+##!   - `etc-overlay-setup.service` — /etc overlay with /var/etc + /etc.lower
 {
   config,
   pkgs,
@@ -25,18 +30,11 @@
 }: let
   cfg = config.aos.services.ignition;
 
-  # Ignition shells out to external tools at each stage: `modprobe`
-  # to load qemu_fw_cfg, `mount`/`umount`, `sgdisk`/`blkid`/`wipefs`,
-  # `mkfs.ext4`, etc. It looks them up via $PATH, so every service
-  # needs the common sysutil dirs on PATH. Most of these tools ship
-  # in sbin rather than bin (kmod, util-linux admin tools, e2fsprogs,
-  # cryptsetup), so we concatenate bin + sbin across the relevant
-  # packages via lib.makeBinPath / lib.makeSearchPath.
-  # Ignition's per-stage commands come from internal/distro/distro.go
-  # in the upstream repo: sgdisk (gptfdisk), partx/wipefs/mount/umount
-  # (util-linux), modprobe (kmod), udevadm (systemd), mkfs.ext4
-  # (e2fsprogs), mkfs.fat (dosfstools), cryptsetup, and a handful of
-  # coreutils/bash staples.
+  # Ignition shells out to external tools at each stage: `modprobe`,
+  # `mount`/`umount`, `sgdisk`/`blkid`/`wipefs`, `mkfs.ext4`, etc.
+  # It looks them up via $PATH. sbin lookups are covered by the
+  # `lib.makeSearchPath "sbin"` side. Upstream reference for which
+  # commands each stage invokes: internal/distro/distro.go.
   ignitionTools = [
     pkgs.kmod
     pkgs.util-linux
@@ -47,35 +45,23 @@
     pkgs.systemd
     pkgs.coreutils
     pkgs.bash
-    # iproute2 for the test-metadata mount unit's `ip link set lo up`.
-    # Production boots skip that unit via ConditionPathExists.
-    pkgs.iproute2
   ];
   ignitionPath = lib.concatStringsSep ":" [
     (lib.makeBinPath ignitionTools)
     (lib.makeSearchPath "sbin" ignitionTools)
   ];
 
-  # Ignition 2.x requires `--platform=<name>` on the command line — it does
-  # not read `ignition.platform.id=` from /proc/cmdline itself (upstream's
-  # dracut module is what parses the karg and then invokes ignition with
-  # the flag). Mirror that behaviour here so the image's platform can be
-  # driven by the kernel cmdline (see `aos.boot.kernelParams`), which lets
-  # the VM test harness override it to `metal` without rebuilding the image.
-  ignitionWrapper = pkgs.writeShellScriptBin "ignition-platform-wrapper" ''
-    set -e
-    platform=""
-    for arg in $(cat /proc/cmdline); do
-      case "$arg" in
-        ignition.platform.id=*) platform="''${arg#ignition.platform.id=}" ;;
-      esac
-    done
-    if [ -z "$platform" ]; then
-      echo "ignition-platform-wrapper: ignition.platform.id= missing from /proc/cmdline" >&2
-      exit 2
-    fi
-    exec ${pkgs.ignition}/bin/ignition --platform="$platform" "$@"
-  '';
+  # Shared config for every ignition stage unit: inherit the platform
+  # env from aos-platform-detect, wire PATH for the shell-outs, and
+  # run a oneshot that stays active across subsequent stages.
+  stageServiceConfig = stage: {
+    Type = "oneshot";
+    RemainAfterExit = true;
+    EnvironmentFile = "/run/ignition/platform.env";
+    ExecStart = "${pkgs.ignition}/bin/ignition --platform=\${PLATFORM_ID} --root=/sysroot --stage=${stage} --log-to-stdout";
+    StandardOutput = "journal+console";
+    StandardError = "journal+console";
+  };
 in {
   options.aos.services.ignition = {
     ## Enable Ignition first-boot provisioning.
@@ -88,59 +74,11 @@ in {
         during the initrd phase (partitioning, filesystem creation,
         file writes). If Ignition fails the system does not boot — no
         partially-configured machines.
-      '';
-    };
 
-    ## Ignition platform name.
-    platform = lib.mkOption {
-      # Valid platform names come from the ignition binary itself —
-      # `ignition --help` prints the full list under `-platform value`.
-      # The enum is kept verbatim from ignition 2.25.1 so misspelling
-      # a platform fails at eval time instead of at initrd boot.
-      type = lib.types.enum [
-        "akamai"
-        "aliyun"
-        "applehv"
-        "aws"
-        "azure"
-        "azurestack"
-        "brightbox"
-        "cloudstack"
-        "digitalocean"
-        "exoscale"
-        "file"
-        "gcp"
-        "hetzner"
-        "hyperv"
-        "ibmcloud"
-        "kubevirt"
-        "metal"
-        "nutanix"
-        "nvidiabluefield"
-        "openstack"
-        "oraclecloud"
-        "packet"
-        "powervs"
-        "proxmoxve"
-        "qemu"
-        "scaleway"
-        "upcloud"
-        "virtualbox"
-        "vmware"
-        "vultr"
-        "zvm"
-      ];
-      default = "qemu";
-      description = ''
-        Ignition platform. Contributed to the image's kernel cmdline as
-        `ignition.platform.id=<name>`; ignition's initrd services read
-        it from /proc/cmdline (no --platform= flag on the ExecStart).
-        Determines how Ignition locates its config:
-          - "qemu"      — QEMU fw_cfg device (used for VM testing)
-          - "aws"/"gcp" — cloud instance metadata services
-          - "metal"     — baremetal (systemd credentials or kargs)
-        See https://coreos.github.io/ignition/supported-platforms/ for
-        the full list.
+        The platform is auto-detected at initrd time by
+        aos-platform-detect.service (DMI-based with an ISO9660
+        operator override). No configuration required for standard
+        clouds; bare-metal installs fall through to the `metal` provider.
       '';
     };
   };
@@ -149,14 +87,6 @@ in {
     # Ignition ships the binary in every stage-2 installation too so
     # operators can re-run or inspect state after first boot.
     environment.systemPackages = [pkgs.ignition];
-
-    # Ignition discovers its platform from the kernel cmdline when no
-    # --platform= flag is passed on the ExecStart — contribute the arg
-    # here so it flows through `aos.boot.kernelParams` into the image's
-    # boot loader entry. The VM test harness overrides this with
-    # `ignition.platform.id=metal` on its own cmdline (metal is the only
-    # platform that reads `ignition.config.url=` from kargs).
-    aos.boot.kernelParams = ["ignition.platform.id=${cfg.platform}"];
 
     # Initrd services. The cpio assembler in modules/base/initrd-builder.nix
     # picks these up via `system.build.systemdInitrdUnits`.
@@ -178,22 +108,15 @@ in {
         requires = [
           "systemd-modules-load.service"
           "systemd-udevd.service"
+          "aos-platform-detect.service"
         ];
         after = [
           "systemd-modules-load.service"
           "systemd-udevd.service"
+          "aos-platform-detect.service"
         ];
-        # Ignition shells out to modprobe / mount / blkid etc. at each
-        # stage; it expects to find them on PATH, not at absolute paths.
-        # PATH is inherited in its entirety across services below.
         environment.PATH = ignitionPath;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = "${ignitionWrapper}/bin/ignition-platform-wrapper --root=/sysroot --stage=fetch --log-to-stdout";
-          StandardOutput = "journal+console";
-          StandardError = "journal+console";
-        };
+        serviceConfig = stageServiceConfig "fetch";
       };
 
       "ignition-disks" = {
@@ -210,13 +133,7 @@ in {
           "systemd-udevd.service"
         ];
         environment.PATH = ignitionPath;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = "${ignitionWrapper}/bin/ignition-platform-wrapper --root=/sysroot --stage=disks --log-to-stdout";
-          StandardOutput = "journal+console";
-          StandardError = "journal+console";
-        };
+        serviceConfig = stageServiceConfig "disks";
       };
 
       "ignition-mount" = {
@@ -234,17 +151,14 @@ in {
           "initrd-root-fs.target"
         ];
         environment.PATH = ignitionPath;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = "${ignitionWrapper}/bin/ignition-platform-wrapper --root=/sysroot --stage=mount --log-to-stdout";
-          # Run umount on service stop (i.e. during initrd-cleanup)
-          # so filesystems ignition mounted are torn down cleanly
-          # before switch_root. Matches upstream's ignition-mount.service.
-          ExecStop = "${ignitionWrapper}/bin/ignition-platform-wrapper --root=/sysroot --stage=umount --log-to-stdout";
-          StandardOutput = "journal+console";
-          StandardError = "journal+console";
-        };
+        serviceConfig =
+          stageServiceConfig "mount"
+          // {
+            # Run umount on service stop (i.e. during initrd-cleanup)
+            # so filesystems ignition mounted are torn down cleanly
+            # before switch_root. Matches upstream ignition-mount.service.
+            ExecStop = "${pkgs.ignition}/bin/ignition --platform=\${PLATFORM_ID} --root=/sysroot --stage=umount --log-to-stdout";
+          };
       };
 
       "ignition-files" = {
@@ -257,18 +171,7 @@ in {
         ];
         after = ["ignition-mount.service"];
         environment.PATH = ignitionPath;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          # Ignition writes its own stamp to /var/etc/.ignition-result.json
-          # (compiled-in override of resultFilePath; see
-          # pkgs/boot/ignition.nix). That stamp lives on the persistent
-          # ext4 root, and on subsequent boots ignition detects it and
-          # runs idempotently. No external marker file needed.
-          ExecStart = "${ignitionWrapper}/bin/ignition-platform-wrapper --root=/sysroot --stage=files --log-to-stdout";
-          StandardOutput = "journal+console";
-          StandardError = "journal+console";
-        };
+        serviceConfig = stageServiceConfig "files";
       };
 
       # Mount the /var partition created by ignition-disks so that
@@ -384,91 +287,6 @@ in {
             -o nosuid,nodev,lowerdir="$sysroot/var/etc:$sysroot/etc.lower",upperdir="$sysroot/run/etc-upper/upper",workdir="$sysroot/run/etc-upper/work" \
             "$sysroot/etc"
         '';
-      };
-
-      # ── AOS test-metadata path (gated on /dev/disk/by-label/aos-metadata) ──
-      #
-      # These units exist in every ignition-enabled image but only fire when
-      # a disk labelled `aos-metadata` is present — which the test harness
-      # attaches as a second virtio-blk drive when `instanceMetadata != null`.
-      # On production boots the label never appears and the three units skip.
-
-      # Mount the per-test metadata ext4 disk read-only at /run/metadata, and
-      # bring the loopback interface up so ignition-fetch can reach the
-      # localhost HTTP handler below. Stage-2 `systemd-networkd` would
-      # normally handle lo, but that runs much later than ignition-fetch.
-      "aos-test-metadata-mount" = {
-        description = "Mount AOS test metadata disk";
-        wantedBy = ["initrd-fs.target"];
-        before = [
-          "aos-test-metadata.socket"
-          "ignition-fetch.service"
-        ];
-        after = ["systemd-udev-settle.service"];
-        requires = ["systemd-udev-settle.service"];
-        unitConfig = {
-          ConditionPathExists = "/dev/disk/by-label/aos-metadata";
-          DefaultDependencies = "no";
-        };
-        environment.PATH = ignitionPath;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-        script = ''
-          set -euo pipefail
-          mkdir -p /run/metadata
-          mount -o ro /dev/disk/by-label/aos-metadata /run/metadata
-          ip link set lo up
-        '';
-      };
-
-      # Templated handler invoked once per accepted connection on the
-      # `aos-test-metadata.socket` below (`Accept=yes`). systemd attaches
-      # the accepted connection to stdin/stdout so the script just writes
-      # the HTTP response to stdout. Using `script = ...` lets the AOS
-      # systemd-lib wrap the body in a proper store-path ExecStart.
-      #
-      # The handler uses absolute store paths rather than depending on
-      # PATH — the templated service has no PATH set, so shell builtins
-      # + explicit /nix/store/... references are the only portable way
-      # to read the JSON and emit the HTTP response.
-      "aos-test-metadata@" = {
-        description = "AOS test metadata HTTP handler";
-        unitConfig = {
-          DefaultDependencies = "no";
-        };
-        serviceConfig = {
-          StandardInput = "socket";
-          StandardOutput = "socket";
-          Type = "oneshot";
-        };
-        script = ''
-          body=$(${pkgs.coreutils}/bin/cat /run/metadata/config.json)
-          len=''${#body}
-          printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
-            "$len" "$body"
-        '';
-      };
-    };
-
-    # Socket-activated metadata server. `Accept=yes` spawns one
-    # aos-test-metadata@<instance>.service per connection (systemd
-    # supplies the accepted fd on stdin/stdout). Same ConditionPathExists
-    # as the mount unit so the whole chain skips on production boots.
-    boot.initrd.systemd.sockets."aos-test-metadata" = {
-      description = "AOS test metadata HTTP socket";
-      wantedBy = ["sockets.target"];
-      before = ["ignition-fetch.service"];
-      after = ["aos-test-metadata-mount.service"];
-      requires = ["aos-test-metadata-mount.service"];
-      unitConfig = {
-        ConditionPathExists = "/dev/disk/by-label/aos-metadata";
-        DefaultDependencies = "no";
-      };
-      socketConfig = {
-        ListenStream = "127.0.0.1:8080";
-        Accept = "yes";
       };
     };
   };

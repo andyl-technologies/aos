@@ -42,6 +42,7 @@
 }: let
   inherit
     (pkgs)
+    aos-platform-detect
     bash
     coreutils
     cpio
@@ -49,7 +50,6 @@
     e2fsprogs
     findutils
     ignition
-    iproute2
     kmod
     pigz
     systemd
@@ -58,20 +58,13 @@
 
   # Packages whose full runtime closures are copied into the initrd's
   # /nix/store. See the docstring at the top of this file for why.
-  #
-  # `iproute2` is pulled in so the ignition test-metadata mount unit
-  # (modules/services/ignition.nix) can `ip link set lo up` before the
-  # socket-activated HTTP handler binds 127.0.0.1:8080. On production
-  # boots the condition-gated units skip and `ip` is never invoked, but
-  # it's in the closure either way — small enough that a conditional
-  # include isn't worth the complexity.
   initrdPackages = [
+    aos-platform-detect
     bash
     coreutils
     cryptsetup
     e2fsprogs
     ignition
-    iproute2
     kmod
     systemd
     util-linux
@@ -218,9 +211,19 @@
       src = "bin";
     }
     {
-      pkg = iproute2;
-      bin = "ip";
-      src = "sbin";
+      pkg = aos-platform-detect;
+      bin = "aos-platform-detect";
+      src = "bin";
+    }
+  ];
+
+  # AOS-owned unit files shipped inside AOS packages (not systemd). The
+  # symlink loop below doesn't gate on the systemd path — the unit lives
+  # in the referenced package itself.
+  initrdAosUnits = [
+    {
+      pkg = aos-platform-detect;
+      name = "aos-platform-detect.service";
     }
   ];
 
@@ -306,6 +309,20 @@
       ln -sfn ${systemd}/lib/systemd/system/${u} root/lib/systemd/system/${u}
     '')
     initrdUpstreamUnits;
+
+  # Render AOS-owned unit symlinks into /lib/systemd/system. The source
+  # package's lib/systemd/system/ hosts the unit file; the symlink lets
+  # systemd find it alongside the upstream units.
+  aosUnitSymlinks =
+    lib.concatMapStringsSep "\n" (u: ''
+      if [ ! -e ${u.pkg}/lib/systemd/system/${u.name} ]; then
+        echo "initrd-builder: AOS unit missing: ${u.name} (from ${u.pkg})" >&2
+        exit 1
+      fi
+      ln -sfn ${u.pkg}/lib/systemd/system/${u.name} \
+        root/lib/systemd/system/${u.name}
+    '')
+    initrdAosUnits;
 
   generatorSymlinks =
     lib.concatMapStringsSep "\n" (g: ''
@@ -450,6 +467,7 @@ in
           # ── 6. Upstream systemd units and generators ───────────────────
           ${unitSymlinks}
           ${generatorSymlinks}
+          ${aosUnitSymlinks}
 
           # ── 7. Rendered initrd units from boot.initrd.systemd.* ────────
           # Matches generateUnits output — a directory whose entries are
