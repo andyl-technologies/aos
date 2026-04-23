@@ -11,8 +11,7 @@
   gnumake,
   bootstrapTools,
   glibc,
-}:
-let
+}: let
   version = "1.14.1";
   src = fetchurl {
     urls = [
@@ -28,41 +27,41 @@ let
     }
   ];
 in
-mkCargoPackage {
-  pname = "firecracker";
-  inherit version src;
+  mkCargoPackage {
+    pname = "firecracker";
+    inherit version src;
 
-  cargoDeps = fetchCargoDeps {
-    inherit src;
-    # Firecracker has a git dependency on micro_http — fetch via builtins.fetchGit
-    # and patch Cargo.toml to use a local path instead.
+    cargoDeps = fetchCargoDeps {
+      inherit src;
+      # Firecracker has a git dependency on micro_http — fetch via builtins.fetchGit
+      # and patch Cargo.toml to use a local path instead.
+      gitDeps = microHttpGitDeps;
+      hash = "sha256-eGkw6H4DB42osPimndIch63k9vQyA4d5h8ylV1Ptau4=";
+    };
+
+    # Pass gitDeps so cargo build config also replaces the git source
     gitDeps = microHttpGitDeps;
-    hash = "sha256-eGkw6H4DB42osPimndIch63k9vQyA4d5h8ylV1Ptau4=";
-  };
 
-  # Pass gitDeps so cargo build config also replaces the git source
-  gitDeps = microHttpGitDeps;
+    buildDeps = [
+      llvm
+      linux-headers
+      cmake
+      gnumake
+    ];
 
-  buildDeps = [
-    llvm
-    linux-headers
-    cmake
-    gnumake
-  ];
+    # bindgen needs libclang.so and system headers
+    LIBCLANG_PATH = "${llvm}/lib";
+    BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${glibc}/include -isystem ${linux-headers}/include";
 
-  # bindgen needs libclang.so and system headers
-  LIBCLANG_PATH = "${llvm}/lib";
-  BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${glibc}/include -isystem ${linux-headers}/include";
+    # Build only the firecracker binary from the workspace
+    cargoFlags = "-p firecracker";
+    doCheck = false;
 
-  # Build only the firecracker binary from the workspace
-  cargoFlags = "-p firecracker";
-  doCheck = false;
+    runtimeDeps = [libseccomp];
 
-  runtimeDeps = [ libseccomp ];
-
-  meta = {
-    description = "Firecracker — lightweight virtual machine monitor for serverless workloads";
-    homepage = "https://github.com/firecracker-microvm/firecracker";
-    license = "Apache-2.0";
-  };
-}
+    meta = {
+      description = "Firecracker — lightweight virtual machine monitor for serverless workloads";
+      homepage = "https://github.com/firecracker-microvm/firecracker";
+      license = "Apache-2.0";
+    };
+  }

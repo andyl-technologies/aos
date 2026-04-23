@@ -9,8 +9,7 @@
   python3,
   zlib,
   bootstrapTools,
-}:
-{
+}: {
   version,
   srcHash,
   # Projects (LLVM_ENABLE_PROJECTS)
@@ -34,59 +33,57 @@
   ],
   # Version-specific workarounds
   needsArc4randomFix ? true,
-  extraCmakeFlags ? [ ],
-}:
-let
+  extraCmakeFlags ? [],
+}: let
   projectsStr = builtins.concatStringsSep ";" projects;
   runtimesStr = builtins.concatStringsSep ";" runtimes;
   targetsStr = builtins.concatStringsSep ";" targets;
   extraFlagsStr = builtins.concatStringsSep " " extraCmakeFlags;
 in
-mkDerivation {
-  pname = "llvm";
-  inherit version;
+  mkDerivation {
+    pname = "llvm";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz"
+      ];
+      hash = srcHash;
+    };
+
+    buildDeps = [
+      gnumake
+      cmake
+      ninja
+      python3
     ];
-    hash = srcHash;
-  };
+    runtimeDeps = [zlib];
 
-  buildDeps = [
-    gnumake
-    cmake
-    ninja
-    python3
-  ];
-  runtimeDeps = [ zlib ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd llvm-project-${version}.src
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ${
-          if needsArc4randomFix then
-            ''
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd llvm-project-${version}.src
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ${
+            if needsArc4randomFix
+            then ''
               # Fix arc4random not being visible in C++ — include stdlib.h directly
               sed -i '/#include.*Process\.inc/i #include <stdlib.h>' llvm/lib/Support/Process.cpp 2>/dev/null || true
               if grep -q 'arc4random' llvm/lib/Support/Unix/Process.inc; then
                 sed -i '1i #include <stdlib.h>' llvm/lib/Support/Unix/Process.inc
               fi
             ''
-          else
-            ""
-        }
-        ${
-          if runtimes != [ ] then
-            ''
+            else ""
+          }
+          ${
+            if runtimes != []
+            then ''
               # Create clang config file so the just-built clang finds AOS
               # GCC toolchain and libraries when building runtimes.
               # Read real GCC/glibc paths from ccWrapper's nix-support files.
@@ -112,75 +109,77 @@ mkDerivation {
                 echo "-Wl,-rpath,$REAL_CC/lib"
               } > build/clang-cfg/x86_64-unknown-linux-gnu.cfg
             ''
-          else
-            ""
-        }
-        cmake -S llvm -B build -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_INSTALL_PREFIX=$out \
-          -DLLVM_ENABLE_PROJECTS="${projectsStr}" \
-          ${
-            if runtimes != [ ] then ''-DLLVM_ENABLE_RUNTIMES="${runtimesStr}"'' else ""
+            else ""
+          }
+          cmake -S llvm -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$out \
+            -DLLVM_ENABLE_PROJECTS="${projectsStr}" \
+            ${
+            if runtimes != []
+            then ''-DLLVM_ENABLE_RUNTIMES="${runtimesStr}"''
+            else ""
           } \
-          -DLLVM_TARGETS_TO_BUILD="${targetsStr}" \
-          -DLLVM_LINK_LLVM_DYLIB=ON \
-          -DLLVM_INSTALL_UTILS=ON \
-          -DLLVM_ENABLE_ZLIB=FORCE_ON \
-          -DZLIB_INCLUDE_DIR=${zlib}/include \
-          -DZLIB_LIBRARY=${zlib}/lib/libz.so \
-          -DLLVM_ENABLE_TERMINFO=OFF \
-          -DLLVM_ENABLE_LIBXML2=OFF \
-          -DLLVM_ENABLE_LIBEDIT=OFF \
-          -DLLVM_INCLUDE_BENCHMARKS=OFF \
-          -DLLVM_INCLUDE_EXAMPLES=OFF \
-          -DLLVM_INCLUDE_TESTS=OFF \
-          -DLLVM_INCLUDE_DOCS=OFF \
-          -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
-          ${
-            if runtimes != [ ] then
-              ''
-                -DDEFAULT_SYSROOT=/ \
-                -DCLANG_CONFIG_FILE_SYSTEM_DIR=$PWD/build/clang-cfg \
-              ''
-            else
-              ""
+            -DLLVM_TARGETS_TO_BUILD="${targetsStr}" \
+            -DLLVM_LINK_LLVM_DYLIB=ON \
+            -DLLVM_INSTALL_UTILS=ON \
+            -DLLVM_ENABLE_ZLIB=FORCE_ON \
+            -DZLIB_INCLUDE_DIR=${zlib}/include \
+            -DZLIB_LIBRARY=${zlib}/lib/libz.so \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_LIBEDIT=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
+            ${
+            if runtimes != []
+            then ''
+              -DDEFAULT_SYSROOT=/ \
+              -DCLANG_CONFIG_FILE_SYSTEM_DIR=$PWD/build/clang-cfg \
+            ''
+            else ""
           } \
-          ${if needsArc4randomFix then "-DHAVE_DECL_ARC4RANDOM=0" else ""} \
-          ${extraFlagsStr}
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        ninja -C build -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        ninja -C build install
+            ${
+            if needsArc4randomFix
+            then "-DHAVE_DECL_ARC4RANDOM=0"
+            else ""
+          } \
+            ${extraFlagsStr}
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          ninja -C build -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          ninja -C build install
 
-        # LLVM 22 moved PassPlugin.h from llvm/Passes/ to llvm/Plugins/.
-        # Create backward-compat symlink for consumers expecting the old path
-        # (e.g. Rust's llvm-wrapper/PassWrapper.cpp).
-        if [ -f "$out/include/llvm/Plugins/PassPlugin.h" ] && \
-           [ ! -f "$out/include/llvm/Passes/PassPlugin.h" ]; then
-          ln -s ../Plugins/PassPlugin.h "$out/include/llvm/Passes/PassPlugin.h"
-        fi
-      '';
-    }
-  ];
+          # LLVM 22 moved PassPlugin.h from llvm/Passes/ to llvm/Plugins/.
+          # Create backward-compat symlink for consumers expecting the old path
+          # (e.g. Rust's llvm-wrapper/PassWrapper.cpp).
+          if [ -f "$out/include/llvm/Plugins/PassPlugin.h" ] && \
+             [ ! -f "$out/include/llvm/Passes/PassPlugin.h" ]; then
+            ln -s ../Plugins/PassPlugin.h "$out/include/llvm/Passes/PassPlugin.h"
+          fi
+        '';
+      }
+    ];
 
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       compile-c = testing.mkVMTest {
         name = "toolchain-llvm-compile-c";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           cat > /tmp/hello.c << 'EOF'
           #include <stdio.h>
@@ -208,7 +207,7 @@ mkDerivation {
 
       compile-cpp = testing.mkVMTest {
         name = "toolchain-llvm-compile-cpp";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           cat > /tmp/test.cpp << 'EOF'
           #include <iostream>
@@ -245,7 +244,7 @@ mkDerivation {
 
       libllvm = testing.mkVMTest {
         name = "toolchain-llvm-libllvm";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           LLVM="${builtins.toString self}"
 
@@ -266,7 +265,7 @@ mkDerivation {
 
       tools = testing.mkVMTest {
         name = "toolchain-llvm-tools";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           cat > /tmp/tiny.c << 'EOF'
           int main(void) { return 0; }
@@ -343,9 +342,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "LLVM ${version} compiler infrastructure";
-    homepage = "https://llvm.org";
-    license = "Apache-2.0";
-  };
-}
+    meta = {
+      description = "LLVM ${version} compiler infrastructure";
+      homepage = "https://llvm.org";
+      license = "Apache-2.0";
+    };
+  }

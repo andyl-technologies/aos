@@ -13,149 +13,146 @@
   rust-1_92,
   openssl,
   zlib,
-}:
-let
+}: let
   version = "1.93.1";
 in
-mkDerivation {
-  pname = "rust";
-  inherit version;
+  mkDerivation {
+    pname = "rust";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
+      ];
+      hash = "sha256-TCMKRLPZyfPO+VCUNxn4OABY0nyR/aXjapqUfvAT4B8=";
+    };
+
+    buildDeps = [
+      gnumake
+      cmake
+      ninja
+      pkg-config
+      python3
+      bash
+      which
+      rust-1_92
+      llvm
+      openssl
     ];
-    hash = "sha256-TCMKRLPZyfPO+VCUNxn4OABY0nyR/aXjapqUfvAT4B8=";
-  };
+    runtimeDeps = [
+      llvm
+      zlib
+    ];
 
-  buildDeps = [
-    gnumake
-    cmake
-    ninja
-    pkg-config
-    python3
-    bash
-    which
-    rust-1_92
-    llvm
-    openssl
-  ];
-  runtimeDeps = [
-    llvm
-    zlib
-  ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd rustc-${version}-src
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          # Fix arc4random: cmake detects it in glibc but the header doesn't declare it
+          sed -i 's/check_symbol_exists(arc4random "stdlib.h" HAVE_DECL_ARC4RANDOM)/set(HAVE_DECL_ARC4RANDOM 0 CACHE BOOL "")/' \
+            src/llvm-project/llvm/cmake/config-ix.cmake 2>/dev/null || true
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd rustc-${version}-src
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        # Fix arc4random: cmake detects it in glibc but the header doesn't declare it
-        sed -i 's/check_symbol_exists(arc4random "stdlib.h" HAVE_DECL_ARC4RANDOM)/set(HAVE_DECL_ARC4RANDOM 0 CACHE BOOL "")/' \
-          src/llvm-project/llvm/cmake/config-ix.cmake 2>/dev/null || true
+          # Fake git — must return exit 1 to avoid canonicalize("") panic
+          mkdir -p .fake-bin
+          printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
+          chmod +x .fake-bin/git
+          export PATH="$PWD/.fake-bin:$PATH"
+          cat > bootstrap.toml << TOML
+          change-id = 148795
 
-        # Fake git — must return exit 1 to avoid canonicalize("") panic
-        mkdir -p .fake-bin
-        printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
-        chmod +x .fake-bin/git
-        export PATH="$PWD/.fake-bin:$PATH"
-        cat > bootstrap.toml << TOML
-        change-id = 148795
+          [llvm]
+          link-shared = true
+          download-ci-llvm = false
 
-        [llvm]
-        link-shared = true
-        download-ci-llvm = false
+          [build]
+          docs = false
+          extended = true
+          tools = ["cargo"]
+          vendor = true
+          cargo = "${rust-1_92}/bin/cargo"
+          rustc = "${rust-1_92}/bin/rustc"
 
-        [build]
-        docs = false
-        extended = true
-        tools = ["cargo"]
-        vendor = true
-        cargo = "${rust-1_92}/bin/cargo"
-        rustc = "${rust-1_92}/bin/rustc"
+          [install]
+          prefix = "$out"
+          sysconfdir = "etc"
 
-        [install]
-        prefix = "$out"
-        sysconfdir = "etc"
+          [rust]
+          channel = "stable"
+          codegen-units = 0
+          rpath = true
+          omit-git-hash = true
+          download-rustc = false
+          lld = false
+          use-lld = false
 
-        [rust]
-        channel = "stable"
-        codegen-units = 0
-        rpath = true
-        omit-git-hash = true
-        download-rustc = false
-        lld = false
-        use-lld = false
+          [target.x86_64-unknown-linux-gnu]
+          llvm-config = "${llvm}/bin/llvm-config"
 
-        [target.x86_64-unknown-linux-gnu]
-        llvm-config = "${llvm}/bin/llvm-config"
+          [target.aarch64-unknown-linux-gnu]
+          llvm-config = "${llvm}/bin/llvm-config"
+          TOML
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          export PATH="$PWD/.fake-bin:$PATH"
+          export OPENSSL_DIR=${openssl}
+          export OPENSSL_LIB_DIR=${openssl}/lib
+          export OPENSSL_INCLUDE_DIR=${openssl}/include
+          export OPENSSL_NO_VENDOR=1
+          export OPENSSL_STATIC=0
+          python3 x.py build -j $NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+                  export PATH="$PWD/.fake-bin:$PATH"
+                  export OPENSSL_DIR=${openssl}
+                  export OPENSSL_LIB_DIR=${openssl}/lib
+                  export OPENSSL_INCLUDE_DIR=${openssl}/include
+                  export OPENSSL_NO_VENDOR=1
+                  export OPENSSL_STATIC=0
+                  python3 x.py install
 
-        [target.aarch64-unknown-linux-gnu]
-        llvm-config = "${llvm}/bin/llvm-config"
-        TOML
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        export PATH="$PWD/.fake-bin:$PATH"
-        export OPENSSL_DIR=${openssl}
-        export OPENSSL_LIB_DIR=${openssl}/lib
-        export OPENSSL_INCLUDE_DIR=${openssl}/include
-        export OPENSSL_NO_VENDOR=1
-        export OPENSSL_STATIC=0
-        python3 x.py build -j $NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        export PATH="$PWD/.fake-bin:$PATH"
-        export OPENSSL_DIR=${openssl}
-        export OPENSSL_LIB_DIR=${openssl}/lib
-        export OPENSSL_INCLUDE_DIR=${openssl}/include
-        export OPENSSL_NO_VENDOR=1
-        export OPENSSL_STATIC=0
-        python3 x.py install
+                  # No patchelf available — use wrapper scripts
+                  LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${llvm}/lib:${openssl}/lib:${zlib}/lib"
 
-        # No patchelf available — use wrapper scripts
-        LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${llvm}/lib:${openssl}/lib:${zlib}/lib"
+                  for f in $out/bin/*; do
+                    if [ -f "$f" ] && [ ! -L "$f" ]; then
+                      if head -c4 "$f" | grep -q "ELF"; then
+                        mv "$f" "$f.unwrapped"
+                        cat > "$f" <<WRAP
+          #!/bin/sh
+          export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
+          exec "$f.unwrapped" "\$@"
+          WRAP
+                        chmod +x "$f"
+                      elif head -1 "$f" | grep -q '^#!'; then
+                        sed -i "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" "$f"
+                      fi
+                    fi
+                  done
+        '';
+      }
+    ];
 
-        for f in $out/bin/*; do
-          if [ -f "$f" ] && [ ! -L "$f" ]; then
-            if head -c4 "$f" | grep -q "ELF"; then
-              mv "$f" "$f.unwrapped"
-              cat > "$f" <<WRAP
-#!/bin/sh
-export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
-exec "$f.unwrapped" "\$@"
-WRAP
-              chmod +x "$f"
-            elif head -1 "$f" | grep -q '^#!'; then
-              sed -i "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" "$f"
-            fi
-          fi
-        done
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       hello = testing.mkVMTest {
         name = "toolchain-rust-hello";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           cat > /tmp/hello.rs << 'EOF'
@@ -173,7 +170,7 @@ WRAP
 
       cargo = testing.mkVMTest {
         name = "toolchain-rust-cargo";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export CARGO_HOME="/tmp/cargo"
@@ -206,7 +203,7 @@ WRAP
 
       bootstrap-chain = testing.mkVMTest {
         name = "toolchain-rust-bootstrap-chain";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           # Verify rustc and cargo versions
@@ -240,7 +237,7 @@ WRAP
 
       build = testing.mkVMTest {
         name = "cross-cutting-rust-build";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         memory = 512;
         testScript = ''
           export PATH="${self}/bin:$PATH"
@@ -310,9 +307,9 @@ WRAP
       };
     };
 
-  meta = {
-    description = "Rust programming language — compiler and cargo";
-    homepage = "https://www.rust-lang.org";
-    license = "MIT OR Apache-2.0";
-  };
-}
+    meta = {
+      description = "Rust programming language — compiler and cargo";
+      homepage = "https://www.rust-lang.org";
+      license = "MIT OR Apache-2.0";
+    };
+  }

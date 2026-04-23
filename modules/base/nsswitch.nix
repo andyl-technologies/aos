@@ -12,11 +12,9 @@
   config,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.nsswitch;
-in
-{
+in {
   options.aos.nsswitch = {
     enable = lib.mkOption {
       type = lib.types.bool;

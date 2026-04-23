@@ -8,9 +8,9 @@ mkDerivation {
   pname = "linux-headers";
   inherit (linuxSource) version src;
 
-  buildDeps = [ gnumake ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
+  buildDeps = [gnumake];
+  runtimeDeps = [];
+  propagatedDeps = [];
 
   phases = [
     {

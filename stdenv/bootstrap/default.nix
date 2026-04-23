@@ -22,22 +22,21 @@
 #
 # All stages target i686-linux (32-bit). Cross-compilation happens in toolchains.
 #
-{ buildPlatform, ... }:
-let
+{buildPlatform, ...}: let
   # ══════════════════════════════════════════════════════════════════════
   # Stage 0: Seeds (hex0-seed + hex0-compiled tools)
   # ══════════════════════════════════════════════════════════════════════
-  seeds = import ./stage0-seeds.nix { inherit buildPlatform; };
+  seeds = import ./stage0-seeds.nix {inherit buildPlatform;};
 
   # ══════════════════════════════════════════════════════════════════════
   # Stage 1: Posix-tools (M2-Planet, M1, hex2, blood-elf, full kaem, etc.)
   # ══════════════════════════════════════════════════════════════════════
-  posix-tools = import ./stage1-posix-tools.nix { inherit seeds buildPlatform; };
+  posix-tools = import ./stage1-posix-tools.nix {inherit seeds buildPlatform;};
 
   # ══════════════════════════════════════════════════════════════════════
   # Stage 2: GNU Mes 0.27.1 (Scheme interpreter + MesCC C compiler)
   # ══════════════════════════════════════════════════════════════════════
-  mes = import ./stage2-mes.nix { inherit posix-tools seeds buildPlatform; };
+  mes = import ./stage2-mes.nix {inherit posix-tools seeds buildPlatform;};
 
   # ══════════════════════════════════════════════════════════════════════
   # Stage 3: TinyCC 0.9.27 (built via MesCC → boot chain)
@@ -228,9 +227,11 @@ let
 
   # Stage 5 tools — stage4 shell tools + stage5 GCC-compiled binutils.
   # All stage5b packages use the trusted binutils (ar, as, ld, etc.).
-  stage5-tools = stage4-tools // {
-    binutils = binutils;
-  };
+  stage5-tools =
+    stage4-tools
+    // {
+      binutils = binutils;
+    };
 
   # 5b: All tools recompiled with GCC 2.95.3 + glibc + binutils
 
@@ -365,8 +366,7 @@ let
     }
     // stage5-tools
   );
-in
-{
+in {
   # ── Public exports (consumed by toolchains/gcc3_4) ──────────────────
   inherit gcc; # GCC 2.95.3 (self-hosted, linked against glibc)
   inherit glibc; # glibc 2.2.5 (GCC-compiled)

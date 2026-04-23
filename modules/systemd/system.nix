@@ -200,6 +200,5 @@ in {
       packages = config.systemd.packages;
       package = config.systemd.package;
     };
-
   };
 }
