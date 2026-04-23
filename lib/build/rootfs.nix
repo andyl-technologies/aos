@@ -177,6 +177,13 @@ in
           mkdir -p rootfs/proc rootfs/sys rootfs/dev rootfs/tmp
           mkdir -p rootfs/run rootfs/var rootfs/sysroot
           mkdir -p rootfs/var/{log,lib,tmp}
+          # /boot + /var are mountpoints that modules/base/filesystems.nix
+          # writes into /etc/fstab (ESP → /boot, var partition → /var).
+          # systemd-fstab-generator synthesises boot.mount / var.mount
+          # from those entries; if the mountpoint directory doesn't
+          # exist, the mount fails at stage-2 boot. /var was already
+          # above — /boot would otherwise be missing in production.
+          mkdir -p rootfs/boot
           mkdir -m 0700 rootfs/root
           mkdir -p rootfs/run/current-system
 
