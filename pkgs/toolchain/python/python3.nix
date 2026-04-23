@@ -7,6 +7,7 @@
   zlib,
   openssl,
   xz,
+  libffi,
 }: let
   version = "3.14.3";
 
@@ -43,6 +44,12 @@ in
       zlib
       openssl
       xz
+      # libffi is required for the _ctypes extension module — Python 3.13
+      # removed the bundled libffi and always uses the system one now.
+      # Without it `import ctypes` fails at runtime, breaking ukify and
+      # other systemd build-time scripts (elf2efi.py, generate-hwids-
+      # section.py) that need it.
+      libffi
     ];
     propagatedDeps = [];
 
@@ -61,7 +68,6 @@ in
           ./configure \
             --prefix=$out \
             --enable-shared \
-            --with-system-ffi=no \
             --with-system-expat=no \
             --with-ensurepip=no \
             --without-static-libpython \
