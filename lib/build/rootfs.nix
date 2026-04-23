@@ -167,10 +167,14 @@ in
           echo "==> Populating rootfs ($(wc -l < store-paths) store paths)"
 
           # ── 1. Directory skeleton (merged-usr) ──────────────────────────
+          # Full /usr merge AND /usr/sbin → /usr/bin merge. systemd's
+          # unmerged-bin taint fires when /usr/sbin isn't a symlink
+          # into /usr/bin (see src/core/taint.c's test_usr_unmerged).
           mkdir -p rootfs/nix/store
-          mkdir -p rootfs/usr/bin rootfs/usr/sbin rootfs/usr/lib
+          mkdir -p rootfs/usr/bin rootfs/usr/lib
+          ln -sfn bin rootfs/usr/sbin
           ln -sfn usr/bin rootfs/bin
-          ln -sfn usr/sbin rootfs/sbin
+          ln -sfn usr/bin rootfs/sbin
           ln -sfn usr/lib rootfs/lib
           mkdir -p rootfs/lib64
           mkdir -p rootfs/"$ETC_TARGET"
