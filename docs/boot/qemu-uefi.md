@@ -94,10 +94,19 @@ so ignition's partition creation succeeds beyond the original boundary.
 ## 3. Prepare OVMF (UEFI firmware)
 
 OVMF is not an AOS package (EDK2 is large; we rely on the host's Nix
-store for development). Snapshot the vars file to a writable copy per VM:
+store for development). Resolve the path via `nix-shell -p` — that
+goes through the binary cache like any other nix-shell invocation,
+no need to actually drop into a shell:
 
 ```sh
-OVMF=$(nix-build '<nixpkgs>' -A OVMF.fd --no-out-link)
+OVMF=$(nix-shell -p OVMF.fd --run 'printf %s "$buildInputs"')
+```
+
+Inside a `-p pkg` shell, Nix sets `$buildInputs` to the resolved
+store path of the requested package (one path, no trailing newline
+from `printf %s`). Snapshot the vars file to a writable copy per VM:
+
+```sh
 cp $OVMF/FV/OVMF_VARS.fd /tmp/kal/tmp/aos-vm-OVMF_VARS.fd
 chmod u+w /tmp/kal/tmp/aos-vm-OVMF_VARS.fd
 ```
