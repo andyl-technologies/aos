@@ -479,17 +479,47 @@
       then loaded (args // proxyArgs // {_file = file;})
       else loaded;
 
+    # Accept `freeformType` and `strict` as top-level module attributes
+    # and normalize them to `config._module.{freeformType,strict}`.
+    # Matches nixpkgs' ergonomics where a module writes
+    # `{ freeformType = pkgs.formats.json {}.type; … }` at the top level
+    # rather than reaching into `config._module` directly.
+    rawConfig =
+      evaluated.config
+      or (builtins.removeAttrs evaluated [
+        "options"
+        "imports"
+        "require"
+        "_file"
+        "_type"
+        "freeformType"
+        "strict"
+      ]);
+
+    topLevelModuleMeta =
+      (
+        if evaluated ? freeformType
+        then {freeformType = evaluated.freeformType;}
+        else {}
+      )
+      // (
+        if evaluated ? strict
+        then {strict = evaluated.strict;}
+        else {}
+      );
+
+    finalModuleConfig =
+      if topLevelModuleMeta == {}
+      then rawConfig
+      else
+        rawConfig
+        // {
+          _module = (rawConfig._module or {}) // topLevelModuleMeta;
+        };
+
     result = {
       options = evaluated.options or {};
-      config =
-        evaluated.config
-        or (builtins.removeAttrs evaluated [
-          "options"
-          "imports"
-          "require"
-          "_file"
-          "_type"
-        ]);
+      config = finalModuleConfig;
       _file = file;
       imports = evaluated.imports or [];
     };
@@ -535,6 +565,59 @@
       else lib;
 
     result = let
+      # Synthetic internal module that declares the three `_module.*`
+      # options used by the engine itself. Without these declarations
+      # strict-mode evaluation (see configWithFreeform below) would flag
+      # `_module.args` contributions as undeclared, and there would be
+      # nowhere to type-check `_module.freeformType`. Injected first in
+      # `collectModules` so its declarations are available to all other
+      # modules and submodules.
+      internalModule = {
+        _file = "<AOS internal: _module option declarations>";
+        options._module = {
+          args = mkOption {
+            type = types.attrs;
+            default = {};
+            internal = true;
+            description = ''
+              Additional arguments passed to every module function.
+              Seeded from `evalModules`' `extraArgs` / `specialArgs`
+              parameters; modules may also extend it via
+              `config._module.args.<name> = …`.
+            '';
+          };
+          freeformType = mkOption {
+            type = types.nullOr types.optionType;
+            default = null;
+            internal = true;
+            description = ''
+              When non-null, config paths with no matching option
+              declaration are merged through this type's `merge`
+              function rather than being rejected. Mirrors nixpkgs'
+              RFC 0042 freeform modules. May also be written as a
+              top-level module attribute (`{ freeformType = …; … }`).
+            '';
+          };
+          strict = mkOption {
+            type = types.bool;
+            default = false;
+            internal = true;
+            description = ''
+              When true and `_module.freeformType` is null, any config
+              path with no matching option declaration throws at eval
+              time with a readable error pointing at its source file.
+              Scoped per evaluation — safe to turn on for a single
+              submodule. May also be written as a top-level module
+              attribute (`{ strict = true; … }`).
+            '';
+          };
+        };
+        # Seed `_module.args` with the caller's extraArgs/specialArgs so
+        # the merged option value reflects the full arg-set exposed to
+        # modules via `evalModule`'s `args = … // extraArgs;`.
+        config._module.args = extraArgs // specialArgs;
+      };
+
       collectModules = mods:
         builtins.concatLists (
           builtins.map (
@@ -554,7 +637,7 @@
           mods
         );
 
-      evaluatedModules = collectModules modules;
+      evaluatedModules = collectModules ([internalModule] ++ modules);
 
       # Nested options tree, built from mergedOptions and fed back to
       # module functions via evalModule's `options` arg. This is the
@@ -674,26 +757,20 @@
 
       # --- Phase 5: Build the final config attrset ---
       #
-      # `_module.args` is seeded with the caller-provided `extraArgs` and
-      # `specialArgs` and extended with any module's `config._module.args.X`
-      # contribution via `allConfigMerged`. The proxy-args lookup in
-      # `evalModule` falls back through `config._module.args.<name>` to
-      # find either caller-provided or module-provided arguments.
-      # This enables the nixpkgs `_module.args` pattern (audit fix 1.3).
-      finalConfig =
-        builtins.foldl' (
-          acc: key: let
-            entry = mergedOptions.${key};
-          in
-            deepMerge acc (setPath entry.path entry.finalValue)
-        ) {} (builtins.attrNames mergedOptions)
-        // {
-          _module = {
-            args =
-              extraArgs
-              // (allConfigMerged._module.args or {});
-          };
-        };
+      # `_module.args` is declared by the synthetic internal module and
+      # seeded with `extraArgs // specialArgs` there, so `mergedOptions`
+      # already contains the caller-provided args folded with any
+      # module's `_module.args.<name> = …` contribution via the `attrs`
+      # type's merge. No post-hoc override is needed — the previous
+      # `// { _module = { args = …; }; }` shim would have wiped the
+      # sibling `_module.freeformType` / `_module.strict` values that
+      # mergedOptions now places alongside `args`.
+      finalConfig = builtins.foldl' (
+        acc: key: let
+          entry = mergedOptions.${key};
+        in
+          deepMerge acc (setPath entry.path entry.finalValue)
+      ) {} (builtins.attrNames mergedOptions);
 
       allConfigMerged =
         builtins.foldl' (
@@ -701,7 +778,138 @@
         ) {}
         evaluatedModules;
 
-      configWithFreeform = deepMerge allConfigMerged finalConfig;
+      # --- Phase 6: freeform / strict enforcement ---
+      #
+      # Opt-in per evaluation. When both `_module.freeformType` and
+      # `_module.strict` are at their defaults (null / false), this
+      # phase reduces to the pre-freeform `deepMerge allConfigMerged
+      # finalConfig` path — no config walk runs, no values at
+      # undeclared paths are forced. Existing callers (the main system
+      # eval, every stock module) rely on that laziness to keep broken-
+      # config paths inspectable without firing throws wired into
+      # unrelated options (see `lib/testing/module-enforcement.nix`'s
+      # Option B semantics — forcing `system.build.toplevel` triggers
+      # assertion enforcement, but forcing any other config path must
+      # not).
+      #
+      # When strict-mode or a freeformType is set, the walk runs and
+      # collects every path in the raw module configs that has no
+      # matching option declaration. Descent stops at any declared
+      # option path (the option's own type owns strictness below that
+      # point) and at the `_module` subtree (engine-internal).
+      freeformType = finalConfig._module.freeformType or null;
+      isStrict = finalConfig._module.strict or false;
+
+      configWithFreeform =
+        if freeformType == null && !isStrict
+        then deepMerge allConfigMerged finalConfig
+        else let
+          declaredLeafSet = optionMap;
+
+          declaredPrefixSet = let
+            prefixesOf = key: let
+              parts = strings.splitString "." key;
+              n = builtins.length parts;
+            in
+              builtins.genList (
+                i:
+                  builtins.concatStringsSep "." (
+                    builtins.genList (j: builtins.elemAt parts j) (i + 1)
+                  )
+              ) (n - 1);
+            allPrefixes = builtins.concatLists (
+              builtins.map prefixesOf (builtins.attrNames declaredLeafSet)
+            );
+          in
+            builtins.listToAttrs (
+              builtins.map (p: {
+                name = p;
+                value = true;
+              })
+              allPrefixes
+            );
+
+          findUndeclaredInModule = file: config: let
+            go = path: val: let
+              key = builtins.concatStringsSep "." path;
+              descend = builtins.concatLists (
+                builtins.map (name: go (path ++ [name]) val.${name})
+                (builtins.attrNames val)
+              );
+            in
+              if path == []
+              then
+                if builtins.isAttrs val
+                then descend
+                else []
+              else if key == "_module"
+              then []
+              else if declaredLeafSet ? ${key}
+              then []
+              else if builtins.isAttrs val && declaredPrefixSet ? ${key}
+              then descend
+              else [
+                {
+                  inherit path file;
+                  value = val;
+                }
+              ];
+          in
+            go [] config;
+
+          undeclaredDefs = builtins.concatLists (
+            builtins.map (
+              m: findUndeclaredInModule m._file (resolveIfs m.config)
+            )
+            evaluatedModules
+          );
+        in
+          if undeclaredDefs == []
+          then finalConfig
+          else if freeformType != null
+          then let
+            # Rebuild an attrset-tree from the flat undeclared def list
+            # and hand it to the freeform type's merge as a single
+            # synthetic definition. The type decides how to validate
+            # and fold it. Declared options then win at conflicting
+            # paths.
+            setAt = path: value: acc:
+              if path == []
+              then value
+              else let
+                head = builtins.head path;
+                rest = builtins.genList (i: builtins.elemAt path (i + 1)) (builtins.length path - 1);
+              in
+                acc
+                // {${head} = setAt rest value (acc.${head} or {});};
+            freeformTree =
+              builtins.foldl' (
+                acc: d: setAt d.path d.value acc
+              ) {}
+              undeclaredDefs;
+            merged = freeformType.merge [] [
+              {
+                file = "<freeform>";
+                value = freeformTree;
+              }
+            ];
+          in
+            deepMerge merged finalConfig
+          else let
+            # isStrict == true (the remaining case)
+            formatted = builtins.concatStringsSep "\n" (
+              builtins.map (
+                d: "  - '${builtins.concatStringsSep "." d.path}' (defined in ${d.file})"
+              )
+              undeclaredDefs
+            );
+          in
+            throw ''
+              The following option(s) are not declared:
+              ${formatted}
+
+              Because `_module.strict = true` on this evaluation, undeclared options are not allowed. Declare the option, or set `_module.freeformType` to a type that accepts these values.
+            '';
     in {
       config = configWithFreeform;
       # Exposed as the nested options tree (matching nixpkgs'

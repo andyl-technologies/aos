@@ -464,13 +464,19 @@
   # ext4 + HTTP channel, zero guest-side daemons, and the transport matches
   # what bare-metal operators attach over IPMI virtual media.
   #
-  # `ignition-validate` runs inside the build so malformed configs fail
-  # `nix-build -A checks.vm.<name>` before a VM is ever launched.
+  # Serialisation and `ignition-validate` both live in
+  # `lib/formats/ignition.nix`, so this derivation only has to package
+  # an already-validated `config.json` into an ext4 image.
+  ignitionTestFormat = lib.formats.ignition {
+    inherit lib pkgs;
+    allowStorageHardware = false;
+  };
+
   mkMetadataIso = {
     name,
     ignitionConfig,
   }: let
-    json = builtins.toJSON ignitionConfig;
+    configDrv = ignitionTestFormat.generate "config.json" ignitionConfig;
   in
     pkgs.mkDerivation {
       pname = "vm-metadata-${name}";
@@ -480,21 +486,18 @@
       buildDeps = [
         pkgs.coreutils
         pkgs.libisoburn # provides xorriso
-        pkgs.ignition # provides ignition-validate
       ];
 
-      IGNITION_JSON = json;
+      # `configDrv` is a directory (AOS `mkDerivation` convention) —
+      # the JSON file sits at `${configDrv}/config.json`.
+      CONFIG_JSON = "${configDrv}/config.json";
 
       phases = [
         {
           name = "build-metadata";
           script = ''
             mkdir staging
-            printf '%s' "$IGNITION_JSON" > staging/config.json
-
-            # Fail fast on malformed configs — cheaper than booting a
-            # VM to discover the same error.
-            ignition-validate staging/config.json
+            cp "$CONFIG_JSON" staging/config.json
 
             mkdir -p $out
             # Volume label `aos-metadata` is what blkid picks up via
