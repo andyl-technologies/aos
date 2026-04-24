@@ -107,11 +107,7 @@
   # and returns `{ type; generate; … }`. Keeping them lazy — not
   # pre-applied — avoids threading `pkgs` through `lib/default.nix`,
   # which is deliberately `pkgs`-less (see the file header).
-  formats =
-    (import ./formats.nix {})
-    // {
-      ignition = import ./formats/ignition.nix;
-    };
+  formats = import ./formats;
 
   finalLib =
     trivial
@@ -194,8 +190,9 @@
 
       # Structured-config format helpers. Each factory takes `{ lib,
       # pkgs, … }` at call time and returns `{ type; generate; }`.
-      # See `lib/formats.nix` for the JSON helper and
-      # `lib/formats/ignition.nix` for the Ignition v3.6 schema.
+      # See `lib/formats/` (aggregated via `lib/formats/default.nix`)
+      # for the individual factories: `json.nix`, `yaml.nix`,
+      # `toml.nix`, `ignition.nix`.
       inherit formats;
 
       # Re-export submodules for direct access when needed

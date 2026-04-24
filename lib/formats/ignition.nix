@@ -456,14 +456,7 @@ in {
   # at build time catches semantic errors (impossible partition sizing,
   # malformed GUIDs, unsupported resource URLs) that the eval-time
   # type check cannot.
-  #
-  # AOS' `mkDerivation` setup creates `$out` as a directory (see
-  # `stdenv/` and CLAUDE.md), so the JSON goes at `$out/<name>` and
-  # callers dereference `"${drv}/<name>"`. A `getConfig` helper is
-  # returned alongside the derivation for convenience.
-  generate = name: value: let
-    json = builtins.toJSON (pruneRoot value);
-  in
+  generate = name: value:
     pkgs.mkDerivation {
       pname = "format-ignition-${name}";
       inherit version;
@@ -472,14 +465,14 @@ in {
         pkgs.coreutils
         pkgs.ignition
       ];
-      JSON_CONTENT = json;
+      content = builtins.toJSON (pruneRoot value);
+      passAsFile = ["content"];
       OUTPUT_NAME = name;
       phases = [
         {
           name = "emit-and-validate";
           script = ''
-            mkdir -p "$out"
-            printf '%s' "$JSON_CONTENT" > "$out/$OUTPUT_NAME"
+            cp "$contentPath" "$out/$OUTPUT_NAME"
             ignition-validate "$out/$OUTPUT_NAME"
           '';
         }
