@@ -111,17 +111,6 @@ in {
     '';
   };
 
-  options.system.cloudInitTests = lib.mkOption {
-    type = lib.types.attrsOf lib.types.anything;
-    default = {};
-    description = ''
-      Cloud-init VM test specifications, keyed by test name.
-      Each value should be { userdata = null or JSON string; checks = mkCheckGroup {...}; }.
-      These are automatically collected and used to generate golden-image VM
-      test derivations in the flake's checks output.
-    '';
-  };
-
   options.system.fleetTests = lib.mkOption {
     type = lib.types.attrsOf lib.types.anything;
     default = {};
