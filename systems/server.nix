@@ -1,14 +1,14 @@
 ##! systems/server.nix — Server golden image
 ##!
 ##! Builds a server image suitable for cloud/datacenter deployment with
-##! Kubernetes support (both control plane and worker roles). Cloud-init
-##! configures the actual role at boot time.
+##! Kubernetes support (both control plane and worker roles). Ignition
+##! configures the actual role at first boot.
 ##!
 ##! Profiles: server, k8s.control, k8s.worker, debug
 ##!
 ##! Buildable with empty config root — all required options have defaults.
 {...}: {
-  # Enable server profiles — cloud-init selects the active role at boot
+  # Enable server profiles — ignition selects the active role at first boot
   aos.profiles.server.enable = true;
   aos.profiles.k8s.control.enable = true;
   aos.profiles.k8s.worker.enable = true;
