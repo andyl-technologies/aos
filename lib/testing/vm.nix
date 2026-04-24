@@ -1094,10 +1094,10 @@
           -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0" \
           -drive file=disk.img,format=raw,if=virtio \
           ${lib.optionalString hasMetadata ''
-            -drive id=metadata,file=metadata.iso,if=none,format=raw,readonly=on \
-            -device virtio-scsi-pci,id=scsi0 \
-            -device scsi-cd,drive=metadata,bus=scsi0.0 \
-          ''}
+          -drive id=metadata,file=metadata.iso,if=none,format=raw,readonly=on \
+          -device virtio-scsi-pci,id=scsi0 \
+          -device scsi-cd,drive=metadata,bus=scsi0.0 \
+        ''}
           -device virtio-serial \
           -device virtserialport,chardev=agent,name=aos.test.agent \
           -chardev socket,id=agent,path="$AGENT_SOCK",server=on,wait=off \
