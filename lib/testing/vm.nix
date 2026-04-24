@@ -758,6 +758,10 @@
     timeout ? 120,
     memory ? null,
   }:
+    assert (instanceMetadata != null -> system != null)
+      || throw "mkVMTest '${name}': instanceMetadata requires system mode (got rootfsDeps or neither)";
+    assert (instanceMetadata != null -> system.config.aos.services.ignition.enable)
+      || throw "mkVMTest '${name}': instanceMetadata requires aos.services.ignition.enable = true on the system under test";
     if rootfsDeps != null
     then
       mkHeadlessTest {
@@ -777,15 +781,6 @@
       systemDisk = mkTestDisk {inherit system userdata;};
       systemKernel = system.config.system.build.kernel;
       systemInitrd = system.config.system.build.initrd;
-
-      # When instanceMetadata is set the harness must boot against a
-      # system that has ignition enabled, otherwise ignition-fetch is
-      # absent from the initrd and the metadata channel is dead.
-      # Assert at eval-time with a clear message.
-      _ignitionCheck =
-        if instanceMetadata != null && !(system.config.aos.services.ignition.enable or false)
-        then throw "mkVMTest '${name}': instanceMetadata requires aos.services.ignition.enable = true on the system under test"
-        else null;
 
       systemMetadataDisk =
         if instanceMetadata != null
