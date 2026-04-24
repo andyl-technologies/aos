@@ -271,6 +271,21 @@ in {
     merge = _loc: defs: builtins.foldl' (acc: def: acc // def.value) {} defs;
   };
 
+  ## A value that is itself a type (an attrset carrying `check` and
+  ## `merge` functions). Used as the declared type of
+  ## `_module.freeformType` so the option system can hold a type value
+  ## without treating its internal fields as generic config.
+  ##
+  ## Last-writer-wins merge matches how submodule options with
+  ## identical option names resolve in the outer engine — if two base
+  ## modules both set `freeformType`, the later definition wins.
+  optionType = {
+    name = "optionType";
+    description = "module option type";
+    check = v: builtins.isAttrs v && v ? check && v ? merge;
+    merge = lastValue;
+  };
+
   anything = {
     name = "anything";
     description = "any value";

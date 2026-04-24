@@ -29,7 +29,7 @@ in {
       instanceMetadata = {
         format = "ignition";
         config = {
-          ignition.version = "3.4.0";
+          ignition.version = "3.5.0";
           storage = {
             directories = [{path = "/var/etc";}];
             files = [

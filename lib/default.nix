@@ -102,6 +102,17 @@
   derivations = import ./derivations.nix {inherit system bash;};
   checks = import ./testing/checks.nix;
 
+  # Format helpers (nixpkgs' `pkgs.formats` analog). Each entry in this
+  # attrset is a factory that receives `{ lib, pkgs, … }` at call time
+  # and returns `{ type; generate; … }`. Keeping them lazy — not
+  # pre-applied — avoids threading `pkgs` through `lib/default.nix`,
+  # which is deliberately `pkgs`-less (see the file header).
+  formats =
+    (import ./formats.nix {})
+    // {
+      ignition = import ./formats/ignition.nix;
+    };
+
   finalLib =
     trivial
     // lists
@@ -180,6 +191,12 @@
 
       # Check composition helper (pure data, no deps) for use in modules
       inherit (checks) composeChecks;
+
+      # Structured-config format helpers. Each factory takes `{ lib,
+      # pkgs, … }` at call time and returns `{ type; generate; }`.
+      # See `lib/formats.nix` for the JSON helper and
+      # `lib/formats/ignition.nix` for the Ignition v3.6 schema.
+      inherit formats;
 
       # Re-export submodules for direct access when needed
       inherit

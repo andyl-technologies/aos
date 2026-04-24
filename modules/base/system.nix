@@ -41,12 +41,18 @@
     };
   };
 
-  # Accepted as-is and serialised with `builtins.toJSON`. Matches the
-  # Ignition v3.6.0 config spec. Not fully typed yet — we rely on
-  # `ignition-validate` to catch structural errors at VM-test time.
-  # A follow-up can introduce a typed subset (storage.files, passwd,
-  # systemd.units) without changing call sites.
-  ignitionConfigType = lib.types.attrs;
+  # Fully-typed Ignition v3.6 schema. `allowStorageHardware = false`
+  # omits `storage.{disks,filesystems,raid,luks}` so test-harness
+  # configs that try to manage partitioning fail at eval with a
+  # readable "option not declared" error — those paths belong to the
+  # AOS image, not to first-boot metadata. Production / standalone
+  # callers that want the full schema can import
+  # `lib/formats/ignition.nix` directly with `allowStorageHardware = true`.
+  ignitionFormat = lib.formats.ignition {
+    inherit lib pkgs;
+    allowStorageHardware = false;
+  };
+  ignitionConfigType = ignitionFormat.type;
 
   instanceMetadataType = lib.types.submodule {
     options = {
