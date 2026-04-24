@@ -128,50 +128,51 @@
           script = ''
             mkdir -p $out/packages
             ${builtins.concatStringsSep "\n" (builtins.map (pkg: let
-              letter = builtins.substring 0 1 pkg.name;
-            in ''
-                            mkdir -p $out/packages/${letter}
-                            cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
-              [package]
-              name = "${pkg.name}"
-              description = "mock ${pkg.name}"
-              license = "MIT"
-              maintainer = "test"
-              ${
-                if pkg.sysroot or false
-                then "sysroot = true"
-                else ""
-              }
+                letter = builtins.substring 0 1 pkg.name;
+              in ''
+                              mkdir -p $out/packages/${letter}
+                              cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
+                [package]
+                name = "${pkg.name}"
+                description = "mock ${pkg.name}"
+                license = "MIT"
+                maintainer = "test"
+                ${
+                  if pkg.sysroot or false
+                  then "sysroot = true"
+                  else ""
+                }
 
-              [[versions]]
-              version = "${pkg.version}"
+                [[versions]]
+                version = "${pkg.version}"
 
-              [versions.platforms.x86_64-linux]
-              store_path = "${pkg.storePath}"
-              nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-              nar_size = 1024
-              download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-              download_size = 512
-              closure_size = 2048
-              source_drv = ""
-              source_nar_hash = ""
-              references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
-              ${
-                if (pkg.images or []) != []
-                then
-                  builtins.concatStringsSep "\n" (builtins.map (img: ''
-                    [[versions.platforms.x86_64-linux.images]]
-                    format = "${img.format}"
-                    store_path = "${img.storePath}"
-                    nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                    nar_size = ${builtins.toString img.narSize}
-                    download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                    download_size = ${builtins.toString img.downloadSize}
-                  '') (pkg.images or []))
-                else ""
-              }
-              PKGEOF
-            '') packages)}
+                [versions.platforms.x86_64-linux]
+                store_path = "${pkg.storePath}"
+                nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                nar_size = 1024
+                download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                download_size = 512
+                closure_size = 2048
+                source_drv = ""
+                source_nar_hash = ""
+                references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
+                ${
+                  if (pkg.images or []) != []
+                  then
+                    builtins.concatStringsSep "\n" (builtins.map (img: ''
+                      [[versions.platforms.x86_64-linux.images]]
+                      format = "${img.format}"
+                      store_path = "${img.storePath}"
+                      nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                      nar_size = ${builtins.toString img.narSize}
+                      download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                      download_size = ${builtins.toString img.downloadSize}
+                    '') (pkg.images or []))
+                  else ""
+                }
+                PKGEOF
+              '')
+              packages)}
 
             # Initialize as a git repo (apm expects this)
             cd $out
