@@ -242,7 +242,6 @@
         # vsock mode (Firecracker) — listen on port 52; each host CONNECT
         # spawns a new agent-handler via socat EXEC.
         echo "aos-test-agent: vsock mode, listening on port 52" >&2
-        sleep 0.5
         exec socat VSOCK-LISTEN:52,reuseaddr,fork EXEC:/opt/aos-test/bin/agent-handler
       fi
 
@@ -309,12 +308,30 @@
       # Guest agent systemd service. Drivers present a properly blocking
       # serial backend so a live getty can coexist with the harness;
       # no masking of serial-getty@ttyS0 is needed.
+      #
+      # The agent is gated behind aos-test.target, which is ordered
+      # After=multi-user.target. Systemd only activates aos-test.target
+      # once multi-user.target has reached "active" (i.e. all its Wants=
+      # — sshd, containerd, kubelet — have finished activating), so by
+      # the time the agent's ExecStart fires, `systemctl is-active
+      # multi-user.target` is provably true. No shell polling required.
       mkdir -p "rootfs/$ETC_TARGET/systemd/system/multi-user.target.wants"
+      mkdir -p "rootfs/$ETC_TARGET/systemd/system/aos-test.target.wants"
+      cat > "rootfs/$ETC_TARGET/systemd/system/aos-test.target" << 'UNIT'
+      [Unit]
+      Description=AOS VM Test Harness Ready
+      After=multi-user.target
+      Wants=multi-user.target
+
+      [Install]
+      WantedBy=multi-user.target
+      UNIT
       cat > "rootfs/$ETC_TARGET/systemd/system/aos-test-agent.service" << 'UNIT'
       [Unit]
       Description=AOS VM Test Guest Agent
-      After=systemd-udevd.service
+      After=systemd-udevd.service aos-test.target
       Wants=systemd-udevd.service
+      Requires=aos-test.target
 
       [Service]
       Type=simple
@@ -323,10 +340,12 @@
       RestartSec=1
 
       [Install]
-      WantedBy=multi-user.target
+      WantedBy=aos-test.target
       UNIT
+      ln -sfn ../aos-test.target \
+        "rootfs/$ETC_TARGET/systemd/system/multi-user.target.wants/aos-test.target"
       ln -sfn ../aos-test-agent.service \
-        "rootfs/$ETC_TARGET/systemd/system/multi-user.target.wants/aos-test-agent.service"
+        "rootfs/$ETC_TARGET/systemd/system/aos-test.target.wants/aos-test-agent.service"
     '';
 
     rootfs = mkRootfs {
