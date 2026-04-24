@@ -4,10 +4,9 @@
 ##! first-boot provisioning in the initrd, encrypted swap, NTP via chrony,
 ##! SSH access, and standard security posture.
 ##!
-##! ZFS and cloud-init are disabled for this iteration. /var lives on its
-##! own ext4 partition (created by ignition at first boot), so the root
-##! filesystem is mounted read-only. Cloud-init and ZFS will come back
-##! in a later iteration.
+##! ZFS is disabled for this iteration. /var lives on its own ext4
+##! partition (created by ignition at first boot), so the root filesystem
+##! is mounted read-only. ZFS will come back in a later iteration.
 {
   config,
   pkgs,
@@ -21,8 +20,9 @@ in {
       type = lib.types.bool;
       default = false;
       description = ''
-        Enable the server profile. Configures ZFS storage, cloud-init
-        provisioning, chrony NTP, SSH, and standard security defaults.
+        Enable the server profile. Configures ZFS storage, ignition-based
+        first-boot provisioning, chrony NTP, SSH, and standard security
+        defaults.
       '';
     };
   };
@@ -34,8 +34,7 @@ in {
     aos.filesystems.rootFsType = lib.mkDefault "ext4";
     aos.filesystems.rootReadOnly = lib.mkDefault true;
 
-    # Provisioning: ignition in the initrd; cloud-init disabled.
-    aos.services.cloudInit.enable = lib.mkDefault false;
+    # Provisioning: ignition in the initrd.
     aos.services.ignition.enable = lib.mkDefault true;
 
     # Kernel modules for encrypted swap in stage 2.

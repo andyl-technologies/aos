@@ -62,7 +62,7 @@ in {
       description = ''
         WebSocket address of the CloudCore controller
         (e.g. "wss://cloudcore.example.com:10000"). Typically set via
-        cloud-init userdata at boot time.
+        ignition metadata at first boot.
       '';
     };
 

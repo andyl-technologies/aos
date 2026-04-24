@@ -61,8 +61,7 @@
   #              to /etc.lower at image-build time so the production
   #              etc-overlay-setup.service skips its first-boot remount-rw
   #              dance on ro root.
-  #   3  var   — 32 MiB ext4, empty (apart from an optional NoCloud seed
-  #              for cloudInitTests). Label `var` via GPT partlabel so
+  #   3  var   — 32 MiB ext4, empty. Label `var` via GPT partlabel so
   #              the production mount-var.service mounts it on every boot.
   mkTestDisk = {
     system,
@@ -70,7 +69,6 @@
     hostname ? "aos-test",
     networkConfig ? null,
     hostsEntries ? null,
-    userdata ? null,
   }: let
     systemPackages = system.config.environment.systemPackages;
 
@@ -408,23 +406,7 @@
             set -eu
 
             # ── /var partition staging ──────────────────────────────────
-            # For cloudInitTests the NoCloud seed files live on this
-            # partition so cloud-init finds them once /var is mounted.
             mkdir -p var
-            ${
-              if userdata != null
-              then ''
-                mkdir -p var/lib/cloud/seed/nocloud
-                mkdir -p var/lib/cloud/state
-                cat > var/lib/cloud/seed/nocloud/user-data << 'USERDATAEOF'
-                ${userdata}
-                USERDATAEOF
-                cat > var/lib/cloud/seed/nocloud/meta-data << 'METADATAEOF'
-                {"instance-id":"test-vm","local-hostname":"aos-test"}
-                METADATAEOF
-              ''
-              else ""
-            }
 
             # fakeroot so the var partition's files land as uid/gid 0.
             fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img 32M
@@ -749,7 +731,6 @@
     system ? null,
     groupName ? name,
     checks ? [],
-    userdata ? null,
     instanceMetadata ? null,
     # Headless mode (test script IS init):
     rootfsDeps ? null,
@@ -778,7 +759,7 @@
         }
       else if system != null
       then let
-        systemDisk = mkTestDisk {inherit system userdata;};
+        systemDisk = mkTestDisk {inherit system;};
         systemKernel = system.config.system.build.kernel;
         systemInitrd = system.config.system.build.initrd;
 

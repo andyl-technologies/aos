@@ -1,13 +1,12 @@
 ##! modules/base/checks.nix — Check-to-derivation transformation module
 ##!
-##! Reads check specifications from system.checks and cloud-init test specs
-##! from system.cloudInitTests, and produces runnable VM test derivations
-##! in system.build.checks. This keeps check derivation construction inside
-##! the module fixed point rather than in external collection scripts.
+##! Reads check specifications from system.checks and produces runnable VM
+##! test derivations in system.build.checks. This keeps check derivation
+##! construction inside the module fixed point rather than in external
+##! collection scripts.
 ##!
 ##! Each check group defined by a module (e.g. system.checks.ssh) becomes a
-##! VM test derivation at system.build.checks.ssh. Cloud-init tests become
-##! derivations prefixed with their spec name.
+##! VM test derivation at system.build.checks.ssh.
 {
   config,
   pkgs,
@@ -33,14 +32,12 @@ in {
     type = lib.types.attrsOf lib.types.package;
     default = {};
     description = ''
-      VM test derivations generated from system.checks and
-      system.cloudInitTests specifications. Each check group becomes
-      a runnable VM test derivation.
+      VM test derivations generated from system.checks specifications.
+      Each check group becomes a runnable VM test derivation.
     '';
   };
 
   config.system.build.checks =
-    # Module-defined VM checks (system.checks.*)
     builtins.mapAttrs (
       name: spec:
         harness.mkVMTest {
@@ -51,20 +48,5 @@ in {
           instanceMetadata = spec.instanceMetadata;
         }
     )
-    config.system.checks
-    # Cloud-init tests (system.cloudInitTests.*) — the 15 files under
-    # modules/services/cloud-init-checks/ now return a plain attrset
-    # `{ description; checks = [ {name; description; script;} ... ]; }`,
-    # so `spec.checks.checks` is the flat list.
-    // builtins.mapAttrs (
-      name: spec:
-        harness.mkVMTest {
-          inherit name;
-          system = systemProxy;
-          groupName = name;
-          checks = spec.checks.checks;
-          userdata = spec.userdata;
-        }
-    )
-    config.system.cloudInitTests;
+    config.system.checks;
 }
