@@ -9,7 +9,6 @@ let
     ./base
     ./security
     ./services
-    ./kubernetes
     ./monitoring
     ./image
     ./profiles

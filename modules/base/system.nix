@@ -111,16 +111,6 @@ in {
     '';
   };
 
-  options.system.fleetTests = lib.mkOption {
-    type = lib.types.attrsOf lib.types.anything;
-    default = {};
-    description = ''
-      Fleet (multi-VM) test specifications, keyed by test name.
-      Each value should be { machines = {...}; testScript = "..."; timeout = int; }.
-      Machine specs reference system variants by string name (resolved at collection time).
-    '';
-  };
-
   options.aos.system = {
     ## Operating system name used in os-release and branding.
     name = lib.mkOption {

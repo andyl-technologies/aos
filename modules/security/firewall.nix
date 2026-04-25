@@ -137,9 +137,6 @@ in {
     ## Default policy for the forward chain.
     ##
     ## Set to "accept" on Kubernetes nodes for pod-to-pod traffic.
-    ##
-    ## # See Also
-    ## - `aos.kubernetes.network.enable`
     forwardPolicy = lib.mkOption {
       type = lib.types.str;
       default = "drop";

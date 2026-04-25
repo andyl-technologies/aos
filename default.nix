@@ -201,7 +201,12 @@
   fleetHarness = import ./lib/testing/fleet.nix {inherit pkgs lib testTools;};
 
   discoverFleetTests = let
-    entries = builtins.readDir ./systems/tests;
+    # louis@2026-04-24: `systems/tests` contained tests for the k8s code that
+    # was half-migrated to k3s. I deleted it to keep Claude's context clean it.
+    # I was also thinking fleet tests should go under `tests/fleet`.
+    #
+    # entries = builtins.readDir ./systems/tests;
+    entries = {};
     fleetFiles = builtins.filter (
       name:
         entries.${name}
