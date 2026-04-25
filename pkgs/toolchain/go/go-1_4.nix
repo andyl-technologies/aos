@@ -14,8 +14,9 @@ mkDerivation {
     hash = "sha256-9P9bXrOjyuHJk3I/PqtRnFuuGIZrXl+W/hEC8MtcPlI=";
   };
 
-  buildDeps = [ ];
-  runtimeDeps = [ ];
+  buildDeps = [];
+  runtimeDeps = [];
+  dontStrip = true; # Go runtime metadata in custom ELF sections
 
   phases = [
     {

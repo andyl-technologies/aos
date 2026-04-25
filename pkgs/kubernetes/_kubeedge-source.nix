@@ -1,9 +1,7 @@
 ##! Shared KubeEdge source — used by cloudcore, edgecore
-{ fetchurl }:
-let
+{fetchurl}: let
   version = "1.20.0";
-in
-{
+in {
   inherit version;
   src = fetchurl {
     urls = [

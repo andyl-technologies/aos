@@ -12,11 +12,9 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.security.selinux;
-in
-{
+in {
   options.aos.security.selinux = {
     ## Enable SELinux mandatory access control.
     ##
@@ -81,26 +79,25 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    system.checks.selinux = lib.mkCheckGroup {
-      name = "selinux";
+    system.checks.selinux = {
       description = "SELinux checks";
       checks = [
-        (lib.mkCheck {
+        {
           name = "selinuxfs";
           description = "/sys/fs/selinux is present";
           script = ''
             assert_success "test -d /sys/fs/selinux" \
               "/sys/fs/selinux is present"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "enforce-file";
           description = "SELinux enforce file exists";
           script = ''
             assert_success "test -f /sys/fs/selinux/enforce" \
               "SELinux enforce file exists"
           '';
-        })
+        }
       ];
     };
 
@@ -127,12 +124,12 @@ in
       # This must run before any confined services start.
       "selinux-policy-load" = {
         description = "Load SELinux Policy";
-        wantedBy = [ "sysinit.target" ];
+        wantedBy = ["sysinit.target"];
         before = [
           "sysinit.target"
           "systemd-tmpfiles-setup.service"
         ];
-        after = [ "local-fs.target" ];
+        after = ["local-fs.target"];
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
@@ -144,13 +141,13 @@ in
       # Runs on first boot or when /.autorelabel exists.
       "selinux-autorelabel" = lib.mkIf cfg.autorelabel {
         description = "SELinux Filesystem Relabeling";
-        wantedBy = [ "sysinit.target" ];
-        before = [ "sysinit.target" ];
+        wantedBy = ["sysinit.target"];
+        before = ["sysinit.target"];
         after = [
           "selinux-policy-load.service"
           "local-fs.target"
         ];
-        requires = [ "selinux-policy-load.service" ];
+        requires = ["selinux-policy-load.service"];
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;

@@ -12,11 +12,9 @@
   testing,
   pkgs,
   aosPkg,
-}:
-let
-  fixtures = import ./fixtures.nix { inherit pkgs aosPkg; };
-in
-{
+}: let
+  fixtures = import ./fixtures.nix {inherit pkgs aosPkg;};
+in {
   # -------------------------------------------------------------------------
   # 1. install-basic — Basic install command exercised
   # -------------------------------------------------------------------------
@@ -25,41 +23,41 @@ in
     rootfsDeps = fixtures.commonDeps;
     memory = 512;
     testScript = ''
-      ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+            ${fixtures.setupPreamble}
+            ${fixtures.mkFakePackageToml}
 
-      echo "==> Test: apm install basic flow"
+            echo "==> Test: apm install basic flow"
 
-      # Set up a local registry with a package
-      $APR create test-reg
-      REG_DIR="$REG_STORAGE/test-reg"
-      write_package_toml "$REG_DIR" "testpkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish testpkg 1.0.0"
+            # Set up a local registry with a package
+            $APR create test-reg
+            REG_DIR="$REG_STORAGE/test-reg"
+            write_package_toml "$REG_DIR" "testpkg" "1.0.0"
+            commit_registry "$REG_DIR" "publish testpkg 1.0.0"
 
-      # Configure apm to know about this registry
-      cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
-[registry]
-name = "test-reg"
-url = "file://$REG_DIR"
-priority = 500
-enabled = true
-EOF
+            # Configure apm to know about this registry
+            cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
+      [registry]
+      name = "test-reg"
+      url = "file://$REG_DIR"
+      priority = 500
+      enabled = true
+      EOF
 
-      # Attempt install — will fail at download phase (no real cache),
-      # but should get past parsing and resolution stages.
-      $APM install testpkg --registry test-reg > /tmp/install-out 2>&1 || true
+            # Attempt install — will fail at download phase (no real cache),
+            # but should get past parsing and resolution stages.
+            $APM install testpkg --registry test-reg > /tmp/install-out 2>&1 || true
 
-      # Verify the command attempted to load registries and resolve
-      cat /tmp/install-out
-      # The command should mention loading registries or resolving
-      if grep -q -i "registr\|resolv\|loading\|no packages\|not found" /tmp/install-out 2>/dev/null; then
-        pass "apm install processes registry and attempts resolution"
-      else
-        # Even if it errors differently, the command ran
-        pass "apm install command executed"
-      fi
+            # Verify the command attempted to load registries and resolve
+            cat /tmp/install-out
+            # The command should mention loading registries or resolving
+            if grep -q -i "registr\|resolv\|loading\|no packages\|not found" /tmp/install-out 2>/dev/null; then
+              pass "apm install processes registry and attempts resolution"
+            else
+              # Even if it errors differently, the command ran
+              pass "apm install command executed"
+            fi
 
-      check_fail
+            check_fail
     '';
   };
 
@@ -71,60 +69,60 @@ EOF
     rootfsDeps = fixtures.commonDeps;
     memory = 512;
     testScript = ''
-      ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+            ${fixtures.setupPreamble}
+            ${fixtures.mkFakePackageToml}
 
-      echo "==> Test: apm install with dependencies"
+            echo "==> Test: apm install with dependencies"
 
-      # Create registry with a package that has a dependency reference
-      $APR create test-reg
-      REG_DIR="$REG_STORAGE/test-reg"
+            # Create registry with a package that has a dependency reference
+            $APR create test-reg
+            REG_DIR="$REG_STORAGE/test-reg"
 
-      # Create the dependency package first
-      write_package_toml "$REG_DIR" "libfoo" "1.0.0"
+            # Create the dependency package first
+            write_package_toml "$REG_DIR" "libfoo" "1.0.0"
 
-      # Create the main package with a reference to libfoo
-      mkdir -p "$REG_DIR/packages/m"
-      cat > "$REG_DIR/packages/m/mypkg.toml" << 'EOF'
-[package]
-name = "mypkg"
-description = "Package with dependency"
-license = "MIT"
-maintainer = "test"
+            # Create the main package with a reference to libfoo
+            mkdir -p "$REG_DIR/packages/m"
+            cat > "$REG_DIR/packages/m/mypkg.toml" << 'EOF'
+      [package]
+      name = "mypkg"
+      description = "Package with dependency"
+      license = "MIT"
+      maintainer = "test"
 
-[[versions]]
-version = "2.0.0"
+      [[versions]]
+      version = "2.0.0"
 
-[versions.platforms.x86_64-linux]
-store_path = "/nix/store/cccccccccccccccccccccccccccccccc-mypkg-2.0.0"
-nar_hash = "sha256:2222222222222222222222222222222222222222222222222222"
-nar_size = 2048
-download_hash = "sha256:2222222222222222222222222222222222222222222222222222"
-download_size = 1024
-closure_size = 4096
-source_drv = ""
-source_nar_hash = ""
-references = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
-EOF
-      commit_registry "$REG_DIR" "publish mypkg with deps"
+      [versions.platforms.x86_64-linux]
+      store_path = "/nix/store/cccccccccccccccccccccccccccccccc-mypkg-2.0.0"
+      nar_hash = "sha256:2222222222222222222222222222222222222222222222222222"
+      nar_size = 2048
+      download_hash = "sha256:2222222222222222222222222222222222222222222222222222"
+      download_size = 1024
+      closure_size = 4096
+      source_drv = ""
+      source_nar_hash = ""
+      references = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+      EOF
+            commit_registry "$REG_DIR" "publish mypkg with deps"
 
-      # Configure apm
-      cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
-[registry]
-name = "test-reg"
-url = "file://$REG_DIR"
-priority = 500
-enabled = true
-EOF
+            # Configure apm
+            cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
+      [registry]
+      name = "test-reg"
+      url = "file://$REG_DIR"
+      priority = 500
+      enabled = true
+      EOF
 
-      # Attempt install — exercises dependency resolution path
-      $APM install mypkg --registry test-reg > /tmp/install-out 2>&1 || true
-      cat /tmp/install-out
+            # Attempt install — exercises dependency resolution path
+            $APM install mypkg --registry test-reg > /tmp/install-out 2>&1 || true
+            cat /tmp/install-out
 
-      # Verify the command was processed
-      pass "apm install with deps command executed"
+            # Verify the command was processed
+            pass "apm install with deps command executed"
 
-      check_fail
+            check_fail
     '';
   };
 
@@ -164,34 +162,34 @@ EOF
     rootfsDeps = fixtures.commonDeps;
     memory = 512;
     testScript = ''
-      ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+            ${fixtures.setupPreamble}
+            ${fixtures.mkFakePackageToml}
 
-      echo "==> Test: apm install idempotency"
+            echo "==> Test: apm install idempotency"
 
-      # Create registry with a package
-      $APR create test-reg
-      REG_DIR="$REG_STORAGE/test-reg"
-      write_package_toml "$REG_DIR" "idempkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish idempkg 1.0.0"
+            # Create registry with a package
+            $APR create test-reg
+            REG_DIR="$REG_STORAGE/test-reg"
+            write_package_toml "$REG_DIR" "idempkg" "1.0.0"
+            commit_registry "$REG_DIR" "publish idempkg 1.0.0"
 
-      cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
-[registry]
-name = "test-reg"
-url = "file://$REG_DIR"
-priority = 500
-enabled = true
-EOF
+            cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
+      [registry]
+      name = "test-reg"
+      url = "file://$REG_DIR"
+      priority = 500
+      enabled = true
+      EOF
 
-      # Run install twice with the same package
-      $APM install idempkg --registry test-reg > /tmp/install-1.out 2>&1 || true
-      $APM install idempkg --registry test-reg > /tmp/install-2.out 2>&1 || true
+            # Run install twice with the same package
+            $APM install idempkg --registry test-reg > /tmp/install-1.out 2>&1 || true
+            $APM install idempkg --registry test-reg > /tmp/install-2.out 2>&1 || true
 
-      # Both invocations should produce similar output
-      # (neither should crash or behave erratically)
-      pass "apm install runs twice without error"
+            # Both invocations should produce similar output
+            # (neither should crash or behave erratically)
+            pass "apm install runs twice without error"
 
-      check_fail
+            check_fail
     '';
   };
 
@@ -258,73 +256,73 @@ EOF
     rootfsDeps = fixtures.commonDeps;
     memory = 512;
     testScript = ''
-      ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+            ${fixtures.setupPreamble}
+            ${fixtures.mkFakePackageToml}
 
-      echo "==> Test: apm upgrade flow"
+            echo "==> Test: apm upgrade flow"
 
-      # Create registry with v1 and v2 of a package
-      $APR create test-reg
-      REG_DIR="$REG_STORAGE/test-reg"
+            # Create registry with v1 and v2 of a package
+            $APR create test-reg
+            REG_DIR="$REG_STORAGE/test-reg"
 
-      # Write a package with two versions
-      mkdir -p "$REG_DIR/packages/u"
-      cat > "$REG_DIR/packages/u/upgradepkg.toml" << 'EOF'
-[package]
-name = "upgradepkg"
-description = "Upgradable test package"
-license = "MIT"
-maintainer = "test"
+            # Write a package with two versions
+            mkdir -p "$REG_DIR/packages/u"
+            cat > "$REG_DIR/packages/u/upgradepkg.toml" << 'EOF'
+      [package]
+      name = "upgradepkg"
+      description = "Upgradable test package"
+      license = "MIT"
+      maintainer = "test"
 
-[[versions]]
-version = "2.0.0"
+      [[versions]]
+      version = "2.0.0"
 
-[versions.platforms.x86_64-linux]
-store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-upgradepkg-2.0.0"
-nar_hash = "sha256:1111111111111111111111111111111111111111111111111111"
-nar_size = 2048
-download_hash = "sha256:1111111111111111111111111111111111111111111111111111"
-download_size = 1024
-closure_size = 4096
-source_drv = ""
-source_nar_hash = ""
-references = []
+      [versions.platforms.x86_64-linux]
+      store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-upgradepkg-2.0.0"
+      nar_hash = "sha256:1111111111111111111111111111111111111111111111111111"
+      nar_size = 2048
+      download_hash = "sha256:1111111111111111111111111111111111111111111111111111"
+      download_size = 1024
+      closure_size = 4096
+      source_drv = ""
+      source_nar_hash = ""
+      references = []
 
-[[versions]]
-version = "1.0.0"
+      [[versions]]
+      version = "1.0.0"
 
-[versions.platforms.x86_64-linux]
-store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-upgradepkg-1.0.0"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = 1024
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = 512
-closure_size = 2048
-source_drv = ""
-source_nar_hash = ""
-references = []
-EOF
-      commit_registry "$REG_DIR" "publish upgradepkg 1.0.0 + 2.0.0"
+      [versions.platforms.x86_64-linux]
+      store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-upgradepkg-1.0.0"
+      nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+      nar_size = 1024
+      download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+      download_size = 512
+      closure_size = 2048
+      source_drv = ""
+      source_nar_hash = ""
+      references = []
+      EOF
+            commit_registry "$REG_DIR" "publish upgradepkg 1.0.0 + 2.0.0"
 
-      cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
-[registry]
-name = "test-reg"
-url = "file://$REG_DIR"
-priority = 500
-enabled = true
-EOF
+            cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
+      [registry]
+      name = "test-reg"
+      url = "file://$REG_DIR"
+      priority = 500
+      enabled = true
+      EOF
 
-      # Test upgrade command
-      $APM upgrade upgradepkg > /tmp/upgrade-out 2>&1 || true
-      cat /tmp/upgrade-out
-      pass "apm upgrade command executed"
+            # Test upgrade command
+            $APM upgrade upgradepkg > /tmp/upgrade-out 2>&1 || true
+            cat /tmp/upgrade-out
+            pass "apm upgrade command executed"
 
-      # Test upgrade all (no specific package)
-      $APM upgrade > /tmp/upgrade-all.out 2>&1 || true
-      cat /tmp/upgrade-all.out
-      pass "apm upgrade (all) command executed"
+            # Test upgrade all (no specific package)
+            $APM upgrade > /tmp/upgrade-all.out 2>&1 || true
+            cat /tmp/upgrade-all.out
+            pass "apm upgrade (all) command executed"
 
-      check_fail
+            check_fail
     '';
   };
 

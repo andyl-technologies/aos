@@ -6,8 +6,7 @@
   testing,
   self,
   pkgs,
-}:
-let
+}: let
   # Shared preamble for server tests: bring up loopback, create mock Nix DB,
   # write server config, start aos serve in background.
   serverPreamble = ''
@@ -64,15 +63,14 @@ let
     pkgs.iproute2
     pkgs.grep
   ];
-in
-{
+in {
   # ---------------------------------------------------------------------------
   # CLI basics
   # ---------------------------------------------------------------------------
 
   help = testing.mkVMTest {
     name = "aos-help";
-    rootfsDeps = [ self ];
+    rootfsDeps = [self];
     memory = 1024;
     testScript = ''
       echo "==> Testing aos --help"

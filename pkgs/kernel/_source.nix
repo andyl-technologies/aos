@@ -1,9 +1,7 @@
 ##! Shared Linux kernel source — used by linux and linux-headers
-{ fetchurl }:
-let
+{fetchurl}: let
   version = "6.18.12";
-in
-{
+in {
   inherit version;
   src = fetchurl {
     urls = [

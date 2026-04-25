@@ -18,59 +18,52 @@
   pkgs,
   lib,
   mkVMTest,
-}:
-let
+}: let
   bootstrapTools = pkgs.bootstrapTools;
 
   # Helper: build colon-separated paths for C_INCLUDE_PATH, LIBRARY_PATH,
   # and LD_LIBRARY_PATH from a list of packages.
   # Automatically includes bootstrap tools' glibc headers and libraries
   # so that the raw gcc from bootstrap tools can find standard headers.
-  makeIncludePath =
-    deps:
+  makeIncludePath = deps:
     builtins.concatStringsSep ":" (
       builtins.concatMap (
-        dep:
-        let
+        dep: let
           base = builtins.toString dep;
-        in
-        [ "${base}/include" ]
-      ) deps
-      ++ [ "${builtins.toString bootstrapTools}/include-glibc" ]
+        in ["${base}/include"]
+      )
+      deps
+      ++ ["${builtins.toString bootstrapTools}/include-glibc"]
     );
 
-  makeLibraryPath =
-    deps:
+  makeLibraryPath = deps:
     builtins.concatStringsSep ":" (
       builtins.concatMap (
-        dep:
-        let
+        dep: let
           base = builtins.toString dep;
-        in
-        [ "${base}/lib" ]
-      ) deps
-      ++ [ "${builtins.toString bootstrapTools}/lib" ]
+        in ["${base}/lib"]
+      )
+      deps
+      ++ ["${builtins.toString bootstrapTools}/lib"]
     );
 
   # -------------------------------------------------------------------------
   # mkLinkCheck — Compile + link + run a C program against a library
   # -------------------------------------------------------------------------
-  mkLinkCheck =
-    {
-      pname,
-      library,
-      testSource,
-      includes ? [ ],
-      libs ? [ ],
-      extraDeps ? [ ],
-    }:
-    let
-      allLibDeps = [ library ] ++ extraDeps;
-      includeFlags = builtins.concatStringsSep " " (builtins.map (i: "-I${i}") includes);
-      libFlags = builtins.concatStringsSep " " libs;
-      includePath = makeIncludePath allLibDeps;
-      libraryPath = makeLibraryPath allLibDeps;
-    in
+  mkLinkCheck = {
+    pname,
+    library,
+    testSource,
+    includes ? [],
+    libs ? [],
+    extraDeps ? [],
+  }: let
+    allLibDeps = [library] ++ extraDeps;
+    includeFlags = builtins.concatStringsSep " " (builtins.map (i: "-I${i}") includes);
+    libFlags = builtins.concatStringsSep " " libs;
+    includePath = makeIncludePath allLibDeps;
+    libraryPath = makeLibraryPath allLibDeps;
+  in
     mkVMTest {
       name = pname;
       rootfsDeps = allLibDeps;
@@ -94,31 +87,28 @@ let
   # -------------------------------------------------------------------------
   # mkToolCheck — Run a CLI tool and optionally verify output
   # -------------------------------------------------------------------------
-  mkToolCheck =
-    {
-      pname,
-      tool,
-      command,
-      expectedOutput ? null,
-      extraDeps ? [ ],
-    }:
-    let
-      allDeps = [ tool ] ++ extraDeps;
-      checkOutput =
-        if expectedOutput != null then
-          ''
-            ACTUAL=$(cat /tmp/tool-output)
-            EXPECTED="${expectedOutput}"
-            if [ "$ACTUAL" != "$EXPECTED" ]; then
-              printf 'Expected: %s\n' "$EXPECTED" >&2
-              printf 'Actual:   %s\n' "$ACTUAL" >&2
-              exit 1
-            fi
-            echo "==> Output matches expected value"
-          ''
-        else
-          "";
-    in
+  mkToolCheck = {
+    pname,
+    tool,
+    command,
+    expectedOutput ? null,
+    extraDeps ? [],
+  }: let
+    allDeps = [tool] ++ extraDeps;
+    checkOutput =
+      if expectedOutput != null
+      then ''
+        ACTUAL=$(cat /tmp/tool-output)
+        EXPECTED="${expectedOutput}"
+        if [ "$ACTUAL" != "$EXPECTED" ]; then
+          printf 'Expected: %s\n' "$EXPECTED" >&2
+          printf 'Actual:   %s\n' "$ACTUAL" >&2
+          exit 1
+        fi
+        echo "==> Output matches expected value"
+      ''
+      else "";
+  in
     mkVMTest {
       name = pname;
       rootfsDeps = allDeps;
@@ -134,17 +124,15 @@ let
   # -------------------------------------------------------------------------
   # mkCompileCheck — Compile-only (no run) to verify headers/linkage
   # -------------------------------------------------------------------------
-  mkCompileCheck =
-    {
-      pname,
-      deps,
-      testSource,
-      flags ? "",
-    }:
-    let
-      includePath = makeIncludePath deps;
-      libraryPath = makeLibraryPath deps;
-    in
+  mkCompileCheck = {
+    pname,
+    deps,
+    testSource,
+    flags ? "",
+  }: let
+    includePath = makeIncludePath deps;
+    libraryPath = makeLibraryPath deps;
+  in
     mkVMTest {
       name = pname;
       rootfsDeps = deps;
@@ -165,17 +153,15 @@ let
   # -------------------------------------------------------------------------
   # mkCxxCompileCheck — Compile + run a C++ program (for header-only libs)
   # -------------------------------------------------------------------------
-  mkCxxCompileCheck =
-    {
-      pname,
-      deps,
-      testSource,
-      flags ? "-std=c++17",
-    }:
-    let
-      includePath = makeIncludePath deps;
-      libraryPath = makeLibraryPath deps;
-    in
+  mkCxxCompileCheck = {
+    pname,
+    deps,
+    testSource,
+    flags ? "-std=c++17",
+  }: let
+    includePath = makeIncludePath deps;
+    libraryPath = makeLibraryPath deps;
+  in
     mkVMTest {
       name = pname;
       rootfsDeps = deps;
@@ -199,18 +185,17 @@ let
   # -------------------------------------------------------------------------
   # mkSONAMECheck — Verify SONAME exists on shared libraries
   # -------------------------------------------------------------------------
-  mkSONAMECheck =
-    {
-      pkg,
-      libs,
-    }:
-    let
-      libChecks = builtins.concatStringsSep "\n" (
-        builtins.map (l: ''
-          check_soname "${pkg}/lib/${l}" "${l}"
-        '') libs
-      );
-    in
+  mkSONAMECheck = {
+    pkg,
+    libs,
+  }: let
+    libChecks = builtins.concatStringsSep "\n" (
+      builtins.map (l: ''
+        check_soname "${pkg}/lib/${l}" "${l}"
+      '')
+      libs
+    );
+  in
     mkVMTest {
       name = "${pkg.pname or "pkg"}-soname";
       rootfsDeps = [
@@ -252,31 +237,31 @@ let
   # -------------------------------------------------------------------------
   # mkRPATHCheck — Verify RPATH entries point to valid dirs
   # -------------------------------------------------------------------------
-  mkRPATHCheck =
-    {
-      pkg,
-      bins,
-    }:
-    let
-      binChecks = builtins.concatStringsSep "\n" (
-        builtins.map (
-          b:
-          let
-            # Support both bin/ and sbin/ — try both paths
-            binPath = if builtins.substring 0 1 b == "/" then "${pkg}${b}" else "${pkg}/bin/${b}";
-          in
-          ''
-            if [ -f "${binPath}" ]; then
-              check_rpath "${binPath}" "${b}"
-            elif [ -f "${pkg}/sbin/${b}" ]; then
-              check_rpath "${pkg}/sbin/${b}" "${b}"
-            else
-              echo "SKIP: ${b} not found in ${pkg}/bin/ or ${pkg}/sbin/"
-            fi
-          ''
-        ) bins
-      );
-    in
+  mkRPATHCheck = {
+    pkg,
+    bins,
+  }: let
+    binChecks = builtins.concatStringsSep "\n" (
+      builtins.map (
+        b: let
+          # Support both bin/ and sbin/ — try both paths
+          binPath =
+            if builtins.substring 0 1 b == "/"
+            then "${pkg}${b}"
+            else "${pkg}/bin/${b}";
+        in ''
+          if [ -f "${binPath}" ]; then
+            check_rpath "${binPath}" "${b}"
+          elif [ -f "${pkg}/sbin/${b}" ]; then
+            check_rpath "${pkg}/sbin/${b}" "${b}"
+          else
+            echo "SKIP: ${b} not found in ${pkg}/bin/ or ${pkg}/sbin/"
+          fi
+        ''
+      )
+      bins
+    );
+  in
     mkVMTest {
       name = "${pkg.pname or "pkg"}-rpath";
       rootfsDeps = [
@@ -338,19 +323,18 @@ let
   # -------------------------------------------------------------------------
   # mkSymbolCheck — Verify symbols are exported from a shared library
   # -------------------------------------------------------------------------
-  mkSymbolCheck =
-    {
-      pkg,
-      libName,
-      symbols,
-    }:
-    let
-      symbolChecks = builtins.concatStringsSep "\n" (
-        builtins.map (sym: ''
-          check_symbol "${pkg}/lib/${libName}" "${libName}" "${sym}"
-        '') symbols
-      );
-    in
+  mkSymbolCheck = {
+    pkg,
+    libName,
+    symbols,
+  }: let
+    symbolChecks = builtins.concatStringsSep "\n" (
+      builtins.map (sym: ''
+        check_symbol "${pkg}/lib/${libName}" "${libName}" "${sym}"
+      '')
+      symbols
+    );
+  in
     mkVMTest {
       name = "${pkg.pname or "pkg"}-symbols";
       rootfsDeps = [
@@ -395,22 +379,20 @@ let
   # headerCode: C code fragment that sets `const char *header_ver = ...;`
   # runtimeCode: C code fragment that sets `const char *runtime_ver = ...;`
   # libs: linker flags (e.g. ["-lssl" "-lcrypto"])
-  mkVersionCheck =
-    {
-      pkg,
-      name,
-      headerCode,
-      runtimeCode,
-      libs ? [ ],
-    }:
-    let
-      includePath = makeIncludePath [ pkg ];
-      libraryPath = makeLibraryPath [ pkg ];
-      libFlags = builtins.concatStringsSep " " libs;
-    in
+  mkVersionCheck = {
+    pkg,
+    name,
+    headerCode,
+    runtimeCode,
+    libs ? [],
+  }: let
+    includePath = makeIncludePath [pkg];
+    libraryPath = makeLibraryPath [pkg];
+    libFlags = builtins.concatStringsSep " " libs;
+  in
     mkVMTest {
       name = "${pkg.pname or "pkg"}-version-${name}";
-      rootfsDeps = [ pkg ];
+      rootfsDeps = [pkg];
       testScript = ''
         export C_INCLUDE_PATH="${includePath}:$C_INCLUDE_PATH"
         export LIBRARY_PATH="${libraryPath}:$LIBRARY_PATH"
@@ -441,30 +423,30 @@ let
   # -------------------------------------------------------------------------
   # mkDynLinkerCheck — Verify ELF interpreter exists
   # -------------------------------------------------------------------------
-  mkDynLinkerCheck =
-    {
-      pkg,
-      bins,
-    }:
-    let
-      binChecks = builtins.concatStringsSep "\n" (
-        builtins.map (
-          b:
-          let
-            binPath = if builtins.substring 0 1 b == "/" then "${pkg}${b}" else "${pkg}/bin/${b}";
-          in
-          ''
-            if [ -f "${binPath}" ]; then
-              check_interp "${binPath}" "${b}"
-            elif [ -f "${pkg}/sbin/${b}" ]; then
-              check_interp "${pkg}/sbin/${b}" "${b}"
-            else
-              echo "SKIP: ${b} not found in ${pkg}/bin/ or ${pkg}/sbin/"
-            fi
-          ''
-        ) bins
-      );
-    in
+  mkDynLinkerCheck = {
+    pkg,
+    bins,
+  }: let
+    binChecks = builtins.concatStringsSep "\n" (
+      builtins.map (
+        b: let
+          binPath =
+            if builtins.substring 0 1 b == "/"
+            then "${pkg}${b}"
+            else "${pkg}/bin/${b}";
+        in ''
+          if [ -f "${binPath}" ]; then
+            check_interp "${binPath}" "${b}"
+          elif [ -f "${pkg}/sbin/${b}" ]; then
+            check_interp "${pkg}/sbin/${b}" "${b}"
+          else
+            echo "SKIP: ${b} not found in ${pkg}/bin/ or ${pkg}/sbin/"
+          fi
+        ''
+      )
+      bins
+    );
+  in
     mkVMTest {
       name = "${pkg.pname or "pkg"}-dynamic-linker";
       rootfsDeps = [
@@ -514,8 +496,7 @@ let
         echo "==> All dynamic linker checks passed"
       '';
     };
-in
-{
+in {
   inherit
     mkLinkCheck
     mkToolCheck

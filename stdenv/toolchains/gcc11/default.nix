@@ -13,21 +13,18 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
-}:
-let
-  callPackage =
-    path: overrides:
-    let
-      fn = import path;
-      args = builtins.functionArgs fn;
-      auto = builtins.intersectAttrs args scope;
-    in
+}: let
+  callPackage = path: overrides: let
+    fn = import path;
+    args = builtins.functionArgs fn;
+    auto = builtins.intersectAttrs args scope;
+  in
     fn (auto // overrides);
 
   # Phase 1: Raw GCC 11.5.0 built with prev.gcc (8.5.0)
   # Has prev.glibc (2.28) crt*.o in its specs dir — NOT compatible with
   # glibc 2.34 which removed __libc_csu_init/__libc_csu_fini.
-  gccRaw = callPackage ./gcc.nix { };
+  gccRaw = callPackage ./gcc.nix {};
 
   scope = {
     inherit
@@ -78,42 +75,42 @@ let
     };
 
     # Phase 2: binutils 2.35 built with raw GCC (no glibc 2.34 needed)
-    binutils = callPackage ./binutils.nix { gcc = gccRaw; };
+    binutils = callPackage ./binutils.nix {gcc = gccRaw;};
 
     # Phase 3: linux-headers + glibc built with raw GCC + binutils
-    linuxHeaders = callPackage ./linux-headers.nix { gcc = gccRaw; };
-    glibc = callPackage ./glibc.nix { gcc = gccRaw; };
+    linuxHeaders = callPackage ./linux-headers.nix {gcc = gccRaw;};
+    glibc = callPackage ./glibc.nix {gcc = gccRaw;};
 
     # Phase 3.5: Autotools rebuilt with wrapped gcc + binutils + glibc
     # Order: perl/texinfo/help2man first (no m4/flex/bison deps),
     # then m4/flex/bison/autoconf/automake (can use real texinfo/help2man)
-    perl = callPackage ./perl.nix { };
-    texinfo = callPackage ./texinfo.nix { };
-    help2man = callPackage ./help2man.nix { };
-    m4 = callPackage ./m4.nix { };
-    flex = callPackage ./flex.nix { };
-    bison = callPackage ./bison.nix { };
-    autoconf = callPackage ./autoconf.nix { };
-    automake = callPackage ./automake.nix { };
-    gperf = callPackage ./gperf.nix { };
+    perl = callPackage ./perl.nix {};
+    texinfo = callPackage ./texinfo.nix {};
+    help2man = callPackage ./help2man.nix {};
+    m4 = callPackage ./m4.nix {};
+    flex = callPackage ./flex.nix {};
+    bison = callPackage ./bison.nix {};
+    autoconf = callPackage ./autoconf.nix {};
+    automake = callPackage ./automake.nix {};
+    gperf = callPackage ./gperf.nix {};
     python3 = prev.python3;
 
     # Phase 4: POSIX tools built with wrapped gcc + binutils + glibc
-    bash = callPackage ./bash.nix { };
-    coreutils = callPackage ./coreutils.nix { };
-    gnumake = callPackage ./gnumake.nix { };
-    sed = callPackage ./sed.nix { };
-    grep = callPackage ./grep.nix { };
-    gawk = callPackage ./gawk.nix { };
-    findutils = callPackage ./findutils.nix { };
-    diffutils = callPackage ./diffutils.nix { };
-    tar = callPackage ./tar.nix { };
-    gzip = callPackage ./gzip.nix { };
-    patch = callPackage ./patch.nix { };
+    bash = callPackage ./bash.nix {};
+    coreutils = callPackage ./coreutils.nix {};
+    gnumake = callPackage ./gnumake.nix {};
+    sed = callPackage ./sed.nix {};
+    grep = callPackage ./grep.nix {};
+    gawk = callPackage ./gawk.nix {};
+    findutils = callPackage ./findutils.nix {};
+    diffutils = callPackage ./diffutils.nix {};
+    tar = callPackage ./tar.nix {};
+    gzip = callPackage ./gzip.nix {};
+    patch = callPackage ./patch.nix {};
   };
-in
-{
-  inherit (scope)
+in {
+  inherit
+    (scope)
     gcc
     binutils
     glibc

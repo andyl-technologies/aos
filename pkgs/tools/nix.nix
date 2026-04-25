@@ -25,111 +25,111 @@
   lowdown,
   bzip2,
   zlib,
-}:
-let
+}: let
   version = "2.24.12";
 in
-mkDerivation {
-  pname = "nix";
-  inherit version;
+  mkDerivation {
+    pname = "nix";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/NixOS/nix/archive/refs/tags/${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/NixOS/nix/archive/refs/tags/${version}.tar.gz"
+      ];
+      hash = "sha256-862Kc2J+EH5X9JFIaKzWN6oODXCmh91nGLrC0vZPUMg=";
+    };
+
+    buildDeps = [
+      gnumake
+      cmake
+      pkg-config
+      meson
+      ninja
+      python3
+      bison
+      flex
     ];
-    hash = "sha256-862Kc2J+EH5X9JFIaKzWN6oODXCmh91nGLrC0vZPUMg=";
-  };
+    runtimeDeps = [
+      curl
+      openssl
+      sqlite
+      boost
+      editline
+      libsodium
+      nlohmann-json
+      toml11
+      libgit2
+      brotli
+      libarchive
+      gc
+      lowdown
+      bzip2
+      zlib
+    ];
+    propagatedDeps = [];
 
-  buildDeps = [
-    gnumake
-    cmake
-    pkg-config
-    meson
-    ninja
-    python3
-    bison
-    flex
-  ];
-  runtimeDeps = [
-    curl
-    openssl
-    sqlite
-    boost
-    editline
-    libsodium
-    nlohmann-json
-    toml11
-    libgit2
-    brotli
-    libarchive
-    gc
-    lowdown
-    bzip2
-    zlib
-  ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd nix-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+          # Strip meson.build to only core libraries + nix executable
+          # Remove docs, tests, perl bindings, C wrappers we don't need
+          sed -i '/internal-api-docs/d' meson.build
+          sed -i '/external-api-docs/d' meson.build
+          sed -i '/libutil-c/d' meson.build
+          sed -i '/libstore-c/d' meson.build
+          sed -i '/libexpr-c/d' meson.build
+          sed -i '/libmain-c/d' meson.build
+          sed -i '/perl/d' meson.build
+          sed -i '/nix-.*-test/d' meson.build
+          sed -i '/nix-.*-tests/d' meson.build
+          # Fix SYSTEM define: meson build at 2.24.x only sets it to the OS name
+          # ("linux") instead of the full system pair ("x86_64-linux"). Fixed
+          # upstream in 2.28.0 (commit 6a1a3fa1c).
+          sed -i "s|configdata.set_quoted('SYSTEM', host_machine.system())|configdata.set_quoted('SYSTEM', host_machine.cpu_family() + '-' + host_machine.system())|" \
+            src/libstore/meson.build
+          mkdir -p build && cd build
+          meson setup .. \
+            --prefix=$out \
+            --buildtype=release
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          ninja -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          ninja install
 
-  LDFLAGS = "-Wl,-rpath,$out/lib";
+          # Create legacy command symlinks (multi-call binary)
+          for cmd in nix-store nix-build nix-instantiate nix-env \
+                     nix-collect-garbage nix-copy-closure nix-daemon \
+                     nix-hash nix-prefetch-url nix-channel; do
+            if [ ! -e "$out/bin/$cmd" ]; then
+              ln -s nix "$out/bin/$cmd"
+            fi
+          done
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd nix-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        export PYTHONPATH="${meson}/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
-        # Strip meson.build to only core libraries + nix executable
-        # Remove docs, tests, perl bindings, C wrappers we don't need
-        sed -i '/internal-api-docs/d' meson.build
-        sed -i '/external-api-docs/d' meson.build
-        sed -i '/libutil-c/d' meson.build
-        sed -i '/libstore-c/d' meson.build
-        sed -i '/libexpr-c/d' meson.build
-        sed -i '/libmain-c/d' meson.build
-        sed -i '/perl/d' meson.build
-        sed -i '/nix-.*-test/d' meson.build
-        sed -i '/nix-.*-tests/d' meson.build
-        mkdir -p build && cd build
-        meson setup .. \
-          --prefix=$out \
-          --buildtype=release
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        ninja -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        ninja install
-
-        # Create legacy command symlinks (multi-call binary)
-        for cmd in nix-store nix-build nix-instantiate nix-env \
-                   nix-collect-garbage nix-copy-closure nix-daemon \
-                   nix-hash nix-prefetch-url nix-channel; do
-          if [ ! -e "$out/bin/$cmd" ]; then
-            ln -s nix "$out/bin/$cmd"
-          fi
-        done
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       stack = testing.mkVMTest {
         name = "cross-cutting-nix-stack";
         rootfsDeps = [
@@ -228,9 +228,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "Nix — the purely functional package manager";
-    homepage = "https://nixos.org/nix";
-    license = "LGPL-2.1-or-later";
-  };
-}
+    meta = {
+      description = "Nix — the purely functional package manager";
+      homepage = "https://nixos.org/nix";
+      license = "LGPL-2.1-or-later";
+    };
+  }

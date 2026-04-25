@@ -8,8 +8,7 @@
   python3,
   zlib,
   bootstrapTools,
-}:
-let
+}: let
   mkLLVM = import ./_llvm.nix {
     inherit
       mkDerivation
@@ -23,7 +22,7 @@ let
       ;
   };
 in
-mkLLVM {
-  version = "18.1.8";
-  srcHash = "sha256-C1hVem0yzu6XyNUzpZuSEth+D8TSgzkk62xhEkfbLyo=";
-}
+  mkLLVM {
+    version = "18.1.8";
+    srcHash = "sha256-C1hVem0yzu6XyNUzpZuSEth+D8TSgzkk62xhEkfbLyo=";
+  }
