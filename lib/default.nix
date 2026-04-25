@@ -10,13 +10,42 @@
 ##! The optional `bash` parameter (a derivation) causes all builders to use
 ##! the AOS-built bash instead of `/bin/sh`. When `null` (early bootstrap),
 ##! `/bin/sh` is used as a fallback.
-{ system, bash ? null }:
-let
+##!
+##! Submodule semantics — the fixpoint below:
+##!
+##!   lib/types.nix's `submodule` type delegates to `evalSubmodule`, which
+##!   closes over `modules.evalModules`, which is constructed from
+##!   `lib/modules.nix` with `types` as a parameter. This is a mutual
+##!   recursion between `types` and `modules` broken by Nix's laziness:
+##!   neither forces the other until an actual submodule merge fires
+##!   during user-module evaluation, by which point the whole let block
+##!   has been constructed. `evalSubmodule` passes `lib = finalLib` into
+##!   the nested evalModules so any deeper submodules also get the real
+##!   evaluator, and threads the attribute name of an `attrsOf` /
+##!   `listOf` submodule through `specialArgs.name` so ported nixpkgs
+##!   modules that write `{ name, config, ... }: ...` keep working.
+{
+  system,
+  bash ? null,
+}: let
   trivial = import ./trivial.nix;
   lists = import ./lists.nix;
   attrsets = import ./attrsets.nix;
   strings = import ./strings.nix;
-  types = import ./types.nix;
+
+  # --- Fixpoint: types and modules are mutually recursive --------------
+  #
+  # `types` takes `evalSubmodule` (a callback that knows how to evaluate
+  # nested modules) as a lazy thunk. `modules` takes `types` as a lazy
+  # thunk. `evalSubmodule` closes over `modules` and `finalLib`. None
+  # of these three forces the others until a submodule merge is invoked,
+  # which only happens during user-module evaluation when the whole
+  # let-block has been fully resolved. This gives us real nixpkgs-style
+  # submodule semantics (defaults, mkIf/mkMerge/mkDefault inside
+  # submodules, per-option type checking) without tearing the lib into
+  # two bootstrap phases.
+
+  types = import ./types.nix {inherit evalSubmodule;};
   modules = import ./modules.nix {
     inherit
       trivial
@@ -26,76 +55,156 @@ let
       types
       ;
   };
+
+  evalSubmodule = moduleArgs: loc: defs: let
+    # `submodule [m1 m2 m3]` and `submodule m` should both work; nixpkgs
+    # accepts either a single module or a list of modules.
+    baseModules =
+      if builtins.isList moduleArgs
+      then moduleArgs
+      else [moduleArgs];
+
+    # Each definition contributes a `config = def.value` module, so the
+    # submodule's option declarations (defaults, types, mkIf/mkMerge)
+    # process it as a normal module input.
+    defModules =
+      builtins.map (d: {
+        _file = d.file or "<anonymous submodule definition>";
+        config = d.value;
+      })
+      defs;
+
+    # For `attrsOf (submodule ...)` and `listOf (submodule ...)`, the
+    # last element of `loc` is the attribute name / list index. Nixpkgs-
+    # style submodule modules written as `{ name, config, ... }: ...`
+    # expect this as an implicit specialArg. Thread it through.
+    implicitName =
+      if loc == []
+      then null
+      else builtins.elemAt loc (builtins.length loc - 1);
+    specialArgs =
+      if implicitName != null
+      then {name = implicitName;}
+      else {};
+
+    evaluated = modules.evalModules {
+      modules = baseModules ++ defModules;
+      # Passing the fully-wired finalLib ensures any nested submodule
+      # types inside `baseModules` see the upgraded `types.submodule`
+      # and also recursively delegate to `evalSubmodule`.
+      lib = finalLib;
+      inherit specialArgs;
+    };
+  in
+    evaluated.config;
+
   platformMod = import ./platform.nix;
-  derivations = import ./derivations.nix { inherit system bash; };
+  derivations = import ./derivations.nix {inherit system bash;};
   checks = import ./testing/checks.nix;
-in
-trivial
-// lists
-// attrsets
-// strings
-// {
-  inherit types system;
-  inherit (platformMod)
-    mkPlatform
-    cpus
-    satisfies
-    canRun
-    canBuildOn
-    platformIsCompatible
-    constraintsCompatible
-    executionTargets
-    resolveTarget
-    mkPlatformFromConstraints
-    ;
-  platform = platformMod.mkPlatform system;
-  inherit (modules)
-    evalModules
-    mkOption
-    mkIf
-    mkMerge
-    mkOverride
-    mkDefault
-    mkForce
-    mkOrder
-    mkBefore
-    mkAfter
-    ;
-  inherit (derivations)
-    mkDerivation
-    mkShell
-    fetchurl
-    fetchgit
-    fetchCargoDeps
-    fetchGoModules
-    fetchBazelDeps
-    fakeHash
-    ;
 
-  # Phase manipulation helpers from derivations module
-  inherit (derivations)
-    replacePhase
-    addPhaseAfter
-    addPhaseBefore
-    removePhase
-    ;
+  # Format helpers (nixpkgs' `pkgs.formats` analog). Each entry in this
+  # attrset is a factory that receives `{ lib, pkgs, … }` at call time
+  # and returns `{ type; generate; … }`. Keeping them lazy — not
+  # pre-applied — avoids threading `pkgs` through `lib/default.nix`,
+  # which is deliberately `pkgs`-less (see the file header).
+  formats = import ./formats;
 
-  # Check constructors (pure data, no deps) for use in modules
-  inherit (checks)
-    mkCheck
-    mkCheckGroup
-    flattenChecks
-    composeChecks
-    ;
-
-  # Re-export submodules for direct access when needed
-  inherit
+  finalLib =
     trivial
-    lists
-    attrsets
-    strings
-    modules
-    derivations
-    checks
-    ;
-}
+    // lists
+    // attrsets
+    // strings
+    // {
+      inherit types system;
+      inherit
+        (platformMod)
+        mkPlatform
+        cpus
+        satisfies
+        canRun
+        canBuildOn
+        platformIsCompatible
+        constraintsCompatible
+        executionTargets
+        resolveTarget
+        mkPlatformFromConstraints
+        ;
+      platform = platformMod.mkPlatform system;
+      inherit
+        (modules)
+        evalModules
+        mkOption
+        mkIf
+        mkMerge
+        mkOverride
+        mkDefault
+        mkForce
+        mkOrder
+        mkBefore
+        mkAfter
+        mkEnableOption
+        mkPackageOption
+        ;
+      inherit
+        (derivations)
+        mkDerivation
+        mkShell
+        fetchurl
+        fetchgit
+        fetchCargoDeps
+        fetchGoModules
+        fetchBazelDeps
+        fakeHash
+        ;
+
+      # Phase manipulation helpers from derivations module
+      inherit
+        (derivations)
+        replacePhase
+        addPhaseAfter
+        addPhaseBefore
+        removePhase
+        ;
+
+      # Derivation path helpers (isDerivation is already pulled in via the
+      # `trivial //` spread above, so no extra inherit is needed for it).
+      inherit
+        (derivations)
+        getBin
+        getExe
+        getExe'
+        ;
+
+      # Nixpkgs-style top-level helpers that ported code expects at
+      # `lib.mkOptionType` / `lib.mergeEqualOption`. Both live in
+      # `lib/types.nix` because they are tightly coupled to how merge
+      # functions are written.
+      inherit
+        (types)
+        mkOptionType
+        mergeEqualOption
+        ;
+
+      # Check composition helper (pure data, no deps) for use in modules
+      inherit (checks) composeChecks;
+
+      # Structured-config format helpers. Each factory takes `{ lib,
+      # pkgs, … }` at call time and returns `{ type; generate; }`.
+      # See `lib/formats/` (aggregated via `lib/formats/default.nix`)
+      # for the individual factories: `json.nix`, `yaml.nix`,
+      # `toml.nix`, `ignition.nix`.
+      inherit formats;
+
+      # Re-export submodules for direct access when needed
+      inherit
+        trivial
+        lists
+        attrsets
+        strings
+        modules
+        derivations
+        checks
+        ;
+    };
+in
+  finalLib

@@ -20,8 +20,7 @@
 {
   testing,
   pkgs,
-}:
-let
+}: let
   aosPkg = pkgs.aos;
 
   registryTests = import ./registry.nix {inherit testing pkgs aosPkg;};

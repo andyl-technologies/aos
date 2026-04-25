@@ -26,8 +26,7 @@
   bazel-bootstrap,
   bootstrapTools,
   gcc-libs,
-}:
-let
+}: let
   mkBazel = import ./_bazel.nix {
     inherit
       mkDerivation
@@ -59,8 +58,8 @@ let
       ;
   };
 in
-mkBazel {
-  version = "9.0.1";
-  srcHash = "sha256-PzNrRRCoIQ+VT6On1s+9JxtvnWOXMv3BHAALb7/KP74=";
-  vendorDepsHash = "sha256-Tqrq8IFRec1xCWx1uQTvP/lKDIHmyzNNd991taZLoHw=";
-}
+  mkBazel {
+    version = "9.0.1";
+    srcHash = "sha256-PzNrRRCoIQ+VT6On1s+9JxtvnWOXMv3BHAALb7/KP74=";
+    vendorDepsHash = "sha256-Tqrq8IFRec1xCWx1uQTvP/lKDIHmyzNNd991taZLoHw=";
+  }
