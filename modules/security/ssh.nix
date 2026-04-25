@@ -13,8 +13,7 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.services.ssh;
 
   sshdConfig = ''
@@ -29,25 +28,34 @@ let
 
     # Host keys (ed25519 preferred, RSA as fallback).
     HostKey /etc/ssh/ssh_host_ed25519_key
-    HostKey /etc/ssh/ssh_host_rsa_key
 
     # Authentication.
     PermitRootLogin ${cfg.permitRootLogin}
-    PasswordAuthentication ${if cfg.passwordAuthentication then "yes" else "no"}
-    KbdInteractiveAuthentication ${if cfg.kbdInteractiveAuthentication then "yes" else "no"}
+    PasswordAuthentication ${
+      if cfg.passwordAuthentication
+      then "yes"
+      else "no"
+    }
+    KbdInteractiveAuthentication ${
+      if cfg.kbdInteractiveAuthentication
+      then "yes"
+      else "no"
+    }
     PubkeyAuthentication yes
     AuthorizedKeysFile ${cfg.authorizedKeysFile}
     ${
-      if cfg.authorizedKeysCommand != null then
-        "AuthorizedKeysCommand ${cfg.authorizedKeysCommand}\n    AuthorizedKeysCommandUser ${cfg.authorizedKeysCommandUser}"
-      else
-        ""
+      if cfg.authorizedKeysCommand != null
+      then "AuthorizedKeysCommand ${cfg.authorizedKeysCommand}\n    AuthorizedKeysCommandUser ${cfg.authorizedKeysCommandUser}"
+      else ""
     }
     MaxAuthTries ${toString cfg.maxAuthTries}
 
     # Disable unused authentication methods.
     ChallengeResponseAuthentication no
-    GSSAPIAuthentication no
+    # GSSAPIAuthentication intentionally omitted: AOS openssh is built
+    # without Kerberos/GSSAPI support, so sshd refuses to start if the
+    # directive appears at all ("Unsupported option GSSAPIAuthentication"
+    # at config parse time). Disabled at build time is the secure default.
     HostbasedAuthentication no
     PermitEmptyPasswords no
 
@@ -57,7 +65,11 @@ let
     MACs ${builtins.concatStringsSep "," cfg.allowedMACs}
 
     # Session settings.
-    X11Forwarding ${if cfg.x11Forwarding then "yes" else "no"}
+    X11Forwarding ${
+      if cfg.x11Forwarding
+      then "yes"
+      else "no"
+    }
     PrintMotd no
     PrintLastLog yes
     TCPKeepAlive yes
@@ -84,8 +96,7 @@ let
     ClientAliveInterval 300
     ClientAliveCountMax 3
   '';
-in
-{
+in {
   options.aos.services.ssh = {
     ## Enable the OpenSSH server (sshd).
     ##
@@ -265,53 +276,89 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    system.checks.ssh = lib.mkCheckGroup {
-      name = "ssh";
+    system.checks.ssh = {
       description = "SSH server checks";
       checks = [
-        (lib.mkCheck {
+        {
           name = "sshd-active";
           description = "sshd service is active";
           script = ''
             assert_success "systemctl is-active sshd" \
               "sshd service is active"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "sshd-config";
           description = "sshd_config exists";
           script = ''
             assert_success "test -f /etc/ssh/sshd_config" \
               "sshd_config exists"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "password-auth-disabled";
           description = "Password authentication is disabled";
           script = ''
             assert_output_contains "cat /etc/ssh/sshd_config" "PasswordAuthentication no" \
               "Password authentication is disabled"
           '';
-        })
+        }
       ];
     };
 
-    environment.systemPackages = [ pkgs.openssh ];
+    environment.systemPackages = [pkgs.openssh];
+
+    # sshd's privilege-separation user. Required at startup — sshd
+    # aborts with "Privilege separation user sshd does not exist"
+    # if it's missing. The chroot dir is /var/empty (compiled in via
+    # --with-privsep-path=/var/empty in pkgs/networking/openssh.nix)
+    # and must be root-owned + not group/world-writable; it is
+    # created by the tmpfiles rule below.
+    aos.users.users.sshd = {
+      uid = 198;
+      group = "sshd";
+      home = "/var/empty";
+      shell = "/sbin/nologin";
+      description = "OpenSSH Privilege Separation";
+      extraGroups = [];
+    };
+    aos.users.groups.sshd = {
+      gid = 198;
+      members = [];
+    };
 
     # /etc/ssh/sshd_config — OpenSSH server configuration.
     environment.etc."ssh/sshd_config" = {
       text = sshdConfig;
     };
 
+    # Generate SSH host keys on first boot to /var/etc/ssh/ (persistent
+    # across reboots via the /var partition). The /etc overlay makes them
+    # visible at /etc/ssh/ for sshd.
+    systemd.services."sshd-keygen" = {
+      description = "Generate SSH Host Keys";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        set -euo pipefail
+        install -d -m 0755 -o root -g root /var/etc/ssh
+
+        key=/var/etc/ssh/ssh_host_ed25519_key
+        if [ ! -s "$key" ]; then
+          echo "sshd-keygen: generating ed25519 host key at $key"
+          ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$key" </dev/null
+        fi
+      '';
+    };
+
     # sshd.service — OpenSSH server daemon.
     systemd.services."sshd" = {
       description = "OpenSSH Daemon";
-      wantedBy = [ "multi-user.target" ];
-      after = [
-        "network.target"
-        "sshd-keygen.target"
-      ];
-      wants = [ "sshd-keygen.target" ];
+      wantedBy = ["multi-user.target"];
+      requires = ["sshd-keygen.service"];
+      after = ["network.target" "sshd-keygen.service"];
       serviceConfig = {
         Type = "notify";
         ExecStart = "${pkgs.openssh}/sbin/sshd -D -f /etc/ssh/sshd_config";
@@ -324,31 +371,19 @@ in
       };
     };
 
-    # Generate SSH host keys if they do not exist.
-    # This runs once on first boot (via Ignition or this fallback).
-    systemd.services."sshd-keygen" = {
-      description = "Generate SSH Host Keys";
-      wantedBy = [ "sshd-keygen.target" ];
-      before = [ "sshd-keygen.target" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = [
-          "${pkgs.openssh}/bin/ssh-keygen -A"
-        ];
-        ExecCondition = "${pkgs.coreutils}/bin/test ! -f /etc/ssh/ssh_host_ed25519_key";
-      };
-    };
-
-    # Ensure the authorized_keys directory exists.
+    # Ensure the authorized_keys directory and sshd privsep chroot exist.
     environment.etc."tmpfiles.d/aos-ssh.conf" = {
       text = ''
         # Ensure SSH authorized_keys directory exists.
         d /etc/ssh/authorized_keys 0755 root root -
+
+        # sshd privilege-separation chroot. Must be root-owned and
+        # NOT group/world-writable — sshd enforces both at startup.
+        d /var/empty 0755 root root -
       '';
     };
 
     # Open the SSH port in the firewall.
-    aos.firewall.allowedTCP = [ cfg.port ];
+    aos.firewall.allowedTCP = [cfg.port];
   };
 }

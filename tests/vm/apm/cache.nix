@@ -10,8 +10,7 @@
   testing,
   self,
   pkgs,
-}:
-let
+}: let
   iproute2Bin = "${pkgs.iproute2}/sbin/ip";
   sqliteBin = "${pkgs.sqlite}/bin/sqlite3";
   socatBin = "${pkgs.socat}/bin/socat";
@@ -22,55 +21,55 @@ let
 
   # Shared preamble: loopback interface, mock Nix DB, server config.
   serverPreamble = ''
-    ${iproute2Bin} link set lo up || true
-    ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+        ${iproute2Bin} link set lo up || true
+        ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-    echo "==> Setting up test environment"
-    export AOS_ROOT=/tmp/aos
-    mkdir -p $AOS_ROOT/var/nix/db
-    mkdir -p $AOS_ROOT/store
-    mkdir -p $AOS_ROOT/meta
-    mkdir -p /tmp/run/aos
+        echo "==> Setting up test environment"
+        export AOS_ROOT=/tmp/aos
+        mkdir -p $AOS_ROOT/var/nix/db
+        mkdir -p $AOS_ROOT/store
+        mkdir -p $AOS_ROOT/meta
+        mkdir -p /tmp/run/aos
 
-    echo "==> Creating mock Nix store DB"
-    ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
-    CREATE TABLE IF NOT EXISTS ValidPaths (
-      id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-      path TEXT UNIQUE NOT NULL,
-      hash TEXT NOT NULL,
-      registrationTime INTEGER NOT NULL,
-      deriver TEXT,
-      narSize INTEGER,
-      ultimate INTEGER,
-      sigs TEXT,
-      ca TEXT
-    );
-    CREATE TABLE IF NOT EXISTS Refs (
-      referrer INTEGER NOT NULL,
-      reference INTEGER NOT NULL,
-      PRIMARY KEY (referrer, reference),
-      FOREIGN KEY (referrer) REFERENCES ValidPaths(id) ON DELETE CASCADE,
-      FOREIGN KEY (reference) REFERENCES ValidPaths(id) ON DELETE CASCADE
-    );
-    PRAGMA journal_mode=WAL;
-SQL
-    chmod 666 $AOS_ROOT/var/nix/db/db.sqlite
-    chmod 777 $AOS_ROOT/var/nix/db
-    echo "==> Test environment ready"
+        echo "==> Creating mock Nix store DB"
+        ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
+        CREATE TABLE IF NOT EXISTS ValidPaths (
+          id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          path TEXT UNIQUE NOT NULL,
+          hash TEXT NOT NULL,
+          registrationTime INTEGER NOT NULL,
+          deriver TEXT,
+          narSize INTEGER,
+          ultimate INTEGER,
+          sigs TEXT,
+          ca TEXT
+        );
+        CREATE TABLE IF NOT EXISTS Refs (
+          referrer INTEGER NOT NULL,
+          reference INTEGER NOT NULL,
+          PRIMARY KEY (referrer, reference),
+          FOREIGN KEY (referrer) REFERENCES ValidPaths(id) ON DELETE CASCADE,
+          FOREIGN KEY (reference) REFERENCES ValidPaths(id) ON DELETE CASCADE
+        );
+        PRAGMA journal_mode=WAL;
+    SQL
+        chmod 666 $AOS_ROOT/var/nix/db/db.sqlite
+        chmod 777 $AOS_ROOT/var/nix/db
+        echo "==> Test environment ready"
   '';
 
   serverConfig = ''
-    cat > /tmp/aos-config.toml << 'CFGEOF'
-    listen = "127.0.0.1:15000"
+        cat > /tmp/aos-config.toml << 'CFGEOF'
+        listen = "127.0.0.1:15000"
 
-    [[views]]
-    name = "default"
-    anonymous_read = true
+        [[views]]
+        name = "default"
+        anonymous_read = true
 
-    [bootstrap]
-    socket = "/tmp/run/aos/bootstrap.sock"
-    socket_group = "root"
-CFGEOF
+        [bootstrap]
+        socket = "/tmp/run/aos/bootstrap.sock"
+        socket_group = "root"
+    CFGEOF
   '';
 
   startServer = ''
@@ -120,8 +119,7 @@ CFGEOF
     pkgs.iproute2
     pkgs.grep
   ];
-in
-{
+in {
   # ---------------------------------------------------------------------------
   # Test 1: cache-push-pull -- round-trip via file:// backend
   # ---------------------------------------------------------------------------

@@ -19,6 +19,12 @@ set -euo pipefail
 : "${CPPFLAGS:=}"
 : "${LDFLAGS:=}"
 
+# Ensure binaries and shared libraries can find sibling .so files within the
+# same package at runtime.  Matches the Nixpkgs _addRpathPrefix mechanism.
+if [ -n "${out:-}" ]; then
+  export NIX_LDFLAGS="-Wl,-rpath,$out/lib ${NIX_LDFLAGS:-}"
+fi
+
 # Set up PATH from build dependencies
 if [ -n "${buildInputs:-}" ]; then
   for dep in $buildInputs; do

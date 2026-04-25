@@ -9,96 +9,93 @@
   zlib,
   nghttp2,
   ca-certificates,
-}:
-let
+}: let
   version = "8.12.1";
 in
-mkDerivation {
-  pname = "curl";
-  inherit version;
+  mkDerivation {
+    pname = "curl";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://curl.se/download/curl-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://curl.se/download/curl-${version}.tar.xz"
+      ];
+      hash = "sha256-A0Hx7ZeibIEauuvTfWK4M5VnkrdgfqPxXQAWE8dt4gI=";
+    };
+
+    buildDeps = [
+      gnumake
+      pkg-config
+      perl
     ];
-    hash = "sha256-A0Hx7ZeibIEauuvTfWK4M5VnkrdgfqPxXQAWE8dt4gI=";
-  };
+    runtimeDeps = [
+      openssl
+      zlib
+      nghttp2
+    ];
+    propagatedDeps = [
+      openssl
+      zlib
+      nghttp2
+    ];
 
-  buildDeps = [
-    gnumake
-    pkg-config
-    perl
-  ];
-  runtimeDeps = [
-    openssl
-    zlib
-    nghttp2
-  ];
-  propagatedDeps = [
-    openssl
-    zlib
-    nghttp2
-  ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd curl-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --with-openssl=${openssl} \
+            --with-zlib=${zlib} \
+            --with-nghttp2=${nghttp2} \
+            --with-ca-bundle=${ca-certificates}/etc/ssl/certs/ca-certificates.crt \
+            --enable-shared \
+            --disable-static \
+            --disable-ldap \
+            --disable-ldaps \
+            --without-librtmp \
+            --without-libpsl \
+            --without-libidn2 \
+            --enable-threaded-resolver \
+            --enable-ipv6 \
+            --disable-docs \
+            --disable-manual
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+          # Create curl.pc symlink (some consumers look for "curl" not "libcurl")
+          ln -sf libcurl.pc $out/lib/pkgconfig/curl.pc
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd curl-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --with-openssl=${openssl} \
-          --with-zlib=${zlib} \
-          --with-nghttp2=${nghttp2} \
-          --with-ca-bundle=${ca-certificates}/etc/ssl/certs/ca-certificates.crt \
-          --enable-shared \
-          --disable-static \
-          --disable-ldap \
-          --disable-ldaps \
-          --without-librtmp \
-          --without-libpsl \
-          --without-libidn2 \
-          --enable-threaded-resolver \
-          --enable-ipv6 \
-          --disable-docs \
-          --disable-manual
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-        # Create curl.pc symlink (some consumers look for "curl" not "libcurl")
-        ln -sf libcurl.pc $out/lib/pkgconfig/curl.pc
-      '';
-    }
-  ];
+    meta = {
+      description = "curl — command-line tool for transferring data via URLs";
+      homepage = "https://curl.se";
+      license = "curl";
+    };
 
-  meta = {
-    description = "curl — command-line tool for transferring data via URLs";
-    homepage = "https://curl.se";
-    license = "curl";
-  };
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       version = testing.mkToolCheck {
         pname = "tool-curl";
         tool = self;
@@ -112,7 +109,7 @@ mkDerivation {
       link = testing.mkLinkCheck {
         pname = "lib-curl";
         library = self;
-        libs = [ "-lcurl" ];
+        libs = ["-lcurl"];
         extraDeps = [
           pkgs.openssl
           pkgs.zlib
@@ -130,7 +127,7 @@ mkDerivation {
       easy = testing.mkLinkCheck {
         pname = "lib-curl-easy";
         library = self;
-        libs = [ "-lcurl" ];
+        libs = ["-lcurl"];
         extraDeps = [
           pkgs.openssl
           pkgs.zlib
@@ -152,12 +149,12 @@ mkDerivation {
 
       rpath = testing.mkRPATHCheck {
         pkg = self;
-        bins = [ "curl" ];
+        bins = ["curl"];
       };
 
       soname = testing.mkSONAMECheck {
         pkg = self;
-        libs = [ "libcurl.so" ];
+        libs = ["libcurl.so"];
       };
 
       tls-stack = testing.mkVMTest {
@@ -318,4 +315,4 @@ mkDerivation {
         '';
       };
     };
-}
+  }

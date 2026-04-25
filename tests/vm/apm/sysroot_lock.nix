@@ -17,8 +17,7 @@
   testing,
   apm,
   pkgs,
-}:
-let
+}: let
   # --------------------------------------------------------------------------
   # Real placeholder derivations — tiny packages that produce valid store paths.
   # Each has a unique (pname, version) so it gets a unique Nix store hash.
@@ -28,7 +27,7 @@ let
     pkgs.mkDerivation {
       inherit pname version;
       src = null;
-      buildDeps = [ pkgs.coreutils ];
+      buildDeps = [pkgs.coreutils];
       phases = [
         {
           name = "build";
@@ -41,28 +40,28 @@ let
     };
 
   # Sysroot closure members (one set of store paths)
-  sysrootOpensslPkg  = mkPlaceholder "openssl" "3.2.1";
-  sysrootZlibPkg     = mkPlaceholder "zlib" "1.3.0";
-  sysrootGlibcPkg    = mkPlaceholder "glibc" "2.39";
+  sysrootOpensslPkg = mkPlaceholder "openssl" "3.2.1";
+  sysrootZlibPkg = mkPlaceholder "zlib" "1.3.0";
+  sysrootGlibcPkg = mkPlaceholder "glibc" "2.39";
   sysrootToplevelPkg = mkPlaceholder "server" "2026.03";
 
   # Divergent closure members (different store paths for the same names)
   pkgOpensslPkg = mkPlaceholder "openssl" "3.3.0";
-  pkgZlibPkg    = mkPlaceholder "zlib" "1.3.1";
+  pkgZlibPkg = mkPlaceholder "zlib" "1.3.1";
 
   # Additional mock packages
-  nginxPkg    = mkPlaceholder "nginx" "1.27.0";
+  nginxPkg = mkPlaceholder "nginx" "1.27.0";
   cleanPkgPkg = mkPlaceholder "clean-pkg" "1.0.0";
 
   # Real store path strings for use in TOML generation
-  sysrootOpenssl  = builtins.toString sysrootOpensslPkg;
-  sysrootZlib     = builtins.toString sysrootZlibPkg;
-  sysrootGlibc    = builtins.toString sysrootGlibcPkg;
+  sysrootOpenssl = builtins.toString sysrootOpensslPkg;
+  sysrootZlib = builtins.toString sysrootZlibPkg;
+  sysrootGlibc = builtins.toString sysrootGlibcPkg;
   sysrootToplevel = builtins.toString sysrootToplevelPkg;
-  pkgOpenssl      = builtins.toString pkgOpensslPkg;
-  pkgZlib         = builtins.toString pkgZlibPkg;
-  nginxPath       = builtins.toString nginxPkg;
-  cleanPkgPath    = builtins.toString cleanPkgPkg;
+  pkgOpenssl = builtins.toString pkgOpensslPkg;
+  pkgZlib = builtins.toString pkgZlibPkg;
+  nginxPath = builtins.toString nginxPkg;
+  cleanPkgPath = builtins.toString cleanPkgPkg;
 
   # All placeholder derivations — included in rootfsDeps so their store paths
   # are physically present in the VM and pass nix-store --check-validity.
@@ -80,18 +79,31 @@ let
   # Common rootfs deps for all sysroot-lock tests
   # nix runtime deps needed for LD_LIBRARY_PATH (RPATH doesn't cover all deps yet)
   nixRuntimeDeps = [
-    pkgs.nix pkgs.brotli pkgs.curl pkgs.openssl pkgs.sqlite pkgs.boost
-    pkgs.editline pkgs.libsodium pkgs.libarchive pkgs.gc pkgs.lowdown
-    pkgs.bzip2 pkgs.zlib
+    pkgs.nix
+    pkgs.brotli
+    pkgs.curl
+    pkgs.openssl
+    pkgs.sqlite
+    pkgs.boost
+    pkgs.editline
+    pkgs.libsodium
+    pkgs.libarchive
+    pkgs.gc
+    pkgs.lowdown
+    pkgs.bzip2
+    pkgs.zlib
   ];
 
-  testDeps = [
-    apm
-    pkgs.coreutils
-    pkgs.jq
-    pkgs.grep
-    pkgs.git
-  ] ++ nixRuntimeDeps ++ allPlaceholders;
+  testDeps =
+    [
+      apm
+      pkgs.coreutils
+      pkgs.jq
+      pkgs.grep
+      pkgs.git
+    ]
+    ++ nixRuntimeDeps
+    ++ allPlaceholders;
 
   # --------------------------------------------------------------------------
   # Fixture builder: create a mock registry directory with package metadata
@@ -101,55 +113,66 @@ let
   #
   # Parameters:
   #   packages — list of { name, version, storePath, sysroot, references, images }
-  mkMockRegistry = { name, packages }:
+  mkMockRegistry = {
+    name,
+    packages,
+  }:
     pkgs.mkDerivation {
       pname = "mock-registry-${name}";
       version = "0";
       src = null;
-      buildDeps = [ pkgs.coreutils pkgs.git ];
+      buildDeps = [pkgs.coreutils pkgs.git];
       phases = [
         {
           name = "build";
           script = ''
             mkdir -p $out/packages
-            ${builtins.concatStringsSep "\n" (builtins.map (pkg:
-              let letter = builtins.substring 0 1 pkg.name;
+            ${builtins.concatStringsSep "\n" (builtins.map (pkg: let
+                letter = builtins.substring 0 1 pkg.name;
               in ''
-              mkdir -p $out/packages/${letter}
-              cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
-[package]
-name = "${pkg.name}"
-description = "mock ${pkg.name}"
-license = "MIT"
-maintainer = "test"
-${if pkg.sysroot or false then "sysroot = true" else ""}
+                              mkdir -p $out/packages/${letter}
+                              cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
+                [package]
+                name = "${pkg.name}"
+                description = "mock ${pkg.name}"
+                license = "MIT"
+                maintainer = "test"
+                ${
+                  if pkg.sysroot or false
+                  then "sysroot = true"
+                  else ""
+                }
 
-[[versions]]
-version = "${pkg.version}"
+                [[versions]]
+                version = "${pkg.version}"
 
-[versions.platforms.x86_64-linux]
-store_path = "${pkg.storePath}"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = 1024
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = 512
-closure_size = 2048
-source_drv = ""
-source_nar_hash = ""
-references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
-${if (pkg.images or []) != [] then
-  builtins.concatStringsSep "\n" (builtins.map (img: ''
-[[versions.platforms.x86_64-linux.images]]
-format = "${img.format}"
-store_path = "${img.storePath}"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = ${builtins.toString img.narSize}
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = ${builtins.toString img.downloadSize}
-'') (pkg.images or []))
-else ""}
-PKGEOF
-            '') packages)}
+                [versions.platforms.x86_64-linux]
+                store_path = "${pkg.storePath}"
+                nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                nar_size = 1024
+                download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                download_size = 512
+                closure_size = 2048
+                source_drv = ""
+                source_nar_hash = ""
+                references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
+                ${
+                  if (pkg.images or []) != []
+                  then
+                    builtins.concatStringsSep "\n" (builtins.map (img: ''
+                      [[versions.platforms.x86_64-linux.images]]
+                      format = "${img.format}"
+                      store_path = "${img.storePath}"
+                      nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                      nar_size = ${builtins.toString img.narSize}
+                      download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                      download_size = ${builtins.toString img.downloadSize}
+                    '') (pkg.images or []))
+                  else ""
+                }
+                PKGEOF
+              '')
+              packages)}
 
             # Initialize as a git repo (apm expects this)
             cd $out
@@ -171,75 +194,85 @@ PKGEOF
   # nix-store needs its runtime libraries
   nixLibPath = builtins.concatStringsSep ":" (map (p: "${p}/lib") nixRuntimeDeps);
 
-  mkPreamble = { sysrootRegistryPath, userRegistryPath, sysrootState ? null, storePaths ? [] }: ''
-    # Use /tmp for all writable state
-    export HOME=/tmp/home
-    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    mkdir -p $HOME/.config/apm/registries.d
-    mkdir -p $HOME/.local/share/apm/registries
-    mkdir -p $HOME/.local/share/apm/remote
-    mkdir -p $HOME/.cache/apm
-    mkdir -p /var/lib/profiles/system
-    mkdir -p /var/lib/apm/remote
-    mkdir -p /var/lib/apm/registries
-    mkdir -p /etc/apm/registries.d
+  mkPreamble = {
+    sysrootRegistryPath,
+    userRegistryPath,
+    sysrootState ? null,
+    storePaths ? [],
+  }: ''
+        # Use /tmp for all writable state
+        export HOME=/tmp/home
+        export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        mkdir -p $HOME/.config/apm/registries.d
+        mkdir -p $HOME/.local/share/apm/registries
+        mkdir -p $HOME/.local/share/apm/remote
+        mkdir -p $HOME/.cache/apm
+        mkdir -p /var/lib/profiles/system
+        mkdir -p /var/lib/apm/remote
+        mkdir -p /var/lib/apm/registries
+        mkdir -p /etc/apm/registries.d
 
-    # Copy both mock registries (git repos are read-only in the store)
-    cp -r ${sysrootRegistryPath} /var/lib/apm/registries/sysroot-reg
-    chmod -R u+w /var/lib/apm/registries/sysroot-reg
-    cp -r ${userRegistryPath} /var/lib/apm/registries/user-reg
-    chmod -R u+w /var/lib/apm/registries/user-reg
+        # Copy both mock registries (git repos are read-only in the store)
+        cp -r ${sysrootRegistryPath} /var/lib/apm/registries/sysroot-reg
+        chmod -R u+w /var/lib/apm/registries/sysroot-reg
+        cp -r ${userRegistryPath} /var/lib/apm/registries/user-reg
+        chmod -R u+w /var/lib/apm/registries/user-reg
 
-    # Configure apm to use both registries
-    # sysroot-reg has higher priority (600) and contains the sysroot + old versions
-    cat > /etc/apm/registries.d/sysroot-reg.toml << 'CFGEOF'
-[registry]
-name = "sysroot-reg"
-url = "file:///var/lib/apm/registries/sysroot-reg"
-priority = 600
-enabled = true
-CFGEOF
+        # Configure apm to use both registries
+        # sysroot-reg has higher priority (600) and contains the sysroot + old versions
+        cat > /etc/apm/registries.d/sysroot-reg.toml << 'CFGEOF'
+    [registry]
+    name = "sysroot-reg"
+    url = "file:///var/lib/apm/registries/sysroot-reg"
+    priority = 600
+    enabled = true
+    CFGEOF
 
-    cat > /etc/apm/registries.d/user-reg.toml << 'CFGEOF'
-[registry]
-name = "user-reg"
-url = "file:///var/lib/apm/registries/user-reg"
-priority = 500
-enabled = true
-CFGEOF
+        cat > /etc/apm/registries.d/user-reg.toml << 'CFGEOF'
+    [registry]
+    name = "user-reg"
+    url = "file:///var/lib/apm/registries/user-reg"
+    priority = 500
+    enabled = true
+    CFGEOF
 
-    # Symlink registries into the remote cache (apm reads from here)
-    ln -sfn /var/lib/apm/registries/sysroot-reg /var/lib/apm/remote/sysroot-reg
-    ln -sfn /var/lib/apm/registries/user-reg /var/lib/apm/remote/user-reg
-    ln -sfn /var/lib/apm/registries/sysroot-reg $HOME/.local/share/apm/remote/sysroot-reg
-    ln -sfn /var/lib/apm/registries/user-reg $HOME/.local/share/apm/remote/user-reg
+        # Symlink registries into the remote cache (apm reads from here)
+        ln -sfn /var/lib/apm/registries/sysroot-reg /var/lib/apm/remote/sysroot-reg
+        ln -sfn /var/lib/apm/registries/user-reg /var/lib/apm/remote/user-reg
+        ln -sfn /var/lib/apm/registries/sysroot-reg $HOME/.local/share/apm/remote/sysroot-reg
+        ln -sfn /var/lib/apm/registries/user-reg $HOME/.local/share/apm/remote/user-reg
 
-    ${if sysrootState != null then ''
-      # Write system generation state
-      cp ${builtins.toFile "state.json" (builtins.unsafeDiscardStringContext sysrootState)} /var/lib/profiles/system/state.json
-      # Create generation directories
-      mkdir -p /var/lib/profiles/system/gen-1
-    '' else ""}
+        ${
+      if sysrootState != null
+      then ''
+        # Write system generation state
+        cp ${builtins.toFile "state.json" (builtins.unsafeDiscardStringContext sysrootState)} /var/lib/profiles/system/state.json
+        # Create generation directories
+        mkdir -p /var/lib/profiles/system/gen-1
+      ''
+      else ""
+    }
 
-    # Register real store paths in the Nix database so that
-    # nix-store --check-validity succeeds for them.
-    # The VM rootfs has /nix/store but no Nix database.
-    # First initialise the store DB, then register each path.
-    mkdir -p /nix/var/nix/db /nix/var/nix/gcroots /nix/var/nix/temproots /nix/var/nix/userpool
-    export NIX_REMOTE=""
-    nix-store --init
-    ${builtins.concatStringsSep "\n" (builtins.map (p: ''
-      printf '%s\n\n0\n' "${builtins.toString p}" | nix-store --register-validity
-    '') storePaths)}
+        # Register real store paths in the Nix database so that
+        # nix-store --check-validity succeeds for them.
+        # The VM rootfs has /nix/store but no Nix database.
+        # First initialise the store DB, then register each path.
+        mkdir -p /nix/var/nix/db /nix/var/nix/gcroots /nix/var/nix/temproots /nix/var/nix/userpool
+        export NIX_REMOTE=""
+        nix-store --init
+        ${builtins.concatStringsSep "\n" (builtins.map (p: ''
+        printf '%s\n\n0\n' "${builtins.toString p}" | nix-store --register-validity
+      '')
+      storePaths)}
   '';
 
   # Store path hash extraction helper — takes the first component before '-'
   # from the basename, matching the Rust store_path_hash() function.
-  hashOf = path:
-    let
-      basename = builtins.baseNameOf (builtins.toString path);
-      parts = builtins.split "-" basename;
-    in builtins.head parts;
+  hashOf = path: let
+    basename = builtins.baseNameOf (builtins.toString path);
+    parts = builtins.split "-" basename;
+  in
+    builtins.head parts;
 
   # --------------------------------------------------------------------------
   # Two registries: sysroot-reg has the sysroot + its versions of shared libs,
@@ -266,13 +299,13 @@ CFGEOF
         name = "openssl";
         version = "3.2.1";
         storePath = sysrootOpenssl;
-        references = [ (hashOf sysrootGlibc) ];
+        references = [(hashOf sysrootGlibc)];
       }
       {
         name = "zlib";
         version = "1.3.0";
         storePath = sysrootZlib;
-        references = [ (hashOf sysrootGlibc) ];
+        references = [(hashOf sysrootGlibc)];
       }
       {
         name = "glibc";
@@ -304,13 +337,13 @@ CFGEOF
         name = "openssl";
         version = "3.3.0";
         storePath = pkgOpenssl;
-        references = [ (hashOf sysrootGlibc) ];
+        references = [(hashOf sysrootGlibc)];
       }
       {
         name = "zlib";
         version = "1.3.1";
         storePath = pkgZlib;
-        references = [ (hashOf sysrootGlibc) ];
+        references = [(hashOf sysrootGlibc)];
       }
       {
         name = "glibc";
@@ -359,16 +392,14 @@ CFGEOF
     sysrootState = sysrootStateJson;
     storePaths = allPlaceholders;
   };
-
-in
-{
+in {
   # --------------------------------------------------------------------------
   # Test 1: sysroot-lock-blocked
   # --------------------------------------------------------------------------
   # Install nginx whose closure has divergent openssl => blocked
   sysroot-lock-blocked = testing.mkVMTest {
     name = "apm-sysroot-lock-blocked";
-    rootfsDeps = testDeps ++ [ sysrootRegistry userRegistry stateJsonFile ];
+    rootfsDeps = testDeps ++ [sysrootRegistry userRegistry stateJsonFile];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -414,7 +445,7 @@ in
   # Ignoring both openssl and zlib succeeds.
   sysroot-lock-ignore-specific = testing.mkVMTest {
     name = "apm-sysroot-lock-ignore-specific";
-    rootfsDeps = testDeps ++ [ sysrootRegistry userRegistry stateJsonFile ];
+    rootfsDeps = testDeps ++ [sysrootRegistry userRegistry stateJsonFile];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -460,7 +491,7 @@ in
   # --ignore-sysroot-lock (no value) bypasses the entire check
   sysroot-lock-ignore-all = testing.mkVMTest {
     name = "apm-sysroot-lock-ignore-all";
-    rootfsDeps = testDeps ++ [ sysrootRegistry userRegistry stateJsonFile ];
+    rootfsDeps = testDeps ++ [sysrootRegistry userRegistry stateJsonFile];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -486,7 +517,7 @@ in
   # Install a package whose closure fully overlaps with sysroot — no violations
   sysroot-lock-clean = testing.mkVMTest {
     name = "apm-sysroot-lock-clean";
-    rootfsDeps = testDeps ++ [ sysrootRegistry userRegistry stateJsonFile ];
+    rootfsDeps = testDeps ++ [sysrootRegistry userRegistry stateJsonFile];
     memory = 1024;
     testScript = ''
       ${preamble}
@@ -512,7 +543,7 @@ in
   # After installing with --ignore-sysroot-lock, list and show display violation info
   sysroot-lock-list-display = testing.mkVMTest {
     name = "apm-sysroot-lock-list-display";
-    rootfsDeps = testDeps ++ [ sysrootRegistry userRegistry stateJsonFile ];
+    rootfsDeps = testDeps ++ [sysrootRegistry userRegistry stateJsonFile];
     memory = 1024;
     testScript = ''
       ${preamble}

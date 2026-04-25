@@ -5,8 +5,7 @@
 {
   lib,
   stdenv,
-}:
-let
+}: let
   fetchurl = lib.fetchurl;
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH)
@@ -19,8 +18,7 @@ let
   phases = import ../stdenv/phases.nix;
 
   # Wire fetchers with AOS toolchains (using lazy self-reference)
-  fetchCargoDeps =
-    args:
+  fetchCargoDeps = args:
     lib.fetchCargoDeps (
       args
       // {
@@ -32,16 +30,16 @@ let
           stdenv.gzip
           stdenv.bash
         ];
-        extraLibPaths = [
-          self.openssl
-          self.zlib
-        ]
-        ++ (args.extraLibPaths or [ ]);
+        extraLibPaths =
+          [
+            self.openssl
+            self.zlib
+          ]
+          ++ (args.extraLibPaths or []);
       }
     );
 
-  fetchGoModules =
-    args:
+  fetchGoModules = args:
     lib.fetchGoModules (
       args
       // {
@@ -107,53 +105,61 @@ let
     "preBazelBuild"
   ];
 
-  mkCargoPackage =
-    args:
-    let
-      # Extract cargo-specific attrs for the phase generator
-      cargoArgs = builtins.intersectAttrs (builtins.listToAttrs (
+  mkCargoPackage = args: let
+    # Extract cargo-specific attrs for the phase generator
+    cargoArgs =
+      builtins.intersectAttrs (builtins.listToAttrs (
         map (n: {
           name = n;
           value = true;
-        }) cargoSpecificAttrs
-      )) args;
-      # Remove cargo-specific attrs before passing to mkDerivation
-      restArgs = removeAttrs args cargoSpecificAttrs;
-    in
+        })
+        cargoSpecificAttrs
+      ))
+      args;
+    # Remove cargo-specific attrs before passing to mkDerivation
+    restArgs = removeAttrs args cargoSpecificAttrs;
+  in
     mkDerivation (
       restArgs
       // {
-        buildDeps = [ self.rust ] ++ (args.buildDeps or [ ]);
+        buildDeps = [self.rust] ++ (args.buildDeps or []);
         phases = phases.cargoPhases cargoArgs;
       }
     );
 
-  mkGoPackage =
-    args:
-    let
-      goArgs = builtins.intersectAttrs (builtins.listToAttrs (
+  mkGoPackage = args: let
+    goArgs =
+      builtins.intersectAttrs (builtins.listToAttrs (
         map (n: {
           name = n;
           value = true;
-        }) goSpecificAttrs
-      )) args;
-      # Default goOutput to pname when not explicitly set
-      goArgsWithDefaults = goArgs // {
+        })
+        goSpecificAttrs
+      ))
+      args;
+    # Default goOutput to pname when not explicitly set
+    goArgsWithDefaults =
+      goArgs
+      // {
         goOutput = args.goOutput or args.pname or (throw "mkGoPackage: goOutput or pname required");
       };
-      restArgs = removeAttrs args goSpecificAttrs;
-    in
+    restArgs = removeAttrs args goSpecificAttrs;
+  in
     mkDerivation (
       restArgs
       // {
-        buildDeps = [ self.go ] ++ (args.buildDeps or [ ]);
+        buildDeps = [self.go] ++ (args.buildDeps or []);
         phases = phases.goPhases goArgsWithDefaults;
+        # Guard: the Go toolchain must not leak into the runtime closure.
+        # -trimpath (in goPhases) prevents source-path embedding; this
+        # disallowedReferences catches any residual leak at build time.
+        # Matches nixpkgs' buildGoModule pattern.
+        disallowedReferences = args.disallowedReferences or [self.go];
       }
     );
 
   # Wire fetchBazelDeps with AOS-specific defaults
-  fetchBazelDeps =
-    args:
+  fetchBazelDeps = args:
     lib.fetchBazelDeps (
       args
       // {
@@ -162,47 +168,48 @@ let
       }
     );
 
-  mkBazelPackage =
-    args:
-    let
-      # Extract bazel-specific parameters
-      bazel = args.bazel or self.bazel;
-      jdk = args.jdk or self.openjdk;
-      tools = args.tools or [ ];
-      caCerts = args.caCertificates or self.ca-certificates;
-      bazelTarget = args.bazelTarget or (throw "mkBazelPackage: bazelTarget required");
-      bazelFlags = args.bazelFlags or [ ];
-      bazelBuildFlags = args.bazelBuildFlags or [ ];
-      scrubMap = args.scrubMap or { };
-      installPhase = args.installPhase or (throw "mkBazelPackage: installPhase required");
+  mkBazelPackage = args: let
+    # Extract bazel-specific parameters
+    bazel = args.bazel or self.bazel;
+    jdk = args.jdk or self.openjdk;
+    tools = args.tools or [];
+    caCerts = args.caCertificates or self.ca-certificates;
+    bazelTarget = args.bazelTarget or (throw "mkBazelPackage: bazelTarget required");
+    bazelFlags = args.bazelFlags or [];
+    bazelBuildFlags = args.bazelBuildFlags or [];
+    scrubMap = args.scrubMap or {};
+    installPhase = args.installPhase or (throw "mkBazelPackage: installPhase required");
 
-      # Create or use provided deps FOD
-      deps =
-        args.bazelDeps or (fetchBazelDeps {
-          name = "${args.pname or "bazel"}-deps-${args.version or "0"}";
-          inherit (args) src;
-          hash = args.depsHash or lib.fakeHash;
-          inherit bazel jdk tools;
-          caCertificates = caCerts;
-          postPatch = args.postPatch or "";
-          fetchPostPatch = args.fetchPostPatch or "";
-          inherit bazelTarget bazelFlags;
-          bazelFetchFlags = args.bazelFetchFlags or [ ];
-          env = args.fetchEnv or { };
-          inherit scrubMap;
-          postFetch = args.postFetch or "";
-          removeRepos = args.removeRepos or [
+    # Create or use provided deps FOD
+    deps =
+      args.bazelDeps
+      or (fetchBazelDeps {
+        name = "${args.pname or "bazel"}-deps-${args.version or "0"}";
+        inherit (args) src;
+        hash = args.depsHash or lib.fakeHash;
+        inherit bazel jdk tools;
+        caCertificates = caCerts;
+        postPatch = args.postPatch or "";
+        fetchPostPatch = args.fetchPostPatch or "";
+        inherit bazelTarget bazelFlags;
+        bazelFetchFlags = args.bazelFetchFlags or [];
+        env = args.fetchEnv or {};
+        inherit scrubMap;
+        postFetch = args.postFetch or "";
+        removeRepos =
+          args.removeRepos
+          or [
             "bazel_tools"
             "embedded_jdk"
             "local_config_cc"
             "local_jdk"
           ];
-          populateBCR = args.populateBCR or true;
-        });
+        populateBCR = args.populateBCR or true;
+      });
 
-      # Remove bazel-specific attrs before passing to mkDerivation
-      restArgs = removeAttrs args bazelSpecificAttrs;
-    in
+    # Remove bazel-specific attrs before passing to mkDerivation
+    restArgs = removeAttrs args bazelSpecificAttrs;
+  in
     mkDerivation (
       restArgs
       // {
@@ -213,7 +220,7 @@ let
             self.patchelf
           ]
           ++ tools
-          ++ (args.buildDeps or [ ]);
+          ++ (args.buildDeps or []);
         phases = phases.bazelPhases {
           bazelDeps = deps;
           inherit bazel jdk tools;
@@ -233,101 +240,125 @@ let
   # The package file is a function whose formals are introspected via
   # builtins.functionArgs, then satisfied from the package set plus the
   # always-available helpers (mkDerivation, fetchurl).
-  callPackage =
-    path: overrides:
-    let
-      fn = import path;
-      auto = builtins.intersectAttrs (builtins.functionArgs fn) (
-        self
-        // {
-          inherit mkDerivation fetchurl;
-        }
-      );
-    in
+  callPackage = path: overrides: let
+    fn = import path;
+    auto = builtins.intersectAttrs (builtins.functionArgs fn) (
+      self
+      // {
+        inherit mkDerivation fetchurl;
+      }
+    );
+  in
     fn (auto // overrides);
 
   # Shared Linux kernel source (single tarball for linux and linux-headers)
-  linuxSource = import ./kernel/_source.nix { inherit fetchurl; };
+  linuxSource = import ./kernel/_source.nix {inherit fetchurl;};
 
   # Shared Kubernetes source (single tarball for kubelet, kubectl)
-  kubeSource = import ./kubernetes/_source.nix { inherit fetchurl; };
+  kubeSource = import ./kubernetes/_source.nix {inherit fetchurl;};
 
   # Shared KubeEdge source (single tarball for cloudcore, edgecore)
-  kubeedgeSource = import ./kubernetes/_kubeedge-source.nix { inherit fetchurl; };
+  kubeedgeSource = import ./kubernetes/_kubeedge-source.nix {inherit fetchurl;};
 
   # Auto-discover packages from subdirectories.
   # Recursively scans for .nix files, skipping default.nix and _-prefixed
   # files/directories (used for shared resources like _source.nix).
-  discoverPackages =
-    dir:
-    let
-      entries = builtins.readDir dir;
-      names = builtins.attrNames entries;
+  discoverPackages = dir: let
+    entries = builtins.readDir dir;
+    names = builtins.attrNames entries;
 
-      # .nix files → packages (skip default.nix and _-prefixed)
-      nixFiles = builtins.filter (
+    # .nix files → packages (skip default.nix and _-prefixed)
+    nixFiles =
+      builtins.filter (
         name:
-        entries.${name} == "regular"
-        && lib.hasSuffix ".nix" name
-        && name != "default.nix"
-        && builtins.substring 0 1 name != "_"
-      ) names;
+          entries.${name}
+          == "regular"
+          && lib.hasSuffix ".nix" name
+          && name != "default.nix"
+          && builtins.substring 0 1 name != "_"
+      )
+      names;
 
-      # Subdirectories to recurse into (skip _-prefixed)
-      subdirs = builtins.filter (
+    # Subdirectories to recurse into (skip _-prefixed)
+    subdirs =
+      builtins.filter (
         name: entries.${name} == "directory" && builtins.substring 0 1 name != "_"
-      ) names;
+      )
+      names;
 
-      filePackages = builtins.listToAttrs (
-        map (name: {
-          name = lib.removeSuffix ".nix" name;
-          value = callPackage (dir + "/${name}") { };
-        }) nixFiles
-      );
+    filePackages = builtins.listToAttrs (
+      map (name: {
+        name = lib.removeSuffix ".nix" name;
+        value = callPackage (dir + "/${name}") {};
+      })
+      nixFiles
+    );
 
-      subdirPackages = builtins.foldl' (
+    subdirPackages =
+      builtins.foldl' (
         acc: subdir: acc // discoverPackages (dir + "/${subdir}")
-      ) { } subdirs;
-    in
+      ) {}
+      subdirs;
+  in
     filePackages // subdirPackages;
 
-  self = {
-    # --- Plumbing ---
-    inherit mkDerivation fetchurl lib;
-    inherit mkCargoPackage mkGoPackage mkBazelPackage;
-    inherit fetchCargoDeps fetchGoModules fetchBazelDeps;
-    inherit bootstrapTools;
-    fakeHash = lib.fakeHash;
-    # --- Build infrastructure ---
-    inherit stdenv;
-  }
-  // discoverPackages ./.
-  // {
-    # --- Explicit overrides for packages needing non-standard arguments ---
-    linux = callPackage ./kernel/linux.nix { inherit linuxSource; };
-    linux-headers = callPackage ./kernel/linux-headers.nix { inherit linuxSource; };
+  self =
+    {
+      # --- Plumbing ---
+      inherit mkDerivation fetchurl lib;
+      inherit mkCargoPackage mkGoPackage mkBazelPackage;
+      inherit fetchCargoDeps fetchGoModules fetchBazelDeps;
+      inherit bootstrapTools;
+      fakeHash = lib.fakeHash;
+      # --- Build infrastructure ---
+      inherit stdenv;
+    }
+    // discoverPackages ./.
+    // {
+      # --- Explicit overrides for packages needing non-standard arguments ---
+      linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
+      linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
 
-    kubelet = callPackage ./kubernetes/kubelet.nix { inherit kubeSource; };
-    kubectl = callPackage ./kubernetes/kubectl.nix { inherit kubeSource; };
+      kubelet = callPackage ./kubernetes/kubelet.nix {inherit kubeSource;};
+      kubectl = callPackage ./kubernetes/kubectl.nix {inherit kubeSource;};
 
-    cloudcore = callPackage ./kubernetes/cloudcore.nix { inherit kubeedgeSource; };
-    edgecore = callPackage ./kubernetes/edgecore.nix { inherit kubeedgeSource; };
+      cloudcore = callPackage ./kubernetes/cloudcore.nix {inherit kubeedgeSource;};
+      edgecore = callPackage ./kubernetes/edgecore.nix {inherit kubeedgeSource;};
 
-    # --- stdenv packages (linked, not rebuilt) ---
-    gcc = stdenv.gcc;
-    glibc = stdenv.glibc;
-    binutils = stdenv.binutils;
-    bash = stdenv.bash;
-    coreutils = stdenv.coreutils;
-    gnumake = stdenv.gnumake;
-    sed = stdenv.sed;
-    grep = stdenv.grep;
-    findutils = stdenv.findutils;
-    gawk = stdenv.gawk;
-    diffutils = stdenv.diffutils;
-    tar = stdenv.tar;
-    gzip = stdenv.gzip;
-    patch = stdenv.patch;
-  };
+      # --- stdenv packages (linked, not rebuilt) ---
+      gcc = stdenv.gcc;
+      glibc = stdenv.glibc;
+      binutils = stdenv.binutils;
+      bash = stdenv.bash;
+      coreutils = stdenv.coreutils;
+      gnumake = stdenv.gnumake;
+      sed = stdenv.sed;
+      grep = stdenv.grep;
+      findutils = stdenv.findutils;
+      gawk = stdenv.gawk;
+      diffutils = stdenv.diffutils;
+      tar = stdenv.tar;
+      gzip = stdenv.gzip;
+      patch = stdenv.patch;
+    }
+    # --- Trivial builders, exposed flat on the package set ---
+    # The file at pkgs/build-support/trivial-builders.nix is also picked up
+    # by discoverPackages as `self.trivial-builders`; here we re-inherit the
+    # four primitives into the top level so consumers can call
+    # `pkgs.writeTextFile` / `pkgs.runCommand` etc. directly, matching the
+    # nixpkgs convention that the ported systemd library expects.
+    // (
+      let
+        tb = self.trivial-builders;
+      in {
+        inherit
+          (tb)
+          writeTextFile
+          writeShellScriptBin
+          runtimeShell
+          runCommand
+          ;
+      }
+    );
 in
-self
+  self

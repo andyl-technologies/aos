@@ -12,8 +12,7 @@
   openssl,
   zlib,
   rust-1_82,
-}:
-let
+}: let
   mkRustBootstrap = import ./_rust-bootstrap.nix {
     inherit
       fetchurl
@@ -30,9 +29,9 @@ let
       ;
   };
 in
-mkRustBootstrap {
-  version = "1.83.0";
-  srcHash = "sha256-ci13O9Tqstgo1901tZ8LAX3fmpfuK0bBt/f6xciEHG4=";
-  changeId = 131075;
-  prevRust = rust-1_82;
-}
+  mkRustBootstrap {
+    version = "1.83.0";
+    srcHash = "sha256-ci13O9Tqstgo1901tZ8LAX3fmpfuK0bBt/f6xciEHG4=";
+    changeId = 131075;
+    prevRust = rust-1_82;
+  }

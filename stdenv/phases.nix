@@ -45,10 +45,15 @@ let
   fixupPhase = {
     name = "fixup";
     script = ''
-      # Strip debug symbols
+      # Strip debug info. --strip-unneeded on .so removes debug sections
+      # (including DWARF .debug_line that embeds gcc include paths as
+      # /nix/store/<hash>-gcc-stage2/...) while preserving the dynamic
+      # symbol table needed for linking. -s on executables strips
+      # everything. Without this, every compiled object drags the ~230 MB
+      # gcc-stage2 into its runtime closure via Nix's reference scanner.
       if [ -z "''${dontStrip:-}" ]; then
-        echo "stripping debug symbols..."
-        find "$out" -type f -name '*.so*' -exec strip -S {} \; 2>/dev/null || true
+        echo "stripping..."
+        find "$out" -type f -name '*.so*' -exec strip --strip-unneeded {} \; 2>/dev/null || true
         find "$out" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
         if [ -d "$out/bin" ]; then
           find "$out/bin" -type f -exec strip -s {} \; 2>/dev/null || true
@@ -137,14 +142,12 @@ let
       fi
     '';
   };
-in
-rec {
+in rec {
   # GNU Autoconf (configure / make / make install)
-  autoconfPhases =
-    {
-      doCheck ? true,
-      checkTarget ? "check",
-    }:
+  autoconfPhases = {
+    doCheck ? true,
+    checkTarget ? "check",
+  }:
     [
       unpackPhase
       {
@@ -173,17 +176,16 @@ rec {
       }
     ]
     ++ (
-      if doCheck then
-        [
-          {
-            name = "check";
-            script = ''
-              make ${checkTarget} -j$NIX_BUILD_CORES
-            '';
-          }
-        ]
-      else
-        [ ]
+      if doCheck
+      then [
+        {
+          name = "check";
+          script = ''
+            make ${checkTarget} -j$NIX_BUILD_CORES
+          '';
+        }
+      ]
+      else []
     )
     ++ [
       {
@@ -196,10 +198,7 @@ rec {
     ];
 
   # CMake
-  cmakePhases =
-    {
-      doCheck ? true,
-    }:
+  cmakePhases = {doCheck ? true}:
     [
       unpackPhase
       {
@@ -223,17 +222,16 @@ rec {
       }
     ]
     ++ (
-      if doCheck then
-        [
-          {
-            name = "check";
-            script = ''
-              cd build && ctest --output-on-failure -j$NIX_BUILD_CORES
-            '';
-          }
-        ]
-      else
-        [ ]
+      if doCheck
+      then [
+        {
+          name = "check";
+          script = ''
+            cd build && ctest --output-on-failure -j$NIX_BUILD_CORES
+          '';
+        }
+      ]
+      else []
     )
     ++ [
       {
@@ -246,11 +244,10 @@ rec {
     ];
 
   # Meson + Ninja
-  mesonPhases =
-    {
-      doCheck ? true,
-      mesonTestFlags ? "",
-    }:
+  mesonPhases = {
+    doCheck ? true,
+    mesonTestFlags ? "",
+  }:
     [
       unpackPhase
       {
@@ -272,17 +269,16 @@ rec {
       }
     ]
     ++ (
-      if doCheck then
-        [
-          {
-            name = "check";
-            script = ''
-              meson test -C build --no-rebuild ${mesonTestFlags}
-            '';
-          }
-        ]
-      else
-        [ ]
+      if doCheck
+      then [
+        {
+          name = "check";
+          script = ''
+            meson test -C build --no-rebuild ${mesonTestFlags}
+          '';
+        }
+      ]
+      else []
     )
     ++ [
       {
@@ -295,44 +291,49 @@ rec {
     ];
 
   # Go
-  goPhases =
-    {
-      goModules ? null,
-      goPackage ? ".",
-      goOutput,
-      cgoEnabled ? false,
-      ldflags ? "-s -w",
-      tags ? [ ],
-      doCheck ? true,
-      goTestFlags ? "./...",
-      doParallelCheck ? true,
-    }:
-    let
-      tagsFlag = if tags != [ ] then "-tags ${builtins.concatStringsSep "," tags}" else "";
-    in
+  goPhases = {
+    goModules ? null,
+    goPackage ? ".",
+    goOutput,
+    cgoEnabled ? false,
+    ldflags ? "-s -w",
+    tags ? [],
+    doCheck ? true,
+    goTestFlags ? "./...",
+    doParallelCheck ? true,
+  }: let
+    tagsFlag =
+      if tags != []
+      then "-tags ${builtins.concatStringsSep "," tags}"
+      else "";
+  in
     [
       unpackPhase
       {
         name = "configure";
-        script = ''
-          export GOPATH="$TMPDIR/go"
-          export GOCACHE="$TMPDIR/go-cache"
-          export GOFLAGS="-trimpath"
-          export CGO_ENABLED=${if cgoEnabled then "1" else "0"}
-          export GONOSUMDB="*"
-          export GONOSUMCHECK="*"
-          mkdir -p "$GOPATH" "$GOCACHE"
+        script =
+          ''
+            export GOPATH="$TMPDIR/go"
+            export GOCACHE="$TMPDIR/go-cache"
+            export GOFLAGS="-trimpath"
+            export CGO_ENABLED=${
+              if cgoEnabled
+              then "1"
+              else "0"
+            }
+            export GONOSUMDB="*"
+            export GONOSUMCHECK="*"
+            mkdir -p "$GOPATH" "$GOCACHE"
 
-        ''
-        + (
-          if goModules != null then
-            ''
+          ''
+          + (
+            if goModules != null
+            then ''
               export GOPATH="${goModules}"
               export GOFLAGS="$GOFLAGS -mod=readonly"
               export GOPROXY=off
             ''
-          else
-            ''
+            else ''
               if [ -d vendor ]; then
                 export GOFLAGS="$GOFLAGS -mod=vendor"
                 export GOPROXY=off
@@ -340,7 +341,7 @@ rec {
                 export GOPROXY="https://proxy.golang.org,direct"
               fi
             ''
-        );
+          );
       }
       {
         name = "build";
@@ -354,22 +355,25 @@ rec {
       }
     ]
     ++ (
-      if doCheck then
-        [
-          {
-            name = "check";
-            script = ''
-              go test \
-                -v \
-                ${if !doParallelCheck then "-p 1" else ""} \
-                ${tagsFlag} \
-                ${goTestFlags}
-              go vet ${goTestFlags}
-            '';
-          }
-        ]
-      else
-        [ ]
+      if doCheck
+      then [
+        {
+          name = "check";
+          script = ''
+            go test \
+              -v \
+              ${
+              if !doParallelCheck
+              then "-p 1"
+              else ""
+            } \
+              ${tagsFlag} \
+              ${goTestFlags}
+            go vet ${goTestFlags}
+          '';
+        }
+      ]
+      else []
     )
     ++ [
       {
@@ -383,35 +387,44 @@ rec {
     ];
 
   # Rust (Cargo)
-  cargoPhases =
-    {
-      cargoDeps,
-      cargoFlags ? "",
-      buildType ? "release",
-      checkType ? buildType,
-      cargoTestFlags ? "",
-      buildFeatures ? [ ],
-      buildNoDefaultFeatures ? false,
-      installBins ? true,
-      installLibs ? false,
-      doCheck ? true,
-      doParallelCheck ? true,
-      gitDeps ? [ ],
-    }:
-    let
-      featuresFlag =
-        if buildFeatures != [ ] then "--features ${builtins.concatStringsSep "," buildFeatures}" else "";
-      noDefaultFlag = if buildNoDefaultFeatures then "--no-default-features" else "";
-      profileFlag = if buildType == "release" then "--release" else "";
-      checkProfileFlag = if checkType == "release" then "--release" else "";
+  cargoPhases = {
+    cargoDeps,
+    cargoFlags ? "",
+    buildType ? "release",
+    checkType ? buildType,
+    cargoTestFlags ? "",
+    buildFeatures ? [],
+    buildNoDefaultFeatures ? false,
+    installBins ? true,
+    installLibs ? false,
+    doCheck ? true,
+    doParallelCheck ? true,
+    gitDeps ? [],
+  }: let
+    featuresFlag =
+      if buildFeatures != []
+      then "--features ${builtins.concatStringsSep "," buildFeatures}"
+      else "";
+    noDefaultFlag =
+      if buildNoDefaultFeatures
+      then "--no-default-features"
+      else "";
+    profileFlag =
+      if buildType == "release"
+      then "--release"
+      else "";
+    checkProfileFlag =
+      if checkType == "release"
+      then "--release"
+      else "";
 
-      gitSourceLines = builtins.concatStringsSep "" (
-        builtins.map (
-          dep:
-          "printf '[source.\"git+${dep.url}\"]\\ngit = \"${dep.url}\"\\nreplace-with = \"vendored-sources\"\\n\\n' >> .cargo/config.toml\n"
-        ) gitDeps
-      );
-    in
+    gitSourceLines = builtins.concatStringsSep "" (
+      builtins.map (
+        dep: "printf '[source.\"git+${dep.url}\"]\\ngit = \"${dep.url}\"\\nreplace-with = \"vendored-sources\"\\n\\n' >> .cargo/config.toml\n"
+      )
+      gitDeps
+    );
+  in
     [
       unpackPhase
       {
@@ -439,50 +452,51 @@ rec {
       }
     ]
     ++ (
-      if doCheck then
-        [
-          {
-            name = "check";
-            script = ''
-              cargo test \
-                ${checkProfileFlag} \
-                --frozen \
-                --offline \
-                ${if !doParallelCheck then "-- --test-threads=1" else ""} \
-                ${cargoTestFlags}
-            '';
-          }
-        ]
-      else
-        [ ]
+      if doCheck
+      then [
+        {
+          name = "check";
+          script = ''
+            cargo test \
+              ${checkProfileFlag} \
+              --frozen \
+              --offline \
+              ${
+              if !doParallelCheck
+              then "-- --test-threads=1"
+              else ""
+            } \
+              ${cargoTestFlags}
+          '';
+        }
+      ]
+      else []
     )
     ++ [
       {
         name = "install";
         script =
           (
-            if installBins then
-              ''
-                mkdir -p "$out/bin"
-                find target/${buildType} -maxdepth 1 -type f -executable \
-                  ! -name '*.d' ! -name '*.so' ! -name '*.dylib' | while read bin; do
-                  install -m 755 "$bin" "$out/bin/"
-                done
-              ''
-            else
-              ""
+            if installBins
+            then ''
+              mkdir -p "$out/bin"
+              find target/${buildType} -maxdepth 1 -type f -executable \
+                ! -name '*.d' ! -name '*.so' ! -name '*.dylib' | while read bin; do
+                install -m 755 "$bin" "$out/bin/"
+              done
+            ''
+            else ""
           )
           + (
-            if installLibs then
-              ''
-                mkdir -p "$out/lib"
-                find target/${buildType} -maxdepth 1 \
-                  \( -name '*.so' -o -name '*.a' -o -name '*.dylib' \) | while read lib; do
-                  install -m 644 "$lib" "$out/lib/"
-                done
-              ''
-            else
-              ""
+            if installLibs
+            then ''
+              mkdir -p "$out/lib"
+              find target/${buildType} -maxdepth 1 \
+                \( -name '*.so' -o -name '*.a' -o -name '*.dylib' \) | while read lib; do
+                install -m 644 "$lib" "$out/lib/"
+              done
+            ''
+            else ""
           );
       }
       fixupPhase
@@ -520,7 +534,7 @@ rec {
     fixupPhase
   ];
 
-  defaultPhases = autoconfPhases { };
+  defaultPhases = autoconfPhases {};
 
   copyPhases = [
     unpackPhase
@@ -573,174 +587,170 @@ rec {
   # Returns phases that unpack deps from a fetchBazelDeps FOD, patchelf
   # downloaded ELF binaries, restore scrubbed store paths, and run
   # `bazel build` offline with --repository_disable_download.
-  bazelPhases =
-    {
-      # Result of fetchBazelDeps (directory containing external/ subtree)
-      bazelDeps,
-      # Bazel package to use
-      bazel,
-      # Java runtime
-      jdk,
-      # Packages for PATH (same list used in fetchBazelDeps)
-      tools,
-      # ccWrapper (provides nix-support/dynamic-linker)
-      bootstrapTools,
-      # For patchelfing downloaded ELF binaries
-      patchelf,
-      # Bash package (for wrapper script)
-      bash,
-      # CA cert bundle (optional)
-      caCertificates ? null,
-      # Build target (e.g. "//source/exe:envoy-static")
-      bazelTarget,
-      # Common bazel flags (shared with fetch)
-      bazelFlags ? [ ],
-      # Build-specific flags (e.g. "-c opt", "--config=gcc")
-      bazelBuildFlags ? [ ],
-      # Store path scrubbing map (same as fetchBazelDeps, used for restoration)
-      scrubMap ? { },
-      # Pre-build setup script
-      preBuild ? "",
-      # Install script (required — no reasonable default for Bazel outputs)
-      installPhase,
-    }:
-    let
-      toolsPath = builtins.concatStringsSep ":" (
-        builtins.map (d: "${builtins.toString d}/bin") tools
-      );
-      flagsStr = builtins.concatStringsSep " " bazelFlags;
-      buildFlagsStr = builtins.concatStringsSep " " bazelBuildFlags;
-      restoreSedArgs = builtins.concatStringsSep " " (
-        builtins.attrValues (
-          builtins.mapAttrs (
-            path: placeholder: "-e 's|${placeholder}|${path}|g'"
-          ) scrubMap
+  bazelPhases = {
+    # Result of fetchBazelDeps (directory containing external/ subtree)
+    bazelDeps,
+    # Bazel package to use
+    bazel,
+    # Java runtime
+    jdk,
+    # Packages for PATH (same list used in fetchBazelDeps)
+    tools,
+    # ccWrapper (provides nix-support/dynamic-linker)
+    bootstrapTools,
+    # For patchelfing downloaded ELF binaries
+    patchelf,
+    # Bash package (for wrapper script)
+    bash,
+    # CA cert bundle (optional)
+    caCertificates ? null,
+    # Build target (e.g. "//source/exe:envoy-static")
+    bazelTarget,
+    # Common bazel flags (shared with fetch)
+    bazelFlags ? [],
+    # Build-specific flags (e.g. "-c opt", "--config=gcc")
+    bazelBuildFlags ? [],
+    # Store path scrubbing map (same as fetchBazelDeps, used for restoration)
+    scrubMap ? {},
+    # Pre-build setup script
+    preBuild ? "",
+    # Install script (required — no reasonable default for Bazel outputs)
+    installPhase,
+  }: let
+    toolsPath = builtins.concatStringsSep ":" (
+      builtins.map (d: "${builtins.toString d}/bin") tools
+    );
+    flagsStr = builtins.concatStringsSep " " bazelFlags;
+    buildFlagsStr = builtins.concatStringsSep " " bazelBuildFlags;
+    restoreSedArgs = builtins.concatStringsSep " " (
+      builtins.attrValues (
+        builtins.mapAttrs (
+          path: placeholder: "-e 's|${placeholder}|${path}|g'"
         )
-      );
-    in
-    [
-      unpackPhase
-      {
-        name = "configure";
-        script = ''
-          # Unpack deps from FOD
-          bazelOut="$TMPDIR/output"
-          mkdir -p "$bazelOut"
-          cp -a ${bazelDeps} "$bazelOut/external"
-          chmod -R +w "$bazelOut"
+        scrubMap
+      )
+    );
+  in [
+    unpackPhase
+    {
+      name = "configure";
+      script = ''
+        # Unpack deps from FOD
+        bazelOut="$TMPDIR/output"
+        mkdir -p "$bazelOut"
+        cp -a ${bazelDeps} "$bazelOut/external"
+        chmod -R +w "$bazelOut"
 
-          # Restore symlinks that reference the placeholder paths from fetchBazelDeps
-          find "$bazelOut/external" -type l | while read symlink; do
-            target="$(readlink "$symlink")"
-            case "$target" in
-              *__BAZEL_SRCDIR__*|*__BAZEL_TMPDIR__*)
-                new="$(echo "$target" | sed -e "s,__BAZEL_SRCDIR__,$PWD,g" -e "s,__BAZEL_TMPDIR__,$TMPDIR,g")"
-                rm "$symlink"
-                ln -sf "$new" "$symlink"
-                ;;
-            esac
-          done
+        # Restore symlinks that reference the placeholder paths from fetchBazelDeps
+        find "$bazelOut/external" -type l | while read symlink; do
+          target="$(readlink "$symlink")"
+          case "$target" in
+            *__BAZEL_SRCDIR__*|*__BAZEL_TMPDIR__*)
+              new="$(echo "$target" | sed -e "s,__BAZEL_SRCDIR__,$PWD,g" -e "s,__BAZEL_TMPDIR__,$TMPDIR,g")"
+              rm "$symlink"
+              ln -sf "$new" "$symlink"
+              ;;
+          esac
+        done
 
-          # Patchelf dynamically-linked ELF binaries from upstream
-          INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
-          BT_LIB=$(dirname "$INTERP")
-          find "$bazelOut/external" -type f -executable | while read execbin; do
-            interp=$(${patchelf}/bin/patchelf --print-interpreter "$execbin" 2>/dev/null) || continue
-            case "$interp" in
-              */lib64/ld-linux*|*/lib/ld-linux*)
-                ${patchelf}/bin/patchelf --set-interpreter "$INTERP" --set-rpath "$BT_LIB" \
-                  "$execbin" 2>/dev/null || true
-                ;;
-            esac
-          done
+        # Patchelf dynamically-linked ELF binaries from upstream
+        INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
+        BT_LIB=$(dirname "$INTERP")
+        find "$bazelOut/external" -type f -executable | while read execbin; do
+          interp=$(${patchelf}/bin/patchelf --print-interpreter "$execbin" 2>/dev/null) || continue
+          case "$interp" in
+            */lib64/ld-linux*|*/lib/ld-linux*)
+              ${patchelf}/bin/patchelf --set-interpreter "$INTERP" --set-rpath "$BT_LIB" \
+                "$execbin" 2>/dev/null || true
+              ;;
+          esac
+        done
 
-          ${
-            if scrubMap != { } then
-              ''
-                # Restore store paths from placeholders
-                find "$bazelOut/external" -type f | while read f; do
-                  sed -i ${restoreSedArgs} "$f" 2>/dev/null || true
-                done
-              ''
-            else
-              ""
-          }
+        ${
+          if scrubMap != {}
+          then ''
+            # Restore store paths from placeholders
+            find "$bazelOut/external" -type f | while read f; do
+              sed -i ${restoreSedArgs} "$f" 2>/dev/null || true
+            done
+          ''
+          else ""
+        }
 
-          # Configure .bazelrc for offline build
-          echo "common --repository_cache=\"$bazelOut/external/repository_cache\"" >> .bazelrc
-          echo "common --repository_disable_download" >> .bazelrc
+        # Configure .bazelrc for offline build
+        echo "common --repository_cache=\"$bazelOut/external/repository_cache\"" >> .bazelrc
+        echo "common --repository_disable_download" >> .bazelrc
 
-          # Generate --override_repository for all repos in the deps
-          # Copy repos outside output_base to avoid Bazel cycles
-          mkdir -p "$TMPDIR/repo-overrides"
-          for repo in "$bazelOut/external"/*/; do
-            repo_name="$(basename "$repo")"
-            case "$repo_name" in
-              repository_cache) continue ;;
-            esac
-            cp -a "$repo" "$TMPDIR/repo-overrides/$repo_name"
-            chmod -R u+rwx "$TMPDIR/repo-overrides/$repo_name"
-            echo "common --override_repository=$repo_name=$TMPDIR/repo-overrides/$repo_name" >> .bazelrc
-          done
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          # Set up environment
-          INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
-          BT_LIB=$(dirname "$INTERP")
+        # Generate --override_repository for all repos in the deps
+        # Copy repos outside output_base to avoid Bazel cycles
+        mkdir -p "$TMPDIR/repo-overrides"
+        for repo in "$bazelOut/external"/*/; do
+          repo_name="$(basename "$repo")"
+          case "$repo_name" in
+            repository_cache) continue ;;
+          esac
+          cp -a "$repo" "$TMPDIR/repo-overrides/$repo_name"
+          chmod -R u+rwx "$TMPDIR/repo-overrides/$repo_name"
+          echo "common --override_repository=$repo_name=$TMPDIR/repo-overrides/$repo_name" >> .bazelrc
+        done
+      '';
+    }
+    {
+      name = "build";
+      script = ''
+                  # Set up environment
+                  INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
+                  BT_LIB=$(dirname "$INTERP")
 
-          # Create bash wrapper with PATH for genrules
-          mkdir -p $TMPDIR/bazel-tools
-          cat > $TMPDIR/bazel-tools/bash-with-path << BASHWRAP
-#!${bash}/bin/bash
-export PATH="${toolsPath}:\$PATH"
-export LD_LIBRARY_PATH="$BT_LIB''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-exec ${bash}/bin/bash "\$@"
-BASHWRAP
-          chmod +x $TMPDIR/bazel-tools/bash-with-path
+                  # Create bash wrapper with PATH for genrules
+                  mkdir -p $TMPDIR/bazel-tools
+                  cat > $TMPDIR/bazel-tools/bash-with-path << BASHWRAP
+        #!${bash}/bin/bash
+        export PATH="${toolsPath}:\$PATH"
+        export LD_LIBRARY_PATH="$BT_LIB''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+        exec ${bash}/bin/bash "\$@"
+        BASHWRAP
+                  chmod +x $TMPDIR/bazel-tools/bash-with-path
 
-          export HOME="$TMPDIR/bazel-home"
-          mkdir -p "$HOME"
-          export JAVA_HOME="${jdk}"
-          ${
-            if caCertificates != null then
-              ''export SSL_CERT_FILE="${caCertificates}/etc/ssl/certs/ca-certificates.crt"''
-            else
-              ""
-          }
-          export PATH="${toolsPath}:${jdk}/bin:${bazel}/bin:$PATH"
-          export CMAKE_POLICY_VERSION_MINIMUM=3.5
+                  export HOME="$TMPDIR/bazel-home"
+                  mkdir -p "$HOME"
+                  export JAVA_HOME="${jdk}"
+                  ${
+          if caCertificates != null
+          then ''export SSL_CERT_FILE="${caCertificates}/etc/ssl/certs/ca-certificates.crt"''
+          else ""
+        }
+                  export PATH="${toolsPath}:${jdk}/bin:${bazel}/bin:$PATH"
+                  export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
-          # Unset C_INCLUDE_PATH to prevent #include_next breakage
-          unset C_INCLUDE_PATH CPATH CPLUS_INCLUDE_PATH
+                  # Unset C_INCLUDE_PATH to prevent #include_next breakage
+                  unset C_INCLUDE_PATH CPATH CPLUS_INCLUDE_PATH
 
-          ${preBuild}
+                  ${preBuild}
 
-          BAZEL_USE_CPP_ONLY_TOOLCHAIN=1 \
-          USER=nix \
-          bazel --batch \
-            --output_base="$TMPDIR/output" \
-            --output_user_root="$TMPDIR/tmp" \
-            --server_javabase="${jdk}" \
-            build ${bazelTarget} \
-            --curses=no \
-            --verbose_failures \
-            --jobs $NIX_BUILD_CORES \
-            ${flagsStr} \
-            ${buildFlagsStr} \
-            --action_env=PATH=${toolsPath} \
-            --host_action_env=PATH=${toolsPath} \
-            --action_env=LD_LIBRARY_PATH=$BT_LIB \
-            --host_action_env=LD_LIBRARY_PATH=$BT_LIB \
-            --shell_executable=$TMPDIR/bazel-tools/bash-with-path
-        '';
-      }
-      {
-        name = "install";
-        script = installPhase;
-      }
-      fixupPhase
-    ];
+                  BAZEL_USE_CPP_ONLY_TOOLCHAIN=1 \
+                  USER=nix \
+                  bazel --batch \
+                    --output_base="$TMPDIR/output" \
+                    --output_user_root="$TMPDIR/tmp" \
+                    --server_javabase="${jdk}" \
+                    build ${bazelTarget} \
+                    --curses=no \
+                    --verbose_failures \
+                    --jobs $NIX_BUILD_CORES \
+                    ${flagsStr} \
+                    ${buildFlagsStr} \
+                    --action_env=PATH=${toolsPath} \
+                    --host_action_env=PATH=${toolsPath} \
+                    --action_env=LD_LIBRARY_PATH=$BT_LIB \
+                    --host_action_env=LD_LIBRARY_PATH=$BT_LIB \
+                    --shell_executable=$TMPDIR/bazel-tools/bash-with-path
+      '';
+    }
+    {
+      name = "install";
+      script = installPhase;
+    }
+    fixupPhase
+  ];
 }

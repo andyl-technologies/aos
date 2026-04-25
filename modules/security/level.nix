@@ -16,11 +16,9 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.security;
-in
-{
+in {
   options.aos.security.level = lib.mkOption {
     type = lib.types.nullOr (
       lib.types.enum [

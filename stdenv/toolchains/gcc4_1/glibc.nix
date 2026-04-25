@@ -10,127 +10,129 @@
   linuxHeaders,
   buildPlatform,
   hostPlatform,
-}:
-let
+}: let
   src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.5.tar.bz2";
     sha256 = "0khysawcx2glspp1nq2j02sszqjc06hjrpiirbw1qr2a73q5jg1w";
   };
 
-  stubsSuffix = if hostPlatform.is64bit then "64" else "32";
+  stubsSuffix =
+    if hostPlatform.is64bit
+    then "64"
+    else "32";
 in
-builtins.derivation {
-  name = "glibc-2.5";
-  system = buildPlatform.system;
-  builder = "${prev.bash}/bin/bash";
-  args = [
-    "-c"
-    ''
-      set -eu
-      export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
-      export CONFIG_SHELL="${prev.bash}/bin/bash"
+  builtins.derivation {
+    name = "glibc-2.5";
+    system = buildPlatform.system;
+    builder = "${prev.bash}/bin/bash";
+    args = [
+      "-c"
+      ''
+              set -eu
+              export PATH="${prev.coreutils}/bin:${gcc}/bin:${binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin"
+              export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-      cd "$TMPDIR"
-      cp -r ${src} glibc-2.5
-      cd glibc-2.5
-      chmod -R u+w .
+              cd "$TMPDIR"
+              cp -r ${src} glibc-2.5
+              cd glibc-2.5
+              chmod -R u+w .
 
-      # glibc configure hardcodes /bin/pwd which doesn't exist in sandbox
-      sed -i 's|/bin/pwd|pwd|g' configure
+              # glibc configure hardcodes /bin/pwd which doesn't exist in sandbox
+              sed -i 's|/bin/pwd|pwd|g' configure
 
-      # vm86 is a versioned symbol (vm86@@GLIBC_2.3.4) — make-syscalls.sh only
-      # generates rules for versioned symbols when building shared libraries.
-      # With --disable-shared, the rule is skipped but the i386 Makefile still
-      # lists vm86 in sysdep_routines, causing "No rule to make target vm86.o".
-      sed -i '/^sysdep_routines/s/ vm86//' sysdeps/unix/sysv/linux/i386/Makefile 2>/dev/null || true
+              # vm86 is a versioned symbol (vm86@@GLIBC_2.3.4) — make-syscalls.sh only
+              # generates rules for versioned symbols when building shared libraries.
+              # With --disable-shared, the rule is skipped but the i386 Makefile still
+              # lists vm86 in sysdep_routines, causing "No rule to make target vm86.o".
+              sed -i '/^sysdep_routines/s/ vm86//' sysdeps/unix/sysv/linux/i386/Makefile 2>/dev/null || true
 
-      # Out-of-tree build (required by glibc)
-      mkdir -p "$TMPDIR/build"
-      cd "$TMPDIR/build"
+              # Out-of-tree build (required by glibc)
+              mkdir -p "$TMPDIR/build"
+              cd "$TMPDIR/build"
 
-      # GCC 4.1.2 produces dynamically-linked test programs by default,
-      # but there's no dynamic linker in the sandbox. Create a wrapper
-      # that adds -static only when linking (not for -c/-S/-E compilation).
-      mkdir -p "$TMPDIR/fakebin"
-      cat > "$TMPDIR/fakebin/gcc-wrap" << 'WRAPPER'
-#!/bin/sh
-linking=yes
-for arg; do
-  case "$arg" in
-    -c|-S|-E) linking=no; break ;;
-  esac
-done
-if [ "$linking" = "yes" ]; then
-  exec REAL_GCC "$@" -static
-else
-  exec REAL_GCC "$@"
-fi
-WRAPPER
-      sed -i "s|REAL_GCC|${gcc}/bin/gcc|g" "$TMPDIR/fakebin/gcc-wrap"
-      chmod +x "$TMPDIR/fakebin/gcc-wrap"
+              # GCC 4.1.2 produces dynamically-linked test programs by default,
+              # but there's no dynamic linker in the sandbox. Create a wrapper
+              # that adds -static only when linking (not for -c/-S/-E compilation).
+              mkdir -p "$TMPDIR/fakebin"
+              cat > "$TMPDIR/fakebin/gcc-wrap" << 'WRAPPER'
+        #!/bin/sh
+        linking=yes
+        for arg; do
+          case "$arg" in
+            -c|-S|-E) linking=no; break ;;
+          esac
+        done
+        if [ "$linking" = "yes" ]; then
+          exec REAL_GCC "$@" -static
+        else
+          exec REAL_GCC "$@"
+        fi
+        WRAPPER
+              sed -i "s|REAL_GCC|${gcc}/bin/gcc|g" "$TMPDIR/fakebin/gcc-wrap"
+              chmod +x "$TMPDIR/fakebin/gcc-wrap"
 
-      CC="$TMPDIR/fakebin/gcc-wrap" \
-      AR="${binutils}/bin/ar" \
-      RANLIB="${binutils}/bin/ranlib" \
-      CFLAGS="-O2" \
-      "$TMPDIR/glibc-2.5/configure" \
-        --prefix="$out" \
-        --build=${hostPlatform.config} \
-        --host=${hostPlatform.config} \
-        --with-headers="${linuxHeaders}/include" \
-        --disable-shared \
-        --disable-profile \
-        --disable-nscd \
-        --enable-static-nss \
-        --without-gd \
-        --without-selinux \
-        libc_cv_forced_unwind=yes \
-        libc_cv_c_cleanup=yes
+              CC="$TMPDIR/fakebin/gcc-wrap" \
+              AR="${binutils}/bin/ar" \
+              RANLIB="${binutils}/bin/ranlib" \
+              CFLAGS="-O2" \
+              "$TMPDIR/glibc-2.5/configure" \
+                --prefix="$out" \
+                --build=${hostPlatform.config} \
+                --host=${hostPlatform.config} \
+                --with-headers="${linuxHeaders}/include" \
+                --disable-shared \
+                --disable-profile \
+                --disable-nscd \
+                --enable-static-nss \
+                --without-gd \
+                --without-selinux \
+                libc_cv_forced_unwind=yes \
+                libc_cv_c_cleanup=yes
 
-      # PERL=true: configure sets PERL=no without perl in PATH, causing
-      # locale/Makefile to run "no gen-translit.pl ..." which fails.
-      make -j"$NIX_BUILD_CORES" PERL=true || true
-      test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
-      # -k: keep going past locale subdirectory failure.  libc.a, headers,
-      # and crt files are all installed before locale runs.
-      # -k installs headers and subdirectory artifacts but the locale
-      # failure prevents the top-level libc.a/crt install and stubs
-      # generation.  Install those manually from the build directory.
-      make -k install PERL=true || true
-      mkdir -p "$out/lib"
-      cp libc.a "$out/lib/"
-      cp csu/crt1.o csu/crti.o csu/crtn.o "$out/lib/"
-      # Fix stubs file: static-only build generates stubs-.h (empty ABI suffix)
-      if [ -f "$out/include/gnu/stubs-.h" ] && [ ! -f "$out/include/gnu/stubs-${stubsSuffix}.h" ]; then
-        mv "$out/include/gnu/stubs-.h" "$out/include/gnu/stubs-${stubsSuffix}.h"
-      fi
-      mkdir -p "$out/include/gnu"
-      touch "$out/include/gnu/stubs-${stubsSuffix}.h"
+              # PERL=true: configure sets PERL=no without perl in PATH, causing
+              # locale/Makefile to run "no gen-translit.pl ..." which fails.
+              make -j"$NIX_BUILD_CORES" PERL=true || true
+              test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
+              # -k: keep going past locale subdirectory failure.  libc.a, headers,
+              # and crt files are all installed before locale runs.
+              # -k installs headers and subdirectory artifacts but the locale
+              # failure prevents the top-level libc.a/crt install and stubs
+              # generation.  Install those manually from the build directory.
+              make -k install PERL=true || true
+              mkdir -p "$out/lib"
+              cp libc.a "$out/lib/"
+              cp csu/crt1.o csu/crti.o csu/crtn.o "$out/lib/"
+              # Fix stubs file: static-only build generates stubs-.h (empty ABI suffix)
+              if [ -f "$out/include/gnu/stubs-.h" ] && [ ! -f "$out/include/gnu/stubs-${stubsSuffix}.h" ]; then
+                mv "$out/include/gnu/stubs-.h" "$out/include/gnu/stubs-${stubsSuffix}.h"
+              fi
+              mkdir -p "$out/include/gnu"
+              touch "$out/include/gnu/stubs-${stubsSuffix}.h"
 
-      # Copy linux headers into glibc output for downstream use
-      cp -r "${linuxHeaders}/include/linux" "$out/include/" 2>/dev/null || true
-      cp -r "${linuxHeaders}/include/asm" "$out/include/" 2>/dev/null || true
-      cp -r "${linuxHeaders}/include/asm-generic" "$out/include/" 2>/dev/null || true
+              # Copy linux headers into glibc output for downstream use
+              cp -r "${linuxHeaders}/include/linux" "$out/include/" 2>/dev/null || true
+              cp -r "${linuxHeaders}/include/asm" "$out/include/" 2>/dev/null || true
+              cp -r "${linuxHeaders}/include/asm-generic" "$out/include/" 2>/dev/null || true
 
-      echo "glibc 2.5 installed to $out"
-    ''
-  ];
-}
-// {
-  meta = {
-    build = {
-      os = "linux";
-      cpu = [
-        "x86_64"
-        "i686"
-      ];
+              echo "glibc 2.5 installed to $out"
+      ''
+    ];
+  }
+  // {
+    meta = {
+      build = {
+        os = "linux";
+        cpu = [
+          "x86_64"
+          "i686"
+        ];
+      };
+      execute = {
+        os = "linux";
+        cpu = [
+          "x86_64"
+          "i686"
+        ];
+      };
     };
-    execute = {
-      os = "linux";
-      cpu = [
-        "x86_64"
-        "i686"
-      ];
-    };
-  };
-}
+  }

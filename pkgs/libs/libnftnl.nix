@@ -5,66 +5,63 @@
   gnumake,
   pkg-config,
   libmnl,
-}:
-let
+}: let
   version = "1.2.9";
 in
-mkDerivation {
-  pname = "libnftnl";
-  inherit version;
+  mkDerivation {
+    pname = "libnftnl";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://www.netfilter.org/projects/libnftnl/files/libnftnl-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://www.netfilter.org/projects/libnftnl/files/libnftnl-${version}.tar.xz"
+      ];
+      hash = "sha256-6MIWJV4SnyYnBjn+53dSZWZaMbEaqSAlPD5dXWLfxLg=";
+    };
+
+    buildDeps = [
+      gnumake
+      pkg-config
     ];
-    hash = "sha256-6MIWJV4SnyYnBjn+53dSZWZaMbEaqSAlPD5dXWLfxLg=";
-  };
+    runtimeDeps = [libmnl];
+    propagatedDeps = [];
 
-  buildDeps = [
-    gnumake
-    pkg-config
-  ];
-  runtimeDeps = [ libmnl ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd libnftnl-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --disable-static \
+            --enable-shared
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd libnftnl-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --disable-static \
-          --enable-shared
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       link = testing.mkLinkCheck {
         pname = "lib-libnftnl";
         library = self;
@@ -72,7 +69,7 @@ mkDerivation {
           "-lnftnl"
           "-lmnl"
         ];
-        extraDeps = [ pkgs.libmnl ];
+        extraDeps = [pkgs.libmnl];
         testSource = ''
           #include <libnftnl/table.h>
           #include <stdio.h>
@@ -87,9 +84,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "libnftnl — userspace library for nf_tables Netlink communication";
-    homepage = "https://www.netfilter.org/projects/libnftnl/";
-    license = "GPL-2.0-or-later";
-  };
-}
+    meta = {
+      description = "libnftnl — userspace library for nf_tables Netlink communication";
+      homepage = "https://www.netfilter.org/projects/libnftnl/";
+      license = "GPL-2.0-or-later";
+    };
+  }

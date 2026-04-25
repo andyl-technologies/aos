@@ -5,79 +5,98 @@
   gnumake,
   openssl,
   zlib,
-}:
-let
+}: let
   version = "10.0p1";
 in
-mkDerivation {
-  pname = "openssh";
-  inherit version;
+  mkDerivation {
+    pname = "openssh";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${version}.tar.gz"
+      ];
+      hash = "sha256-AhoucJoO30JQsSVr1anlAEEakN3avqgw7VnO+Q652Fw=";
+    };
+
+    buildDeps = [gnumake];
+    runtimeDeps = [
+      openssl
+      zlib
     ];
-    hash = "sha256-AhoucJoO30JQsSVr1anlAEEakN3avqgw7VnO+Q652Fw=";
-  };
+    propagatedDeps = [];
 
-  buildDeps = [ gnumake ];
-  runtimeDeps = [
-    openssl
-    zlib
-  ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd openssh-${version}
+        '';
+      }
+      {
+        name = "configure";
+        # --sysconfdir=/etc/ssh so the compiled-in default for every ssh
+        # tool (ssh-keygen -A, sshd default config lookup, etc.) points
+        # at the real runtime config dir. Using $out/etc/ssh bakes a
+        # store path into those defaults, which makes `ssh-keygen -A`
+        # refuse to regenerate keys because it sees the store's
+        # pre-staged files and short-circuits.
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --sysconfdir=/etc/ssh \
+            --with-ssl-dir=${openssl} \
+            --with-zlib=${zlib} \
+            --with-privsep-path=/var/empty \
+            --with-privsep-user=sshd \
+            --without-pam \
+            --disable-strip
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        # `make install-nokeys` mirrors `install` but skips the
+        # `install-sysconf-keys` hook that runs `ssh-keygen -A` during
+        # the build. Without it, the package would ship the same host
+        # keys to every AOS install — a critical security problem, and
+        # also the reason `sshd-keygen.service` couldn't regenerate them
+        # at runtime (the compiled-in default saw the store's pre-staged
+        # keys as already-present). Pair with `--sysconfdir=/etc/ssh`
+        # above so the produced ssh tools write to the runtime config
+        # dir, not the (read-only) store path.
+        script = ''
+          sed -i 's/-m 4711/-m 0755/g' Makefile
+          # DESTDIR redirects all install paths under $out, so the
+          # `install-sysconf` hook creates $out/etc/ssh/ (writable Nix
+          # build dir) rather than /etc/ssh/ (which only exists on the
+          # running system). Runtime binaries still look at /etc/ssh/
+          # because that's what was compiled in via --sysconfdir above.
+          make install-nokeys DESTDIR=$out
+          # Flatten $out/$out/... back to $out (DESTDIR concatenates).
+          cp -a $out$out/. $out/
+          rm -rf $out/nix
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd openssh-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --sysconfdir=$out/etc/ssh \
-          --with-ssl-dir=${openssl} \
-          --with-zlib=${zlib} \
-          --with-privsep-path=$out/var/empty/sshd \
-          --with-privsep-user=sshd \
-          --without-pam \
-          --disable-strip
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        # Strip setuid bits from install (not available in Nix sandbox)
-        sed -i 's/-m 4711/-m 0755/g' Makefile
-        make install
-      '';
-    }
-  ];
+    meta = {
+      description = "OpenSSH — secure shell connectivity tools";
+      homepage = "https://www.openssh.com";
+      license = "BSD-2-Clause";
+    };
 
-  meta = {
-    description = "OpenSSH — secure shell connectivity tools";
-    homepage = "https://www.openssh.com";
-    license = "BSD-2-Clause";
-  };
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       version = testing.mkToolCheck {
         pname = "tool-openssh-version";
         tool = self;
@@ -86,7 +105,7 @@ mkDerivation {
 
       keygen = testing.mkVMTest {
         name = "tool-openssh-keygen";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           echo "==> Generating ed25519 keypair"
           ssh-keygen -t ed25519 -f /tmp/testkey -N ""
@@ -99,12 +118,12 @@ mkDerivation {
 
       rpath = testing.mkRPATHCheck {
         pkg = self;
-        bins = [ "ssh" ];
+        bins = ["ssh"];
       };
 
       config-validity = testing.mkVMTest {
         name = "cross-cutting-openssh-config-validity";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           export PATH="${self}/bin:${self}/sbin:$PATH"
 
@@ -125,4 +144,4 @@ mkDerivation {
         '';
       };
     };
-}
+  }

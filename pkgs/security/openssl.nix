@@ -5,82 +5,96 @@
   gnumake,
   zlib,
   perl,
-}:
-let
+}: let
   version = "3.4.1";
 in
-mkDerivation {
-  pname = "openssl";
-  inherit version;
+  mkDerivation {
+    pname = "openssl";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://www.openssl.org/source/openssl-${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://www.openssl.org/source/openssl-${version}.tar.gz"
+      ];
+      hash = "sha256-ACotazC1i/S+pGxDvdljZar42qbEKHgqpP7uBtoZffM=";
+    };
+
+    buildDeps = [
+      gnumake
+      perl
     ];
-    hash = "sha256-ACotazC1i/S+pGxDvdljZar42qbEKHgqpP7uBtoZffM=";
-  };
+    runtimeDeps = [zlib];
+    propagatedDeps = [];
 
-  buildDeps = [
-    gnumake
-    perl
-  ];
-  runtimeDeps = [ zlib ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd openssl-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          perl ./Configure \
+            --prefix=$out \
+            --libdir=lib \
+            --openssldir=$out/etc/ssl \
+            linux-x86_64 \
+            no-ssl2 \
+            no-ssl3 \
+            no-dtls \
+            no-legacy \
+            shared \
+            zlib \
+            --with-zlib-include=${zlib}/include \
+            --with-zlib-lib=${zlib}/lib \
+            -Wl,-rpath,$out/lib
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install_sw install_ssldirs
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd openssl-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        perl ./Configure \
-          --prefix=$out \
-          --libdir=lib \
-          --openssldir=$out/etc/ssl \
-          linux-x86_64 \
-          no-ssl2 \
-          no-ssl3 \
-          no-dtls \
-          no-legacy \
-          shared \
-          zlib \
-          --with-zlib-include=${zlib}/include \
-          --with-zlib-lib=${zlib}/lib \
-          -Wl,-rpath,$out/lib
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install_sw install_ssldirs
-      '';
-    }
-  ];
+          # OpenSSL's build embeds the full compile command line as a
+          # .rodata string so `openssl version -a` can print it — including
+          # the absolute /nix/store path of the cc-wrapper. That .rodata
+          # entry is application data, not debug info, so the fixup phase's
+          # strip leaves it intact; the result is a closure edge from
+          # libcrypto to the cc-wrapper (and through it, ~230 MB of gcc
+          # toolchain) purely so `openssl version -a` can echo a build-time
+          # detail. Scrub the wrapper's 32-char hash in-place (length-
+          # preserving replacement with `eeeee…`): the "compiler:" string
+          # stays printable but no longer registers as a closure reference.
+          _ccwrap=$(dirname "$(dirname "$CC")")
+          _hash=$(echo "$_ccwrap" | sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
+          if [ -n "$_hash" ]; then
+            find "$out" -type f \( -name '*.so*' -o -name '*.a' -o -perm -u+x \) \
+              -exec sed -i "s|$_hash|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" {} + 2>/dev/null || true
+          fi
+        '';
+      }
+    ];
 
-  meta = {
-    description = "OpenSSL — TLS/SSL and cryptography toolkit";
-    homepage = "https://www.openssl.org";
-    license = "Apache-2.0";
-  };
+    meta = {
+      description = "OpenSSL — TLS/SSL and cryptography toolkit";
+      homepage = "https://www.openssl.org";
+      license = "Apache-2.0";
+    };
 
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       link = testing.mkLinkCheck {
         pname = "lib-openssl";
         library = self;
@@ -102,7 +116,7 @@ mkDerivation {
       evp = testing.mkLinkCheck {
         pname = "lib-openssl-evp";
         library = self;
-        libs = [ "-lcrypto" ];
+        libs = ["-lcrypto"];
         testSource = ''
           #include <openssl/evp.h>
           #include <stdio.h>
@@ -125,7 +139,7 @@ mkDerivation {
       rand = testing.mkLinkCheck {
         pname = "lib-openssl-rand";
         library = self;
-        libs = [ "-lcrypto" ];
+        libs = ["-lcrypto"];
         testSource = ''
           #include <openssl/rand.h>
           #include <stdio.h>
@@ -146,7 +160,7 @@ mkDerivation {
 
       cli-dgst = testing.mkVMTest {
         name = "lib-openssl-cli-dgst";
-        rootfsDeps = [ self ];
+        rootfsDeps = [self];
         testScript = ''
           echo "test" > /tmp/input.txt
           OUTPUT=$(openssl dgst -sha256 /tmp/input.txt)
@@ -167,7 +181,7 @@ mkDerivation {
       header-version = testing.mkLinkCheck {
         pname = "lib-openssl-header-version";
         library = self;
-        libs = [ "-lcrypto" ];
+        libs = ["-lcrypto"];
         testSource = ''
           #include <openssl/opensslv.h>
           #include <openssl/crypto.h>
@@ -285,4 +299,4 @@ mkDerivation {
         '';
       };
     };
-}
+  }

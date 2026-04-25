@@ -8,22 +8,26 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.firewall;
 
   # Format a list of ports as an nftables set expression: { 22, 80, 443 }
-  portSet =
-    ports:
-    if ports == [ ] then "" else "{ ${builtins.concatStringsSep ", " (builtins.map toString ports)} }";
+  portSet = ports:
+    if ports == []
+    then ""
+    else "{ ${builtins.concatStringsSep ", " (builtins.map toString ports)} }";
 
   # Build nftables rules for allowed TCP ports.
   tcpInputRules =
-    if cfg.allowedTCP == [ ] then "" else "    tcp dport ${portSet cfg.allowedTCP} accept\n";
+    if cfg.allowedTCP == []
+    then ""
+    else "    tcp dport ${portSet cfg.allowedTCP} accept\n";
 
   # Build nftables rules for allowed UDP ports.
   udpInputRules =
-    if cfg.allowedUDP == [ ] then "" else "    udp dport ${portSet cfg.allowedUDP} accept\n";
+    if cfg.allowedUDP == []
+    then ""
+    else "    udp dport ${portSet cfg.allowedUDP} accept\n";
 
   # Trusted interface rules — accept all traffic on lo, etc.
   trustedIfaceRules = builtins.concatStringsSep "\n" (
@@ -79,8 +83,7 @@ let
       }
     }
   '';
-in
-{
+in {
   options.aos.firewall = {
     ## Enable the nftables-based firewall.
     ##
@@ -118,7 +121,7 @@ in
     ## ```
     allowedTCP = lib.mkOption {
       type = lib.types.listOf lib.types.port;
-      default = [ ];
+      default = [];
       description = "TCP ports to allow inbound. Services append their ports here.";
     };
 
@@ -127,16 +130,13 @@ in
     ## Services append their ports here (e.g. Cilium VXLAN adds 8472).
     allowedUDP = lib.mkOption {
       type = lib.types.listOf lib.types.port;
-      default = [ ];
+      default = [];
       description = "UDP ports to allow inbound. Services append their ports here.";
     };
 
     ## Default policy for the forward chain.
     ##
     ## Set to "accept" on Kubernetes nodes for pod-to-pod traffic.
-    ##
-    ## # See Also
-    ## - `aos.kubernetes.network.enable`
     forwardPolicy = lib.mkOption {
       type = lib.types.str;
       default = "drop";
@@ -149,7 +149,7 @@ in
     ## Network interfaces where all traffic is accepted unconditionally.
     trustedInterfaces = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "lo" ];
+      default = ["lo"];
       description = ''
         Network interfaces where all traffic is accepted unconditionally.
         The loopback interface (lo) should always be trusted.
@@ -158,26 +158,25 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    system.checks.firewall = lib.mkCheckGroup {
-      name = "firewall";
+    system.checks.firewall = {
       description = "nftables firewall checks";
       checks = [
-        (lib.mkCheck {
+        {
           name = "nftables-active";
           description = "nftables service is active";
           script = ''
             assert_success "systemctl is-active nftables" \
               "nftables service is active"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "ruleset-loaded";
           description = "nftables ruleset is loaded";
           script = ''
             assert_success "nft list ruleset" \
               "nftables ruleset is loaded"
           '';
-        })
+        }
       ];
     };
 
@@ -194,10 +193,10 @@ in
     # nftables.service — load the firewall rules at boot.
     systemd.services."nftables" = {
       description = "nftables Firewall";
-      wantedBy = [ "multi-user.target" ];
-      before = [ "network-pre.target" ];
-      wants = [ "network-pre.target" ];
-      after = [ "local-fs.target" ];
+      wantedBy = ["multi-user.target"];
+      before = ["network-pre.target"];
+      wants = ["network-pre.target"];
+      after = ["local-fs.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

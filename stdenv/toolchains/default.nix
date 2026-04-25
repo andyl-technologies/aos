@@ -29,26 +29,31 @@
   buildPlatform,
   hostPlatform,
   targetPlatform,
-}:
-let
+}: let
   lib = import ../../lib/platform.nix;
 
   # Override system for Nix scheduling while preserving platform identity.
   # Foreign-arch binaries run via QEMU binfmt_misc on the x86_64 builder.
-  mkBuildable = platform: platform // { system = buildPlatform.system; };
+  mkBuildable = platform: platform // {system = buildPlatform.system;};
 
   bootstrapPlatform = mkBuildable (lib.mkPlatform "i686-linux");
 
   # ── Cross transition logic ────────────────────────────────────────
   cross0Platform = lib.mkPlatform "x86_64-linux";
 
-  cross1Targets = [ "aarch64" ]; # GCC 3.4
+  cross1Targets = ["aarch64"]; # GCC 3.4
   needsCross1 = builtins.elem hostPlatform.constraints.cpu cross1Targets;
-  cross1Platform = if needsCross1 then mkBuildable hostPlatform else cross0Platform;
+  cross1Platform =
+    if needsCross1
+    then mkBuildable hostPlatform
+    else cross0Platform;
 
-  cross2Targets = [ "riscv64" ]; # GCC 8
+  cross2Targets = ["riscv64"]; # GCC 8
   needsCross2 = builtins.elem hostPlatform.constraints.cpu cross2Targets;
-  cross2Platform = if needsCross2 then mkBuildable hostPlatform else cross1Platform;
+  cross2Platform =
+    if needsCross2
+    then mkBuildable hostPlatform
+    else cross1Platform;
 
   # ── gcc3_4: i686 native ───────────────────────────────────────────
   gcc3_4 = import ./gcc3_4 {
@@ -97,7 +102,10 @@ let
 
   # ── gcc8: native on x86_64 or aarch64 ─────────────────────────────
   gcc8 = import ./gcc8 {
-    prev = if needsCross1 then gcc4_8_cross else gcc4_8;
+    prev =
+      if needsCross1
+      then gcc4_8_cross
+      else gcc4_8;
     buildPlatform = cross1Platform;
     hostPlatform = cross1Platform;
     targetPlatform = cross1Platform;
@@ -113,7 +121,10 @@ let
 
   # ── gcc11: native on final target ─────────────────────────────────
   gcc11 = import ./gcc11 {
-    prev = if needsCross2 then gcc8_cross else gcc8;
+    prev =
+      if needsCross2
+      then gcc8_cross
+      else gcc8;
     buildPlatform = cross2Platform;
     hostPlatform = cross2Platform;
     targetPlatform = cross2Platform;
@@ -126,10 +137,9 @@ let
     hostPlatform = mkBuildable hostPlatform;
     targetPlatform = mkBuildable targetPlatform;
   };
-
   # ── latest: change this when adding a new GCC tier ──────────────
   # Points to the newest tier directory.
   # TODO: Re-enable self-recompile once GCC 14's in-tree GMP configure
   # CC_FOR_BUILD issue is resolved (sysroot path invalidated after install).
 in
-gcc14
+  gcc14

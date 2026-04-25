@@ -8,103 +8,102 @@
   classpath-0_93,
   ant-bootstrap,
   unzip,
-}:
-let
+}: let
   version = "3.2.2";
 in
-mkDerivation {
-  pname = "ecj-bootstrap";
-  inherit version;
+  mkDerivation {
+    pname = "ecj-bootstrap";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://archive.eclipse.org/eclipse/downloads/drops/R-3.2.2-200702121330/ecjsrc.zip"
+    src = fetchurl {
+      urls = [
+        "https://archive.eclipse.org/eclipse/downloads/drops/R-3.2.2-200702121330/ecjsrc.zip"
+      ];
+      hash = "sha256-BwzUJfUyQ0kHPI6po6DUMWZCkmRYTanpU3iI1qdAEhY=";
+    };
+
+    buildDeps = [
+      jikes
+      fastjar
+      jamvm-1_5
+      classpath-0_93
+      ant-bootstrap
+      unzip
     ];
-    hash = "sha256-BwzUJfUyQ0kHPI6po6DUMWZCkmRYTanpU3iI1qdAEhY=";
-  };
+    runtimeDeps = [
+      jamvm-1_5
+      classpath-0_93
+    ];
 
-  buildDeps = [
-    jikes
-    fastjar
-    jamvm-1_5
-    classpath-0_93
-    ant-bootstrap
-    unzip
-  ];
-  runtimeDeps = [
-    jamvm-1_5
-    classpath-0_93
-  ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir -p ecjsrc
+          cd ecjsrc
+          unzip $src
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          # Find all Java source files
+          find . -name '*.java' > sources.txt
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        mkdir -p ecjsrc
-        cd ecjsrc
-        unzip $src
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        # Find all Java source files
-        find . -name '*.java' > sources.txt
+          # Compile with Jikes against GNU Classpath
+          # Jikes needs the bootclasspath to find core Java classes
+          # ECJ's JDTCompilerAdapter extends Ant's DefaultCompilerAdapter
+          mkdir -p classes
+          jikes -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
+            -classpath ${ant-bootstrap}/lib/ant.jar \
+            -d classes \
+            -nowarn \
+            @sources.txt
 
-        # Compile with Jikes against GNU Classpath
-        # Jikes needs the bootclasspath to find core Java classes
-        # ECJ's JDTCompilerAdapter extends Ant's DefaultCompilerAdapter
-        mkdir -p classes
-        jikes -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
-          -classpath ${ant-bootstrap}/lib/ant.jar \
-          -d classes \
-          -nowarn \
-          @sources.txt
+          # Copy resource files (properties, etc.) into classes dir
+          find . -maxdepth 1 -name '*.java' -prune -o -type f -name '*.properties' -print \
+            -o -type f -name '*.rsc' -print \
+            -o -type f -name '*.profile' -print | while read f; do
+            dir=$(dirname "$f")
+            mkdir -p "classes/$dir"
+            cp "$f" "classes/$f"
+          done
 
-        # Copy resource files (properties, etc.) into classes dir
-        find . -maxdepth 1 -name '*.java' -prune -o -type f -name '*.properties' -print \
-          -o -type f -name '*.rsc' -print \
-          -o -type f -name '*.profile' -print | while read f; do
-          dir=$(dirname "$f")
-          mkdir -p "classes/$dir"
-          cp "$f" "classes/$f"
-        done
+          # Also copy from org/eclipse subdirs
+          find org -type f ! -name '*.java' | while read f; do
+            dir=$(dirname "$f")
+            mkdir -p "classes/$dir"
+            cp "$f" "classes/$f"
+          done
 
-        # Also copy from org/eclipse subdirs
-        find org -type f ! -name '*.java' | while read f; do
-          dir=$(dirname "$f")
-          mkdir -p "classes/$dir"
-          cp "$f" "classes/$f"
-        done
+          # Package into ecj.jar
+          cd classes
+          ${fastjar}/bin/fastjar cf ../ecj.jar .
+          cd ..
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+                  mkdir -p $out/lib $out/bin
 
-        # Package into ecj.jar
-        cd classes
-        ${fastjar}/bin/fastjar cf ../ecj.jar .
-        cd ..
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-                mkdir -p $out/lib $out/bin
+                  cp ecj.jar $out/lib/ecj.jar
 
-                cp ecj.jar $out/lib/ecj.jar
+          # Create wrapper script to invoke ECJ via JamVM
+          # JamVM already has correct boot classpath from --with-classpath-install-dir
+          # -J flags from callers are silently ignored (we set -Xmx768M directly)
+          printf '#!/bin/sh\nexec %s -Xmx768M -cp %s org.eclipse.jdt.internal.compiler.batch.Main "$@"\n' \
+            "${jamvm-1_5}/bin/jamvm" \
+            "$out/lib/ecj.jar" \
+            > $out/bin/ecj
+          chmod +x $out/bin/ecj
+        '';
+      }
+    ];
 
-        # Create wrapper script to invoke ECJ via JamVM
-        # JamVM already has correct boot classpath from --with-classpath-install-dir
-        # -J flags from callers are silently ignored (we set -Xmx768M directly)
-        printf '#!/bin/sh\nexec %s -Xmx768M -cp %s org.eclipse.jdt.internal.compiler.batch.Main "$@"\n' \
-          "${jamvm-1_5}/bin/jamvm" \
-          "$out/lib/ecj.jar" \
-          > $out/bin/ecj
-        chmod +x $out/bin/ecj
-      '';
-    }
-  ];
-
-  meta = {
-    description = "Eclipse Compiler for Java 3.2.2 — bootstrapped with Jikes";
-    homepage = "https://www.eclipse.org/jdt/core/";
-    license = "EPL-1.0";
-  };
-}
+    meta = {
+      description = "Eclipse Compiler for Java 3.2.2 — bootstrapped with Jikes";
+      homepage = "https://www.eclipse.org/jdt/core/";
+      license = "EPL-1.0";
+    };
+  }

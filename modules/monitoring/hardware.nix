@@ -7,14 +7,13 @@
 ##! provides early warning of disk failures.
 ##!
 ##! Options:
-##!   [monitoring.hardware] enable, watchdog, watchdogTimeout, smartd, thermalThrottling
+##!   [monitoring.hardware] enable, watchdog, watchdogTimeout, smartd
 {
   config,
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.monitoring.hardware;
 
   # Watchdog configuration for systemd's system.conf.d drop-in.
@@ -42,14 +41,7 @@ let
     # -m root: mail alerts to root
     DEVICESCAN -a -o on -S on -n standby,q -W 5,45,55 -m root
   '';
-
-  # Thermal throttling detection script (run as a periodic check).
-  thermalCheckUnit = ''
-    # Check for thermal throttling events in dmesg.
-    # Logs a warning if CPU throttling is detected.
-  '';
-in
-{
+in {
   options.aos.monitoring.hardware = {
     ## Enable hardware health monitoring (watchdog, SMART, thermal).
     enable = lib.mkOption {
@@ -98,15 +90,14 @@ in
       '';
     };
 
-    ## Enable thermal throttling detection.
-    thermalThrottling = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = ''
-        Enable thermal throttling detection. Periodically checks for
-        CPU thermal throttling events and logs warnings when detected.
-      '';
-    };
+    # `thermalThrottling` was removed in the systemd refactor
+    # (spec v3.1 §6.10). The previous implementation declared
+    # `systemd.services."thermal-check.timer"` — a misuse pattern
+    # that stuffed `[Timer]` directives into a `[Service]` section
+    # of a file named `thermal-check.timer.service`, which systemd
+    # silently ignored. Re-add when actually needed, declaring a
+    # proper `systemd.services.thermal-check` + `systemd.timers.
+    # thermal-check` pair.
   };
 
   config = lib.mkIf cfg.enable {
@@ -122,8 +113,8 @@ in
 
     systemd.services."smartd" = lib.mkIf cfg.smartd {
       description = "S.M.A.R.T. Disk Monitoring Daemon";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "local-fs.target" ];
+      wantedBy = ["multi-user.target"];
+      after = ["local-fs.target"];
       serviceConfig = {
         Type = "forking";
         ExecStart = "${pkgs.smartmontools}/sbin/smartd -c /etc/smartd.conf";
@@ -137,30 +128,7 @@ in
       };
     };
 
-    # Thermal throttling detection timer and service.
-    systemd.services."thermal-check" = lib.mkIf cfg.thermalThrottling {
-      description = "Thermal Throttling Detection";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${pkgs.bash}/bin/sh -c 'if test -f /sys/devices/system/cpu/cpu0/thermal_throttle/core_throttle_count; then count=$(cat /sys/devices/system/cpu/cpu0/thermal_throttle/core_throttle_count); if test \"$count\" -gt 0; then echo \"WARNING: CPU thermal throttling detected ($count events)\"; fi; fi'";
-        # No privileges needed — reads sysfs only.
-        ProtectSystem = "full";
-        ProtectHome = true;
-        NoNewPrivileges = true;
-      };
-    };
-
-    systemd.services."thermal-check.timer" = lib.mkIf cfg.thermalThrottling {
-      description = "Periodic Thermal Throttling Check";
-      wantedBy = [ "timers.target" ];
-      serviceConfig = {
-        OnBootSec = "5min";
-        OnUnitActiveSec = "10min";
-        AccuracySec = "1min";
-      };
-    };
-
     # Install smartmontools if smartd is enabled.
-    environment.systemPackages = lib.mkIf cfg.smartd [ pkgs.smartmontools ];
+    environment.systemPackages = lib.mkIf cfg.smartd [pkgs.smartmontools];
   };
 }

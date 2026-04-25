@@ -3,63 +3,60 @@
   mkDerivation,
   fetchurl,
   go,
-}:
-let
+}: let
   version = "1.17.3";
 in
-mkDerivation {
-  pname = "hubble";
-  inherit version;
+  mkDerivation {
+    pname = "hubble";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/cilium/hubble/archive/v${version}/hubble-${version}.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://github.com/cilium/hubble/archive/v${version}/hubble-${version}.tar.gz"
+      ];
+      hash = "sha256-ea/dd7K5QGu2zdkMClmQ/f6UV8CIN69Finu3cXtY1WA=";
+    };
+
+    buildDeps = [go];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd hubble-${version}
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          export GOPATH=$TMPDIR/go
+          export GOCACHE=$TMPDIR/go-cache
+          export CGO_ENABLED=0
+          export GOPROXY=off
+          export GOFLAGS="-trimpath -mod=vendor"
+          mkdir -p "$GOPATH" "$GOCACHE"
+
+          go build -ldflags "-s -w \
+            -X github.com/cilium/hubble/pkg/version.Version=v${version}" \
+            -o hubble .
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p $out/bin
+          install -m 755 hubble $out/bin/
+        '';
+      }
     ];
-    hash = "sha256-ea/dd7K5QGu2zdkMClmQ/f6UV8CIN69Finu3cXtY1WA=";
-  };
 
-  buildDeps = [ go ];
-  runtimeDeps = [ ];
-
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd hubble-${version}
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        export GOPATH=$TMPDIR/go
-        export GOCACHE=$TMPDIR/go-cache
-        export CGO_ENABLED=0
-        export GOPROXY=off
-        export GOFLAGS="-trimpath -mod=vendor"
-        mkdir -p "$GOPATH" "$GOCACHE"
-
-        go build -ldflags "-s -w \
-          -X github.com/cilium/hubble/pkg/version.Version=v${version}" \
-          -o hubble .
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        mkdir -p $out/bin
-        install -m 755 hubble $out/bin/
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       version = testing.mkToolCheck {
         pname = "tool-hubble";
         tool = self;
@@ -67,9 +64,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "Hubble — Cilium network observability CLI";
-    homepage = "https://github.com/cilium/hubble";
-    license = "Apache-2.0";
-  };
-}
+    meta = {
+      description = "Hubble — Cilium network observability CLI";
+      homepage = "https://github.com/cilium/hubble";
+      license = "Apache-2.0";
+    };
+  }

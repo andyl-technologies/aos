@@ -14,25 +14,22 @@
   lib,
   pkgs,
   ...
-}:
-let
+}: let
   cfg = config.aos.image;
   buildImage = import ./_builder.nix;
 
   rawImage = buildImage {
     inherit pkgs lib;
-    system = { inherit config; };
+    system = {inherit config;};
     name = config.aos.system.name;
-    inherit (cfg) diskSize bootSize rootSize;
   };
 
   # Convert a raw image to another format via qemu-img
-  convertImage =
-    format: formatFlag:
+  convertImage = format: formatFlag:
     pkgs.mkDerivation {
       name = "aos-image-${config.aos.system.name}-${format}";
       src = null;
-      buildDeps = [ pkgs.qemu ];
+      buildDeps = [pkgs.qemu];
       phases = [
         {
           name = "convert";
@@ -48,32 +45,13 @@ let
         description = "AOS ${config.aos.system.name} image (${format})";
       };
     };
-in
-{
+in {
   options.aos.image = {
     ## Whether to build disk images for this system variant.
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
       description = "Whether to build disk images for this system variant.";
-    };
-    ## Total raw disk image size.
-    diskSize = lib.mkOption {
-      type = lib.types.str;
-      default = "16G";
-      description = "Total raw disk image size.";
-    };
-    ## Boot partition size.
-    bootSize = lib.mkOption {
-      type = lib.types.str;
-      default = "512M";
-      description = "Boot partition size (kernel + initrd).";
-    };
-    ## Root filesystem partition size.
-    rootSize = lib.mkOption {
-      type = lib.types.str;
-      default = "8G";
-      description = "Root filesystem partition size.";
     };
   };
 

@@ -4,72 +4,69 @@
   fetchurl,
   gnumake,
   openssl,
-}:
-let
+}: let
   version = "1.8.0.3";
 in
-mkDerivation {
-  pname = "socat";
-  inherit version;
+  mkDerivation {
+    pname = "socat";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "http://www.dest-unreach.org/socat/download/socat-${version}.tar.bz2"
+    src = fetchurl {
+      urls = [
+        "http://www.dest-unreach.org/socat/download/socat-${version}.tar.bz2"
+      ];
+      hash = "sha256-AesBc2HZW7OmlB6EC1nkRjo/q/kt9BVO0CsWou1qAJU=";
+    };
+
+    buildDeps = [gnumake];
+    runtimeDeps = [openssl];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd socat-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --enable-openssl \
+            --with-openssl=${openssl}
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
     ];
-    hash = "sha256-AesBc2HZW7OmlB6EC1nkRjo/q/kt9BVO0CsWou1qAJU=";
-  };
 
-  buildDeps = [ gnumake ];
-  runtimeDeps = [ openssl ];
-  propagatedDeps = [ ];
+    meta = {
+      description = "socat — multipurpose relay for bidirectional data transfer";
+      homepage = "http://www.dest-unreach.org/socat/";
+      license = "GPL-2.0-only";
+    };
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd socat-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --enable-openssl \
-          --with-openssl=${openssl}
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  meta = {
-    description = "socat — multipurpose relay for bidirectional data transfer";
-    homepage = "http://www.dest-unreach.org/socat/";
-    license = "GPL-2.0-only";
-  };
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       rpath = testing.mkRPATHCheck {
         pkg = self;
-        bins = [ "socat" ];
+        bins = ["socat"];
       };
 
       version = testing.mkToolCheck {
@@ -78,4 +75,4 @@ mkDerivation {
         command = "socat -V";
       };
     };
-}
+  }

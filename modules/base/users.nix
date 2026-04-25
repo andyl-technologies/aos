@@ -12,16 +12,13 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.users;
 
   # Generate a passwd(5) line for a user.
-  mkPasswdLine =
-    name: u:
-    "${name}:x:${toString u.uid}:${
-      toString (cfg.groups.${u.group}.gid or 65534)
-    }:${u.description}:${u.home}:${u.shell}";
+  mkPasswdLine = name: u: "${name}:x:${toString u.uid}:${
+    toString (cfg.groups.${u.group}.gid or 65534)
+  }:${u.description}:${u.home}:${u.shell}";
 
   # Generate a group(5) line for a group.
   mkGroupLine = name: g: "${name}:x:${toString g.gid}:${builtins.concatStringsSep "," g.members}";
@@ -29,21 +26,21 @@ let
   # Generate a shadow(5) line for a user.
   # All system users get locked passwords by default (! prefix).
   # Root gets an empty password hash that requires key-based auth.
-  mkShadowLine =
-    name: _u: if name == "root" then "${name}:!*::0:99999:7:::" else "${name}:!*::0:99999:7:::";
+  mkShadowLine = name: _u:
+    if name == "root"
+    then "${name}:!*::0:99999:7:::"
+    else "${name}:!*::0:99999:7:::";
 
   # Collect all users from extraGroups and merge into group members.
   extraGroupMembers = builtins.foldl' (
-    acc: entry:
-    let
+    acc: entry: let
       userName = entry.name;
       userCfg = entry.value;
       groups = userCfg.extraGroups;
     in
-    builtins.foldl' (a: grp: a // { ${grp} = (a.${grp} or [ ]) ++ [ userName ]; }) acc groups
-  ) { } (lib.mapAttrsToList (name: value: { inherit name value; }) cfg.users);
-in
-{
+      builtins.foldl' (a: grp: a // {${grp} = (a.${grp} or []) ++ [userName];}) acc groups
+  ) {} (lib.mapAttrsToList (name: value: {inherit name value;}) cfg.users);
+in {
   options.aos.users = {
     ## System user accounts.
     ##
@@ -97,46 +94,13 @@ in
             ## Additional groups this user belongs to.
             extraGroups = lib.mkOption {
               type = lib.types.listOf lib.types.str;
-              default = [ ];
+              default = [];
               description = "Additional groups this user belongs to.";
             };
           };
         }
       );
-      default = {
-        root = {
-          uid = 0;
-          group = "root";
-          home = "/root";
-          shell = "/bin/bash";
-          description = "System Administrator";
-          extraGroups = [ ];
-        };
-        nobody = {
-          uid = 65534;
-          group = "nobody";
-          home = "/";
-          shell = "/sbin/nologin";
-          description = "Nobody";
-          extraGroups = [ ];
-        };
-        systemd-journal = {
-          uid = 190;
-          group = "systemd-journal";
-          home = "/";
-          shell = "/sbin/nologin";
-          description = "systemd Journal";
-          extraGroups = [ ];
-        };
-        systemd-network = {
-          uid = 192;
-          group = "systemd-network";
-          home = "/";
-          shell = "/sbin/nologin";
-          description = "systemd Network Management";
-          extraGroups = [ ];
-        };
-      };
+      default = {};
       description = "System user accounts.";
     };
 
@@ -164,43 +128,142 @@ in
             ## Users who are members of this group.
             members = lib.mkOption {
               type = lib.types.listOf lib.types.str;
-              default = [ ];
+              default = [];
               description = "Users who are members of this group.";
             };
           };
         }
       );
-      default = {
-        root = {
-          gid = 0;
-          members = [ "root" ];
-        };
-        nobody = {
-          gid = 65534;
-          members = [ ];
-        };
-        utmp = {
-          gid = 22;
-          members = [ ];
-        };
-        wheel = {
-          gid = 10;
-          members = [ ];
-        };
-        systemd-journal = {
-          gid = 190;
-          members = [ ];
-        };
-        systemd-network = {
-          gid = 192;
-          members = [ ];
-        };
-      };
+      default = {};
       description = "System groups.";
     };
   };
 
   config = {
+    # Baseline system users and groups. Declared in a `config` block
+    # (rather than as the option's `default = { … }`) so they merge
+    # cleanly with entries other modules add via
+    # `aos.users.users.chrony = { … };`. Prior to this refactor the
+    # initial users lived in the option's `default`, which was
+    # silently dropped the moment any other module contributed a def
+    # at the same attrsOf path — see audit finding 1.1.
+    aos.users.users = {
+      root = {
+        uid = 0;
+        group = "root";
+        home = "/root";
+        shell = "/bin/bash";
+        description = "System Administrator";
+        extraGroups = [];
+      };
+      nobody = {
+        uid = 65534;
+        group = "nobody";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "Nobody";
+        extraGroups = [];
+      };
+      systemd-journal = {
+        uid = 190;
+        group = "systemd-journal";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Journal";
+        extraGroups = [];
+      };
+      systemd-network = {
+        uid = 192;
+        group = "systemd-network";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Network Management";
+        extraGroups = [];
+      };
+      # UIDs 193–196 are consumed by systemd units that hard-code
+      # `User=systemd-<name>` in their shipped unit files — the
+      # accounts must exist even when the corresponding daemon isn't
+      # started by the active profile, otherwise unit activation
+      # fails at startup with "unknown user". Added in the merge of
+      # the `systemd-features` branch, which enables `resolved`,
+      # `timesyncd`, `oomd`, and `coredump` in the systemd build.
+      systemd-resolve = {
+        uid = 193;
+        group = "systemd-resolve";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Resolver";
+        extraGroups = [];
+      };
+      systemd-timesync = {
+        uid = 194;
+        group = "systemd-timesync";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Time Synchronization";
+        extraGroups = [];
+      };
+      systemd-oom = {
+        uid = 195;
+        group = "systemd-oom";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Userspace OOM Killer";
+        extraGroups = [];
+      };
+      systemd-coredump = {
+        uid = 196;
+        group = "systemd-coredump";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "systemd Core Dumper";
+        extraGroups = [];
+      };
+    };
+
+    aos.users.groups = {
+      root = {
+        gid = 0;
+        members = ["root"];
+      };
+      nobody = {
+        gid = 65534;
+        members = [];
+      };
+      utmp = {
+        gid = 22;
+        members = [];
+      };
+      wheel = {
+        gid = 10;
+        members = [];
+      };
+      systemd-journal = {
+        gid = 190;
+        members = [];
+      };
+      systemd-network = {
+        gid = 192;
+        members = [];
+      };
+      systemd-resolve = {
+        gid = 193;
+        members = [];
+      };
+      systemd-timesync = {
+        gid = 194;
+        members = [];
+      };
+      systemd-oom = {
+        gid = 195;
+        members = [];
+      };
+      systemd-coredump = {
+        gid = 196;
+        members = [];
+      };
+    };
+
     # /etc/passwd — user account database.
     environment.etc."passwd" = {
       text = builtins.concatStringsSep "\n" (lib.mapAttrsToList mkPasswdLine cfg.users) + "\n";
@@ -212,13 +275,13 @@ in
       text =
         builtins.concatStringsSep "\n" (
           lib.mapAttrsToList (
-            name: g:
-            let
-              allMembers = g.members ++ (extraGroupMembers.${name} or [ ]);
+            name: g: let
+              allMembers = g.members ++ (extraGroupMembers.${name} or []);
               uniqueMembers = lib.unique allMembers;
             in
-            mkGroupLine name (g // { members = uniqueMembers; })
-          ) cfg.groups
+              mkGroupLine name (g // {members = uniqueMembers;})
+          )
+          cfg.groups
         )
         + "\n";
     };

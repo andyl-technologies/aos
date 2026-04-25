@@ -10,90 +10,87 @@
   bzip2,
   lz4,
   expat,
-}:
-let
+}: let
   version = "3.8.5";
 in
-mkDerivation {
-  pname = "libarchive";
-  inherit version;
+  mkDerivation {
+    pname = "libarchive";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://www.libarchive.org/downloads/libarchive-${version}.tar.xz"
-      "https://github.com/libarchive/libarchive/releases/download/v${version}/libarchive-${version}.tar.xz"
+    src = fetchurl {
+      urls = [
+        "https://www.libarchive.org/downloads/libarchive-${version}.tar.xz"
+        "https://github.com/libarchive/libarchive/releases/download/v${version}/libarchive-${version}.tar.xz"
+      ];
+      hash = "sha256-1oBo50vu46DsDdBK7pA31XV/zGUVkabc8bbVQvsVpwM=";
+    };
+
+    buildDeps = [
+      gnumake
+      pkg-config
     ];
-    hash = "sha256-1oBo50vu46DsDdBK7pA31XV/zGUVkabc8bbVQvsVpwM=";
-  };
+    runtimeDeps = [
+      openssl
+      zlib
+      zstd
+      bzip2
+      lz4
+      expat
+    ];
+    propagatedDeps = [];
 
-  buildDeps = [
-    gnumake
-    pkg-config
-  ];
-  runtimeDeps = [
-    openssl
-    zlib
-    zstd
-    bzip2
-    lz4
-    expat
-  ];
-  propagatedDeps = [ ];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd libarchive-${version}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --enable-shared \
+            --disable-static \
+            --with-openssl \
+            --with-zlib \
+            --with-zstd \
+            --with-bz2lib \
+            --without-xml2 \
+            --with-expat \
+            --with-lz4
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
+    ];
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd libarchive-${version}
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        ./configure \
-          --prefix=$out \
-          --enable-shared \
-          --disable-static \
-          --with-openssl \
-          --with-zlib \
-          --with-zstd \
-          --with-bz2lib \
-          --without-xml2 \
-          --with-expat \
-          --with-lz4
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -j$NIX_BUILD_CORES
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make install
-      '';
-    }
-  ];
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       soname = testing.mkSONAMECheck {
         pkg = self;
-        libs = [ "libarchive.so" ];
+        libs = ["libarchive.so"];
       };
 
       link = testing.mkLinkCheck {
         pname = "lib-libarchive";
         library = self;
-        libs = [ "-larchive" ];
+        libs = ["-larchive"];
         extraDeps = [
           pkgs.zlib
           pkgs.zstd
@@ -184,9 +181,9 @@ mkDerivation {
       };
     };
 
-  meta = {
-    description = "libarchive — multi-format archive and compression library";
-    homepage = "https://www.libarchive.org";
-    license = "BSD-2-Clause";
-  };
-}
+    meta = {
+      description = "libarchive — multi-format archive and compression library";
+      homepage = "https://www.libarchive.org";
+      license = "BSD-2-Clause";
+    };
+  }

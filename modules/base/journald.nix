@@ -13,11 +13,9 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.journald;
-in
-{
+in {
   options.aos.journald = {
     ## Journal storage mode (persistent, volatile, auto).
     storage = lib.mkOption {
@@ -115,7 +113,11 @@ in
         SystemMaxFileSize=${cfg.systemMaxFileSize}
         RateLimitIntervalSec=${cfg.rateLimitInterval}
         RateLimitBurst=${toString cfg.rateLimitBurst}
-        ForwardToSyslog=${if cfg.forwardToSyslog then "yes" else "no"}
+        ForwardToSyslog=${
+          if cfg.forwardToSyslog
+          then "yes"
+          else "no"
+        }
         Compress=yes
       '';
     };

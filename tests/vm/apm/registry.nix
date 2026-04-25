@@ -7,11 +7,9 @@
   testing,
   pkgs,
   aosPkg,
-}:
-let
-  fixtures = import ./fixtures.nix { inherit pkgs aosPkg; };
-in
-{
+}: let
+  fixtures = import ./fixtures.nix {inherit pkgs aosPkg;};
+in {
   # -------------------------------------------------------------------------
   # 1. registry-create — Initialize a new empty registry
   # -------------------------------------------------------------------------

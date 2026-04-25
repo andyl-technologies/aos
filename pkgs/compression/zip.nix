@@ -3,82 +3,79 @@
   mkDerivation,
   fetchurl,
   gnumake,
-}:
-let
+}: let
   version = "3.0";
 in
-mkDerivation {
-  pname = "zip";
-  inherit version;
+  mkDerivation {
+    pname = "zip";
+    inherit version;
 
-  src = fetchurl {
-    urls = [
-      "https://downloads.sourceforge.net/infozip/zip30.tar.gz"
+    src = fetchurl {
+      urls = [
+        "https://downloads.sourceforge.net/infozip/zip30.tar.gz"
+      ];
+      hash = "sha256-8Oi7H5t+sLAShUlaJpnfOkt2Z4TBdlqPGu7fY8CAY2k=";
+    };
+
+    buildDeps = [gnumake];
+    runtimeDeps = [];
+    propagatedDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd zip30
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          # Remove hardcoded CC = cc so ccWrapper is used
+          sed -i 's/^CC = cc$//' unix/Makefile
+
+          # Fix implicit function declarations for modern compilers
+          sed -i '1i #include <time.h>' timezone.c 2>/dev/null || true
+
+          # Fix unix/configure: its test programs use implicit function
+          # declarations which GCC 14 (C23 default) rejects, causing
+          # all function detection to fail and zip to define its own
+          # K&R-style memcmp/strchr/etc. that conflict with glibc.
+          # Fix: inject -std=gnu89 into both configure tests and compilation.
+          sed -i 's/^CFLAGS_NOOPT = /CFLAGS_NOOPT = -std=gnu89 /' unix/Makefile
+          # Configure uses various $CC invocations for test compilations
+          # without passing $CFLAGS, so inject -std=gnu89 into all of them.
+          sed -i 's|\$CC \(.*\)-o conftest|\$CC -std=gnu89 \1-o conftest|g' unix/configure
+          sed -i 's|\$CC -o conftest|\$CC -std=gnu89 -o conftest|g' unix/configure
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -f unix/Makefile generic -j$NIX_BUILD_CORES \
+            LFLAGS2="$NIX_LDFLAGS"
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make -f unix/Makefile prefix=$out install INSTALL=cp
+        '';
+      }
     ];
-    hash = "sha256-8Oi7H5t+sLAShUlaJpnfOkt2Z4TBdlqPGu7fY8CAY2k=";
-  };
 
-  buildDeps = [ gnumake ];
-  runtimeDeps = [ ];
-  propagatedDeps = [ ];
+    meta = {
+      description = "zip — package and compress files into ZIP archives";
+      homepage = "http://infozip.sourceforge.net/Zip.html";
+      license = "Info-ZIP";
+    };
 
-  phases = [
-    {
-      name = "unpack";
-      script = ''
-        tar xf $src
-        cd zip30
-      '';
-    }
-    {
-      name = "patch";
-      script = ''
-        # Remove hardcoded CC = cc so ccWrapper is used
-        sed -i 's/^CC = cc$//' unix/Makefile
-
-        # Fix implicit function declarations for modern compilers
-        sed -i '1i #include <time.h>' timezone.c 2>/dev/null || true
-
-        # Fix unix/configure: its test programs use implicit function
-        # declarations which GCC 14 (C23 default) rejects, causing
-        # all function detection to fail and zip to define its own
-        # K&R-style memcmp/strchr/etc. that conflict with glibc.
-        # Fix: inject -std=gnu89 into both configure tests and compilation.
-        sed -i 's/^CFLAGS_NOOPT = /CFLAGS_NOOPT = -std=gnu89 /' unix/Makefile
-        # Configure uses various $CC invocations for test compilations
-        # without passing $CFLAGS, so inject -std=gnu89 into all of them.
-        sed -i 's|\$CC \(.*\)-o conftest|\$CC -std=gnu89 \1-o conftest|g' unix/configure
-        sed -i 's|\$CC -o conftest|\$CC -std=gnu89 -o conftest|g' unix/configure
-      '';
-    }
-    {
-      name = "build";
-      script = ''
-        make -f unix/Makefile generic -j$NIX_BUILD_CORES \
-          LFLAGS2="$NIX_LDFLAGS"
-      '';
-    }
-    {
-      name = "install";
-      script = ''
-        make -f unix/Makefile prefix=$out install INSTALL=cp
-      '';
-    }
-  ];
-
-  meta = {
-    description = "zip — package and compress files into ZIP archives";
-    homepage = "http://infozip.sourceforge.net/Zip.html";
-    license = "Info-ZIP";
-  };
-
-  checks =
-    {
+    checks = {
       testing,
       self,
       pkgs,
-    }:
-    {
+    }: {
       roundtrip = testing.mkVMTest {
         name = "tool-zip-roundtrip";
         rootfsDeps = [
@@ -148,4 +145,4 @@ mkDerivation {
         '';
       };
     };
-}
+  }

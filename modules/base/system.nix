@@ -12,40 +12,102 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.system;
-in
-{
+
+  # The helper functions referenced by `script` (`run_in_guest`,
+  # `assert_success`, `assert_output_contains`) are defined in
+  # `lib/testing/assertions.nix` and injected into the host-side
+  # shell that runs each check against the VM's guest agent.
+  checkType = lib.types.submodule {
+    options = {
+      name = lib.mkOption {
+        type = lib.types.str;
+        description = "Check identifier; used in log banners as <group>/<name>.";
+      };
+      description = lib.mkOption {
+        type = lib.types.str;
+        description = "Human-readable purpose of the check.";
+      };
+      script = lib.mkOption {
+        type = lib.types.lines;
+        description = ''
+          Shell fragment run on the host against the guest agent.
+          See `lib/testing/assertions.nix` for the helper vocabulary
+          (`run_in_guest`, `assert_success`,
+          `assert_output_contains`).
+        '';
+      };
+    };
+  };
+
+  # Fully-typed Ignition v3.6 schema. `allowStorageHardware = false`
+  # omits `storage.{disks,filesystems,raid,luks}` so test-harness
+  # configs that try to manage partitioning fail at eval with a
+  # readable "option not declared" error — those paths belong to the
+  # AOS image, not to first-boot metadata. Production / standalone
+  # callers that want the full schema can import
+  # `lib/formats/ignition.nix` directly with `allowStorageHardware = true`.
+  ignitionFormat = lib.formats.ignition {
+    inherit lib pkgs;
+    allowStorageHardware = false;
+  };
+  ignitionConfigType = ignitionFormat.type;
+
+  instanceMetadataType = lib.types.submodule {
+    options = {
+      format = lib.mkOption {
+        type = lib.types.enum ["ignition"];
+        default = "ignition";
+        description = "Provisioner that will consume the metadata.";
+      };
+      config = lib.mkOption {
+        type = ignitionConfigType;
+        description = ''
+          The ignition config as a Nix attrset. It is serialised to
+          JSON and delivered to the guest by the test harness — the
+          delivery channel (virtio-blk + localhost HTTP) is an
+          implementation detail. The guest-side plumbing is the
+          `aos-test-metadata.socket` initrd unit installed by
+          `modules/services/ignition.nix`.
+        '';
+      };
+    };
+  };
+
+  checkSpecType = lib.types.submodule ({name, ...}: {
+    options = {
+      description = lib.mkOption {
+        type = lib.types.str;
+        default = name;
+        description = "Description shown in the test log banner.";
+      };
+      checks = lib.mkOption {
+        type = lib.types.listOf checkType;
+        description = "Flat list of checks run inside one VM.";
+      };
+      instanceMetadata = lib.mkOption {
+        type = lib.types.nullOr instanceMetadataType;
+        default = null;
+        description = ''
+          Optional first-boot provisioning payload. When set, the
+          test harness attaches a second virtio-blk device carrying
+          this JSON. Ignition runs on every test boot (metadata or
+          not), but only consumes a config when this option is set.
+          The system under test must have
+          `aos.services.ignition.enable = true`.
+        '';
+      };
+    };
+  });
+in {
   options.system.checks = lib.mkOption {
-    type = lib.types.attrsOf lib.types.anything;
-    default = { };
+    type = lib.types.attrsOf checkSpecType;
+    default = {};
     description = ''
-      VM checks contributed by modules, keyed by check group name.
-      Each value should be a check group created with lib.mkCheckGroup.
-      These are automatically collected and used to generate VM test
-      derivations in the flake's checks output.
-    '';
-  };
-
-  options.system.cloudInitTests = lib.mkOption {
-    type = lib.types.attrsOf lib.types.anything;
-    default = { };
-    description = ''
-      Cloud-init VM test specifications, keyed by test name.
-      Each value should be { userdata = null or JSON string; checks = mkCheckGroup {...}; }.
-      These are automatically collected and used to generate golden-image VM
-      test derivations in the flake's checks output.
-    '';
-  };
-
-  options.system.fleetTests = lib.mkOption {
-    type = lib.types.attrsOf lib.types.anything;
-    default = { };
-    description = ''
-      Fleet (multi-VM) test specifications, keyed by test name.
-      Each value should be { machines = {...}; testScript = "..."; timeout = int; }.
-      Machine specs reference system variants by string name (resolved at collection time).
+      VM checks contributed by modules, keyed by check-group name.
+      Each entry produces one test derivation at
+      `system.build.checks.<name>`.
     '';
   };
 
@@ -102,89 +164,87 @@ in
   };
 
   config = {
-    system.checks.boot-basics = lib.mkCheckGroup {
-      name = "boot-basics";
+    system.checks.boot-basics = {
       description = "Core boot verification";
       checks = [
-        (lib.mkCheck {
+        {
           name = "os-release";
           description = "os-release contains ANDYL OS";
           script = ''
             assert_output_contains "cat /etc/os-release" "ANDYL OS" \
               "os-release contains ANDYL OS"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "hostname";
           description = "Hostname is set";
           script = ''
             assert_success "test -f /etc/hostname" \
               "/etc/hostname exists"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "systemd-running";
-          description = "systemd reached running state";
+          description = "systemd reached multi-user.target";
           script = ''
-            assert_success "systemctl is-system-running --wait || true" \
-              "systemd reached running state"
+            assert_success "systemctl is-active multi-user.target" \
+              "systemd reached multi-user.target"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "kernel-version";
           description = "Kernel version is 6.18.x";
           script = ''
             assert_output_contains "uname -r" "6.18" \
               "kernel version is 6.18.x"
           '';
-        })
+        }
       ];
     };
 
-    system.checks.systemd-basics = lib.mkCheckGroup {
-      name = "systemd-basics";
+    system.checks.systemd-basics = {
       description = "systemd service infrastructure checks";
       checks = [
-        (lib.mkCheck {
+        {
           name = "runtime-dir";
           description = "systemd runtime directory exists";
           script = ''
             assert_success "test -d /run/systemd/system" \
               "systemd runtime directory exists"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "timers";
           description = "systemd timers are functional";
           script = ''
             assert_success "systemctl list-timers --no-pager" \
               "systemd timers are functional"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "list-services";
           description = "systemctl can list services";
           script = ''
             assert_success "systemctl list-units --type=service --no-pager" \
               "systemctl can list services"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "journal";
           description = "journalctl can read system journal";
           script = ''
             assert_success "journalctl --no-pager -n 5" \
               "journalctl can read system journal"
           '';
-        })
-        (lib.mkCheck {
+        }
+        {
           name = "etc-writable";
           description = "/etc is writable for updates";
           script = ''
             assert_success "touch /etc/test-write && rm /etc/test-write" \
               "/etc is writable for updates"
           '';
-        })
+        }
       ];
     };
 
