@@ -12,8 +12,7 @@
   testing,
   apm,
   pkgs,
-}:
-let
+}: let
   testDeps = [
     apm
     pkgs.coreutils
@@ -26,13 +25,12 @@ let
   # --------------------------------------------------------------------------
   # Mock kernel store paths — simulate different kernel versions
   # --------------------------------------------------------------------------
-  mkMockKernel =
-    { version }:
+  mkMockKernel = {version}:
     pkgs.mkDerivation {
       pname = "mock-linux";
       inherit version;
       src = null;
-      buildDeps = [ pkgs.coreutils ];
+      buildDeps = [pkgs.coreutils];
       phases = [
         {
           name = "build";
@@ -44,24 +42,23 @@ let
       ];
     };
 
-  kernelV1 = mkMockKernel { version = "6.12.1"; };
-  kernelV2 = mkMockKernel { version = "6.13.0"; };
+  kernelV1 = mkMockKernel {version = "6.12.1";};
+  kernelV2 = mkMockKernel {version = "6.13.0";};
 
   # --------------------------------------------------------------------------
   # Mock toplevels with kernel symlinks
   # --------------------------------------------------------------------------
-  mkKernelToplevel =
-    {
-      pname,
-      version,
-      kernel,
-      drainScript ? null,
-    }:
+  mkKernelToplevel = {
+    pname,
+    version,
+    kernel,
+    drainScript ? null,
+  }:
     pkgs.mkDerivation {
       pname = "mock-toplevel-${pname}";
       inherit version;
       src = null;
-      buildDeps = [ pkgs.coreutils ];
+      buildDeps = [pkgs.coreutils];
       phases = [
         {
           name = "build";
@@ -135,8 +132,7 @@ let
   # --------------------------------------------------------------------------
   # Mock registries for kernel tests
   # --------------------------------------------------------------------------
-  mkKernelRegistry =
-    { packages }:
+  mkKernelRegistry = {packages}:
     pkgs.mkDerivation {
       pname = "mock-registry-kernel";
       version = "0";
@@ -152,34 +148,39 @@ let
             mkdir -p $out/packages
             ${builtins.concatStringsSep "\n" (
               builtins.map (
-                pkg:
-                let letter = builtins.substring 0 1 pkg.name;
+                pkg: let
+                  letter = builtins.substring 0 1 pkg.name;
                 in ''
-                  mkdir -p $out/packages/${letter}
-                  cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
-[package]
-name = "${pkg.name}"
-description = "mock ${pkg.name}"
-license = "MIT"
-maintainer = "test"
-${if pkg.sysroot or false then "sysroot = true" else ""}
+                                    mkdir -p $out/packages/${letter}
+                                    cat > $out/packages/${letter}/${pkg.name}.toml << 'PKGEOF'
+                  [package]
+                  name = "${pkg.name}"
+                  description = "mock ${pkg.name}"
+                  license = "MIT"
+                  maintainer = "test"
+                  ${
+                    if pkg.sysroot or false
+                    then "sysroot = true"
+                    else ""
+                  }
 
-[[versions]]
-version = "${pkg.version}"
+                  [[versions]]
+                  version = "${pkg.version}"
 
-[versions.platforms.x86_64-linux]
-store_path = "${pkg.storePath}"
-nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-nar_size = 1024
-download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-download_size = 512
-closure_size = 2048
-source_drv = ""
-source_nar_hash = ""
-references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
-PKGEOF
+                  [versions.platforms.x86_64-linux]
+                  store_path = "${pkg.storePath}"
+                  nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                  nar_size = 1024
+                  download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+                  download_size = 512
+                  closure_size = 2048
+                  source_drv = ""
+                  source_nar_hash = ""
+                  references = [${builtins.concatStringsSep ", " (builtins.map (r: "\"${r}\"") (pkg.references or []))}]
+                  PKGEOF
                 ''
-              ) packages
+              )
+              packages
             )}
 
             cd $out
@@ -228,50 +229,53 @@ PKGEOF
   };
 
   # Preamble
-  mkKernelPreamble = { registryPath, stateJson }: ''
-    export HOME=/tmp/home
-    mkdir -p $HOME/.config/apm/registries.d
-    mkdir -p $HOME/.local/share/apm/registries
-    mkdir -p $HOME/.local/share/apm/remote
-    mkdir -p $HOME/.cache/apm
-    mkdir -p /var/lib/profiles/system
-    mkdir -p /var/lib/apm/remote
-    mkdir -p /var/lib/apm/registries
-    mkdir -p /etc/apm/registries.d
+  mkKernelPreamble = {
+    registryPath,
+    stateJson,
+  }: ''
+        export HOME=/tmp/home
+        mkdir -p $HOME/.config/apm/registries.d
+        mkdir -p $HOME/.local/share/apm/registries
+        mkdir -p $HOME/.local/share/apm/remote
+        mkdir -p $HOME/.cache/apm
+        mkdir -p /var/lib/profiles/system
+        mkdir -p /var/lib/apm/remote
+        mkdir -p /var/lib/apm/registries
+        mkdir -p /etc/apm/registries.d
 
-    cp -r ${registryPath} /var/lib/apm/registries/test
-    chmod -R u+w /var/lib/apm/registries/test
+        cp -r ${registryPath} /var/lib/apm/registries/test
+        chmod -R u+w /var/lib/apm/registries/test
 
-    cat > /etc/apm/registries.d/test.toml << 'CFGEOF'
-[registry]
-name = "test"
-url = "file:///var/lib/apm/registries/test"
-priority = 500
-enabled = true
-CFGEOF
+        cat > /etc/apm/registries.d/test.toml << 'CFGEOF'
+    [registry]
+    name = "test"
+    url = "file:///var/lib/apm/registries/test"
+    priority = 500
+    enabled = true
+    CFGEOF
 
-    ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
-    ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
+        ln -sfn /var/lib/apm/registries/test /var/lib/apm/remote/test
+        ln -sfn /var/lib/apm/registries/test $HOME/.local/share/apm/remote/test
 
-    echo '${stateJson}' > /var/lib/profiles/system/state.json
+        echo '${stateJson}' > /var/lib/profiles/system/state.json
 
-    # Create mock kexec and systemctl commands that log their invocations
-    # instead of actually rebooting
-    mkdir -p /tmp/mock-bin
-    printf '%s\n' '#!/bin/sh' 'echo "MOCK-KEXEC: $@" >> /tmp/kexec-invocations.log' 'echo "kexec: $@"' 'exit 0' > /tmp/mock-bin/kexec
-    chmod +x /tmp/mock-bin/kexec
+        # Create mock kexec and systemctl commands that log their invocations
+        # instead of actually rebooting
+        mkdir -p /tmp/mock-bin
+        printf '%s\n' '#!/bin/sh' 'echo "MOCK-KEXEC: $@" >> /tmp/kexec-invocations.log' 'echo "kexec: $@"' 'exit 0' > /tmp/mock-bin/kexec
+        chmod +x /tmp/mock-bin/kexec
 
-    printf '%s\n' '#!/bin/sh' 'echo "MOCK-SYSTEMCTL: $@" >> /tmp/systemctl-invocations.log' 'echo "systemctl: $@"' 'exit 0' > /tmp/mock-bin/systemctl
-    chmod +x /tmp/mock-bin/systemctl
+        printf '%s\n' '#!/bin/sh' 'echo "MOCK-SYSTEMCTL: $@" >> /tmp/systemctl-invocations.log' 'echo "systemctl: $@"' 'exit 0' > /tmp/mock-bin/systemctl
+        chmod +x /tmp/mock-bin/systemctl
 
-    printf '%s\n' '#!/bin/sh' 'echo "MOCK-SYNC" >> /tmp/sync-invocations.log' 'exit 0' > /tmp/mock-bin/sync
-    chmod +x /tmp/mock-bin/sync
+        printf '%s\n' '#!/bin/sh' 'echo "MOCK-SYNC" >> /tmp/sync-invocations.log' 'exit 0' > /tmp/mock-bin/sync
+        chmod +x /tmp/mock-bin/sync
 
-    # Prepend mock binaries to PATH
-    export PATH="/tmp/mock-bin:$PATH"
+        # Prepend mock binaries to PATH
+        export PATH="/tmp/mock-bin:$PATH"
 
-    # Create boot loader entry directory
-    mkdir -p /boot/loader/entries
+        # Create boot loader entry directory
+        mkdir -p /boot/loader/entries
   '';
 
   # State with v1 installed (kernel v1)
@@ -307,16 +311,14 @@ CFGEOF
       }
     ];
   };
-
-in
-{
+in {
   # --------------------------------------------------------------------------
   # Test 1: kernel-advisory
   # --------------------------------------------------------------------------
   # Default mode: advise reboot when kernel changed, don't actually reboot
   kernel-advisory = testing.mkVMTest {
     name = "apm-kernel-advisory";
-    rootfsDeps = testDeps ++ [ registryKV2 toplevelKV1 toplevelKV2 ];
+    rootfsDeps = testDeps ++ [registryKV2 toplevelKV1 toplevelKV2];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
@@ -372,7 +374,7 @@ in
   # --kexec flag: kexec -l + kexec -e when kernel changed
   kernel-kexec = testing.mkVMTest {
     name = "apm-kernel-kexec";
-    rootfsDeps = testDeps ++ [ registryKV2 toplevelKV1 toplevelKV2 ];
+    rootfsDeps = testDeps ++ [registryKV2 toplevelKV1 toplevelKV2];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
@@ -413,7 +415,7 @@ in
   # --reboot flag: systemctl reboot after activation
   kernel-reboot = testing.mkVMTest {
     name = "apm-kernel-reboot";
-    rootfsDeps = testDeps ++ [ registryKV2 toplevelKV1 toplevelKV2 ];
+    rootfsDeps = testDeps ++ [registryKV2 toplevelKV1 toplevelKV2];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
@@ -454,7 +456,7 @@ in
   # --live flag: update bootloader but don't reboot, stage for next boot
   kernel-live = testing.mkVMTest {
     name = "apm-kernel-live";
-    rootfsDeps = testDeps ++ [ registryKV2 toplevelKV1 toplevelKV2 ];
+    rootfsDeps = testDeps ++ [registryKV2 toplevelKV1 toplevelKV2];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
@@ -502,7 +504,7 @@ in
   # When kernel is the same, no kernel handling should trigger
   kernel-unchanged = testing.mkVMTest {
     name = "apm-kernel-unchanged";
-    rootfsDeps = testDeps ++ [ registryKV1b toplevelKV1 toplevelKV1b ];
+    rootfsDeps = testDeps ++ [registryKV1b toplevelKV1 toplevelKV1b];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {
@@ -554,7 +556,7 @@ in
   # --drain flag executes the toplevel's drain script before kernel switch
   kernel-drain = testing.mkVMTest {
     name = "apm-kernel-drain";
-    rootfsDeps = testDeps ++ [ registryKV2Drain toplevelKV1 toplevelKV2Drain ];
+    rootfsDeps = testDeps ++ [registryKV2Drain toplevelKV1 toplevelKV2Drain];
     memory = 1024;
     testScript = ''
       ${mkKernelPreamble {

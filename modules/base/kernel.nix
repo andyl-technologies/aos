@@ -13,16 +13,14 @@
   pkgs,
   lib,
   ...
-}:
-let
+}: let
   cfg = config.aos.kernel;
 
   # Format sysctl settings as a sysctl.d(5) drop-in file.
   sysctlText = builtins.concatStringsSep "\n" (
     lib.mapAttrsToList (key: value: "${key} = ${value}") cfg.sysctl
   );
-in
-{
+in {
   options.aos.kernel = {
     ## Enable TCP BBR congestion control.
     bbr = lib.mkOption {
@@ -58,9 +56,16 @@ in
         # -- Network performance --
         "net.core.somaxconn" = "32768";
         "net.core.netdev_max_backlog" = "16384";
+        # Socket buffer ceilings for high-throughput network services.
+        "net.core.rmem_max" = "7500000";
+        "net.core.wmem_max" = "7500000";
 
         # -- Virtual memory --
         "vm.swappiness" = "10";
+        # Raise the mmap region ceiling so apps that map many regions
+        # (modern games, large JVMs, container runtimes) don't hit
+        # ENOMEM from the default 65530 limit.
+        "vm.max_map_count" = "1048576";
 
         # -- Filesystem watches (IDEs, file sync, container runtimes) --
         "fs.inotify.max_user_instances" = "8192";
@@ -80,7 +85,7 @@ in
     ## Kernel modules to load at boot.
     modules = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ ];
+      default = [];
       description = ''
         Kernel modules to load at boot. Written to
         /etc/modules-load.d/aos-kernel.conf and loaded by
