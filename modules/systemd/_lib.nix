@@ -121,13 +121,9 @@
 
   # Port of nixpkgs' `lib.strings.escapeC`: for every character in
   # `charsToEscape`, replace it with `\xNN` (lowercase hex) in `s`.
+  # We only need the subset of ASCII that systemd path escaping touches,
+  # so a small lookup table is enough. Values are lowercase two-digit hex.
   escapeC = charsToEscape: s: let
-    toHex = c: let
-      n = builtins.substring 0 1 "${builtins.toString (builtins.elemAt [0 1 2 3 4 5 6 7 8 9] c)}";
-    in
-      n;
-    # We only need the subset of ASCII that systemd path escaping touches,
-    # so a small lookup table is enough. Values are lowercase two-digit hex.
     hexTable = {
       " " = "20";
       "!" = "21";
