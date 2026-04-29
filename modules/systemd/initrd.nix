@@ -3,11 +3,13 @@
 ##! Declares the typed `boot.initrd.systemd.*` option tree for the
 ##! systemd-based initrd and produces `system.build.initrd` by
 ##! rendering the options through the stage-1 `*-ToUnit` helpers in
-##! `_lib.nix` and piping the result through `generateUnits` and then
-##! into the cpio assembler in `../base/initrd-builder.nix`.
+##! `lib/modules/systemd/lib.nix` and piping the result through
+##! `generateUnits` and then into the cpio assembler in
+##! `../base/initrd-builder.nix`.
 ##!
-##! Uses the `stage1*` option + type variants from `_unit-options.nix`
-##! / `_types.nix`, so modules that contribute initrd units declare
+##! Uses the `stage1*` option + type variants from
+##! `lib/modules/systemd/unit-options.nix` / `lib/modules/systemd/types.nix`,
+##! so modules that contribute initrd units declare
 ##! them with real per-option validation exactly like stage-2 services.
 ##! The stage-1 option trees drop the switch-to-configuration knobs
 ##! (`startAt`, `restartIfChanged`, ...) and otherwise mirror the
@@ -30,11 +32,11 @@
   pkgs,
   ...
 }: let
-  systemdLib = import ./_lib.nix {inherit lib pkgs;};
-  systemdUnitOptions = import ./_unit-options.nix {
+  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
+  systemdUnitOptions = import ../../lib/modules/systemd/unit-options.nix {
     inherit lib systemdLib;
   };
-  systemdTypes = import ./_types.nix {
+  systemdTypes = import ../../lib/modules/systemd/types.nix {
     inherit lib systemdLib systemdUnitOptions;
   };
 
@@ -165,7 +167,7 @@ in {
       # builder itself (it reads them directly from
       # `${systemd}/lib/systemd/system/`). `generateUnits` would look
       # under `$package/example/systemd/`, which AOS does not
-      # populate — see the TODO at `_lib.nix:510`.
+      # populate — see the TODO at `lib/modules/systemd/lib.nix:510`.
       upstreamUnits = [];
       upstreamWants = [];
       packages = [];

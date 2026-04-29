@@ -12,7 +12,7 @@
 ##! The toplevel build script below pulls them in as a single
 ##! `ln -s ${config.system.build.systemdSystemUnits} $out/etc/systemd/system`
 ##! line — the derivation behind `systemdSystemUnits` is assembled by
-##! the ported `generateUnits` function in modules/systemd/_lib.nix.
+##! the ported `generateUnits` function in lib/modules/systemd/lib.nix.
 {
   config,
   pkgs,

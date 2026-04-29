@@ -3,7 +3,7 @@
 ##! Declares the typed `systemd.*` option tree (services, timers, sockets,
 ##! targets, paths, slices, mounts, automounts, units, plus the package /
 ##! packages / globalEnvironment plumbing), wires `systemd.units` via the
-##! *-ToUnit rendering functions in `_lib.nix`, and produces
+##! *-ToUnit rendering functions in `lib/modules/systemd/lib.nix`, and produces
 ##! `system.build.systemdSystemUnits` — a derivation whose output is a
 ##! directory matching `/etc/systemd/system/`.
 ##!
@@ -18,11 +18,11 @@
   pkgs,
   ...
 }: let
-  systemdLib = import ./_lib.nix {inherit lib pkgs;};
-  systemdUnitOptions = import ./_unit-options.nix {
+  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
+  systemdUnitOptions = import ../../lib/modules/systemd/unit-options.nix {
     inherit lib systemdLib;
   };
-  systemdTypes = import ./_types.nix {
+  systemdTypes = import ../../lib/modules/systemd/types.nix {
     inherit lib systemdLib systemdUnitOptions;
   };
 
@@ -33,7 +33,7 @@
   # Upstream nixpkgs bakes `cfg.globalEnvironment // def.environment` into
   # `serviceToUnit`, reading `cfg` through a closure over the whole NixOS
   # config. The AOS port moves that merge out here so the library in
-  # `_lib.nix` stays a pure function of its inputs, reusable for initrd
+  # `lib/modules/systemd/lib.nix` stays a pure function of its inputs, reusable for initrd
   # / nspawn / user units without re-parameterisation. Per-service
   # values still win over globals because `//` is right-biased and
   # `svc.environment` is on the right.
@@ -98,7 +98,7 @@ in {
         `systemd.services.<name>.environment`. Matches nixpkgs
         semantics: per-service values win over globals. Applied as a
         pre-merge step in this module (see the module source), rather
-        than inside `_lib.nix`, so the library stays a pure function
+        than inside `lib/modules/systemd/lib.nix`, so the library stays a pure function
         of its inputs.
       '';
     };

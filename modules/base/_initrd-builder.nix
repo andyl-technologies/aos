@@ -18,7 +18,7 @@
 ##!   7. Upstream systemd initrd units symlinked from ${systemd}/lib/systemd/
 ##!      system/ into /etc/systemd/system/. (AOS systemd ships units at
 ##!      lib/systemd/system/, not example/; generateUnits can't fold these
-##!      in automatically for initrd — see the TODO in _lib.nix:510.)
+##!      in automatically for initrd — see the TODO in lib/modules/systemd/lib.nix:510.)
 ##!   8. The output of `generateUnits` for the rendered initrd units —
 ##!      `boot.initrd.systemd.services` etc. resolved through the stage-1
 ##!      ToUnit renderers.
