@@ -64,12 +64,11 @@
       config = lib.mkOption {
         type = ignitionConfigType;
         description = ''
-          The ignition config as a Nix attrset. It is serialised to
-          JSON and delivered to the guest by the test harness — the
-          delivery channel (virtio-blk + localhost HTTP) is an
-          implementation detail. The guest-side plumbing is the
-          `aos-test-metadata.socket` initrd unit installed by
-          `modules/services/ignition.nix`.
+          The ignition config as a Nix attrset. The test harness
+          serialises it to JSON, packs it into an ISO9660 image
+          (volume label `aos-metadata`), and attaches it to the VM;
+          `aos-platform-detect.service` mounts it and points ignition
+          at the file via `IGNITION_CONFIG_FILE`.
         '';
       };
     };

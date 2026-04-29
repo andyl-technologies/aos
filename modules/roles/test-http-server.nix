@@ -57,7 +57,7 @@ in {
 
       # Integration test. The harness delivers
       # `instanceMetadata.config` over the ignition fetch path
-      # (virtio-blk + localhost HTTP — see `lib/testing/vm.nix`),
+      # (ISO9660 metadata disk — see `lib/testing/vm.nix`),
       # ignition applies it, stage 2 boots, and the agent runs each
       # `script` against the live system.
       system.checks.test-http-server = {
