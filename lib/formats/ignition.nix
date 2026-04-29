@@ -442,12 +442,33 @@
       else kept
     else v;
 
+  # `version` is required at the schema level (Ignition's
+  # `Config.Ignition.Version` is a non-pointer `string`). The factory's
+  # `version` arg gives every consumer a valid default — but the
+  # `ignitionMetaType` submodule only fires that default when an
+  # `ignition` definition reaches it. Callers that hand `generate` a
+  # value built via raw `//` (not through the submodule, e.g.
+  # `modules/roles/default.nix:168` composing `extras // { systemd = …; }`)
+  # would otherwise produce a JSON with no `ignition` field at all, and
+  # `ignition-validate` would reject it with "invalid config version
+  # (couldn't parse)". Inject the default here so every JSON `generate`
+  # emits is at minimum `{"ignition":{"version":"<version>"},...}`.
   pruneRoot = v: let
     p = prune v;
+    base =
+      if p == null
+      then {}
+      else p;
+    ignition = base.ignition or {};
   in
-    if p == null
-    then {}
-    else p;
+    base
+    // {
+      ignition =
+        ignition
+        // {
+          version = ignition.version or version;
+        };
+    };
 in {
   type = configType;
 
