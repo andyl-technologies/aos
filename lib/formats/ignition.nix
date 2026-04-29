@@ -451,6 +451,12 @@
 in {
   type = configType;
 
+  # Re-exported so the ignition-flavoured systemd lib at
+  # `lib/modules/ignition/systemd.nix` can reuse the format's
+  # submodule type for `dropins[]` without carrying a parallel
+  # declaration whose shape would have to be kept in lock-step.
+  inherit dropinType;
+
   # `generate name value` produces a derivation that materialises the
   # Ignition JSON and validates it with `ignition-validate`. Validation
   # at build time catches semantic errors (impossible partition sizing,
