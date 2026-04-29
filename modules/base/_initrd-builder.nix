@@ -39,6 +39,7 @@
   kernelModules,
   initrdUnits,
   maskedUnits ? [],
+  ignitionRoles,
 }: let
   inherit
     (pkgs)
@@ -345,7 +346,10 @@ in
     exportReferencesGraph =
       lib.concatLists
       (lib.imap (i: p: ["closure-${toString i}" p]) initrdPackages)
-      ++ ["closure-initrd-units" initrdUnits];
+      ++ [
+        "closure-initrd-units" initrdUnits
+        "closure-ignition-roles" ignitionRoles
+      ];
 
     phases = [
       {
@@ -457,6 +461,15 @@ in
           if [ -d ${initrdUnits} ]; then
             cp -a ${initrdUnits}/. root/etc/systemd/system/ || true
           fi
+
+          # ── 7b. Ignition role bundle ───────────────────────────────────
+          # Stable initrd path /etc/aos/ignition-roles → bundle drv. Userdata
+          # uses `file:///etc/aos/ignition-roles/<role-name>` as the merge
+          # source for first-boot. The bundle's contents (one entry per role)
+          # are walked at runtime by ignition's resource fetcher; we only
+          # install the top-level symlink here.
+          mkdir -p root/etc/aos
+          ln -sfn ${ignitionRoles} root/etc/aos/ignition-roles
 
           # ── 8. Masked units ─────────────────────────────────────────────
           chmod u+w root/etc/systemd/system

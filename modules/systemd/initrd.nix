@@ -179,6 +179,7 @@ in {
       kernelModules = config.aos.boot.initrd.modules;
       initrdUnits = config.system.build.systemdInitrdUnits;
       maskedUnits = cfg.maskedUnits;
+      ignitionRoles = config.system.build.ignitionRolesBundle;
     };
   };
 }

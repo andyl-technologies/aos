@@ -227,12 +227,88 @@
     }
   ];
 in {
-  options.aos.roles = lib.mkOption {
-    type = lib.types.attrsOf roleType;
-    default = {};
+  options = {
+    aos.roles = lib.mkOption {
+      type = lib.types.attrsOf roleType;
+      default = {};
+    };
+
+    system.build.ignitionRolesBundle = lib.mkOption {
+      type = lib.types.package;
+      description = ''
+        Derivation whose output is a flat directory of `<role-name>`
+        symlinks, one per `aos.roles.<name>`, each pointing at the
+        role's pre-validated Ignition JSON inside its own
+        `ignitionConfigDrv`. Consumed by the cpio assembler in
+        `modules/base/_initrd-builder.nix` (which symlinks
+        `/etc/aos/ignition-roles → ${"\${ignitionRolesBundle}"}`
+        inside the initrd) and by `environment.etc."aos/ignition-roles"`
+        below (which surfaces the same path in stage-2 /etc).
+      '';
+    };
   };
 
-  config.assertions =
-    lib.concatLists
-    (lib.mapAttrsToList roleAssertions config.aos.roles);
+  config = {
+    assertions =
+      lib.concatLists
+      (lib.mapAttrsToList roleAssertions config.aos.roles);
+
+    # Bundle: a single derivation whose `$out` is a flat directory of
+    # `<role-name>` symlinks pointing at each role's pre-validated JSON.
+    # Stable filename per role (the role's name) → operator-visible URL
+    # `file:///etc/aos/ignition-roles/<role-name>` is rebuild-stable
+    # even though the bundle drv's hash isn't.
+    #
+    # Empty-roles edge case: `lib.mapAttrsToList` over an empty attrset
+    # produces `[]`, the `for`-equivalent loop emits no `ln` lines, and
+    # the resulting derivation is an empty directory. That is correct:
+    # a host with no roles defined still gets a working symlink target,
+    # just one with nothing inside.
+    #
+    # Closure tracking note: Nix scans the bundle drv's `$out` for
+    # `/nix/store/...` substrings to compute its references. The
+    # symlinks we lay down contain those store paths as their target
+    # text, so each role's `ignitionConfigDrv` is pulled into the
+    # bundle's closure transparently. The initrd-builder's
+    # `exportReferencesGraph` addition then drags the whole closure into
+    # the initrd's `/nix/store`. If this derivation ever changes from
+    # "directory of symlinks" to something that doesn't embed target
+    # paths as text (e.g. a tar archive), the closure-tracking has to
+    # be re-established explicitly via `runtimeDeps` or similar.
+    system.build.ignitionRolesBundle = pkgs.mkDerivation {
+      pname = "aos-ignition-roles-bundle";
+      version = "0";
+      src = null;
+      buildDeps = [pkgs.coreutils];
+      phases = [
+        {
+          name = "assemble";
+          script = ''
+            mkdir -p "$out"
+            ${lib.concatStringsSep "\n" (
+              lib.mapAttrsToList (
+                name: role:
+                  "ln -sfn ${role.ignitionConfigDrv}/${name} \"$out/${name}\""
+              )
+              config.aos.roles
+            )}
+          '';
+        }
+      ];
+    };
+
+    # Stage-2 mirror at /etc/aos/ignition-roles → bundle. Same /nix/store
+    # path is reachable from both initrd and stage-2; this `environment.etc`
+    # entry installs the same symlink into the system /etc tree at toplevel
+    # build time (see modules/base/build.nix:23 for how `source` entries
+    # are realised).
+    #
+    # Operator value: post-boot `cat /etc/aos/ignition-roles/<role>` works
+    # for inspection without duplicating bytes — the file content lives
+    # once, in the role's `ignitionConfigDrv` output, and both paths are
+    # symlinks to it.
+    environment.etc."aos/ignition-roles" = {
+      source = config.system.build.ignitionRolesBundle;
+    };
+  };
 }

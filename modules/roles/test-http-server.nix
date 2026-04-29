@@ -65,7 +65,11 @@ in {
 
         instanceMetadata = {
           format = "ignition";
-          config = cfg.ignitionConfig;
+          config = {
+            ignition.config.merge = [
+              {source = "file:///etc/aos/ignition-roles/test-http-server";}
+            ];
+          };
         };
 
         checks = [
@@ -128,6 +132,35 @@ in {
                 "curl -s http://127.0.0.1:8000/" \
                 "Directory listing for /" \
                 "http.server should serve the root index over loopback"
+            '';
+          }
+          {
+            name = "stage-2-mirror-readable";
+            description = "stage-2 /etc/aos/ignition-roles/<role> resolves to the role JSON ignition fetched";
+            script = ''
+              # The bundle's filename for each role is the role's name
+              # (no extension). `test -f` follows symlinks, so this
+              # asserts the chain
+              # /etc/aos/ignition-roles/test-http-server →
+              # bundle/test-http-server →
+              # ignitionConfigDrv/test-http-server resolves to a
+              # regular file. A regression in
+              # `system.build.ignitionRolesBundle` (e.g. a stray broken
+              # symlink) would fire here with a clear failure instead
+              # of an opaque ignition-fetch error on next boot.
+              assert_success \
+                "test -f /etc/aos/ignition-roles/test-http-server" \
+                "stage-2 /etc/aos/ignition-roles/test-http-server should be a regular file (resolved through the bundle symlink)"
+              # The role's serialised JSON contains the unit name
+              # verbatim — the renderer in lib/modules/ignition/systemd.nix
+              # emits `name = "test-http-server.service"` into
+              # `units[].name`. Loose-by-design: we only check that the
+              # marker string is present, not that the full JSON
+              # structure round-trips.
+              assert_output_contains \
+                "cat /etc/aos/ignition-roles/test-http-server" \
+                "test-http-server.service" \
+                "stage-2 mirror should expose the role's serialised ignition config"
             '';
           }
         ];
