@@ -299,75 +299,7 @@ in {
           RemainAfterExit = true;
           BindPaths = "/sysroot/var/etc:/sysroot/etc";
         };
-        script = ''
-          set -euo pipefail
-
-          preset=/sysroot/etc/systemd/system-preset/20-ignition.preset
-          units=/sysroot/etc/systemd/system
-
-          # Parse one unit's `[Install]` section and emit the four
-          # symlink kinds. Lines outside the section are ignored;
-          # the section ends at the next `[…]` header or EOF.
-          apply_install() {
-            local unit_path="$1" unit_name="$2"
-            awk -v unit="$unit_name" -v dir="$units" '
-              BEGIN { in_install = 0 }
-              /^\[Install\]/  { in_install = 1; next }
-              /^\[/           { in_install = 0; next }
-              !in_install     { next }
-              /^Alias=/       { sub(/^Alias=/, ""); split($0, a, " ");
-                                for (i in a) print "alias", a[i] }
-              /^WantedBy=/    { sub(/^WantedBy=/, ""); split($0, a, " ");
-                                for (i in a) print "wants", a[i] }
-              /^RequiredBy=/  { sub(/^RequiredBy=/, ""); split($0, a, " ");
-                                for (i in a) print "requires", a[i] }
-              /^UpheldBy=/    { sub(/^UpheldBy=/, ""); split($0, a, " ");
-                                for (i in a) print "upholds", a[i] }
-            ' "$unit_path" | while read -r kind target; do
-              [ -z "$target" ] && continue
-              case "$kind" in
-                alias)
-                  ln -sfn "$unit_name" "$units/$target"
-                  ;;
-                wants|requires|upholds)
-                  mkdir -p "$units/$target.$kind"
-                  ln -sfn "../$unit_name" "$units/$target.$kind/$unit_name"
-                  ;;
-              esac
-            done
-          }
-
-          # Read the preset file: lines are `enable <unit>` or
-          # `disable <unit>` (we skip comments and blanks). For
-          # `disable`, removing pre-existing symlinks would mean
-          # walking [Install] on the on-disk unit; v1 leaves disable
-          # as a no-op since AOS doesn't ship pre-enabled image-time
-          # units that ignition would need to undo.
-          while IFS= read -r line || [ -n "$line" ]; do
-            case "$line" in
-              ""|"#"*) continue ;;
-            esac
-            set -- $line
-            action="$1"; name="''${2:-}"
-            [ -z "$name" ] && continue
-            case "$action" in
-              enable)
-                unit_path="$units/$name"
-                if [ ! -f "$unit_path" ]; then
-                  echo "aos-ignition-preset: preset enables $name but $unit_path does not exist" >&2
-                  continue
-                fi
-                apply_install "$unit_path" "$name"
-                ;;
-              disable)
-                : # no-op — see comment above
-                ;;
-              *)
-                echo "aos-ignition-preset: ignoring unknown preset directive '$action' for $name" >&2
-                ;;
-            esac
-          done < "$preset"
-        '';
+        script = builtins.readFile ./aos-ignition-preset.bash;
       };
 
       # Mount the /var partition created by ignition-disks so that
