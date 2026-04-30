@@ -8,7 +8,6 @@
 #   assertions = import ./assertions.nix { inherit (pkgs) aos-agent-rpc; };
 #   ... ${assertions.vmHelpers} ...
 #   ... ${assertions.fleetHelpers} ...
-#   ... ${assertions.fleetVsockHelpers} ...
 {aos-agent-rpc}: let
   rpc = "${aos-agent-rpc}/bin/aos-agent-rpc";
 
@@ -133,18 +132,6 @@ in {
       local cmd="$2"
       local sock_var="AGENT_SOCK_$machine"
       ${rpc} --driver qemu "''${!sock_var}" "$cmd"
-    }
-    ${fleetAssertions}
-  '';
-
-  # Shell helpers for fleet tests (Firecracker vsock driver).
-  # Expects VSOCK_UDS_<name> variables and jq in the environment.
-  fleetVsockHelpers = ''
-    run_on() {
-      local machine="$1"
-      local cmd="$2"
-      local uds_var="VSOCK_UDS_$machine"
-      ${rpc} --driver firecracker "''${!uds_var}" "$cmd"
     }
     ${fleetAssertions}
   '';
