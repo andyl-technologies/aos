@@ -117,23 +117,6 @@
         default = {};
       };
 
-      # Per-role bootstrap-time inputs the operator must fill. Typed
-      # via `lib.formats.json` — strict enough to reject anything
-      # `builtins.toJSON` can't round-trip, lets `aos-bootstrap` parse
-      # the schema directly without inventing its own format. Use
-      # nested attrsets to describe the expected shape.
-      userDataSchema = lib.mkOption {
-        type = jsonFormat.type;
-        default = {};
-        description = ''
-          Typed shape (key → expected type) describing the per-host
-          inputs `aos-bootstrap` fills before applying this role.
-          Conventional shape: an attrset where each leaf is a string
-          naming a primitive type (e.g. `{ apiserverEndpoint =
-          "string"; nodeIndex = "int"; }`).
-        '';
-      };
-
       # Computed: the ignition config to ship.
       ignitionConfig = lib.mkOption {
         type = ignitionFormat.type;
