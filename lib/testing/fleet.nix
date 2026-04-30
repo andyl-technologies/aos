@@ -39,12 +39,13 @@
   # without rescanning the output, so listing `%` first is safe — the
   # `%` we emit when escaping `\n` (→ `%0A`) does NOT trigger another
   # round of escaping. Covers every reserved char that arises in the
-  # content we synthesise here (hostnames, /etc/hosts, .network bodies);
-  # callers needing more should add to the lists in lockstep.
+  # content we synthesise here (hostnames, /etc/hosts, systemd unit
+  # bodies including `[Section]` headers); callers needing more
+  # should add to the lists in lockstep.
   uriEncode =
     builtins.replaceStrings
-    ["%" "\n" "#" "?" " " "&" "+" "="]
-    ["%25" "%0A" "%23" "%3F" "%20" "%26" "%2B" "%3D"];
+    ["%" "\n" "#" "?" " " "&" "+" "=" "[" "]"]
+    ["%25" "%0A" "%23" "%3F" "%20" "%26" "%2B" "%3D" "%5B" "%5D"];
   dataUrl = content: "data:,${uriEncode content}";
 
   mkFleetTest = spec: let
@@ -291,6 +292,16 @@
           # QEMU launch. The metadata ISO rides on a SCSI CD-ROM so the guest
           # sees /dev/sr0 with ISO9660 volume label `aos-metadata` —
           # exactly what aos-platform-detect.service probes for.
+          # `localaddr=127.0.0.1` on the mcast netdev binds the multicast
+          # socket to loopback. Without it QEMU asks the kernel to pick
+          # an outbound interface for 230.0.0.1, and the Nix sandbox's
+          # network namespace has only `lo` — which doesn't carry the
+          # IFF_MULTICAST flag — so the kernel rejects IP_ADD_MEMBERSHIP
+          # with "No such device". Pinning to 127.0.0.1 routes the
+          # mcast traffic through lo explicitly and works around the
+          # missing flag (no CAP_NET_ADMIN required to set it). Cross-
+          # process delivery between QEMU instances on the same host
+          # works as designed.
           qemu-system-x86_64 \
             -machine q35,accel=kvm \
             -cpu host \
@@ -309,7 +320,7 @@
             -chardev socket,id=agent,path="''${AGENT_SOCK_${mb.name}}",server=on,wait=off \
             -chardev socket,id=ttyS0,path="''${SERIAL_SOCK_${mb.name}}",server=off \
             -serial chardev:ttyS0 \
-            -netdev socket,id=net0,mcast=230.0.0.1:1234 \
+            -netdev socket,id=net0,mcast=230.0.0.1:1234,localaddr=127.0.0.1 \
             -device virtio-net-pci,netdev=net0,mac=${mb.mac} \
             -no-reboot \
               > "''${QEMU_LOG_${mb.name}}" 2>&1 &
