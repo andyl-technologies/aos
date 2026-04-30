@@ -31,7 +31,12 @@ in {
           enabled = true;
 
           serviceConfig = {
-            ExecStart = "${pkgs.python3}/bin/python3 -m http.server --bind 127.0.0.1 8000";
+            # Bind to all addresses so the same role works for both
+            # single-VM tests (curl http://127.0.0.1:8000/ over loopback)
+            # and fleet tests (peer machines curl http://server:8000/
+            # over the multicast L2). This is a test role; firewalling is
+            # not in scope.
+            ExecStart = "${pkgs.python3}/bin/python3 -m http.server --bind 0.0.0.0 8000";
             WorkingDirectory = "/";
             Restart = "on-failure";
             # Hardening — http.server reads /, writes nothing.
@@ -46,6 +51,12 @@ in {
 
     (lib.mkIf cfg.enable {
       aos.services.ignition.enable = true;
+
+      # Open 8000/tcp on the host firewall — required for fleet tests
+      # where peer machines reach this server over the multicast L2.
+      # Without it, the standard security level's default-deny INPUT
+      # chain drops inbound HTTP. No-op for single-VM loopback tests.
+      aos.firewall.allowedTCP = [8000];
 
       # The unit's ExecStart references ${pkgs.python3} (an absolute
       # store path). Ignition can write the unit but can't pull store
