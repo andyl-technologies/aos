@@ -1,32 +1,26 @@
-# lib/testing/vm.nix — Multi-driver VM test harness (Firecracker + QEMU)
+# lib/testing/vm.nix — Single-VM test harness (Firecracker only)
 #
 # Architecture:
 #   1. Build a rootfs ext4 image from the system's Nix store closure
 #      (uses mkfs.ext4 -d — no losetup/mount, sandbox-compatible)
-#   2. Boot a VM using either Firecracker (default) or QEMU
-#   3. Guest agent communicates over vsock (Firecracker) or virtio-serial (QEMU)
+#   2. Boot a Firecracker microVM
+#   3. Guest agent communicates over vsock
 #   4. Host sends commands, asserts on results
 #
-# Drivers:
-#   - "firecracker": Lightweight VMM, vsock communication, vmlinux kernel,
-#     JSON config file, ~125ms boot. Guest agent uses socat VSOCK-LISTEN.
-#   - "qemu": Full-featured VMM, virtio-serial communication, vmlinuz kernel,
-#     CLI flags. Guest agent reads /dev/virtio-ports/*.
+# Multi-VM tests live in lib/testing/fleet.nix and use QEMU (virtio-serial
+# transport, multicast L2 between guests). The two harnesses are deliberately
+# segregated by transport — vsock (Firecracker) here, virtio-serial (QEMU)
+# there — and don't share driver state.
 #
 # Requirements:
 #   - Kernel with built-in: VIRTIO, VIRTIO_PCI, VIRTIO_BLK, EXT4_FS,
-#     VIRTIO_CONSOLE, DEVTMPFS, DEVTMPFS_MOUNT, VIRTIO_VSOCKETS (Firecracker),
-#     VIRTIO_MMIO (Firecracker)
+#     VIRTIO_CONSOLE, DEVTMPFS, DEVTMPFS_MOUNT, VIRTIO_VSOCKETS, VIRTIO_MMIO
 #   - requiredSystemFeatures = [ "kvm" ] on the builder
 {
   pkgs,
   lib,
   testTools ? {},
 }: let
-  # QEMU is the sole host-tool exception (CLAUDE.md) — too complex to bootstrap.
-  # socat, jq, and firecracker are AOS packages built from source.
-  qemu = testTools.qemu;
-  hostSocat = pkgs.socat;
   hostJq = pkgs.jq;
   firecracker = pkgs.firecracker;
 
@@ -526,7 +520,6 @@
     testScript,
     rootfsDeps ? [],
     memory ? 256,
-    driver ? "firecracker",
   }: let
     rootfs = fcLib.mkFirecrackerRootfs {
       pname = name;
@@ -534,20 +527,11 @@
     };
     kernelPath = builtins.toString kernel;
 
-    headlessBuildDeps =
-      if driver == "firecracker"
-      then [
-        pkgs.coreutils
-        pkgs.grep
-        firecracker
-      ]
-      else if driver == "qemu"
-      then [
-        pkgs.coreutils
-        pkgs.grep
-        qemu
-      ]
-      else throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
+    headlessBuildDeps = [
+      pkgs.coreutils
+      pkgs.grep
+      firecracker
+    ];
 
     headlessFirecrackerScript = ''
       set -eu
@@ -630,73 +614,6 @@
         exit 1
       fi
     '';
-
-    headlessQemuScript = ''
-      set -eu
-
-      SERIAL_LOG="$TMPDIR/serial.log"
-      QEMU_LOG="$TMPDIR/qemu.log"
-      CONFIG="$TMPDIR/vm_config.json"
-
-      VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
-      if [ -z "$VMLINUZ" ]; then
-        echo "ERROR: No vmlinuz kernel image found in $KERNEL/boot/"
-        exit 1
-      fi
-
-      cp $ROOTFS rootfs.img
-      chmod u+w rootfs.img
-
-      echo "Kernel: $VMLINUZ"
-      echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
-      echo "Memory: ${builtins.toString memory} MiB"
-      ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
-
-      unset LD_LIBRARY_PATH || true
-
-      echo "==> Launching QEMU for test: ${name}"
-
-      qemu-system-x86_64 \
-        -machine q35,accel=kvm \
-        -cpu host \
-        -m ${builtins.toString memory} \
-        -smp 1 \
-        -nographic \
-        -kernel "$VMLINUZ" \
-        -append "root=/dev/vda ro console=ttyS0 init=/init panic=1 quiet" \
-        -drive file=rootfs.img,format=raw,if=virtio \
-        -no-reboot > "$SERIAL_LOG" 2>"$QEMU_LOG" || true
-
-      if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
-        echo ""
-        echo "==> TEST PASSED: ${name}"
-        mkdir -p $out
-        cp "$SERIAL_LOG" $out/serial.log
-        cp "$QEMU_LOG" $out/qemu.log 2>/dev/null || true
-        echo "PASS" > $out/result
-      elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
-        echo ""
-        echo "==> TEST FAILED: ${name}"
-        echo "--- serial.log ---"
-        cat "$SERIAL_LOG"
-        echo "--- qemu.log ---"
-        cat "$QEMU_LOG" 2>/dev/null || true
-        exit 1
-      else
-        echo ""
-        echo "==> ERROR: No test result marker found in serial output"
-        echo "--- serial.log ---"
-        cat "$SERIAL_LOG"
-        echo "--- qemu.log ---"
-        cat "$QEMU_LOG" 2>/dev/null || true
-        exit 1
-      fi
-    '';
-
-    headlessScript =
-      if driver == "firecracker"
-      then headlessFirecrackerScript
-      else headlessQemuScript;
   in
     pkgs.mkDerivation {
       pname = "aos-vm-test-${name}";
@@ -711,7 +628,7 @@
       phases = [
         {
           name = "test";
-          script = headlessScript;
+          script = headlessFirecrackerScript;
         }
       ];
 
@@ -726,7 +643,6 @@
   #   - Headless mode (rootfsDeps parameter): test script IS init, for package checks
   mkVMTest = {
     name,
-    driver ? "firecracker",
     # System mode (full systemd + agent):
     system ? null,
     groupName ? name,
@@ -750,7 +666,6 @@
             name
             testScript
             rootfsDeps
-            driver
             ;
           memory =
             if memory != null
@@ -810,24 +725,12 @@
           then memory
           else 2048;
 
-        # Driver-specific build dependencies
-        driverBuildDeps =
-          if driver == "firecracker"
-          then [
-            pkgs.coreutils
-            hostJq
-            firecracker
-            pkgs.aos-agent-rpc
-          ]
-          else if driver == "qemu"
-          then [
-            pkgs.coreutils
-            hostSocat
-            hostJq
-            qemu
-            pkgs.aos-agent-rpc
-          ]
-          else throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
+        driverBuildDeps = [
+          pkgs.coreutils
+          hostJq
+          firecracker
+          pkgs.aos-agent-rpc
+        ];
 
         # -----------------------------------------------------------------------
         # Firecracker driver test script (system mode)
@@ -960,7 +863,7 @@
           echo "vsock UDS ready."
 
           # Import shared test helpers (run_in_guest, assert_success, assert_output_contains).
-          ${assertions.vmFirecrackerHelpers}
+          ${assertions.vmHelpers}
 
           # Wait for guest agent using PING/PONG
           echo "Waiting for guest agent..."
@@ -1015,164 +918,6 @@
           cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
           echo "PASS" > $out/result
         '';
-
-        # -----------------------------------------------------------------------
-        # QEMU driver test script (system mode)
-        # -----------------------------------------------------------------------
-        qemuScript = ''
-          set -eu
-
-          AGENT_SOCK="$TMPDIR/agent.sock"
-          SERIAL_SOCK="$TMPDIR/serial.sock"
-          SERIAL_LOG="$TMPDIR/serial.log"
-
-          # Copy disk image to writable location
-          cp $DISK/disk.img disk.img
-          chmod u+w disk.img
-
-          # Copy the metadata ISO (when attached) to a writable location.
-          ${lib.optionalString hasMetadata ''
-            cp $METADATA/metadata.iso metadata.iso
-            chmod u+w metadata.iso
-          ''}
-
-          # Find the kernel image
-          VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
-          INITRD_IMG=$INITRD/initrd.img
-
-          # Pre-flight checks
-          QEMU_LOG="$TMPDIR/qemu.log"
-          echo "Driver: qemu"
-          echo "Kernel: $VMLINUZ"
-          echo "Initrd: $INITRD_IMG"
-          echo "Disk:   disk.img ($(ls -lh disk.img | awk '{print $5}'))"
-          ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
-
-          # Clear LD_LIBRARY_PATH — AOS build libs can conflict with QEMU
-          # (QEMU is the sole nixpkgs binary; socat/jq are AOS packages)
-          unset LD_LIBRARY_PATH
-
-          qemu-system-x86_64 --version || echo "QEMU version check failed"
-
-          # Serial console drain: socat listens on $SERIAL_SOCK and appends
-          # everything the guest writes to $SERIAL_LOG. -u makes it strictly
-          # one-way (socket → file), so any guest read from /dev/ttyS0 blocks
-          # on the socket — socat never writes back — matching the behavior
-          # of a real idle tty with no user typing. Must be up before QEMU
-          # connects as client, else early-boot output would be lost.
-          socat -u UNIX-LISTEN:"$SERIAL_SOCK",reuseaddr,fork \
-                   OPEN:"$SERIAL_LOG",creat,append &
-          DRAIN_PID=$!
-          SOCK_WAIT=0
-          while [ ! -S "$SERIAL_SOCK" ]; do
-            sleep 0.05
-            SOCK_WAIT=$((SOCK_WAIT + 1))
-            if [ "$SOCK_WAIT" -gt 100 ]; then
-              echo "ERROR: serial drain socket did not appear within 5s"
-              exit 1
-            fi
-          done
-
-          # Launch QEMU with direct kernel boot through the initrd. The
-          # -append cmdline replaces the image's built-in cmdline; no
-          # `ignition.platform.id=` or `ignition.config.url=` —
-          # aos-platform-detect infers qemu from DMI and mounts the
-          # metadata ISO when attached.
-          # Metadata ISO (when attached) rides on a SCSI CD-ROM so the
-          # guest sees it as /dev/sr0; blkid then picks up the ISO9660
-          # volume label `aos-metadata` for the detector.
-          qemu-system-x86_64 \
-            -machine q35,accel=kvm \
-            -cpu host \
-            -m ${builtins.toString effectiveMemory} \
-            -smp 2 \
-            -nographic \
-            -kernel "$VMLINUZ" \
-            -initrd "$INITRD_IMG" \
-            -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0" \
-            -drive file=disk.img,format=raw,if=virtio \
-            ${lib.optionalString hasMetadata ''
-            -drive id=metadata,file=metadata.iso,if=none,format=raw,readonly=on \
-            -device virtio-scsi-pci,id=scsi0 \
-            -device scsi-cd,drive=metadata,bus=scsi0.0 \
-          ''}
-            -device virtio-serial \
-            -device virtserialport,chardev=agent,name=aos.test.agent \
-            -chardev socket,id=agent,path="$AGENT_SOCK",server=on,wait=off \
-            -chardev socket,id=ttyS0,path="$SERIAL_SOCK",server=off \
-            -serial chardev:ttyS0 \
-            -no-reboot > "$QEMU_LOG" 2>&1 &
-          QEMU_PID=$!
-          echo "QEMU PID: $QEMU_PID"
-          sleep 2
-          if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-            echo "ERROR: QEMU exited immediately!"
-            echo "--- QEMU log ---"
-            cat "$QEMU_LOG" 2>/dev/null || true
-            exit 1
-          fi
-
-          cleanup() {
-            kill "$QEMU_PID" 2>/dev/null || true
-            wait "$QEMU_PID" 2>/dev/null || true
-            kill "$DRAIN_PID" 2>/dev/null || true
-            wait "$DRAIN_PID" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-
-          # Import shared test helpers (run_in_guest, assert_success, assert_output_contains)
-          ${assertions.vmHelpers}
-
-          # Wait for guest agent using PING/PONG
-          echo "Waiting for guest agent..."
-          START_TIME=$(date +%s)
-          DEADLINE=$((START_TIME + ${builtins.toString timeout}))
-          AGENT_READY=0
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            if [ -S "$AGENT_SOCK" ]; then
-              RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
-              if echo "$RESPONSE" | grep -q '"ready"'; then
-                echo "Guest agent ready."
-                AGENT_READY=1
-                break
-              fi
-            fi
-            sleep 0.5
-          done
-
-          if [ "$AGENT_READY" -ne 1 ]; then
-            echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
-            echo "--- QEMU log ---"
-            cat "$QEMU_LOG" 2>/dev/null || true
-            echo "--- Serial log ---"
-            cat "$SERIAL_LOG" 2>/dev/null || true
-            exit 1
-          fi
-
-          echo ""
-          echo "==> Running test: ${name}"
-          echo ""
-
-          ${composedScript}
-
-          echo ""
-          echo "Shutting down guest..."
-          run_in_guest "SHUTDOWN" || true
-          sleep 2
-          wait "$QEMU_PID" 2>/dev/null || true
-          trap - EXIT
-
-          echo ""
-          echo "==> All tests passed for: ${name}"
-          mkdir -p $out
-          cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
-          echo "PASS" > $out/result
-        '';
-
-        testPhaseScript =
-          if driver == "firecracker"
-          then firecrackerScript
-          else qemuScript;
       in
         pkgs.mkDerivation {
           pname = "aos-vm-test-${name}";
@@ -1189,7 +934,7 @@
           phases = [
             {
               name = "test";
-              script = testPhaseScript;
+              script = firecrackerScript;
             }
           ];
 
