@@ -218,39 +218,51 @@
       HANDLER
       chmod +x rootfs/opt/aos-test/bin/agent-handler
 
-      # ── Guest agent: auto-detect vsock vs virtio-serial, listen.
+      # ── Guest agent: auto-detect virtio-serial vs vsock, listen.
+      # Detection ORDER matters. The AOS kernel has CONFIG_VSOCKETS=y
+      # built-in (pkgs/kernel/config/drivers-vm.config), so /dev/vsock
+      # is created on every guest regardless of whether the host
+      # provided a virtio-vsock device. The virtio-serial port path
+      # (/dev/virtio-ports/aos.test.agent) only appears when QEMU
+      # actually attaches a virtserialport — making it the definitive
+      # "QEMU + virtio-serial harness" indicator. Check that first;
+      # only fall back to vsock when no virtio port shows up after a
+      # short wait (Firecracker's transport).
       cat > rootfs/opt/aos-test/bin/aos-test-agent << 'AGENT'
       #!/bin/sh
       set -u
       export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-      if [ -e /dev/vsock ]; then
+      AGENT_PORT=""
+      echo "aos-test-agent: probing transports..." >&2
+      TRIES=0
+      while [ -z "$AGENT_PORT" ] && [ "$TRIES" -lt 30 ]; do
+        if [ -e "/dev/virtio-ports/aos.test.agent" ]; then
+          AGENT_PORT="/dev/virtio-ports/aos.test.agent"
+          break
+        fi
+        if [ -e "/dev/vport0p1" ]; then
+          AGENT_PORT="/dev/vport0p1"
+          break
+        fi
+        TRIES=$((TRIES + 1))
+        sleep 0.1
+      done
+
+      if [ -z "$AGENT_PORT" ] && [ -e /dev/vsock ]; then
         # vsock mode (Firecracker) — listen on port 52; each host CONNECT
         # spawns a new agent-handler via socat EXEC.
         echo "aos-test-agent: vsock mode, listening on port 52" >&2
         exec socat VSOCK-LISTEN:52,reuseaddr,fork EXEC:/opt/aos-test/bin/agent-handler
       fi
 
-      # virtio-serial mode (QEMU)
-      AGENT_PORT=""
-      echo "aos-test-agent: waiting for virtio port..." >&2
-      TRIES=0
-      while [ -z "$AGENT_PORT" ]; do
-        if [ -e "/dev/virtio-ports/aos.test.agent" ]; then
-          AGENT_PORT="/dev/virtio-ports/aos.test.agent"
-        elif [ -e "/dev/vport0p1" ]; then
-          AGENT_PORT="/dev/vport0p1"
-        else
-          TRIES=$((TRIES + 1))
-          if [ $((TRIES % 50)) -eq 0 ]; then
-            echo "aos-test-agent: still waiting ($TRIES attempts)..." >&2
-            ls /dev/vport* 2>&1 >&2 || true
-            ls /dev/virtio-ports/ 2>&1 >&2 || true
-          fi
-          sleep 0.1
-        fi
-      done
-      echo "aos-test-agent: using port $AGENT_PORT" >&2
+      if [ -z "$AGENT_PORT" ]; then
+        echo "aos-test-agent: no transport found (no virtio port, no /dev/vsock)" >&2
+        ls /dev/vport* 2>&1 >&2 || true
+        ls /dev/virtio-ports/ 2>&1 >&2 || true
+        exit 1
+      fi
+      echo "aos-test-agent: virtio-serial mode, using port $AGENT_PORT" >&2
 
       while true; do
         cmd=$(head -1 "$AGENT_PORT" 2>/dev/null) || true
