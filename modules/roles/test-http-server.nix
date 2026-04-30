@@ -41,8 +41,6 @@ in {
             PrivateTmp = true;
           };
         };
-
-        userDataSchema = {}; # role takes no per-host input
       };
     }
 
