@@ -57,12 +57,22 @@
   #              dance on ro root.
   #   3  var   — 32 MiB ext4, empty. Label `var` via GPT partlabel so
   #              the production mount-var.service mounts it on every boot.
+  # `mkTestDisk` is a function of `system` only — two callers passing
+  # the same system reference the same Nix derivation, which is what
+  # lets fleet tests share one disk across every machine of a given
+  # variant.
+  #
+  # Per-instance state (hostname, /etc/hosts, eth0 .network) is no
+  # longer baked in here; the harnesses deliver it through ignition
+  # via the metadata ISO. The default `/etc.lower/hostname` written
+  # below is `aos-test` — at runtime, ignition's `/etc/hostname`
+  # write lands on the etc-overlay's upper layer (`/var/etc/hostname`)
+  # which shadows this lower-layer file. So the baked hostname is a
+  # fallback for tests that never deliver an instance identity, and
+  # the production-faithful identity flow shadows it when used.
   mkTestDisk = {
     system,
-    name ? "aos-test",
-    hostname ? "aos-test",
-    networkConfig ? null,
-    hostsEntries ? null,
+    name ? "aos-disk",
   }: let
     systemPackages = system.config.environment.systemPackages;
 
@@ -101,7 +111,12 @@
       SELINUXCFG
       fi
 
-      echo "${hostname}" > "rootfs/$ETC_TARGET/hostname"
+      # Default hostname goes into etc.lower (the overlay's lower
+      # layer). Ignition's `/etc/hostname` write lands on the upper
+      # layer at runtime and shadows this — so tests delivering a
+      # per-instance identity through ignition see the identity
+      # fragment's hostname; tests that don't see "aos-test".
+      echo "aos-test" > "rootfs/$ETC_TARGET/hostname"
       # Empty fstab — systemd-fstab-generator synthesizes sysroot.mount
       # from root= on the cmdline; mount-var.service handles /var.
       : > "rootfs/$ETC_TARGET/fstab"
@@ -113,27 +128,6 @@
       mkdir -p "rootfs/$ETC_TARGET/ssh"
       ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
         -f "rootfs/$ETC_TARGET/ssh/ssh_host_ed25519_key" </dev/null
-
-      ${
-        if hostsEntries != null
-        then ''
-          cat > "rootfs/$ETC_TARGET/hosts" << 'HOSTS'
-          127.0.0.1 localhost
-          ${hostsEntries}
-          HOSTS
-        ''
-        else ""
-      }
-      ${
-        if networkConfig != null
-        then ''
-          mkdir -p "rootfs/$ETC_TARGET/systemd/network"
-          cat > "rootfs/$ETC_TARGET/systemd/network/10-eth0.network" << 'NETCFG'
-          ${networkConfig}
-          NETCFG
-        ''
-        else ""
-      }
 
       cat > "rootfs/$ETC_TARGET/os-release" << 'OSREL'
       ID=aos
