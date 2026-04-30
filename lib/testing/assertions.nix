@@ -84,6 +84,33 @@
       fi
       echo "PASS: $desc"
     }
+
+    # Poll a command on a machine until it exits 0 or the deadline fires.
+    # 0.5s sleep between attempts. Bash arithmetic, not `date +%s` deltas,
+    # so the function is cheap to call from a tight loop.
+    wait_until_succeeds_on() {
+      local machine="$1"
+      local cmd="$2"
+      local timeout="$3"
+      local desc="''${4:-[$machine] $cmd succeeds within ''${timeout}s}"
+      local start
+      start=$(date +%s)
+      local deadline=$((start + timeout))
+      while [ "$(date +%s)" -lt "$deadline" ]; do
+        RESULT=$(run_on "$machine" "$cmd" 2>/dev/null || true)
+        EXIT_CODE=$(echo "$RESULT" | jq -r '.exit_code' 2>/dev/null || echo "1")
+        if [ "$EXIT_CODE" = "0" ]; then
+          echo "PASS: $desc"
+          return 0
+        fi
+        sleep 0.5
+      done
+      echo "FAIL: $desc (timeout after ''${timeout}s)"
+      echo "  last exit_code: $EXIT_CODE"
+      echo "  last stdout: $(echo "$RESULT" | jq -r '.stdout' 2>/dev/null || true)"
+      echo "  last stderr: $(echo "$RESULT" | jq -r '.stderr' 2>/dev/null || true)"
+      return 1
+    }
   '';
 in {
   # Store path to the binary, for inline calls in vm.nix / fleet.nix.
