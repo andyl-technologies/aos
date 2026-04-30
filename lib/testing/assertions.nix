@@ -7,7 +7,6 @@
 # Usage (from vm.nix / fleet.nix):
 #   assertions = import ./assertions.nix { inherit (pkgs) aos-agent-rpc; };
 #   ... ${assertions.vmHelpers} ...
-#   ... ${assertions.vmFirecrackerHelpers} ...
 #   ... ${assertions.fleetHelpers} ...
 #   ... ${assertions.fleetVsockHelpers} ...
 {aos-agent-rpc}: let
@@ -90,18 +89,9 @@ in {
   # Store path to the binary, for inline calls in vm.nix / fleet.nix.
   rpcBin = rpc;
 
-  # Shell helpers for single-VM tests (QEMU virtio-serial driver).
-  # Expects $AGENT_SOCK and jq in the environment.
-  vmHelpers = ''
-    run_in_guest() {
-      ${rpc} --driver qemu "$AGENT_SOCK" "$1"
-    }
-    ${vmAssertions}
-  '';
-
   # Shell helpers for single-VM tests (Firecracker vsock driver).
   # Expects $VSOCK_UDS and jq in the environment.
-  vmFirecrackerHelpers = ''
+  vmHelpers = ''
     run_in_guest() {
       ${rpc} --driver firecracker "$VSOCK_UDS" "$1"
     }
