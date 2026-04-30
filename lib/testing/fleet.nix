@@ -1,249 +1,410 @@
-# lib/testing/fleet.nix — Multi-VM test orchestrator (QEMU-only)
+# lib/testing/fleet.nix — Multi-VM test orchestrator (QEMU-only).
 #
-# Boots multiple QEMU VMs connected via a shared multicast L2 segment.
-# Each machine has its own virtio-serial agent channel for independent
-# command execution.
+# Each machine boots through the production initrd path (stage-1 systemd
+# → ignition stages → switch-root → stage-2 systemd) with an aos-metadata
+# ISO9660 disk attached. Per-machine identity (hostname, /etc/hosts,
+# eth0 .network) ships in that ISO as ignition `storage.files` — the
+# rootfs disk is identical across every machine of a given system variant.
+# Inter-VM L2 is QEMU's `-netdev socket,mcast=…` transport — host-local
+# UDP multicast carrying Ethernet frames — so no host bridge or tap setup
+# is required. CAP_NET_ADMIN is not needed.
 #
-# Architecture:
-#   - Each machine gets a separate qemu-system-x86_64 process with its
-#     own agent channel (virtio-serial UNIX socket).
-#   - Machines are connected via QEMU's `-netdev socket,mcast=...`
-#     transport — host-local UDP multicast carrying Ethernet frames.
-#     No host bridge or tap setup; CAP_NET_ADMIN not required.
-#   - Static IPs assigned via systemd-networkd (192.168.50.0/24 subnet).
-#   - The test script uses run_on / assert_on / assert_output_on /
-#     wait_until_succeeds_on helpers from lib/testing/assertions.nix.
-#   - Direct kernel boot for each machine.
-#   - All machines are shut down after the test completes; trap covers
-#     failure paths.
-#
-# Single-VM tests use Firecracker (vsock RPC) via mkVMTest in
+# Drivers: QEMU only. Single-VM tests use Firecracker via mkVMTest in
 # lib/testing/vm.nix; the two harnesses are deliberately segregated by
-# transport and don't share driver state.
+# transport (vsock vs. virtio-serial) and don't share driver state.
 {
   pkgs,
   lib,
   testTools ? {},
 }: let
   vmLib = import ./vm.nix {inherit pkgs lib testTools;};
+  metadataLib = import ./metadata.nix {inherit pkgs lib;};
   assertions = import ./assertions.nix {inherit (pkgs) aos-agent-rpc;};
 
   qemu = testTools.qemu;
-  hostSocat = pkgs.socat;
-  hostJq = pkgs.jq;
 
-  mkFleetTest = {
-    name,
-    machines,
-    testScript,
-    timeout ? 300,
-  }: let
+  # ── MAC scheme (mirrors NixOS qemu-common.nix) ─────────────────────
+  # 52:54:00:12:<vlan>:<machine>. Vlan stays 0 in this revision; the
+  # encoding leaves room for a second L2 segment without resyncing
+  # callers. Two-hex-digit padding keeps the resulting string well-formed
+  # for both single- and double-digit numbers.
+  zeroPad = n:
+    if n > 255
+    then throw "fleet: machine number ${toString n} > 255"
+    else lib.optionalString (n < 16) "0" + lib.toHexString n;
+  mkMac = vlan: n: "52:54:00:12:${zeroPad vlan}:${zeroPad n}";
+
+  # ── Minimal URI encoder for ignition `data:` URLs ──────────────────
+  # builtins.replaceStrings scans the input and emits replacements
+  # without rescanning the output, so listing `%` first is safe — the
+  # `%` we emit when escaping `\n` (→ `%0A`) does NOT trigger another
+  # round of escaping. Covers every reserved char that arises in the
+  # content we synthesise here (hostnames, /etc/hosts, .network bodies);
+  # callers needing more should add to the lists in lockstep.
+  uriEncode =
+    builtins.replaceStrings
+    ["%" "\n" "#" "?" " " "&" "+" "="]
+    ["%25" "%0A" "%23" "%3F" "%20" "%26" "%2B" "%3D"];
+  dataUrl = content: "data:,${uriEncode content}";
+
+  mkFleetTest = spec: let
+    # spec is already validated against fleetSpecType by the discoverer
+    # — including the per-machine `roles` enum-against-`config.aos.roles`.
+    inherit (spec) name testScript timeout machines;
     machineNames = builtins.attrNames machines;
 
-    # Assign sequential IPs: 192.168.50.10, .11, .12, ...
+    # Per-machine derivation order — drives IP, MAC, banner ordering.
+    # `lib.imap` is the AOS lib's 0-indexed iterator (lib/lists.nix:97).
     machinesWithIndex =
-      lib.imap (i: mname: {
+      lib.imap (i: mname: let
+        m = machines.${mname};
+      in {
+        inherit (m) system roles instanceMetadata;
         name = mname;
-        machine = machines.${mname};
-        ip = "192.168.50.${builtins.toString (i + 10)}";
-        mac = machines.${mname}.mac or "52:54:00:00:00:${builtins.toString (i + 1)}";
+        ip = "192.168.50.${toString (i + 10)}";
+        mac = mkMac 0 (i + 1);
         index = i;
       })
       machineNames;
 
-    # Build /etc/hosts entries for all machines
-    hostsEntries = lib.concatStringsSep "\n" (builtins.map (m: "${m.ip} ${m.name}") machinesWithIndex);
+    # /etc/hosts entries seen by every machine — every guest sees every
+    # other guest by name. Test scripts use this implicitly
+    # (curl http://server:8000/).
+    hostsEntries =
+      lib.concatStringsSep "\n"
+      (builtins.map (m: "${m.ip} ${m.name}") machinesWithIndex);
 
-    # Build network config for a specific machine
-    mkNetworkConfig = m:
-      lib.concatStringsSep "\n" [
-        "[Match]"
-        "Name=eth0"
-        ""
-        "[Network]"
-        "Address=${m.ip}/24"
+    # ── Per-machine identity fragment (ignition) ───────────────────────
+    # Hostname, /etc/hosts, and the eth0 .network file. In production,
+    # the platform delivers equivalent fragments via cloud-init
+    # userdata or IPMI virtual media. Here the harness synthesises them
+    # from the fleet topology.
+    #
+    # The .network matches by `MACAddress=` (not `Name=eth0`) so the
+    # binding is robust against future changes in interface naming. With
+    # `net.ifnames=0` already in the kernel cmdline, the single virtio-net
+    # NIC is `eth0` deterministically — but matching by MAC is the level
+    # at which the policy actually wants to live.
+    fleetIdentityFragment = m: {
+      storage.files = [
+        {
+          path = "/etc/hostname";
+          mode = 420; # 0644
+          overwrite = true;
+          contents.source = dataUrl "${m.name}\n";
+        }
+        {
+          path = "/etc/hosts";
+          mode = 420;
+          overwrite = true;
+          contents.source = dataUrl ''
+            127.0.0.1 localhost
+            ${hostsEntries}
+          '';
+        }
+        {
+          path = "/etc/systemd/network/10-fleet-eth0.network";
+          mode = 420;
+          overwrite = true;
+          contents.source = dataUrl ''
+            [Match]
+            MACAddress=${m.mac}
+
+            [Network]
+            Address=${m.ip}/24
+          '';
+        }
       ];
+    };
 
-    # Build per-machine GPT disk images.
-    # Each machine boots through the production-like initrd path.
-    machineImages =
-      builtins.map (m: {
-        inherit m;
-        image = vmLib.mkTestDisk {
-          system = m.machine.system;
-          name = m.name;
+    # ── Compose final ignition for one machine ──────────────────────────
+    # Identity fragment is always present; role merges and user-supplied
+    # `instanceMetadata` are layered on top. Identity files use stable
+    # paths (`/etc/hostname`, `/etc/hosts`,
+    # `/etc/systemd/network/10-fleet-eth0.network`), so a user fragment
+    # that writes to any of those would produce a duplicate-`path` error
+    # at ignition-validate time. We catch it earlier — at evalModules
+    # time — with a useful message naming the offending paths.
+    composeIgnition = m: let
+      identity = fleetIdentityFragment m;
+      identityPaths = builtins.map (f: f.path) identity.storage.files;
+      roleMerges =
+        builtins.map
+        (r: {source = "file:///etc/aos/ignition-roles/${r}";})
+        m.roles;
+      userCfg =
+        if m.instanceMetadata != null
+        then m.instanceMetadata.config
+        else {};
+
+      # `storage` is `nullOr submodule` (lib/formats/ignition.nix:392)
+      # with default null — `userCfg.storage` exists but may BE null,
+      # so a literal `userCfg.storage or {}` would not catch it
+      # (`or` only catches missing-attr errors). Unwrap explicitly.
+      # `ignition` is a non-null submodule (default `{}`), so the same
+      # treatment isn't needed for the merge path.
+      maybeNull = x: default:
+        if x == null
+        then default
+        else x;
+      userStorage = maybeNull (userCfg.storage or null) {};
+
+      userMerges = ((userCfg.ignition or {}).config or {}).merge or [];
+      userFiles = userStorage.files or [];
+
+      collisions =
+        builtins.filter
+        (f: builtins.elem f.path identityPaths)
+        userFiles;
+    in
+      if collisions != []
+      then
+        throw ''
+          mkFleetTest '${name}': machine "${m.name}" instanceMetadata.config.storage.files
+          collides with the fleet identity fragment at path(s):
+            ${lib.concatStringsSep ", " (builtins.map (f: f.path) collisions)}
+          The identity fragment owns: ${lib.concatStringsSep ", " identityPaths}.
+          Pick a different path, or move the override into a role.
+        ''
+      else
+        userCfg
+        // {
+          # `merge` is reconstructed as `roleMerges ++ userMerges` — both
+          # contribute, role merges first. The collision check above only
+          # inspects `storage.files`; merge entries aren't path-scoped and
+          # are safe to concatenate.
+          ignition =
+            (userCfg.ignition or {})
+            // {
+              config =
+                ((userCfg.ignition or {}).config or {})
+                // {
+                  merge = roleMerges ++ userMerges;
+                };
+            };
+          storage =
+            userStorage
+            // {
+              files = identity.storage.files ++ userFiles;
+            };
         };
-        kernel = m.machine.system.config.system.build.kernel;
-        initrd = m.machine.system.config.system.build.initrd;
+
+    # ── Per-machine builds ─────────────────────────────────────────────
+    # `disk` is a function of `system` only — Nix dedups identical
+    # derivations, so two machines on the same system reference one disk.
+    # `metadataISO` is the only per-machine derivation.
+    machineBuilds =
+      builtins.map (m: {
+        inherit (m) name ip mac index system roles;
+        kernel = m.system.config.system.build.kernel;
+        initrd = m.system.config.system.build.initrd;
+        disk = vmLib.mkTestDisk {system = m.system;};
+        metadataISO = metadataLib.mkMetadataIso {
+          name = "${name}-${m.name}";
+          ignitionConfig = composeIgnition m;
+        };
       })
       machinesWithIndex;
 
-    driverBuildDeps = [
-      pkgs.coreutils
-      hostSocat
-      hostJq
-      qemu
-      pkgs.aos-agent-rpc
-    ];
-
+    # ============================================================
+    # Shell template
+    # ============================================================
+    # The script splices a per-machine block for launch, agent-wait, and
+    # shutdown. Per-machine shell variables follow the convention
+    # AGENT_SOCK_<name> / SERIAL_SOCK_<name> / SERIAL_LOG_<name> /
+    # QEMU_LOG_<name> / VMLINUZ_<name> / INITRD_<name> / QEMU_PID_<name>;
+    # the first one is required by assertions.fleetHelpers (§8).
     qemuScript = ''
       set -euo pipefail
 
       FLEET_DIR="$TMPDIR/fleet"
       mkdir -p "$FLEET_DIR"
 
-      # Clear LD_LIBRARY_PATH — AOS build libs can conflict with QEMU
+      # AOS build libs can conflict with QEMU's runtime linker.
       unset LD_LIBRARY_PATH
 
-      PIDS=""
-
-      # Cleanup handler: kill all QEMU processes
+      # PID tracking: separate arrays for QEMU and serial-drain processes.
+      # cleanup() walks both. The trap fires on any exit (success or
+      # failure); the happy path also drains explicitly before reaching it.
+      QEMU_PIDS=()
+      DRAIN_PIDS=()
       cleanup() {
-        for pid in $PIDS; do
-          kill "$pid" 2>/dev/null || true
-        done
+        for pid in "''${QEMU_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
+        for pid in "''${DRAIN_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
         wait 2>/dev/null || true
       }
       trap cleanup EXIT
 
-      # ----------------------------------------------------------
-      # Launch each machine
-      # ----------------------------------------------------------
-      ${lib.concatStringsSep "\n" (
-        builtins.map (
-          mi: let
-            m = mi.m;
-          in ''
-            echo "Starting machine: ${m.name} (role: ${m.machine.role or "worker"}, ip: ${m.ip})"
+      qemu-system-x86_64 --version >/dev/null \
+        || { echo "ERROR: qemu-system-x86_64 missing or non-functional"; exit 1; }
 
-            AGENT_SOCK_${m.name}="$FLEET_DIR/${m.name}-agent.sock"
-            SERIAL_SOCK_${m.name}="$FLEET_DIR/${m.name}-serial.sock"
-            SERIAL_LOG_${m.name}="$FLEET_DIR/${m.name}-serial.log"
+      # ============================================================
+      # Per-machine launch
+      # ============================================================
+      ${lib.concatMapStringsSep "\n" (mb: ''
+          echo ""
+          echo "==> Starting machine: ${mb.name} (ip=${mb.ip} mac=${mb.mac})"
 
-            # Copy disk image to writable location
-            cp "${mi.image}/disk.img" "$FLEET_DIR/${m.name}-disk.img"
-            chmod u+w "$FLEET_DIR/${m.name}-disk.img"
+          AGENT_SOCK_${mb.name}="$FLEET_DIR/${mb.name}-agent.sock"
+          SERIAL_SOCK_${mb.name}="$FLEET_DIR/${mb.name}-serial.sock"
+          SERIAL_LOG_${mb.name}="$FLEET_DIR/${mb.name}-serial.log"
+          QEMU_LOG_${mb.name}="$FLEET_DIR/${mb.name}-qemu.log"
 
-            # Find kernel image
-            VMLINUZ_${m.name}=$(ls ${mi.kernel}/boot/vmlinuz-* | head -1)
-            INITRD_${m.name}=${mi.initrd}/initrd.img
+          # Per-machine writable copy. The disk is shared across machines of
+          # this system variant (Nix dedups), but each VM needs a writable
+          # copy because qemu opens it rw. The metadata ISO is per-machine
+          # already; the local copy isolates the run from any read-side
+          # caching quirks with store files on certain filesystems.
+          cp "${mb.disk}/disk.img" "$FLEET_DIR/${mb.name}-disk.img"
+          chmod u+w "$FLEET_DIR/${mb.name}-disk.img"
+          cp "${mb.metadataISO}/metadata.iso" "$FLEET_DIR/${mb.name}-metadata.iso"
+          chmod u+w "$FLEET_DIR/${mb.name}-metadata.iso"
 
-            # Per-machine unidirectional serial drain — see vm.nix for the
-            # rationale (guest reads from /dev/ttyS0 must block, not EOF).
-            socat -u UNIX-LISTEN:"''${SERIAL_SOCK_${m.name}}",reuseaddr,fork \
-                     OPEN:"''${SERIAL_LOG_${m.name}}",creat,append &
-            PIDS="$PIDS $!"
-            SOCK_WAIT=0
-            while [ ! -S "''${SERIAL_SOCK_${m.name}}" ]; do
-              sleep 0.05
-              SOCK_WAIT=$((SOCK_WAIT + 1))
-              if [ "$SOCK_WAIT" -gt 100 ]; then
-                echo "ERROR: serial drain socket for ${m.name} did not appear within 5s"
-                exit 1
-              fi
-            done
+          VMLINUZ_${mb.name}=$(ls "${mb.kernel}/boot/vmlinuz-"* | head -1)
+          INITRD_${mb.name}="${mb.initrd}/initrd.img"
 
-            qemu-system-x86_64 \
-              -machine q35,accel=kvm \
-              -cpu host \
-              -m 2048 \
-              -smp 2 \
-              -nographic \
-              -kernel "''${VMLINUZ_${m.name}}" \
-              -initrd "''${INITRD_${m.name}}" \
-              -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0 net.ifnames=0" \
-              -drive file="$FLEET_DIR/${m.name}-disk.img",format=raw,if=virtio \
-              -device virtio-serial \
-              -device virtserialport,chardev=agent,name=aos.test.agent \
-              -chardev socket,id=agent,path="$AGENT_SOCK_${m.name}",server=on,wait=off \
-              -chardev socket,id=ttyS0,path="''${SERIAL_SOCK_${m.name}}",server=off \
-              -serial chardev:ttyS0 \
-              -netdev socket,id=net0,mcast=230.0.0.1:1234 \
-              -device virtio-net-pci,netdev=net0,mac=${m.mac} \
-              -no-reboot > "$FLEET_DIR/${m.name}-qemu.log" 2>&1 &
-            PIDS="$PIDS $!"
-          ''
-        )
-        machineImages
-      )}
+          # Preflight banner — failure to find vmlinuz/initrd surfaces here
+          # as a diagnostic, not as a cryptic qemu error 100ms later.
+          echo "  Driver:   qemu (fleet)"
+          echo "  Kernel:   ''${VMLINUZ_${mb.name}}"
+          echo "  Initrd:   ''${INITRD_${mb.name}}"
+          echo "  Disk:     $FLEET_DIR/${mb.name}-disk.img ($(ls -lh "$FLEET_DIR/${mb.name}-disk.img" | awk '{print $5}'))"
+          echo "  Metadata: $FLEET_DIR/${mb.name}-metadata.iso ($(ls -lh "$FLEET_DIR/${mb.name}-metadata.iso" | awk '{print $5}'))"
+          if [ -e /dev/kvm ]; then echo "  KVM: available"; else echo "  KVM: NOT available"; fi
 
-      sleep 2
+          # Serial drain — unidirectional listener appending to ${mb.name}-serial.log.
+          # Must be up before QEMU connects; the wait loop guards against early-
+          # boot output being lost. -u + OPEN-with-creat,append matches vm.nix.
+          socat -u UNIX-LISTEN:"''${SERIAL_SOCK_${mb.name}}",reuseaddr,fork \
+                   OPEN:"''${SERIAL_LOG_${mb.name}}",creat,append &
+          DRAIN_PIDS+=($!)
+          SOCK_WAIT=0
+          while [ ! -S "''${SERIAL_SOCK_${mb.name}}" ]; do
+            sleep 0.05
+            SOCK_WAIT=$((SOCK_WAIT + 1))
+            if [ "$SOCK_WAIT" -gt 100 ]; then
+              echo "ERROR: ${mb.name} serial drain socket did not appear within 5s"
+              exit 1
+            fi
+          done
 
-      # ----------------------------------------------------------
-      # Wait for all agents to become ready (PING/PONG)
-      # ----------------------------------------------------------
-      DEADLINE=$((SECONDS + ${builtins.toString timeout}))
-      ${lib.concatStringsSep "\n" (
-        builtins.map (mi: ''
-          echo "Waiting for ${mi.m.name}..."
-          while [ "$SECONDS" -lt "$DEADLINE" ]; do
-            if [ -S "''${AGENT_SOCK_${mi.m.name}}" ]; then
-              RESPONSE=$(${assertions.rpcBin} --driver qemu "''${AGENT_SOCK_${mi.m.name}}" "PING" || true)
+          # QEMU launch. The metadata ISO rides on a SCSI CD-ROM so the guest
+          # sees /dev/sr0 with ISO9660 volume label `aos-metadata` —
+          # exactly what aos-platform-detect.service probes for.
+          qemu-system-x86_64 \
+            -machine q35,accel=kvm \
+            -cpu host \
+            -m 2048 \
+            -smp 2 \
+            -nographic \
+            -kernel "''${VMLINUZ_${mb.name}}" \
+            -initrd "''${INITRD_${mb.name}}" \
+            -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0 net.ifnames=0" \
+            -drive file="$FLEET_DIR/${mb.name}-disk.img",format=raw,if=virtio \
+            -drive id=metadata,file="$FLEET_DIR/${mb.name}-metadata.iso",if=none,format=raw,readonly=on \
+            -device virtio-scsi-pci,id=scsi0 \
+            -device scsi-cd,drive=metadata,bus=scsi0.0 \
+            -device virtio-serial \
+            -device virtserialport,chardev=agent,name=aos.test.agent \
+            -chardev socket,id=agent,path="''${AGENT_SOCK_${mb.name}}",server=on,wait=off \
+            -chardev socket,id=ttyS0,path="''${SERIAL_SOCK_${mb.name}}",server=off \
+            -serial chardev:ttyS0 \
+            -netdev socket,id=net0,mcast=230.0.0.1:1234 \
+            -device virtio-net-pci,netdev=net0,mac=${mb.mac} \
+            -no-reboot \
+              > "''${QEMU_LOG_${mb.name}}" 2>&1 &
+          QEMU_PID_${mb.name}=$!
+          QEMU_PIDS+=($!)
+          sleep 0.2
+          if ! kill -0 "''${QEMU_PID_${mb.name}}" 2>/dev/null; then
+            echo "ERROR: QEMU for ${mb.name} exited immediately!"
+            echo "--- ${mb.name} qemu log ---"
+            cat "''${QEMU_LOG_${mb.name}}" 2>/dev/null || true
+            exit 1
+          fi
+        '')
+        machineBuilds}
+
+      # ============================================================
+      # Wait for every guest agent (PING/PONG via virtio-serial).
+      # ============================================================
+      # The kill -0 inside the loop is the load-bearing detail: if any QEMU
+      # exits during agent-wait, dump that machine's logs *now* and fail
+      # with context — not after the deadline fires with empty logs.
+      START_TIME=$(date +%s)
+      DEADLINE=$((START_TIME + ${toString timeout}))
+
+      ${assertions.fleetHelpers}
+
+      ${lib.concatMapStringsSep "\n" (mb: ''
+          echo "Waiting for ${mb.name} agent..."
+          AGENT_READY_${mb.name}=0
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            if ! kill -0 "''${QEMU_PID_${mb.name}}" 2>/dev/null; then
+              echo "ERROR: ${mb.name} (qemu) exited while waiting for its agent"
+              echo "--- ${mb.name} qemu log ---"
+              cat "''${QEMU_LOG_${mb.name}}" 2>/dev/null || true
+              echo "--- ${mb.name} serial log ---"
+              cat "''${SERIAL_LOG_${mb.name}}" 2>/dev/null || true
+              exit 1
+            fi
+            if [ -S "''${AGENT_SOCK_${mb.name}}" ]; then
+              RESPONSE=$(${assertions.rpcBin} --driver qemu "''${AGENT_SOCK_${mb.name}}" "PING" 2>/dev/null || true)
               if echo "$RESPONSE" | grep -q '"ready"'; then
-                echo "${mi.m.name} ready."
+                echo "${mb.name} agent ready."
+                AGENT_READY_${mb.name}=1
                 break
               fi
             fi
-            sleep 1
+            sleep 0.5
           done
+          if [ "''${AGENT_READY_${mb.name}}" -ne 1 ]; then
+            echo "TIMEOUT: ${mb.name} agent did not become ready within ${toString timeout}s"
+            echo "--- ${mb.name} serial log ---"
+            cat "''${SERIAL_LOG_${mb.name}}" 2>/dev/null || true
+            echo "--- ${mb.name} qemu log ---"
+            cat "''${QEMU_LOG_${mb.name}}" 2>/dev/null || true
+            exit 1
+          fi
         '')
-        machineImages
-      )}
+        machineBuilds}
 
-      if [ "$SECONDS" -ge "$DEADLINE" ]; then
-        echo "TIMEOUT: Not all machines became ready within ${builtins.toString timeout}s"
-        ${lib.concatStringsSep "\n" (
-        builtins.map (mi: ''
-          echo "--- ${mi.m.name} serial log ---"
-          cat "$SERIAL_LOG_${mi.m.name}" 2>/dev/null || true
-          echo "--- ${mi.m.name} qemu log ---"
-          cat "$FLEET_DIR/${mi.m.name}-qemu.log" 2>/dev/null || true
-        '')
-        machineImages
-      )}
-        exit 1
-      fi
-
-      # Import shared fleet test helpers (run_on, assert_on, assert_output_on)
-      ${assertions.fleetHelpers}
-
-      # ----------------------------------------------------------
-      # Run fleet test script
-      # ----------------------------------------------------------
+      # ============================================================
+      # Run the test script
+      # ============================================================
       echo ""
       echo "==> Running fleet test: ${name}"
       echo ""
 
       ${testScript}
 
-      # ----------------------------------------------------------
-      # Shutdown all machines
-      # ----------------------------------------------------------
+      # ============================================================
+      # Shutdown — happy path; the cleanup trap covers failure paths.
+      # ============================================================
       echo ""
       echo "Shutting down fleet..."
-      ${lib.concatStringsSep "\n" (
-        builtins.map (mi: ''
-          ${assertions.rpcBin} --driver qemu "''${AGENT_SOCK_${mi.m.name}}" "SHUTDOWN" || true
+      ${lib.concatMapStringsSep "\n" (mb: ''
+          ${assertions.rpcBin} --driver qemu "''${AGENT_SOCK_${mb.name}}" "SHUTDOWN" 2>/dev/null || true
         '')
-        machineImages
-      )}
+        machineBuilds}
       sleep 2
-      for pid in $PIDS; do
-        kill "$pid" 2>/dev/null || true
-      done
+      for pid in "''${QEMU_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
+      for pid in "''${DRAIN_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
       wait 2>/dev/null || true
       trap - EXIT
 
+      # ============================================================
+      # Result
+      # ============================================================
       echo ""
       echo "==> Fleet test passed: ${name}"
-      mkdir -p $out
-      echo "PASS" > $out/result
-      ${lib.concatStringsSep "\n" (
-        builtins.map (mi: ''
-          cp "$SERIAL_LOG_${mi.m.name}" "$out/${mi.m.name}-serial.log" 2>/dev/null || true
+      mkdir -p "$out"
+      echo "PASS" > "$out/result"
+      ${lib.concatMapStringsSep "\n" (mb: ''
+          cp "''${SERIAL_LOG_${mb.name}}" "$out/${mb.name}-serial.log" 2>/dev/null || true
+          cp "''${QEMU_LOG_${mb.name}}"   "$out/${mb.name}-qemu.log"   2>/dev/null || true
         '')
-        machineImages
-      )}
+        machineBuilds}
     '';
   in
     pkgs.mkDerivation {
@@ -251,7 +412,13 @@
       version = "0";
       src = null;
 
-      buildDeps = driverBuildDeps;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.socat
+        pkgs.jq
+        qemu
+        pkgs.aos-agent-rpc
+      ];
 
       phases = [
         {
