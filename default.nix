@@ -201,42 +201,43 @@
   fleetHarness = import ./lib/testing/fleet.nix {inherit pkgs lib testTools;};
 
   discoverFleetTests = let
-    # louis@2026-04-24: `systems/tests` contained tests for the k8s code that
-    # was half-migrated to k3s. I deleted it to keep Claude's context clean it.
-    # I was also thinking fleet tests should go under `tests/fleet`.
-    #
-    # entries = builtins.readDir ./systems/tests;
-    entries = {};
+    ignitionFormat = lib.formats.ignition {
+      inherit lib pkgs;
+      allowStorageHardware = false;
+    };
+    fleetSpec = import ./lib/testing/fleet-spec.nix {
+      inherit lib ignitionFormat;
+    };
+
+    entries = builtins.readDir ./tests/fleet;
     fleetFiles = builtins.filter (
-      name:
-        entries.${name}
+      n:
+        entries.${n}
         == "regular"
-        && builtins.match ".*\\.nix" name != null
-        && name != "default.nix"
-        && builtins.substring 0 1 name != "_"
+        && builtins.match ".*\\.nix" n != null
+        && builtins.substring 0 1 n != "_"
     ) (builtins.attrNames entries);
 
-    specs = map (name: import (./systems/tests + "/${name}") {inherit lib;}) fleetFiles;
-    fleetSpecs = builtins.filter (spec: (spec.type or "vm") == "fleet") specs;
+    loadSpec = filename: let
+      raw = (import (./tests/fleet + "/${filename}")) {
+        inherit lib pkgs;
+        systems = discoverSystems;
+      };
+      eval = lib.evalModules {
+        modules = [
+          {options.spec = lib.mkOption {type = fleetSpec.fleetSpecType;};}
+          {config.spec = raw;}
+        ];
+      };
+    in
+      eval.config.spec;
   in
     builtins.listToAttrs (
-      map (spec: {
-        name = spec.name;
-        value = fleetHarness.mkFleetTest {
-          name = spec.name;
-          machines =
-            builtins.mapAttrs (
-              mname: mspec: {
-                system = mkSystem (./systems + "/${mspec.system}.nix");
-                role = mspec.role or mname;
-              }
-            )
-            spec.machines;
-          testScript = spec.testScript;
-          timeout = spec.timeout or 300;
-        };
+      builtins.map (filename: {
+        name = lib.removeSuffix ".nix" filename;
+        value = fleetHarness.mkFleetTest (loadSpec filename);
       })
-      fleetSpecs
+      fleetFiles
     );
 in {
   inherit lib pkgs stdenv modules mkSystem;
