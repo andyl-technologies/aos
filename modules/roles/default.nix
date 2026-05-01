@@ -270,8 +270,7 @@ in {
             mkdir -p "$out"
             ${lib.concatStringsSep "\n" (
               lib.mapAttrsToList (
-                name: role:
-                  "ln -sfn ${role.ignitionConfigDrv}/${name} \"$out/${name}\""
+                name: role: "ln -sfn ${role.ignitionConfigDrv}/${name} \"$out/${name}\""
               )
               config.aos.roles
             )}

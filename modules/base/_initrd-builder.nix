@@ -347,8 +347,10 @@ in
       lib.concatLists
       (lib.imap (i: p: ["closure-${toString i}" p]) initrdPackages)
       ++ [
-        "closure-initrd-units" initrdUnits
-        "closure-ignition-roles" ignitionRoles
+        "closure-initrd-units"
+        initrdUnits
+        "closure-ignition-roles"
+        ignitionRoles
       ];
 
     phases = [
