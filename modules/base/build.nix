@@ -182,7 +182,34 @@ in {
                 # modules/systemd/system.nix's `generateUnits` call.
                 # Replaces the old renderUnit/renderTimer heredoc
                 # pipeline (spec v3.1 stage 4).
-                ln -sfn ${config.system.build.systemdSystemUnits} $out/etc/systemd/system
+                #
+                # Materialise as a real directory of symlinks rather
+                # than a single symlink to the system-units output.
+                # First-boot ignition writes role units to
+                # /var/etc/systemd/system/ (via the BindPaths in
+                # ignition-files.service), and etc-overlay-setup then
+                # mounts /etc as `lowerdir=/var/etc:/etc.lower`. If
+                # /etc.lower/systemd/system is a single symlink and
+                # /var/etc/systemd/system is a real directory, overlayfs
+                # can't merge the two — at a path where the lowers
+                # disagree on inode type, the higher-priority lower's
+                # type wins, so the entire system-units symlink target
+                # gets shadowed (sshd, dbus, networkd, chrony, nftables
+                # all become invisible). Materialising as a real
+                # directory of symlinks here keeps both lowers
+                # type-compatible and lets overlayfs do a proper
+                # name-by-name merge — the system's units stay visible
+                # alongside whatever the role's ignition merge added.
+                #
+                # `cp -RP` preserves both absolute symlinks (top-level
+                # units → /nix/store/<unit-text>/<name>.service) and
+                # relative symlinks (`*.wants/foo.service → ../foo.service`)
+                # because the directory layout under
+                # `${"\${systemdSystemUnits}"}` is reproduced exactly,
+                # and the wants/requires/upholds dirs themselves
+                # generateUnits already creates as real directories.
+                mkdir -p $out/etc/systemd/system
+                cp -RP ${config.system.build.systemdSystemUnits}/. $out/etc/systemd/system/
 
                 # Create system PATH manifest
                 cat > $out/etc/aos/system-path << 'PATHEOF'
