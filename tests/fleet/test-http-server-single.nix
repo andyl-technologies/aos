@@ -12,7 +12,7 @@
 # systems/server.nix turns on aos.profiles.debug.enable, and
 # modules/profiles/debug.nix flips aos.roles.test-http-server.enable =
 # true. That gate is what pulls pkgs.python3/pkgs.curl into the closure
-# and turns aos.services.ignition.enable on.
+# and adds the integration check.
 {
   lib,
   pkgs,
