@@ -192,13 +192,7 @@
   fleetHarness = import ./lib/testing/fleet.nix {inherit pkgs lib;};
 
   discoverFleetTests = let
-    ignitionFormat = lib.formats.ignition {
-      inherit lib pkgs;
-      allowStorageHardware = false;
-    };
-    fleetSpec = import ./lib/testing/fleet-spec.nix {
-      inherit lib ignitionFormat;
-    };
+    fleetSpec = import ./lib/testing/fleet-spec.nix {inherit lib pkgs;};
 
     entries = builtins.readDir ./tests/fleet;
     fleetFiles = builtins.filter (

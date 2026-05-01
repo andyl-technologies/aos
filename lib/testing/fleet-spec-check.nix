@@ -17,14 +17,7 @@
   pkgs,
   lib,
 }: let
-  ignitionFormat = lib.formats.ignition {
-    inherit lib pkgs;
-    allowStorageHardware = false;
-  };
-
-  fleetSpec = import ./fleet-spec.nix {
-    inherit lib ignitionFormat;
-  };
+  fleetSpec = import ./fleet-spec.nix {inherit lib pkgs;};
 
   # Stub system attrset shaped like what `discoverSystems` produces.
   # Only `config.aos.roles` is actually consulted by `fleetSpecType`'s
