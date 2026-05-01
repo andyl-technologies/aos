@@ -13,9 +13,14 @@
 # `config.system` has been merged from the user's definition.
 {
   lib,
-  ignitionFormat,
+  pkgs,
 }: let
   inherit (lib) types mkOption;
+
+  ignitionFormat = lib.formats.ignition {
+    inherit lib pkgs;
+    allowStorageHardware = false;
+  };
 
   # `types.unspecified` (nixpkgs name): a no-op type that accepts any
   # value with `lastValue` merge. AOS's lib doesn't ship one, so we
