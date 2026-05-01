@@ -5,9 +5,8 @@
 ##! The role's typed definition is unconditional — the image builder
 ##! may want to materialise its `ignitionConfigDrv` even on hosts
 ##! that don't locally activate it. Side effects (systemPackages,
-##! the integration check, flipping `aos.services.ignition.enable`)
-##! live behind `lib.mkIf cfg.enable`, so the file is inert on hosts
-##! whose profile didn't activate the role.
+##! the integration check) live behind `lib.mkIf cfg.enable`, so the
+##! file is inert on hosts whose profile didn't activate the role.
 {
   config,
   lib,
@@ -50,8 +49,6 @@ in {
     }
 
     (lib.mkIf cfg.enable {
-      aos.services.ignition.enable = true;
-
       # Open 8000/tcp on the host firewall — required for fleet tests
       # where peer machines reach this server over the multicast L2.
       # Without it, the standard security level's default-deny INPUT

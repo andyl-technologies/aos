@@ -23,13 +23,10 @@
 ##!                                    Ignition) before ignition-files
 ##!   - `etc-overlay-setup.service` — /etc overlay with /var/etc + /etc.lower
 {
-  config,
   pkgs,
   lib,
   ...
 }: let
-  cfg = config.aos.services.ignition;
-
   # Ignition shells out to external tools at each stage: `modprobe`,
   # `mount`/`umount`, `sgdisk`/`blkid`/`wipefs`, `mkfs.ext4`, etc.
   # It looks them up via $PATH. sbin lookups are covered by the
@@ -63,27 +60,7 @@
     StandardError = "journal+console";
   };
 in {
-  options.aos.services.ignition = {
-    ## Enable Ignition first-boot provisioning.
-    enable = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Enable Ignition first-boot provisioning. Ignition reads a JSON
-        configuration from its platform source and applies it atomically
-        during the initrd phase (partitioning, filesystem creation,
-        file writes). If Ignition fails the system does not boot — no
-        partially-configured machines.
-
-        The platform is auto-detected at initrd time by
-        aos-platform-detect.service (DMI-based with an ISO9660
-        operator override). No configuration required for standard
-        clouds; bare-metal installs fall through to the `metal` provider.
-      '';
-    };
-  };
-
-  config = lib.mkIf cfg.enable {
+  config = {
     # Ignition ships the binary in every stage-2 installation too so
     # operators can re-run or inspect state after first boot.
     environment.systemPackages = [pkgs.ignition];

@@ -608,8 +608,6 @@
   }:
     assert (instanceMetadata != null -> system != null)
     || throw "mkVMTest '${name}': instanceMetadata requires system mode (got rootfsDeps or neither)";
-    assert (instanceMetadata != null -> system.config.aos.services.ignition.enable)
-    || throw "mkVMTest '${name}': instanceMetadata requires aos.services.ignition.enable = true on the system under test";
       if rootfsDeps != null
       then
         mkHeadlessTest {

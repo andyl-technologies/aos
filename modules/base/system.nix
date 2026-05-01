@@ -93,8 +93,6 @@
           test harness attaches a second virtio-blk device carrying
           this JSON. Ignition runs on every test boot (metadata or
           not), but only consumes a config when this option is set.
-          The system under test must have
-          `aos.services.ignition.enable = true`.
         '';
       };
     };

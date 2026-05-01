@@ -34,9 +34,6 @@ in {
     aos.filesystems.rootFsType = lib.mkDefault "ext4";
     aos.filesystems.rootReadOnly = lib.mkDefault true;
 
-    # Provisioning: ignition in the initrd.
-    aos.services.ignition.enable = lib.mkDefault true;
-
     # Kernel modules for encrypted swap in stage 2.
     aos.kernel.modules = ["dm-crypt" "aes" "xts"];
 

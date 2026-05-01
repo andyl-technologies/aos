@@ -14,43 +14,35 @@
 ##! Storage targets /var/etc/<path> because it is the top lower layer of
 ##! the production /etc overlay — entries there shadow the same path in
 ##! /etc.lower, so the test can override a file the image baked in.
-{
-  config,
-  lib,
-  ...
-}: let
-  hasIgnition = config.aos.services.ignition.enable or false;
-in {
-  config = lib.mkIf hasIgnition {
-    system.checks.ignition-hostname = {
-      description = "ignition first-boot provisioning via ISO9660 metadata channel";
-      instanceMetadata = {
-        format = "ignition";
-        config = {
-          ignition.version = "3.5.0";
-          storage = {
-            directories = [{path = "/var/etc";}];
-            files = [
-              {
-                path = "/var/etc/hostname";
-                mode = 420; # 0644
-                overwrite = true;
-                contents.source = "data:,ignition-test-host%0A";
-              }
-            ];
-          };
+{...}: {
+  system.checks.ignition-hostname = {
+    description = "ignition first-boot provisioning via ISO9660 metadata channel";
+    instanceMetadata = {
+      format = "ignition";
+      config = {
+        ignition.version = "3.5.0";
+        storage = {
+          directories = [{path = "/var/etc";}];
+          files = [
+            {
+              path = "/var/etc/hostname";
+              mode = 420; # 0644
+              overwrite = true;
+              contents.source = "data:,ignition-test-host%0A";
+            }
+          ];
         };
       };
-      checks = [
-        {
-          name = "hostname-overridden";
-          description = "/etc/hostname reads 'ignition-test-host' via the overlay";
-          script = ''
-            assert_output_contains "cat /etc/hostname" "ignition-test-host" \
-              "ignition wrote /var/etc/hostname and the /etc overlay exposes it"
-          '';
-        }
-      ];
     };
+    checks = [
+      {
+        name = "hostname-overridden";
+        description = "/etc/hostname reads 'ignition-test-host' via the overlay";
+        script = ''
+          assert_output_contains "cat /etc/hostname" "ignition-test-host" \
+            "ignition wrote /var/etc/hostname and the /etc overlay exposes it"
+        '';
+      }
+    ];
   };
 }
