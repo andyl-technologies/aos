@@ -15,13 +15,10 @@
 {
   pkgs,
   lib,
-  testTools ? {},
 }: let
-  vmLib = import ./vm.nix {inherit pkgs lib testTools;};
+  vmLib = import ./vm.nix {inherit pkgs lib;};
   metadataLib = import ./metadata.nix {inherit pkgs lib;};
   assertions = import ./assertions.nix {inherit (pkgs) aos-agent-rpc;};
-
-  qemu = testTools.qemu;
 
   # ── MAC scheme (mirrors NixOS qemu-common.nix) ─────────────────────
   # 52:54:00:12:<vlan>:<machine>. Vlan stays 0 in this revision; the
@@ -427,7 +424,7 @@
         pkgs.coreutils
         pkgs.socat
         pkgs.jq
-        qemu
+        pkgs.qemu
         pkgs.aos-agent-rpc
       ];
 

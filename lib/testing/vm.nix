@@ -19,7 +19,6 @@
 {
   pkgs,
   lib,
-  testTools ? {},
 }: let
   hostJq = pkgs.jq;
   firecracker = pkgs.firecracker;
