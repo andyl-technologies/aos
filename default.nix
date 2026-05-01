@@ -112,20 +112,11 @@
   # Test infrastructure
   # ---------------------------------------------------------------------------
 
-  testTools = {
-    qemu = pkgs.qemu;
-    socat = pkgs.socat;
-    jq = pkgs.jq;
-  };
-
   # The default system used for eval/build checks and package integration tests.
   serverSystem = mkSystem ./systems/server.nix;
 
   # Testing harness (headless mode for package integration tests)
-  testing = import ./lib/testing {
-    inherit pkgs lib;
-    testTools = {};
-  };
+  testing = import ./lib/testing {inherit pkgs lib;};
 
   prefixAttrs = prefix: attrs:
     builtins.listToAttrs (
@@ -198,7 +189,7 @@
   # ---------------------------------------------------------------------------
   # Fleet tests (multi-VM, inherently span multiple systems)
   # ---------------------------------------------------------------------------
-  fleetHarness = import ./lib/testing/fleet.nix {inherit pkgs lib testTools;};
+  fleetHarness = import ./lib/testing/fleet.nix {inherit pkgs lib;};
 
   discoverFleetTests = let
     ignitionFormat = lib.formats.ignition {

@@ -9,16 +9,15 @@
 #   - Headless mode (rootfsDeps param): test script IS init, for package checks
 #
 # Usage:
-#   let testing = import ./lib/testing { inherit pkgs lib testTools; };
+#   let testing = import ./lib/testing { inherit pkgs lib; };
 #   in testing.mkVMTest { name = "boot"; system = ...; checks = [...]; }
 #   in testing.mkVMTest { name = "zlib-link"; rootfsDeps = [...]; testScript = "..."; }
 {
   pkgs,
   lib,
-  testTools ? {},
 }: let
-  vm = import ./vm.nix {inherit pkgs lib testTools;};
-  fleet = import ./fleet.nix {inherit pkgs lib testTools;};
+  vm = import ./vm.nix {inherit pkgs lib;};
+  fleet = import ./fleet.nix {inherit pkgs lib;};
   firecracker = import ./firecracker.nix {inherit pkgs lib;};
   integration = import ./integration.nix {
     inherit pkgs lib;
