@@ -54,9 +54,9 @@ in {
       ];
 
       # Activate the test-http-server role's runtime side effects
-      # (systemPackages, system.checks, aos.services.ignition.enable).
-      # The role's ignition config is computed regardless; this flip
-      # adds the integration test to the system's checks set.
+      # (systemPackages, system.checks). The role's ignition config is
+      # computed regardless; this flip adds the integration test to the
+      # system's checks set.
       aos.roles.test-http-server.enable = true;
     }
 
