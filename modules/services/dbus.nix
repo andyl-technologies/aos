@@ -1,15 +1,46 @@
 ##! modules/services/dbus.nix — D-Bus system message bus
 ##!
-##! dbus 1.14 only ships a user unit (`lib/systemd/user/dbus.service`);
-##! the system dbus.service is by convention distro-provided. Systemd's
-##! `systemd-logind`, `systemd-hostnamed`, etc. all connect to
-##! `/run/dbus/system_bus_socket` and refuse to start if it's absent —
-##! that's exactly task #18's symptom.
+##! dbus 1.14 only ships a user unit; the system dbus.service is by
+##! convention distro-provided. systemd-logind, systemd-hostnamed, etc.
+##! all connect to /run/dbus/system_bus_socket and refuse to start if
+##! it's absent.
+##!
+##! Generated configuration model
+##! -----------------------------
+##! dbus-daemon's stock share/dbus-1/system.conf uses
+##! <standard_system_servicedirs/>, which is baked at compile time to
+##! ${pkgs.dbus}/share/dbus-1/{services,system-services} — both empty.
+##! That means it never finds the activation entries shipped by systemd
+##! at ${pkgs.systemd}/share/dbus-1/system-services, so
+##! org.freedesktop.systemd1 never auto-activates on the bus and any D-Bus
+##! consumer (kubelet's systemd cgroup driver, hostnamectl, timedatectl,
+##! loginctl) fails.
+##!
+##! The fix: pkgs.dbus-conf rewrites the stock system.conf via xsltproc to
+##! emit explicit <servicedir>/<includedir> lines for every package in
+##! aos.services.dbus.packages. systemd is contributed automatically;
+##! other modules can append (polkit, NetworkManager, etc.) by extending
+##! the option.
+##!
+##! Operator override paths (no rebuild required)
+##! ---------------------------------------------
+##!   * /etc/dbus-1/system.d/*.conf  — drop-in policy files
+##!   * /etc/dbus-1/system-local.conf — single-file policy override
+##! After editing either, run `systemctl reload dbus.service` so dbus-daemon
+##! re-reads its config without disrupting in-flight connections. Closure
+##! rebuilds (a new aos.services.dbus.packages value) produce a new store
+##! path for --config-file and require a `systemctl restart dbus.service`.
+##!
+##! suidHelper note
+##! ---------------
+##! AOS has no security-wrappers framework, so <servicehelper> points at
+##! /bin/false. The helper is only used for non-root activation requests
+##! that need privilege — a path AOS doesn't exercise today. This matches
+##! NixOS's initrd codepath.
 ##!
 ##! This module contributes:
-##!   * `aos.users.users.messagebus` + group (dbus's default runtime user)
-##!   * `systemd.sockets.dbus` listening on /run/dbus/system_bus_socket
-##!   * `systemd.services.dbus` running dbus-daemon --system
+##!   * aos.users.users.messagebus + group (dbus's default runtime user)
+##!   * systemd.services.dbus running dbus-daemon --system
 ##!   * tmpfiles entry so /run/dbus exists with the right perms
 {
   config,
@@ -18,6 +49,11 @@
   ...
 }: let
   cfg = config.aos.services.dbus;
+  dbusConf = pkgs.dbus-conf {
+    packages = cfg.packages;
+    suidHelper = "/bin/false";
+    apparmor = "disabled";
+  };
 in {
   options.aos.services.dbus.enable = lib.mkOption {
     type = lib.types.bool;
@@ -29,7 +65,29 @@ in {
     '';
   };
 
+  options.aos.services.dbus.packages = lib.mkOption {
+    type = lib.types.listOf lib.types.package;
+    default = [];
+    example = lib.literalExpression "[ pkgs.systemd pkgs.networkmanager ]";
+    description = ''
+      Packages whose share/dbus-1/{system-services,system.d} contents
+      should be merged into the system D-Bus configuration. systemd is
+      contributed automatically when this module is enabled; other
+      modules may append polkit, NetworkManager, etc. as they're added.
+
+      Per-contributor <servicedir> entries are first-match-wins for
+      activation. The operator /etc/dbus-1/system.d directory is emitted
+      last, so per-contributor activation entries take precedence.
+    '';
+  };
+
   config = lib.mkIf cfg.enable {
+    # Always contribute systemd so org.freedesktop.systemd1 (plus
+    # hostname1/login1/timedate1/...) is reachable on the bus. listOf
+    # merges across modules, so other modules can extend this list
+    # without clobbering the systemd entry.
+    aos.services.dbus.packages = [pkgs.systemd];
+
     # Standard dbus runtime account. UID 81 matches Debian/Fedora
     # convention so hand-debugged systems look familiar.
     aos.users.users.messagebus = {
@@ -45,24 +103,10 @@ in {
       members = [];
     };
 
-    # dbus's shipped share/dbus-1/system.conf contains:
-    #   <include ignore_missing="yes">/etc/dbus-1/system.conf</include>
-    # to let admins override. If we symlinked that same file back at
-    # /etc/dbus-1/system.conf, the parser would self-include and
-    # abort with "Circular inclusion". We therefore do NOT create
-    # /etc/dbus-1/system.conf — ignore_missing=yes makes the include
-    # a no-op, and dbus-daemon reads the store copy via --config-file
-    # on the ExecStart.
-    #
-    # system.d is an include *directory* for drop-in policy files;
-    # the store copy exists next to system.conf and the shipped
-    # system.conf's `<includedir>system.d</includedir>` resolves
-    # relative to its own directory, so no symlink needed there
-    # either.
-    #
-    # If you want to add a local override, create /etc/dbus-1/system.conf
-    # and include the store copy explicitly:
-    #   <include>${pkgs.dbus}/share/dbus-1/system.conf</include>
+    # System bus configuration is generated by pkgs.dbus-conf — see the
+    # head comment for the operator override paths. We do NOT touch
+    # /etc/dbus-1/system.conf at all; dbus-daemon reads the store path
+    # passed via --config-file below.
 
     # /run/dbus needs to exist before dbus-daemon starts (it creates
     # the socket file there). tmpfiles runs early in stage 2.
@@ -71,24 +115,51 @@ in {
       d /var/lib/dbus 0755 root root -
     '';
 
+    # Socket activation. systemd creates /run/dbus/system_bus_socket
+    # before dbus-daemon starts; dbus-daemon then attaches via
+    # `--address=systemd:` (LISTEN_FDS handover). This is the load-
+    # bearing piece for systemd-PID-1 to claim org.freedesktop.systemd1
+    # on the bus: PID 1 connects to dbus through the same socket the
+    # moment dbus-daemon enters the running state, and the
+    # `--systemd-activation` flag on dbus.service tells dbus-daemon
+    # to forward activation requests for org.freedesktop.systemd1
+    # back to systemd via that connection. Without socket activation
+    # systemd PID 1 never registers, kubelet's systemd cgroup driver
+    # fails to create kubepods.slice, hostnamectl/timedatectl/
+    # loginctl all error, etc.
+    systemd.sockets."dbus" = {
+      description = "D-Bus System Message Bus Socket";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenStream = "/run/dbus/system_bus_socket";
+      };
+    };
+
     systemd.services."dbus" = {
       description = "D-Bus System Message Bus";
       wantedBy = ["multi-user.target"];
+      requires = [
+        "dbus.socket"
+        "systemd-tmpfiles-setup.service"
+      ];
       after = [
         "local-fs.target"
         "systemd-tmpfiles-setup.service"
+        "dbus.socket"
       ];
-      requires = ["systemd-tmpfiles-setup.service"];
       serviceConfig = {
         RuntimeDirectory = "dbus";
         RuntimeDirectoryMode = "0755";
-        # --nofork + Type=simple so systemd tracks dbus-daemon's PID
-        # directly (no double-fork races). dbus-daemon binds the
-        # socket path from system.conf itself — no systemd socket
-        # activation, since that needs --address=systemd: which also
-        # needs LISTEN_FDS which is fragile to wire up correctly.
-        Type = "simple";
-        ExecStart = "${pkgs.dbus}/bin/dbus-daemon --nofork --nopidfile --config-file=${pkgs.dbus}/share/dbus-1/system.conf";
+        # `--address=systemd:` + `--systemd-activation` enable the
+        # socket-activated handover with systemd PID 1.
+        # `Type=notify` because `--systemd-activation` makes
+        # dbus-daemon emit a sd_notify(READY=1) once it has accepted
+        # the listen FD; without notify, systemd would mark dbus
+        # `active` immediately after fork and PID 1 would race the
+        # bus-name registration.
+        Type = "notify";
+        NotifyAccess = "main";
+        ExecStart = "${pkgs.dbus}/bin/dbus-daemon --address=systemd: --nofork --nopidfile --systemd-activation --config-file=${dbusConf}/system.conf";
         ExecReload = "${pkgs.dbus}/bin/dbus-send --print-reply --system --type=method_call --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig";
         OOMScoreAdjust = "-900";
         Restart = "on-failure";
