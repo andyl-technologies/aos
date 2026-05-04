@@ -42,7 +42,7 @@
   # ---------------------------------------------------------------------------
   # Build a GPT disk image for VM testing
   # ---------------------------------------------------------------------------
-  # Produces a single $out/disk.img with three partitions matching the
+  # Produces a single $out/disk.img with four partitions matching the
   # production layout closely enough for the production initrd + ignition
   # services to run unchanged against it:
   #
@@ -54,7 +54,12 @@
   #              to /etc.lower at image-build time so the production
   #              etc-overlay-setup.service skips its first-boot remount-rw
   #              dance on ro root.
-  #   3  var   — 32 MiB ext4, empty. Label `var` via GPT partlabel so
+  #   3  swap  — 8 MiB stub with the Linux-swap GPT GUID, no body.
+  #              cryptswap.service's `Requires=` on the auto-instantiated
+  #              `dev-disk-by-partlabel-swap.device` would otherwise sit
+  #              queued for 90 s on every boot waiting for udev to
+  #              announce a partition that doesn't exist.
+  #   4  var   — 32 MiB ext4, empty. Label `var` via GPT partlabel so
   #              the production mount-var.service mounts it on every boot.
   # `mkTestDisk` is a function of `system` only — two callers passing
   # the same system reference the same Nix derivation, which is what
@@ -422,26 +427,30 @@
             # but reserving it keeps root at /dev/vda2 matching production.
             BOOT_SECTORS=$(( 4 * 1024 * 1024 / 512 ))   # 4 MiB
             ROOT_SECTORS=$(( root_bytes / 512 ))
-            VAR_SECTORS=$((  32 * 1024 * 1024 / 512 )) # 32 MiB
+            SWAP_SECTORS=$(( 8 * 1024 * 1024 / 512 ))   # 8 MiB
+            VAR_SECTORS=$((  32 * 1024 * 1024 / 512 ))  # 32 MiB
 
             BOOT_START=2048
             ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
-            VAR_START=$(( ROOT_START + ROOT_SECTORS ))
+            SWAP_START=$(( ROOT_START + ROOT_SECTORS ))
+            VAR_START=$((  SWAP_START + SWAP_SECTORS ))
             DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
             DISK_BYTES=$(( DISK_SECTORS * 512 ))
 
             echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
             truncate -s "$DISK_BYTES" disk.img
 
-            # Standard Linux filesystem GUID for all three partitions.
-            # The partlabel `var` is what mount-var.service binds to via
-            # /dev/disk/by-partlabel/var. The root partition is labelled
-            # `root-a` to match the production A/B layout — aos-growfs
-            # triggers on ConditionPathExists=/dev/disk/by-partlabel/root-a.
+            # Standard Linux filesystem GUID for boot/root/var; Linux
+            # swap GUID for the swap stub. The partlabel `var` is what
+            # mount-var.service binds to via /dev/disk/by-partlabel/var.
+            # The root partition is labelled `root-a` to match the
+            # production A/B layout — aos-growfs triggers on
+            # ConditionPathExists=/dev/disk/by-partlabel/root-a.
             sfdisk disk.img <<PTABLE
             label: gpt
             size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="boot"
             size=$ROOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root-a"
+            size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name="swap"
             size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="var"
             PTABLE
 
