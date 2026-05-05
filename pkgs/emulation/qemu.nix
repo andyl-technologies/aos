@@ -12,6 +12,7 @@
   glib,
   pixman,
   zlib,
+  libslirp,
 }: let
   version = "9.2.4";
 in
@@ -39,6 +40,7 @@ in
       glib
       pixman
       zlib
+      libslirp
     ];
     propagatedDeps = [];
 
@@ -66,6 +68,7 @@ in
             --prefix=$out \
             --target-list=x86_64-softmmu \
             --enable-kvm \
+            --enable-slirp \
             --enable-virtfs \
             --disable-bsd-user \
             --disable-linux-user \
