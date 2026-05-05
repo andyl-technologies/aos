@@ -20,10 +20,10 @@
 
   ## Compose a list of functions, applying left to right.
   ##
-  ## `pipe [f g h] x == h (g (f x))`
+  ## `pipe x [f g h] == h (g (f x))`
   ## # Type
-  ## `[a -> a] -> a -> a`
-  pipe = fns: x: builtins.foldl' (acc: f: f acc) x fns;
+  ## `a -> [a -> a] -> a`
+  pipe = x: fns: builtins.foldl' (acc: f: f acc) x fns;
 
   ## Function composition, right to left.
   ##

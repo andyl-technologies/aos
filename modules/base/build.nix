@@ -32,13 +32,8 @@
     config.environment.etc
   );
 
-  # --- Build the system PATH from systemPackages ---
   makeBinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
   makeSbinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/sbin") pkgsList);
-  systemPath =
-    makeBinPath config.environment.systemPackages
-    + ":"
-    + makeSbinPath config.environment.systemPackages;
 in {
   options = {
     ## Assertions checked during system build. If any assertion is
@@ -87,6 +82,7 @@ in {
     environment.systemPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
+      apply = lib.unique;
       description = ''
         The set of packages that appear in the system profile. These packages
         are made available in the system PATH and are included in the Nix store
@@ -131,6 +127,18 @@ in {
       initrd = lib.mkOption {
         type = lib.types.package;
         description = "The initrd derivation providing initrd.img.";
+      };
+
+      ## Colon-joined PATH derived from `environment.systemPackages`.
+      systemPath = lib.mkOption {
+        type = lib.types.str;
+        readOnly = true;
+        description = ''
+          The system PATH built by joining `bin` and `sbin` directories of
+          every package in `environment.systemPackages`. Other modules (PAM
+          environment, /etc/profile) reference this so a single source of
+          truth governs the system search path.
+        '';
       };
     };
   };
@@ -238,6 +246,10 @@ in {
       );
 
     system.build.kernel = pkgs.linux;
+    system.build.systemPath =
+      makeBinPath config.environment.systemPackages
+      + ":"
+      + makeSbinPath config.environment.systemPackages;
 
     environment.systemPackages = [
       pkgs.bash
@@ -259,7 +271,7 @@ in {
         __ETC_PROFILE_SOURCED=1
         export __ETC_PROFILE_DONE=1
 
-        export PATH="${systemPath}"
+        export PATH="${config.system.build.systemPath}"
         export PAGER=less
 
         if [ -z "$HOME" ] && [ -f /etc/passwd ]; then

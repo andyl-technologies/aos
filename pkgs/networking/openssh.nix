@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  linux-pam,
   openssl,
   zlib,
 }: let
@@ -21,6 +22,7 @@ in
 
     buildDeps = [gnumake];
     runtimeDeps = [
+      linux-pam
       openssl
       zlib
     ];
@@ -50,7 +52,7 @@ in
             --with-zlib=${zlib} \
             --with-privsep-path=/var/empty \
             --with-privsep-user=sshd \
-            --without-pam \
+            --with-pam \
             --disable-strip
         '';
       }

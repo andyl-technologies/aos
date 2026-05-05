@@ -42,6 +42,11 @@
       else "no"
     }
     PubkeyAuthentication yes
+    UsePAM ${
+      if cfg.usePAM
+      then "yes"
+      else "no"
+    }
     AuthorizedKeysFile ${cfg.authorizedKeysFile}
     ${
       if cfg.authorizedKeysCommand != null
@@ -176,6 +181,19 @@ in {
       description = "Allow keyboard-interactive authentication (PAM prompts).";
     };
 
+    ## Run authentication and session management through PAM.
+    ##
+    ## With this enabled, sshd consults `/etc/pam.d/sshd` for the
+    ## account/session stacks even when authentication itself is by
+    ## public key. The session stack is what runs `pam_env(5)` against
+    ## `/etc/pam/environment`, which is how non-interactive
+    ## `ssh host cmd` invocations inherit the system PATH.
+    usePAM = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Use PAM for sshd account/session management.";
+    };
+
     ## Allow X11 forwarding.
     x11Forwarding = lib.mkOption {
       type = lib.types.bool;
@@ -303,10 +321,83 @@ in {
               "Password authentication is disabled"
           '';
         }
+        {
+          name = "sshd-use-pam";
+          description = "sshd is configured to use PAM";
+          script = ''
+            assert_output_contains "cat /etc/ssh/sshd_config" "UsePAM ${
+              if cfg.usePAM
+              then "yes"
+              else "no"
+            }" \
+              "UsePAM is ${
+              if cfg.usePAM
+              then "enabled"
+              else "disabled"
+            }"
+          '';
+        }
+        {
+          name = "sshd-pam-config";
+          description = "/etc/pam.d/sshd is present";
+          script = ''
+            assert_success "test -f /etc/pam.d/sshd" "sshd PAM config exists"
+          '';
+        }
+        {
+          name = "sshd-pam-env-rule";
+          description = "sshd PAM session stack invokes pam_env";
+          script = ''
+            assert_output_contains "cat /etc/pam.d/sshd" "pam_env.so" \
+              "pam_env.so is in sshd PAM stack"
+          '';
+        }
+        {
+          name = "pam-environment-has-path";
+          description = "/etc/pam/environment publishes PATH";
+          script = ''
+            assert_output_contains "cat /etc/pam/environment" "PATH" \
+              "PATH is set in /etc/pam/environment"
+          '';
+        }
+        {
+          name = "sshd-pam-limits-rule";
+          description = "sshd PAM session stack invokes pam_limits";
+          script = ''
+            assert_output_contains "cat /etc/pam.d/sshd" "pam_limits.so" \
+              "pam_limits.so is in sshd PAM stack"
+          '';
+        }
+        {
+          name = "ssh-noninteractive-inherits-path";
+          description = "non-interactive ssh inherits the system PATH via pam_env";
+          script = ''
+            GUEST_SCRIPT=$(cat <<'GUESTSCRIPT'
+            set -e
+            ssh-keygen -t ed25519 -N "" -f /tmp/aos-test-key -q
+            cat /tmp/aos-test-key.pub > /etc/ssh/authorized_keys/root
+            systemctl is-active --quiet sshd || systemctl start sshd
+            ssh -i /tmp/aos-test-key \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o BatchMode=yes \
+              -o LogLevel=ERROR \
+              root@127.0.0.1 'echo $PATH'
+            GUESTSCRIPT
+            )
+            assert_output_contains "$GUEST_SCRIPT" "${config.system.build.systemPath}" \
+              "non-interactive ssh inherits the full system PATH via pam_env"
+          '';
+        }
       ];
     };
 
     environment.systemPackages = [pkgs.openssh];
+
+    aos.pam.services.sshd = lib.mkIf cfg.usePAM {
+      unixAuth = cfg.passwordAuthentication;
+      startSession = true;
+    };
 
     # sshd's privilege-separation user. Required at startup — sshd
     # aborts with "Privilege separation user sshd does not exist"
