@@ -11,6 +11,7 @@
 {
   pkgs,
   systems,
+  ...
 }: let
   # k3s's token parser (`pkg/clientaccess/token.go:251`) accepts:
   #   - a kubeadm bootstrap token: `[a-z0-9]{6}\.[a-z0-9]{16}`
@@ -43,23 +44,26 @@
   # /etc/rancher/k3s/config.yaml is k3s's default config-file
   # location. Both `k3s server` and `k3s agent` read it
   # automatically; the loader (`pkg/configfilearg`) merges its keys
-  # in as if they were CLI flags. We use it to pin `node-ip` per
-  # machine without having to bake the IP into the role's
-  # ExecStart (the role is image-shared and doesn't know the IP).
+  # in as if they were CLI flags. We use it to pin `node-ip` and
+  # `flannel-iface` per machine without having to bake them into
+  # the role's ExecStart (the role is image-shared and doesn't
+  # know the IP or interface name).
   #
-  # Why we have to pin node-ip in tests: k3s would otherwise call
-  # `apimachinery/pkg/util/net.ChooseHostInterface()`, which reads
-  # `/proc/net/route` to find the default-route interface and
-  # picks its address. The fleet harness in lib/testing/fleet.nix
-  # only writes `[Network] Address=` on eth0 — no gateway, no
-  # default route — so that lookup fatals with "no default routes
-  # found". Real-world hosts always have a default route via
-  # DHCP / a real gateway; pinning node-ip here is test-only glue.
+  # See `tests/fleet/k3s-control-plane-worker.nix` for the longer
+  # rationale on both pins; the same gateway-less fleet harness
+  # forces the same workaround here. Both `combined` (running
+  # `k3s server` without `--disable-agent`) and `worker` run the
+  # flannel daemon, so both need the iface pin.
   configFile = ip: {
     path = "/etc/rancher/k3s/config.yaml";
     mode = 420; # 0644
     overwrite = true;
-    contents.source = "data:," + uriEncode "node-ip: ${ip}\n";
+    contents.source =
+      "data:,"
+      + uriEncode ''
+        node-ip: ${ip}
+        flannel-iface: eth0
+      '';
   };
 in {
   name = "k3s-combined-worker";
@@ -144,15 +148,24 @@ in {
     # `assert_output_on machine cmd ""` would have used
     # `grep -q ""`, which matches any non-empty input — exactly
     # backwards from the intent.
+    #
+    # `\$(…)` (and `\"`) defer command substitution until the
+    # guest shell — see the parallel note in
+    # `k3s-control-plane-worker.nix`. Without the escape this
+    # silently passed for the wrong reason: kubectl ran (and
+    # failed) on the build host, the substitution produced an
+    # empty string, and `test -z ""` was trivially true.
     assert_on combined \
-      "test -z \"$(${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get node combined -o jsonpath='{.spec.taints}')\"" \
+      "test -z \"\$(${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get node combined -o jsonpath='{.spec.taints}')\"" \
       "combined node has no NoSchedule taint"
 
     # ── Sanity: exactly two nodes ─────────────────────────────────
     # Numeric equality, not substring match — see the rationale in
-    # k3s-control-plane-worker.nix's testScript.
+    # k3s-control-plane-worker.nix's testScript. The `\$(…)` escape
+    # is for the same outer-shell substitution reason documented
+    # in that file.
     assert_on combined \
-      "test $(${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes --no-headers | wc -l) -eq 2" \
+      "test \$(${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes --no-headers | wc -l) -eq 2" \
       "exactly two nodes registered"
   '';
 }
