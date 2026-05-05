@@ -12,7 +12,7 @@
 ##! The toplevel build script below pulls them in as a single
 ##! `ln -s ${config.system.build.systemdSystemUnits} $out/etc/systemd/system`
 ##! line — the derivation behind `systemdSystemUnits` is assembled by
-##! the ported `generateUnits` function in modules/systemd/_lib.nix.
+##! the ported `generateUnits` function in lib/modules/systemd/lib.nix.
 {
   config,
   pkgs,
@@ -32,13 +32,8 @@
     config.environment.etc
   );
 
-  # --- Build the system PATH from systemPackages ---
   makeBinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
   makeSbinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/sbin") pkgsList);
-  systemPath =
-    makeBinPath config.environment.systemPackages
-    + ":"
-    + makeSbinPath config.environment.systemPackages;
 in {
   options = {
     ## Assertions checked during system build. If any assertion is
@@ -87,6 +82,7 @@ in {
     environment.systemPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
+      apply = lib.unique;
       description = ''
         The set of packages that appear in the system profile. These packages
         are made available in the system PATH and are included in the Nix store
@@ -131,6 +127,18 @@ in {
       initrd = lib.mkOption {
         type = lib.types.package;
         description = "The initrd derivation providing initrd.img.";
+      };
+
+      ## Colon-joined PATH derived from `environment.systemPackages`.
+      systemPath = lib.mkOption {
+        type = lib.types.str;
+        readOnly = true;
+        description = ''
+          The system PATH built by joining `bin` and `sbin` directories of
+          every package in `environment.systemPackages`. Other modules (PAM
+          environment, /etc/profile) reference this so a single source of
+          truth governs the system search path.
+        '';
       };
     };
   };
@@ -182,7 +190,34 @@ in {
                 # modules/systemd/system.nix's `generateUnits` call.
                 # Replaces the old renderUnit/renderTimer heredoc
                 # pipeline (spec v3.1 stage 4).
-                ln -sfn ${config.system.build.systemdSystemUnits} $out/etc/systemd/system
+                #
+                # Materialise as a real directory of symlinks rather
+                # than a single symlink to the system-units output.
+                # First-boot ignition writes role units to
+                # /var/etc/systemd/system/ (via the BindPaths in
+                # ignition-files.service), and etc-overlay-setup then
+                # mounts /etc as `lowerdir=/var/etc:/etc.lower`. If
+                # /etc.lower/systemd/system is a single symlink and
+                # /var/etc/systemd/system is a real directory, overlayfs
+                # can't merge the two — at a path where the lowers
+                # disagree on inode type, the higher-priority lower's
+                # type wins, so the entire system-units symlink target
+                # gets shadowed (sshd, dbus, networkd, chrony, nftables
+                # all become invisible). Materialising as a real
+                # directory of symlinks here keeps both lowers
+                # type-compatible and lets overlayfs do a proper
+                # name-by-name merge — the system's units stay visible
+                # alongside whatever the role's ignition merge added.
+                #
+                # `cp -RP` preserves both absolute symlinks (top-level
+                # units → /nix/store/<unit-text>/<name>.service) and
+                # relative symlinks (`*.wants/foo.service → ../foo.service`)
+                # because the directory layout under
+                # `${"\${systemdSystemUnits}"}` is reproduced exactly,
+                # and the wants/requires/upholds dirs themselves
+                # generateUnits already creates as real directories.
+                mkdir -p $out/etc/systemd/system
+                cp -RP ${config.system.build.systemdSystemUnits}/. $out/etc/systemd/system/
 
                 # Create system PATH manifest
                 cat > $out/etc/aos/system-path << 'PATHEOF'
@@ -211,6 +246,10 @@ in {
       );
 
     system.build.kernel = pkgs.linux;
+    system.build.systemPath =
+      makeBinPath config.environment.systemPackages
+      + ":"
+      + makeSbinPath config.environment.systemPackages;
 
     environment.systemPackages = [
       pkgs.bash
@@ -232,7 +271,7 @@ in {
         __ETC_PROFILE_SOURCED=1
         export __ETC_PROFILE_DONE=1
 
-        export PATH="${systemPath}"
+        export PATH="${config.system.build.systemPath}"
         export PAGER=less
 
         if [ -z "$HOME" ] && [ -f /etc/passwd ]; then

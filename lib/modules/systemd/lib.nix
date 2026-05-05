@@ -103,7 +103,7 @@
 
   # ------------------------------------------------------------------
   # escapeSystemdPath — ported from nixos/lib/utils.nix (inlined here
-  # so _lib.nix stays a pure library without pulling in a utils module).
+  # so lib.nix stays a pure library without pulling in a utils module).
   # ------------------------------------------------------------------
   #
   # The escaping rules are from systemd.unit(5): slashes become dashes;
@@ -121,13 +121,9 @@
 
   # Port of nixpkgs' `lib.strings.escapeC`: for every character in
   # `charsToEscape`, replace it with `\xNN` (lowercase hex) in `s`.
+  # We only need the subset of ASCII that systemd path escaping touches,
+  # so a small lookup table is enough. Values are lowercase two-digit hex.
   escapeC = charsToEscape: s: let
-    toHex = c: let
-      n = builtins.substring 0 1 "${builtins.toString (builtins.elemAt [0 1 2 3 4 5 6 7 8 9] c)}";
-    in
-      n;
-    # We only need the subset of ASCII that systemd path escaping touches,
-    # so a small lookup table is enough. Values are lowercase two-digit hex.
     hexTable = {
       " " = "20";
       "!" = "21";
@@ -867,14 +863,25 @@ in rec {
     };
   };
 
-  commonUnitText = def: bodyLines:
+  # Render the `[Install]` directives — Alias=, WantedBy=, RequiredBy=,
+  # UpheldBy= — for every unit type. Stage 2 ALSO populates .wants /
+  # .requires / .upholds via `generateUnits`'s symlink farm; the
+  # `[Install]` section is redundant-but-safe in that case (systemd's
+  # preset/enable mechanism is idempotent if the symlinks already
+  # exist). Ignition relies on this section as the only path: its
+  # `enabled = true` writes the unit name to /etc/systemd/system-preset/,
+  # and `systemctl preset-all` (run by `aos-ignition-preset.service`
+  # in the initrd) walks `[Install]` to create the runtime symlinks.
+  commonUnitText = def: bodyLines: let
+    install =
+      optionalString (def.aliases != []) "Alias=${concatStringsSep " " def.aliases}\n"
+      + optionalString (def.wantedBy != []) "WantedBy=${concatStringsSep " " def.wantedBy}\n"
+      + optionalString (def.requiredBy != []) "RequiredBy=${concatStringsSep " " def.requiredBy}\n"
+      + optionalString (def.upheldBy != []) "UpheldBy=${concatStringsSep " " def.upheldBy}\n";
+  in
     (settingsToSections {Unit = def.unitConfig;})
     + bodyLines
-    + optionalString (def.wantedBy != []) ''
-
-      [Install]
-      WantedBy=${concatStringsSep " " def.wantedBy}
-    '';
+    + optionalString (install != "") "\n[Install]\n${install}";
 
   # ----------------------------------------------------------------------
   # Per-unit-type renderers
