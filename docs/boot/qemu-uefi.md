@@ -14,7 +14,7 @@ Write to `tests/ignition-test.json` at the repo root. Not checked in.
 
 ```json
 {
-  "ignition": { "version": "3.4.0" },
+  "ignition": { "version": "3.5.0" },
   "storage": {
     "disks": [
       {
