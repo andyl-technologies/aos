@@ -1,7 +1,7 @@
 # lib/testing/systemd-lib.nix — Stage-2 regression check.
 #
-# Exercises the three ported nixpkgs files (modules/systemd/_lib.nix,
-# modules/systemd/_unit-options.nix, modules/systemd/_types.nix) in
+# Exercises the three ported nixpkgs files (lib/modules/systemd/lib.nix,
+# lib/modules/systemd/unit-options.nix, lib/modules/systemd/types.nix) in
 # isolation from the rest of the AOS module tree. Builds a synthetic
 # `systemd.services` option using the typed submodule stack, drives a
 # handful of representative services through it, and asserts both at
@@ -27,11 +27,11 @@
   pkgs,
   lib,
 }: let
-  systemdLib = import ../../modules/systemd/_lib.nix {inherit lib pkgs;};
-  systemdUnitOptions = import ../../modules/systemd/_unit-options.nix {
+  systemdLib = import ../modules/systemd/lib.nix {inherit lib pkgs;};
+  systemdUnitOptions = import ../modules/systemd/unit-options.nix {
     inherit lib systemdLib;
   };
-  systemdTypes = import ../../modules/systemd/_types.nix {
+  systemdTypes = import ../modules/systemd/types.nix {
     inherit lib systemdLib systemdUnitOptions;
   };
 

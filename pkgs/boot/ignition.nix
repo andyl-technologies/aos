@@ -19,6 +19,16 @@ in
       hash = "sha256-dPvBvkFjXrf6QTGn1WzUowPvZxcSphujUc2MCWHoAYE=";
     };
 
+    # Patches applied after unpack:
+    #   0001 — Add `file://` URL scheme support so ignition can fetch
+    #          configs and resources from the initrd's local filesystem.
+    #          Used by AOS to expose per-role configs at
+    #          /etc/aos/ignition-roles/<role-name> for first-boot
+    #          merge via `ignition.config.merge`.
+    patches = [
+      ./ignition-patches/0001-add-file-url-scheme-support.patch
+    ];
+
     buildDeps = [go];
     runtimeDeps = [util-linux];
     propagatedDeps = [];

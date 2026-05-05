@@ -13,13 +13,7 @@
   lib,
   ...
 }: let
-  # Import the VM test harness. All test tools are AOS packages.
-  testTools = {
-    qemu = pkgs.qemu;
-    socat = pkgs.socat;
-    jq = pkgs.jq;
-  };
-  harness = import ../../lib/testing/vm.nix {inherit pkgs lib testTools;};
+  harness = import ../../lib/testing/vm.nix {inherit pkgs lib;};
 
   # Proxy object that satisfies mkVMTest's `system` parameter interface.
   # mkVMTest reads: system.config.system.build.{toplevel,kernel}

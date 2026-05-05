@@ -74,6 +74,7 @@ semver = "1"
 
 # Dev
 tempfile = "3"
+libc = "0.2"
 
 # ConnectRPC
 connectrpc = { version = "0.3", features = ["server", "client", "client-tls", "axum"] }

@@ -69,6 +69,27 @@ impl NixRunner {
         Ok(path)
     }
 
+    /// Run `nix-build -E <expr>` and return the resulting store path.
+    /// The expression is responsible for any imports it needs (e.g.
+    /// `(import /path/to/. {}).foo.bar`).
+    pub fn build_expr(&self, expr: &str) -> Result<PathBuf> {
+        let args: Vec<String> = vec![
+            "-E".to_string(),
+            expr.to_string(),
+            "--no-out-link".to_string(),
+        ];
+
+        let output = self.run_nix("nix-build", &args)?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let path = stdout
+            .lines()
+            .last()
+            .map(|l| PathBuf::from(l.trim()))
+            .context("nix-build produced no output")?;
+
+        Ok(path)
+    }
+
     /// Build an attribute that evaluates to a set / list and return all
     /// resulting store paths.
     pub fn build_all(&self, attr: &str) -> Result<Vec<PathBuf>> {

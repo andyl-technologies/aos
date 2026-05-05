@@ -132,7 +132,7 @@ in {
             TRIES=0
             while [ $TRIES -lt 15 ]; do
               RESULT=$(run_in_guest "systemctl is-active chronyd" 2>/dev/null || true)
-              STATUS=$(echo "$RESULT" | jq -r '.stdout // empty' 2>/dev/null || echo "$RESULT")
+              STATUS=$(echo "$RESULT" | jq -r '.stdout_b64 // empty' 2>/dev/null | base64 -d 2>/dev/null || echo "$RESULT")
               if [ "$STATUS" = "active" ]; then
                 break
               fi

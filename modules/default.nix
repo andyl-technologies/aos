@@ -1,8 +1,9 @@
 ##! modules/default.nix — Auto-discovered module registry
 ##!
-##! Scans configured module directories for .nix files and returns
-##! them as a list of paths. All modules including profiles are loaded —
-##! profiles use enable flags so they are inert unless activated.
+##! Scans configured module directories recursively for .nix files
+##! and returns them as a list of paths. All modules including profiles
+##! are loaded — profiles use enable flags so they are inert unless
+##! activated.
 let
   # Directories containing auto-loaded modules
   moduleDirs = [
@@ -12,22 +13,44 @@ let
     ./monitoring
     ./image
     ./profiles
+    ./roles
     ./systemd
     ./tests
   ];
 
-  # Discover all .nix files in a directory (non-recursive).
-  # Skips _-prefixed files (internal helpers, not modules).
+  # Discover all .nix files in a directory tree (recursive).
+  # Skips _-prefixed files and directories — by convention those are
+  # internal helpers that other modules `import` directly (e.g.
+  # `modules/roles/kubernetes/_k3s-common.nix`), not auto-loaded
+  # NixOS-style modules. Mirrors `pkgs/default.nix`'s
+  # `discoverPackages` so the two halves of the tree behave the same.
   discoverModules = dir: let
     entries = builtins.readDir dir;
-    nixFileNames = builtins.filter (
-      name:
-        entries.${name}
-        == "regular"
-        && builtins.match ".*\\.nix" name != null
-        && builtins.match "_.*" name == null
-    ) (builtins.attrNames entries);
+    names = builtins.attrNames entries;
+    nixFileNames =
+      builtins.filter (
+        name:
+          entries.${name}
+          == "regular"
+          && builtins.match ".*\\.nix" name != null
+          && builtins.match "_.*" name == null
+      )
+      names;
+    subdirs =
+      builtins.filter (
+        name:
+          entries.${name}
+          == "directory"
+          && builtins.match "_.*" name == null
+      )
+      names;
+    here = map (name: dir + "/${name}") nixFileNames;
+    nested =
+      builtins.concatMap (
+        name: discoverModules (dir + "/${name}")
+      )
+      subdirs;
   in
-    map (name: dir + "/${name}") nixFileNames;
+    here ++ nested;
 in
   builtins.concatMap discoverModules moduleDirs

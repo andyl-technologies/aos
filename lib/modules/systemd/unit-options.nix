@@ -18,7 +18,7 @@
 #     dropped (spec §5.2 / §5.3).
 #   - `startLimitBurst` / `startLimitIntervalSec` use `types.int` with
 #     no default (matching upstream) and rely on `options.X.isDefined`
-#     inside `_lib.nix`'s `unitConfig` to tell whether a value was set.
+#     inside `lib.nix`'s `unitConfig` to tell whether a value was set.
 #     This requires AOS's module system to thread an `options` tree
 #     into submodule functions — which it now does after audit fix
 #     1.2 (see `lib/modules.nix`'s `mkOptionsTree` and `evalModule`).
@@ -81,19 +81,8 @@ in rec {
       else mergeEqualOption loc defs;
   };
 
-  sharedOptions = {
-    enable = mkOption {
-      default = true;
-      type = types.bool;
-      description = ''
-        If set to false, this unit will be a symlink to
-        /dev/null. This is primarily useful to prevent specific
-        template instances (e.g. `serial-getty@ttyS0`) from being
-        started. Note that `enable=true` does not make a unit start
-        by default at boot; if you want that, see `wantedBy`.
-      '';
-    };
-
+  # Identity layer — shared by every install model.
+  identityOption = {
     name = mkOption {
       type = types.str;
       description = ''
@@ -101,30 +90,14 @@ in rec {
         This can be used to refer to this unit from other systemd units.
       '';
     };
+  };
 
-    overrideStrategy = mkOption {
-      default = "asDropinIfExists";
-      type = types.enum [
-        "asDropinIfExists"
-        "asDropin"
-      ];
-      description = ''
-        Defines how unit configuration is provided for systemd:
-
-        `asDropinIfExists` creates a unit file when no unit file is
-        provided by the package; otherwise it creates a drop-in file
-        named `overrides.conf`.
-
-        `asDropin` always creates a drop-in file named `overrides.conf`.
-        Needed to define instances for systemd template units
-        (e.g. `systemd-nspawn@mycontainer.service`) and to enable
-        upstream-provided units from `systemd.packages` (see
-        `modules/base/networking.nix` for the networkd case).
-
-        See also {manpage}`systemd.unit(5)`.
-      '';
-    };
-
+  # `[Install]`-section directives. Both install models honour these
+  # via the renderer in `lib.nix`'s `commonUnitText`: stage 2 ALSO
+  # populates `.wants` / `.requires` / `.upholds` via `generateUnits`'s
+  # symlink farm (the `[Install]` lines are idempotent for it);
+  # ignition relies on these directives as the only path.
+  commonInstallOptions = {
     requiredBy = mkOption {
       default = [];
       type = types.listOf unitNameType;
@@ -152,12 +125,19 @@ in rec {
         for starting a unit by default at boot time is to set this
         option to `["multi-user.target"]` for system services.
 
-        This option creates a `.wants` symlink in the given target that
-        exists statelessly without the need for running `systemctl
-        enable`. The `[Install]` section described in
-        {manpage}`systemd.unit(5)` however is not supported because it
-        is a stateful process that does not fit well into AOS's
-        image-based model.
+        Two install paths consume this option:
+
+        - **Stage 2** writes a `.wants` symlink in the named target's
+          `.wants/` dir at image-build time via `generateUnits` —
+          stateless, no `systemctl enable` needed.
+        - **Ignition** has no symlink-farm phase, so the renderer also
+          emits an `[Install] WantedBy=` line (alongside `Alias=`,
+          `RequiredBy=`, `UpheldBy=` when those fields are set). At
+          first boot the initrd's `aos-ignition-preset.service` runs
+          `systemctl preset-all`, which walks `[Install]` to create the
+          runtime symlinks. The `[Install]` lines are idempotent for
+          stage 2 (whose symlinks already exist) but load-bearing for
+          ignition.
       '';
     };
 
@@ -167,6 +147,55 @@ in rec {
       description = "Aliases of that unit.";
     };
   };
+
+  # Stage-2-only install machinery: the `/dev/null` mask trick and the
+  # auto-detected drop-in strategy. Ignition has different equivalents
+  # (`mask` field, explicit `dropins[]`) which live in the ignition
+  # library, not here.
+  stage2InstallOptions =
+    commonInstallOptions
+    // {
+      enable = mkOption {
+        default = true;
+        type = types.bool;
+        description = ''
+          If set to false, this unit will be a symlink to
+          /dev/null. This is primarily useful to prevent specific
+          template instances (e.g. `serial-getty@ttyS0`) from being
+          started. Note that `enable=true` does not make a unit start
+          by default at boot; if you want that, see `wantedBy`.
+        '';
+      };
+
+      overrideStrategy = mkOption {
+        default = "asDropinIfExists";
+        type = types.enum [
+          "asDropinIfExists"
+          "asDropin"
+        ];
+        description = ''
+          Defines how unit configuration is provided for systemd:
+
+          `asDropinIfExists` creates a unit file when no unit file is
+          provided by the package; otherwise it creates a drop-in file
+          named `overrides.conf`.
+
+          `asDropin` always creates a drop-in file named `overrides.conf`.
+          Needed to define instances for systemd template units
+          (e.g. `systemd-nspawn@mycontainer.service`) and to enable
+          upstream-provided units from `systemd.packages` (see
+          `modules/base/networking.nix` for the networkd case).
+
+          See also {manpage}`systemd.unit(5)`.
+        '';
+      };
+    };
+
+  # Reconstruct the legacy `sharedOptions` shape from the layered
+  # halves. Stage-2 callers still see a byte-identical option surface:
+  # identity + `[Install]` directives + the stage-2-only mask /
+  # override-strategy fields.
+  sharedOptions = identityOption // stage2InstallOptions;
 
   concreteUnitOptions =
     sharedOptions
@@ -332,7 +361,7 @@ in rec {
   };
 
   # After the spec §5.2 cuts, stage2CommonUnitOptions has no extra options
-  # beyond commonUnitOptions. Keep the name so the `_types.nix` composition
+  # beyond commonUnitOptions. Keep the name so the `types.nix` composition
   # can still say `[stage2ServiceOptions serviceConfig unitConfig
   # stage2ServiceConfig]` without modification, making future nixpkgs
   # re-syncs shallow.

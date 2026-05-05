@@ -30,9 +30,6 @@ in {
     aos.filesystems.zfs.enable = lib.mkDefault false;
     aos.filesystems.rootFsType = lib.mkDefault "ext4";
 
-    # Provisioning: ignition in the initrd.
-    aos.services.ignition.enable = lib.mkDefault true;
-
     # Time sync
     aos.services.chrony.enable = lib.mkDefault true;
 

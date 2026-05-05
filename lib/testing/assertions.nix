@@ -7,9 +7,7 @@
 # Usage (from vm.nix / fleet.nix):
 #   assertions = import ./assertions.nix { inherit (pkgs) aos-agent-rpc; };
 #   ... ${assertions.vmHelpers} ...
-#   ... ${assertions.vmFirecrackerHelpers} ...
 #   ... ${assertions.fleetHelpers} ...
-#   ... ${assertions.fleetVsockHelpers} ...
 {aos-agent-rpc}: let
   rpc = "${aos-agent-rpc}/bin/aos-agent-rpc";
 
@@ -26,8 +24,8 @@
         echo "FAIL: $desc"
         echo "  command: $cmd"
         echo "  exit_code: $EXIT_CODE"
-        echo "  stdout: $(echo "$RESULT" | jq -r '.stdout')"
-        echo "  stderr: $(echo "$RESULT" | jq -r '.stderr')"
+        echo "  stdout: $(echo "$RESULT" | jq -r '.stdout_b64' | base64 -d)"
+        echo "  stderr: $(echo "$RESULT" | jq -r '.stderr_b64' | base64 -d)"
         return 1
       fi
       echo "PASS: $desc"
@@ -39,7 +37,7 @@
       local expected="$2"
       local desc="''${3:-$cmd contains $expected}"
       RESULT=$(run_in_guest "$cmd")
-      STDOUT=$(echo "$RESULT" | jq -r '.stdout')
+      STDOUT=$(echo "$RESULT" | jq -r '.stdout_b64' | base64 -d)
       if ! echo "$STDOUT" | grep -q "$expected"; then
         echo "FAIL: $desc"
         echo "  expected to contain: $expected"
@@ -62,8 +60,8 @@
       EXIT_CODE=$(echo "$RESULT" | jq -r '.exit_code')
       if [ "$EXIT_CODE" != "0" ]; then
         echo "FAIL: $desc"
-        echo "  stdout: $(echo "$RESULT" | jq -r '.stdout')"
-        echo "  stderr: $(echo "$RESULT" | jq -r '.stderr')"
+        echo "  stdout: $(echo "$RESULT" | jq -r '.stdout_b64' | base64 -d)"
+        echo "  stderr: $(echo "$RESULT" | jq -r '.stderr_b64' | base64 -d)"
         return 1
       fi
       echo "PASS: $desc"
@@ -76,7 +74,7 @@
       local expected="$3"
       local desc="''${4:-[$machine] $cmd contains $expected}"
       RESULT=$(run_on "$machine" "$cmd")
-      STDOUT=$(echo "$RESULT" | jq -r '.stdout')
+      STDOUT=$(echo "$RESULT" | jq -r '.stdout_b64' | base64 -d)
       if ! echo "$STDOUT" | grep -q "$expected"; then
         echo "FAIL: $desc"
         echo "  expected to contain: $expected"
@@ -85,23 +83,41 @@
       fi
       echo "PASS: $desc"
     }
+
+    # Poll a command on a machine until it exits 0 or the deadline fires.
+    # 0.5s sleep between attempts. Bash arithmetic, not `date +%s` deltas,
+    # so the function is cheap to call from a tight loop.
+    wait_until_succeeds_on() {
+      local machine="$1"
+      local cmd="$2"
+      local timeout="$3"
+      local desc="''${4:-[$machine] $cmd succeeds within ''${timeout}s}"
+      local start
+      start=$(date +%s)
+      local deadline=$((start + timeout))
+      while [ "$(date +%s)" -lt "$deadline" ]; do
+        RESULT=$(run_on "$machine" "$cmd" 2>/dev/null || true)
+        EXIT_CODE=$(echo "$RESULT" | jq -r '.exit_code' 2>/dev/null || echo "1")
+        if [ "$EXIT_CODE" = "0" ]; then
+          echo "PASS: $desc"
+          return 0
+        fi
+        sleep 0.5
+      done
+      echo "FAIL: $desc (timeout after ''${timeout}s)"
+      echo "  last exit_code: $EXIT_CODE"
+      echo "  last stdout: $(echo "$RESULT" | jq -r '.stdout_b64' 2>/dev/null | base64 -d 2>/dev/null || true)"
+      echo "  last stderr: $(echo "$RESULT" | jq -r '.stderr_b64' 2>/dev/null | base64 -d 2>/dev/null || true)"
+      return 1
+    }
   '';
 in {
   # Store path to the binary, for inline calls in vm.nix / fleet.nix.
   rpcBin = rpc;
 
-  # Shell helpers for single-VM tests (QEMU virtio-serial driver).
-  # Expects $AGENT_SOCK and jq in the environment.
-  vmHelpers = ''
-    run_in_guest() {
-      ${rpc} --driver qemu "$AGENT_SOCK" "$1"
-    }
-    ${vmAssertions}
-  '';
-
   # Shell helpers for single-VM tests (Firecracker vsock driver).
   # Expects $VSOCK_UDS and jq in the environment.
-  vmFirecrackerHelpers = ''
+  vmHelpers = ''
     run_in_guest() {
       ${rpc} --driver firecracker "$VSOCK_UDS" "$1"
     }
@@ -116,18 +132,6 @@ in {
       local cmd="$2"
       local sock_var="AGENT_SOCK_$machine"
       ${rpc} --driver qemu "''${!sock_var}" "$cmd"
-    }
-    ${fleetAssertions}
-  '';
-
-  # Shell helpers for fleet tests (Firecracker vsock driver).
-  # Expects VSOCK_UDS_<name> variables and jq in the environment.
-  fleetVsockHelpers = ''
-    run_on() {
-      local machine="$1"
-      local cmd="$2"
-      local uds_var="VSOCK_UDS_$machine"
-      ${rpc} --driver firecracker "''${!uds_var}" "$cmd"
     }
     ${fleetAssertions}
   '';
