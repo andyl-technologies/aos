@@ -1,32 +1,25 @@
-# lib/testing/vm.nix — Multi-driver VM test harness (Firecracker + QEMU)
+# lib/testing/vm.nix — Single-VM test harness (Firecracker only)
 #
 # Architecture:
 #   1. Build a rootfs ext4 image from the system's Nix store closure
 #      (uses mkfs.ext4 -d — no losetup/mount, sandbox-compatible)
-#   2. Boot a VM using either Firecracker (default) or QEMU
-#   3. Guest agent communicates over vsock (Firecracker) or virtio-serial (QEMU)
+#   2. Boot a Firecracker microVM
+#   3. Guest agent communicates over vsock
 #   4. Host sends commands, asserts on results
 #
-# Drivers:
-#   - "firecracker": Lightweight VMM, vsock communication, vmlinux kernel,
-#     JSON config file, ~125ms boot. Guest agent uses socat VSOCK-LISTEN.
-#   - "qemu": Full-featured VMM, virtio-serial communication, vmlinuz kernel,
-#     CLI flags. Guest agent reads /dev/virtio-ports/*.
+# Multi-VM tests live in lib/testing/fleet.nix and use QEMU (virtio-serial
+# transport, multicast L2 between guests). The two harnesses are deliberately
+# segregated by transport — vsock (Firecracker) here, virtio-serial (QEMU)
+# there — and don't share driver state.
 #
 # Requirements:
 #   - Kernel with built-in: VIRTIO, VIRTIO_PCI, VIRTIO_BLK, EXT4_FS,
-#     VIRTIO_CONSOLE, DEVTMPFS, DEVTMPFS_MOUNT, VIRTIO_VSOCKETS (Firecracker),
-#     VIRTIO_MMIO (Firecracker)
+#     VIRTIO_CONSOLE, DEVTMPFS, DEVTMPFS_MOUNT, VIRTIO_VSOCKETS, VIRTIO_MMIO
 #   - requiredSystemFeatures = [ "kvm" ] on the builder
 {
   pkgs,
   lib,
-  testTools ? {},
 }: let
-  # QEMU is the sole host-tool exception (CLAUDE.md) — too complex to bootstrap.
-  # socat, jq, and firecracker are AOS packages built from source.
-  qemu = testTools.qemu;
-  hostSocat = pkgs.socat;
   hostJq = pkgs.jq;
   firecracker = pkgs.firecracker;
 
@@ -49,7 +42,7 @@
   # ---------------------------------------------------------------------------
   # Build a GPT disk image for VM testing
   # ---------------------------------------------------------------------------
-  # Produces a single $out/disk.img with three partitions matching the
+  # Produces a single $out/disk.img with four partitions matching the
   # production layout closely enough for the production initrd + ignition
   # services to run unchanged against it:
   #
@@ -61,14 +54,29 @@
   #              to /etc.lower at image-build time so the production
   #              etc-overlay-setup.service skips its first-boot remount-rw
   #              dance on ro root.
-  #   3  var   — 32 MiB ext4, empty. Label `var` via GPT partlabel so
+  #   3  swap  — 8 MiB stub with the Linux-swap GPT GUID, no body.
+  #              cryptswap.service's `Requires=` on the auto-instantiated
+  #              `dev-disk-by-partlabel-swap.device` would otherwise sit
+  #              queued for 90 s on every boot waiting for udev to
+  #              announce a partition that doesn't exist.
+  #   4  var   — 32 MiB ext4, empty. Label `var` via GPT partlabel so
   #              the production mount-var.service mounts it on every boot.
+  # `mkTestDisk` is a function of `system` only — two callers passing
+  # the same system reference the same Nix derivation, which is what
+  # lets fleet tests share one disk across every machine of a given
+  # variant.
+  #
+  # Per-instance state (hostname, /etc/hosts, eth0 .network) is no
+  # longer baked in here; the harnesses deliver it through ignition
+  # via the metadata ISO. The default `/etc.lower/hostname` written
+  # below is `aos-test` — at runtime, ignition's `/etc/hostname`
+  # write lands on the etc-overlay's upper layer (`/var/etc/hostname`)
+  # which shadows this lower-layer file. So the baked hostname is a
+  # fallback for tests that never deliver an instance identity, and
+  # the production-faithful identity flow shadows it when used.
   mkTestDisk = {
     system,
-    name ? "aos-test",
-    hostname ? "aos-test",
-    networkConfig ? null,
-    hostsEntries ? null,
+    name ? "aos-disk",
   }: let
     systemPackages = system.config.environment.systemPackages;
 
@@ -107,7 +115,12 @@
       SELINUXCFG
       fi
 
-      echo "${hostname}" > "rootfs/$ETC_TARGET/hostname"
+      # Default hostname goes into etc.lower (the overlay's lower
+      # layer). Ignition's `/etc/hostname` write lands on the upper
+      # layer at runtime and shadows this — so tests delivering a
+      # per-instance identity through ignition see the identity
+      # fragment's hostname; tests that don't see "aos-test".
+      echo "aos-test" > "rootfs/$ETC_TARGET/hostname"
       # Empty fstab — systemd-fstab-generator synthesizes sysroot.mount
       # from root= on the cmdline; mount-var.service handles /var.
       : > "rootfs/$ETC_TARGET/fstab"
@@ -119,27 +132,6 @@
       mkdir -p "rootfs/$ETC_TARGET/ssh"
       ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
         -f "rootfs/$ETC_TARGET/ssh/ssh_host_ed25519_key" </dev/null
-
-      ${
-        if hostsEntries != null
-        then ''
-          cat > "rootfs/$ETC_TARGET/hosts" << 'HOSTS'
-          127.0.0.1 localhost
-          ${hostsEntries}
-          HOSTS
-        ''
-        else ""
-      }
-      ${
-        if networkConfig != null
-        then ''
-          mkdir -p "rootfs/$ETC_TARGET/systemd/network"
-          cat > "rootfs/$ETC_TARGET/systemd/network/10-eth0.network" << 'NETCFG'
-          ${networkConfig}
-          NETCFG
-        ''
-        else ""
-      }
 
       cat > "rootfs/$ETC_TARGET/os-release" << 'OSREL'
       ID=aos
@@ -184,22 +176,61 @@
       hosts:  files dns
       NSS
 
-      # ── Guest agent handler: one command from stdin → JSON to stdout.
+      # ── Guest agent handler: one framed request from stdin → framed
+      # response to stdout. Wire format (both directions):
+      #   <ascii-decimal-len>\n<len bytes>
+      # Request bytes are the shell command (no trailing \n). Response
+      # bytes are JSON: {"exit_code":N,"stdout_b64":"...","stderr_b64":"..."}.
+      # stdout/stderr are base64-encoded so arbitrary output bytes (NUL,
+      # high-bit, embedded \n) round-trip without escaping. PING and
+      # SHUTDOWN are still recognised as the literal decoded payloads.
       cat > rootfs/opt/aos-test/bin/agent-handler << 'HANDLER'
       #!/bin/sh
+      # LC_ALL=C makes parameter-length counting byte-based (not
+      # character-based) and keeps base64/printf locale-independent.
+      LC_ALL=C
+      export LC_ALL
       set -u
       export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-      read -r cmd
-      if [ -z "$cmd" ]; then
-        exit 0
+
+      MAX=$((16 * 1024 * 1024))
+
+      IFS= read -r len_line || exit 0
+      case "$len_line" in
+        '''|*[!0-9]*)
+          echo "aos-test-agent: malformed length line: '$len_line'" >&2
+          exit 1
+          ;;
+      esac
+      if [ "$len_line" -gt "$MAX" ]; then
+        echo "aos-test-agent: request length $len_line exceeds $MAX" >&2
+        exit 1
       fi
-      echo "aos-test-agent: received: $cmd" >&2
+
+      # head -c reads exactly N bytes from stdin (the socket); writing
+      # to a file dodges $()'s trailing-newline strip and lets us run
+      # multi-line scripts via `bash /tmp/agent-cmd`.
+      head -c "$len_line" > /tmp/agent-cmd
+      actual=$(stat -c %s /tmp/agent-cmd)
+      if [ "$actual" -ne "$len_line" ]; then
+        echo "aos-test-agent: short read ($actual / $len_line)" >&2
+        exit 1
+      fi
+
+      cmd=$(cat /tmp/agent-cmd)
+      echo "aos-test-agent: received ($len_line bytes)" >&2
+
+      emit_response() {
+        body="$1"
+        printf '%s\n%s' "''${#body}" "$body"
+      }
+
       if [ "$cmd" = "PING" ]; then
-        printf '{"status":"ready"}\n'
+        emit_response '{"status":"ready"}'
         exit 0
       fi
       if [ "$cmd" = "SHUTDOWN" ]; then
-        printf '{"status":"shutdown"}\n'
+        emit_response '{"status":"shutdown"}'
         # Firecracker needs reboot -f (poweroff hangs); QEMU uses poweroff -f.
         if [ -e /dev/vsock ]; then
           reboot -f
@@ -208,97 +239,130 @@
         fi
         exit 0
       fi
-      eval "$cmd" > /tmp/agent-stdout 2>/tmp/agent-stderr
+
+      bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr
       exit_code=$?
-      stdout=$(cat /tmp/agent-stdout 2>/dev/null || true)
-      stderr=$(cat /tmp/agent-stderr 2>/dev/null || true)
-      NL='
-      '
-      escape_json() {
-        local s="$1"
-        s="''${s//\\/\\\\}"
-        s="''${s//\"/\\\"}"
-        s="''${s//$'\t'/\\t}"
-        s="''${s//$'\r'/\\r}"
-        s="''${s//$NL/\\n}"
-        printf '%s' "$s"
-      }
-      stdout_escaped=$(escape_json "$stdout")
-      stderr_escaped=$(escape_json "$stderr")
-      printf '{"exit_code":%d,"stdout":"%s","stderr":"%s"}\n' \
-        "$exit_code" "$stdout_escaped" "$stderr_escaped"
+      stdout_b64=$(base64 -w0 < /tmp/agent-stdout)
+      stderr_b64=$(base64 -w0 < /tmp/agent-stderr)
+      body="{\"exit_code\":$exit_code,\"stdout_b64\":\"$stdout_b64\",\"stderr_b64\":\"$stderr_b64\"}"
+      emit_response "$body"
       HANDLER
       chmod +x rootfs/opt/aos-test/bin/agent-handler
 
-      # ── Guest agent: auto-detect vsock vs virtio-serial, listen.
+      # ── Guest agent: auto-detect virtio-serial vs vsock, listen.
+      # Detection ORDER matters. The AOS kernel has CONFIG_VSOCKETS=y
+      # built-in (pkgs/kernel/config/drivers-vm.config), so /dev/vsock
+      # is created on every guest regardless of whether the host
+      # provided a virtio-vsock device. The virtio-serial port path
+      # (/dev/virtio-ports/aos.test.agent) only appears when QEMU
+      # actually attaches a virtserialport — making it the definitive
+      # "QEMU + virtio-serial harness" indicator. Check that first;
+      # only fall back to vsock when no virtio port shows up after a
+      # short wait (Firecracker's transport).
       cat > rootfs/opt/aos-test/bin/aos-test-agent << 'AGENT'
       #!/bin/sh
+      # See agent-handler for the wire format. LC_ALL=C: byte-counting
+      # parameter expansions and locale-independent printf/base64.
+      #
+      # Each request reopens $AGENT_PORT on fd 3 (read+write) and closes
+      # it after writing the response. A persistent open across multiple
+      # host connections gets a hang-up when the host disconnects between
+      # requests and subsequent reads return EOF — fd 3 must therefore be
+      # scoped to a single request/response pair. Within one request the
+      # fd MUST stay open between the LEN line and the body bytes so the
+      # body bytes aren't lost between successive opens.
+      LC_ALL=C
+      export LC_ALL
       set -u
       export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-      if [ -e /dev/vsock ]; then
+      MAX=$((16 * 1024 * 1024))
+
+      AGENT_PORT=""
+      echo "aos-test-agent: probing transports..." >&2
+      TRIES=0
+      while [ -z "$AGENT_PORT" ] && [ "$TRIES" -lt 30 ]; do
+        if [ -e "/dev/virtio-ports/aos.test.agent" ]; then
+          AGENT_PORT="/dev/virtio-ports/aos.test.agent"
+          break
+        fi
+        if [ -e "/dev/vport0p1" ]; then
+          AGENT_PORT="/dev/vport0p1"
+          break
+        fi
+        TRIES=$((TRIES + 1))
+        sleep 0.1
+      done
+
+      if [ -z "$AGENT_PORT" ] && [ -e /dev/vsock ]; then
         # vsock mode (Firecracker) — listen on port 52; each host CONNECT
         # spawns a new agent-handler via socat EXEC.
         echo "aos-test-agent: vsock mode, listening on port 52" >&2
         exec socat VSOCK-LISTEN:52,reuseaddr,fork EXEC:/opt/aos-test/bin/agent-handler
       fi
 
-      # virtio-serial mode (QEMU)
-      AGENT_PORT=""
-      echo "aos-test-agent: waiting for virtio port..." >&2
-      TRIES=0
-      while [ -z "$AGENT_PORT" ]; do
-        if [ -e "/dev/virtio-ports/aos.test.agent" ]; then
-          AGENT_PORT="/dev/virtio-ports/aos.test.agent"
-        elif [ -e "/dev/vport0p1" ]; then
-          AGENT_PORT="/dev/vport0p1"
-        else
-          TRIES=$((TRIES + 1))
-          if [ $((TRIES % 50)) -eq 0 ]; then
-            echo "aos-test-agent: still waiting ($TRIES attempts)..." >&2
-            ls /dev/vport* 2>&1 >&2 || true
-            ls /dev/virtio-ports/ 2>&1 >&2 || true
-          fi
-          sleep 0.1
-        fi
-      done
-      echo "aos-test-agent: using port $AGENT_PORT" >&2
+      if [ -z "$AGENT_PORT" ]; then
+        echo "aos-test-agent: no transport found (no virtio port, no /dev/vsock)" >&2
+        ls /dev/vport* 2>&1 >&2 || true
+        ls /dev/virtio-ports/ 2>&1 >&2 || true
+        exit 1
+      fi
+      echo "aos-test-agent: virtio-serial mode, using port $AGENT_PORT" >&2
 
       while true; do
-        cmd=$(head -1 "$AGENT_PORT" 2>/dev/null) || true
-        if [ -z "$cmd" ]; then
+        # Open the port for both directions on fd 3 for this one request.
+        exec 3<> "$AGENT_PORT"
+
+        if ! IFS= read -r len_line <&3; then
+          exec 3<&-
           sleep 0.1
           continue
         fi
-        echo "aos-test-agent: received: $cmd" >&2
+        case "$len_line" in
+          '''|*[!0-9]*)
+            echo "aos-test-agent: malformed length line: '$len_line'" >&2
+            exec 3<&-
+            continue
+            ;;
+        esac
+        if [ "$len_line" -gt "$MAX" ]; then
+          echo "aos-test-agent: request length $len_line exceeds $MAX" >&2
+          exec 3<&-
+          continue
+        fi
+
+        head -c "$len_line" <&3 > /tmp/agent-cmd
+        actual=$(stat -c %s /tmp/agent-cmd)
+        if [ "$actual" -ne "$len_line" ]; then
+          echo "aos-test-agent: short read ($actual / $len_line)" >&2
+          exec 3<&-
+          continue
+        fi
+
+        cmd=$(cat /tmp/agent-cmd)
+        echo "aos-test-agent: received ($len_line bytes)" >&2
+
         if [ "$cmd" = "PING" ]; then
-          printf '{"status":"ready"}\n' > "$AGENT_PORT"
+          body='{"status":"ready"}'
+          printf '%s\n%s' "''${#body}" "$body" >&3
+          exec 3<&-
           continue
         fi
         if [ "$cmd" = "SHUTDOWN" ]; then
-          printf '{"status":"shutdown"}\n' > "$AGENT_PORT"
+          body='{"status":"shutdown"}'
+          printf '%s\n%s' "''${#body}" "$body" >&3
+          exec 3<&-
           poweroff -f
           exit 0
         fi
-        eval "$cmd" > /tmp/agent-stdout 2>/tmp/agent-stderr
+
+        bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr
         exit_code=$?
-        stdout=$(cat /tmp/agent-stdout 2>/dev/null || true)
-        stderr=$(cat /tmp/agent-stderr 2>/dev/null || true)
-        NL='
-      '
-        escape_json() {
-          local s="$1"
-          s="''${s//\\/\\\\}"
-          s="''${s//\"/\\\"}"
-          s="''${s//$'\t'/\\t}"
-          s="''${s//$'\r'/\\r}"
-          s="''${s//$NL/\\n}"
-          printf '%s' "$s"
-        }
-        stdout_escaped=$(escape_json "$stdout")
-        stderr_escaped=$(escape_json "$stderr")
-        printf '{"exit_code":%d,"stdout":"%s","stderr":"%s"}\n' \
-          "$exit_code" "$stdout_escaped" "$stderr_escaped" > "$AGENT_PORT"
+        stdout_b64=$(base64 -w0 < /tmp/agent-stdout)
+        stderr_b64=$(base64 -w0 < /tmp/agent-stderr)
+        body="{\"exit_code\":$exit_code,\"stdout_b64\":\"$stdout_b64\",\"stderr_b64\":\"$stderr_b64\"}"
+        printf '%s\n%s' "''${#body}" "$body" >&3
+        exec 3<&-
       done
       AGENT
       chmod +x rootfs/opt/aos-test/bin/aos-test-agent
@@ -423,26 +487,30 @@
             # but reserving it keeps root at /dev/vda2 matching production.
             BOOT_SECTORS=$(( 4 * 1024 * 1024 / 512 ))   # 4 MiB
             ROOT_SECTORS=$(( root_bytes / 512 ))
-            VAR_SECTORS=$((  32 * 1024 * 1024 / 512 )) # 32 MiB
+            SWAP_SECTORS=$(( 8 * 1024 * 1024 / 512 ))   # 8 MiB
+            VAR_SECTORS=$((  32 * 1024 * 1024 / 512 ))  # 32 MiB
 
             BOOT_START=2048
             ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
-            VAR_START=$(( ROOT_START + ROOT_SECTORS ))
+            SWAP_START=$(( ROOT_START + ROOT_SECTORS ))
+            VAR_START=$((  SWAP_START + SWAP_SECTORS ))
             DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
             DISK_BYTES=$(( DISK_SECTORS * 512 ))
 
             echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
             truncate -s "$DISK_BYTES" disk.img
 
-            # Standard Linux filesystem GUID for all three partitions.
-            # The partlabel `var` is what mount-var.service binds to via
-            # /dev/disk/by-partlabel/var. The root partition is labelled
-            # `root-a` to match the production A/B layout — aos-growfs
-            # triggers on ConditionPathExists=/dev/disk/by-partlabel/root-a.
+            # Standard Linux filesystem GUID for boot/root/var; Linux
+            # swap GUID for the swap stub. The partlabel `var` is what
+            # mount-var.service binds to via /dev/disk/by-partlabel/var.
+            # The root partition is labelled `root-a` to match the
+            # production A/B layout — aos-growfs triggers on
+            # ConditionPathExists=/dev/disk/by-partlabel/root-a.
             sfdisk disk.img <<PTABLE
             label: gpt
             size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="boot"
             size=$ROOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root-a"
+            size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name="swap"
             size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="var"
             PTABLE
 
@@ -456,62 +524,8 @@
       ];
     };
 
-  # ---------------------------------------------------------------------------
-  # Per-test metadata ISO (ISO9660, volume label aos-metadata)
-  # ---------------------------------------------------------------------------
-  # Produces a small ISO9660 image with one file — config.json — that the
-  # initrd-side aos-platform-detect.service mounts at /run/aos-metadata and
-  # reads via IGNITION_CONFIG_FILE. Same developer ergonomics as the old
-  # ext4 + HTTP channel, zero guest-side daemons, and the transport matches
-  # what bare-metal operators attach over IPMI virtual media.
-  #
-  # Serialisation and `ignition-validate` both live in
-  # `lib/formats/ignition.nix`, so this derivation only has to package
-  # an already-validated `config.json` into an ext4 image.
-  ignitionTestFormat = lib.formats.ignition {
-    inherit lib pkgs;
-    allowStorageHardware = false;
-  };
-
-  mkMetadataIso = {
-    name,
-    ignitionConfig,
-  }: let
-    configDrv = ignitionTestFormat.generate "config.json" ignitionConfig;
-  in
-    pkgs.mkDerivation {
-      pname = "vm-metadata-${name}";
-      version = "0";
-      src = null;
-
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.libisoburn # provides xorriso
-      ];
-
-      # `configDrv` is a directory (AOS `mkDerivation` convention) —
-      # the JSON file sits at `${configDrv}/config.json`.
-      CONFIG_JSON = "${configDrv}/config.json";
-
-      phases = [
-        {
-          name = "build-metadata";
-          script = ''
-            mkdir staging
-            cp "$CONFIG_JSON" staging/config.json
-
-            mkdir -p $out
-            # Volume label `aos-metadata` is what blkid picks up via
-            # ISO9660's volume descriptor; the guest-side detector
-            # gates on /dev/disk/by-label/aos-metadata.
-            xorriso -as mkisofs \
-              -volid aos-metadata \
-              -output $out/metadata.iso \
-              -r staging/
-          '';
-        }
-      ];
-    };
+  # Metadata ISO builder (shared with fleet.nix). See metadata.nix.
+  inherit (import ./metadata.nix {inherit pkgs lib;}) mkMetadataIso;
 
   # ---------------------------------------------------------------------------
   # Create a VM test derivation
@@ -526,7 +540,6 @@
     testScript,
     rootfsDeps ? [],
     memory ? 256,
-    driver ? "firecracker",
   }: let
     rootfs = fcLib.mkFirecrackerRootfs {
       pname = name;
@@ -534,20 +547,11 @@
     };
     kernelPath = builtins.toString kernel;
 
-    headlessBuildDeps =
-      if driver == "firecracker"
-      then [
-        pkgs.coreutils
-        pkgs.grep
-        firecracker
-      ]
-      else if driver == "qemu"
-      then [
-        pkgs.coreutils
-        pkgs.grep
-        qemu
-      ]
-      else throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
+    headlessBuildDeps = [
+      pkgs.coreutils
+      pkgs.grep
+      firecracker
+    ];
 
     headlessFirecrackerScript = ''
       set -eu
@@ -630,73 +634,6 @@
         exit 1
       fi
     '';
-
-    headlessQemuScript = ''
-      set -eu
-
-      SERIAL_LOG="$TMPDIR/serial.log"
-      QEMU_LOG="$TMPDIR/qemu.log"
-      CONFIG="$TMPDIR/vm_config.json"
-
-      VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
-      if [ -z "$VMLINUZ" ]; then
-        echo "ERROR: No vmlinuz kernel image found in $KERNEL/boot/"
-        exit 1
-      fi
-
-      cp $ROOTFS rootfs.img
-      chmod u+w rootfs.img
-
-      echo "Kernel: $VMLINUZ"
-      echo "Rootfs: rootfs.img ($(ls -lh rootfs.img | awk '{print $5}'))"
-      echo "Memory: ${builtins.toString memory} MiB"
-      ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
-
-      unset LD_LIBRARY_PATH || true
-
-      echo "==> Launching QEMU for test: ${name}"
-
-      qemu-system-x86_64 \
-        -machine q35,accel=kvm \
-        -cpu host \
-        -m ${builtins.toString memory} \
-        -smp 1 \
-        -nographic \
-        -kernel "$VMLINUZ" \
-        -append "root=/dev/vda ro console=ttyS0 init=/init panic=1 quiet" \
-        -drive file=rootfs.img,format=raw,if=virtio \
-        -no-reboot > "$SERIAL_LOG" 2>"$QEMU_LOG" || true
-
-      if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
-        echo ""
-        echo "==> TEST PASSED: ${name}"
-        mkdir -p $out
-        cp "$SERIAL_LOG" $out/serial.log
-        cp "$QEMU_LOG" $out/qemu.log 2>/dev/null || true
-        echo "PASS" > $out/result
-      elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
-        echo ""
-        echo "==> TEST FAILED: ${name}"
-        echo "--- serial.log ---"
-        cat "$SERIAL_LOG"
-        echo "--- qemu.log ---"
-        cat "$QEMU_LOG" 2>/dev/null || true
-        exit 1
-      else
-        echo ""
-        echo "==> ERROR: No test result marker found in serial output"
-        echo "--- serial.log ---"
-        cat "$SERIAL_LOG"
-        echo "--- qemu.log ---"
-        cat "$QEMU_LOG" 2>/dev/null || true
-        exit 1
-      fi
-    '';
-
-    headlessScript =
-      if driver == "firecracker"
-      then headlessFirecrackerScript
-      else headlessQemuScript;
   in
     pkgs.mkDerivation {
       pname = "aos-vm-test-${name}";
@@ -711,7 +648,7 @@
       phases = [
         {
           name = "test";
-          script = headlessScript;
+          script = headlessFirecrackerScript;
         }
       ];
 
@@ -726,7 +663,6 @@
   #   - Headless mode (rootfsDeps parameter): test script IS init, for package checks
   mkVMTest = {
     name,
-    driver ? "firecracker",
     # System mode (full systemd + agent):
     system ? null,
     groupName ? name,
@@ -741,8 +677,6 @@
   }:
     assert (instanceMetadata != null -> system != null)
     || throw "mkVMTest '${name}': instanceMetadata requires system mode (got rootfsDeps or neither)";
-    assert (instanceMetadata != null -> system.config.aos.services.ignition.enable)
-    || throw "mkVMTest '${name}': instanceMetadata requires aos.services.ignition.enable = true on the system under test";
       if rootfsDeps != null
       then
         mkHeadlessTest {
@@ -750,7 +684,6 @@
             name
             testScript
             rootfsDeps
-            driver
             ;
           memory =
             if memory != null
@@ -810,24 +743,12 @@
           then memory
           else 2048;
 
-        # Driver-specific build dependencies
-        driverBuildDeps =
-          if driver == "firecracker"
-          then [
-            pkgs.coreutils
-            hostJq
-            firecracker
-            pkgs.aos-agent-rpc
-          ]
-          else if driver == "qemu"
-          then [
-            pkgs.coreutils
-            hostSocat
-            hostJq
-            qemu
-            pkgs.aos-agent-rpc
-          ]
-          else throw "mkVMTest '${name}': unknown driver '${driver}' (expected 'firecracker' or 'qemu')";
+        driverBuildDeps = [
+          pkgs.coreutils
+          hostJq
+          firecracker
+          pkgs.aos-agent-rpc
+        ];
 
         # -----------------------------------------------------------------------
         # Firecracker driver test script (system mode)
@@ -960,7 +881,7 @@
           echo "vsock UDS ready."
 
           # Import shared test helpers (run_in_guest, assert_success, assert_output_contains).
-          ${assertions.vmFirecrackerHelpers}
+          ${assertions.vmHelpers}
 
           # Wait for guest agent using PING/PONG
           echo "Waiting for guest agent..."
@@ -1015,164 +936,6 @@
           cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
           echo "PASS" > $out/result
         '';
-
-        # -----------------------------------------------------------------------
-        # QEMU driver test script (system mode)
-        # -----------------------------------------------------------------------
-        qemuScript = ''
-          set -eu
-
-          AGENT_SOCK="$TMPDIR/agent.sock"
-          SERIAL_SOCK="$TMPDIR/serial.sock"
-          SERIAL_LOG="$TMPDIR/serial.log"
-
-          # Copy disk image to writable location
-          cp $DISK/disk.img disk.img
-          chmod u+w disk.img
-
-          # Copy the metadata ISO (when attached) to a writable location.
-          ${lib.optionalString hasMetadata ''
-            cp $METADATA/metadata.iso metadata.iso
-            chmod u+w metadata.iso
-          ''}
-
-          # Find the kernel image
-          VMLINUZ=$(ls $KERNEL/boot/vmlinuz-* | head -1)
-          INITRD_IMG=$INITRD/initrd.img
-
-          # Pre-flight checks
-          QEMU_LOG="$TMPDIR/qemu.log"
-          echo "Driver: qemu"
-          echo "Kernel: $VMLINUZ"
-          echo "Initrd: $INITRD_IMG"
-          echo "Disk:   disk.img ($(ls -lh disk.img | awk '{print $5}'))"
-          ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
-
-          # Clear LD_LIBRARY_PATH — AOS build libs can conflict with QEMU
-          # (QEMU is the sole nixpkgs binary; socat/jq are AOS packages)
-          unset LD_LIBRARY_PATH
-
-          qemu-system-x86_64 --version || echo "QEMU version check failed"
-
-          # Serial console drain: socat listens on $SERIAL_SOCK and appends
-          # everything the guest writes to $SERIAL_LOG. -u makes it strictly
-          # one-way (socket → file), so any guest read from /dev/ttyS0 blocks
-          # on the socket — socat never writes back — matching the behavior
-          # of a real idle tty with no user typing. Must be up before QEMU
-          # connects as client, else early-boot output would be lost.
-          socat -u UNIX-LISTEN:"$SERIAL_SOCK",reuseaddr,fork \
-                   OPEN:"$SERIAL_LOG",creat,append &
-          DRAIN_PID=$!
-          SOCK_WAIT=0
-          while [ ! -S "$SERIAL_SOCK" ]; do
-            sleep 0.05
-            SOCK_WAIT=$((SOCK_WAIT + 1))
-            if [ "$SOCK_WAIT" -gt 100 ]; then
-              echo "ERROR: serial drain socket did not appear within 5s"
-              exit 1
-            fi
-          done
-
-          # Launch QEMU with direct kernel boot through the initrd. The
-          # -append cmdline replaces the image's built-in cmdline; no
-          # `ignition.platform.id=` or `ignition.config.url=` —
-          # aos-platform-detect infers qemu from DMI and mounts the
-          # metadata ISO when attached.
-          # Metadata ISO (when attached) rides on a SCSI CD-ROM so the
-          # guest sees it as /dev/sr0; blkid then picks up the ISO9660
-          # volume label `aos-metadata` for the detector.
-          qemu-system-x86_64 \
-            -machine q35,accel=kvm \
-            -cpu host \
-            -m ${builtins.toString effectiveMemory} \
-            -smp 2 \
-            -nographic \
-            -kernel "$VMLINUZ" \
-            -initrd "$INITRD_IMG" \
-            -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0" \
-            -drive file=disk.img,format=raw,if=virtio \
-            ${lib.optionalString hasMetadata ''
-            -drive id=metadata,file=metadata.iso,if=none,format=raw,readonly=on \
-            -device virtio-scsi-pci,id=scsi0 \
-            -device scsi-cd,drive=metadata,bus=scsi0.0 \
-          ''}
-            -device virtio-serial \
-            -device virtserialport,chardev=agent,name=aos.test.agent \
-            -chardev socket,id=agent,path="$AGENT_SOCK",server=on,wait=off \
-            -chardev socket,id=ttyS0,path="$SERIAL_SOCK",server=off \
-            -serial chardev:ttyS0 \
-            -no-reboot > "$QEMU_LOG" 2>&1 &
-          QEMU_PID=$!
-          echo "QEMU PID: $QEMU_PID"
-          sleep 2
-          if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-            echo "ERROR: QEMU exited immediately!"
-            echo "--- QEMU log ---"
-            cat "$QEMU_LOG" 2>/dev/null || true
-            exit 1
-          fi
-
-          cleanup() {
-            kill "$QEMU_PID" 2>/dev/null || true
-            wait "$QEMU_PID" 2>/dev/null || true
-            kill "$DRAIN_PID" 2>/dev/null || true
-            wait "$DRAIN_PID" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-
-          # Import shared test helpers (run_in_guest, assert_success, assert_output_contains)
-          ${assertions.vmHelpers}
-
-          # Wait for guest agent using PING/PONG
-          echo "Waiting for guest agent..."
-          START_TIME=$(date +%s)
-          DEADLINE=$((START_TIME + ${builtins.toString timeout}))
-          AGENT_READY=0
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            if [ -S "$AGENT_SOCK" ]; then
-              RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
-              if echo "$RESPONSE" | grep -q '"ready"'; then
-                echo "Guest agent ready."
-                AGENT_READY=1
-                break
-              fi
-            fi
-            sleep 0.5
-          done
-
-          if [ "$AGENT_READY" -ne 1 ]; then
-            echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
-            echo "--- QEMU log ---"
-            cat "$QEMU_LOG" 2>/dev/null || true
-            echo "--- Serial log ---"
-            cat "$SERIAL_LOG" 2>/dev/null || true
-            exit 1
-          fi
-
-          echo ""
-          echo "==> Running test: ${name}"
-          echo ""
-
-          ${composedScript}
-
-          echo ""
-          echo "Shutting down guest..."
-          run_in_guest "SHUTDOWN" || true
-          sleep 2
-          wait "$QEMU_PID" 2>/dev/null || true
-          trap - EXIT
-
-          echo ""
-          echo "==> All tests passed for: ${name}"
-          mkdir -p $out
-          cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
-          echo "PASS" > $out/result
-        '';
-
-        testPhaseScript =
-          if driver == "firecracker"
-          then firecrackerScript
-          else qemuScript;
       in
         pkgs.mkDerivation {
           pname = "aos-vm-test-${name}";
@@ -1189,7 +952,7 @@
           phases = [
             {
               name = "test";
-              script = testPhaseScript;
+              script = firecrackerScript;
             }
           ];
 

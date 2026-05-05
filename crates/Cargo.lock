@@ -126,6 +126,7 @@ dependencies = [
  "hyper-util",
  "ignore",
  "indicatif",
+ "libc",
  "rand",
  "regex",
  "reqwest",
