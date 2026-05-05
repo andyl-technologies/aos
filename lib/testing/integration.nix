@@ -200,6 +200,7 @@
       name = "${pkg.pname or "pkg"}-soname";
       rootfsDeps = [
         pkgs.elfutils
+        pkgs.grep
         pkg
       ];
       testScript = ''
