@@ -19,6 +19,7 @@
 {
   pkgs,
   systems,
+  ...
 }: let
   # k3s's token parser (`pkg/clientaccess/token.go:251`) accepts
   # kubeadm bootstrap tokens, `username:password` pairs, or K10-
@@ -63,9 +64,10 @@
   # /etc/rancher/k3s/config.yaml is k3s's default config-file
   # location. Both `k3s server` and `k3s agent` read it
   # automatically; the loader (`pkg/configfilearg`) merges its keys
-  # in as if they were CLI flags. We use it to pin `node-ip` per
-  # machine without having to bake the IP into the role's
-  # ExecStart (the role is image-shared and doesn't know the IP).
+  # in as if they were CLI flags. We use it to pin `node-ip` and
+  # `flannel-iface` per machine without having to bake them into
+  # the role's ExecStart (the role is image-shared and doesn't
+  # know the IP or interface name).
   #
   # Why we have to pin node-ip in tests: k3s would otherwise call
   # `apimachinery/pkg/util/net.ChooseHostInterface()`, which reads
@@ -75,11 +77,31 @@
   # default route — so that lookup fatals with "no default routes
   # found". Real-world hosts always have a default route via
   # DHCP / a real gateway; pinning node-ip here is test-only glue.
+  #
+  # Why we have to pin flannel-iface: k3s's embedded flannel
+  # daemon walks the same routing table to discover its external
+  # interface (`pkg/agent/flannel.LookupExtIface` →
+  # `ip.GetDefaultGatewayInterface`). With no default route the
+  # lookup returns `unable to find default route` and flannel
+  # `os.Exit(1)`s the whole agent — `Restart=always` then traps
+  # the unit in `activating`/`failed` forever, never reaching the
+  # `READY=1` notify. Pinning the iface skips the gateway probe.
+  # `eth0` is deterministic here because the kernel cmdline carries
+  # `net.ifnames=0` and the fleet harness only attaches a single
+  # mcast NIC to each sandbox VM. (The interactive harness adds
+  # eth1 with DHCP and a default route, so the gateway probe would
+  # succeed there — but pinning is harmless and keeps the two
+  # codepaths symmetrical.)
   configFile = ip: {
     path = "/etc/rancher/k3s/config.yaml";
     mode = 420; # 0644
     overwrite = true;
-    contents.source = "data:," + uriEncode "node-ip: ${ip}\n";
+    contents.source =
+      "data:,"
+      + uriEncode ''
+        node-ip: ${ip}
+        flannel-iface: eth0
+      '';
   };
 in {
   name = "k3s-control-plane-worker";
@@ -157,8 +179,17 @@ in {
     # is fully up. We don't `kubectl get componentstatuses` because
     # k3s lies about scheduler/controller-manager component health
     # in some versions — /healthz is the load-bearing probe.
+    #
+    # k3s 1.35 (kubernetes 1.35) returns 401 to anonymous requests
+    # against /healthz; the apiserver routes it through the auth
+    # chain and `--anonymous-auth=false` is the new default. So we
+    # probe via `kubectl get --raw=/healthz`, which authenticates
+    # using the admin client cert from /etc/rancher/k3s/k3s.yaml
+    # — same endpoint, same response body, just past the authn
+    # gate. (curl with --cacert+--cert+--key would also work; the
+    # kubectl form is shorter and avoids hard-coding tls paths.)
     wait_until_succeeds_on controlplane \
-      "${pkgs.curl}/bin/curl -sfk https://127.0.0.1:6443/healthz | grep -qx 'ok'" \
+      "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get --raw=/healthz | grep -qx 'ok'" \
       60 \
       "controlplane apiserver /healthz returns ok"
 
@@ -181,8 +212,15 @@ in {
     # passing "1" as the expected value would also match "11", "12",
     # … Use `assert_on` with a numeric `test -eq` instead — that
     # asserts an exact integer equality and returns exit 0/1.
+    #
+    # `\$(…)` is load-bearing: the testScript is concatenated into
+    # the outer build-host shell (lib/testing/fleet.nix), so an
+    # un-escaped `$(…)` would substitute *there* — running kubectl
+    # against the build host's missing /etc/rancher/k3s/k3s.yaml.
+    # Escaping defers the substitution until `assert_on` ships the
+    # string into the guest's shell, where the kubeconfig exists.
     assert_on controlplane \
-      "test $(${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes --no-headers | wc -l) -eq 1" \
+      "test \$(${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes --no-headers | wc -l) -eq 1" \
       "exactly one node registered (control-plane is invisible by design)"
   '';
 }
