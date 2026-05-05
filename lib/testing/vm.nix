@@ -176,22 +176,61 @@
       hosts:  files dns
       NSS
 
-      # ── Guest agent handler: one command from stdin → JSON to stdout.
+      # ── Guest agent handler: one framed request from stdin → framed
+      # response to stdout. Wire format (both directions):
+      #   <ascii-decimal-len>\n<len bytes>
+      # Request bytes are the shell command (no trailing \n). Response
+      # bytes are JSON: {"exit_code":N,"stdout_b64":"...","stderr_b64":"..."}.
+      # stdout/stderr are base64-encoded so arbitrary output bytes (NUL,
+      # high-bit, embedded \n) round-trip without escaping. PING and
+      # SHUTDOWN are still recognised as the literal decoded payloads.
       cat > rootfs/opt/aos-test/bin/agent-handler << 'HANDLER'
       #!/bin/sh
+      # LC_ALL=C makes parameter-length counting byte-based (not
+      # character-based) and keeps base64/printf locale-independent.
+      LC_ALL=C
+      export LC_ALL
       set -u
       export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-      read -r cmd
-      if [ -z "$cmd" ]; then
-        exit 0
+
+      MAX=$((16 * 1024 * 1024))
+
+      IFS= read -r len_line || exit 0
+      case "$len_line" in
+        '''|*[!0-9]*)
+          echo "aos-test-agent: malformed length line: '$len_line'" >&2
+          exit 1
+          ;;
+      esac
+      if [ "$len_line" -gt "$MAX" ]; then
+        echo "aos-test-agent: request length $len_line exceeds $MAX" >&2
+        exit 1
       fi
-      echo "aos-test-agent: received: $cmd" >&2
+
+      # head -c reads exactly N bytes from stdin (the socket); writing
+      # to a file dodges $()'s trailing-newline strip and lets us run
+      # multi-line scripts via `bash /tmp/agent-cmd`.
+      head -c "$len_line" > /tmp/agent-cmd
+      actual=$(stat -c %s /tmp/agent-cmd)
+      if [ "$actual" -ne "$len_line" ]; then
+        echo "aos-test-agent: short read ($actual / $len_line)" >&2
+        exit 1
+      fi
+
+      cmd=$(cat /tmp/agent-cmd)
+      echo "aos-test-agent: received ($len_line bytes)" >&2
+
+      emit_response() {
+        body="$1"
+        printf '%s\n%s' "''${#body}" "$body"
+      }
+
       if [ "$cmd" = "PING" ]; then
-        printf '{"status":"ready"}\n'
+        emit_response '{"status":"ready"}'
         exit 0
       fi
       if [ "$cmd" = "SHUTDOWN" ]; then
-        printf '{"status":"shutdown"}\n'
+        emit_response '{"status":"shutdown"}'
         # Firecracker needs reboot -f (poweroff hangs); QEMU uses poweroff -f.
         if [ -e /dev/vsock ]; then
           reboot -f
@@ -200,25 +239,13 @@
         fi
         exit 0
       fi
-      eval "$cmd" > /tmp/agent-stdout 2>/tmp/agent-stderr
+
+      bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr
       exit_code=$?
-      stdout=$(cat /tmp/agent-stdout 2>/dev/null || true)
-      stderr=$(cat /tmp/agent-stderr 2>/dev/null || true)
-      NL='
-      '
-      escape_json() {
-        local s="$1"
-        s="''${s//\\/\\\\}"
-        s="''${s//\"/\\\"}"
-        s="''${s//$'\t'/\\t}"
-        s="''${s//$'\r'/\\r}"
-        s="''${s//$NL/\\n}"
-        printf '%s' "$s"
-      }
-      stdout_escaped=$(escape_json "$stdout")
-      stderr_escaped=$(escape_json "$stderr")
-      printf '{"exit_code":%d,"stdout":"%s","stderr":"%s"}\n' \
-        "$exit_code" "$stdout_escaped" "$stderr_escaped"
+      stdout_b64=$(base64 -w0 < /tmp/agent-stdout)
+      stderr_b64=$(base64 -w0 < /tmp/agent-stderr)
+      body="{\"exit_code\":$exit_code,\"stdout_b64\":\"$stdout_b64\",\"stderr_b64\":\"$stderr_b64\"}"
+      emit_response "$body"
       HANDLER
       chmod +x rootfs/opt/aos-test/bin/agent-handler
 
@@ -234,8 +261,22 @@
       # short wait (Firecracker's transport).
       cat > rootfs/opt/aos-test/bin/aos-test-agent << 'AGENT'
       #!/bin/sh
+      # See agent-handler for the wire format. LC_ALL=C: byte-counting
+      # parameter expansions and locale-independent printf/base64.
+      #
+      # Each request reopens $AGENT_PORT on fd 3 (read+write) and closes
+      # it after writing the response. A persistent open across multiple
+      # host connections gets a hang-up when the host disconnects between
+      # requests and subsequent reads return EOF — fd 3 must therefore be
+      # scoped to a single request/response pair. Within one request the
+      # fd MUST stay open between the LEN line and the body bytes so the
+      # body bytes aren't lost between successive opens.
+      LC_ALL=C
+      export LC_ALL
       set -u
       export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+      MAX=$((16 * 1024 * 1024))
 
       AGENT_PORT=""
       echo "aos-test-agent: probing transports..." >&2
@@ -269,40 +310,59 @@
       echo "aos-test-agent: virtio-serial mode, using port $AGENT_PORT" >&2
 
       while true; do
-        cmd=$(head -1 "$AGENT_PORT" 2>/dev/null) || true
-        if [ -z "$cmd" ]; then
+        # Open the port for both directions on fd 3 for this one request.
+        exec 3<> "$AGENT_PORT"
+
+        if ! IFS= read -r len_line <&3; then
+          exec 3<&-
           sleep 0.1
           continue
         fi
-        echo "aos-test-agent: received: $cmd" >&2
+        case "$len_line" in
+          '''|*[!0-9]*)
+            echo "aos-test-agent: malformed length line: '$len_line'" >&2
+            exec 3<&-
+            continue
+            ;;
+        esac
+        if [ "$len_line" -gt "$MAX" ]; then
+          echo "aos-test-agent: request length $len_line exceeds $MAX" >&2
+          exec 3<&-
+          continue
+        fi
+
+        head -c "$len_line" <&3 > /tmp/agent-cmd
+        actual=$(stat -c %s /tmp/agent-cmd)
+        if [ "$actual" -ne "$len_line" ]; then
+          echo "aos-test-agent: short read ($actual / $len_line)" >&2
+          exec 3<&-
+          continue
+        fi
+
+        cmd=$(cat /tmp/agent-cmd)
+        echo "aos-test-agent: received ($len_line bytes)" >&2
+
         if [ "$cmd" = "PING" ]; then
-          printf '{"status":"ready"}\n' > "$AGENT_PORT"
+          body='{"status":"ready"}'
+          printf '%s\n%s' "''${#body}" "$body" >&3
+          exec 3<&-
           continue
         fi
         if [ "$cmd" = "SHUTDOWN" ]; then
-          printf '{"status":"shutdown"}\n' > "$AGENT_PORT"
+          body='{"status":"shutdown"}'
+          printf '%s\n%s' "''${#body}" "$body" >&3
+          exec 3<&-
           poweroff -f
           exit 0
         fi
-        eval "$cmd" > /tmp/agent-stdout 2>/tmp/agent-stderr
+
+        bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr
         exit_code=$?
-        stdout=$(cat /tmp/agent-stdout 2>/dev/null || true)
-        stderr=$(cat /tmp/agent-stderr 2>/dev/null || true)
-        NL='
-      '
-        escape_json() {
-          local s="$1"
-          s="''${s//\\/\\\\}"
-          s="''${s//\"/\\\"}"
-          s="''${s//$'\t'/\\t}"
-          s="''${s//$'\r'/\\r}"
-          s="''${s//$NL/\\n}"
-          printf '%s' "$s"
-        }
-        stdout_escaped=$(escape_json "$stdout")
-        stderr_escaped=$(escape_json "$stderr")
-        printf '{"exit_code":%d,"stdout":"%s","stderr":"%s"}\n' \
-          "$exit_code" "$stdout_escaped" "$stderr_escaped" > "$AGENT_PORT"
+        stdout_b64=$(base64 -w0 < /tmp/agent-stdout)
+        stderr_b64=$(base64 -w0 < /tmp/agent-stderr)
+        body="{\"exit_code\":$exit_code,\"stdout_b64\":\"$stdout_b64\",\"stderr_b64\":\"$stderr_b64\"}"
+        printf '%s\n%s' "''${#body}" "$body" >&3
+        exec 3<&-
       done
       AGENT
       chmod +x rootfs/opt/aos-test/bin/aos-test-agent

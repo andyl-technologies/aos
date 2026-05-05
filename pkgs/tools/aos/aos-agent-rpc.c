@@ -2,8 +2,10 @@
  * aos-agent-rpc — Single-shot RPC client for the AOS VM test agent.
  *
  * Connects to a Unix domain socket, optionally performs the Firecracker
- * vsock CONNECT handshake, sends a command, reads one line of JSON
- * response, and prints it to stdout.
+ * vsock CONNECT handshake, sends a command framed as `<len>\n<bytes>`,
+ * reads a response framed the same way (body is JSON with base64-encoded
+ * stdout/stderr), and prints the body followed by a single `\n` to stdout
+ * so existing `jq` pipelines see line-terminated input.
  *
  * Replaces the shell pipeline { printf cmd; sleep 30 } | socat | head -1
  * which always blocks for the full sleep duration because sleep is immune
@@ -27,13 +29,15 @@ enum driver {
 	DRIVER_FIRECRACKER,
 };
 
-#define RESPONSE_BUFSZ  65536
+#define LEN_LINE_BUFSZ  32
 #define HANDSHAKE_BUFSZ 256
+#define MAX_FRAME_BYTES (16U * 1024U * 1024U)
 
 /* Forward declarations — helpers defined after main (call-graph order). */
 static void    usage(const char *progname);
 static int     write_all(int fd, const char *buf, size_t len);
 static ssize_t read_line(int fd, char *buf, size_t bufsz, int timeout_ms);
+static int     read_n(int fd, char *buf, size_t n, int timeout_ms);
 
 int main(int argc, char *argv[])
 {
@@ -96,6 +100,15 @@ int main(int argc, char *argv[])
 
 	const char *socket_path = argv[optind];
 	const char *command = argv[optind + 1];
+	size_t command_len = strlen(command);
+
+	if (command_len > MAX_FRAME_BYTES) {
+		fprintf(stderr,
+			"aos-agent-rpc: command length %zu exceeds"
+			" %u-byte limit\n",
+			command_len, MAX_FRAME_BYTES);
+		return 1;
+	}
 
 	/* Connect to the Unix domain socket. */
 	int fd = socket(AF_UNIX, SOCK_STREAM, /*protocol=*/0);
@@ -150,17 +163,25 @@ int main(int argc, char *argv[])
 		/* hbuf contains "OK <port>" — discard. */
 	}
 
-	/* Send the command. */
-	if (write_all(fd, command, strlen(command)) < 0 ||
-	    write_all(fd, "\n", /*len=*/1) < 0) {
+	/* Send the request frame: "<len>\n<command bytes>" — no trailing \n. */
+	char prefix[LEN_LINE_BUFSZ];
+	int prefix_len = snprintf(prefix, sizeof(prefix), "%zu\n", command_len);
+	if (prefix_len <= 0 || (size_t)prefix_len >= sizeof(prefix)) {
+		fprintf(stderr,
+			"aos-agent-rpc: failed to format request length\n");
+		close(fd);
+		return 1;
+	}
+	if (write_all(fd, prefix, (size_t)prefix_len) < 0 ||
+	    write_all(fd, command, command_len) < 0) {
 		close(fd);
 		return 1;
 	}
 
-	/* Read the JSON response line. */
-	char response[RESPONSE_BUFSZ];
-	ssize_t rlen = read_line(fd, response, sizeof(response), timeout_ms);
-	if (rlen < 0) {
+	/* Read the response length line. */
+	char len_buf[LEN_LINE_BUFSZ];
+	ssize_t llen = read_line(fd, len_buf, sizeof(len_buf), timeout_ms);
+	if (llen < 0) {
 		fprintf(stderr,
 			"aos-agent-rpc: no response from guest agent"
 			" (timeout %ds, socket %s)\n",
@@ -168,9 +189,65 @@ int main(int argc, char *argv[])
 		close(fd);
 		return 1;
 	}
+	if (llen == 0) {
+		fprintf(stderr,
+			"aos-agent-rpc: empty response length line\n");
+		close(fd);
+		return 1;
+	}
 
-	printf("%s\n", response);
+	char *endptr = NULL;
+	errno = 0;
+	unsigned long body_len = strtoul(len_buf, &endptr, 10);
+	if (errno != 0 || endptr == len_buf || *endptr != '\0') {
+		fprintf(stderr,
+			"aos-agent-rpc: malformed response length line:"
+			" '%s'\n",
+			len_buf);
+		close(fd);
+		return 1;
+	}
+	if (body_len == 0 || body_len > MAX_FRAME_BYTES) {
+		fprintf(stderr,
+			"aos-agent-rpc: response body length %lu out of"
+			" range (1..%u)\n",
+			body_len, MAX_FRAME_BYTES);
+		close(fd);
+		return 1;
+	}
 
+	char *body = malloc(body_len + 1);
+	if (body == NULL) {
+		fprintf(stderr,
+			"aos-agent-rpc: malloc(%lu) failed: %s\n",
+			body_len + 1, strerror(errno));
+		close(fd);
+		return 1;
+	}
+
+	if (read_n(fd, body, body_len, timeout_ms) < 0) {
+		fprintf(stderr,
+			"aos-agent-rpc: short response body"
+			" (expected %lu bytes)\n",
+			body_len);
+		free(body);
+		close(fd);
+		return 1;
+	}
+	body[body_len] = '\0';
+
+	if (fwrite(body, /*size=*/1, body_len, stdout) != body_len) {
+		fprintf(stderr,
+			"aos-agent-rpc: failed to write response body"
+			" to stdout: %s\n",
+			strerror(errno));
+		free(body);
+		close(fd);
+		return 1;
+	}
+	fputc('\n', stdout);
+
+	free(body);
 	close(fd);
 	return 0;
 }
@@ -240,4 +317,35 @@ static ssize_t read_line(int fd, char *buf, size_t bufsz, int timeout_ms)
 	fprintf(stderr, "aos-agent-rpc: response line exceeds %zu bytes\n",
 		bufsz - 1);
 	return -1;
+}
+
+static int read_n(int fd, char *buf, size_t n, int timeout_ms)
+{
+	size_t pos = 0;
+	struct pollfd pfd = {
+		.fd = fd,
+		.events = POLLIN,
+	};
+
+	while (pos < n) {
+		int ret = poll(&pfd, /*nfds=*/1, timeout_ms);
+		if (ret < 0) {
+			if (errno == EINTR)
+				continue;
+			return -1;
+		}
+		if (ret == 0)
+			return -1; /* timeout */
+
+		ssize_t r = read(fd, &buf[pos], n - pos);
+		if (r < 0) {
+			if (errno == EINTR)
+				continue;
+			return -1;
+		}
+		if (r == 0)
+			return -1; /* EOF before all bytes read */
+		pos += (size_t)r;
+	}
+	return 0;
 }
