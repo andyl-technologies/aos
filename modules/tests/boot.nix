@@ -62,7 +62,14 @@
           # The immutable OS design mounts / as ext4 ro; mutable state
           # lives on /var (rw) and /etc is an overlayfs with a tmpfs
           # upper layer. A writable / would undermine the model.
-          assert_output_contains "findmnt -n -o OPTIONS /" "ro" \
+          #
+          # `findmnt -O ro /` filters by mount option: exit 0 iff `/`
+          # actually carries the `ro` flag. We previously substring-
+          # grepped the OPTIONS column for "ro", which silently passed
+          # on a writable ext4 root because `errors=remount-ro` (the
+          # ext4 default) contains the literal "ro" — exactly the
+          # regression we were trying to catch.
+          assert_success "findmnt -O ro /" \
             "root filesystem is mounted read-only"
         '';
       }
