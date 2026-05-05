@@ -25,7 +25,7 @@
   # that declares a handful of services covering the patterns we care
   # about at stage 3. Deliberately does NOT pull in the whole AOS
   # module tree — we want this check to fail in a way that points at
-  # system.nix / _lib.nix / _unit-options.nix, not at an unrelated
+  # system.nix / lib.nix / unit-options.nix, not at an unrelated
   # module deep in modules/services/.
   syntheticConfig = {
     config.systemd = {
