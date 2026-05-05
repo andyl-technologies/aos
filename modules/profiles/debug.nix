@@ -127,6 +127,7 @@ in {
           ];
           Restart = "always";
           RestartSec = "0";
+          SendSIGHUP = "yes";
           TTYPath = "/dev/tty1";
           TTYReset = "yes";
           TTYVHangup = "yes";
@@ -147,6 +148,7 @@ in {
           ];
           Restart = "always";
           RestartSec = "0";
+          SendSIGHUP = "yes";
           TTYPath = "/dev/ttyS0";
           TTYReset = "yes";
           TTYVHangup = "yes";
