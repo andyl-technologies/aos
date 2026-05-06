@@ -8,7 +8,6 @@
 ##!
 ##!     /usr/{bin,sbin,lib}   — real directories
 ##!     /{bin,sbin,lib}       — symlinks into /usr/
-##!     /lib64                — real directory (for ld-linux-x86-64.so.2)
 ##!
 ##! Every file in the resulting image is owned by uid/gid 0: `mkfs.ext4 -d`
 ##! runs under `fakeroot` so the sandbox user's uid doesn't leak into the
@@ -185,7 +184,6 @@ in
           ln -sfn usr/bin rootfs/bin
           ln -sfn usr/bin rootfs/sbin
           ln -sfn usr/lib rootfs/lib
-          mkdir -p rootfs/lib64
           mkdir -p rootfs/"$ETC_TARGET"
           mkdir -p rootfs/proc rootfs/sys rootfs/dev rootfs/tmp
           mkdir -p rootfs/run rootfs/var rootfs/sysroot
@@ -217,47 +215,27 @@ in
           done < store-paths
           echo ""
 
-          # ── 3. /lib64/ld-linux-x86-64.so.2 ──────────────────────────────
-          # PIE binaries with a hardcoded /lib64/ld-linux-x86-64.so.2
-          # interpreter path (containerd with CGO, various Go binaries,
-          # third-party tools) fail to exec without this.
-          #
-          # The closure lives on disk under rootfs/nix.lower/store, but
-          # the symlink target is the overlay-visible path /nix/store/...
-          # (matching every other binary's embedded RUNPATH).
-          LD_LINUX=$(find rootfs/nix.lower/store -name 'ld-linux-x86-64.so.2' \
-                       -path '*glibc-*/lib/*' 2>/dev/null \
-                       | sort -V | tail -1)
-          if [ -n "$LD_LINUX" ]; then
-            GUEST_LD="''${LD_LINUX#rootfs/nix.lower}"
-            GUEST_LD="/nix$GUEST_LD"
-            ln -sfn "$GUEST_LD" rootfs/lib64/ld-linux-x86-64.so.2
-            echo "    /lib64/ld-linux-x86-64.so.2 -> $GUEST_LD"
-          else
-            echo "    WARN: ld-linux-x86-64.so.2 not found in rootfs glibc" >&2
-          fi
-
-          # ── 4. PID 1 and compat symlinks ────────────────────────────────
+          # ── 3. PID 1 and compat symlinks ────────────────────────────────
           # /sbin/init (via merged-usr: /sbin → usr/bin) → systemd.
           ln -sfn "$SYSTEMD/lib/systemd/systemd" rootfs/usr/bin/init
           ln -sfn "$AOS_BASH/bin/bash" rootfs/usr/bin/bash
           ln -sfn "$AOS_BASH/bin/sh" rootfs/usr/bin/sh
           ln -sfn "$COREUTILS/bin/env" rootfs/usr/bin/env
 
-          # ── 5. Kernel modules ───────────────────────────────────────────
+          # ── 4. Kernel modules ───────────────────────────────────────────
           # kmod looks up modules at /lib/modules/$(uname -r); the
           # /lib → usr/lib symlink makes this resolve to usr/lib/modules.
           ln -sfn "$KERNEL/lib/modules" rootfs/usr/lib/modules
 
-          # ── 6. /var/run → /run ──────────────────────────────────────────
+          # ── 5. /var/run → /run ──────────────────────────────────────────
           # Modern-Linux convention: /run is tmpfs, /var/run is a back-
           # compat symlink. Many daemons still reference /var/run paths.
           ln -sfn /run rootfs/var/run
 
-          # ── 7. /run/current-system → toplevel ───────────────────────────
+          # ── 6. /run/current-system → toplevel ───────────────────────────
           ln -sfn "$TOPLEVEL" rootfs/run/current-system
 
-          # ── 8. Copy toplevel's /etc into rootfs/$ETC_TARGET ─────────────
+          # ── 7. Copy toplevel's /etc into rootfs/$ETC_TARGET ─────────────
           # tar-pipe rather than `cp -a` so extracted files inherit the
           # builder's umask (writable) instead of the store's read-only
           # perms — subsequent writes from postPopulate need `u+w`.
@@ -268,16 +246,16 @@ in
             chmod -R u+w rootfs/"$ETC_TARGET"
           fi
 
-          # ── 9. Unwrap /nix/store symlinks inside $ETC_TARGET ────────────
+          # ── 8. Unwrap /nix/store symlinks inside $ETC_TARGET ────────────
           ${unwrapScript}
 
-          # ── 10. Empty machine-id — signals systemd to generate one ──────
+          # ── 9. Empty machine-id — signals systemd to generate one ──────
           touch rootfs/"$ETC_TARGET"/machine-id
 
-          # ── 11. Symlink farm for caller-supplied packages ───────────────
+          # ── 10. Symlink farm for caller-supplied packages ───────────────
           ${symlinkFarmScript}
 
-          # ── 12. Caller-supplied postPopulate hook ───────────────────────
+          # ── 11. Caller-supplied postPopulate hook ───────────────────────
           ${postPopulate}
         '';
       }
