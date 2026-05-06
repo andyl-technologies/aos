@@ -22,6 +22,8 @@
 ##!   - `mount-var.service`         — mounts /var partition (created by
 ##!                                    Ignition) before ignition-files
 ##!   - `etc-overlay-setup.service` — /etc overlay with /var/etc + /etc.lower
+##!   - `nix-overlay-setup.service` — /nix overlay with persistent upper
+##!                                    on /var (writable Nix store layer)
 {
   pkgs,
   lib,
@@ -399,6 +401,56 @@ in {
           ${pkgs.util-linux}/bin/mount -t overlay overlay \
             -o nosuid,nodev,lowerdir="$sysroot/var/etc:$sysroot/etc.lower",upperdir="$sysroot/run/etc-upper/upper",workdir="$sysroot/run/etc-upper/work" \
             "$sysroot/etc"
+        '';
+      };
+
+      # /nix overlay: stack a writable upper on /var over the image's
+      # immutable /nix.lower so the Nix package manager can install new
+      # store paths at runtime. The image builder ships /nix.lower
+      # populated and /nix as an empty mountpoint (lib/build/rootfs.nix),
+      # so this unit is unconditional — no first-boot rename, no
+      # remount,rw window, identical on fresh installs and post-upgrade
+      # boots.
+      #
+      # Garbage collection only ever evicts upper-layer paths: the lower
+      # is read-only by physics, not by gcroots, so image-shipped store
+      # paths are protected as a property of the layout.
+      "nix-overlay-setup" = {
+        description = "Set Up /nix Overlay Filesystem";
+        wantedBy = ["initrd-fs.target"];
+        before = [
+          "initrd-fs.target"
+          "initrd-switch-root.target"
+        ];
+        requires = [
+          "sysroot.mount"
+          "mount-var.service"
+        ];
+        after = [
+          "sysroot.mount"
+          "mount-var.service"
+          "initrd-root-fs.target"
+        ];
+        environment.PATH = ignitionPath;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -euo pipefail
+          sysroot=/sysroot
+
+          # Upper and work must share a filesystem (overlayfs requires
+          # workdir to be on the same fs as upperdir for atomic
+          # rename-into-upper). Both live on the /var partition.
+          mkdir -p "$sysroot/var/lib/nix-overlay/upper"
+          mkdir -p "$sysroot/var/lib/nix-overlay/work"
+
+          if ! mountpoint -q "$sysroot/nix"; then
+            ${pkgs.util-linux}/bin/mount -t overlay overlay \
+              -o nosuid,nodev,lowerdir="$sysroot/nix.lower",upperdir="$sysroot/var/lib/nix-overlay/upper",workdir="$sysroot/var/lib/nix-overlay/work" \
+              "$sysroot/nix"
+          fi
         '';
       };
     };
