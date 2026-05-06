@@ -170,7 +170,16 @@ in
           # Full /usr merge AND /usr/sbin → /usr/bin merge. systemd's
           # unmerged-bin taint fires when /usr/sbin isn't a symlink
           # into /usr/bin (see src/core/taint.c's test_usr_unmerged).
-          mkdir -p rootfs/nix/store
+          #
+          # The image's Nix closure lives at /nix.lower/store; /nix is an
+          # empty mountpoint where nix-overlay-setup.service stacks an
+          # overlayfs in the initrd (lowerdir=/nix.lower, upperdir on the
+          # /var partition). At runtime, /nix/store/... and /nix.lower/store/...
+          # both resolve to the closure — the former through the overlay
+          # (matching the path embedded in every binary's RUNPATH and
+          # shebang), the latter directly on disk for inspection.
+          mkdir -p rootfs/nix.lower/store
+          mkdir -p rootfs/nix
           mkdir -p rootfs/usr/bin rootfs/usr/lib
           ln -sfn bin rootfs/usr/sbin
           ln -sfn usr/bin rootfs/bin
@@ -200,7 +209,7 @@ in
               printf '\r    [%d/%d]' "$count" "$total"
             fi
             if [ -e "$p" ]; then
-              cp -a "$p" rootfs/nix/store/
+              cp -a "$p" rootfs/nix.lower/store/
             else
               echo ""
               echo "    WARN: store path does not exist: $p" >&2
@@ -212,11 +221,16 @@ in
           # PIE binaries with a hardcoded /lib64/ld-linux-x86-64.so.2
           # interpreter path (containerd with CGO, various Go binaries,
           # third-party tools) fail to exec without this.
-          LD_LINUX=$(find rootfs/nix/store -name 'ld-linux-x86-64.so.2' \
+          #
+          # The closure lives on disk under rootfs/nix.lower/store, but
+          # the symlink target is the overlay-visible path /nix/store/...
+          # (matching every other binary's embedded RUNPATH).
+          LD_LINUX=$(find rootfs/nix.lower/store -name 'ld-linux-x86-64.so.2' \
                        -path '*glibc-*/lib/*' 2>/dev/null \
                        | sort -V | tail -1)
           if [ -n "$LD_LINUX" ]; then
-            GUEST_LD="''${LD_LINUX#rootfs}"
+            GUEST_LD="''${LD_LINUX#rootfs/nix.lower}"
+            GUEST_LD="/nix$GUEST_LD"
             ln -sfn "$GUEST_LD" rootfs/lib64/ld-linux-x86-64.so.2
             echo "    /lib64/ld-linux-x86-64.so.2 -> $GUEST_LD"
           else
