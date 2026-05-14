@@ -20,7 +20,6 @@
   pkgs,
   lib,
 }: let
-  hostJq = pkgs.jq;
   firecracker = pkgs.firecracker;
 
   # Headless rootfs builder (for integration tests without systemd/agent)
@@ -29,9 +28,6 @@
 
   # Shared rootfs helper (lib/build/rootfs.nix) — produces root.img.
   mkRootfs = import ../build/rootfs.nix;
-
-  # Shared shell assertion helpers
-  assertions = import ./assertions.nix {inherit (pkgs) aos-agent-rpc;};
 
   # ---------------------------------------------------------------------------
   # Build a rootfs ext4 image for VM testing
@@ -177,17 +173,21 @@
       NSS
 
       # ── Guest agent handler: one framed request from stdin → framed
-      # response to stdout. Wire format (both directions):
-      #   <ascii-decimal-len>\n<len bytes>
-      # Request bytes are the shell command (no trailing \n). Response
-      # bytes are JSON: {"exit_code":N,"stdout_b64":"...","stderr_b64":"..."}.
-      # stdout/stderr are base64-encoded so arbitrary output bytes (NUL,
-      # high-bit, embedded \n) round-trip without escaping. PING and
-      # SHUTDOWN are still recognised as the literal decoded payloads.
+      # response to stdout. Wire format (v2):
+      #   Frame:        <ascii-decimal body_len>\n<body bytes>
+      #   Request body: bash blob, OR the literal ASCII "PING"/"SHUTDOWN".
+      #   Response body:
+      #     <exit_code> <stdout_len> <stderr_len>\n<stdout bytes><stderr bytes>
+      # Header line is three space-separated ASCII-decimal integers
+      # terminated by \n; the stdout/stderr payloads are raw bytes
+      # concatenated immediately after. PING and SHUTDOWN replies are
+      # the bare 6-byte body `0 0 0\n` (no payload) — matching how
+      # bash succeed/fail responses on empty output would be encoded.
       cat > rootfs/opt/aos-test/bin/agent-handler << 'HANDLER'
       #!/bin/sh
       # LC_ALL=C makes parameter-length counting byte-based (not
-      # character-based) and keeps base64/printf locale-independent.
+      # character-based) and keeps printf locale-independent. Byte-
+      # counting matters because the outer length prefix is in bytes.
       LC_ALL=C
       export LC_ALL
       set -u
@@ -220,17 +220,13 @@
       cmd=$(cat /tmp/agent-cmd)
       echo "aos-test-agent: received ($len_line bytes)" >&2
 
-      emit_response() {
-        body="$1"
-        printf '%s\n%s' "''${#body}" "$body"
-      }
-
       if [ "$cmd" = "PING" ]; then
-        emit_response '{"status":"ready"}'
+        # Body is `0 0 0\n` (6 bytes); outer frame `6\n0 0 0\n`.
+        printf '6\n0 0 0\n'
         exit 0
       fi
       if [ "$cmd" = "SHUTDOWN" ]; then
-        emit_response '{"status":"shutdown"}'
+        printf '6\n0 0 0\n'
         # Firecracker needs reboot -f (poweroff hangs); QEMU uses poweroff -f.
         if [ -e /dev/vsock ]; then
           reboot -f
@@ -242,10 +238,15 @@
 
       bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr
       exit_code=$?
-      stdout_b64=$(base64 -w0 < /tmp/agent-stdout)
-      stderr_b64=$(base64 -w0 < /tmp/agent-stderr)
-      body="{\"exit_code\":$exit_code,\"stdout_b64\":\"$stdout_b64\",\"stderr_b64\":\"$stderr_b64\"}"
-      emit_response "$body"
+      stdout_size=$(stat -c %s /tmp/agent-stdout)
+      stderr_size=$(stat -c %s /tmp/agent-stderr)
+      header="$exit_code $stdout_size $stderr_size"
+      # +1 for the newline that terminates the header line.
+      total=$(( ''${#header} + 1 + stdout_size + stderr_size ))
+      printf '%d\n' "$total"
+      printf '%s\n' "$header"
+      cat /tmp/agent-stdout
+      cat /tmp/agent-stderr
       HANDLER
       chmod +x rootfs/opt/aos-test/bin/agent-handler
 
@@ -261,8 +262,8 @@
       # short wait (Firecracker's transport).
       cat > rootfs/opt/aos-test/bin/aos-test-agent << 'AGENT'
       #!/bin/sh
-      # See agent-handler for the wire format. LC_ALL=C: byte-counting
-      # parameter expansions and locale-independent printf/base64.
+      # See agent-handler for the wire format (v2). LC_ALL=C: byte-
+      # counting parameter expansions and locale-independent printf.
       #
       # Each request reopens $AGENT_PORT on fd 3 (read+write) and closes
       # it after writing the response. A persistent open across multiple
@@ -343,14 +344,13 @@
         echo "aos-test-agent: received ($len_line bytes)" >&2
 
         if [ "$cmd" = "PING" ]; then
-          body='{"status":"ready"}'
-          printf '%s\n%s' "''${#body}" "$body" >&3
+          # Body is `0 0 0\n` (6 bytes); outer frame `6\n0 0 0\n`.
+          printf '6\n0 0 0\n' >&3
           exec 3<&-
           continue
         fi
         if [ "$cmd" = "SHUTDOWN" ]; then
-          body='{"status":"shutdown"}'
-          printf '%s\n%s' "''${#body}" "$body" >&3
+          printf '6\n0 0 0\n' >&3
           exec 3<&-
           poweroff -f
           exit 0
@@ -358,10 +358,25 @@
 
         bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr
         exit_code=$?
-        stdout_b64=$(base64 -w0 < /tmp/agent-stdout)
-        stderr_b64=$(base64 -w0 < /tmp/agent-stderr)
-        body="{\"exit_code\":$exit_code,\"stdout_b64\":\"$stdout_b64\",\"stderr_b64\":\"$stderr_b64\"}"
-        printf '%s\n%s' "''${#body}" "$body" >&3
+        stdout_size=$(stat -c %s /tmp/agent-stdout)
+        stderr_size=$(stat -c %s /tmp/agent-stderr)
+        header="$exit_code $stdout_size $stderr_size"
+        # +1 for the newline terminating the header line.
+        total=$(( ''${#header} + 1 + stdout_size + stderr_size ))
+        # Stage the entire frame (outer length + body) in one file then
+        # emit it with a single `cat` to fd 3. Multiple successive
+        # writes to the virtio-serial chardev between host
+        # disconnect/reconnect cycles race against QEMU's chardev
+        # accept loop — the old wire's single-printf shape worked, and
+        # the new wire matches that by composing the whole frame
+        # off-fd-3 first.
+        {
+          printf '%d\n' "$total"
+          printf '%s\n' "$header"
+          cat /tmp/agent-stdout
+          cat /tmp/agent-stderr
+        } > /tmp/agent-frame
+        cat /tmp/agent-frame >&3
         exec 3<&-
       done
       AGENT
@@ -707,33 +722,18 @@
 
         hasMetadata = instanceMetadata != null;
 
-        # Firecracker has no CD-ROM support, so the ISO is attached as a
-        # read-only virtio-blk drive. blkid probes the ISO9660 superblock
-        # regardless of transport, so the guest-side detector still finds
-        # /dev/disk/by-label/aos-metadata.
-        fcMetadataDrive =
-          if hasMetadata
-          then ''
-            ,
-              {
-                "drive_id": "metadata",
-                "path_on_host": "$(pwd)/metadata.iso",
-                "is_root_device": false,
-                "is_read_only": true,
-                "cache_type": "Unsafe",
-                "io_engine": "Sync"
-              }''
-          else "";
-        # Compose checks into script, then append testScript if provided
-        checksScript =
+        # Compose Python check fragments into the test source, then
+        # append the user's testScript if provided. Both halves are
+        # Python now; see lib/testing/checks.nix:composeChecks.
+        checksPy =
           if checks != []
           then checksLib.composeChecks {inherit groupName checks;}
           else "";
-        composedScript =
-          if checksScript != "" && testScript != null
-          then checksScript + "\n" + testScript
-          else if checksScript != ""
-          then checksScript
+        composedTestPy =
+          if checksPy != "" && testScript != null
+          then checksPy + "\n" + testScript
+          else if checksPy != ""
+          then checksPy
           else if testScript != null
           then testScript
           else throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
@@ -743,198 +743,74 @@
           then memory
           else 2048;
 
+        # Driver manifest. The aos-test-driver consumes this JSON to
+        # build one FirecrackerMachine; the testScript runs as a
+        # Python module via runpy with `vm` exposed as a global. See
+        # the v1 spec ("Manifest schema") for the full field list.
+        manifest = {
+          inherit name timeout;
+          machines = [
+            {
+              name = "vm";
+              transport = "firecracker";
+              kernel = builtins.toString systemKernel;
+              initrd = "${builtins.toString systemInitrd}/initrd.img";
+              disk = "${builtins.toString systemDisk}/disk.img";
+              metadata =
+                if hasMetadata
+                then "${builtins.toString systemMetadataDisk}/metadata.iso"
+                else null;
+              memory_mib = effectiveMemory;
+              vcpu_count = 2;
+            }
+          ];
+        };
+        manifestFile = pkgs.writeTextFile {
+          name = "aos-vm-test-${name}-manifest.json";
+          text = builtins.toJSON manifest;
+          destination = "/manifest.json";
+        };
+        testPyFile = pkgs.writeTextFile {
+          name = "aos-vm-test-${name}-test.py";
+          text = composedTestPy;
+          destination = "/test.py";
+        };
+
         driverBuildDeps = [
           pkgs.coreutils
-          hostJq
           firecracker
-          pkgs.aos-agent-rpc
+          pkgs.socat
+          pkgs.python3
+          pkgs.aos-test-driver
         ];
 
         # -----------------------------------------------------------------------
-        # Firecracker driver test script (system mode)
+        # Firecracker driver script (system mode)
         # -----------------------------------------------------------------------
-        # The VM boots through the production initrd path (stage-1 systemd
-        # → ignition stages → switch-root → stage-2 systemd), matching the
-        # real boot sequence. Firecracker's `boot_args` replaces the image's
-        # built-in cmdline; no `ignition.platform.id=` or
-        # `ignition.config.url=` kargs — `aos-platform-detect.service`
-        # infers the platform from DMI (→ `qemu`) and mounts the ISO9660
-        # metadata channel when the test harness attaches one.
-        firecrackerScript = ''
+        # The host-side glue is now thin: write manifest + test.py into
+        # $TMPDIR, exec aos-test-driver, copy logs into $out. Boot
+        # plumbing (Firecracker JSON, vsock handshake, agent wait,
+        # shutdown) lives in aos_test_driver/firecracker.py.
+        firecrackerDriverScript = ''
           set -eu
 
-          AGENT_SOCK="$TMPDIR/agent.sock"
-          SERIAL_LOG="$TMPDIR/serial.log"
-          FC_LOG="$TMPDIR/firecracker.log"
-          VSOCK_UDS="$TMPDIR/vm.vsock"
-          FC_CFG="$TMPDIR/fc-config.json"
-
-          # Copy disk image to writable location (Firecracker needs rw for system tests)
-          cp $DISK/disk.img disk.img
-          chmod u+w disk.img
-
-          # Copy the metadata ISO (when attached) to a writable location.
-          # virtio-blk backends open the file at launch and hold it for the
-          # run — a local copy isolates the run from any read-side caching
-          # quirks with store files on certain filesystems.
-          ${lib.optionalString hasMetadata ''
-            cp $METADATA/metadata.iso metadata.iso
-            chmod u+w metadata.iso
-          ''}
-
-          # Find the uncompressed kernel image (Firecracker requires vmlinux, not vmlinuz)
-          VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
-          INITRD_IMG=$INITRD/initrd.img
-
-          # Generate a unique CID from the builder PID (range 3-65535)
-          GUEST_CID=$(( ($$ % 65533) + 3 ))
-
-          echo "Driver: firecracker"
-          echo "Kernel: $VMLINUX"
-          echo "Initrd: $INITRD_IMG"
-          echo "Disk:   disk.img ($(ls -lh disk.img | awk '{print $5}'))"
-          echo "CID: $GUEST_CID"
-          echo "Vsock UDS: $VSOCK_UDS"
-          ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
-
-          # Write Firecracker JSON config
-          cat > "$FC_CFG" << FCCFGEOF
-          {
-            "boot-source": {
-              "kernel_image_path": "$VMLINUX",
-              "initrd_path": "$INITRD_IMG",
-              "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0"
-            },
-            "drives": [
-              {
-                "drive_id": "rootfs",
-                "path_on_host": "$(pwd)/disk.img",
-                "is_root_device": false,
-                "is_read_only": false,
-                "cache_type": "Unsafe",
-                "io_engine": "Sync"
-              }${fcMetadataDrive}
-            ],
-            "machine-config": {
-              "vcpu_count": 2,
-              "mem_size_mib": ${builtins.toString effectiveMemory},
-              "smt": false,
-              "track_dirty_pages": false,
-              "huge_pages": "None"
-            },
-            "vsock": {
-              "guest_cid": $GUEST_CID,
-              "uds_path": "$VSOCK_UDS"
-            },
-            "network-interfaces": []
-          }
-          FCCFGEOF
-
-          # Clear LD_LIBRARY_PATH — AOS build libs can conflict
+          # AOS build libs can conflict with the driver's child processes
+          # (Firecracker, python's own runtime linker). Match what the
+          # bash driver did.
           unset LD_LIBRARY_PATH
 
-          # Firecracker wires the guest's ttyS0 to its own stdin/stdout. Feed
-          # stdin from a FIFO that has a permanent, silent writer (sleep holds
-          # the write end open RDWR but never writes). Guest reads from ttyS0
-          # then block indefinitely — no EOF → no agetty respawn — so the debug
-          # profile's autologin can coexist with the harness.
-          FC_STDIN="$TMPDIR/fc-stdin"
-          mkfifo "$FC_STDIN"
-          sleep infinity <>"$FC_STDIN" &
-          FC_STDIN_PID=$!
+          cp ${manifestFile}/manifest.json "$TMPDIR/manifest.json"
+          cp ${testPyFile}/test.py         "$TMPDIR/test.py"
 
-          # Launch Firecracker (serial output goes to stdout, redirected to file)
-          firecracker --no-api --config-file "$FC_CFG" \
-            < "$FC_STDIN" > "$SERIAL_LOG" 2>"$FC_LOG" &
-          FC_PID=$!
-          echo "Firecracker PID: $FC_PID"
-          sleep 1
-          if ! kill -0 "$FC_PID" 2>/dev/null; then
-            echo "ERROR: Firecracker exited immediately!"
-            echo "--- Firecracker log ---"
-            cat "$FC_LOG" 2>/dev/null || true
-            echo "--- Serial log ---"
-            cat "$SERIAL_LOG" 2>/dev/null || true
-            exit 1
-          fi
+          ${pkgs.aos-test-driver}/bin/aos-test-driver \
+            --manifest "$TMPDIR/manifest.json" \
+            --test     "$TMPDIR/test.py"
 
-          cleanup() {
-            kill "$FC_PID" 2>/dev/null || true
-            wait "$FC_PID" 2>/dev/null || true
-            kill "$FC_STDIN_PID" 2>/dev/null || true
-            wait "$FC_STDIN_PID" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-
-          # Wait for the vsock UDS to appear (Firecracker creates it on start)
-          echo "Waiting for vsock UDS..."
-          VSOCK_WAIT=0
-          while [ ! -S "$VSOCK_UDS" ]; do
-            sleep 0.1
-            VSOCK_WAIT=$((VSOCK_WAIT + 1))
-            if [ "$VSOCK_WAIT" -gt 100 ]; then
-              echo "ERROR: vsock UDS did not appear within 10s"
-              cat "$FC_LOG" 2>/dev/null || true
-              exit 1
-            fi
+          mkdir -p "$out"
+          for log in "$TMPDIR"/*-serial.log "$TMPDIR"/*-firecracker.log; do
+            [ -f "$log" ] && cp "$log" "$out/"
           done
-          echo "vsock UDS ready."
-
-          # Import shared test helpers (run_in_guest, assert_success, assert_output_contains).
-          ${assertions.vmHelpers}
-
-          # Wait for guest agent using PING/PONG
-          echo "Waiting for guest agent..."
-          START_TIME=$(date +%s)
-          DEADLINE=$((START_TIME + ${builtins.toString timeout}))
-          AGENT_READY=0
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            if kill -0 "$FC_PID" 2>/dev/null; then
-              RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
-              if echo "$RESPONSE" | grep -q '"ready"'; then
-                echo "Guest agent ready."
-                AGENT_READY=1
-                break
-              fi
-            else
-              echo "ERROR: Firecracker exited while waiting for agent"
-              echo "--- Firecracker log ---"
-              cat "$FC_LOG" 2>/dev/null || true
-              echo "--- Serial log ---"
-              cat "$SERIAL_LOG" 2>/dev/null || true
-              exit 1
-            fi
-            sleep 0.5
-          done
-
-          if [ "$AGENT_READY" -ne 1 ]; then
-            echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
-            echo "--- Firecracker log ---"
-            cat "$FC_LOG" 2>/dev/null || true
-            echo "--- Serial log ---"
-            cat "$SERIAL_LOG" 2>/dev/null || true
-            exit 1
-          fi
-
-          echo ""
-          echo "==> Running test: ${name}"
-          echo ""
-
-          ${composedScript}
-
-          echo ""
-          echo "Shutting down guest..."
-          run_in_guest "SHUTDOWN" || true
-          sleep 2
-          # Firecracker exits on reboot -f from guest
-          wait "$FC_PID" 2>/dev/null || true
-          trap - EXIT
-
-          echo ""
-          echo "==> All tests passed for: ${name}"
-          mkdir -p $out
-          cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
-          echo "PASS" > $out/result
+          echo PASS > "$out/result"
         '';
       in
         pkgs.mkDerivation {
@@ -944,15 +820,10 @@
 
           buildDeps = driverBuildDeps;
 
-          DISK = builtins.toString systemDisk;
-          KERNEL = builtins.toString systemKernel;
-          INITRD = builtins.toString systemInitrd;
-          METADATA = lib.optionalString hasMetadata (builtins.toString systemMetadataDisk);
-
           phases = [
             {
               name = "test";
-              script = firecrackerScript;
+              script = firecrackerDriverScript;
             }
           ];
 

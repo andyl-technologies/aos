@@ -147,16 +147,14 @@ in {
           name = "auditd-active";
           description = "auditd service is active";
           script = ''
-            assert_success "systemctl is-active auditd" \
-              "auditd service is active"
+            vm.succeed("systemctl is-active auditd")
           '';
         }
         {
           name = "audit-rules";
           description = "Audit rules file exists";
           script = ''
-            assert_success "test -f /etc/audit/audit.rules" \
-              "Audit rules file exists"
+            vm.succeed("test -f /etc/audit/audit.rules")
           '';
         }
       ];

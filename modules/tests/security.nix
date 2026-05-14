@@ -14,37 +14,38 @@
         name = "root-no-password";
         description = "root account has no password set";
         script = ''
-          assert_success "test -f /etc/shadow" "/etc/shadow exists"
+          vm.succeed("test -f /etc/shadow")
         '';
       }
       {
         name = "shadow-permissions";
         description = "/etc/shadow has restricted permissions";
         script = ''
-          assert_success "test ! -r /etc/shadow || test -f /etc/shadow" \
-            "/etc/shadow exists"
+          vm.succeed("test ! -r /etc/shadow || test -f /etc/shadow")
         '';
       }
       {
         name = "firewall-config";
         description = "firewall configuration is present";
         script = ''
-          assert_success "test -f /etc/nftables.conf" "nftables.conf exists"
+          vm.succeed("test -f /etc/nftables.conf")
         '';
       }
       {
         name = "sysctl-hardening";
         description = "kernel hardening sysctls are configured";
         script = ''
-          assert_success "test -d /etc/sysctl.d" "sysctl.d directory exists"
+          vm.succeed("test -d /etc/sysctl.d")
         '';
       }
       {
         name = "shadow-not-world-readable";
         description = "/etc/shadow is not world-readable";
         script = ''
-          assert_success "test ! -r /etc/shadow || test \"\$(ls -la /etc/shadow | cut -c8)\" = '-'" \
-            "/etc/shadow is not world-readable"
+          # In Python the inner $() is plain — no \$ escape needed.
+          vm.succeed(
+              "test ! -r /etc/shadow || test \"$(ls -la /etc/shadow | cut -c8)\" = '-'"
+          )
         '';
       }
     ];
