@@ -17,8 +17,7 @@
         name = "nix-is-overlay";
         description = "/nix is mounted as an overlayfs";
         script = ''
-          assert_success "findmnt -t overlay /nix" \
-            "/nix is an overlayfs mount"
+          vm.succeed("findmnt -t overlay /nix")
         '';
       }
       {
@@ -29,10 +28,8 @@
           # which is a symlink into the store. Reading it via /nix/store
           # (the overlay) and via /nix.lower/store (the on-disk lower)
           # must produce the same closure root.
-          assert_success "test -d /nix.lower/store" \
-            "/nix.lower/store exists on the rootfs"
-          assert_success "test -d /nix/store" \
-            "/nix/store exists through the overlay"
+          vm.succeed("test -d /nix.lower/store")
+          vm.succeed("test -d /nix/store")
         '';
       }
       {
@@ -41,17 +38,15 @@
         script = ''
           # Write a marker through the overlay; the file must surface
           # at the overlay path AND physically appear under the upper.
-          assert_success "echo aos-overlay-test > /nix/store/.aos-overlay-marker" \
-            "marker write through overlay succeeds"
-          assert_output_contains "cat /nix/store/.aos-overlay-marker" \
-            "aos-overlay-test" \
-            "marker readable through overlay"
-          assert_output_contains "cat /var/lib/nix-overlay/upper/store/.aos-overlay-marker" \
-            "aos-overlay-test" \
-            "marker physically present on upper layer"
+          vm.succeed("echo aos-overlay-test > /nix/store/.aos-overlay-marker")
+          assert "aos-overlay-test" in vm.succeed(
+              "cat /nix/store/.aos-overlay-marker"
+          )
+          assert "aos-overlay-test" in vm.succeed(
+              "cat /var/lib/nix-overlay/upper/store/.aos-overlay-marker"
+          )
           # And confirm the lower was NOT touched (immutability invariant).
-          assert_success "test ! -e /nix.lower/store/.aos-overlay-marker" \
-            "marker did not leak to /nix.lower (lower stays immutable)"
+          vm.succeed("test ! -e /nix.lower/store/.aos-overlay-marker")
         '';
       }
     ];

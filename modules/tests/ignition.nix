@@ -39,8 +39,7 @@
         name = "hostname-overridden";
         description = "/etc/hostname reads 'ignition-test-host' via the overlay";
         script = ''
-          assert_output_contains "cat /etc/hostname" "ignition-test-host" \
-            "ignition wrote /var/etc/hostname and the /etc overlay exposes it"
+          assert "ignition-test-host" in vm.succeed("cat /etc/hostname")
         '';
       }
     ];

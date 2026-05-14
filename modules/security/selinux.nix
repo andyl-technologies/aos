@@ -86,16 +86,14 @@ in {
           name = "selinuxfs";
           description = "/sys/fs/selinux is present";
           script = ''
-            assert_success "test -d /sys/fs/selinux" \
-              "/sys/fs/selinux is present"
+            vm.succeed("test -d /sys/fs/selinux")
           '';
         }
         {
           name = "enforce-file";
           description = "SELinux enforce file exists";
           script = ''
-            assert_success "test -f /sys/fs/selinux/enforce" \
-              "SELinux enforce file exists"
+            vm.succeed("test -f /sys/fs/selinux/enforce")
           '';
         }
       ];
