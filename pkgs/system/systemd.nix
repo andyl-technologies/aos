@@ -98,6 +98,13 @@ in
       cryptsetup
       elfutils
       linux-pam
+      # ukify wrapper installed below references python3 + the pefile and
+      # pyelftools site-packages. Declared here so scrubPhase preserves
+      # the refs; Task D in the build-leaks plan moves ukify to a separate
+      # `tools` output so PID-1 systemd no longer pulls these in.
+      python3
+      python3-pefile
+      python3-pyelftools
     ];
     propagatedDeps = [];
 

@@ -22,7 +22,11 @@ in
       gnumake
       m4
     ];
-    runtimeDeps = [];
+    # flex exec()s m4 at runtime to expand the generated scanner skeleton
+    # templates; without m4 in runtimeDeps, the scrubPhase nuke-refs pass
+    # would rewrite flex's hardcoded m4 path and break every downstream
+    # `make flex` invocation.
+    runtimeDeps = [m4];
     propagatedDeps = [];
 
     phases = [
