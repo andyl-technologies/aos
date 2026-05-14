@@ -6,8 +6,9 @@
 ##!     mkShell        — development shell environment
 ##!     fetchurl       — fetch a file by URL (fixed-output derivation)
 ##!     fetchgit       — fetch a Git repository (fixed-output derivation)
-##!     fetchCargoDeps — vendor Cargo dependencies (fixed-output derivation)
-##!     fetchGoModules — download Go module dependencies (fixed-output derivation)
+##!     fetchCargoDeps   — vendor Cargo dependencies (fixed-output derivation)
+##!     fetchCargoVendor — lockfile-driven Cargo vendoring (FOD staging + pure assembly)
+##!     fetchGoModules   — download Go module dependencies (fixed-output derivation)
 ##!     fakeHash       — placeholder hash for iterating on FODs
 ##!     replacePhase   — replace a phase by name
 ##!     addPhaseAfter  — insert a phase after a named phase
@@ -1021,6 +1022,109 @@
     };
 
   # ---------------------------------------------------------------------------
+  # fetchCargoVendor
+  # ---------------------------------------------------------------------------
+  # fetchCargoVendor { cargo; python3; git; caCertificates; bootstrapTools;
+  #                    src; hash; sourceRoot?; cargoPatches?; }
+  #
+  # Lockfile-driven Cargo vendoring (ported from nixpkgs's fetchCargoVendor /
+  # fetch-cargo-vendor-util-v2 design). Two stages:
+  #
+  #   1. vendorStaging (FOD, content-hashed): reads Cargo.lock and downloads
+  #      every crates.io tarball + clones every git source at its exact sha.
+  #      Output layout: { Cargo.lock, tarballs/<crate>-<ver>.tar.gz,
+  #                       git/<sha>/<repo contents> }.
+  #
+  #   2. final vendor (regular derivation): walks the lockfile again, locates
+  #      each git-sourced crate inside its tree by running `cargo metadata`
+  #      to match crate name, copies the crate's subtree, resolves workspace
+  #      inheritance via replace-workspace-values.py, and writes
+  #      .cargo/config.toml with @vendor@ placeholders.
+  #
+  # The build-time consumer (cargoPhases) substitutes @vendor@ with the
+  # absolute store path before invoking cargo.
+  #
+  # Unlike fetchCargoDeps, no manual gitDeps list is needed — git sources
+  # (including monorepo crates) are discovered from Cargo.lock automatically.
+  fetchCargoVendor = {
+    cargo,
+    python3,
+    git,
+    caCertificates,
+    bootstrapTools,
+    src,
+    hash,
+    sourceRoot ? null,
+    cargoPatches ? [],
+    extraLibPaths ? [],
+    extraPaths ? [],
+    name ? "cargo-vendor",
+    system ? defaultSystem,
+  }: let
+    utilDir = ./cargo-vendor;
+    ldLibPath = builtins.concatStringsSep ":" (
+      builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
+    );
+
+    # Stage 1: fetch all crates.io tarballs and clone all git sources.
+    vendorStaging = builtins.derivation {
+      name = "${name}-staging";
+      inherit system;
+      builder = builderPath;
+      args = [
+        "-c"
+        ''
+          set -euo pipefail
+          export PATH="${cargo}/bin:${python3}/bin:${git}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
+          export GIT_SSL_CAINFO="${caCertificates}/etc/ssl/certs/ca-certificates.crt"
+          export SSL_CERT_FILE="$GIT_SSL_CAINFO"
+          ${
+            if extraLibPaths != []
+            then "export LD_LIBRARY_PATH=\"${ldLibPath}\""
+            else ""
+          }
+
+          mkdir -p "$TMPDIR/src"
+          cd "$TMPDIR/src"
+          tar xf "${src}" || cp -r "${src}" source
+          cd ${
+            if sourceRoot != null
+            then sourceRoot
+            else "$(ls -d */)"
+          }
+
+          ${builtins.concatStringsSep "\n" (builtins.map (p: "patch -p1 < ${p}") cargoPatches)}
+
+          python3 ${utilDir}/fetch-cargo-vendor-util.py \
+            create-vendor-staging Cargo.lock "$out"
+        ''
+      ];
+
+      outputHash = hash;
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+
+      preferLocalBuild = true;
+    };
+  in
+    # Stage 2: pure transformation of staging into cargo vendor layout.
+    builtins.derivation {
+      inherit name system;
+      builder = builderPath;
+      args = [
+        "-c"
+        ''
+          set -euo pipefail
+          export PATH="${cargo}/bin:${python3}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
+          python3 ${utilDir}/fetch-cargo-vendor-util.py \
+            create-vendor "${vendorStaging}" "$out"
+        ''
+      ];
+
+      preferLocalBuild = true;
+    };
+
+  # ---------------------------------------------------------------------------
   # fetchGoModules
   # ---------------------------------------------------------------------------
   # fetchGoModules { go; bootstrapTools; src; hash; sourceRoot?; }
@@ -1292,6 +1396,7 @@ in {
     fetchurl
     fetchgit
     fetchCargoDeps
+    fetchCargoVendor
     fetchGoModules
     fetchBazelDeps
     fakeHash
