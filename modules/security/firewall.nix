@@ -165,16 +165,14 @@ in {
           name = "nftables-active";
           description = "nftables service is active";
           script = ''
-            assert_success "systemctl is-active nftables" \
-              "nftables service is active"
+            vm.succeed("systemctl is-active nftables")
           '';
         }
         {
           name = "ruleset-loaded";
           description = "nftables ruleset is loaded";
           script = ''
-            assert_success "nft list ruleset" \
-              "nftables ruleset is loaded"
+            vm.succeed("nft list ruleset")
           '';
         }
       ];

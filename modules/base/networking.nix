@@ -256,32 +256,28 @@ in {
           name = "loopback-exists";
           description = "Loopback interface exists";
           script = ''
-            assert_success "test -d /sys/class/net/lo" \
-              "Loopback interface exists"
+            vm.succeed("test -d /sys/class/net/lo")
           '';
         }
         {
           name = "loopback-up";
           description = "Loopback interface is up";
           script = ''
-            assert_output_contains "cat /sys/class/net/lo/operstate" "unknown" \
-              "Loopback interface is up"
+            assert "unknown" in vm.succeed("cat /sys/class/net/lo/operstate")
           '';
         }
         {
           name = "proc-net";
           description = "/proc/net is available";
           script = ''
-            assert_success "test -d /proc/net" \
-              "/proc/net is available"
+            vm.succeed("test -d /proc/net")
           '';
         }
         {
           name = "hostname-file";
           description = "/etc/hostname exists";
           script = ''
-            assert_success "test -f /etc/hostname" \
-              "/etc/hostname exists"
+            vm.succeed("test -f /etc/hostname")
           '';
         }
       ];

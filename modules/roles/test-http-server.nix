@@ -83,10 +83,7 @@ in {
             name = "unit-file-written";
             description = "ignition-files wrote test-http-server.service to /etc";
             script = ''
-              assert_output_contains \
-                "test -f /etc/systemd/system/test-http-server.service && echo OK" \
-                "OK" \
-                "ignition-files should have created the unit file"
+              vm.succeed("test -f /etc/systemd/system/test-http-server.service")
             '';
           }
           {
@@ -107,23 +104,20 @@ in {
               # lookup checks paths inside its own read-only nix-store
               # directory rather than /etc/systemd/system, and reports
               # `disabled` even when the .wants symlink is actually
-              # present and active. Same root cause that makes
-              # `systemctl preset-all` fail (see modules/services/
-              # ignition.nix's aos-ignition-preset.service comment).
-              # The symlink-presence check is the load-bearing one.
-              assert_success \
-                "test -L /etc/systemd/system/multi-user.target.wants/test-http-server.service" \
-                "multi-user.target.wants/test-http-server.service symlink should exist"
+              # present and active. The symlink-presence check is the
+              # load-bearing one.
+              vm.succeed(
+                  "test -L /etc/systemd/system/multi-user.target.wants/test-http-server.service"
+              )
             '';
           }
           {
             name = "unit-active";
             description = "stage-2 systemd activated the unit via WantedBy=multi-user.target";
             script = ''
-              assert_output_contains \
-                "systemctl is-active test-http-server.service" \
-                "active" \
-                "test-http-server.service should be active after multi-user.target"
+              assert "active" in vm.succeed(
+                  "systemctl is-active test-http-server.service"
+              )
             '';
           }
           {
@@ -134,10 +128,9 @@ in {
               # the <h1> of its index page. That string is the most stable
               # marker we can assert without depending on what files
               # happen to be in /.
-              assert_output_contains \
-                "curl -s http://127.0.0.1:8000/" \
-                "Directory listing for /" \
-                "http.server should serve the root index over loopback"
+              assert "Directory listing for /" in vm.succeed(
+                  "curl -s http://127.0.0.1:8000/"
+              )
             '';
           }
           {
@@ -154,19 +147,16 @@ in {
               # `system.build.ignitionRolesBundle` (e.g. a stray broken
               # symlink) would fire here with a clear failure instead
               # of an opaque ignition-fetch error on next boot.
-              assert_success \
-                "test -f /etc/aos/ignition-roles/test-http-server" \
-                "stage-2 /etc/aos/ignition-roles/test-http-server should be a regular file (resolved through the bundle symlink)"
+              vm.succeed("test -f /etc/aos/ignition-roles/test-http-server")
               # The role's serialised JSON contains the unit name
               # verbatim — the renderer in lib/modules/ignition/systemd.nix
               # emits `name = "test-http-server.service"` into
               # `units[].name`. Loose-by-design: we only check that the
               # marker string is present, not that the full JSON
               # structure round-trips.
-              assert_output_contains \
-                "cat /etc/aos/ignition-roles/test-http-server" \
-                "test-http-server.service" \
-                "stage-2 mirror should expose the role's serialised ignition config"
+              assert "test-http-server.service" in vm.succeed(
+                  "cat /etc/aos/ignition-roles/test-http-server"
+              )
             '';
           }
         ];

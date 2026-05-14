@@ -141,48 +141,42 @@ in {
           name = "aslr";
           description = "ASLR is fully enabled (randomize_va_space=2)";
           script = ''
-            assert_output_contains "cat /proc/sys/kernel/randomize_va_space" "2" \
-              "ASLR is fully enabled"
+            assert "2" in vm.succeed("cat /proc/sys/kernel/randomize_va_space")
           '';
         }
         {
           name = "syncookies";
           description = "TCP syncookies are enabled";
           script = ''
-            assert_output_contains "cat /proc/sys/net/ipv4/tcp_syncookies" "1" \
-              "TCP syncookies are enabled"
+            assert "1" in vm.succeed("cat /proc/sys/net/ipv4/tcp_syncookies")
           '';
         }
         {
           name = "protected-hardlinks";
           description = "Protected hardlinks sysctl exists";
           script = ''
-            assert_success "test -f /proc/sys/fs/protected_hardlinks" \
-              "Protected hardlinks sysctl is accessible"
+            vm.succeed("test -f /proc/sys/fs/protected_hardlinks")
           '';
         }
         {
           name = "protected-symlinks";
           description = "Protected symlinks sysctl exists";
           script = ''
-            assert_success "test -f /proc/sys/fs/protected_symlinks" \
-              "Protected symlinks sysctl is accessible"
+            vm.succeed("test -f /proc/sys/fs/protected_symlinks")
           '';
         }
         {
           name = "proc-isolation";
           description = "PID 1 visible in /proc";
           script = ''
-            assert_success "test -d /proc/1" \
-              "PID 1 visible in /proc"
+            vm.succeed("test -d /proc/1")
           '';
         }
         {
           name = "syskernel";
           description = "/sys/kernel is accessible";
           script = ''
-            assert_success "test -d /sys/kernel" \
-              "/sys/kernel is accessible"
+            vm.succeed("test -d /sys/kernel")
           '';
         }
       ];
@@ -195,24 +189,21 @@ in {
           name = "dmesg-restrict";
           description = "dmesg_restrict is enabled";
           script = ''
-            assert_output_contains "cat /proc/sys/kernel/dmesg_restrict" "1" \
-              "dmesg_restrict is enabled"
+            assert "1" in vm.succeed("cat /proc/sys/kernel/dmesg_restrict")
           '';
         }
         {
           name = "kptr-restrict";
           description = "kptr_restrict is set";
           script = ''
-            assert_success "test -f /proc/sys/kernel/kptr_restrict" \
-              "kptr_restrict sysctl exists"
+            vm.succeed("test -f /proc/sys/kernel/kptr_restrict")
           '';
         }
         {
           name = "ptrace-scope";
           description = "ptrace scope is restricted";
           script = ''
-            assert_success "test -f /proc/sys/kernel/yama/ptrace_scope" \
-              "ptrace_scope sysctl exists"
+            vm.succeed("test -f /proc/sys/kernel/yama/ptrace_scope")
           '';
         }
       ];

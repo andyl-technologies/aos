@@ -97,7 +97,20 @@
     options = {
       name = mkOption {type = types.str;};
       machines = mkOption {type = types.attrsOf fleetMachineType;};
-      testScript = mkOption {type = types.lines;};
+      testScript = mkOption {
+        type = types.lines;
+        description = ''
+          Python fragment run by the AOS test driver
+          (pkgs/tools/aos/aos-test-driver) once every machine's agent
+          is reachable. Each machine is exposed as a Python global
+          named after its attribute key (e.g. `controlplane`,
+          `worker`); call `controlplane.succeed("...")`,
+          `controlplane.wait_until_succeeds("...", timeout=60)`,
+          etc. — see
+          `pkgs/tools/aos/aos-test-driver/aos_test_driver/machine.py`
+          for the full Machine API.
+        '';
+      };
       timeout = mkOption {
         type = types.int;
         default = 300;

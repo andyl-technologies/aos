@@ -14,45 +14,45 @@
         name = "systemd-pid1";
         description = "systemd is running as PID 1";
         script = ''
-          assert_output_contains "cat /proc/1/comm" "systemd" "PID 1 is systemd"
+          assert "systemd" in vm.succeed("cat /proc/1/comm")
         '';
       }
       {
         name = "multi-user-target";
         description = "system reached multi-user.target";
         script = ''
-          assert_success "systemctl is-active multi-user.target" "multi-user.target is active"
+          vm.succeed("systemctl is-active multi-user.target")
         '';
       }
       {
         name = "os-release";
         description = "/etc/os-release identifies ANDYL OS";
         script = ''
-          assert_output_contains "cat /etc/os-release" "ANDYL OS" "/etc/os-release contains ANDYL OS"
+          assert "ANDYL OS" in vm.succeed("cat /etc/os-release")
         '';
       }
       {
         name = "hostname";
         description = "hostname is set";
         script = ''
-          assert_success "test -s /etc/hostname" "/etc/hostname is non-empty"
+          vm.succeed("test -s /etc/hostname")
         '';
       }
       {
         name = "nix-store-present";
         description = "/nix/store contains system packages";
         script = ''
-          assert_success "test -d /nix/store" "/nix/store exists"
-          assert_success "test -e /sbin/init" "/sbin/init exists"
+          vm.succeed("test -d /nix/store")
+          vm.succeed("test -e /sbin/init")
         '';
       }
       {
         name = "essential-filesystems";
         description = "proc, sys, dev are mounted";
         script = ''
-          assert_success "test -d /proc/1" "/proc is mounted"
-          assert_success "test -d /sys/class" "/sys is mounted"
-          assert_success "test -c /dev/null" "/dev/null exists"
+          vm.succeed("test -d /proc/1")
+          vm.succeed("test -d /sys/class")
+          vm.succeed("test -c /dev/null")
         '';
       }
       {
@@ -69,8 +69,7 @@
           # on a writable ext4 root because `errors=remount-ro` (the
           # ext4 default) contains the literal "ro" — exactly the
           # regression we were trying to catch.
-          assert_success "findmnt -O ro /" \
-            "root filesystem is mounted read-only"
+          vm.succeed("findmnt -O ro /")
         '';
       }
     ];
