@@ -309,7 +309,7 @@
           initrd = "${builtins.toString mb.initrd}/initrd.img";
           disk = "${builtins.toString mb.disk}/disk.img";
           metadata = "${builtins.toString mb.metadataISO}/metadata.iso";
-          memory_mib = 2048;
+          memory_mib = 8192;
           vcpu_count = 2;
         })
         machineBuilds;
