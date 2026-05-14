@@ -12,30 +12,48 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import IO, ClassVar, override
 
+from .agent import Driver
 from .machine import Machine
 
 
-log = logging.getLogger(__name__)
+log: logging.Logger = logging.getLogger(__name__)
 
 
 class QemuMachine(Machine):
-    transport = "qemu"
+    transport: ClassVar[Driver] = "qemu"
+
+    kernel_pkg: str
+    initrd_path: str
+    disk_src: str
+    metadata_src: str
+    memory_mib: int
+    vcpu_count: int
+    mac: str
+    ip: str
+    tmpdir: Path
+    serial_socket: str
+    qemu_log: str
+    disk_copy: str
+    metadata_copy: str
+    qemu_proc: subprocess.Popen[bytes] | None
+    drain_proc: subprocess.Popen[bytes] | None
 
     def __init__(
         self,
         *,
-        name,
-        kernel,
-        initrd,
-        disk,
-        metadata,
-        memory_mib,
-        vcpu_count,
-        mac,
-        ip,
-        tmpdir,
-    ):
+        name: str,
+        kernel: str,
+        initrd: str,
+        disk: str,
+        metadata: str,
+        memory_mib: int,
+        vcpu_count: int,
+        mac: str,
+        ip: str,
+        tmpdir: str,
+    ) -> None:
         self.kernel_pkg = kernel
         self.initrd_path = initrd
         self.disk_src = disk
@@ -57,10 +75,10 @@ class QemuMachine(Machine):
 
         self.qemu_proc = None
         self.drain_proc = None
-        self._qemu_log_fd = None
+        self._qemu_log_fd: IO[bytes] | None = None
 
     # ------------------------------------------------------------------
-    def _find_kernel(self):
+    def _find_kernel(self) -> str:
         # The fleet QEMU boots vmlinuz (compressed). Driver expands the
         # glob; fail fast on zero or multiple matches.
         pattern = str(Path(self.kernel_pkg) / "boot" / "vmlinuz-*")
@@ -76,7 +94,8 @@ class QemuMachine(Machine):
         return candidates[0]
 
     # ------------------------------------------------------------------
-    def start(self):
+    @override
+    def start(self) -> None:
         log.info(
             "==> Starting machine: %s (ip=%s mac=%s)",
             self.name,
@@ -137,7 +156,7 @@ class QemuMachine(Machine):
         # traffic through lo explicitly and works around the missing flag
         # (no CAP_NET_ADMIN required). Cross-process delivery between
         # QEMU instances on the same host works as designed.
-        argv = [
+        argv: list[str] = [
             "qemu-system-x86_64",
             "-machine", "q35,accel=kvm",
             "-cpu", "host",
@@ -188,7 +207,8 @@ class QemuMachine(Machine):
             )
 
     # ------------------------------------------------------------------
-    def stop(self):
+    @override
+    def stop(self) -> None:
         if self.qemu_proc is not None and self.qemu_proc.poll() is None:
             self.qemu_proc.terminate()
             try:
@@ -207,7 +227,7 @@ class QemuMachine(Machine):
             self._qemu_log_fd.close()
             self._qemu_log_fd = None
 
-    def _dump_qemu_log(self):
+    def _dump_qemu_log(self) -> None:
         if self._qemu_log_fd is not None:
             self._qemu_log_fd.flush()
         try:

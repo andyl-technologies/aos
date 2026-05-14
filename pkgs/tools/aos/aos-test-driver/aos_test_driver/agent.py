@@ -18,23 +18,26 @@ the vsock CONNECT handshake (``CONNECT 52\\n`` → ``OK <port>\\n``).
 import logging
 import socket
 import time
+from typing import Literal
 
 from .errors import AgentProtocolError, AgentTimeout
 
-log = logging.getLogger(__name__)
+log: logging.Logger = logging.getLogger(__name__)
 
 
-DEFAULT_TIMEOUT = 30
+DEFAULT_TIMEOUT: float = 30
 # Same upper bound the agent enforces; mismatched limits would let the
 # host send a request the agent silently rejects.
-MAX_FRAME_BYTES = 16 * 1024 * 1024
+MAX_FRAME_BYTES: int = 16 * 1024 * 1024
+
+Driver = Literal["qemu", "firecracker"]
 
 
-def _remaining(deadline):
+def _remaining(deadline: float) -> float:
     return max(0.0, deadline - time.monotonic())
 
 
-def _read_n(sock, n, deadline):
+def _read_n(sock: socket.socket, n: int, deadline: float) -> bytes:
     out = bytearray()
     while len(out) < n:
         sock.settimeout(max(_remaining(deadline), 0.001))
@@ -50,7 +53,7 @@ def _read_n(sock, n, deadline):
     return bytes(out)
 
 
-def _read_line(sock, deadline, max_bytes=64):
+def _read_line(sock: socket.socket, deadline: float, max_bytes: int = 64) -> bytes:
     out = bytearray()
     while True:
         if len(out) >= max_bytes:
@@ -61,7 +64,7 @@ def _read_line(sock, deadline, max_bytes=64):
         out += b
 
 
-def _write_all(sock, data, deadline):
+def _write_all(sock: socket.socket, data: bytes, deadline: float) -> None:
     pos = 0
     while pos < len(data):
         sock.settimeout(max(_remaining(deadline), 0.001))
@@ -82,16 +85,23 @@ class _ProtocolMidstream(Exception):
 class AgentClient:
     """One-shot RPC client. Each ``request()`` opens a fresh connection."""
 
-    def __init__(self, name, socket_path, driver):
-        self.name = name
-        self.socket_path = socket_path
+    name: str
+    socket_path: str
+    driver: Driver
+
+    def __init__(self, name: str, socket_path: str, driver: str) -> None:
         if driver not in ("qemu", "firecracker"):
             raise ValueError(
                 f"driver must be 'qemu' or 'firecracker', got {driver!r}"
             )
-        self.driver = driver
+        self.name = name
+        self.socket_path = socket_path
+        # narrowed by the check above
+        self.driver = driver  # type: ignore[assignment]
 
-    def request(self, payload: bytes, timeout: float = DEFAULT_TIMEOUT):
+    def request(
+        self, payload: bytes, timeout: float = DEFAULT_TIMEOUT
+    ) -> tuple[int, bytes, bytes]:
         """Send ``payload`` to the agent and return (exit_code, stdout, stderr).
 
         Raises ``AgentTimeout`` on the overall RPC deadline,
@@ -173,11 +183,11 @@ class AgentClient:
         stderr = body[payload_start + stdout_len :]
         return exit_code, stdout, stderr
 
-    def ping(self, timeout: float = 2.0):
+    def ping(self, timeout: float = 2.0) -> bool:
         """Send PING; return True if the agent responded with a valid frame."""
         exit_code, _, _ = self.request(b"PING", timeout=timeout)
         return exit_code == 0
 
-    def shutdown(self, timeout: float = 5.0):
+    def shutdown(self, timeout: float = 5.0) -> tuple[int, bytes, bytes]:
         """Send SHUTDOWN; the agent calls reboot/poweroff -f."""
         return self.request(b"SHUTDOWN", timeout=timeout)
