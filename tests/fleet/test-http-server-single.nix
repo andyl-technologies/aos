@@ -27,14 +27,12 @@
   };
 
   testScript = ''
-    wait_until_succeeds_on server \
-      "systemctl is-active test-http-server.service" 60 \
-      "test-http-server reaches active"
+    server.wait_until_succeeds(
+        "systemctl is-active test-http-server.service", timeout=60
+    )
 
     # Loopback request — no inter-VM traffic, just proves the role's
     # unit is serving on :8000.
-    assert_output_on server "curl -s http://127.0.0.1:8000/" \
-      "Directory listing" \
-      "http.server serves the root index over loopback"
+    assert "Directory listing" in server.succeed("curl -s http://127.0.0.1:8000/")
   '';
 }
