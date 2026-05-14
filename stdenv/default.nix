@@ -118,6 +118,15 @@
           RANLIB = "${ccWrapper}/bin/ranlib";
           STRIP = "${ccWrapper}/bin/strip";
           CONFIG_SHELL = shellPath;
+
+          # Every ELF in the output references libc as its dynamic linker
+          # (PT_INTERP) and links against ${libc}/lib via the cc-wrapper.
+          # Bash is the build-time shell every autotools `./configure`
+          # substitutes into shebangs (#!@BASH@ → #!/nix/store/HASH/bin/bash).
+          # The scrubPhase's deny-by-default nuke-refs pass would otherwise
+          # rewrite those hashes and break binaries/scripts; preserve them
+          # here so callers don't have to redeclare as a runtimeDep.
+          nukeRefsKeep = (args.nukeRefsKeep or []) ++ [ccWrapper.libc tc.bash];
         };
     in
       lib.mkDerivation effectiveArgs;
