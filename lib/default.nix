@@ -171,7 +171,9 @@
       # `trivial //` spread above, so no extra inherit is needed for it).
       inherit
         (derivations)
+        getOutput
         getBin
+        getDev
         getExe
         getExe'
         ;
