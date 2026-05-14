@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  patch,
+  patchelf,
   pkg-config,
   zlib,
   openssl,
@@ -52,6 +54,16 @@ in
       libffi
     ];
     propagatedDeps = [];
+
+    # Guard: scrubPhase's nuke-refs pass should keep these out of the
+    # closure. Fails the build if a future regression re-introduces a
+    # _sysconfigdata*.py(c) or Makefile reference to the build toolchain.
+    disallowedReferences = [
+      gnumake
+      pkg-config
+      patch
+      patchelf
+    ];
 
     phases = [
       {
