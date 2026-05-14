@@ -71,4 +71,47 @@ mkDerivation {
   meta = {
     description = "Python test driver for AOS VM and fleet tests";
   };
+
+  # Host-side type check. Pyrefly is heavy (rust + ~600 crates), so it
+  # stays out of the install phase — the .nix-eval-time `mkDerivation`
+  # check below runs it on the source tree as a separate derivation,
+  # surfaced at checks.aos-test-driver-pyrefly.
+  checks = {
+    self,
+    pkgs,
+    ...
+  }: {
+    pyrefly = pkgs.mkDerivation {
+      pname = "aos-test-driver-pyrefly";
+      version = "0";
+      src = null;
+
+      buildDeps = [pkgs.pyrefly];
+
+      phases = [
+        {
+          name = "typecheck";
+          script = ''
+            # Copy the source tree into the sandbox (the Nix path
+            # interpolation imports it into the store) and cd so
+            # pyrefly's upward config-search lands on pyrefly.toml
+            # at the source root next to aos_test_driver/.
+            cp -r ${./aos-test-driver} source
+            chmod -R u+w source
+            cd source
+
+            # `skip-interpreter-query` in pyrefly.toml keeps the check
+            # hermetic — pyrefly uses its bundled typeshed and doesn't
+            # poke at any external interpreter from $PATH.
+            pyrefly check
+            touch "$out"
+          '';
+        }
+      ];
+
+      meta = {
+        description = "pyrefly strict-mode type check for aos-test-driver";
+      };
+    };
+  };
 }

@@ -13,28 +13,45 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import IO, Any, ClassVar, override
 
+from .agent import Driver
 from .machine import Machine
 
 
-log = logging.getLogger(__name__)
+log: logging.Logger = logging.getLogger(__name__)
 
 
 class FirecrackerMachine(Machine):
-    transport = "firecracker"
+    transport: ClassVar[Driver] = "firecracker"
+
+    kernel_pkg: str
+    initrd_path: str
+    disk_src: str
+    metadata_src: str | None
+    memory_mib: int
+    vcpu_count: int
+    tmpdir: Path
+    fc_log: str
+    disk_copy: str
+    metadata_copy: str | None
+    fc_cfg: str
+    fc_stdin_fifo: str
+    fc_proc: subprocess.Popen[bytes] | None
+    stdin_proc: subprocess.Popen[bytes] | None
 
     def __init__(
         self,
         *,
-        name,
-        kernel,
-        initrd,
-        disk,
-        metadata,
-        memory_mib,
-        vcpu_count,
-        tmpdir,
-    ):
+        name: str,
+        kernel: str,
+        initrd: str,
+        disk: str,
+        metadata: str | None,
+        memory_mib: int,
+        vcpu_count: int,
+        tmpdir: str,
+    ) -> None:
         self.kernel_pkg = kernel
         self.initrd_path = initrd
         self.disk_src = disk
@@ -62,12 +79,12 @@ class FirecrackerMachine(Machine):
 
         self.fc_proc = None
         self.stdin_proc = None
-        self._fc_stdin_fd = None
-        self._serial_fd = None
-        self._fc_err_fd = None
+        self._fc_stdin_fd: IO[bytes] | None = None
+        self._serial_fd: IO[bytes] | None = None
+        self._fc_err_fd: IO[bytes] | None = None
 
     # ------------------------------------------------------------------
-    def _find_kernel(self):
+    def _find_kernel(self) -> str:
         # Firecracker requires the uncompressed vmlinux image.
         pattern = str(Path(self.kernel_pkg) / "boot" / "vmlinux-*")
         candidates = sorted(glob.glob(pattern))
@@ -82,12 +99,13 @@ class FirecrackerMachine(Machine):
         return candidates[0]
 
     # ------------------------------------------------------------------
-    def start(self):
+    @override
+    def start(self) -> None:
         log.info("==> Starting machine: %s (firecracker)", self.name)
 
         shutil.copyfile(self.disk_src, self.disk_copy)
         os.chmod(self.disk_copy, 0o644)
-        if self.metadata_copy is not None:
+        if self.metadata_copy is not None and self.metadata_src is not None:
             shutil.copyfile(self.metadata_src, self.metadata_copy)
             os.chmod(self.metadata_copy, 0o644)
 
@@ -98,7 +116,7 @@ class FirecrackerMachine(Machine):
         # test runs on the same host from colliding.
         guest_cid = (os.getpid() % 65533) + 3
 
-        drives = [
+        drives: list[dict[str, Any]] = [
             {
                 "drive_id": "rootfs",
                 "path_on_host": self.disk_copy,
@@ -123,7 +141,7 @@ class FirecrackerMachine(Machine):
                 }
             )
 
-        cfg = {
+        cfg: dict[str, Any] = {
             "boot-source": {
                 "kernel_image_path": vmlinux,
                 "initrd_path": initrd,
@@ -201,7 +219,8 @@ class FirecrackerMachine(Machine):
             time.sleep(0.1)
 
     # ------------------------------------------------------------------
-    def stop(self):
+    @override
+    def stop(self) -> None:
         for proc in (self.fc_proc, self.stdin_proc):
             if proc is not None and proc.poll() is None:
                 proc.terminate()
@@ -218,7 +237,7 @@ class FirecrackerMachine(Machine):
                     pass
         self._fc_stdin_fd = self._serial_fd = self._fc_err_fd = None
 
-    def _dump_logs(self):
+    def _dump_logs(self) -> None:
         for fd in (self._serial_fd, self._fc_err_fd):
             if fd is not None:
                 try:

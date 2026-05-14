@@ -19,21 +19,25 @@ import runpy
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from .errors import AosDriverError
 from .firecracker import FirecrackerMachine
 from .logger import setup as setup_logging
+from .machine import Machine
 from .qemu import QemuMachine
 
 
-log = logging.getLogger(__name__)
+log: logging.Logger = logging.getLogger(__name__)
 
-NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+NAME_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _load_manifest(path):
+def _load_manifest(path: Path) -> dict[str, Any]:
     with open(path) as f:
-        manifest = json.load(f)
+        manifest: Any = json.load(f)
+    if not isinstance(manifest, dict):
+        raise SystemExit(f"manifest at {path} is not a JSON object")
 
     required_top = {"name", "timeout", "machines"}
     missing = required_top - manifest.keys()
@@ -42,12 +46,12 @@ def _load_manifest(path):
     if not isinstance(manifest["machines"], list) or not manifest["machines"]:
         raise SystemExit("manifest.machines must be a non-empty list")
 
-    seen_transports = set()
+    seen_transports: set[str] = set()
     for m in manifest["machines"]:
         if not isinstance(m, dict):
             raise SystemExit(f"machine entry is not an object: {m!r}")
         name = m.get("name", "")
-        if not NAME_PATTERN.match(name):
+        if not isinstance(name, str) or not NAME_PATTERN.match(name):
             raise SystemExit(
                 f"machine name {name!r} is not a valid Python identifier"
             )
@@ -85,24 +89,34 @@ def _load_manifest(path):
     return manifest
 
 
-def _build_machine(entry, tmpdir):
-    transport = entry["transport"]
-    common = dict(
+def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
+    transport: str = entry["transport"]
+    if transport == "firecracker":
+        return FirecrackerMachine(
+            name=entry["name"],
+            kernel=entry["kernel"],
+            initrd=entry["initrd"],
+            disk=entry["disk"],
+            metadata=entry.get("metadata"),
+            memory_mib=entry["memory_mib"],
+            vcpu_count=entry["vcpu_count"],
+            tmpdir=str(tmpdir),
+        )
+    return QemuMachine(
         name=entry["name"],
         kernel=entry["kernel"],
         initrd=entry["initrd"],
         disk=entry["disk"],
-        metadata=entry.get("metadata"),
+        metadata=entry["metadata"],
         memory_mib=entry["memory_mib"],
         vcpu_count=entry["vcpu_count"],
+        mac=entry["mac"],
+        ip=entry["ip"],
         tmpdir=str(tmpdir),
     )
-    if transport == "firecracker":
-        return FirecrackerMachine(**common)
-    return QemuMachine(**common, mac=entry["mac"], ip=entry["ip"])
 
 
-def _dump_serial_logs(machines):
+def _dump_serial_logs(machines: list[Machine]) -> None:
     for m in machines:
         path = Path(m.serial_log_path)
         if not path.exists():
@@ -116,7 +130,7 @@ def _dump_serial_logs(machines):
         sys.stderr.write(f"--- end {m.name} serial log ---\n\n")
 
 
-def _wait_agents(machines, deadline):
+def _wait_agents(machines: list[Machine], deadline: float) -> None:
     for m in machines:
         log.info("Waiting for %s agent...", m.name)
         while True:
@@ -133,7 +147,7 @@ def _wait_agents(machines, deadline):
             time.sleep(0.5)
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aos-test-driver")
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--test", required=True, type=Path)
@@ -145,7 +159,9 @@ def main(argv=None):
     manifest = _load_manifest(args.manifest)
 
     tmpdir = Path(os.environ.get("TMPDIR", "/tmp"))
-    machines = [_build_machine(entry, tmpdir) for entry in manifest["machines"]]
+    machines: list[Machine] = [
+        _build_machine(entry, tmpdir) for entry in manifest["machines"]
+    ]
 
     log.info(
         "==> aos-test-driver: %s (%d machine(s))",
@@ -153,8 +169,8 @@ def main(argv=None):
         len(machines),
     )
 
-    started = []
-    exit_code = 0
+    started: list[Machine] = []
+    exit_code: int = 0
     try:
         for m in machines:
             m.start()
@@ -165,9 +181,11 @@ def main(argv=None):
 
         # Expose machines as test-module globals; chdir to TMPDIR so
         # tracebacks render as ./test.py:NN regardless of where the
-        # synthesised file lives.
+        # synthesised file lives. The dict is typed `dict[str, object]`
+        # so pyrefly doesn't infer a TypedDict and reject the per-name
+        # machine assignments below.
         os.chdir(str(tmpdir))
-        init_globals = {"machines": started}
+        init_globals: dict[str, object] = {"machines": started}
         for m in started:
             init_globals[m.name] = m
 

@@ -21,16 +21,24 @@ class AosDriverError(Exception):
 class MachineFailure(AosDriverError):
     """A test-issued command did not meet its assertion."""
 
-    def __init__(self, machine, cmd, exit_code, stdout, stderr, timeout=None):
-        self.machine = machine
-        self.cmd = cmd
-        self.exit_code = exit_code
-        self.stdout = stdout
-        self.stderr = stderr
-        self.timeout = timeout
+    def __init__(
+        self,
+        machine: str,
+        cmd: str,
+        exit_code: int,
+        stdout: bytes,
+        stderr: bytes,
+        timeout: float | None = None,
+    ) -> None:
+        self.machine: str = machine
+        self.cmd: str = cmd
+        self.exit_code: int = exit_code
+        self.stdout: bytes = stdout
+        self.stderr: bytes = stderr
+        self.timeout: float | None = timeout
         super().__init__(self._format())
 
-    def _format(self):
+    def _format(self) -> str:
         head = f"[{self.machine}] command failed (exit {self.exit_code})"
         if self.timeout is not None:
             head += f" — deadline {self.timeout}s fired"
@@ -48,10 +56,10 @@ class MachineFailure(AosDriverError):
 class AgentTimeout(AosDriverError):
     """The agent did not respond within the per-RPC deadline."""
 
-    def __init__(self, machine, cmd, timeout):
-        self.machine = machine
-        self.cmd = cmd
-        self.timeout = timeout
+    def __init__(self, machine: str, cmd: str, timeout: float) -> None:
+        self.machine: str = machine
+        self.cmd: str = cmd
+        self.timeout: float = timeout
         super().__init__(
             f"[{machine}] agent timeout after {timeout}s on {cmd!r}"
         )
@@ -60,11 +68,11 @@ class AgentTimeout(AosDriverError):
 class AgentProtocolError(AosDriverError):
     """The agent returned a malformed wire response or the socket died."""
 
-    def __init__(self, machine, detail):
-        self.machine = machine
-        self.detail = detail
+    def __init__(self, machine: str, detail: str) -> None:
+        self.machine: str = machine
+        self.detail: str = detail
         super().__init__(f"[{machine}] agent protocol error: {detail}")
 
 
-def _indent(text, prefix="    "):
+def _indent(text: str, prefix: str = "    ") -> str:
     return "\n".join(prefix + line for line in text.splitlines())
