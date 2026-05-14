@@ -45,6 +45,12 @@ in
     pname = "systemd";
     inherit version;
 
+    # Split ukify into a `tools` output so the python3-pefile and
+    # python3-pyelftools site-packages stay out of PID-1 systemd's
+    # runtime closure. aos-uki (the only consumer of ukify) pulls
+    # systemd.tools explicitly.
+    outputs = ["out" "tools"];
+
     src = fetchurl {
       urls = [
         "https://github.com/systemd/systemd/archive/refs/tags/v${version}.tar.gz"
@@ -98,15 +104,13 @@ in
       cryptsetup
       elfutils
       linux-pam
-      # ukify wrapper installed below references python3 + the pefile and
-      # pyelftools site-packages. Declared here so scrubPhase preserves
-      # the refs; Task D in the build-leaks plan moves ukify to a separate
-      # `tools` output so PID-1 systemd no longer pulls these in.
-      python3
-      python3-pefile
-      python3-pyelftools
     ];
     propagatedDeps = [];
+
+    # The ukify wrapper installed into $tools/bin references python3 +
+    # the pefile / pyelftools site-packages. Listed in nukeRefsKeep so
+    # scrubPhase preserves the hashes only inside the tools output.
+    nukeRefsKeep = [python3 python3-pefile python3-pyelftools];
 
     phases = [
       {
@@ -421,18 +425,21 @@ in
 
           # ukify: pefile must be importable when the wrapped shebang
           # runs. systemd's meson install lays the script down with a
-          # plain python3 shebang — we replace the entry on PATH with
-          # a bash wrapper that exports PYTHONPATH pointing at
-          # python3-pefile's site-packages before invoking python3 on
-          # the original script.
+          # plain python3 shebang — we relocate it into the `tools`
+          # output (so the python3 / pefile / pyelftools refs don't
+          # land in PID-1 systemd's closure) and emit a bash wrapper
+          # that exports PYTHONPATH pointing at python3-pefile's
+          # site-packages before invoking python3 on the original
+          # script.
           if [ -x "$out/bin/ukify" ]; then
-            mv "$out/bin/ukify" "$out/bin/.ukify-unwrapped"
-            cat > "$out/bin/ukify" << EOF
+            mkdir -p "$tools/bin"
+            mv "$out/bin/ukify" "$tools/bin/.ukify-unwrapped"
+            cat > "$tools/bin/ukify" << EOF
           #!${bash}/bin/bash
           export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
-          exec "${python3}/bin/python3" "$out/bin/.ukify-unwrapped" "\$@"
+          exec "${python3}/bin/python3" "$tools/bin/.ukify-unwrapped" "\$@"
           EOF
-            chmod +x "$out/bin/ukify"
+            chmod +x "$tools/bin/ukify"
           fi
         '';
       }
