@@ -150,23 +150,27 @@
     script = ''
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
-        find "$out" -type f -name '*.so*' -exec strip --strip-unneeded {} \; 2>/dev/null || true
-        find "$out" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
-        if [ -d "$out/bin" ]; then
-          find "$out/bin" -type f -exec strip -s {} \; 2>/dev/null || true
-        fi
-        if [ -d "$out/sbin" ]; then
-          find "$out/sbin" -type f -exec strip -s {} \; 2>/dev/null || true
-        fi
-        if [ -d "$out/libexec" ]; then
-          find "$out/libexec" -type f -exec strip -s {} \; 2>/dev/null || true
-        fi
+        for o in ''${outputs:-out}; do
+          eval "p=\"\''${$o:-}\""
+          [ -d "$p" ] || continue
+          find "$p" -type f -name '*.so*' -exec strip --strip-unneeded {} \; 2>/dev/null || true
+          find "$p" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
+          for d in bin sbin libexec; do
+            if [ -d "$p/$d" ]; then
+              find "$p/$d" -type f -exec strip -s {} \; 2>/dev/null || true
+            fi
+          done
+        done
       fi
 
       if [ -z "''${dontPatchELF:-}" ] && command -v patchelf >/dev/null 2>&1; then
         echo "shrinking ELF RPATHs..."
-        find "$out" -type f \( -name '*.so*' -o -perm -u+x \) | while read f; do
-          patchelf --shrink-rpath "$f" 2>/dev/null || true
+        for o in ''${outputs:-out}; do
+          eval "p=\"\''${$o:-}\""
+          [ -d "$p" ] || continue
+          find "$p" -type f \( -name '*.so*' -o -perm -u+x \) | while read f; do
+            patchelf --shrink-rpath "$f" 2>/dev/null || true
+          done
         done
       fi
     '';
@@ -306,15 +310,27 @@
   # Derivation path helpers
   # ---------------------------------------------------------------------------
 
-  ## Return the "bin" output of a derivation. In AOS every derivation is
-  ## single-output (see `outputs ? [ "out" ]` below), so this is the identity
-  ## function. Kept for API compatibility with `getExe` / `getExe'` — call
-  ## sites can express intent today and will benefit automatically if AOS
-  ## ever grows multi-output support.
+  ## Return a named output of a derivation. Falls back to the derivation
+  ## itself (its default output) when the named output doesn't exist —
+  ## lets call sites express intent without forcing every package to
+  ## split outputs.
+  ## # Type
+  ## `string -> derivation -> derivation`
+  getOutput = name: drv:
+    assert isDerivation drv;
+      drv.${name} or drv;
+
+  ## Return the "bin" output of a derivation, or the default output if
+  ## no `bin` output is declared.
   ## # Type
   ## `derivation -> derivation`
-  getBin = drv:
-    assert isDerivation drv; drv;
+  getBin = drv: getOutput "bin" drv;
+
+  ## Return the "dev" output of a derivation, or the default output if
+  ## no `dev` output is declared.
+  ## # Type
+  ## `derivation -> derivation`
+  getDev = drv: getOutput "dev" drv;
 
   ## Return the absolute path of a named binary inside a derivation. Use
   ## when you want a specific tool rather than the "main" one.
@@ -1471,7 +1487,9 @@ in {
     ;
 
   inherit
+    getOutput
     getBin
+    getDev
     getExe
     getExe'
     ;
