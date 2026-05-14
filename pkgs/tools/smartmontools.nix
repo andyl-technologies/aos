@@ -3,6 +3,9 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  patch,
+  patchelf,
+  pkg-config,
 }: let
   version = "7.4";
 in
@@ -20,6 +23,16 @@ in
     buildDeps = [gnumake];
     runtimeDeps = [];
     propagatedDeps = [];
+
+    # Guard: keep the autotools build toolchain out of smartctl/smartd's
+    # `--version` strings (which previously pinned xz-5.6.4 and the entire
+    # live-bootstrap chain into the closure).
+    disallowedReferences = [
+      gnumake
+      pkg-config
+      patch
+      patchelf
+    ];
 
     phases = [
       {
