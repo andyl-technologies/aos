@@ -172,6 +172,61 @@
     '';
   };
 
+  # Scrub phase: rewrite build-time /nix/store/<hash>- references inside
+  # the output so the Nix reference scanner doesn't pull build-only
+  # toolchain paths into the runtime closure. Runs after fixup for every
+  # derivation; appended unconditionally so cargo/go/bazel phase
+  # templates (which bundle their own fixup) also get scrubbed.
+  #
+  # Preserves references to declared outputs, runtimeDeps, propagatedDeps,
+  # and per-package `nukeRefsKeep`. Set `dontNukeRefs = true` on the
+  # caller to skip (e.g. for nuke-references itself).
+  scrubPhase = {
+    name = "scrub";
+    script = ''
+      if [ -n "''${dontNukeRefs:-}" ]; then
+        echo "scrub: skipped (dontNukeRefs set)"
+      elif ! command -v nuke-refs >/dev/null 2>&1; then
+        echo "scrub: nuke-refs not on PATH, skipping" >&2
+      else
+        echo "scrubbing build-time refs..."
+
+        # Build the -e keep list: every declared output, every runtime /
+        # propagated dep, plus the per-package extension `nukeRefsKeep`.
+        # The env vars are nixpkgs-style ($buildInputs = runtimeDeps,
+        # $propagatedBuildInputs = propagatedDeps).
+        keep_args=""
+        for o in ''${outputs:-out}; do
+          eval "p=\"\''${$o:-}\""
+          [ -n "$p" ] && keep_args="$keep_args -e $p"
+        done
+        for p in ''${buildInputs:-} ''${propagatedBuildInputs:-} ''${nukeRefsKeep:-}; do
+          [ -n "$p" ] && keep_args="$keep_args -e $p"
+        done
+
+        # Default target set: every executable, every shared lib, every
+        # pkgconfig/.la/Makefile/sysconfig file. These are the locations
+        # autotools/python embed build-tool paths into. Python's
+        # __pycache__ is included because import compiles _sysconfigdata
+        # to .pyc at install time, baking the build-time toolchain refs
+        # into a binary blob that the .py-only pattern would miss.
+        for o in ''${outputs:-out}; do
+          eval "p=\"\''${$o:-}\""
+          [ -d "$p" ] || continue
+          find "$p" \( \
+               -path "*/bin/*" -o -path "*/sbin/*" -o -path "*/libexec/*" \
+            -o -name "*.so" -o -name "*.so.*" \
+            -o -name "*.pc"  -o -name "*.la" \
+            -o -name "Makefile" \
+            -o -name "_sysconfigdata*.py"  -o -name "_sysconfigdata*.pyc" \
+            -o -name "_sysconfig_vars*.json" \
+            \) -type f -print0 \
+          | xargs -0 -r nuke-refs $keep_args
+        done
+      fi
+    '';
+  };
+
   defaultPhases = [
     defaultUnpackPhase
     defaultConfigurePhase
@@ -493,10 +548,17 @@
     # debug sections embed gcc store paths that drag the ~230 MB compiler
     # into every package's closure. Skip if the caller already supplied
     # a fixup — the cargo/go/bazel phase templates bundle their own.
+    #
+    # scrubPhase always runs last, regardless of whether the caller
+    # supplied a custom fixup. Inlining it into fixup would skip it
+    # whenever cargo/go/bazel templates override the fixup phase.
     allPhases =
-      if builtins.any (p: p.name == "fixup") finalPhases
-      then finalPhases
-      else finalPhases ++ [fixupPhase];
+      (
+        if builtins.any (p: p.name == "fixup") finalPhases
+        then finalPhases
+        else finalPhases ++ [fixupPhase]
+      )
+      ++ [scrubPhase];
 
     builder = phasesToScript allPhases shell;
 

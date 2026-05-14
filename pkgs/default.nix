@@ -12,9 +12,17 @@
   # nuke-references itself (to break the self-referential cycle).
   rawMkDerivation = stdenv.mkDerivation;
 
-  # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH).
-  # P1 stage: identity alias; P2 wraps this to inject nuke-references.
-  mkDerivation = rawMkDerivation;
+  # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
+  # wrapped to inject nuke-references into every package's buildDeps so
+  # the scrubPhase from lib/derivations.nix can rewrite build-toolchain
+  # store paths out of the output (matches nixpkgs nuke-refs idiom).
+  mkDerivation = args:
+    rawMkDerivation (
+      args
+      // {
+        buildDeps = (args.buildDeps or []) ++ [self.nuke-references];
+      }
+    );
 
   # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
   bootstrapTools = stdenv.cc;
