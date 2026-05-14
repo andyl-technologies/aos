@@ -27,6 +27,12 @@ in
     runtimeDeps = [runc];
     propagatedDeps = [];
 
+    # Guard: containerd's shim used to bake the go-1.26.0 store path into
+    # its DWARF + runtime.GOROOT(). The -trimpath flags below strip that;
+    # disallowedReferences catches any future regression at build time.
+    # Mirrors mkGoPackage's default.
+    disallowedReferences = [go];
+
     phases = [
       {
         name = "unpack";
@@ -50,10 +56,17 @@ in
           export GOCACHE=$TMPDIR/go-cache
           export CGO_ENABLED=0
           export GOPROXY=off
+          # -trimpath strips the build-dir + go-1.26.0 store path out of
+          # the binary's DWARF and runtime.GOROOT(); without it the shim
+          # pins go (212 MiB) into the runtime closure. GOFLAGS reaches
+          # the shim's `go build` invocation; GO_BUILD_FLAGS reaches the
+          # main containerd / ctr invocations (Makefile naming).
+          export GOFLAGS="-trimpath"
           mkdir -p "$GOCACHE"
           make SHELL="$CONFIG_SHELL" VERSION=v${version} \
             REVISION=v${version} \
             STATIC=1 \
+            GO_BUILD_FLAGS="-trimpath" \
             binaries
         '';
       }
