@@ -8,8 +8,13 @@
 }: let
   fetchurl = lib.fetchurl;
 
-  # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH)
-  mkDerivation = stdenv.mkDerivation;
+  # Raw stdenv.mkDerivation, without nuke-references injected. Used by
+  # nuke-references itself (to break the self-referential cycle).
+  rawMkDerivation = stdenv.mkDerivation;
+
+  # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH).
+  # P1 stage: identity alias; P2 wraps this to inject nuke-references.
+  mkDerivation = rawMkDerivation;
 
   # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
   bootstrapTools = stdenv.cc;
@@ -336,6 +341,14 @@
       fakeHash = lib.fakeHash;
       # --- Build infrastructure ---
       inherit stdenv;
+
+      # nuke-references uses the raw (un-wrapped) mkDerivation so it can't
+      # depend on itself. Every other package gets nuke-references injected
+      # into buildDeps automatically via the wrapped mkDerivation above.
+      nuke-references = import ../lib/build-support/nuke-references {
+        mkDerivation = rawMkDerivation;
+        inherit (self) bash gawk sed;
+      };
     }
     // discoverPackages ./.
     // {
