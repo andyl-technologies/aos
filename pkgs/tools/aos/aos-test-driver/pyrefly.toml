@@ -1,0 +1,17 @@
+# pyrefly.toml — type-check config for the AOS test driver.
+#
+# `preset = "strict"` enables implicit-any (no untyped functions,
+# parameters, or returns), missing-override-decorator (subclass overrides
+# without @override fail), unused-ignore (stale `# pyrefly: ignore`
+# comments fail), and strict-callable-subtyping. The whole driver is
+# stdlib-only so no third-party type stubs are needed.
+#
+# `python-version` matches AOS's python3 (pkgs/toolchain/python/python3.nix);
+# `skip-interpreter-query` keeps the type-check hermetic — pyrefly uses
+# its bundled typeshed and doesn't poke at any external interpreter.
+
+preset = "strict"
+python-version = "3.14"
+skip-interpreter-query = true
+
+project-includes = ["aos_test_driver/**/*.py"]

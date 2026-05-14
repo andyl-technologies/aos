@@ -4,7 +4,7 @@ import logging
 import sys
 
 
-def setup(verbose=False):
+def setup(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     handler = logging.StreamHandler(stream=sys.stderr)
     handler.setFormatter(
