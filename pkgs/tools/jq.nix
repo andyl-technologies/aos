@@ -3,6 +3,9 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  patch,
+  patchelf,
+  pkg-config,
   oniguruma,
 }: let
   version = "1.8.1";
@@ -21,6 +24,15 @@ in
     buildDeps = [gnumake];
     runtimeDeps = [oniguruma];
     propagatedDeps = [];
+
+    # Guard: keep the autotools build toolchain out of jq's
+    # `--version`-baked PKG_CONFIG_PATH / CC strings.
+    disallowedReferences = [
+      gnumake
+      pkg-config
+      patch
+      patchelf
+    ];
 
     phases = [
       {
