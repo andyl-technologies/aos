@@ -4,7 +4,7 @@
 ##! Usage: `let lib = import ./lib { system = "aarch64-linux"; }; in ...`
 ##!
 ##! The `system` parameter is threaded through to all derivation builders
-##! (mkDerivation, mkShell, fetchurl, fetchgit, fetchCargoDeps, fetchGoModules)
+##! (mkDerivation, mkShell, fetchurl, fetchgit, fetchCargoDeps, fetchCargoVendor, fetchGoModules)
 ##! so that every package targets the correct platform.
 ##!
 ##! The optional `bash` parameter (a derivation) causes all builders to use
@@ -152,6 +152,7 @@
         fetchurl
         fetchgit
         fetchCargoDeps
+        fetchCargoVendor
         fetchGoModules
         fetchBazelDeps
         fakeHash

@@ -39,6 +39,30 @@
       }
     );
 
+  fetchCargoVendor = args:
+    lib.fetchCargoVendor (
+      args
+      // {
+        cargo = self.rust;
+        python3 = self.python3;
+        git = self.git;
+        caCertificates = self.ca-certificates;
+        inherit bootstrapTools;
+        extraPaths = [
+          stdenv.coreutils
+          stdenv.tar
+          stdenv.gzip
+          stdenv.bash
+        ];
+        extraLibPaths =
+          [
+            self.openssl
+            self.zlib
+          ]
+          ++ (args.extraLibPaths or []);
+      }
+    );
+
   fetchGoModules = args:
     lib.fetchGoModules (
       args
@@ -307,7 +331,7 @@
       # --- Plumbing ---
       inherit mkDerivation fetchurl lib;
       inherit mkCargoPackage mkGoPackage mkBazelPackage;
-      inherit fetchCargoDeps fetchGoModules fetchBazelDeps;
+      inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchBazelDeps;
       inherit bootstrapTools;
       fakeHash = lib.fakeHash;
       # --- Build infrastructure ---
