@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 
 use aos_core::nar::export::ExportTrailer;
-use aos_core::nix::NixCli;
+use aos_core::nix::{aos_nix_env, NixCli};
 
 /// Streaming compression pipeline: `nix-store --dump <path> | compressor`
 ///
@@ -15,6 +15,7 @@ pub fn streaming_compress(store_path: &str, algorithm: &str, level: i32) -> Resu
         "zstd" => {
             // Pipe: nix-store --dump <path> -> zstd -c -<level>
             let mut dump = Command::new("nix-store")
+                .envs(aos_nix_env())
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -42,6 +43,7 @@ pub fn streaming_compress(store_path: &str, algorithm: &str, level: i32) -> Resu
         }
         "xz" => {
             let mut dump = Command::new("nix-store")
+                .envs(aos_nix_env())
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -70,6 +72,7 @@ pub fn streaming_compress(store_path: &str, algorithm: &str, level: i32) -> Resu
         "none" => {
             // No compression: read directly from nix-store --dump.
             let output = Command::new("nix-store")
+                .envs(aos_nix_env())
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -130,6 +133,7 @@ pub fn streaming_import(
 
     // Spawn nix-store --import and pipe the export data.
     let mut child = std::process::Command::new("nix-store")
+        .envs(aos_nix_env())
         .arg("--import")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

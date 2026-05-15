@@ -469,7 +469,7 @@
         "${pkgs.qemu}/bin/qemu-system-x86_64" \
           -machine q35,accel=kvm \
           -cpu host \
-          -m 2048 \
+          -m 8192 \
           -smp 2 \
           -nographic \
           -kernel "''${VMLINUZ_${mb.name}}" \
