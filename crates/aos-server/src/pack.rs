@@ -145,16 +145,32 @@ pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
 
     // Check if the path is content-addressed by querying nix path-info.
     // Content-addressed paths have a "ca" field in their narinfo.
+    //
+    // `nix path-info` is part of the "new" CLI and only runs when the
+    // `nix-command` experimental feature is enabled — without it the
+    // process exits non-zero with `error: experimental Nix feature
+    // 'nix-command' is disabled` on stderr. The aos rootfs ships no
+    // system-wide `nix.conf`, so we have to opt in per-invocation.
     let output = std::process::Command::new("nix")
         .envs(aos_nix_env())
-        .args(["path-info", "--json", store_path])
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "path-info",
+            "--json",
+            store_path,
+        ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
         .map_err(|e| format!("failed to query path info: {e}"))?;
 
     if !output.status.success() {
-        return Err(format!("path not found in store: {store_path}"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "nix path-info failed for {store_path}: {}",
+            stderr.trim()
+        ));
     }
 
     let json_str = String::from_utf8_lossy(&output.stdout);
