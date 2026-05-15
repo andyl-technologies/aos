@@ -1,4 +1,5 @@
 use aos_core::nar::info::{basename, store_hash};
+use crate::compress::{compute_file_hash_size, Compression};
 use crate::config::CompressionConfig;
 use crate::sign::NarInfoSigner;
 use crate::store::DbPathInfo;
@@ -9,6 +10,16 @@ fn compression_parts(config: &CompressionConfig) -> (&str, &str) {
         "zstd" => ("zstd", "nar.zst"),
         "xz" => ("xz", "nar.xz"),
         _ => ("none", "nar"),
+    }
+}
+
+/// Resolve narinfo `Compression:` config into the typed `Compression` used
+/// by the compression pipeline.
+fn compression_from_config(config: &CompressionConfig) -> Compression {
+    match config.algorithm.as_str() {
+        "zstd" => Compression::Zstd { level: config.level },
+        "xz" => Compression::Xz { level: config.level },
+        _ => Compression::None,
     }
 }
 
@@ -25,14 +36,34 @@ pub fn format_narinfo(info: &DbPathInfo, store_dir: &str, compression: &Compress
     // URL uses the store hash + nar hash for resolution (nix-serve style).
     let url = format!("nar/{path_hash}-{}.{comp_ext}", nar_hash.replace(':', "-"));
 
+    // FileHash / FileSize describe the compressed bytes the client will
+    // actually download. For Compression::None they coincide with
+    // NarHash / NarSize; for zstd / xz we have to actually run the
+    // compression pipeline once to compute them. Apm-side verification
+    // (`crates/aos-package/src/verify.rs`) requires both to be present
+    // and non-empty regardless of compression, so we always emit them.
+    let (file_hash, file_size): (String, u64) = if comp_name == "none" {
+        (nar_hash.clone(), info.nar_size as u64)
+    } else {
+        match compute_file_hash_size(&info.path, compression_from_config(compression)) {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(
+                    path = %info.path,
+                    error = %e,
+                    "FileHash/FileSize computation failed; falling back to NarHash"
+                );
+                (nar_hash.clone(), info.nar_size as u64)
+            }
+        }
+    };
+
     let mut out = String::with_capacity(512);
     out.push_str(&format!("StorePath: {store_dir}/{path_basename}\n"));
     out.push_str(&format!("URL: {url}\n"));
     out.push_str(&format!("Compression: {comp_name}\n"));
-    if comp_name == "none" {
-        out.push_str(&format!("FileHash: {nar_hash}\n"));
-        out.push_str(&format!("FileSize: {}\n", info.nar_size));
-    }
+    out.push_str(&format!("FileHash: {file_hash}\n"));
+    out.push_str(&format!("FileSize: {file_size}\n"));
     out.push_str(&format!("NarHash: {nar_hash}\n"));
     out.push_str(&format!("NarSize: {}\n", info.nar_size));
 
