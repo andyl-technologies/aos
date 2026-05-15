@@ -11,6 +11,7 @@ pub enum Method {
     Put,
     Head,
     Delete,
+    Post,
 }
 
 /// The body to send with a transfer request.
@@ -128,6 +129,19 @@ impl TransferRequest {
         }
     }
 
+    /// Create a POST request with bytes body.
+    pub fn post(url: &str, data: Vec<u8>) -> Self {
+        Self {
+            url: url.to_string(),
+            method: Method::Post,
+            headers: Vec::new(),
+            body: Some(TransferBody::Bytes(data)),
+            hash: None,
+            resume: false,
+            output: TransferOutput::Memory,
+        }
+    }
+
     /// Create a HEAD request.
     pub fn head(url: &str) -> Self {
         Self {
@@ -197,5 +211,21 @@ impl TransferResult {
             .iter()
             .find(|(k, _)| k.to_lowercase() == lower)
             .map(|(_, v)| v.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn post_constructor_sets_method_and_body() {
+        let req = TransferRequest::post("http://example.com/x", vec![1, 2, 3]);
+        assert_eq!(req.method, Method::Post);
+        assert_eq!(req.url, "http://example.com/x");
+        match req.body {
+            Some(TransferBody::Bytes(b)) => assert_eq!(b, vec![1, 2, 3]),
+            _ => panic!("expected Bytes body"),
+        }
     }
 }
