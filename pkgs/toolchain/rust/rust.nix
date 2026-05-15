@@ -42,6 +42,7 @@ in
     runtimeDeps = [
       llvm
       zlib
+      openssl
     ];
 
     phases = [
