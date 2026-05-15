@@ -189,9 +189,20 @@ in {
         chmod +x ${storePath}/bin/${testPkg.name}
 
         # 3.4 Register in ValidPaths so `aos cache push` finds it.
-        # Schema matches tests/vm/apm/cache.nix:36. Hash placeholder
-        # is the same long-form bogus value the existing apm VM
-        # tests use; the real hashes come back via narinfo in 3.6.
+        # Schema matches tests/vm/apm/cache.nix:36.
+        #
+        # The `hash` column has to be the *real* NAR hash of the
+        # on-disk content. `aos cache push`'s pack path shells out
+        # to `nix-store --export ${storePath}` (via
+        # `streaming_export` in aos-cache/src/compress.rs), and Nix
+        # refuses with `"hash of path ... has changed from ... to
+        # ..."` if the registered hash doesn't match what it just
+        # computed by re-NARing the path. So precompute the hash
+        # here. `nix-store --dump` is also used in the bigpkg
+        # tripwire at step 3.9, but that path goes through
+        # `streaming_compress` (also `--dump`) which doesn't
+        # hash-check against ValidPaths — placeholder hash is fine
+        # there.
         mkdir -p "$AOS_ROOT/var/nix/db"
         if [ ! -e "$AOS_ROOT/var/nix/db/db.sqlite" ]; then
           sqlite3 "$AOS_ROOT/var/nix/db/db.sqlite" <<'SQL'
@@ -209,13 +220,21 @@ in {
             PRAGMA journal_mode=WAL;
         SQL
         fi
+        NAR_TMP=$(mktemp)
+        NIX_STORE_DIR=$AOS_ROOT/store NIX_STATE_DIR=$AOS_ROOT/var/nix \\
+          ${pkgs.nix}/bin/nix-store --dump ${storePath} > "$NAR_TMP"
+        NAR_HASH=$(sha256sum "$NAR_TMP" | awk '{{print $1}}')
+        NAR_SIZE=$(stat -c %s "$NAR_TMP")
+        rm -f "$NAR_TMP"
         sqlite3 "$AOS_ROOT/var/nix/db/db.sqlite" \\
-          "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('${storePath}', 'sha256:0000000000000000000000000000000000000000000000000000000000000001', 1000000, 4096, 1, ''');"
+          "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('${storePath}', 'sha256:$NAR_HASH', 1000000, $NAR_SIZE, 1, ''');"
 
-        # 3.5 Bootstrap-token → JWT (mirrors tests/vm/apm/e2e.nix:72).
-        # Wait for the bootstrap socket to actually appear — the
-        # unit is "active" before its first accept(), so a hard race
-        # is possible on a cold VM.
+        # 3.5 Mint provisioning token via the bootstrap socket.
+        # Wait for the socket to actually appear — the unit is
+        # "active" before its first accept(), so a hard race is
+        # possible on a cold VM. `aos cache push --token "$PROV"`
+        # performs the PROV → JWT exchange internally via the
+        # `oauth2/token` endpoint, so we don't need to do it here.
         for _ in 1 2 3 4 5 6 7 8 9 10; do
           test -S /run/aos-registry-server/bootstrap.sock && break
           sleep 0.5
@@ -223,12 +242,7 @@ in {
         RESP=$(echo '{{"action":"create","views":["default"],"permissions":["read","build","gc"]}}' \\
           | socat - UNIX-CONNECT:/run/aos-registry-server/bootstrap.sock)
         PROV=$(echo "$RESP" | jq -r '.data.token')
-        JWT=$(curl -s -X POST \\
-          -H "Authorization: Bearer $PROV" \\
-          -H "Content-Type: application/x-www-form-urlencoded" \\
-          -d "grant_type=client_credentials" \\
-          http://127.0.0.1:15000/oauth2/token | jq -r '.access_token')
-        [ -n "$JWT" ] && [ "$JWT" != "null" ] || {{ echo "FAIL: no JWT" >&2; exit 1; }}
+        [ -n "$PROV" ] && [ "$PROV" != "null" ] || {{ echo "FAIL: no PROV token" >&2; exit 1; }}
 
         # 3.6 Push the NAR, then read back the real hashes from the
         # cache's on-demand narinfo. `apm install` verifies both
@@ -236,14 +250,8 @@ in {
         # .nar.zst) — placeholders would fail with HashMismatch
         # (verify.rs:54-94). The narinfo route is anonymous-readable
         # because the default view has `anonymous_read = true`.
-        # Tolerate non-zero exit from `aos cache push`: existing apm
-        # VM tests do the same (e2e.nix:139) because mock ValidPaths
-        # entries can warn at verify time even though the NAR
-        # uploads successfully. The narinfo readback below is the
-        # real success check.
         ${pkgs.aos}/bin/aos cache push ${storePath} \\
-          --to http://127.0.0.1:15000/default --token "$JWT" \\
-          2>&1 || echo "WARN: aos cache push returned non-zero (mock ValidPaths hash)"
+          --to http://127.0.0.1:15000/default --token "$PROV" 2>&1
         NARINFO=$(curl -sf \\
           "http://127.0.0.1:15000/default/${testPkg.storeHash}.narinfo")
         NAR_HASH=$(echo "$NARINFO" | awk '/^NarHash:/ {{print $2}}')
@@ -260,6 +268,33 @@ in {
           | sed -e "s|__NAR_HASH__|$NAR_HASH|" \\
                 -e "s|__DOWNLOAD_HASH__|$DL_HASH|" \\
           > packages/t/${testPkg.name}.toml
+
+        # 3.9 Cross-failing tripwire for the deferred put_nar AOS
+        # bug. --batch-threshold 0 forces the per-file put_nar path
+        # instead of upload_pack. That path is broken on two axes
+        # upstream: (1) URL — PUT goes to /{{view}}/nar/<file> but
+        # the server's only PUT route is /{{view}}/store/<hash>;
+        # (2) body format — the server pipes the body into
+        # nix-store --import, which expects raw NAR + ExportTrailer,
+        # not compressed NAR. See the TODO block in
+        # crates/aos-cache/src/backend/http.rs::put_nar. When someone
+        # fixes that path, the `if cmd; then exit 1` below fires in
+        # CI and the fixer must delete this block (or flip `if` →
+        # `if !`). The check is intentionally exit-code only — a
+        # tripwire for "bug is gone", not a tight oracle.
+        BIG=$AOS_ROOT/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bigpkg-1.0
+        mkdir -p "$BIG/share"
+        dd if=/dev/urandom of="$BIG/share/blob" bs=1M count=2 status=none
+        sqlite3 "$AOS_ROOT/var/nix/db/db.sqlite" \\
+          "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$BIG', 'sha256:0000000000000000000000000000000000000000000000000000000000000002', 2100000, 4096, 1, ''');"
+        if ${pkgs.aos}/bin/aos cache push "$BIG" \\
+            --to http://127.0.0.1:15000/default --token "$PROV" \\
+            --batch-threshold 0 2>&1; then
+          echo "CROSS-FAIL FIRED: aos cache push --batch-threshold 0 unexpectedly succeeded." >&2
+          echo "The deferred put_nar AOS bug appears fixed — delete this block." >&2
+          exit 1
+        fi
+        echo "Cross-failing put_nar assertion held — push still fails as expected."
 
         # 3.8 Commit + push to the bare repo.
         git add -A
