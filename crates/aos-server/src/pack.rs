@@ -3,6 +3,8 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use aos_core::nix::aos_nix_env;
+
 const MAGIC: &[u8; 4] = b"AOSP";
 const VERSION: u32 = 1;
 const HEADER_SIZE: usize = 4 + 4 + 4; // magic + version + entry count
@@ -144,6 +146,7 @@ pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
     // Check if the path is content-addressed by querying nix path-info.
     // Content-addressed paths have a "ca" field in their narinfo.
     let output = std::process::Command::new("nix")
+        .envs(aos_nix_env())
         .args(["path-info", "--json", store_path])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -186,6 +189,7 @@ pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
 
     for (i, entry) in entries.iter().enumerate() {
         let mut child = Command::new("nix-store")
+            .envs(aos_nix_env())
             .arg("--import")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
