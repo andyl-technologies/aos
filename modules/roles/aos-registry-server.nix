@@ -177,6 +177,11 @@ in {
         pkgs.jq
         pkgs.sqlite
         pkgs.curl
+        # `aos cache push` shells out to `zstd -c` for NAR compression
+        # (crates/aos-cache/src/compress.rs:27). The aos wrapper script
+        # doesn't add zstd to PATH, so it has to be in the system
+        # environment for the testScript's push to work.
+        pkgs.zstd
       ];
 
       # /etc/aos/serve.toml — referenced by the cache unit's
