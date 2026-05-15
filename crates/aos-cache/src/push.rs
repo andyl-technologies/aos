@@ -13,7 +13,7 @@ use aos_core::output::Printer;
 
 use crate::backend::CacheBackend;
 use crate::bandwidth;
-use crate::compress::{compression_ext, compression_name, streaming_compress};
+use crate::compress::{compression_ext, compression_name, streaming_compress, streaming_export};
 use crate::resolve::resolve_installables;
 
 pub async fn run_push(
@@ -176,9 +176,18 @@ pub async fn run_push(
 
         // Batch small NARs into packs for HTTP backends.
         if use_packs && file_size < batch_threshold_bytes {
+            // Pack entries are piped server-side into `nix-store --import`
+            // (aos-server/src/pack.rs:186-251), which requires Nix's
+            // export format — NOT compressed NAR. Run `nix-store --export`
+            // here to produce raw NAR + ExportTrailer bytes. The
+            // `compressed` we built above stays useful for the file-hash
+            // and file-size fields of the narinfo we generate, but it's
+            // dropped at end-of-scope; packs trade compression for the
+            // batching win.
+            let exported = streaming_export(&info.path)?;
             pack_paths.push(PackPath {
                 hash: hash.to_string(),
-                nar_data: compressed,
+                nar_data: exported,
             });
             pack_narinfos.push((hash.to_string(), narinfo_text));
         } else {
