@@ -82,6 +82,7 @@ impl Protocol for HttpProtocol {
         match request.method {
             Method::Get => self.do_get(request, auth).await,
             Method::Put => self.do_put(request, auth).await,
+            Method::Post => self.do_post(request, auth).await,
             Method::Head => self.do_head(request, auth).await,
             Method::Delete => self.do_delete(request, auth).await,
         }
@@ -97,6 +98,13 @@ impl Protocol for HttpProtocol {
             Method::Put => {
                 // PUT returns metadata + empty stream (upload direction).
                 let result = self.do_put(request, auth).await?;
+                let stream: ByteStream =
+                    Box::pin(futures_util::stream::empty());
+                Ok((result, stream))
+            }
+            Method::Post => {
+                // POST returns metadata + empty stream (upload direction).
+                let result = self.do_post(request, auth).await?;
                 let stream: ByteStream =
                     Box::pin(futures_util::stream::empty());
                 Ok((result, stream))
@@ -359,6 +367,69 @@ impl HttpProtocol {
         } else {
             let text = response.text().await.unwrap_or_default();
             anyhow::bail!("HTTP {} for PUT {}: {}", status, request.url, text);
+        };
+
+        Ok(TransferResult {
+            status,
+            headers,
+            bytes_transferred: body.as_ref().map_or(0, |b| b.len() as u64),
+            content_length,
+            body,
+            hash: None,
+            resumed: false,
+        })
+    }
+
+    async fn do_post(
+        &self,
+        request: &TransferRequest,
+        auth: Option<&Credential>,
+    ) -> Result<TransferResult> {
+        let mut builder = self.client.post(&request.url);
+        builder = self.apply_auth(builder, auth);
+
+        for (name, value) in &request.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+
+        match &request.body {
+            Some(TransferBody::Bytes(data)) => {
+                builder = builder
+                    .header("Content-Length", data.len().to_string())
+                    .body(data.clone());
+            }
+            Some(TransferBody::File(path)) => {
+                let file = tokio::fs::File::open(path)
+                    .await
+                    .with_context(|| format!("opening file {}", path.display()))?;
+                let metadata = file.metadata().await?;
+                let file_len = metadata.len();
+                let stream = tokio_util::io::ReaderStream::new(file);
+                let body = reqwest::Body::wrap_stream(stream);
+                builder = builder
+                    .header("Content-Length", file_len.to_string())
+                    .body(body);
+            }
+            Some(TransferBody::Stream(_reader)) => {
+                anyhow::bail!("stream body upload not directly supported via Protocol::execute(); use TransferEngine");
+            }
+            None => {}
+        }
+
+        let response = builder
+            .send()
+            .await
+            .with_context(|| format!("POST {}", request.url))?;
+
+        let status = response.status().as_u16();
+        let headers = collect_headers(&response);
+        let content_length = response.content_length();
+
+        let body = if status < 400 {
+            response.bytes().await.ok().map(|b| b.to_vec())
+        } else {
+            let text = response.text().await.unwrap_or_default();
+            anyhow::bail!("HTTP {} for POST {}: {}", status, request.url, text);
         };
 
         Ok(TransferResult {

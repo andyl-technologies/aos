@@ -612,6 +612,9 @@ impl Protocol for SftpProtocol {
                     resumed: false,
                 })
             }
+            Method::Post => {
+                anyhow::bail!("POST is not supported by the SFTP protocol");
+            }
         }
     }
 

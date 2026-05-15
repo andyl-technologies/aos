@@ -547,6 +547,7 @@ impl Protocol for S3Protocol {
             Method::Put => self.do_put(request, auth).await,
             Method::Head => self.do_head(request, auth).await,
             Method::Delete => self.do_delete(request, auth).await,
+            Method::Post => anyhow::bail!("POST is not supported by the s3:// protocol"),
         }
     }
 
