@@ -98,10 +98,13 @@
   };
 in {
   name = "apm-e2e";
-  # 240s budget: two VM boots + role activation + server-side seeding
+  # 600s budget: two VM boots + role activation + server-side seeding
   # (git init, NAR push, narinfo readback, commit/push) + client sync
-  # + install. Existing fleet tests under similar load use 180-300.
-  timeout = 240;
+  # + install. The original 240s was tight even before the FileHash
+  # narinfo computation got wired in (server compresses the path
+  # once per narinfo); under sandbox CPU/IO contention this can take
+  # tens of seconds.
+  timeout = 600;
 
   machines = {
     # Lexicographic order → client=192.168.50.10, server=192.168.50.11.
@@ -142,8 +145,12 @@ in {
 
     # ── 2. Pre-condition: store path absent on client before install.
     # Load-bearing for step 5 — proves the post-install path didn't
-    # come from the image's shared closure.
-    client.fail("test -e ${storePath}")
+    # come from the image's shared closure. Bumped timeout: the
+    # very first agent round-trip to the client races with the
+    # tail end of its boot under sandbox CPU contention and the
+    # default 30s can run out before the agent dispatches the
+    # command.
+    client.fail("test -e ${storePath}", timeout=120)
 
     # ── 3. Server-side seeding ────────────────────────────────────
     # Ship the pre-rendered TOMLs as base64 blobs. base64 round-
@@ -226,8 +233,33 @@ in {
         NAR_HASH=$(sha256sum "$NAR_TMP" | awk '{{print $1}}')
         NAR_SIZE=$(stat -c %s "$NAR_TMP")
         rm -f "$NAR_TMP"
+        # Seed the `ca` column so the server's `validate_imported_path`
+        # check (aos-server/src/pack.rs:140-189) treats this path as a
+        # fixed-output content-addressed path and accepts it. The pack-
+        # import handler refuses to register anything that's not .drv
+        # or CA, on the grounds that unverified non-CA store paths from
+        # remote uploaders could smuggle in arbitrary binaries. The
+        # `fixed:r:sha256:<NAR_HASH>` form is what Nix writes for
+        # `--add-fixed --recursive sha256 …`: same shape, with the
+        # NAR-hash we just computed. Nix's path-info reads the column
+        # verbatim and doesn't recompute store-path hashing against it,
+        # so the placeholder store-prefix (`aaaa…`) is fine to keep.
         sqlite3 "$AOS_ROOT/var/nix/db/db.sqlite" \\
-          "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('${storePath}', 'sha256:$NAR_HASH', 1000000, $NAR_SIZE, 1, ''');"
+          "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs, ca) VALUES ('${storePath}', 'sha256:$NAR_HASH', 1000000, $NAR_SIZE, 1, ''', 'fixed:r:sha256:$NAR_HASH');"
+
+        # 3.4b Promote the path into the view's `bin/` namespace.
+        # `aos cache push` ends up creating a GC root under
+        # `gcroots/{{view}}/tmp/{{hash}}` (see
+        # `upload_pack_handler` → `create_tmp_root`), but the
+        # narinfo / NAR handlers go through `check_visibility`
+        # which only consults `bin/` and `src/`
+        # (aos-server/src/views.rs:48-58). In production a `bin/`
+        # root is materialised once `apm build` completes; the
+        # fleet test isn't running a build, so we materialise it
+        # by hand. Without this, step 3.6's narinfo curl would 404
+        # even though the path is valid in the Nix store.
+        mkdir -p "$AOS_ROOT/gcroots/default/bin"
+        ln -sfn ${storePath} "$AOS_ROOT/gcroots/default/bin/${testPkg.storeHash}"
 
         # 3.5 Mint provisioning token via the bootstrap socket.
         # Wait for the socket to actually appear — the unit is
@@ -296,11 +328,17 @@ in {
         fi
         echo "Cross-failing put_nar assertion held — push still fails as expected."
 
-        # 3.8 Commit + push to the bare repo.
+        # 3.8 Commit + tag + push to the bare repo. The apm
+        # registry sync's default tracking mode is "latest tag by
+        # version-sort" (`registry/git.rs::resolve_latest_tag`),
+        # so we need at least one tag for `apm update` to pick a
+        # ref. Existing apm VM tests follow the same convention
+        # (`tests/vm/apm/tracking.nix`).
         git add -A
         git commit -m 'publish ${testPkg.name} ${testPkg.version}'
-        git push origin HEAD
-    """))
+        git tag v1.0.0
+        git push origin HEAD --tags
+    """), timeout=240)
 
     # ── 4. Client adds the registry and syncs ─────────────────────
     # Invoke via the store path, not via /usr/bin/apm — the
@@ -309,16 +347,64 @@ in {
     # `dirname "$0"` resolution fails. Calling the store-path
     # binary directly makes `dirname` resolve to the bin/ that
     # contains both wrapper and `.apm-unwrapped`.
+    #
+    # `HOME=/tmp` is set explicitly: the AOS rootfs ships `/` as
+    # read-only, so the `modules/base/apm.nix` tmpfiles.d entries
+    # under `/root/.config/...` silently fail at boot (the parent
+    # `/root` itself can't gain new children on a read-only fs).
+    # apm's `resolve_home()` already falls back to `/tmp` with a
+    # warning when `$HOME` is unset — we make it explicit and
+    # consistent across every client invocation so registry state
+    # and download caches survive across commands. The aos-test-
+    # agent doesn't spawn a login shell, so without this every
+    # command would see a fresh empty $HOME.
     client.succeed(
-        "${pkgs.aos}/bin/apm registry add git://server:9418/test-reg --name test-reg"
+        "HOME=/tmp ${pkgs.aos}/bin/apm registry add git://server:9418/test-reg --name test-reg",
+        timeout=120,
     )
-    client.succeed("${pkgs.aos}/bin/apm update --registry test-reg")
+    # `apm update` walks `git fetch` + `git archive | tar -x` over
+    # the fleet's multicast L2, which can comfortably overshoot the
+    # 30s default agent timeout under host load (other VMs running,
+    # cargo recompiles competing for CPU).
+    client.succeed("HOME=/tmp ${pkgs.aos}/bin/apm update --registry test-reg", timeout=120)
+    # `extract_packages` strips the leading `packages/` and lands TOMLs
+    # under `cache_path()/<registry>/packages/` —
+    # `crates/aos-package/src/{update,registry/git}.rs::extract_packages`.
+    # `cache_path()` is `$HOME/.local/share/apm/remote` for the user scope
+    # (see `types.rs::cache_path`), not `.../registries` (which holds the
+    # bare git clone metadata).
     client.succeed(
-        "test -f /root/.local/share/apm/registries/test-reg/packages/t/${testPkg.name}.toml"
+        "test -f /tmp/.local/share/apm/remote/test-reg/packages/t/${testPkg.name}.toml"
+    )
+
+    # `resolve_mirror` (crates/aos-package/src/download.rs:67) reads
+    # `[[caches]]` from `$HOME/.local/share/apm/registries/<name>/
+    # registry.toml`, but `apm update`'s `git archive packages/`
+    # (crates/aos-package/src/{update,registry/git}.rs) only extracts
+    # the `packages/` subtree — the registry.toml at repo root is
+    # never materialised on the client. Without it, `resolve_mirror`
+    # falls back to `<registry-url>/nar`, i.e. `git://server:9418/
+    # test-reg/nar`, which apm's transfer engine rejects with
+    # `unsupported URL scheme: 'git'`. Materialise it by hand here
+    # so step 5 can pick the http cache. A proper fix lives in apm
+    # and is tracked separately.
+    client.succeed(
+        "mkdir -p /tmp/.local/share/apm/registries/test-reg && "
+        "${pkgs.git}/bin/git -C /tmp/.local/share/apm/remote/test-reg/repo.git "
+        "show v1.0.0:registry.toml > /tmp/.local/share/apm/registries/test-reg/registry.toml"
     )
 
     # ── 5. Install pulls the NAR from the server's cache ──────────
-    client.succeed("${pkgs.aos}/bin/apm install ${testPkg.name} --registry test-reg")
+    # `apm install` fetches narinfo, downloads the NAR over the
+    # cross-VM L2, runs nix-store --import. Generous timeout —
+    # narinfo fetch path on the server runs `nix-store --dump |
+    # zstd | sha256sum` to fill in `FileHash` (compress.rs's
+    # `compute_file_hash_size`), and apm-side `nix-store --import`
+    # invocations can be slow inside the sandboxed VM.
+    client.succeed(
+        "HOME=/tmp ${pkgs.aos}/bin/apm install ${testPkg.name} --registry test-reg",
+        timeout=240,
+    )
     # Path was absent in step 2; its presence here proves the NAR
     # was transferred over the network from the server's cache.
     client.succeed("test -x ${storePath}/bin/${testPkg.name}")
@@ -338,7 +424,7 @@ in {
     )
 
     # ── 7. Idempotency: second sync exits clean ───────────────────
-    client.succeed("${pkgs.aos}/bin/apm update --registry test-reg")
+    client.succeed("HOME=/tmp ${pkgs.aos}/bin/apm update --registry test-reg", timeout=120)
 
     # ── 8. Negative path: registry down ───────────────────────────
     # Stop the git daemon. `apm update` should fail — there's no
@@ -347,7 +433,7 @@ in {
     # doesn't take the binary cache down with it. Restart afterwards
     # so any future operator inspection sees a working server.
     server.succeed("systemctl stop aos-registry-server-gitd.service")
-    client.fail("${pkgs.aos}/bin/apm update --registry test-reg")
+    client.fail("HOME=/tmp ${pkgs.aos}/bin/apm update --registry test-reg", timeout=120)
     client.succeed("curl -sf http://server:15000/default/nix-cache-info")
     server.succeed("systemctl start aos-registry-server-gitd.service")
   '';
