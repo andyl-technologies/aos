@@ -4,6 +4,7 @@
 #
 {
   prev,
+  bash,
   gcc,
   binutils,
   glibc,
@@ -67,6 +68,17 @@ in
 
         make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
         make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+
+        # ./configure substitutes CONFIG_SHELL (= prev.bash, the gcc11
+        # tier bash-5.1) into the generated egrep/fgrep wrapper script
+        # shebangs. That pins bash-5.1 → gcc-11.5.0-wrapped → entire
+        # mes/tcc/cross-* bootstrap chain (~700 MiB, 13 paths) into the
+        # runtime closure of every consumer. Rewrite to the same-tier
+        # bash-5.2.37 (glibc-2.39-only closure) so the chain dies here.
+        for f in "$out/bin/egrep" "$out/bin/fgrep"; do
+          [ -f "$f" ] || continue
+          ${prev.sed}/bin/sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$f"
+        done
 
         echo "GNU grep 3.11 installed to $out"
       ''
