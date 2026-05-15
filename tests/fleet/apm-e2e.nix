@@ -60,7 +60,14 @@
     };
     caches = [
       {
-        url = "http://server:15000/default";
+        # `/nar` suffix is load-bearing: apm's `download::nar_url`
+        # (crates/aos-package/src/download.rs:57) appends
+        # `<nar_hash>.nar.zst` directly to this base, while the
+        # server's NAR route is `/{{view}}/nar/{{filename}}`
+        # (`crates/aos-server/src/routes.rs::nar_handler`). Without
+        # the `/nar` segment the GET lands on the narinfo route
+        # and 400s with `expected .narinfo suffix`.
+        url = "http://server:15000/default/nar";
         priority = 100;
       }
     ];
