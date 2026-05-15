@@ -95,6 +95,23 @@ in {
           description = "Git daemon serving AOS registries on :9418";
           wantedBy = ["multi-user.target"];
           enabled = true;
+          # Tell every git invocation under this unit to treat any
+          # path under the base-path as a "safe.directory". Without
+          # this, git's CVE-2022-24765 guard refuses to read repos
+          # whose on-disk owner is not the daemon's UID, with the
+          # opaque client-side error `fatal: Could not read from
+          # remote repository.`. The daemon is intentionally read-
+          # only and confined to the StateDirectory subtree, so the
+          # safe.directory check buys us nothing here. Using
+          # `GIT_CONFIG_*` env-var injection (rather than a
+          # writable gitconfig) keeps the override invisible to
+          # other git binaries and avoids relaxing the system-wide
+          # gitconfig.
+          environment = {
+            GIT_CONFIG_COUNT = "1";
+            GIT_CONFIG_KEY_0 = "safe.directory";
+            GIT_CONFIG_VALUE_0 = "*";
+          };
           serviceConfig = {
             ExecStart = lib.concatStringsSep " " [
               "${pkgs.git}/bin/git daemon"
