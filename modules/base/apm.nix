@@ -7,7 +7,17 @@
 ##! `modules/default.nix`.
 {pkgs, ...}: {
   config = {
-    environment.systemPackages = [pkgs.aos];
+    # `apm`'s registry-sync path pipes `git archive` through `tar`
+    # to materialise package TOMLs locally
+    # (`crates/aos-package/src/registry/git.rs:462-482` and
+    # `crates/aos-package/src/update.rs:484-502`). The aos wrapper
+    # script bakes `git` and `nix` into PATH, but not `tar` — so
+    # without an explicit dependency declared here, every
+    # `apm update` fails with `running tar to extract packages:
+    # No such file or directory`. Surfaced by `apm-e2e` once it
+    # reached step 4; existing apm VM tests share the same
+    # plumbing and benefit from this fix too.
+    environment.systemPackages = [pkgs.aos pkgs.tar];
 
     # `apm registry add` writes `~/.config/apm/registries.d/<name>.toml`
     # (crates/aos-package/src/lib.rs:1273; mkdir at :1245). Pre-
