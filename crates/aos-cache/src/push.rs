@@ -204,7 +204,7 @@ pub async fn run_push(
             }
             Err(e) => {
                 // Fall back to individual uploads if pack fails.
-                printer.warning(&format!("pack upload failed, falling back: {e}"));
+                printer.warning(&format!("pack upload failed, falling back: {e:#}"));
                 for (i, pp) in pack_paths.iter().enumerate() {
                     let (hash, narinfo_text) = &pack_narinfos[i];
                     let comp_ext = compression_ext(compression);

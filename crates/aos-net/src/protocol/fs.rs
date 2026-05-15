@@ -221,6 +221,9 @@ impl Protocol for FsProtocol {
                     resumed: false,
                 })
             }
+            Method::Post => {
+                anyhow::bail!("POST is not supported by the file:// protocol");
+            }
         }
     }
 
