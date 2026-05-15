@@ -49,6 +49,7 @@ in
     ];
     runtimeDeps = [
       zlib
+      openssl
     ];
 
     phases = [
