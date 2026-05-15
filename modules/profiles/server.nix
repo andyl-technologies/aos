@@ -56,15 +56,10 @@ in {
       pkgs.jq
     ];
 
-    # k3s roles: enabling each one ships its ignition JSON
-    # (`/etc/aos/ignition-roles/<name>`) and pulls its runtime
-    # closure (k3s, runc, containerd, cni-plugins, ipset, …) into
-    # the image. Operators select exactly one of these per host
-    # at first boot via `ignition.config.merge` in their userdata.
-    # Image-layer multiselect is intentional — see the spec at
-    # archives/2026-04-30_k3s_roles_v2.md §1.2.
+    aos.roles.aos-registry-server.enable = true;
     aos.roles.k3s-control-plane.enable = true;
     aos.roles.k3s-worker.enable = true;
     aos.roles.k3s-combined.enable = true;
+    aos.roles.test-http-server.enable = true;
   };
 }

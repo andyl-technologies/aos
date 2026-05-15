@@ -36,9 +36,9 @@ in {
             # over the multicast L2). This is a test role; firewalling is
             # not in scope.
             ExecStart = "${pkgs.python3}/bin/python3 -m http.server --bind 0.0.0.0 8000";
-            WorkingDirectory = "/";
+            WorkingDirectory = "%S";
+            StateDirectory = "test-http-server";
             Restart = "on-failure";
-            # Hardening — http.server reads /, writes nothing.
             DynamicUser = true;
             ProtectSystem = "strict";
             ProtectHome = true;
