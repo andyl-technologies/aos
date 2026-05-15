@@ -293,7 +293,17 @@ impl CacheBackend for HttpBackend {
         let resp_body = result
             .body
             .ok_or_else(|| anyhow::anyhow!("empty upload-pack response"))?;
-        serde_json::from_slice(&resp_body).context("parsing upload-pack response")
+        // Server wraps the imported paths in
+        // `{accepted, rejected, paths}` (aos-server/src/routes.rs's
+        // `upload_pack_handler`). Extract just the `paths` array; the
+        // counts are tracing-only metadata.
+        #[derive(serde::Deserialize)]
+        struct UploadPackResponse {
+            paths: Vec<String>,
+        }
+        let parsed: UploadPackResponse =
+            serde_json::from_slice(&resp_body).context("parsing upload-pack response")?;
+        Ok(parsed.paths)
     }
 }
 
