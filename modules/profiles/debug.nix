@@ -52,20 +52,6 @@ in {
         pkgs.curl
         pkgs.jq
       ];
-
-      # Activate the test-http-server role's runtime side effects
-      # (systemPackages, system.checks). The role's ignition config is
-      # computed regardless; this flip adds the integration test to the
-      # system's checks set.
-      aos.roles.test-http-server.enable = true;
-
-      # Same pattern for aos-registry-server: opens 9418 + 15000 on
-      # the firewall and surfaces the role's smoke checks. The role's
-      # systemd units only listen when ignition merges its config
-      # (i.e. when a fleet machine declares `roles = ["aos-registry-server"]`),
-      # so debug images carrying the open ports without an active
-      # listener is fine — the cost is two TCP ports in the allowlist.
-      aos.roles.aos-registry-server.enable = true;
     }
 
     (lib.mkIf cfg.autologin (let
