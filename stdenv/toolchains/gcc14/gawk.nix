@@ -69,6 +69,17 @@ in
 
         [ -f "$out/bin/gawk" ] && [ ! -f "$out/bin/awk" ] && ln -sf gawk "$out/bin/awk"
 
+        # gawkbug is a bug-report-generator shell script that bakes the
+        # build-time CC path into a `CC="..."` line for the user to copy
+        # into their report. The embedded path pins gcc-14.3.0-wrapped
+        # (and stage2, 232 MiB) into every consumer's runtime closure
+        # because nothing else references it. Replace the absolute path
+        # with the bare command name — gawkbug is a debugging aid; it
+        # doesn't need the exact compiler path to function.
+        if [ -f "$out/bin/gawkbug" ]; then
+          ${prev.sed}/bin/sed -i 's|^CC=.*|CC="gcc"|' "$out/bin/gawkbug"
+        fi
+
         echo "GNU awk 5.3.1 installed to $out"
       ''
     ];
