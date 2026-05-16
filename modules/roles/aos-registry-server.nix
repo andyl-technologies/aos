@@ -95,24 +95,13 @@ in {
           description = "Git daemon serving AOS registries on :9418";
           wantedBy = ["multi-user.target"];
           enabled = true;
-          # Tell every git invocation under this unit to treat any
-          # path under the base-path as a "safe.directory". Without
-          # this, git's CVE-2022-24765 guard refuses to read repos
-          # whose on-disk owner is not the daemon's UID, with the
-          # opaque client-side error `fatal: Could not read from
-          # remote repository.`. The daemon is intentionally read-
-          # only and confined to the StateDirectory subtree, so the
-          # safe.directory check buys us nothing here. Using
-          # `GIT_CONFIG_*` env-var injection (rather than a
-          # writable gitconfig) keeps the override invisible to
-          # other git binaries and avoids relaxing the system-wide
-          # gitconfig.
-          environment = {
-            GIT_CONFIG_COUNT = "1";
-            GIT_CONFIG_KEY_0 = "safe.directory";
-            GIT_CONFIG_VALUE_0 = "*";
-          };
           serviceConfig = {
+            # Adopt anything written into the StateDirectory by other
+            # uids (operators or the fleet test seeding a bare repo as
+            # root) before the daemon opens its first FD. The `+`
+            # prefix runs the command as root regardless of User=; the
+            # chown is idempotent so re-runs on every start are safe.
+            ExecStartPre = "+${pkgs.coreutils}/bin/chown -R aos-gitd:aos-gitd /var/lib/aos-registry-server/registries";
             ExecStart = lib.concatStringsSep " " [
               "${pkgs.git}/bin/git daemon"
               "--reuseaddr"
@@ -123,7 +112,8 @@ in {
             ];
             Restart = "on-failure";
             RestartSec = "5s";
-            DynamicUser = true;
+            User = "aos-gitd";
+            Group = "aos-gitd";
             StateDirectory = "aos-registry-server/registries";
             StateDirectoryMode = "0755";
             ProtectSystem = "strict";
@@ -151,7 +141,14 @@ in {
             # store paths both live under this prefix, declared as a
             # StateDirectory= (writable, persistent).
             Environment = [
-              "PATH=${pkgs.coreutils}/bin"
+              # `aos serve` shells out to `nix-store --import` for
+              # uploads (aos-server/src/pack.rs), `nix-store --dump`
+              # for NAR streaming, and `zstd -c` for both NAR compression
+              # and FileHash computation (aos-server/src/compress.rs).
+              # The aos wrapper script's own PATH prepend gives the
+              # in-process `dirname` lookup what it needs, but these
+              # external subprocesses use this Environment=PATH.
+              "PATH=${pkgs.nix}/bin:${pkgs.zstd}/bin:${pkgs.coreutils}/bin"
               "AOS_ROOT=/var/lib/aos-registry-server/store-root"
             ];
             Restart = "on-failure";
@@ -173,6 +170,24 @@ in {
     }
 
     (lib.mkIf cfg.enable {
+      # Static account for the gitd unit. Stable UID so on-disk ownership
+      # is meaningful across boots — needed because operators (and the
+      # fleet test) seed bare repos under the daemon's StateDirectory by
+      # hand. With DynamicUser the daemon's UID changed every boot and
+      # git's CVE-2022-24765 guard tripped on any externally-owned repo.
+      aos.users.users.aos-gitd = {
+        uid = 800;
+        group = "aos-gitd";
+        home = "/var/lib/aos-registry-server/registries";
+        shell = "/sbin/nologin";
+        description = "AOS registry git daemon";
+        extraGroups = [];
+      };
+      aos.users.groups.aos-gitd = {
+        gid = 800;
+        members = [];
+      };
+
       # Open the listener ports. 9418 for `apm update` (git fetch),
       # 15000 for `apm install` (NAR download from the cache).
       aos.firewall.allowedTCP = [9418 15000];
@@ -199,6 +214,13 @@ in {
         # doesn't add zstd to PATH, so it has to be in the system
         # environment for the testScript's push to work.
         pkgs.zstd
+        # Fleet test seeding shells out to `${pkgs.nix}/bin/nix-store
+        # --dump` to compute the NAR hash of the fabricated store path.
+        # pkgs.nix lands in the aos wrapper's closure but at a different
+        # store path than `${pkgs.nix}` resolves to from the test eval
+        # context — listing it here forces the test's path into the
+        # rootfs.
+        pkgs.nix
       ];
 
       # /etc/aos/serve.toml — referenced by the cache unit's

@@ -54,9 +54,6 @@ pub struct PackageMeta {
     /// Hash of the uncompressed NAR: `"sha256:..."`.
     pub nar_hash: String,
     pub nar_size: u64,
-    /// Hash of the compressed NAR (download): `"sha256:..."`.
-    pub download_hash: String,
-    pub download_size: u64,
     /// Store path hashes of direct runtime references.
     pub references: Vec<String>,
     /// Source derivation store path.
@@ -609,8 +606,6 @@ pub struct SysrootImageEntry {
     pub store_path: String,
     pub nar_hash: String,
     pub nar_size: u64,
-    pub download_hash: String,
-    pub download_size: u64,
 }
 
 // ---------------------------------------------------------------------------

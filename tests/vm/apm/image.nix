@@ -106,8 +106,6 @@
                   store_path = "${pkg.storePath}"
                   nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
                   nar_size = 1024
-                  download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                  download_size = 512
                   closure_size = 2048
                   source_drv = ""
                   source_nar_hash = ""
@@ -118,8 +116,6 @@
                     store_path = "${img.storePath}"
                     nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
                     nar_size = ${builtins.toString img.narSize}
-                    download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                    download_size = ${builtins.toString img.downloadSize}
                   '') (pkg.images or []))}
                   PKGEOF
                 ''

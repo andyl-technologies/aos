@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod logging;
 
 use std::path::Path;
 use std::process;

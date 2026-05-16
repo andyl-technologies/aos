@@ -15,7 +15,10 @@ use anyhow::{bail, Context, Result};
 use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
-use crate::download::{download_nars, resolve_mirror, DownloadRequest};
+use crate::download::{
+    default_engine, download_nars, fetch_narinfos, resolve_mirror, DownloadRequest,
+    ResolvedDownload,
+};
 use crate::registry::{store_path_hash, RegistrySet};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
@@ -124,9 +127,26 @@ pub async fn install_system(
         .copied()
         .collect();
 
-    // Step 3: Print summary.
+    // Step 3: Plan + fetch narinfo for missing paths so the summary can
+    // show real compressed sizes and download_nars has the cache's URLs.
     printer.step(3, 8, "Planning...");
-    let download_size: u64 = to_download.iter().map(|m| m.download_size).sum();
+    let requests = build_download_requests(&closures, &to_download, config)?;
+    let engine = std::sync::Arc::new(default_engine());
+    let resolved: Vec<ResolvedDownload> = if requests.is_empty() {
+        Vec::new()
+    } else {
+        fetch_narinfos(
+            std::sync::Arc::clone(&engine),
+            &requests,
+            config.settings.parallel_downloads,
+            printer,
+        )
+        .await?
+    };
+    let download_size: u64 = resolved
+        .iter()
+        .map(|r| r.narinfo.file_size.unwrap_or(0))
+        .sum();
     let total_refs = toplevel_meta.references.len();
     printer.kv("Package", &format!("{} {}", pkg_name, toplevel_meta.version));
     printer.kv("Closure paths", &format!("{}", all_metas.len()));
@@ -145,13 +165,12 @@ pub async fn install_system(
     }
 
     // Step 5: Download missing NARs.
-    if !to_download.is_empty() {
+    if !resolved.is_empty() {
         printer.step(4, 8, "Downloading...");
-        let requests = build_download_requests(&closures, &to_download, config)?;
         let nar_cache = config.nar_cache_path();
 
         let results = download_nars(
-            &requests,
+            &resolved,
             &nar_cache,
             config.settings.parallel_downloads,
             printer,
@@ -169,9 +188,14 @@ pub async fn install_system(
 
         printer.step(6, 8, "Importing...");
         for result in &results {
-            import_nar(&result.local_path, &result.store_path)
-                .await
-                .with_context(|| format!("importing {}", result.store_path))?;
+            import_nar(
+                &result.local_path,
+                &result.store_path,
+                &result.references,
+                result.deriver.as_deref(),
+            )
+            .await
+            .with_context(|| format!("importing {}", result.store_path))?;
         }
     } else {
         printer.info("All paths already in store.");
@@ -594,16 +618,22 @@ async fn download_image(
     let mirror_url = resolve_image_mirror(config, meta);
     let request = DownloadRequest {
         store_path: img.store_path.clone(),
-        nar_hash: img.nar_hash.clone(),
-        download_hash: img.download_hash.clone(),
-        download_size: img.download_size,
         mirror_url,
     };
+
+    let engine = std::sync::Arc::new(default_engine());
+    let resolved = fetch_narinfos(
+        std::sync::Arc::clone(&engine),
+        &[request],
+        config.settings.parallel_downloads,
+        printer,
+    )
+    .await?;
 
     let nar_cache = config.nar_cache_path();
 
     let results = download_nars(
-        &[request],
+        &resolved,
         &nar_cache,
         config.settings.parallel_downloads,
         printer,
@@ -618,7 +648,13 @@ async fn download_image(
     let result = &results[0];
     verify_download_hash(&result.local_path, &result.download_hash)?;
     verify_nar_hash(&result.local_path, &result.nar_hash)?;
-    import_nar(&result.local_path, &result.store_path).await?;
+    import_nar(
+        &result.local_path,
+        &result.store_path,
+        &result.references,
+        result.deriver.as_deref(),
+    )
+    .await?;
 
     // Copy the image file from the store path to the output.
     // The image store path typically contains a single large file.
@@ -1081,7 +1117,7 @@ fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> String {
     if let Some((cfg, _)) = config.registries.first() {
         return resolve_mirror(cfg);
     }
-    "https://cache.aos.dev/nar".to_string()
+    "https://cache.aos.dev".to_string()
 }
 
 fn build_download_requests(
@@ -1100,7 +1136,7 @@ fn build_download_requests(
             let mirror_url = if let Some(cfg) = reg_config {
                 resolve_mirror(cfg)
             } else {
-                format!("https://registry.aos.dev/{}/nar", c.registry_name)
+                format!("https://registry.aos.dev/{}", c.registry_name)
             };
             (c.registry_name.clone(), mirror_url)
         })
@@ -1129,9 +1165,6 @@ fn build_download_requests(
 
         requests.push(DownloadRequest {
             store_path: meta.store_path.clone(),
-            nar_hash: meta.nar_hash.clone(),
-            download_hash: meta.download_hash.clone(),
-            download_size: meta.download_size,
             mirror_url: mirror_url.clone(),
         });
     }

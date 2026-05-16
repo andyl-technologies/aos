@@ -4,7 +4,10 @@ use std::io::Write;
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
-use super::download::{download_nars, resolve_mirror, DownloadRequest};
+use super::download::{
+    default_engine, download_nars, fetch_narinfos, resolve_mirror, DownloadRequest,
+    ResolvedDownload,
+};
 use super::profile::merge::build_fhs_tree;
 use super::profile::meta::write_meta;
 use super::profile::Profile;
@@ -101,28 +104,43 @@ pub async fn run(
         .copied()
         .collect();
 
-    // Step 5: Print install summary.
-    print_summary(&closures, packages, &to_download, &all_metas, printer);
+    // Step 5: Fetch narinfo for each missing path so the summary can show
+    // real compressed sizes and the download can use the cache's URL/hash.
+    let requests = build_download_requests(&closures, &to_download, config)?;
+    let engine = std::sync::Arc::new(default_engine());
+    let resolved: Vec<ResolvedDownload> = if requests.is_empty() {
+        Vec::new()
+    } else {
+        fetch_narinfos(
+            std::sync::Arc::clone(&engine),
+            &requests,
+            config.settings.parallel_downloads,
+            printer,
+        )
+        .await?
+    };
+
+    // Step 6: Print install summary.
+    print_summary(&closures, packages, &resolved, &all_metas, printer);
 
     if dry_run {
         printer.info("Dry run -- no changes made.");
         return Ok(());
     }
 
-    // Step 6: Prompt for confirmation (unless --yes).
+    // Step 7: Prompt for confirmation (unless --yes).
     if !yes && !config.settings.assume_yes {
         confirm(printer)?;
     }
 
-    // Step 7: Download missing NARs.
-    if !to_download.is_empty() {
+    // Step 8: Download missing NARs.
+    if !resolved.is_empty() {
         printer.step(3, 7, "Downloading packages...");
 
-        let requests = build_download_requests(&closures, &to_download, config)?;
         let cache_dir = config.nar_cache_path();
 
         let results = download_nars(
-            &requests,
+            &resolved,
             &cache_dir,
             config.settings.parallel_downloads,
             printer,
@@ -141,9 +159,14 @@ pub async fn run(
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
         for result in &results {
-            import_nar(&result.local_path, &result.store_path)
-                .await
-                .with_context(|| format!("importing {}", result.store_path))?;
+            import_nar(
+                &result.local_path,
+                &result.store_path,
+                &result.references,
+                result.deriver.as_deref(),
+            )
+            .await
+            .with_context(|| format!("importing {}", result.store_path))?;
         }
     } else {
         printer.info("All packages already in store, skipping download.");
@@ -405,7 +428,7 @@ fn format_size(bytes: u64) -> String {
 fn print_summary(
     closures: &[ResolvedClosure],
     explicit_names: &[String],
-    to_download: &[&PackageMeta],
+    resolved: &[ResolvedDownload],
     all_metas: &[&PackageMeta],
     printer: &Printer,
 ) {
@@ -440,7 +463,10 @@ fn print_summary(
         }
     }
 
-    let download_size: u64 = to_download.iter().map(|m| m.download_size).sum();
+    let download_size: u64 = resolved
+        .iter()
+        .map(|r| r.narinfo.file_size.unwrap_or(0))
+        .sum();
     let installed_size: u64 = all_metas.iter().map(|m| m.nar_size).sum();
 
     printer.plain(&format!(
@@ -472,7 +498,7 @@ fn build_download_requests(
                 resolve_mirror(cfg)
             } else {
                 // Fallback: construct from the default pattern.
-                format!("https://registry.aos.dev/{}/nar", c.registry_name)
+                format!("https://registry.aos.dev/{}", c.registry_name)
             };
             (c.registry_name.clone(), mirror_url)
         })
@@ -502,9 +528,6 @@ fn build_download_requests(
 
         requests.push(DownloadRequest {
             store_path: meta.store_path.clone(),
-            nar_hash: meta.nar_hash.clone(),
-            download_hash: meta.download_hash.clone(),
-            download_size: meta.download_size,
             mirror_url: mirror_url.clone(),
         });
     }
