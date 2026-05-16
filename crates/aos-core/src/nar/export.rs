@@ -2,8 +2,11 @@ use std::io::Write;
 
 use anyhow::{Context, Result};
 
-/// Nix export magic number.
-const EXPORT_MAGIC: u64 = 0x4558504f52540000;
+/// Nix export magic number — `0x4558494e`, the four bytes `NIXE`.
+/// Matches Nix's `exportMagic` (`src/libstore/export-import.cc`); written
+/// as an 8-byte little-endian integer it lands on disk as
+/// `4e 49 58 45 00 00 00 00`.
+const EXPORT_MAGIC: u64 = 0x4558494e;
 
 /// Build a Nix export stream from a NAR + metadata.
 ///
@@ -115,6 +118,28 @@ impl ExportTrailer {
         w.write_all(&0u64.to_le_bytes())
             .context("writing signature count")?;
 
+        Ok(())
+    }
+
+    /// Write a complete single-path `nix-store --import` stream: the
+    /// path-follows marker, the NAR, this trailer, and the end marker.
+    ///
+    /// `nix-store --import` reads a `u64` framing word before each path
+    /// (`1` = a path follows, `0` = end of stream). Omitting them makes
+    /// the importer read the NAR's leading bytes as the framing word and
+    /// reject the input with "doesn't look like something created by
+    /// 'nix-store --export'".
+    pub fn write_import_stream<W: Write>(&self, w: &mut W, nar_data: &[u8]) -> Result<()> {
+        // Path-follows marker.
+        w.write_all(&1u64.to_le_bytes())
+            .context("writing import path marker")?;
+        // The NAR archive.
+        w.write_all(nar_data).context("writing NAR data")?;
+        // magic + path + references + deriver + signatures.
+        self.write_to(w)?;
+        // End-of-stream marker.
+        w.write_all(&0u64.to_le_bytes())
+            .context("writing import end marker")?;
         Ok(())
     }
 }
