@@ -46,8 +46,6 @@ struct PlatformEntry {
     store_path: String,
     nar_hash: String,
     nar_size: u64,
-    download_hash: String,
-    download_size: u64,
     closure_size: u64,
     source_drv: String,
     source_nar_hash: String,
@@ -65,8 +63,6 @@ struct ImageEntry {
     store_path: String,
     nar_hash: String,
     nar_size: u64,
-    download_hash: String,
-    download_size: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -145,8 +141,6 @@ pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<Packag
                     store_path: img.store_path.clone(),
                     nar_hash: img.nar_hash.clone(),
                     nar_size: img.nar_size,
-                    download_hash: img.download_hash.clone(),
-                    download_size: img.download_size,
                 })
                 .collect();
 
@@ -161,8 +155,6 @@ pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<Packag
                 store_path: plat.store_path.clone(),
                 nar_hash: plat.nar_hash.clone(),
                 nar_size: plat.nar_size,
-                download_hash: plat.download_hash.clone(),
-                download_size: plat.download_size,
                 references: plat.references.clone(),
                 source_drv: plat.source_drv.clone(),
                 source_nar_hash: plat.source_nar_hash.clone(),
@@ -229,8 +221,6 @@ version = "8.5.0"
 store_path = "/var/lib/store/h7j3k8l2m9n4-curl-8.5.0"
 nar_hash = "sha256:aabbcc"
 nar_size = 3145728
-download_hash = "sha256:ddeeff"
-download_size = 1048576
 closure_size = 52428800
 source_drv = "/var/lib/store/i8k4l9m3n0o5-curl-8.5.0.drv"
 source_nar_hash = "sha256:112233"
@@ -240,8 +230,6 @@ references = ["xr5is7by89v3q", "r4q1m2kp8v3x", "q8mn2pv73w0x", "kl9m3n0o5p6q"]
 store_path = "/var/lib/store/z1y2x3w4v5u6-curl-8.5.0"
 nar_hash = "sha256:aabbdd"
 nar_size = 3200000
-download_hash = "sha256:ddeefg"
-download_size = 1100000
 closure_size = 54000000
 source_drv = "/var/lib/store/a9b8c7d6e5f4-curl-8.5.0.drv"
 source_nar_hash = "sha256:445566"
@@ -264,8 +252,6 @@ version = "1.3.1"
 store_path = "/var/lib/store/r4q1m2kp8v3x-zlib-1.3.1"
 nar_hash = "sha256:abc123"
 nar_size = 524288
-download_hash = "sha256:def456"
-download_size = 196608
 closure_size = 524288
 source_drv = "/var/lib/store/s5t2n3lq9w4y-zlib-1.3.1.drv"
 source_nar_hash = "sha256:789abc"
