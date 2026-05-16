@@ -46,6 +46,7 @@ pub async fn sync_git(
     config: &RegistryConfig,
     tracking_mode: &TrackingMode,
     cache_dir: &Path,
+    registries_dir: &Path,
     state: &mut RegistryState,
     printer: &Printer,
 ) -> Result<SyncResult> {
@@ -79,6 +80,12 @@ pub async fn sync_git(
     let old_packages = count_toml_files(&output_dir).await;
     extract_packages(&repo_dir, &new_commit, &output_dir).await?;
     let new_packages = count_toml_files(&output_dir).await;
+
+    // Step 6b: Materialise registry.toml from the repo root so resolve_mirror
+    // can find the [[caches]] entries. Without this, the only fallback is
+    // the registry URL itself, which fails for git:// transports.
+    let registry_toml_target = registries_dir.join(&config.name);
+    extract_registry_root(&repo_dir, &new_commit, &registry_toml_target).await?;
 
     // Compute rough stats. Without a detailed diff we approximate:
     // - If this is the first sync, everything is "added"
@@ -489,6 +496,50 @@ async fn extract_packages(
         );
     }
 
+    Ok(())
+}
+
+/// Extract the repo-root `registry.toml` into `target_dir/registry.toml`.
+///
+/// Missing-file errors are non-fatal: `apm install` falls back to the
+/// registry URL when no cache config is present. Other git errors bubble up.
+pub async fn extract_registry_root(
+    repo_dir: &Path,
+    commit: &str,
+    target_dir: &Path,
+) -> Result<()> {
+    tokio::fs::create_dir_all(target_dir)
+        .await
+        .with_context(|| format!("creating {}", target_dir.display()))?;
+
+    let output = Command::new("git")
+        .args(["show", &format!("{commit}:registry.toml")])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .context("running git show :registry.toml")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Missing root registry.toml is fine — resolve_mirror falls back to
+        // the registry URL. Any other failure (corrupt object, IO error)
+        // bubbles up.
+        if stderr.contains("does not exist")
+            || stderr.contains("exists on disk, but not in")
+            || stderr.contains("path 'registry.toml'")
+        {
+            return Ok(());
+        }
+        bail!(
+            "git show {commit}:registry.toml failed: {}",
+            stderr.trim(),
+        );
+    }
+
+    let dest = target_dir.join("registry.toml");
+    tokio::fs::write(&dest, &output.stdout)
+        .await
+        .with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
 }
 

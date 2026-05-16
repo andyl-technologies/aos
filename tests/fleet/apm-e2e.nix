@@ -60,25 +60,20 @@
     };
     caches = [
       {
-        # `/nar` suffix is load-bearing: apm's `download::nar_url`
-        # (crates/aos-package/src/download.rs:57) appends
-        # `<nar_hash>.nar.zst` directly to this base, while the
-        # server's NAR route is `/{{view}}/nar/{{filename}}`
-        # (`crates/aos-server/src/routes.rs::nar_handler`). Without
-        # the `/nar` segment the GET lands on the narinfo route
-        # and 400s with `expected .narinfo suffix`.
-        url = "http://server:15000/default/nar";
+        # Cache base URL. apm now reads the per-path URL from the
+        # narinfo's `URL:` field (crates/aos-package/src/download.rs)
+        # and joins it onto this base, so we point at the view root
+        # `/default` and let the narinfo carry the `nar/...` segment.
+        url = "http://server:15000/default";
         priority = 100;
       }
     ];
   };
 
-  # Package TOML skeleton with `__NAR_HASH__` / `__DOWNLOAD_HASH__`
-  # markers; the runtime `sed` substitutes the real hashes read back
-  # from the cache's narinfo. Going through `lib.formats.toml`
-  # (instead of templating raw text) keeps the schema typed: missing
-  # or mistyped fields fail at eval time. Field shape mirrors
-  # tests/vm/apm/fixtures.nix:163 (`write_package_toml`).
+  # Package TOML skeleton with the `__NAR_HASH__` marker; the runtime
+  # `sed` substitutes the real NAR hash read back from the cache's
+  # narinfo. The schema dropped `download_hash`/`download_size` after
+  # apm switched to reading those from narinfo (FileHash / FileSize).
   packageTomlSkeleton = tomlFmt.generate "testpkg.toml" {
     package = {
       name = testPkg.name;
@@ -93,8 +88,6 @@
           store_path = storePath;
           nar_hash = "__NAR_HASH__";
           nar_size = 0;
-          download_hash = "__DOWNLOAD_HASH__";
-          download_size = 0;
           closure_size = 0;
           source_drv = "";
           source_nar_hash = "";
@@ -178,9 +171,12 @@ in {
         export AOS_ROOT=${serverStoreRoot}
 
         # 3.1 Init the bare repo + a working clone. The gitd unit's
-        # `StateDirectory=aos-registry-server/registries` (StateDirectoryMode=0755)
+        # `StateDirectory=aos-registry-server/registries` (mode 0755)
         # already created the parent; root creates the per-registry
-        # subdir below it.
+        # subdir below it. Ownership is transferred to aos-gitd at the
+        # end of seeding (step 3.10) so git's CVE-2022-24765 guard
+        # accepts daemon reads — doing it now would trip the same
+        # guard against root's own subsequent clone/push.
         REG_DIR=/var/lib/aos-registry-server/registries/test-reg
         git init --bare "$REG_DIR"
         # No `touch git-daemon-export-ok` — the unit passes
@@ -283,29 +279,26 @@ in {
         PROV=$(echo "$RESP" | jq -r '.data.token')
         [ -n "$PROV" ] && [ "$PROV" != "null" ] || {{ echo "FAIL: no PROV token" >&2; exit 1; }}
 
-        # 3.6 Push the NAR, then read back the real hashes from the
-        # cache's on-demand narinfo. `apm install` verifies both
-        # nar_hash (uncompressed) and download_hash (compressed
-        # .nar.zst) — placeholders would fail with HashMismatch
-        # (verify.rs:54-94). The narinfo route is anonymous-readable
-        # because the default view has `anonymous_read = true`.
+        # 3.6 Push the NAR, then read back the real NarHash from the
+        # cache's on-demand narinfo. apm now sources FileHash/FileSize
+        # from the narinfo at install time, so the only value the
+        # package TOML still carries is `nar_hash`. The narinfo route
+        # is anonymous-readable because the default view has
+        # `anonymous_read = true`.
         ${pkgs.aos}/bin/aos cache push ${storePath} \\
           --to http://127.0.0.1:15000/default --token "$PROV" 2>&1
         NARINFO=$(curl -sf \\
           "http://127.0.0.1:15000/default/${testPkg.storeHash}.narinfo")
         NAR_HASH=$(echo "$NARINFO" | awk '/^NarHash:/ {{print $2}}')
-        DL_HASH=$(echo "$NARINFO"  | awk '/^FileHash:/ {{print $2}}')
-        # NarHash / FileHash come out in `sha256:<hex>` form, which
-        # is exactly what verify.rs compares against. Sanity check:
-        # both must be non-empty.
+        # NarHash comes out in `sha256:<hex>` form. Sanity check: must
+        # be non-empty so the sed substitution below produces a valid
+        # TOML.
         test -n "$NAR_HASH" || {{ echo "FAIL: narinfo missing NarHash" >&2; exit 1; }}
-        test -n "$DL_HASH"  || {{ echo "FAIL: narinfo missing FileHash" >&2; exit 1; }}
 
         # 3.7 Materialise testpkg.toml from the eval-time skeleton.
         mkdir -p packages/t
         echo '{package_toml_b64}' | base64 -d \\
           | sed -e "s|__NAR_HASH__|$NAR_HASH|" \\
-                -e "s|__DOWNLOAD_HASH__|$DL_HASH|" \\
           > packages/t/${testPkg.name}.toml
 
         # 3.9 Cross-failing tripwire for the deferred put_nar AOS
@@ -345,6 +338,11 @@ in {
         git commit -m 'publish ${testPkg.name} ${testPkg.version}'
         git tag v1.0.0
         git push origin HEAD --tags
+
+        # 3.10 Hand the bare repo over to the gitd daemon's user. Done
+        # last so root's earlier git invocations on the same tree
+        # aren't blocked by CVE-2022-24765's dubious-ownership check.
+        chown -R aos-gitd:aos-gitd "$REG_DIR"
     """), timeout=240)
 
     # ── 4. Client adds the registry and syncs ─────────────────────
@@ -384,23 +382,6 @@ in {
         "test -f /tmp/.local/share/apm/remote/test-reg/packages/t/${testPkg.name}.toml"
     )
 
-    # `resolve_mirror` (crates/aos-package/src/download.rs:67) reads
-    # `[[caches]]` from `$HOME/.local/share/apm/registries/<name>/
-    # registry.toml`, but `apm update`'s `git archive packages/`
-    # (crates/aos-package/src/{update,registry/git}.rs) only extracts
-    # the `packages/` subtree — the registry.toml at repo root is
-    # never materialised on the client. Without it, `resolve_mirror`
-    # falls back to `<registry-url>/nar`, i.e. `git://server:9418/
-    # test-reg/nar`, which apm's transfer engine rejects with
-    # `unsupported URL scheme: 'git'`. Materialise it by hand here
-    # so step 5 can pick the http cache. A proper fix lives in apm
-    # and is tracked separately.
-    client.succeed(
-        "mkdir -p /tmp/.local/share/apm/registries/test-reg && "
-        "${pkgs.git}/bin/git -C /tmp/.local/share/apm/remote/test-reg/repo.git "
-        "show v1.0.0:registry.toml > /tmp/.local/share/apm/registries/test-reg/registry.toml"
-    )
-
     # ── 5. Install pulls the NAR from the server's cache ──────────
     # `apm install` fetches narinfo, downloads the NAR over the
     # cross-VM L2, runs nix-store --import. Generous timeout —
@@ -408,8 +389,19 @@ in {
     # zstd | sha256sum` to fill in `FileHash` (compress.rs's
     # `compute_file_hash_size`), and apm-side `nix-store --import`
     # invocations can be slow inside the sandboxed VM.
+    #
+    # `AOS_ROOT` is set so apm's `nix-store --import` (via
+    # `aos_nix_env()`) materialises the package at the same
+    # `${serverStoreRoot}/store/...` string the package TOML names —
+    # the test fixes that path as a hash-locked label shared with the
+    # server. The store + Nix state dirs live on the writable `/var`
+    # partition; create them up front so `nix-store --import` has a
+    # place to write its DB and the path.
+    # mkdir + install in one round-trip — keeps the agent-command count
+    # down (each cross-VM round-trip is a flake surface under load).
     client.succeed(
-        "HOME=/tmp ${pkgs.aos}/bin/apm install ${testPkg.name} --registry test-reg",
+        "mkdir -p ${serverStoreRoot}/store ${serverStoreRoot}/var/nix/db && "
+        "AOS_ROOT=${serverStoreRoot} HOME=/tmp ${pkgs.aos}/bin/apm install ${testPkg.name} --registry test-reg",
         timeout=240,
     )
     # Path was absent in step 2; its presence here proves the NAR
