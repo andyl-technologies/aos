@@ -133,18 +133,11 @@ def _dump_serial_logs(machines: list[Machine]) -> None:
 def _wait_agents(machines: list[Machine], deadline: float) -> None:
     for m in machines:
         log.info("Waiting for %s agent...", m.name)
-        while True:
-            try:
-                if m.agent.ping(timeout=2):
-                    log.info("%s agent ready.", m.name)
-                    break
-            except Exception:
-                pass
-            if time.monotonic() > deadline:
-                raise RuntimeError(
-                    f"[{m.name}] agent did not become ready before manifest timeout"
-                )
-            time.sleep(0.5)
+        # wait_ready blocks until the agent answers a PING (raising
+        # RuntimeError on the deadline). For the qemu transport it also
+        # establishes the persistent connection reused for the run.
+        m.agent.wait_ready(deadline)
+        log.info("%s agent ready.", m.name)
 
 
 def main(argv: list[str] | None = None) -> int:
