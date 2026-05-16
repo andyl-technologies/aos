@@ -265,13 +265,19 @@
       # See agent-handler for the wire format (v2). LC_ALL=C: byte-
       # counting parameter expansions and locale-independent printf.
       #
-      # Each request reopens $AGENT_PORT on fd 3 (read+write) and closes
-      # it after writing the response. A persistent open across multiple
-      # host connections gets a hang-up when the host disconnects between
-      # requests and subsequent reads return EOF — fd 3 must therefore be
-      # scoped to a single request/response pair. Within one request the
-      # fd MUST stay open between the LEN line and the body bytes so the
-      # body bytes aren't lost between successive opens.
+      # virtio-serial mode: $AGENT_PORT is opened ONCE on fd 3 and held
+      # open for the whole run — the driver (aos-test-driver, qemu
+      # transport) holds a single persistent connection, so the link
+      # never tears down between requests and the self-delimiting frame
+      # format streams any number of request/response pairs over it.
+      #
+      # This must NOT reopen the port per request. A close+reopen on
+      # every request races QEMU's virtio-serial control-queue port
+      # state machine: under KVM the close and reopen land within
+      # microseconds and QEMU can be left believing the guest port is
+      # closed while the agent sits blocked in read(), so the next
+      # command's bytes are never delivered and the agent goes silent
+      # mid-run. fd 3 is reopened only on a genuine EOF (host gone).
       LC_ALL=C
       export LC_ALL
       set -u
@@ -310,25 +316,29 @@
       fi
       echo "aos-test-agent: virtio-serial mode, using port $AGENT_PORT" >&2
 
-      while true; do
-        # Open the port for both directions on fd 3 for this one request.
-        exec 3<> "$AGENT_PORT"
+      # Open the port once and hold it open for the whole run. See the
+      # header comment: reopening per request races QEMU's virtio-serial
+      # port state machine under KVM and wedges the agent mid-run.
+      exec 3<> "$AGENT_PORT"
 
+      while true; do
         if ! IFS= read -r len_line <&3; then
+          # EOF on fd 3: the host disconnected — end of run, or the
+          # driver tore the connection down after an error. Reopen and
+          # wait for a fresh connection rather than spinning on EOF.
           exec 3<&-
           sleep 0.1
+          exec 3<> "$AGENT_PORT"
           continue
         fi
         case "$len_line" in
           '''|*[!0-9]*)
             echo "aos-test-agent: malformed length line: '$len_line'" >&2
-            exec 3<&-
             continue
             ;;
         esac
         if [ "$len_line" -gt "$MAX" ]; then
           echo "aos-test-agent: request length $len_line exceeds $MAX" >&2
-          exec 3<&-
           continue
         fi
 
@@ -336,7 +346,6 @@
         actual=$(stat -c %s /tmp/agent-cmd)
         if [ "$actual" -ne "$len_line" ]; then
           echo "aos-test-agent: short read ($actual / $len_line)" >&2
-          exec 3<&-
           continue
         fi
 
@@ -346,17 +355,18 @@
         if [ "$cmd" = "PING" ]; then
           # Body is `0 0 0\n` (6 bytes); outer frame `6\n0 0 0\n`.
           printf '6\n0 0 0\n' >&3
-          exec 3<&-
+          echo "aos-test-agent: replied (PING)" >&2
           continue
         fi
         if [ "$cmd" = "SHUTDOWN" ]; then
           printf '6\n0 0 0\n' >&3
-          exec 3<&-
           poweroff -f
           exit 0
         fi
 
-        bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr
+        # 3<&- closes the virtio-serial port in the command's process
+        # tree — no apm/git/nix-store child inherits the transport fd.
+        bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr 3<&-
         exit_code=$?
         stdout_size=$(stat -c %s /tmp/agent-stdout)
         stderr_size=$(stat -c %s /tmp/agent-stderr)
@@ -364,12 +374,8 @@
         # +1 for the newline terminating the header line.
         total=$(( ''${#header} + 1 + stdout_size + stderr_size ))
         # Stage the entire frame (outer length + body) in one file then
-        # emit it with a single `cat` to fd 3. Multiple successive
-        # writes to the virtio-serial chardev between host
-        # disconnect/reconnect cycles race against QEMU's chardev
-        # accept loop — the old wire's single-printf shape worked, and
-        # the new wire matches that by composing the whole frame
-        # off-fd-3 first.
+        # emit it with a single `cat` to fd 3 — keeps the framed write
+        # atomic from the agent's side regardless of payload size.
         {
           printf '%d\n' "$total"
           printf '%s\n' "$header"
@@ -377,7 +383,7 @@
           cat /tmp/agent-stderr
         } > /tmp/agent-frame
         cat /tmp/agent-frame >&3
-        exec 3<&-
+        echo "aos-test-agent: replied ($total bytes, exit $exit_code)" >&2
       done
       AGENT
       chmod +x rootfs/opt/aos-test/bin/aos-test-agent

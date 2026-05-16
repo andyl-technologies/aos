@@ -209,6 +209,9 @@ class QemuMachine(Machine):
     # ------------------------------------------------------------------
     @override
     def stop(self) -> None:
+        # Release the persistent agent connection before tearing down
+        # QEMU so the guest's virtio-serial read() sees a clean EOF.
+        self.agent.close()
         if self.qemu_proc is not None and self.qemu_proc.poll() is None:
             self.qemu_proc.terminate()
             try:
