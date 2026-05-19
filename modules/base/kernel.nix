@@ -108,12 +108,22 @@ in {
       '';
     };
 
+    # systemd-modules-load already ignores a missing module (-ENOENT) and a
+    # hardware-absent one (-ENODEV); it only exits non-zero (1) when a listed
+    # module is present but genuinely fails to insert (unresolved symbols,
+    # bad params, init error). Treat that exit 1 as success too, so an
+    # optional module can't mark the unit failed (mirrors NixOS). The initrd
+    # carries its own copy of this — see modules/systemd/initrd.nix.
+    systemd.services."systemd-modules-load" = {
+      overrideStrategy = "asDropin";
+      serviceConfig.SuccessExitStatus = "0 1";
+    };
+
     # When BBR is enabled, add kernel parameters to set the default congestion
     # control algorithm and queue discipline.
     aos.boot.kernelParams = lib.mkIf cfg.bbr [
       "net.core.default_qdisc=fq"
       "net.ipv4.tcp_congestion_control=bbr"
     ];
-
   };
 }
