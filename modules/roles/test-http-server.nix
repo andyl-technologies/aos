@@ -18,6 +18,12 @@ in {
   config = lib.mkMerge [
     {
       aos.roles.test-http-server = {
+        # Open 8000/tcp — required for fleet tests where peer machines
+        # reach this server over the multicast L2. Set unconditionally
+        # so it rides the role's ignitionConfig and takes effect only
+        # on hosts that activate the role at first boot.
+        firewall.allowedTCP = [8000];
+
         systemd.services.test-http-server = {
           description = "Test python http.server on :8000";
 
@@ -49,12 +55,6 @@ in {
     }
 
     (lib.mkIf cfg.enable {
-      # Open 8000/tcp on the host firewall — required for fleet tests
-      # where peer machines reach this server over the multicast L2.
-      # Without it, the standard security level's default-deny INPUT
-      # chain drops inbound HTTP. No-op for single-VM loopback tests.
-      aos.firewall.allowedTCP = [8000];
-
       # The unit's ExecStart references ${pkgs.python3} (an absolute
       # store path). Ignition can write the unit but can't pull store
       # paths out of nowhere — the closure must already contain them.
