@@ -11,23 +11,13 @@
 }: let
   cfg = config.aos.firewall;
 
-  # Format a list of ports as an nftables set expression: { 22, 80, 443 }
-  portSet = ports:
+  # Render a named set's `elements = { 22, 80, 443 }` line. Omitted
+  # entirely when the port list is empty — a declared-but-empty set
+  # is fine (referencing it simply never matches).
+  setElements = ports:
     if ports == []
     then ""
-    else "{ ${builtins.concatStringsSep ", " (builtins.map toString ports)} }";
-
-  # Build nftables rules for allowed TCP ports.
-  tcpInputRules =
-    if cfg.allowedTCP == []
-    then ""
-    else "    tcp dport ${portSet cfg.allowedTCP} accept\n";
-
-  # Build nftables rules for allowed UDP ports.
-  udpInputRules =
-    if cfg.allowedUDP == []
-    then ""
-    else "    udp dport ${portSet cfg.allowedUDP} accept\n";
+    else "\n      elements = { ${builtins.concatStringsSep ", " (builtins.map toString ports)} }";
 
   # Trusted interface rules — accept all traffic on lo, etc.
   trustedIfaceRules = builtins.concatStringsSep "\n" (
@@ -44,6 +34,17 @@
     flush ruleset
 
     table inet filter {
+      # Named sets for the inbound port allow-list. Declared here so
+      # role drop-ins under /etc/nftables.d/*.nft can `add element` to
+      # them within the same atomic `nft -f` transaction. An empty set
+      # is harmless — referencing it from a rule simply never matches.
+      set allowed_tcp {
+        type inet_service${setElements cfg.allowedTCP}
+      }
+      set allowed_udp {
+        type inet_service${setElements cfg.allowedUDP}
+      }
+
       chain input {
         type filter hook input priority 0; policy ${cfg.defaultPolicy};
 
@@ -60,10 +61,11 @@
         ip protocol icmp accept
         ip6 nexthdr ipv6-icmp accept
 
-        # Allowed TCP ports.
-    ${tcpInputRules}
-        # Allowed UDP ports.
-    ${udpInputRules}
+        # Allowed inbound ports — base config plus any role drop-ins
+        # that `add element` to the sets above.
+        tcp dport @allowed_tcp accept
+        udp dport @allowed_udp accept
+
         # Log and drop everything else.
         log prefix "nft-drop: " flags all counter drop
       }
@@ -82,6 +84,12 @@
         type filter hook output priority 0; policy accept;
       }
     }
+
+    # Role kernel/firewall drop-ins. `include` of a wildcard pattern
+    # that matches nothing — including a missing /etc/nftables.d
+    # directory — is not an error in nftables, so no placeholder file
+    # or pre-created directory is needed.
+    include "/etc/nftables.d/*.nft"
   '';
 in {
   options.aos.firewall = {

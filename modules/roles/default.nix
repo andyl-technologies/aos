@@ -48,6 +48,80 @@
   # symlink layout.
   roleNamePattern = "[a-z][a-z0-9-]*";
 
+  # Render a role's `kernel` / `firewall` config into its
+  # `storage.links` list (≤3 entries). Each drop-in file is
+  # materialised as its own `pkgs.writeTextFile` derivation and
+  # surfaced as an ignition symlink whose `target` is that store
+  # path. An entry is emitted only when its source option is
+  # non-empty.
+  #
+  # The file is written at `<drv>/<basename>` via a non-empty
+  # `destination`: AOS's stdenv `setup.sh` always pre-creates `$out`
+  # as a directory, so the empty-destination "`$out` *is* the file"
+  # mode does not work here — the content would land *inside* the
+  # directory. The store path still holds the content exactly once;
+  # the link `target` just carries the basename.
+  #
+  # The drop-in derivations' store paths end up as
+  # `storage.links[].target` strings in `ignitionConfigDrv`'s JSON,
+  # so they carry string context into the bundle's closure — see the
+  # closure-tracking note on `ignitionRolesBundle` below.
+  renderRoleLinks = name: role: let
+    portList = ports: builtins.concatStringsSep ", " (builtins.map builtins.toString ports);
+
+    # `path` is an ordinary /etc/... path; ignition's --root=/sysroot
+    # plus ignition-files.service's /var/etc BindPaths land it on the
+    # rw /var partition, where the /etc overlay surfaces it in stage-2.
+    # The drop-in's basename is reused as the derivation's
+    # `destination`, so `target` resolves to `<drv>/<basename>`.
+    mkLink = path: text: let
+      file = builtins.baseNameOf path;
+      drv = pkgs.writeTextFile {
+        name = file;
+        destination = "/${file}";
+        inherit text;
+      };
+    in {
+      inherit path;
+      target = "${drv}/${file}";
+      overwrite = true;
+    };
+
+    modulesLink = lib.optional (role.kernel.modules != []) (
+      mkLink "/etc/modules-load.d/role-${name}.conf" (
+        lib.concatMapStrings (m: "${m}\n") role.kernel.modules
+      )
+    );
+
+    sysctlLink = lib.optional (role.kernel.sysctl != {}) (
+      mkLink "/etc/sysctl.d/70-role-${name}.conf" (
+        lib.concatStrings (
+          lib.mapAttrsToList (k: v: "${k} = ${v}\n") role.kernel.sysctl
+        )
+      )
+    );
+
+    fw = role.firewall;
+    fwActive =
+      fw.allowedTCP != [] || fw.allowedUDP != [] || fw.forwardPolicy == "accept";
+
+    # Drop-in carries only `add` statements — the `inet filter` table
+    # and the `allowed_*` sets are declared earlier in the same atomic
+    # `nft -f` transaction (see modules/security/firewall.nix).
+    nftLink = lib.optional fwActive (
+      mkLink "/etc/nftables.d/50-role-${name}.nft" (
+        "# /etc/nftables.d/50-role-${name}.nft — generated for aos.roles.${name}\n"
+        + lib.optionalString (fw.allowedTCP != [])
+        "add element inet filter allowed_tcp { ${portList fw.allowedTCP} }\n"
+        + lib.optionalString (fw.allowedUDP != [])
+        "add element inet filter allowed_udp { ${portList fw.allowedUDP} }\n"
+        + lib.optionalString (fw.forwardPolicy == "accept")
+        "add rule inet filter forward accept\n"
+      )
+    );
+  in
+    modulesLink ++ sysctlLink ++ nftLink;
+
   roleType = lib.types.submodule ({
     name,
     config,
@@ -109,6 +183,46 @@
         };
       };
 
+      # Kernel tunables this role needs. Rendered into the role's
+      # ignitionConfig; applied at runtime only when the role's
+      # ignition config is merged into the host's. Mirrors
+      # `aos.kernel.{modules,sysctl}` from modules/base/kernel.nix —
+      # same option names and types. Set unconditionally by role
+      # files (NOT inside `lib.mkIf cfg.enable`), exactly like
+      # `systemd` above, since `ignitionConfig` is computed regardless
+      # of `enable`.
+      kernel = {
+        modules = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [];
+        };
+        sysctl = lib.mkOption {
+          type = lib.types.attrsOf lib.types.str;
+          default = {};
+        };
+      };
+
+      # Firewall openings this role needs. Mirrors the additive subset
+      # of `aos.firewall` (modules/security/firewall.nix) — same option
+      # names and types. Host-global knobs (`enable`, `defaultPolicy`,
+      # `trustedInterfaces`) are deliberately NOT mirrored: a role must
+      # not be able to disable the firewall or flip the host's inbound
+      # default policy.
+      firewall = {
+        allowedTCP = lib.mkOption {
+          type = lib.types.listOf lib.types.port;
+          default = [];
+        };
+        allowedUDP = lib.mkOption {
+          type = lib.types.listOf lib.types.port;
+          default = [];
+        };
+        forwardPolicy = lib.mkOption {
+          type = lib.types.str;
+          default = "drop";
+        };
+      };
+
       # Storage / files / users / kernelArguments that ignition should
       # write directly. Escape hatch for roles whose needs go beyond
       # systemd units (e.g. k3s wants /etc/rancher/k3s/config.yaml).
@@ -139,20 +253,39 @@
     };
 
     config = {
-      # Merge the role's typed systemd inputs with `ignitionExtras`
-      # as a single definition. `lib.mkMerge` would expand into two
-      # separate option defs, which trips `readOnly = true`'s
-      # multiple-definition guard. Shallow `//` is enough because we
-      # only rewrite `systemd` — the other ignition top-level fields
-      # (`storage`, `passwd`, …) ride through extras unchanged. Within
-      # `systemd`, we splice into the existing `units` list (preserving
-      # any escape-hatch units the role wrote into
-      # `ignitionExtras.systemd.units`).
+      # Merge the role's typed systemd + kernel/firewall inputs with
+      # `ignitionExtras` as a single definition. `lib.mkMerge` would
+      # expand into two separate option defs, which trips `readOnly =
+      # true`'s multiple-definition guard. Shallow `//` is enough
+      # because we only rewrite `systemd` and `storage.links` — the
+      # other ignition top-level fields (`passwd`, …) and the rest of
+      # `storage` (`files`, `directories`) ride through extras
+      # unchanged.
+      #
+      # Null-safety: AOS's module engine returns the literal `{}`
+      # default when a role writes no `ignitionExtras` def (so
+      # `extras.systemd` / `extras.storage` are *missing* — `or`
+      # handles that). But when a role writes *any* `ignitionExtras`
+      # def, the strict submodule fires and `systemd` / `storage` are
+      # present **and `null`** (both `nullOr`, default `null`) — `or`
+      # does NOT catch a present-but-`null`, so an explicit `== null`
+      # unwrap is required for both.
       ignitionConfig = let
         extras = config.ignitionExtras;
-        extrasSystemd = extras.systemd or {};
+
+        unwrap = a: let
+          v = extras.${a} or null;
+        in
+          if v == null
+          then {}
+          else v;
+        extrasSystemd = unwrap "systemd";
+        extrasStorage = unwrap "storage";
+
         extrasUnits = extrasSystemd.units or [];
+        extrasLinks = extrasStorage.links or [];
         roleUnits = renderRoleSystemd config.systemd;
+        roleLinks = renderRoleLinks name config;
       in
         extras
         // {
@@ -160,6 +293,13 @@
             extrasSystemd
             // {
               units = extrasUnits ++ roleUnits;
+            };
+        }
+        // lib.optionalAttrs (roleLinks != [] || extrasStorage != {}) {
+          storage =
+            extrasStorage
+            // {
+              links = extrasLinks ++ roleLinks;
             };
         };
       ignitionConfigDrv = ignitionFormat.generate name config.ignitionConfig;
@@ -187,6 +327,20 @@
       builtins.map (u: u.name)
       (lib.optionals (extraSystemd != null) extraSystemd.units);
     collisions = builtins.filter (n: builtins.elem n renderedNames) extraNames;
+
+    # The role's rendered kernel/firewall drop-in symlink paths must
+    # not collide with any `path` in `ignitionExtras.storage.{files,
+    # links}` — ignition would reject the duplicate at validate time,
+    # but the eval-time check gives a better message. Same defensive
+    # `or null` access as `extraSystemd` above.
+    roleLinkPaths = builtins.map (l: l.path) (renderRoleLinks name role);
+    extraStorage = role.ignitionExtras.storage or null;
+    extraStoragePaths = lib.optionals (extraStorage != null) (
+      builtins.map (f: f.path) extraStorage.files
+      ++ builtins.map (l: l.path) extraStorage.links
+    );
+    linkCollisions =
+      builtins.filter (p: builtins.elem p extraStoragePaths) roleLinkPaths;
   in [
     {
       assertion = builtins.match roleNamePattern name != null;
@@ -206,6 +360,17 @@
         ${lib.concatStringsSep ", " collisions}.
         Move one side or rename to avoid a late
         ignition-validate failure.
+      '';
+    }
+    {
+      assertion = linkCollisions == [];
+      message = ''
+        aos.roles."${name}": storage path collision between the
+        role's rendered kernel/firewall drop-in links and
+        ignitionExtras.storage.{files,links}:
+        ${lib.concatStringsSep ", " linkCollisions}.
+        Rename or remove one side to avoid a late
+        ignition-validate duplicate-path failure.
       '';
     }
   ];

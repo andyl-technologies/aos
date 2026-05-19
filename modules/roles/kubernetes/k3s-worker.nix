@@ -17,6 +17,33 @@ in {
   config = lib.mkMerge [
     {
       aos.roles.k3s-worker = {
+        # Kernel + firewall config — set unconditionally so they ride
+        # the role's ignitionConfig and take effect at runtime only
+        # when this role's ignition config is merged into the host's.
+        kernel.modules = common.kernelModules;
+        kernel.sysctl = common.sysctls;
+
+        # Pod-to-pod traffic on a worker traverses the forward chain
+        # (kube-proxy iptables mode + flannel's vxlan device), so the
+        # role opens forwarding. Caveat: this assumes kube-proxy is in
+        # iptables mode (the default). IPVS mode does NOT install
+        # equivalent filter-chain rules — if a future role enables
+        # IPVS, we'd need to revisit.
+        #
+        # 10250: kubelet (apiserver's `kubectl logs` / `kubectl exec`
+        #        reverse channel).
+        # 8472/udp: flannel VXLAN — only between nodes on the same L2.
+        #
+        # Not opened by default (uncomment if your deployment actually
+        # uses them):
+        #   - 10256/tcp: kube-proxy healthz endpoint, sometimes probed
+        #                by external load balancers.
+        #   - 51820/udp: flannel WireGuard backend (only with
+        #                `flannel-backend=wireguard-native`).
+        firewall.allowedTCP = [10250];
+        firewall.allowedUDP = [8472];
+        firewall.forwardPolicy = "accept";
+
         # See `_k3s-common.nix`'s `preflightService` for the full
         # unit shape and rationale.
         systemd.services.k3s-preflight =
@@ -49,39 +76,6 @@ in {
     }
 
     (lib.mkIf cfg.enable {
-      aos.kernel.modules = common.kernelModules;
-      aos.kernel.sysctl = common.sysctls;
-
-      # Pod-to-pod traffic on a worker traverses the forward chain
-      # (kube-proxy iptables mode + flannel's vxlan device). Switch
-      # the default forward policy from drop to accept; kube-proxy's
-      # own iptables chains in the `filter` table provide selective
-      # blocking on top of that. Caveat: this assumes kube-proxy is
-      # in iptables mode (the default). IPVS mode does NOT install
-      # equivalent filter-chain rules — if a future role enables
-      # IPVS, we'd need to revisit.
-      #
-      # Plain assignment, NOT `lib.mkForce`: the option's default
-      # in `modules/security/firewall.nix` is set in the mkOption
-      # declaration (option-level priority), so a normal role-level
-      # assignment already wins over it. Using `mkForce` here would
-      # also mask any future site-local operator override, which we
-      # don't want.
-      aos.firewall.forwardPolicy = "accept";
-
-      # 10250: kubelet (apiserver's `kubectl logs` / `kubectl exec`
-      #        reverse channel).
-      # 8472/udp: flannel VXLAN — only between nodes on the same L2.
-      #
-      # Not opened by default (uncomment if your deployment
-      # actually uses them):
-      #   - 10256/tcp: kube-proxy healthz endpoint, sometimes
-      #                probed by external load balancers.
-      #   - 51820/udp: flannel WireGuard backend (only with
-      #                `flannel-backend=wireguard-native`).
-      aos.firewall.allowedTCP = [10250];
-      aos.firewall.allowedUDP = [8472];
-
       environment.systemPackages = common.runtimePath;
     })
   ];

@@ -19,6 +19,19 @@ in {
   config = lib.mkMerge [
     {
       aos.roles.k3s-combined = {
+        # Kernel + firewall config — set unconditionally so they ride
+        # the role's ignitionConfig and take effect at runtime only
+        # when this role's ignition config is merged into the host's.
+        kernel.modules = common.kernelModules;
+        kernel.sysctl = common.sysctls;
+
+        # See the rationale in k3s-worker.nix for the forwardPolicy
+        # choice and the IPVS-mode caveat. Union of the control-plane
+        # and worker port lists.
+        firewall.allowedTCP = [6443 10250];
+        firewall.allowedUDP = [8472];
+        firewall.forwardPolicy = "accept";
+
         systemd.services.k3s-preflight =
           common.preflightService "k3s-combined" required;
 
@@ -49,18 +62,6 @@ in {
     }
 
     (lib.mkIf cfg.enable {
-      aos.kernel.modules = common.kernelModules;
-      aos.kernel.sysctl = common.sysctls;
-
-      # See the rationale in k3s-worker.nix for the forwardPolicy
-      # choice and the IPVS-mode caveat. Plain assignment, no
-      # mkForce.
-      aos.firewall.forwardPolicy = "accept";
-
-      # Union of the control-plane and worker port lists.
-      aos.firewall.allowedTCP = [6443 10250];
-      aos.firewall.allowedUDP = [8472];
-
       environment.systemPackages = common.runtimePath;
     })
   ];

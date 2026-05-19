@@ -20,6 +20,26 @@ in {
   config = lib.mkMerge [
     {
       aos.roles.k3s-control-plane = {
+        # Kernel + firewall config — set unconditionally so they ride
+        # the role's ignitionConfig and take effect at runtime only
+        # when this role's ignition config is merged into the host's.
+        kernel.modules = common.kernelModules;
+        kernel.sysctl = common.sysctls;
+
+        # Pod traffic does NOT traverse a control-plane-only node, so
+        # `forwardPolicy` stays at its "drop" default. We DO need
+        # 6443/TCP open for the API server.
+        #
+        # Not opened by default (uncomment if your deployment actually
+        # uses them):
+        #   - 9345/tcp:      k3s server's supervisor port, required
+        #                    for HA join when additional servers point
+        #                    at this one via `--server` / `K3S_URL`.
+        #   - 2379-2380/tcp: etcd peer + client — only exposed between
+        #                    control-plane members in HA-with-embedded-
+        #                    etcd mode.
+        firewall.allowedTCP = [6443];
+
         # The whole preflight unit (description, ordering, condition,
         # EnvironmentFile, script body) lives in `_k3s-common.nix`
         # — see `preflightService` there for the rationale. We pass
@@ -67,24 +87,6 @@ in {
     }
 
     (lib.mkIf cfg.enable {
-      aos.kernel.modules = common.kernelModules;
-      aos.kernel.sysctl = common.sysctls;
-
-      # Pod traffic does NOT traverse a control-plane-only node, so
-      # no forward-chain change needed. We DO need 6443/TCP open
-      # for the API server.
-      #
-      # Not opened by default (uncomment if your deployment
-      # actually uses them):
-      #   - 9345/tcp:        k3s server's supervisor port,
-      #                      required for HA join when additional
-      #                      servers point at this one via
-      #                      `--server` / `K3S_URL`.
-      #   - 2379-2380/tcp:   etcd peer + client — only exposed
-      #                      between control-plane members in
-      #                      HA-with-embedded-etcd mode.
-      aos.firewall.allowedTCP = [6443];
-
       # All the binaries the unit references plus aos-friendly
       # operator tools.
       environment.systemPackages = common.runtimePath;
