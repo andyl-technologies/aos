@@ -61,8 +61,8 @@
     // lib.mapAttrs' (_: withName systemdLib.timerToUnit) cfg.timers
     // lib.mapAttrs' (_: withName systemdLib.pathToUnit) cfg.paths
     // lib.mapAttrs' (_: withName systemdLib.sliceToUnit) cfg.slices
-    // lib.listToAttrs (builtins.map (withName systemdLib.mountToUnit) cfg.mounts)
-    // lib.listToAttrs (builtins.map (withName systemdLib.automountToUnit) cfg.automounts);
+    // lib.listToAttrs (map (withName systemdLib.mountToUnit) cfg.mounts)
+    // lib.listToAttrs (map (withName systemdLib.automountToUnit) cfg.automounts);
 in {
   options.boot.initrd.systemd = {
     enable = lib.mkEnableOption "a systemd-based initrd (tier ii, not yet implemented)";
@@ -146,19 +146,43 @@ in {
   };
 
   config = {
-    # Stage-1 runs with an empty /etc (just /etc/os-release and a few
-    # basics from the cpio builder), so systemd-sysctl and
-    # systemd-tmpfiles read no config and exit successfully with
-    # nothing to do. systemd then serializes the "done" state across
-    # initrd→rootfs switch-root and stage-2 never re-runs them — so the
-    # real /etc/sysctl.d/* and /etc/tmpfiles.d/* on the rootfs are
-    # silently ignored. Mask both in the initrd to force stage-2 to run
-    # them fresh against the real /etc.
-    boot.initrd.systemd.maskedUnits = [
-      "systemd-sysctl.service"
-      "systemd-tmpfiles-setup.service"
-      "systemd-tmpfiles-setup-dev.service"
-    ];
+    # Re-run stage-1 config oneshots against the real /etc in stage-2.
+    #
+    # systemd-modules-load / systemd-sysctl / systemd-tmpfiles-setup run once
+    # in the initrd against stage-1's near-empty /etc. systemd serializes unit
+    # *state* across the initrd→rootfs switch-root but deliberately drops any
+    # un-run *job* (src/core/unit-serialize.c — job serialization is guarded by
+    # `if (!switching_root)`). These units are oneshot `RemainAfterExit=yes`,
+    # so they end the initrd as `active (exited)`; that state is carried into
+    # stage-2, where `sysinit.target` treats them as already satisfied and
+    # never re-runs them — so the real /etc/{modules-load,sysctl,tmpfiles}.d/*
+    # are silently ignored (e.g. br_netfilter never loads, k3s bridge sysctls
+    # fail). Same family as systemd issue #38765.
+    #
+    # `initrd-cleanup` does `isolate initrd-switch-root.target`, which would
+    # stop these and reset them — but only for units *outside* that target's
+    # dependency closure. `ignition-fetch.service` has
+    # `Requires=systemd-modules-load.service` and is pulled in via
+    # initrd-root-fs.target, so modules-load sits *inside* the closure and is
+    # never stopped. Masking them in the initrd is also wrong: modules-load
+    # genuinely has work there (loads isofs / dm_crypt for ignition).
+    #
+    # Fix: `RemainAfterExit=no` in the initrd only. The oneshot still runs (and
+    # still satisfies `Requires=`/`After=` — a successful oneshot start counts),
+    # but drops straight back to `inactive` instead of lingering `active`. The
+    # serialized state is then `inactive` regardless of switch-root job timing
+    # or closure membership, so stage-2 starts each one fresh against the real
+    # /etc. Stage-2 keeps the stock `RemainAfterExit=yes`.
+    boot.initrd.systemd.services =
+      lib.genAttrs [
+        "systemd-modules-load"
+        "systemd-sysctl"
+        "systemd-tmpfiles-setup"
+        "systemd-tmpfiles-setup-dev"
+      ] (_: {
+        overrideStrategy = "asDropin";
+        serviceConfig.RemainAfterExit = false;
+      });
 
     system.build.systemdInitrdUnits = systemdLib.generateUnits {
       type = "initrd";
