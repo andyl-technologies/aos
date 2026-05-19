@@ -79,6 +79,13 @@ pub enum Commands {
     Test {
         #[command(subcommand)]
         command: Option<TestCmd>,
+        /// Cap concurrent test-derivation builds. Threaded to
+        /// `nix-build --max-jobs <N>`. Defaults to the host's CPU
+        /// count (`nproc`); the harness is race-free at any
+        /// concurrency, so the default just makes the most of the box.
+        /// Pass a smaller number to tame I/O bursts on a slow disk.
+        #[arg(long, short = 'j', global = false)]
+        jobs: Option<usize>,
     },
     /// Enter development shell
     Shell,

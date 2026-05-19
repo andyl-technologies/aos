@@ -7,19 +7,19 @@ use crate::cli::TestCmd;
 use aos_core::nix::NixRunner;
 use aos_core::output::{create_spinner, Printer};
 
-/// Concurrency cap for `aos test` — equivalent to `--max-jobs $(nproc)`.
+/// Resolve the concurrency cap for `aos test`.
 ///
-/// Without this flag `nix-build` uses whatever the system / user
-/// `nix.conf` says (commonly `max-jobs = 1`), serialising every test
-/// derivation. Tying it to host CPU count is purely an optimisation;
-/// correctness under concurrency is the harness's responsibility (see
-/// the per-driver-PID mcast endpoint in aos_test_driver/qemu.py and the
-/// per-PID vsock CID in firecracker.py).
-///
-/// Falls back to 1 if the platform refuses to report parallelism — the
-/// pre-change behaviour was effectively serial, so a single-job floor
-/// preserves it.
-fn host_parallelism() -> usize {
+/// `aos test -j N` wins. With no override, default to host CPU count
+/// (`nproc`); the harness is race-free at any concurrency (per-driver-
+/// PID mcast endpoint in aos_test_driver/qemu.py, per-PID vsock CID in
+/// firecracker.py, system-ready gate in __main__.py), so the default
+/// just makes the most of the box. Falls back to 1 if the platform
+/// refuses to report parallelism — pre-change behaviour was effectively
+/// serial, so a single-job floor preserves it.
+fn resolve_jobs(explicit: Option<usize>) -> usize {
+    if let Some(n) = explicit {
+        return n.max(1);
+    }
     available_parallelism().map(|n| n.get()).unwrap_or(1)
 }
 
@@ -81,10 +81,16 @@ fn nix_string_quote(s: &str) -> String {
 }
 
 /// `aos test [subcommand]` — run test layers.
-pub fn run(nix: &NixRunner, printer: &Printer, cmd: &Option<TestCmd>) -> Result<()> {
+pub fn run(
+    nix: &NixRunner,
+    printer: &Printer,
+    cmd: &Option<TestCmd>,
+    jobs: Option<usize>,
+) -> Result<()> {
+    let jobs = resolve_jobs(jobs);
     match cmd {
-        Some(TestCmd::Eval) => run_layer(nix, printer, "checks.eval", "eval"),
-        Some(TestCmd::Build) => run_layer(nix, printer, "checks.build", "build"),
+        Some(TestCmd::Eval) => run_layer(nix, printer, "checks.eval", "eval", jobs),
+        Some(TestCmd::Build) => run_layer(nix, printer, "checks.build", "build", jobs),
         Some(TestCmd::Vm { suite }) => {
             let attr = match suite {
                 Some(s) => {
@@ -97,7 +103,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, cmd: &Option<TestCmd>) -> Result<
                 Some(s) => format!("vm/{s}"),
                 None => "vm".to_string(),
             };
-            run_layer(nix, printer, &attr, &label)
+            run_layer(nix, printer, &attr, &label, jobs)
         }
         Some(TestCmd::Fleet {
             suite,
@@ -123,14 +129,14 @@ pub fn run(nix: &NixRunner, printer: &Printer, cmd: &Option<TestCmd>) -> Result<
                 Some(s) => format!("fleet/{s}"),
                 None => "fleet".to_string(),
             };
-            run_layer(nix, printer, &attr, &label)
+            run_layer(nix, printer, &attr, &label, jobs)
         }
-        None => run_all(nix, printer),
+        None => run_all(nix, printer, jobs),
     }
 }
 
 /// Run all test layers sequentially and produce a summary.
-fn run_all(nix: &NixRunner, printer: &Printer) -> Result<()> {
+fn run_all(nix: &NixRunner, printer: &Printer, jobs: usize) -> Result<()> {
     let layers: &[(&str, &str)] = &[
         ("checks.eval", "eval"),
         ("checks.build", "build"),
@@ -142,7 +148,6 @@ fn run_all(nix: &NixRunner, printer: &Printer) -> Result<()> {
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut failures: Vec<String> = Vec::new();
-    let jobs = host_parallelism();
 
     for (i, (attr, label)) in layers.iter().enumerate() {
         printer.step(i + 1, total, &format!("Running {label} tests..."));
@@ -272,13 +277,19 @@ fn run_fleet_interactive(
     ))
 }
 
-/// Run a single test layer.
-fn run_layer(nix: &NixRunner, printer: &Printer, attr: &str, label: &str) -> Result<()> {
-    printer.info(&format!("Running {label} tests..."));
+/// Run a single test layer at the given concurrency.
+fn run_layer(
+    nix: &NixRunner,
+    printer: &Printer,
+    attr: &str,
+    label: &str,
+    jobs: usize,
+) -> Result<()> {
+    printer.info(&format!("Running {label} tests (max-jobs={jobs})..."));
 
     let spinner = create_spinner(&format!("testing {label}"));
     let result = nix
-        .build_with_max_jobs(attr, None, host_parallelism())
+        .build_with_max_jobs(attr, None, jobs)
         .with_context(|| format!("test layer '{label}'"));
     spinner.finish_and_clear();
 
