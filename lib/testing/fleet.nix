@@ -484,7 +484,7 @@
           -chardev socket,id=agent,path="''${AGENT_SOCK_${mb.name}}",server=on,wait=off \
           -chardev socket,id=ttyS0,path="''${SERIAL_SOCK_${mb.name}}",server=off \
           -serial chardev:ttyS0 \
-          -netdev socket,id=fleet,mcast=230.0.0.1:1234,localaddr=127.0.0.1 \
+          -netdev socket,id=fleet,mcast="$MCAST_GROUP:$MCAST_PORT",localaddr=127.0.0.1 \
           -device virtio-net-pci,netdev=fleet,mac=${mb.mac} \
           -netdev user,id=usernet,hostfwd=tcp:127.0.0.1:${toString (sshPort mb)}-:22 \
           -device virtio-net-pci,netdev=usernet,mac=${mb.debugMac} \
@@ -535,6 +535,17 @@
       FLEET_DIR="''${TMPDIR:-/tmp}/aos-fleet-${name}-$$"
       mkdir -p "$FLEET_DIR"
       echo "Fleet runtime dir: $FLEET_DIR"
+
+      # Per-launcher-process mcast endpoint for the inter-VM L2 segment.
+      # Mirrors the PID-derived scheme in aos_test_driver/qemu.py so two
+      # concurrent interactive fleets (or one alongside a sandboxed
+      # `aos test fleet` run that escapes its netns) cannot cross-talk on
+      # 230.0.0.1:1234 — the previous hardcoded group, which collided.
+      # 239.0.0.0/8 is RFC 2365 organization-local scope; the last three
+      # octets carry 24 bits of PID and the port adds a second axis.
+      MCAST_GROUP="239.$(( ($$ >> 16) & 0xff )).$(( ($$ >> 8) & 0xff )).$(( $$ & 0xff ))"
+      MCAST_PORT=$(( 10000 + ($$ % 50000) ))
+      echo "Fleet L2 mcast: $MCAST_GROUP:$MCAST_PORT"
 
       if [ -e /dev/kvm ]; then
         echo "KVM: available"
