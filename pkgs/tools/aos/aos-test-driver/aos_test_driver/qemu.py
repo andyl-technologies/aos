@@ -21,6 +21,37 @@ from .machine import Machine
 log: logging.Logger = logging.getLogger(__name__)
 
 
+def _mcast_endpoint() -> tuple[str, int]:
+    """Pick a per-driver-process multicast group + port for the fleet L2.
+
+    Every machine in one ``aos-test-driver`` invocation joins the same
+    group (so they form one virtual L2 segment); two driver processes on
+    the same host cannot collide because their PIDs are distinct while
+    both are live. Mirrors the per-PID CID derivation in
+    ``firecracker.py`` — the codebase already does not rely on Nix
+    sandbox netns isolation for harness-internal addresses.
+
+    Even when the sandbox netns *does* isolate ``localaddr=127.0.0.1``
+    mcast traffic, this keeps the interactive launcher (which runs
+    outside the sandbox) and any future non-sandboxed call path correct
+    by construction.
+
+    239.0.0.0/8 is the IANA "organization-local scope" range (RFC 2365)
+    — the right pool for an ephemeral, harness-internal multicast group.
+    The last three octets carry 24 bits of PID; Linux's default
+    PID_MAX_LIMIT is 2^22, so within the live PID range the group is
+    unique. The port adds a second axis of separation in case the PID
+    happens to share its low 24 bits with another live driver.
+    """
+    pid = os.getpid()
+    group = f"239.{(pid >> 16) & 0xff}.{(pid >> 8) & 0xff}.{pid & 0xff}"
+    port = 10000 + (pid % 50000)
+    return group, port
+
+
+MCAST_GROUP, MCAST_PORT = _mcast_endpoint()
+
+
 class QemuMachine(Machine):
     transport: ClassVar[Driver] = "qemu"
 
@@ -97,10 +128,12 @@ class QemuMachine(Machine):
     @override
     def start(self) -> None:
         log.info(
-            "==> Starting machine: %s (ip=%s mac=%s)",
+            "==> Starting machine: %s (ip=%s mac=%s mcast=%s:%d)",
             self.name,
             self.ip,
             self.mac,
+            MCAST_GROUP,
+            MCAST_PORT,
         )
 
         # Per-machine writable copy. The disk is shared across machines of
@@ -149,13 +182,18 @@ class QemuMachine(Machine):
         #
         # `localaddr=127.0.0.1` on the mcast netdev binds the multicast
         # socket to loopback. Without it QEMU asks the kernel to pick an
-        # outbound interface for 230.0.0.1, and the Nix sandbox's network
+        # outbound interface for the group, and the Nix sandbox's network
         # namespace has only `lo` — which doesn't carry the
         # IFF_MULTICAST flag — so the kernel rejects IP_ADD_MEMBERSHIP
         # with "No such device". Pinning to 127.0.0.1 routes the mcast
         # traffic through lo explicitly and works around the missing flag
         # (no CAP_NET_ADMIN required). Cross-process delivery between
-        # QEMU instances on the same host works as designed.
+        # QEMU instances of the same fleet works as designed.
+        #
+        # The mcast group + port are derived from the driver PID at
+        # import time (see _mcast_endpoint above), so two concurrent
+        # driver processes — sandboxed or not — get distinct L2 segments
+        # and cannot cross-talk even if a future change shares a netns.
         argv: list[str] = [
             "qemu-system-x86_64",
             "-machine", "q35,accel=kvm",
@@ -185,7 +223,7 @@ class QemuMachine(Machine):
             f"socket,id=ttyS0,path={self.serial_socket},server=off",
             "-serial", "chardev:ttyS0",
             "-netdev",
-            "socket,id=net0,mcast=230.0.0.1:1234,localaddr=127.0.0.1",
+            f"socket,id=net0,mcast={MCAST_GROUP}:{MCAST_PORT},localaddr=127.0.0.1",
             "-device", f"virtio-net-pci,netdev=net0,mac={self.mac}",
             "-no-reboot",
         ]
