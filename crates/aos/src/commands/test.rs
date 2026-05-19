@@ -1,10 +1,27 @@
 use std::os::unix::process::CommandExt;
+use std::thread::available_parallelism;
 
 use anyhow::{Context, Result};
 
 use crate::cli::TestCmd;
 use aos_core::nix::NixRunner;
 use aos_core::output::{create_spinner, Printer};
+
+/// Concurrency cap for `aos test` — equivalent to `--max-jobs $(nproc)`.
+///
+/// Without this flag `nix-build` uses whatever the system / user
+/// `nix.conf` says (commonly `max-jobs = 1`), serialising every test
+/// derivation. Tying it to host CPU count is purely an optimisation;
+/// correctness under concurrency is the harness's responsibility (see
+/// the per-driver-PID mcast endpoint in aos_test_driver/qemu.py and the
+/// per-PID vsock CID in firecracker.py).
+///
+/// Falls back to 1 if the platform refuses to report parallelism — the
+/// pre-change behaviour was effectively serial, so a single-job floor
+/// preserves it.
+fn host_parallelism() -> usize {
+    available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
 
 /// Validate that a test suite name contains only safe characters for
 /// interpolation into Nix attribute paths.
@@ -125,12 +142,15 @@ fn run_all(nix: &NixRunner, printer: &Printer) -> Result<()> {
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut failures: Vec<String> = Vec::new();
+    let jobs = host_parallelism();
 
     for (i, (attr, label)) in layers.iter().enumerate() {
         printer.step(i + 1, total, &format!("Running {label} tests..."));
 
         let spinner = create_spinner(&format!("testing {label}"));
-        let result = nix.build(attr, None).with_context(|| format!("test layer '{label}'"));
+        let result = nix
+            .build_with_max_jobs(attr, None, jobs)
+            .with_context(|| format!("test layer '{label}'"));
         spinner.finish_and_clear();
 
         match result {
@@ -257,7 +277,9 @@ fn run_layer(nix: &NixRunner, printer: &Printer, attr: &str, label: &str) -> Res
     printer.info(&format!("Running {label} tests..."));
 
     let spinner = create_spinner(&format!("testing {label}"));
-    let result = nix.build(attr, None).with_context(|| format!("test layer '{label}'"));
+    let result = nix
+        .build_with_max_jobs(attr, None, host_parallelism())
+        .with_context(|| format!("test layer '{label}'"));
     spinner.finish_and_clear();
 
     match result {
