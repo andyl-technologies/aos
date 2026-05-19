@@ -321,14 +321,44 @@ class AgentClient:
         them all before declaring the agent ready; that keeps the
         request/response stream strictly 1:1, which the persistent
         transport relies on for every subsequent command.
+
+        Error handling is asymmetric on purpose:
+          - read timeout: legitimate (agent still booting, PING sits in
+            QEMU's chardev queue). Loop, keep the connection AND the
+            outstanding count — the buffered reply is still owed to us.
+          - write timeout: only happens if QEMU's chardev outbound
+            buffer is full, which for a 6-byte payload means the link
+            is genuinely stuck. Partial bytes may have landed on the
+            wire, so we must reset the connection rather than write
+            another PING on top of them — otherwise framing desyncs.
+          - any other error: connection is torn, reset and restart the
+            count.
         """
         ping_frame = f"{len(b'PING')}\n".encode("ascii") + b"PING"
         outstanding = 0
         while time.monotonic() < deadline:
             try:
                 sock = self._persistent_conn(deadline)
+            except OSError:
+                # Connect failed (UDS not there yet, refused, …) — wait
+                # for QEMU to come up.
+                self._reset_conn()
+                time.sleep(0.5)
+                continue
+            try:
                 _write_all(sock, ping_frame, time.monotonic() + 5)
-                outstanding += 1
+            except TimeoutError:
+                # Partial write → wire framing is now compromised.
+                self._reset_conn()
+                outstanding = 0
+                continue
+            except (OSError, _ProtocolMidstream):
+                self._reset_conn()
+                outstanding = 0
+                time.sleep(0.5)
+                continue
+            outstanding += 1
+            try:
                 # Drain every reply owed so far. If the agent is still
                 # booting the first read times out and we loop, keeping
                 # the count; once it is up the whole burst drains here.
@@ -339,7 +369,6 @@ class AgentClient:
             except TimeoutError:
                 continue
             except (OSError, _ProtocolMidstream):
-                # Connection itself broke — reset and restart the count.
                 self._reset_conn()
                 outstanding = 0
                 time.sleep(0.5)
