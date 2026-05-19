@@ -175,14 +175,29 @@ in {
     # /etc. Stage-2 keeps the stock `RemainAfterExit=yes`.
     boot.initrd.systemd.services =
       lib.genAttrs [
-        "systemd-modules-load"
         "systemd-sysctl"
         "systemd-tmpfiles-setup"
         "systemd-tmpfiles-setup-dev"
       ] (_: {
         overrideStrategy = "asDropin";
         serviceConfig.RemainAfterExit = false;
-      });
+      })
+      // {
+        # ignition-fetch.service has Requires=systemd-modules-load.service,
+        # so if modules-load fails the unit, ignition is blocked and the
+        # initrd drops to emergency.target. modules-load already ignores
+        # missing (-ENOENT) and hardware-absent (-ENODEV) modules; it exits
+        # non-zero (1) only when a module is present but fails to insert.
+        # SuccessExitStatus=0 1 keeps even that non-fatal, matching the
+        # stage-2 drop-in in modules/base/kernel.nix.
+        "systemd-modules-load" = {
+          overrideStrategy = "asDropin";
+          serviceConfig = {
+            RemainAfterExit = false;
+            SuccessExitStatus = "0 1";
+          };
+        };
+      };
 
     system.build.systemdInitrdUnits = systemdLib.generateUnits {
       type = "initrd";
