@@ -85,6 +85,12 @@ in {
   config = lib.mkMerge [
     {
       aos.roles.aos-registry-server = {
+        # Open the listener ports. 9418 for `apm update` (git fetch),
+        # 15000 for `apm install` (NAR download from the cache). Set
+        # unconditionally so they ride the role's ignitionConfig and
+        # take effect only on hosts that activate the role.
+        firewall.allowedTCP = [9418 15000];
+
         # git daemon — read-only, plaintext. --listen=0.0.0.0 so the
         # fleet's multicast L2 (192.168.50.0/24) reaches it.
         # --export-all skips the per-repo `git-daemon-export-ok` gate;
@@ -187,10 +193,6 @@ in {
         gid = 800;
         members = [];
       };
-
-      # Open the listener ports. 9418 for `apm update` (git fetch),
-      # 15000 for `apm install` (NAR download from the cache).
-      aos.firewall.allowedTCP = [9418 15000];
 
       # `pkgs.aos` is already in systemPackages via
       # modules/base/apm.nix. `pkgs.git` is the only thing this role
