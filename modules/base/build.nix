@@ -19,38 +19,6 @@
   lib,
   ...
 }: let
-  # --- Render /etc files (legacy path; deleted in spec v12 step 7
-  # when the toplevel switches to the named-output layout) ---
-  #
-  # With the new typed submodule, every entry has `source` defined
-  # (either directly or derived from `text` via writeTextFile). For
-  # directory sources we recurse with `cp -RP` so the resulting
-  # `${toplevel}/etc/<target>` is a real directory of symlinks,
-  # matching the cp-based shape the now-deleted systemd-unit special
-  # case provided. Without this, `environment.etc."systemd/system".source
-  # = systemdSystemUnits` would land as a single symlink in the
-  # rootfs, get shadowed by ignition's directory write at runtime,
-  # and hide every system unit. (The composefs dump path handles the
-  # recursion via Python; this temporary bash port keeps the old
-  # overlay model boot-clean until step 7 replaces the whole thing.)
-  # `mode`/`uid`/`gid` are honoured by the composefs dump path
-  # (system.build.etcMetadataImage), not here.
-  etcScript = lib.concatStringsSep "\n" (
-    lib.mapAttrsToList (
-      _: entry:
-        lib.optionalString entry.enable ''
-          mkdir -p $out/etc/$(dirname ${entry.target})
-          if [ -d ${entry.source} ]; then
-            mkdir -p $out/etc/${entry.target}
-            cp -RP ${entry.source}/. $out/etc/${entry.target}/
-          else
-            ln -sfn ${entry.source} $out/etc/${entry.target}
-          fi
-        ''
-    )
-    config.environment.etc
-  );
-
   # --- composefs / EROFS inputs (spec v12 §5.3) ---
   #
   # Mirror the upstream nixpkgs etc.nix derivation set:
@@ -557,28 +525,46 @@ in {
           phases = [
             {
               name = "build-toplevel";
+              # Named-output layout per spec v12 §1. No more
+              # `${toplevel}/etc` tree — the system /etc content lives
+              # entirely in the composefs metadata image plus basedir,
+              # mounted as the bottom lower of the /etc overlay at
+              # boot. Consumers read named-output paths directly:
+              #   etc-metadata.erofs, etc-basedir/, etc-dump,
+              #   systemd-units/, ignition-roles/, os-release,
+              #   meta/{package-name,version}, kernel, initrd.
+              # `nix-support/etc-merge-safety-check` forces the
+              # merge-safety check whenever the toplevel materialises.
+              # `${toplevel}/activate` is intentionally not shipped —
+              # deferred to the apm-side follow-up spec along with
+              # `apm activate <gen>`'s call site.
               script = ''
-                mkdir -p $out/etc/aos $out/bin $out/sbin
+                mkdir -p $out/meta $out/nix-support
 
-                # Render /etc files. systemd units flow through here
-                # too — `environment.etc."systemd/system"` in
-                # modules/systemd/system.nix points at
-                # `system.build.systemdSystemUnits`, and the legacy
-                # etcScript above recurses for directory sources so
-                # the result is a real directory of symlinks (the
-                # shape overlayfs's directory-merge logic requires).
-                ${etcScript}
+                ln -sfn ${config.system.build.etcMetadataImage} $out/etc-metadata.erofs
+                ln -sfn ${config.system.build.etcBasedir} $out/etc-basedir
+                ln -sfn ${config.system.build.etcDump} $out/etc-dump
+                ln -sfn ${config.system.build.systemdSystemUnits} $out/systemd-units
+                ln -sfn ${config.system.build.ignitionRolesBundle} $out/ignition-roles
+                ln -sfn ${config.environment.etc."os-release".source} $out/os-release
+                ln -sfn ${config.system.build.kernel} $out/kernel
+                ln -sfn ${config.system.build.initrd} $out/initrd
 
-                # Create system PATH manifest
-                cat > $out/etc/aos/system-path << 'PATHEOF'
-                ${makeBinPath config.environment.systemPackages}
-                PATHEOF
+                # `aos-seed-profiles.service` reads these on first boot
+                # to populate `state.json`. Plain text — `read_meta`
+                # in the service script strips the trailing newline.
+                printf '%s' "${config.aos.system.name}" > $out/meta/package-name
+                printf '%s' "${config.aos.system.version}" > $out/meta/version
 
-                # Symlink /sbin/init to systemd
-                ln -sfn ${pkgs.systemd}/lib/systemd/systemd $out/sbin/init
+                # Force the build-time merge-safety check by pulling
+                # its derivation into the toplevel's closure.
+                ln -sfn ${config.system.build.etcMergeSafetyCheck} $out/nix-support/etc-merge-safety-check
 
-                # Record the system packages for closure tracking
-                mkdir -p $out/nix-support
+                # Closure tracking: list every systemPackage as a
+                # /nix/store path so Nix's reference scanner pulls
+                # them into the toplevel's closure (and thereby the
+                # rootfs's, via `allClosures = [toplevel kernel] ++
+                # extraClosures` in lib/build/rootfs.nix).
                 ${lib.concatStringsSep "\n" (
                   builtins.map (
                     p: "echo ${builtins.toString p} >> $out/nix-support/system-packages"
