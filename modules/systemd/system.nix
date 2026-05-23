@@ -179,6 +179,23 @@ in {
   };
 
   config = {
+    # v1 doesn't model package-provided units (no IFD; we can't
+    # enumerate `$pkg/lib/systemd/system/` at eval time, which the
+    # `render-role.nix` drift assertion and `etc-merge-safety` check
+    # both depend on). Track as future work — spec v12 §10 item #2.
+    assertions = [
+      {
+        assertion = config.systemd.packages == [];
+        message = ''
+          systemd.packages is not yet supported with the composefs
+          /etc model (spec v12 §10 future-work #2). Re-introducing
+          package-provided units requires either accepting that the
+          merge-safety diff data source becomes incomplete or
+          generating the unit list at build time via a derivation.
+        '';
+      }
+    ];
+
     # Merge the rendered unit attrsets back into `systemd.units` so
     # `generateUnits` can see everything (both raw unit text from
     # modules that bypassed the typed options and compiled text from
@@ -186,8 +203,11 @@ in {
     systemd.units = renderedUnits;
 
     # Expose the /etc/systemd/system directory as a single derivation.
-    # `modules/base/build.nix` wires this into `$out/etc/systemd/system`
-    # via one `ln -s` line in its toplevel script.
+    # Routed into the EROFS metadata image via `environment.etc`
+    # below; the composefs dump script (spec v12 §5.2) recurses into
+    # the directory so it lands as a real directory of symlinks
+    # rather than a single symlink (which would be shadowed by the
+    # ignition role lower at runtime).
     system.build.systemdSystemUnits = systemdLib.generateUnits {
       type = "system";
       units = config.systemd.units;
@@ -199,6 +219,16 @@ in {
       upstreamWants = [];
       packages = config.systemd.packages;
       package = config.systemd.package;
+    };
+
+    # Route the rendered unit directory through environment.etc so
+    # the EROFS image carries it as a real directory of symlinks (the
+    # composefs dump script's `mode == "symlink"` + `os.path.isdir(source)`
+    # branch recurses — spec v12 §5.2). At runtime, this directory
+    # merges with the ignition role lower's `/etc/systemd/system/`
+    # without one side shadowing the other.
+    environment.etc."systemd/system" = {
+      source = config.system.build.systemdSystemUnits;
     };
   };
 }

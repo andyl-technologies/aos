@@ -50,7 +50,6 @@ in {
 
         systemd.services.k3s = {
           description = "Lightweight Kubernetes (control plane, no agent)";
-          enabled = true;
           wantedBy = ["multi-user.target"];
           after = ["network-online.target" "k3s-preflight.service"];
           wants = ["network-online.target"];

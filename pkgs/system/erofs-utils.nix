@@ -1,0 +1,116 @@
+##! erofs-utils — EROFS user-space tools (mkfs.erofs, fsck.erofs)
+##!
+##! The AOS `/etc` model uses EROFS as the bottom lower of the
+##! three-layer overlay (`system.build.etcMetadataImage`). `fsck.erofs`
+##! sanity-checks the image at build time; `mkfs.erofs` is unused at
+##! image-build time today (composefs's `mkcomposefs --from-file`
+##! produces the EROFS image directly) but ships in the same package.
+{
+  mkDerivation,
+  fetchurl,
+  gnumake,
+  pkg-config,
+  autoconf,
+  automake,
+  libtool,
+  m4,
+  util-linux,
+}: let
+  # v1.8.x is the last stable line whose `lib/Makefile.am` keeps the
+  # heavy optional deps (lz4, lzma, zstd, libdeflate, xxhash, json-c,
+  # libxml2, libcurl, openssl, zlib) all gated behind `--enable-*`
+  # `if ENABLE_*` blocks. v1.9.x unconditionally pulls in zlib +
+  # libcurl + json-c + libxml2 + openssl for the new OCI / S3 / gzip
+  # importer code paths, which AOS doesn't need for the
+  # composefs-generated EROFS image used by `system.build.etcMetadataImage`.
+  # Sticking with 1.8.10 keeps the dependency closure to just util-linux
+  # (libuuid). Bump only when AOS actually grows a runtime dep on the
+  # 1.9 features.
+  version = "1.8.10";
+in
+  mkDerivation {
+    pname = "erofs-utils";
+    inherit version;
+
+    # kernel.org publishes git snapshots of the upstream tree; no
+    # release tarballs ship with a pre-generated `configure`, so the
+    # full autotools bootstrap (aclocal/autoheader/autoconf/libtoolize/
+    # automake, per upstream `autogen.sh`) runs in the unpack phase.
+    src = fetchurl {
+      urls = [
+        "https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/snapshot/erofs-utils-${version}.tar.gz"
+      ];
+      hash = "sha256-BetO3r4R3szm7LNOmNL4DIzSg8Lyln2Lp+/VhBhXBRQ=";
+    };
+
+    buildDeps = [
+      gnumake
+      pkg-config
+      autoconf
+      automake
+      libtool
+      m4
+    ];
+    runtimeDeps = [util-linux];
+    propagatedDeps = [util-linux];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf $src
+          cd erofs-utils-${version}
+        '';
+      }
+      {
+        name = "autoreconf";
+        # Upstream's `autogen.sh` runs `aclocal` without `-I m4` and
+        # without `--install`, which fails when the m4/ aux dir hasn't
+        # been seeded. `autoreconf -i` does the right thing (creates
+        # m4/, installs ltmain.sh, runs everything in order). The AOS
+        # stdenv does not populate ACLOCAL_PATH from buildDeps, so we
+        # add libtool's and pkg-config's m4 directories explicitly —
+        # without them aclocal can't see LT_INIT / PKG_CHECK_MODULES
+        # and autoreconf decides to skip libtoolize entirely.
+        script = ''
+          export ACLOCAL_PATH="${libtool}/share/aclocal:${pkg-config}/share/aclocal''${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
+          mkdir -p m4
+          autoreconf -i -f -v
+        '';
+      }
+      {
+        name = "configure";
+        # No LZ4/LZMA/ZSTD: the composefs-generated EROFS image AOS
+        # uses for `/etc` carries plain inodes — no compressed data
+        # blocks — so the compression libs aren't needed at runtime
+        # (or for fsck). Drop fuse for the same reason (the runtime
+        # mount is `mount -t erofs`).
+        script = ''
+          ./configure \
+            --prefix=$out \
+            --disable-fuse \
+            --without-lz4 \
+            --without-lzma \
+            --without-zstd
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          make -j$NIX_BUILD_CORES
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          make install
+        '';
+      }
+    ];
+
+    meta = {
+      description = "erofs-utils — EROFS user-space tools";
+      homepage = "https://erofs.docs.kernel.org/";
+      license = "GPL-2.0-or-later";
+    };
+  }

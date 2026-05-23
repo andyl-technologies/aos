@@ -56,7 +56,6 @@
     # `after = [...preflight.service]` sit on the role's
     # `k3s.service` (declared inline per role, since k3s.service
     # itself diverges between roles in `ExecStart` and ports).
-    enabled = true;
     wantedBy = ["multi-user.target"];
     before = ["k3s.service"];
 
