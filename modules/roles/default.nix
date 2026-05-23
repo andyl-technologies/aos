@@ -29,17 +29,14 @@
   systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
   ignitionLib = import ../../lib/modules/ignition/systemd.nix {inherit lib pkgs;};
 
-  T = ignitionLib.toIgnitionUnit;
-
-  renderRoleSystemd = sd:
-    lib.mapAttrsToList (_: T systemdLib.serviceToUnit) sd.services
-    ++ lib.mapAttrsToList (_: T systemdLib.targetToUnit) sd.targets
-    ++ lib.mapAttrsToList (_: T systemdLib.socketToUnit) sd.sockets
-    ++ lib.mapAttrsToList (_: T systemdLib.timerToUnit) sd.timers
-    ++ lib.mapAttrsToList (_: T systemdLib.pathToUnit) sd.paths
-    ++ lib.mapAttrsToList (_: T systemdLib.sliceToUnit) sd.slices
-    ++ builtins.map (T systemdLib.mountToUnit) sd.mounts
-    ++ builtins.map (T systemdLib.automountToUnit) sd.automounts;
+  # Renders a role's typed systemd inputs into a `generateUnits`-style
+  # derivation plus the eval-time prediction of `storage.links`
+  # entries that ignition's files stage will lay down inside the
+  # per-gen lower's `/etc/systemd/system/...` subtree. See spec v12
+  # §5.6 and `lib/modules/systemd/render-role.nix` for the contract.
+  renderRole = import ../../lib/modules/systemd/render-role.nix {
+    inherit lib pkgs systemdLib;
+  };
 
   # Filesystem-safe role names: lowercase letters, digits, dashes,
   # starting with a letter. Used as both the derivation `pname` and
@@ -250,59 +247,65 @@
         internal = true;
         description = "Materialised + validated Ignition config for this role.";
       };
+
+      # Computed: a derivation that diffs `render-role.nix`'s
+      # predicted `storage.links` paths against the actual paths
+      # produced by `generateUnits` for this role's typed
+      # `systemd.*` inputs. Forced to evaluate via `ignitionRolesBundle`
+      # so any toplevel referencing the role bundle catches drift
+      # at build time. See spec v12 §5.6.2.
+      driftCheck = lib.mkOption {
+        type = lib.types.package;
+        readOnly = true;
+        internal = true;
+        description = "Build-time drift check between predicted and actual storage.links paths.";
+      };
     };
 
-    config = {
+    config = let
+      # Share the renderRole output across `ignitionConfig` and
+      # `driftCheck` so we don't run the renderer (or its build-time
+      # drift derivation) twice.
+      renderedRole = renderRole {
+        inherit name;
+        inherit (config) systemd;
+      };
+    in {
       # Merge the role's typed systemd + kernel/firewall inputs with
-      # `ignitionExtras` as a single definition. `lib.mkMerge` would
-      # expand into two separate option defs, which trips `readOnly =
-      # true`'s multiple-definition guard. Shallow `//` is enough
-      # because we only rewrite `systemd` and `storage.links` — the
-      # other ignition top-level fields (`passwd`, …) and the rest of
-      # `storage` (`files`, `directories`) ride through extras
-      # unchanged.
+      # `ignitionExtras` as a single definition. Shallow `//` rewrites
+      # `storage.links` (which we extend with the role's predicted
+      # unit-install symlinks); the other ignition top-level fields
+      # (`passwd`, …) and the rest of `storage` (`files`,
+      # `directories`) ride through extras unchanged.
       #
-      # Null-safety: AOS's module engine returns the literal `{}`
-      # default when a role writes no `ignitionExtras` def (so
-      # `extras.systemd` / `extras.storage` are *missing* — `or`
-      # handles that). But when a role writes *any* `ignitionExtras`
-      # def, the strict submodule fires and `systemd` / `storage` are
-      # present **and `null`** (both `nullOr`, default `null`) — `or`
-      # does NOT catch a present-but-`null`, so an explicit `== null`
-      # unwrap is required for both.
+      # Spec v12 §5.6.4 removed `ignitionExtras.systemd` — roles now
+      # express systemd units exclusively via the typed `systemd.*`
+      # input, which `renderRole` projects into `storage.links` that
+      # point at `unitsDrv` paths. There is no ignition-native systemd
+      # surface anymore.
       ignitionConfig = let
         extras = config.ignitionExtras;
-
-        unwrap = a: let
-          v = extras.${a} or null;
-        in
-          if v == null
+        extrasStorage =
+          if (extras.storage or null) == null
           then {}
-          else v;
-        extrasSystemd = unwrap "systemd";
-        extrasStorage = unwrap "storage";
-
-        extrasUnits = extrasSystemd.units or [];
+          else extras.storage;
         extrasLinks = extrasStorage.links or [];
-        roleUnits = renderRoleSystemd config.systemd;
+
         roleLinks = renderRoleLinks name config;
+        unitLinks = renderedRole.storageLinks;
       in
         extras
-        // {
-          systemd =
-            extrasSystemd
-            // {
-              units = extrasUnits ++ roleUnits;
-            };
-        }
-        // lib.optionalAttrs (roleLinks != [] || extrasStorage != {}) {
+        // lib.optionalAttrs (
+          roleLinks != [] || unitLinks != [] || extrasStorage != {}
+        ) {
           storage =
             extrasStorage
             // {
-              links = extrasLinks ++ roleLinks;
+              links = extrasLinks ++ roleLinks ++ unitLinks;
             };
         };
       ignitionConfigDrv = ignitionFormat.generate name config.ignitionConfig;
+      driftCheck = renderedRole.driftCheck;
     };
   });
 
@@ -316,23 +319,12 @@
   # submodule), but AOS's modules engine returns the literal `default
   # = {}` when no defs exist — it doesn't run defaults through the
   # submodule type. So `role.ignitionExtras.systemd` is missing when
-  # the role doesn't override extras. Read defensively with `or
-  # null`, and `nullSubmodule systemdType` makes the populated case
-  # `null` too unless the user actually wrote `ignitionExtras.systemd
-  # = { units = […]; }`.
+  # the role doesn't override extras. Read defensively with `or null`.
   roleAssertions = name: role: let
-    renderedNames = builtins.map (u: u.name) (renderRoleSystemd role.systemd);
-    extraSystemd = role.ignitionExtras.systemd or null;
-    extraNames =
-      builtins.map (u: u.name)
-      (lib.optionals (extraSystemd != null) extraSystemd.units);
-    collisions = builtins.filter (n: builtins.elem n renderedNames) extraNames;
-
     # The role's rendered kernel/firewall drop-in symlink paths must
     # not collide with any `path` in `ignitionExtras.storage.{files,
     # links}` — ignition would reject the duplicate at validate time,
-    # but the eval-time check gives a better message. Same defensive
-    # `or null` access as `extraSystemd` above.
+    # but the eval-time check gives a better message.
     roleLinkPaths = builtins.map (l: l.path) (renderRoleLinks name role);
     extraStorage = role.ignitionExtras.storage or null;
     extraStoragePaths = lib.optionals (extraStorage != null) (
@@ -341,6 +333,41 @@
     );
     linkCollisions =
       builtins.filter (p: builtins.elem p extraStoragePaths) roleLinkPaths;
+
+    # Spec v12 §5.6.3 — the role's effective ignitionConfig is
+    # bounded to /etc/-rooted storage entries and no
+    # passwd/systemd/kernelArguments. Any deviation either silently
+    # shadows declarative AOS state (passwd files via
+    # modules/base/users.nix) or writes paths outside the per-gen
+    # tmpfs that won't surface in the live overlay.
+    ic = role.ignitionConfig;
+    extraSystemd = role.ignitionExtras.systemd or null;
+    badStoragePath = p: !(lib.hasPrefix "/etc/" p);
+    nonEtcEntries = entries: pathField:
+      builtins.filter (e: badStoragePath e.${pathField}) entries;
+    icStorage =
+      if (ic.storage or null) == null
+      then {}
+      else ic.storage;
+    icLinks = icStorage.links or [];
+    icFiles = icStorage.files or [];
+    icDirs = icStorage.directories or [];
+    nonEtcLinks = nonEtcEntries icLinks "path";
+    nonEtcFiles = nonEtcEntries icFiles "path";
+    nonEtcDirs = nonEtcEntries icDirs "path";
+    nonEtcPaths =
+      builtins.map (e: e.path) nonEtcLinks
+      ++ builtins.map (e: e.path) nonEtcFiles
+      ++ builtins.map (e: e.path) nonEtcDirs;
+    kernelArgs = ic.kernelArguments or null;
+    kernelArgsEmpty =
+      kernelArgs
+      == null
+      || (
+        (kernelArgs.shouldExist or [])
+        == []
+        && (kernelArgs.shouldNotExist or []) == []
+      );
   in [
     {
       assertion = builtins.match roleNamePattern name != null;
@@ -353,16 +380,6 @@
       '';
     }
     {
-      assertion = collisions == [];
-      message = ''
-        aos.roles."${name}": unit name collision between
-        typed systemd inputs and ignitionExtras.systemd.units:
-        ${lib.concatStringsSep ", " collisions}.
-        Move one side or rename to avoid a late
-        ignition-validate failure.
-      '';
-    }
-    {
       assertion = linkCollisions == [];
       message = ''
         aos.roles."${name}": storage path collision between the
@@ -371,6 +388,52 @@
         ${lib.concatStringsSep ", " linkCollisions}.
         Rename or remove one side to avoid a late
         ignition-validate duplicate-path failure.
+      '';
+    }
+    {
+      assertion = (ic.passwd or null) == null;
+      message = ''
+        aos.roles."${name}": role.ignitionConfig.passwd is not
+        supported under the composefs /etc model (spec v12 §5.6.3).
+        Ignition's files stage writes `$ign/etc/passwd` /
+        `$ign/etc/shadow` / `$ign/etc/group`, which would silently
+        shadow AOS's declarative passwd files
+        (modules/base/users.nix:267). Future-work #6 lays out the
+        deliberate-design path; the field is forbidden until then.
+      '';
+    }
+    {
+      assertion = extraSystemd == null;
+      message = ''
+        aos.roles."${name}": role.ignitionExtras.systemd is not
+        supported under the composefs /etc model (spec v12 §5.6.4).
+        The runtime preset-walker is removed; native ignition
+        systemd units bypass the render-role drift assertion and the
+        etc-merge-safety check. Use the typed `systemd.*` input on
+        the role instead (its `wantedBy` / `overrideStrategy` etc.
+        are projected through render-role.nix into the right
+        storage.links).
+      '';
+    }
+    {
+      assertion = kernelArgsEmpty;
+      message = ''
+        aos.roles."${name}": role.ignitionConfig.kernelArguments
+        writes to the bootloader, not the role lower. On stage-2
+        re-runs (spec v12 §7) the change would be silently lost; on
+        first boot, the typed `aos.kernel.*` options are the
+        supported surface.
+      '';
+    }
+    {
+      assertion = nonEtcPaths == [];
+      message = ''
+        aos.roles."${name}": role.ignitionConfig.storage.* paths
+        must start with `/etc/` (spec v12 §5.6.3). Anything outside
+        `/etc/` writes to `$ign/<path>` inside the per-gen tmpfs,
+        which is never mounted into the live system — silently
+        lost. Offending paths:
+        ${lib.concatStringsSep ", " nonEtcPaths}
       '';
     }
   ];
@@ -427,7 +490,14 @@ in {
       pname = "aos-ignition-roles-bundle";
       version = "0";
       src = null;
-      buildDeps = [pkgs.coreutils];
+      # Every role's `driftCheck` derivation is pulled in as a
+      # build-time dep so the bundle (and thus the toplevel and the
+      # initrd that ship it) refuse to build if predicted
+      # storage.links don't match what `generateUnits` actually lays
+      # down. See spec v12 §5.6.2.
+      buildDeps =
+        [pkgs.coreutils]
+        ++ lib.mapAttrsToList (_: role: role.driftCheck) config.aos.roles;
       phases = [
         {
           name = "assemble";

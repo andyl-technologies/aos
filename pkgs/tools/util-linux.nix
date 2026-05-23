@@ -10,7 +10,12 @@
   libxcrypt,
   audit,
 }: let
-  version = "2.41";
+  # 2.42.1 is the first stable release including
+  # mount --beneath (commit cbf05f69 by Karel Zak, 2025-08-11; in-tree
+  # at sys-utils/mount.c:562,720,989 and
+  # libmount/src/hook_mount.c:547-548). Required by the apm-side
+  # stage-2 /etc swap (spec v12 §7.1 Phase B).
+  version = "2.42.1";
 in
   mkDerivation {
     pname = "util-linux";
@@ -18,9 +23,9 @@ in
 
     src = fetchurl {
       urls = [
-        "https://cdn.kernel.org/pub/linux/utils/util-linux/v2.41/util-linux-${version}.tar.xz"
+        "https://cdn.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-${version}.tar.xz"
       ];
-      hash = "sha256-ge6Ts8/f6318QJDO3rode7zpFB/QtQG2hrP+R13cpMY=";
+      hash = "sha256-gukVjrEqmwtWnYThaH/tndGP6JzNjvWsNCchinwNf38=";
     };
 
     buildDeps = [

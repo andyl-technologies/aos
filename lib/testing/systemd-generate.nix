@@ -173,6 +173,53 @@ in
           # Requires= directive in the [Unit] section (which we
           # asserted at eval time above).
 
+          # --- Composefs-recursion shape (spec v12 §5.2) ---
+          #
+          # The dump script's directory-recursion only produces a
+          # correct EROFS image if `systemdSystemUnits`'s output has
+          # the right shape:
+          #   - The root must be a real directory (otherwise the
+          #     recursion has nothing to walk).
+          #   - Top-level unit files are symlinks to /nix/store
+          #     (regular-file leaves → composefs symlink-to-store).
+          #   - `.wants` / `.requires` / `.upholds` are real
+          #     directories (subdirectory → composefs directory entry).
+          #   - Install symlinks inside those dirs preserve their
+          #     relative target verbatim (symlink → composefs symlink
+          #     with `os.readlink`-preserved target; spec rules out
+          #     `realpath` resolution).
+          if [ ! -d "$units_dir" ]; then
+            echo "FAIL: units_dir root is not a real directory"
+            exit 1
+          fi
+          for top_unit in hello-world.service with-requires.service \
+                          periodic.timer my-target.target; do
+            if [ ! -L "$units_dir/$top_unit" ]; then
+              echo "FAIL: top-level $top_unit must be a symlink (leaf-as-symlink-to-store rule)"
+              exit 1
+            fi
+            target=$(readlink "$units_dir/$top_unit")
+            case "$target" in
+              /nix/store/*) ;;
+              *) echo "FAIL: $top_unit symlink target is not /nix/store/* (got: $target)"; exit 1 ;;
+            esac
+          done
+          for wants_dir in multi-user.target.wants timers.target.wants; do
+            if [ ! -d "$units_dir/$wants_dir" ] || [ -L "$units_dir/$wants_dir" ]; then
+              echo "FAIL: $wants_dir must be a real directory (overlayfs can't merge symlink + dir)"
+              exit 1
+            fi
+          done
+          # Install symlink target must be RELATIVE (typically
+          # `../foo.service`), per generateUnits's `ln -s ../$name`
+          # convention. The composefs dump script preserves this
+          # verbatim via os.readlink.
+          install_target=$(readlink "$units_dir/multi-user.target.wants/hello-world.service")
+          case "$install_target" in
+            ../hello-world.service|../hello-world.service/*) ;;
+            *) echo "FAIL: install symlink target should be relative ../hello-world.service (got: $install_target)"; exit 1 ;;
+          esac
+
           echo "==> systemd-generate stage-3 check passed."
           mkdir -p "$out"
           echo PASS > "$out/result"
