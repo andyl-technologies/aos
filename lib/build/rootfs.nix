@@ -9,6 +9,15 @@
 ##!     /usr/{bin,sbin,lib}   — real directories
 ##!     /{bin,sbin,lib}       — symlinks into /usr/
 ##!
+##! /etc is an empty mountpoint (the runtime overlay mounts on top in
+##! stage-1); /run/etc is also an empty mountpoint
+##! (run-etc-setup.service mounts a tmpfs there). The seed pointer
+##! at `/aos-toplevel` is what aos-seed-profiles.service reads on
+##! first boot to populate apm's profile state, breaking the
+##! initrd→toplevel→initrd derivation cycle that direct interpolation
+##! of `${config.system.build.toplevel}` in initrd service scripts
+##! would create.
+##!
 ##! Every file in the resulting image is owned by uid/gid 0: `mkfs.ext4 -d`
 ##! runs under `fakeroot` so the sandbox user's uid doesn't leak into the
 ##! image (auditd and several other daemons refuse to start when their
@@ -20,12 +29,6 @@
 ##!   system               — evaluated AOS system (provides toplevel + kernel)
 ##!   pname                — derivation name prefix (default "aos-rootfs")
 ##!   label                — filesystem label (default "aos-root")
-##!   etcTarget            — "etc" (production) or "etc.lower" (overlay-lower
-##!                          for VM tests). The toplevel's /etc is copied
-##!                          into rootfs/${etcTarget}/.
-##!   unwrapStoreSymlinks  — recursively replace /nix/store symlinks inside
-##!                          etcTarget with copies. Needed when etcTarget is
-##!                          "etc.lower" and postPopulate writes into it.
 ##!   shrinkToFit          — resize2fs -M + grow by `headroomMiB` (production
 ##!                          image). false leaves the image at an over-
 ##!                          provisioned initial size (VM test disk).
@@ -39,8 +42,7 @@
 ##!                          symlinked into /usr/bin, /usr/sbin, /usr/libexec.
 ##!                          Later entries never overwrite earlier ones.
 ##!   postPopulate         — shell fragment spliced after tree population and
-##!                          before mkfs. Runs with `rootfs/` as the tree and
-##!                          `$ETC_TARGET` as the etc-path basename.
+##!                          before mkfs. Runs with `rootfs/` as the tree.
 ##!
 ##! Output: `$out/root.img` (the ext4 image) and `$out/rootfs-size-bytes`
 ##! (the final image byte count, so the caller can size the partition).
@@ -50,8 +52,6 @@
   system,
   pname ? "aos-rootfs",
   label ? "aos-root",
-  etcTarget ? "etc",
-  unwrapStoreSymlinks ? false,
   shrinkToFit ? true,
   headroomMiB ? 64,
   minSizeMiB ? 512,
@@ -100,32 +100,6 @@
       fi
     '')
     symlinkFarmPkgs;
-
-  unwrapScript = lib.optionalString unwrapStoreSymlinks ''
-    # Toplevel /etc can contain symlinks pointing into the read-only
-    # /nix/store (e.g. /etc/systemd/system → a system-units derivation).
-    # Replace each such link with a copy of its target so subsequent
-    # writes into the tree don't fail with EACCES. Replacing a
-    # directory-symlink can reveal new store symlinks in the copied
-    # subtree — loop until no store symlinks remain.
-    while true; do
-      find rootfs/"$ETC_TARGET" -type l | while IFS= read -r link; do
-        target=$(readlink "$link")
-        case "$target" in
-          /nix/store/*)
-            rm "$link"
-            cp -a "$target" "$link"
-            ;;
-        esac
-      done
-      if ! find rootfs/"$ETC_TARGET" -type l -exec readlink {} \; \
-           | grep -q '^/nix/store/'; then
-        break
-      fi
-      chmod -R u+w rootfs/"$ETC_TARGET"
-    done
-    chmod -R u+w rootfs/"$ETC_TARGET"
-  '';
 in
   pkgs.mkDerivation {
     inherit pname;
@@ -147,7 +121,6 @@ in
     KERNEL = toString kernel;
     SYSTEMD = toString pkgs.systemd;
     COREUTILS = toString pkgs.coreutils;
-    ETC_TARGET = etcTarget;
     # `$BASH` is a bash built-in pointing at the bash executable
     # currently running the script — setting it as a derivation env
     # var has no effect at runtime. Use a dedicated name (AOS_BASH)
@@ -184,10 +157,17 @@ in
           ln -sfn usr/bin rootfs/bin
           ln -sfn usr/bin rootfs/sbin
           ln -sfn usr/lib rootfs/lib
-          mkdir -p rootfs/"$ETC_TARGET"
+          # /etc is an empty mountpoint — the runtime overlay (system
+          # EROFS lower + per-gen ignition lower + /var/etc) mounts
+          # on top in stage-1 (etc-overlay-setup.service).
+          mkdir -p rootfs/etc
           mkdir -p rootfs/proc rootfs/sys rootfs/dev rootfs/tmp
           mkdir -p rootfs/run rootfs/var rootfs/sysroot
           mkdir -p rootfs/var/{log,lib,tmp}
+          # /run/etc is an empty mountpoint — run-etc-setup.service
+          # mounts a tmpfs there early in stage-1 so ignition-files
+          # and etc-overlay-setup can stage per-gen state under it.
+          mkdir -p rootfs/run/etc
           # /boot + /var are mountpoints that modules/base/filesystems.nix
           # writes into /etc/fstab (ESP → /boot, var partition → /var).
           # systemd-fstab-generator synthesises boot.mount / var.mount
@@ -235,27 +215,28 @@ in
           # ── 6. /run/current-system → toplevel ───────────────────────────
           ln -sfn "$TOPLEVEL" rootfs/run/current-system
 
-          # ── 7. Copy toplevel's /etc into rootfs/$ETC_TARGET ─────────────
-          # tar-pipe rather than `cp -a` so extracted files inherit the
-          # builder's umask (writable) instead of the store's read-only
-          # perms — subsequent writes from postPopulate need `u+w`.
-          if [ -d "$TOPLEVEL/etc" ]; then
-            echo "    Merging toplevel /etc into rootfs/$ETC_TARGET"
-            (cd "$TOPLEVEL/etc" && tar cf - .) \
-              | (cd rootfs/"$ETC_TARGET" && tar xf -)
-            chmod -R u+w rootfs/"$ETC_TARGET"
-          fi
+          # ── 7. /aos-toplevel seed pointer ──────────────────────────────
+          # First-boot bootstrap: aos-seed-profiles.service reads this
+          # symlink to populate /var/lib/profiles/system/gen-1/toplevel
+          # without referencing config.system.build.toplevel directly
+          # (which would create an initrd→toplevel→initrd cycle). The
+          # rootfs already references the toplevel via /nix.lower/store,
+          # so adding the symlink doesn't introduce a new derivation
+          # edge. See spec v12 §6.1.
+          ln -sfn "$TOPLEVEL" rootfs/aos-toplevel
 
-          # ── 8. Unwrap /nix/store symlinks inside $ETC_TARGET ────────────
-          ${unwrapScript}
+          # /etc/machine-id no longer touched here — stage-1's
+          # aos-machine-id.service generates /var/etc/machine-id on
+          # first boot from /proc/sys/kernel/random/uuid, and the
+          # /var/etc lower of the overlay surfaces it at
+          # /etc/machine-id. Doing it in the rootfs would land the
+          # file on the wrong side of the overlay (and on every
+          # rebuild's $TOPLEVEL, defeating per-host persistence).
 
-          # ── 9. Empty machine-id — signals systemd to generate one ──────
-          touch rootfs/"$ETC_TARGET"/machine-id
-
-          # ── 10. Symlink farm for caller-supplied packages ───────────────
+          # ── 8. Symlink farm for caller-supplied packages ───────────────
           ${symlinkFarmScript}
 
-          # ── 11. Caller-supplied postPopulate hook ───────────────────────
+          # ── 9. Caller-supplied postPopulate hook ───────────────────────
           ${postPopulate}
         '';
       }

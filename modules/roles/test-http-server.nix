@@ -87,15 +87,17 @@ in {
           }
           {
             name = "wants-symlink-present";
-            description = "aos-ignition-preset created the multi-user.target.wants symlink";
+            description = "render-role.nix's storage.links produced the multi-user.target.wants symlink";
             script = ''
-              # aos-ignition-preset (initrd) parses the preset file
-              # ignition wrote and creates the corresponding `.wants` /
-              # `.requires` / `.upholds` / Alias= symlinks under
-              # /var/etc/systemd/system/, which the /etc overlay
-              # surfaces at /etc/systemd/system/. The presence of this
-              # symlink — not `systemctl is-enabled` — is what makes
-              # systemd's job-runner pull the unit into the boot.
+              # Under spec v12 §5.6, render-role.nix predicts the
+              # install symlinks `generateUnits` lays down (top-level
+              # unit files + .wants/.requires/.upholds + aliases) and
+              # ignition writes each as a `storage.links` entry into
+              # the per-gen role lower at
+              # /run/etc/ignition-<gen>/etc/systemd/system/. The /etc
+              # overlay's three-layer mount surfaces that lower at
+              # /etc/systemd/system/, so the install symlink is
+              # observable as a path on disk.
               #
               # We deliberately do NOT use `systemctl is-enabled`
               # here: AOS systemd is built with --sysconfdir=$out/etc
