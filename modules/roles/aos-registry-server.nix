@@ -100,7 +100,6 @@ in {
         systemd.services.aos-registry-server-gitd = {
           description = "Git daemon serving AOS registries on :9418";
           wantedBy = ["multi-user.target"];
-          enabled = true;
           serviceConfig = {
             # Adopt anything written into the StateDirectory by other
             # uids (operators or the fleet test seeding a bare repo as
@@ -133,7 +132,6 @@ in {
         systemd.services.aos-registry-server-cache = {
           description = "aos serve binary cache on :15000";
           wantedBy = ["multi-user.target"];
-          enabled = true;
           serviceConfig = {
             # Bootstrap the ValidPaths DB schema before launching the
             # binary; see `initStoreDb` above.

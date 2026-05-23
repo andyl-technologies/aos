@@ -27,13 +27,12 @@ in {
         systemd.services.test-http-server = {
           description = "Test python http.server on :8000";
 
-          # `wantedBy` populates [Install] WantedBy= via the renderer
-          # extended in §3.2; `enabled = true` is what writes
-          # `enable test-http-server.service` to the ignition preset
-          # file, which `systemctl preset-all` (added to the initrd
-          # by §6 step 2) then turns into the runtime .wants symlink.
+          # `wantedBy` populates [Install] WantedBy= via the renderer.
+          # Under the composefs /etc model (spec v12 §5.6) the install
+          # symlink is laid down at image build time through
+          # render-role.nix's predicted storage.links — no runtime
+          # preset walker is involved.
           wantedBy = ["multi-user.target"];
-          enabled = true;
 
           serviceConfig = {
             # Bind to all addresses so the same role works for both

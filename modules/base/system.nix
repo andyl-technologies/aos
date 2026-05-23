@@ -271,9 +271,13 @@ in {
     };
 
     # Timezone: symlink /etc/localtime to the zoneinfo database.
-    # This is the standard mechanism for glibc and systemd.
+    # This is the standard mechanism for glibc and systemd. Source is
+    # the hermetic `pkgs.tzdata` package, not the host's
+    # `/usr/share/zoneinfo` (which is unspecified inside the Nix
+    # sandbox and would break the composefs dump script's
+    # `os.path.isdir(source)` probe).
     environment.etc."localtime" = {
-      source = "/usr/share/zoneinfo/${cfg.timezone}";
+      source = "${pkgs.tzdata}/share/zoneinfo/${cfg.timezone}";
     };
 
     # Write the timezone name for tools that read it as a string.
