@@ -46,17 +46,28 @@
   #              via `-kernel`/`-initrd`, partition 1 is never mounted.
   #              Reserving 4 MiB keeps root at /dev/vda2 matching
   #              production device naming.
-  #   2  root  — ext4, sized to fit. The system's /etc is pre-split
-  #              to /etc.lower at image-build time so the production
-  #              etc-overlay-setup.service skips its first-boot remount-rw
-  #              dance on ro root.
+  #   2  root  — ext4, sized to fit. /etc is an empty mountpoint; the
+  #              system /etc content lives in the composefs EROFS image
+  #              shipped at ${toplevel}/etc-metadata.erofs, mounted by
+  #              etc-overlay-setup.service in stage-1.
   #   3  swap  — 8 MiB stub with the Linux-swap GPT GUID, no body.
   #              cryptswap.service's `Requires=` on the auto-instantiated
   #              `dev-disk-by-partlabel-swap.device` would otherwise sit
   #              queued for 90 s on every boot waiting for udev to
   #              announce a partition that doesn't exist.
-  #   4  var   — 32 MiB ext4, empty. Label `var` via GPT partlabel so
-  #              the production mount-var.service mounts it on every boot.
+  #   4  var   — 32 MiB ext4. Carries the /var/etc allowlist plus
+  #              test-specific overrides (host SSH key, hostname,
+  #              SELinux off, test units). Label `var` via GPT
+  #              partlabel so mount-var.service finds it.
+  #
+  # Spec v12 §5.4 names /var/etc as the tight host-persistent
+  # allowlist (machine-id, ssh host keys). For test infrastructure we
+  # widen that scope: the test units (aos-test.target,
+  # aos-test-agent.service) and the per-test fallbacks (hostname,
+  # nsswitch.conf, etc.) also live there. This is a deliberate
+  # test-only deviation; production roles must use the
+  # `environment.etc` route through the EROFS image.
+  #
   # `mkTestDisk` is a function of `system` only — two callers passing
   # the same system reference the same Nix derivation, which is what
   # lets fleet tests share one disk across every machine of a given
@@ -64,23 +75,23 @@
   #
   # Per-instance state (hostname, /etc/hosts, eth0 .network) is no
   # longer baked in here; the harnesses deliver it through ignition
-  # via the metadata ISO. The default `/etc.lower/hostname` written
-  # below is `aos-test` — at runtime, ignition's `/etc/hostname`
-  # write lands on the etc-overlay's upper layer (`/var/etc/hostname`)
-  # which shadows this lower-layer file. So the baked hostname is a
-  # fallback for tests that never deliver an instance identity, and
-  # the production-faithful identity flow shadows it when used.
+  # via the metadata ISO. The default `var/etc/hostname` written here
+  # is `aos-test` — at runtime, ignition's `/etc/hostname` write
+  # lands on the per-gen ignition lower at `/run/etc/ignition-<gen>/
+  # etc/hostname`, which the new overlay layer order
+  # (`/var/etc > ignition lower > system EROFS`) keeps from shadowing
+  # the var-baked value. Tests that want ignition's hostname to take
+  # effect should skip the baked default.
   mkTestDisk = {
     system,
     name ? "aos-disk",
   }: let
     systemPackages = system.config.environment.systemPackages;
 
-    # Shell fragment spliced into the shared rootfs helper's populate
-    # phase after tree population, before mkfs. Runs with `rootfs/` as
-    # the populated tree and `$ETC_TARGET` pointing at `etc.lower` —
-    # the lower layer of the production /etc overlay (pre-split to skip
-    # the first-boot remount-rw dance).
+    # rootfsPost — shell fragment spliced into the shared rootfs
+    # helper's populate phase after tree population, before mkfs.
+    # Only touches rootfs/ paths (the system /etc tree no longer
+    # lives on the rootfs; see varSeed below).
     postPopulate = ''
       # ── systemd's /lib/* subdirs into merged-usr /usr/lib ──
       # Provides udev rules, tmpfiles.d, sysctl.d, and systemd's own
@@ -91,86 +102,8 @@
         [ -e "rootfs/usr/lib/$n" ] || ln -sfn "$d" "rootfs/usr/lib/$n"
       done
 
-      # /etc is the overlay mountpoint — the helper populated
-      # /etc.lower; leave /etc as an empty mountpoint.
-      mkdir -p rootfs/etc
-      # /run/etc-upper is where etc-overlay-setup mounts the tmpfs
-      # that carries the overlay's upper+work dirs. Pre-creating
-      # keeps the first-boot setup on the cold path.
-      mkdir -p rootfs/run/etc-upper
       # /opt/aos-test/bin holds the test agent scripts.
       mkdir -p rootfs/opt/aos-test/bin
-
-      # SELinux override — the test rootfs has no policy files and
-      # enforcing mode causes systemd to freeze when it can't load
-      # the policy. Only applies if the toplevel /etc had a config.
-      if [ -f "rootfs/$ETC_TARGET/selinux/config" ]; then
-        cat > "rootfs/$ETC_TARGET/selinux/config" << 'SELINUXCFG'
-      SELINUX=disabled
-      SELINUXTYPE=targeted
-      SELINUXCFG
-      fi
-
-      # Default hostname goes into etc.lower (the overlay's lower
-      # layer). Ignition's `/etc/hostname` write lands on the upper
-      # layer at runtime and shadows this — so tests delivering a
-      # per-instance identity through ignition see the identity
-      # fragment's hostname; tests that don't see "aos-test".
-      echo "aos-test" > "rootfs/$ETC_TARGET/hostname"
-      # Empty fstab — systemd-fstab-generator synthesizes sysroot.mount
-      # from root= on the cmdline; mount-var.service handles /var.
-      : > "rootfs/$ETC_TARGET/fstab"
-
-      # Pre-generate SSH host key so sshd can start without the keygen
-      # service (which expects /var/etc/ssh from the production overlay
-      # setup). The key lives in the etc-overlay lower layer so sshd
-      # finds it via the overlay.
-      mkdir -p "rootfs/$ETC_TARGET/ssh"
-      ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
-        -f "rootfs/$ETC_TARGET/ssh/ssh_host_ed25519_key" </dev/null
-
-      cat > "rootfs/$ETC_TARGET/os-release" << 'OSREL'
-      ID=aos
-      NAME="ANDYL OS"
-      PRETTY_NAME="ANDYL OS (test)"
-      VERSION_ID=0.1
-      OSREL
-
-      # Fallback passwd/group/shadow if toplevel didn't provide them.
-      # The users module generates these for module-defined users
-      # (chrony, sshd, etc.); writing fallbacks keeps early-boot
-      # systemd services functional when running a minimal system.
-      if [ ! -s "rootfs/$ETC_TARGET/passwd" ]; then
-        cat > "rootfs/$ETC_TARGET/passwd" << 'PASSWD'
-      root:x:0:0:root:/root:/bin/sh
-      nobody:x:65534:65534:Nobody:/:/sbin/nologin
-      systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin
-      systemd-network:x:102:102:systemd Network:/:/sbin/nologin
-      PASSWD
-      fi
-      if [ ! -s "rootfs/$ETC_TARGET/group" ]; then
-        cat > "rootfs/$ETC_TARGET/group" << 'GROUP'
-      root:x:0:
-      nobody:x:65534:
-      utmp:x:22:
-      systemd-journal:x:101:
-      systemd-network:x:102:
-      GROUP
-      fi
-      if [ ! -s "rootfs/$ETC_TARGET/shadow" ]; then
-        cat > "rootfs/$ETC_TARGET/shadow" << 'SHADOW'
-      root:!:1::::::
-      nobody:!:1::::::
-      SHADOW
-      fi
-      chmod 640 "rootfs/$ETC_TARGET/shadow"
-
-      cat > "rootfs/$ETC_TARGET/nsswitch.conf" << 'NSS'
-      passwd: files
-      group:  files
-      shadow: files
-      hosts:  files dns
-      NSS
 
       # ── Guest agent handler: one framed request from stdin → framed
       # response to stdout. Wire format (v2):
@@ -387,20 +320,78 @@
       done
       AGENT
       chmod +x rootfs/opt/aos-test/bin/aos-test-agent
+    '';
 
-      # Guest agent systemd service. Drivers present a properly blocking
-      # serial backend so a live getty can coexist with the harness;
-      # no masking of serial-getty@ttyS0 is needed.
-      #
-      # The agent is gated behind aos-test.target, which is ordered
-      # After=multi-user.target. Systemd only activates aos-test.target
-      # once multi-user.target has reached "active" (i.e. all its Wants=
-      # — sshd, containerd, kubelet — have finished activating), so by
-      # the time the agent's ExecStart fires, `systemctl is-active
-      # multi-user.target` is provably true. No shell polling required.
-      mkdir -p "rootfs/$ETC_TARGET/systemd/system/multi-user.target.wants"
-      mkdir -p "rootfs/$ETC_TARGET/systemd/system/aos-test.target.wants"
-      cat > "rootfs/$ETC_TARGET/systemd/system/aos-test.target" << 'UNIT'
+    # varSeed — shell fragment spliced into the disk-assembly phase
+    # below. Populates `var/etc/...` and `var/etc/systemd/system/...`
+    # before `mkfs.ext4 -d var var.img`, so the resulting var
+    # partition surfaces these files at `/etc/<path>` via the runtime
+    # overlay (spec v12 §5.4: /var/etc is the persistent lower).
+    #
+    # The test-only entries (selinux off, baked hostname, fstab,
+    # pre-generated SSH host key, passwd/group fallbacks,
+    # nsswitch.conf, aos-test units) all live on the var partition
+    # rather than going through `environment.etc` — they're test
+    # infrastructure, not production state.
+    varSeed = ''
+      mkdir -p var/etc/systemd/system/multi-user.target.wants
+      mkdir -p var/etc/systemd/system/aos-test.target.wants
+      mkdir -p var/etc/ssh
+      mkdir -p var/etc/selinux
+
+      # SELinux off — the test rootfs has no policy files; enforcing
+      # mode would freeze systemd. The toplevel may write
+      # /etc/selinux/config from modules/security/selinux.nix; the
+      # var entry shadows it via the /var/etc overlay lower.
+      cat > var/etc/selinux/config << 'SELINUXCFG'
+      SELINUX=disabled
+      SELINUXTYPE=targeted
+      SELINUXCFG
+
+      # Default hostname for tests that don't deliver an identity
+      # fragment through ignition. The new layer order
+      # (`/var/etc > ignition lower > system EROFS`) means this
+      # value wins over both the system default and the per-gen
+      # ignition write — tests wanting ignition's hostname must
+      # skip this default.
+      echo "aos-test" > var/etc/hostname
+
+      # Empty fstab — systemd-fstab-generator synthesises
+      # sysroot.mount from `root=` on the cmdline; mount-var.service
+      # handles /var.
+      : > var/etc/fstab
+
+      # Pre-generate SSH host key so sshd starts without waiting on
+      # sshd-keygen.service (the production path writes the same
+      # /var/etc/ssh/ssh_host_ed25519_key on first boot).
+      ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
+        -f var/etc/ssh/ssh_host_ed25519_key </dev/null
+
+      # Test os-release marker — overlays the production
+      # /etc/os-release without changing the toplevel module.
+      cat > var/etc/os-release << 'OSREL'
+      ID=aos
+      NAME="ANDYL OS"
+      PRETTY_NAME="ANDYL OS (test)"
+      VERSION_ID=0.1
+      OSREL
+
+      # Fallback nsswitch.conf — matches the toplevel default but
+      # shadowing here means even a minimal test system gets sane
+      # NSS resolution.
+      cat > var/etc/nsswitch.conf << 'NSS'
+      passwd: files
+      group:  files
+      shadow: files
+      hosts:  files dns
+      NSS
+
+      # Test guest agent target + service. The unit refers to
+      # /opt/aos-test/bin/aos-test-agent which lives on the rootfs
+      # (postPopulate creates it). The aos-test.target is ordered
+      # After=multi-user.target so by the time the agent fires,
+      # systemctl is-active multi-user.target is provably true.
+      cat > var/etc/systemd/system/aos-test.target << 'UNIT'
       [Unit]
       Description=AOS VM Test Harness Ready
       After=multi-user.target
@@ -409,7 +400,7 @@
       [Install]
       WantedBy=multi-user.target
       UNIT
-      cat > "rootfs/$ETC_TARGET/systemd/system/aos-test-agent.service" << 'UNIT'
+      cat > var/etc/systemd/system/aos-test-agent.service << 'UNIT'
       [Unit]
       Description=AOS VM Test Guest Agent
       After=systemd-udevd.service aos-test.target
@@ -426,19 +417,15 @@
       WantedBy=aos-test.target
       UNIT
       ln -sfn ../aos-test.target \
-        "rootfs/$ETC_TARGET/systemd/system/multi-user.target.wants/aos-test.target"
+        var/etc/systemd/system/multi-user.target.wants/aos-test.target
       ln -sfn ../aos-test-agent.service \
-        "rootfs/$ETC_TARGET/systemd/system/aos-test.target.wants/aos-test-agent.service"
+        var/etc/systemd/system/aos-test.target.wants/aos-test-agent.service
     '';
 
     rootfs = mkRootfs {
       inherit pkgs lib system;
       pname = "vm-disk-${name}-rootfs";
       label = "aos-root";
-      # /etc.lower layout — stage-2 etc-overlay-setup.service mounts an
-      # overlayfs on /etc with /etc.lower as the base lower layer.
-      etcTarget = "etc.lower";
-      unwrapStoreSymlinks = true;
       # Leave the image at its initial over-provisioned size — tests
       # can write a lot during execution. 2048 MiB floor matches the
       # pre-refactor behavior.
@@ -492,6 +479,11 @@
 
             # ── /var partition staging ──────────────────────────────────
             mkdir -p var
+
+            # Spec v12 model: the test-only /etc overrides + test units
+            # live on /var/etc (the persistent overlay lower), not on
+            # the rootfs's /etc tree (which is now empty by design).
+            ${varSeed}
 
             # fakeroot so the var partition's files land as uid/gid 0.
             fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img 32M
