@@ -119,6 +119,40 @@ in {
       serviceConfig.SuccessExitStatus = "0 1";
     };
 
+    # Late re-apply of sysctl drop-ins. Belt-and-suspenders for the
+    # 2026-05-19 microvm-races briefing's Shape 2: under host I/O load
+    # the stage-2 systemd-sysctl.service runs `Before=sysinit.target`
+    # — very early — and can race the etc-overlay's settle on switch-
+    # root. We saw the service report success while
+    # `/etc/sysctl.d/80-aos-hardening.conf` was effectively invisible
+    # to it, leaving e.g. `kernel.dmesg_restrict = 0` against the
+    # asserted `= 1`. Manual `sysctl -p` and `systemctl restart
+    # systemd-sysctl` both immediately set the right value, confirming
+    # the file is correct and the kernel accepts it; only the early-
+    # boot pass missed.
+    #
+    # b0f3fe1 (initrd → stage-2 oneshot re-run) closed one window but
+    # not all of them. Running `systemd-sysctl` again later in stage-2
+    # boot — after every overlay / mount unit has settled and before
+    # multi-user.target — guarantees the on-disk config wins regardless
+    # of how the early pass landed. The unit is `Type=oneshot` and the
+    # binary is idempotent; the cost is one short fork+read.
+    systemd.services."aos-sysctl-late-apply" = {
+      description = "Re-apply /etc/sysctl.d after the /etc overlay has settled";
+      wantedBy = ["multi-user.target"];
+      after = [
+        "local-fs.target"
+        "systemd-tmpfiles-setup.service"
+        "systemd-sysctl.service"
+      ];
+      before = ["multi-user.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.systemd}/lib/systemd/systemd-sysctl";
+      };
+    };
+
     # When BBR is enabled, select it (and the fq qdisc) via sysctl.
     # Both keys are address-family-agnostic, so the two lines are complete
     # as written: net.ipv4.tcp_congestion_control governs the shared TCP
