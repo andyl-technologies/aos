@@ -76,30 +76,43 @@
         name = "etc-three-layer-overlay";
         description = "/etc is the composefs three-layer overlay (spec v12 §1)";
         script = ''
-          # spec v12 §6.1.4: /etc is mounted as overlayfs with lowerdir+=
-          # /var/etc, /run/etc/ignition-<gen>/etc, /run/etc/system-<gen>/
-          # metadata, plus datadir+= /run/etc/system-<gen>/content and
-          # upperdir on /run/etc/upper-<gen>.
+          # /etc is mounted as overlayfs with lowerdir+= /var/etc,
+          # /run/etc/ignition-<gen>/etc, /run/etc/system-<gen>/
+          # metadata, plus datadir+= /run/etc/system-<gen>/content
+          # and upperdir on /run/etc/upper-<gen>.
           #
-          # The /sysroot prefix survives switch_root because the mount
-          # was set up in stage-1 before pivoting — the kernel keeps
-          # the literal source path strings, so all four paths still
-          # carry /sysroot/ at runtime. We grep for that shape rather
-          # than the post-pivot form. metacopy=on / redirect_dir=on
-          # don't appear in the option line: kernel defaults
-          # (CONFIG_OVERLAY_FS_METACOPY=y +
+          # Path shapes in the option line:
+          # - /var/etc keeps the literal /sysroot prefix from mount
+          #   time — /var was mounted on /sysroot/var in stage-1, and
+          #   overlayfs records the source path string verbatim.
+          # - /run/etc/... does NOT carry /sysroot: the per-gen lower
+          #   mounts live in the initrd's /run, which switch_root
+          #   moves to /sysroot/run and then pivots, so the paths
+          #   were already in their post-pivot shape when the
+          #   overlay was constructed.
+          #
+          # metacopy=on / redirect_dir=on don't appear in the option
+          # line: kernel defaults (CONFIG_OVERLAY_FS_METACOPY=y +
           # CONFIG_OVERLAY_FS_REDIRECT_DIR=y) make them implicit.
           mount_line = vm.succeed("findmnt -no SOURCE,FSTYPE,OPTIONS /etc")
           assert "overlay" in mount_line, f"/etc is not overlayfs: {mount_line!r}"
           for needle in (
               "lowerdir+=/sysroot/var/etc",
-              "lowerdir+=/sysroot/run/etc/ignition-",
-              "lowerdir+=/sysroot/run/etc/system-",
-              "datadir+=/sysroot/run/etc/system-",
-              "upperdir=/sysroot/run/etc/upper-",
+              "lowerdir+=/run/etc/ignition-",
+              "lowerdir+=/run/etc/system-",
+              "datadir+=/run/etc/system-",
+              "upperdir=/run/etc/upper-",
           ):
               assert needle in mount_line, \
                   f"/etc overlay missing {needle}: {mount_line!r}"
+
+          # The per-gen subtree must be reachable by path post-pivot
+          # — i.e. the /run/etc tmpfs and its sub-mounts must be
+          # children of the moved-from-initrd /run, not shadowed by
+          # it. Stat the system-<gen>/metadata mountpoint to prove
+          # the path resolves, not just that findmnt sees the mount.
+          vm.succeed("test -d /run/etc/system-1/metadata")
+          vm.succeed("test -d /run/etc/ignition-1/etc")
         '';
       }
       {
@@ -107,13 +120,11 @@
         description = "system EROFS metadata image is mounted as the bottom lower";
         script = ''
           # etc-overlay-setup.service mounts the toplevel's
-          # etc-metadata.erofs at /sysroot/run/etc/system-<gen>/metadata
-          # in stage-1. switch_root moves submounts under /sysroot to
-          # their post-pivot path, so the mountpoint becomes
-          # /run/etc/system-1/metadata in stage-2. (The /etc overlay's
-          # option-string lowerdir/datadir paths keep their literal
-          # /sysroot prefix because they're stored as strings, not
-          # mountpoint references.)
+          # etc-metadata.erofs at /run/etc/system-<gen>/metadata in
+          # stage-1. The mount lives inside the initrd's /run (so
+          # systemd-initrd's `mount --move /run /sysroot/run` carries
+          # it through switch_root) and remains reachable by path
+          # post-pivot at /run/etc/system-1/metadata.
           vm.succeed("findmnt -t erofs /run/etc/system-1/metadata")
         '';
       }
