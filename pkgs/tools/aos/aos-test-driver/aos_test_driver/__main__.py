@@ -130,6 +130,22 @@ def _dump_serial_logs(machines: list[Machine]) -> None:
         sys.stderr.write(f"--- end {m.name} serial log ---\n\n")
 
 
+# Default budget for the agent-readiness handshake — strictly the time
+# from VM start until the guest agent answers PING. Independent of
+# manifest["timeout"], which is the test-body budget; a slow boot must
+# not silently eat the checks' time (see the 2026-05-19 microvm-races
+# briefing). Surfaceable per-test via manifest["boot_timeout"].
+DEFAULT_BOOT_TIMEOUT: float = 180.0
+
+# Default budget for waiting on `systemctl is-system-running` to settle.
+# Once the agent is up, multi-user.target is conceptually reached, but
+# some Wants= units (sshd, auditd, …) may still be activating. The
+# briefing's Shape 2 was a check racing a still-finishing oneshot;
+# gating at the harness avoids needing every individual check to know
+# which unit it depends on. Independent of test_body / boot_timeout.
+DEFAULT_SYSTEM_READY_TIMEOUT: float = 60.0
+
+
 def _wait_agents(machines: list[Machine], deadline: float) -> None:
     for m in machines:
         log.info("Waiting for %s agent...", m.name)
@@ -138,6 +154,51 @@ def _wait_agents(machines: list[Machine], deadline: float) -> None:
         # establishes the persistent connection reused for the run.
         m.agent.wait_ready(deadline)
         log.info("%s agent ready.", m.name)
+
+
+def _wait_system_ready(machines: list[Machine], timeout: float) -> None:
+    """Block until each machine's systemd reports the boot complete.
+
+    ``systemctl is-system-running --wait`` returns once systemd is in
+    one of: running, degraded, maintenance, stopping. ``degraded`` is
+    fine for our purposes — it means startup finished but a unit failed,
+    which is a useful diagnostic to surface to the test rather than
+    masking by hanging forever. A non-zero exit is logged but not fatal;
+    individual tests can still assert on specific units.
+
+    The timeout is per-machine. Falls back to a warning if the agent
+    cannot run the command at all (very early boot, agent crashed) —
+    the test body will then surface a more specific failure.
+    """
+    cmd = (
+        # `|| true` so a `degraded` exit (= 1) doesn't propagate to the
+        # agent's exit_code path; we want to capture and log the actual
+        # final state regardless.
+        "timeout {t:.0f}s systemctl is-system-running --wait; "
+        "systemctl is-system-running"
+    ).format(t=timeout)
+    for m in machines:
+        log.info("Waiting for %s system to finish booting...", m.name)
+        try:
+            exit_code, stdout, _ = m.execute(cmd, timeout=timeout + 10)
+        except Exception as e:
+            log.warning(
+                "[%s] system-ready probe raised %s; continuing",
+                m.name,
+                e,
+            )
+            continue
+        state = stdout.decode("utf-8", errors="replace").strip().splitlines()
+        final = state[-1] if state else "(no output)"
+        if exit_code == 0:
+            log.info("[%s] system %s.", m.name, final)
+        else:
+            log.warning(
+                "[%s] system %s (probe exit %d); proceeding",
+                m.name,
+                final,
+                exit_code,
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -162,6 +223,18 @@ def main(argv: list[str] | None = None) -> int:
         len(machines),
     )
 
+    # Two-axis budget. `boot_timeout` covers VM boot → agent PING reply;
+    # `manifest["timeout"]` is left intact for the test body (per-RPC
+    # timeouts already enforce it indirectly). The briefing's Shape 1
+    # (agent never connects) was conflated with test-body slowness when
+    # a single deadline covered both.
+    boot_timeout: float = float(
+        manifest.get("boot_timeout", DEFAULT_BOOT_TIMEOUT)
+    )
+    system_ready_timeout: float = float(
+        manifest.get("system_ready_timeout", DEFAULT_SYSTEM_READY_TIMEOUT)
+    )
+
     started: list[Machine] = []
     exit_code: int = 0
     try:
@@ -169,8 +242,9 @@ def main(argv: list[str] | None = None) -> int:
             m.start()
             started.append(m)
 
-        deadline = time.monotonic() + manifest["timeout"]
-        _wait_agents(started, deadline)
+        boot_deadline = time.monotonic() + boot_timeout
+        _wait_agents(started, boot_deadline)
+        _wait_system_ready(started, system_ready_timeout)
 
         # Expose machines as test-module globals; chdir to TMPDIR so
         # tracebacks render as ./test.py:NN regardless of where the
@@ -192,11 +266,9 @@ def main(argv: list[str] | None = None) -> int:
     except AosDriverError as e:
         exit_code = 1
         log.error("test failed: %s", e)
-        _dump_serial_logs(started)
     except BaseException:
         exit_code = 1
         log.exception("test raised")
-        _dump_serial_logs(started)
     finally:
         if exit_code == 0:
             # Graceful shutdown on the happy path; on failure the agent
@@ -208,11 +280,18 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception:
                     pass
             time.sleep(2)
+        # stop() before _dump_serial_logs: terminating the VM proc forces
+        # the serial chardev / Firecracker stdout buffer to flush, so the
+        # dumped log actually contains the boot output we want for
+        # diagnosis. Reading the file mid-run regularly produced an empty
+        # dump because the VM hadn't been flushed yet.
         for m in started:
             try:
                 m.stop()
             except Exception:
                 log.exception("cleanup error for %s", m.name)
+        if exit_code != 0:
+            _dump_serial_logs(started)
 
     return exit_code
 
