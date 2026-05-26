@@ -137,18 +137,28 @@ in {
     system.checks.kernel-security = {
       description = "Kernel sysctl hardening checks";
       checks = [
+        # Value-asserting sysctl reads are wrapped in wait_until_succeeds:
+        # systemd-sysctl.service applies /etc/sysctl.d/*.conf during boot
+        # and a bare `cat` can race the apply (the 2026-05-19 microvm-races
+        # briefing's Shape 2 — reproduced under host load even after the
+        # initrd-oneshot re-run fix in b0f3fe1). The existence-only checks
+        # below (`test -f …`) are kernel-build features that don't race.
         {
           name = "aslr";
           description = "ASLR is fully enabled (randomize_va_space=2)";
           script = ''
-            assert "2" in vm.succeed("cat /proc/sys/kernel/randomize_va_space")
+            vm.wait_until_succeeds(
+                "grep -q '^2$' /proc/sys/kernel/randomize_va_space"
+            )
           '';
         }
         {
           name = "syncookies";
           description = "TCP syncookies are enabled";
           script = ''
-            assert "1" in vm.succeed("cat /proc/sys/net/ipv4/tcp_syncookies")
+            vm.wait_until_succeeds(
+                "grep -q '^1$' /proc/sys/net/ipv4/tcp_syncookies"
+            )
           '';
         }
         {
@@ -189,7 +199,16 @@ in {
           name = "dmesg-restrict";
           description = "dmesg_restrict is enabled";
           script = ''
-            assert "1" in vm.succeed("cat /proc/sys/kernel/dmesg_restrict")
+            # Poll: systemd-sysctl applies this from /etc/sysctl.d/* during
+            # boot and a bare cat races the apply under host I/O load
+            # (microvm-races briefing Shape 2). The aos-sysctl-late-apply
+            # service in modules/base/kernel.nix re-runs sysctl late in
+            # boot to win over the early-stage race; this poll is the
+            # defensive layer that lets the test survive even if the
+            # late-apply itself slips.
+            vm.wait_until_succeeds(
+                "grep -q '^1$' /proc/sys/kernel/dmesg_restrict"
+            )
           '';
         }
         {
