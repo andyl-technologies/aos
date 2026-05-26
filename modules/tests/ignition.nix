@@ -7,9 +7,8 @@
 ##!      `/dev/disk/by-label/aos-metadata`, mounts it at `/run/aos-metadata`,
 ##!      and writes `IGNITION_CONFIG_FILE=/run/aos-metadata/config.json`
 ##!      to the platform env that every ignition stage inherits.
-##!   3. ignition-files runs with
-##!      `--root=/sysroot/run/etc/ignition-<gen>` and writes the file
-##!      under that per-gen subtree (spec v12 §6.1.3).
+##!   3. ignition-files runs with `--root=/run/etc/ignition-<gen>`
+##!      and writes the file under that per-gen subtree.
 ##!   4. etc-overlay-setup mounts the per-gen ignition lower as the
 ##!      middle layer of the /etc overlay (spec v12 §6.1.4), so the
 ##!      file surfaces at `/etc/<path>` in stage-2.

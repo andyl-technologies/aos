@@ -58,7 +58,10 @@
   # run a oneshot that stays active across subsequent stages. `root`
   # defaults to `/sysroot` (which is what the fetch / disks / mount
   # stages want); the files stage overrides it to the per-gen
-  # /sysroot/run/etc/ignition-<gen> path (spec v12 §6.1.3).
+  # /run/etc/ignition-<gen> path. The per-gen path lives in the
+  # initrd's `/run` tmpfs so that systemd-initrd's `mount --move /run
+  # /sysroot/run` during switch_root carries it (and its sub-mounts)
+  # into stage-2 — see the note above `run-etc-setup.service` below.
   stageServiceConfig = {
     stage,
     root ? "/sysroot",
@@ -217,18 +220,24 @@ in {
           "run-etc-setup.service"
         ];
         environment.PATH = ignitionPath;
-        # Spec v12 §6.1.3 — write into the per-gen lower under
-        # /sysroot/run/etc/ignition-<gen>/ instead of bind-mounting
-        # /var/etc over /sysroot/etc. Ignition's `--root=$ign`
-        # prepends $ign to absolute paths, so a
-        # `storage.links.path = "/etc/foo"` write lands at
+        # Write into the per-gen lower under /run/etc/ignition-<gen>/.
+        # Ignition's `--root=$ign` prepends $ign to absolute paths,
+        # so a `storage.links.path = "/etc/foo"` write lands at
         # `$ign/etc/foo`. The per-gen subtree is created by the
         # ExecStartPre below; etc-overlay-setup mounts it as the
         # role lowerdir in the three-layer /etc overlay.
+        #
+        # `--root` and the ExecStartPre target the initrd's own
+        # /run/etc/... (not /sysroot/run/etc/...) so the per-gen
+        # subtree is rooted under the /run tmpfs that
+        # systemd-initrd's switch_root moves to /sysroot/run — i.e.
+        # so the per-gen path remains reachable post-pivot as
+        # /run/etc/ignition-<gen>/ rather than getting shadowed by
+        # the moved /run mount.
         serviceConfig =
           stageServiceConfig {
             stage = "files";
-            root = "/sysroot/run/etc/ignition-\${AOS_PROFILE_GEN}";
+            root = "/run/etc/ignition-\${AOS_PROFILE_GEN}";
           }
           // {
             EnvironmentFile = [
@@ -237,7 +246,7 @@ in {
             ];
             ExecStartPre =
               "${pkgs.coreutils}/bin/mkdir -p "
-              + "/sysroot/run/etc/ignition-\${AOS_PROFILE_GEN}/etc";
+              + "/run/etc/ignition-\${AOS_PROFILE_GEN}/etc";
           };
       };
 
@@ -356,9 +365,17 @@ in {
           # resolves through that.
           toplevel=$(readlink /sysroot/var/lib/profiles/system/current/toplevel)
           gen=$AOS_PROFILE_GEN
-          sys=/sysroot/run/etc/system-$gen
-          ign=/sysroot/run/etc/ignition-$gen
-          upper_root=/sysroot/run/etc/upper-$gen
+          # Per-gen mountpoints live under the initrd's own /run/etc
+          # (the tmpfs that run-etc-setup.service mounted before
+          # this unit runs). systemd-initrd does `mount --move /run
+          # /sysroot/run` during switch_root, which carries the
+          # /run/etc sub-mounts into stage-2 unchanged. Placing them
+          # on /sysroot/run/etc instead would make /run/etc a sibling
+          # of the moved /run rather than a child of it, so the
+          # moved /run would shadow the whole subtree post-pivot.
+          sys=/run/etc/system-$gen
+          ign=/run/etc/ignition-$gen
+          upper_root=/run/etc/upper-$gen
 
           mkdir -p "$sys/metadata" "$sys/content" \
                    "$upper_root/upper" "$upper_root/work"
@@ -384,15 +401,20 @@ in {
           ${pkgs.util-linux}/bin/mount -t erofs -o ro,nodev,nosuid \
             "/sysroot$metadata" "$sys/metadata"
 
+          # /sysroot/var/etc keeps its /sysroot prefix because /var is
+          # mounted on /sysroot/var in stage-1; the overlay records
+          # vfsmount refs at mount time, so the literal source string
+          # in the option line never gets re-resolved post-pivot.
           ${pkgs.util-linux}/bin/mount -t overlay overlay -o \
             nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$ign/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/upper,workdir=$upper_root/work \
             /sysroot/etc
 
           # Inspection symlinks (relative targets so they survive
-          # switch_root from /sysroot/run/etc/... to /run/etc/...).
-          ln -sfn system-$gen   /sysroot/run/etc/system
-          ln -sfn ignition-$gen /sysroot/run/etc/ignition
-          ln -sfn upper-$gen    /sysroot/run/etc/upper
+          # switch_root). Created under the initrd's /run/etc so they
+          # move into stage-2 along with the rest of /run.
+          ln -sfn system-$gen   /run/etc/system
+          ln -sfn ignition-$gen /run/etc/ignition
+          ln -sfn upper-$gen    /run/etc/upper
         '';
       };
 
@@ -533,31 +555,42 @@ in {
         '';
       };
 
-      # Mount a tmpfs on /sysroot/run/etc once, before anything else
-      # writes under it. ignition-files writes its per-gen
-      # /sysroot/run/etc/ignition-<gen>/ subtree here, and
-      # etc-overlay-setup later creates the system/upper mountpoints
-      # alongside. Spec v12 §6.1.2.
+      # Mount a tmpfs on /run/etc once, before anything else writes
+      # under it. ignition-files writes its per-gen
+      # /run/etc/ignition-<gen>/ subtree here, and etc-overlay-setup
+      # later creates the system/upper mountpoints alongside.
+      #
+      # Why the initrd's /run rather than /sysroot/run:
+      # systemd-initrd-switch-root does `mount --move /run
+      # /sysroot/run` (then pivots) when handing off to stage-2. The
+      # move carries the initrd's /run mount and any sub-mounts of
+      # it; a separate mount on /sysroot/run/etc would be parented
+      # to the sysroot fs, end up as a sibling of the moved /run
+      # mount post-pivot, and be shadowed (path traversal goes
+      # through the moved /run's empty /etc directory). Mounting
+      # /run/etc here makes it a true child of the initrd's /run,
+      # so the move carries it and its sub-mounts (the system EROFS,
+      # the content bind, the per-gen ignition lower, the tmpfs
+      # upper) into stage-2 still reachable at /run/etc/... by path.
       "run-etc-setup" = {
-        description = "Mount /sysroot/run/etc tmpfs";
+        description = "Mount /run/etc tmpfs";
         wantedBy = ["initrd-fs.target"];
         before = [
           "ignition-files.service"
           "etc-overlay-setup.service"
           "initrd-fs.target"
         ];
-        requires = ["sysroot.mount"];
-        after = ["sysroot.mount"];
         unitConfig = {
           DefaultDependencies = "no";
-          ConditionPathIsMountPoint = "!/sysroot/run/etc";
+          ConditionPathIsMountPoint = "!/run/etc";
         };
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
+          ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /run/etc";
           ExecStart =
             "${pkgs.util-linux}/bin/mount -t tmpfs -o nosuid,nodev,mode=755 "
-            + "tmpfs /sysroot/run/etc";
+            + "tmpfs /run/etc";
         };
       };
 
