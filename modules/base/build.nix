@@ -610,11 +610,6 @@ in {
         export PATH="${config.system.build.systemPath}"
         export PAGER=less
 
-        if [ -z "$HOME" ] && [ -f /etc/passwd ]; then
-          HOME=$(${pkgs.gawk}/bin/awk -F: -v u="$(${pkgs.coreutils}/bin/id -un)" '$1==u{print $6}' /etc/passwd)
-          export HOME
-        fi
-
         if [ -f /etc/profile.local ]; then
           . /etc/profile.local
         fi
@@ -629,6 +624,19 @@ in {
       text = ''
         if [ -z "$__ETC_PROFILE_DONE" ]; then
           . /etc/profile
+        fi
+
+        if [ -n "$PS1" ]; then
+          if [ "$TERM" != "dumb" ]; then
+            PROMPT_COLOR="1;31m"
+            ((UID)) && PROMPT_COLOR="1;32m"
+            PS1="\n\[\033[$PROMPT_COLOR\][\[\e]0;\u@\h: \w\a\]\u@\h:\w]\\$\[\033[0m\] "
+            if [ "$TERM" = "xterm" ]; then
+              PS1="\[\033]2;\h:\u:\w\007\]$PS1"
+            fi
+          fi
+
+          alias ls='ls -NFh --group-directories-first --color=auto'
         fi
       '';
     };
