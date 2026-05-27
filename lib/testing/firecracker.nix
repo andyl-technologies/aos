@@ -109,12 +109,28 @@
         echo 'TEST_RESULT:FAIL'
       fi
 
-      # Allow serial UART to drain before hard reboot
-      sleep 0.2
-
-      # Trigger clean Firecracker exit via SysRq reboot
-      # (poweroff hangs Firecracker; reboot -f needs util-linux/systemd)
-      echo b > /proc/sysrq-trigger
+      # Shut down via reboot(2) instead of SysRq 'b'. The previous
+      # `echo b > /proc/sysrq-trigger` is `emergency_restart()` — an
+      # immediate hard reset that skips every device .shutdown callback,
+      # including the 8250 UART's tx-FIFO drain. The trailing
+      # TEST_RESULT:PASS|FAIL line lives in that FIFO between the guest
+      # kernel and Firecracker's emulated UART; under heavy host CPU
+      # contention Firecracker's vmm thread may not be scheduled in the
+      # 200 ms grace before the reset, so the marker is lost and the
+      # host's post-mortem `grep TEST_RESULT:` lands in the "No test
+      # result marker found" branch — a flake that scales with host load.
+      #
+      # `reboot -f` (util-linux is in allDeps and already symlinked into
+      # /sbin) issues reboot(2) with LINUX_REBOOT_CMD_RESTART. The
+      # kernel runs the orderly restart path which drains tty/UART
+      # buffers as part of device_shutdown(); Firecracker still exits
+      # cleanly on the resulting KVM_EXIT_SYSTEM_EVENT. The pre-sync
+      # belts-and-braces filesystem buffers (not strictly needed for
+      # the marker, but free); the half-second sleep gives Firecracker
+      # extra slack on top of what reboot(2) provides.
+      sync
+      sleep 0.5
+      reboot -f
     '';
   in
     pkgs.mkDerivation {
