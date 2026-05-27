@@ -4,18 +4,22 @@
 ##! `aos serve` on :15000 (serving NARs as a binary cache) on the
 ##! host that selects this role at first boot.
 ##!
-##! The role's runtime side effects (firewall ports 9418 + 15000,
-##! /etc/aos/serve.toml on disk, `pkgs.git` in systemPackages) gate
-##! on `cfg.enable`. The role's ignition JSON — the systemd unit
-##! definitions and the preset entries — is baked into the image
-##! regardless, so any host can activate the role at first boot via
-##! `ignition.config.merge` (or via the fleet harness's
-##! `roles = ["aos-registry-server"]` shorthand, which does the same
-##! thing).
+##! The role's typed definition (firewall ports 9418 + 15000, the
+##! `aos-registry-server-{gitd,cache}` units, `/etc/aos/serve.toml`)
+##! is set unconditionally inside `aos.roles.aos-registry-server`,
+##! while host-local side effects (`aos.users` entries, `pkgs.git` in
+##! `systemPackages`, etc.) gate on `cfg.bundle`. The role's ignition
+##! JSON is bundled into the image only on hosts where
+##! `bundle = true`; on those hosts it lands at
+##! `/etc/aos/ignition-roles/aos-registry-server` and can be activated
+##! by an `ignition.config.merge` entry — either from cloud-init
+##! userdata in production, or via the fleet harness's
+##! `roles = ["aos-registry-server"]` shorthand, which synthesises
+##! the same merge entry.
 ##!
 ##! Mirrors `modules/roles/test-http-server.nix`'s shape; see that
 ##! file for the rationale on splitting unit-definition from
-##! side-effects.
+##! host-local side effects.
 {
   config,
   lib,
@@ -173,7 +177,7 @@ in {
       };
     }
 
-    (lib.mkIf cfg.enable {
+    (lib.mkIf cfg.bundle {
       # Static account for the gitd unit. Stable UID so on-disk ownership
       # is meaningful across boots — needed because operators (and the
       # fleet test) seed bare repos under the daemon's StateDirectory by
