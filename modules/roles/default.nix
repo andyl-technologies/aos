@@ -7,13 +7,28 @@
 ##! `lib.formats.ignition.generate`.
 ##!
 ##! Role files in this directory are auto-loaded by
-##! `modules/default.nix`'s loader; the role module declares the
-##! `aos.roles.<name>` value, and any side-effects it wants on a
-##! locally-activated host go inside `lib.mkIf cfg.enable {…}`. Roles
-##! whose `enable` flag is false still produce their `ignitionConfig`
-##! and `ignitionConfigDrv`, so the image builder can ship JSON for
-##! every defined role to every host (runtime-selectable by
-##! `aos-bootstrap`).
+##! `modules/default.nix`'s loader; each role module declares the
+##! `aos.roles.<name>` value (typed systemd/kernel/firewall inputs +
+##! `ignitionExtras`) unconditionally, and any host-local payload
+##! (`environment.systemPackages`, `system.checks`, `aos.services.*`)
+##! goes inside `lib.mkIf cfg.bundle {…}`.
+##!
+##! `bundle` is the single per-host inclusion flag. When true, the
+##! role is **bundled into the image**: its `ignitionConfigDrv` is
+##! materialised, its entry lands in `system.build.ignitionRolesBundle`
+##! at `/etc/aos/ignition-roles/<name>`, the role's unit-file closure
+##! is pulled into the image, and the host-local payload is baked in.
+##! When false, none of that is bundled — the role's module is still
+##! loaded (so eval-time assertions and the fleet-spec enum can
+##! introspect it) but the role is not available on this host.
+##!
+##! Bundling a role makes it **available** to activate at runtime; it
+##! does not activate it. Activation happens only when the role's
+##! ignition fragment is merged into the host's ignition config at
+##! first boot, via `ignition.config.merge` in the instance metadata
+##! (cloud-init userdata, IPMI virtual media, or — in fleet tests —
+##! the per-machine `roles = [...]` shorthand in
+##! `lib/testing/fleet.nix`, which synthesises the same merge entry).
 {
   config,
   lib,
@@ -125,20 +140,28 @@
     ...
   }: {
     options = {
-      enable = lib.mkOption {
+      bundle = lib.mkOption {
         type = lib.types.bool;
         default = false;
         description = ''
-          Whether this role's runtime side effects (its
-          `environment.systemPackages` contributions, its
-          `system.checks` registrations, any `aos.services.*` flips)
-          take effect on this host. Profiles activate roles by
-          flipping this to `true`. The role's `ignitionConfig` and
-          `ignitionConfigDrv` are computed regardless — the image
-          builder ships them to every host that imports the role
-          file, since `aos-bootstrap` may select a role at runtime
-          based on userdata even on hosts that don't activate it
-          locally.
+          Whether this role is bundled into the image. When true, its
+          ignition fragment is materialised at
+          `/etc/aos/ignition-roles/<name>` (via
+          `system.build.ignitionRolesBundle`), the unit-file closure
+          is pulled into the image, and any host-local payload —
+          `environment.systemPackages` contributions, `system.checks`
+          registrations, `aos.services.*` flips — is baked in. When
+          false, the role's module is loaded but nothing is bundled
+          and the role cannot be activated on this host.
+
+          Bundling makes the role **available** to activate at
+          runtime; it does not activate it. Activation happens only
+          when the role's ignition fragment is merged into the host's
+          ignition config at first boot, via `ignition.config.merge`
+          in the instance metadata (cloud-init userdata, IPMI virtual
+          media, or — in fleet tests — the per-machine
+          `roles = [...]` shorthand in `lib/testing/fleet.nix`, which
+          synthesises the same merge entry).
         '';
       };
 
@@ -185,9 +208,11 @@
       # ignition config is merged into the host's. Mirrors
       # `aos.kernel.{modules,sysctl}` from modules/base/kernel.nix —
       # same option names and types. Set unconditionally by role
-      # files (NOT inside `lib.mkIf cfg.enable`), exactly like
-      # `systemd` above, since `ignitionConfig` is computed regardless
-      # of `enable`.
+      # files (NOT inside `lib.mkIf cfg.bundle`), exactly like
+      # `systemd` above. `ignitionConfig` is computed for every
+      # defined role so the fleet-spec enum and per-role assertions
+      # can introspect it; only the bundle inclusion (and thus the
+      # closure) is gated on `bundle`.
       kernel = {
         modules = lib.mkOption {
           type = lib.types.listOf lib.types.str;
@@ -465,54 +490,71 @@ in {
       (lib.mapAttrsToList roleAssertions config.aos.roles);
 
     # Bundle: a single derivation whose `$out` is a flat directory of
-    # `<role-name>` symlinks pointing at each role's pre-validated JSON.
-    # Stable filename per role (the role's name) → operator-visible URL
-    # `file:///etc/aos/ignition-roles/<role-name>` is rebuild-stable
-    # even though the bundle drv's hash isn't.
+    # `<role-name>` symlinks pointing at each bundled role's
+    # pre-validated JSON. Stable filename per role (the role's name) →
+    # operator-visible URL `file:///etc/aos/ignition-roles/<role-name>`
+    # is rebuild-stable even though the bundle drv's hash isn't.
     #
-    # Empty-roles edge case: `lib.mapAttrsToList` over an empty attrset
-    # produces `[]`, the `for`-equivalent loop emits no `ln` lines, and
-    # the resulting derivation is an empty directory. That is correct:
-    # a host with no roles defined still gets a working symlink target,
+    # Only roles with `bundle = true` are included: both the
+    # `ln -sfn` loop and the `driftCheck` buildDeps list iterate over
+    # the filtered set. Unbundled roles pay no closure cost — their
+    # `ignitionConfigDrv` is never realised, and `renderRole`'s
+    # unit-file derivations (which would drag in `ExecStart=` store
+    # paths via Nix's text-reference scan) never enter the bundle's
+    # closure.
+    #
+    # Empty-roles edge case: `lib.mapAttrsToList` over an empty
+    # attrset produces `[]`, the `for`-equivalent loop emits no `ln`
+    # lines, and the resulting derivation is an empty directory. Same
+    # behaviour when nothing in `aos.roles.*` has `bundle = true` — a
+    # host that bundles no roles still gets a working symlink target,
     # just one with nothing inside.
     #
     # Closure tracking note: Nix scans the bundle drv's `$out` for
     # `/nix/store/...` substrings to compute its references. The
     # symlinks we lay down contain those store paths as their target
-    # text, so each role's `ignitionConfigDrv` is pulled into the
-    # bundle's closure transparently. The initrd-builder's
-    # `exportReferencesGraph` addition then drags the whole closure into
-    # the initrd's `/nix/store`. If this derivation ever changes from
-    # "directory of symlinks" to something that doesn't embed target
-    # paths as text (e.g. a tar archive), the closure-tracking has to
-    # be re-established explicitly via `runtimeDeps` or similar.
-    system.build.ignitionRolesBundle = pkgs.mkDerivation {
-      pname = "aos-ignition-roles-bundle";
-      version = "0";
-      src = null;
-      # Every role's `driftCheck` derivation is pulled in as a
-      # build-time dep so the bundle (and thus the toplevel and the
-      # initrd that ship it) refuse to build if predicted
-      # storage.links don't match what `generateUnits` actually lays
-      # down. See spec v12 §5.6.2.
-      buildDeps =
-        [pkgs.coreutils]
-        ++ lib.mapAttrsToList (_: role: role.driftCheck) config.aos.roles;
-      phases = [
-        {
-          name = "assemble";
-          script = ''
-            mkdir -p "$out"
-            ${lib.concatStringsSep "\n" (
-              lib.mapAttrsToList (
-                name: role: "ln -sfn ${role.ignitionConfigDrv}/${name} \"$out/${name}\""
-              )
-              config.aos.roles
-            )}
-          '';
-        }
-      ];
-    };
+    # text, so each bundled role's `ignitionConfigDrv` is pulled into
+    # the bundle's closure transparently. The initrd-builder's
+    # `exportReferencesGraph` addition then drags the whole closure
+    # into the initrd's `/nix/store`. If this derivation ever changes
+    # from "directory of symlinks" to something that doesn't embed
+    # target paths as text (e.g. a tar archive), the closure-tracking
+    # has to be re-established explicitly via `runtimeDeps` or similar.
+    system.build.ignitionRolesBundle = let
+      bundledRoles =
+        lib.filterAttrs (_: role: role.bundle) config.aos.roles;
+    in
+      pkgs.mkDerivation {
+        pname = "aos-ignition-roles-bundle";
+        version = "0";
+        src = null;
+        # Every bundled role's `driftCheck` derivation is pulled in
+        # as a build-time dep so the bundle (and thus the toplevel
+        # and the initrd that ship it) refuse to build if predicted
+        # storage.links don't match what `generateUnits` actually
+        # lays down. See spec v12 §5.6.2. Unbundled roles skip drift
+        # checking — the check would force their unit-file closure,
+        # defeating the closure-size win of `bundle = false`. Drift
+        # in an unbundled role surfaces the first time someone flips
+        # `bundle = true` on it.
+        buildDeps =
+          [pkgs.coreutils]
+          ++ lib.mapAttrsToList (_: role: role.driftCheck) bundledRoles;
+        phases = [
+          {
+            name = "assemble";
+            script = ''
+              mkdir -p "$out"
+              ${lib.concatStringsSep "\n" (
+                lib.mapAttrsToList (
+                  name: role: "ln -sfn ${role.ignitionConfigDrv}/${name} \"$out/${name}\""
+                )
+                bundledRoles
+              )}
+            '';
+          }
+        ];
+      };
 
     # Stage-2 mirror at /etc/aos/ignition-roles → bundle. Same /nix/store
     # path is reachable from both initrd and stage-2; this `environment.etc`

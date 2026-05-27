@@ -2,11 +2,16 @@
 ##! python http.server serving / over HTTP on :8000, applied via
 ##! ignition first-boot.
 ##!
-##! The role's typed definition is unconditional — the image builder
-##! may want to materialise its `ignitionConfigDrv` even on hosts
-##! that don't locally activate it. Side effects (systemPackages,
-##! the integration check) live behind `lib.mkIf cfg.enable`, so the
-##! file is inert on hosts whose profile didn't activate the role.
+##! The role's typed definition is set unconditionally (`aos.roles.
+##! test-http-server = { … }`) so per-role assertions and the
+##! fleet-spec enum can introspect it on every host. Side effects
+##! (`environment.systemPackages`, the integration check) live behind
+##! `lib.mkIf cfg.bundle`, and the role's ignition fragment lands in
+##! `/etc/aos/ignition-roles/test-http-server` only on hosts that set
+##! `bundle = true`. Activation is still a separate runtime decision —
+##! the fragment takes effect only when an ignition merge points at
+##! it (e.g. the fleet harness's `roles = ["test-http-server"]`
+##! shorthand, or cloud-init userdata in production).
 {
   config,
   lib,
@@ -53,7 +58,7 @@ in {
       };
     }
 
-    (lib.mkIf cfg.enable {
+    (lib.mkIf cfg.bundle {
       # The unit's ExecStart references ${pkgs.python3} (an absolute
       # store path). Ignition can write the unit but can't pull store
       # paths out of nowhere — the closure must already contain them.

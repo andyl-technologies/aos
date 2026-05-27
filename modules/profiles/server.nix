@@ -56,10 +56,10 @@ in {
       pkgs.jq
     ];
 
-    aos.roles.aos-registry-server.enable = true;
-    aos.roles.k3s-control-plane.enable = true;
-    aos.roles.k3s-worker.enable = true;
-    aos.roles.k3s-combined.enable = true;
-    aos.roles.test-http-server.enable = true;
+    aos.roles.aos-registry-server.bundle = true;
+    aos.roles.k3s-control-plane.bundle = true;
+    aos.roles.k3s-worker.bundle = true;
+    aos.roles.k3s-combined.bundle = true;
+    aos.roles.test-http-server.bundle = true;
   };
 }

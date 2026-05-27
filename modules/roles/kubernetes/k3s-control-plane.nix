@@ -21,8 +21,9 @@ in {
     {
       aos.roles.k3s-control-plane = {
         # Kernel + firewall config — set unconditionally so they ride
-        # the role's ignitionConfig and take effect at runtime only
-        # when this role's ignition config is merged into the host's.
+        # the role's ignitionConfig (bundled on hosts where
+        # `bundle = true`) and take effect at runtime only when the
+        # fragment is merged into the host's ignition config.
         kernel.modules = common.kernelModules;
         kernel.sysctl = common.sysctls;
 
@@ -85,7 +86,7 @@ in {
       };
     }
 
-    (lib.mkIf cfg.enable {
+    (lib.mkIf cfg.bundle {
       # All the binaries the unit references plus aos-friendly
       # operator tools.
       environment.systemPackages = common.runtimePath;
