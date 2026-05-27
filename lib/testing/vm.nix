@@ -56,32 +56,22 @@
   #              queued for 90 s on every boot waiting for udev to
   #              announce a partition that doesn't exist.
   #   4  var   — 32 MiB ext4. Carries the /var/etc allowlist plus
-  #              test-specific overrides (host SSH key, hostname,
-  #              SELinux off, test units). Label `var` via GPT
-  #              partlabel so mount-var.service finds it.
+  #              test-specific overrides (host SSH key, SELinux off,
+  #              test units). Label `var` via GPT partlabel so
+  #              mount-var.service finds it.
   #
   # Spec v12 §5.4 names /var/etc as the tight host-persistent
   # allowlist (machine-id, ssh host keys). For test infrastructure we
   # widen that scope: the test units (aos-test.target,
-  # aos-test-agent.service) and the per-test fallbacks (hostname,
-  # nsswitch.conf, etc.) also live there. This is a deliberate
-  # test-only deviation; production roles must use the
-  # `environment.etc` route through the EROFS image.
+  # aos-test-agent.service) and the per-test fallbacks (nsswitch.conf,
+  # etc.) also live there. This is a deliberate test-only deviation;
+  # production roles must use the `environment.etc` route through the
+  # EROFS image.
   #
   # `mkTestDisk` is a function of `system` only — two callers passing
   # the same system reference the same Nix derivation, which is what
   # lets fleet tests share one disk across every machine of a given
   # variant.
-  #
-  # Per-instance state (hostname, /etc/hosts, eth0 .network) is no
-  # longer baked in here; the harnesses deliver it through ignition
-  # via the metadata ISO. The default `var/etc/hostname` written here
-  # is `aos-test` — at runtime, ignition's `/etc/hostname` write
-  # lands on the per-gen ignition lower at `/run/etc/ignition-<gen>/
-  # etc/hostname`, which the new overlay layer order
-  # (`/var/etc > ignition lower > system EROFS`) keeps from shadowing
-  # the var-baked value. Tests that want ignition's hostname to take
-  # effect should skip the baked default.
   mkTestDisk = {
     system,
     name ? "aos-disk",
@@ -347,14 +337,6 @@
       SELINUX=disabled
       SELINUXTYPE=targeted
       SELINUXCFG
-
-      # Default hostname for tests that don't deliver an identity
-      # fragment through ignition. The new layer order
-      # (`/var/etc > ignition lower > system EROFS`) means this
-      # value wins over both the system default and the per-gen
-      # ignition write — tests wanting ignition's hostname must
-      # skip this default.
-      echo "aos-test" > var/etc/hostname
 
       # Empty fstab — systemd-fstab-generator synthesises
       # sysroot.mount from `root=` on the cmdline; mount-var.service
