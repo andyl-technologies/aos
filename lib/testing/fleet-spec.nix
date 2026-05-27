@@ -8,9 +8,13 @@
 # the harness.
 #
 # `fleetMachineType.options.roles`'s `enum` is derived from this
-# machine's chosen `system.config.aos.roles`. The type is forced
-# lazily — only when a `roles` value is type-checked, by which time
-# `config.system` has been merged from the user's definition.
+# machine's chosen `system.config.aos.roles`, filtered to roles where
+# `bundle = true` on that system — only bundled roles are listable,
+# since a role not bundled on the host has no ignition fragment at
+# `/etc/aos/ignition-roles/<name>` for the synthesised merge entry to
+# point at. The type is forced lazily — only when a `roles` value is
+# type-checked, by which time `config.system` has been merged from the
+# user's definition.
 {
   lib,
   pkgs,
@@ -48,23 +52,31 @@
       };
 
       roles = mkOption {
-        # Type-level enum derived from this machine's chosen system.
-        # `availableRoles` is forced lazily — only when a `roles` value
-        # is type-checked, by which time `config.system` has been
-        # merged from the user's definition.
+        # Type-level enum derived from this machine's chosen system,
+        # restricted to roles where `bundle = true` — only bundled
+        # roles have a fragment at `/etc/aos/ignition-roles/<name>` on
+        # the running host for the synthesised
+        # `ignition.config.merge` entry to resolve. `availableRoles`
+        # is forced lazily — only when a `roles` value is type-checked,
+        # by which time `config.system` has been merged from the
+        # user's definition.
         type = let
-          availableRoles =
-            builtins.attrNames (config.system.config.aos.roles or {});
+          availableRoles = builtins.attrNames (
+            lib.filterAttrs
+            (_: role: role.bundle)
+            (config.system.config.aos.roles or {})
+          );
         in
           types.listOf (types.enum availableRoles);
         default = [];
         description = ''
-          Names of `aos.roles.<name>` to activate on this machine. Each
-          name is converted into a
+          Names of `aos.roles.<name>` to activate at runtime on this
+          machine. Each name is converted into a
           `{ source = "file:///etc/aos/ignition-roles/<name>"; }`
-          entry on the machine's `ignition.config.merge` list. Roles
-          are pre-baked into the image — no on-the-fly system
-          re-evaluation.
+          entry on the machine's `ignition.config.merge` list. The
+          listed roles must have `bundle = true` on the chosen system
+          — otherwise the fragment is not on disk and the merge would
+          fail at first boot.
         '';
       };
 
