@@ -48,6 +48,14 @@
         '';
       }
       {
+        name = "metadata-iso-survives-switch-root";
+        description = "aos-platform-detect's /run/aos-metadata mount survives switch-root into stage-2";
+        script = ''
+          vm.succeed("findmnt -t iso9660 /run/aos-metadata")
+          vm.succeed("test -f /run/aos-metadata/config.json")
+        '';
+      }
+      {
         name = "machine-id-seeded";
         description = "aos-machine-id.service seeded /var/etc/machine-id (spec v12 §6.1.5)";
         script = ''
