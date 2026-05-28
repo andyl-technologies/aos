@@ -65,9 +65,9 @@ in
         # anything in toplevel pulled diff in.
         export PR_PROGRAM="${coreutils}/bin/pr"
         CC="${gcc}/bin/gcc" \
-        CFLAGS="-O2 -isystem ${glibc}/include" \
-        CPPFLAGS="-isystem ${glibc}/include" \
-        LDFLAGS="-L${glibc}/lib -static -no-pie" \
+        CFLAGS="-O2 -isystem ${glibc.dev}/include" \
+        CPPFLAGS="-isystem ${glibc.dev}/include" \
+        LDFLAGS="-L${glibc.static}/lib -L${glibc}/lib -static -no-pie" \
         "$TMPDIR/diffutils-3.10/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \

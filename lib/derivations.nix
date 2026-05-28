@@ -369,6 +369,24 @@
     #!${shell}
     set -euo pipefail
 
+    # Restore env-var attrs when running with __structuredAttrs = true.
+    # Idempotent: when NIX_ATTRS_SH_FILE isn't set (the default), this
+    # is a no-op.
+    #
+    # Under __structuredAttrs Nix exposes `outputs` as a bash associative
+    # array (declare -A outputs=([out]=/nix/store/… [dev]=/nix/store/…))
+    # but does NOT set each output name as a scalar. Re-declare them so
+    # phase scripts that reference $out / $dev / etc. keep working.
+    if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then
+      . "$NIX_ATTRS_SH_FILE"
+      if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then
+        for __o in "''${!outputs[@]}"; do
+          declare -g "$__o=''${outputs[$__o]}"
+        done
+        unset __o
+      fi
+    fi
+
     # Source the stdenv setup if available
     if [ -n "''${stdenv:-}" ] && [ -f "$stdenv/setup.sh" ]; then
       source "$stdenv/setup.sh"
@@ -509,8 +527,15 @@
     allowedReferences ? null,
     disallowedRequisites ? [],
     disallowedReferences ? [],
+    # Per-output reference checks. When set, the derivation runs with
+    # __structuredAttrs = true so Nix honors outputChecks.<out>.disallowed*
+    # / allowed* on a per-output basis. Example:
+    #   outputChecks = { out = { disallowedReferences = [ gcc ]; }; };
+    # When null (default), behaves identically to historical mkDerivation.
+    outputChecks ? null,
     ...
   }: let
+    useStructuredAttrs = outputChecks != null;
     # Accept either `name` (direct) or `pname` (computed as pname-version).
     name =
       args.name
@@ -612,6 +637,7 @@
       "allowedReferences"
       "disallowedRequisites"
       "disallowedReferences"
+      "outputChecks"
     ];
 
     # ── Chaining constraint validation ────────────────────────────────
@@ -729,22 +755,37 @@
             # Prefer store dir parameter
             NIX_STORE_DIR = storeDir;
 
-            # Reference-control blacklists. Empty list = no constraint, so
-            # unconditional inclusion is safe. See the arg docstring above.
-            inherit disallowedRequisites disallowedReferences;
           }
+          # Reference-control blacklists. Empty list = no constraint, so
+          # unconditional inclusion is safe. Under __structuredAttrs the
+          # top-level disallowed* attrs are inert and trigger a Nix
+          # warning; per-output equivalents live in `outputChecks`.
+          // (
+            if !useStructuredAttrs
+            then {inherit disallowedRequisites disallowedReferences;}
+            else {}
+          )
           # Reference-control whitelists. `null` = unconstrained; we only
           # forward them to builtins.derivation when actually set, so the
           # default path is a no-op (preserves historical behavior for any
           # unaudited derivation).
           // (
-            if allowedRequisites != null
+            if allowedRequisites != null && !useStructuredAttrs
             then {inherit allowedRequisites;}
             else {}
           )
           // (
-            if allowedReferences != null
+            if allowedReferences != null && !useStructuredAttrs
             then {inherit allowedReferences;}
+            else {}
+          )
+          # Per-output reference checks require __structuredAttrs = true.
+          // (
+            if useStructuredAttrs
+            then {
+              __structuredAttrs = true;
+              inherit outputChecks;
+            }
             else {}
           )
           // extraArgs

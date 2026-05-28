@@ -374,6 +374,13 @@
       gcc = stdenv.gcc;
       glibc = stdenv.glibc;
       binutils = stdenv.binutils;
+      cc = stdenv.cc;
+      # The unwrapped gcc-14.3.0-stage2. `pkgs.gcc` is the wrapped
+      # gcc-14.3.0-wrapped; the perl Config scrub needs to substitute
+      # and block the unwrapped one, since that's what Configure
+      # records via specs/PATH.
+      gccUnwrapped = stdenv.gccStage2;
+      getent = lib.getOutput "getent" stdenv.glibc;
       bash = stdenv.bash;
       coreutils = stdenv.coreutils;
       gnumake = stdenv.gnumake;
