@@ -58,10 +58,11 @@
         # it (include_next searches dirs AFTER the one the current header
         # was found in). Result: C++ builds fail with "stdlib.h: No such
         # file". See gcc-stage2.nix + patchelf.nix for the same hazard.
-        extra_cflags="$extra_cflags -idirafter ${libc}/include"
+        extra_cflags="$extra_cflags -idirafter ${libc.dev}/include"
 
         if [ "$linking" = true ]; then
           extra_ldflags="$extra_ldflags -L${libc}/lib"
+          extra_ldflags="$extra_ldflags -L${libc.static}/lib"
           extra_ldflags="$extra_ldflags -Wl,-rpath,${libc}/lib"
           extra_ldflags="$extra_ldflags -Wl,--dynamic-linker=${dynamicLinker}"
           extra_ldflags="$extra_ldflags -Wl,-rpath-link,${libc}/lib"
@@ -95,10 +96,11 @@
         done
 
         # See the gcc wrapper above for why -idirafter instead of -isystem.
-        extra_cflags="$extra_cflags -idirafter ${libc}/include"
+        extra_cflags="$extra_cflags -idirafter ${libc.dev}/include"
 
         if [ "$linking" = true ]; then
           extra_ldflags="$extra_ldflags -L${libc}/lib"
+          extra_ldflags="$extra_ldflags -L${libc.static}/lib"
           extra_ldflags="$extra_ldflags -Wl,-rpath,${libc}/lib"
           extra_ldflags="$extra_ldflags -Wl,--dynamic-linker=${dynamicLinker}"
           extra_ldflags="$extra_ldflags -Wl,-rpath-link,${libc}/lib"
@@ -149,10 +151,15 @@
                 # ── nix-support metadata ──────────────────────────────────────
                 ${echo} "${cc}"        > $out/nix-support/orig-cc
                 ${echo} "${libc}"      > $out/nix-support/orig-libc
+                # Multi-output glibc: $dev holds headers, $static holds .a archives.
+                # Consumers that need either (e.g. envoy bazel, llvm clang config)
+                # read these instead of computing them from $out's path.
+                ${echo} "${libc.dev}"    > $out/nix-support/orig-libc-dev
+                ${echo} "${libc.static}" > $out/nix-support/orig-libc-static
                 ${echo} "${binutils_}" > $out/nix-support/orig-binutils
                 ${echo} "${system}"    > $out/nix-support/system
-                ${echo} "-idirafter ${libc}/include" > $out/nix-support/cc-cflags
-                ${echo} "-L${libc}/lib -Wl,-rpath,${libc}/lib" > $out/nix-support/cc-ldflags
+                ${echo} "-idirafter ${libc.dev}/include" > $out/nix-support/cc-cflags
+                ${echo} "-L${libc}/lib -L${libc.static}/lib -Wl,-rpath,${libc}/lib" > $out/nix-support/cc-ldflags
                 ${echo} "${dynamicLinker}" > $out/nix-support/dynamic-linker
       ''
     ];

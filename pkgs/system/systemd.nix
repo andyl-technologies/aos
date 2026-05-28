@@ -18,6 +18,7 @@
   ninja,
   python3,
   gperf,
+  getent,
   libcap,
   libxcrypt,
   pcre2,
@@ -83,6 +84,7 @@ in
       ninja
       python3
       gperf
+      getent
     ];
     runtimeDeps = [
       util-linux
@@ -161,46 +163,6 @@ in
       {
         name = "configure";
         script = ''
-                  # Create getent shim — systemd's meson.build uses getent to look up
-                  # system users/groups (nobody, systemd-journal, etc.) during configure.
-                  # In the Nix sandbox there's no NSS, so we provide a shim that returns
-                  # the expected entries for standard system accounts.
-                  mkdir -p .shim-bin
-                  cat > .shim-bin/getent << 'GETENT'
-          #!/bin/sh
-          db="$1"; key="$2"
-          case "$db" in
-            passwd)
-              case "$key" in
-                root)              echo "root:x:0:0:root:/root:/bin/sh" ;;
-                nobody)            echo "nobody:x:65534:65534:Nobody:/:/sbin/nologin" ;;
-                systemd-journal)   echo "systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin" ;;
-                systemd-network)   echo "systemd-network:x:102:102:systemd Network:/:/sbin/nologin" ;;
-                systemd-resolve)   echo "systemd-resolve:x:103:103:systemd Resolver:/:/sbin/nologin" ;;
-                systemd-timesync)  echo "systemd-timesync:x:104:104:systemd Time Sync:/:/sbin/nologin" ;;
-                systemd-coredump)  echo "systemd-coredump:x:105:105:systemd Core Dumper:/:/sbin/nologin" ;;
-                systemd-oom)       echo "systemd-oom:x:106:106:systemd Userspace OOM Killer:/:/sbin/nologin" ;;
-                *)                 exit 2 ;;
-              esac ;;
-            group)
-              case "$key" in
-                root)              echo "root:x:0:" ;;
-                nobody)            echo "nobody:x:65534:" ;;
-                utmp)              echo "utmp:x:22:" ;;
-                systemd-journal)   echo "systemd-journal:x:101:" ;;
-                systemd-network)   echo "systemd-network:x:102:" ;;
-                systemd-resolve)   echo "systemd-resolve:x:193:" ;;
-                systemd-timesync)  echo "systemd-timesync:x:194:" ;;
-                systemd-coredump)  echo "systemd-coredump:x:105:" ;;
-                systemd-oom)       echo "systemd-oom:x:106:" ;;
-                *)                 exit 2 ;;
-              esac ;;
-            *)                     exit 2 ;;
-          esac
-          GETENT
-                  chmod +x .shim-bin/getent
-                  export PATH="$(pwd)/.shim-bin:$PATH"
-
                   # Ensure meson's Python module, pefile, and pyelftools
                   # are findable both at meson-configure time and when
                   # ninja later invokes patched python3 scripts (e.g.
