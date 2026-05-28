@@ -87,9 +87,12 @@ in
               # Create clang config file so the just-built clang finds AOS
               # GCC toolchain and libraries when building runtimes.
               # Read real GCC/glibc paths from ccWrapper's nix-support files.
+              # Headers live in glibc.dev (multi-output split); shared libs
+              # and crt*.o stay in glibc.out.
               BT="${bootstrapTools}"
               REAL_CC=$(cat "$BT/nix-support/orig-cc")
               REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
+              REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
               GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
               mkdir -p build/clang-cfg
               DL=$(echo "$REAL_LIBC"/lib/ld-linux-x86-64.so.*)
@@ -98,7 +101,7 @@ in
                 # Use -idirafter so glibc headers come AFTER GCC C++ headers
                 # (needed for #include_next <stdlib.h> in cstdlib to work)
                 echo "-idirafter"
-                echo "$REAL_LIBC/include"
+                echo "$REAL_LIBC_DEV/include"
                 echo "-B$REAL_LIBC/lib"
                 echo "-B$GCC_DIR"
                 echo "-L$REAL_LIBC/lib"

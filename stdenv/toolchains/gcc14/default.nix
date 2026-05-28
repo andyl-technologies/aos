@@ -40,7 +40,7 @@
       ;
 
     # GCC wrapper around stage-2: passes -B${glibc}/lib / -idirafter
-    # ${glibc}/include for cc-wrapper-symmetry and for callers that probe
+    # ${glibc.dev}/include for cc-wrapper-symmetry and for callers that probe
     # `gcc -v`. Stage-2's own specs file already has these baked in, so
     # these flags are belt-and-suspenders.
     gcc = builtins.derivation {
@@ -55,12 +55,12 @@
           mkdir -p $out/bin
 
           echo '#!/bin/sh' > $out/bin/gcc
-          echo 'exec ${gccStage2}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc}/include "$@"' >> $out/bin/gcc
+          echo 'exec ${gccStage2}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/gcc
           chmod +x $out/bin/gcc
 
           if [ -f "${gccStage2}/bin/g++" ]; then
             echo '#!/bin/sh' > $out/bin/g++
-            echo 'exec ${gccStage2}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc}/include "$@"' >> $out/bin/g++
+            echo 'exec ${gccStage2}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/g++
             chmod +x $out/bin/g++
           fi
 
@@ -126,6 +126,12 @@
     patch = callPackage ./patch.nix {};
   };
 in {
+  # Expose the unwrapped gcc-14.3.0-stage2 (the let-binding above the
+  # scope, since scope wraps it via the cc-wrapper). Needed by
+  # pkgs.gccUnwrapped so the perl Config scrub can target the unwrapped
+  # path that Configure records.
+  inherit gccStage2;
+
   inherit
     (scope)
     gcc

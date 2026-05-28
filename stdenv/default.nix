@@ -185,6 +185,7 @@
     inherit
       (tc)
       gcc
+      gccStage2
       glibc
       binutils
       bash
