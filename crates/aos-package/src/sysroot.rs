@@ -250,21 +250,41 @@ pub async fn install_system(
     // Step 8: Activation and kernel comparison.
     printer.step(8, 8, "Activating...");
 
-    // Run activation script if it exists.
+    // Run the toplevel's activate script with the generation number. It
+    // rebuilds this gen's /etc overlay, reconciles running daemons, and
+    // swaps /etc in atomically (daemon reconciliation now happens inside
+    // the activate script, not here). Its exit code is the authority on
+    // what happened (see modules/base/activate.sh.in):
+    //   0      switch succeeded, every unit healthy
+    //   5      switch succeeded; only stale-mount cleanup failed (cosmetic)
+    //   6      switch succeeded but some units failed — the upgrade is
+    //          applied and the gen stays live, but apm exits non-zero
+    //   1/2/3  failed before the swap; the previous gen is still live
+    //   4      swap incomplete; /etc indeterminate — operator must intervene
+    let mut activate_degraded = false;
     let activate_script = format!("{}/activate", toplevel_meta.store_path);
     if Path::new(&activate_script).exists() {
         let status = std::process::Command::new(&activate_script)
+            .arg(gen_num.to_string())
             .status()
             .with_context(|| format!("running {activate_script}"))?;
-        if !status.success() {
-            printer.warning("Activation script returned non-zero exit code.");
+        match status.code() {
+            Some(0) => {}
+            Some(5) => printer.warning(
+                "Activation succeeded, but cleanup of the previous \
+                 generation's mounts failed (stale /run/etc mounts).",
+            ),
+            Some(6) => activate_degraded = true,
+            Some(4) => anyhow::bail!(
+                "FATAL: the /etc swap is incomplete; the running system's \
+                 /etc may be in an indeterminate state. Manual intervention \
+                 is required (gen-{gen_num})."
+            ),
+            other => anyhow::bail!(
+                "Activation failed before the /etc swap (exit {other:?}); the \
+                 previous generation is still live."
+            ),
         }
-    }
-
-    // Diff services if both old and new toplevels have etc/systemd.
-    if let Some(ref old) = old_gen {
-        let diff = diff_services(&old.toplevel, &toplevel_meta.store_path);
-        run_service_diff(&diff, printer).await?;
     }
 
     // Handle kernel upgrade according to the chosen mode.
@@ -293,6 +313,14 @@ pub async fn install_system(
         }
         _ => "",
     };
+
+    if activate_degraded {
+        anyhow::bail!(
+            "System generation {gen_num} is live, but one or more units failed \
+             to (re)start (see the reconcile report above). The upgrade was \
+             applied; the failing units need attention."
+        );
+    }
 
     printer.success(&format!(
         "System generation {gen_num} active: {} {}{}",
@@ -458,20 +486,36 @@ pub async fn rollback_system(
     std::os::unix::fs::symlink(format!("gen-{}", target.number), &tmp_link)?;
     std::fs::rename(&tmp_link, &current_link)?;
 
-    // Run activation on the target toplevel.
+    // Run the target generation's activate script with its gen number.
+    // It rebuilds the target gen's /etc overlay, reconciles daemons, and
+    // swaps /etc in atomically. Exit-code contract matches install (see
+    // modules/base/activate.sh.in).
+    let mut activate_degraded = false;
     let activate_script = format!("{}/activate", target.toplevel);
     if Path::new(&activate_script).exists() {
         let status = std::process::Command::new(&activate_script)
+            .arg(target.number.to_string())
             .status()
             .with_context(|| format!("running {activate_script}"))?;
-        if !status.success() {
-            printer.warning("Activation script returned non-zero exit code.");
+        match status.code() {
+            Some(0) => {}
+            Some(5) => printer.warning(
+                "Rollback activation succeeded, but cleanup of the previous \
+                 generation's mounts failed (stale /run/etc mounts).",
+            ),
+            Some(6) => activate_degraded = true,
+            Some(4) => anyhow::bail!(
+                "FATAL: the /etc swap is incomplete; the running system's \
+                 /etc may be in an indeterminate state. Manual intervention \
+                 is required (gen-{})." ,
+                target.number
+            ),
+            other => anyhow::bail!(
+                "Rollback activation failed before the /etc swap (exit \
+                 {other:?}); the previous generation is still live."
+            ),
         }
     }
-
-    // Diff services.
-    let diff = diff_services(&current.toplevel, &target.toplevel);
-    run_service_diff(&diff, printer).await?;
 
     // Handle kernel upgrade according to the chosen mode.
     handle_kernel_upgrade(
@@ -483,6 +527,18 @@ pub async fn rollback_system(
         printer,
     )
     .await?;
+
+    if activate_degraded {
+        anyhow::bail!(
+            "Rolled back to system generation {} ({} {}), which is now live, \
+             but one or more units failed to (re)start (see the reconcile \
+             report above). The rollback was applied; the failing units need \
+             attention.",
+            target.number,
+            target.package_name,
+            target.version,
+        );
+    }
 
     printer.success(&format!(
         "Rolled back to system generation {} ({} {}).",
@@ -743,9 +799,17 @@ fn current_sysroot_store_path() -> Result<Option<String>> {
 
 // ---------------------------------------------------------------------------
 // Service diffing
+//
+// DEAD as of the activate-script refactor: install/upgrade/rollback no longer
+// diff `${toplevel}/etc/systemd/system/` (a path that does not exist in the
+// composefs named-output layout). Daemon reconciliation moved into the activate
+// script's `apm activate-reconcile` slot, which diffs the live vs candidate
+// /etc. These are retained (allow(dead_code)) only until that subcommand lands;
+// they are deleted then.
 // ---------------------------------------------------------------------------
 
 /// Represents the diff between two toplevels' systemd units.
+#[allow(dead_code)]
 struct ServiceDiff {
     added: Vec<String>,
     removed: Vec<String>,
@@ -753,6 +817,7 @@ struct ServiceDiff {
 }
 
 /// Compute the service diff between an old and new toplevel.
+#[allow(dead_code)]
 fn diff_services(old_toplevel: &str, new_toplevel: &str) -> ServiceDiff {
     let old_units = list_unit_files(old_toplevel);
     let new_units = list_unit_files(new_toplevel);
@@ -794,6 +859,7 @@ fn diff_services(old_toplevel: &str, new_toplevel: &str) -> ServiceDiff {
 
 /// List unit files under a toplevel's etc/systemd/system/ directory.
 /// Returns (unit_name, content_hash) pairs.
+#[allow(dead_code)]
 fn list_unit_files(toplevel: &str) -> Vec<(String, String)> {
     let units_dir = PathBuf::from(toplevel).join("etc/systemd/system");
     let mut results = Vec::new();
@@ -830,6 +896,7 @@ fn list_unit_files(toplevel: &str) -> Vec<(String, String)> {
 /// microVM tests, which run no system D-Bus) a non-empty diff surfaces as a
 /// clear `SystemdUnavailable` error rather than the previous silent no-op; the
 /// live service path is exercised by the `apm-systemd-client` fleet test.
+#[allow(dead_code)]
 async fn run_service_diff(diff: &ServiceDiff, printer: &Printer) -> Result<()> {
     if diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty() {
         return Ok(());
