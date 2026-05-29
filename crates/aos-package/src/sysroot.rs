@@ -1359,7 +1359,13 @@ fn format_size(bytes: u64) -> String {
 }
 
 /// Simple DJB2 hash for content fingerprinting (not cryptographic).
-fn djb2_hash(data: &[u8]) -> u64 {
+///
+/// `pub(crate)` so the live-vs-candidate diff engine in [`crate::unit_diff`]
+/// can share the same deterministic, dependency-free hash. The unit
+/// fingerprint is only ever compared within a single `activate-reconcile`
+/// process, so a non-cryptographic hash is sufficient and lets us avoid
+/// pulling in `twox-hash` (which would churn the vendored Cargo deps hash).
+pub(crate) fn djb2_hash(data: &[u8]) -> u64 {
     let mut hash: u64 = 5381;
     for &byte in data {
         hash = hash.wrapping_mul(33).wrapping_add(byte as u64);
