@@ -51,8 +51,10 @@
     cryptsetup
     e2fsprogs
     findutils
+    grep
     ignition
     kmod
+    less
     pigz
     systemd
     util-linux
@@ -67,8 +69,10 @@
     coreutils
     cryptsetup
     e2fsprogs
+    grep
     ignition
     kmod
+    less
     systemd
     util-linux
   ];
@@ -320,6 +324,12 @@
     initrdGenerators;
 
   modulesLoadConf = lib.concatStringsSep "\n" kernelModules;
+
+  interactivePath = lib.concatStringsSep ":" (
+    (map (p: "${p}/bin") initrdPackages)
+    ++ (map (p: "${p}/sbin") initrdPackages)
+    ++ ["/bin" "/sbin"]
+  );
 in
   pkgs.mkDerivation {
     name = "aos-initrd";
@@ -375,6 +385,7 @@ in
           mkdir -p root/lib/modules
           mkdir -p root/nix/store
           mkdir -p root/proc root/sys root/dev root/run root/tmp root/sysroot root/var
+          mkdir -p -m 700 root/root
 
           # /usr → . so /usr/lib/<...> paths resolve to /lib/<...>. systemd
           # and several helpers synthesise /usr paths internally.
@@ -430,6 +441,12 @@ in
           PRETTY_NAME="ANDYL OS (initrd)"
           OSREL
           cp root/etc/os-release root/etc/initrd-release
+
+          # Make the interactive stage-1 recovery shells usable:
+          cat > root/etc/profile <<PROFILE
+          export PATH="${interactivePath}"
+          export PAGER=less
+          PROFILE
 
           cat > root/etc/passwd <<'PASSWD'
           root:x:0:0:root:/root:/bin/bash
