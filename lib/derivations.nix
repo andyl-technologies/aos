@@ -754,7 +754,6 @@
 
             # Prefer store dir parameter
             NIX_STORE_DIR = storeDir;
-
           }
           # Reference-control blacklists. Empty list = no constraint, so
           # unconditional inclusion is safe. Under __structuredAttrs the
