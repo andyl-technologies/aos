@@ -18,6 +18,7 @@ pub mod sysroot;
 pub mod sysroot_lock;
 pub mod test_systemd_client;
 pub mod types;
+pub mod unit_diff;
 pub mod update;
 pub mod upgrade;
 pub mod verify;
