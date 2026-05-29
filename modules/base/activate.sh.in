@@ -234,17 +234,20 @@ workdir="$upper_root/work" \
   "$tmpEtc"
 
 # --- reconcile ---
-# P1: reconciliation is stubbed. The real `apm activate-reconcile` call
-# is wired in a follow-up phase; for now we proceed straight to the swap
-# so the overlay-swap path can be exercised on its own. The call is kept
-# outside the ERR trap (wrapped in set +e/set -e) because a reconcile
-# exit of 1 must let the script PROCEED, which `set -e` would abort on.
+# Hand off to apm: diff the live /etc/systemd/system against the candidate
+# overlay's and apply the right stop/reload/restart/start actions over D-Bus.
+# The call is kept OUTSIDE the ERR trap (wrapped in set +e/set -e) because a
+# reconcile exit of 1 (some units failed, but the switch is still valid) must
+# let the script PROCEED to the swap, which `set -e` would otherwise abort on.
+# Exit codes (apm activate-reconcile): 0 clean, 1 failed units (proceed,
+# degraded), 2 catastrophic (abort the switch).
 STAGE="$STAGE_RECONCILE"
 set +e
-# (Replaced in P4 with: @apm@/bin/apm activate-reconcile --gen="$N" \
-#   --candidate-etc="$tmpEtc" --new-toplevel="$new_top" \
-#   --old-toplevel-symlink=/var/lib/profiles/system/current/toplevel)
-true
+@apm@/bin/apm activate-reconcile \
+  --gen="$N" \
+  --candidate-etc="$tmpEtc" \
+  --new-toplevel="$new_top" \
+  --old-toplevel-symlink=/var/lib/profiles/system/current/toplevel
 reconcile_rc=$?
 set -e
 

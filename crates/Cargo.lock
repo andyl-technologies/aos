@@ -244,6 +244,7 @@ dependencies = [
  "hex",
  "humantime",
  "indicatif",
+ "libc",
  "regex",
  "reqwest",
  "rusqlite",
