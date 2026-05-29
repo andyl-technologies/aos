@@ -7,6 +7,17 @@
 # These tests run apm in a headless Firecracker microVM with mock toplevels
 # and registry metadata. The toplevels are real Nix derivations containing
 # activation scripts, etc/ directories, and systemd unit stubs.
+#
+# NOTE on the systemd D-Bus migration: when a generation switch produces a
+# non-empty service diff (every upgrade/rollback here, but NOT a fresh
+# install), apm now applies it via the `aos-systemd` D-Bus client instead of
+# fire-and-forget `systemctl` shell-outs. This headless microVM runs no system
+# D-Bus, so that activation step fails with a clear "no system bus" error —
+# AFTER the generation symlink + state.json have already been committed
+# atomically. These tests therefore keep `|| true` on the apm invocation and
+# assert on the committed generation state, which is what they exercise; the
+# live service-activation path (start/stop/restart over a real bus) is covered
+# by the apm-systemd-client fleet test.
 {
   testing,
   apm,
