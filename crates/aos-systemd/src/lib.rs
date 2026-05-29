@@ -1,0 +1,17 @@
+//! `aos-systemd` — a typed, async client for `org.freedesktop.systemd1` over
+//! D-Bus (zbus 5).
+//!
+//! This crate is the *transport* layer: it speaks to systemd directly so apm
+//! can propagate job results, classify outcomes, and read unit properties
+//! without shelling out to `systemctl`. It has no apm- or apr-specific
+//! knowledge and deliberately does not depend on `aos-core`.
+//!
+//! Entry point: [`SystemdClient::connect`].
+
+mod client;
+mod error;
+mod manager_proxy;
+
+pub use client::{FailedUnit, FailedUnitsReport, JobOutcome, JobResult, SystemdClient};
+pub use error::{Error, Result};
+pub use manager_proxy::ListUnitsEntry;

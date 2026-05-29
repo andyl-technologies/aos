@@ -10,6 +10,7 @@ members = [
     "aos-remote",
     "aos-doc",
     "aos-package",
+    "aos-systemd",
 ]
 
 [workspace.dependencies]
@@ -38,6 +39,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 url = "2"
 async-trait = "0.1"
 futures-util = "0.3"
+
+# D-Bus (systemd client). default-features=false drops the async-io reactor so
+# zbus runs on the existing tokio runtime instead of a second event loop.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 # Server
 axum = { version = "0.8", features = ["macros"] }
@@ -98,3 +103,4 @@ aos-cache = { path = "aos-cache" }
 aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-package = { path = "aos-package" }
+aos-systemd = { path = "aos-systemd" }
