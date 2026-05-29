@@ -7,15 +7,18 @@
 //! to determine if a reboot is needed.
 
 use std::collections::HashSet;
+use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use aos_core::output::Printer;
 use aos_systemd::{FailedUnitsReport, JobResult, SystemdClient};
 
 use crate::config::ApmConfig;
+use crate::unit_diff::{self, UnitDiff};
 use crate::download::{
     default_engine, download_nars, fetch_narinfos, resolve_mirror, DownloadRequest,
     ResolvedDownload,
@@ -798,161 +801,21 @@ fn current_sysroot_store_path() -> Result<Option<String>> {
 }
 
 // ---------------------------------------------------------------------------
-// Service diffing
+// Daemon reconciliation reporting helpers
 //
-// DEAD as of the activate-script refactor: install/upgrade/rollback no longer
-// diff `${toplevel}/etc/systemd/system/` (a path that does not exist in the
-// composefs named-output layout). Daemon reconciliation moved into the activate
-// script's `apm activate-reconcile` slot, which diffs the live vs candidate
-// /etc. These are retained (allow(dead_code)) only until that subcommand lands;
-// they are deleted then.
+// The old toplevel-vs-toplevel `diff_services` path was removed when daemon
+// reconciliation moved into the activate script's `apm activate-reconcile`
+// slot (see `activate_reconcile`, which diffs the live `/etc` against the
+// candidate `/etc` via `crate::unit_diff`). These two helpers — per-job
+// warning and the failed-units report formatter — are still used by that
+// reconciler and by the kernel-upgrade path.
 // ---------------------------------------------------------------------------
-
-/// Represents the diff between two toplevels' systemd units.
-#[allow(dead_code)]
-struct ServiceDiff {
-    added: Vec<String>,
-    removed: Vec<String>,
-    changed: Vec<String>,
-}
-
-/// Compute the service diff between an old and new toplevel.
-#[allow(dead_code)]
-fn diff_services(old_toplevel: &str, new_toplevel: &str) -> ServiceDiff {
-    let old_units = list_unit_files(old_toplevel);
-    let new_units = list_unit_files(new_toplevel);
-
-    let old_set: HashSet<&str> = old_units.iter().map(|(n, _)| n.as_str()).collect();
-    let new_set: HashSet<&str> = new_units.iter().map(|(n, _)| n.as_str()).collect();
-
-    let added: Vec<String> = new_set
-        .difference(&old_set)
-        .map(|s| s.to_string())
-        .collect();
-    let removed: Vec<String> = old_set
-        .difference(&new_set)
-        .map(|s| s.to_string())
-        .collect();
-
-    // Changed: same name, different content hash.
-    let old_map: std::collections::HashMap<&str, &str> = old_units
-        .iter()
-        .map(|(n, h)| (n.as_str(), h.as_str()))
-        .collect();
-    let new_map: std::collections::HashMap<&str, &str> = new_units
-        .iter()
-        .map(|(n, h)| (n.as_str(), h.as_str()))
-        .collect();
-
-    let changed: Vec<String> = old_set
-        .intersection(&new_set)
-        .filter(|name| old_map.get(*name) != new_map.get(*name))
-        .map(|s| s.to_string())
-        .collect();
-
-    ServiceDiff {
-        added,
-        removed,
-        changed,
-    }
-}
-
-/// List unit files under a toplevel's etc/systemd/system/ directory.
-/// Returns (unit_name, content_hash) pairs.
-#[allow(dead_code)]
-fn list_unit_files(toplevel: &str) -> Vec<(String, String)> {
-    let units_dir = PathBuf::from(toplevel).join("etc/systemd/system");
-    let mut results = Vec::new();
-
-    if let Ok(entries) = std::fs::read_dir(&units_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                let content = std::fs::read(&path).unwrap_or_default();
-                // Simple fingerprint: length + djb2 hash of content.
-                let hash = format!("{}-{:x}", content.len(), djb2_hash(&content));
-                results.push((name, hash));
-            }
-        }
-    }
-
-    results
-}
-
-/// Apply a service diff via the systemd D-Bus client: `daemon-reload`, then
-/// stop removed units, restart changed units, and start added units — awaiting
-/// each job and surfacing its real result instead of discarding the exit code.
-///
-/// A transport failure (the system bus is unreachable, a job sender is dropped)
-/// is returned as an error. A non-`Done` *job* result (a unit that failed,
-/// timed out, or was held back by a dependency) is data, not a transport error:
-/// it is warned about here. Turning a failed activation into a non-zero apm exit
-/// is layered on in P3 via [`SystemdClient::failed_units`].
-///
-/// The client is constructed lazily, only once we know the diff is non-empty:
-/// a fresh install (no previous generation) never reaches this function, and an
-/// empty diff returns before opening the bus. On a bus-less host (e.g. the apm
-/// microVM tests, which run no system D-Bus) a non-empty diff surfaces as a
-/// clear `SystemdUnavailable` error rather than the previous silent no-op; the
-/// live service path is exercised by the `apm-systemd-client` fleet test.
-#[allow(dead_code)]
-async fn run_service_diff(diff: &ServiceDiff, printer: &Printer) -> Result<()> {
-    if diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty() {
-        return Ok(());
-    }
-
-    let client = SystemdClient::connect().await?;
-
-    // Daemon reload first so systemd picks up the new generation's unit files.
-    client.daemon_reload().await?;
-
-    for unit in &diff.removed {
-        printer.plain(&format!("  Stopping: {unit}"));
-        let outcome = client.stop_unit(unit).await?;
-        warn_if_job_not_done(printer, "stop", unit, &outcome.result);
-    }
-
-    for unit in &diff.changed {
-        printer.plain(&format!("  Restarting: {unit}"));
-        let outcome = client.restart_unit(unit).await?;
-        warn_if_job_not_done(printer, "restart", unit, &outcome.result);
-    }
-
-    for unit in &diff.added {
-        printer.plain(&format!("  Starting: {unit}"));
-        let outcome = client.start_unit(unit).await?;
-        warn_if_job_not_done(printer, "start", unit, &outcome.result);
-    }
-
-    // Post-activation health gate: surface any unit left in a failed (or
-    // failed-and-auto-restarting) state and fail the whole operation, so
-    // `apm install/upgrade/rollback --system` exits non-zero instead of
-    // silently leaving a broken service set behind — which was the pre-D-Bus
-    // behaviour, where every `systemctl` exit code was discarded. The scan
-    // covers all loaded units, not just the ones in this diff: a (re)started
-    // unit can knock over a dependent one, and that should fail the activation
-    // too. Mirrors switch-to-configuration-ng's post-switch check.
-    let report = client.failed_units().await?;
-    if !report.is_empty() {
-        printer.error(&format_failed_units(&report));
-        bail!("{} service(s) failed during activation", report.failed.len());
-    }
-
-    printer.plain(&format!(
-        "Services: {} added, {} removed, {} changed.",
-        diff.added.len(),
-        diff.removed.len(),
-        diff.changed.len(),
-    ));
-
-    Ok(())
-}
 
 /// Warn (but do not fail) when a unit lifecycle job ended in something other
 /// than `done`. The hard failure is the post-activation [`failed_units`] scan
-/// in [`run_service_diff`] — a job can report a transient non-`done` result yet
-/// the unit still settle active, so the authoritative gate is the final state.
+/// in [`activate_reconcile`] — a job can report a transient non-`done` result
+/// yet the unit still settle active, so the authoritative gate is the final
+/// state.
 fn warn_if_job_not_done(printer: &Printer, verb: &str, unit: &str, result: &JobResult) {
     if !result.is_done() {
         printer.warning(&format!(
@@ -988,6 +851,345 @@ fn format_failed_units(report: &FailedUnitsReport) -> String {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Live daemon reconciliation (`apm activate-reconcile`)
+// ---------------------------------------------------------------------------
+
+/// Exit codes for `apm activate-reconcile` (spec §6.10). The activate script
+/// maps these into its own contract: 0/1 → proceed to the overlay swap, 2 →
+/// abort (no swap). 1 means the switch is valid but some units failed, so apm
+/// still exits non-zero (via the activate script's `EX_DEGRADED`).
+const RECONCILE_OK: i32 = 0;
+const RECONCILE_FAILED_UNITS: i32 = 1;
+const RECONCILE_CATASTROPHIC: i32 = 2;
+
+/// Where the reconciler keeps its lock and resume lists. On tmpfs (`/run`), so
+/// boot-scoped; nothing else on the boot path creates it.
+const APM_RUN_DIR: &str = "/run/apm";
+
+/// `apm activate-reconcile` — reconcile the running systemd against a candidate
+/// `/etc` overlay built by the activate script, applying the minimal set of
+/// stop / reload / restart / start actions over the D-Bus [`SystemdClient`].
+///
+/// Returns the process exit code and never bails: every error collapses to the
+/// catastrophic code (2) so the activate script can dispatch deterministically
+/// on the result (the `aos` `main.rs` would otherwise flatten any `Err` to 1).
+/// The caller `std::process::exit`s this directly.
+///
+/// `new_toplevel` and `old_toplevel_symlink` are part of the stable CLI contract
+/// but are deliberately NOT used to compute the diff: the diff is purely
+/// filesystem-based (live `/etc` vs candidate `/etc`), so it does not depend on
+/// the profile pointer — which `install_system` has already swung to the new
+/// generation by the time this runs.
+pub async fn activate_reconcile(
+    generation: u32,
+    candidate_etc: &Path,
+    new_toplevel: &Path,
+    old_toplevel_symlink: &Path,
+    dry_run: bool,
+    printer: &Printer,
+) -> i32 {
+    match reconcile_inner(
+        generation,
+        candidate_etc,
+        new_toplevel,
+        old_toplevel_symlink,
+        dry_run,
+        printer,
+    )
+    .await
+    {
+        Ok(code) => code,
+        Err(e) => {
+            printer.error(&format!("activate-reconcile: {e:#}"));
+            RECONCILE_CATASTROPHIC
+        }
+    }
+}
+
+async fn reconcile_inner(
+    generation: u32,
+    candidate_etc: &Path,
+    new_toplevel: &Path,
+    old_toplevel_symlink: &Path,
+    dry_run: bool,
+    printer: &Printer,
+) -> Result<i32> {
+    // Contract args, intentionally unused by the filesystem diff (see the
+    // doc comment on `activate_reconcile`).
+    let _ = (new_toplevel, old_toplevel_symlink);
+
+    // The candidate systemd tree must exist and be readable — otherwise the
+    // diff would see "everything removed" and stop every running unit. Treat a
+    // missing/unreadable candidate as catastrophic.
+    let candidate_units = candidate_etc.join("systemd/system");
+    if !candidate_units.is_dir() {
+        bail!(
+            "candidate /etc has no readable systemd/system dir: {}",
+            candidate_units.display()
+        );
+    }
+
+    // Compute the live-vs-candidate diff first. `compute_diff` takes the /etc
+    // ROOTS (it appends `systemd/system` and rebases `X-Reload-Triggers` per
+    // side). This is pure filesystem work — no lock, no systemd — so a
+    // standalone `--dry-run` needs neither `/run/apm` nor the system bus.
+    let mut diff = unit_diff::compute_diff(Path::new("/etc"), candidate_etc);
+    for w in &diff.warnings {
+        printer.warning(w);
+    }
+
+    if dry_run {
+        print_diff(&diff, printer);
+        return Ok(RECONCILE_OK);
+    }
+
+    let run_dir = Path::new(APM_RUN_DIR);
+    ensure_run_dir(run_dir)?;
+
+    // Exclusive, non-blocking lock for the whole reconcile. Bound to `_lock`
+    // (RAII) so it outlives every `.await` below; drop = unlock.
+    let _lock = match FlockGuard::acquire(&run_dir.join("system-switch.lock"))? {
+        Some(g) => g,
+        None => {
+            printer
+                .error("activate-reconcile: another system switch holds the lock; aborting");
+            return Ok(RECONCILE_CATASTROPHIC);
+        }
+    };
+
+    printer.info(&format!("Reconciling daemons for generation {generation}…"));
+
+    // Fold install-only units (unchanged file, new install wiring) into the
+    // start set, then merge any resume lists left by an interrupted prior run.
+    let install_only = std::mem::take(&mut diff.install_only);
+    for u in install_only {
+        if !diff.to_start.contains(&u) {
+            diff.to_start.push(u);
+        }
+    }
+    merge_resume_lists(&mut diff, run_dir);
+
+    // Persist the work lists so an interrupted run can resume.
+    persist_lists(run_dir, &diff)?;
+
+    let client = SystemdClient::connect()
+        .await
+        .context("connecting to systemd over D-Bus")?;
+
+    // Always daemon-reload first so systemd ingests the new unit files.
+    client.daemon_reload().await.context("daemon-reload")?;
+
+    // Apply in order: stop → reload → restart → start. The diff engine has
+    // already ordered sockets first within to_restart / to_start. Each list
+    // file is deleted as its phase finishes, so a resumed run skips it.
+    for unit in &diff.to_stop {
+        printer.plain(&format!("  stopping   {unit}"));
+        let outcome = client
+            .stop_unit(unit)
+            .await
+            .with_context(|| format!("stopping {unit}"))?;
+        warn_if_job_not_done(printer, "stop", unit, &outcome.result);
+    }
+
+    for unit in &diff.to_reload {
+        printer.plain(&format!("  reloading  {unit}"));
+        let outcome = client
+            .reload_unit(unit)
+            .await
+            .with_context(|| format!("reloading {unit}"))?;
+        warn_if_job_not_done(printer, "reload", unit, &outcome.result);
+    }
+    remove_list(run_dir, "reload-list");
+
+    for unit in &diff.to_restart {
+        printer.plain(&format!("  restarting {unit}"));
+        let outcome = client
+            .restart_unit(unit)
+            .await
+            .with_context(|| format!("restarting {unit}"))?;
+        warn_if_job_not_done(printer, "restart", unit, &outcome.result);
+    }
+    remove_list(run_dir, "restart-list");
+
+    for unit in &diff.to_start {
+        printer.plain(&format!("  starting   {unit}"));
+        let outcome = client
+            .start_unit(unit)
+            .await
+            .with_context(|| format!("starting {unit}"))?;
+        warn_if_job_not_done(printer, "start", unit, &outcome.result);
+    }
+    remove_list(run_dir, "start-list");
+
+    // Clear stale failed state from before the switch, then drain late jobs.
+    client.reset_failed().await.context("reset-failed")?;
+    let late = client.settle().await.context("settling job events")?;
+    if late > 0 {
+        printer.info(&format!("settled {late} late job event(s)"));
+    }
+
+    // Authoritative health gate: a (re)started unit can knock over a dependent
+    // one, so scan all units, not just the ones we touched.
+    let report = client
+        .failed_units()
+        .await
+        .context("scanning for failed units")?;
+    delete_lists(run_dir);
+
+    if !report.is_empty() {
+        printer.error(&format_failed_units(&report));
+        // The switch is still valid (matches switch-to-configuration): return 1
+        // so apm surfaces a non-zero exit without rolling back the swap.
+        return Ok(RECONCILE_FAILED_UNITS);
+    }
+
+    printer.success(&format!(
+        "Reconcile complete: {} stopped, {} reloaded, {} restarted, {} started.",
+        diff.to_stop.len(),
+        diff.to_reload.len(),
+        diff.to_restart.len(),
+        diff.to_start.len(),
+    ));
+    Ok(RECONCILE_OK)
+}
+
+/// Create `/run/apm` (mode 0755) if absent.
+fn ensure_run_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    // Best-effort: the umask may have masked the group/other read+exec bits.
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+    Ok(())
+}
+
+/// RAII exclusive `flock` on a lock file. Released on drop (and on process exit
+/// via fd close). Must be bound for the whole reconcile so it outlives every
+/// `.await`.
+struct FlockGuard {
+    _file: std::fs::File,
+}
+
+impl FlockGuard {
+    /// Acquire a non-blocking exclusive lock. `Ok(None)` on contention
+    /// (`EWOULDBLOCK`); `Err` on any other failure.
+    fn acquire(path: &Path) -> Result<Option<FlockGuard>> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(path)
+            .with_context(|| format!("opening lock file {}", path.display()))?;
+        // SAFETY: `file` owns the fd for the duration of this call and the
+        // returned guard.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            return Ok(Some(FlockGuard { _file: file }));
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            Ok(None)
+        } else {
+            Err(anyhow!("flock {}: {err}", path.display()))
+        }
+    }
+}
+
+impl Drop for FlockGuard {
+    fn drop(&mut self) {
+        // SAFETY: the fd is still open (we own `_file`); unlock is best-effort.
+        let _ = unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn list_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(name)
+}
+
+/// Read a `/run/apm/*-list` file into a deduped-by-position list of unit names.
+/// A missing/unreadable file is an empty list (the common, non-resume case).
+fn read_list_file(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .map(|s| {
+            s.lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn write_list_file(path: &Path, units: &[String]) -> Result<()> {
+    let mut body = units.join("\n");
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    std::fs::write(path, body).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Persist the reload/restart/start work lists so an interrupted run resumes.
+/// (Stops are not persisted: they are idempotent and re-derived from the diff.)
+fn persist_lists(dir: &Path, diff: &UnitDiff) -> Result<()> {
+    write_list_file(&list_path(dir, "reload-list"), &diff.to_reload)?;
+    write_list_file(&list_path(dir, "restart-list"), &diff.to_restart)?;
+    write_list_file(&list_path(dir, "start-list"), &diff.to_start)?;
+    Ok(())
+}
+
+/// Merge any leftover resume lists into the diff's corresponding sets,
+/// preserving order and de-duplicating.
+fn merge_resume_lists(diff: &mut UnitDiff, dir: &Path) {
+    let merge = |target: &mut Vec<String>, extra: Vec<String>| {
+        for u in extra {
+            if !target.contains(&u) {
+                target.push(u);
+            }
+        }
+    };
+    merge(&mut diff.to_reload, read_list_file(&list_path(dir, "reload-list")));
+    merge(
+        &mut diff.to_restart,
+        read_list_file(&list_path(dir, "restart-list")),
+    );
+    merge(&mut diff.to_start, read_list_file(&list_path(dir, "start-list")));
+}
+
+fn remove_list(dir: &Path, name: &str) {
+    let _ = std::fs::remove_file(list_path(dir, name));
+}
+
+fn delete_lists(dir: &Path) {
+    for name in ["reload-list", "restart-list", "start-list"] {
+        remove_list(dir, name);
+    }
+}
+
+/// Print the reconciliation plan without applying it (`--dry-run`).
+fn print_diff(diff: &UnitDiff, printer: &Printer) {
+    let show = |label: &str, units: &[String]| {
+        let body = if units.is_empty() {
+            "(none)".to_string()
+        } else {
+            units.join(" ")
+        };
+        printer.plain(&format!("  {label:<9}{body}"));
+    };
+    show("stop:", &diff.to_stop);
+    show("reload:", &diff.to_reload);
+    show("restart:", &diff.to_restart);
+    show("start:", &diff.to_start);
+    if !diff.install_only.is_empty() {
+        show("install:", &diff.install_only);
+    }
+    if !diff.blanket_targets.is_empty() {
+        printer.plain(&format!(
+            "  (reload-trigger driven: {})",
+            diff.blanket_targets.join(" ")
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1483,14 +1685,6 @@ mod tests {
     }
 
     #[test]
-    fn diff_services_empty() {
-        let diff = diff_services("/nonexistent/old", "/nonexistent/new");
-        assert!(diff.added.is_empty());
-        assert!(diff.removed.is_empty());
-        assert!(diff.changed.is_empty());
-    }
-
-    #[test]
     fn format_size_values() {
         assert_eq!(format_size(500), "500 B");
         assert_eq!(format_size(2048), "2.0 KiB");
@@ -1564,5 +1758,97 @@ mod tests {
         // A unit with no ExecMainStatus renders as n/a.
         assert!(out.contains("stuck.service"), "{out}");
         assert!(out.contains("ExecMainStatus=n/a"), "{out}");
+    }
+
+    // --- activate-reconcile helpers (§8.5) -----------------------------
+
+    #[test]
+    fn flock_guard_is_exclusive_and_releases() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let lock = tmp.path().join("system-switch.lock");
+
+        let g1 = FlockGuard::acquire(&lock).unwrap();
+        assert!(g1.is_some(), "first acquire should succeed");
+
+        // A second acquirer (a distinct open file description) contends.
+        let g2 = FlockGuard::acquire(&lock).unwrap();
+        assert!(g2.is_none(), "second acquire should report contention");
+
+        drop(g1);
+        let g3 = FlockGuard::acquire(&lock).unwrap();
+        assert!(g3.is_some(), "acquire after release should succeed");
+    }
+
+    #[test]
+    fn resume_lists_round_trip_and_delete() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        let diff = UnitDiff {
+            to_reload: vec!["nftables.service".to_string()],
+            to_restart: vec![
+                "systemd-sysctl.service".to_string(),
+                "foo.service".to_string(),
+            ],
+            to_start: vec!["new.service".to_string()],
+            ..Default::default()
+        };
+        persist_lists(dir, &diff).unwrap();
+
+        assert_eq!(
+            read_list_file(&dir.join("reload-list")),
+            vec!["nftables.service".to_string()]
+        );
+        assert_eq!(
+            read_list_file(&dir.join("restart-list")),
+            vec![
+                "systemd-sysctl.service".to_string(),
+                "foo.service".to_string()
+            ]
+        );
+        assert_eq!(
+            read_list_file(&dir.join("start-list")),
+            vec!["new.service".to_string()]
+        );
+
+        delete_lists(dir);
+        assert!(read_list_file(&dir.join("reload-list")).is_empty());
+        assert!(read_list_file(&dir.join("restart-list")).is_empty());
+        assert!(read_list_file(&dir.join("start-list")).is_empty());
+    }
+
+    #[test]
+    fn merge_resume_lists_merges_and_dedups() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        write_list_file(
+            &dir.join("restart-list"),
+            &["a.service".to_string(), "b.service".to_string()],
+        )
+        .unwrap();
+        write_list_file(&dir.join("start-list"), &["c.service".to_string()]).unwrap();
+
+        let mut diff = UnitDiff {
+            // a.service is already in the fresh diff — must not be duplicated.
+            to_restart: vec!["a.service".to_string()],
+            ..Default::default()
+        };
+        merge_resume_lists(&mut diff, dir);
+
+        assert_eq!(
+            diff.to_restart,
+            vec!["a.service".to_string(), "b.service".to_string()]
+        );
+        assert_eq!(diff.to_start, vec!["c.service".to_string()]);
+    }
+
+    #[test]
+    fn print_diff_does_not_panic() {
+        let printer = Printer::new(0, true, false);
+        let diff = UnitDiff {
+            to_restart: vec!["x.service".to_string()],
+            blanket_targets: vec!["x.service".to_string()],
+            ..Default::default()
+        };
+        print_diff(&diff, &printer);
     }
 }

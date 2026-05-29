@@ -24,6 +24,7 @@ pub mod upgrade;
 pub mod verify;
 
 use std::fs;
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
@@ -253,6 +254,31 @@ pub enum PackageCommand {
     Registry {
         #[command(subcommand)]
         command: RegistryCommand,
+    },
+    /// Reconcile running systemd against a candidate /etc view.
+    ///
+    /// Called from the toplevel's `activate` script during
+    /// install / upgrade / rollback (Phase B-mid). Diffs the live
+    /// `/etc/systemd/system` against the candidate overlay's and applies the
+    /// right stop / reload / restart / start actions over D-Bus. Talks to
+    /// systemd and needs no apm config, so `run()` dispatches it before
+    /// `ApmConfig::load` and `std::process::exit`s its 0/1/2 status code.
+    ActivateReconcile {
+        /// Generation number being activated. The field is `generation`
+        /// because `gen` is reserved in edition 2024; the CLI flag stays
+        /// `--gen` so the activate script's call site is stable.
+        #[arg(long = "gen")]
+        generation: u32,
+        /// Candidate /etc view — the merged overlay built before the swap.
+        #[arg(long)]
+        candidate_etc: PathBuf,
+        /// Store path of the new toplevel (contract arg; not used by the diff).
+        #[arg(long)]
+        new_toplevel: PathBuf,
+        /// Symlink to the currently-active toplevel (contract arg; not used by
+        /// the diff, which is live-`/etc`-vs-candidate).
+        #[arg(long, default_value = "/var/lib/profiles/system/current/toplevel")]
+        old_toplevel_symlink: PathBuf,
     },
     /// Hidden: exercise the `aos_systemd::SystemdClient` directly.
     ///
@@ -760,6 +786,30 @@ pub async fn run(
         return test_systemd_client::run(op, printer).await;
     }
 
+    // `activate-reconcile` runs during the activate script's Phase B-mid: it
+    // talks to systemd over D-Bus, needs no apm config, and must return its own
+    // 0/1/2 exit code (which `main.rs` would otherwise flatten to 1). Dispatch
+    // it before `ApmConfig::load` and `std::process::exit` directly, mirroring
+    // the `TestSystemdClient` arm above.
+    if let PackageCommand::ActivateReconcile {
+        generation,
+        candidate_etc,
+        new_toplevel,
+        old_toplevel_symlink,
+    } = command
+    {
+        let code = sysroot::activate_reconcile(
+            *generation,
+            candidate_etc,
+            new_toplevel,
+            old_toplevel_symlink,
+            dry_run,
+            printer,
+        )
+        .await;
+        std::process::exit(code);
+    }
+
     let system = command.is_system();
     let scope = if system {
         ProfileScope::System
@@ -932,6 +982,9 @@ pub async fn run(
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
+        }
+        PackageCommand::ActivateReconcile { .. } => {
+            unreachable!("ActivateReconcile is handled before ApmConfig::load")
         }
     }
 }
