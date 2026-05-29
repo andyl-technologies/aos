@@ -199,6 +199,19 @@ in {
     # nftables.service — load the firewall rules at boot.
     systemd.services."nftables" = {
       description = "nftables Firewall";
+      # Live in-place upgrades (`apm upgrade --system`): when the firewall
+      # ruleset changes between generations, reload gracefully via
+      # `ExecReload=` (an atomic `nft -f`) instead of a stop+start that
+      # would briefly `flush ruleset` and leave a window with no firewall.
+      # `allowedTCP` / `allowedUDP` are baked into the base
+      # `/etc/nftables.conf` (the `set allowed_tcp { elements = … }` lines
+      # above), and role drop-ins live under `/etc/nftables.d/*.nft`, so
+      # the trigger must watch both paths — not just the drop-in dir.
+      reloadIfChanged = true;
+      reloadTriggers = [
+        "/etc/nftables.conf"
+        "/etc/nftables.d"
+      ];
       wantedBy = ["multi-user.target"];
       before = ["network-pre.target"];
       wants = ["network-pre.target"];

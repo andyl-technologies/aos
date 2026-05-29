@@ -178,23 +178,103 @@ in {
     '';
   };
 
-  config = {
+  config = let
+    # --- X-* contract eval-time guards (spec §7.3) ---------------------
+    #
+    # The `apm activate-reconcile` reconciler honours the X-* knobs added
+    # in this refactor; these assertions catch degenerate combinations at
+    # eval time so a misconfigured unit fails the build rather than
+    # silently doing nothing (or the wrong thing) on a live upgrade.
+    # A service can reload in place iff it declares ExecReload= — either
+    # directly in serviceConfig, or via the `reload` option (which sets
+    # serviceConfig.ExecReload through a mkDefault in serviceOptions).
+    hasExecReload = svc: (svc.serviceConfig ? ExecReload) || ((svc.reload or "") != "");
+
+    # `stopOnReconfiguration` is target-only (NixOS semantics). Flag it on
+    # any non-target typed unit. attrset-keyed categories:
+    nonTargetAttrCats = {
+      services = cfg.services;
+      sockets = cfg.sockets;
+      timers = cfg.timers;
+      paths = cfg.paths;
+      slices = cfg.slices;
+    };
+    # list-keyed categories (mounts/automounts are listOf, keyed by where):
+    nonTargetListCats = {
+      mounts = cfg.mounts;
+      automounts = cfg.automounts;
+    };
+    stopOnReconfAttrAsserts = lib.concatLists (
+      lib.mapAttrsToList (
+        cat: units:
+          lib.mapAttrsToList (n: u: {
+            assertion = !u.stopOnReconfiguration;
+            message = "systemd.${cat}.${n}: stopOnReconfiguration only applies to .target units.";
+          })
+          units
+      )
+      nonTargetAttrCats
+    );
+    stopOnReconfListAsserts = lib.concatLists (
+      lib.mapAttrsToList (
+        cat: units:
+          lib.map (u: {
+            assertion = !u.stopOnReconfiguration;
+            message = "systemd.${cat} entry `${u.name}': stopOnReconfiguration only applies to .target units.";
+          })
+          units
+      )
+      nonTargetListCats
+    );
+
+    # `reloadTriggers` on a .target can never take effect: a target is
+    # never reloaded, and the reconciler never restarts targets directly
+    # (its per-type policy). Move the trigger to a service.
+    targetReloadTriggerAsserts =
+      lib.mapAttrsToList (n: t: {
+        assertion = t.reloadTriggers == [];
+        message = "systemd.targets.${n}: reloadTriggers has no effect on a .target (targets are neither reloaded nor restarted directly); move the trigger to a service.";
+      })
+      cfg.targets;
+
+    # `onlyManualStart` on a .scope unit would be an error too (spec §7.3),
+    # but AOS has no `scope` unit type (none in lib/modules/systemd/
+    # types.nix), so there is no eval-time data source to check; revisit if
+    # a scopes option is ever added.
+
+    # `reloadIfChanged = true` without an ExecReload= falls back to restart
+    # at reconcile time — usually not what the author intended. Warn.
+    reloadWithoutExecReloadWarnings = lib.concatLists (
+      lib.mapAttrsToList (
+        n: svc:
+          lib.optional (svc.reloadIfChanged && !hasExecReload svc)
+          "systemd.services.${n}: reloadIfChanged = true but the unit has no ExecReload= (set serviceConfig.ExecReload or the `reload` option); it will fall back to restart during a live upgrade."
+      )
+      cfg.services
+    );
+  in {
     # v1 doesn't model package-provided units (no IFD; we can't
     # enumerate `$pkg/lib/systemd/system/` at eval time, which the
     # `render-role.nix` drift assertion and `etc-merge-safety` check
     # both depend on). Track as future work — spec v12 §10 item #2.
-    assertions = [
-      {
-        assertion = config.systemd.packages == [];
-        message = ''
-          systemd.packages is not yet supported with the composefs
-          /etc model (spec v12 §10 future-work #2). Re-introducing
-          package-provided units requires either accepting that the
-          merge-safety diff data source becomes incomplete or
-          generating the unit list at build time via a derivation.
-        '';
-      }
-    ];
+    assertions =
+      [
+        {
+          assertion = config.systemd.packages == [];
+          message = ''
+            systemd.packages is not yet supported with the composefs
+            /etc model (spec v12 §10 future-work #2). Re-introducing
+            package-provided units requires either accepting that the
+            merge-safety diff data source becomes incomplete or
+            generating the unit list at build time via a derivation.
+          '';
+        }
+      ]
+      ++ stopOnReconfAttrAsserts
+      ++ stopOnReconfListAsserts
+      ++ targetReloadTriggerAsserts;
+
+    warnings = reloadWithoutExecReloadWarnings;
 
     # Merge the rendered unit attrsets back into `systemd.units` so
     # `generateUnits` can see everything (both raw unit text from

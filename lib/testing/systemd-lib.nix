@@ -86,6 +86,22 @@
             };
             serviceConfig.Type = "oneshot";
           };
+          with-x-knobs = {
+            description = "X-* contract knobs rendered into [Unit]";
+            script = "echo x";
+            serviceConfig.Type = "oneshot";
+            # Every knob set to a non-default value so the renderer emits
+            # the corresponding X-* line (spec §6.4). reloadIfChanged is
+            # paired with an ExecReload= so it is the meaningful case.
+            reload = "echo reload";
+            restartIfChanged = false;
+            reloadIfChanged = true;
+            stopIfChanged = false;
+            stopOnRemoval = false;
+            notSocketActivated = true;
+            onlyManualStart = true;
+            reloadTriggers = ["/etc/a" "/etc/b"];
+          };
         };
       }
     ];
@@ -101,28 +117,85 @@
   preStartList = svc.with-prestart.serviceConfig.ExecStartPre;
 
   rendered = (systemdLib.serviceToUnit svc.with-environment).text;
+  xKnobsRendered = (systemdLib.serviceToUnit svc.with-x-knobs).text;
+  # `script-only` sets none of the X-* knobs, so its rendered text must
+  # carry no `X-*` line — the no-op invariant that keeps default-config
+  # units from churning their fingerprint on the next live upgrade.
+  defaultRendered = (systemdLib.serviceToUnit svc.script-only).text;
 
   # AOS lib doesn't currently expose `hasInfix`; a one-liner using
   # `builtins.match` is enough for these checks.
   containsStr = needle: haystack:
     builtins.match ".*${lib.escapeRegex needle}.*" haystack != null;
 
+  # Each check is `{ cond; msg; }`; the fold throws `msg` on the first
+  # false `cond`. Flatter than nesting `throwIfNot` calls by hand.
+  checks = [
+    {
+      cond = lib.hasPrefix "/nix/store/" scriptOnlyExec;
+      msg = "systemd-lib: script-only ExecStart should be a store path, got '${scriptOnlyExec}'";
+    }
+    {
+      cond = directOnlyExec == "/bin/true";
+      msg = "systemd-lib: direct-only ExecStart should be '/bin/true', got '${directOnlyExec}'";
+    }
+    {
+      cond = beatenExec == "/bin/yes";
+      msg = "systemd-lib: user-direct ExecStart should beat mkDefault script; got '${beatenExec}'";
+    }
+    {
+      cond = builtins.length preStartList == 1;
+      msg = "systemd-lib: preStart should produce a single-element ExecStartPre list";
+    }
+    {
+      cond = containsStr "Environment=\"FOO=bar\"" rendered;
+      msg = "systemd-lib: expected Environment=\"FOO=bar\" in rendered text";
+    }
+    {
+      cond = containsStr "Environment=\"BAZ=qux\"" rendered;
+      msg = "systemd-lib: expected Environment=\"BAZ=qux\" in rendered text";
+    }
+    {
+      cond = containsStr "ExecStart=" rendered;
+      msg = "systemd-lib: expected ExecStart= in rendered text";
+    }
+    # --- X-* contract knob rendering (spec §6.4) ---------------------
+    {
+      cond = containsStr "X-RestartIfChanged=false" xKnobsRendered;
+      msg = "systemd-lib: expected X-RestartIfChanged=false in rendered text";
+    }
+    {
+      cond = containsStr "X-ReloadIfChanged=true" xKnobsRendered;
+      msg = "systemd-lib: expected X-ReloadIfChanged=true in rendered text";
+    }
+    {
+      cond = containsStr "X-StopIfChanged=false" xKnobsRendered;
+      msg = "systemd-lib: expected X-StopIfChanged=false in rendered text";
+    }
+    {
+      cond = containsStr "X-StopOnRemoval=false" xKnobsRendered;
+      msg = "systemd-lib: expected X-StopOnRemoval=false in rendered text";
+    }
+    {
+      cond = containsStr "X-NotSocketActivated=true" xKnobsRendered;
+      msg = "systemd-lib: expected X-NotSocketActivated=true in rendered text";
+    }
+    {
+      cond = containsStr "X-OnlyManualStart=true" xKnobsRendered;
+      msg = "systemd-lib: expected X-OnlyManualStart=true in rendered text";
+    }
+    {
+      cond = containsStr "X-Reload-Triggers=/etc/a /etc/b" xKnobsRendered;
+      msg = "systemd-lib: expected space-joined X-Reload-Triggers=/etc/a /etc/b in rendered text";
+    }
+    {
+      cond = !containsStr "X-" defaultRendered;
+      msg = "systemd-lib: a default service must emit no X-* lines, but found one in: ${defaultRendered}";
+    }
+  ];
+
   evalAssertions =
-    lib.throwIfNot (lib.hasPrefix "/nix/store/" scriptOnlyExec)
-    "systemd-lib: script-only ExecStart should be a store path, got '${scriptOnlyExec}'"
-    (lib.throwIfNot (directOnlyExec == "/bin/true")
-      "systemd-lib: direct-only ExecStart should be '/bin/true', got '${directOnlyExec}'"
-      (lib.throwIfNot (beatenExec == "/bin/yes")
-        "systemd-lib: user-direct ExecStart should beat mkDefault script; got '${beatenExec}'"
-        (lib.throwIfNot (builtins.length preStartList == 1)
-          "systemd-lib: preStart should produce a single-element ExecStartPre list"
-          (lib.throwIfNot (containsStr "Environment=\"FOO=bar\"" rendered)
-            "systemd-lib: expected Environment=\"FOO=bar\" in rendered text"
-            (lib.throwIfNot (containsStr "Environment=\"BAZ=qux\"" rendered)
-              "systemd-lib: expected Environment=\"BAZ=qux\" in rendered text"
-              (lib.throwIfNot (containsStr "ExecStart=" rendered)
-                "systemd-lib: expected ExecStart= in rendered text"
-                true))))));
+    builtins.foldl' (acc: c: lib.throwIfNot c.cond c.msg acc) true checks;
 in
   pkgs.mkDerivation {
     pname = "systemd-lib-check";
