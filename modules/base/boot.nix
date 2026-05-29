@@ -51,11 +51,9 @@
           "virtio_pci"
           "virtio_net"
           "ext4"
-          # isofs is required so aos-platform-detect.service can mount
-          # the ISO9660 `aos-metadata` channel — used by VM tests and
-          # by bare-metal operators who attach metadata via IPMI
-          # virtual media.
           "isofs"
+          "usb_storage"
+          "uas"
           "overlay"
           "dm-crypt"
           "qemu_fw_cfg"
@@ -64,9 +62,10 @@
           Kernel modules to include in the initrd. These are loaded
           early in boot before the root filesystem is mounted. The
           defaults cover virtio (QEMU/KVM block, PCI, net), ext4
-          root, ISO9660 metadata channel, overlayfs for /etc,
-          dm-crypt for encrypted swap, and qemu_fw_cfg for ignition's
-          QEMU platform reader.
+          root, ISO9660 metadata channel, USB mass storage
+          (usb_storage/uas) for bare-metal IPMI virtual media,
+          overlayfs for /etc, dm-crypt for encrypted swap, and
+          qemu_fw_cfg for ignition's QEMU platform reader.
         '';
       };
     };
