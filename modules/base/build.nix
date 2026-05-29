@@ -240,6 +240,20 @@ in {
         '';
       };
 
+      ## The `${toplevel}/activate <gen>` script.
+      activateScript = lib.mkOption {
+        type = lib.types.package;
+        description = ''
+          A single executable bash script, shipped as
+          `''${toplevel}/activate`. Invoked by apm during install /
+          upgrade / rollback as `activate <gen-number>`: it rebuilds
+          this generation's `/etc` composefs overlay on the live
+          system, runs daemon reconciliation, and swaps the new `/etc`
+          in atomically. Built from `modules/base/activate.sh.in` with
+          its `@tool@` placeholders substituted for store paths.
+        '';
+      };
+
       ## The kernel derivation providing bzImage.
       kernel = lib.mkOption {
         type = lib.types.package;
@@ -535,9 +549,9 @@ in {
               #   meta/{package-name,version}, kernel, initrd.
               # `nix-support/etc-merge-safety-check` forces the
               # merge-safety check whenever the toplevel materialises.
-              # `${toplevel}/activate` is intentionally not shipped —
-              # deferred to the apm-side follow-up spec along with
-              # `apm activate <gen>`'s call site.
+              # `activate` is the live install/upgrade/rollback driver
+              # (`activate <gen>`); apm invokes it after swinging the
+              # `current → gen-N` profile pointer.
               script = ''
                 mkdir -p $out/meta $out/nix-support
 
@@ -549,6 +563,7 @@ in {
                 ln -sfn ${config.environment.etc."os-release".source} $out/os-release
                 ln -sfn ${config.system.build.kernel} $out/kernel
                 ln -sfn ${config.system.build.initrd} $out/initrd
+                ln -sfn ${config.system.build.activateScript} $out/activate
 
                 # `aos-seed-profiles.service` reads these on first boot
                 # to populate `state.json`. Plain text — `read_meta`
@@ -580,6 +595,28 @@ in {
           };
         })
       );
+
+    # Substitute the `@tool@` placeholders in activate.sh.in for store
+    # paths. AOS's stdenv has no `substituteAll`, so this uses the
+    # `pkgs.runCommand` + `pkgs.sed` idiom. The body is kept in a
+    # committed `.sh.in` file (not an inline Nix string) so the script's
+    # shell `${N}` / `${prev_gen:-}` expansions don't collide with Nix's
+    # own `${…}` interpolation. `@apm@` resolves to `pkgs.aos` (the apm
+    # binary); this does not create a cycle since `pkgs.aos` is a Rust
+    # binary that does not depend on the toplevel.
+    system.build.activateScript = pkgs.runCommand "aos-activate" {} ''
+      # AOS stdenv pre-creates $out as a directory; this output is a
+      # single executable file, so drop the dir and write to $out.
+      rmdir "$out"
+      ${pkgs.sed}/bin/sed \
+        -e "s|@bash@|${pkgs.bash}|g" \
+        -e "s|@coreutils@|${pkgs.coreutils}|g" \
+        -e "s|@util-linux@|${pkgs.util-linux}|g" \
+        -e "s|@ignition@|${pkgs.ignition}|g" \
+        -e "s|@apm@|${pkgs.aos}|g" \
+        ${./activate.sh.in} > "$out"
+      chmod +x "$out"
+    '';
 
     system.build.kernel = pkgs.linux;
     system.build.systemPath =
