@@ -117,6 +117,25 @@ in {
     systemd.services."systemd-modules-load" = {
       overrideStrategy = "asDropin";
       serviceConfig.SuccessExitStatus = "0 1";
+      # Live in-place upgrades (`apm upgrade --system`): when a role bundle
+      # changes the set of kernel modules, the drop-in under
+      # /etc/modules-load.d/ changes; restart this oneshot to load the new
+      # modules without a reboot. systemd-modules-load has no ExecReload=,
+      # so the reconciler falls back to a restart (re-running ExecStart
+      # re-applies the module list).
+      reloadTriggers = ["/etc/modules-load.d"];
+    };
+
+    # Live in-place upgrades: re-apply sysctl drop-ins when a role bundle
+    # changes /etc/sysctl.d. This drop-in (asDropin → overrides.conf) only
+    # adds the reload trigger to the upstream systemd-sysctl.service; like
+    # systemd-modules-load it has no ExecReload=, so the reconciler
+    # restarts it, which re-runs `systemd-sysctl` and re-applies the
+    # on-disk config. This is the boot-path-independent complement to
+    # aos-sysctl-late-apply below (which only re-applies once, at boot).
+    systemd.services."systemd-sysctl" = {
+      overrideStrategy = "asDropin";
+      reloadTriggers = ["/etc/sysctl.d"];
     };
 
     # Late re-apply of sysctl drop-ins. Belt-and-suspenders for the

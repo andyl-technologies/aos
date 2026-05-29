@@ -13,9 +13,23 @@
 #     without an assertion or conflict (spec §5.9).
 #   - `enableStrictShellChecks` option and every `inherit (config)
 #     enableStrictShellChecks;` line dropped (spec §5.4).
-#   - `restartTriggers`, `reloadTriggers`, `restartIfChanged`,
-#     `reloadIfChanged`, `stopIfChanged`, `notSocketActivated`, `startAt`
-#     dropped (spec §5.2 / §5.3).
+#   - The switch-to-configuration `X-*` contract knobs were originally
+#     dropped (`restartTriggers`, `reloadTriggers`, `restartIfChanged`,
+#     `reloadIfChanged`, `stopIfChanged`, `notSocketActivated`,
+#     `startAt`). The live in-place `apm upgrade --system` path
+#     (2026-05-27_apm_system_upgrade_refactor_v2 §6.4) restores a subset
+#     as first-class options: `restartIfChanged`, `reloadIfChanged`,
+#     `stopOnRemoval`, `stopOnReconfiguration`, `onlyManualStart`,
+#     `notSocketActivated`, and `reloadTriggers` live on
+#     `commonUnitOptions` (every unit type gets the same surface, rendered
+#     into `[Unit]`); `stopIfChanged` is service-only and lives on
+#     `serviceOptions`. `stopOnRemoval`, `stopOnReconfiguration`, and
+#     `onlyManualStart` are new keys not present in the upstream
+#     `systemd-unit-options.nix` block (upstream sets
+#     `X-StopOnReconfiguration` via raw `unitConfig` on individual
+#     targets). `restartTriggers` and `startAt` remain out of scope. The
+#     defaults are no-ops: a default-config unit emits zero `X-*` lines,
+#     so its rendered text is byte-identical to the reboot-only era.
 #   - `startLimitBurst` / `startLimitIntervalSec` use `types.int` with
 #     no default (matching upstream) and rely on `options.X.isDefined`
 #     inside `lib.nix`'s `unitConfig` to tell whether a value was set.
@@ -357,6 +371,109 @@ in rec {
             interval are not permitted to start any more.
           '';
         };
+
+        # ----------------------------------------------------------------
+        # switch-to-configuration `X-*` contract knobs (restored, spec §6.4)
+        # ----------------------------------------------------------------
+        #
+        # These drive the live `apm upgrade --system` reconciler. Each
+        # renders an `X-*` line into the unit's `[Unit]` section (see
+        # `lib.nix`'s `unitConfig` mixin), gated so the default value
+        # emits nothing — a default-config unit's rendered text is
+        # unchanged from before this restoration. `apm activate-reconcile`
+        # reads them back to choose restart-vs-reload-vs-skip per unit.
+        # They live on `commonUnitOptions` (not the service-only block, as
+        # upstream does) because the shared `unitConfig` mixin reads them
+        # for every unit type; `stopIfChanged` is the lone service-only
+        # member and lives on `serviceOptions`.
+        restartIfChanged = mkOption {
+          type = types.bool;
+          default = true;
+          description = ''
+            Whether the unit should be restarted during a system
+            configuration switch if its definition changed. When false,
+            an `X-RestartIfChanged=false` marker is emitted and the
+            reconciler leaves a changed unit running. `.target` units are
+            never restarted directly regardless of this value — the
+            reconciler's per-type policy handles them — so leaving the
+            default `true` on a target is harmless (and avoids emitting a
+            spurious marker on every target).
+          '';
+        };
+
+        reloadIfChanged = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Whether the unit should be reloaded rather than restarted
+            during a system configuration switch if its definition
+            changed. Requires `ExecReload=` (or a unit type that supports
+            reload); the reconciler falls back to restart with a warning
+            otherwise. Prefer `reloadTriggers` for granular control.
+          '';
+        };
+
+        stopOnRemoval = mkOption {
+          type = types.bool;
+          default = true;
+          description = ''
+            Whether the unit should be stopped during a system
+            configuration switch if it is removed from the new
+            configuration. When false, an `X-StopOnRemoval=false` marker
+            is emitted and the reconciler leaves the unit running — useful
+            for units operators may have started or edited by hand.
+          '';
+        };
+
+        stopOnReconfiguration = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Only meaningful on `.target` units. When true, the target is
+            stopped as a dependency barrier when the units it orders have
+            changed, so its dependents reconcile in the right order. Emits
+            `X-StopOnReconfiguration=true`. Setting it on a non-target is
+            an eval-time error.
+          '';
+        };
+
+        onlyManualStart = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            When true, the reconciler never auto-starts this unit even if
+            it is newly added to the configuration; it must be started
+            manually or pulled in by another unit. Emits
+            `X-OnlyManualStart=true`.
+          '';
+        };
+
+        notSocketActivated = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            When true, a changed unit is never treated as socket-activated
+            during a configuration switch, even if it has associated
+            socket units: it is restarted directly rather than having its
+            sockets restarted first. Emits `X-NotSocketActivated=true`.
+          '';
+        };
+
+        reloadTriggers = mkOption {
+          type = types.listOf types.str;
+          default = [];
+          example = ["/etc/sysctl.d"];
+          description = ''
+            A list of paths (files or directories, typically under
+            `/etc`). When the content of any listed path changes between
+            generations, the reconciler reloads this unit (or restarts it
+            if it has no reload capability). Rendered as a space-joined
+            `X-Reload-Triggers=` line. This is the AOS analogue of NixOS's
+            `sysinit-reactivation.target` for the small set of in-tree
+            units that re-apply `/etc` drop-ins (sysctl, modules-load,
+            nftables).
+          '';
+        };
       };
   };
 
@@ -496,6 +613,25 @@ in rec {
         description = "A list of all job script derivations of this unit.";
         default = [];
       };
+
+      # Service-only member of the `X-*` contract (spec §6.4); the other
+      # seven knobs live on `commonUnitOptions`. Emitted into `[Unit]` by
+      # the `serviceConfig` mixin in `lib.nix` (reading it from the shared
+      # `unitConfig` mixin would fail on non-service unit types). Default
+      # `true` emits nothing.
+      stopIfChanged = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          If set, a changed service is restarted by stopping it in the old
+          configuration and starting it in the new one. When false, an
+          `X-StopIfChanged=false` marker is emitted and the service is
+          restarted in a single `systemctl restart` step in the new
+          configuration (which runs the new `ExecStop=`, so it is slightly
+          less correct). Service-only; non-service unit types get their
+          stop-vs-restart behaviour from the reconciler's per-type policy.
+        '';
+      };
     };
 
     # AOS adaptation (spec §5.9): script-derived `serviceConfig.Exec*`
@@ -556,9 +692,13 @@ in rec {
       stage2CommonUnitOptions
       serviceOptions
     ];
-    # Upstream's `options = { restartIfChanged, reloadIfChanged,
-    # stopIfChanged, notSocketActivated, startAt }` block is dropped
-    # here — these are switch-to-configuration knobs (spec §5.2/§5.3).
+    # Upstream declares the switch-to-configuration knobs
+    # (`restartIfChanged`, `reloadIfChanged`, `stopIfChanged`,
+    # `notSocketActivated`, `startAt`) in this service-only block. AOS
+    # restores them for the live-upgrade contract but lifts all except
+    # `stopIfChanged` up to `commonUnitOptions` (every unit type gets the
+    # same `X-*` surface, rendered into `[Unit]`); see the header summary.
+    # `startAt` and `restartTriggers` stay out of scope.
   };
 
   stage1ServiceOptions = {
