@@ -15,3 +15,9 @@ mod manager_proxy;
 pub use client::{FailedUnit, FailedUnitsReport, JobOutcome, JobResult, SystemdClient};
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;
+
+// `unit_property` returns a `zbus::zvariant::OwnedValue` in its public
+// signature. Re-export it (and `Value`, needed to inspect the variant) so
+// downstream consumers can name and destructure the result without taking a
+// direct zbus dependency of their own.
+pub use zbus::zvariant::{OwnedValue, Value};

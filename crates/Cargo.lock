@@ -233,6 +233,7 @@ dependencies = [
  "anyhow",
  "aos-core",
  "aos-net",
+ "aos-systemd",
  "async-trait",
  "base64",
  "clap",

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use aos_core::output::Printer;
+use aos_systemd::{FailedUnitsReport, JobResult, SystemdClient};
 
 use crate::config::ApmConfig;
 use crate::download::{
@@ -263,7 +264,7 @@ pub async fn install_system(
     // Diff services if both old and new toplevels have etc/systemd.
     if let Some(ref old) = old_gen {
         let diff = diff_services(&old.toplevel, &toplevel_meta.store_path);
-        run_service_diff(&diff, printer);
+        run_service_diff(&diff, printer).await?;
     }
 
     // Handle kernel upgrade according to the chosen mode.
@@ -470,7 +471,7 @@ pub async fn rollback_system(
 
     // Diff services.
     let diff = diff_services(&current.toplevel, &target.toplevel);
-    run_service_diff(&diff, printer);
+    run_service_diff(&diff, printer).await?;
 
     // Handle kernel upgrade according to the chosen mode.
     handle_kernel_upgrade(
@@ -813,36 +814,62 @@ fn list_unit_files(toplevel: &str) -> Vec<(String, String)> {
     results
 }
 
-/// Execute service diff operations via systemctl.
-fn run_service_diff(diff: &ServiceDiff, printer: &Printer) {
+/// Apply a service diff via the systemd D-Bus client: `daemon-reload`, then
+/// stop removed units, restart changed units, and start added units — awaiting
+/// each job and surfacing its real result instead of discarding the exit code.
+///
+/// A transport failure (the system bus is unreachable, a job sender is dropped)
+/// is returned as an error. A non-`Done` *job* result (a unit that failed,
+/// timed out, or was held back by a dependency) is data, not a transport error:
+/// it is warned about here. Turning a failed activation into a non-zero apm exit
+/// is layered on in P3 via [`SystemdClient::failed_units`].
+///
+/// The client is constructed lazily, only once we know the diff is non-empty:
+/// a fresh install (no previous generation) never reaches this function, and an
+/// empty diff returns before opening the bus. On a bus-less host (e.g. the apm
+/// microVM tests, which run no system D-Bus) a non-empty diff surfaces as a
+/// clear `SystemdUnavailable` error rather than the previous silent no-op; the
+/// live service path is exercised by the `apm-systemd-client` fleet test.
+async fn run_service_diff(diff: &ServiceDiff, printer: &Printer) -> Result<()> {
     if diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty() {
-        return;
+        return Ok(());
     }
 
-    // Daemon reload first.
-    let _ = std::process::Command::new("systemctl")
-        .arg("daemon-reload")
-        .status();
+    let client = SystemdClient::connect().await?;
+
+    // Daemon reload first so systemd picks up the new generation's unit files.
+    client.daemon_reload().await?;
 
     for unit in &diff.removed {
         printer.plain(&format!("  Stopping: {unit}"));
-        let _ = std::process::Command::new("systemctl")
-            .args(["stop", unit])
-            .status();
+        let outcome = client.stop_unit(unit).await?;
+        warn_if_job_not_done(printer, "stop", unit, &outcome.result);
     }
 
     for unit in &diff.changed {
         printer.plain(&format!("  Restarting: {unit}"));
-        let _ = std::process::Command::new("systemctl")
-            .args(["restart", unit])
-            .status();
+        let outcome = client.restart_unit(unit).await?;
+        warn_if_job_not_done(printer, "restart", unit, &outcome.result);
     }
 
     for unit in &diff.added {
         printer.plain(&format!("  Starting: {unit}"));
-        let _ = std::process::Command::new("systemctl")
-            .args(["start", unit])
-            .status();
+        let outcome = client.start_unit(unit).await?;
+        warn_if_job_not_done(printer, "start", unit, &outcome.result);
+    }
+
+    // Post-activation health gate: surface any unit left in a failed (or
+    // failed-and-auto-restarting) state and fail the whole operation, so
+    // `apm install/upgrade/rollback --system` exits non-zero instead of
+    // silently leaving a broken service set behind — which was the pre-D-Bus
+    // behaviour, where every `systemctl` exit code was discarded. The scan
+    // covers all loaded units, not just the ones in this diff: a (re)started
+    // unit can knock over a dependent one, and that should fail the activation
+    // too. Mirrors switch-to-configuration-ng's post-switch check.
+    let report = client.failed_units().await?;
+    if !report.is_empty() {
+        printer.error(&format_failed_units(&report));
+        bail!("{} service(s) failed during activation", report.failed.len());
     }
 
     printer.plain(&format!(
@@ -851,6 +878,49 @@ fn run_service_diff(diff: &ServiceDiff, printer: &Printer) {
         diff.removed.len(),
         diff.changed.len(),
     ));
+
+    Ok(())
+}
+
+/// Warn (but do not fail) when a unit lifecycle job ended in something other
+/// than `done`. The hard failure is the post-activation [`failed_units`] scan
+/// in [`run_service_diff`] — a job can report a transient non-`done` result yet
+/// the unit still settle active, so the authoritative gate is the final state.
+fn warn_if_job_not_done(printer: &Printer, verb: &str, unit: &str, result: &JobResult) {
+    if !result.is_done() {
+        printer.warning(&format!(
+            "  {verb} {unit}: systemd job result '{}'",
+            result.label(),
+        ));
+    }
+}
+
+/// Render a [`FailedUnitsReport`] for human display: a one-line summary per
+/// failed unit (state / sub-state / exit status) followed by its captured
+/// `systemctl status` dump, indented.
+fn format_failed_units(report: &FailedUnitsReport) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{} service(s) failed during activation:",
+        report.failed.len(),
+    );
+    for u in &report.failed {
+        let status = match u.exec_main_status {
+            Some(code) => code.to_string(),
+            None => "n/a".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "  - {} (active={}, sub={}, ExecMainStatus={})",
+            u.name, u.active_state, u.sub_state, status,
+        );
+        for line in u.status_dump.lines() {
+            let _ = writeln!(out, "      {line}");
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -996,7 +1066,12 @@ async fn handle_kernel_upgrade(
             } else {
                 printer.plain("Rebooting (kernel unchanged)...");
             }
-            run_command("systemctl", &["reboot"])?;
+            // Queue the reboot over D-Bus (`Manager.Reboot`) rather than
+            // shelling out to `systemctl reboot`. Constructed lazily, only on
+            // this arm. Returns once systemd has queued the transition; this
+            // process then exits or is torn down as systemd stops the system.
+            let client = SystemdClient::connect().await?;
+            client.reboot().await?;
         }
         KernelUpgradeMode::Live => {
             if kernel_changed {
@@ -1058,16 +1133,27 @@ async fn drain_workloads(toplevel: &str, printer: &Printer) -> Result<()> {
         return Ok(());
     }
 
-    // Fall back to systemd drain target if it exists.
-    let status = std::process::Command::new("systemctl")
-        .args(["is-active", "drain.target"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    if status.map(|s| s.success()).unwrap_or(false) {
+    // Fall back to the systemd `drain.target` if it exists. The client is
+    // constructed lazily here, only on the no-drain-script path (the common
+    // case ships a drain script and returns above). `start_unit` awaits the
+    // job, giving us the old `systemctl start --wait` semantics for free.
+    let client = SystemdClient::connect().await?;
+    if client.is_active("drain.target").await? {
         printer.plain("Draining workloads via drain.target...");
-        run_command("systemctl", &["isolate", "drain.target"])?;
-        run_command("systemctl", &["start", "--wait", "drain-complete.target"])?;
+        let isolate = client.isolate_unit("drain.target").await?;
+        if !isolate.result.is_done() {
+            bail!(
+                "isolating drain.target failed: systemd job result '{}'",
+                isolate.result.label(),
+            );
+        }
+        let complete = client.start_unit("drain-complete.target").await?;
+        if !complete.result.is_done() {
+            bail!(
+                "drain-complete.target failed: systemd job result '{}'",
+                complete.result.label(),
+            );
+        }
         printer.plain("Drain complete.");
     }
 
@@ -1371,5 +1457,39 @@ mod tests {
     fn kernel_upgrade_mode_default() {
         let mode = KernelUpgradeMode::default();
         assert_eq!(mode, KernelUpgradeMode::Advisory);
+    }
+
+    #[test]
+    fn format_failed_units_lists_each_unit() {
+        use aos_systemd::FailedUnit;
+
+        let report = FailedUnitsReport {
+            failed: vec![
+                FailedUnit {
+                    name: "broken.service".into(),
+                    active_state: "failed".into(),
+                    sub_state: "failed".into(),
+                    exec_main_status: Some(1),
+                    status_dump: "● broken.service - Broken\n   Active: failed".into(),
+                },
+                FailedUnit {
+                    name: "stuck.service".into(),
+                    active_state: "activating".into(),
+                    sub_state: "auto-restart".into(),
+                    exec_main_status: None,
+                    status_dump: String::new(),
+                },
+            ],
+        };
+
+        let out = format_failed_units(&report);
+        assert!(out.contains("2 service(s) failed during activation"), "{out}");
+        assert!(out.contains("broken.service"), "{out}");
+        assert!(out.contains("ExecMainStatus=1"), "{out}");
+        // The captured status dump is included, indented.
+        assert!(out.contains("      ● broken.service - Broken"), "{out}");
+        // A unit with no ExecMainStatus renders as n/a.
+        assert!(out.contains("stuck.service"), "{out}");
+        assert!(out.contains("ExecMainStatus=n/a"), "{out}");
     }
 }
