@@ -410,7 +410,20 @@ in {
   # --------------------------------------------------------------------------
   # Test 3: kernel-reboot
   # --------------------------------------------------------------------------
-  # --reboot flag: systemctl reboot after activation
+  # --reboot flag: queue a reboot after activation.
+  #
+  # Reboot is now queued via `Manager.Reboot` over the system bus, NOT by
+  # shelling out to the `systemctl` binary. Two layers verify the actual call:
+  # the `aos-systemd` unit test `reboot_calls_manager_reboot` (FakeSystemd
+  # records it) and the live apm-systemd-client fleet test. This headless
+  # microVM cannot exercise the reboot itself — it runs no system D-Bus, and a
+  # real reboot would be destructive — and apm here does not even reach the
+  # reboot dispatch (this harness does not register the mock toplevel in the
+  # Nix DB, so `apm install` stops at the download step; the kernel-mode
+  # dispatch was never reachable in these microVM tests, before or after the
+  # D-Bus migration). What this test still meaningfully guards is the
+  # migration's invariant: the reboot path must NEVER shell out to the
+  # `systemctl` binary mock that sits on PATH for the kexec/drain tests.
   kernel-reboot = testing.mkVMTest {
     name = "apm-kernel-reboot";
     rootfsDeps = testDeps ++ [registryKV2 toplevelKV1 toplevelKV2];
@@ -425,24 +438,19 @@ in {
       ln -sfn ${toplevelKV1} /var/lib/profiles/system/gen-1/toplevel
       ln -sfn gen-1 /var/lib/profiles/system/current
 
-      echo "==> Test: --reboot invokes systemctl reboot"
+      echo "==> Test: --reboot never shells out to the systemctl binary"
 
       OUTPUT=$(${apm}/bin/apm install server --system --yes --reboot 2>&1) || true
       echo "Output: $OUTPUT"
 
-      # Verify systemctl reboot was invoked
-      if [ -f /tmp/systemctl-invocations.log ]; then
-        echo "Systemctl invocations:"
+      # Regression guard: reboot goes through D-Bus (Manager.Reboot), never the
+      # systemctl binary. Pre-migration this mock would have logged "reboot".
+      if [ -f /tmp/systemctl-invocations.log ] && grep -q "reboot" /tmp/systemctl-invocations.log; then
+        echo "FAIL: reboot must not invoke the systemctl binary (it is now D-Bus)"
         cat /tmp/systemctl-invocations.log
-
-        if grep -q "reboot" /tmp/systemctl-invocations.log; then
-          echo "==> systemctl reboot was invoked"
-        else
-          echo "INFO: reboot not invoked — kernel may not have been detected as changed"
-        fi
-      else
-        echo "INFO: no systemctl invocations recorded"
+        exit 1
       fi
+      echo "==> systemctl binary not used for reboot (reboot is D-Bus; see reboot_calls_manager_reboot)"
 
       echo "==> kernel-reboot PASSED"
     '';
