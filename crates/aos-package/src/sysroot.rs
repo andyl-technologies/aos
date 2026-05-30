@@ -982,6 +982,15 @@ async fn reconcile_inner(
     // Always daemon-reload first so systemd ingests the new unit files.
     client.daemon_reload().await.context("daemon-reload")?;
 
+    // Clear *stale* failed state from before the switch, BEFORE we apply any
+    // changes. This must not run after the apply phase: a unit that fails to
+    // (re)start below stays in the `failed` state, and a blanket reset_failed
+    // afterwards would wipe exactly the failures the health gate exists to
+    // catch (the EX_DEGRADED contract). Resetting here means the post-apply
+    // scan reports only failures introduced by *this* reconcile, not unrelated
+    // pre-existing ones.
+    client.reset_failed().await.context("reset-failed")?;
+
     // Apply in order: stop → reload → restart → start. The diff engine has
     // already ordered sockets first within to_restart / to_start. Each list
     // file is deleted as its phase finishes, so a resumed run skips it.
@@ -1024,8 +1033,9 @@ async fn reconcile_inner(
     }
     remove_list(run_dir, "start-list");
 
-    // Clear stale failed state from before the switch, then drain late jobs.
-    client.reset_failed().await.context("reset-failed")?;
+    // Drain late job events so the scan below sees settled unit states.
+    // (reset_failed already ran before the apply phase — see above — so we do
+    // NOT clear failed state here; that would mask failures from the apply.)
     let late = client.settle().await.context("settling job events")?;
     if late > 0 {
         printer.info(&format!("settled {late} late job event(s)"));
