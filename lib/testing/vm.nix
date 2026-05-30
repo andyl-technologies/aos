@@ -356,14 +356,13 @@
       ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
         -f var/etc/ssh/ssh_host_ed25519_key </dev/null
 
-      # Test os-release marker — overlays the production
-      # /etc/os-release without changing the toplevel module.
-      cat > var/etc/os-release << 'OSREL'
-      ID=aos
-      NAME="ANDYL OS"
-      PRETTY_NAME="ANDYL OS (test)"
-      VERSION_ID=0.1
-      OSREL
+      # NOTE: we deliberately do NOT seed /var/etc/os-release here.
+      # /var/etc is the highest-precedence /etc-overlay lower
+      # (modules/services/ignition.nix), so a var-seed os-release would
+      # shadow the generation's EROFS os-release on every boot — masking
+      # the real NAME/VERSION_ID and breaking upgrade tests that assert
+      # the active generation's version. The toplevel's own os-release
+      # (modules/base/system.nix, baked into the EROFS) surfaces instead.
 
       # Fallback nsswitch.conf — matches the toplevel default but
       # shadowing here means even a minimal test system gets sane
