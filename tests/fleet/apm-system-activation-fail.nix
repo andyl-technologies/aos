@@ -1,32 +1,30 @@
-# tests/fleet/apm-system-activation-fail.nix — P3 regression: a failed
-# service activation makes `apm <op> --system` exit non-zero.
+# tests/fleet/apm-system-activation-fail.nix — the failed-units health gate.
 #
-# Before this change every `systemctl` call during a generation switch was
-# fire-and-forget — a service that failed to (re)start was silently ignored and
-# the command still returned success. P3 added a post-activation
-# `failed_units()` gate to `run_service_diff` (shared by install / upgrade /
-# rollback): if any unit is left failed, apm prints the offending units and
-# exits non-zero.
+# Contract (decision 1 of the apm system-upgrade refactor v2): when a unit
+# fails to (re)start during a generation switch, the switch is NOT rolled back
+# (the /etc swap is authoritative), but the operation must surface a non-zero
+# exit. After the v2 refactor that gate lives in `apm activate-reconcile`
+# (crates/aos-package/src/sysroot.rs::reconcile_inner): it diffs live `/etc`
+# against the candidate `/etc`, applies stop/reload/restart/start, then scans
+# for failed units and returns exit code 1 if any are left failed (0 = clean,
+# 2 = catastrophic). The activate script maps that 1 → EX_DEGRADED=6 →
+# `apm upgrade/rollback --system` exits non-zero.
 #
-# We drive that gate through **rollback**, not upgrade. The bail lives in the
-# shared `run_service_diff`, so a rollback exercises the identical code path —
-# and rollback reaches it with none of the registry / NAR-download / Nix-DB
-# machinery that `install --system` needs (the apm microVM `system.nix` tests
-# already cover that flow structurally). `rollback_system` only reads local
-# generation state and the two toplevels' `etc/systemd/system` dirs, then calls
-# `run_service_diff` against the real system bus this fleet machine provides.
+# This test drives that gate directly. A predecessor of this file targeted the
+# old `run_service_diff` path with fabricated toplevels; that path was removed
+# in P1/P4 (the reconcile moved into the activate script), so the gate is now
+# exercised through `apm activate-reconcile` against a real live `/etc`.
 #
-# Setup: a generation pair where the rollback *target* (gen-1) declares a
-# service that fails to start. The service diff classifies it as "added", so
-# `run_service_diff` starts it; the start fails; the `failed_units()` scan
-# catches it; apm bails non-zero and names the unit. Because the toplevel's
-# `etc/systemd/system` is not on systemd's live search path in this harness, we
-# also drop the unit into `/run/systemd/system` so `daemon-reload` + start can
-# load it — mirroring what real activation does when it materialises /etc.
+# Scenario: build a candidate `/etc` that is a faithful copy of the live one
+# (so the diff classifies nothing as removed — stopping live units would be
+# catastrophic) plus ONE added unit that fails to start. The reconcile sees it
+# as `added` → starts it → it fails → the post-apply scan catches it → exit 1.
+# This also pins the `reset_failed` ordering fix: `reset_failed` must run
+# BEFORE the apply phase, or it would wipe exactly this failure before the scan.
 #
-# File bodies (the unit, state.json) are shipped as base64 and decoded on the
-# guest, dodging shell-quoting and heredoc-termination hazards (same trick as
-# apm-e2e.nix). `${pkgs...}` are Nix interpolations resolved at eval time.
+# Single machine (N=1) — the gate needs the real system D-Bus, which the
+# fleet harness's full systemd boot provides. apm is invoked by store path
+# (the rootfs symlink farm omits the `.apm-unwrapped` dotfile; see apm-e2e.nix).
 {
   pkgs,
   systems,
@@ -36,8 +34,7 @@
   timeout = 600;
 
   machines = {
-    # Roleless server image: full systemd + dbus (what run_service_diff needs);
-    # `apm` ships via modules/base/apm.nix. Python global `vm`.
+    # Python global `vm`.
     vm = {system = systems.server;};
   };
 
@@ -46,14 +43,15 @@
     ''
       import base64
 
-      # ── 0. Wait for the system bus ────────────────────────────────
+      # ── 0. Wait for the system bus (reconcile connects to it) ─────
       vm.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
 
-      # ── 1. Build the file bodies (Nix already substituted the store
-      #       paths below; these are plain Python strings, not f-strings). ──
+      # A unit that fails to start: a oneshot whose ExecStart is /bin/false.
+      # It ends in the `failed` state with no auto-restart, so it is exactly
+      # the kind of failure a naive `reset_failed` before the scan would mask.
       unit = (
           "[Unit]\n"
-          "Description=apm P3 regression: a service that fails to start\n"
+          "Description=apm activation-fail regression: a unit that fails to start\n"
           "\n"
           "[Service]\n"
           "Type=oneshot\n"
@@ -61,65 +59,54 @@
       )
       unit_b64 = base64.b64encode(unit.encode()).decode()
 
-      # current=gen-2 (no services); gen-1 is the rollback target and declares
-      # the failing unit, so the diff (old=gen-2, new=gen-1) sees it as "added".
-      state = (
-          '{\n'
-          '  "current": 2,\n'
-          '  "next": 3,\n'
-          '  "generations": [\n'
-          '    { "number": 1, "toplevel": "/run/apm-regression/tl1",'
-          ' "version": "1.0", "package_name": "regression", "registry": "test",'
-          ' "created_at": "2026-01-01T00:00:00Z", "kernel_path": null },\n'
-          '    { "number": 2, "toplevel": "/run/apm-regression/tl2",'
-          ' "version": "2.0", "package_name": "regression", "registry": "test",'
-          ' "created_at": "2026-02-01T00:00:00Z", "kernel_path": null }\n'
-          '  ]\n'
-          '}\n'
-      )
-      state_b64 = base64.b64encode(state.encode()).decode()
-
-      # ── 2. Materialise the scenario on the guest ──────────────────
-      # Normalise the baseline so the post-rollback failed_units() bail is
-      # attributable to our unit alone.
+      # ── 1. Normalise the failed-unit baseline ─────────────────────
       vm.succeed("systemctl reset-failed || true")
-      vm.succeed(
-          "mkdir -p /run/apm-regression/tl1/etc/systemd/system "
-          "/run/apm-regression/tl2/etc/systemd/system /run/systemd/system "
-          "/var/lib/profiles/system/gen-1 /var/lib/profiles/system/gen-2"
-      )
-      # The unit goes both into gen-1's toplevel (so the diff detects it) and
-      # into /run/systemd/system (so the live systemd can actually load it).
-      vm.succeed(
-          f"echo {unit_b64} | base64 -d"
-          " > /run/apm-regression/tl1/etc/systemd/system/apm-reg-fail.service"
-      )
-      vm.succeed(f"echo {unit_b64} | base64 -d > /run/systemd/system/apm-reg-fail.service")
-      vm.succeed("systemctl daemon-reload")
-      vm.succeed("ln -sfn /run/apm-regression/tl1 /var/lib/profiles/system/gen-1/toplevel")
-      vm.succeed("ln -sfn /run/apm-regression/tl2 /var/lib/profiles/system/gen-2/toplevel")
-      vm.succeed("ln -sfn gen-2 /var/lib/profiles/system/current")
-      vm.succeed(f"echo {state_b64} | base64 -d > /var/lib/profiles/system/state.json")
+      vm.fail("systemctl is-failed apm-reg-fail.service || false")
 
-      # ── 3. Rollback must FAIL because a service failed to activate ─
-      # `fail` asserts a non-zero exit and returns stdout; 2>&1 folds the error
-      # report (printed to stderr) into it so we can assert on the text.
-      out = vm.fail("HOME=/tmp ${pkgs.aos}/bin/apm rollback --system 2>&1", timeout=180)
+      # ── 2. Build a candidate /etc = faithful copy of live + the new unit ─
+      # compute_diff only reads <root>/systemd/system plus the X-Reload-Triggers
+      # paths (nftables.d / sysctl.d / modules-load.d / nftables.conf), so
+      # copying those makes the ONLY difference the added unit — nothing is
+      # classified as removed (which would stop live units) and nothing else
+      # is restarted. The unit also goes into /run/systemd/system so the live
+      # systemd can actually load + start it (the candidate tree is not on
+      # systemd's search path).
+      vm.succeed(
+          "set -eu\n"
+          "CAND=/run/apm-acttest/cand\n"
+          "mkdir -p \"$CAND/systemd\"\n"
+          "cp -a /etc/systemd/system \"$CAND/systemd/system\"\n"
+          "for t in nftables.d sysctl.d modules-load.d; do\n"
+          "  [ -e \"/etc/$t\" ] && cp -a \"/etc/$t\" \"$CAND/$t\" || true\n"
+          "done\n"
+          "[ -e /etc/nftables.conf ] && cp -a /etc/nftables.conf \"$CAND/nftables.conf\" || true\n"
+          f"echo {unit_b64} | base64 -d > \"$CAND/systemd/system/apm-reg-fail.service\"\n"
+          f"echo {unit_b64} | base64 -d > /run/systemd/system/apm-reg-fail.service\n"
+          "systemctl daemon-reload\n"
+      )
+
+      # ── 3. Reconcile must exit 1 (failed units), naming the unit ──
+      # --gen / --new-toplevel are required by the CLI but unused by the
+      # filesystem diff; point --new-toplevel at the candidate dir. Capture
+      # the exit code explicitly so we distinguish 1 (failed-units gate, the
+      # contract) from 2 (catastrophic).
+      out = vm.succeed(
+          "HOME=/tmp ${pkgs.aos}/bin/apm activate-reconcile "
+          "--gen 99 --candidate-etc /run/apm-acttest/cand "
+          "--new-toplevel /run/apm-acttest/cand 2>&1; echo RECONCILE_RC=$?",
+          timeout=180,
+      )
+      print("=== activate-reconcile output ===\n" + out)
+      rc = int(out.strip().splitlines()[-1].split("=", 1)[1])
+      assert rc == 1, f"expected exit 1 (failed-units gate), got {rc}; output:\n{out}"
       assert "apm-reg-fail.service" in out, (
-          f"expected the failed unit to be named in the output; got: {out!r}"
-      )
-      assert "failed during activation" in out, (
-          f"expected the activation-failure diagnostic; got: {out!r}"
+          f"expected the failed unit to be named; output:\n{out}"
       )
 
-      # ── 4. Corroborate: the unit genuinely failed (not a spurious exit) ──
-      # systemctl is-failed exits 0 iff the unit is in the failed state.
+      # ── 4. Corroborate: the unit genuinely failed (gate wasn't spurious) ─
+      # `systemctl is-failed` exits 0 iff the unit is in the failed state.
+      # This is the assertion that would FAIL if `reset_failed` ran after the
+      # apply phase and wiped the failure before the scan.
       vm.succeed("systemctl is-failed apm-reg-fail.service")
-
-      # ── 5. The generation switch still committed before the bail ──
-      # Activation failing does not undo the symlink/state flip — apm surfaces
-      # the failure but the switch is atomic and already done.
-      target = vm.succeed("readlink /var/lib/profiles/system/current").strip()
-      assert target == "gen-1", f"rollback should have switched current -> gen-1, got {target!r}"
     '';
 }
