@@ -80,6 +80,19 @@
         '';
       };
 
+      extraClosures = mkOption {
+        type = types.listOf types.package;
+        default = [];
+        description = ''
+          Extra Nix derivations whose full closures land in /nix/store on
+          this machine's rootfs. Used by upgrade tests that need a second
+          system toplevel pre-staged on disk so `apm upgrade --system`
+          doesn't have to traverse the network for store paths (the
+          pre-staged path is registered valid in the Nix DB at test time;
+          see tests/fleet/apm-system-upgrade.nix).
+        '';
+      };
+
       instanceMetadata = mkOption {
         type = types.nullOr (types.submodule {
           options = {
