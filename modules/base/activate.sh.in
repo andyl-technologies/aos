@@ -243,7 +243,15 @@ workdir="$upper_root/work" \
 # degraded), 2 catastrophic (abort the switch).
 STAGE="$STAGE_RECONCILE"
 set +e
-@apm@/bin/apm activate-reconcile \
+# Invoke the UNWRAPPED binary directly, not @apm@/bin/apm. The `apm` wrapper
+# runs `exec "$(dirname "$0")/.apm-unwrapped"`, which needs `dirname` on PATH —
+# but this script runs with `PATH=` (empty), so the wrapper would die with
+# "dirname: command not found". `activate-reconcile` does pure filesystem +
+# D-Bus work and shells out to neither git nor nix-store, so it needs none of
+# the git/nix PATH the wrapper sets up. Calling `.apm-unwrapped` (argv0 still
+# ends in `apm`, so the multicall dispatches to the package surface) sidesteps
+# the wrapper entirely.
+@apm@/bin/.apm-unwrapped activate-reconcile \
   --gen="$N" \
   --candidate-etc="$tmpEtc" \
   --new-toplevel="$new_top" \
