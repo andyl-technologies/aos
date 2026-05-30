@@ -171,9 +171,11 @@ in {
       checks = [
         {
           name = "os-release";
-          description = "os-release contains ANDYL OS";
+          description = "os-release identifies the configured OS name + version";
           script = ''
-            assert "ANDYL OS" in vm.succeed("cat /etc/os-release")
+            osrel = vm.succeed("cat /etc/os-release")
+            assert 'NAME="${cfg.name}"' in osrel, osrel
+            assert "VERSION_ID=${cfg.version}" in osrel, osrel
           '';
         }
         {

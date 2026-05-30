@@ -313,20 +313,18 @@ in {
       # gen-2's EROFS metadata image, and the var-seed never writes under
       # /etc/aos/, so its appearance is a clean proof the EROFS lower was
       # swapped to gen-2.
-      #
-      # NOTE (deviation from spec §8.4): the spec also asserted
-      # `VERSION_ID=test-2` in /etc/os-release. That cannot hold in this
-      # harness — lib/testing/vm.nix's var-seed writes /var/etc/os-release
-      # (VERSION_ID=0.1), and /var/etc is the highest-precedence lower in
-      # the three-layer /etc overlay (modules/services/ignition.nix:309),
-      # so it shadows the gen's EROFS os-release on every generation. The
-      # marker file (which the var-seed does not write) is the load-bearing
-      # EROFS-swap proof instead.
       target.succeed("test -f /etc/aos/upgrade-test/marker.conf")
       marker = target.succeed(
           "cat /etc/aos/upgrade-test/marker.conf"
       ).strip()
       assert marker == "marker = 1", f"unexpected marker content: {marker!r}"
+
+      # os-release reflects gen-2's version. The harness no longer seeds
+      # /var/etc/os-release (it would shadow the gen's EROFS os-release —
+      # see lib/testing/vm.nix), so the active generation's VERSION_ID
+      # surfaces and corroborates the EROFS swap.
+      osrel = target.succeed("cat /etc/os-release")
+      assert "VERSION_ID=test-2" in osrel, osrel
 
       # ── 10. Role drop-ins regenerated on the per-gen ignition lower ──
       nftd = target.succeed("cat /etc/nftables.d/50-role-test-http-server.nft")
@@ -383,6 +381,9 @@ in {
       target.fail("test -e /etc/aos/upgrade-test/marker.conf")
       # The added unit is torn down with gen-2.
       target.fail("test -e /etc/systemd/system/aos-upgrade-test-marker.service")
+      # os-release is back to gen-1's version (no longer the gen-2 "test-2").
+      osrel_back = target.succeed("cat /etc/os-release")
+      assert "VERSION_ID=test-2" not in osrel_back, osrel_back
 
       # /run/etc bookkeeping: the active system lower points back at
       # system-1, and Phase C tore down gen-2's mounts.

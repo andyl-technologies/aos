@@ -26,9 +26,9 @@
       }
       {
         name = "os-release";
-        description = "/etc/os-release identifies ANDYL OS";
+        description = "/etc/os-release identifies the configured OS name";
         script = ''
-          assert "ANDYL OS" in vm.succeed("cat /etc/os-release")
+          assert 'NAME="${config.aos.system.name}"' in vm.succeed("cat /etc/os-release")
         '';
       }
       {
