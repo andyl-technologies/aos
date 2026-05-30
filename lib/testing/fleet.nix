@@ -73,6 +73,9 @@
       m = machines.${mname};
     in {
       inherit (m) system roles instanceMetadata;
+      # `extraClosures` defaults to [] on the fleet machine type, so this
+      # `or []` only matters for callers bypassing fleet-spec validation.
+      extraClosures = m.extraClosures or [];
       name = mname;
       ip = "192.168.50.${toString (i + 10)}";
       mac = mkMac 0 (i + 1);
@@ -257,8 +260,10 @@
       };
 
   # ── Per-machine builds ─────────────────────────────────────────────
-  # `disk` is a function of `system` only — Nix dedups identical
-  # derivations, so two machines on the same system reference one disk.
+  # `disk` is a function of `{system, extraClosures}` — Nix dedups
+  # identical derivations, so two machines with the same system and the
+  # same extraClosures reference one disk (machines differing only by
+  # extraClosures get distinct disks).
   # `metadataISO` is the only per-machine derivation; in interactive
   # mode the SSH-key+DHCP fragment changes the ignition input, so
   # interactive ISOs hash differently from sandboxed-test ISOs.
@@ -272,7 +277,10 @@
       inherit (m) name ip mac debugMac index system roles;
       kernel = m.system.config.system.build.kernel;
       initrd = m.system.config.system.build.initrd;
-      disk = vmLib.mkTestDisk {system = m.system;};
+      disk = vmLib.mkTestDisk {
+        system = m.system;
+        inherit (m) extraClosures;
+      };
       metadataISO = metadataLib.mkMetadataIso {
         name = "${name}-${m.name}";
         ignitionConfig = composeIgnition {inherit name identity debug;} m;

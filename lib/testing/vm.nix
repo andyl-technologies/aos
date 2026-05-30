@@ -75,6 +75,13 @@
   mkTestDisk = {
     system,
     name ? "aos-disk",
+    # Extra derivations whose full closures land in /nix/store on the
+    # rootfs, over and above `system`'s own closure. Upgrade tests pass
+    # a second system toplevel here so `apm upgrade --system` finds its
+    # store paths already present locally (no network fetch) — see
+    # lib/build/rootfs.nix's `extraClosures` and tests/fleet/
+    # apm-system-upgrade.nix.
+    extraClosures ? [],
   }: let
     systemPackages = system.config.environment.systemPackages;
 
@@ -418,13 +425,16 @@
       # reference socat at a runtime-only path (not via environment.
       # systemPackages), so include explicitly to guarantee its closure
       # lands in /nix/store. The other three are no-ops if already in
-      # toplevel's closure.
-      extraClosures = [
-        pkgs.systemd
-        pkgs.coreutils
-        pkgs.bash
-        pkgs.socat
-      ];
+      # toplevel's closure. Caller-supplied `extraClosures` (e.g. a
+      # second system toplevel for upgrade tests) are appended.
+      extraClosures =
+        [
+          pkgs.systemd
+          pkgs.coreutils
+          pkgs.bash
+          pkgs.socat
+        ]
+        ++ extraClosures;
       # Symlink farm into /usr/bin, /usr/sbin, /usr/libexec. Ordering
       # is first-wins for collisions — coreutils before systemd so
       # coreutils' `env` / `ls` / etc. don't get shadowed.
