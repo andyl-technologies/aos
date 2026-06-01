@@ -69,6 +69,10 @@
   # referencing `/nix/store/...-socat-*` verbatim).
   allClosures = [toplevel kernel] ++ extraClosures;
 
+  regInfo = import ./closure-info.nix {inherit pkgs lib;} {
+    rootPaths = allClosures;
+  };
+
   # Pair each closure with a numeric label for exportReferencesGraph.
   # The populate phase greps `closure-*` and sorts -u for unique paths.
   closureGraph =
@@ -119,6 +123,7 @@ in
 
     TOPLEVEL = toString toplevel;
     KERNEL = toString kernel;
+    REGINFO = toString regInfo;
     SYSTEMD = toString pkgs.systemd;
     COREUTILS = toString pkgs.coreutils;
     # `$BASH` is a bash built-in pointing at the bash executable
@@ -225,6 +230,12 @@ in
           # edge. See spec v12 §6.1.
           ln -sfn "$TOPLEVEL" rootfs/aos-toplevel
 
+          # ── 8. /aos-registration Nix DB seed ───────────────────────────
+          # Stage-2 loads this plain text `nix-store --load-db` stream to
+          # register the image closure without canonicalising/chowning store
+          # contents. Copy the bytes instead of symlinking the derivation.
+          cp "$REGINFO/registration" rootfs/aos-registration
+
           # /etc/machine-id no longer touched here — stage-1's
           # aos-machine-id.service generates /var/etc/machine-id on
           # first boot from /proc/sys/kernel/random/uuid, and the
@@ -233,10 +244,10 @@ in
           # file on the wrong side of the overlay (and on every
           # rebuild's $TOPLEVEL, defeating per-host persistence).
 
-          # ── 8. Symlink farm for caller-supplied packages ───────────────
+          # ── 9. Symlink farm for caller-supplied packages ───────────────
           ${symlinkFarmScript}
 
-          # ── 9. Caller-supplied postPopulate hook ───────────────────────
+          # ── 10. Caller-supplied postPopulate hook ──────────────────────
           ${postPopulate}
         '';
       }

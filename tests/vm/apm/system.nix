@@ -354,10 +354,11 @@
     ];
   };
 
-  # Preamble for system tests.
-  # The storePaths parameter lists real Nix store paths that should be
-  # registered in the Nix database so that `nix-store --check-validity`
-  # succeeds for them (the VM has the files but no db by default).
+  # Preamble for headless system tests.
+  # These tests use rootfsDeps mode, where the test script is PID 1 and the
+  # stage-2 aos-nix-db.service never runs. The headless rootfs still ships
+  # /aos-registration, so load that stream explicitly after setting up Nix's
+  # runtime library path.
   # nix-store needs its runtime libraries (RPATH doesn't cover all deps yet)
   nixLibPath = builtins.concatStringsSep ":" (map (p: "${p}/lib") [
     pkgs.nix
@@ -378,7 +379,6 @@
   mkSystemPreamble = {
     registryPath,
     stateJson ? null,
-    storePaths ? [],
   }: ''
         export HOME=/tmp/home
         export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -413,17 +413,13 @@
       else ""
     }
 
-        # Register real store paths in the Nix database so that
-        # nix-store --check-validity succeeds for them.
-        # The VM rootfs has /nix/store but no Nix database.
-        # First initialise the store DB, then register each path.
-        mkdir -p /nix/var/nix/db /nix/var/nix/gcroots /nix/var/nix/temproots /nix/var/nix/userpool
+        # Headless rootfsDeps tests do not boot stage-2 systemd, so seed the
+        # Nix DB from the same registration stream full images load at boot.
         export NIX_REMOTE=""
-        nix-store --init
-        ${builtins.concatStringsSep "\n" (builtins.map (p: ''
-        printf '%s\n\n0\n' "${builtins.toString p}" | nix-store --register-validity
-      '')
-      storePaths)}
+        nix-store --init || true
+        nix-store --load-db < /aos-registration
+        mkdir -p /nix/var/nix/gcroots
+        ln -sfn /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
   '';
 
   # State with v1 installed
@@ -519,7 +515,6 @@ in {
     testScript = ''
       ${mkSystemPreamble {
         registryPath = registryV1;
-        storePaths = [toplevelV1];
       }}
 
       echo "==> Test: apm install server --system creates a generation"
@@ -578,7 +573,6 @@ in {
       ${mkSystemPreamble {
         registryPath = registryV2;
         stateJson = stateV1;
-        storePaths = [toplevelV1 toplevelV2];
       }}
 
       # Set up gen-1 directory structure
