@@ -1,0 +1,74 @@
+##! modules/base/nix-db.nix — Seed the single-user Nix database
+##!
+##! The image ships its store closure in /nix.lower/store and the initrd mounts
+##! it at /nix/store via overlayfs. This stage-2 unit registers that closure in
+##! Nix's local DB and exposes AOS profile generations as Nix GC roots.
+{pkgs, ...}: {
+  config = {
+    systemd.services."aos-nix-db" = {
+      description = "Seed Nix store database and AOS GC roots";
+      wantedBy = ["multi-user.target"];
+      after = ["local-fs.target"];
+      before = ["multi-user.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        set -euo pipefail
+
+        # Initialise the store layout/schema if absent. Loading the registration
+        # stream is idempotent and does not canonicalise/chown store contents.
+        ${pkgs.nix}/bin/nix-store --init || true
+        if [ -r /aos-registration ]; then
+          ${pkgs.nix}/bin/nix-store --load-db < /aos-registration
+        fi
+
+        # Nix's GC follows symlinks under gcroots recursively. This bridge makes
+        # apm's existing profile generation symlinks visible to Nix GC.
+        ${pkgs.coreutils}/bin/mkdir -p /nix/var/nix/gcroots
+        ${pkgs.coreutils}/bin/ln -sfn /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
+      '';
+    };
+
+    system.checks.nix-db = {
+      description = "Nix store database seed and GC-root bridge";
+      checks = [
+        {
+          name = "service-active";
+          description = "aos-nix-db.service completed during boot";
+          script = ''
+            vm.succeed("systemctl is-active aos-nix-db.service")
+          '';
+        }
+        {
+          name = "database-created";
+          description = "single-user Nix database exists on the writable overlay";
+          script = ''
+            vm.succeed("${pkgs.coreutils}/bin/test -f /nix/var/nix/db/db.sqlite")
+          '';
+        }
+        {
+          name = "gcroot-bridge";
+          description = "AOS profile tree is visible under Nix GC roots";
+          script = ''
+            vm.succeed("${pkgs.coreutils}/bin/test -L /nix/var/nix/gcroots/aos-profiles")
+            assert "/var/lib/profiles" in vm.succeed(
+                "${pkgs.coreutils}/bin/readlink /nix/var/nix/gcroots/aos-profiles"
+            )
+          '';
+        }
+        {
+          name = "current-system-valid";
+          description = "the booted system toplevel is registered valid";
+          script = ''
+            vm.succeed(
+                "${pkgs.nix}/bin/nix-store --check-validity "
+                "$(${pkgs.coreutils}/bin/readlink /run/current-system)"
+            )
+          '';
+        }
+      ];
+    };
+  };
+}

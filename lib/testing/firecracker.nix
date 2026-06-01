@@ -54,6 +54,11 @@
       allDeps;
     flatGraphPairs = builtins.concatLists graphPairs;
 
+    regInfo = import ../build/closure-info.nix {inherit pkgs lib;} {
+      rootPaths = allDeps;
+      pname = "fc-rootfs-${pname}-closure-info";
+    };
+
     closureFileNames = builtins.genList (i: "closure-${builtins.toString i}") (builtins.length allDeps);
 
     catClosures = builtins.concatStringsSep " " closureFileNames;
@@ -150,6 +155,7 @@
       UTIL_LINUX = builtins.toString utilLinuxPkg;
       BOOTSTRAP = builtins.toString bootstrapTools;
       DYNAMIC_LINKER = dynamicLinker;
+      REGINFO = builtins.toString regInfo;
 
       phases = [
         {
@@ -178,6 +184,11 @@
                           fi
                         done < all-paths
                         echo ""
+
+                        # Headless tests do not run the stage-2 Nix DB seed
+                        # unit, but they can load the same registration stream
+                        # explicitly when they exercise Nix store operations.
+                        cp "$REGINFO/registration" rootfs/aos-registration
 
                         # /bin/sh -> bash (required for shell scripts)
                         ln -sfn $AOS_BASH/bin/bash rootfs/bin/sh

@@ -38,14 +38,10 @@
 # ── Why the upgrade needs no network ───────────────────────────────────
 # `extraClosures` pre-stages the entire server-2 closure onto the target's
 # disk, so `apm upgrade --system` finds every store path present and downloads
-# nothing. Two things the spec didn't call out are handled here:
-#   1. The booted AOS system has /nix/store but no Nix *database* (see the
-#      design brief at archives 2026-05-29_nix_db_problem.md), so `nix-store
-#      --check-validity` — which apm's filter_missing uses — would report the
-#      pre-staged toplevel as missing and try to fetch it. We register it valid
-#      first (the `nix-store --init` + `--register-validity` incantation proven
-#      in tests/vm/apm/system.nix). With references=[] in the registry entry,
-#      apm only ever checks the toplevel path itself.
+# nothing. Two details are handled here:
+#   1. The full image ships `/aos-registration`, and aos-nix-db.service loads it
+#      at boot. That makes the pre-staged server-2 closure visible to
+#      `nix-store --check-validity` without manual test seeding.
 #   2. `apm upgrade --system` reads SYSTEM-scope registries
 #      (/etc/apm/registries.d for config, /var/lib/apm/remote for the synced
 #      packages — types.rs), NOT the user scope that `apm registry add` /
@@ -60,8 +56,6 @@
   pkgs,
   systems,
 }: let
-  tomlFmt = lib.formats.toml {inherit lib pkgs;};
-
   # gen-2's toplevel. Pre-staged on the target via `extraClosures`; the
   # registry entry's `store_path` names this exact path.
   server2Top = systems.server-2.config.system.build.toplevel;
@@ -75,30 +69,69 @@
   #     upgrade_system looks up `reg.packages.get(&current_gen.package_name)`,
   #     and gen-1's package_name is "aos".
   #   - version "test-2" matches systems/server-2.nix's aos.system.version.
-  #   - references = [] — the closure is pre-staged + registered valid, so apm
-  #     never recurses into references and never downloads.
+  #   - references are the real direct reference hashes from Nix's structured
+  #     exportReferencesGraph metadata.
   #   - nar_hash is a placeholder: with nothing to download there is no verify
   #     step, so the value is never inspected.
-  serverPkgToml = tomlFmt.generate "aos.toml" {
-    package = {
-      name = "aos";
-      description = "Upgrade test fixture (server-2 toplevel)";
-      license = "MIT";
-      maintainer = "test";
-      sysroot = true;
-    };
-    versions = [
+  serverPkgToml = pkgs.mkDerivation {
+    pname = "apm-system-upgrade-server2-registry-entry";
+    version = "0";
+    src = null;
+
+    __structuredAttrs = true;
+    exportReferencesGraph.server2 = [server2Top];
+
+    buildDeps = [
+      pkgs.jq
+      pkgs.coreutils
+    ];
+
+    dontStrip = true;
+    dontNukeRefs = true;
+
+    SERVER2_TOP = builtins.toString server2Top;
+
+    phases = [
       {
-        version = "test-2";
-        platforms.x86_64-linux = {
-          store_path = "${server2Top}";
-          nar_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-          nar_size = 0;
-          closure_size = 0;
-          source_drv = "";
-          source_nar_hash = "";
-          references = [];
-        };
+        name = "build";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+
+          references=$(
+            jq -r --arg path "$SERVER2_TOP" '
+              [
+                .server2[]
+                | select(.path == $path)
+                | .references[]
+                | split("/")[-1]
+                | split("-")[0]
+              ]
+              | @json
+            ' < "$NIX_ATTRS_JSON_FILE"
+          )
+
+          {
+            printf '%s\n' '[package]'
+            printf '%s\n' 'name = "aos"'
+            printf '%s\n' 'description = "Upgrade test fixture (server-2 toplevel)"'
+            printf '%s\n' 'license = "MIT"'
+            printf '%s\n' 'maintainer = "test"'
+            printf '%s\n' 'sysroot = true'
+            printf '\n'
+            printf '%s\n' '[[versions]]'
+            printf '%s\n' 'version = "test-2"'
+            printf '\n'
+            printf '%s\n' '[versions.platforms.x86_64-linux]'
+            printf 'store_path = "%s"\n' "$SERVER2_TOP"
+            printf '%s\n' 'nar_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"'
+            printf '%s\n' 'nar_size = 0'
+            printf '%s\n' 'closure_size = 0'
+            printf '%s\n' 'source_drv = ""'
+            printf '%s\n' 'source_nar_hash = ""'
+            printf 'references = %s\n' "$references"
+          } > "$out/aos.toml"
+        '';
       }
     ];
   };
@@ -196,17 +229,10 @@ in {
           f"echo {package_toml_b64} | base64 -d > /var/lib/apm/remote/test-reg/packages/a/aos.toml\n"
       )
 
-      # ── 3. Register the pre-staged toplevel valid in the target's Nix DB ─
-      # The booted system has /nix/store (extraClosures put the whole server-2
-      # closure there) but no Nix DB; initialise it and register the toplevel
-      # path so apm's check-validity sees it present (no download). With
-      # references=[] in the TOML, apm only checks this one path.
+      # ── 3. The boot-time DB seed covers the pre-staged toplevel ────────
       target.succeed(
-          "set -eu\n"
-          'export NIX_REMOTE=""\n'
-          "mkdir -p /nix/var/nix/db /nix/var/nix/gcroots /nix/var/nix/temproots /nix/var/nix/userpool\n"
-          "${pkgs.nix}/bin/nix-store --init\n"
-          "printf '%s\\n\\n0\\n' '${server2Top}' | ${pkgs.nix}/bin/nix-store --register-validity\n"
+          "systemctl is-active aos-nix-db.service\n"
+          "test -L /nix/var/nix/gcroots/aos-profiles\n"
           "${pkgs.nix}/bin/nix-store --check-validity '${server2Top}'\n",
           timeout=120,
       )

@@ -426,9 +426,10 @@ in {
       # remount,rw window, identical on fresh installs and post-upgrade
       # boots.
       #
-      # Garbage collection only ever evicts upper-layer paths: the lower
-      # is read-only by physics, not by gcroots, so image-shipped store
-      # paths are protected as a property of the layout.
+      # Once the Nix DB is seeded, GC safety depends on roots. The lower
+      # filesystem cannot be physically deleted, but unreferenced lower store
+      # paths can still be hidden by overlay whiteouts; the stage-2 GC-root
+      # bridge keeps the live AOS profile closure reachable.
       "nix-overlay-setup" = {
         description = "Set Up /nix Overlay Filesystem";
         wantedBy = ["initrd-fs.target"];
