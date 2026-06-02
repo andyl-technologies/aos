@@ -255,30 +255,28 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: RegistryCommand,
     },
-    /// Reconcile running systemd against a candidate /etc view.
+    /// Hidden: pre-/etc-swap daemon reconcile planning.
     ///
-    /// Called from the toplevel's `activate` script during
-    /// install / upgrade / rollback (Phase B-mid). Diffs the live
-    /// `/etc/systemd/system` against the candidate overlay's and applies the
-    /// right stop / reload / restart / start actions over D-Bus. Talks to
-    /// systemd and needs no apm config, so `run()` dispatches it before
-    /// `ApmConfig::load` and `std::process::exit`s its 0/1/2 status code.
-    ActivateReconcile {
-        /// Generation number being activated. The field is `generation`
-        /// because `gen` is reserved in edition 2024; the CLI flag stays
-        /// `--gen` so the activate script's call site is stable.
+    /// Called only from the toplevel's `activate` script while it holds the
+    /// switch lock. Diffs live `/etc` against the candidate overlay, stops
+    /// units that must be torn down under their old definitions, and prints a
+    /// race-free plan path for the post-swap phase.
+    #[command(name = "activate-pre-etc-swap", hide = true)]
+    ActivatePreEtcSwap {
         #[arg(long = "gen")]
         generation: u32,
-        /// Candidate /etc view — the merged overlay built before the swap.
         #[arg(long)]
         candidate_etc: PathBuf,
-        /// Store path of the new toplevel (contract arg; not used by the diff).
+    },
+    /// Hidden: post-/etc-swap daemon reconcile apply.
+    ///
+    /// Called only from the toplevel's `activate` script while it holds the
+    /// switch lock. Reads the pre-swap plan, reloads systemd against the new
+    /// `/etc`, applies reload/restart/start actions, and runs the health gate.
+    #[command(name = "activate-post-etc-swap", hide = true)]
+    ActivatePostEtcSwap {
         #[arg(long)]
-        new_toplevel: PathBuf,
-        /// Symlink to the currently-active toplevel (contract arg; not used by
-        /// the diff, which is live-`/etc`-vs-candidate).
-        #[arg(long, default_value = "/var/lib/profiles/system/current/toplevel")]
-        old_toplevel_symlink: PathBuf,
+        plan: PathBuf,
     },
     /// Hidden: exercise the `aos_systemd::SystemdClient` directly.
     ///
@@ -786,27 +784,21 @@ pub async fn run(
         return test_systemd_client::run(op, printer).await;
     }
 
-    // `activate-reconcile` runs during the activate script's Phase B-mid: it
-    // talks to systemd over D-Bus, needs no apm config, and must return its own
-    // 0/1/2 exit code (which `main.rs` would otherwise flatten to 1). Dispatch
-    // it before `ApmConfig::load` and `std::process::exit` directly, mirroring
-    // the `TestSystemdClient` arm above.
-    if let PackageCommand::ActivateReconcile {
+    // The hidden activate split runs during the activate script while that
+    // script holds the switch lock. These paths talk to systemd over D-Bus,
+    // need no apm config, and must return their own 0/1/2 exit codes (which
+    // `main.rs` would otherwise flatten to 1).
+    if let PackageCommand::ActivatePreEtcSwap {
         generation,
         candidate_etc,
-        new_toplevel,
-        old_toplevel_symlink,
     } = command
     {
-        let code = sysroot::activate_reconcile(
-            *generation,
-            candidate_etc,
-            new_toplevel,
-            old_toplevel_symlink,
-            dry_run,
-            printer,
-        )
-        .await;
+        let code =
+            sysroot::activate_pre_etc_swap(*generation, candidate_etc, dry_run, printer).await;
+        std::process::exit(code);
+    }
+    if let PackageCommand::ActivatePostEtcSwap { plan } = command {
+        let code = sysroot::activate_post_etc_swap(plan, printer).await;
         std::process::exit(code);
     }
 
@@ -983,8 +975,11 @@ pub async fn run(
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
         }
-        PackageCommand::ActivateReconcile { .. } => {
-            unreachable!("ActivateReconcile is handled before ApmConfig::load")
+        PackageCommand::ActivatePreEtcSwap { .. } => {
+            unreachable!("ActivatePreEtcSwap is handled before ApmConfig::load")
+        }
+        PackageCommand::ActivatePostEtcSwap { .. } => {
+            unreachable!("ActivatePostEtcSwap is handled before ApmConfig::load")
         }
     }
 }

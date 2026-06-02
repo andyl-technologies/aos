@@ -55,6 +55,17 @@ in {
             PrivateTmp = true;
           };
         };
+
+        systemd.services.aos-upgrade-removed = {
+          description = "Upgrade-test removed oneshot";
+          wantedBy = ["multi-user.target"];
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.coreutils}/bin/true";
+            ExecStop = "${pkgs.coreutils}/bin/touch /run/removed-stop-ran";
+            RemainAfterExit = true;
+          };
+        };
       };
     }
 

@@ -6,9 +6,9 @@
 # Built into `${toplevel}/activate` by `system.build.activateScript`
 # (modules/base/build.nix), which substitutes the `@tool@` placeholders
 # for absolute /nix/store paths. apm invokes it as `activate <gen>`
-# after swinging the `current → gen-N` profile pointer: it rebuilds this
-# generation's /etc composefs overlay on the live system, reconciles
-# running daemons, and swaps the new /etc in atomically.
+# before committing the `current → gen-N` profile pointer: it rebuilds this
+# generation's /etc composefs overlay on the live system, reconciles running
+# daemons across the swap, and swaps the new /etc in atomically.
 #
 # The Phase B-post swap (`mount --move --beneath` + recursive
 # lazy-umount) is cribbed from NixOS switch-to-configuration:
@@ -27,8 +27,9 @@ export PATH=
 declare -r STAGE_PREFLIGHT=preflight  # arg + env checks, before any mount
 declare -r STAGE_PREPARE=prepare      # render the new gen's ignition lower
 declare -r STAGE_COMPOSE=compose      # build the candidate /etc overlay
-declare -r STAGE_RECONCILE=reconcile  # hand off to apm activate-reconcile
+declare -r STAGE_PRESWAP=preswap      # stop old units + write reconcile plan
 declare -r STAGE_SWAP=swap            # mount-move-beneath + lazy-umount of /etc
+declare -r STAGE_POSTSWAP=postswap    # daemon-reload + apply reconcile plan
 declare -r STAGE_CLEANUP=cleanup      # tear down the previous gen's mounts
 
 # --- Exit codes ------------------------------------------------------
@@ -39,14 +40,14 @@ declare -ri EX_OK=0         # all steps succeeded, every unit healthy
 declare -ri EX_PREPARE=1    # prepare failed; no swap, previous gen live
 declare -ri EX_PREFLIGHT=2  # bad args / missing env; no mounts yet
 declare -ri EX_COMPOSE=2    # candidate overlay couldn't be built
-declare -ri EX_RECONCILE=3  # reconcile returned its catastrophic code
+declare -ri EX_RECONCILE=3  # pre-swap reconcile returned its catastrophic code
 declare -ri EX_SWAP=4       # mount-move/lazy-umount failed; /etc indeterminate
 declare -ri EX_CLEANUP=5    # prev-gen cleanup failed; the upgrade itself is fine
 declare -ri EX_DEGRADED=6   # swap succeeded but reconcile reported failed units
 
-# Set to 1 by the reconcile slot if `apm activate-reconcile` reports
-# failed units. The switch still proceeds (the swap is authoritative),
-# but the final exit becomes EX_DEGRADED so apm surfaces a non-zero code.
+# Set to 1 by the post-swap reconcile slot if units fail. The switch still
+# stands (the swap is authoritative), but the final exit becomes EX_DEGRADED so
+# apm surfaces a non-zero code.
 reconcile_degraded=0
 
 # Variables the cleanup fn references are declared during preflight so
@@ -72,7 +73,9 @@ on_err() {
     "$STAGE_PREFLIGHT") exit "$EX_PREFLIGHT" ;;        # no mounts yet
     "$STAGE_PREPARE")   cleanup_partial_gen; exit "$EX_PREPARE" ;;
     "$STAGE_COMPOSE")   cleanup_partial_gen; exit "$EX_COMPOSE" ;;
+    "$STAGE_PRESWAP")   cleanup_partial_gen; exit "$EX_RECONCILE" ;;
     "$STAGE_SWAP")      echo "FATAL: /etc swap incomplete (rc=$rc)" >&2; exit "$EX_SWAP" ;;
+    "$STAGE_POSTSWAP")  echo "WARN: post-swap step failed (rc=$rc); /etc swap stands" >&2; exit "$EX_DEGRADED" ;;
     "$STAGE_CLEANUP")
       # The swap already succeeded; a cleanup failure is cosmetic. If
       # reconcile also reported failed units, surface EX_DEGRADED (the
@@ -116,6 +119,14 @@ if [ ! -r /run/ignition/platform.env ]; then
   exit "$EX_PREFLIGHT"
 fi
 . /run/ignition/platform.env
+
+@coreutils@/bin/mkdir -p /run/apm
+@coreutils@/bin/chmod 0700 /run/apm
+exec {LOCK_FD}>/run/apm/switch.lock
+if ! @util-linux@/bin/flock -n "$LOCK_FD"; then
+  echo "activate: another system switch holds /run/apm/switch.lock" >&2
+  exit "$EX_PREFLIGHT"
+fi
 
 # --- prepare ---
 # From here a failure maps to activate exit 1 (EX_PREPARE): the ERR trap
@@ -233,38 +244,29 @@ upperdir="$upper_root/upper",\
 workdir="$upper_root/work" \
   "$tmpEtc"
 
-# --- reconcile ---
-# Hand off to apm: diff the live /etc/systemd/system against the candidate
-# overlay's and apply the right stop/reload/restart/start actions over D-Bus.
-# The call is kept OUTSIDE the ERR trap (wrapped in set +e/set -e) because a
-# reconcile exit of 1 (some units failed, but the switch is still valid) must
-# let the script PROCEED to the swap, which `set -e` would otherwise abort on.
-# Exit codes (apm activate-reconcile): 0 clean, 1 failed units (proceed,
-# degraded), 2 catastrophic (abort the switch).
-STAGE="$STAGE_RECONCILE"
+# --- pre-swap reconcile ---
+# Hand off to apm before the swap: diff live /etc against the candidate, stop
+# old-definition units, and capture the post-swap plan path. The path is the
+# command's only stdout; diagnostics go to stderr via Printer.
+STAGE="$STAGE_PRESWAP"
 set +e
 # Invoke the UNWRAPPED binary directly, not @apm@/bin/apm. The `apm` wrapper
 # runs `exec "$(dirname "$0")/.apm-unwrapped"`, which needs `dirname` on PATH —
 # but this script runs with `PATH=` (empty), so the wrapper would die with
-# "dirname: command not found". `activate-reconcile` does pure filesystem +
-# D-Bus work and shells out to neither git nor nix-store, so it needs none of
-# the git/nix PATH the wrapper sets up. Calling `.apm-unwrapped` (argv0 still
-# ends in `apm`, so the multicall dispatches to the package surface) sidesteps
-# the wrapper entirely.
-@apm@/bin/.apm-unwrapped activate-reconcile \
+# "dirname: command not found". The activate subcommands do pure filesystem +
+# D-Bus work and shell out to neither git nor nix-store, so they need none of
+# the git/nix PATH the wrapper sets up.
+plan=$(@apm@/bin/.apm-unwrapped activate-pre-etc-swap \
   --gen="$N" \
-  --candidate-etc="$tmpEtc" \
-  --new-toplevel="$new_top" \
-  --old-toplevel-symlink=/var/lib/profiles/system/current/toplevel
-reconcile_rc=$?
+  --candidate-etc="$tmpEtc")
+pre_rc=$?
 set -e
 
-case "$reconcile_rc" in
-  0) ;;                                              # clean — proceed
-  1) reconcile_degraded=1
-     echo "activate: reconcile reported failed units; switch proceeds" >&2 ;;
-  *) cleanup_partial_gen; exit "$EX_RECONCILE" ;;    # catastrophic → abort
+case "$pre_rc" in
+  0) ;;                                              # proceed; $plan is the plan path
+  *) cleanup_partial_gen; exit "$EX_RECONCILE" ;;    # catastrophic → abort before swap
 esac
+trap '[ -n "${plan:-}" ] && @coreutils@/bin/rm -f "$plan" 2>/dev/null || true' EXIT
 
 # --- swap ---
 # From here a failure maps to activate exit 4 (EX_SWAP): the swap is in
@@ -302,6 +304,21 @@ prev_gen=$(@coreutils@/bin/readlink /run/etc/system \
 @coreutils@/bin/ln -sfn system-${N}   /run/etc/system
 @coreutils@/bin/ln -sfn ignition-${N} /run/etc/ignition
 @coreutils@/bin/ln -sfn upper-${N}    /run/etc/upper
+
+# --- post-swap reconcile ---
+# The /etc swap is now the commit point. Any post-swap reconcile problem is
+# reported as degraded, never as a rollback/cleanup of the new live /etc.
+STAGE="$STAGE_POSTSWAP"
+set +e
+@apm@/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
+post_rc=$?
+set -e
+
+case "$post_rc" in
+  0) ;;
+  *) reconcile_degraded=1
+     echo "activate: post-swap reconcile reported failures (rc=$post_rc); switch stands" >&2 ;;
+esac
 
 # --- cleanup ---
 # The swap already succeeded; a failure here is cosmetic (stale mounts),
