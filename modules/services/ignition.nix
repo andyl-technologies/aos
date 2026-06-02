@@ -151,6 +151,70 @@ in {
         ];
       };
 
+      # Relocate the GPT backup header to the true end of the boot disk
+      # before ignition's disks stage runs. The server image is built
+      # sized-to-fit (modules/image/_builder.nix): its backup GPT header
+      # sits right after root-a, so the primary header's LastUsableLBA
+      # describes the *image*, not the device it is written to. When that
+      # image lands on a larger disk — bare-metal `dd`, or a custom cloud
+      # image (e.g. DigitalOcean) on a bigger volume — ignition's disks
+      # stage cannot create or grow partitions past the stale boundary and
+      # fails with "Could not create partition N from X to Y" (sgdisk exit
+      # 4). `sgdisk -e` moves the backup header to the real end of the
+      # device and expands LastUsableLBA; it is a no-op when the image
+      # already spans the disk (disk == image size, or the qemu-uefi doc's
+      # host-side `sgdisk -e`). Ignition itself won't do this: its disks
+      # stage is strictly declarative and treats the existing table as
+      # authoritative input — repairing the GPT is the boot pipeline's job.
+      #
+      # Gated to the pre-provisioning boot only: once ignition has laid out
+      # the disk the var partition exists and the backup header is already
+      # at the end, so we skip and never rewrite the GPT on later boots.
+      "aos-gpt-relocate" = {
+        description = "Relocate GPT backup header to end of boot disk";
+        wantedBy = ["initrd-root-fs.target"];
+        before = [
+          "ignition-disks.service"
+          "initrd-root-fs.target"
+        ];
+        requires = ["systemd-udev-settle.service"];
+        after = ["systemd-udev-settle.service"];
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "/dev/disk/by-partlabel/root-a";
+        };
+        environment.PATH = ignitionPath;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          StandardOutput = "journal+console";
+          StandardError = "journal+console";
+        };
+        script = ''
+          set -euo pipefail
+
+          # The var partition is created by ignition, never by the image.
+          # Its presence means ignition already provisioned this disk and
+          # the GPT spans the full device — nothing to relocate.
+          if [ -e /dev/disk/by-partlabel/var ]; then
+            echo "aos-gpt-relocate: disk already provisioned (var present); skipping"
+            exit 0
+          fi
+
+          part=$(readlink -f /dev/disk/by-partlabel/root-a)
+          disk=$(lsblk -ndo PKNAME "$part" 2>/dev/null || true)
+          if [ -z "$disk" ]; then
+            echo "aos-gpt-relocate: cannot resolve parent disk of $part; skipping" >&2
+            exit 0
+          fi
+          disk="/dev/$disk"
+
+          echo "aos-gpt-relocate: relocating GPT backup header to end of $disk"
+          sgdisk -e "$disk"
+          sgdisk -v "$disk" || true
+        '';
+      };
+
       "aos-growfs" = {
         description = "Grow root-a ext4 filesystem to fill its partition";
         wantedBy = ["initrd-root-fs.target"];
@@ -208,11 +272,13 @@ in {
         requires = [
           "systemd-udevd.service"
           "aos-platform-detect.service"
+          "aos-gpt-relocate.service"
         ];
         after = [
           "ignition-fetch.service"
           "systemd-udevd.service"
           "aos-platform-detect.service"
+          "aos-gpt-relocate.service"
         ];
         environment.PATH = ignitionPath;
         serviceConfig = stageServiceConfig {stage = "disks";};
