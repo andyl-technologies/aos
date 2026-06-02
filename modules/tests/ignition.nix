@@ -67,6 +67,34 @@
               f"expected hex+newline, got {val!r}"
         '';
       }
+      {
+        name = "stage1-network-gate-skipped-on-file-platform";
+        description = "the ISO (file) platform leaves the stage-1 network gate condition-skipped — no DHCP pulled in";
+        script = ''
+          # The aos-metadata ISO ⇒ PLATFORM_ID=file. The detector takes its
+          # early-exit branch and never classifies a cloud platform, so the
+          # need-network flag is absent and platform.env carries no
+          # IGNITION_NEEDS_NETWORK. /run is mount --moved into stage-2, so
+          # these initrd artifacts are still readable here.
+          vm.fail("test -e /run/ignition/need-network")
+          env = vm.succeed("cat /run/ignition/platform.env")
+          assert "PLATFORM_ID=file" in env, f"expected file platform, got {env!r}"
+          assert "IGNITION_NEEDS_NETWORK" not in env, \
+              f"file platform must not flag network, got {env!r}"
+
+          # aos-ignition-network is WantedBy initrd-root-fs.target, so its job
+          # is enqueued, but ConditionPathExists=/run/ignition/need-network is
+          # unmet ⇒ systemd skips it (and pulls in NO networking). The skip is
+          # logged by PID1 with this exact wording (src/core/job.c). It is an
+          # initrd-only unit, so this is unambiguously a stage-1 signal even
+          # though stage-2 networking runs wait-online later in the same boot.
+          boot_journal = vm.succeed("journalctl -b --no-pager")
+          assert (
+              "skipped, unmet condition check "
+              "ConditionPathExists=/run/ignition/need-network" in boot_journal
+          ), "aos-ignition-network was not condition-skipped on the file platform"
+        '';
+      }
     ];
   };
 }
