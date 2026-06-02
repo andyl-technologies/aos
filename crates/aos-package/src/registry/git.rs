@@ -622,6 +622,18 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 mod tests {
     use super::*;
 
+    /// Build a `git` command for fixture setup with the developer's global
+    /// and system config neutralized, so tests don't inherit `~/.gitconfig`
+    /// settings (gpg signing, hooks, templates, etc.). Repo-local identity is
+    /// still set explicitly by each test via `git config`.
+    fn git(dir: &Path) -> Command {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+        cmd
+    }
+
     #[test]
     fn normalize_git_plus_https() {
         assert_eq!(
@@ -744,23 +756,16 @@ mod tests {
         tokio::fs::create_dir_all(&work_dir).await.unwrap();
 
         // Init a regular repo.
-        let output = Command::new("git")
-            .args(["init"])
-            .current_dir(&work_dir)
-            .output()
-            .await
-            .unwrap();
+        let output = git(&work_dir).args(["init"]).output().await.unwrap();
         assert!(output.status.success());
 
         // Configure git user for commit.
-        let _ = Command::new("git")
+        let _ = git(&work_dir)
             .args(["config", "user.email", "test@test.com"])
-            .current_dir(&work_dir)
             .output()
             .await;
-        let _ = Command::new("git")
+        let _ = git(&work_dir)
             .args(["config", "user.name", "Test"])
-            .current_dir(&work_dir)
             .output()
             .await;
 
@@ -772,19 +777,14 @@ mod tests {
             .unwrap();
 
         // Add and commit.
-        let _ = Command::new("git")
-            .args(["add", "."])
-            .current_dir(&work_dir)
-            .output()
-            .await;
-        let _ = Command::new("git")
+        let _ = git(&work_dir).args(["add", "."]).output().await;
+        let _ = git(&work_dir)
             .args(["commit", "-m", "initial"])
-            .current_dir(&work_dir)
             .output()
             .await;
 
         // Clone as bare repo.
-        let output = Command::new("git")
+        let output = git(&work_dir)
             .args([
                 "clone",
                 "--bare",
@@ -797,9 +797,8 @@ mod tests {
         assert!(output.status.success());
 
         // Get the commit SHA.
-        let output = Command::new("git")
+        let output = git(&repo_dir)
             .args(["rev-parse", "HEAD"])
-            .current_dir(&repo_dir)
             .output()
             .await
             .unwrap();
@@ -826,39 +825,26 @@ mod tests {
         tokio::fs::create_dir_all(&work_dir).await.unwrap();
 
         // Init repo.
-        let _ = Command::new("git")
-            .args(["init"])
-            .current_dir(&work_dir)
-            .output()
-            .await
-            .unwrap();
-        let _ = Command::new("git")
+        let _ = git(&work_dir).args(["init"]).output().await.unwrap();
+        let _ = git(&work_dir)
             .args(["config", "user.email", "test@test.com"])
-            .current_dir(&work_dir)
             .output()
             .await;
-        let _ = Command::new("git")
+        let _ = git(&work_dir)
             .args(["config", "user.name", "Test"])
-            .current_dir(&work_dir)
             .output()
             .await;
 
         // First commit.
         tokio::fs::write(work_dir.join("a.txt"), "a").await.unwrap();
-        let _ = Command::new("git")
-            .args(["add", "."])
-            .current_dir(&work_dir)
-            .output()
-            .await;
-        let _ = Command::new("git")
+        let _ = git(&work_dir).args(["add", "."]).output().await;
+        let _ = git(&work_dir)
             .args(["commit", "-m", "first"])
-            .current_dir(&work_dir)
             .output()
             .await;
 
-        let output = Command::new("git")
+        let output = git(&work_dir)
             .args(["rev-parse", "HEAD"])
-            .current_dir(&work_dir)
             .output()
             .await
             .unwrap();
@@ -866,20 +852,14 @@ mod tests {
 
         // Second commit.
         tokio::fs::write(work_dir.join("b.txt"), "b").await.unwrap();
-        let _ = Command::new("git")
-            .args(["add", "."])
-            .current_dir(&work_dir)
-            .output()
-            .await;
-        let _ = Command::new("git")
+        let _ = git(&work_dir).args(["add", "."]).output().await;
+        let _ = git(&work_dir)
             .args(["commit", "-m", "second"])
-            .current_dir(&work_dir)
             .output()
             .await;
 
-        let output = Command::new("git")
+        let output = git(&work_dir)
             .args(["rev-parse", "HEAD"])
-            .current_dir(&work_dir)
             .output()
             .await
             .unwrap();
