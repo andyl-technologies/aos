@@ -26,6 +26,7 @@
         # symlink into /run/lock so that stale locks never survive a
         # reboot.
         d  /run/lock                0755 root root - -
+        d  /run/apm                 0700 root root - -
         d  /var/db                  0755 root root - -
         L  /var/lock                -    -    -    - ../run/lock
 
