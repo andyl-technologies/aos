@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-//! Live-vs-candidate systemd unit diff engine for `apm activate-reconcile`.
+//! Live-vs-candidate systemd unit diff engine for the activation reconcile split.
 //!
 //! Heavily ported from nixpkgs'
 //! `nixos/modules/system/activation/switch-to-configuration-ng/src/main.rs`

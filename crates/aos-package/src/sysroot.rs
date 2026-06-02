@@ -9,10 +9,11 @@
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 
 use aos_core::output::Printer;
 use aos_systemd::{FailedUnitsReport, JobResult, SystemdClient};
@@ -239,16 +240,7 @@ pub async fn install_system(
         .with_context(|| format!("creating toplevel symlink in gen-{gen_num}"))?;
 
     state.generations.push(new_gen);
-    state.current = gen_num;
     save_generation_state(&profile_path, &state)?;
-
-    // Atomic switch: current -> gen-N
-    let current_link = profile_path.join("current");
-    let tmp_link = profile_path.join(".current.tmp");
-    let _ = std::fs::remove_file(&tmp_link);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(format!("gen-{gen_num}"), &tmp_link)?;
-    std::fs::rename(&tmp_link, &current_link)?;
 
     // Step 8: Activation and kernel comparison.
     printer.step(8, 8, "Activating...");
@@ -289,6 +281,7 @@ pub async fn install_system(
             ),
         }
     }
+    commit_current_generation(&profile_path, &mut state, gen_num)?;
 
     // Handle kernel upgrade according to the chosen mode.
     let old_kernel_path = old_gen.as_ref().and_then(|g| g.kernel_path.clone());
@@ -478,17 +471,6 @@ pub async fn rollback_system(
         return Ok(());
     }
 
-    // Switch current symlink.
-    state.current = target.number;
-    save_generation_state(&profile_path, &state)?;
-
-    let current_link = profile_path.join("current");
-    let tmp_link = profile_path.join(".current.tmp");
-    let _ = std::fs::remove_file(&tmp_link);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(format!("gen-{}", target.number), &tmp_link)?;
-    std::fs::rename(&tmp_link, &current_link)?;
-
     // Run the target generation's activate script with its gen number.
     // It rebuilds the target gen's /etc overlay, reconciles daemons, and
     // swaps /etc in atomically. Exit-code contract matches install (see
@@ -519,6 +501,7 @@ pub async fn rollback_system(
             ),
         }
     }
+    commit_current_generation(&profile_path, &mut state, target.number)?;
 
     // Handle kernel upgrade according to the chosen mode.
     handle_kernel_upgrade(
@@ -786,6 +769,23 @@ fn save_generation_state(profile_path: &Path, state: &SystemGenerationState) -> 
     Ok(())
 }
 
+fn commit_current_generation(
+    profile_path: &Path,
+    state: &mut SystemGenerationState,
+    generation: u32,
+) -> Result<()> {
+    state.current = generation;
+    save_generation_state(profile_path, state)?;
+
+    let current_link = profile_path.join("current");
+    let tmp_link = profile_path.join(".current.tmp");
+    let _ = std::fs::remove_file(&tmp_link);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(format!("gen-{generation}"), &tmp_link)?;
+    std::fs::rename(&tmp_link, &current_link)?;
+    Ok(())
+}
+
 /// Get the current sysroot's store path, if any.
 fn current_sysroot_store_path() -> Result<Option<String>> {
     let profile_path = ProfileScope::System.profile_path();
@@ -804,16 +804,16 @@ fn current_sysroot_store_path() -> Result<Option<String>> {
 // Daemon reconciliation reporting helpers
 //
 // The old toplevel-vs-toplevel `diff_services` path was removed when daemon
-// reconciliation moved into the activate script's `apm activate-reconcile`
-// slot (see `activate_reconcile`, which diffs the live `/etc` against the
-// candidate `/etc` via `crate::unit_diff`). These two helpers — per-job
-// warning and the failed-units report formatter — are still used by that
-// reconciler and by the kernel-upgrade path.
+// reconciliation moved into the activate script's hidden pre/post split (see
+// `activate_pre_etc_swap` / `activate_post_etc_swap`, which diff the live
+// `/etc` against the candidate `/etc` via `crate::unit_diff`). These two
+// helpers — per-job warning and the failed-units report formatter — are still
+// used by that reconciler and by the kernel-upgrade path.
 // ---------------------------------------------------------------------------
 
 /// Warn (but do not fail) when a unit lifecycle job ended in something other
-/// than `done`. The hard failure is the post-activation [`failed_units`] scan
-/// in [`activate_reconcile`] — a job can report a transient non-`done` result
+/// than `done`. The hard failure is the post-activation `failed_units` scan
+/// in [`activate_post_etc_swap`] — a job can report a transient non-`done` result
 /// yet the unit still settle active, so the authoritative gate is the final
 /// state.
 fn warn_if_job_not_done(printer: &Printer, verb: &str, unit: &str, result: &JobResult) {
@@ -854,89 +854,63 @@ fn format_failed_units(report: &FailedUnitsReport) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Live daemon reconciliation (`apm activate-reconcile`)
+// Live daemon reconciliation (`apm activate-{pre,post}-etc-swap`)
 // ---------------------------------------------------------------------------
 
-/// Exit codes for `apm activate-reconcile` (spec §6.10). The activate script
-/// maps these into its own contract: 0/1 → proceed to the overlay swap, 2 →
-/// abort (no swap). 1 means the switch is valid but some units failed, so apm
-/// still exits non-zero (via the activate script's `EX_DEGRADED`).
+/// Exit codes for the hidden activation reconciler subcommands. The activate
+/// script maps these into its own 0/3/4/5/6 contract.
 const RECONCILE_OK: i32 = 0;
 const RECONCILE_FAILED_UNITS: i32 = 1;
 const RECONCILE_CATASTROPHIC: i32 = 2;
 
-/// Where the reconciler keeps its lock and resume lists. On tmpfs (`/run`), so
-/// boot-scoped; nothing else on the boot path creates it.
+const PLAN_SCHEMA_VERSION: u32 = 1;
+
+/// Where the activation orchestrator keeps the switch lock and plan files. It
+/// lives on tmpfs (`/run`), so crash debris disappears on reboot.
 const APM_RUN_DIR: &str = "/run/apm";
 
-/// `apm activate-reconcile` — reconcile the running systemd against a candidate
-/// `/etc` overlay built by the activate script, applying the minimal set of
-/// stop / reload / restart / start actions over the D-Bus [`SystemdClient`].
-///
-/// Returns the process exit code and never bails: every error collapses to the
-/// catastrophic code (2) so the activate script can dispatch deterministically
-/// on the result (the `aos` `main.rs` would otherwise flatten any `Err` to 1).
-/// The caller `std::process::exit`s this directly.
-///
-/// `new_toplevel` and `old_toplevel_symlink` are part of the stable CLI contract
-/// but are deliberately NOT used to compute the diff: the diff is purely
-/// filesystem-based (live `/etc` vs candidate `/etc`), so it does not depend on
-/// the profile pointer — which `install_system` has already swung to the new
-/// generation by the time this runs.
-pub async fn activate_reconcile(
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Plan {
+    schema_version: u32,
+    generation: u32,
+    /// Stopped by the pre-swap phase. Best-effort, informational.
+    stopped: Vec<String>,
+    /// Remaining post-swap actions, already in apply order.
+    to_reload: Vec<String>,
+    to_restart: Vec<String>,
+    to_start: Vec<String>,
+    /// Units reconciled because an `X-Reload-Triggers` path changed.
+    blanket_targets: Vec<String>,
+    warnings: Vec<String>,
+}
+
+/// `apm activate-pre-etc-swap` — compute the live-vs-candidate diff while the
+/// old `/etc` is still live, stop removed / stop-if-changed units under their
+/// old definitions, and print the post-swap plan path on stdout.
+pub async fn activate_pre_etc_swap(
     generation: u32,
     candidate_etc: &Path,
-    new_toplevel: &Path,
-    old_toplevel_symlink: &Path,
     dry_run: bool,
     printer: &Printer,
 ) -> i32 {
-    match reconcile_inner(
-        generation,
-        candidate_etc,
-        new_toplevel,
-        old_toplevel_symlink,
-        dry_run,
-        printer,
-    )
-    .await
-    {
+    match activate_pre_etc_swap_inner(generation, candidate_etc, dry_run, printer).await {
         Ok(code) => code,
         Err(e) => {
-            printer.error(&format!("activate-reconcile: {e:#}"));
+            printer.error(&format!("activate-pre-etc-swap: {e:#}"));
             RECONCILE_CATASTROPHIC
         }
     }
 }
 
-async fn reconcile_inner(
+async fn activate_pre_etc_swap_inner(
     generation: u32,
     candidate_etc: &Path,
-    new_toplevel: &Path,
-    old_toplevel_symlink: &Path,
     dry_run: bool,
     printer: &Printer,
 ) -> Result<i32> {
-    // Contract args, intentionally unused by the filesystem diff (see the
-    // doc comment on `activate_reconcile`).
-    let _ = (new_toplevel, old_toplevel_symlink);
-
-    // The candidate systemd tree must exist and be readable — otherwise the
-    // diff would see "everything removed" and stop every running unit. Treat a
-    // missing/unreadable candidate as catastrophic.
-    let candidate_units = candidate_etc.join("systemd/system");
-    if !candidate_units.is_dir() {
-        bail!(
-            "candidate /etc has no readable systemd/system dir: {}",
-            candidate_units.display()
-        );
-    }
-
-    // Compute the live-vs-candidate diff first. `compute_diff` takes the /etc
-    // ROOTS (it appends `systemd/system` and rebases `X-Reload-Triggers` per
-    // side). This is pure filesystem work — no lock, no systemd — so a
-    // standalone `--dry-run` needs neither `/run/apm` nor the system bus.
-    let mut diff = unit_diff::compute_diff(Path::new("/etc"), candidate_etc);
+    // `compute_diff` takes /etc roots and appends `systemd/system` itself.
+    // In this phase live `/etc` is intentionally the old generation.
+    let diff = unit_diff::compute_diff(Path::new("/etc"), candidate_etc);
     for w in &diff.warnings {
         printer.warning(w);
     }
@@ -946,64 +920,82 @@ async fn reconcile_inner(
         return Ok(RECONCILE_OK);
     }
 
-    let run_dir = Path::new(APM_RUN_DIR);
-    ensure_run_dir(run_dir)?;
-
-    // Exclusive, non-blocking lock for the whole reconcile. Bound to `_lock`
-    // (RAII) so it outlives every `.await` below; drop = unlock.
-    let _lock = match FlockGuard::acquire(&run_dir.join("system-switch.lock"))? {
-        Some(g) => g,
-        None => {
-            printer
-                .error("activate-reconcile: another system switch holds the lock; aborting");
-            return Ok(RECONCILE_CATASTROPHIC);
-        }
-    };
-
-    printer.info(&format!("Reconciling daemons for generation {generation}…"));
-
-    // Fold install-only units (unchanged file, new install wiring) into the
-    // start set, then merge any resume lists left by an interrupted prior run.
-    let install_only = std::mem::take(&mut diff.install_only);
-    for u in install_only {
-        if !diff.to_start.contains(&u) {
-            diff.to_start.push(u);
-        }
+    // The candidate systemd tree must exist and be readable; otherwise the
+    // diff would look like "everything removed" and stop live units.
+    let candidate_units = candidate_etc.join("systemd/system");
+    if !candidate_units.is_dir() {
+        bail!(
+            "candidate /etc has no readable systemd/system dir: {}",
+            candidate_units.display()
+        );
     }
-    merge_resume_lists(&mut diff, run_dir);
 
-    // Persist the work lists so an interrupted run can resume.
-    persist_lists(run_dir, &diff)?;
+    let run_dir = Path::new(APM_RUN_DIR);
+    ensure_secure_run_dir(run_dir)?;
 
     let client = SystemdClient::connect()
         .await
         .context("connecting to systemd over D-Bus")?;
 
-    // Always daemon-reload first so systemd ingests the new unit files.
-    client.daemon_reload().await.context("daemon-reload")?;
+    let plan = plan_from_diff(generation, diff);
+    let plan_path = write_plan(run_dir, &plan)?;
 
-    // Clear *stale* failed state from before the switch, BEFORE we apply any
-    // changes. This must not run after the apply phase: a unit that fails to
-    // (re)start below stays in the `failed` state, and a blanket reset_failed
-    // afterwards would wipe exactly the failures the health gate exists to
-    // catch (the EX_DEGRADED contract). Resetting here means the post-apply
-    // scan reports only failures introduced by *this* reconcile, not unrelated
-    // pre-existing ones.
+    printer.info(&format!(
+        "Preparing daemon reconcile plan for generation {generation}..."
+    ));
+
+    // Clear stale failed state for this whole switch before any action. We do
+    // not reset after the post-swap apply, because that would mask failures
+    // introduced by this activation before the health scan.
     client.reset_failed().await.context("reset-failed")?;
 
-    // Apply in order: stop → reload → restart → start. The diff engine has
-    // already ordered sockets first within to_restart / to_start. Each list
-    // file is deleted as its phase finishes, so a resumed run skips it.
-    for unit in &diff.to_stop {
+    for unit in &plan.stopped {
         printer.plain(&format!("  stopping   {unit}"));
-        let outcome = client
-            .stop_unit(unit)
-            .await
-            .with_context(|| format!("stopping {unit}"))?;
-        warn_if_job_not_done(printer, "stop", unit, &outcome.result);
+        match client.stop_unit(unit).await {
+            Ok(outcome) => warn_if_job_not_done(printer, "stop", unit, &outcome.result),
+            Err(e) => printer.warning(&format!("  stop {unit}: {e:#}")),
+        }
     }
 
-    for unit in &diff.to_reload {
+    println!("{}", plan_path.display());
+    Ok(RECONCILE_OK)
+}
+
+/// `apm activate-post-etc-swap` — consume the plan after `/etc` has been
+/// swapped, reload systemd, apply reload/restart/start actions, and scan the
+/// final failed-unit state.
+pub async fn activate_post_etc_swap(plan_path: &Path, printer: &Printer) -> i32 {
+    match activate_post_etc_swap_inner(plan_path, printer).await {
+        Ok(code) => code,
+        Err(e) => {
+            printer.error(&format!("activate-post-etc-swap: {e:#}"));
+            RECONCILE_CATASTROPHIC
+        }
+    }
+}
+
+async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Result<i32> {
+    let plan = read_validated_plan(plan_path)?;
+    ensure_secure_run_dir(Path::new(APM_RUN_DIR))?;
+
+    let client = SystemdClient::connect()
+        .await
+        .context("connecting to systemd over D-Bus")?;
+
+    printer.info(&format!(
+        "Applying daemon reconcile plan for generation {}...",
+        plan.generation
+    ));
+    if !plan.blanket_targets.is_empty() {
+        printer.info(&format!(
+            "reload-trigger driven: {}",
+            plan.blanket_targets.join(" ")
+        ));
+    }
+
+    client.daemon_reload().await.context("daemon-reload")?;
+
+    for unit in &plan.to_reload {
         printer.plain(&format!("  reloading  {unit}"));
         let outcome = client
             .reload_unit(unit)
@@ -1011,9 +1003,8 @@ async fn reconcile_inner(
             .with_context(|| format!("reloading {unit}"))?;
         warn_if_job_not_done(printer, "reload", unit, &outcome.result);
     }
-    remove_list(run_dir, "reload-list");
 
-    for unit in &diff.to_restart {
+    for unit in &plan.to_restart {
         printer.plain(&format!("  restarting {unit}"));
         let outcome = client
             .restart_unit(unit)
@@ -1021,9 +1012,8 @@ async fn reconcile_inner(
             .with_context(|| format!("restarting {unit}"))?;
         warn_if_job_not_done(printer, "restart", unit, &outcome.result);
     }
-    remove_list(run_dir, "restart-list");
 
-    for unit in &diff.to_start {
+    for unit in &plan.to_start {
         printer.plain(&format!("  starting   {unit}"));
         let outcome = client
             .start_unit(unit)
@@ -1031,11 +1021,9 @@ async fn reconcile_inner(
             .with_context(|| format!("starting {unit}"))?;
         warn_if_job_not_done(printer, "start", unit, &outcome.result);
     }
-    remove_list(run_dir, "start-list");
 
-    // Drain late job events so the scan below sees settled unit states.
-    // (reset_failed already ran before the apply phase — see above — so we do
-    // NOT clear failed state here; that would mask failures from the apply.)
+    // Drain late job events so the scan below sees settled unit states. Do not
+    // reset failed state here; pre-swap reset already cleared stale failures.
     let late = client.settle().await.context("settling job events")?;
     if late > 0 {
         printer.info(&format!("settled {late} late job event(s)"));
@@ -1047,134 +1035,134 @@ async fn reconcile_inner(
         .failed_units()
         .await
         .context("scanning for failed units")?;
-    delete_lists(run_dir);
+
+    let _ = std::fs::remove_file(plan_path);
 
     if !report.is_empty() {
         printer.error(&format_failed_units(&report));
-        // The switch is still valid (matches switch-to-configuration): return 1
-        // so apm surfaces a non-zero exit without rolling back the swap.
         return Ok(RECONCILE_FAILED_UNITS);
     }
 
     printer.success(&format!(
         "Reconcile complete: {} stopped, {} reloaded, {} restarted, {} started.",
-        diff.to_stop.len(),
-        diff.to_reload.len(),
-        diff.to_restart.len(),
-        diff.to_start.len(),
+        plan.stopped.len(),
+        plan.to_reload.len(),
+        plan.to_restart.len(),
+        plan.to_start.len(),
     ));
     Ok(RECONCILE_OK)
 }
 
-/// Create `/run/apm` (mode 0755) if absent.
-fn ensure_run_dir(dir: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    // Best-effort: the umask may have masked the group/other read+exec bits.
-    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
+    let install_only = std::mem::take(&mut diff.install_only);
+    for unit in install_only {
+        if !diff.to_start.contains(&unit) {
+            diff.to_start.push(unit);
+        }
+    }
+
+    Plan {
+        schema_version: PLAN_SCHEMA_VERSION,
+        generation,
+        stopped: diff.to_stop,
+        to_reload: diff.to_reload,
+        to_restart: diff.to_restart,
+        to_start: diff.to_start,
+        blanket_targets: diff.blanket_targets,
+        warnings: diff.warnings,
+    }
+}
+
+/// Create `/run/apm` securely if absent; otherwise reject anything other than a
+/// root-owned 0700 directory.
+fn ensure_secure_run_dir(dir: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("chmod 0700 {}", dir.display()))?;
+        }
+        Err(e) => return Err(e).with_context(|| format!("stat {}", dir.display())),
+    }
+
+    validate_secure_dir(dir)
+}
+
+fn validate_secure_dir(dir: &Path) -> Result<()> {
+    let meta = std::fs::symlink_metadata(dir).with_context(|| format!("stat {}", dir.display()))?;
+    if meta.file_type().is_symlink() || !meta.file_type().is_dir() {
+        bail!("{} is not a real directory", dir.display());
+    }
+    if !root_owned_for_runtime(meta.uid()) {
+        bail!("{} is not owned by root", dir.display());
+    }
+    let mode = meta.mode() & 0o777;
+    if mode != 0o700 {
+        bail!("{} has mode {mode:o}, expected 700", dir.display());
+    }
     Ok(())
 }
 
-/// RAII exclusive `flock` on a lock file. Released on drop (and on process exit
-/// via fd close). Must be bound for the whole reconcile so it outlives every
-/// `.await`.
-struct FlockGuard {
-    _file: std::fs::File,
+fn write_plan(run_dir: &Path, plan: &Plan) -> Result<PathBuf> {
+    let f = tempfile::Builder::new()
+        .prefix("plan-")
+        .suffix(".json")
+        .tempfile_in(run_dir)
+        .with_context(|| format!("creating plan in {}", run_dir.display()))?;
+    serde_json::to_writer(f.as_file(), plan).context("serializing activation plan")?;
+    let _ = f.as_file().sync_all();
+    let (_, path) = f
+        .keep()
+        .with_context(|| format!("persisting plan in {}", run_dir.display()))?;
+    Ok(path)
 }
 
-impl FlockGuard {
-    /// Acquire a non-blocking exclusive lock. `Ok(None)` on contention
-    /// (`EWOULDBLOCK`); `Err` on any other failure.
-    fn acquire(path: &Path) -> Result<Option<FlockGuard>> {
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(path)
-            .with_context(|| format!("opening lock file {}", path.display()))?;
-        // SAFETY: `file` owns the fd for the duration of this call and the
-        // returned guard.
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc == 0 {
-            return Ok(Some(FlockGuard { _file: file }));
-        }
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
-            Ok(None)
-        } else {
-            Err(anyhow!("flock {}: {err}", path.display()))
-        }
+fn read_validated_plan(path: &Path) -> Result<Plan> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .with_context(|| format!("opening plan {}", path.display()))?;
+
+    let meta = fstat_file(&file).with_context(|| format!("stat plan {}", path.display()))?;
+    if (meta.st_mode & libc::S_IFMT) != libc::S_IFREG {
+        bail!("plan {} is not a regular file", path.display());
     }
-}
-
-impl Drop for FlockGuard {
-    fn drop(&mut self) {
-        // SAFETY: the fd is still open (we own `_file`); unlock is best-effort.
-        let _ = unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+    if !root_owned_for_runtime(meta.st_uid) {
+        bail!("plan {} is not owned by root", path.display());
     }
-}
-
-fn list_path(dir: &Path, name: &str) -> PathBuf {
-    dir.join(name)
-}
-
-/// Read a `/run/apm/*-list` file into a deduped-by-position list of unit names.
-/// A missing/unreadable file is an empty list (the common, non-resume case).
-fn read_list_file(path: &Path) -> Vec<String> {
-    std::fs::read_to_string(path)
-        .map(|s| {
-            s.lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn write_list_file(path: &Path, units: &[String]) -> Result<()> {
-    let mut body = units.join("\n");
-    if !body.is_empty() {
-        body.push('\n');
+    let mode = meta.st_mode & 0o777;
+    if mode != 0o600 {
+        bail!("plan {} has mode {mode:o}, expected 600", path.display());
     }
-    std::fs::write(path, body).with_context(|| format!("writing {}", path.display()))
-}
 
-/// Persist the reload/restart/start work lists so an interrupted run resumes.
-/// (Stops are not persisted: they are idempotent and re-derived from the diff.)
-fn persist_lists(dir: &Path, diff: &UnitDiff) -> Result<()> {
-    write_list_file(&list_path(dir, "reload-list"), &diff.to_reload)?;
-    write_list_file(&list_path(dir, "restart-list"), &diff.to_restart)?;
-    write_list_file(&list_path(dir, "start-list"), &diff.to_start)?;
-    Ok(())
-}
-
-/// Merge any leftover resume lists into the diff's corresponding sets,
-/// preserving order and de-duplicating.
-fn merge_resume_lists(diff: &mut UnitDiff, dir: &Path) {
-    let merge = |target: &mut Vec<String>, extra: Vec<String>| {
-        for u in extra {
-            if !target.contains(&u) {
-                target.push(u);
-            }
-        }
-    };
-    merge(&mut diff.to_reload, read_list_file(&list_path(dir, "reload-list")));
-    merge(
-        &mut diff.to_restart,
-        read_list_file(&list_path(dir, "restart-list")),
-    );
-    merge(&mut diff.to_start, read_list_file(&list_path(dir, "start-list")));
-}
-
-fn remove_list(dir: &Path, name: &str) {
-    let _ = std::fs::remove_file(list_path(dir, name));
-}
-
-fn delete_lists(dir: &Path) {
-    for name in ["reload-list", "restart-list", "start-list"] {
-        remove_list(dir, name);
+    let plan: Plan = serde_json::from_reader(file)
+        .with_context(|| format!("parsing plan {}", path.display()))?;
+    if plan.schema_version != PLAN_SCHEMA_VERSION {
+        bail!(
+            "plan {} has schema version {}, expected {}",
+            path.display(),
+            plan.schema_version,
+            PLAN_SCHEMA_VERSION
+        );
     }
+    Ok(plan)
+}
+
+fn fstat_file(file: &std::fs::File) -> Result<libc::stat> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `stat` points to valid writable storage and `file` owns a live fd.
+    let rc = unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("fstat");
+    }
+    // SAFETY: fstat returned success, so it initialized the struct.
+    Ok(unsafe { stat.assume_init() })
+}
+
+fn root_owned_for_runtime(uid: u32) -> bool {
+    uid == 0 || cfg!(test)
 }
 
 /// Print the reconciliation plan without applying it (`--dry-run`).
@@ -1574,7 +1562,7 @@ fn format_size(bytes: u64) -> String {
 ///
 /// `pub(crate)` so the live-vs-candidate diff engine in [`crate::unit_diff`]
 /// can share the same deterministic, dependency-free hash. The unit
-/// fingerprint is only ever compared within a single `activate-reconcile`
+/// fingerprint is only ever compared within a single activation reconcile
 /// process, so a non-cryptographic hash is sufficient and lets us avoid
 /// pulling in `twox-hash` (which would churn the vendored Cargo deps hash).
 pub(crate) fn djb2_hash(data: &[u8]) -> u64 {
@@ -1770,85 +1758,123 @@ mod tests {
         assert!(out.contains("ExecMainStatus=n/a"), "{out}");
     }
 
-    // --- activate-reconcile helpers (§8.5) -----------------------------
+    // --- activate plan helpers -----------------------------------------
 
     #[test]
-    fn flock_guard_is_exclusive_and_releases() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let lock = tmp.path().join("system-switch.lock");
+    fn plan_round_trips_through_json() {
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 42,
+            stopped: vec!["old.service".to_string()],
+            to_reload: vec!["reload.service".to_string()],
+            to_restart: vec!["restart.socket".to_string(), "restart.service".to_string()],
+            to_start: vec!["new.service".to_string()],
+            blanket_targets: vec!["nftables.service".to_string()],
+            warnings: vec!["warning".to_string()],
+        };
 
-        let g1 = FlockGuard::acquire(&lock).unwrap();
-        assert!(g1.is_some(), "first acquire should succeed");
-
-        // A second acquirer (a distinct open file description) contends.
-        let g2 = FlockGuard::acquire(&lock).unwrap();
-        assert!(g2.is_none(), "second acquire should report contention");
-
-        drop(g1);
-        let g3 = FlockGuard::acquire(&lock).unwrap();
-        assert!(g3.is_some(), "acquire after release should succeed");
+        let json = serde_json::to_string(&plan).unwrap();
+        let parsed: Plan = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, plan);
+        assert_eq!(parsed.schema_version, PLAN_SCHEMA_VERSION);
     }
 
     #[test]
-    fn resume_lists_round_trip_and_delete() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let dir = tmp.path();
+    fn plan_from_diff_folds_install_only_into_start() {
         let diff = UnitDiff {
-            to_reload: vec!["nftables.service".to_string()],
-            to_restart: vec![
-                "systemd-sysctl.service".to_string(),
-                "foo.service".to_string(),
+            to_start: vec!["y.service".to_string(), "dup.service".to_string()],
+            install_only: vec![
+                "x.service".to_string(),
+                "dup.service".to_string(),
+                "z.service".to_string(),
             ],
+            ..Default::default()
+        };
+
+        let plan = plan_from_diff(7, diff);
+        assert_eq!(
+            plan.to_start,
+            vec![
+                "y.service".to_string(),
+                "dup.service".to_string(),
+                "x.service".to_string(),
+                "z.service".to_string(),
+            ]
+        );
+        assert_eq!(plan.generation, 7);
+    }
+
+    #[test]
+    fn write_plan_file_is_regular_root_readable_0600() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 1,
+            ..Default::default()
+        };
+
+        let path = write_plan(tmp.path(), &plan).unwrap();
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert!(meta.file_type().is_file());
+        assert_eq!(meta.mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn read_validated_plan_rejects_symlink() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 1,
+            ..Default::default()
+        };
+        let target = write_plan(tmp.path(), &plan).unwrap();
+        let link = tmp.path().join("plan-link.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(read_validated_plan(&link).is_err());
+    }
+
+    #[test]
+    fn read_validated_plan_rejects_wrong_mode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 1,
+            ..Default::default()
+        };
+        let path = write_plan(tmp.path(), &plan).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(read_validated_plan(&path).is_err());
+    }
+
+    #[test]
+    fn read_validated_plan_round_trips() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 9,
             to_start: vec!["new.service".to_string()],
             ..Default::default()
         };
-        persist_lists(dir, &diff).unwrap();
 
-        assert_eq!(
-            read_list_file(&dir.join("reload-list")),
-            vec!["nftables.service".to_string()]
-        );
-        assert_eq!(
-            read_list_file(&dir.join("restart-list")),
-            vec![
-                "systemd-sysctl.service".to_string(),
-                "foo.service".to_string()
-            ]
-        );
-        assert_eq!(
-            read_list_file(&dir.join("start-list")),
-            vec!["new.service".to_string()]
-        );
-
-        delete_lists(dir);
-        assert!(read_list_file(&dir.join("reload-list")).is_empty());
-        assert!(read_list_file(&dir.join("restart-list")).is_empty());
-        assert!(read_list_file(&dir.join("start-list")).is_empty());
+        let path = write_plan(tmp.path(), &plan).unwrap();
+        let parsed = read_validated_plan(&path).unwrap();
+        assert_eq!(parsed, plan);
     }
 
     #[test]
-    fn merge_resume_lists_merges_and_dedups() {
+    fn ensure_secure_run_dir_creates_0700_and_validates() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let dir = tmp.path();
-        write_list_file(
-            &dir.join("restart-list"),
-            &["a.service".to_string(), "b.service".to_string()],
-        )
-        .unwrap();
-        write_list_file(&dir.join("start-list"), &["c.service".to_string()]).unwrap();
+        let dir = tmp.path().join("apm");
 
-        let mut diff = UnitDiff {
-            // a.service is already in the fresh diff — must not be duplicated.
-            to_restart: vec!["a.service".to_string()],
-            ..Default::default()
-        };
-        merge_resume_lists(&mut diff, dir);
+        ensure_secure_run_dir(&dir).unwrap();
+        let meta = std::fs::symlink_metadata(&dir).unwrap();
+        assert!(meta.file_type().is_dir());
+        assert_eq!(meta.mode() & 0o777, 0o700);
 
-        assert_eq!(
-            diff.to_restart,
-            vec!["a.service".to_string(), "b.service".to_string()]
-        );
-        assert_eq!(diff.to_start, vec!["c.service".to_string()]);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(ensure_secure_run_dir(&dir).is_err());
     }
 
     #[test]

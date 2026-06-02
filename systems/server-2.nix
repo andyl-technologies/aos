@@ -11,12 +11,13 @@
 ##!      metadata image, proving the /etc overlay swap landed.
 ##!   3. tweaked test-http-server role: bumped firewall.allowedTCP, added
 ##!      a kernel.sysctl entry, added one new oneshot systemd.services
-##!      entry. Exercises:
+##!      entry, and removed one gen-1 oneshot unit. Exercises:
 ##!      - role-driven nftables drop-in regeneration → nftables.service
 ##!        reloads (its X-Reload-Triggers covers /etc/nftables.d).
 ##!      - role-driven sysctl drop-in regeneration → systemd-sysctl.service
 ##!        restarts (its X-Reload-Triggers covers /etc/sysctl.d).
 ##!      - a newly-added unit gets installed and started.
+##!      - a removed unit is stopped before the old unit file disappears.
 ##!
 ##! No kernel change. No bootloader change. Pure /etc + systemd
 ##! reconciliation surface, which is exactly what this fixture exists
@@ -50,19 +51,36 @@
   # firewall.allowedTCP as [8000] unconditionally, so the list override
   # needs lib.mkForce to replace rather than concatenate (which would
   # yield [8000 8000 8443]). kernel.sysctl is an attrset and merges
-  # cleanly; systemd.services is an attrset keyed by unit name, so the
-  # new unit merges cleanly too.
+  # cleanly. systemd.services is forced so gen-2 can omit the gen-1-only
+  # aos-upgrade-removed.service while preserving test-http-server unchanged.
   aos.roles.test-http-server = {
     firewall.allowedTCP = lib.mkForce [8000 8443]; # role default: [8000]
     kernel.sysctl."net.ipv4.tcp_keepalive_time" = "300"; # role default: unset
 
-    systemd.services.aos-upgrade-test-marker = {
-      description = "Upgrade-test marker oneshot";
-      wantedBy = ["multi-user.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${pkgs.coreutils}/bin/true";
-        RemainAfterExit = true;
+    systemd.services = lib.mkForce {
+      test-http-server = {
+        description = "Test python http.server on :8000";
+        wantedBy = ["multi-user.target"];
+        serviceConfig = {
+          ExecStart = "${pkgs.python3}/bin/python3 -m http.server --bind 0.0.0.0 8000";
+          WorkingDirectory = "%S";
+          StateDirectory = "test-http-server";
+          Restart = "on-failure";
+          DynamicUser = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          PrivateTmp = true;
+        };
+      };
+
+      aos-upgrade-test-marker = {
+        description = "Upgrade-test marker oneshot";
+        wantedBy = ["multi-user.target"];
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.coreutils}/bin/true";
+          RemainAfterExit = true;
+        };
       };
     };
   };
