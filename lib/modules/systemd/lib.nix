@@ -1077,6 +1077,24 @@ in rec {
     });
   };
 
+  # networkToText — render a systemd-networkd `.network` file body. Unlike
+  # the `*ToUnit` renderers above this is NOT a unit: a `.network` lands in
+  # /etc/systemd/network/ (networkd config), has no `[Unit]`/`[Install]`
+  # sections, and so does not flow through `commonUnitText`/`generateUnits`.
+  # It is the same INI shape as a unit body, so `settingsToSections` (and its
+  # list-value → repeated-keys handling) applies directly. Empty sections are
+  # filtered so an unset `dhcpV4Config` etc. emits nothing. Initrd-scoped for
+  # now (boot.initrd.systemd.network); stage-2 networking.nix still hand-writes
+  # its heredocs — converging it is a deliberate follow-up.
+  networkToText = def:
+    settingsToSections (filterAttrs (_: s: s != {}) {
+      Match = def.matchConfig;
+      Link = def.linkConfig;
+      Network = def.networkConfig;
+      DHCPv4 = def.dhcpV4Config;
+      DHCPv6 = def.dhcpV6Config;
+    });
+
   # The maximum number of characters allowed in a GPT partition label.
   # Corresponds to GPT_LABEL_MAX from systemd's gpt.h.
   GPTMaxLabelLength = 36;
