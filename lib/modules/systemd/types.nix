@@ -56,6 +56,7 @@
     stage2SliceOptions
     stage2SocketOptions
     stage2TimerOptions
+    unitOption
     ;
 
   inherit (lib) mkDefault mkOption;
@@ -174,4 +175,43 @@ in {
     unitConfig
     automountConfig
   ]);
+
+  # initrdNetworks — typed systemd-networkd `.network` files for the stage-1
+  # initrd. A `.network` is networkd CONFIG, not a unit: it has no
+  # `[Unit]`/`[Install]` sections and lands in /etc/systemd/network/, so it
+  # neither imports the stage1 unit options nor flows through `generateUnits`.
+  # Rendered by `systemdLib.networkToText` and copied into the initrd by
+  # `_initrd-builder.nix`. Keyed by file basename — the module appends the
+  # `.network` suffix. Stage-2 networking.nix is untouched (follow-up).
+  initrdNetworks = attrsOf (submodule {
+    options = {
+      matchConfig = mkOption {
+        default = {};
+        example = {Type = "ether";};
+        type = attrsOf unitOption;
+        description = "Attributes of the `[Match]` section. See {manpage}`systemd.network(5)`.";
+      };
+      linkConfig = mkOption {
+        default = {};
+        type = attrsOf unitOption;
+        description = "Attributes of the `[Link]` section. See {manpage}`systemd.network(5)`.";
+      };
+      networkConfig = mkOption {
+        default = {};
+        example = {DHCP = "yes";};
+        type = attrsOf unitOption;
+        description = "Attributes of the `[Network]` section. See {manpage}`systemd.network(5)`.";
+      };
+      dhcpV4Config = mkOption {
+        default = {};
+        type = attrsOf unitOption;
+        description = "Attributes of the `[DHCPv4]` section. See {manpage}`systemd.network(5)`.";
+      };
+      dhcpV6Config = mkOption {
+        default = {};
+        type = attrsOf unitOption;
+        description = "Attributes of the `[DHCPv6]` section. See {manpage}`systemd.network(5)`.";
+      };
+    };
+  });
 }
