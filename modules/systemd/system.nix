@@ -181,7 +181,7 @@ in {
   config = let
     # --- X-* contract eval-time guards (spec §7.3) ---------------------
     #
-    # The `apm activate-reconcile` reconciler honours the X-* knobs added
+    # The activation reconciler honours the X-* knobs added
     # in this refactor; these assertions catch degenerate combinations at
     # eval time so a misconfigured unit fails the build rather than
     # silently doing nothing (or the wrong thing) on a live upgrade.

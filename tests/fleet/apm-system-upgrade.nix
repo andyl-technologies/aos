@@ -1,18 +1,9 @@
-# tests/fleet/_apm-system-upgrade.nix — Live, in-place `apm upgrade --system`.
-#
-# DISABLED (leading `_` → skipped by the fleet discoverer, default.nix) pending
-# the activate-reconcile swap-ordering fix. This test is correct and ready; it
-# currently fails because the activate script reconciles daemons BEFORE swapping
-# /etc, so systemd can't see/start the new generation's units (and changed units
-# restart with their old definitions). The full diagnosis + fix is in
-# `$HOME/archives/claude/aos/archives/2026-05-30_activate_reconcile_swap_ordering.md`.
-# Re-enable by renaming back to `apm-system-upgrade.nix` once the reorder lands;
-# the assertions below already pin the exact post-fix behaviour.
+# tests/fleet/apm-system-upgrade.nix — Live, in-place `apm upgrade --system`.
 #
 # End-to-end proof for the apm system-upgrade refactor (v2): `apm upgrade
 # --system` must reconfigure the *running* system without a reboot — swap the
 # /etc overlay to the new generation (P1's activate script) AND reconcile the
-# running daemons against the new unit set (P4's `apm activate-reconcile`,
+# running daemons against the new unit set (the hidden activate pre/post split,
 # driven by P2's diff engine over P3's X-* unit contract). The fleet harness
 # boots the real `systems.server` image with full systemd + dbus, which is what
 # the reconciler needs.
@@ -29,7 +20,8 @@
 #   gen-2 = systems/server-2.nix   (imports server.nix; bumps the version,
 #                                   adds an environment.etc marker, and gives
 #                                   the test-http-server role a new port, a
-#                                   sysctl, and a new oneshot unit).
+#                                   sysctl, a new oneshot unit, and one
+#                                   removed gen-1 oneshot unit).
 # The test-http-server role is bundled on BOTH gens (the server profile bundles
 # it), so the harness's `roles = ["test-http-server"]` merge resolves at first
 # boot; the upgrade then introduces the role's deltas as a *live* update —
@@ -186,6 +178,10 @@ in {
       # gen-2-only surfaces are absent on gen-1.
       target.fail("test -e /etc/aos/upgrade-test/marker.conf")
       target.fail("test -e /etc/systemd/system/aos-upgrade-test-marker.service")
+      target.wait_until_succeeds(
+          "systemctl is-active aos-upgrade-removed.service", timeout=120
+      )
+      target.fail("test -e /run/removed-stop-ran")
 
       # gen-1 has no tcp_keepalive_time drop-in → the kernel default (7200).
       baseline_keepalive = target.succeed(
@@ -196,8 +192,8 @@ in {
       )
 
       # Record test-http-server's MainPID — its unit file is byte-identical
-      # across gen-1 and gen-2 (server-2 only *adds* a unit), so the reconciler
-      # must leave it untouched. Asserted after the upgrade.
+      # across gen-1 and gen-2, so the reconciler must leave it untouched.
+      # Asserted after the upgrade.
       http_pid_before = int(target.succeed(
           "systemctl show -p MainPID --value test-http-server.service"
       ).strip())
@@ -313,7 +309,12 @@ in {
       # ── 10. The newly-added unit was installed and started ──────────
       target.succeed("systemctl is-active aos-upgrade-test-marker.service")
 
-      # ── 11. The unchanged unit was NOT restarted (diff stayed precise) ─
+      # ── 11. The removed unit was stopped before its old definition vanished ─
+      target.fail("systemctl is-active aos-upgrade-removed.service")
+      target.fail("test -e /etc/systemd/system/aos-upgrade-removed.service")
+      target.succeed("test -f /run/removed-stop-ran")
+
+      # ── 12. The unchanged unit was NOT restarted (diff stayed precise) ─
       http_pid_after = int(target.succeed(
           "systemctl show -p MainPID --value test-http-server.service"
       ).strip())
@@ -322,11 +323,11 @@ in {
           f"{http_pid_before} -> {http_pid_after}"
       )
 
-      # ── 12. No failed units after the reconcile ─────────────────────
+      # ── 13. No failed units after the reconcile ─────────────────────
       failed = target.succeed("systemctl --failed --no-legend").strip()
       assert not failed, f"failed units after upgrade: {failed!r}"
 
-      # ── 13. Rollback reverses the live switch ───────────────────────
+      # ── 14. Rollback reverses the live switch ───────────────────────
       target.succeed(
           "HOME=/tmp ${pkgs.aos}/bin/apm rollback --system --yes 2>&1",
           timeout=300,
