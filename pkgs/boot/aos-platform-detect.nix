@@ -121,8 +121,22 @@ mkDerivation {
             platform=metal
         fi
 
+        # 4. Network-dependent platforms fetch their config over IP from an
+        #    instance metadata server, so stage-1 must bring up DHCP first.
+        #    Drop a flag file the aos-ignition-network gate keys off
+        #    (ConditionPathExists); the local-ISO `file` path above never
+        #    reaches here and so never networks.
+        needs_network=
+        case "$platform" in
+            aws|gcp|azure|digitalocean|hetzner|vultr|scaleway|openstack|oraclecloud)
+                needs_network=1
+                ${coreutils}/bin/touch /run/ignition/need-network
+                ;;
+        esac
+
         ${coreutils}/bin/cat >/run/ignition/platform.env <<EOF
         PLATFORM_ID=$platform
+        ''${needs_network:+IGNITION_NEEDS_NETWORK=$needs_network}
         EOF
         SCRIPT
         chmod +x $out/bin/aos-platform-detect

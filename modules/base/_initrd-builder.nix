@@ -30,6 +30,10 @@
 ##!   kernelModules — list of module names for /etc/modules-load.d/initrd.conf
 ##!   initrdUnits   — derivation whose output is the rendered
 ##!                   /etc/systemd/system directory (from generateUnits)
+##!   initrdNetworkDir — derivation whose output is a directory of rendered
+##!                   systemd-networkd `.network` files (from the typed
+##!                   `boot.initrd.systemd.network` tree); copied into
+##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
 ##!
 ##! Output: $out/initrd.img (gzip-compressed newc cpio archive)
 {
@@ -38,6 +42,7 @@
   kernel,
   kernelModules,
   initrdUnits,
+  initrdNetworkDir ? null,
   maskedUnits ? [],
   ignitionRoles,
 }: let
@@ -281,6 +286,16 @@
     "kmod-static-nodes.service"
     "systemd-ask-password-console.path"
     "systemd-ask-password-console.service"
+    # Stage-1 networking for ignition metadata fetch on cloud platforms.
+    # The aos-ignition-network gate (modules/services/ignition.nix) issues a
+    # blocking `systemctl start network-online.target` only when the detector
+    # flags a network-dependent platform; these units are the closure it pulls.
+    "network-pre.target"
+    "network.target"
+    "network-online.target"
+    "systemd-networkd.service"
+    "systemd-networkd.socket"
+    "systemd-networkd-wait-online.service"
   ];
 
   # Systemd generators that must be present in the initrd so fstab-based
@@ -448,15 +463,29 @@ in
           export PAGER=less
           PROFILE
 
+          # systemd-network (uid/gid 192, matching modules/base/users.nix):
+          # systemd-networkd runs User=systemd-network and fails activation
+          # with "unknown user" if it is absent.
           cat > root/etc/passwd <<'PASSWD'
           root:x:0:0:root:/root:/bin/bash
+          systemd-network:x:192:192:systemd Network Management:/:/sbin/nologin
           nobody:x:65534:65534:Nobody:/:/sbin/nologin
           PASSWD
 
           cat > root/etc/group <<'GROUP'
           root:x:0:
+          systemd-network:x:192:
           nobody:x:65534:
           GROUP
+
+          # /etc/hosts — localhost plus GCP's metadata.google.internal, which
+          # is the one cloud metadata endpoint reached by name rather than IP
+          # literal. No stage-1 DNS resolver, so this static map stands in.
+          cat > root/etc/hosts <<'HOSTS'
+          127.0.0.1 localhost
+          ::1 localhost
+          169.254.169.254 metadata.google.internal metadata
+          HOSTS
 
           cat > root/etc/shadow <<'SHADOW'
           root:::0:99999:7:::
@@ -480,6 +509,28 @@ in
           if [ -d ${initrdUnits} ]; then
             cp -a ${initrdUnits}/. root/etc/systemd/system/ || true
           fi
+
+          # ── 7a. Rendered networkd .network config from
+          #    boot.initrd.systemd.network. These are config, not units, so
+          #    they bypass generateUnits and land in /etc/systemd/network/.
+          mkdir -p root/etc/systemd/network
+          ${lib.optionalString (initrdNetworkDir != null) ''
+            if [ -d ${initrdNetworkDir} ]; then
+              cp -a ${initrdNetworkDir}/. root/etc/systemd/network/ || true
+            fi
+          ''}
+
+          # ── 7c. Enable systemd-networkd-wait-online via network-online.target.
+          #    [Install] sections of upstream units aren't realized in the
+          #    initrd (generateUnits doesn't process upstreamUnits here), so
+          #    this .wants symlink is what makes the gate's `systemctl start
+          #    network-online.target` pull in wait-online → networkd. The
+          #    rendered-units copy above left /etc/systemd/system read-only
+          #    (store perms), so make it writable before adding the subdir.
+          chmod u+w root/etc/systemd/system
+          mkdir -p root/etc/systemd/system/network-online.target.wants
+          ln -sfn /lib/systemd/system/systemd-networkd-wait-online.service \
+            root/etc/systemd/system/network-online.target.wants/systemd-networkd-wait-online.service
 
           # ── 7b. Ignition role bundle ───────────────────────────────────
           # Stable initrd path /etc/aos/ignition-roles → bundle drv. Userdata

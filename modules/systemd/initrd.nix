@@ -63,6 +63,18 @@
     // lib.mapAttrs' (_: withName systemdLib.sliceToUnit) cfg.slices
     // lib.listToAttrs (map (withName systemdLib.mountToUnit) cfg.mounts)
     // lib.listToAttrs (map (withName systemdLib.automountToUnit) cfg.automounts);
+
+  # Render the typed `boot.initrd.systemd.network` tree to a directory of
+  # `<name>.network` files. These are networkd config (not units), so they
+  # skip `generateUnits`/`renderedInitrdUnits` and are handed to the cpio
+  # assembler as a separate directory it copies into /etc/systemd/network/.
+  initrdNetworkDir = pkgs.runCommand "initrd-systemd-networks" {} ''
+    mkdir -p $out
+    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (
+        name: def: "cp ${builtins.toFile "${name}.network" (systemdLib.networkToText def)} $out/${name}.network"
+      )
+      cfg.network)}
+  '';
 in {
   options.boot.initrd.systemd = {
     enable = lib.mkEnableOption "a systemd-based initrd (tier ii, not yet implemented)";
@@ -119,6 +131,19 @@ in {
       type = systemdTypes.initrdAutomounts;
       default = [];
       description = "Typed .automount units to include in the systemd initrd. Keyed by `where`, not by name.";
+    };
+
+    network = lib.mkOption {
+      type = systemdTypes.initrdNetworks;
+      default = {};
+      description = ''
+        Typed systemd-networkd `.network` files for the initrd. Each
+        attribute renders to `/etc/systemd/network/<name>.network` (the
+        `.network` suffix is appended). Unlike the unit options above
+        these are networkd *config*, not units, so they bypass
+        `generateUnits` and are copied into the initrd directly. Used by
+        stage-1 ignition networking to DHCP for instance metadata.
+      '';
     };
 
     maskedUnits = lib.mkOption {
@@ -217,6 +242,7 @@ in {
       kernel = config.system.build.kernel;
       kernelModules = config.aos.boot.initrd.modules;
       initrdUnits = config.system.build.systemdInitrdUnits;
+      inherit initrdNetworkDir;
       maskedUnits = cfg.maskedUnits;
       ignitionRoles = config.system.build.ignitionRolesBundle;
     };

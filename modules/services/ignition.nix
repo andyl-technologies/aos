@@ -104,6 +104,53 @@ in {
         };
       };
 
+      # Bring up DHCP networking before ignition-fetch, but ONLY on
+      # network-dependent platforms. aos-platform-detect drops
+      # /run/ignition/need-network for cloud platforms; the
+      # ConditionPathExists makes this gate a no-op (and, crucially, pull in
+      # nothing) on file/qemu/metal. The whole initrd.target closure is one
+      # transaction at boot, so a static Wants=network-online.target can't be
+      # gated — only a fresh, additive `systemctl start` issued here, after
+      # the post-udev ISO-aware detector ran, is correct. The start blocks
+      # until network-online.target is reached (wait-online is pulled via the
+      # .wants symlink the builder installs). wait-online sits behind a weak
+      # Wants= of the target, so a wait-online timeout doesn't fail the
+      # target's job — but SuccessExitStatus=0 1 keeps even a non-zero
+      # systemctl result best-effort rather than failing the gate and (via
+      # ignition-fetch's Requires=) wedging boot into emergency. ExecStart is
+      # not shell-parsed, so no `|| true` here — SuccessExitStatus is the hatch.
+      "aos-ignition-network" = {
+        description = "Bring up networking for ignition (network-dependent platforms only)";
+        wantedBy = ["initrd-root-fs.target"];
+        requires = ["aos-platform-detect.service"];
+        after = ["aos-platform-detect.service"];
+        before = ["ignition-fetch.service"];
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "/run/ignition/need-network";
+        };
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${pkgs.systemd}/bin/systemctl start network-online.target";
+          SuccessExitStatus = "0 1";
+        };
+      };
+
+      # Best-effort wait-online: succeed as soon as ANY managed link is
+      # routable. Without --any the default "all links online" wedges ~90 s
+      # whenever a second NIC is managed but has no DHCP server (e.g. the
+      # fleet test's mcast NIC). overrideStrategy=asDropin emits only a
+      # <unit>.d/overrides.conf over the upstream unit symlinked by the
+      # builder; the empty-then-set ExecStart list is the systemd reset idiom.
+      "systemd-networkd-wait-online" = {
+        overrideStrategy = "asDropin";
+        serviceConfig.ExecStart = [
+          ""
+          "${pkgs.systemd}/lib/systemd/systemd-networkd-wait-online --any"
+        ];
+      };
+
       "aos-growfs" = {
         description = "Grow root-a ext4 filesystem to fill its partition";
         wantedBy = ["initrd-root-fs.target"];
@@ -138,11 +185,13 @@ in {
           "systemd-modules-load.service"
           "systemd-udevd.service"
           "aos-platform-detect.service"
+          "aos-ignition-network.service"
         ];
         after = [
           "systemd-modules-load.service"
           "systemd-udevd.service"
           "aos-platform-detect.service"
+          "aos-ignition-network.service"
         ];
         environment.PATH = ignitionPath;
         serviceConfig = stageServiceConfig {stage = "fetch";};
@@ -640,6 +689,18 @@ in {
           chmod 0444 /sysroot/var/etc/machine-id
         '';
       };
+    };
+
+    # DHCP on every physical NIC in the initrd. Kind=!* excludes virtual
+    # links (bridges/bonds/etc.); matching only physical ether devices
+    # mirrors the stage-2 80-dhcp.network and nixpkgs' default. Brought up
+    # only when the aos-ignition-network gate fires (cloud platforms).
+    boot.initrd.systemd.network."80-dhcp" = {
+      matchConfig = {
+        Type = "ether";
+        Kind = "!*";
+      };
+      networkConfig.DHCP = "yes";
     };
   };
 }
