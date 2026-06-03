@@ -100,6 +100,7 @@
 
   platformMod = import ./platform.nix;
   derivations = import ./derivations.nix {inherit system bash;};
+  hardening = import ./hardening.nix;
   checks = import ./testing/checks.nix;
 
   # Format helpers (nixpkgs' `pkgs.formats` analog). Each entry in this
@@ -190,6 +191,11 @@
 
       # Check composition helper (pure data, no deps) for use in modules
       inherit (checks) composeChecks;
+
+      # Compiler-hardening token vocabulary and set algebra. Used by the
+      # stdenv to bake the cc-wrapper's default policy and by derivations.nix
+      # to compute each package's effective AOS_HARDENING_ENABLE.
+      inherit hardening;
 
       # Structured-config format helpers. Each factory takes `{ lib,
       # pkgs, … }` at call time and returns `{ type; generate; }`.
