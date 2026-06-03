@@ -17,24 +17,51 @@
 
   configFile = "${pkgs.linux}/boot/config-${pkgs.linux.version}";
 
-  # Symbols required to be enabled (CONFIG_<name>=y).
-  enabledCommon = [];
+  # Symbols required to be enabled (CONFIG_<name>=y). Key-free, seed-free
+  # hardening common to all supported architectures.
+  enabledCommon = [
+    "INIT_STACK_ALL_ZERO"
+    "INIT_ON_ALLOC_DEFAULT_ON"
+    "INIT_ON_FREE_DEFAULT_ON"
+    "SLAB_FREELIST_HARDENED"
+    "SLAB_FREELIST_RANDOM"
+    "RANDOM_KMALLOC_CACHES"
+    "SHUFFLE_PAGE_ALLOCATOR"
+    "VMAP_STACK"
+    "RANDOMIZE_KSTACK_OFFSET"
+    "RANDOMIZE_KSTACK_OFFSET_DEFAULT"
+    "LIST_HARDENED"
+    "BUG_ON_DATA_CORRUPTION"
+    "SCHED_STACK_END_CHECK"
+    "DEBUG_WX"
+    "STRICT_DEVMEM"
+    "IO_STRICT_DEVMEM"
+    "SECURITY_DMESG_RESTRICT"
+  ];
 
   # Symbols required to hold a specific value (CONFIG_<name>=<value>).
-  valueCommon = {};
+  valueCommon = {
+    DEFAULT_MMAP_MIN_ADDR = "65536";
+  };
 
   # Symbols that must not be enabled. SECURITY_LOCKDOWN_LSM pulls in module
   # signing, whose default key generation is incompatible with a reproducible
-  # public base.
+  # public base; the rest expose kernel memory.
   disabledCommon = [
     "SECURITY_LOCKDOWN_LSM"
     "SECURITY_LOCKDOWN_LSM_EARLY"
     "MODULE_SIG"
     "MODULE_SIG_ALL"
     "MODULE_SIG_FORCE"
+    "DEVKMEM"
+    "PROC_KCORE"
+    "COMPAT_BRK"
   ];
 
-  enabledX86 = [];
+  enabledX86 = [
+    "X86_KERNEL_IBT"
+    "LEGACY_VSYSCALL_NONE"
+  ];
   enabledAarch64 = [];
 
   enabled =
