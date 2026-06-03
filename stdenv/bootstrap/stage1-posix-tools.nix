@@ -31,11 +31,13 @@
   ...
 }: let
   system = buildPlatform.system;
-  src = builtins.fetchGit {
-    url = "https://github.com/oriansj/stage0-posix.git";
-    ref = "refs/tags/Release_1.9.1";
-    rev = "45d90f5955b6907dc6cdea9ebafce558359edcd3";
-    submodules = true;
+  # The release tarball ships with all submodules already resolved, which
+  # is nice because one of them (mescc-tools) lives on the flaky
+  # git.savannah.nongnu.org. This unpacks to the same tree a submodule
+  # checkout would, with no eval-time submodule re-resolution.
+  src = builtins.fetchTarball {
+    url = "https://github.com/oriansj/stage0-posix/releases/download/Release_1.9.1/stage0-posix-1.9.1.tar.gz";
+    sha256 = "sha256-7ttlkYWAsVZuQpmxDrcxvnpIkaeGYEFmUY7PdmBtNOI=";
   };
 
   # ── Install script (run by freshly-built full kaem) ──────────────────
