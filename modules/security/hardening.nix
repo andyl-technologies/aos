@@ -5,7 +5,7 @@
 ##! dmesg access control, network hardening, and filesystem protections.
 ##!
 ##! Absorbed TOML config values:
-##!   [security.hardening] enable, sysctl, kernel_lockdown, core_dump
+##!   [security.hardening] enable, sysctl, core_dump
 {
   config,
   pkgs,
@@ -20,17 +20,17 @@
   );
 in {
   options.aos.security.hardening = {
-    ## Enable system hardening (sysctl, lockdown, core dump restrictions).
+    ## Enable system hardening (sysctl, core dump restrictions).
     ##
     ## # See Also
-    ## - `aos.security.hardening.sysctl`, `aos.security.hardening.kernelLockdown`
+    ## - `aos.security.hardening.sysctl`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
       description = ''
-        Enable system hardening. Applies security-focused sysctl settings,
-        kernel lockdown mode, and core dump restrictions. Enabled by default
-        because AOS is a server OS where security is paramount.
+        Enable system hardening. Applies security-focused sysctl settings
+        and core dump restrictions. Enabled by default because AOS is a
+        server OS where security is paramount.
       '';
     };
 
@@ -93,29 +93,6 @@ in {
         /etc/sysctl.d/80-aos-hardening.conf and applied at boot by
         systemd-sysctl.service. The defaults follow CIS benchmark
         recommendations for Linux servers.
-      '';
-    };
-
-    ## Kernel lockdown mode (none, integrity, confidentiality).
-    ##
-    ## # Examples
-    ## ```nix
-    ## aos.security.hardening.kernelLockdown = "confidentiality";
-    ## ```
-    kernelLockdown = lib.mkOption {
-      type = lib.types.enum [
-        "none"
-        "integrity"
-        "confidentiality"
-      ];
-      default = "integrity";
-      description = ''
-        Kernel lockdown mode:
-        - none: no restrictions
-        - integrity: prevents modification of the running kernel
-          (blocks kexec, module signature bypass, /dev/mem writes)
-        - confidentiality: integrity + prevents reading kernel memory
-          (blocks /proc/kcore, eBPF, perf)
       '';
     };
 
@@ -282,11 +259,6 @@ in {
         }
       '';
     };
-
-    # Kernel lockdown parameter — added to boot command line.
-    # Only add the parameter if lockdown is not "none".
-    aos.boot.kernelParams =
-      lib.optional (cfg.kernelLockdown != "none") "lockdown=${cfg.kernelLockdown}";
 
     # Resource limits to prevent core dumps at the process level.
     environment.etc."security/limits.d/aos-hardening.conf" = lib.mkIf (!cfg.coreDump.enable) {
