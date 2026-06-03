@@ -56,8 +56,10 @@
     cryptsetup
     e2fsprogs
     findutils
+    gptfdisk
     grep
     ignition
+    iproute2
     kmod
     less
     pigz
@@ -75,7 +77,9 @@
     cryptsetup
     e2fsprogs
     grep
+    gptfdisk
     ignition
+    iproute2
     kmod
     less
     systemd
@@ -183,6 +187,11 @@
       src = "sbin";
     }
     {
+      pkg = iproute2;
+      bin = "ip";
+      src = "sbin";
+    }
+    {
       pkg = kmod;
       bin = "modprobe";
       src = "sbin";
@@ -231,6 +240,11 @@
       pkg = aos-growfs;
       bin = "aos-growfs";
       src = "bin";
+    }
+    {
+      pkg = gptfdisk;
+      bin = "sgdisk";
+      src = "sbin";
     }
   ];
 
