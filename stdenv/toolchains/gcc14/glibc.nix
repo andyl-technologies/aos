@@ -20,6 +20,14 @@
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.39.tar.xz";
     sha256 = "0zr0lk75rvkxp0xplfsggaj4fcv1xjpsvg5qrvp6yifim77q2mn0";
   };
+
+  # Control-flow Enforcement Technology is x86-only in glibc 2.39. Plain
+  # --enable-cet (not permissive): a CET-enabled AOS process loading a
+  # non-CET AOS DSO is a bug to fix, not a compatibility case to preserve.
+  cetFlag =
+    if hostPlatform.isx86_64
+    then "--enable-cet"
+    else "";
 in
   builtins.derivation {
     name = "glibc-2.39";
@@ -68,6 +76,7 @@ in
           --enable-static-nss \
           --without-gd \
           --without-selinux \
+          ${cetFlag} \
           libc_cv_forced_unwind=yes \
           libc_cv_c_cleanup=yes
 

@@ -49,19 +49,23 @@
     # Default compiler-hardening tokens applied to every package unless it
     # opts out with hardeningDisable. See lib/hardening.nix for the token
     # vocabulary and stdenv/cc-wrapper.nix for the flag mapping.
-    defaultHardeningFlags = [
-      "stackprotector"
-      "relro"
-      "bindnow"
-      "pie"
-      "noexecstack"
-      "fortify"
-      "fortify3"
-      "stackclashprotection"
-      "format"
-      "strictflexarrays3"
-      "glibcxxassertions"
-    ];
+    defaultHardeningFlags =
+      [
+        "stackprotector"
+        "relro"
+        "bindnow"
+        "pie"
+        "noexecstack"
+        "fortify"
+        "fortify3"
+        "stackclashprotection"
+        "format"
+        "strictflexarrays3"
+        "glibcxxassertions"
+      ]
+      # x86_64 shadow stack, enabled now that glibc and GCC are built with
+      # --enable-cet and the SHSTK probe passes. Filtered off other arches.
+      ++ lib.optional hostPlatform.isx86_64 "shadowstack";
 
     # Platform-filtered default the wrapper bakes in as its fallback when
     # AOS_HARDENING_ENABLE is unset (interactive / non-build use).
