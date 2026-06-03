@@ -62,7 +62,16 @@
     "X86_KERNEL_IBT"
     "LEGACY_VSYSCALL_NONE"
   ];
-  enabledAarch64 = [];
+
+  # ARM64_BTI_KERNEL is intentionally absent: the local Kconfig excludes GCC
+  # for it, and AOS builds the kernel with GCC. It is a future clang-kernel /
+  # GCC-support item.
+  enabledAarch64 = [
+    "STACKPROTECTOR_PER_TASK"
+    "ARM64_PTR_AUTH"
+    "ARM64_PTR_AUTH_KERNEL"
+    "ARM64_BTI"
+  ];
 
   enabled =
     enabledCommon

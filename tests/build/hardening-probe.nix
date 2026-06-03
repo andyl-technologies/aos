@@ -12,6 +12,7 @@
   lib,
 }: let
   system = pkgs.stdenv.system or pkgs.bash.system or "x86_64-linux";
+  isAarch64 = builtins.match "aarch64-.*" system != null;
 
   # Source with a stack object (forces stack-protector coverage) and a call
   # to a fortifiable libc function (so __*_chk is observable when Fortify is
@@ -310,6 +311,26 @@ in {
   strict-flex-arrays = mkCompileProbe {
     name = "strict-flex-arrays";
     src = flexSrc;
+  };
+
+  # aarch64 pointer-authentication return signing. On aarch64 the token emits
+  # -mbranch-protection=pac-ret and the compiler signs returns in non-leaf
+  # functions; on other platforms the token is a valid but filtered no-op.
+  pacret-aarch64 = mkProbe {
+    name = "pacret-aarch64";
+    hardeningEnable = ["pacret"];
+    checkScript =
+      if isAarch64
+      then ''
+        objdump -d ./probe | grep -Eq 'paciasp|autiasp|pacia|retaa' || fail "expected PAC return signing"
+        echo "ok: pacret"
+      ''
+      else ''
+        case " $AOS_HARDENING_ENABLE " in
+          *" pacret "*) fail "pacret must be filtered out off aarch64" ;;
+        esac
+        echo "ok: pacret filtered on ${system}"
+      '';
   };
 
   # Unknown tokens are an evaluation error.
