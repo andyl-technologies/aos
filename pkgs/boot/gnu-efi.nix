@@ -25,6 +25,10 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
+    # Freestanding EFI CRT and static libraries. The wrapper's PIE and
+    # link flags conflict with EFI's hosted/PE output, so opt out entirely.
+    hardeningDisable = ["all"];
+
     phases = [
       {
         name = "unpack";
