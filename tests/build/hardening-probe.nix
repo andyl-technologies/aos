@@ -34,6 +34,51 @@
     }
   '';
 
+  # Compile-only sources that assert the active Fortify level via the
+  # preprocessor. The wrapper defines _FORTIFY_SOURCE on the command line, so
+  # the #if is evaluated against the effective level.
+  fortify2Src = builtins.toFile "fortify2.c" ''
+    #include <string.h>
+    #if !defined(_FORTIFY_SOURCE) || _FORTIFY_SOURCE != 2
+    #error "expected _FORTIFY_SOURCE=2"
+    #endif
+    int main(void) { return 0; }
+  '';
+
+  fortifyOffSrc = builtins.toFile "fortify-off.c" ''
+    #include <string.h>
+    #ifdef _FORTIFY_SOURCE
+    #error "expected no _FORTIFY_SOURCE"
+    #endif
+    int main(void) { return 0; }
+  '';
+
+  # Non-literal format string: rejected under -Werror=format-security, accepted
+  # when the format token is disabled.
+  formatSrc = builtins.toFile "format.c" ''
+    #include <stdio.h>
+    void emit(const char *s) { printf(s); }
+    int main(int argc, char **argv) {
+      emit(argv[0]);
+      return argc;
+    }
+  '';
+
+  cxxAssertSrc = builtins.toFile "cxx-assert.cc" ''
+    #ifndef _GLIBCXX_ASSERTIONS
+    #error "expected _GLIBCXX_ASSERTIONS"
+    #endif
+    int main() { return 0; }
+  '';
+
+  flexSrc = builtins.toFile "flex.c" ''
+    struct s {
+      int n;
+      int data[3];
+    };
+    int main(void) { return sizeof(struct s) > 0 ? 0 : 1; }
+  '';
+
   # Shared assertion helpers used by the compile-and-inspect probes.
   assertHelpers = ''
     fail() {
@@ -73,6 +118,10 @@
       fi
       echo "ok: no SSP"
     }
+    assert_fortify() {
+      objdump -d ./probe | grep -q '_chk' || fail "expected a fortified (__*_chk) call"
+      echo "ok: Fortify"
+    }
   '';
 
   # Build a probe: compile probe.c under the given hardening attrs, then run
@@ -101,6 +150,64 @@
             ${assertHelpers}
             ${checkScript}
 
+            mkdir -p $out
+            echo "PASS" > $out/result
+          '';
+        }
+      ];
+    };
+
+  # Compile-only probe: compile `src` with the given hardening attrs and
+  # assert the compile succeeds (or, when expectSuccess is false, fails).
+  mkCompileProbe = {
+    name,
+    src,
+    hardeningEnable ? [],
+    hardeningDisable ? [],
+    isCxx ? false,
+    expectSuccess ? true,
+  }:
+    pkgs.mkDerivation {
+      pname = "hardening-probe-${name}";
+      version = "0";
+      src = null;
+      inherit hardeningEnable hardeningDisable;
+      phases = [
+        {
+          name = "check";
+          script = ''
+            set -eu
+            cp ${src} src.${
+              if isCxx
+              then "cc"
+              else "c"
+            }
+            echo "AOS_HARDENING_ENABLE=[$AOS_HARDENING_ENABLE]"
+            if ${
+              if isCxx
+              then "g++"
+              else "gcc"
+            } -c src.${
+              if isCxx
+              then "cc"
+              else "c"
+            } -o out.o 2>compile.log; then
+              status=0
+            else
+              status=1
+            fi
+            cat compile.log || true
+            ${
+              if expectSuccess
+              then ''
+                [ "$status" -eq 0 ] || { echo "FAIL: expected compile to succeed"; exit 1; }
+                echo "ok: compiled"
+              ''
+              else ''
+                [ "$status" -ne 0 ] || { echo "FAIL: expected compile to fail"; exit 1; }
+                echo "ok: rejected as expected"
+              ''
+            }
             mkdir -p $out
             echo "PASS" > $out/result
           '';
@@ -139,6 +246,7 @@ in {
       assert_bindnow
       assert_noexecstack
       assert_ssp
+      assert_fortify
     '';
   };
 
@@ -161,6 +269,47 @@ in {
       assert_not_pie
       assert_ssp
     '';
+  };
+
+  # Disabling fortify3 downgrades Fortify to level 2.
+  fortify2-fallback = mkCompileProbe {
+    name = "fortify2-fallback";
+    src = fortify2Src;
+    hardeningDisable = ["fortify3"];
+  };
+
+  # Disabling fortify removes _FORTIFY_SOURCE entirely.
+  fortify-off = mkCompileProbe {
+    name = "fortify-off";
+    src = fortifyOffSrc;
+    hardeningDisable = ["fortify"];
+  };
+
+  # A non-literal format string is rejected under default hardening.
+  format-negative = mkCompileProbe {
+    name = "format-negative";
+    src = formatSrc;
+    expectSuccess = false;
+  };
+
+  # The same source compiles when the format token is disabled.
+  format-disabled = mkCompileProbe {
+    name = "format-disabled";
+    src = formatSrc;
+    hardeningDisable = ["format"];
+  };
+
+  # C++ sees _GLIBCXX_ASSERTIONS under default hardening.
+  cxx-assertions = mkCompileProbe {
+    name = "cxx-assertions";
+    src = cxxAssertSrc;
+    isCxx = true;
+  };
+
+  # The compiler accepts -fstrict-flex-arrays=3 under default hardening.
+  strict-flex-arrays = mkCompileProbe {
+    name = "strict-flex-arrays";
+    src = flexSrc;
   };
 
   # Unknown tokens are an evaluation error.
