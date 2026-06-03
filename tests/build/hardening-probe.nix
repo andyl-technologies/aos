@@ -12,6 +12,7 @@
   lib,
 }: let
   system = pkgs.stdenv.system or pkgs.bash.system or "x86_64-linux";
+  isX86 = builtins.match "x86_64-.*" system != null;
   isAarch64 = builtins.match "aarch64-.*" system != null;
 
   # Source with a stack object (forces stack-protector coverage) and a call
@@ -216,6 +217,77 @@
       ];
     };
 
+  # PCRE2 JIT runtime smoke test under strict CET. PCRE2 has no shadowstack
+  # opt-out, so its JIT-generated code must execute correctly in a
+  # shadow-stack-enabled process. Built and run on x86_64 only.
+  pcre2JitSrc = builtins.toFile "pcre2-jit.c" ''
+    #define PCRE2_CODE_UNIT_WIDTH 8
+    #include <pcre2.h>
+    #include <string.h>
+    #include <stdio.h>
+
+    int main(void) {
+      int errnum;
+      PCRE2_SIZE erroff;
+      pcre2_code *re = pcre2_compile((PCRE2_SPTR)"a(b|c)+d",
+                                     PCRE2_ZERO_TERMINATED, 0,
+                                     &errnum, &erroff, NULL);
+      if (!re) { fprintf(stderr, "compile failed\n"); return 1; }
+      if (pcre2_jit_compile(re, PCRE2_JIT_COMPLETE) != 0) {
+        fprintf(stderr, "jit_compile failed\n");
+        return 2;
+      }
+      pcre2_match_data *md = pcre2_match_data_create_from_pattern(re, NULL);
+      PCRE2_SPTR subj = (PCRE2_SPTR)"abcbcd";
+      int rc = pcre2_jit_match(re, subj, strlen((const char *)subj),
+                               0, 0, md, NULL);
+      if (rc < 1) { fprintf(stderr, "jit_match rc=%d\n", rc); return 3; }
+      printf("jit match ok rc=%d\n", rc);
+      return 0;
+    }
+  '';
+
+  pcre2JitProbe =
+    if isX86
+    then
+      pkgs.mkDerivation {
+        pname = "hardening-probe-pcre2-jit-cet";
+        version = "0";
+        src = null;
+        runtimeDeps = [pkgs.pcre2];
+        phases = [
+          {
+            name = "check";
+            script = ''
+              set -eu
+              cp ${pcre2JitSrc} smoke.c
+              echo "AOS_HARDENING_ENABLE=[$AOS_HARDENING_ENABLE]"
+              gcc smoke.c -lpcre2-8 -o smoke
+              # Execute the JIT match in a shadow-stack-enabled process.
+              ./smoke
+              mkdir -p $out
+              echo "PASS" > $out/result
+            '';
+          }
+        ];
+      }
+    else
+      pkgs.mkDerivation {
+        pname = "hardening-probe-pcre2-jit-cet";
+        version = "0";
+        src = null;
+        phases = [
+          {
+            name = "check";
+            script = ''
+              echo "skip: PCRE2 JIT CET smoke is x86_64-only"
+              mkdir -p $out
+              echo "PASS" > $out/result
+            '';
+          }
+        ];
+      };
+
   # Unknown tokens must be rejected during evaluation, not at build time.
   badTokenThrows =
     !(
@@ -313,6 +385,25 @@ in {
     src = flexSrc;
   };
 
+  # x86_64 shadow stack. With the CET toolchain the final binary carries a
+  # GNU property note advertising SHSTK; off x86_64 the token is filtered.
+  shadowstack-x86_64 = mkProbe {
+    name = "shadowstack-x86_64";
+    hardeningEnable = ["shadowstack"];
+    checkScript =
+      if isX86
+      then ''
+        readelf -n ./probe | grep -qi 'SHSTK' || fail "expected a SHSTK GNU property note"
+        echo "ok: shadowstack SHSTK note"
+      ''
+      else ''
+        case " $AOS_HARDENING_ENABLE " in
+          *" shadowstack "*) fail "shadowstack must be filtered out off x86_64" ;;
+        esac
+        echo "ok: shadowstack filtered on ${system}"
+      '';
+  };
+
   # aarch64 pointer-authentication return signing. On aarch64 the token emits
   # -mbranch-protection=pac-ret and the compiler signs returns in non-leaf
   # functions; on other platforms the token is a valid but filtered no-op.
@@ -332,6 +423,8 @@ in {
         echo "ok: pacret filtered on ${system}"
       '';
   };
+
+  pcre2-jit-cet = pcre2JitProbe;
 
   # Unknown tokens are an evaluation error.
   unknown-token = pkgs.mkDerivation {

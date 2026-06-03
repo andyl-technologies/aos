@@ -28,6 +28,14 @@
     sha256 = "18slj57b3zizzmc1bn4b6x8rygijfjjmwfzipdvyyzrbspaa5x21";
   };
 
+  # CET instrumentation for the GCC target runtime libraries is x86-only.
+  # This pairs with glibc's --enable-cet so the shadowstack token can be
+  # default-enabled on x86_64.
+  cetFlag =
+    if targetPlatform.isx86_64
+    then "--enable-cet"
+    else "";
+
   gmp-src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gmp/gmp-6.3.0.tar.xz";
     sha256 = "1kc3dy4jxand0y118yb9715g9xy1fnzqgkwxy02vd57y2fhg2pcw";
@@ -157,6 +165,7 @@ in
                 --disable-multilib --disable-bootstrap \
                 --disable-libsanitizer --disable-libvtv \
                 --enable-default-pie --enable-default-ssp \
+                ${cetFlag} \
                 --with-native-system-header-dir="/usr/include" \
                 --with-build-sysroot="$TMPDIR/sysroot" \
                 --program-transform-name=
