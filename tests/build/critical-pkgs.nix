@@ -1,11 +1,11 @@
-# lib/testing/build.nix — Layer 2: Build checks
+# tests/build/critical-pkgs.nix — Build checks for critical packages
 #
 # Verifies key packages build successfully and closure sizes stay within
 # reasonable bounds. Failing on oversized closures catches accidental
 # dependency bloat before images ship.
 #
 # Usage:
-#   nix-build -A checks.build
+#   nix-build -A checks.build.critical-pkgs
 {
   pkgs,
   lib,

@@ -46,6 +46,27 @@
   mkStdenvFromTier = tc: let
     shellPath = "${tc.bash}/bin/bash";
 
+    # Default compiler-hardening tokens applied to every package unless it
+    # opts out with hardeningDisable. See lib/hardening.nix for the token
+    # vocabulary and stdenv/cc-wrapper.nix for the flag mapping.
+    defaultHardeningFlags = [
+      "stackprotector"
+      "relro"
+      "bindnow"
+      "pie"
+      "noexecstack"
+    ];
+
+    # Platform-filtered default the wrapper bakes in as its fallback when
+    # AOS_HARDENING_ENABLE is unset (interactive / non-build use).
+    defaultHardeningStr = lib.hardening.effectiveString {
+      name = "cc-wrapper-default";
+      platform = hostPlatform;
+      defaultFlags = defaultHardeningFlags;
+      hardeningEnable = [];
+      hardeningDisable = [];
+    };
+
     ccWrapper = import ./cc-wrapper.nix {
       inherit storeDir hostPlatform;
       shell = shellPath;
@@ -53,6 +74,7 @@
       cc = tc.gcc;
       libc = tc.glibc;
       binutils_ = tc.binutils;
+      defaultHardening = defaultHardeningStr;
     };
 
     initialPath = [
@@ -111,6 +133,10 @@
           shell = args.shell or shellPath;
           storeDir = args.storeDir or storeDir;
           stdenv = stdenvDrv;
+
+          # Central hardening default. Packages keep their own hardeningEnable
+          # / hardeningDisable; this only supplies the baseline they adjust.
+          defaultHardeningFlags = args.defaultHardeningFlags or defaultHardeningFlags;
           CC = "${ccWrapper}/bin/gcc";
           CXX = "${ccWrapper}/bin/g++";
           LD = "${ccWrapper}/bin/ld";

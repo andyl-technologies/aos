@@ -1,7 +1,16 @@
 # stdenv/cc-wrapper.nix — Compiler and linker wrapper script generator
 #
 # Creates wrapper scripts for gcc, g++, and ld that inject correct
-# -isystem, -L, -rpath, and -dynamic-linker flags.
+# -isystem, -L, -rpath, and -dynamic-linker flags, and translate the
+# AOS_HARDENING_ENABLE token list (set per package by lib/derivations.nix)
+# into concrete compiler/linker hardening flags.
+#
+# The token vocabulary and set algebra live in lib/hardening.nix. This file
+# owns the token → flag mapping. `defaultHardening` is the space-separated
+# default token list baked in as a fallback for environments that don't set
+# AOS_HARDENING_ENABLE (interactive shells, ad-hoc compiler use); inside an
+# AOS build the variable is always present, so an empty value (from
+# hardeningDisable = [ "all" ]) genuinely disables everything.
 #
 {
   cc,
@@ -11,6 +20,7 @@
   coreutils,
   hostPlatform,
   storeDir ? "/nix/store",
+  defaultHardening ? "",
 }: let
   system = hostPlatform.system;
   targetTriple = hostPlatform.config;
@@ -21,6 +31,101 @@
   chmod = "${coreutils}/bin/chmod";
   ln = "${coreutils}/bin/ln";
   echo = "${coreutils}/bin/echo";
+
+  # Shared shell prologue that turns the AOS_HARDENING_ENABLE token list into
+  # the flag fragments used by the gcc/g++ wrappers:
+  #   $hardening_cflags  — emitted before the package's arguments
+  #   $hardening_post    — emitted after the package's arguments (Fortify)
+  #   $hardening_ldflags — emitted on the link line
+  # `isCxx` adds the C++-only libstdc++ assertions token.
+  compilerHardening = isCxx: ''
+    tokens="''${AOS_HARDENING_ENABLE-${defaultHardening}}"
+
+    has() {
+      case " $tokens " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+      esac
+    }
+
+    hardening_cflags=""
+    hardening_post=""
+    hardening_ldflags=""
+
+    # Stack protector and PIE are GCC build-time defaults, so opting out has
+    # to inject negative flags — omitting a positive flag is not enough.
+    if has stackprotector; then
+      hardening_cflags="$hardening_cflags -fstack-protector-strong --param ssp-buffer-size=4"
+    else
+      hardening_cflags="$hardening_cflags -fno-stack-protector"
+    fi
+
+    if has pie; then
+      :
+    else
+      hardening_cflags="$hardening_cflags -fno-PIE"
+    fi
+
+    if has stackclashprotection; then
+      hardening_cflags="$hardening_cflags -fstack-clash-protection"
+    fi
+    if has format; then
+      hardening_cflags="$hardening_cflags -Wformat -Wformat-security -Werror=format-security"
+    fi
+    if has strictflexarrays3; then
+      hardening_cflags="$hardening_cflags -fstrict-flex-arrays=3"
+    fi
+    if has shadowstack; then
+      hardening_cflags="$hardening_cflags -fcf-protection=return"
+    fi
+    if has pacret; then
+      hardening_cflags="$hardening_cflags -mbranch-protection=pac-ret"
+    fi
+    if has trivialautovarinit; then
+      hardening_cflags="$hardening_cflags -ftrivial-auto-var-init=zero"
+    fi
+    if has zerocallusedregs; then
+      hardening_cflags="$hardening_cflags -fzero-call-used-regs=used-gpr"
+    fi
+    ${
+      if isCxx
+      then ''
+        if has glibcxxassertions; then
+          hardening_cflags="$hardening_cflags -D_GLIBCXX_ASSERTIONS"
+        fi
+      ''
+      else ""
+    }
+
+    # Fortify: force -O2 and clear any inherited level before the package's
+    # arguments, then set the requested level after them. This avoids macro
+    # redefinition warnings and lets a package's own -O0/-Og make Fortify
+    # inert. fortify3 wins over fortify.
+    if has fortify3; then
+      hardening_cflags="$hardening_cflags -O2 -U_FORTIFY_SOURCE"
+      hardening_post="$hardening_post -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3"
+    elif has fortify; then
+      hardening_cflags="$hardening_cflags -O2 -U_FORTIFY_SOURCE"
+      hardening_post="$hardening_post -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2"
+    fi
+
+    if [ "$linking" = true ]; then
+      if has relro; then
+        hardening_ldflags="$hardening_ldflags -Wl,-z,relro"
+      fi
+      if has bindnow; then
+        hardening_ldflags="$hardening_ldflags -Wl,-z,now"
+      fi
+      if has noexecstack; then
+        hardening_ldflags="$hardening_ldflags -Wl,-z,noexecstack"
+      fi
+      # Active PIE opt-out, executable links only. Shared, relocatable and
+      # freestanding links manage their own position-independence.
+      if ! has pie && [ "$exec_link" = true ]; then
+        hardening_ldflags="$hardening_ldflags -no-pie"
+      fi
+    fi
+  '';
 
   wrapperDrv = builtins.derivation {
     name = "aos-cc-wrapper";
@@ -42,10 +147,12 @@
         extra_cflags=""
         extra_ldflags=""
         linking=true
+        exec_link=true
 
         for arg in "$@"; do
           case "$arg" in
             -c|-S|-E) linking=false ;;
+            -shared|-r|--relocatable|-nostdlib|-nostartfiles|-ffreestanding) exec_link=false ;;
           esac
         done
 
@@ -69,29 +176,31 @@
           extra_ldflags="$extra_ldflags -B${libc}/lib"
         fi
 
-        hardening_flags="-fstack-protector-strong"
+        ${compilerHardening false}
 
         nix_ldflags=""
         if [ "$linking" = true ] && [ -n "''${NIX_LDFLAGS:-}" ]; then
           nix_ldflags="$NIX_LDFLAGS"
         fi
 
-        exec ${cc}/bin/gcc $extra_cflags $hardening_flags "$@" $extra_ldflags $nix_ldflags
+        exec ${cc}/bin/gcc $extra_cflags $hardening_cflags "$@" $hardening_post $extra_ldflags $hardening_ldflags $nix_ldflags
         WRAPPER_EOF
-                ${chmod} +x $out/bin/gcc
+        ${chmod} +x $out/bin/gcc
 
-                # ── g++ wrapper ──────────────────────────────────────────────
-                ${cat} > $out/bin/g++ << 'WRAPPER_EOF'
+        # ── g++ wrapper ──────────────────────────────────────────────
+        ${cat} > $out/bin/g++ << 'WRAPPER_EOF'
         #!${shell}
         set -eu
 
         extra_cflags=""
         extra_ldflags=""
         linking=true
+        exec_link=true
 
         for arg in "$@"; do
           case "$arg" in
             -c|-S|-E) linking=false ;;
+            -shared|-r|--relocatable|-nostdlib|-nostartfiles|-ffreestanding) exec_link=false ;;
           esac
         done
 
@@ -107,25 +216,34 @@
           extra_ldflags="$extra_ldflags -B${libc}/lib"
         fi
 
-        hardening_flags="-fstack-protector-strong"
+        ${compilerHardening true}
 
         nix_ldflags=""
         if [ "$linking" = true ] && [ -n "''${NIX_LDFLAGS:-}" ]; then
           nix_ldflags="$NIX_LDFLAGS"
         fi
 
-        exec ${cc}/bin/g++ $extra_cflags $hardening_flags "$@" $extra_ldflags $nix_ldflags
+        exec ${cc}/bin/g++ $extra_cflags $hardening_cflags "$@" $hardening_post $extra_ldflags $hardening_ldflags $nix_ldflags
         WRAPPER_EOF
-                ${chmod} +x $out/bin/g++
+        ${chmod} +x $out/bin/g++
 
-                # ── cc/c++ symlinks ──────────────────────────────────────────
-                ${ln} -s gcc $out/bin/cc
-                ${ln} -s g++ $out/bin/c++
+        # ── cc/c++ symlinks ──────────────────────────────────────────
+        ${ln} -s gcc $out/bin/cc
+        ${ln} -s g++ $out/bin/c++
 
-                # ── ld wrapper ───────────────────────────────────────────────
-                ${cat} > $out/bin/ld << 'WRAPPER_EOF'
+        # ── ld wrapper ───────────────────────────────────────────────
+        ${cat} > $out/bin/ld << 'WRAPPER_EOF'
         #!${shell}
         set -eu
+
+        tokens="''${AOS_HARDENING_ENABLE-${defaultHardening}}"
+
+        has() {
+          case " $tokens " in
+            *" $1 "*) return 0 ;;
+            *) return 1 ;;
+          esac
+        }
 
         extra_flags=""
         extra_flags="$extra_flags -L${libc}/lib"
@@ -133,34 +251,39 @@
         extra_flags="$extra_flags --dynamic-linker ${dynamicLinker}"
         extra_flags="$extra_flags -rpath-link ${libc}/lib"
         # Phase 3: no -L/-rpath for ${cc}/lib{,64} — see gcc wrapper.
-        extra_flags="$extra_flags -z relro -z now"
+
+        # Token-gated link hardening for direct ld users. The gcc/g++
+        # wrappers inject the -Wl, equivalents for driver-based links.
+        if has relro; then extra_flags="$extra_flags -z relro"; fi
+        if has bindnow; then extra_flags="$extra_flags -z now"; fi
+        if has noexecstack; then extra_flags="$extra_flags -z noexecstack"; fi
 
         exec ${binutils_}/bin/ld $extra_flags "$@"
         WRAPPER_EOF
-                ${chmod} +x $out/bin/ld
+        ${chmod} +x $out/bin/ld
 
-                # ── binutils pass-through wrappers ────────────────────────────
-                for tool in ar as nm objcopy objdump ranlib readelf size strings strip; do
-                  ${cat} > $out/bin/$tool << TOOL_EOF
+        # ── binutils pass-through wrappers ────────────────────────────
+        for tool in ar as nm objcopy objdump ranlib readelf size strings strip; do
+          ${cat} > $out/bin/$tool << TOOL_EOF
         #!${shell}
         exec ${binutils_}/bin/$tool "\$@"
         TOOL_EOF
-                  ${chmod} +x $out/bin/$tool
-                done
+          ${chmod} +x $out/bin/$tool
+        done
 
-                # ── nix-support metadata ──────────────────────────────────────
-                ${echo} "${cc}"        > $out/nix-support/orig-cc
-                ${echo} "${libc}"      > $out/nix-support/orig-libc
-                # Multi-output glibc: $dev holds headers, $static holds .a archives.
-                # Consumers that need either (e.g. envoy bazel, llvm clang config)
-                # read these instead of computing them from $out's path.
-                ${echo} "${libc.dev}"    > $out/nix-support/orig-libc-dev
-                ${echo} "${libc.static}" > $out/nix-support/orig-libc-static
-                ${echo} "${binutils_}" > $out/nix-support/orig-binutils
-                ${echo} "${system}"    > $out/nix-support/system
-                ${echo} "-idirafter ${libc.dev}/include" > $out/nix-support/cc-cflags
-                ${echo} "-L${libc}/lib -L${libc.static}/lib -Wl,-rpath,${libc}/lib" > $out/nix-support/cc-ldflags
-                ${echo} "${dynamicLinker}" > $out/nix-support/dynamic-linker
+        # ── nix-support metadata ──────────────────────────────────────
+        ${echo} "${cc}"        > $out/nix-support/orig-cc
+        ${echo} "${libc}"      > $out/nix-support/orig-libc
+        # Multi-output glibc: $dev holds headers, $static holds .a archives.
+        # Consumers that need either (e.g. envoy bazel, llvm clang config)
+        # read these instead of computing them from $out's path.
+        ${echo} "${libc.dev}"    > $out/nix-support/orig-libc-dev
+        ${echo} "${libc.static}" > $out/nix-support/orig-libc-static
+        ${echo} "${binutils_}" > $out/nix-support/orig-binutils
+        ${echo} "${system}"    > $out/nix-support/system
+        ${echo} "-idirafter ${libc.dev}/include" > $out/nix-support/cc-cflags
+        ${echo} "-L${libc}/lib -L${libc.static}/lib -Wl,-rpath,${libc}/lib" > $out/nix-support/cc-ldflags
+        ${echo} "${dynamicLinker}" > $out/nix-support/dynamic-linker
       ''
     ];
   };
