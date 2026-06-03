@@ -83,6 +83,13 @@ in
             scripts/kconfig/merge_config.sh -m .config "$frag"
           done
 
+          # Architecture-specific fragments (e.g. x86 IBT, arm64 PAC) live in
+          # a per-arch subdirectory keyed by the kernel's ARCH name.
+          for frag in "$configDir/${kernelArch.karch}"/*.config; do
+            [ -e "$frag" ] || continue
+            scripts/kconfig/merge_config.sh -m .config "$frag"
+          done
+
           # Merge extra config from the system profile
           ${
             if extraConfig != ""
