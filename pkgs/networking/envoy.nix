@@ -269,6 +269,10 @@ in
     inherit tools;
     caCertificates = ca-certificates;
 
+    # The Bazel build already passes --linkopt=-no-pie and
+    # --host_linkopt=-no-pie; make the policy explicit.
+    hardeningDisable = ["pie"];
+
     postPatch = postPatchScript;
     bazelTarget = "//source/exe:envoy-static";
     bazelFlags = [

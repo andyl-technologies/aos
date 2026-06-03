@@ -59,6 +59,14 @@ in
     ];
     runtimeDeps = [zlib];
 
+    # Builds LLVM, clang, lld, compiler-rt, libunwind, libcxxabi and libcxx
+    # together. Keep Fortify at level 2 and avoid x86 shadow stack for the
+    # compiler toolchain package.
+    hardeningDisable = [
+      "fortify3"
+      "shadowstack"
+    ];
+
     phases = [
       {
         name = "unpack";

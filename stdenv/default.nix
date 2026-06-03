@@ -55,6 +55,12 @@
       "bindnow"
       "pie"
       "noexecstack"
+      "fortify"
+      "fortify3"
+      "stackclashprotection"
+      "format"
+      "strictflexarrays3"
+      "glibcxxassertions"
     ];
 
     # Platform-filtered default the wrapper bakes in as its fallback when
