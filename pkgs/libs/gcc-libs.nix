@@ -53,6 +53,11 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
+    # Builds the GCC target runtime libraries with explicit raw-GCC flags,
+    # bypassing the production wrapper. Keep it outside the package hardening
+    # policy so verification does not expect wrapper effects here.
+    hardeningDisable = ["all"];
+
     phases = [
       {
         name = "build";

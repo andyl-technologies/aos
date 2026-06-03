@@ -56,6 +56,11 @@ in
     runtimeDeps = [kmod];
     propagatedDeps = [];
 
+    # Kbuild owns the kernel's compiler and linker policy. The userspace
+    # wrapper flags (PIE, Fortify, format, control-flow) are wrong for
+    # kernel code, so opt out of the whole policy here.
+    hardeningDisable = ["all"];
+
     # Path to kernel config fragments — these are merged before building.
     configDir = ./config;
 

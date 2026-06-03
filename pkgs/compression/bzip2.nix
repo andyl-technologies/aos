@@ -21,6 +21,9 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
+    # The CLI build already passes -no-pie; make the policy explicit.
+    hardeningDisable = ["pie"];
+
     phases = [
       {
         name = "unpack";
