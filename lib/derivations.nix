@@ -45,6 +45,7 @@
     platformIsCompatible
     constraintsCompatible
     ;
+  hardening = import ./hardening.nix;
 
   # ---------------------------------------------------------------------------
   # Default phase definitions
@@ -502,6 +503,17 @@
     postInstall ? "",
     passthru ? {},
     checks ? null,
+    # ── Compiler-hardening policy ─────────────────────────────────────
+    # Per-package opt-in / opt-out over the central token set. The
+    # effective set is (defaultHardeningFlags ++ hardeningEnable) minus
+    # hardeningDisable, with implication and platform-filtering rules from
+    # lib/hardening.nix, exported to the builder as AOS_HARDENING_ENABLE
+    # and consumed by the cc-wrapper. `hardeningDisable = [ "all" ]` clears
+    # every token; unknown tokens are evaluation errors. defaultHardeningFlags
+    # is supplied by the stdenv and is normally not set per package.
+    hardeningEnable ? [],
+    hardeningDisable ? [],
+    defaultHardeningFlags ? [],
     # ── Reference-control attrs (Nix-enforced at build time) ──────────
     # Pass-through to `builtins.derivation`. If set, Nix fails the build
     # if the output's closure (or direct references) breaks the rule.
@@ -633,6 +645,9 @@
       "postInstall"
       "passthru"
       "checks"
+      "hardeningEnable"
+      "hardeningDisable"
+      "defaultHardeningFlags"
       "allowedRequisites"
       "allowedReferences"
       "disallowedRequisites"
@@ -642,6 +657,15 @@
 
     # ── Chaining constraint validation ────────────────────────────────
     buildPlatform = mkPlatform system;
+
+    # Effective compiler-hardening token set, exported to the builder for
+    # the cc-wrapper to translate into flags. Tokens are filtered for the
+    # platform the output runs on; for native builds that is buildPlatform.
+    hardeningEnableStr = hardening.effectiveString {
+      inherit name hardeningEnable hardeningDisable;
+      defaultFlags = defaultHardeningFlags;
+      platform = buildPlatform;
+    };
 
     # Our execution constraint — where this derivation's output runs.
     ourExecute =
@@ -754,6 +778,12 @@
 
             # Prefer store dir parameter
             NIX_STORE_DIR = storeDir;
+
+            # Effective hardening tokens for the cc-wrapper. Always set (even
+            # to "") so a build that opts out via hardeningDisable = [ "all" ]
+            # is distinguishable from a non-build environment, where the
+            # wrapper falls back to its baked-in default policy.
+            AOS_HARDENING_ENABLE = hardeningEnableStr;
           }
           # Reference-control blacklists. Empty list = no constraint, so
           # unconditional inclusion is safe. Under __structuredAttrs the
