@@ -1,39 +1,42 @@
 # Versioning & Channels
 
 > **Audience:** users pinning a registry, implementers of the consumer
-> (`apm update`/`apm upgrade`) and producer (`apr`), architects, and engineers
+> (`apm update` / `apm upgrade`) and producer (`apr`), architects, and engineers
 > operating a fleet.
 >
-> **Scope:** how AOS registries are *versioned* (calendar tags ↔ semver ↔
-> `creation_token`), how a host *tracks* a registry (commit / branch / tag /
-> version), and the **target** machinery layered on top — symbolic **channels**
-> (`stable`/`testing`) decoupled from tags, **phased rollouts**, and
-> **components**.
+> **Scope:** how AOS registries are *versioned* (**semver, no `v` prefix**), how a
+> channel is modeled (**a git branch whose head is the rollout *frontier***), how
+> rollout is driven (**16 signed partition tag objects per channel**), how a
+> consumer self-selects one of those partitions (**deterministic, persisted bucket
+> with probe-forward fallback**), and how downgrades are prevented
+> (**monotonic anti-rollback floor + fix-forward abort**).
 >
-> **CURRENT vs TARGET:** sections labeled **CURRENT** describe behavior that
-> exists in the code today, cited as `path:line`. Sections labeled **TARGET**
+> **CURRENT vs TARGET.** This is one of the docs being **rewritten** onto the
+> git-native registry architecture. Sections labeled **CURRENT** describe behavior
+> that exists in the code today, cited as `path:line`. Sections labeled **TARGET**
 > describe the design intent from the
-> [design brief](../plans/registry/design-brief.md) (§2.5, §4.3, §6) that is
-> **not yet implemented**. Where the two are interleaved, each subsection is
-> labeled.
+> [design brief](../plans/registry/design-brief.md) (§5–§7). The current code still
+> implements the *old* calendar-tag / `creation_token` / git-bundle scheme; that
+> scheme is **superseded** and is documented here only as the migration baseline.
 
 Related reference docs:
 [README](./README.md) ·
 [architecture](./architecture.md) ·
 [current-state](./current-state.md) ·
 [http-layout](./http-layout.md) ·
-[registry-toml](./registry-toml.md) ·
-[bundles-and-deltas](./bundles-and-deltas.md) ·
-[nix-cache-compatibility](./nix-cache-compatibility.md) ·
+[packs-and-deltas](./packs-and-deltas.md) ·
+[tag-metadata](./tag-metadata.md) ·
 [signing-and-trust](./signing-and-trust.md) ·
 [publishing](./publishing.md) ·
+[nix-cache-compatibility](./nix-cache-compatibility.md) ·
 [apt-comparison](./apt-comparison.md)
 
 Plan docs:
 [plan README](../plans/registry/README.md) ·
 [design brief](../plans/registry/design-brief.md) ·
 [gap analysis](../plans/registry/gap-analysis.md) ·
-[workstream-04 channels & rollouts](../plans/registry/workstream-04-channels-rollouts.md) ·
+[workstream-03 channels & rollouts](../plans/registry/workstream-03-channels-rollouts.md) ·
+[workstream-04 signing & trust](../plans/registry/workstream-04-signing-trust.md) ·
 [workstream-05 consumer](../plans/registry/workstream-05-consumer.md) ·
 [open questions](../plans/registry/open-questions.md)
 
@@ -41,174 +44,366 @@ Plan docs:
 
 ## 1. Overview
 
-A registry is a **git repository of TOML metadata** distributed over HTTP. Its
-*releases* are git **tags** following a **calendar versioning** scheme; a host
-*subscribes* to a registry and chooses which release(s) it will track. The
-mechanisms in play, from lowest to highest level:
+In the **TARGET** architecture the registry is a **bare git repository (sha256)
+served as static files over dumb HTTP** (see [architecture](./architecture.md) and
+[http-layout](./http-layout.md)). On top of that object store, three concepts give
+us versioning and fleet rollout:
 
-| Layer | What it is | Status |
-|---|---|---|
-| **Calendar tag** | `vYYYY.MM[.P]` git tag naming a release | CURRENT |
-| **`creation_token`** | monotonic integer `YYYYMMPPPP` derived from the tag — total order over releases | CURRENT (consumer-side) |
-| **Semver projection** | tag parsed as `semver::Version` for `VersionReq` matching | CURRENT |
-| **Tracking mode** | how a host selects a release: commit / branch / tag / version / default | CURRENT |
-| **Channel** | symbolic alias (`stable`/`testing`) → concrete tag, decoupled from tag names | TARGET |
-| **Rollout** | percentage gate on a channel target for canary/phased fleet updates | TARGET |
-| **Component** | intra-registry partition (trust/license/stability) | TARGET |
+| Concept | Modeled as | Signed? | Consumed by |
+|---|---|---|---|
+| **Release** | semver git **tag** `refs/tags/<semver>` → commit | **yes** | stock git (`verify-tag`) + AOS |
+| **Channel (branch)** | `refs/heads/<channel>`, head = **frontier** | no (ref pointer) | stock git convenience |
+| **Channel (rollout)** | **16 signed partition tag objects** `/channel/<name>/0..f` | **yes** | AOS rollout only |
 
-The first four exist and are exercised by `apm update`. The last three are
-APT-derived improvements adopted into the **target** signed `registry.toml`
-root (design brief §4.3, §6 items 3/4/5) and are documented here as the design
-that [workstream-04](../plans/registry/workstream-04-channels-rollouts.md) and
-[workstream-05](../plans/registry/workstream-05-consumer.md) will implement.
+The release tag is the **immutable, signed unit of distribution**. The channel
+*branch* is an **unsigned convenience pointer** at the rollout *frontier* (the
+newest release any partition targets). The channel *partitions* are the **signed,
+bucketed rollout surface** the AOS client actually follows.
+
+```
+                       ┌─────────────────────────────────────────┐
+   release tags        │  refs/tags/1.0.0   refs/tags/1.1.0  ...  │  (signed → commit)
+                       └─────────────────────────────────────────┘
+                                  ▲                   ▲
+   channel branch head ───────────┼───────────────────┘   = FRONTIER
+   refs/heads/stable ─────────────┘  (unsigned; newest release any partition targets)
+
+   channel partitions (signed tag objects, name == "stable", → semver tag):
+     /channel/stable/0 ─► 1.1.0     ─┐
+     /channel/stable/1 ─► 1.1.0      │  publisher has advanced 4/16
+     /channel/stable/2 ─► 1.1.0      │  partitions to 1.1.0 ...
+     /channel/stable/3 ─► 1.1.0     ─┘
+     /channel/stable/4 ─► 1.0.0     ─┐
+     ...                             │  ... and left 12/16 on the prior
+     /channel/stable/f ─► 1.0.0     ─┘  release 1.0.0
+```
+
+> **Design philosophy.** Rollout is an **AOS-fleet** concept, not a `git clone`
+> concept. A stock `git pull <channel>` always lands on the frontier (no rollout
+> protection); only AOS clients honor the 16-partition bucketing. This is an
+> accepted trade for staying a clean superset of stock dumb-HTTP git.
 
 ---
 
-## 2. Calendar versioning (CURRENT)
+## 2. Semver versioning (TARGET)
 
-### 2.1 Tag grammar
+### 2.1 Version grammar
 
-Releases are git tags of the form:
+Releases use **standard [semver](https://semver.org/), with no `v` prefix**:
 
 ```
-vYYYY.MM        a "minor base" — a monthly release with no patch
-vYYYY.MM.P      a patch release within that month
+1.1.2                          a normal patch release
+1.1.0-alpha.1                  a pre-release of the 1.1.0 minor base
+1.0.0-beta+exp.sha.5114f85     pre-release "beta" with build metadata
 ```
 
-Examples: `v2026.02`, `v2026.02.3`, `v2026.12.99`.
+A release is a **signed git tag** `refs/tags/<semver>` pointing at a commit. There
+is no calendar component, no `creation_token`, and no `v` prefix — those belong to
+the superseded scheme in §6.
 
-Constraints enforced by `version_to_token`
-(`crates/aos-package/src/registry/state.rs:131-166`):
+### 2.2 Precedence & ordering
 
-- exactly **2 or 3** dot-separated components after stripping the optional
-  leading `v`;
-- `YYYY` and `MM` parse as integers; `MM` is **1–12** (`state.rs:149-151`);
-- `P` (patch) defaults to `0` when absent and must be **≤ 9999**
-  (`state.rs:161-163`).
+Ordering follows semver precedence exactly. The relevant rules:
 
-A 2-component tag (`vYYYY.MM`) is the *minor base* of a month; its patch
-component is implicitly `0`.
+1. Compare `major`, then `minor`, then `patch` numerically.
+2. A version **with** a pre-release has **lower** precedence than the associated
+   normal version: `1.0.0-alpha < 1.0.0`.
+3. Pre-release identifiers compare left-to-right: numeric identifiers compare
+   numerically, alphanumeric identifiers compare in ASCII sort order, numeric < alphanumeric,
+   and a larger set of identifiers (when all preceding are equal) has higher
+   precedence.
+4. **Build metadata** (`+…`) is **ignored** for precedence —
+   `1.0.0+a` and `1.0.0+b` have equal precedence.
 
-### 2.2 `creation_token` — the total order
+```
+1.0.0-alpha  <  1.0.0-alpha.1  <  1.0.0-alpha.beta  <  1.0.0-beta
+            <  1.0.0-beta.2   <  1.0.0-beta.11     <  1.0.0-rc.1
+            <  1.0.0
+```
 
-Every tag maps to a monotonic 64-bit integer used to order releases and bundles:
+Crucially, ordering is *not* re-derived from a synthetic token: it comes from
+semver precedence **and** git ancestry (the commit a tag points at is a descendant
+of the prior release's commit). The two agree because the publisher only ever tags
+forward — see [packs-and-deltas](./packs-and-deltas.md) for how this co-designs with
+the delta graph.
+
+### 2.3 Path encoding of a release
+
+A release's object store lives under
+`/release/<major>/<minor>/<patch…>/`, where the **third segment is everything after
+`major.minor`** — including any `-prerelease` and `+build` suffix:
+
+| Semver | Release path |
+|---|---|
+| `1.1.2` | `/release/1/1/2/` |
+| `1.1.0-alpha.1` | `/release/1/1/0-alpha.1/` |
+| `1.0.0-beta+exp.sha.5114f85` | `/release/1/0/0-beta+exp.sha.5114f85/` |
+
+Releases are **immutable** once published and may carry a long CDN TTL (see
+[http-layout](./http-layout.md) §CDN policy).
+
+---
+
+## 3. Channels as branches; branch head = frontier (TARGET)
+
+A **channel** is a named release line — e.g. `stable`, `testing`. It is modeled two
+ways simultaneously:
+
+### 3.1 The branch (unsigned convenience pointer)
+
+`refs/heads/<channel>` is an ordinary git branch. Its head points at the commit of
+the **frontier**: the newest release *any* of the channel's 16 partitions targets
+(i.e. the current rollout target).
+
+- `HEAD` is a symref to `refs/heads/<default-channel>` (e.g. `stable`), so a bare
+  `git clone <url>` checks out the default channel's frontier.
+- Branch refs are **never part of the trust chain** (see
+  [signing-and-trust](./signing-and-trust.md)). They are an unsigned convenience so
+  stock git users get a working clone. Those users can still
+  `git verify-tag <semver>` because the **release tags** are the signed objects.
+
+```
+HEAD ──symref──► refs/heads/stable ──► commit(1.1.0)   ← frontier
+                                            ▲
+                 newest release any /channel/stable/<0..f> targets
+```
+
+> **Implication.** `git pull stable` always advances to the frontier — there is no
+> rollout gating for stock clients. Acceptable by design (§1): rollout is fleet
+> policy enforced by AOS, not by the git ref graph.
+
+### 3.2 The partitions (the rollout surface) — see §4.
+
+The frontier is a *derived* value: when the publisher advances even one partition
+to a newer release, the branch head moves to that newer release's commit. The
+branch head is therefore "the most ambitious thing the channel is currently rolling
+out," not "what the median host runs."
+
+---
+
+## 4. The 16 signed partition tag objects (TARGET)
+
+Each channel exposes **exactly 16** partition files:
+
+```
+/channel/<name>/0
+/channel/<name>/1
+   ...
+/channel/<name>/f          (hex 0..f → 16 partitions)
+```
+
+Each file is an **independently signed annotated tag object** whose **tag name field
+equals the channel name** (`<name>`), pointing at a **semver release tag**. The full
+trust chain is therefore:
+
+```
+signed partition tag  ──►  signed semver tag  ──►  commit
+   (name == channel)          (name == semver)
+   under /channel/<name>/      under /release/...
+```
+
+Verification checks **both** the Ed25519/SSH signature **and** the embedded
+tag-name field against the expected name — the channel name under `/channel/*`, the
+semver under `/release/*`. This **name-binding** binds a tag object to its serving
+path and prevents cross-serving a tag from one path at another. See
+[signing-and-trust](./signing-and-trust.md) and
+[tag-metadata](./tag-metadata.md) for the signature format and the tag-message TOML
+(only `[meta]` + `[[caches]]`).
+
+> **Invariant: there must always be 16.** A complete channel has all of `0..f`
+> present and signed. If a partition file is temporarily missing or fails
+> verification, a client **MAY** fall back to another partition via deterministic
+> **probe-forward** (§5.3) — it does **not** treat a single missing partition as a
+> channel-wide failure.
+
+These 16 tag objects live **outside** the git ref namespace (under `/channel/*`, not
+`refs/`). They are **AOS-only**; stock dumb-HTTP git never sees them and is
+unaffected.
+
+---
+
+## 5. Consumer bucket selection (TARGET)
+
+### 5.1 Deterministic, persisted bucket
+
+A consumer self-selects **one** of the 16 partitions, deterministically and
+**persisted once**, so a host does not flap between buckets across `apm update`
+runs:
+
+```
+bucket = sha256(machine_id) mod 16          # 0..f, computed once, then persisted
+```
+
+- `machine_id` is a stable per-host identifier; its exact source (e.g.
+  `/etc/machine-id`) and the encoding fed into the hash are an
+  [open question](../plans/registry/open-questions.md) (brief §16 item 3).
+- The bucket is **written once** and reused thereafter, so the host's partition
+  assignment is stable for the life of the machine. Re-deriving it every run (rather
+  than persisting) would also be deterministic, but persistence makes the contract
+  explicit and survives any future change to the hash construction.
+
+### 5.2 Resolution path
+
+On `apm update`, an AOS client resolves its target release like this:
+
+```
+1. bucket  ← persisted sha256(machine_id) mod 16            (§5.1)
+2. fetch   /channel/<name>/<bucket>                          (signed partition tag)
+3. verify  signature + tag-name field == <name>             (name-binding, §4)
+4. follow  partition tag → semver tag; verify sig + name == <semver>
+5. target  ← that semver release; resolve objects via packs/deltas/loose
+            (see packs-and-deltas.md), subject to the anti-rollback floor (§7)
+```
+
+The bucket selects *which* release this host adopts *now*; the partition the
+publisher has (or has not) advanced is what determines whether this host is in the
+already-rolled-out cohort or still holding on the prior release.
+
+### 5.3 Probe-forward fallback
+
+If the host's assigned partition file is missing or fails verification, the client
+probes forward deterministically:
+
+```
+b ← bucket
+repeat up to 16 times:
+    try /channel/<name>/<hex(b)>
+    if present AND verifies → use it
+    else b ← (b + 1) mod 16
+if none usable → channel is unavailable → fail closed (do not invent a target)
+```
+
+Probe-forward is **deterministic** (same starting bucket → same probe order), so the
+fallback choice is itself reproducible and does not reshuffle the host between runs.
+
+---
+
+## 6. Publisher-controlled rollout (TARGET)
+
+Rollout is driven entirely by **how many of the 16 partitions point at the new
+release**. To roll a new release to N/16 of the fleet:
+
+```
+point N partitions at the new semver tag;
+leave (16 − N) partitions on the prior release.
+```
+
+A host adopts the new release iff its persisted bucket maps to a partition that has
+been advanced. Because buckets are stable, **the same hosts adopt first** as the
+publisher ramps `4/16 → 8/16 → 16/16`; the cohort is monotone, never reshuffled.
+
+```
+ step 0   advance 1/16    /channel/stable/0 → 1.1.0    canary (one bucket)
+ step 1   advance 4/16    /channel/stable/0..3 → 1.1.0 widen if healthy
+ step 2   advance 8/16    /channel/stable/0..7 → 1.1.0 half the fleet
+ step 3   advance 16/16   /channel/stable/0..f → 1.1.0 complete
+```
+
+Key properties:
+
+- **"Where does the rest of the fleet go?" is answered explicitly.** The
+  un-advanced partitions still *name the prior release* — there is no separate
+  `previous_tag`/baseline concept. A held host resolves its (un-advanced) partition
+  and lands on the prior release, a no-op relative to where it already is.
+- **Completion = all 16 point at the new release.** At that point every bucket maps
+  to the new release and the rollout is done.
+- **The branch head tracks the frontier** (§3.1): as soon as the first partition is
+  advanced to `1.1.0`, `refs/heads/stable` points at `commit(1.1.0)`.
+- **The granularity is 1/16 ≈ 6.25%.** This replaces the superseded percentage
+  rollout (any `0..100` value) with a fixed 16-way partitioning — coarser, but it
+  needs **no central host registry** and no per-host reporting: the deterministic
+  bucket *is* the cohort assignment.
+
+---
+
+## 7. Anti-rollback: monotonic floor + fix-forward (TARGET)
+
+### 7.1 Monotonic floor
+
+A consumer keeps a **monotonic floor**: it **never moves to a release older than its
+current one** (by semver precedence + git ancestry). If a resolved partition would
+take the host *backward* — for example, because a partition was repointed at an
+older release, or a mirror is stale — the client **rejects** the move and stays put.
+
+```
+target ← release the bucket resolves to
+if precedence(target) < floor  OR  not is-ancestor(floor.commit, target.commit):
+    reject (do not downgrade); keep running floor
+else:
+    adopt target; floor ← target
+```
+
+This is the conceptual successor to today's `check_monotonic`
+(`crates/aos-package/src/registry/state.rs:104-117`), but the anchor moves from the
+calendar `creation_token` to **semver precedence plus a git
+`merge-base --is-ancestor` ancestry check** against the signed target commit. See
+[signing-and-trust](./signing-and-trust.md) for how the signed tag chain feeds this.
+
+### 7.2 Aborting a bad rollout is fix-forward
+
+A publisher does **not** abort a bad rollout by **decrementing** partitions back to
+the prior release. That would be a downgrade — and the consumers' monotonic floor
+(§7.1) would block it anyway. Instead, abort is **fix-forward**:
+
+```
+1. publish a NEWER release that fixes (or reverts the content of) the regression;
+2. point the affected partitions at that newer release.
+```
+
+Because the new release is *newer* by precedence and a descendant commit, it passes
+the floor check and rolls out normally. The semantics: "roll back" means "roll
+*forward* to a corrected build," never "move the fleet to an older tag."
+
+| Action | Mechanism | Allowed? |
+|---|---|---|
+| Roll out N/16 | advance N partitions to a newer release | yes |
+| Widen rollout | advance more partitions to the same newer release | yes |
+| Abort / "rollback" | publish a newer fixed release, advance partitions to it | yes (fix-forward) |
+| Decrement partitions to an older release | point partitions back at a prior semver | rejected by consumer floor |
+
+---
+
+## 8. Migration baseline — the superseded calendar scheme (CURRENT)
+
+> **This entire section describes today's code, which is being replaced.** It is
+> kept as the migration baseline, not as target design. The git-native model in
+> §2–§7 supersedes all of it. Do not implement new behavior against this section.
+
+### 8.1 Calendar tags & `creation_token` (CURRENT)
+
+Today, releases are **calendar** git tags `vYYYY.MM[.P]`, parsed by
+`version_to_token` (`crates/aos-package/src/registry/state.rs:131-166`) into a
+monotonic 64-bit integer:
 
 ```
 creation_token = year * 1_000_000 + month * 10_000 + patch
 ```
 
-Source: `version_to_token` (`state.rs:131-166`), inverse `token_to_version`
-(`state.rs:168-184`).
-
 | Tag | `creation_token` |
 |---|---|
-| `v2026.02`   | `2026020000` |
-| `v2026.02.3` | `2026020003` |
-| `v2026.12.99`| `2026120099` |
+| `v2026.02`    | `2026020000` |
+| `v2026.02.3`  | `2026020003` |
+| `v2026.12.99` | `2026120099` |
 
-The inverse renders patch `0` as a **2-part base tag** (`token_to_version` at
-`state.rs:179-183`): `2026020000 → "v2026.02"`, `2026020003 → "v2026.02.3"`.
+The inverse is `token_to_version` (`state.rs:173-184`), which renders patch `0` as
+the 2-part base tag. The token is the *total order* and the anti-rollback anchor
+today — it is **removed** in the target, replaced by semver precedence + git
+ancestry (§2.2, §7.1).
 
-```
- token = 2 0 2 6 0 2 0 0 0 3
-          \__/  \_/  \____/
-          year month patch (0000-9999)
-```
+### 8.2 Tag → semver projection (CURRENT)
 
-This layout makes ordinary integer comparison a correct release ordering:
-later year > earlier year; within a year, later month wins; within a month,
-higher patch wins.
+Calendar tags are *also* projected to semver by `parse_tag_as_semver`
+(`crates/aos-package/src/update.rs:429-450`) — strip the leading `v`, parse each
+component as `u64` to drop leading zeros, pad a 2-component tag to `X.Y.0` — so a
+host can write `version = "~2026.3"` and match `v2026.03`. Best-match selection is
+`find_best_version_tag_in_manifest` (`update.rs:400-424`). In the **target**, this
+projection is unnecessary: versions are *already* `MAJOR.MINOR.PATCH` semver with no
+`v` and no calendar normalization.
 
-> **Note on capacity.** Because month occupies 4 decimal digits
-> (`* 10_000`) but only uses 01–12, and patch occupies the low 4 digits, the
-> token is *not* a dense encoding — there are unused integer ranges between
-> months. This is intentional and harmless; the token is an ordering key, not a
-> compact identifier.
+### 8.3 Tracking modes (CURRENT)
 
-### 2.3 Monotonicity & downgrade defense (CURRENT)
-
-`creation_token` is the anchor for **anti-rollback**. `check_monotonic`
-(`state.rs:104-117`) rejects any sync whose new token is **≤** the persisted
-token:
-
-```rust
-// state.rs:104
-pub fn check_monotonic(old_token: u64, new_token: u64) -> Result<()> {
-    if new_token <= old_token { bail!("registry downgrade detected: ...") }
-    Ok(())
-}
-```
-
-The consumer calls this from `sync_bundle` *after* picking and applying bundles
-but *before* committing new state
-(`crates/aos-package/src/update.rs:263-267`). The error names both versions via
-`token_to_version`, framing it as a possible downgrade attack or stale mirror.
-
-> **CURRENT caveat (guard is conditional).** In `update.rs:263-267` the check
-> only runs *inside* `if latest_token > old_token`, so the `<=` branch of
-> `check_monotonic` is effectively unreachable from `sync_bundle`: a stale or
-> equal token silently skips the guard rather than erroring. The standalone
-> `check_monotonic` unit tests (`state.rs:254-274`) still exercise the reject
-> path. See [open questions](../plans/registry/open-questions.md). The
-> **TARGET** anti-rollback anchor moves to the signed `[latest].creation_token`
-> field in `registry.toml` (§6.2), evaluated unconditionally.
-
----
-
-## 3. Semver projection (CURRENT)
-
-Calendar tags are *also* interpreted as semver so that a host can express a
-flexible constraint (`~2026.3`, `^2026`, `>=2026.3, <2026.5`). AOS depends on
-the standard `semver` crate (design brief §2.5).
-
-### 3.1 Tag → semver normalization
-
-`parse_tag_as_semver` (`crates/aos-package/src/update.rs:429-450`):
-
-1. strip a leading `v`;
-2. split on `.`, parse each component as `u64` to **strip leading zeros**
-   (`02 → 2`), falling back to the literal on parse failure;
-3. pad a **2-component** tag to `X.Y.0`; accept a **3-component** tag as-is;
-   any other length → `None` (not semver).
-
-| Tag | Parsed `semver::Version` |
-|---|---|
-| `v2026.02`   | `2026.2.0` |
-| `v2026.02.3` | `2026.2.3` |
-| `v1.2.3`     | `1.2.3` |
-| `release-candidate` | — (`None`, skipped) |
-
-This is *why* a `version` constraint written as `~2026.3` (not `~2026.03`)
-matches a `v2026.03` tag — the leading zero is normalized away before matching
-(`types.rs` tests at `crates/aos-package/src/types.rs:914-925`,
-`update.rs` tests at `crates/aos-package/src/update.rs:754-761`).
-
-### 3.2 Best-match selection
-
-`find_best_version_tag_in_manifest` (`update.rs:400-424`) scans every bundle
-entry's `target_tag`, projects it to semver, keeps those satisfying the
-`VersionReq`, and returns the **highest** matching tag. Non-semver tags are
-silently skipped (`update.rs:771-798` test). If nothing matches, the caller
-errors (`update.rs:334-336`).
-
-> **`creation_token` vs semver — two orderings, kept consistent.** The
-> calendar→token map and the calendar→semver map agree on ordering for
-> well-formed `vYYYY.MM[.P]` tags, so "highest semver match" and "highest token"
-> coincide in practice. They diverge only for tags outside the calendar grammar
-> (e.g. `v1.2.3`), which `version_to_token` rejects but `parse_tag_as_semver`
-> accepts. Producers SHOULD use calendar tags exclusively; the version-matching
-> path tolerates plain semver for flexibility.
-
----
-
-## 4. Tracking modes (CURRENT)
-
-A host subscribes to a registry via a config file at
-`~/.config/apm/registries.d/{name}.toml` (or `/etc/apm/registries.d/…` for
-system scope; see `ProfileScope::config_dir` at
-`crates/aos-package/src/types.rs:483-489`). The `[registry]` table carries at
-most one *tracking field*. The resolved mode is the
-`TrackingMode` enum (`types.rs:281-293`):
+A host subscribes via `~/.config/apm/registries.d/{name}.toml`; the resolved mode is
+`TrackingMode` (`crates/aos-package/src/types.rs:281-293`):
 
 ```rust
 // types.rs:281
@@ -221,403 +416,118 @@ pub enum TrackingMode {
 }
 ```
 
-### 4.1 Config fields → mode
+There is **no `Channel` variant** today; channel subscription is the target
+addition (§3–§6). The natural mapping under the target model:
 
-`RegistryConfig::tracking_mode` (`types.rs:352-400`) maps fields to modes and
-**validates that at most one** of `commit`/`branch`/`tag`/`version` is set
-(legacy `pin` folds into `tag`); two or more set → error
-(`types.rs:370-377`).
-
-| `[registry]` field | `TrackingMode` | Selection behavior |
-|---|---|---|
-| `commit = "<sha>"` | `Commit` | Pin to an exact commit. **Bundle transport cannot resolve arbitrary commits** — falls through to default fetch (`update.rs:314-317`). Honored fully under git transport. |
-| `branch = "<name>"` | `Branch` | Track the branch HEAD; behaves as Default for bundle selection (incremental to latest). |
-| `tag = "<v…>"` | `Tag` | Pin to an exact tag; sync resolves the matching snapshot or a delta targeting it (`update.rs:299-313`). |
-| `version = "<req>"` | `Version` | Best-match the highest tag satisfying the semver `VersionReq` (`update.rs:318-337`). |
-| *(none)* | `Default` | Default branch HEAD; incremental sync to latest. |
-| `pin = "<v…>"` *(legacy)* | `Tag` | Backward-compat alias for `tag` (`types.rs:354`, `230-232`). |
-
-Example config files:
-
-```toml
-# Track the latest stable monthly line within 2026, auto-adopt patches.
-[registry]
-name = "aos-core"
-url  = "https://registry.aos.dev/core"
-version = "~2026.3"          # matches v2026.03, v2026.03.1, v2026.03.2, ...
-```
-
-```toml
-# Freeze to an exact release for reproducibility.
-[registry]
-name = "aos-core"
-url  = "https://registry.aos.dev/core"
-tag  = "v2026.02.3"
-```
-
-```toml
-# Frozen to an exact commit (only fully honored under git transport).
-[registry]
-name = "aos-core"
-url  = "git+ssh://git@github.com/andyl/registry.git"
-commit = "abc123def456abc123def456abc123def456abcd"
-```
-
-### 4.2 Mode-aware bundle selection
-
-`pick_bundles` (`update.rs:291-391`) consumes the `TrackingMode` plus persisted
-`RegistryState` to choose the minimal set of bundles. Summary (full algorithm
-in [bundles-and-deltas](./bundles-and-deltas.md)):
-
-```
-TrackingMode::Tag      -> snapshot with target_tag == tag, else any delta to it,
-                          else error                            (update.rs:299-313)
-TrackingMode::Commit   -> bundle transport can't resolve; fall through  (update.rs:314-317)
-TrackingMode::Version  -> find_best_version_tag_in_manifest, then snapshot/delta
-                          to it, else error                     (update.rs:318-337)
-TrackingMode::Branch
-TrackingMode::Default  -> incremental:
-                            no prior state          -> latest_snapshot()
-                            entries_since(cur) empty-> []  (up to date)
-                            skip delta available    -> skip delta
-                            sequential chain        -> sequential deltas
-                            otherwise               -> latest snapshot
-```
-
-> **Transport interaction.** The URL scheme selects transport
-> (`RegistryConfig::transport`, `types.rs:315-324`): `http(s)://` ⇒ HTTP
-> bundles, `git*://` ⇒ native git. Under git transport, `Commit` and `Branch`
-> are resolved directly by `git fetch`; the bundle-transport limitation on
-> `Commit` (above) does not apply. See `update.rs:115-128`.
-
-### 4.3 State persistence
-
-After a successful sync the consumer writes
-`RegistryState { last_commit, last_creation_token, last_update }`
-(`types.rs:254-262`) into the `[registry.state]` section of the same config
-file (`save_state`, `state.rs:37-77`; called from `update.rs:131-145`).
-User-edited fields (name, url, signing, tracking fields) are preserved — only
-the state section is rewritten (`state.rs:53-71`).
-
----
-
-## 5. Channels (TARGET)
-
-> **Status: TARGET.** No channel field, parsing, or selection logic exists in
-> the code today. `TrackingMode` has no `Channel` variant (`types.rs:281-293`),
-> and the current root schema `RegistryRootConfig` (`types.rs:566-599`) carries
-> only `registry`, `caches`, and `signing` — there is **no `[channels]`
-> table**. This section is the design from brief §4.3 and §6 (item 3), to be
-> implemented by
-> [workstream-04](../plans/registry/workstream-04-channels-rollouts.md) and
-> [workstream-05](../plans/registry/workstream-05-consumer.md).
-
-### 5.1 Motivation: decouple subscription from tag names
-
-Today a host that wants "the current stable release" must either pin an exact
-`tag` (and manually bump it each month) or use a `version` constraint (which
-couples the subscription to the *calendar shape* of tags). Neither lets the
-**publisher** move the meaning of "stable" forward without every host editing
-config.
-
-A **channel** is a *symbolic alias* — a name like `stable` or `testing` — that
-the publisher maps to a concrete tag inside the signed `registry.toml` root.
-Promotion is **one atomic signed flip** of that mapping; subscribers that track
-`channel = "stable"` follow it automatically with no local edit. This is the
-APT `suite`/`Codename` idea (`stable`, `testing`, `unstable`), adapted.
-
-```
-                 registry.toml [channels]            git tags
-   apm host  ───────────────────────────────────────────────────
-   channel = "stable"  ──►  stable  = "v2026.02.3"  ──►  v2026.02.3
-   channel = "testing" ──►  testing = "v2026.03"    ──►  v2026.03
-```
-
-The key property: `stable` and `testing` are **not** themselves git tags or
-branches — they are *pointers* living in the signed root, independent of the
-tag-naming convention. A publisher can repoint `stable` from `v2026.02.3` to
-`v2026.03.1` without renaming anything.
-
-### 5.2 Root schema (TARGET)
-
-In the target signed root (`registry.toml`, see
-[registry-toml](./registry-toml.md)), channels live in a `[channels]` table.
-Brief §4.3 specifies: *"`[channels]` symbolic aliases (`stable`, `testing`) →
-concrete tags, each optionally with a **rollout** percentage."*
-
-```toml
-# registry.toml (TARGET) — channel definitions in the signed root
-# [channels.<name>] subtables (NOT inline tables, NOT [[array]]).
-
-[channels.stable]
-tag            = "v2026.02.3"
-creation_token = 2026020003   # per-channel monotonic anti-rollback
-
-[channels.testing]
-tag            = "v2026.03"
-creation_token = 2026030000
-rollout        = 25           # percent; phased — only ~25% of the fleet adopts (see §6)
-```
-
-The simplest form (a channel that is just an alias) needs only `tag`;
-`creation_token` SHOULD be present so the consumer can apply the same monotonic
-ordering it uses for `[latest]` (per-channel anti-rollback). `rollout` is the
-adoption percentage; omit it (or set `100`) for a fully rolled-out channel.
-
-### 5.3 Consumer subscription (TARGET)
-
-A host opts into channel tracking with a new `channel` tracking field, mutually
-exclusive with the existing four (the same one-of validation in
-`tracking_mode`, `types.rs:352-400`, extended for a fifth field):
-
-```toml
-# registries.d/aos-core.toml (TARGET)
-[registry]
-name    = "aos-core"
-url     = "https://registry.aos.dev/core"
-channel = "stable"          # follow whatever the publisher calls "stable"
-```
-
-Resolution (TARGET): `apm update` reads the signed root, looks up
-`channel = "stable"` in `[channels]`, obtains the concrete `tag`/`creation_token`, then
-runs the **existing** bundle-selection machinery as if the user had pinned that
-tag — i.e. channels resolve to a tag *before* `pick_bundles` runs, reusing
-§4.2. A `TrackingMode::Channel(String)` variant captures this.
-
-This means channels add a *resolution step* on top of the current design; they
-do not replace `creation_token`, semver, or bundle selection.
-
-### 5.4 Relationship to the signed `[latest]` pointer (TARGET)
-
-Brief §4.3 also defines a single signed `[latest]` pointer (`tag`,
-`creation_token`, `head` — the authentic git commit SHA) as the *freshness /
-anti-rollback anchor*. `[latest]` is the registry-wide "newest published
-release"; channels are *named, possibly-lagging* views (`stable` typically
-trails `[latest]`). Both are signed fields in the same root and flip atomically
-on publish (brief §4.4). The consumer applies monotonic `creation_token` checks
-against the *channel's* `creation_token` for channel subscribers, and against
-`[latest].creation_token` for freshness.
-
----
-
-## 6. Freshness, freeze, and anti-rollback for channels (TARGET)
-
-Channels and the `[latest]` pointer inherit the threat model in
-[signing-and-trust](./signing-and-trust.md) (brief §4.5). Three defenses apply
-to *which release a channel resolves to*:
-
-### 6.1 `valid_until` (freeze defense) — TARGET
-
-A mirror stuck on a validly-signed-but-old root cannot be detected by sequence
-numbers alone. The target root carries an APT-style `[meta].valid_until` expiry
-(brief §4.3, §6 item 1); a client **rejects an expired root**, so a frozen
-mirror degrades to a *visible* failure rather than silently serving a stale
-channel. Re-signed each publish with `valid_until = publish_time + N`.
-
-### 6.2 Monotonic `[latest].creation_token` — TARGET
-
-The current `check_monotonic` on `RegistryState.last_creation_token`
-(`state.rs:104-117`, §2.3) moves up to operate on the signed
-`[latest].creation_token` in the root, plus a git `merge-base --is-ancestor`
-ancestry check
-(`security.rs` `check_downgrade`, brief §2.10/§4.5). A channel repointed
-*backward* (lower token than the host's current state for that channel) is
-rejected as a downgrade.
-
-### 6.3 Fail-closed omission — TARGET
-
-With the signed `[latest].head` (authentic commit SHA), a mirror that *omits*
-newer bundles causes the client to **fail closed** — it cannot reach the signed
-target commit and errors, rather than silently using stale data (brief §4.5).
-Freeze degrades to DoS, not silent rollback.
-
-| Threat | CURRENT defense | TARGET defense |
-|---|---|---|
-| Downgrade | `check_monotonic` on local `last_creation_token` (§2.3, conditional) | unconditional monotonic on signed `[latest].creation_token` + git ancestry |
-| Freeze (stale valid root) | — (none) | `valid_until` signed expiry |
-| Omission (hidden newer bundles) | — (silently stale) | fail-closed via signed `[latest].head` |
-| Tamper / MITM | NAR SHA-256 + signed commit (transitive) | + inline-signed root, by-hash index |
-
----
-
-## 7. Phased rollouts (TARGET)
-
-> **Status: TARGET.** No rollout gating exists in the code. This is brief §6
-> (item 4), the analogue of APT `Phased-Update-Percentage`.
-
-### 7.1 Motivation
-
-For a fleet, flipping a channel to a new tag exposes *every* host at once — a
-bad release has maximum blast radius. A **rollout percentage** on a channel
-target lets a publisher say "make `v2026.03` the `testing` target, but only
-~25% of hosts should adopt it yet." This is a **canary** mechanism for
-blast-radius control.
-
-```toml
-[channels.testing]
-tag     = "v2026.03"
-rollout = 25                # ~25% of the fleet adopts now; the rest hold
-```
-
-### 7.2 Deterministic gating (TARGET)
-
-The gate MUST be **deterministic per host** so that a host's adopt/hold
-decision is stable across `apm update` runs (no flapping) and so the cohort is
-reproducible. The design (brief §6 item 4, open question §7.4) is a
-deterministic hash bucket keyed on the **channel name** — explicitly **not** the
-target tag, so cohorts stay stable across promotions:
-
-```
-bucket = sha256(machine_id : channel_name) mod 100      # 0..99, stable per host
-adopt  = bucket < rollout
-```
-
-- A host with `bucket = 12` adopts at `rollout >= 13`; a host with `bucket = 80`
-  waits until `rollout >= 81`.
-- Because the bucket is a function of a stable `machine_id` and the channel
-  name — and **not** the candidate tag — the *same* hosts adopt first as the
-  publisher ramps `rollout` 25 → 50 → 100, and the cohort is unchanged across
-  successive promotions (a host's bucket does not re-shuffle when the channel
-  repoints to a new tag). Adoption is **monotone**, not re-shuffled each step.
-- A host in the held (not-yet-rolled-out) cohort is a **no-op**: it stays at its
-  current `last_creation_token` (its previously-resolved release), not at
-  no-release. There is no `previous_tag` field — the held host simply does not
-  advance.
-
-> **Open question (brief §7.4):** the exact hash construction within
-> `sha256(machine_id : channel_name)` (delimiter, encoding) and how a host
-> reports/learns its bucket are not yet fixed; the inputs are settled as
-> `machine_id` and `channel_name` (tag excluded). Tracked in
-> [open questions](../plans/registry/open-questions.md) and to be specified by
-> [workstream-04](../plans/registry/workstream-04-channels-rollouts.md).
-
-### 7.3 Rollout lifecycle (TARGET)
-
-```
- day 0   testing.tag = v2026.03   rollout =   5    canary cohort only
- day 2   testing.tag = v2026.03   rollout =  25    widen if metrics healthy
- day 5   testing.tag = v2026.03   rollout = 100    full; promote to stable next
- ...     stable.tag  = v2026.03.1 rollout = 100    promoted after soak
-```
-
-Each step is one atomic signed flip of the root (brief §4.4 publish ordering);
-hosts re-evaluate their bucket against the new `rollout` on the next
-`apm update`. A regression at any step is rolled back by repointing the channel
-(subject to the §6.2 monotonic/ancestry checks — a rollback to an *older* tag
-needs an explicit, signed, ancestry-valid move).
-
----
-
-## 8. Components (TARGET)
-
-> **Status: TARGET.** No component field or partitioning exists in the code.
-> This is brief §4.3 and §6 (item 5), the analogue of APT
-> `main`/`contrib`/`non-free`.
-
-A **component** is an optional *intra-registry partition* by trust, license, or
-stability — a single signed root can expose multiple component views without
-splitting into separate registries. Brief §4.3: *"`[components]` optional
-intra-registry partitions (trust/license/stability)."*
-
-```toml
-# registry.toml (TARGET) — component partitions in one signed root
-[components.main]
-description = "Fully-supported, hermetic-from-source packages."
-
-[components.contrib]
-description = "Community-contributed; built from source but lower support tier."
-```
-
-Mapping to APT and to the AOS layout (brief §5 comparison table):
-
-| APT | AOS registry (TARGET) |
+| Today's intent | Target mechanism |
 |---|---|
-| `dists/<suite>/<component>/binary-<arch>/` | registry **name** + **component** + **platform** |
-| `main` / `contrib` / `non-free` | `[components]` partitions in one signed root |
+| `branch = "stable"` (track a line) | `channel = "stable"` → bucketed partitions (§4–§6) |
+| `tag = "1.1.0"` (pin a release) | unchanged — signed semver tag `refs/tags/1.1.0` (§2) |
+| `commit = "<sha>"` (freeze) | unchanged — exact commit |
+| `version = "~1.1"` (constraint) | unchanged — semver `VersionReq` over signed tags |
 
-Components compose *orthogonally* with channels and platforms: a host could, in
-principle, subscribe to the `stable` channel of the `main` component for its
-platform. The exact consumer surface (a `component` field? a default of
-`main`?) is part of
-[workstream-04](../plans/registry/workstream-04-channels-rollouts.md) and is
-left open here because no consumer code consumes it yet.
+### 8.4 Monotonic check (CURRENT, conditional)
+
+The current downgrade guard is `check_monotonic` (`state.rs:104-117`), called from
+`update.rs:263-267`:
+
+```rust
+// update.rs:262
+// Downgrade protection: check monotonic ordering.
+if let Some(old_token) = reg_state.last_creation_token {
+    if latest_token > old_token {
+        state::check_monotonic(old_token, latest_token)?;
+    }
+}
+```
+
+Because the call sits **inside** `if latest_token > old_token`, the `<=` reject
+branch of `check_monotonic` is effectively unreachable from this path — a stale or
+equal token silently skips the guard. The **target** floor (§7.1) is evaluated
+**unconditionally** against semver precedence + git ancestry, closing that gap.
+Tracked in [open questions](../plans/registry/open-questions.md).
 
 ---
 
 ## 9. Worked examples
 
-### 9.1 CURRENT — version constraint adopts patches automatically
+### 9.1 TARGET — a 4/16 rollout, two different hosts
 
-```toml
-# registries.d/aos-core.toml
-[registry]
-name = "aos-core"
-url  = "https://registry.aos.dev/core"
-version = "~2026.2"
+Publisher advances 4 of 16 `stable` partitions to `1.1.0`; partitions `4..f` still
+name `1.0.0`. Two hosts, both on `channel = "stable"`, both currently at floor
+`1.0.0`:
+
+```
+Host A:  bucket = sha256(machine_id_A) mod 16 = 2
+         /channel/stable/2 → 1.1.0  (advanced)   → adopt 1.1.0; floor ← 1.1.0
+Host B:  bucket = sha256(machine_id_B) mod 16 = 11 (0xb)
+         /channel/stable/b → 1.0.0  (held)        → no-op; stays at 1.0.0
 ```
 
-Given a bundle manifest containing tags `v2026.02`, `v2026.02.1`, `v2026.02.2`
-(the sample at `update.rs:586-625`):
+When the publisher later advances to `8/16`, Host A is unaffected (already at
+`1.1.0`); a host whose bucket is `5` flips from held to adopted. Host B (bucket
+`11`) keeps holding until partition `b` is advanced.
 
-1. `tracking_mode()` → `Version(~2026.2)` (`types.rs:388-396`).
-2. `find_best_version_tag_in_manifest` projects each tag to semver
-   (`2026.2.0`, `2026.2.1`, `2026.2.2`), all match `~2026.2`, picks the highest:
-   `v2026.02.2` (`update.rs:400-424`, test `update.rs:754-761`).
-3. `pick_bundles` resolves a snapshot or skip/sequential delta to `v2026.02.2`
-   (`update.rs:318-337`; test `pick_bundles_version_mode` at
-   `update.rs:714-726`).
-4. On the next month, `v2026.03` appears; `~2026.2` does **not** match it, so
-   the host stays on the `2026.02.x` line — patches yes, minor bump no.
+### 9.2 TARGET — frontier vs. median
 
-### 9.2 TARGET — channel + phased rollout
+With the 4/16 rollout above:
 
-```toml
-# registries.d/aos-core.toml (TARGET)
-[registry]
-name    = "aos-core"
-url     = "https://registry.aos.dev/core"
-channel = "testing"
+```
+refs/heads/stable  → commit(1.1.0)     ← frontier (newest release any partition targets)
+git clone <url>    → checks out 1.1.0  ← stock git gets the frontier, no gating
+AOS fleet median   → still 1.0.0       ← 12/16 buckets are held
 ```
 
-```toml
-# registry.toml (TARGET, published)
-[channels.testing]
-tag            = "v2026.03"
-creation_token = 2026030000
-rollout        = 25
+### 9.3 TARGET — fix-forward abort
+
+`1.1.0` (rolled to 8/16) is found bad. The publisher does **not** repoint partitions
+back to `1.0.0` (consumers' floor would reject it). Instead:
+
+```
+1. publish 1.1.1 (signed tag → fixed commit, descendant of 1.1.0)
+2. advance the affected partitions: /channel/stable/0..7 → 1.1.1
+3. hosts at floor 1.1.0 see a NEWER release → adopt 1.1.1 (passes the floor)
+   hosts at floor 1.0.0 (held buckets) see 1.0.0 still on their partition → unchanged
 ```
 
-1. `apm update` fetches and verifies the signed root, checks `valid_until`
-   (§6.1).
-2. Resolve `channel = "testing"` → candidate `tag = v2026.03`,
-   `creation_token = 2026030000`.
-3. Compute `bucket = sha256(machine_id : "testing") mod 100` (§7.2). If
-   `bucket < 25`, adopt `v2026.03`; else hold — a no-op that stays at the host's
-   current `last_creation_token`.
-4. If adopting, feed `v2026.03` into the **existing** `pick_bundles` path (§4.2)
-   exactly as a `tag` pin would, apply the monotonic/ancestry checks against
-   the channel `creation_token` (§6.2), download/verify/unbundle as today.
+### 9.4 TARGET — probe-forward fallback
+
+Host bucket = `7`, but `/channel/stable/7` 404s (CDN propagation gap):
+
+```
+try /channel/stable/7  → 404
+try /channel/stable/8  → present + verifies  → use it
+```
+
+The host transiently follows partition `8`'s release for this run; once partition
+`7` is restored, the host returns to its assigned bucket on the next update.
 
 ---
 
 ## 10. Cross-references
 
-- **Tag → token → semver internals** and the full `pick_bundles` algorithm:
-  [bundles-and-deltas](./bundles-and-deltas.md).
-- **The signed `registry.toml` root** that will carry `[channels]`,
-  `[latest]`, `[components]`, and `[meta].valid_until`:
-  [registry-toml](./registry-toml.md) and [http-layout](./http-layout.md).
-- **As-is grounding** for tracking modes, state, and the producer gaps:
-  [current-state](./current-state.md).
-- **Signatures, TOFU, and the threat model** behind §6:
+- **HTTP/object layout** of `/channel/*`, `/release/*`, `refs`, `HEAD`,
+  `http-alternates`, and CDN TTLs: [http-layout](./http-layout.md).
+- **The three ref layers, name-binding, and the `tag → tag → commit` trust chain:**
   [signing-and-trust](./signing-and-trust.md).
-- **Atomic publish ordering** that flips channels/`[latest]`:
-  [publishing](./publishing.md).
-- **APT precedent** for channels, phased updates, and components:
-  [apt-comparison](./apt-comparison.md).
+- **The tag-message TOML** carried by partition and release tags (only `[meta]` +
+  `[[caches]]`): [tag-metadata](./tag-metadata.md).
+- **How a resolved release is fetched** (full packs, thin deltas, retention, loose
+  fallback): [packs-and-deltas](./packs-and-deltas.md).
+- **The producer pipeline** that tags/signs, packs, runs `update-server-info`, and
+  **advances partitions**: [publishing](./publishing.md).
+- **As-is grounding** for tracking modes, state, and the calendar/`creation_token`
+  baseline: [current-state](./current-state.md).
+- **The Nix binary-cache superset** advertised via relative `[[caches]]`:
+  [nix-cache-compatibility](./nix-cache-compatibility.md).
+- **APT precedent** (signed flat-file lineage, `pool`, phased rollout → 16
+  partitions): [apt-comparison](./apt-comparison.md).
 - **Implementation plan:**
-  [workstream-04](../plans/registry/workstream-04-channels-rollouts.md)
-  (channels, rollouts, components, freshness),
-  [workstream-05](../plans/registry/workstream-05-consumer.md) (consumer:
-  channel tracking, expiry/freeze checks, fail-closed omission), and
+  [workstream-03](../plans/registry/workstream-03-channels-rollouts.md) (16 signed
+  partition tags, channels-as-branches/frontier, bucket selection, publisher rollout
+  control),
+  [workstream-04](../plans/registry/workstream-04-signing-trust.md) (signed tag
+  objects, name-binding, anti-rollback/fix-forward),
+  [workstream-05](../plans/registry/workstream-05-consumer.md) (consumer resolution:
+  bucket → channel tag → semver tag → commit), and
   [gap-analysis](../plans/registry/gap-analysis.md).
