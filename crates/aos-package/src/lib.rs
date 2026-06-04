@@ -1602,6 +1602,7 @@ mod tests {
                         last_commit: Some("deadbeef1234".into()),
                         last_creation_token: Some(2026020003),
                         last_update: Some("2026-02-16T12:00:00Z".into()),
+                        ..types::RegistryState::default()
                     }),
                 ),
             ],

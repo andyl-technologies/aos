@@ -36,7 +36,8 @@ Keep this file current as work lands.
 
 - [x] Add `registry::channel` module.
 - [x] Add `channel` config field and `TrackingMode::Channel`.
-- [ ] Replace creation-token state with semver floor, bucket, and retained releases.
+- [x] Add semver floor, bucket, and retained release fields to registry state.
+- [ ] Remove legacy creation-token state when the bundle path is retired.
 - [x] Implement bucket selection, bucket hex rendering, and probe-forward order.
 - [x] Implement semver floor anti-rollback check.
 - [ ] Implement partition map/frontier helpers.

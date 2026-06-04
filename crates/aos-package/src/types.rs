@@ -258,6 +258,12 @@ pub struct RegistryState {
     #[serde(default)]
     pub last_creation_token: Option<u64>,
     #[serde(default)]
+    pub floor: Option<String>,
+    #[serde(default)]
+    pub bucket: Option<u8>,
+    #[serde(default)]
+    pub retained: Vec<String>,
+    #[serde(default)]
     pub last_update: Option<String>,
 }
 
@@ -830,12 +836,18 @@ url = "https://registry.aos.dev/core"
 [registry.state]
 last_commit = "abc123"
 last_creation_token = 2026020003
+floor = "1.2.0"
+bucket = 10
+retained = ["1.0.0", "1.2.0"]
 last_update = "2026-02-13T10:30:00Z"
 "#;
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
         let state = rf.registry.state.unwrap();
         assert_eq!(state.last_commit.unwrap(), "abc123");
         assert_eq!(state.last_creation_token.unwrap(), 2026020003);
+        assert_eq!(state.floor.unwrap(), "1.2.0");
+        assert_eq!(state.bucket.unwrap(), 10);
+        assert_eq!(state.retained, vec!["1.0.0", "1.2.0"]);
     }
 
     #[test]

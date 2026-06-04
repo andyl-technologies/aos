@@ -553,11 +553,13 @@ else (incl. `http(s)://`) ⇒ `HttpBundle`.
 
 ### 7.5 Persisted state
 
-`RegistryState { last_commit, last_creation_token, last_update }`
-(`types.rs:251-259`), serialized under `[registry.state]` in the per-registry
-config file. `load_state`/`save_state` (`state.rs:21-95`) preserve user-edited
-fields and only replace/append the `[registry.state]` section. A successful sync
-updates all three fields.
+`RegistryState` (`types.rs:251-264`) is serialized under `[registry.state]` in
+the per-registry config file. The active legacy bundle path still writes
+`last_commit`, `last_creation_token`, and `last_update`; the schema also now
+persists the git-native fields `floor`, `bucket`, and `retained` for the pending
+channel/delta consumer cutover. `load_state`/`save_state` (`state.rs:21-112`)
+preserve user-edited fields and only replace/append the `[registry.state]`
+section.
 
 ---
 
