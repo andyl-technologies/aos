@@ -45,16 +45,16 @@ Cross-references: [`README.md`](./README.md) ·
 | `HEAD` | symref → `refs/heads/<default-channel>` (e.g. `stable`) | no | stock + AOS |
 | `refs/heads/<channel>` | **channels are branches**; head = **frontier** | no (ref pointer) | stock git convenience |
 | `refs/tags/<semver>` | release: signed tag → commit | **yes** | stock (`verify-tag`) + AOS |
-| `/channel/<name>/<00..ff>` | 256 signed partition tag objects (tag name == channel) → semver tag | **yes** | AOS rollout only |
+| `/channels/<name>/<00..ff>` | 256 signed partition tag objects (tag name == channel) → semver tag | **yes** | AOS rollout only |
 
 The partition tags live **outside** the git ref namespace, as static files under
-`/channel/<name>/00..ff`. They are not `refs/*` and do not appear in `info/refs`;
+`/channels/<name>/00..ff`. They are not `refs/*` and do not appear in `info/refs`;
 they are an AOS-only overlay served over the same dumb-HTTP origin.
 
 ### 1.2 HTTP layout for this workstream (brief §4)
 
 ```
-/channel/
+/channels/
   <name>/                                                       [low TTL — MUST]
     00 .. ff        ← 256 SIGNED tag objects (tag name == <name>),
                        each → a semver tag (rollout partitions)
@@ -65,7 +65,7 @@ they are an AOS-only overlay served over the same dumb-HTTP origin.
 
 CDN policy this workstream depends on:
 
-- `/channel/**` — **MUST** be low TTL so partition advancement propagates fast.
+- `/channels/**` — **MUST** be low TTL so partition advancement propagates fast.
 - `info/refs` + `HEAD` — **MUST** be low TTL (the frontier branch head moves on
   every rollout step).
 
@@ -118,18 +118,13 @@ A single monotonic guard exists at `update.rs:262-267`: if the new
 called. This is the **only** anti-rollback present, and it is keyed on calendar
 tokens, not semver — it must be re-pointed at a semver/floor model (§7).
 
-### 2.4 What the target *removes* from this surface (brief §15)
-
-- `creation_token` ordering and `RegistryState.last_creation_token`
-  (`types.rs:259`).
-- The `[channels.<name>.rollout]` percentage block and
-  `previous_tag`/baseline+candidate framing (these existed only in the superseded
-  `registry.toml` capture, never in code).
-- Calendar-tag versioning (`vYYYY.MM[.P]`) and the `v` prefix throughout
-  `update.rs` (`parse_tag_as_semver`, `extract_minor_base`).
+### 2.4 What survives into the target
 
 `TrackingMode::Branch` survives in spirit: a "channel" is precisely a branch +
-its 256 partition overlay.
+its 256 partition overlay. The current `creation_token` ordering, calendar-tag
+versioning (`vYYYY.MM[.P]`), and the `v`-prefix machinery in `update.rs`
+(`parse_tag_as_semver`, `extract_minor_base`) are dropped — see the removal tasks
+in §9 (Phase D) and design-brief §15.
 
 ---
 
@@ -142,7 +137,7 @@ A channel `<name>` (e.g. `stable`, `testing`) consists of exactly two things:
 1. A **branch** `refs/heads/<name>` whose head is the **frontier** — the commit
    of the newest release any of its 256 partitions targets (§5). Unsigned
    convenience pointer; not part of the trust chain.
-2. **256 signed partition tag objects** at `/channel/<name>/00 .. /channel/<name>/ff`
+2. **256 signed partition tag objects** at `/channels/<name>/00 .. /channels/<name>/ff`
    (one byte (two hex digits, 00–ff)). Each is an annotated, Ed25519-signed git tag whose
    **tag-name field == `<name>`** (the channel name, *not* the partition index)
    and which points at a **semver release tag** (`refs/tags/<semver>`). A
@@ -152,13 +147,13 @@ A channel `<name>` (e.g. `stable`, `testing`) consists of exactly two things:
    `partition tag → semver tag → commit`.
 
 ```
-/channel/stable/00  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
-/channel/stable/01  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
+/channels/stable/00  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
+/channels/stable/01  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
         ...
-/channel/stable/9f  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
-/channel/stable/a0  ── signed tag (name="stable") ──►  refs/tags/1.1.3 ──► commit C_113   (not yet advanced)
+/channels/stable/9f  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
+/channels/stable/a0  ── signed tag (name="stable") ──►  refs/tags/1.1.3 ──► commit C_113   (not yet advanced)
         ...
-/channel/stable/ff  ── signed tag (name="stable") ──►  refs/tags/1.1.3 ──► commit C_113
+/channels/stable/ff  ── signed tag (name="stable") ──►  refs/tags/1.1.3 ──► commit C_113
 
 refs/heads/stable  ──────────────────────────────►  commit C_120  (frontier = newest target = 1.2.0)
 ```
@@ -169,8 +164,8 @@ points at `1.2.0` (the frontier).
 
 ### 3.2 Why 256 (not percentages)
 
-The superseded design used a percentage knob (`rollout = 30%`). The target uses
-**exactly 256 fixed partitions** because:
+The target uses **exactly 256 fixed partitions** rather than a percentage knob
+because:
 
 - A consumer's bucket is a **pure function of its identity**
   (the low byte of `sha256(machine_id)` (i.e. mod 256)) — stable, no central coordination, no flapping.
@@ -201,7 +196,7 @@ The tag *object* carries the signature and the name binding; the ref namespace
 carries pointers; the object store carries everything else.
 
 **Freshness** for partition tags is therefore **out-of-band**, not an in-band
-`valid_until` (§6.3, §7.3): it is the low `/channel/**` CDN TTL + the consumer's
+`valid_until` (§6.3, §7.3): it is the low `/channels/**` CDN TTL + the consumer's
 own max-staleness policy + the monotonic anti-rollback floor. Trade-off: this is
 weaker than an in-band signed expiry against a frozen-but-validly-signed mirror —
 a mirror can replay an old (still-correctly-signed) partition pointer, and only
@@ -213,9 +208,9 @@ itself — it is **not** advertised in signed tags. The origin MAY serve the sto
 nix superset (`nix-cache-info`, `<storehash>.narinfo`, `nar/…`); narinfo signing
 reuses the same one Ed25519 key.
 
-**Removed** structures (must never appear in a tag): `[meta]`, `schema`,
-`valid_until`, `[[caches]]`, `[latest]`, `[components]`, `[capabilities]`,
-`[channels]`, `[[bundles]]`, `[[deltas]]`, `pubkey`, `[signature]`.
+A tag carries no `[latest]`, `[[bundles]]`, `[[deltas]]`, `valid_until`, or
+`[[caches]]` — superseded concepts live only in current-state.md (today's code)
+and design-brief §15.
 
 ---
 
@@ -290,7 +285,7 @@ selected_at = "2026-06-04T12:00:00Z"
 machine_id ─► sha256 ─► mod 256 ─► bucket b (persisted)
                                      │
                                      ▼
-                   GET /channel/<name>/<hex(b)>           [low TTL]
+                   GET /channels/<name>/<hex(b)>           [low TTL]
                                      │  signed partition tag (name=="<name>")
                                      ▼
                    verify: sig valid AND tag-name == <name>   (ws-04)
@@ -302,7 +297,7 @@ machine_id ─► sha256 ─► mod 256 ─► bucket b (persisted)
                    semver tag → commit  ─► hand off to ws-05 (fetch/delta)
 ```
 
-The two name-binding checks (channel name under `/channel/*`, semver under the
+The two name-binding checks (channel name under `/channels/*`, semver under the
 release tag) are the trust gate; they are specified in
 [`workstream-04-signing-trust.md`](./workstream-04-signing-trust.md) and are a
 hard precondition before this workstream's output is acted on.
@@ -316,7 +311,7 @@ deterministically probe the next partition:
 ```
 for i in 0..256:
     p = (b + i) mod 256
-    tag = GET /channel/<name>/<hex(p)>
+    tag = GET /channels/<name>/<hex(p)>
     if usable(tag):   # fetched AND signature valid AND name=="<name>" AND fresh
         return tag
 fail: channel has no usable partition  →  fall back to last-good / abort
@@ -343,12 +338,12 @@ un-advanced partitions still **explicitly name** `P` — there is no implicit
 ```
 advance(channel, T, partitions=[0,1,2]):
     for p in partitions:
-        # create/replace the signed partition tag object for /channel/<name>/<p>
-        write_signed_tag(name=<channel>, target=refs/tags/<T>) ─► /channel/<name>/<hex(p)>
+        # create/replace the signed partition tag object for /channels/<name>/<p>
+        write_signed_tag(name=<channel>, target=refs/tags/<T>) ─► /channels/<name>/<hex(p)>
     frontier(channel) = max_semver(all 256 targets)        # ← T once any partition names it
     git update-ref refs/heads/<channel> <commit-of-frontier>
     git update-server-info
-    upload /channel/<name>/* + refs (see ws-01 / publishing for atomicity)
+    upload /channels/<name>/* + refs (see ws-01 / publishing for atomicity)
 ```
 
 | Step | Partitions on T | Fleet on T | Notes |
@@ -469,7 +464,7 @@ to `1.2.0`.
 ### Phase B — consumer bucket + resolution
 - [ ] **B1.** Implement bucket selection from the low byte of `sha256(machine_id)` (i.e. mod 256); persist on
   first run; never re-select implicitly (§6.1).
-- [ ] **B2.** Implement partition fetch `GET /channel/<name>/<hex(b)>` and the
+- [ ] **B2.** Implement partition fetch `GET /channels/<name>/<hex(b)>` and the
   `partition tag → semver tag → commit` resolution, gated on the ws-04
   name-binding verification (§6.2).
 - [ ] **B3.** Implement probe-forward `(b+i) mod 256` with the
@@ -495,9 +490,9 @@ to `1.2.0`.
   token branches (`update.rs:344-390`), `token_to_version`, `extract_minor_base`
   (`update.rs:456-464`), `parse_tag_as_semver`'s `v`-prefix / calendar
   normalization (`update.rs:429-450`).
-- [ ] **D2.** Remove any `[channels.<name>.rollout]` percentage /
+- [ ] **D2.** Strip any lingering `[channels.<name>.rollout]` percentage /
   `previous_tag` / baseline+candidate framing references from docs and config
-  parsing (they exist only in the superseded capture).
+  parsing.
 
 ---
 
@@ -507,7 +502,7 @@ to `1.2.0`.
 |---|---|
 | Bucket determinism | same `machine_id` → same bucket across runs; persisted bucket survives a `machine_id` source change |
 | Bucket distribution | 10k synthetic `machine_id`s spread roughly uniformly over `00..ff` (sha256 avalanche) |
-| Partition resolve | `GET /channel/stable/a3` → signed tag (name=="stable") → `1.1.3` tag → commit; name-binding enforced |
+| Partition resolve | `GET /channels/stable/a3` → signed tag (name=="stable") → `1.1.3` tag → commit; name-binding enforced |
 | Probe-forward | partition `b7` missing/expired → lands on `(b+1) mod 256`; wrap-around; deterministic order |
 | Frontier | after advancing 1/256 to `1.2.0`, `refs/heads/stable` head == `1.2.0` commit |
 | Rollout staging | `advance --count 4` ⇒ exactly partitions `00..03` on T, `04..ff` on P; `status` reports 4/256 |
@@ -528,11 +523,11 @@ to `1.2.0`.
   missing advance early. Acceptable, but a flapping partition could systematically
   skew a cohort — bound by the "always 256" publish invariant.
 - **Partition freshness tuning** (brief §11, §16.5): freshness is out-of-band
-  (low `/channel/**` CDN TTL + consumer max-staleness policy + the anti-rollback
+  (low `/channels/**` CDN TTL + consumer max-staleness policy + the anti-rollback
   floor), not an in-band signed `valid_until`. Too aggressive a max-staleness ⇒
   spurious staleness + probe-forward storms; too lax ⇒ a frozen-but-validly-signed
   mirror can replay a stale partition pointer for longer (caught only by the floor).
-  The consumer's max-staleness must be co-tuned with the low `/channel/**` CDN TTL.
+  The consumer's max-staleness must be co-tuned with the low `/channels/**` CDN TTL.
 - **Command surface** (brief §16.4): whether `apr channel advance` is standalone
   or folded into a single `apr release` / `apr publish` pipeline.
 - **State location:** host-scoped bucket vs per-registry floor — confirm the

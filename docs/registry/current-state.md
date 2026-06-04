@@ -72,7 +72,7 @@ is a thin wrapper over `git` + `git bundle create`** with significant gaps — s
 > `[[caches]]`, `[signing]`) — see [§3.1](#31-the-repo-local-registrytoml). The
 > **target** drops bundles, `bundle-list.toml`, *and* this `registry.toml`
 > config entirely in favor of a bare git repo served over dumb HTTP, with
-> channel/release pointers carried by signed git tag objects — pure signed
+> channel/releases pointers carried by signed git tag objects — pure signed
 > pointers with no structured payload (see
 > [`architecture.md`](architecture.md), TARGET).
 
@@ -154,7 +154,7 @@ public_key = "aos-core:Ed25519:base64keyhere"
 - `[signing].public_key` carries the registry's Ed25519 key string.
 
 > This `registry.toml` is a repo-local config file, **not** part of the target
-> wire format. The target has **no** `registry.toml` at all: channel/release
+> wire format. The target has **no** `registry.toml` at all: channel/releases
 > pointers move to **signed git tag objects**, which are pure signed pointers
 > carrying **no** structured payload — no `[meta]`, no `[[caches]]` (see
 > [`architecture.md`](architecture.md), TARGET). The NAR cache location is no

@@ -27,7 +27,7 @@ unmodified — **channels are branches**, **releases are signed semver tags**, a
 *may also* advertise itself as a **Nix binary cache** (`nix-cache-info` /
 `*.narinfo` / `nar/`) so a stock `nix` substituter can pull the same artifacts.
 The AOS client (`apm`) layers two extra, *additive* surfaces that ride alongside
-without conflict: signed **`/channel/<name>/00..ff`** partition tags for bucketed
+without conflict: signed **`/channels/<name>/00..ff`** partition tags for bucketed
 rollout, and **thin `delta-*.pack`s** for cheap incremental fetch. One Ed25519 key
 signs the release and channel tags. The governing design principle is **asymmetric
 cost: make publishing as expensive as possible so that consumption is as cheap as
@@ -85,15 +85,15 @@ in [`http-layout.md`](./http-layout.md).
                       │    nar/<…>  (client-side cache config)       │
                       │                                              │
   apm (AOS) ─────────▶│  AOS-ONLY ADDITIONS  (additive, ⊇)           │  ◀── apm's extra reach
-                      │    channel/<name>/00..ff (signed partitions) │
-                      │    release/…/delta-<semver>.pack  (thin)     │
+                      │    channels/<name>/00..ff (signed partitions) │
+                      │    releases/…/delta-<semver>.pack  (thin)     │
                       └──────────────────────────────────────────────┘
 ```
 
 The registry is a **strict superset** of git dumb HTTP (superset #1) and *may also*
 be a strict superset of the Nix binary cache (superset #2). Neither superset claims
 a path the other needs; the AOS-only additions ride in disjoint namespaces
-(`/channel/**`, `delta-*.pack`) that stock clients simply never request. See
+(`/channels/**`, `delta-*.pack`) that stock clients simply never request. See
 [`nix-cache-compatibility.md`](./nix-cache-compatibility.md) for the Nix surface.
 
 ---
@@ -120,7 +120,7 @@ there is no out-of-band index. (Brief §5.)
   │  Ed25519-signed; stock git can `git verify-tag <semver>`                     │
   └────────────────────────────────────▲───────────────────────────────────────┘
                                         │  AOS rollout overlay (outside ref ns)
-  ┌─ /channel/<name>/00..ff ────────────┴───────────────────────────────────────┐
+  ┌─ /channels/<name>/00..ff ────────────┴───────────────────────────────────────┐
   │  256 SIGNED partition tag objects (tag name == channel) → a semver tag       │
   │  AOS-only; the bucketed-rollout selector                                     │
   └─────────────────────────────────────────────────────────────────────────────┘
@@ -131,7 +131,7 @@ there is no out-of-band index. (Brief §5.)
 | `HEAD` | symref → `refs/heads/<default-channel>` | no | stock git + AOS |
 | `refs/heads/<channel>` | channels-as-branches; head = **frontier** (newest release any partition targets) | no (ref pointer) | stock git convenience |
 | `refs/tags/<semver>` | release: signed tag → commit | **yes** | stock (`verify-tag`) + AOS |
-| `/channel/<name>/<00..ff>` | 256 signed partition tag objects (name == channel) → semver tag | **yes** | AOS rollout only |
+| `/channels/<name>/<00..ff>` | 256 signed partition tag objects (name == channel) → semver tag | **yes** | AOS rollout only |
 
 ### 3.1 Layer A — `HEAD`
 
@@ -151,7 +151,7 @@ The implication is deliberate: a stock `git pull <channel>` always gets the
 frontier with **no rollout protection**, which is acceptable because *rollout is an
 AOS-fleet concept, not a git-clone concept*. Branch refs are **unsigned convenience
 pointers** and are never part of the trust chain. Channel branches and the
-`/channel/**` partition tags are low TTL so rollout changes propagate fast. See
+`/channels/**` partition tags are low TTL so rollout changes propagate fast. See
 [`versioning-and-channels.md`](./versioning-and-channels.md).
 
 ### 3.3 Layer C — signed semver tags
@@ -167,10 +167,10 @@ once published (long CDN TTL). A stock-git user can authenticate any release wit
 tags *are* the trust anchor for stock clients. See
 [`signing-and-trust.md`](./signing-and-trust.md).
 
-### 3.4 The rollout overlay — `/channel/<name>/00..ff`
+### 3.4 The rollout overlay — `/channels/<name>/00..ff`
 
 Outside the ref namespace, each channel exposes exactly **256** files
-`/channel/<name>/00..ff`, each an independently-signed tag object whose **tag name ==
+`/channels/<name>/00..ff`, each an independently-signed tag object whose **tag name ==
 the channel name**, pointing at a semver tag. These are the **rollout partitions**:
 a consumer deterministically self-selects one bucket (e.g.
 the low byte of `sha256(machine_id)` (i.e. mod 256), persisted once so it never flaps), and the publisher
@@ -185,8 +185,8 @@ checking at each hop both that the SSH-Ed25519 signature is valid **and** that t
 tag object's embedded **tag-name field equals the name expected for its serving
 path**:
 
-- under `/channel/<name>/<n>`, the partition tag's name must be `<name>`;
-- under `/release/.../` the semver tag's name must be that semver.
+- under `/channels/<name>/<n>`, the partition tag's name must be `<name>`;
+- under `/releases/.../` the semver tag's name must be that semver.
 
 This **name-binding** check binds a tag object to the path it is served from and
 prevents a cross-serving attack (replaying a validly-signed tag at the wrong URL).
@@ -209,14 +209,14 @@ convenience. Full detail and the threat model are in
 
 The dumb fetcher reads `info/refs` and `HEAD`, then resolves objects via
 `objects/info/packs` and `objects/info/alternates` — a host-independent file of
-**relative** `../release/<M>/<m>/<patch…>/objects/` entries (one `../` per entry,
+**relative** `../releases/<M>/<m>/<patch…>/objects/` entries (one `../` per entry,
 which strips the `objects` segment to reach the repo root), newest→oldest. The dumb
 walker reads `http-alternates` then falls back to `alternates`, so the one relative
 file serves HTTP and local-FS alike. Because all loose objects are centralized at the
 root `/objects/`, alternates now serve **pack discovery + the release index**, not
 object completeness. Conventionally-named **full packs** (`pack-<sha256>.pack` +
 `.idx`, listed in `info/packs`) restore speed; **loose objects** guarantee
-correctness even if no pack helps. A stock client never touches `/channel/**` or any
+correctness even if no pack helps. A stock client never touches `/channels/**` or any
 `delta-*.pack` (thin deltas are deliberately *not* listed in `info/packs`, since a
 dumb client cannot apply a thin pack). sha256 + dumb HTTP requires a git client
 that supports the sha256 object format (the dumb protocol has no capability
@@ -230,7 +230,7 @@ efficiency. End to end (TARGET):
 ```
   apm update / upgrade:
     1. bucket    b = the low byte of sha256(machine_id) (i.e. mod 256)  (persisted once)
-    2. channel   GET /channel/<channel>/<b>               → signed partition tag
+    2. channel   GET /channels/<channel>/<b>               → signed partition tag
                  verify sig + name-binding (name == <channel>)
     3. semver    follow partition tag → refs/tags/<semver> (signed)
                  verify sig + name-binding (name == <semver>)
@@ -301,17 +301,17 @@ reader never sees a torn state:
   1. commit       apr stages package TOMLs/closures → release commit
   2. tag/sign     refs/tags/<semver>  (annotated, Ed25519, pure signed pointer)
   3. objects      write loose objects to the ROOT /objects/<xx>/<62hex>
-  4. pack/delta   per-release pack-only /release/*/objects/pack/: full pack at X.Y.0;
+  4. pack/delta   per-release pack-only /releases/*/objects/pack/: full pack at X.Y.0;
                   thin delta-<from>.pack per the delta scheme
                   --compression=0  →  zstd --ultra -22 --long=27
   5. index        git update-server-info  (regenerate info/refs, objects/info/packs)
-                  write objects/info/alternates (relative ../release/*/objects, new→old)
-  6. partitions   advance N of /channel/<name>/00..ff to the new semver tag (signed)
-  7. upload       immutable /release/** first;  /channel/** + info/** flipped last
+                  write objects/info/alternates (relative ../releases/*/objects, new→old)
+  6. partitions   advance N of /channels/<name>/00..ff to the new semver tag (signed)
+  7. upload       immutable /releases/** first;  /channels/** + info/** flipped last
 ```
 
-Releases under `/release/**` are immutable (long TTL) and uploaded before any ref
-or partition that references them; `/channel/**` and the `info/**` shims are low TTL
+Releases under `/releases/**` are immutable (long TTL) and uploaded before any ref
+or partition that references them; `/channels/**` and the `info/**` shims are low TTL
 and flipped last. Full producer workflow, atomicity, and concurrency are in
 [`publishing.md`](./publishing.md).
 
@@ -342,30 +342,13 @@ would block a decrement anyway. See
 | Tamper / MITM | signed semver + partition tags pin every object by sha256; loose-object Merkle DAG |
 | Cross-serving a valid tag at the wrong path | **name-binding**: embedded tag name must equal the serving path's expected name |
 | Rollback to an older release | consumer **monotonic floor** (never moves below current release) |
-| Stale / frozen mirror | **low CDN TTL** on `/channel` (and `info/refs`, `objects/info`) + the consumer's **max-staleness** policy + the monotonic anti-rollback floor. Weaker than an in-band signed expiry against a frozen-but-validly-signed mirror — no `valid_until` exists |
+| Stale / frozen mirror | **low CDN TTL** on `/channels` (and `info/refs`, `objects/info`) + the consumer's **max-staleness** policy + the monotonic anti-rollback floor. Weaker than an in-band signed expiry against a frozen-but-validly-signed mirror — no `valid_until` exists |
 
 Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
 
 ---
 
-## 7. Removed concepts (do **not** reintroduce)
-
-For clarity to readers migrating from earlier captures, the target deliberately has
-**none** of the following (brief §15). If you see these, they describe the old code
-in [`current-state.md`](./current-state.md), not the target:
-
-`registry.toml` (the single signed root) · `bundle-list.toml` · git **bundles** ·
-the `[latest]` pointer · `[components]` · `[capabilities]` · percentage-based
-rollouts and the `[channels.<name>.rollout]` sub-block (replaced by 256 partitions) ·
-calendar versioning and `creation_token` ordering (replaced by semver + git
-ancestry) · the by-hash `[[bundles]]`/`[[deltas]]` index (replaced by the git object
-store + relative `info/alternates`) · any **structured tag-message payload**
-(`[meta]`, `[[caches]]`, `valid_until`): a signed tag is a pure signed pointer with
-at most an optional freeform human message.
-
----
-
-## 8. Cross-references
+## 7. Cross-references
 
 - [`README.md`](./README.md) — purpose, audience, glossary, doc index.
 - [`current-state.md`](./current-state.md) — the as-is code (bundles /

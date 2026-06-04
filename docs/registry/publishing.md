@@ -41,7 +41,7 @@ A publish has two strictly-ordered halves that must never be confused:
    changes meaning.
 2. **Flip the mutable pointers.** Regenerate the repo-root `info/refs` / `HEAD` /
    `objects/info/alternates`, bump `refs/heads/<channel>` to the frontier,
-   and advance the signed `/channel/<name>/<00..ff>` partition tags. These are the
+   and advance the signed `/channels/<name>/<00..ff>` partition tags. These are the
    *only* mutable surfaces, and they are published **last**, after every object
    they can possibly reference already exists at the origin.
 
@@ -57,7 +57,7 @@ A publish has two strictly-ordered halves that must never be confused:
    │ 6  root update-server-info (info/refs, HEAD)      │                          ▼
    │ 7  regen objects/info/alternates                 │                  ┌────────────────┐
    │ 8  bump refs/heads/<channel> → frontier          │                  │  HTTP / CDN     │
-   │ 9  advance /channel/<name>/00..ff partition tags  │─────────────────▶│  origin (dumb   │
+   │ 9  advance /channels/<name>/00..ff partition tags  │─────────────────▶│  origin (dumb   │
    │ 10 upload with per-path CDN TTLs                  │                  │  git static)    │
    └────────────────────────────────────────────────┘                  └────────────────┘
                                                                                  │
@@ -138,7 +138,7 @@ to a mirror.
 It produces, under [the HTTP/object layout](./http-layout.md):
 
 ```
-/release/<major>/<minor>/<patch[-prerelease][+build]>/
+/releases/<major>/<minor>/<patch[-prerelease][+build]>/
   objects/
     info/packs                       ← lists this release's self-contained pack(s)
     pack/pack-<sha256>.pack (+ .idx)  ← full pack (only at X.Y.0 anchors)
@@ -146,14 +146,14 @@ It produces, under [the HTTP/object layout](./http-layout.md):
                                         (PACK-ONLY: no loose <xx>/<…>, no info/alternates)
 /objects/<xx>/<62-hex>                ← ALL loose objects (every release), centralized at root
 refs/tags/<semver>                    ← signed tag → release commit          [via info/refs]
-/channel/<name>/<00..ff>              ← signed partition tags advanced per the rollout plan
+/channels/<name>/<00..ff>              ← signed partition tags advanced per the rollout plan
 refs/heads/<channel>                  ← branch head bumped to the frontier
 /objects/info/{packs,alternates}     ← repo-root indices regenerated
 /info/refs, /HEAD                     ← regenerated via update-server-info
 ```
 
-The third `/release` path segment is **everything after `major.minor`** — e.g.
-`1.0.0-beta+exp.sha.5114f85` → `/release/1/0/0-beta+exp.sha.5114f85/`.
+The third `/releases` path segment is **everything after `major.minor`** — e.g.
+`1.0.0-beta+exp.sha.5114f85` → `/releases/1/0/0-beta+exp.sha.5114f85/`.
 
 ---
 
@@ -170,9 +170,9 @@ The third `/release` path segment is **everything after `major.minor`** — e.g.
 2. **Create the annotated, signed semver tag.** An **annotated git tag** that is a
    **pure signed pointer** — the standard git tag fields (`object`, `type`, the tag
    **name**, `tagger`) plus an SSH-format Ed25519 signature on the tag *object*, plus
-   an **optional freeform human message**. The tag carries **no structured payload**:
-   no `[meta]`, no `schema`, no `valid_until`, no `[[caches]]`. Cache locations and
-   freshness are **not** advertised in the tag (see §B/§C of [signing-and-trust.md](./signing-and-trust.md)).
+   an **optional freeform human message**. The tag carries **no structured payload**
+   and no in-band `valid_until`. Cache locations and
+   freshness are **not** advertised in the tag (see §1 and §4 of [signing-and-trust.md](./signing-and-trust.md)).
 
    The tag **name** is the bare semver (`1.2.0`), the signature lives on the tag
    *object*, and the embedded tag-name field is bound to the serving path during
@@ -181,10 +181,9 @@ The third `/release` path segment is **everything after `major.minor`** — e.g.
    from `apr sign` (`git`-resolved `user.signingkey` + `gpg.format = ssh`;
    `security.rs` `parse_signing_key` `name:Ed25519:<base64>`).
 
-The signing key is the **generous** signature-trust / key-rotation lifetime
-(design brief §11); release tags carry no in-band expiry, which fits releases being
+Release tags carry no in-band expiry, which fits releases being
 immutable and carrying a long CDN TTL. Freshness is enforced out of band — low CDN
-TTL on `/channel` (and `info/refs`, `objects/info`), the consumer's own
+TTL on `/channels` (and `info/refs`, `objects/info`), the consumer's own
 max-staleness policy, and the monotonic anti-rollback floor — rather than a signed
 `valid_until` inside the tag. The trade-off: this is weaker than an in-band signed
 expiry against a frozen-but-validly-signed mirror.
@@ -285,7 +284,7 @@ dictionary** across a release line's small delta packs is an optional further wi
   under the single root `/objects/<xx>/<62-hex>` (the sha256 2/62 split) — this is
   the guaranteed completeness fallback; packs are an optimization on top
   (design brief §8). Loose objects are **centralized at the root only**; the
-  per-release `/release/<major>/<minor>/<patch>/objects/` dirs are **pack-only**
+  per-release `/releases/<major>/<minor>/<patch>/objects/` dirs are **pack-only**
   (they hold `info/packs` + `pack/*` and contain **no** loose `<xx>/<…>` objects and
   **no** per-release `info/alternates`).
 
@@ -317,8 +316,8 @@ mutable indices that make the whole thing a valid dumb-HTTP bare repo:
    branch.
 
 3. **`/objects/info/alternates`** is regenerated to list **every**
-   `/release/*/objects/` directory, **newest → oldest**, as **relative** paths.
-   Each entry is `../release/<M>/<m>/<patch…>/objects/` — git resolves relative
+   `/releases/*/objects/` directory, **newest → oldest**, as **relative** paths.
+   Each entry is `../releases/<M>/<m>/<patch…>/objects/` — git resolves relative
    alternates against the repo's `objects/` URL, so the single `../` strips the
    `objects` segment to reach the repo root (therefore the correct depth is **one**
    `../`, not two). The file is **host-independent** — byte-identical across
@@ -330,10 +329,10 @@ mutable indices that make the whole thing a valid dumb-HTTP bare repo:
 
 ```
 # /objects/info/alternates  (newest → oldest, relative, host-independent)
-../release/1/2/0/objects/
-../release/1/1/3/objects/
-../release/1/1/0/objects/
-../release/1/0/0/objects/
+../releases/1/2/0/objects/
+../releases/1/1/3/objects/
+../releases/1/1/0/objects/
+../releases/1/0/0/objects/
 …
 ```
 
@@ -352,7 +351,7 @@ These four files (`info/refs`, `HEAD`, `objects/info/packs`,
 |---|---|---|
 | `refs/heads/<channel>` | **channels are branches**; head = **frontier** (newest release any partition targets) | no (unsigned convenience pointer) |
 | `refs/tags/<semver>` | release: signed tag → commit | **yes** |
-| `/channel/<name>/<00..ff>` | 256 signed partition tag objects (tag name == channel) → semver tag | **yes** |
+| `/channels/<name>/<00..ff>` | 256 signed partition tag objects (tag name == channel) → semver tag | **yes** |
 
 ### 8.1 Bump the frontier branch head
 
@@ -365,7 +364,7 @@ chain.
 
 ### 8.2 Advance the 256 partition tags (publisher-controlled rollout)
 
-A channel exposes **exactly 256** partition files `/channel/<name>/00..ff`, each an
+A channel exposes **exactly 256** partition files `/channels/<name>/00..ff`, each an
 **independently-signed** annotated tag object whose **tag name == the channel
 name**, pointing at a semver tag. There must always be 256 present.
 
@@ -376,7 +375,7 @@ still name the prior release. Advance partitions as confidence grows; completion
 = all 256 point at the new release (design brief §6).
 
 ```
-  rollout fraction      /channel/stable/00..ff  →  semver tag
+  rollout fraction      /channels/stable/00..ff  →  semver tag
   ────────────────      ────────────────────────────────────
   0/256  (none yet)     00 01 02 … fd fe ff → 1.1.3
   4/256  (early ring)   00 01 02 03         → 1.2.0   (new)
@@ -386,7 +385,7 @@ still name the prior release. Advance partitions as confidence grows; completion
 
 Each advanced partition is a **fresh signed tag object** (`tag → tag → commit`:
 channel partition tag → semver tag → release commit). The signature and the
-embedded tag-name field (`== <channel>`) bind it to its `/channel/<name>/<bucket>`
+embedded tag-name field (`== <channel>`) bind it to its `/channels/<name>/<bucket>`
 serving path. See [signing-and-trust.md](./signing-and-trust.md).
 
 **Aborting a bad rollout is fix-forward** (publish a newer release and point
@@ -409,15 +408,15 @@ upload (immutable first, pointers last) is the atomicity discipline of §11.
 
 | Path | Mutability | CDN TTL |
 |---|---|---|
-| `/objects/<xx>/<…>` (loose), `/release/**/pack/*` | immutable (content-addressed) | **very high** (`MAY`) |
-| `/release/**` (the whole subtree) | immutable after publish | **long** (`MAY`) |
+| `/objects/<xx>/<…>` (loose), `/releases/**/pack/*` | immutable (content-addressed) | **very high** (`MAY`) |
+| `/releases/**` (the whole subtree) | immutable after publish | **long** (`MAY`) |
 | `/objects/info/**` (`packs`, `alternates`), per-release `objects/info/**` | mutable on publish | **low** (`MUST`) |
 | `/info/refs`, `/HEAD` | mutable on publish | **low** (`MUST`) |
-| `/channel/**` | mutable on rollout | **low** (`MUST`) — fast rollout updates |
+| `/channels/**` | mutable on rollout | **low** (`MUST`) — fast rollout updates |
 
-The asymmetry is intentional: `/channel/**` and the `info/*` indices must turn
+The asymmetry is intentional: `/channels/**` and the `info/*` indices must turn
 over quickly so a rollout or a new frontier is visible promptly, while the bulk
-bytes (`/release/**`, loose objects, packs) are immutable and may be cached
+bytes (`/releases/**`, loose objects, packs) are immutable and may be cached
 aggressively forever. If the CDN supports cache invalidation, invalidate the
 low-TTL paths on publish; otherwise the short TTL bounds staleness.
 
@@ -430,9 +429,9 @@ verification is **`signed partition tag → signed semver tag → commit`**, che
 **both** the signature **and** the embedded tag-name field against the expected
 name:
 
-- under `/channel/<name>/*` the embedded tag name **must** equal `<name>` (the
+- under `/channels/<name>/*` the embedded tag name **must** equal `<name>` (the
   channel);
-- under `/release/*` (i.e. `refs/tags/<semver>`) the embedded tag name **must**
+- under `/releases/*` (i.e. `refs/tags/<semver>`) the embedded tag name **must**
   equal the semver.
 
 This **name-binding** is what binds a tag object to its serving path and prevents
@@ -463,7 +462,7 @@ objects.
   6–7    info/refs, HEAD,                      MUTABLE pointer   flipped only AFTER 1–5 exist
          objects/info/alternates
   8      refs/heads/<channel> (frontier)       MUTABLE pointer   flipped after release objects
-  9      /channel/<name>/00..ff partition tags MUTABLE pointer   flipped LAST (rollout gate)
+  9      /channels/<name>/00..ff partition tags MUTABLE pointer   flipped LAST (rollout gate)
 ```
 
 **Invariant:** every object a pointer can reference (commits, packs, deltas,
@@ -490,7 +489,7 @@ idempotent and needs no coordination (design brief §8, §10). Coordination is o
 required for the **mutable pointers** (steps 6–9). Two publishers advancing the
 *same* channel must serialize their pointer flips (e.g. via the upstream git
 remote's ref CAS on `refs/heads/<channel>` and `refs/tags/*`, or a
-conditional-PUT / `If-Match` on the `/channel/**` objects at the origin); the
+conditional-PUT / `If-Match` on the `/channels/**` objects at the origin); the
 loser re-derives the frontier and re-applies its partition plan. The mechanism
 for serializing the pointer flip is an open implementation question
 ([open-questions.md](../plans/registry/open-questions.md), design brief §16.4),
@@ -543,19 +542,19 @@ build release commit  →  create + sign semver tag (refs/tags/<semver>, pure si
         ▼  (immutable, content-addressed — idempotent, any order)
 pack-objects:  full pack at X.Y.0  +  thin delta-<from>.pack(s)   [--no-reuse-* --window=350 --depth=50 --compression=0]
         →  zstd --ultra -22 --long=27 each .pack
-        →  packs under /release/X/Y/P/objects/pack/  ;  loose objects under root /objects/
+        →  packs under /releases/X/Y/P/objects/pack/  ;  loose objects under root /objects/
         →  per-release pack index  (objects/info/packs: full pack only)
         │
         ▼  (mutable pointers — flipped LAST, after every object exists)
 root git update-server-info  (info/refs, objects/info/packs)
 write HEAD = ref: refs/heads/<default-channel>
-regen /objects/info/alternates  (all /release/*/objects, newest→oldest, relative one-"../")
+regen /objects/info/alternates  (all /releases/*/objects, newest→oldest, relative one-"../")
 bump refs/heads/<channel> → frontier
-advance /channel/<name>/00..ff  (N partitions → new semver tag; rest stay on prior)  [signed; name-bound]
+advance /channels/<name>/00..ff  (N partitions → new semver tag; rest stay on prior)  [signed; name-bound]
         │
         ▼
-upload with CDN TTLs:  /release/**, loose, packs = long/immutable
-                       /objects/info/**, info/refs, HEAD, /channel/** = low TTL
+upload with CDN TTLs:  /releases/**, loose, packs = long/immutable
+                       /objects/info/**, info/refs, HEAD, /channels/** = low TTL
 ```
 
 Whether `apr` grows a single `apr release` / `apr publish` orchestrator that runs

@@ -61,11 +61,10 @@ benefits with a small, fast fetch. Loose objects guarantee that even a stock
 `git clone` from a sha256-capable client always succeeds, with packs and deltas
 as pure speed layers on top.
 
-> **No git bundles (TARGET).** The earlier model shipped `git bundle` files plus
-> a `bundle-list.toml`. Bundles carry refs and prerequisites; in the target the
-> ref namespace is replaced by signed tag objects, so bundles are dropped
-> entirely in favor of bare `*.pack`/`*.pack.zst` files. See
-> [§7](#7-current-the-bundle-model-being-replaced).
+> **No git bundles (TARGET).** Bundles carry refs and prerequisites; in the
+> target the ref namespace is replaced by signed tag objects, so the transport
+> is bare `*.pack`/`*.pack.zst` files. Today's code still ships bundles — see
+> [§7](#7-current-the-bundle-model-being-replaced) for the as-is.
 
 ---
 
@@ -75,8 +74,8 @@ Every **major or minor** release — any version whose patch component is `0`
 (`X.Y.0`) — ships a **self-contained full pack**:
 
 ```
-/release/<major>/<minor>/0/objects/pack/pack-<sha256>.pack
-/release/<major>/<minor>/0/objects/pack/pack-<sha256>.idx
+/releases/<major>/<minor>/0/objects/pack/pack-<sha256>.pack
+/releases/<major>/<minor>/0/objects/pack/pack-<sha256>.idx
 ```
 
 - The pack is named `pack-<sha256>.pack` (git's conventional name) and **listed
@@ -231,8 +230,8 @@ Pack discovery and the release index both ride on a single
 per-release `objects/` dir, newest→oldest:
 
 ```
-../release/1/1/0/objects/
-../release/1/0/0/objects/
+../releases/1/1/0/objects/
+../releases/1/0/0/objects/
 ```
 
 Git resolves a relative alternate against the **repo's `objects/` URL**, so each
@@ -300,8 +299,8 @@ bundles, no smart-HTTP server.
 
 **Write layout.** The producer writes **loose objects to the central root
 `/objects/`** (every release's loose objects land there, never under
-`/release/`). Packs go under each release's pack-only
-`/release/<M>/<m>/<patch...>/objects/pack/`, which holds `info/packs`,
+`/releases/`). Packs go under each release's pack-only
+`/releases/<M>/<m>/<patch...>/objects/pack/`, which holds `info/packs`,
 `pack/pack-<sha256>.pack(.idx)`, and `pack/delta-<from>.pack` — and **no** loose
 `<xx>/<..>` objects and **no** per-release `info/alternates`.
 

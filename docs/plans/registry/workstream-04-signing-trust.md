@@ -102,7 +102,7 @@ Per brief §5 there are three ref layers; **only the tag objects are signed**:
 | `HEAD` | symref → `refs/heads/<default-channel>` | no | no |
 | `refs/heads/<channel>` | branch ptr → frontier commit | **no** | **no** (convenience pointer) |
 | `refs/tags/<semver>` | annotated tag → commit | **yes** | yes (release tag) |
-| `/channel/<name>/<00..ff>` | 256 annotated tags → semver tag | **yes** | yes (partition tags) |
+| `/channels/<name>/<00..ff>` | 256 annotated tags → semver tag | **yes** | yes (partition tags) |
 
 Branch refs are **unsigned convenience pointers**: `refs/heads/<channel>` points
 at the **frontier** (the commit of the newest release any partition targets), so
@@ -113,7 +113,7 @@ git-clone concept. AOS trust derives **only** from the signed tags.
 ### 3.2 The `tag → tag → commit` chain
 
 ```
-/channel/stable/b7                      refs/tags/1.4.2                     commit
+/channels/stable/b7                      refs/tags/1.4.2                     commit
 ┌───────────────────────────┐  →obj→   ┌───────────────────────────┐  →obj→ ┌─────────┐
 │ annotated tag object       │          │ annotated tag object       │        │ release  │
 │  tag-name field: "stable"  │          │  tag-name field: "1.4.2"   │        │ commit   │
@@ -131,7 +131,7 @@ Verification walks left→right and checks, at **each** hop:
    both hops; reuse `verify_commit_signature`'s mechanism, retargeted to tags).
 2. **Name-binding** (brief §5): the tag object's **embedded tag-name field**
    equals the *expected name for the serving path* — the **channel name** for a
-   `/channel/<name>/<n>` object, the **semver** for a `refs/tags/<semver>`
+   `/channels/<name>/<n>` object, the **semver** for a `refs/tags/<semver>`
    object. This binds a tag object to where it is served and prevents
    cross-serving (e.g. a valid `stable` partition tag re-served as `testing`).
 3. **Type / target** matches the chain shape: HOP-1 tag must be `type tag`
@@ -148,8 +148,8 @@ The serving path also names the tag:
 
 | Object served at | Expected embedded tag-name |
 |---|---|
-| `/channel/stable/00 … /ff` | `stable` (the channel name — **all 256 share it**) |
-| `/channel/testing/00 … /ff` | `testing` |
+| `/channels/stable/00 … /ff` | `stable` (the channel name — **all 256 share it**) |
+| `/channels/testing/00 … /ff` | `testing` |
 | `refs/tags/1.4.2` | `1.4.2` |
 | `refs/tags/1.0.0-beta+exp.sha.5114f85` | `1.0.0-beta+exp.sha.5114f85` |
 
@@ -161,7 +161,7 @@ independently — see
 `00..ff` is a *path* coordinate, **not** part of the embedded name.
 
 > **Attack this stops.** Without name-binding, a CDN/mirror operator could serve
-> a genuine, validly-signed `stable` partition tag at the `/channel/testing/*`
+> a genuine, validly-signed `stable` partition tag at the `/channels/testing/*`
 > path, silently grafting stable's release onto testing consumers. Name-binding
 > rejects it because the embedded name (`stable`) ≠ the path name (`testing`).
 
@@ -193,13 +193,13 @@ three out-of-band mechanisms:
 
 | Mechanism | Where it lives | What it does |
 |---|---|---|
-| **Low CDN TTL** | origin/CDN cache headers on `/channel`, `info/refs`, `objects/info` | bounds how stale a served rollout pointer / ref advertisement can be |
-| **Consumer max-staleness policy** | consumer's local registry config | caps how old a fetched `/channel` pointer the consumer will *act on* |
+| **Low CDN TTL** | origin/CDN cache headers on `/channels`, `info/refs`, `objects/info` | bounds how stale a served rollout pointer / ref advertisement can be |
+| **Consumer max-staleness policy** | consumer's local registry config | caps how old a fetched `/channels` pointer the consumer will *act on* |
 | **Monotonic anti-rollback floor** | persisted consumer install state (§6.2) | refuses any candidate older than the highest semver ever run |
 
 Enforcement:
 
-- **Channel freshness** comes from the **low CDN TTL** on `/channel/**` (and
+- **Channel freshness** comes from the **low CDN TTL** on `/channels/**` (and
   `info/refs`, `objects/info`) plus the **consumer's own max-staleness policy**:
   a consumer that fetches a partition pointer older than its policy allows treats
   the rollout pointer as **stale** and does **not** advance to a new frontier (it
@@ -214,7 +214,7 @@ Enforcement:
 
 > **Trade-off (brief §11).** Without an in-band signed expiry, this freshness
 > model is **weaker against a frozen-but-validly-signed mirror**: a mirror that
-> serves a stale-but-genuinely-signed `/channel` pointer past its CDN TTL is
+> serves a stale-but-genuinely-signed `/channels` pointer past its CDN TTL is
 > only caught by the consumer's max-staleness policy and the monotonic floor,
 > not by a signed `valid_until` the mirror cannot forge. The floor still blocks
 > any *rollback*; the residual exposure is a mirror **pinning** a fleet to an old
@@ -282,16 +282,16 @@ git -c gpg.format=ssh -c user.signingkey=<key> \
 # Done once per partition the rollout advances (see workstream-03).
 git -c gpg.format=ssh -c user.signingkey=<key> \
     tag -s -f stable -m "stable → 1.4.2" refs/tags/1.4.2
-#   then publish that tag object's bytes to /channel/stable/<n>
+#   then publish that tag object's bytes to /channels/stable/<n>
 ```
 
 - The signing key is the registry's existing Ed25519 key (one key, brief §11);
   `apr sign`'s today-unused `_key` arg (`registry_ops.rs:1761`) becomes live.
-- The tag carries **no structured payload** — no `[meta]`, no `valid_until`, no
-  `[[caches]]`. The cache/substituter location is **client-side** consumer
-  config or the origin itself (§7.4), never advertised in a signed tag.
+- The tag carries **no structured payload** (optional freeform note only). The
+  cache/substituter location is **client-side** consumer config or the origin
+  itself (§7.4), never advertised in a signed tag.
 - The publish step copies the signed tag *object bytes* to the 256
-  `/channel/<name>/<n>` paths — the rollout coordinate is the path, the embedded
+  `/channels/<name>/<n>` paths — the rollout coordinate is the path, the embedded
   name stays the channel name (§3.3).
 
 ### 7.2 `apr tag` → sign (G8)
@@ -330,7 +330,7 @@ key (via `KeyStore::lookup`, TOFU on first use), and the persisted semver floor.
 ```
 verify_and_select(channel, bucket):
   key = KeyStore.lookup(channel-registry)        # security.rs:70  (TOFU if absent)
-  ptag = fetch("/channel/{channel}/{bucket}")    # probe-forward (bucket+1)%256 if missing
+  ptag = fetch("/channels/{channel}/{bucket}")    # probe-forward (bucket+1)%256 if missing
   # --- HOP 1: channel partition tag ---
   assert verify_tag_signature(ptag, key)         # retargeted security.rs:199
   assert tag_name(ptag) == channel               # NAME-BINDING (brief §5)

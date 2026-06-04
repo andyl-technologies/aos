@@ -20,13 +20,11 @@ This is the `apm`-side counterpart to the producer workstreams
 [02 pack/delta pipeline](./workstream-02-pack-delta-pipeline.md),
 [03 channels & rollouts](./workstream-03-channels-rollouts.md),
 [04 signing & trust](./workstream-04-signing-trust.md)). The consumer **only
-reads static files over dumb HTTP** — there is no server-side cooperation, no
-smart-protocol negotiation, and (per [§15 of the brief](./design-brief.md#15-removed-from-the-target-do-not-document-as-target))
-**no `registry.toml`, no `bundle-list.toml`, no git bundles, and no
-`creation_token`**. The consumer's job is six steps:
+reads static files over dumb HTTP** — there is no server-side cooperation and no
+smart-protocol negotiation. The consumer's job is six steps:
 
 1. **Bucket selection** — deterministically self-select one of 256 partitions.
-2. **Tag-chain resolution** — `/channel/<name>/<bucket>` signed tag → semver tag
+2. **Tag-chain resolution** — `/channels/<name>/<bucket>` signed tag → semver tag
    → commit.
 3. **Chain verification** — verify both signatures *and* the name-binding of each
    tag object to its serving path (§11).
@@ -145,7 +143,7 @@ apm update / apm upgrade
 │
 ├─ 1. bucket   = persisted_bucket  ||  the low byte of sha256(machine_id) (i.e. mod 256)      (§4)
 │
-├─ 2. fetch    /channel/<name>/<bucket>        (signed partition tag object)
+├─ 2. fetch    /channels/<name>/<bucket>        (signed partition tag object)
 │        │        └─ missing? probe-forward (bucket+1) mod 256          (§4.3)
 │        ▼
 │      partition_tag ──verify sig + name-binds "<name>"── (§6)
@@ -181,15 +179,15 @@ flow is **always completable** even if every pack is missing or corrupt.
 
 | URL | Purpose | Verify |
 |---|---|---|
-| `/channel/<name>/<bucket>` | signed partition tag → semver tag | sig + name == `<name>` |
+| `/channels/<name>/<bucket>` | signed partition tag → semver tag | sig + name == `<name>` |
 | `refs/tags/<semver>` (via `info/refs`) | signed release tag → commit | sig + name == `<semver>` |
-| `objects/info/alternates` | relative `../release/*/objects/` entries, newest→oldest; pack discovery + release index | — |
-| `/release/<M>/<m>/<p…>/objects/info/packs` | self-contained full packs only | idx self-check |
-| `/release/<M>/<m>/<p…>/objects/pack/delta-<from>.pack[.zst]` | thin AOS deltas (NOT in `info/packs`) | `index-pack --fix-thin` |
+| `objects/info/alternates` | relative `../releases/*/objects/` entries, newest→oldest; pack discovery + release index | — |
+| `/releases/<M>/<m>/<p…>/objects/info/packs` | self-contained full packs only | idx self-check |
+| `/releases/<M>/<m>/<p…>/objects/pack/delta-<from>.pack[.zst]` | thin AOS deltas (NOT in `info/packs`) | `index-pack --fix-thin` |
 | `/objects/<xx>/<62hex>` | loose objects (sha256 2/62), centralized at the root | sha256 == path |
 
 The `objects/info/alternates` entries are **relative** paths, newest→oldest, e.g.
-`../release/1/1/0/objects/`. Git resolves relative alternates against the repo's
+`../releases/1/1/0/objects/`. Git resolves relative alternates against the repo's
 `objects/` URL, so each `../` strips the trailing `objects` segment to reach the
 repo root — therefore the correct depth is **one** `../`, not two. The file is
 **host-independent** (byte-identical across CDN, mirror, and `localhost` — no
@@ -205,7 +203,7 @@ See [`http-layout.md`](../../registry/http-layout.md) and
 ### 3.3 The tag chain — `tag → tag → commit`
 
 ```
-/channel/stable/b7  ──►  signed partition tag object
+/channels/stable/b7  ──►  signed partition tag object
    tag name: "stable"                      (name-binds the channel)
    target:   refs/tags/1.4.2  ─────────────┐
                                            ▼
@@ -227,7 +225,7 @@ the AOS consumer's rollout-respecting target comes from the **partition tag**.
 `refs/heads/<channel>` points at the **frontier** (newest release any partition
 targets, [§6](./design-brief.md#6-channels--rollouts)). Following it would defeat
 rollout — every host would jump straight to the newest release. The AOS consumer
-therefore resolves through `/channel/<name>/<bucket>`, which the publisher
+therefore resolves through `/channels/<name>/<bucket>`, which the publisher
 advances **per-partition** to control blast radius. The branch head is a
 stock-git convenience pointer only.
 
@@ -256,7 +254,7 @@ block; WS-05 extends its serializer (it currently emits `last_commit`,
 ## 4. Bucket selection (consumer self-partitioning)
 
 > **TARGET.** Per [brief §6](./design-brief.md#6-channels--rollouts): a channel
-> exposes exactly **256** partitions `/channel/<name>/00..ff`; the consumer
+> exposes exactly **256** partitions `/channels/<name>/00..ff`; the consumer
 > deterministically self-selects **one** bucket and **persists** it so a host
 > never flaps between buckets across updates.
 
@@ -293,7 +291,7 @@ gap), the consumer **may** probe forward deterministically:
 ```text
 b = bucket
 for i in 0..256:
-    try fetch /channel/<name>/((b + i) mod 256)
+    try fetch /channels/<name>/((b + i) mod 256)
     if present and verifies: use it; stop
 fail closed if none of 256 resolve
 ```
@@ -429,11 +427,11 @@ loose-object floor.
 
 | Tag object | Signature check | Name-binding check |
 |---|---|---|
-| `/channel/<name>/<bucket>` | Ed25519/SSH valid against a trusted key | embedded tag name `== "<name>"` (the channel) |
+| `/channels/<name>/<bucket>` | Ed25519/SSH valid against a trusted key | embedded tag name `== "<name>"` (the channel) |
 | `refs/tags/<semver>` | Ed25519/SSH valid against a trusted key | embedded tag name `== "<semver>"` (the release) |
 
 The **name-binding** is what stops a valid-but-misfiled tag from being honoured:
-a partition tag signed for channel `testing` served under `/channel/stable/3f`
+a partition tag signed for channel `testing` served under `/channels/stable/3f`
 fails because its embedded name is `testing`, not `stable`. Likewise a release
 tag whose embedded name is `1.4.1` cannot be served from the `1.4.2/` release
 path. This closes cross-serving without any server-side enforcement — the
@@ -536,7 +534,7 @@ downloads. This reconciles the discrepancy flagged in
 There is **no** in-band signed `valid_until` expiry — signed tags carry no
 structured payload (§6.2). Freshness is instead the combination of:
 
-- a **low CDN TTL** on the mutable surface (`/channel`, `info/refs`,
+- a **low CDN TTL** on the mutable surface (`/channels`, `info/refs`,
   `objects/info`), so a host re-reads the publisher's current pointer quickly;
 - the consumer's own **max-staleness policy** (how long it tolerates not having
   re-resolved); and
@@ -544,7 +542,7 @@ structured payload (§6.2). Freshness is instead the combination of:
 
 **Trade-off.** This is *weaker* than an in-band signed expiry against a
 **frozen-but-validly-signed mirror**: a mirror that serves an old, correctly
-signed `/channel` pointer cannot be detected by signature alone, since the tag
+signed `/channels` pointer cannot be detected by signature alone, since the tag
 has no embedded expiry. The low CDN TTL + max-staleness policy bound the staleness
 window operationally rather than cryptographically.
 
@@ -579,13 +577,13 @@ cache_url  = "./nar"        # relative to origin, OR absolute
   stock `nix`, so a consumer with no explicit `cache_url` can substitute straight
   from the origin.
 
-There is **no** tag-message TOML to parse, so no `[meta]`, no `schema`, no
-`valid_until`, and no `[[caches]]` table are read out of any tag object.
+Tags are pure signed pointers (§6.2): the consumer reads no `[[caches]]` entry
+or any other structured payload out of a tag object.
 
 ### 8.2 Relative-URL resolution
 
 A client-side `cache_url` (when relative) is resolved against the **registry
-origin** (the base URL the partition/release was fetched from):
+origin** (the base URL the partition/releases was fetched from):
 
 ```text
 registry origin:  https://registry.aos.dev/core/
@@ -658,7 +656,7 @@ doing substitution reads its client-side config.
       ([`types.rs:282`](../../../crates/aos-package/src/types.rs)) and a `channel`
       config field threaded into `tracking_mode()`
       ([`types.rs:352`](../../../crates/aos-package/src/types.rs)).
-- [ ] Tag-chain resolver `/channel/<name>/<bucket>` → semver tag → commit (§3.3).
+- [ ] Tag-chain resolver `/channels/<name>/<bucket>` → semver tag → commit (§3.3).
 
 **Verification:**
 
@@ -698,7 +696,7 @@ doing substitution reads its client-side config.
 - [current-state.md](../../registry/current-state.md) — the as-is bundle /
   `creation_token` implementation this WS replaces.
 - [http-layout.md](../../registry/http-layout.md) — the static surface the
-  consumer reads (`/channel`, `/release`, relative `info/alternates`, root
+  consumer reads (`/channels`, `/releases`, relative `info/alternates`, root
   `/objects/` loose objects).
 - [versioning-and-channels.md](../../registry/versioning-and-channels.md) —
   semver, 256-partition rollout, bucket selection, anti-rollback.
