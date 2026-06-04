@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 
 use crate::cli::TestCmd;
 use aos_core::nix::NixRunner;
-use aos_core::output::{create_spinner, Printer};
+use aos_core::output::{Printer, create_spinner};
 
 /// Resolve the concurrency cap for `aos test`.
 ///
@@ -219,8 +219,7 @@ fn run_fleet_interactive(
     let suite =
         suite.context("--interactive requires a fleet suite name (e.g. `aos test fleet k3s-combined-worker --interactive …`)")?;
     validate_suite_name(suite)?;
-    let key = ssh_authorized_key
-        .context("--interactive requires --ssh-authorized-key")?;
+    let key = ssh_authorized_key.context("--interactive requires --ssh-authorized-key")?;
     validate_pubkey_string(key)?;
 
     let root = nix.root().to_string_lossy().to_string();
@@ -247,9 +246,7 @@ fn run_fleet_interactive(
         );
     }
 
-    printer.success(&format!(
-        "Launching fleet/{suite} (Ctrl-C to shut down)"
-    ));
+    printer.success(&format!("Launching fleet/{suite} (Ctrl-C to shut down)"));
 
     // Reset SIGINT/SIGQUIT to SIG_DFL so the launcher's `trap cleanup INT`
     // takes effect. Bash silently refuses to install a trap on a signal
@@ -271,10 +268,7 @@ fn run_fleet_interactive(
     // Replace the current process so signals reach the launcher directly,
     // not us. `exec` only returns on failure.
     let err = std::process::Command::new(&script).exec();
-    Err(anyhow::anyhow!(
-        "exec({}): {err}",
-        script.display()
-    ))
+    Err(anyhow::anyhow!("exec({}): {err}", script.display()))
 }
 
 /// Run a single test layer at the given concurrency.

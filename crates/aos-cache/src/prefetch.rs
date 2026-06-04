@@ -30,26 +30,15 @@ pub async fn run_prefetch(
     let mut all_fods = Vec::new();
 
     for installable in installables {
-        let drv = discover::resolve_to_drv(
-            &nix,
-            file.map(Path::new),
-            attr,
-            expr,
-            Some(installable),
-        )?;
+        let drv =
+            discover::resolve_to_drv(&nix, file.map(Path::new), attr, expr, Some(installable))?;
         let fods = discover::discover_fods(&nix, &drv)?;
         all_fods.extend(fods);
     }
 
     // If no installables, use attr/expr.
     if installables.is_empty() {
-        let drv = discover::resolve_to_drv(
-            &nix,
-            file.map(Path::new),
-            attr,
-            expr,
-            None,
-        )?;
+        let drv = discover::resolve_to_drv(&nix, file.map(Path::new), attr, expr, None)?;
         let fods = discover::discover_fods(&nix, &drv)?;
         all_fods.extend(fods);
     }

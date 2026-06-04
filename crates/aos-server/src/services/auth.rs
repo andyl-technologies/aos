@@ -28,28 +28,18 @@ impl AuthService for AuthServiceImpl {
             .tokens
             .validate_token(provisioning_token)
             .map_err(|e| {
-                ConnectError::new(
-                    ErrorCode::Internal,
-                    format!("token validation error: {e}"),
-                )
+                ConnectError::new(ErrorCode::Internal, format!("token validation error: {e}"))
             })?
             .ok_or_else(|| {
-                ConnectError::new(
-                    ErrorCode::Unauthenticated,
-                    "invalid provisioning secret",
-                )
+                ConnectError::new(ErrorCode::Unauthenticated, "invalid provisioning secret")
             })?;
 
         let ttl = self.state.config.oauth2.access_token_ttl;
 
-        let access_token =
-            auth::create_access_token(&self.state.jwt_secret, &token_record, ttl)
-                .map_err(|e| {
-                    ConnectError::new(
-                        ErrorCode::Internal,
-                        format!("token creation error: {e}"),
-                    )
-                })?;
+        let access_token = auth::create_access_token(&self.state.jwt_secret, &token_record, ttl)
+            .map_err(|e| {
+                ConnectError::new(ErrorCode::Internal, format!("token creation error: {e}"))
+            })?;
 
         let scope = token_record.permissions.join(" ");
 

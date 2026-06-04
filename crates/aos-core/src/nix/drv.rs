@@ -18,8 +18,8 @@ pub struct FixedOutputDrv {
 /// Returns `Some(FixedOutputDrv)` if the derivation has an `outputHash` env var,
 /// `None` otherwise.
 pub fn parse_drv_for_fod(drv_path: &str) -> Result<Option<FixedOutputDrv>> {
-    let content = std::fs::read_to_string(drv_path)
-        .with_context(|| format!("reading {drv_path}"))?;
+    let content =
+        std::fs::read_to_string(drv_path).with_context(|| format!("reading {drv_path}"))?;
 
     // Quick check: if no outputHash, not a FOD.
     if !content.contains("\"outputHash\"") {

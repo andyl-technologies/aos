@@ -1,8 +1,8 @@
-use aos_core::nar::info::{basename, store_hash};
-use crate::compress::{compute_file_hash_size, Compression};
+use crate::compress::{Compression, compute_file_hash_size};
 use crate::config::CompressionConfig;
 use crate::sign::NarInfoSigner;
 use crate::store::DbPathInfo;
+use aos_core::nar::info::{basename, store_hash};
 
 /// Resolve compression name and file extension from config.
 fn compression_parts(config: &CompressionConfig) -> (&str, &str) {
@@ -17,14 +17,23 @@ fn compression_parts(config: &CompressionConfig) -> (&str, &str) {
 /// by the compression pipeline.
 fn compression_from_config(config: &CompressionConfig) -> Compression {
     match config.algorithm.as_str() {
-        "zstd" => Compression::Zstd { level: config.level },
-        "xz" => Compression::Xz { level: config.level },
+        "zstd" => Compression::Zstd {
+            level: config.level,
+        },
+        "xz" => Compression::Xz {
+            level: config.level,
+        },
         _ => Compression::None,
     }
 }
 
 /// Format a DbPathInfo as a Nix narinfo response.
-pub fn format_narinfo(info: &DbPathInfo, store_dir: &str, compression: &CompressionConfig, signer: Option<&NarInfoSigner>) -> String {
+pub fn format_narinfo(
+    info: &DbPathInfo,
+    store_dir: &str,
+    compression: &CompressionConfig,
+    signer: Option<&NarInfoSigner>,
+) -> String {
     let path_basename = basename(&info.path);
     let path_hash = store_hash(&info.path);
 
@@ -86,7 +95,8 @@ pub fn format_narinfo(info: &DbPathInfo, store_dir: &str, compression: &Compress
     // Live signing with ed25519 key
     if let Some(signer) = signer {
         let store_path = format!("{store_dir}/{}", basename(&info.path));
-        let fingerprint = NarInfoSigner::fingerprint(&store_path, &info.nar_hash, info.nar_size, &info.refs);
+        let fingerprint =
+            NarInfoSigner::fingerprint(&store_path, &info.nar_hash, info.nar_size, &info.refs);
         if let Some(sig) = signer.sign(&fingerprint) {
             out.push_str(&format!("Sig: {sig}\n"));
         }

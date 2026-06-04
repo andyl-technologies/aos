@@ -147,8 +147,11 @@ impl TransferEngine {
                             }
                         }
 
-                        self.progress
-                            .on_progress(&url, result.bytes_transferred, result.content_length);
+                        self.progress.on_progress(
+                            &url,
+                            result.bytes_transferred,
+                            result.content_length,
+                        );
                         self.progress.on_complete(&url, result.bytes_transferred);
                         return Ok(result);
                     }
@@ -159,9 +162,9 @@ impl TransferEngine {
             match stream_result {
                 Ok((mut result, mut stream)) => {
                     // Set up the streaming pipeline.
-                    let mut hasher = hash_spec.as_ref().map(|h| {
-                        StreamingHasher::with_expected(h.algorithm, &h.expected)
-                    });
+                    let mut hasher = hash_spec
+                        .as_ref()
+                        .map(|h| StreamingHasher::with_expected(h.algorithm, &h.expected));
                     let mut bytes_transferred: u64 = result.bytes_transferred;
                     let transfer_start = Instant::now();
 
@@ -226,8 +229,7 @@ impl TransferEngine {
                         if let Some(min_speed) = self.min_speed {
                             let elapsed = transfer_start.elapsed();
                             if elapsed > self.min_speed_duration {
-                                let speed =
-                                    bytes_transferred as f64 / elapsed.as_secs_f64();
+                                let speed = bytes_transferred as f64 / elapsed.as_secs_f64();
                                 if speed < min_speed as f64 {
                                     let err = anyhow::anyhow!(
                                         "transfer speed {:.0} B/s below minimum {} B/s for {}",
@@ -256,7 +258,10 @@ impl TransferEngine {
                             let err = anyhow::anyhow!(
                                 "hash mismatch for {}: expected {}, got {}",
                                 url,
-                                hash_spec.as_ref().map(|h| h.expected.as_str()).unwrap_or("?"),
+                                hash_spec
+                                    .as_ref()
+                                    .map(|h| h.expected.as_str())
+                                    .unwrap_or("?"),
                                 hash_result.hex
                             );
                             self.progress.on_error(&url, &err);
@@ -290,9 +295,7 @@ impl TransferEngine {
                                     .await
                                     .unwrap_or(false)
                                 {
-                                    tracing::info!(
-                                        "refreshed auth token for {host_str}, retrying"
-                                    );
+                                    tracing::info!("refreshed auth token for {host_str}, retrying");
                                     token_refreshed = true;
                                     last_err = Some(err);
                                     continue;
@@ -306,18 +309,13 @@ impl TransferEngine {
                         self.progress.on_error(&url, &err);
                         return Err(err);
                     }
-                    tracing::debug!(
-                        attempt,
-                        "transient error, will retry: {}",
-                        err
-                    );
+                    tracing::debug!(attempt, "transient error, will retry: {}", err);
                     last_err = Some(err);
                 }
             }
         }
 
-        let err = last_err
-            .unwrap_or_else(|| anyhow::anyhow!("transfer failed after retries"));
+        let err = last_err.unwrap_or_else(|| anyhow::anyhow!("transfer failed after retries"));
         self.progress.on_error(&url, &err);
         Err(err)
     }
@@ -343,8 +341,7 @@ impl TransferEngine {
 
         // Hash verification on body if available.
         if let (Some(ref spec), Some(ref body)) = (&request.hash, &result.body) {
-            let mut hasher =
-                StreamingHasher::with_expected(spec.algorithm, &spec.expected);
+            let mut hasher = StreamingHasher::with_expected(spec.algorithm, &spec.expected);
             hasher.update(body);
             let hash_result = hasher.finalize();
             result.hash = Some(hash_result.hex.clone());
@@ -417,8 +414,7 @@ impl TransferEngine {
 
                 for attempt in 0..retry_config.max_attempts {
                     if attempt > 0 {
-                        let delay =
-                            retry::compute_retry_delay(&retry_config, attempt - 1);
+                        let delay = retry::compute_retry_delay(&retry_config, attempt - 1);
                         tokio::time::sleep(delay).await;
                     }
 
@@ -460,20 +456,15 @@ impl TransferEngine {
                         Ok(r)
                     }
                     None => {
-                        let err = last_err.unwrap_or_else(|| {
-                            anyhow::anyhow!("transfer failed after retries")
-                        });
+                        let err = last_err
+                            .unwrap_or_else(|| anyhow::anyhow!("transfer failed after retries"));
                         progress.on_transfer_error(index, &err);
                         Err(err)
                     }
                 };
 
                 let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                progress.on_batch_progress(
-                    done,
-                    total,
-                    total_bytes.load(Ordering::Relaxed),
-                );
+                progress.on_batch_progress(done, total, total_bytes.load(Ordering::Relaxed));
 
                 result
             });
@@ -485,9 +476,7 @@ impl TransferEngine {
         for handle in handles {
             match handle.await {
                 Ok(result) => results.push(result),
-                Err(e) => {
-                    results.push(Err(anyhow::anyhow!("transfer task panicked: {e}")))
-                }
+                Err(e) => results.push(Err(anyhow::anyhow!("transfer task panicked: {e}"))),
             }
         }
 
@@ -586,10 +575,7 @@ mod tests {
             extract_host("https://example.com/path"),
             Some("example.com".to_string())
         );
-        assert_eq!(
-            extract_host("s3://bucket/key"),
-            Some("bucket".to_string())
-        );
+        assert_eq!(extract_host("s3://bucket/key"), Some("bucket".to_string()));
         assert_eq!(extract_host("not-a-url"), None);
     }
 
@@ -631,10 +617,7 @@ mod tests {
 
         let url = format!("file://{}", file_path.display());
         let engine = TransferEngine::new(TransferEngineConfig::default());
-        let result = engine
-            .execute(TransferRequest::get(&url))
-            .await
-            .unwrap();
+        let result = engine.execute(TransferRequest::get(&url)).await.unwrap();
         assert_eq!(result.status, 200);
         assert_eq!(result.body.unwrap(), b"hello world");
     }
@@ -667,12 +650,10 @@ mod tests {
         let engine = TransferEngine::new(TransferEngineConfig::default());
 
         let result = engine
-            .execute(
-                TransferRequest::get(&url).with_hash(
-                    crate::types::HashAlgorithm::Sha256,
-                    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
-                ),
-            )
+            .execute(TransferRequest::get(&url).with_hash(
+                crate::types::HashAlgorithm::Sha256,
+                "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            ))
             .await
             .unwrap();
         assert_eq!(
@@ -691,12 +672,10 @@ mod tests {
         let engine = TransferEngine::new(TransferEngineConfig::default());
 
         let err = engine
-            .execute(
-                TransferRequest::get(&url).with_hash(
-                    crate::types::HashAlgorithm::Sha256,
-                    "0000000000000000000000000000000000000000000000000000000000000000",
-                ),
-            )
+            .execute(TransferRequest::get(&url).with_hash(
+                crate::types::HashAlgorithm::Sha256,
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ))
             .await
             .unwrap_err();
         assert!(format!("{err}").contains("hash mismatch"));
@@ -776,10 +755,7 @@ mod tests {
         };
         let engine = TransferEngine::new(config);
         let url = format!("file://{}", file_path.display());
-        let result = engine
-            .execute(TransferRequest::get(&url))
-            .await
-            .unwrap();
+        let result = engine.execute(TransferRequest::get(&url)).await.unwrap();
         assert_eq!(result.body.unwrap(), b"bandwidth test data");
     }
 

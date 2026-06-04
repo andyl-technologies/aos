@@ -231,7 +231,10 @@ mod tests {
         let results = fuzzy_search(&entries, "head");
         assert!(!results.is_empty());
         // "head" should rank higher than "headOrDefault" due to exact match properties.
-        assert_eq!(results[0].0, 1, "exact path component match should rank first");
+        assert_eq!(
+            results[0].0, 1,
+            "exact path component match should rank first"
+        );
     }
 
     #[test]

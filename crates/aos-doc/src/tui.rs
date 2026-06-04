@@ -1,17 +1,17 @@
 use std::io;
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
+    event::{self, Event, KeyCode, KeyModifiers},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::CrosstermBackend,
     style::{Modifier, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
-    Frame, Terminal,
 };
 
 use crate::model::{DocCategory, DocEntry, DocIndex};
@@ -127,7 +127,9 @@ impl TreeState {
     }
 
     fn selected_node(&self) -> Option<usize> {
-        self.list_state.selected().and_then(|i| self.visible.get(i).copied())
+        self.list_state
+            .selected()
+            .and_then(|i| self.visible.get(i).copied())
     }
 
     fn move_down(&mut self) {
@@ -155,7 +157,8 @@ impl TreeState {
                 // Keep selection within bounds.
                 if let Some(pos) = sel_pos {
                     if pos >= self.visible.len() {
-                        self.list_state.select(Some(self.visible.len().saturating_sub(1)));
+                        self.list_state
+                            .select(Some(self.visible.len().saturating_sub(1)));
                     } else {
                         self.list_state.select(Some(pos));
                     }
@@ -232,13 +235,15 @@ impl App {
         let pkg_tree = build_path_tree(&entries, &pkg_entries, 1);
 
         // Initialize function list from first tree selection.
-        let func_list = Self::children_entries_for_tree(&func_tree, &entries, DocCategory::Function);
+        let func_list =
+            Self::children_entries_for_tree(&func_tree, &entries, DocCategory::Function);
         let mut func_list_state = ListState::default();
         if !func_list.is_empty() {
             func_list_state.select(Some(0));
         }
 
-        let opt_list = Self::children_entries_for_tree(&opt_tree, &entries, DocCategory::ModuleOption);
+        let opt_list =
+            Self::children_entries_for_tree(&opt_tree, &entries, DocCategory::ModuleOption);
         let mut opt_list_state = ListState::default();
         if !opt_list.is_empty() {
             opt_list_state.select(Some(0));
@@ -323,28 +328,26 @@ impl App {
     }
 
     fn selected_lang_content(&self) -> Option<&(String, String, String)> {
-        self.lang_tree
-            .selected_node()
-            .and_then(|nid| {
-                let node = &self.lang_tree.nodes[nid];
-                if node.entry_idx.is_some() {
-                    // Leaf node — find matching content.
-                    let parent_idx = node.parent?;
-                    let chapter_name = &self.lang_tree.nodes[parent_idx].label;
-                    self.lang_content
-                        .iter()
-                        .find(|(ch, tp, _)| ch == chapter_name && tp == &node.label)
-                } else if node.children.is_empty() {
-                    None
-                } else {
-                    // Chapter node — show first child's content.
-                    let first_child = *node.children.first()?;
-                    let child_node = &self.lang_tree.nodes[first_child];
-                    self.lang_content
-                        .iter()
-                        .find(|(ch, tp, _)| ch == &node.label && tp == &child_node.label)
-                }
-            })
+        self.lang_tree.selected_node().and_then(|nid| {
+            let node = &self.lang_tree.nodes[nid];
+            if node.entry_idx.is_some() {
+                // Leaf node — find matching content.
+                let parent_idx = node.parent?;
+                let chapter_name = &self.lang_tree.nodes[parent_idx].label;
+                self.lang_content
+                    .iter()
+                    .find(|(ch, tp, _)| ch == chapter_name && tp == &node.label)
+            } else if node.children.is_empty() {
+                None
+            } else {
+                // Chapter node — show first child's content.
+                let first_child = *node.children.first()?;
+                let child_node = &self.lang_tree.nodes[first_child];
+                self.lang_content
+                    .iter()
+                    .find(|(ch, tp, _)| ch == &node.label && tp == &child_node.label)
+            }
+        })
     }
 }
 
@@ -404,23 +407,14 @@ fn build_language_content() -> Vec<(String, String, String)> {
     content
 }
 
-fn build_path_tree(
-    entries: &[DocEntry],
-    indices: &[usize],
-    split_depth: usize,
-) -> TreeState {
+fn build_path_tree(entries: &[DocEntry], indices: &[usize], split_depth: usize) -> TreeState {
     struct Builder {
         nodes: Vec<TreeNode>,
         default_expand_depth: usize,
     }
 
     impl Builder {
-        fn get_or_create(
-            &mut self,
-            parent: Option<usize>,
-            label: &str,
-            depth: usize,
-        ) -> usize {
+        fn get_or_create(&mut self, parent: Option<usize>, label: &str, depth: usize) -> usize {
             // Check if already exists under parent.
             if let Some(p) = parent {
                 for &child in &self.nodes[p].children {
@@ -479,11 +473,7 @@ fn build_path_tree(
     TreeState::new(builder.nodes)
 }
 
-fn collect_leaf_entries(
-    nodes: &[TreeNode],
-    node_idx: usize,
-    _entries: &[DocEntry],
-) -> Vec<usize> {
+fn collect_leaf_entries(nodes: &[TreeNode], node_idx: usize, _entries: &[DocEntry]) -> Vec<usize> {
     let mut result = Vec::new();
     collect_leaves_recursive(nodes, node_idx, &mut result);
     result
@@ -796,7 +786,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // tab bar
+            Constraint::Length(3), // tab bar
             Constraint::Min(1),    // content
             Constraint::Length(1), // status bar
         ])
@@ -887,7 +877,11 @@ fn draw_language_tab(f: &mut Frame, app: &mut App, area: Rect) {
 
     let tree_list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" Chapters "))
-        .highlight_style(Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(ratatui::style::Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     f.render_stateful_widget(tree_list, chunks[0], &mut app.lang_tree.list_state);
 
@@ -957,7 +951,11 @@ fn draw_functions_tab(f: &mut Frame, app: &mut App, area: Rect) {
                 .title(" Modules ")
                 .border_style(tree_border_style),
         )
-        .highlight_style(Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(ratatui::style::Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     f.render_stateful_widget(tree_list, chunks[0], &mut app.func_tree.list_state);
 
@@ -1001,7 +999,11 @@ fn draw_functions_tab(f: &mut Frame, app: &mut App, area: Rect) {
                 .title(" Functions ")
                 .border_style(list_border_style),
         )
-        .highlight_style(Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(ratatui::style::Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     f.render_stateful_widget(func_list_widget, chunks[1], &mut app.func_list_state);
 
@@ -1073,7 +1075,11 @@ fn draw_options_tab(f: &mut Frame, app: &mut App, area: Rect) {
                 .title(" Namespaces ")
                 .border_style(tree_border_style),
         )
-        .highlight_style(Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(ratatui::style::Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     f.render_stateful_widget(tree_list, chunks[0], &mut app.opt_tree.list_state);
 
@@ -1106,7 +1112,11 @@ fn draw_options_tab(f: &mut Frame, app: &mut App, area: Rect) {
                 .title(" Options ")
                 .border_style(list_border_style),
         )
-        .highlight_style(Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(ratatui::style::Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     f.render_stateful_widget(opt_list_widget, chunks[1], &mut app.opt_list_state);
 
@@ -1164,7 +1174,11 @@ fn draw_packages_tab(f: &mut Frame, app: &mut App, area: Rect) {
 
     let tree_list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" Packages "))
-        .highlight_style(Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(ratatui::style::Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     f.render_stateful_widget(tree_list, chunks[0], &mut app.pkg_tree.list_state);
 
@@ -1189,7 +1203,9 @@ fn draw_packages_tab(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_search_overlay(f: &mut Frame, app: &mut App, area: Rect) {
     // Search overlay at the bottom of the screen.
-    let height = (app.search_results.len() as u16 + 3).min(area.height / 2).max(3);
+    let height = (app.search_results.len() as u16 + 3)
+        .min(area.height / 2)
+        .max(3);
     let overlay_area = Rect {
         x: area.x + 1,
         y: area.y + area.height - height - 1,
@@ -1214,10 +1230,7 @@ fn draw_search_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default()
         };
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("[{}] ", entry.category),
-                Style::default().dim(),
-            ),
+            Span::styled(format!("[{}] ", entry.category), Style::default().dim()),
             Span::styled(entry.path.clone(), style),
             Span::styled(format!("  ({score})"), Style::default().dim()),
         ]));
@@ -1245,10 +1258,7 @@ fn render_entry_detail(entry: &DocEntry) -> Text<'static> {
 
     // Type signature.
     if let Some(ref sig) = entry.type_sig {
-        lines.push(Line::from(Span::styled(
-            "Type:",
-            Style::default().bold(),
-        )));
+        lines.push(Line::from(Span::styled("Type:", Style::default().bold())));
         lines.push(Line::from(Span::styled(
             format!("  {sig}"),
             Style::default().fg(ratatui::style::Color::Green),
@@ -1276,7 +1286,10 @@ fn render_entry_detail(entry: &DocEntry) -> Text<'static> {
         )));
         for (name, desc) in &entry.parameters {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {name}"), Style::default().fg(ratatui::style::Color::Yellow)),
+                Span::styled(
+                    format!("  {name}"),
+                    Style::default().fg(ratatui::style::Color::Yellow),
+                ),
                 Span::styled(format!(" - {desc}"), Style::default()),
             ]));
         }
@@ -1340,7 +1353,10 @@ fn render_option_detail(entry: &DocEntry) -> Text<'static> {
     if let Some(ref sig) = entry.type_sig {
         lines.push(Line::from(vec![
             Span::styled("Type: ", Style::default().bold()),
-            Span::styled(sig.clone(), Style::default().fg(ratatui::style::Color::Green)),
+            Span::styled(
+                sig.clone(),
+                Style::default().fg(ratatui::style::Color::Green),
+            ),
         ]));
     }
 

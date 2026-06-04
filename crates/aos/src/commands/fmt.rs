@@ -1,15 +1,10 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use ignore::WalkBuilder;
 
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 
-pub fn run(
-    nix: &NixRunner,
-    printer: &Printer,
-    check: bool,
-    files: &[String],
-) -> Result<()> {
+pub fn run(nix: &NixRunner, printer: &Printer, check: bool, files: &[String]) -> Result<()> {
     let nix_files: Vec<String> = if files.is_empty() {
         // Walk project tree respecting .gitignore (skips symlinks into /nix/store)
         let mut found = Vec::new();
@@ -67,10 +62,7 @@ pub fn run(
     }
 
     if !errors.is_empty() {
-        bail!(
-            "Formatting errors:\n{}",
-            errors.join("\n")
-        );
+        bail!("Formatting errors:\n{}", errors.join("\n"));
     }
 
     if check && had_changes {

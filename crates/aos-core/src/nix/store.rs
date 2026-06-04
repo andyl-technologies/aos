@@ -34,7 +34,10 @@ impl NixCli {
     pub fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let mut cmd = Command::new("nix-instantiate");
         cmd.envs(aos_nix_env())
-            .arg("-f").arg(file).arg("-A").arg(attr);
+            .arg("-f")
+            .arg(file)
+            .arg("-A")
+            .arg(attr);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -77,7 +80,10 @@ impl NixCli {
     pub fn build(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let mut cmd = Command::new("nix-build");
         cmd.envs(aos_nix_env())
-            .arg(file).arg("-A").arg(attr).arg("--no-out-link");
+            .arg(file)
+            .arg("-A")
+            .arg(attr)
+            .arg("--no-out-link");
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -124,9 +130,12 @@ impl NixCli {
         if !output.status.success() {
             anyhow::bail!("nix-store -qR failed for {}", path);
         }
-        let text = String::from_utf8(output.stdout)
-            .context("invalid utf-8 from nix-store -qR")?;
-        Ok(text.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+        let text = String::from_utf8(output.stdout).context("invalid utf-8 from nix-store -qR")?;
+        Ok(text
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect())
     }
 
     /// Query metadata for a store path via CLI commands.
@@ -216,17 +225,27 @@ impl NixCli {
             .context("failed to spawn nix-store --import")?;
 
         {
-            let stdin = child.stdin.as_mut().context("no stdin for nix-store --import")?;
+            let stdin = child
+                .stdin
+                .as_mut()
+                .context("no stdin for nix-store --import")?;
             std::io::copy(&mut data, stdin).context("writing to nix-store --import")?;
         }
 
-        let output = child.wait_with_output().context("waiting for nix-store --import")?;
+        let output = child
+            .wait_with_output()
+            .context("waiting for nix-store --import")?;
         if !output.status.success() {
             anyhow::bail!("nix-store --import failed");
         }
 
-        let text = String::from_utf8(output.stdout).context("invalid utf-8 from nix-store --import")?;
-        Ok(text.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+        let text =
+            String::from_utf8(output.stdout).context("invalid utf-8 from nix-store --import")?;
+        Ok(text
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect())
     }
 }
 

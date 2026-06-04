@@ -3,18 +3,18 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     body::{Body, Bytes},
     extract::{Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, head, post, put},
-    Json, Router,
 };
 use serde::Deserialize;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 
 use aos_core::nix::aos_nix_env;
 
@@ -146,12 +146,7 @@ async fn cache_info_handler(
         state.store_dir
     );
 
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain")],
-        body,
-    )
-        .into_response()
+    (StatusCode::OK, [(header::CONTENT_TYPE, "text/plain")], body).into_response()
 }
 
 async fn narinfo_handler(
@@ -188,7 +183,7 @@ async fn narinfo_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("visibility check: {e}"),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -201,14 +196,19 @@ async fn narinfo_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("store query: {e}"),
             )
-                .into_response()
+                .into_response();
         }
     };
 
     // Update access metadata (best-effort, don't fail the request).
     let _ = access::update_access(&state.views, &view, hash);
 
-    let body = narinfo::format_narinfo(&info, &state.store_dir, &state.config.compression, Some(&state.signer));
+    let body = narinfo::format_narinfo(
+        &info,
+        &state.store_dir,
+        &state.config.compression,
+        Some(&state.signer),
+    );
 
     tracing::info!(view = %view, hash = %hash, "narinfo served");
 
@@ -248,7 +248,11 @@ async fn nar_handler(
     } else if let Some(name) = filename.strip_suffix(".nar") {
         (name, Compression::None)
     } else {
-        return (StatusCode::BAD_REQUEST, "expected .nar, .nar.zst, or .nar.xz suffix").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "expected .nar, .nar.zst, or .nar.xz suffix",
+        )
+            .into_response();
     };
 
     let store_hash = match name.split('-').next() {
@@ -265,7 +269,7 @@ async fn nar_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("visibility check: {e}"),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -354,7 +358,9 @@ fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
 
 /// Return the path to the partial upload file for a given hash.
 fn partial_upload_path(hash: &str) -> std::path::PathBuf {
-    crate::aos_root().join("uploads").join(format!("{hash}.partial"))
+    crate::aos_root()
+        .join("uploads")
+        .join(format!("{hash}.partial"))
 }
 
 async fn upload_path_handler(
@@ -507,26 +513,42 @@ async fn import_nar(data: &[u8]) -> Result<String, Response> {
         .spawn()
         .map_err(|e| {
             tracing::error!(error = %e, "failed to spawn nix-store --import");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("spawning nix-store --import: {e}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("spawning nix-store --import: {e}"),
+            )
+                .into_response()
         })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(data).await.map_err(|e| {
             tracing::error!(error = %e, "failed to write NAR to nix-store");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("writing NAR to nix-store: {e}")).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("writing NAR to nix-store: {e}"),
+            )
+                .into_response()
         })?;
         drop(stdin);
     }
 
     let output = child.wait_with_output().await.map_err(|e| {
         tracing::error!(error = %e, "failed waiting for nix-store --import");
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("waiting for nix-store --import: {e}")).into_response()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("waiting for nix-store --import: {e}"),
+        )
+            .into_response()
     })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::error!(stderr = %stderr, "nix-store --import failed");
-        return Err((StatusCode::BAD_REQUEST, format!("nix-store --import failed: {stderr}")).into_response());
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("nix-store --import failed: {stderr}"),
+        )
+            .into_response());
     }
 
     let imported = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -578,11 +600,7 @@ async fn upload_progress_handler(
     match tokio::fs::metadata(&partial_path).await {
         Ok(meta) => {
             let size = meta.len();
-            (
-                StatusCode::OK,
-                [(header::CONTENT_LENGTH, size.to_string())],
-            )
-                .into_response()
+            (StatusCode::OK, [(header::CONTENT_LENGTH, size.to_string())]).into_response()
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
@@ -656,9 +674,7 @@ async fn build_handler(
         .and_then(|s| s.parse().ok());
 
     // Get or start the build (deduplication).
-    let handle = state
-        .build_mgr
-        .get_or_start(&state, &view, drv_path);
+    let handle = state.build_mgr.get_or_start(&state, &view, drv_path);
 
     tracing::info!(view = %view, drv = %drv_path, "build stream started");
 
@@ -677,25 +693,20 @@ async fn build_handler(
     );
 
     // Find the highest replayed ID so we don't duplicate.
-    let highest_replayed = handle
-        .log_buffer
-        .all_events()
-        .last()
-        .map(|e| e.id);
+    let highest_replayed = handle.log_buffer.all_events().last().map(|e| e.id);
 
-    let live_stream = BroadcastStream::new(rx)
-        .filter_map(move |result| match result {
-            Ok(event) => {
-                // Skip events we already replayed.
-                if let Some(max_id) = highest_replayed {
-                    if event.id <= max_id {
-                        return None;
-                    }
+    let live_stream = BroadcastStream::new(rx).filter_map(move |result| match result {
+        Ok(event) => {
+            // Skip events we already replayed.
+            if let Some(max_id) = highest_replayed {
+                if event.id <= max_id {
+                    return None;
                 }
-                Some(Ok::<_, Infallible>(event.to_sse()))
             }
-            Err(_) => None, // lagged — skip
-        });
+            Some(Ok::<_, Infallible>(event.to_sse()))
+        }
+        Err(_) => None, // lagged — skip
+    });
 
     let combined = replay_stream.chain(live_stream);
 
@@ -843,8 +854,8 @@ async fn build_closure_handler(
     }
     drop(merged_tx); // Close when all spawned tasks finish.
 
-    let stream = tokio_stream::wrappers::ReceiverStream::new(merged_rx)
-        .map(|s| Ok::<_, Infallible>(s));
+    let stream =
+        tokio_stream::wrappers::ReceiverStream::new(merged_rx).map(|s| Ok::<_, Infallible>(s));
 
     let body = Body::from_stream(stream);
 
@@ -1006,21 +1017,20 @@ async fn gc_handler(
                 }
                 evicted = candidates
                     .iter()
-                    .map(|c| serde_json::json!({
-                        "hash": c.hash,
-                        "store_path": c.store_path,
-                        "unique_size": c.unique_size,
-                        "age_days": c.age_days,
-                        "score": c.score,
-                    }))
+                    .map(|c| {
+                        serde_json::json!({
+                            "hash": c.hash,
+                            "store_path": c.store_path,
+                            "unique_size": c.unique_size,
+                            "age_days": c.age_days,
+                            "score": c.score,
+                        })
+                    })
                     .collect();
             }
             Err(e) => {
                 tracing::error!(view = %view, error = %e, "eviction failed");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("eviction: {e}"),
-                )
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("eviction: {e}"))
                     .into_response();
             }
         }

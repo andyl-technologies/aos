@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -53,15 +53,13 @@ impl DrainState {
 /// Install a SIGTERM handler that initiates drain mode.
 /// Returns a future that resolves when the signal is received.
 pub async fn wait_for_shutdown_signal() {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     // Signal handler registration is a hard requirement for graceful shutdown.
     // Panicking here during startup is intentional — the server cannot operate
     // safely without signal handling.
-    let mut sigterm = signal(SignalKind::terminate())
-        .expect("failed to install SIGTERM handler");
-    let mut sigint = signal(SignalKind::interrupt())
-        .expect("failed to install SIGINT handler");
+    let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
 
     tokio::select! {
         _ = sigterm.recv() => {},
@@ -76,7 +74,7 @@ pub struct BuildState {
     pub drv: String,
     pub view: String,
     pub started_at: i64,
-    pub status: String,    // "queued", "building", "complete", "failed"
+    pub status: String, // "queued", "building", "complete", "failed"
     pub pid: Option<u32>,
     pub outputs: Option<Vec<String>>,
 }
@@ -120,7 +118,11 @@ impl BuildState {
     /// Remove build state file after completion.
     pub fn remove(&self, root: &std::path::Path) {
         let drv_hash = self.drv.rsplit('/').next().unwrap_or("unknown");
-        let path = root.join("views").join(&self.view).join("builds").join(format!("{drv_hash}.json"));
+        let path = root
+            .join("views")
+            .join(&self.view)
+            .join("builds")
+            .join(format!("{drv_hash}.json"));
         let _ = std::fs::remove_file(&path);
     }
 
