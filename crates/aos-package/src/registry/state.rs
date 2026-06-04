@@ -46,6 +46,24 @@ pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
     if let Some(token) = state.last_creation_token {
         state_lines.push_str(&format!("last_creation_token = {token}\n"));
     }
+    if let Some(ref floor) = state.floor {
+        state_lines.push_str(&format!("floor = \"{}\"\n", escape_toml_string(floor)));
+    }
+    if let Some(bucket) = state.bucket {
+        state_lines.push_str(&format!("bucket = {bucket}\n"));
+    }
+    if !state.retained.is_empty() {
+        state_lines.push_str("retained = [");
+        for (i, release) in state.retained.iter().enumerate() {
+            if i > 0 {
+                state_lines.push_str(", ");
+            }
+            state_lines.push('"');
+            state_lines.push_str(&escape_toml_string(release));
+            state_lines.push('"');
+        }
+        state_lines.push_str("]\n");
+    }
     if let Some(ref ts) = state.last_update {
         state_lines.push_str(&format!("last_update = \"{ts}\"\n"));
     }
@@ -74,6 +92,10 @@ pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))?;
 
     Ok(())
+}
+
+fn escape_toml_string(input: &str) -> String {
+    input.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Find the byte offset of the `[registry.state]` header in the file content.
@@ -291,6 +313,9 @@ public_key = "aos-core:Ed25519:base64keyhere"
 [registry.state]
 last_commit = "abc123def456"
 last_creation_token = 2026020003
+floor = "1.4.2"
+bucket = 183
+retained = ["1.0.0", "1.4.0", "1.4.2"]
 last_update = "2026-02-13T10:30:00Z"
 "#,
         )
@@ -299,6 +324,9 @@ last_update = "2026-02-13T10:30:00Z"
         let state = load_state(&path).unwrap().unwrap();
         assert_eq!(state.last_commit.unwrap(), "abc123def456");
         assert_eq!(state.last_creation_token.unwrap(), 2026020003);
+        assert_eq!(state.floor.unwrap(), "1.4.2");
+        assert_eq!(state.bucket.unwrap(), 183);
+        assert_eq!(state.retained, vec!["1.0.0", "1.4.0", "1.4.2"]);
         assert_eq!(state.last_update.unwrap(), "2026-02-13T10:30:00Z");
     }
 
@@ -349,6 +377,9 @@ public_key = "aos-core:Ed25519:base64keyhere"
         let state = RegistryState {
             last_commit: Some("deadbeef".into()),
             last_creation_token: Some(2026020003),
+            floor: Some("1.4.2".into()),
+            bucket: Some(183),
+            retained: vec!["1.0.0".into(), "1.4.0".into(), "1.4.2".into()],
             last_update: Some("2026-02-16T12:00:00Z".into()),
         };
         save_state(&path, &state).unwrap();
@@ -360,11 +391,17 @@ public_key = "aos-core:Ed25519:base64keyhere"
         assert!(content.contains("[registry.state]"));
         assert!(content.contains("last_commit = \"deadbeef\""));
         assert!(content.contains("last_creation_token = 2026020003"));
+        assert!(content.contains("floor = \"1.4.2\""));
+        assert!(content.contains("bucket = 183"));
+        assert!(content.contains("retained = [\"1.0.0\", \"1.4.0\", \"1.4.2\"]"));
 
         // Verify it round-trips through load_state.
         let loaded = load_state(&path).unwrap().unwrap();
         assert_eq!(loaded.last_commit.unwrap(), "deadbeef");
         assert_eq!(loaded.last_creation_token.unwrap(), 2026020003);
+        assert_eq!(loaded.floor.unwrap(), "1.4.2");
+        assert_eq!(loaded.bucket.unwrap(), 183);
+        assert_eq!(loaded.retained, vec!["1.0.0", "1.4.0", "1.4.2"]);
     }
 
     #[test]
@@ -388,6 +425,9 @@ last_update = "2026-01-01T00:00:00Z"
         let state = RegistryState {
             last_commit: Some("new_commit".into()),
             last_creation_token: Some(2026020003),
+            floor: Some("1.4.2".into()),
+            bucket: Some(183),
+            retained: vec!["1.4.2".into()],
             last_update: Some("2026-02-16T12:00:00Z".into()),
         };
         save_state(&path, &state).unwrap();
@@ -396,6 +436,8 @@ last_update = "2026-01-01T00:00:00Z"
         assert!(!content.contains("old_commit"));
         assert!(content.contains("new_commit"));
         assert!(content.contains("2026020003"));
+        assert!(content.contains("floor = \"1.4.2\""));
+        assert!(content.contains("bucket = 183"));
 
         // Verify user fields are preserved.
         assert!(content.contains("name = \"aos-core\""));
@@ -404,6 +446,9 @@ last_update = "2026-01-01T00:00:00Z"
         let loaded = load_state(&path).unwrap().unwrap();
         assert_eq!(loaded.last_commit.unwrap(), "new_commit");
         assert_eq!(loaded.last_creation_token.unwrap(), 2026020003);
+        assert_eq!(loaded.floor.unwrap(), "1.4.2");
+        assert_eq!(loaded.bucket.unwrap(), 183);
+        assert_eq!(loaded.retained, vec!["1.4.2"]);
     }
 
     #[test]
@@ -432,6 +477,7 @@ public_key = "test:Ed25519:abc"
             last_commit: Some("new".into()),
             last_creation_token: Some(2026020001),
             last_update: None,
+            ..RegistryState::default()
         };
         save_state(&path, &state).unwrap();
 
