@@ -35,7 +35,7 @@ Keep this file current as work lands.
 ## WS-03 Channels And Rollouts
 
 - [x] Add `registry::channel` module.
-- [ ] Add `channel` config field and `TrackingMode::Channel`.
+- [x] Add `channel` config field and `TrackingMode::Channel`.
 - [ ] Replace creation-token state with semver floor, bucket, and retained releases.
 - [x] Implement bucket selection, bucket hex rendering, and probe-forward order.
 - [x] Implement semver floor anti-rollback check.
