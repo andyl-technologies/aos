@@ -21,9 +21,9 @@ bucket selection + anti-rollback floor. It deliberately does **not** own:
 
 | Concern | Owner |
 |---|---|
-| sha256 bare repo, `info/refs`/`HEAD`/`http-alternates`, per-release object dirs | [`workstream-01-object-store.md`](./workstream-01-object-store.md) |
+| sha256 bare repo, `info/refs`/`HEAD`/`info/alternates`, per-release pack dirs | [`workstream-01-object-store.md`](./workstream-01-object-store.md) |
 | `git pack-objects` thin/full packs, the delta scheme, zstd | [`workstream-02-pack-delta-pipeline.md`](./workstream-02-pack-delta-pipeline.md) |
-| Signed-tag-object primitive, name-binding verification, `tag→tag→commit` chain, `valid_until` | [`workstream-04-signing-trust.md`](./workstream-04-signing-trust.md) |
+| Signed-tag-object primitive (pure signed pointer), name-binding verification, `tag→tag→commit` chain | [`workstream-04-signing-trust.md`](./workstream-04-signing-trust.md) |
 | Consumer resolution path (bucket → channel tag → semver tag → commit), delta walk, retention | [`workstream-05-consumer.md`](./workstream-05-consumer.md) |
 
 The boundaries are intentionally tight: this doc decides **which release a given
@@ -143,10 +143,13 @@ A channel `<name>` (e.g. `stable`, `testing`) consists of exactly two things:
    of the newest release any of its 256 partitions targets (§5). Unsigned
    convenience pointer; not part of the trust chain.
 2. **256 signed partition tag objects** at `/channel/<name>/00 .. /channel/<name>/ff`
-   (one byte (two hex digits, 00–ff)). Each is an annotated, Ed25519/SSH-signed git tag whose
+   (one byte (two hex digits, 00–ff)). Each is an annotated, Ed25519-signed git tag whose
    **tag-name field == `<name>`** (the channel name, *not* the partition index)
-   and which points at a **semver release tag** (`refs/tags/<semver>`). The
-   chain is `partition tag → semver tag → commit`.
+   and which points at a **semver release tag** (`refs/tags/<semver>`). A
+   partition tag is a **pure signed pointer**: the standard git tag fields
+   (`object`, `type`, the tag *name*, `tagger`) + the Ed25519 signature + an
+   optional freeform human message — no structured payload. The chain is
+   `partition tag → semver tag → commit`.
 
 ```
 /channel/stable/00  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
@@ -188,31 +191,31 @@ a committed/published state.
 
 ---
 
-## 4. Tag-message TOML (this workstream's slice)
+## 4. Tags carry no structured payload (this workstream's slice)
 
-Both partition tags and release tags carry a **TOML** message with *only*
-`[meta]` + optional `[[caches]]` (brief §14; full schema owned by
-[`../../registry/tag-metadata.md`](../../registry/tag-metadata.md)):
+Partition tags (and release tags) carry **no structured message** — no TOML, no
+`[meta]`, no `schema` field, no `valid_until`, no `[[caches]]`. A signed tag is a
+**pure signed pointer**: the standard git tag fields (`object`, `type`, the tag
+*name*, `tagger`) + the Ed25519 signature + an *optional* freeform human message.
+The tag *object* carries the signature and the name binding; the ref namespace
+carries pointers; the object store carries everything else.
 
-```toml
-[meta]
-schema      = 1                      # integer schema version
-valid_until = "2026-06-30T00:00:00Z" # channels: FRESHNESS (paired with low CDN TTL)
+**Freshness** for partition tags is therefore **out-of-band**, not an in-band
+`valid_until` (§6.3, §7.3): it is the low `/channel/**` CDN TTL + the consumer's
+own max-staleness policy + the monotonic anti-rollback floor. Trade-off: this is
+weaker than an in-band signed expiry against a frozen-but-validly-signed mirror —
+a mirror can replay an old (still-correctly-signed) partition pointer, and only
+the consumer's max-staleness policy and floor catch it.
 
-[[caches]]
-url      = "./nar"                   # relative (same origin) OR absolute
-priority = 100
-```
+**Cache config is client-side**, never tag-embedded. The Nix binary-cache / NAR
+substituter location is the *consumer's* local registry config or the origin
+itself — it is **not** advertised in signed tags. The origin MAY serve the stock
+nix superset (`nix-cache-info`, `<storehash>.narinfo`, `nar/…`); narinfo signing
+reuses the same one Ed25519 key.
 
-For **partition** tags, `valid_until` is the **freshness** knob: a short window
-that, paired with the low `/channel/**` CDN TTL, bounds how stale a rollout
-pointer a client will accept. (For *release* tags the same field is a generous
-key-rotation lifetime — see [`workstream-04`](./workstream-04-signing-trust.md).)
-
-**Removed** top-level tables (must never appear): `[latest]`, `[components]`,
-`[capabilities]`, `[channels]`, `[[bundles]]`, `[[deltas]]`, `pubkey`,
-`[signature]`. The tag *object* carries the signature; the ref namespace carries
-pointers; the object store carries everything else.
+**Removed** structures (must never appear in a tag): `[meta]`, `schema`,
+`valid_until`, `[[caches]]`, `[latest]`, `[components]`, `[capabilities]`,
+`[channels]`, `[[bundles]]`, `[[deltas]]`, `pubkey`, `[signature]`.
 
 ---
 
@@ -307,8 +310,8 @@ hard precondition before this workstream's output is acted on.
 ### 6.3 Probe-forward fallback
 
 If partition `b` is unusable — HTTP 404, signature invalid, name mismatch, or
-`valid_until` expired (stale) — the client **may** deterministically probe the
-next partition:
+stale past the consumer's max-staleness policy — the client **may**
+deterministically probe the next partition:
 
 ```
 for i in 0..256:
@@ -524,9 +527,12 @@ to `1.2.0`.
 - **Probe-forward fairness skew:** hosts whose assigned partition is briefly
   missing advance early. Acceptable, but a flapping partition could systematically
   skew a cohort — bound by the "always 256" publish invariant.
-- **Partition `valid_until` window length** (brief §11, §16.5): too short ⇒
-  spurious staleness + probe-forward storms; too long ⇒ slow rollback of trust.
-  Must be co-tuned with the low `/channel/**` CDN TTL.
+- **Partition freshness tuning** (brief §11, §16.5): freshness is out-of-band
+  (low `/channel/**` CDN TTL + consumer max-staleness policy + the anti-rollback
+  floor), not an in-band signed `valid_until`. Too aggressive a max-staleness ⇒
+  spurious staleness + probe-forward storms; too lax ⇒ a frozen-but-validly-signed
+  mirror can replay a stale partition pointer for longer (caught only by the floor).
+  The consumer's max-staleness must be co-tuned with the low `/channel/**` CDN TTL.
 - **Command surface** (brief §16.4): whether `apr channel advance` is standalone
   or folded into a single `apr release` / `apr publish` pipeline.
 - **State location:** host-scoped bucket vs per-registry floor — confirm the
@@ -538,7 +544,6 @@ to `1.2.0`.
 
 - Reference (target): [`../../registry/versioning-and-channels.md`](../../registry/versioning-and-channels.md) ·
   [`../../registry/signing-and-trust.md`](../../registry/signing-and-trust.md) ·
-  [`../../registry/tag-metadata.md`](../../registry/tag-metadata.md) ·
   [`../../registry/http-layout.md`](../../registry/http-layout.md) ·
   [`../../registry/publishing.md`](../../registry/publishing.md) ·
   [`../../registry/architecture.md`](../../registry/architecture.md) ·

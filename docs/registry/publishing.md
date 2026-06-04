@@ -35,12 +35,12 @@ packs, thin deltas, and zstd-compressing — and every consumer benefits.
 A publish has two strictly-ordered halves that must never be confused:
 
 1. **Materialize immutable release objects.** Build the release commit, create
-   and sign the semver tag, generate the full/delta packs, write loose objects,
-   and regenerate the per-release `objects/info/*`. Everything here is
-   **content-addressed and immutable** — once a sha256 object exists it never
+   and sign the semver tag, generate the full/delta packs, write loose objects to
+   the **root** `/objects/`, and regenerate the per-release pack indices. Everything
+   here is **content-addressed and immutable** — once a sha256 object exists it never
    changes meaning.
 2. **Flip the mutable pointers.** Regenerate the repo-root `info/refs` / `HEAD` /
-   `objects/info/http-alternates`, bump `refs/heads/<channel>` to the frontier,
+   `objects/info/alternates`, bump `refs/heads/<channel>` to the frontier,
    and advance the signed `/channel/<name>/<00..ff>` partition tags. These are the
    *only* mutable surfaces, and they are published **last**, after every object
    they can possibly reference already exists at the origin.
@@ -51,11 +51,11 @@ A publish has two strictly-ordered halves that must never be confused:
    │ 1  build release commit                          │
    │ 2  create + sign semver tag  (refs/tags/<semver>)│
    │ 3  pack-objects → full + thin deltas → zstd      │   immutable, content-addressed
-   │ 4  write loose objects under /release/X/Y/P/     │──────────────────────────┐
-   │ 5  per-release update-server-info                │                          │
+   │ 4  write loose objects under root /objects/      │──────────────────────────┐
+   │ 5  per-release pack index (info/packs)           │                          │
    ├──────────────────────────────────────────────────┤   pointers, flipped LAST │
    │ 6  root update-server-info (info/refs, HEAD)      │                          ▼
-   │ 7  regen objects/info/http-alternates            │                  ┌────────────────┐
+   │ 7  regen objects/info/alternates                 │                  ┌────────────────┐
    │ 8  bump refs/heads/<channel> → frontier          │                  │  HTTP / CDN     │
    │ 9  advance /channel/<name>/00..ff partition tags  │─────────────────▶│  origin (dumb   │
    │ 10 upload with per-path CDN TTLs                  │                  │  git static)    │
@@ -80,7 +80,7 @@ new one — never a partition tag pointing at a commit whose objects are missing
 Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml` +
 `closures/<hash>`) and distributes via **git bundles**. None of the TARGET
 git-native pipeline (sha256 object store, signed semver/partition tags, packs,
-deltas, `update-server-info`, `http-alternates`, upload) exists yet.
+deltas, `update-server-info`, `info/alternates`, upload) exists yet.
 
 The commands relevant to a release, in workflow order:
 
@@ -117,7 +117,7 @@ to a mirror.
 > **TARGET shift.** The TARGET drops git **bundles** entirely (a bundle carries
 > refs and prerequisites; refs are replaced by signed tag objects, and the object
 > store is served loose + as conventionally-named packs). Producing the dumb-HTTP
-> object store with `pack-objects` + `update-server-info` + `http-alternates`
+> object store with `pack-objects` + `update-server-info` + `info/alternates`
 > replaces `apr bundle` wholesale (design brief §10, §15). The rest of this
 > document is TARGET.
 
@@ -141,14 +141,14 @@ It produces, under [the HTTP/object layout](./http-layout.md):
 /release/<major>/<minor>/<patch[-prerelease][+build]>/
   objects/
     info/packs                       ← lists this release's self-contained pack(s)
-    info/http-alternates             ← this release's view of the alternates chain
     pack/pack-<sha256>.pack (+ .idx)  ← full pack (only at X.Y.0 anchors)
     pack/delta-<from-semver>.pack[.zst] ← THIN deltas (AOS-only; NOT in info/packs)
-    <xx>/<62-hex>                     ← this release's new loose objects
+                                        (PACK-ONLY: no loose <xx>/<…>, no info/alternates)
+/objects/<xx>/<62-hex>                ← ALL loose objects (every release), centralized at root
 refs/tags/<semver>                    ← signed tag → release commit          [via info/refs]
 /channel/<name>/<00..ff>              ← signed partition tags advanced per the rollout plan
 refs/heads/<channel>                  ← branch head bumped to the frontier
-/objects/info/{packs,http-alternates} ← repo-root indices regenerated
+/objects/info/{packs,alternates}     ← repo-root indices regenerated
 /info/refs, /HEAD                     ← regenerated via update-server-info
 ```
 
@@ -167,23 +167,12 @@ The third `/release` path segment is **everything after `major.minor`** — e.g.
    (`git init --object-format=sha256`; design brief §8). The release commit is
    what `refs/tags/<semver>` will point at and what every pack is computed over.
 
-2. **Create the annotated, signed semver tag.** An **annotated git tag** carrying
-   an SSH-format Ed25519 signature, whose message is the TOML described in
-   [tag-metadata.md](./tag-metadata.md):
-
-   ```toml
-   [meta]
-   schema      = 1
-   valid_until = "2027-06-30T00:00:00Z"   # releases: generous (must not fight long release TTL)
-
-   [[caches]]
-   url      = "https://cache.example.com"   # absolute external mirror
-   priority = 1000                          # HIGHER priority = preferred (tried first)
-
-   [[caches]]
-   url      = "./nar"                        # relative (same origin) fallback
-   priority = 100                           # lower priority = later fallback
-   ```
+2. **Create the annotated, signed semver tag.** An **annotated git tag** that is a
+   **pure signed pointer** — the standard git tag fields (`object`, `type`, the tag
+   **name**, `tagger`) plus an SSH-format Ed25519 signature on the tag *object*, plus
+   an **optional freeform human message**. The tag carries **no structured payload**:
+   no `[meta]`, no `schema`, no `valid_until`, no `[[caches]]`. Cache locations and
+   freshness are **not** advertised in the tag (see §B/§C of [signing-and-trust.md](./signing-and-trust.md)).
 
    The tag **name** is the bare semver (`1.2.0`), the signature lives on the tag
    *object*, and the embedded tag-name field is bound to the serving path during
@@ -192,11 +181,18 @@ The third `/release` path segment is **everything after `major.minor`** — e.g.
    from `apr sign` (`git`-resolved `user.signingkey` + `gpg.format = ssh`;
    `security.rs` `parse_signing_key` `name:Ed25519:<base64>`).
 
-Release `valid_until` is the **generous** signature-trust / key-rotation lifetime
-(design brief §11); it is intentionally long because releases are immutable and
-carry a long CDN TTL — a tight expiry here would defeat that. Contrast the
-**channel** partition tags' `valid_until`, which is the *freshness* knob paired
-with the low `/channel/**` TTL.
+The signing key is the **generous** signature-trust / key-rotation lifetime
+(design brief §11); release tags carry no in-band expiry, which fits releases being
+immutable and carrying a long CDN TTL. Freshness is enforced out of band — low CDN
+TTL on `/channel` (and `info/refs`, `objects/info`), the consumer's own
+max-staleness policy, and the monotonic anti-rollback floor — rather than a signed
+`valid_until` inside the tag. The trade-off: this is weaker than an in-band signed
+expiry against a frozen-but-validly-signed mirror.
+
+The Nix binary-cache / NAR substituter location is **client-side** configuration on
+the consumer (its local registry config) or the origin itself — never embedded in a
+signed tag. The origin **MAY** serve `nix-cache-info` / `<storehash>.narinfo` / `nar`
+as the stock-nix superset; narinfo signing reuses the one Ed25519 key.
 
 ---
 
@@ -281,21 +277,24 @@ dictionary** across a release line's small delta packs is an optional further wi
 
 ---
 
-## 6. Step 4–5 — loose objects + per-release `update-server-info`
+## 6. Step 4–5 — loose objects + per-release pack index
 
 **TARGET.**
 
-- **Write loose objects.** **ALL** objects exist loose under
-  `/objects/<xx>/<62-hex>` (the sha256 2/62 split) — this is the guaranteed
-  completeness fallback; packs are an optimization on top (design brief §8). A
-  release's *new* loose objects live under its own
-  `/release/<major>/<minor>/<patch>/objects/<xx>/<…>`, so the per-release object
-  dir is self-describing.
+- **Write loose objects to the root.** **ALL** objects (every release) exist loose
+  under the single root `/objects/<xx>/<62-hex>` (the sha256 2/62 split) — this is
+  the guaranteed completeness fallback; packs are an optimization on top
+  (design brief §8). Loose objects are **centralized at the root only**; the
+  per-release `/release/<major>/<minor>/<patch>/objects/` dirs are **pack-only**
+  (they hold `info/packs` + `pack/*` and contain **no** loose `<xx>/<…>` objects and
+  **no** per-release `info/alternates`).
 
-- **Per-release `update-server-info`.** Regenerate `objects/info/packs` (listing
-  this release's self-contained full pack only — never the thin deltas) for the
-  release's object dir. This makes the per-release directory a valid dumb-HTTP
-  object store that the root `http-alternates` chain can stitch together.
+- **Per-release pack index.** Regenerate the per-release `objects/info/packs`
+  (listing this release's self-contained full pack only — never the thin deltas) for
+  the release's pack dir. This makes the per-release directory a valid dumb-HTTP
+  **pack source** that the root `info/alternates` chain can stitch together for pack
+  discovery — object completeness itself comes from the centralized root
+  `/objects/`.
 
 Because release objects are content-addressed sha256, **writing the same object
 twice is idempotent** — a re-run or a concurrent publisher writing the same bytes
@@ -303,7 +302,7 @@ is a no-op. This is what makes step 3/4 safe to retry freely (§11).
 
 ---
 
-## 7. Step 6–7 — root `update-server-info` + `http-alternates`
+## 7. Step 6–7 — root `update-server-info` + `info/alternates`
 
 **TARGET.** With every immutable object in place, regenerate the *repo-root*
 mutable indices that make the whole thing a valid dumb-HTTP bare repo:
@@ -317,24 +316,29 @@ mutable indices that make the whole thing a valid dumb-HTTP bare repo:
    `ref: refs/heads/stable`) so a default clone lands on the default channel
    branch.
 
-3. **`/objects/info/http-alternates`** is regenerated to list **every**
-   `/release/*/objects/` directory, **newest → oldest**. Git's dumb fetcher
-   follows it, resolving the distributed per-release object stores as one logical
-   store; this file also doubles as the **full release index** (design brief §8).
-   Use `http-alternates` (URL-reachable), not `alternates`; an `info/alternates`
-   readable mirror is optional (open question §16.6).
+3. **`/objects/info/alternates`** is regenerated to list **every**
+   `/release/*/objects/` directory, **newest → oldest**, as **relative** paths.
+   Each entry is `../release/<M>/<m>/<patch…>/objects/` — git resolves relative
+   alternates against the repo's `objects/` URL, so the single `../` strips the
+   `objects` segment to reach the repo root (therefore the correct depth is **one**
+   `../`, not two). The file is **host-independent** — byte-identical across
+   CDN / mirror / localhost, with no hostname baked in. The dumb-HTTP walker reads
+   `http-alternates` then falls back to `alternates`, so this one relative
+   `info/alternates` works for **HTTP and local-FS** alike. Because loose objects
+   are centralized at the root `/objects/`, the alternates now serve **pack
+   discovery + the release index**, not object completeness (design brief §8).
 
 ```
-# /objects/info/http-alternates  (newest → oldest)
-../../release/1/2/0/objects/
-../../release/1/1/3/objects/
-../../release/1/1/0/objects/
-../../release/1/0/0/objects/
+# /objects/info/alternates  (newest → oldest, relative, host-independent)
+../release/1/2/0/objects/
+../release/1/1/3/objects/
+../release/1/1/0/objects/
+../release/1/0/0/objects/
 …
 ```
 
 These four files (`info/refs`, `HEAD`, `objects/info/packs`,
-`objects/info/http-alternates`) are **mutable** and therefore **low TTL** (§9).
+`objects/info/alternates`) are **mutable** and therefore **low TTL** (§9).
 
 ---
 
@@ -407,7 +411,7 @@ upload (immutable first, pointers last) is the atomicity discipline of §11.
 |---|---|---|
 | `/objects/<xx>/<…>` (loose), `/release/**/pack/*` | immutable (content-addressed) | **very high** (`MAY`) |
 | `/release/**` (the whole subtree) | immutable after publish | **long** (`MAY`) |
-| `/objects/info/**` (`packs`, `http-alternates`), per-release `objects/info/**` | mutable on publish | **low** (`MUST`) |
+| `/objects/info/**` (`packs`, `alternates`), per-release `objects/info/**` | mutable on publish | **low** (`MUST`) |
 | `/info/refs`, `/HEAD` | mutable on publish | **low** (`MUST`) |
 | `/channel/**` | mutable on rollout | **low** (`MUST`) — fast rollout updates |
 
@@ -453,11 +457,11 @@ objects.
 ```
   STEP   SURFACE                              MUTABILITY        SAFETY
   ────   ───────                              ──────────        ──────
-  1–4    release commit, semver tag,          immutable (CA)    idempotent;
-         packs, deltas, loose objects                           retry freely, any order
-  5      per-release objects/info/*           low-TTL index     regenerated from immutable set
+  1–4    release commit, semver tag, packs,   immutable (CA)    idempotent;
+         deltas, root /objects loose objects                    retry freely, any order
+  5      per-release objects/info/packs       low-TTL index     regenerated from immutable set
   6–7    info/refs, HEAD,                      MUTABLE pointer   flipped only AFTER 1–5 exist
-         objects/info/http-alternates
+         objects/info/alternates
   8      refs/heads/<channel> (frontier)       MUTABLE pointer   flipped after release objects
   9      /channel/<name>/00..ff partition tags MUTABLE pointer   flipped LAST (rollout gate)
 ```
@@ -528,24 +532,24 @@ apr bundle --delta-from 2026.05.0 --tag 2026.06.0     # delta bundle    (registr
 ```
 
 Everything after `apr push` is incomplete: the operator hand-copies bundles to a
-mirror; there is no pack/delta/zstd, no `update-server-info`, no `http-alternates`,
+mirror; there is no pack/delta/zstd, no `update-server-info`, no `info/alternates`,
 no channel/partition tags, and no upload.
 
 ### 12.2 TARGET (the §10/§4/§6 pipeline, e.g. a future `apr release`)
 
 ```
-build release commit  →  create + sign semver tag (refs/tags/<semver>, TOML message)
+build release commit  →  create + sign semver tag (refs/tags/<semver>, pure signed pointer + optional message)
         │
         ▼  (immutable, content-addressed — idempotent, any order)
 pack-objects:  full pack at X.Y.0  +  thin delta-<from>.pack(s)   [--no-reuse-* --window=350 --depth=50 --compression=0]
         →  zstd --ultra -22 --long=27 each .pack
-        →  write loose objects under /release/X/Y/P/objects/
-        →  per-release git update-server-info  (objects/info/packs: full pack only)
+        →  packs under /release/X/Y/P/objects/pack/  ;  loose objects under root /objects/
+        →  per-release pack index  (objects/info/packs: full pack only)
         │
         ▼  (mutable pointers — flipped LAST, after every object exists)
 root git update-server-info  (info/refs, objects/info/packs)
 write HEAD = ref: refs/heads/<default-channel>
-regen /objects/info/http-alternates  (all /release/*/objects, newest→oldest)
+regen /objects/info/alternates  (all /release/*/objects, newest→oldest, relative one-"../")
 bump refs/heads/<channel> → frontier
 advance /channel/<name>/00..ff  (N partitions → new semver tag; rest stay on prior)  [signed; name-bound]
         │
@@ -567,12 +571,11 @@ open question (design brief §16.4;
 - [README.md](./README.md) — registry doc index and overview.
 - [architecture.md](./architecture.md) — git-repo-over-dumb-HTTP; superset of git and Nix; asymmetric-cost philosophy.
 - [current-state.md](./current-state.md) — full as-is grounding (the bundle/`creation_token` code).
-- [http-layout.md](./http-layout.md) — the HTTP/object layout, CDN TTLs, `info/refs`/`HEAD`/`http-alternates`.
+- [http-layout.md](./http-layout.md) — the HTTP/object layout, CDN TTLs, `info/refs`/`HEAD`/`info/alternates`.
 - [versioning-and-channels.md](./versioning-and-channels.md) — semver, channels-as-branches, frontier, the 256-partition rollout, bucket selection, anti-rollback.
 - [packs-and-deltas.md](./packs-and-deltas.md) — the delta-scheme graph, client resolution + retention, `index-pack --fix-thin`, zstd.
-- [tag-metadata.md](./tag-metadata.md) — the channel/release tag-message TOML schema (`[meta]` + `[[caches]]`).
-- [signing-and-trust.md](./signing-and-trust.md) — signed tag objects, name-binding, `tag→tag→commit`, sha256, unsigned branch refs, `valid_until`.
-- [nix-cache-compatibility.md](./nix-cache-compatibility.md) — the Nix binary-cache superset via relative `[[caches]]`.
+- [signing-and-trust.md](./signing-and-trust.md) — signed tag objects (pure signed pointers), name-binding, `tag→tag→commit`, sha256, unsigned branch refs.
+- [nix-cache-compatibility.md](./nix-cache-compatibility.md) — the Nix binary-cache superset via client-side cache config.
 - [apt-comparison.md](./apt-comparison.md) — git-native + dumb-HTTP vs APT signed-flat-file / `pool` / phased rollout.
 - Plan: [design-brief.md](../plans/registry/design-brief.md) (§10, §4, §6 authoritative for this doc),
   [gap-analysis.md](../plans/registry/gap-analysis.md),
