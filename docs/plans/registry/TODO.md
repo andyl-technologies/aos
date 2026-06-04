@@ -20,8 +20,8 @@ Keep this file current as work lands.
 - [x] Implement `git update-server-info` wrapper.
 - [x] Add focused object-store unit tests.
 - [x] Wire producer create path to sha256 object-store helpers.
-- [ ] Wire publish path to object-store refresh/alternates helpers.
-- [ ] Add dumb-HTTP clone integration coverage.
+- [x] Wire publish path to object-store refresh/alternates helpers.
+- [x] Add dumb-HTTP clone integration coverage.
 
 ## WS-02 Packs And Deltas
 
