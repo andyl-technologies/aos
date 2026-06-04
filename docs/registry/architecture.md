@@ -342,7 +342,9 @@ and flipped last. Full producer workflow, atomicity, and concurrency are in
 > `objects/info/alternates`), but `apr bundle` only runs
 > `git bundle create` into a local `bundles/` dir and its `_update_manifest`
 > parameter is **dead code** (`registry_ops.rs:1718`). There is **no** pack/delta
-> pipeline, no partition machinery, and no upload. The gaps map to workstreams in
+> pipeline and no upload. `apr channel init/advance/status` now writes the
+> partition files and frontier branch, but consumer rollout resolution and
+> upload integration remain gaps. The gaps map to workstreams in
 > [`gap-analysis.md`](../plans/registry/gap-analysis.md).
 
 ### 6.2 Rollout (publisher-controlled, fix-forward)

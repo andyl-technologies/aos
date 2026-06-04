@@ -43,7 +43,7 @@ Keep this file current as work lands.
 - [x] Implement semver floor anti-rollback check.
 - [x] Implement partition map/frontier helpers.
 - [x] Add focused channel/state unit tests.
-- [ ] Add `apr channel init/advance/status` command surface.
+- [x] Add `apr channel init/advance/status` command surface.
 
 ## WS-04 Signing And Trust
 
