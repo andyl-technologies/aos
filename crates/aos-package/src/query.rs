@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
-use super::profile::meta::list_meta;
 use super::profile::Profile;
-use super::registry::{store_path_hash, Registry, RegistrySet};
+use super::profile::meta::list_meta;
+use super::registry::{Registry, RegistrySet, store_path_hash};
 use super::sysroot_lock;
 use super::types::{InstalledMeta, PackageMeta};
 use aos_core::output::{OutputMode, Printer};
@@ -94,9 +94,7 @@ pub async fn search(
         printer.json(&serde_json::json!(json_results));
     } else {
         for (name, registry, version, description) in &results {
-            printer.plain(&format!(
-                "{name}/{registry} {version} - {description}"
-            ));
+            printer.plain(&format!("{name}/{registry} {version} - {description}"));
         }
     }
 
@@ -108,11 +106,7 @@ pub async fn search(
 // ---------------------------------------------------------------------------
 
 /// Display detailed information about a package.
-pub async fn show(
-    config: &ApmConfig,
-    package: &str,
-    printer: &Printer,
-) -> Result<()> {
+pub async fn show(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
 
     let (reg, meta) = registries
@@ -164,10 +158,7 @@ pub async fn show(
         }
         printer.kv("License", &meta.license);
         printer.kv("Platform", &meta.platform);
-        printer.kv(
-            "Installed",
-            if is_installed { "yes" } else { "no" },
-        );
+        printer.kv("Installed", if is_installed { "yes" } else { "no" });
         printer.kv("Store path", &meta.store_path);
         printer.kv("NAR size", &nar_size_str);
         if dep_names.is_empty() {
@@ -191,7 +182,9 @@ pub async fn show(
                     .references
                     .iter()
                     .cloned()
-                    .chain(std::iter::once(store_path_hash(&meta.store_path).to_string()))
+                    .chain(std::iter::once(
+                        store_path_hash(&meta.store_path).to_string(),
+                    ))
                     .collect();
                 let violations =
                     sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
@@ -233,11 +226,7 @@ pub async fn list(
     // Build a map: package_name -> InstalledMeta (for packages with apm section).
     let installed_by_name: HashMap<String, &InstalledMeta> = meta_list
         .iter()
-        .filter_map(|m| {
-            m.apm
-                .as_ref()
-                .map(|apm| (apm.name.clone(), m))
-        })
+        .filter_map(|m| m.apm.as_ref().map(|apm| (apm.name.clone(), m)))
         .collect();
 
     // Pre-load sysroot references and registry lookup for sysroot-lock checks.
@@ -310,13 +299,12 @@ pub async fn list(
                         .references
                         .iter()
                         .cloned()
-                        .chain(std::iter::once(store_path_hash(&meta.store_path).to_string()))
+                        .chain(std::iter::once(
+                            store_path_hash(&meta.store_path).to_string(),
+                        ))
                         .collect();
-                    let violations = sysroot_lock::check_sysroot_lock(
-                        sysroot_refs,
-                        &pkg_refs,
-                        &registry_lookup,
-                    );
+                    let violations =
+                        sysroot_lock::check_sysroot_lock(sysroot_refs, &pkg_refs, &registry_lookup);
                     violations.iter().map(|v| v.name.clone()).collect()
                 } else {
                     Vec::new()
@@ -394,9 +382,7 @@ pub async fn list(
             if status.is_empty() {
                 printer.plain(&format!("{name}/{registry} {version}"));
             } else {
-                printer.plain(&format!(
-                    "{name}/{registry} {version} [{status}]"
-                ));
+                printer.plain(&format!("{name}/{registry} {version} [{status}]"));
             }
         }
     }
@@ -516,8 +502,8 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
     use crate::registry::Registry;
+    use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
     use crate::types::{ApmMeta, InstalledMeta, RegistryConfig};
 
     /// Helper: create a registry in a temp directory from TOML test fixtures.

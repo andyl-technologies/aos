@@ -82,9 +82,8 @@ fn clear_nar_cache(cache_dir: &Path) -> Result<u64> {
         let meta = entry.metadata()?;
         if meta.is_file() {
             freed += meta.len();
-            std::fs::remove_file(entry.path()).with_context(|| {
-                format!("removing cached file {}", entry.path().display())
-            })?;
+            std::fs::remove_file(entry.path())
+                .with_context(|| format!("removing cached file {}", entry.path().display()))?;
         }
     }
 
