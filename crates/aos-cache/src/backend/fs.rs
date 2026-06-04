@@ -122,9 +122,7 @@ impl CacheBackend for FsBackend {
 
         let info_path = self.root.join("nix-cache-info");
         if !info_path.exists() {
-            let content = format!(
-                "StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n"
-            );
+            let content = format!("StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n");
             let url = self.file_url("nix-cache-info");
             let req = TransferRequest::put(&url, content.into_bytes());
             self.engine

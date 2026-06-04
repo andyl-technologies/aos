@@ -69,8 +69,7 @@ impl S3Protocol {
     ///
     /// Format: `s3://bucket/key/path`
     fn parse_url(url: &str) -> Result<(String, String)> {
-        let parsed = url::Url::parse(url)
-            .with_context(|| format!("invalid S3 URL: {url}"))?;
+        let parsed = url::Url::parse(url).with_context(|| format!("invalid S3 URL: {url}"))?;
 
         let bucket = parsed
             .host_str()
@@ -103,8 +102,7 @@ impl S3Protocol {
                 if let Ok(metadata) = tokio::fs::metadata(path).await {
                     let existing_size = metadata.len();
                     if existing_size > 0 {
-                        get_builder =
-                            get_builder.range(format!("bytes={}-", existing_size));
+                        get_builder = get_builder.range(format!("bytes={}-", existing_size));
                         resume_offset = existing_size;
                         resumed = true;
                     }
@@ -232,8 +230,7 @@ impl S3Protocol {
                 if let Ok(metadata) = tokio::fs::metadata(path).await {
                     let existing_size = metadata.len();
                     if existing_size > 0 {
-                        get_builder =
-                            get_builder.range(format!("bytes={}-", existing_size));
+                        get_builder = get_builder.range(format!("bytes={}-", existing_size));
                         resume_offset = existing_size;
                         resumed = true;
                     }
@@ -270,10 +267,7 @@ impl S3Protocol {
                         buf.truncate(n);
                         Some((Ok(Bytes::from(buf)), reader))
                     }
-                    Err(e) => Some((
-                        Err(anyhow::anyhow!("reading S3 object chunk: {e}")),
-                        reader,
-                    )),
+                    Err(e) => Some((Err(anyhow::anyhow!("reading S3 object chunk: {e}")), reader)),
                 }
             },
         ));
@@ -379,12 +373,7 @@ impl S3Protocol {
         let client = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
 
-        let resp = client
-            .head_object()
-            .bucket(&bucket)
-            .key(&key)
-            .send()
-            .await;
+        let resp = client.head_object().bucket(&bucket).key(&key).send().await;
 
         match resp {
             Ok(output) => {
@@ -491,9 +480,7 @@ impl S3Protocol {
                 .body(chunk.into())
                 .send()
                 .await
-                .with_context(|| {
-                    format!("S3 UploadPart {bucket}/{key} part {part_number}")
-                })?;
+                .with_context(|| format!("S3 UploadPart {bucket}/{key} part {part_number}"))?;
 
             let etag = upload_resp
                 .e_tag()

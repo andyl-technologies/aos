@@ -20,11 +20,7 @@ pub struct SftpBackend {
 }
 
 impl SftpBackend {
-    pub fn new(
-        url: &str,
-        path: &str,
-        engine: Arc<TransferEngine>,
-    ) -> Self {
+    pub fn new(url: &str, path: &str, engine: Arc<TransferEngine>) -> Self {
         // Strip the path from the original URL to get the base.
         let base_url = url
             .strip_suffix(path)
@@ -108,10 +104,7 @@ impl CacheBackend for SftpBackend {
     }
 
     async fn query_missing(&self, store_hashes: &[&str]) -> Result<Vec<String>> {
-        let urls: Vec<String> = store_hashes
-            .iter()
-            .map(|h| self.narinfo_url(h))
-            .collect();
+        let urls: Vec<String> = store_hashes.iter().map(|h| self.narinfo_url(h)).collect();
         let url_refs: Vec<&str> = urls.iter().map(String::as_str).collect();
         let results = self.engine.head_batch(&url_refs).await;
 
@@ -139,9 +132,7 @@ impl CacheBackend for SftpBackend {
 
         // Create root and nar directories by writing empty marker files,
         // since SFTP protocol in aos-net creates parent dirs automatically.
-        let content = format!(
-            "StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n"
-        );
+        let content = format!("StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n");
         let req = TransferRequest::put(&info_url, content.into_bytes());
         self.engine
             .execute(req)

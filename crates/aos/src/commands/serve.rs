@@ -30,8 +30,7 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
         .with_context(|| format!("creating {}", meta_dir.display()))?;
     let token_db_path = meta_dir.join("tokens.db");
     printer.info(&format!("Opening token DB at {}", token_db_path.display()));
-    let token_store =
-        tokens::TokenStore::open(&token_db_path).context("opening token database")?;
+    let token_store = tokens::TokenStore::open(&token_db_path).context("opening token database")?;
 
     // Load or generate the JWT signing secret.
     let jwt_secret = load_jwt_secret(&cfg).context("loading JWT secret")?;
@@ -71,7 +70,10 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
     // Load narinfo signing key (if configured).
     let signer = sign::NarInfoSigner::load(cfg.signing.secret_key_file.as_deref())?;
     if signer.is_configured() {
-        printer.info(&format!("Signing narinfo with key: {}", signer.key_name().unwrap_or("unknown")));
+        printer.info(&format!(
+            "Signing narinfo with key: {}",
+            signer.key_name().unwrap_or("unknown")
+        ));
     }
 
     let build_mgr = Arc::new(build::BuildManager::new());
@@ -109,7 +111,9 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
         eprintln!("Shutdown signal received, draining...");
         drain_state.start_drain();
         state.build_mgr.broadcast_drain();
-        let completed = drain_state.wait_for_completion(Duration::from_secs(75)).await;
+        let completed = drain_state
+            .wait_for_completion(Duration::from_secs(75))
+            .await;
         if completed {
             eprintln!("All builds complete, shutting down");
         } else {
@@ -130,22 +134,24 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
             .unwrap_or_else(tls::default_key_path);
 
         let acceptor = if cert_path.exists() && key_path.exists() {
-            printer.info(&format!(
-                "Loading TLS cert from {}",
-                cert_path.display()
-            ));
-            tls::acceptor_from_pem(&cert_path, &key_path)
-                .context("loading TLS certificates")?
+            printer.info(&format!("Loading TLS cert from {}", cert_path.display()));
+            tls::acceptor_from_pem(&cert_path, &key_path).context("loading TLS certificates")?
         } else {
             printer.info("Generating self-signed TLS certificate");
             tls::generate_self_signed(&cert_path, &key_path, &cfg.tls.san)
                 .context("generating self-signed certificate")?
         };
 
-        printer.success(&format!("Serving on https://{} (h2 + http/1.1)", cfg.listen));
+        printer.success(&format!(
+            "Serving on https://{} (h2 + http/1.1)",
+            cfg.listen
+        ));
         Some(acceptor)
     } else {
-        printer.success(&format!("Serving on http://{} (h2c + http/1.1)", cfg.listen));
+        printer.success(&format!(
+            "Serving on http://{} (h2c + http/1.1)",
+            cfg.listen
+        ));
         None
     };
 

@@ -4,12 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::{FromRequestParts, State},
-    http::{header, request::Parts, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    extract::{FromRequestParts, State},
+    http::{StatusCode, header, request::Parts},
+    response::{IntoResponse, Response},
 };
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
 use crate::routes::AppState;
@@ -109,11 +109,7 @@ impl FromRequestParts<Arc<AppState>> for AuthClaims {
         )
         .map_err(|e| {
             tracing::warn!(error = %e, "JWT validation failed");
-            (
-                StatusCode::UNAUTHORIZED,
-                format!("invalid token: {e}"),
-            )
-                .into_response()
+            (StatusCode::UNAUTHORIZED, format!("invalid token: {e}")).into_response()
         })?;
 
         Ok(AuthClaims(token_data.claims))
@@ -168,11 +164,7 @@ impl FromRequestParts<Arc<AppState>> for AuthResult {
         )
         .map_err(|e| {
             tracing::warn!(error = %e, "JWT validation failed (anonymous-capable endpoint)");
-            (
-                StatusCode::UNAUTHORIZED,
-                format!("invalid token: {e}"),
-            )
-                .into_response()
+            (StatusCode::UNAUTHORIZED, format!("invalid token: {e}")).into_response()
         })?;
 
         Ok(AuthResult::Authenticated(token_data.claims))

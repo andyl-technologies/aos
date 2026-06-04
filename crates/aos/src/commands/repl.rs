@@ -7,10 +7,7 @@ use aos_core::output::Printer;
 pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
     let nix_file = nix.root().join("default.nix");
 
-    printer.info(&format!(
-        "Starting Nix REPL with {}",
-        nix_file.display()
-    ));
+    printer.info(&format!("Starting Nix REPL with {}", nix_file.display()));
 
     nix.repl(&nix_file)
 }

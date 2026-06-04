@@ -98,27 +98,23 @@ impl Protocol for HttpProtocol {
             Method::Put => {
                 // PUT returns metadata + empty stream (upload direction).
                 let result = self.do_put(request, auth).await?;
-                let stream: ByteStream =
-                    Box::pin(futures_util::stream::empty());
+                let stream: ByteStream = Box::pin(futures_util::stream::empty());
                 Ok((result, stream))
             }
             Method::Post => {
                 // POST returns metadata + empty stream (upload direction).
                 let result = self.do_post(request, auth).await?;
-                let stream: ByteStream =
-                    Box::pin(futures_util::stream::empty());
+                let stream: ByteStream = Box::pin(futures_util::stream::empty());
                 Ok((result, stream))
             }
             Method::Head => {
                 let result = self.do_head(request, auth).await?;
-                let stream: ByteStream =
-                    Box::pin(futures_util::stream::empty());
+                let stream: ByteStream = Box::pin(futures_util::stream::empty());
                 Ok((result, stream))
             }
             Method::Delete => {
                 let result = self.do_delete(request, auth).await?;
-                let stream: ByteStream =
-                    Box::pin(futures_util::stream::empty());
+                let stream: ByteStream = Box::pin(futures_util::stream::empty());
                 Ok((result, stream))
             }
         }
@@ -156,8 +152,7 @@ impl HttpProtocol {
                 if let Ok(metadata) = tokio::fs::metadata(path).await {
                     let existing_size = metadata.len();
                     if existing_size > 0 {
-                        builder =
-                            builder.header("Range", format!("bytes={}-", existing_size));
+                        builder = builder.header("Range", format!("bytes={}-", existing_size));
                         resume_offset = existing_size;
                         resumed = true;
                     }
@@ -227,8 +222,7 @@ impl HttpProtocol {
                 if let Ok(metadata) = tokio::fs::metadata(path).await {
                     let existing_size = metadata.len();
                     if existing_size > 0 {
-                        builder =
-                            builder.header("Range", format!("bytes={}-", existing_size));
+                        builder = builder.header("Range", format!("bytes={}-", existing_size));
                         resume_offset = existing_size;
                         resumed = true;
                     }

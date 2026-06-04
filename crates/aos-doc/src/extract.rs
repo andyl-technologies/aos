@@ -297,8 +297,17 @@ fn extract_language_ref(entries: &mut Vec<DocEntry>) {
         for topic in chapter.topics {
             let doc_path = format!(
                 "language.{}.{}",
-                chapter.name.to_ascii_lowercase().replace(' ', "-").replace('&', "and"),
-                topic.name.to_ascii_lowercase().replace(' ', "-").replace('(', "").replace(')', "")
+                chapter
+                    .name
+                    .to_ascii_lowercase()
+                    .replace(' ', "-")
+                    .replace('&', "and"),
+                topic
+                    .name
+                    .to_ascii_lowercase()
+                    .replace(' ', "-")
+                    .replace('(', "")
+                    .replace(')', "")
             );
             entries.push(DocEntry {
                 path: doc_path,
@@ -532,7 +541,8 @@ fn extract_version_from_content(content: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
         // Match: version = "X.Y.Z";  or  let version = "X.Y.Z";
-        if let Some(rest) = trimmed.strip_prefix("version = \"")
+        if let Some(rest) = trimmed
+            .strip_prefix("version = \"")
             .or_else(|| trimmed.strip_prefix("let version = \""))
         {
             if let Some(end) = rest.find('"') {
@@ -596,7 +606,11 @@ mkDerivation {
         let mut entries = Vec::new();
         extract_language_ref(&mut entries);
         assert!(!entries.is_empty());
-        assert!(entries.iter().all(|e| e.category == DocCategory::LanguageRef));
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.category == DocCategory::LanguageRef)
+        );
         // Check that chapter/topic paths are formed correctly.
         assert!(entries.iter().any(|e| e.path.starts_with("language.")));
     }
@@ -618,7 +632,12 @@ mkDerivation {
         fs::write(tmp.join("default.nix"), "{}").unwrap();
 
         let index = build_index(&tmp, None).unwrap();
-        assert!(index.entries.iter().any(|e| e.path == "functions.lists.head"));
+        assert!(
+            index
+                .entries
+                .iter()
+                .any(|e| e.path == "functions.lists.head")
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }
