@@ -158,8 +158,9 @@ surface without conflicting.
 > **calendar `creation_token`** ordering; release-tag signing now uses
 > SSH-format Ed25519 signed tag objects (`apr tag --key` /
 > `apr sign <tag> --key`). The served dumb-HTTP object store, the `/channels`
-> partition tags, the thin delta packs, the semver scheme, and the origin-served
-> Nix-cache superset are **TARGET**. See
+> index refresh hooks now exist, while `/channels` partition tags, thin delta
+> packs, full consumer cutover, and the origin-served Nix-cache superset are
+> still **TARGET**. See
 > [current-state.md](current-state.md) for the grounded as-is and
 > [architecture.md](architecture.md) for the target.
 
