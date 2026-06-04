@@ -1,0 +1,628 @@
+# Workstream 02 — Pack & Delta Pipeline
+
+> **Status:** Plan (target). Grounded by
+> [`design-brief.md`](./design-brief.md) §9–§10. This workstream replaces the
+> current **git-bundle** transport with a **git-native pack/thin-delta pipeline**
+> served over dumb HTTP.
+>
+> **Scope:** the producer side of pack generation (full packs at `X.Y.0`, the
+> guaranteed thin-delta scheme, `pack-objects` tuning, the zstd transport trick,
+> the optional trained dictionary) plus the client-side completion primitives
+> (`index-pack --fix-thin`, `zstd -d`). Channel/rollout selection of *which*
+> release to fetch is [workstream-03](./workstream-03-channels-rollouts.md); the
+> full client resolution walk + retention is
+> [workstream-05](./workstream-05-consumer.md); the sha256 bare repo and
+> `info/alternates` object layout this rides on is
+> [workstream-01](./workstream-01-object-store.md).
+
+---
+
+## 1. Goal
+
+Produce, per release, exactly the pack/delta artifacts the brief guarantees, so
+that:
+
+- a **stock dumb-HTTP git client** can clone via conventionally-named full packs
+  (`pack-<sha256>.pack` + `.idx`) plus loose objects — no thin packs needed; and
+- an **AOS client** can fetch a cheap **thin** `delta-<from-semver>.pack`,
+  decompress it (`zstd -d`), and complete it locally
+  (`git index-pack --fix-thin`).
+
+The governing philosophy (brief §3): **make publishing as expensive as possible
+so consumption is as cheap as possible.** The producer spends CPU once on tight
+delta search and `zstd --ultra`; every consumer downloads less and reconstructs
+fast.
+
+---
+
+## 2. CURRENT state (as-is) — what we replace
+
+The current transport is a git-**bundle** pipeline. Cited code in
+[`crates/aos-package/src/registry/bundle.rs`](../../../crates/aos-package/src/registry/bundle.rs):
+
+| Concern | Current implementation | `path:line` |
+|---|---|---|
+| Artifact format | git **bundles** (`*.bundle`), refs + prereqs baked in | `bundle.rs:1-6` (module doc) |
+| Bundle taxonomy | `BundleType::Snapshot` / `SequentialDelta` / `SkipDelta` enum | `bundle.rs:22-31` |
+| Manifest | `bundle-list.toml` parsed by the **consumer** (`ManifestToml`/`BundleManifest::parse`) | `bundle.rs:59-92`, `124-178` |
+| Ordering key | `creation_token: u64` (calendar) | `bundle.rs:33-45` (field), `171` (`sort_by_key`) |
+| Tag scheme | calendar `vYYYY.MM[.P]`, classified by dot-segment count (`classify_delta`) | `bundle.rs:238-243` |
+| Integrity | SHA-256 of bundle file + `git bundle verify` (`verify_bundle`) | `bundle.rs:305-346` |
+| Apply | `git bundle unbundle` into a bare cache repo (`unbundle`) | `bundle.rs:376-404` |
+| Producer | **stub** — `apr bundle` (`registry_ops.rs:1706-1744`) = `git bundle create`; no manifest writer, no upload (brief §2) | — |
+| Selection | `latest_snapshot` / `skip_delta_from` / `sequential_deltas_between` over `creation_token` | `bundle.rs:189-224` |
+
+Everything in the table above is **deleted or rewritten** in the target. The
+only primitive that survives unchanged is "SHA-256 the artifact file before
+trusting it" — and in the target that role is largely carried by git's own
+object-format hashing (`index-pack` validates the pack) plus the signed-tag
+trust chain, so file-level SHA-256 is no longer a manifest field.
+
+### Why bundles are wrong for this design
+
+- A bundle **carries refs and prerequisites** in a self-describing header. The
+  target moves refs out of artifacts entirely: channels are branches, releases
+  are signed tag objects, and the 256 partition tags live at `/channels/*` (brief
+  §5). A bundle's ref payload would duplicate (and could contradict) that.
+- Bundles can't be composed with the dumb-HTTP object store / `info/alternates`
+  layout (workstream-01). The target wants packs that drop straight into
+  `/releases/<…>/objects/pack/` and loose objects that land in the single root
+  `/objects/` and satisfy any stock client.
+- The `creation_token` ordering the bundle manifest depends on is removed (brief
+  §15). The target orders by **semver + git ancestry**.
+
+---
+
+## 3. TARGET artifacts per release
+
+A release's **pack** artifacts live under its per-release object dir
+(workstream-01). This dir is **pack-only**: it holds `info/packs` + the `pack/`
+tree, and **no** loose `<xx>/<62-hex>` objects and **no** per-release
+`info/alternates`. All loose objects (this release's NEW objects included) live
+in the single **root** `/objects/<xx>/<62-hex>` (D):
+
+```
+/objects/<xx>/<62-hex>                      ← ALL loose objects (every release), ROOT only
+
+/releases/<major>/<minor>/<patch[-pre][+build]>/objects/
+  info/packs                                ← lists self-contained pack-<sha>.pack ONLY
+  pack/
+    pack-<sha256>.pack   (+ .idx)           ← FULL pack; present only at X.Y.0
+    pack-<sha256>.pack.zst                  ← zstd-wrapped full pack (transport)
+    delta-<from-semver>.pack                ← THIN delta; AOS-only; NOT in info/packs
+    delta-<from-semver>.pack.zst            ← zstd-wrapped thin delta (transport)
+                                            ← NO loose <xx>/<62-hex> here; NO info/alternates
+```
+
+Rules (brief §9, §10, §12):
+
+- **Full packs** are named `pack-<sha256>.pack` (+ `.idx`) and **listed in
+  `info/packs`** so stock dumb git uses them. We drop any semantic `full.pack`
+  name — no duplicate.
+- **Thin deltas** are named `delta-<from-semver>.pack` and are **NOT listed in
+  `info/packs`** (a stock dumb client cannot apply a thin pack). AOS clients
+  discover them by the `delta-<semver>` filename convention.
+- `.idx` is shipped **only** for self-contained full packs. Thin deltas are
+  `.pack[.zst]` only — the client's `--fix-thin` builds the index.
+- The `.zst` variants are the **transport** form (§7). The plain `.pack`/`.idx`
+  remain present so a zstd-unaware stock client still works off the full pack.
+
+---
+
+## 4. The guaranteed delta scheme (the walkable graph)
+
+The producer **commits** to emitting exactly these artifacts, so clients can
+plan a walk without probing (brief §9). `X`, `Y`, `Z` are semver
+major/minor/patch.
+
+| Release kind | Full pack? | Delta packs emitted |
+|---|---|---|
+| **`X.Y.0`** (any major or minor) | **yes** `pack-<sha256>` | (see below) |
+| `X.0.0` (major) | yes | `delta-<(X-1).0.0>` (from last major) |
+| `X.Y.0`, `Y>0` (minor) | yes | `delta-<X.(Y-1).0>` (last minor) + `delta-<X.0.0>` (current major) |
+| `X.Y.Z`, `Z>0` (patch) | **no** | `delta-<X.Y.(Z-1)>`, `delta-<X.Y.(Z-2)>`, `delta-<X.Y.(Z-3)>` (last 3 patches, where they exist) + `delta-<X.Y.0>` (current minor) |
+
+Notes:
+
+- **Patch releases have no full pack.** A stock dumb clone of a patch pulls the
+  minor-base full pack (discovered via the relative `info/alternates` release
+  index) plus the patch's loose new objects from the root `/objects/` — graceful
+  degradation, no thin packs (brief §9, §12).
+- The patch fan of "last 3 patches + minor base" is co-designed with the client
+  **retention** rule (brief §9): a client on `X.Y.Z` keeps object trees for at
+  least `X.0.0`, `X.Y.0`, and `X.Y.Z`, so a usable delta base is always present.
+
+### Example: the delta graph for a `1.x` line
+
+The figure lists, under each release, the **deduplicated** delta set it actually
+emits (the names clients plan against). Where a patch's `Z-k` lookback slot would
+land on (or before) the minor base `1.1.0`, that slot **collapses into the minor
+base** — it is not emitted twice. Full packs exist only at `X.Y.0`.
+
+```
+  full pack             full pack                                    full pack
+     │                     │                                             │
+  1.0.0 ────────────────▶ 1.1.0 ──▶ 1.1.1 ──▶ 1.1.2 ──▶ 1.1.3 ───────▶ 1.2.0
+     │                     │          │         │         │              │
+  (full only,          full pack +  {d-1.1.0} {d-1.1.1, {d-1.1.2,    full pack +
+   first major:        {d-1.0.0}              d-1.1.0}  d-1.1.1,     {d-1.1.0,
+   no delta)           (minor base                      d-1.1.0}     d-1.0.0}
+                        == major)
+
+  Per-patch derivation (last-3-patches + minor base, deduped):
+    1.1.1 (Z=1): Z-1=1.1.0; minor base=1.1.0      → collapse → {d-1.1.0}
+    1.1.2 (Z=2): Z-1=1.1.1, Z-2=1.1.0; base=1.1.0 → Z-2 collapses → {d-1.1.1, d-1.1.0}
+    1.1.3 (Z=3): Z-1=1.1.2, Z-2=1.1.1, Z-3=1.1.0; → Z-3 collapses → {d-1.1.2, d-1.1.1, d-1.1.0}
+                 base=1.1.0
+```
+
+Reading 1.1.2 (a patch, `Z=2`): the lookback slots are `Z-1=1.1.1` and
+`Z-2=1.1.0`, plus the minor base `1.1.0`. The `Z-2` slot lands exactly on the
+minor base, so it collapses — the actual artifacts are `{delta-1.1.1,
+delta-1.1.0}`. Reading 1.2.0 (a minor): full pack + `delta-1.1.0` (last minor) +
+`delta-1.0.0` (current major).
+
+### Client resolution (summary; full walk in workstream-05)
+
+Current `C` → target `T`: prefer a `delta-<B>.pack` at `T` whose base `B` the
+client retains; else walk releases backward until a usable delta or a full pack
+is found; else fetch a full pack; else fall back to **loose objects** over dumb
+HTTP (always correct). Cross-major jumps degrade to "minor-base full pack +
+walk" (brief §9).
+
+---
+
+## 5. Producer: delta packs (thin)
+
+A thin delta carries only objects in `<to>` not in `<from>`, and is permitted to
+emit deltas whose base object lives in `<from>` (hence "thin" — the base is
+absent from the pack). The producer reads a rev range on stdin (brief §10):
+
+```sh
+# Generate delta-<from>.pack: objects in <to-commit> not in <from-commit>,
+# deltas may reference <from>'s objects (THIN).
+printf '%s\n^%s\n' "$TO_COMMIT" "$FROM_COMMIT" \
+  | git -C "$REPO" pack-objects --revs --thin --stdout \
+      --no-reuse-object --no-reuse-delta \
+      --window=350 --depth=50 --threads=0 \
+      --compression=0 \
+  > "delta-${FROM_SEMVER}.pack"
+```
+
+- `--revs` reads the `"<to>\n^<from>\n"` range from stdin and packs the
+  difference.
+- `--thin` allows base objects to be omitted (they exist in `<from>`, which the
+  client already has).
+- `--stdout` writes the pack to stdout; the producer names it
+  `delta-<from-semver>.pack`. **No `.idx` is shipped** for thin deltas.
+- The client **must** complete it (§8): `git index-pack --fix-thin` re-attaches
+  the missing bases from the local object store and writes the `.idx`.
+
+The producer may try **multiple delta bases** for the same `<to>` and ship the
+smallest result (brief §10) — but it must still ship the *named* deltas the
+scheme in §4 guarantees, because clients plan against those names. "Try multiple
+bases, ship the smallest" applies to *intra-pack* delta-base selection, not to
+substituting a different `from-semver` filename.
+
+---
+
+## 6. Producer: full packs (non-thin)
+
+A full pack at `X.Y.0` is self-contained: every object it references is inside
+it. It is named by its content sha256 and listed in `info/packs`.
+
+```sh
+# Generate a self-contained full pack over the release commit.
+git -C "$REPO" rev-parse "$RELEASE_COMMIT^{commit}" \
+  | git -C "$REPO" pack-objects --revs \
+      --no-reuse-object --no-reuse-delta \
+      --window=350 --depth=50 --threads=0 \
+      --compression=0 \
+      "$OUT_DIR/pack"                        # writes pack/pack-<sha256>.pack + .idx
+```
+
+- **`--revs`, no `--thin`** → a complete, self-contained pack (brief §10).
+- The base-name argument (`"$OUT_DIR/pack"`) makes `git pack-objects` write
+  `pack-<sha256>.pack` and `pack-<sha256>.idx`, where `<sha256>` is the pack
+  content hash — exactly the dumb-HTTP convention stock git expects, so the
+  semantic `full.pack` name is dropped (brief §12).
+- For the X.Y.0 **boundary**, pack the full set reachable from the release
+  commit so the pack stands alone; the parallel `delta-<prior X.Y.0>` (§4)
+  covers the same surface for AOS clients that already hold the base.
+
+After writing, **list it** in the per-release `objects/info/packs` and
+regenerate the root `objects/info/alternates`/`info/refs` (workstream-01). The
+`info/alternates` entries are **relative** paths
+`../releases/<M>/<m>/<patch…>/objects/` (newest→oldest, one `../`), so it is
+host-independent and serves **pack discovery + the release index** — not object
+completeness, since all loose objects are centralized at the root.
+
+---
+
+## 7. The zstd transport trick
+
+**Problem:** git's pack format hard-codes **zlib (DEFLATE) per object**. Wrapping
+a `--compression=9` pack in zstd is near-useless — the bytes are already entropy-
+coded by DEFLATE, so zstd finds almost nothing to compress (brief §10).
+
+**Solution (the working trick):** emit the pack with `--compression=0` and then
+zstd the whole file at maximum effort.
+
+```sh
+# 1. Produce the pack with zlib level 0 = "stored": valid zlib framing,
+#    NO entropy coding — BUT git's per-object DELTA ENCODING is still applied.
+git -C "$REPO" pack-objects ... --compression=0 ...        # → foo.pack
+
+# 2. Let zstd do the entropy coding over the delta-encoded stream.
+zstd --ultra -22 --long=27 -o foo.pack.zst foo.pack
+```
+
+Why this wins:
+
+- `--compression=0` ("stored") keeps the pack **git-valid** (correct zlib
+  framing) while skipping zlib's weak entropy coder. Crucially git's **delta
+  encoding still runs** — the expensive, high-value transform is preserved.
+- `zstd --ultra -22 --long=27` then applies a far stronger entropy coder + long-
+  range matcher over the delta-encoded stream, **beating zlib-9** on the same
+  content.
+- The pack inside the `.zst` is byte-for-byte a valid git pack, so the client
+  path is simply `zstd -d | git index-pack`.
+
+**Transport:** serve `.pack.zst` (both full and thin). Client:
+
+```sh
+# Thin delta:
+zstd -d --long=27 -o delta.pack delta-<from>.pack.zst
+git -C "$REPO" index-pack --fix-thin delta.pack            # completes + writes .idx
+
+# Full pack:
+zstd -d --long=27 -o pack-<sha>.pack pack-<sha>.pack.zst
+git -C "$REPO" index-pack pack-<sha>.pack                  # writes .idx
+```
+
+> **`--long=27`** (128 MiB window) must match between compressor and
+> decompressor or `zstd -d` will refuse the long-distance matches. Pin it on
+> both sides (open question: brief §16.2 — final level/window defaults).
+
+### Optional: trained dictionary per release line
+
+A zstd **trained dictionary** computed across a release line's many *small*
+delta packs is an optional further win (brief §10, §16.2). Small packs compress
+poorly standalone because zstd has no history to prime from; a shared dictionary
+front-loads that history.
+
+```sh
+# Train once per release line over its accumulated delta packs:
+zstd --train release-1.x/objects/pack/delta-*.pack \
+     -o release-1.x/objects/pack/zstd-dict-1.x
+
+# Compress/decompress small deltas with the dictionary:
+zstd --ultra -22 -D zstd-dict-1.x -o delta-<from>.pack.zst delta-<from>.pack
+zstd -d        -D zstd-dict-1.x -o delta-<from>.pack       delta-<from>.pack.zst
+```
+
+The dictionary is served alongside the line's packs; the client fetches it once
+and reuses it for every delta on that line. This is **optional** and gated on the
+open question — full packs (large) gain little from a dictionary; the win is on
+the patch-delta fan.
+
+---
+
+## 8. Expensive-producer tuning
+
+The producer is allowed to be slow; the consumer must be fast (brief §3, §10).
+
+| Flag | Value | Rationale |
+|---|---|---|
+| `--no-reuse-object` | on | Re-encode every object; ignore existing pack layout. |
+| `--no-reuse-delta` | on | Recompute every delta from scratch — don't inherit prior (possibly weak) deltas. |
+| `--window=<large>` | **≈350** | Delta-search window. **The free lever** — bigger = better deltas, only producer CPU/RAM cost. |
+| `--depth=<moderate>` | **≈50** | Max delta-chain length. **Cap this** — deep chains cost the *consumer* CPU to reconstruct. Do **not** crank it like `--window`. |
+| `--threads=0` | all cores | Parallelize the search across all available CPUs. |
+| `--compression=0` | "stored" | Skip zlib entropy coding so the zstd trick (§7) can do it better; keeps delta encoding. |
+
+**Asymmetry to remember:** `--window` is cheap for consumers (it only affects how
+hard the producer searched); `--depth` is *paid by consumers* every reconstruct.
+That's why the brief says "window is the free lever; cap depth."
+
+The producer may additionally try multiple delta bases per object and ship the
+smallest pack (§5).
+
+---
+
+## 9. Client completion primitives
+
+These are the only client-side pack operations this workstream owns (the *walk*
+that decides which delta to fetch is workstream-05):
+
+| Step | Command | Notes |
+|---|---|---|
+| Decompress | `zstd -d --long=27 [-D dict] -o X.pack X.pack.zst` | Window/dict must match producer. |
+| Complete thin | `git index-pack --fix-thin X.pack` | Re-attaches bases from local store; writes `X.idx`. **Required** for every `delta-*.pack`. |
+| Index full | `git index-pack X.pack` | Self-contained; just writes the `.idx`. |
+| Fallback | loose-object fetch over dumb HTTP | Always correct; used when no usable pack/delta (brief §9, §12). |
+
+`--fix-thin` **requires** the delta's base objects to already be in the local
+object store — which the retention rule (§4, workstream-05) guarantees. If a base
+is missing, the client must fall back (walk to an earlier delta or a full pack,
+or fetch loose objects), never error out.
+
+---
+
+## 10. Producer pipeline ordering (within a publish)
+
+This workstream is the **pack/delta stage** of the end-to-end publish (full
+pipeline in [`docs/registry/publishing.md`](../../registry/publishing.md) and
+brief §10/§4/§6):
+
+```
+  commit ──▶ sign tag (ws-04) ──▶ ┌─────────────────────────────────────┐
+                                  │ PACK/DELTA STAGE (this workstream)   │
+                                  │  1. if X.Y.0: full pack (§6)         │
+                                  │  2. scheme deltas (§4, §5)           │
+                                  │  3. --compression=0 on all (§7)      │
+                                  │  4. zstd --ultra (+ optional dict)   │
+                                  │  5. write .pack[.zst]/.idx into      │
+                                  │     /releases/<…>/objects/pack/;      │
+                                  │     loose objects → root /objects/   │
+                                  │  6. list full pack in info/packs     │
+                                  │     (NOT thin deltas)                │
+                                  └─────────────────────────────────────┘
+            ──▶ update-server-info (ws-01) ──▶ advance partitions (ws-03) ──▶ upload
+```
+
+Atomicity: write all immutable artifacts (root loose objects, per-release packs,
+`.zst`) **before** the low-TTL index files (`info/packs`, `info/alternates`,
+`info/refs`) are flipped, so a CDN never advertises a pack that isn't fully
+uploaded (brief §4 TTL policy; workstream-01 for the index writes).
+
+---
+
+## 11. Implementation tasks
+
+New module replacing `bundle.rs`'s producer/transport role (suggested
+`crates/aos-package/src/registry/pack.rs`):
+
+1. **Delete the bundle transport path.** Remove `BundleType` (`bundle.rs:22-31`),
+   `BundleEntry` (`bundle.rs:33-45`), `BundleManifest` (`bundle.rs:47-53`),
+   `classify_delta` (`bundle.rs:238-243`), `download_bundle` (`bundle.rs:251-300`),
+   `verify_bundle` (`bundle.rs:305-346`), `unbundle` (`bundle.rs:376-404`), and the
+   `bundle-list.toml` parser (`ManifestToml`/`ManifestHeader`/`BundleEntryToml` at
+   `bundle.rs:59-92`, `BundleManifest::parse` at `bundle.rs:124-178`, and the
+   selectors `entries_since`/`latest_snapshot`/`skip_delta_from`/`sequential_deltas_between`
+   at `bundle.rs:181-224`)
+   ([`bundle.rs:22-243`, `251-404`](../../../crates/aos-package/src/registry/bundle.rs)).
+   Keep `ensure_git_repo` (`bundle.rs:349-371`) and `resolve_tag`
+   (`bundle.rs:407-421`) — they're format-agnostic and still useful.
+
+   **Consumers this breaks (must be cut over in the same change):**
+   - **`update.rs::sync_bundle`** (`update.rs:209-316`) is built entirely on the
+     deleted surface: it calls `BundleManifest::fetch`, `pick_bundles`,
+     `ensure_git_repo`, `download_bundle`, `verify_bundle`, `unbundle`,
+     `resolve_tag`, and `state::check_monotonic`. Delete `sync_bundle` and its
+     helper `pick_bundles` (`update.rs:318-418`), which dispatches over
+     `BundleType::Snapshot`/`skip_delta_from`/`sequential_deltas_between` and
+     `state::token_to_version`.
+   - **`update.rs::run`** (`update.rs:116-144`) dispatches on
+     `reg_config.transport()`; the `Transport::HttpBundle => sync_bundle(...)` arm
+     (`update.rs:117-127`) is removed, leaving only the `Transport::Git` arm
+     (`git::sync_git`). The `Transport` enum (`types.rs`) loses its `HttpBundle`
+     variant.
+   - **`update.rs::find_best_version_tag_in_manifest`** (`update.rs:427-451`),
+     `parse_tag_as_semver` (`update.rs:456-477`) and `extract_minor_base`
+     (`update.rs:483-491`) are bundle-manifest-only and go with `pick_bundles`.
+     Their replacement (semver tag selection over a git ref list, not a manifest)
+     lands in workstream-03/05.
+   - **`registry_ops.rs::bundle`** (`registry_ops.rs:1706-1744`, the `apr bundle`
+     subcommand `= git bundle create`) is the producer stub and is replaced by the
+     `pack`-module producers (Tasks 2-5). Drop the `BundleCommand` CLI wiring.
+   - **`state.rs::check_monotonic`/`token_to_version`/`version_to_token`**
+     (`state.rs:104-184`) encode the calendar `creation_token` ordering the
+     bundle path depended on. They become dead once `sync_bundle` is gone; the
+     monotonic-downgrade guard is re-expressed on **semver + signed-tag ancestry**
+     in workstream-04/05.
+
+   **Tests this breaks (delete or port):**
+   - `bundle.rs` tests `parse_manifest`, `entries_sorted_by_creation_token`,
+     `snapshot_classification`, `delta_classification` (`bundle.rs:533-559`),
+     `entries_since_filters_correctly`, `latest_snapshot_returns_most_recent`,
+     `skip_delta_from_finds_correct_delta`, `sequential_deltas_between_tokens`,
+     `classify_delta_skip_vs_sequential`, and the `parse_manifest_*` set — all
+     assert on the deleted manifest/`BundleType` surface. Port only the *intent*
+     of `delta_classification` into the new `scheme_deltas` tests (Test plan).
+   - `update.rs` tests `pick_bundles_*` (9 tests, `update.rs:655-769`; the
+     `pick_bundles` fn is at `update.rs:319`),
+     `find_best_version_tag_*` (`update.rs:780-825`), `extract_minor_base_*`
+     (`update.rs:827-835`) — all exercise the deleted `pick_bundles`/manifest
+     selectors and are removed.
+   - `state.rs` tests `version_to_token_*`/`token_to_version_*`/
+     `token_version_round_trip`/`check_monotonic_*` (`state.rs:196-274`) cover the
+     removed token encoding. The `load_state_*`/`save_state_*` tests
+     (`state.rs:276-443`) stay — they exercise `[registry.state]` round-tripping
+     and the `[registry.signing] public_key` preservation, which both survive.
+2. **`full_pack` — the §6 `pack-objects --revs` wrapper.** New
+   `crates/aos-package/src/registry/pack.rs`:
+
+   ```rust
+   /// Generate a self-contained full pack over `release_commit` (§6).
+   /// Writes `pack-<sha256>.pack` + `.idx` under `out_dir`; returns the
+   /// `.pack` path (its basename is what gets listed in `info/packs`).
+   pub async fn full_pack(
+       repo: &Path,
+       release_commit: &str,
+       out_dir: &Path,
+   ) -> anyhow::Result<PathBuf>;
+   ```
+
+   Internally: `git -C repo rev-parse <commit>^{commit}` piped on stdin to
+   `git pack-objects --revs --no-reuse-object --no-reuse-delta --window=350
+   --depth=50 --threads=0 --compression=0 <out_dir>/pack`. `pack-objects` prints
+   the resulting pack sha256 to stdout; `full_pack` reads it and returns
+   `out_dir/pack-<sha256>.pack`. Reuse the `git`-subprocess error-handling shape
+   of `bundle.rs::ensure_git_repo` (`Command::new("git")` + `output.status`
+   check + `bail!`).
+3. **`thin_delta` — the §5 `pack-objects --revs --thin --stdout` wrapper.** In
+   `pack.rs`:
+
+   ```rust
+   /// Generate a thin delta pack: objects in `to_commit` not in `from_commit`,
+   /// deltas may reference `from`'s objects (§5). Writes
+   /// `delta-<from_semver>.pack` (no `.idx`); returns its path.
+   pub async fn thin_delta(
+       repo: &Path,
+       from_commit: &str,
+       to_commit: &str,
+       from_semver: &semver::Version,
+       out_dir: &Path,
+   ) -> anyhow::Result<PathBuf>;
+   ```
+
+   Internally: `printf '%s\n^%s\n' <to> <from>` on stdin to `git pack-objects
+   --revs --thin --stdout --no-reuse-object --no-reuse-delta --window=350
+   --depth=50 --threads=0 --compression=0`, redirecting stdout to
+   `out_dir/delta-<from_semver>.pack`. The filename component is
+   `from_semver.to_string()` (e.g. `delta-1.1.0.pack`).
+4. **`scheme_deltas` — pure §4 delta-set generator.** In `pack.rs`. The
+   "Semver"/"FromSemver" types in the prior draft **do not exist**; use
+   `semver::Version` end-to-end:
+
+   ```rust
+   /// Kind of a release, derived from its semver triple.
+   pub enum ReleaseKind { Major, Minor, Patch }
+
+   /// Classify a release by its (major, minor, patch) triple (§4).
+   pub fn release_kind(v: &semver::Version) -> ReleaseKind;
+
+   /// The §4 guaranteed delta bases for `release`, given the set of
+   /// already-published releases on the line (needed to find "prior major",
+   /// "last minor", and to clamp/dedup the last-3-patches fan against the
+   /// minor base). Returns base versions, newest→oldest, deduplicated.
+   pub fn scheme_deltas(
+       release: &semver::Version,
+       published: &[semver::Version],
+   ) -> Vec<semver::Version>;
+   ```
+
+   `scheme_deltas` is the producer-side counterpart of the consumer walk
+   (workstream-05); it owns the dedup/collapse rule in §4 (a `Z-k` slot that
+   lands on/before the minor base collapses into the minor base). Unit-testable
+   with no git/IO.
+5. **`zstd_compress` / `zstd_decompress` — the §7 transport wrappers.** In
+   `pack.rs`:
+
+   ```rust
+   /// zstd `--ultra -22 --long=27` (+ optional trained dict) → `<path>.zst` (§7).
+   pub async fn zstd_compress(
+       path: &Path,
+       dict: Option<&Path>,
+   ) -> anyhow::Result<PathBuf>;
+
+   /// zstd `-d --long=27` (+ optional dict) → strips `.zst` (§7/§9).
+   pub async fn zstd_decompress(
+       path: &Path,
+       dict: Option<&Path>,
+   ) -> anyhow::Result<PathBuf>;
+   ```
+
+   Shell out to the **AOS-built `zstd`** (`pkgs.zstd`; never a host zstd, per
+   CLAUDE.md). `--long=27` is pinned on both sides (§7 callout); a window
+   mismatch makes `zstd -d` refuse the long matches, so the constant is shared
+   (`const ZSTD_LONG: &str = "27";`).
+6. **`index_pack_fix_thin` / `index_pack` — client completion (§9).** In
+   `pack.rs`:
+
+   ```rust
+   /// `git index-pack --fix-thin <pack>` — re-attach bases from the local
+   /// object store and write `<pack>.idx`. Required for every `delta-*.pack` (§9).
+   pub async fn index_pack_fix_thin(repo: &Path, pack: &Path) -> anyhow::Result<()>;
+
+   /// `git index-pack <pack>` — self-contained full pack; just write `.idx` (§9).
+   pub async fn index_pack(repo: &Path, pack: &Path) -> anyhow::Result<()>;
+   ```
+
+   These replace the deleted `bundle.rs::unbundle` as the client-apply primitive
+   in the new `git::sync_*` path (workstream-05 wires them in).
+7. **`train_dictionary` — optional §7 dictionary trainer.** In `pack.rs`:
+
+   ```rust
+   /// `zstd --train <packs...> -o <out>` over a release line's delta packs (§7).
+   /// Gated behind a config flag pending brief §16.2.
+   pub async fn train_dictionary(
+       packs: &[PathBuf],
+       out: &Path,
+   ) -> anyhow::Result<PathBuf>;
+   ```
+
+### Test plan
+
+- **`scheme_deltas` table tests on `semver::Version`** (not `creation_token`/
+  calendar). All in `pack.rs`'s `#[cfg(test)] mod tests`, using
+  `semver::Version::parse(...)`:
+  - `#[test] fn scheme_deltas_first_major_is_empty` — `1.0.0` with no prior
+    major → `[]`.
+  - `#[test] fn scheme_deltas_minor_dedups_to_minor_base` — `1.1.0` →
+    `[1.0.0 (last minor), 1.0.0 (current major)]` dedup → `[1.0.0]`.
+  - `#[test] fn scheme_deltas_patch_collapses_to_minor_base` — `1.1.2` →
+    `[1.1.1, 1.1.0, minor-base 1.1.0]` (the `Z-2` slot lands on the minor base)
+    dedup → `[1.1.1, 1.1.0]`.
+  - `#[test] fn scheme_deltas_patch_full_fan` — `1.1.3` →
+    `[1.1.2, 1.1.1, 1.1.0]` (`Z-3` collapses into the minor base).
+  - `#[test] fn release_kind_classifies_triple` — `release_kind` returns
+    `Major`/`Minor`/`Patch` for `X.0.0`/`X.Y.0`/`X.Y.Z`.
+
+  These port the *intent* of the removed bundle test
+  `delta_classification`
+  ([`bundle.rs:533-559`](../../../crates/aos-package/src/registry/bundle.rs)) onto
+  semver ancestry — the calendar `classify_delta` it tested is deleted (Task 1).
+- **Round-trip** (`#[test] fn round_trip_full_pack`, `fn round_trip_thin_delta`):
+  `full_pack` → `zstd_compress` → `zstd_decompress` → `index_pack` reproduces a
+  clonable store; `thin_delta` → `zstd_compress` → `zstd_decompress` →
+  `index_pack_fix_thin` against a store holding the base reproduces the target
+  commit. Build a throwaway repo in a `tempfile::TempDir` (the existing
+  `update.rs`/`state.rs` tests already use `tempfile`).
+- **Stock-git compat** (`#[test] fn stock_git_clone_full_pack_only`): a `git
+  clone` (dumb HTTP, sha256) of an `X.Y.0` release using only
+  `info/packs`-listed full packs + root loose objects succeeds without ever
+  touching a `delta-*.pack`.
+- **Size assertion** (`#[test] fn compression0_plus_zstd_beats_zlib9`):
+  `--compression=0` + `zstd --ultra` produces a smaller `.pack.zst` than
+  `--compression=9` + `zstd` on the same release (validates §7).
+
+---
+
+## 12. Cross-references
+
+- [`design-brief.md`](./design-brief.md) — §9 (delta scheme), §10 (pack
+  generation + zstd), §12 (stock-git compat), §16.2 (open: window/depth/zstd
+  defaults + dictionary).
+- [`workstream-01-object-store.md`](./workstream-01-object-store.md) — sha256 bare
+  repo, `info/packs`, relative `info/alternates`, `update-server-info`,
+  root loose-object store + per-release pack-only object dirs.
+- [`workstream-03-channels-rollouts.md`](./workstream-03-channels-rollouts.md) —
+  which release a partition targets (the `<to>` of a delta).
+- [`workstream-04-signing-trust.md`](./workstream-04-signing-trust.md) — signed
+  tags whose commits the packs cover.
+- [`workstream-05-consumer.md`](./workstream-05-consumer.md) — the full client
+  delta-walk + retention rule this scheme is co-designed with.
+- [`gap-analysis.md`](./gap-analysis.md) — bundle → pack/delta gap enumeration.
+- [`open-questions.md`](./open-questions.md) — §16 risks/migration.
+- [`README.md`](./README.md) — plan overview and sequencing.
+- Reference set: [`packs-and-deltas.md`](../../registry/packs-and-deltas.md)
+  (target reference), [`http-layout.md`](../../registry/http-layout.md),
+  [`publishing.md`](../../registry/publishing.md),
+  [`versioning-and-channels.md`](../../registry/versioning-and-channels.md),
+  [`signing-and-trust.md`](../../registry/signing-and-trust.md),
+  [`nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md),
+  [`apt-comparison.md`](../../registry/apt-comparison.md),
+  [`architecture.md`](../../registry/architecture.md),
+  [`current-state.md`](../../registry/current-state.md),
+  [`README.md`](../../registry/README.md).
+- Current code (to remove/refactor):
+  [`crates/aos-package/src/registry/bundle.rs`](../../../crates/aos-package/src/registry/bundle.rs)
+  (the entire bundle surface),
+  [`crates/aos-package/src/update.rs`](../../../crates/aos-package/src/update.rs)
+  (`sync_bundle`/`pick_bundles`/`find_best_version_tag_in_manifest` consumers),
+  [`crates/aos-package/src/registry/state.rs`](../../../crates/aos-package/src/registry/state.rs)
+  (`check_monotonic`/`token_to_version` calendar-token logic),
+  [`crates/aos-package/src/registry_ops.rs`](../../../crates/aos-package/src/registry_ops.rs)
+  (the `apr bundle` producer stub at `registry_ops.rs:1706-1744`).
