@@ -24,7 +24,7 @@ cite) versus **TARGET** (what the brief mandates), then routed to a workstream:
 |----|-----|-------|
 | WS-01 | [workstream-01-object-store.md](./workstream-01-object-store.md) | sha256 bare repo, dumb-HTTP layout, `info/refs`/`HEAD`/`http-alternates`/`update-server-info`, per-release object dirs |
 | WS-02 | [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md) | `pack-objects` thin/full, the delta-scheme graph, zstd, expensive-producer tuning |
-| WS-03 | [workstream-03-channels-rollouts.md](./workstream-03-channels-rollouts.md) | 16 signed partition tags, channels-as-branches/frontier, bucket selection, publisher rollout control |
+| WS-03 | [workstream-03-channels-rollouts.md](./workstream-03-channels-rollouts.md) | 256 signed partition tags, channels-as-branches/frontier, bucket selection, publisher rollout control |
 | WS-04 | [workstream-04-signing-trust.md](./workstream-04-signing-trust.md) | signed **tag objects**, name-binding, sha256, `valid_until`, anti-rollback/fix-forward |
 | WS-05 | [workstream-05-consumer.md](./workstream-05-consumer.md) | consumer resolution (bucket → channel tag → semver tag → commit), delta walk, retention, verification, the Nix `[[caches]]` superset |
 
@@ -56,7 +56,7 @@ static files over dumb HTTP**, where:
   `objects/info/http-alternates` — **no bundles, no `bundle-list.toml`**;
 - versions are **semver** (no `v`) ordered by **git ancestry** — **no
   `creation_token`**;
-- rollout is **16 signed partition tag objects** under `/channel/<name>/0..f`
+- rollout is **256 signed partition tag objects** under `/channel/<name>/00..ff`
   with the channel **branch head = frontier** — **no percentage rollout**;
 - the trust anchor moves from a signed **commit** to signed **tag objects**
   with **name-binding** verification (`tag → tag → commit`);
@@ -80,7 +80,7 @@ expensive-producer / trivial-consumer one.
  │ creation_token ordering   │              │ + thin delta-<from>.pack      │
  │ signed COMMIT             │              │ semver + git ancestry         │
  │ no rollout model           │              │ signed TAG objects, /channel/ │
- │ pick_bundles() consumer    │              │   <name>/0..f (16 partitions) │
+ │ pick_bundles() consumer    │              │ <name>/00..ff (256 partitions)│
  │ NO upload                  │              │ full publish pipeline         │
  └───────────────────────────┘              └───────────────────────────────┘
 ```
@@ -132,9 +132,9 @@ and `unbundle` (`bundle.rs:376`) — all replaced by `pack-objects` /
 |--------|---------|--------|
 | Version scheme | Calendar tags `vYYYY.MM[.P]` encoded to a monotonic **`creation_token`** (`state.rs version_to_token:131`, `token_to_version:173`). | **Standard semver, no `v` prefix** (`1.1.2`, `1.0.0-beta+exp.sha.5114f85`); precedence by semver rules + git ancestry (brief §7). The whole `creation_token` scheme is **removed** (brief §15). |
 | Ordering source | `entries.sort_by_key(creation_token)` (`bundle.rs:171`); `entries_since` / `latest_snapshot` / `skip_delta_from` / `sequential_deltas_between` (`bundle.rs:181-224`) all key off the token. | git **ancestry** + semver precedence; no scalar token. |
-| Channel model | A git **branch** the consumer tracks via `TrackingMode::Branch` (`types.rs:282-302`) — but there is no rollout structure on top. | A channel = **branch** (`refs/heads/<channel>`, head = **frontier**) **plus 16 signed partition tag objects** `/channel/<name>/0..f` (brief §5, §6). |
-| Rollout mechanism | **None.** No partitions, no percentage, no `[channels.<name>.rollout]`. `pick_bundles` just picks the newest reachable bundle (`update.rs:292-391`). | **Publisher-controlled 16-partition rollout**: to roll to N/16, point N partition tags at the new semver tag and leave the rest on the prior release (brief §6). |
-| Consumer bucket | None. | Deterministic, **persisted** bucket: `sha256(machine_id) mod 16`, written once; probe-forward `(bucket+1) mod 16` if a partition is missing (brief §6). |
+| Channel model | A git **branch** the consumer tracks via `TrackingMode::Branch` (`types.rs:282-302`) — but there is no rollout structure on top. | A channel = **branch** (`refs/heads/<channel>`, head = **frontier**) **plus 256 signed partition tag objects** `/channel/<name>/00..ff` (brief §5, §6). |
+| Rollout mechanism | **None.** No partitions, no percentage, no `[channels.<name>.rollout]`. `pick_bundles` just picks the newest reachable bundle (`update.rs:292-391`). | **Publisher-controlled 256-partition rollout**: to roll to N/256, point N partition tags at the new semver tag and leave the rest on the prior release (brief §6). |
+| Consumer bucket | None. | Deterministic, **persisted** bucket: the low byte of `sha256(machine_id)` (i.e. mod 256), written once; probe-forward `(bucket+1) mod 256` if a partition is missing (brief §6). |
 | Frontier | n/a. | `refs/heads/<channel>` head = the commit of the newest release **any** partition targets; stock `git pull <channel>` always gets the frontier (brief §6). |
 | Anti-rollback | `check_monotonic(old_token, latest_token)` on `creation_token` (`state.rs:104`, called from `update.rs:263-266`). | A **monotonic semver floor** per consumer; a bad rollout is **fix-forward** (publish newer, advance partitions), never partition-decrement (brief §6). |
 
@@ -199,7 +199,7 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 | `bundle-list.toml` | `bundle.rs:48-225` | `objects/info/packs` + `objects/info/http-alternates` |
 | git **bundles** | `registry_ops.rs:1718-1755`, `bundle.rs:376` | loose objects + `pack-<sha>.pack` + thin `delta-*.pack` |
 | `[latest]` / `[components]` / `[capabilities]` | config concepts (not in code) | ref namespace (branches/tags) + object store |
-| percentage rollout / `[channels.<name>.rollout]` / baseline+candidate | never implemented (brief §15) | 16 signed partition tag objects `/channel/<name>/0..f` |
+| percentage rollout / `[channels.<name>.rollout]` / baseline+candidate | never implemented (brief §15) | 256 signed partition tag objects `/channel/<name>/00..ff` |
 | calendar versioning + `creation_token` | `state.rs:131-187`, `bundle.rs:34-224`, `update.rs:256-390` | semver (no `v`) + git ancestry |
 | by-hash `[[bundles]]` / `[[deltas]]` index | `bundle.rs:59-92` | git object store + `http-alternates` |
 | `previous_tag` / per-version `previous` framing | `registry_ops.rs:626-628,735-739` | semver precedence + the delta-scheme graph |
@@ -235,8 +235,8 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 | G11 | n/a → `info/packs` lists **full packs only** | §10,§12 | WS-02 |
 | G12 | `creation_token` → **semver (no `v`) + git ancestry** | §7 | WS-03 |
 | G13 | bare branch tracking → branch **frontier head** | §5,§6 | WS-03 |
-| G14 | no rollout → **16 signed partition tags `/channel/<name>/0..f`** | §6 | WS-03 |
-| G15 | no bucket → deterministic persisted `sha256(machine_id) mod 16` | §6 | WS-03 |
+| G14 | no rollout → **256 signed partition tags `/channel/<name>/00..ff`** | §6 | WS-03 |
+| G15 | no bucket → deterministic persisted low byte of `sha256(machine_id)` (i.e. mod 256) | §6 | WS-03 |
 | G16 | token monotonic check → **semver floor + fix-forward** | §6 | WS-03 |
 | G17 | signed **commit** → signed **tag objects** | §11 | WS-04 |
 | G18 | no `verify-tag` → `verify-tag` over `tag → tag → commit` | §5,§11 | WS-04 |

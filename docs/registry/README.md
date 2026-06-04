@@ -34,8 +34,8 @@ stock `git clone <url>` works — **channels are branches**, **releases are tags
 and a **superset of the Nix binary cache** (NAR substitution is advertised via a
 `[[caches]]` entry that may point relative-to-origin). Release lines are
 **standard semver, no `v` prefix**; a **channel** (`stable`, `testing`) is a git
-branch whose head is the rollout **frontier** plus **16 signed partition tag
-objects** (`/channel/<name>/0..f`) that drive bucketed, publisher-controlled
+branch whose head is the rollout **frontier** plus **256 signed partition tag
+objects** (`/channel/<name>/00..ff`) that drive bucketed, publisher-controlled
 rollout. Distribution rides on a **guaranteed delta graph**: every `X.Y.0`
 release ships a self-contained **full pack** and every release ships a small set
 of **thin delta packs** (`delta-<from-semver>.pack`) that the client completes
@@ -60,7 +60,7 @@ This reference set answers, for the AOS registry's **target state**:
   (deterministic bucket → channel partition tag → semver tag → commit, then a
   delta-pack walk with loose-object fallback).
 - *How it is versioned & rolled out* — semver releases, channels-as-branches
-  with a frontier head, the 16-partition rollout, deterministic bucket
+  with a frontier head, the 256-partition rollout, deterministic bucket
   selection, and anti-rollback / fix-forward.
 - *How it is trusted* — one Ed25519 key, signed tag objects, name-binding,
   the `tag → tag → commit` chain, and `valid_until` semantics.
@@ -69,7 +69,7 @@ This reference set answers, for the AOS registry's **target state**:
   atomicity and concurrency.
 - *How it relates to prior art* — a structured comparison to the APT repository
   format, mapping bundles/pdiff → git packs/thin-delta scheme and the percentage
-  rollout → 16 partitions.
+  rollout → 256 partitions.
 
 It does **not** specify the implementation tasks; those are enumerated in the
 [plan set](../plans/registry/README.md).
@@ -98,7 +98,7 @@ It does **not** specify the implementation tasks; those are enumerated in the
 | [architecture.md](architecture.md) | Git-repo-over-dumb-HTTP; superset of git **and** Nix; the three ref layers; how `apm` and stock git both consume; the asymmetric-cost philosophy. |
 | [current-state.md](current-state.md) | The as-is implementation, grounded in code (`crates/aos-package/`) — today's bundle / `creation_token` / nested-TOML registry, including producer-side gaps. **Light edit only.** |
 | [http-layout.md](http-layout.md) | The full HTTP/object layout, CDN TTLs, the sha256 loose-object store, `info/refs` / `HEAD` / `http-alternates`, and the stock git dumb-HTTP compatibility surface. |
-| [versioning-and-channels.md](versioning-and-channels.md) | Semver (no `v` prefix), channels-as-branches, the frontier head, the 16-partition rollout, deterministic bucket selection, and anti-rollback. |
+| [versioning-and-channels.md](versioning-and-channels.md) | Semver (no `v` prefix), channels-as-branches, the frontier head, the 256-partition rollout, deterministic bucket selection, and anti-rollback. |
 | [packs-and-deltas.md](packs-and-deltas.md) | `git pack-objects`, thin vs full packs, the guaranteed delta-scheme graph, client resolution + retention, and the `--compression=0` + zstd trick. |
 | [tag-metadata.md](tag-metadata.md) | The channel / release tag-message TOML schema (`[meta]` + `[[caches]]` only). |
 | [signing-and-trust.md](signing-and-trust.md) | Signed tag objects (SSH Ed25519), name-binding, the `tag → tag → commit` chain, sha256, unsigned branch refs, `valid_until` semantics, and anti-rollback. |
@@ -115,7 +115,7 @@ It does **not** specify the implementation tasks; those are enumerated in the
 | [gap-analysis.md](../plans/registry/gap-analysis.md) | Current code (bundles / `creation_token` / `registry.toml`-config) → git-native target; gaps mapped to workstreams. |
 | [workstream-01-object-store.md](../plans/registry/workstream-01-object-store.md) | sha256 bare repo, dumb-HTTP layout, `info/refs` / `HEAD` / `http-alternates` / `update-server-info`, per-release object dirs. |
 | [workstream-02-pack-delta-pipeline.md](../plans/registry/workstream-02-pack-delta-pipeline.md) | `pack-objects` thin/full, the delta scheme, zstd, expensive-producer tuning. |
-| [workstream-03-channels-rollouts.md](../plans/registry/workstream-03-channels-rollouts.md) | 16 signed partition tags, channels-as-branches / frontier, bucket selection, publisher rollout control. |
+| [workstream-03-channels-rollouts.md](../plans/registry/workstream-03-channels-rollouts.md) | 256 signed partition tags, channels-as-branches / frontier, bucket selection, publisher rollout control. |
 | [workstream-04-signing-trust.md](../plans/registry/workstream-04-signing-trust.md) | Signed tag objects, name-binding, sha256, `valid_until`, anti-rollback / fix-forward. |
 | [workstream-05-consumer.md](../plans/registry/workstream-05-consumer.md) | Consumer resolution (bucket → channel tag → semver tag → commit), delta walk, retention, verification, and the Nix `[[caches]]` superset. |
 | [open-questions.md](../plans/registry/open-questions.md) | Open decisions, risks, and migration strategy. |
@@ -140,7 +140,7 @@ surface without conflicting.
   releases=tags           │  /objects/info/packs  full packs only          │
                           │  /objects/info/http-alternates  release index   │
                           │                                                │
-  apm (AOS rollout) ─────▶│  /channel/<name>/0..f 16 SIGNED partition tags  │
+  apm (AOS rollout) ─────▶│  /channel/<name>/00..ff 256 SIGNED partition tags│
   bucket→tag→tag→commit   │  /release/<M>/<m>/<p>/objects/  per-release store│
   + thin delta packs      │     pack-<sha256>.pack   full pack at X.Y.0     │
                           │     delta-<from>.pack    THIN, AOS-only         │
@@ -173,8 +173,8 @@ surface without conflicting.
 | **`apm`** | The package-management CLI front-end. The **same binary** as `aos`, dispatched by `argv[0]`: invoked as `apm …` it implicitly prepends `package …` (`crates/aos/src/main.rs:37`–`68`). |
 | **`apr`** | The AOS Package Registry CLI. The same binary again; invoked as `apr …` it implicitly prepends `package registry …` (`crates/aos/src/main.rs:56`–`61`). The `apr` bin alias is declared in `crates/aos/Cargo.toml` (`[[bin]] name = "apr"`). |
 | **Registry (target)** | A **bare git repository in sha256 object format, served as static files over dumb HTTP**. The package metadata *is* the git tree content. |
-| **Channel** | A named release line (e.g. `stable`, `testing`), modeled as a git **branch** (`refs/heads/<channel>`) whose head is the rollout **frontier**, and as **16 signed partition tag objects** (`/channel/<name>/0..f`) for rollout. |
-| **Partition / bucket** | One of exactly **16** channel partitions (`0`–`f`). A consumer deterministically self-selects one bucket (e.g. `sha256(machine_id) mod 16`, persisted). The publisher advances partitions independently to control rollout. |
+| **Channel** | A named release line (e.g. `stable`, `testing`), modeled as a git **branch** (`refs/heads/<channel>`) whose head is the rollout **frontier**, and as **256 signed partition tag objects** (`/channel/<name>/00..ff`) for rollout. |
+| **Partition / bucket** | One of exactly **256** channel partitions (`00`–`ff`). A consumer deterministically self-selects one bucket (e.g. the low byte of `sha256(machine_id)` (i.e. mod 256), persisted). The publisher advances partitions independently to control rollout. |
 | **Release** | An immutable **semver** version (e.g. `1.1.0`, `1.0.0-beta+exp.sha.5114f85`, **no `v` prefix**). A signed git **tag** (`refs/tags/<semver>`) → commit, with its object store under `/release/<major>/<minor>/<patch…>/`. |
 | **Frontier** | The newest release any channel partition targets; the value of the channel's branch head (`refs/heads/<channel>`). A stock `git pull <channel>` always gets the frontier. |
 | **Signed tag object** | An annotated git tag carrying an SSH-format **Ed25519** signature; its message is **TOML**. Both channel partition tags and release tags are signed; `tag → tag → commit` chains (channel partition → semver → commit) are used. |

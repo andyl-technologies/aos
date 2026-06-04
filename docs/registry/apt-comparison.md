@@ -54,7 +54,7 @@ This keeps three pieces of APT's lineage that genuinely hold up:
    path **is** the sha256), which is strictly stronger for dedup and integrity.
 3. **Phased rollout heritage.** APT's `Phased-Update-Percentage` proved that
    fleet-wide canarying belongs in the index; AOS keeps the idea and replaces the
-   percentage with **16 signed partitions** (design-brief §6).
+   percentage with **256 signed partitions** (design-brief §6).
 
 Where the two diverge, AOS is generally **ahead**, because its substrate is a
 **Merkle DAG** with **atomic ref updates** that is **dumb-HTTP-clonable**. Those
@@ -123,7 +123,7 @@ re-maps onto a git primitive.
    │ by-hash/SHA256/<h>   │   ──→     │ content-addressed git objects        │
    │                      │           │  (path == sha256, intrinsically)     │
    ├──────────────────────┤          ├────────────────────────────────────┤
-   │ Phased-Update-%      │   ──→     │ 16 signed partition tags /channel/*  │
+   │ Phased-Update-%      │   ──→     │ 256 signed partition tags /channel/* │
    ├──────────────────────┤          ├────────────────────────────────────┤
    │ suites / components  │   ──→     │ channels = branches refs/heads/*     │
    ├──────────────────────┤          ├────────────────────────────────────┤
@@ -132,7 +132,7 @@ re-maps onto a git primitive.
 ```
 
 Two namespaces ride alongside the standard git surface without conflicting
-(design-brief §3): the AOS `/channel/<name>/0..f` partition tags (signed,
+(design-brief §3): the AOS `/channel/<name>/00..ff` partition tags (signed,
 bucketed rollout) and the thin `delta-*.pack`s (cheap incremental fetch). A stock
 dumb `git clone` ignores both and still resolves a complete, correct tree from
 loose objects + conventionally-named full packs.
@@ -158,7 +158,7 @@ counterpart. The AOS column links to the reference doc that specifies it.
 | dumb-HTTP, static-mirror-friendly | dumb-HTTP is the substrate — the repo is a valid bare dumb-HTTP repo; a stock `git clone` works (design-brief §12) | [`architecture.md`](./architecture.md), [`http-layout.md`](./http-layout.md) |
 | `signed-by=` per-source key pinning | per-registry key pinning via TOFU + `trusted-keys.d/<registry>.pub` | [`signing-and-trust.md`](./signing-and-trust.md) |
 | `snapshot.debian.org` reproducible archives | reproducible snapshots are intrinsic: a signed tag addresses an immutable commit; the whole object closure is content-addressed | [`versioning-and-channels.md`](./versioning-and-channels.md) |
-| Phased updates (`Phased-Update-Percentage`) | **16 signed partition tags** `/channel/<name>/0..f`; the publisher points N partitions at a new release to roll it to N/16 of the fleet; clients self-select a deterministic bucket | [`versioning-and-channels.md`](./versioning-and-channels.md) |
+| Phased updates (`Phased-Update-Percentage`) | **256 signed partition tags** `/channel/<name>/00..ff`; the publisher points N partitions at a new release to roll it to N/256 of the fleet; clients self-select a deterministic bucket | [`versioning-and-channels.md`](./versioning-and-channels.md) |
 | `Components` (`main` / `contrib` / `non-free`) | **Not adopted** — the target has no `[components]` table; a registry is one git repo, partitioned by channel branches | [`versioning-and-channels.md`](./versioning-and-channels.md) |
 | `Contents-<arch>` — file → package index | not in scope for the registry layer; file-index discovery is a separate concern | — |
 
@@ -246,29 +246,30 @@ which only diffs *consecutive* index snapshots. See
 > diffs the object DAG instead of one text file, and degrades to a full pack, then
 > to loose objects, when no usable delta exists.
 
-### 5.4 `Phased-Update-Percentage` → 16 signed partitions
+### 5.4 `Phased-Update-Percentage` → 256 signed partitions
 
 APT canaries a release to a percentage of machines; each client hashes its
 `machine-id` (plus package identity) and updates only if the hash falls under the
-current percentage. AOS keeps the heritage and discretizes it into **exactly 16
+current percentage. AOS keeps the heritage and discretizes it into **exactly 256
 signed partition tags** per channel (design-brief §6):
 
 ```
 /channel/stable/
-  0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f   ← 16 SIGNED tag objects
+  00  01  02  ..  b7  ..  fd  fe  ff   ← 256 SIGNED tag objects
        each (tag name == "stable") → a semver release tag
 ```
 
 - **Consumer bucket selection** is deterministic and *persisted*:
-  `sha256(machine_id) mod 16`, written once so a host does not flap between
-  buckets. (APT recomputes per-package; AOS pins a stable bucket per host.)
-- **Publisher-controlled rollout:** to roll a new release to N/16 of the fleet,
+  the low byte of `sha256(machine_id)` (i.e. mod 256), written once so a host
+  does not flap between buckets. (APT recomputes per-package; AOS pins a stable
+  bucket per host.)
+- **Publisher-controlled rollout:** to roll a new release to N/256 of the fleet,
   point N partitions at the new semver tag; the un-advanced partitions still name
   the prior release — which **explicitly answers "where does the rest of the
   fleet go"** (APT leaves the not-yet-phased cohort implicit). Advance partitions
-  as confidence grows; completion = all 16 point at the new release.
-- **There must always be 16.** If one is missing a client *may* probe-forward
-  `(bucket+1) mod 16`.
+  as confidence grows; completion = all 256 point at the new release.
+- **There must always be 256.** If one is missing a client *may* probe-forward
+  `(bucket+1) mod 256`.
 - **Anti-rollback:** a consumer keeps a monotonic floor and never moves to an
   older release. Aborting a bad rollout is **fix-forward** (publish a newer
   release, point partitions at it) — never partition-decrement.
@@ -371,7 +372,7 @@ and design-brief §13.
 | Time-based freshness | `Valid-Until` | tag `valid_until` (dual semantics) | **parity (kept)** |
 | Per-source key pinning | `signed-by=` | TOFU + `trusted-keys.d/<registry>.pub` | **parity (kept)** |
 | Reproducible snapshots | `snapshot.debian.org` | immutable signed tags | **AOS ahead** (no extra service) |
-| Phased rollout | `Phased-Update-Percentage` | 16 signed partition tags | **AOS ahead** (explicit cohorts) |
+| Phased rollout | `Phased-Update-Percentage` | 256 signed partition tags | **AOS ahead** (explicit cohorts) |
 
 ---
 
@@ -439,7 +440,7 @@ pool    │ pool/*.deb (org'd)  │   ↑    │ /objects/<xx>/<hex> (addressed)
 deps    │ Depends (solver)    │   ↑    │ explicit closures                   │ AOS ahead
 consist │ by-hash             │   ↑    │ immutable objects + atomic ref flip │ AOS ahead
 chan    │ suites/components   │   →    │ channels = branches (no components) │
-rollout │ Phased-Update-%     │   ↑    │ 16 signed partition tags            │ AOS ahead
+rollout │ Phased-Update-%     │   ↑    │ 256 signed partition tags           │ AOS ahead
 trust   │ signed-by=          │   ≈    │ TOFU + trusted-keys.d/              │
 fresh   │ snapshot.debian.org │   ↑    │ immutable signed tags               │ AOS ahead
 clone   │ APT-specific client │   ↑    │ stock `git clone` (dumb HTTP)       │ AOS ahead
@@ -450,7 +451,7 @@ clone   │ APT-specific client │   ↑    │ stock `git clone` (dumb HTTP)  
 **Keep from APT:** signed static-file indices over dumb HTTP; a content-addressed
 pool; the phased-rollout idea; `Valid-Until`; per-source key pinning.
 **Re-map onto git:** `InRelease`→signed tag object; `Packages`→git tree;
-`pool`→object store; pdiff→thin delta packs; `Phased-Update-%`→16 partitions;
+`pool`→object store; pdiff→thin delta packs; `Phased-Update-%`→256 partitions;
 `by-hash`→content-addressed objects; `Valid-Until`→tag `valid_until`.
 **Drop:** regenerated flat `Packages`, OpenPGP, `Depends` solver, `Components`,
 `Contents-<arch>`, rsync-mirror publish.
@@ -463,7 +464,7 @@ pool; the phased-rollout idea; `Valid-Until`; per-source key pinning.
 - [`architecture.md`](./architecture.md) — git-repo-over-dumb-HTTP; superset of git and Nix.
 - [`current-state.md`](./current-state.md) — the as-is bundle/`creation_token` implementation.
 - [`http-layout.md`](./http-layout.md) — HTTP/object layout, object store, `http-alternates`, stock-git compat.
-- [`versioning-and-channels.md`](./versioning-and-channels.md) — semver, channels-as-branches, 16-partition rollout.
+- [`versioning-and-channels.md`](./versioning-and-channels.md) — semver, channels-as-branches, 256-partition rollout.
 - [`packs-and-deltas.md`](./packs-and-deltas.md) — pack-objects, thin/full packs, the delta scheme, zstd.
 - [`tag-metadata.md`](./tag-metadata.md) — the channel/release tag-message TOML schema.
 - [`signing-and-trust.md`](./signing-and-trust.md) — signed tag objects, name-binding, `tag→tag→commit`.

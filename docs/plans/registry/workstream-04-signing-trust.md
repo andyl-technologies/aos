@@ -36,7 +36,7 @@ tag-message schema it verifies is
 |---|---|---|
 | sha256 bare repo, dumb HTTP, `http-alternates` | [01](./workstream-01-object-store.md) | requires sha256; verifies objects fetched over it |
 | thin/full packs, zstd, delta graph | [02](./workstream-02-pack-delta-pipeline.md) | verifies the *commit* a delta resolves to |
-| 16 partition tags, frontier branch, bucket | [03](./workstream-03-channels-rollouts.md) | signs + name-binds the 16 partition tags |
+| 256 partition tags, frontier branch, bucket | [03](./workstream-03-channels-rollouts.md) | signs + name-binds the 256 partition tags |
 | consumer resolution & retention | [05](./workstream-05-consumer.md) | exposes the verify gate it calls |
 
 ---
@@ -101,7 +101,7 @@ Per brief §5 there are three ref layers; **only the tag objects are signed**:
 | `HEAD` | symref → `refs/heads/<default-channel>` | no | no |
 | `refs/heads/<channel>` | branch ptr → frontier commit | **no** | **no** (convenience pointer) |
 | `refs/tags/<semver>` | annotated tag → commit | **yes** | yes (release tag) |
-| `/channel/<name>/<0..f>` | 16 annotated tags → semver tag | **yes** | yes (partition tags) |
+| `/channel/<name>/<00..ff>` | 256 annotated tags → semver tag | **yes** | yes (partition tags) |
 
 Branch refs are **unsigned convenience pointers**: `refs/heads/<channel>` points
 at the **frontier** (the commit of the newest release any partition targets), so
@@ -112,7 +112,7 @@ git-clone concept. AOS trust derives **only** from the signed tags.
 ### 3.2 The `tag → tag → commit` chain
 
 ```
-/channel/stable/7                       refs/tags/1.4.2                     commit
+/channel/stable/b7                      refs/tags/1.4.2                     commit
 ┌───────────────────────────┐  →obj→   ┌───────────────────────────┐  →obj→ ┌─────────┐
 │ annotated tag object       │          │ annotated tag object       │        │ release  │
 │  tag-name field: "stable"  │          │  tag-name field: "1.4.2"   │        │ commit   │
@@ -147,17 +147,17 @@ The serving path also names the tag:
 
 | Object served at | Expected embedded tag-name |
 |---|---|
-| `/channel/stable/0 … /f` | `stable` (the channel name — **all 16 share it**) |
-| `/channel/testing/0 … /f` | `testing` |
+| `/channel/stable/00 … /ff` | `stable` (the channel name — **all 256 share it**) |
+| `/channel/testing/00 … /ff` | `testing` |
 | `refs/tags/1.4.2` | `1.4.2` |
 | `refs/tags/1.0.0-beta+exp.sha.5114f85` | `1.0.0-beta+exp.sha.5114f85` |
 
-All 16 partition tags for a channel carry the **same** tag-name (the channel
+All 256 partition tags for a channel carry the **same** tag-name (the channel
 name); they differ only by which **semver tag they target** and their
 **signature object** (each is independently signed so partitions advance
 independently — see
 [workstream-03](./workstream-03-channels-rollouts.md)). The partition index
-`0..f` is a *path* coordinate, **not** part of the embedded name.
+`00..ff` is a *path* coordinate, **not** part of the embedded name.
 
 > **Attack this stops.** Without name-binding, a CDN/mirror operator could serve
 > a genuine, validly-signed `stable` partition tag at the `/channel/testing/*`
@@ -267,7 +267,7 @@ pointless — the consumer's floor blocks it anyway. The trust layer therefore
 ### 7.1 `apr sign` → sign **tag objects** (G1, G8)
 
 CURRENT `apr sign` amends and signs the *commit* (`registry_ops.rs:1770`).
-TARGET signs the **release tag** and the **16 channel partition tags** with
+TARGET signs the **release tag** and the **256 channel partition tags** with
 SSH/Ed25519, each carrying the TOML message. The git mechanics:
 
 ```sh
@@ -287,7 +287,7 @@ git -c gpg.format=ssh -c user.signingkey=<key> \
 - The tag **message** is generated to the canonical schema — exactly `[meta]`
   (`schema`, `valid_until`) and optional `[[caches]]` (`url`, `priority`), **no
   other tables** (brief §14, [tag-metadata.md](../../registry/tag-metadata.md)).
-- The publish step copies the signed tag *object bytes* to the 16
+- The publish step copies the signed tag *object bytes* to the 256
   `/channel/<name>/<n>` paths — the rollout coordinate is the path, the embedded
   name stays the channel name (§3.3).
 
@@ -310,13 +310,13 @@ bundle headers.
 ## 8. Consumer verification — algorithm
 
 This is the gate [workstream-05](./workstream-05-consumer.md) calls after
-selecting a bucket. Inputs: `channel`, `bucket ∈ 0..f`, the registry's trusted
+selecting a bucket. Inputs: `channel`, `bucket ∈ 00..ff`, the registry's trusted
 key (via `KeyStore::lookup`, TOFU on first use), and the persisted semver floor.
 
 ```
 verify_and_select(channel, bucket):
   key = KeyStore.lookup(channel-registry)        # security.rs:70  (TOFU if absent)
-  ptag = fetch("/channel/{channel}/{bucket}")    # probe-forward (bucket+1)%16 if missing
+  ptag = fetch("/channel/{channel}/{bucket}")    # probe-forward (bucket+1)%256 if missing
   # --- HOP 1: channel partition tag ---
   assert verify_tag_signature(ptag, key)         # retargeted security.rs:199
   assert tag_name(ptag) == channel               # NAME-BINDING (brief §5)

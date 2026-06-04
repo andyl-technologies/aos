@@ -15,7 +15,7 @@ objects**. See [`architecture.md`](architecture.md) for the broader picture and
 [`http-layout.md`](http-layout.md) for the byte-level object layout.
 
 Related siblings:
-[`versioning-and-channels.md`](versioning-and-channels.md) (the 16-partition rollout
+[`versioning-and-channels.md`](versioning-and-channels.md) (the 256-partition rollout
 and bucket selection), [`tag-metadata.md`](tag-metadata.md) (the tag-message TOML
 schema), [`publishing.md`](publishing.md) (how the producer signs and advances
 partitions), and [`nix-cache-compatibility.md`](nix-cache-compatibility.md) (the NAR
@@ -33,7 +33,7 @@ are unsigned convenience pointers and are **never** part of the trust chain.
 | `HEAD` | symref → `refs/heads/<default-channel>` (e.g. `stable`) | no | no | stock git + AOS |
 | `refs/heads/<channel>` | channels are **branches**; head = **frontier** | no (ref pointer) | **no** | stock git convenience |
 | `refs/tags/<semver>` | release: signed annotated tag → commit | **yes** | **yes** | stock (`verify-tag`) + AOS |
-| `/channel/<name>/<0..f>` | 16 signed partition tag objects (tag name == channel name) → semver tag | **yes** | **yes** | AOS rollout only |
+| `/channel/<name>/<00..ff>` | 256 signed partition tag objects (tag name == channel name) → semver tag | **yes** | **yes** | AOS rollout only |
 
 Key consequences:
 
@@ -46,7 +46,7 @@ Key consequences:
   `refs/tags/<semver>` is itself the signed object, any third party can run
   `git verify-tag <semver>` against the trusted key without any AOS tooling.
 - **Channel partition tags are AOS-only.** They live *outside* the ref namespace at
-  `/channel/<name>/<0..f>` (16 files), so they never appear in `info/refs` and a
+  `/channel/<name>/<00..ff>` (256 files), so they never appear in `info/refs` and a
   stock dumb clone never sees them.
 
 ---
@@ -166,7 +166,7 @@ Each hop performs **two** checks; both must pass:
    `allowed_signers` mechanism of §2.3).
 2. **Name-binding check** — the **embedded tag-name field** inside the tag object
    equals the **expected name for its serving path**:
-   - under `/channel/<name>/<0..f>`, every one of the 16 partition tags must have an
+   - under `/channel/<name>/<00..ff>`, every one of the 256 partition tags must have an
      embedded tag name **== `<name>`** (the channel name);
    - under `/release/<major>/<minor>/<patch…>/` (i.e. `refs/tags/<semver>`), the
      embedded tag name **== `<semver>`**.
@@ -177,7 +177,7 @@ A bare signature check answers "did the registry owner sign *some* tag?" but **n
 "is this the tag that *belongs at this path*?" Without name-binding, an attacker (or a
 buggy mirror) who can rearrange static files could serve a validly-signed tag at the
 wrong path — e.g. place the signed `1.0.0` release tag under
-`/channel/stable/3`, or serve the `testing` channel tag where `stable` is expected.
+`/channel/stable/3f`, or serve the `testing` channel tag where `stable` is expected.
 Both substitutions carry a genuine signature and would pass a naive verifier.
 
 Binding the **embedded tag-name == expected path name** closes this: the tag object
@@ -243,7 +243,7 @@ tag type:
 
 | Tag type | `valid_until` is… | Paired with | Rationale |
 |---|---|---|---|
-| **Channel** (`/channel/<name>/<0..f>`) | a **freshness** knob — "this rollout pointer is current until then" | **low CDN TTL** on `/channel/**` | a stale channel pointer must expire quickly so a consumer re-fetches and sees rollout advances; a short `valid_until` plus low TTL keeps the fleet converging |
+| **Channel** (`/channel/<name>/<00..ff>`) | a **freshness** knob — "this rollout pointer is current until then" | **low CDN TTL** on `/channel/**` | a stale channel pointer must expire quickly so a consumer re-fetches and sees rollout advances; a short `valid_until` plus low TTL keeps the fleet converging |
 | **Release** (`refs/tags/<semver>`) | a **generous signature-trust / key-rotation lifetime** | **long CDN TTL** on `/release/**` (releases are immutable) | a release is immutable; its `valid_until` governs how long the *signature* is considered trusted before a re-sign / key rotation, and it **must not fight** the long release TTL |
 
 Two hard constraints:
@@ -404,7 +404,7 @@ The removed-concept guardrails (no `registry.toml`, no `[signature]` table, no
 - [`README.md`](README.md) — registry doc index and glossary.
 - [`architecture.md`](architecture.md) — git-over-dumb-HTTP, the three ref layers.
 - [`http-layout.md`](http-layout.md) — HTTP/object layout, CDN TTLs, sha256 object store.
-- [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, 16-partition rollout, bucket selection, anti-rollback.
+- [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, 256-partition rollout, bucket selection, anti-rollback.
 - [`tag-metadata.md`](tag-metadata.md) — the `[meta]` + `[[caches]]` tag-message TOML schema.
 - [`packs-and-deltas.md`](packs-and-deltas.md) — what the verified commit's object store contains.
 - [`publishing.md`](publishing.md) — producer pipeline: commit → sign → pack → advance partitions.

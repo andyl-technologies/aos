@@ -27,8 +27,8 @@
   static files over dumb HTTP**. The package metadata *is* the git tree content.
 - **Channel** — a named release line (e.g. `stable`, `testing`). Modeled as a git
   **branch** (`refs/heads/<channel>`) whose head is the rollout **frontier**, and
-  as **16 signed partition tag objects** (`/channel/<name>/0..f`) for rollout.
-- **Partition / bucket** — one of exactly **16** channel partitions (`0`–`f`). A
+  as **256 signed partition tag objects** (`/channel/<name>/00..ff`) for rollout.
+- **Partition / bucket** — one of exactly **256** channel partitions, one byte (`00`–`ff`). A
   consumer deterministically self-selects one bucket. The publisher advances
   partitions independently to control rollout.
 - **Release** — an immutable semver version (e.g. `1.1.0`, `1.0.0-beta+exp.sha.5114f85`,
@@ -110,7 +110,7 @@ benefits).
     <xx>/<62-hex>                  ← loose objects, sha256 2/62 split (dumb HTTP)         [immutable, high TTL]
   channel/
     <name>/                                                                              [low TTL]
-      0 .. f                       ← 16 SIGNED tag objects (tag name == <name>),
+      00 .. ff                     ← 256 SIGNED tag objects (one byte; tag name == <name>),
                                        each → a semver tag (rollout partitions)
   release/
     <major>/<minor>/<patch[-prerelease][+build]>/                                        [long TTL, immutable]
@@ -139,7 +139,7 @@ CDN policy (explicit requirements):
 | `HEAD` | symref → `refs/heads/<default-channel>` | no | stock + AOS |
 | `refs/heads/<channel>` | **channels are branches**; head = **frontier** (newest release any partition targets) | no (ref pointer) | stock git convenience |
 | `refs/tags/<semver>` | release: signed tag → commit | **yes** | stock (`verify-tag`) + AOS |
-| `/channel/<name>/<0..f>` | 16 signed partition tag objects (name == channel) → semver tag | **yes** | AOS rollout only |
+| `/channel/<name>/<00..ff>` | 256 signed partition tag objects (name == channel) → semver tag | **yes** | AOS rollout only |
 
 **Trust chain:** AOS verification is `signed partition tag → signed semver tag →
 commit`, checking both the signature **and** the embedded tag-name field against the
@@ -152,17 +152,17 @@ still `git verify-tag <semver>` because the release tags are the signed objects.
 
 ## 6. Channels & rollouts
 
-- A channel exposes exactly **16** partition files `/channel/<name>/0..f`, each an
+- A channel exposes exactly **256** partition files `/channel/<name>/00..ff` (one byte), each an
   independently-signed tag object (tag name == channel name) pointing at a semver
-  tag. There **must always be 16**; if one is missing a client **may** use another
-  (deterministic probe-forward `(bucket+1) mod 16`).
+  tag. There **must always be 256**; if one is missing a client **may** use another
+  (deterministic probe-forward `(bucket+1) mod 256`).
 - **Consumer bucket selection** is deterministic and persisted (e.g.
-  `sha256(machine_id) mod 16`, written once) so a host does not flap between buckets.
-- **Publisher-controlled rollout:** to roll a new release to N/16 of the fleet, point
+  the low byte of `sha256(machine_id)` — i.e. `mod 256` — written once) so a host does not flap between buckets.
+- **Publisher-controlled rollout:** to roll a new release to N/256 of the fleet, point
   N partitions at the new semver tag and leave the rest on the prior release. This
   *answers "where does the rest of the fleet go"* explicitly — the un-advanced
   partitions still name the prior release. Advance partitions as confidence grows;
-  completion = all 16 point at the new release.
+  completion = all 256 point at the new release.
 - **Branch head = frontier:** `refs/heads/<channel>` points at the commit of the
   newest release any partition targets (the rollout target). Implication: stock
   `git pull <channel>` always gets the frontier (no rollout protection) — acceptable,
@@ -286,7 +286,7 @@ transparently clonable, the origin serves the standard shim: `HEAD`, `info/refs`
 - **Thin `delta-*.pack`s are NOT listed in `info/packs`** (a stock dumb client can't
   apply a thin pack); AOS clients discover them by the `delta-<semver>` convention.
 - **Channels are branches**, **releases are tags**, **`HEAD` = the default channel**
-  (e.g. `stable`); the 16 partition tag objects live outside the ref namespace at
+  (e.g. `stable`); the 256 partition tag objects live outside the ref namespace at
   `/channel/*` and are AOS-only.
 - **Loose objects guarantee correctness** for any stock client; conventionally-named
   full packs restore speed.
@@ -332,7 +332,7 @@ store carries everything else.
 `registry.toml` (entirely) · `bundle-list.toml` · git **bundles** · the `[latest]`
 pointer · `[components]` · `[capabilities]` · the percentage-based rollout, the
 `[channels.<name>.rollout]` sub-block, and `previous_tag`/baseline+candidate framing
-(replaced by 16 partitions) · calendar versioning and `creation_token` ordering
+(replaced by 256 partitions) · calendar versioning and `creation_token` ordering
 (replaced by semver + git ancestry) · the by-hash `[[bundles]]`/`[[deltas]]` index
 (replaced by the git object store + `http-alternates`).
 
@@ -375,7 +375,7 @@ code as `path:line`; cross-link siblings.
   `HEAD`/`http-alternates`, **and a "stock git dumb-HTTP compatibility" section**
   (§4, §8, §12).
 - `versioning-and-channels.md` — semver (no `v`), channels-as-branches, frontier
-  head, the 16-partition rollout, bucket selection, anti-rollback (§5–7).
+  head, the 256-partition rollout, bucket selection, anti-rollback (§5–7).
 - `packs-and-deltas.md` — pack-objects, thin vs full packs, the delta scheme graph,
   client resolution + retention, and zstd (§9–10).
 - `tag-metadata.md` — the channel/release tag-message TOML schema (§14).
@@ -388,7 +388,7 @@ code as `path:line`; cross-link siblings.
   `[[caches]]`; light edit to the new mechanism (§13).
 - `apt-comparison.md` — updated comparison: the design is now git-native + dumb-HTTP;
   keep the signed-flat-file/`pool`/phased-rollout lineage, map bundles/pdiff →
-  git packs/thin-delta scheme, percentage rollout → 16 partitions.
+  git packs/thin-delta scheme, percentage rollout → 256 partitions.
 
 **`docs/plans/registry/`:**
 - `README.md` — plan overview, target summary, milestone roadmap, sequencing.
@@ -399,7 +399,7 @@ code as `path:line`; cross-link siblings.
   `HEAD`/`http-alternates`/`update-server-info`, per-release object dirs.
 - `workstream-02-pack-delta-pipeline.md` — pack-objects thin/full, the delta scheme,
   zstd, expensive-producer tuning.
-- `workstream-03-channels-rollouts.md` — 16 signed partition tags, channels-as-
+- `workstream-03-channels-rollouts.md` — 256 signed partition tags, channels-as-
   branches/frontier, bucket selection, publisher rollout control.
 - `workstream-04-signing-trust.md` — signed tag objects, name-binding, sha256,
   `valid_until`, anti-rollback/fix-forward.

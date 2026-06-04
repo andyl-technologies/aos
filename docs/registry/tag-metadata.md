@@ -1,7 +1,7 @@
 # Tag-Message Metadata — The Signed-Tag TOML Schema
 
 > **Scope:** the **TOML message body** carried by every signed git tag object in
-> an AOS registry — both the 16 channel **partition** tags (`/channel/<name>/0..f`)
+> an AOS registry — both the 256 channel **partition** tags (`/channel/<name>/00..ff`)
 > and the per-release **semver** tags (`refs/tags/<semver>`). It supports exactly
 > two tables: `[meta]` and `[[caches]]`. Nothing else.
 >
@@ -70,7 +70,7 @@ The same schema is carried by **both** kinds of signed tag:
 
 | Tag kind | Path / ref | `tag` name field | Points at | Where the schema rides |
 |---|---|---|---|---|
-| Channel partition | `/channel/<name>/<0..f>` | `<name>` (the channel) | a semver tag | partition tag message |
+| Channel partition | `/channel/<name>/<00..ff>` | `<name>` (the channel) | a semver tag | partition tag message |
 | Release | `refs/tags/<semver>` | `<semver>` | the release commit | release tag message |
 
 The `tag` name field is **not** part of this TOML schema — it is a native git tag
@@ -151,10 +151,10 @@ url      = "./nar"                      # relative → same origin serves the NA
 priority = 100
 ```
 
-### 3.2 A channel partition tag (`/channel/stable/3`)
+### 3.2 A channel partition tag (`/channel/stable/3f`)
 
 ```toml
-# Message of the signed partition tag `stable` (one of 16: /channel/stable/0..f)
+# Message of the signed partition tag `stable` (one of 256: /channel/stable/00..ff)
 # → a semver tag. `valid_until` here is a FRESHNESS knob, kept SHORT and paired
 # with the low CDN TTL on /channel/** (design brief §4, §11).
 
@@ -188,7 +188,7 @@ depending on which kind of tag carries it (design brief §11). It is the produce
 job to set an appropriate window; it is the consumer's job to reject an expired
 tag (fail closed).
 
-| | Channel partition tag (`/channel/<name>/<0..f>`) | Release tag (`refs/tags/<semver>`) |
+| | Channel partition tag (`/channel/<name>/<00..ff>`) | Release tag (`refs/tags/<semver>`) |
 |---|---|---|
 | **Role** | **Freshness** knob | **Generous** signature-trust / key-rotation lifetime |
 | **Typical window** | short (hours–days) | long (months–year) |
@@ -205,7 +205,7 @@ channel's would force needless re-signing of immutable artifacts and could expir
 release the CDN is still happily (and correctly) serving.
 
 ```
-   /channel/stable/3  (low CDN TTL)        refs/tags/1.2.0  (long CDN TTL)
+   /channel/stable/3f (low CDN TTL)        refs/tags/1.2.0  (long CDN TTL)
    valid_until = +1 week  ───────┐         valid_until = +12 months ───────┐
         freshness                │              key-rotation horizon        │
    "fail closed if a mirror      │         "trust this signature until      │
@@ -257,7 +257,7 @@ design brief §15 — and must not be reintroduced.)
 |---|---|---|
 | **`pubkey` / `[signature]`** | the **tag object itself** (SSH-format Ed25519 sig over the whole object) | The signature is *on* the tag, not *in* its message; a key embedded in its own signed payload authenticates nothing. Trust roots in TOFU + `trusted-keys.d` ([signing-and-trust](./signing-and-trust.md)). |
 | **`[latest]` / `head` commit SHA** | **refs** — `refs/heads/<channel>` head is the frontier; the partition tag points at a semver tag → commit | Pointers are refs; the ref namespace *is* the "what's newest" index. A `[latest]` table would be a redundant pointer-to-a-pointer. (Removed — §15.) |
-| **`[channels]` / rollout config** | the **16 partition tag objects** under `/channel/<name>/0..f` | Rollout is expressed by *which semver* each of the 16 signed partitions points at — structure, not a config field. (Percentage rollouts & `[channels]` removed — §15.) |
+| **`[channels]` / rollout config** | the **256 partition tag objects** under `/channel/<name>/00..ff` | Rollout is expressed by *which semver* each of the 256 signed partitions points at — structure, not a config field. (Percentage rollouts & `[channels]` removed — §15.) |
 | **`[components]` / `[capabilities]`** | — (removed from the target) | Not part of the git-native model. (Removed — §15.) |
 | **`[[bundles]]` / `[[deltas]]` index** | the **git object store** + `objects/info/http-alternates` + `delta-<from>.pack` naming | Objects are the store; packs/deltas are discovered by convention and `http-alternates`, not a by-hash table. (Removed — §15.) |
 | **`name` / `date`** | tag header (`tag`, `tagger <when>`) | Native git tag headers already carry the name and the sign time; no need to restate them in TOML. |
@@ -316,7 +316,7 @@ field a reader checks.
 
 ## 8. Summary
 
-- Every signed tag — the 16 channel **partition** tags and the per-release
+- Every signed tag — the 256 channel **partition** tags and the per-release
   **semver** tags — carries a **TOML message** with **exactly** `[meta]` and
   `[[caches]]`.
 - `[meta]` = `schema` (int) + `valid_until` (RFC 3339). `[[caches]]` = `url`

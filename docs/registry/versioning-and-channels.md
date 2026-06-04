@@ -6,7 +6,7 @@
 >
 > **Scope:** how AOS registries are *versioned* (**semver, no `v` prefix**), how a
 > channel is modeled (**a git branch whose head is the rollout *frontier***), how
-> rollout is driven (**16 signed partition tag objects per channel**), how a
+> rollout is driven (**256 signed partition tag objects per channel**), how a
 > consumer self-selects one of those partitions (**deterministic, persisted bucket
 > with probe-forward fallback**), and how downgrades are prevented
 > (**monotonic anti-rollback floor + fix-forward abort**).
@@ -53,7 +53,7 @@ us versioning and fleet rollout:
 |---|---|---|---|
 | **Release** | semver git **tag** `refs/tags/<semver>` → commit | **yes** | stock git (`verify-tag`) + AOS |
 | **Channel (branch)** | `refs/heads/<channel>`, head = **frontier** | no (ref pointer) | stock git convenience |
-| **Channel (rollout)** | **16 signed partition tag objects** `/channel/<name>/0..f` | **yes** | AOS rollout only |
+| **Channel (rollout)** | **256 signed partition tag objects** `/channel/<name>/00..ff` | **yes** | AOS rollout only |
 
 The release tag is the **immutable, signed unit of distribution**. The channel
 *branch* is an **unsigned convenience pointer** at the rollout *frontier* (the
@@ -69,18 +69,18 @@ bucketed rollout surface** the AOS client actually follows.
    refs/heads/stable ─────────────┘  (unsigned; newest release any partition targets)
 
    channel partitions (signed tag objects, name == "stable", → semver tag):
-     /channel/stable/0 ─► 1.1.0     ─┐
-     /channel/stable/1 ─► 1.1.0      │  publisher has advanced 4/16
-     /channel/stable/2 ─► 1.1.0      │  partitions to 1.1.0 ...
-     /channel/stable/3 ─► 1.1.0     ─┘
-     /channel/stable/4 ─► 1.0.0     ─┐
-     ...                             │  ... and left 12/16 on the prior
-     /channel/stable/f ─► 1.0.0     ─┘  release 1.0.0
+     /channel/stable/00 ─► 1.1.0    ─┐
+     /channel/stable/01 ─► 1.1.0     │  publisher has advanced 4/256
+     /channel/stable/02 ─► 1.1.0     │  partitions to 1.1.0 ...
+     /channel/stable/03 ─► 1.1.0    ─┘
+     /channel/stable/04 ─► 1.0.0    ─┐
+     ...                             │  ... and left 252/256 on the prior
+     /channel/stable/ff ─► 1.0.0    ─┘  release 1.0.0
 ```
 
 > **Design philosophy.** Rollout is an **AOS-fleet** concept, not a `git clone`
 > concept. A stock `git pull <channel>` always lands on the frontier (no rollout
-> protection); only AOS clients honor the 16-partition bucketing. This is an
+> protection); only AOS clients honor the 256-partition bucketing. This is an
 > accepted trade for staying a clean superset of stock dumb-HTTP git.
 
 ---
@@ -152,7 +152,7 @@ ways simultaneously:
 ### 3.1 The branch (unsigned convenience pointer)
 
 `refs/heads/<channel>` is an ordinary git branch. Its head points at the commit of
-the **frontier**: the newest release *any* of the channel's 16 partitions targets
+the **frontier**: the newest release *any* of the channel's 256 partitions targets
 (i.e. the current rollout target).
 
 - `HEAD` is a symref to `refs/heads/<default-channel>` (e.g. `stable`), so a bare
@@ -165,7 +165,7 @@ the **frontier**: the newest release *any* of the channel's 16 partitions target
 ```
 HEAD ──symref──► refs/heads/stable ──► commit(1.1.0)   ← frontier
                                             ▲
-                 newest release any /channel/stable/<0..f> targets
+                 newest release any /channel/stable/<00..ff> targets
 ```
 
 > **Implication.** `git pull stable` always advances to the frontier — there is no
@@ -181,15 +181,15 @@ out," not "what the median host runs."
 
 ---
 
-## 4. The 16 signed partition tag objects (TARGET)
+## 4. The 256 signed partition tag objects (TARGET)
 
-Each channel exposes **exactly 16** partition files:
+Each channel exposes **exactly 256** partition files:
 
 ```
-/channel/<name>/0
-/channel/<name>/1
+/channel/<name>/00
+/channel/<name>/01
    ...
-/channel/<name>/f          (hex 0..f → 16 partitions)
+/channel/<name>/ff         (one byte (two hex digits, 00–ff) → 256 partitions)
 ```
 
 Each file is an **independently signed annotated tag object** whose **tag name field
@@ -210,13 +210,13 @@ path and prevents cross-serving a tag from one path at another. See
 [tag-metadata](./tag-metadata.md) for the signature format and the tag-message TOML
 (only `[meta]` + `[[caches]]`).
 
-> **Invariant: there must always be 16.** A complete channel has all of `0..f`
+> **Invariant: there must always be 256.** A complete channel has all of `00..ff`
 > present and signed. If a partition file is temporarily missing or fails
 > verification, a client **MAY** fall back to another partition via deterministic
 > **probe-forward** (§5.3) — it does **not** treat a single missing partition as a
 > channel-wide failure.
 
-These 16 tag objects live **outside** the git ref namespace (under `/channel/*`, not
+These 256 tag objects live **outside** the git ref namespace (under `/channel/*`, not
 `refs/`). They are **AOS-only**; stock dumb-HTTP git never sees them and is
 unaffected.
 
@@ -226,12 +226,12 @@ unaffected.
 
 ### 5.1 Deterministic, persisted bucket
 
-A consumer self-selects **one** of the 16 partitions, deterministically and
+A consumer self-selects **one** of the 256 partitions, deterministically and
 **persisted once**, so a host does not flap between buckets across `apm update`
 runs:
 
 ```
-bucket = sha256(machine_id) mod 16          # 0..f, computed once, then persisted
+bucket = the low byte of sha256(machine_id) (i.e. mod 256)   # 00..ff, computed once, then persisted
 ```
 
 - `machine_id` is a stable per-host identifier; its exact source (e.g.
@@ -247,7 +247,7 @@ bucket = sha256(machine_id) mod 16          # 0..f, computed once, then persiste
 On `apm update`, an AOS client resolves its target release like this:
 
 ```
-1. bucket  ← persisted sha256(machine_id) mod 16            (§5.1)
+1. bucket  ← persisted low byte of sha256(machine_id) (mod 256)  (§5.1)
 2. fetch   /channel/<name>/<bucket>                          (signed partition tag)
 3. verify  signature + tag-name field == <name>             (name-binding, §4)
 4. follow  partition tag → semver tag; verify sig + name == <semver>
@@ -266,10 +266,10 @@ probes forward deterministically:
 
 ```
 b ← bucket
-repeat up to 16 times:
+repeat up to 256 times:
     try /channel/<name>/<hex(b)>
     if present AND verifies → use it
-    else b ← (b + 1) mod 16
+    else b ← (b + 1) mod 256
 if none usable → channel is unavailable → fail closed (do not invent a target)
 ```
 
@@ -280,23 +280,24 @@ fallback choice is itself reproducible and does not reshuffle the host between r
 
 ## 6. Publisher-controlled rollout (TARGET)
 
-Rollout is driven entirely by **how many of the 16 partitions point at the new
-release**. To roll a new release to N/16 of the fleet:
+Rollout is driven entirely by **how many of the 256 partitions point at the new
+release**. To roll a new release to N/256 of the fleet:
 
 ```
 point N partitions at the new semver tag;
-leave (16 − N) partitions on the prior release.
+leave (256 − N) partitions on the prior release.
 ```
 
 A host adopts the new release iff its persisted bucket maps to a partition that has
 been advanced. Because buckets are stable, **the same hosts adopt first** as the
-publisher ramps `4/16 → 8/16 → 16/16`; the cohort is monotone, never reshuffled.
+publisher ramps `1/256 → 16/256 → 128/256 → 256/256`; the cohort is monotone, never
+reshuffled.
 
 ```
- step 0   advance 1/16    /channel/stable/0 → 1.1.0    canary (one bucket)
- step 1   advance 4/16    /channel/stable/0..3 → 1.1.0 widen if healthy
- step 2   advance 8/16    /channel/stable/0..7 → 1.1.0 half the fleet
- step 3   advance 16/16   /channel/stable/0..f → 1.1.0 complete
+ step 0   advance 1/256     /channel/stable/00 → 1.1.0       canary (one bucket, ~0.4%)
+ step 1   advance 16/256    /channel/stable/00..0f → 1.1.0   widen if healthy (~6%)
+ step 2   advance 128/256   /channel/stable/00..7f → 1.1.0   half the fleet (50%)
+ step 3   advance 256/256   /channel/stable/00..ff → 1.1.0   complete (100%)
 ```
 
 Key properties:
@@ -305,12 +306,12 @@ Key properties:
   un-advanced partitions still *name the prior release* — there is no separate
   `previous_tag`/baseline concept. A held host resolves its (un-advanced) partition
   and lands on the prior release, a no-op relative to where it already is.
-- **Completion = all 16 point at the new release.** At that point every bucket maps
+- **Completion = all 256 point at the new release.** At that point every bucket maps
   to the new release and the rollout is done.
 - **The branch head tracks the frontier** (§3.1): as soon as the first partition is
   advanced to `1.1.0`, `refs/heads/stable` points at `commit(1.1.0)`.
-- **The granularity is 1/16 ≈ 6.25%.** This replaces the superseded percentage
-  rollout (any `0..100` value) with a fixed 16-way partitioning — coarser, but it
+- **The granularity is ~0.39% (1/256).** This replaces the superseded percentage
+  rollout (any `0..100` value) with a fixed 256-way partitioning — coarser, but it
   needs **no central host registry** and no per-host reporting: the deterministic
   bucket *is* the cohort assignment.
 
@@ -356,7 +357,7 @@ the floor check and rolls out normally. The semantics: "roll back" means "roll
 
 | Action | Mechanism | Allowed? |
 |---|---|---|
-| Roll out N/16 | advance N partitions to a newer release | yes |
+| Roll out N/256 | advance N partitions to a newer release | yes |
 | Widen rollout | advance more partitions to the same newer release | yes |
 | Abort / "rollback" | publish a newer fixed release, advance partitions to it | yes (fix-forward) |
 | Decrement partitions to an older release | point partitions back at a prior semver | rejected by consumer floor |
@@ -451,56 +452,56 @@ Tracked in [open questions](../plans/registry/open-questions.md).
 
 ## 9. Worked examples
 
-### 9.1 TARGET — a 4/16 rollout, two different hosts
+### 9.1 TARGET — a 4/256 rollout, two different hosts
 
-Publisher advances 4 of 16 `stable` partitions to `1.1.0`; partitions `4..f` still
+Publisher advances 4 of 256 `stable` partitions to `1.1.0`; partitions `04..ff` still
 name `1.0.0`. Two hosts, both on `channel = "stable"`, both currently at floor
 `1.0.0`:
 
 ```
-Host A:  bucket = sha256(machine_id_A) mod 16 = 2
-         /channel/stable/2 → 1.1.0  (advanced)   → adopt 1.1.0; floor ← 1.1.0
-Host B:  bucket = sha256(machine_id_B) mod 16 = 11 (0xb)
-         /channel/stable/b → 1.0.0  (held)        → no-op; stays at 1.0.0
+Host A:  bucket = low byte of sha256(machine_id_A) (mod 256) = 02
+         /channel/stable/02 → 1.1.0  (advanced)  → adopt 1.1.0; floor ← 1.1.0
+Host B:  bucket = low byte of sha256(machine_id_B) (mod 256) = 0xb7
+         /channel/stable/b7 → 1.0.0  (held)       → no-op; stays at 1.0.0
 ```
 
-When the publisher later advances to `8/16`, Host A is unaffected (already at
-`1.1.0`); a host whose bucket is `5` flips from held to adopted. Host B (bucket
-`11`) keeps holding until partition `b` is advanced.
+When the publisher later advances to `8/256`, Host A is unaffected (already at
+`1.1.0`); a host whose bucket is `05` flips from held to adopted. Host B (bucket
+`b7`) keeps holding until partition `b7` is advanced.
 
 ### 9.2 TARGET — frontier vs. median
 
-With the 4/16 rollout above:
+With the 4/256 rollout above:
 
 ```
 refs/heads/stable  → commit(1.1.0)     ← frontier (newest release any partition targets)
 git clone <url>    → checks out 1.1.0  ← stock git gets the frontier, no gating
-AOS fleet median   → still 1.0.0       ← 12/16 buckets are held
+AOS fleet median   → still 1.0.0       ← 252/256 buckets are held
 ```
 
 ### 9.3 TARGET — fix-forward abort
 
-`1.1.0` (rolled to 8/16) is found bad. The publisher does **not** repoint partitions
+`1.1.0` (rolled to 8/256) is found bad. The publisher does **not** repoint partitions
 back to `1.0.0` (consumers' floor would reject it). Instead:
 
 ```
 1. publish 1.1.1 (signed tag → fixed commit, descendant of 1.1.0)
-2. advance the affected partitions: /channel/stable/0..7 → 1.1.1
+2. advance the affected partitions: /channel/stable/00..07 → 1.1.1
 3. hosts at floor 1.1.0 see a NEWER release → adopt 1.1.1 (passes the floor)
    hosts at floor 1.0.0 (held buckets) see 1.0.0 still on their partition → unchanged
 ```
 
 ### 9.4 TARGET — probe-forward fallback
 
-Host bucket = `7`, but `/channel/stable/7` 404s (CDN propagation gap):
+Host bucket = `7f`, but `/channel/stable/7f` 404s (CDN propagation gap):
 
 ```
-try /channel/stable/7  → 404
-try /channel/stable/8  → present + verifies  → use it
+try /channel/stable/7f  → 404
+try /channel/stable/80  → present + verifies  → use it
 ```
 
-The host transiently follows partition `8`'s release for this run; once partition
-`7` is restored, the host returns to its assigned bucket on the next update.
+The host transiently follows partition `80`'s release for this run; once partition
+`7f` is restored, the host returns to its assigned bucket on the next update.
 
 ---
 
@@ -520,10 +521,10 @@ The host transiently follows partition `8`'s release for this run; once partitio
   baseline: [current-state](./current-state.md).
 - **The Nix binary-cache superset** advertised via relative `[[caches]]`:
   [nix-cache-compatibility](./nix-cache-compatibility.md).
-- **APT precedent** (signed flat-file lineage, `pool`, phased rollout → 16
+- **APT precedent** (signed flat-file lineage, `pool`, phased rollout → 256
   partitions): [apt-comparison](./apt-comparison.md).
 - **Implementation plan:**
-  [workstream-03](../plans/registry/workstream-03-channels-rollouts.md) (16 signed
+  [workstream-03](../plans/registry/workstream-03-channels-rollouts.md) (256 signed
   partition tags, channels-as-branches/frontier, bucket selection, publisher rollout
   control),
   [workstream-04](../plans/registry/workstream-04-signing-trust.md) (signed tag

@@ -41,7 +41,7 @@ A publish has two strictly-ordered halves that must never be confused:
    changes meaning.
 2. **Flip the mutable pointers.** Regenerate the repo-root `info/refs` / `HEAD` /
    `objects/info/http-alternates`, bump `refs/heads/<channel>` to the frontier,
-   and advance the signed `/channel/<name>/<0..f>` partition tags. These are the
+   and advance the signed `/channel/<name>/<00..ff>` partition tags. These are the
    *only* mutable surfaces, and they are published **last**, after every object
    they can possibly reference already exists at the origin.
 
@@ -57,7 +57,7 @@ A publish has two strictly-ordered halves that must never be confused:
    │ 6  root update-server-info (info/refs, HEAD)      │                          ▼
    │ 7  regen objects/info/http-alternates            │                  ┌────────────────┐
    │ 8  bump refs/heads/<channel> → frontier          │                  │  HTTP / CDN     │
-   │ 9  advance /channel/<name>/0..f partition tags    │─────────────────▶│  origin (dumb   │
+   │ 9  advance /channel/<name>/00..ff partition tags  │─────────────────▶│  origin (dumb   │
    │ 10 upload with per-path CDN TTLs                  │                  │  git static)    │
    └────────────────────────────────────────────────┘                  └────────────────┘
                                                                                  │
@@ -132,7 +132,7 @@ to a mirror.
 | `<semver>` | Standard semver, **no `v` prefix** (`1.2.0`, `1.0.0-beta+exp.sha.5114f85`). |
 | release commit | The commit the semver tag points at (the new registry tree content). |
 | `<channel>` | The release line being advanced (e.g. `stable`, `testing`). |
-| partition plan | How many of the 16 partitions `0..f` advance to `<semver>` this publish (rollout fraction). |
+| partition plan | How many of the 256 partitions `00..ff` advance to `<semver>` this publish (rollout fraction). |
 | signing key | One SSH-format Ed25519 key (reused from `apr sign` / `security.rs`). |
 
 It produces, under [the HTTP/object layout](./http-layout.md):
@@ -146,7 +146,7 @@ It produces, under [the HTTP/object layout](./http-layout.md):
     pack/delta-<from-semver>.pack[.zst] ← THIN deltas (AOS-only; NOT in info/packs)
     <xx>/<62-hex>                     ← this release's new loose objects
 refs/tags/<semver>                    ← signed tag → release commit          [via info/refs]
-/channel/<name>/<0..f>                ← signed partition tags advanced per the rollout plan
+/channel/<name>/<00..ff>              ← signed partition tags advanced per the rollout plan
 refs/heads/<channel>                  ← branch head bumped to the frontier
 /objects/info/{packs,http-alternates} ← repo-root indices regenerated
 /info/refs, /HEAD                     ← regenerated via update-server-info
@@ -348,7 +348,7 @@ These four files (`info/refs`, `HEAD`, `objects/info/packs`,
 |---|---|---|
 | `refs/heads/<channel>` | **channels are branches**; head = **frontier** (newest release any partition targets) | no (unsigned convenience pointer) |
 | `refs/tags/<semver>` | release: signed tag → commit | **yes** |
-| `/channel/<name>/<0..f>` | 16 signed partition tag objects (tag name == channel) → semver tag | **yes** |
+| `/channel/<name>/<00..ff>` | 256 signed partition tag objects (tag name == channel) → semver tag | **yes** |
 
 ### 8.1 Bump the frontier branch head
 
@@ -359,25 +359,25 @@ because rollout is an AOS-fleet concept, not a git-clone concept (design brief
 §6). The branch ref is an **unsigned** pointer and is never part of the trust
 chain.
 
-### 8.2 Advance the 16 partition tags (publisher-controlled rollout)
+### 8.2 Advance the 256 partition tags (publisher-controlled rollout)
 
-A channel exposes **exactly 16** partition files `/channel/<name>/0..f`, each an
+A channel exposes **exactly 256** partition files `/channel/<name>/00..ff`, each an
 **independently-signed** annotated tag object whose **tag name == the channel
-name**, pointing at a semver tag. There must always be 16 present.
+name**, pointing at a semver tag. There must always be 256 present.
 
-**To roll a new release to N/16 of the fleet:** point N partitions at the new
+**To roll a new release to N/256 of the fleet:** point N partitions at the new
 semver tag and **leave the rest on the prior release**. This is the explicit
 answer to "where does the rest of the fleet go" — the un-advanced partitions
 still name the prior release. Advance partitions as confidence grows; completion
-= all 16 point at the new release (design brief §6).
+= all 256 point at the new release (design brief §6).
 
 ```
-  rollout fraction      /channel/stable/0..f  →  semver tag
+  rollout fraction      /channel/stable/00..ff  →  semver tag
   ────────────────      ────────────────────────────────────
-  0/16  (none yet)      0 1 2 3 4 5 6 7 8 9 a b c d e f → 1.1.3
-  4/16  (early ring)    0 1 2 3                         → 1.2.0   (new)
-                                4 5 6 7 8 9 a b c d e f → 1.1.3   (prior)
-  16/16 (complete)      0 1 2 3 4 5 6 7 8 9 a b c d e f → 1.2.0
+  0/256  (none yet)     00 01 02 … fd fe ff → 1.1.3
+  4/256  (early ring)   00 01 02 03         → 1.2.0   (new)
+                        04 05 … fd fe ff    → 1.1.3   (prior)
+  256/256 (complete)    00 01 02 … fd fe ff → 1.2.0
 ```
 
 Each advanced partition is a **fresh signed tag object** (`tag → tag → commit`:
@@ -390,7 +390,7 @@ partitions at it), never partition-decrement: the consumer's monotonic floor
 (anti-rollback) would block a decrement anyway (design brief §6).
 
 > Consumers self-select a bucket deterministically (e.g.
-> `sha256(machine_id) mod 16`, persisted) and probe-forward `(bucket+1) mod 16`
+> the low byte of `sha256(machine_id)` (i.e. mod 256), persisted) and probe-forward `(bucket+1) mod 256`
 > if their partition is missing — see
 > [versioning-and-channels.md](./versioning-and-channels.md). The producer never
 > chooses *which* hosts get a bucket; it only chooses *which buckets advance*.
@@ -459,7 +459,7 @@ objects.
   6–7    info/refs, HEAD,                      MUTABLE pointer   flipped only AFTER 1–5 exist
          objects/info/http-alternates
   8      refs/heads/<channel> (frontier)       MUTABLE pointer   flipped after release objects
-  9      /channel/<name>/0..f partition tags   MUTABLE pointer   flipped LAST (rollout gate)
+  9      /channel/<name>/00..ff partition tags MUTABLE pointer   flipped LAST (rollout gate)
 ```
 
 **Invariant:** every object a pointer can reference (commits, packs, deltas,
@@ -547,7 +547,7 @@ root git update-server-info  (info/refs, objects/info/packs)
 write HEAD = ref: refs/heads/<default-channel>
 regen /objects/info/http-alternates  (all /release/*/objects, newest→oldest)
 bump refs/heads/<channel> → frontier
-advance /channel/<name>/0..f  (N partitions → new semver tag; rest stay on prior)  [signed; name-bound]
+advance /channel/<name>/00..ff  (N partitions → new semver tag; rest stay on prior)  [signed; name-bound]
         │
         ▼
 upload with CDN TTLs:  /release/**, loose, packs = long/immutable
@@ -568,7 +568,7 @@ open question (design brief §16.4;
 - [architecture.md](./architecture.md) — git-repo-over-dumb-HTTP; superset of git and Nix; asymmetric-cost philosophy.
 - [current-state.md](./current-state.md) — full as-is grounding (the bundle/`creation_token` code).
 - [http-layout.md](./http-layout.md) — the HTTP/object layout, CDN TTLs, `info/refs`/`HEAD`/`http-alternates`.
-- [versioning-and-channels.md](./versioning-and-channels.md) — semver, channels-as-branches, frontier, the 16-partition rollout, bucket selection, anti-rollback.
+- [versioning-and-channels.md](./versioning-and-channels.md) — semver, channels-as-branches, frontier, the 256-partition rollout, bucket selection, anti-rollback.
 - [packs-and-deltas.md](./packs-and-deltas.md) — the delta-scheme graph, client resolution + retention, `index-pack --fix-thin`, zstd.
 - [tag-metadata.md](./tag-metadata.md) — the channel/release tag-message TOML schema (`[meta]` + `[[caches]]`).
 - [signing-and-trust.md](./signing-and-trust.md) — signed tag objects, name-binding, `tag→tag→commit`, sha256, unsigned branch refs, `valid_until`.
