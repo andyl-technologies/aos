@@ -32,15 +32,16 @@ anything being placed in the tag message (tags are pure pointers — see
 
 This is **almost unchanged** from today's code — the git-native redesign changed
 *distribution* (refs, tags, objects, packs over dumb HTTP), not the tree's content.
-The two **TARGET** deltas vs. CURRENT are: the signing pubkey moves **out** of
-`registry.toml`, and a new `keys.toml` carries the trust roster.
+The in-repo signing pubkey has moved out of `registry.toml`; the remaining target
+tree work is to emit `keys.toml` as the committed trust roster during registry
+creation/publish.
 
 ---
 
 ## 2. `registry.toml` — registry-level config (root of the tree)
 
 The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
-(`crates/aos-package/src/types.rs:563-570`), read by `read_registry_toml`
+(`crates/aos-package/src/types.rs:563-568`), read by `read_registry_toml`
 (`registry_ops.rs:391-402`) and written with a default at `registry_ops.rs:443-450`.
 
 > **Do not confuse this with the removed signed-HTTP-root `registry.toml`.** An
@@ -71,11 +72,9 @@ priority = 100                         # fallback
   (`types.rs:582-590`). `resolve_mirrors` sorts **descending** (higher first,
   `registry_ops.rs:405-414`); `resolve_mirror` takes the first
   (`download.rs:85-97`). See [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
-- **No signing key here (TARGET).** The CURRENT `RegistryRootConfig` also carries
-  an optional `signing` field of type `RegistrySigningConfig`, which holds
-  `public_key` (`types.rs:593-596`); in the target that is **removed** — a key
-  inside a file authenticated *by* that key is circular for bootstrap. Key trust
-  lives in `keys.toml` + client-side TOFU (§3).
+- **No signing key here.** The in-repo `RegistryRootConfig.signing` field was
+  removed; a key inside a file authenticated *by* that key is circular for
+  bootstrap. Key trust lives in `keys.toml` + client-side TOFU (§3).
 
 ---
 
@@ -217,12 +216,12 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 
 | File | CURRENT (today's code) | TARGET |
 |---|---|---|
-| `registry.toml` | `[registry]` + `[[caches]]` + `[signing].public_key` (`RegistryRootConfig.signing: RegistrySigningConfig`) | `[registry]` + `[[caches]]` — **pubkey removed** |
-| `keys.toml` | — (pubkey lives in `registry.toml`) | **new** trust roster (active keys + revoked) |
+| `registry.toml` | `[registry]` + `[[caches]]` | unchanged shape |
+| `keys.toml` | parser/helpers exist; not emitted by create yet | committed trust roster (active keys + revoked) |
 | `packages/<x>/<name>.toml` | nested `PackageToml` | unchanged |
 | `closures/<hash>` | adjacency list | unchanged |
 | `.gitattributes` | `closures/** -diff` | unchanged |
-| bootstrap trust | `signing.public_key` + TOFU `trusted-keys.d` | TOFU `trusted-keys.d` (pin) + `keys.toml` overlap rotation |
+| bootstrap trust | TOFU `trusted-keys.d` (pin) | TOFU `trusted-keys.d` (pin) + `keys.toml` overlap rotation |
 
 See also: [`signing-and-trust.md`](signing-and-trust.md) (keys, rotation/revocation),
 [`http-layout.md`](http-layout.md) (served layout), `current-state.md` (the as-is
