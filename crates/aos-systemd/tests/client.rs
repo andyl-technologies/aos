@@ -48,7 +48,9 @@ async fn subscribe_called_before_signal_streams() {
 async fn job_done() {
     let h = Harness::new().await;
     h.set_next_result("done");
-    let outcome = with_timeout(h.client.restart_unit("foo.service")).await.unwrap();
+    let outcome = with_timeout(h.client.restart_unit("foo.service"))
+        .await
+        .unwrap();
     assert_eq!(outcome.result, JobResult::Done);
 }
 
@@ -56,7 +58,9 @@ async fn job_done() {
 async fn job_failed() {
     let h = Harness::new().await;
     h.set_next_result("failed");
-    let outcome = with_timeout(h.client.start_unit("foo.service")).await.unwrap();
+    let outcome = with_timeout(h.client.start_unit("foo.service"))
+        .await
+        .unwrap();
     assert_eq!(outcome.result, JobResult::Failed);
 }
 
@@ -64,7 +68,9 @@ async fn job_failed() {
 async fn job_timeout() {
     let h = Harness::new().await;
     h.set_next_result("timeout");
-    let outcome = with_timeout(h.client.start_unit("foo.service")).await.unwrap();
+    let outcome = with_timeout(h.client.start_unit("foo.service"))
+        .await
+        .unwrap();
     assert_eq!(outcome.result, JobResult::Timeout);
 }
 
@@ -72,7 +78,9 @@ async fn job_timeout() {
 async fn job_dependency() {
     let h = Harness::new().await;
     h.set_next_result("dependency");
-    let outcome = with_timeout(h.client.start_unit("foo.service")).await.unwrap();
+    let outcome = with_timeout(h.client.start_unit("foo.service"))
+        .await
+        .unwrap();
     assert_eq!(outcome.result, JobResult::Dependency);
 }
 
@@ -80,7 +88,9 @@ async fn job_dependency() {
 async fn job_unknown_preserves_label() {
     let h = Harness::new().await;
     h.set_next_result("canceled");
-    let outcome = with_timeout(h.client.restart_unit("foo.service")).await.unwrap();
+    let outcome = with_timeout(h.client.restart_unit("foo.service"))
+        .await
+        .unwrap();
     assert_eq!(outcome.result, JobResult::Unknown("canceled".to_string()));
     assert_eq!(outcome.result.label(), "canceled");
 }

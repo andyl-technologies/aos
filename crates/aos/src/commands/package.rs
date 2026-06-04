@@ -1,7 +1,7 @@
 use anyhow::Result;
 
-use aos_core::output::Printer;
 use crate::cli::PackageArgs;
+use aos_core::output::Printer;
 
 /// `aos package` / `apm` — delegate to the package manager crate.
 pub async fn run(args: &PackageArgs, printer: &Printer) -> Result<()> {

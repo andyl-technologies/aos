@@ -16,7 +16,7 @@ use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing::field::{Field, Visit};
-use tracing::{span, Event, Level, Metadata, Subscriber};
+use tracing::{Event, Level, Metadata, Subscriber, span};
 
 /// Install the stderr subscriber as the global default.
 ///

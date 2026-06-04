@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 
 use aos_core::nar::export::ExportTrailer;
-use aos_core::nix::{aos_nix_env, NixCli};
+use aos_core::nix::{NixCli, aos_nix_env};
 
 /// Run `nix-store --export <path>` and collect the resulting export-format
 /// stream (raw NAR + Nix export trailer, uncompressed).
@@ -151,11 +151,7 @@ pub fn streaming_import(
     });
 
     // Build export format: NAR + trailer.
-    let trailer = ExportTrailer::new(
-        store_path,
-        full_refs,
-        full_deriver,
-    );
+    let trailer = ExportTrailer::new(store_path, full_refs, full_deriver);
 
     // Spawn nix-store --import and pipe the export data.
     let mut child = std::process::Command::new("nix-store")
@@ -168,20 +164,31 @@ pub fn streaming_import(
         .context("spawning nix-store --import")?;
 
     {
-        let stdin = child.stdin.as_mut().context("no stdin for nix-store --import")?;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .context("no stdin for nix-store --import")?;
         // Write NAR data.
-        stdin.write_all(&nar_data).context("writing NAR to import")?;
+        stdin
+            .write_all(&nar_data)
+            .context("writing NAR to import")?;
         // Write export trailer.
         trailer.write_to(stdin).context("writing export trailer")?;
     }
 
-    let output = child.wait_with_output().context("waiting for nix-store --import")?;
+    let output = child
+        .wait_with_output()
+        .context("waiting for nix-store --import")?;
     if !output.status.success() {
         anyhow::bail!("nix-store --import failed for {store_path}");
     }
 
     let text = String::from_utf8(output.stdout).context("invalid utf-8 from import")?;
-    Ok(text.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+    Ok(text
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
 }
 
 /// Decompress NAR data.

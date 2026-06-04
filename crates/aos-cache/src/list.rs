@@ -18,7 +18,9 @@ pub async fn run_list(
     let nix = NixCli::new(0);
 
     if installables.is_empty() && attr.is_none() && expr.is_none() {
-        printer.warning("No installable specified. Provide an installable to check against the cache.");
+        printer.warning(
+            "No installable specified. Provide an installable to check against the cache.",
+        );
         return Ok(());
     }
 

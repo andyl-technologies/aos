@@ -133,8 +133,7 @@ mod tests {
 
     #[test]
     fn test_sha256_with_expected_mismatch() {
-        let mut hasher =
-            StreamingHasher::with_expected(HashAlgorithm::Sha256, "0000000000000000");
+        let mut hasher = StreamingHasher::with_expected(HashAlgorithm::Sha256, "0000000000000000");
         hasher.update(b"hello");
         let result = hasher.finalize();
         assert_eq!(result.matched, Some(false));

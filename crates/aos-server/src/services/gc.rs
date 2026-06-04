@@ -32,9 +32,8 @@ impl GcService for GcServiceImpl {
         }
 
         // Step 1: Expire TTL roots.
-        let expired = evict::expire_ttl_roots(&self.state.views, view).map_err(|e| {
-            ConnectError::new(ErrorCode::Internal, format!("TTL expiry: {e}"))
-        })?;
+        let expired = evict::expire_ttl_roots(&self.state.views, view)
+            .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("TTL expiry: {e}")))?;
 
         // Step 2: Budget-based eviction if max_size is specified.
         let mut evicted_candidates = Vec::new();
@@ -46,9 +45,7 @@ impl GcService for GcServiceImpl {
                 budget,
                 dry_run,
             )
-            .map_err(|e| {
-                ConnectError::new(ErrorCode::Internal, format!("eviction: {e}"))
-            })?;
+            .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("eviction: {e}")))?;
 
             evicted_candidates = candidates
                 .iter()
@@ -72,10 +69,7 @@ impl GcService for GcServiceImpl {
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|e| {
-                    ConnectError::new(
-                        ErrorCode::Internal,
-                        format!("spawning nix-store --gc: {e}"),
-                    )
+                    ConnectError::new(ErrorCode::Internal, format!("spawning nix-store --gc: {e}"))
                 })?;
 
             let output = child.wait_with_output().await.map_err(|e| {

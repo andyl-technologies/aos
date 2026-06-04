@@ -206,8 +206,8 @@ fn update_package_hash(
 
     let mut updated_any = false;
     for path in &matches {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
         // When the old hash is known, match it specifically to avoid updating
         // the wrong field in files with multiple hashes (e.g. per-arch).
@@ -275,7 +275,9 @@ pub fn run(
         let found: Vec<&str> = sources.keys().map(|s| s.as_str()).collect();
         for pkg in packages {
             if !found.contains(&pkg.as_str()) {
-                printer.warning(&format!("package '{pkg}' not found or has no fetchurl source"));
+                printer.warning(&format!(
+                    "package '{pkg}' not found or has no fetchurl source"
+                ));
             }
         }
         if sources.is_empty() {
@@ -360,8 +362,7 @@ pub fn run(
             pb.enable_steady_tick(Duration::from_millis(120));
 
             handles.push(tokio::spawn(async move {
-                let result =
-                    fetch_hash(&client, &urls, pb, &name, min_speed, speed_window).await;
+                let result = fetch_hash(&client, &urls, pb, &name, min_speed, speed_window).await;
                 drop(permit);
                 overall.inc(1);
                 (name, result)

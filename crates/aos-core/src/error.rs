@@ -20,7 +20,9 @@ pub enum AosError {
     #[error("nix is not installed or not in PATH — install it from https://nixos.org/download")]
     NixNotFound,
 
-    #[error("cannot find project root (no default.nix found). Set AOS_ROOT or run from within the repository")]
+    #[error(
+        "cannot find project root (no default.nix found). Set AOS_ROOT or run from within the repository"
+    )]
     RootNotFound,
 
     #[error("{message}")]

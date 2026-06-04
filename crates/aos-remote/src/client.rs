@@ -131,8 +131,8 @@ impl AosClient {
         let http = make_http_client(base_url);
 
         // First, get a JWT token via the auth service (unauthenticated call).
-        let initial_config = ClientConfig::new(base_uri.clone())
-            .default_timeout(Duration::from_secs(30));
+        let initial_config =
+            ClientConfig::new(base_uri.clone()).default_timeout(Duration::from_secs(30));
         let auth_client = AuthServiceClient::new(http.clone(), initial_config);
 
         let token_resp = auth_client

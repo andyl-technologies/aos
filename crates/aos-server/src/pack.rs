@@ -79,7 +79,9 @@ pub fn parse_pack(data: &[u8]) -> Result<Vec<PackEntry>, String> {
 
         // NAR size (u64 BE).
         if pos + 8 > payload.len() {
-            return Err(format!("entry {i}: unexpected end of data reading NAR size"));
+            return Err(format!(
+                "entry {i}: unexpected end of data reading NAR size"
+            ));
         }
         let nar_size = u64::from_be_bytes(
             data[pos..pos + 8]
@@ -175,8 +177,8 @@ pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
 
     let json_str = String::from_utf8_lossy(&output.stdout);
     // nix path-info --json returns an array of objects or {path: {info}} format
-    let parsed: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| format!("failed to parse path info: {e}"))?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_str).map_err(|e| format!("failed to parse path info: {e}"))?;
 
     // Check for "ca" field which indicates content-addressed / fixed-output
     let has_ca = if let Some(arr) = parsed.as_array() {

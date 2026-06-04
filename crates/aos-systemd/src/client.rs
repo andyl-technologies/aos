@@ -64,7 +64,10 @@ impl JobResult {
 }
 
 impl serde::Serialize for JobResult {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         serializer.serialize_str(self.label())
     }
 }
@@ -334,7 +337,10 @@ impl SystemdClient {
         states: &[&str],
         patterns: &[&str],
     ) -> Result<Vec<ListUnitsEntry>> {
-        Ok(self.manager.list_units_by_patterns(states, patterns).await?)
+        Ok(self
+            .manager
+            .list_units_by_patterns(states, patterns)
+            .await?)
     }
 
     /// Whether systemd is currently reloading (last observed `Reloading`

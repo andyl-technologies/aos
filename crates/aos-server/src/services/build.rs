@@ -9,11 +9,10 @@ use tokio_stream::StreamExt;
 
 use aos_proto::aos::build::v1::*;
 
-use crate::build::{BuildEventKind, BuildEvent as InternalBuildEvent};
+use crate::build::{BuildEvent as InternalBuildEvent, BuildEventKind};
 use crate::routes::AppState;
 
-type ResponseStream<T> =
-    Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
+type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
 
 /// ConnectRPC build service backed by the shared `AppState`.
 pub struct BuildServiceImpl {
@@ -68,11 +67,7 @@ impl BuildService for BuildServiceImpl {
         let replay_events = handle.log_buffer.events_from(0);
         let rx = handle.tx.subscribe();
 
-        let highest_replayed = handle
-            .log_buffer
-            .all_events()
-            .last()
-            .map(|e| e.id);
+        let highest_replayed = handle.log_buffer.all_events().last().map(|e| e.id);
 
         let replay_stream = tokio_stream::iter(
             replay_events
@@ -80,20 +75,19 @@ impl BuildService for BuildServiceImpl {
                 .map(|e| Ok(internal_to_proto(&e, ""))),
         );
 
-        let live_stream =
-            tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
-                move |result| match result {
-                    Ok(event) => {
-                        if let Some(max_id) = highest_replayed {
-                            if event.id <= max_id {
-                                return None;
-                            }
+        let live_stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
+            move |result| match result {
+                Ok(event) => {
+                    if let Some(max_id) = highest_replayed {
+                        if event.id <= max_id {
+                            return None;
                         }
-                        Some(Ok(internal_to_proto(&event, "")))
                     }
-                    Err(_) => None, // lagged
-                },
-            );
+                    Some(Ok(internal_to_proto(&event, "")))
+                }
+                Err(_) => None, // lagged
+            },
+        );
 
         let combined = replay_stream.chain(live_stream);
 
@@ -180,8 +174,7 @@ impl BuildService for BuildServiceImpl {
                             }
                             if matches!(
                                 event.kind,
-                                BuildEventKind::Complete { .. }
-                                    | BuildEventKind::Error { .. }
+                                BuildEventKind::Complete { .. } | BuildEventKind::Error { .. }
                             ) {
                                 return;
                             }
@@ -193,8 +186,7 @@ impl BuildService for BuildServiceImpl {
         }
         drop(merged_tx);
 
-        let stream = tokio_stream::wrappers::ReceiverStream::new(merged_rx)
-            .map(Ok);
+        let stream = tokio_stream::wrappers::ReceiverStream::new(merged_rx).map(Ok);
 
         Ok((Box::pin(stream), ctx))
     }
