@@ -10,8 +10,8 @@
 >
 > **Target model in one line:** the registry is a **bare git repository (sha256
 > object format) served as static files over dumb HTTP** — channels are
-> *branches*, releases are signed *tags*, rollout is **16 signed partition tag
-> objects** under `/channel/<name>/0..f`, incremental fetch is **thin
+> *branches*, releases are signed *tags*, rollout is **256 signed partition tag
+> objects** under `/channel/<name>/00..ff`, incremental fetch is **thin
 > `delta-*.pack`s**, and an optional **Nix NAR cache superset** is advertised via
 > a `[[caches]]` entry in the tag-message TOML. There is **no `registry.toml`
 > root, no `bundle-list.toml`, no git bundles, no `creation_token`, no
@@ -47,7 +47,7 @@ Workstream references (target names):
 
 - [WS-01 — object store](./workstream-01-object-store.md) — sha256 bare repo, dumb-HTTP layout, `info/refs` / `HEAD` / `http-alternates` / `update-server-info`, per-release object dirs.
 - [WS-02 — pack/delta pipeline](./workstream-02-pack-delta-pipeline.md) — `pack-objects` thin/full, the delta scheme, zstd, expensive-producer tuning.
-- [WS-03 — channels & rollouts](./workstream-03-channels-rollouts.md) — 16 signed partition tags, channels-as-branches / frontier, bucket selection, publisher rollout control.
+- [WS-03 — channels & rollouts](./workstream-03-channels-rollouts.md) — 256 signed partition tags, channels-as-branches / frontier, bucket selection, publisher rollout control.
 - [WS-04 — signing & trust](./workstream-04-signing-trust.md) — signed tag objects, name-binding, sha256, `valid_until`, anti-rollback / fix-forward.
 - [WS-05 — consumer](./workstream-05-consumer.md) — consumer resolution (bucket → channel tag → semver tag → commit), delta walk, retention, verification, and the Nix `[[caches]]` superset.
 
@@ -176,21 +176,21 @@ necessary packs. Neither corrupts bytes.
 | **Owner WS** | [WS-03](./workstream-03-channels-rollouts.md) (partition model), [WS-05](./workstream-05-consumer.md) (client selection) |
 | **Status** | OPEN — both the hash input and the missing-partition fallback are undecided. |
 
-**What is decided (TARGET).** A channel exposes exactly **16** partition files
-`/channel/<name>/0..f`, each an independently-signed tag object whose tag name ==
+**What is decided (TARGET).** A channel exposes exactly **256** partition files
+`/channel/<name>/00..ff`, each an independently-signed tag object whose tag name ==
 the channel name, pointing at a semver tag (brief §6). The consumer
 **deterministically self-selects one bucket** and **persists** it (e.g.
-`sha256(machine_id) mod 16`, written once) so a host does not flap between
-buckets across promotions. The publisher rolls a release to N/16 of the fleet by
+the low byte of `sha256(machine_id)` (i.e. mod 256), written once) so a host does not flap between
+buckets across promotions. The publisher rolls a release to N/256 of the fleet by
 pointing N partitions at the new semver tag and leaving the rest on the prior
 release; un-advanced partitions still name the prior release (brief §6 — this is
 the explicit answer to "where does the rest of the fleet go"). Completion = all
-16 partitions point at the new release.
+256 partitions point at the new release.
 
 **What is open.**
 
-1. **`machine_id` source on AOS.** Which identifier seeds `sha256(machine_id) mod
-   16`? Candidates: `/etc/machine-id`, systemd's machine-id, or a registry-local
+1. **`machine_id` source on AOS.** Which identifier seeds the low byte of
+   `sha256(machine_id)` (i.e. mod 256)? Candidates: `/etc/machine-id`, systemd's machine-id, or a registry-local
    salt persisted on first use. The choice fixes whether two hosts that share a
    golden image (and thus a baked-in machine-id) collide into the same bucket —
    which would skew rollout. Recommend a **registry-local salt generated once on
@@ -201,17 +201,17 @@ the explicit answer to "where does the rest of the fleet go"). Completion = all
    recomputed, or the *bucket index* that is persisted directly? Persisting the
    bucket index directly is simplest and immune to a future hash-function change;
    persisting the input lets the partition count change later (it will not — it is
-   fixed at 16, brief §6). Recommend persisting the **bucket index** (0–f).
-3. **Probe-forward fallback order.** "There **must always be 16**; if one is
+   fixed at 256, brief §6). Recommend persisting the **bucket index** (00–ff).
+3. **Probe-forward fallback order.** "There **must always be 256**; if one is
    missing a client **may** use another (deterministic probe-forward
-   `(bucket+1) mod 16`)" (brief §6). Open: how many probe steps before giving up,
+   `(bucket+1) mod 256`)" (brief §6). Open: how many probe steps before giving up,
    and does a probe-forward host pin to the probed bucket or retry its home bucket
-   next sync? Recommend: probe `(bucket+i) mod 16` for `i = 1..15`, use the first
+   next sync? Recommend: probe `(bucket+i) mod 256` for `i = 1..255`, use the first
    present partition, but **do not** re-persist — keep the home bucket so the host
    returns to it once the missing partition is republished.
 
 **Recommendation.** Seed from a registry-local salt; persist the resulting
-bucket index 0–f; probe-forward `(bucket+i) mod 16` without re-pinning. Spell the
+bucket index 00–ff; probe-forward `(bucket+i) mod 256` without re-pinning. Spell the
 exact pre-image and the probe loop in WS-03 / WS-05 so client and producer agree.
 This is operational, not a correctness gate — a wrong choice degrades to "rollout
 fractions are uneven", never "a host gets bad bytes" (the anti-rollback floor,
@@ -244,7 +244,7 @@ apr release  (TARGET — performs the full ordered pipeline):
   4. git update-server-info                  (regenerate info/refs, HEAD)
   5. write objects/info/http-alternates      (all /release/*/objects, newest→oldest)
   6. upload immutable content first          (loose objects, packs — any order)
-  7. advance N of the 16 /channel/<name>/0..f signed partition tags  (rollout)
+  7. advance N of the 256 /channel/<name>/00..ff signed partition tags  (rollout)
   8. low-TTL surfaces last                    (/channel/**, info/refs, HEAD, packs)
 ```
 
@@ -301,7 +301,7 @@ surface** (brief §11):
   old base for a delta walk.
 
 ```toml
-# /channel/stable/<0..f> tag message  — short, freshness-paired
+# /channel/stable/<00..ff> tag message  — short, freshness-paired
 [meta]
 schema      = 1
 valid_until = "2026-06-11T00:00:00Z"   # ~days; paired with low /channel/** TTL
@@ -401,7 +401,7 @@ workstream.
 |---|---|---|---|---|
 | **R1** | **sha256 dumb-HTTP client incompatibility** (Q1). Old / non-sha256 gits cannot clone or verify; no capability negotiation to detect this. | Med × Med | Pin a tested minimum git version; emit a clear "requires sha256 git" error in the consumer instead of a low-level object panic; rely on loose-object completeness for in-range clients. | WS-01, WS-05 |
 | **R2** | **Torn publish.** A consumer reads a low-TTL surface (`info/refs`, `/channel/**`, `objects/info/packs`) that names an object/pack not yet uploaded. | Low × High | Strict ordering: upload all immutable objects (loose + packs) **first**, regenerate/publish the low-TTL index and partition surfaces **last** (brief §4, §10). Loose-object completeness means a partially-published frontier still resolves via the prior release. | WS-02, WS-03 |
-| **R3** | **Concurrent publishers race the partition advance.** Two `apr release` runs advancing the same channel's 16 partitions can interleave into an inconsistent rollout fraction. | Med × Med | Restrict to a single publisher per channel, or serialize the partition-advance step; the immutable-object steps are content-addressed and need no coordination. | WS-03 |
+| **R3** | **Concurrent publishers race the partition advance.** Two `apr release` runs advancing the same channel's 256 partitions can interleave into an inconsistent rollout fraction. | Med × Med | Restrict to a single publisher per channel, or serialize the partition-advance step; the immutable-object steps are content-addressed and need no coordination. | WS-03 |
 | **R4** | **Online signing key for channel heartbeat re-sign.** The short channel `valid_until` (Q5) wants the Ed25519 key available off the publish path to heartbeat-re-sign quiet channels. | Med × High | Prefer advance-time re-sign only at launch; if a heartbeat is needed, use a short-lived delegated key via `allowed_signers`, never the long-term commit/release key online. | WS-04, WS-03 |
 | **R5** | **Delta depth too deep → consumer reconstruct cost** (Q2). A large `--depth` shifts CPU onto every consumer applying the delta chain. | Low × Med | Cap `--depth` (suggest 50); window is the free lever, not depth (brief §10); document the consumer-cost rationale. | WS-02 |
 | **R6** | **Bucket flap / skew** (Q3). Image-baked machine-ids collide into one bucket; or a host recomputes a different bucket across syncs and flaps. | Med × Low | Seed from a registry-local salt re-randomized per clone; persist the bucket index once; probe-forward without re-pinning (brief §6). | WS-03, WS-05 |
@@ -437,8 +437,8 @@ rollout*").
 | Root / manifest | `bundle-list.toml` manifest the consumer parses (`registry/bundle.rs:49`, `BundleManifest`, **Deserialize-only**) | **removed** — replaced by git refs + signed tag objects + `objects/info/http-alternates` (brief §15) | **No** |
 | Distribution unit | **git bundles** + `bundle-list.toml`; producer is a stub (`apr bundle` = `git bundle create`; dead `_update_manifest`, `registry_ops.rs:1723`) | **removed** — full packs `pack-<sha256>.pack` + thin `delta-<from>.pack[.zst]` over dumb HTTP (brief §9, §10, §15) | **No** |
 | Versioning / ordering | **calendar tags** `vYYYY.MM[.P]` ordered by `creation_token` (`registry/state.rs:131 version_to_token`, `:104 check_monotonic`) | **standard semver, no `v`**; ordering by semver + git ancestry (brief §7, §15) | **No** |
-| Selection | `pick_bundles` (`registry/update.rs:292`); tracking modes commit/branch/tag/semver (`types.rs TrackingMode`) | bucket → `/channel/<name>/<0..f>` signed partition tag → semver tag → commit, then delta walk (brief §5, §6, §9) | **No** |
-| Rollout | none beyond tracking-mode selection | **16 signed partition tags**, publisher-advanced N/16 (brief §6) | **No** (new) |
+| Selection | `pick_bundles` (`registry/update.rs:292`); tracking modes commit/branch/tag/semver (`types.rs TrackingMode`) | bucket → `/channel/<name>/<00..ff>` signed partition tag → semver tag → commit, then delta walk (brief §5, §6, §9) | **No** |
+| Rollout | none beyond tracking-mode selection | **256 signed partition tags**, publisher-advanced N/256 (brief §6) | **No** (new) |
 | Signing | signed git **commit** (`apr sign` = `git commit -S`; `git verify-commit`, `registry/git.rs:379`) + TOFU `trusted-keys.d` | signed git **tag objects** (channel partitions + release tags), SSH-Ed25519, name-binding, `tag→tag→commit` (brief §5, §11) | **Yes** (primitive), moved commit→tag |
 | Nix NAR cache | `[[caches]]` consumer reads, fallback `{registry}/nar` (`download.rs:67 resolve_mirror`, `:57 nar_url`) | `[[caches]]` in **tag-message TOML** (may be relative), narinfo superset (brief §13, §14) | **Yes** (mechanism), moved into tag TOML |
 
@@ -499,7 +499,7 @@ registry serves only the git-native model; consumers are cut over by version.
 | Pros | Cons |
 |---|---|
 | No throwaway serializer / encoder; the dead bundle path is deleted, not finished. | Requires a coordinated client rollout *before* mirror cutover (a flag day per registry). |
-| Full target model (signed 16-partition rollout, name-binding, delta packs, anti-rollback, NAR superset) from day one for every client. | Old `apm` binaries break the moment a registry cuts over — bad for fleets that pin old clients. |
+| Full target model (signed 256-partition rollout, name-binding, delta packs, anti-rollback, NAR superset) from day one for every client. | Old `apm` binaries break the moment a registry cuts over — bad for fleets that pin old clients. |
 | One distribution model; no dual-surface consistency hazard (closes R8). | Needs a "minimum client version" gate communicated and enforced. |
 | Simplest producer; fewest moving parts in the highest-risk new pipeline (WS-02). | |
 
@@ -654,7 +654,7 @@ item is closed.
 |---|---|---|---|---|
 | Q1 | sha256 dumb-HTTP client floor | WS-01 | WS-01 object store, WS-05 fetch | Pin min git version; fail-closed consumer error |
 | Q2 | `pack-objects` window/depth, zstd, dictionary | WS-02 | WS-02 pipeline | `--window=350 --depth=50 --compression=0` + `zstd --ultra -22 --long=27`; defer dictionary |
-| Q3 | Bucket-selection input + probe-forward order | WS-03 / WS-05 | WS-03 rollouts | Registry-local salt; persist bucket index; probe `(bucket+i) mod 16` no re-pin |
+| Q3 | Bucket-selection input + probe-forward order | WS-03 / WS-05 | WS-03 rollouts | Registry-local salt; persist bucket index; probe `(bucket+i) mod 256` no re-pin |
 | Q4 | `apr release` shape + pluggable upload | WS-02 / WS-03 | WS-02/03 (the pipeline) | Composable verbs under one wrapper; immutable-first / low-TTL-last ordering |
 | Q5 | `valid_until` window + re-sign cadence | WS-04 / WS-03 | WS-04 trust | Short channel window + heartbeat; generous release window; rotate-only re-sign |
 | Q6 | `info/alternates` readable mirror | WS-01 | WS-01 layout | Emit opportunistically, non-authoritative; drop if it skews |
@@ -675,7 +675,7 @@ item is closed.
 - [gap-analysis.md](./gap-analysis.md) — producer/consumer gap enumeration.
 - [workstream-01-object-store.md](./workstream-01-object-store.md) — sha256 bare repo, dumb-HTTP layout, `http-alternates` (Q1, Q6, R2).
 - [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md) — pack-objects, thin/full packs, zstd (Q2, Q4, R2, R5, R11).
-- [workstream-03-channels-rollouts.md](./workstream-03-channels-rollouts.md) — 16 partition tags, frontier, bucket selection (Q3, Q4, Q5, R3, R6, R9, R10).
+- [workstream-03-channels-rollouts.md](./workstream-03-channels-rollouts.md) — 256 partition tags, frontier, bucket selection (Q3, Q4, Q5, R3, R6, R9, R10).
 - [workstream-04-signing-trust.md](./workstream-04-signing-trust.md) — signed tag objects, name-binding, `valid_until` (Q5, R4, R7, R10).
 - [workstream-05-consumer.md](./workstream-05-consumer.md) — resolution, delta walk, retention, verification, `[[caches]]` superset (Q1, Q3, Q7, R1, R6, R7, R8, R9).
 

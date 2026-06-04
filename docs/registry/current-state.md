@@ -7,7 +7,7 @@
 > divergence is recorded explicitly (see [Discrepancies](#11-discrepancies-vs-the-design-brief)).
 >
 > For the **target** design (a git-native registry served over dumb HTTP —
-> channels-as-branches, 16-partition rollouts, signed tag objects, thin delta
+> channels-as-branches, 256-partition rollouts, signed tag objects, thin delta
 > packs, Nix-cache superset), see [`architecture.md`](architecture.md),
 > [`http-layout.md`](http-layout.md),
 > [`versioning-and-channels.md`](versioning-and-channels.md), and
@@ -598,7 +598,7 @@ These do not contradict the brief's *intent* (target design), only its
 - [`README.md`](README.md) — registry doc index and glossary.
 - [`architecture.md`](architecture.md) — git-repo-over-dumb-HTTP; superset of git **and** Nix; the three ref layers (TARGET).
 - [`http-layout.md`](http-layout.md) — HTTP/object layout, CDN TTLs, `http-alternates`, stock dumb-HTTP compatibility (TARGET).
-- [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, the 16-partition rollout, bucket selection, anti-rollback (TARGET).
+- [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, the 256-partition rollout, bucket selection, anti-rollback (TARGET).
 - [`packs-and-deltas.md`](packs-and-deltas.md) — pack-objects, thin vs full packs, the delta scheme graph, zstd (TARGET).
 - [`tag-metadata.md`](tag-metadata.md) — the channel/release tag-message TOML schema (TARGET).
 - [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — the Nix binary-cache superset via relative `[[caches]]` (TARGET).

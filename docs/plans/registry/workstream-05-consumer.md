@@ -24,7 +24,7 @@ smart-protocol negotiation, and (per [§15 of the brief](./design-brief.md#15-re
 **no `registry.toml`, no `bundle-list.toml`, no git bundles, and no
 `creation_token`**. The consumer's job is six steps:
 
-1. **Bucket selection** — deterministically self-select one of 16 partitions.
+1. **Bucket selection** — deterministically self-select one of 256 partitions.
 2. **Tag-chain resolution** — `/channel/<name>/<bucket>` signed tag → semver tag
    → commit.
 3. **Chain verification** — verify both signatures *and* the name-binding of each
@@ -43,7 +43,7 @@ smart-protocol negotiation, and (per [§15 of the brief](./design-brief.md#15-re
 ```
  WS-01 object store ─┐
  WS-02 pack/delta   ─┤  produce the static surface the consumer reads
- WS-03 channels     ─┤  (16 signed partition tags, frontier branch head)
+ WS-03 channels     ─┤  (256 signed partition tags, frontier branch head)
  WS-04 signing      ─┘
         │
         ▼
@@ -62,7 +62,7 @@ It re-uses the existing Ed25519/SSH verification primitives (WS-04,
 > **CURRENT.** Today's consumer fetches a `bundle-list.toml` manifest, selects
 > git **bundles** by `creation_token`, unbundles them into a local repo, extracts
 > package TOMLs, and persists a `creation_token` floor. None of bucket selection,
-> the 16-partition tag chain, thin `delta-*.pack` walking, or `[[caches]]`-from-
+> the 256-partition tag chain, thin `delta-*.pack` walking, or `[[caches]]`-from-
 > tag-message exist. This section maps the surfaces WS-05 replaces.
 
 ### 2.1 The sync entry point
@@ -100,7 +100,7 @@ shape.
 five arms — `Commit`, `Branch`, `Tag`, `Version(VersionReq)`, `Default` —
 resolved by `RegistryConfig::tracking_mode()`
 ([`types.rs:352`](../../../crates/aos-package/src/types.rs)). There is **no
-`Channel` arm** and no notion of a 16-partition bucket. WS-05 adds channel
+`Channel` arm** and no notion of a 256-partition bucket. WS-05 adds channel
 resolution; the existing `Tag` / `Version` arms remain valid stock-git-style
 pins against `refs/tags/<semver>` and are reused once a channel collapses to a
 concrete semver tag.
@@ -141,10 +141,10 @@ bucket, and a retained-release set (§3.5, §7).
 ```
 apm update / apm upgrade
 │
-├─ 1. bucket   = persisted_bucket  ||  sha256(machine_id) mod 16      (§4)
+├─ 1. bucket   = persisted_bucket  ||  the low byte of sha256(machine_id) (i.e. mod 256)      (§4)
 │
 ├─ 2. fetch    /channel/<name>/<bucket>        (signed partition tag object)
-│        │        └─ missing? probe-forward (bucket+1) mod 16          (§4.3)
+│        │        └─ missing? probe-forward (bucket+1) mod 256          (§4.3)
 │        ▼
 │      partition_tag ──verify sig + name-binds "<name>"── (§6)
 │        │  (tag → tag)
@@ -192,7 +192,7 @@ See [`http-layout.md`](../../registry/http-layout.md) and
 ### 3.3 The tag chain — `tag → tag → commit`
 
 ```
-/channel/stable/7  ──►  signed partition tag object
+/channel/stable/b7  ──►  signed partition tag object
    tag name: "stable"                      (name-binds the channel)
    target:   refs/tags/1.4.2  ─────────────┐
                                            ▼
@@ -225,7 +225,7 @@ stock-git convenience pointer only.
 [registry.state]
 last_commit  = "…sha256…"        # KEEP
 floor        = "1.4.2"           # NEW: monotonic semver anti-rollback floor (§7)
-bucket       = 7                 # NEW: persisted partition (0..15), written once (§4)
+bucket       = 183               # NEW: persisted partition (0..255), written once (§4)
 retained     = ["1.0.0", "1.4.0", "1.4.2"]  # NEW: object-tree retention set (§5.4)
 last_update  = "2026-06-04T00:00:00Z"   # KEEP
 # last_creation_token  →  REMOVED (calendar scheme deleted, §15)
@@ -243,14 +243,14 @@ block; WS-05 extends its serializer (it currently emits `last_commit`,
 ## 4. Bucket selection (consumer self-partitioning)
 
 > **TARGET.** Per [brief §6](./design-brief.md#6-channels--rollouts): a channel
-> exposes exactly **16** partitions `/channel/<name>/0..f`; the consumer
+> exposes exactly **256** partitions `/channel/<name>/00..ff`; the consumer
 > deterministically self-selects **one** bucket and **persists** it so a host
 > never flaps between buckets across updates.
 
 ### 4.1 Selection function
 
 ```text
-bucket = sha256(machine_id) mod 16            # 0..=15, rendered as hex digit 0..f
+bucket = the low byte of sha256(machine_id) (i.e. mod 256)            # 0..=255, rendered as one byte (two hex digits, 00–ff)
 ```
 
 - **`machine_id`** source: `/etc/machine-id` (default). The exact input and any
@@ -259,33 +259,33 @@ bucket = sha256(machine_id) mod 16            # 0..=15, rendered as hex digit 0.
   `[registry.state]` (§3.5). On every subsequent update, read the persisted
   value. This is what makes a host *stick* — recomputing each time would be
   equivalent but persistence documents intent and survives a machine-id change.
-- **Hex rendering.** Buckets `10..15` map to the partition file names `a..f`
-  (the channel directory is `0 1 2 3 4 5 6 7 8 9 a b c d e f`).
+- **Hex rendering.** Each bucket renders as one byte (two lowercase hex digits)
+  for the partition file name — the channel directory is `00 01 02 … fe ff`.
 
 ### 4.2 Why deterministic self-selection
 
-The publisher controls rollout by advancing *N of 16* partition tags to a new
+The publisher controls rollout by advancing *N of 256* partition tags to a new
 semver and leaving the rest on the prior release (§6 of the brief). The consumer
 controls *which* partition it reads, deterministically, so:
 
 - a given host always lands on the same partition → no flapping;
-- the fleet is evenly spread across 16 buckets (uniform hash);
-- rollout fraction is `N/16` and is observable to the publisher.
+- the fleet is evenly spread across 256 buckets (uniform hash);
+- rollout fraction is `N/256` and is observable to the publisher.
 
 ### 4.3 Missing-partition probe-forward
 
-There **must** always be 16 partition files. If one is missing (mid-publish, CDN
+There **must** always be 256 partition files. If one is missing (mid-publish, CDN
 gap), the consumer **may** probe forward deterministically:
 
 ```text
 b = bucket
-for i in 0..16:
-    try fetch /channel/<name>/((b + i) mod 16)
+for i in 0..256:
+    try fetch /channel/<name>/((b + i) mod 256)
     if present and verifies: use it; stop
-fail closed if none of 16 resolve
+fail closed if none of 256 resolve
 ```
 
-Probe-forward order is fixed (`(bucket+i) mod 16`) so the fallback is itself
+Probe-forward order is fixed (`(bucket+i) mod 256`) so the fallback is itself
 deterministic and does not re-introduce flapping. The fallback order is
 [open question §16.3](./design-brief.md#16-open-questions--to-confirm-in-implementation).
 
@@ -416,7 +416,7 @@ loose-object floor.
 | `refs/tags/<semver>` | Ed25519/SSH valid against a trusted key | embedded tag name `== "<semver>"` (the release) |
 
 The **name-binding** is what stops a valid-but-misfiled tag from being honoured:
-a partition tag signed for channel `testing` served under `/channel/stable/3`
+a partition tag signed for channel `testing` served under `/channel/stable/3f`
 fails because its embedded name is `testing`, not `stable`. Likewise a release
 tag whose embedded name is `1.4.1` cannot be served from the `1.4.2/` release
 path. This closes cross-serving without any server-side enforcement — the
@@ -610,8 +610,8 @@ build artifacts (NARs). A consumer that only needs metadata can ignore
 
 **Resolution:**
 
-- [ ] Bucket selection `sha256(machine_id) mod 16`, persist once (§4); hex render
-      `10..15`→`a..f`; probe-forward `(bucket+i) mod 16` (§4.3).
+- [ ] Bucket selection `the low byte of sha256(machine_id) (i.e. mod 256)`, persist once (§4); hex render
+      each byte as two hex digits `00..ff`; probe-forward `(bucket+i) mod 256` (§4.3).
 - [ ] Add `TrackingMode::Channel(String)`
       ([`types.rs:282`](../../../crates/aos-package/src/types.rs)) and a `channel`
       config field threaded into `tracking_mode()`
@@ -657,7 +657,7 @@ build artifacts (NARs). A consumer that only needs metadata can ignore
 - [http-layout.md](../../registry/http-layout.md) — the static surface the
   consumer reads (`/channel`, `/release`, `http-alternates`, loose objects).
 - [versioning-and-channels.md](../../registry/versioning-and-channels.md) —
-  semver, 16-partition rollout, bucket selection, anti-rollback.
+  semver, 256-partition rollout, bucket selection, anti-rollback.
 - [packs-and-deltas.md](../../registry/packs-and-deltas.md) — the delta scheme
   graph, client resolution + retention, `index-pack --fix-thin`, zstd.
 - [tag-metadata.md](../../registry/tag-metadata.md) — the `[meta]` + `[[caches]]`
@@ -669,7 +669,7 @@ build artifacts (NARs). A consumer that only needs metadata can ignore
 - [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) — the
   Nix binary-cache superset via relative `[[caches]]`.
 - [apt-comparison.md](../../registry/apt-comparison.md) — phased-rollout /
-  pdiff → 16-partition / thin-delta lineage.
+  pdiff → 256-partition / thin-delta lineage.
 
 ### Plan set (`docs/plans/registry/`)
 
@@ -681,7 +681,7 @@ build artifacts (NARs). A consumer that only needs metadata can ignore
 - [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md)
   — the thin/full pack + zstd artifacts the consumer applies.
 - [workstream-03-channels-rollouts.md](./workstream-03-channels-rollouts.md) —
-  the 16 signed partition tags + frontier branch the consumer resolves.
+  the 256 signed partition tags + frontier branch the consumer resolves.
 - [workstream-04-signing-trust.md](./workstream-04-signing-trust.md) — the signed
   tag objects + name-binding the consumer verifies.
 - [open-questions.md](./open-questions.md) — machine-id source / probe-forward

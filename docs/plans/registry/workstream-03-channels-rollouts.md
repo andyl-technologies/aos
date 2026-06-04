@@ -1,9 +1,9 @@
 # Workstream 03 — Channels & Rollouts
 
-> **Plan doc.** Implementation plan for channels-as-branches, the **16 signed
+> **Plan doc.** Implementation plan for channels-as-branches, the **256 signed
 > partition tag objects**, publisher partition-advancement rollout control,
 > `refs/heads/<channel>` frontier maintenance, consumer deterministic bucket
-> selection (`sha256(machine_id) mod 16`) + probe-forward, and the anti-rollback
+> selection (the low byte of `sha256(machine_id)` (i.e. mod 256)) + probe-forward, and the anti-rollback
 > floor / fix-forward discipline.
 >
 > Grounds out [`design-brief.md`](./design-brief.md) §5 (ref model), §6 (channels
@@ -16,7 +16,7 @@
 ## 0. Scope & relationship to sibling workstreams
 
 This workstream owns the **rollout control plane**: the channel ref namespace,
-the 16-partition fan-out, the publisher's advancement logic, and the consumer's
+the 256-partition fan-out, the publisher's advancement logic, and the consumer's
 bucket selection + anti-rollback floor. It deliberately does **not** own:
 
 | Concern | Owner |
@@ -45,10 +45,10 @@ Cross-references: [`README.md`](./README.md) ·
 | `HEAD` | symref → `refs/heads/<default-channel>` (e.g. `stable`) | no | stock + AOS |
 | `refs/heads/<channel>` | **channels are branches**; head = **frontier** | no (ref pointer) | stock git convenience |
 | `refs/tags/<semver>` | release: signed tag → commit | **yes** | stock (`verify-tag`) + AOS |
-| `/channel/<name>/<0..f>` | 16 signed partition tag objects (tag name == channel) → semver tag | **yes** | AOS rollout only |
+| `/channel/<name>/<00..ff>` | 256 signed partition tag objects (tag name == channel) → semver tag | **yes** | AOS rollout only |
 
 The partition tags live **outside** the git ref namespace, as static files under
-`/channel/<name>/0..f`. They are not `refs/*` and do not appear in `info/refs`;
+`/channel/<name>/00..ff`. They are not `refs/*` and do not appear in `info/refs`;
 they are an AOS-only overlay served over the same dumb-HTTP origin.
 
 ### 1.2 HTTP layout for this workstream (brief §4)
@@ -56,7 +56,7 @@ they are an AOS-only overlay served over the same dumb-HTTP origin.
 ```
 /channel/
   <name>/                                                       [low TTL — MUST]
-    0 .. f          ← 16 SIGNED tag objects (tag name == <name>),
+    00 .. ff        ← 256 SIGNED tag objects (tag name == <name>),
                        each → a semver tag (rollout partitions)
 /                                                               [low TTL — MUST]
   HEAD              ← "ref: refs/heads/<default-channel>"
@@ -85,7 +85,7 @@ single `TrackingMode` enum with four variants plus a default:
 - `crates/aos-package/src/types.rs:281-293` — `TrackingMode { Commit, Branch,
   Tag, Version, Default }`. `Branch` tracks the **HEAD of a named git branch**
   (e.g. `main`/`stable`) — this is the *closest* current analogue to a channel,
-  but it is a raw branch HEAD, not a 16-partition rollout surface.
+  but it is a raw branch HEAD, not a 256-partition rollout surface.
 - `crates/aos-package/src/types.rs:218-229` — config fields `commit` / `branch` /
   `tag` / `version` (mutually exclusive); `tracking_mode()` enforces "at most one
   set" at `types.rs:352-400`.
@@ -129,61 +129,61 @@ tokens, not semver — it must be re-pointed at a semver/floor model (§7).
   `update.rs` (`parse_tag_as_semver`, `extract_minor_base`).
 
 `TrackingMode::Branch` survives in spirit: a "channel" is precisely a branch +
-its 16 partition overlay.
+its 256 partition overlay.
 
 ---
 
-## 3. TARGET — channels as branches + 16 partition tags
+## 3. TARGET — channels as branches + 256 partition tags
 
 ### 3.1 Canonical shape
 
 A channel `<name>` (e.g. `stable`, `testing`) consists of exactly two things:
 
 1. A **branch** `refs/heads/<name>` whose head is the **frontier** — the commit
-   of the newest release any of its 16 partitions targets (§5). Unsigned
+   of the newest release any of its 256 partitions targets (§5). Unsigned
    convenience pointer; not part of the trust chain.
-2. **16 signed partition tag objects** at `/channel/<name>/0 .. /channel/<name>/f`
-   (hex `0`–`f`). Each is an annotated, Ed25519/SSH-signed git tag whose
+2. **256 signed partition tag objects** at `/channel/<name>/00 .. /channel/<name>/ff`
+   (one byte (two hex digits, 00–ff)). Each is an annotated, Ed25519/SSH-signed git tag whose
    **tag-name field == `<name>`** (the channel name, *not* the partition index)
    and which points at a **semver release tag** (`refs/tags/<semver>`). The
    chain is `partition tag → semver tag → commit`.
 
 ```
-/channel/stable/0  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
-/channel/stable/1  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
+/channel/stable/00  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
+/channel/stable/01  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
         ...
-/channel/stable/9  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
-/channel/stable/a  ── signed tag (name="stable") ──►  refs/tags/1.1.3 ──► commit C_113   (not yet advanced)
+/channel/stable/9f  ── signed tag (name="stable") ──►  refs/tags/1.2.0 ──► commit C_120
+/channel/stable/a0  ── signed tag (name="stable") ──►  refs/tags/1.1.3 ──► commit C_113   (not yet advanced)
         ...
-/channel/stable/f  ── signed tag (name="stable") ──►  refs/tags/1.1.3 ──► commit C_113
+/channel/stable/ff  ── signed tag (name="stable") ──►  refs/tags/1.1.3 ──► commit C_113
 
 refs/heads/stable  ──────────────────────────────►  commit C_120  (frontier = newest target = 1.2.0)
 ```
 
-In this snapshot 10/16 partitions (`0`–`9`) have advanced to `1.2.0`; `a`–`f`
-remain on `1.1.3`. The fleet is at "10/16 rolled out". The branch head already
+In this snapshot 160/256 partitions (`00`–`9f`) have advanced to `1.2.0`; `a0`–`ff`
+remain on `1.1.3`. The fleet is at "160/256 rolled out". The branch head already
 points at `1.2.0` (the frontier).
 
-### 3.2 Why 16 (not percentages)
+### 3.2 Why 256 (not percentages)
 
 The superseded design used a percentage knob (`rollout = 30%`). The target uses
-**exactly 16 fixed partitions** because:
+**exactly 256 fixed partitions** because:
 
 - A consumer's bucket is a **pure function of its identity**
-  (`sha256(machine_id) mod 16`) — stable, no central coordination, no flapping.
+  (the low byte of `sha256(machine_id)` (i.e. mod 256)) — stable, no central coordination, no flapping.
 - The publisher controls rollout by **which partitions name the new release**,
   answering "where does the rest of the fleet go?" explicitly: the un-advanced
   partitions still name the prior release (no ambiguity, no implicit "latest").
-- Granularity is 1/16 ≈ 6.25% steps — coarse but sufficient for staged rollout,
-  and trivially auditable (16 static files you can `curl` and diff).
+- Granularity is ~0.39% (1/256) steps — coarse but sufficient for staged rollout,
+  and trivially auditable (256 static files you can `curl` and diff).
 
-### 3.3 "There must always be 16"
+### 3.3 "There must always be 256"
 
-The invariant is **16 partition files exist at all times** for every live
-channel. A fresh channel is bootstrapped by pointing all 16 at the initial
+The invariant is **256 partition files exist at all times** for every live
+channel. A fresh channel is bootstrapped by pointing all 256 at the initial
 release. If a client finds a partition missing (404 / stale / unsigned), it
-**may** probe forward deterministically (`(bucket+1) mod 16`) rather than fail
-(§6.3). The publisher MUST never leave a channel with fewer than 16 partitions in
+**may** probe forward deterministically (`(bucket+1) mod 256`) rather than fail
+(§6.3). The publisher MUST never leave a channel with fewer than 256 partitions in
 a committed/published state.
 
 ---
@@ -224,14 +224,14 @@ release any partition targets** (the rollout target / frontier), per brief §6.
 ### 5.1 Maintenance procedure (producer, on every partition advance)
 
 ```
-frontier(channel) = commit of max_semver( target(p) for p in 0..f )
+frontier(channel) = commit of max_semver( target(p) for p in 00..ff )
 git update-ref refs/heads/<channel> <frontier-commit>
 git update-server-info          # regenerate info/refs + objects/info/packs
 ```
 
 The branch head is computed from the partition set, never the reverse. After the
 *first* partition advances to a new release, the frontier already equals that new
-release's commit (even though 15/16 partitions still name the old one). This is
+release's commit (even though 255/256 partitions still name the old one). This is
 intentional: the branch is the **rollout target**, not the **rollout state**.
 
 ### 5.2 Implication for stock git
@@ -255,7 +255,7 @@ branch exists and tracks its frontier.
 ### 6.1 Deterministic bucket selection
 
 ```
-bucket = sha256(machine_id) mod 16   →  one of 0..f
+bucket = the low byte of sha256(machine_id) (i.e. mod 256)   →  one of 00..ff
 ```
 
 - **Input:** `machine_id` (source TBD — `/etc/machine-id` is the leading
@@ -264,13 +264,13 @@ bucket = sha256(machine_id) mod 16   →  one of 0..f
   selection so a host **never flaps between buckets** even if the input source
   changes. Re-selection happens only on explicit operator action.
 - **Determinism:** identical `machine_id` ⇒ identical bucket on every run; the
-  fleet's hosts are uniformly spread across `0`–`f` by sha256 avalanche.
+  fleet's hosts are uniformly spread across `00`–`ff` by sha256 avalanche.
 
 Suggested persisted shape (AOS state, not the registry):
 
 ```toml
 [rollout]
-bucket      = 10              # 0..15 (decimal) == partition 'a'
+bucket      = 10              # 0..255 (decimal) == partition '0a'
 machine_id  = "…"            # the input that produced it (for audit)
 selected_at = "2026-06-04T12:00:00Z"
 ```
@@ -284,7 +284,7 @@ selected_at = "2026-06-04T12:00:00Z"
 ### 6.2 Selection flow (consumer)
 
 ```
-machine_id ─► sha256 ─► mod 16 ─► bucket b (persisted)
+machine_id ─► sha256 ─► mod 256 ─► bucket b (persisted)
                                      │
                                      ▼
                    GET /channel/<name>/<hex(b)>           [low TTL]
@@ -311,15 +311,15 @@ If partition `b` is unusable — HTTP 404, signature invalid, name mismatch, or
 next partition:
 
 ```
-for i in 0..16:
-    p = (b + i) mod 16
+for i in 0..256:
+    p = (b + i) mod 256
     tag = GET /channel/<name>/<hex(p)>
     if usable(tag):   # fetched AND signature valid AND name=="<name>" AND fresh
         return tag
 fail: channel has no usable partition  →  fall back to last-good / abort
 ```
 
-Probe-forward is **forward-only and wrap-around** (`(b+1) mod 16`, …), so the
+Probe-forward is **forward-only and wrap-around** (`(b+1) mod 256`, …), so the
 order is deterministic per host. It trades a tiny rollout-fairness skew (a probing
 host advances slightly earlier than its assigned partition) for availability when
 a partition file is briefly missing during publish. Anti-rollback (§7) still
@@ -332,8 +332,8 @@ host *backward*.
 
 ### 7.1 The primitive
 
-To roll a new release `T` to **N/16** of the fleet: point **N partitions** at
-`T`'s semver tag and leave the remaining `16-N` on the prior release `P`. The
+To roll a new release `T` to **N/256** of the fleet: point **N partitions** at
+`T`'s semver tag and leave the remaining `256-N` on the prior release `P`. The
 un-advanced partitions still **explicitly name** `P` — there is no implicit
 "latest" (brief §6).
 
@@ -342,7 +342,7 @@ advance(channel, T, partitions=[0,1,2]):
     for p in partitions:
         # create/replace the signed partition tag object for /channel/<name>/<p>
         write_signed_tag(name=<channel>, target=refs/tags/<T>) ─► /channel/<name>/<hex(p)>
-    frontier(channel) = max_semver(all 16 targets)        # ← T once any partition names it
+    frontier(channel) = max_semver(all 256 targets)        # ← T once any partition names it
     git update-ref refs/heads/<channel> <commit-of-frontier>
     git update-server-info
     upload /channel/<name>/* + refs (see ws-01 / publishing for atomicity)
@@ -350,14 +350,14 @@ advance(channel, T, partitions=[0,1,2]):
 
 | Step | Partitions on T | Fleet on T | Notes |
 |---|---|---|---|
-| Canary | `0` | ~6.25% | Frontier head already moves to T |
-| Early | `0,1,2,3` | ~25% | Advance as confidence grows |
-| Half | `0`–`7` | ~50% | |
-| Complete | `0`–`f` | 100% | All 16 name T; rollout done |
+| Canary | `00` | ~0.39% | Frontier head already moves to T |
+| Early | `00`–`3f` | ~25% | Advance as confidence grows |
+| Half | `00`–`7f` | ~50% | |
+| Complete | `00`–`ff` | 100% | All 256 name T; rollout done |
 
-**Completion** = all 16 partitions point at the new release. The producer SHOULD
-advance in a documented, deterministic partition order (e.g. ascending `0→f`) so
-the canary cohort is predictable and `apr` can report "N/16 advanced".
+**Completion** = all 256 partitions point at the new release. The producer SHOULD
+advance in a documented, deterministic partition order (e.g. ascending `00→ff`) so
+the canary cohort is predictable and `apr` can report "N/256 advanced".
 
 ### 7.2 Tooling sketch (`apr`)
 
@@ -370,10 +370,10 @@ apr channel advance <channel> <semver> --partitions 0,1,2,3
 
 # inspect rollout state: which partition → which release, + frontier
 apr channel status <channel>
-#   stable: frontier=1.2.0  (10/16 on 1.2.0, 6/16 on 1.1.3)
-#   0..9 → 1.2.0   a..f → 1.1.3
+#   stable: frontier=1.2.0  (160/256 on 1.2.0, 96/256 on 1.1.3)
+#   00..9f → 1.2.0   a0..ff → 1.1.3
 
-# bootstrap a brand-new channel: all 16 at an initial release
+# bootstrap a brand-new channel: all 256 at an initial release
 apr channel init <channel> <semver>
 ```
 
@@ -426,25 +426,25 @@ bad rollout of T detected
 
 ## 8. Worked rollout walkthrough
 
-Starting state: channel `stable`, all 16 partitions on `1.1.3`, frontier =
+Starting state: channel `stable`, all 256 partitions on `1.1.3`, frontier =
 `1.1.3`. Publish `1.2.0` and roll it out.
 
 ```
-t0  init:      0..f → 1.1.3                       frontier=1.1.3   fleet: 0/16 on 1.2.0
+t0  init:      00..ff → 1.1.3                          frontier=1.1.3   fleet: 0/256 on 1.2.0
 t1  publish 1.2.0 (tag+sign+pack/delta via ws-02/04; no partitions advanced yet)
-t2  advance 0: 0 → 1.2.0   1..f → 1.1.3           frontier=1.2.0   fleet: 1/16  (canary)
-t3  advance 1,2,3: 0..3 → 1.2.0   4..f → 1.1.3    frontier=1.2.0   fleet: 4/16  (~25%)
-t4  advance 4..7:  0..7 → 1.2.0   8..f → 1.1.3    frontier=1.2.0   fleet: 8/16  (~50%)
-t5  advance 8..f:  0..f → 1.2.0                   frontier=1.2.0   fleet: 16/16 (done)
+t2  advance 00: 00 → 1.2.0   01..ff → 1.1.3            frontier=1.2.0   fleet: 1/256   (canary)
+t3  advance 01..3f: 00..3f → 1.2.0   40..ff → 1.1.3    frontier=1.2.0   fleet: 64/256  (~25%)
+t4  advance 40..7f: 00..7f → 1.2.0   80..ff → 1.1.3    frontier=1.2.0   fleet: 128/256 (~50%)
+t5  advance 80..ff: 00..ff → 1.2.0                     frontier=1.2.0   fleet: 256/256 (done)
 ```
 
-Consumer with bucket `5`: still targets `1.1.3` at t2–t3 (partition 5 not yet
-advanced), moves to `1.2.0` at t4. Its floor rises `1.1.3 → 1.2.0` and can never
-fall back.
+Consumer with bucket `5a`: still targets `1.1.3` at t2–t3 (partition 5a not yet
+advanced — it falls in the `40..7f` cohort), moves to `1.2.0` at t4. Its floor
+rises `1.1.3 → 1.2.0` and can never fall back.
 
-If `1.2.0` proves bad after t3 (4/16): publisher does **not** revert; it publishes
-`1.2.1` and advances partitions `0..3` (the affected cohort) to `1.2.1`. Hosts on
-buckets `0..3` move `1.2.0 → 1.2.1` (forward); hosts on `4..f` were never exposed
+If `1.2.0` proves bad after t3 (64/256): publisher does **not** revert; it publishes
+`1.2.1` and advances partitions `00..3f` (the affected cohort) to `1.2.1`. Hosts on
+buckets `00..3f` move `1.2.0 → 1.2.1` (forward); hosts on `40..ff` were never exposed
 to `1.2.0`.
 
 ---
@@ -464,28 +464,28 @@ to `1.2.0`.
   `selected_at`) in a dedicated state file (not per-registry).
 
 ### Phase B — consumer bucket + resolution
-- [ ] **B1.** Implement `sha256(machine_id) mod 16` bucket selection; persist on
+- [ ] **B1.** Implement bucket selection from the low byte of `sha256(machine_id)` (i.e. mod 256); persist on
   first run; never re-select implicitly (§6.1).
 - [ ] **B2.** Implement partition fetch `GET /channel/<name>/<hex(b)>` and the
   `partition tag → semver tag → commit` resolution, gated on the ws-04
   name-binding verification (§6.2).
-- [ ] **B3.** Implement probe-forward `(b+i) mod 16` with the
+- [ ] **B3.** Implement probe-forward `(b+i) mod 256` with the
   fetched/valid/name-matched/fresh predicate (§6.3).
 - [ ] **B4.** Implement the anti-rollback floor check (§7.3.1); re-key
   `check_monotonic` (`update.rs:262-267`) from `creation_token` to semver
   precedence.
 
 ### Phase C — producer rollout control
-- [ ] **C1.** `apr channel init <channel> <semver>` — write all 16 signed
+- [ ] **C1.** `apr channel init <channel> <semver>` — write all 256 signed
   partition tags (uses ws-04 signing primitive).
 - [ ] **C2.** `apr channel advance <channel> <semver> [--count N | --partitions …]`
   — write N signed partition tags, ascending-fill default (§7.1).
 - [ ] **C3.** Frontier maintenance: recompute `max_semver(targets)`, `update-ref
   refs/heads/<channel>`, `update-server-info` after every advance (§5.1).
 - [ ] **C4.** `apr channel status <channel>` — report partition→release map,
-  frontier, and N/16 progress (§7.2).
-- [ ] **C5.** Enforce the "always 16" invariant on publish (refuse to upload a
-  channel with <16 partitions).
+  frontier, and N/256 progress (§7.2).
+- [ ] **C5.** Enforce the "always 256" invariant on publish (refuse to upload a
+  channel with <256 partitions).
 
 ### Phase D — removals (brief §15)
 - [ ] **D1.** Delete the `creation_token` rollout path: `pick_bundles`
@@ -503,14 +503,14 @@ to `1.2.0`.
 | Test | Asserts |
 |---|---|
 | Bucket determinism | same `machine_id` → same bucket across runs; persisted bucket survives a `machine_id` source change |
-| Bucket distribution | 10k synthetic `machine_id`s spread roughly uniformly over `0..f` (sha256 avalanche) |
-| Partition resolve | `GET /channel/stable/a` → signed tag (name=="stable") → `1.1.3` tag → commit; name-binding enforced |
-| Probe-forward | partition `b` missing/expired → lands on `(b+1) mod 16`; wrap-around; deterministic order |
-| Frontier | after advancing 1/16 to `1.2.0`, `refs/heads/stable` head == `1.2.0` commit |
-| Rollout staging | `advance --count 4` ⇒ exactly partitions `0..3` on T, `4..f` on P; `status` reports 4/16 |
+| Bucket distribution | 10k synthetic `machine_id`s spread roughly uniformly over `00..ff` (sha256 avalanche) |
+| Partition resolve | `GET /channel/stable/a3` → signed tag (name=="stable") → `1.1.3` tag → commit; name-binding enforced |
+| Probe-forward | partition `b7` missing/expired → lands on `(b+1) mod 256`; wrap-around; deterministic order |
+| Frontier | after advancing 1/256 to `1.2.0`, `refs/heads/stable` head == `1.2.0` commit |
+| Rollout staging | `advance --count 4` ⇒ exactly partitions `00..03` on T, `04..ff` on P; `status` reports 4/256 |
 | Anti-rollback floor | host on `1.2.0` ignores a partition that decrements to `1.1.3`; floor unchanged |
 | Fix-forward | publish `1.2.1`, advance affected cohort; floor rises; never decrements |
-| "Always 16" | publishing a channel with 15 partitions is refused |
+| "Always 256" | publishing a channel with 255 partitions is refused |
 | Stock-git frontier | `git clone -b stable` lands on the frontier (no rollout protection), as designed |
 
 ---
@@ -523,7 +523,7 @@ to `1.2.0`.
   by persist-once, but VM-clone fan-out needs a re-selection policy.
 - **Probe-forward fairness skew:** hosts whose assigned partition is briefly
   missing advance early. Acceptable, but a flapping partition could systematically
-  skew a cohort — bound by the "always 16" publish invariant.
+  skew a cohort — bound by the "always 256" publish invariant.
 - **Partition `valid_until` window length** (brief §11, §16.5): too short ⇒
   spurious staleness + probe-forward storms; too long ⇒ slow rollback of trust.
   Must be co-tuned with the low `/channel/**` CDN TTL.

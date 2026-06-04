@@ -63,7 +63,7 @@ over a trivial static HTTP server, and `git clone`s it with stock git into a
 byte-identical working tree — plus an AOS-side fetch that resolves objects
 through `http-alternates`.
 
-**Out of scope here:** thin/full pack and zstd generation (WS-02), the 16
+**Out of scope here:** thin/full pack and zstd generation (WS-02), the 256
 channel partition tags and frontier branch head (WS-03), tag signing and
 name-binding verification (WS-04), consumer delta-walk/retention (WS-05). This
 doc references their *hooks* but does not implement them.
@@ -133,9 +133,9 @@ is owned by [WS-03](./workstream-03-channels-rollouts.md).)
                                        (doubles as the full release index)
     info/alternates                ← optional human/agent-readable mirror of the above
     <xx>/<62-hex>                  ← loose objects, sha256 2/62 split (dumb HTTP)         [immutable, high TTL]
-  channel/                         ← OWNED BY WS-03 (16 signed partition tags)
+  channel/                         ← OWNED BY WS-03 (256 signed partition tags)
     <name>/
-      0 .. f
+      00 .. ff
   release/
     <major>/<minor>/<patch[-prerelease][+build]>/                                        [long TTL, immutable]
       objects/
@@ -334,7 +334,7 @@ This workstream is responsible for the **transparent-clone** property (brief
 
 **Graceful degradation (brief §9, §12):** a stock dumb clone of a *patch*
 release pulls the **minor-base full pack** (reached via `http-alternates`) plus
-the patch's loose new objects — no thin packs needed. The 16 channel partition
+the patch's loose new objects — no thin packs needed. The 256 channel partition
 tags live **outside** the ref namespace at `/channel/*` (WS-03), so they never
 pollute a stock client's `refs/tags/*`.
 
