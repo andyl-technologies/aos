@@ -13,21 +13,21 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use aos_core::output::Printer;
 use aos_systemd::{FailedUnitsReport, JobResult, SystemdClient};
 
 use crate::config::ApmConfig;
-use crate::unit_diff::{self, UnitDiff};
 use crate::download::{
-    default_engine, download_nars, fetch_narinfos, resolve_mirror, DownloadRequest,
-    ResolvedDownload,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfos,
+    resolve_mirror,
 };
-use crate::registry::{store_path_hash, RegistrySet};
+use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
 use crate::types::{PackageMeta, ProfileScope, SystemGeneration, SystemGenerationState};
+use crate::unit_diff::{self, UnitDiff};
 use crate::verify::{verify_download_hash, verify_nar_hash};
 
 // ---------------------------------------------------------------------------
@@ -153,7 +153,10 @@ pub async fn install_system(
         .map(|r| r.narinfo.file_size.unwrap_or(0))
         .sum();
     let total_refs = toplevel_meta.references.len();
-    printer.kv("Package", &format!("{} {}", pkg_name, toplevel_meta.version));
+    printer.kv(
+        "Package",
+        &format!("{} {}", pkg_name, toplevel_meta.version),
+    );
     printer.kv("Closure paths", &format!("{}", all_metas.len()));
     printer.kv("Missing paths", &format!("{}", to_download.len()));
     printer.kv("Download size", &format_size(download_size));
@@ -213,7 +216,11 @@ pub async fn install_system(
         .with_context(|| format!("creating {}", profile_path.display()))?;
 
     let mut state = load_generation_state(&profile_path)?;
-    let old_gen = state.generations.iter().find(|g| g.number == state.current).cloned();
+    let old_gen = state
+        .generations
+        .iter()
+        .find(|g| g.number == state.current)
+        .cloned();
 
     let gen_num = state.next;
     state.next += 1;
@@ -320,9 +327,7 @@ pub async fn install_system(
 
     printer.success(&format!(
         "System generation {gen_num} active: {} {}{}",
-        pkg_name,
-        toplevel_meta.version,
-        reboot_hint,
+        pkg_name, toplevel_meta.version, reboot_hint,
     ));
 
     Ok(())
@@ -492,7 +497,7 @@ pub async fn rollback_system(
             Some(4) => anyhow::bail!(
                 "FATAL: the /etc swap is incomplete; the running system's \
                  /etc may be in an indeterminate state. Manual intervention \
-                 is required (gen-{})." ,
+                 is required (gen-{}).",
                 target.number
             ),
             other => anyhow::bail!(
@@ -641,9 +646,7 @@ async fn download_image(
 
     let output_path = output.unwrap_or_else(|| {
         // Default output name derived from package + format.
-        Box::leak(
-            format!("{}-{}.{}", meta.name, meta.version, format).into_boxed_str(),
-        )
+        Box::leak(format!("{}-{}.{}", meta.name, meta.version, format).into_boxed_str())
     });
 
     printer.kv("Image format", format);
@@ -1301,10 +1304,7 @@ async fn handle_kernel_upgrade(
             if kernel_changed {
                 let old_ver = extract_kernel_version(old_kernel);
                 let new_ver = extract_kernel_version(new_kernel);
-                printer.warning(&format!(
-                    "Kernel updated: {} -> {}",
-                    old_ver, new_ver,
-                ));
+                printer.warning(&format!("Kernel updated: {} -> {}", old_ver, new_ver,));
                 printer.plain("  Boot loader updated. Reboot required for kernel changes.");
                 printer.plain("  Use: apm upgrade --system --kexec  (fast, ~3s)");
                 printer.plain("  Or:  apm upgrade --system --reboot (full reboot)");
@@ -1366,11 +1366,7 @@ async fn kexec_kernel(new_toplevel: &str) -> Result<()> {
     check_command_exists("kexec")?;
 
     // Load new kernel.
-    let mut load_args = vec![
-        "-l".to_string(),
-        kernel,
-        "--reuse-cmdline".to_string(),
-    ];
+    let mut load_args = vec!["-l".to_string(), kernel, "--reuse-cmdline".to_string()];
     if Path::new(&initrd).exists() {
         load_args.push(format!("--initrd={}", initrd));
     }
@@ -1589,9 +1585,7 @@ fn chrono_iso8601_now() -> String {
 
     let (year, month, day) = days_to_ymd(days);
 
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 fn days_to_ymd(days: i64) -> (i32, u32, u32) {
@@ -1702,8 +1696,7 @@ mod tests {
     fn extract_kernel_version_from_store_path() {
         // Nix hash is 32 chars, so basename is "01234567890123456789012345678901-linux-6.12.1"
         // After stripping 33-char prefix (hash + '-'), we get "linux-6.12.1", then strip "linux-".
-        let path =
-            Some("/nix/store/01234567890123456789012345678901-linux-6.12.1".to_string());
+        let path = Some("/nix/store/01234567890123456789012345678901-linux-6.12.1".to_string());
         assert_eq!(extract_kernel_version(&path), "6.12.1");
     }
 
@@ -1748,7 +1741,10 @@ mod tests {
         };
 
         let out = format_failed_units(&report);
-        assert!(out.contains("2 service(s) failed during activation"), "{out}");
+        assert!(
+            out.contains("2 service(s) failed during activation"),
+            "{out}"
+        );
         assert!(out.contains("broken.service"), "{out}");
         assert!(out.contains("ExecMainStatus=1"), "{out}");
         // The captured status dump is included, indented.

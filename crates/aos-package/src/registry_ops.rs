@@ -7,16 +7,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
 use crate::registry::objectstore;
-use crate::types::{
-    CacheEntry, RegistryRootConfig,
-};
+use crate::types::{CacheEntry, RegistryRootConfig};
 use crate::{BranchCommand, PrCommand};
 
 // ---------------------------------------------------------------------------
@@ -69,7 +67,11 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
     if config.registries.is_empty() {
         bail!("no registries configured. Add one with `apr create <name>` or `apr add <url>`.");
     }
-    let names: Vec<&str> = config.registries.iter().map(|(c, _)| c.name.as_str()).collect();
+    let names: Vec<&str> = config
+        .registries
+        .iter()
+        .map(|(c, _)| c.name.as_str())
+        .collect();
     bail!(
         "multiple registries configured ({}). Use --registry to specify one.",
         names.join(", ")
@@ -126,7 +128,13 @@ fn parse_store_path(store_path: &str) -> (String, String) {
     let mut in_version = false;
 
     for part in &parts {
-        if !in_version && part.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if !in_version
+            && part
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+        {
             in_version = true;
         }
         if in_version {
@@ -143,7 +151,14 @@ fn parse_store_path(store_path: &str) -> (String, String) {
     };
     let version = version_parts.join("-");
 
-    (name, if version.is_empty() { "0.0.0".into() } else { version })
+    (
+        name,
+        if version.is_empty() {
+            "0.0.0".into()
+        } else {
+            version
+        },
+    )
 }
 
 /// Get the first letter of a name for directory bucketing.
@@ -205,10 +220,7 @@ fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let nar_size = info
-        .get("narSize")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let nar_size = info.get("narSize").and_then(|v| v.as_u64()).unwrap_or(0);
     let path = info
         .get("path")
         .and_then(|v| v.as_str())
@@ -303,10 +315,7 @@ fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
 ///
 /// Creates `closures/{hash}` for the root store path as an adjacency list.
 /// Also ensures `.gitattributes` has the `closures/** -diff` entry.
-fn write_closure_files(
-    dir: &Path,
-    store_path: &str,
-) -> Result<()> {
+fn write_closure_files(dir: &Path, store_path: &str) -> Result<()> {
     let closure = compute_closure(store_path)?;
     if closure.is_empty() {
         return Ok(());
@@ -424,10 +433,10 @@ fn read_registry_toml(dir: &Path) -> Result<Option<RegistryRootConfig>> {
     if !path.exists() {
         return Ok(None);
     }
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let config: RegistryRootConfig = toml::from_str(&content)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let config: RegistryRootConfig =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
     Ok(Some(config))
 }
 
@@ -460,8 +469,7 @@ pub async fn create(
         bail!("registry '{name}' already exists at {}", dir.display());
     }
 
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
     printer.info(&format!("Initializing registry '{name}'..."));
 
@@ -483,7 +491,10 @@ description = ""
 
     // Initial commit.
     git(&dir, &["add", "-A"])?;
-    git(&dir, &["commit", "-m", &format!("Initialize registry '{name}'")])?;
+    git(
+        &dir,
+        &["commit", "-m", &format!("Initialize registry '{name}'")],
+    )?;
     refresh_registry_object_store(&dir)
         .context("refreshing dumb-HTTP object store after registry creation")?;
 
@@ -493,10 +504,7 @@ description = ""
         printer.kv("Remote", url);
     }
 
-    printer.success(&format!(
-        "Registry '{name}' created at {}",
-        dir.display()
-    ));
+    printer.success(&format!("Registry '{name}' created at {}", dir.display()));
 
     Ok(())
 }
@@ -611,9 +619,7 @@ pub async fn publish(
     }
 
     if !no_commit {
-        let default_msg = format!(
-            "publish {pkg_name} {pkg_version} ({platform})"
-        );
+        let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
         commit_registry(&dir, msg)?;
         refresh_registry_object_store(&dir)
@@ -648,16 +654,16 @@ fn build_package_toml(
 
     if existing.is_empty() {
         // Create new TOML.
-        let mut content = format!(
-            "[package]\nname = \"{name}\"\ndescription = \"{desc}\"\n"
-        );
+        let mut content = format!("[package]\nname = \"{name}\"\ndescription = \"{desc}\"\n");
         if sysroot {
             content.push_str("sysroot = true\n");
         }
         if let Some(hp) = homepage {
             content.push_str(&format!("homepage = \"{hp}\"\n"));
         }
-        content.push_str(&format!("license = \"{lic}\"\nmaintainer = \"{maint}\"\n\n"));
+        content.push_str(&format!(
+            "license = \"{lic}\"\nmaintainer = \"{maint}\"\n\n"
+        ));
         content.push_str(&format!("[[versions]]\nversion = \"{version}\"\n"));
         if let Some(prev) = previous {
             content.push_str(&format!("previous = \"{prev}\"\n"));
@@ -689,16 +695,14 @@ fn build_package_toml(
                  store_path = \"{}\"\n\
                  nar_hash = \"{}\"\n\
                  nar_size = {}\n",
-                img_info.path,
-                img_info.nar_hash,
-                img_info.nar_size,
+                img_info.path, img_info.nar_hash, img_info.nar_size,
             ));
         }
         Ok(content)
     } else {
         // Parse existing, add/update the version+platform entry.
-        let mut toml_val: toml::Value = toml::from_str(existing)
-            .context("parsing existing package TOML")?;
+        let mut toml_val: toml::Value =
+            toml::from_str(existing).context("parsing existing package TOML")?;
 
         // Set sysroot flag on the [package] section if requested.
         if sysroot {
@@ -708,16 +712,23 @@ fn build_package_toml(
         }
 
         // Ensure versions array exists.
-        let versions = toml_val
-            .get_mut("versions")
-            .and_then(|v| v.as_array_mut());
+        let versions = toml_val.get_mut("versions").and_then(|v| v.as_array_mut());
 
         let platform_table = {
             let mut t = toml::map::Map::new();
             t.insert("store_path".into(), toml::Value::String(info.path.clone()));
-            t.insert("nar_hash".into(), toml::Value::String(info.nar_hash.clone()));
-            t.insert("nar_size".into(), toml::Value::Integer(info.nar_size as i64));
-            t.insert("closure_size".into(), toml::Value::Integer(info.closure_size as i64));
+            t.insert(
+                "nar_hash".into(),
+                toml::Value::String(info.nar_hash.clone()),
+            );
+            t.insert(
+                "nar_size".into(),
+                toml::Value::Integer(info.nar_size as i64),
+            );
+            t.insert(
+                "closure_size".into(),
+                toml::Value::Integer(info.closure_size as i64),
+            );
             t.insert("source_drv".into(), toml::Value::String(String::new()));
             t.insert("source_nar_hash".into(), toml::Value::String(String::new()));
             let refs: Vec<toml::Value> = info
@@ -757,10 +768,10 @@ fn build_package_toml(
                 // Update existing version entry.
                 let ver_entry = &mut versions[idx];
                 if let Some(prev) = previous {
-                    ver_entry.as_table_mut().unwrap().insert(
-                        "previous".into(),
-                        toml::Value::String(prev.to_string()),
-                    );
+                    ver_entry
+                        .as_table_mut()
+                        .unwrap()
+                        .insert("previous".into(), toml::Value::String(prev.to_string()));
                 }
                 let platforms = ver_entry
                     .as_table_mut()
@@ -794,10 +805,10 @@ fn build_package_toml(
             platforms.insert(platform.to_string(), platform_table);
             ver_table.insert("platforms".into(), toml::Value::Table(platforms));
 
-            toml_val
-                .as_table_mut()
-                .unwrap()
-                .insert("versions".into(), toml::Value::Array(vec![toml::Value::Table(ver_table)]));
+            toml_val.as_table_mut().unwrap().insert(
+                "versions".into(),
+                toml::Value::Array(vec![toml::Value::Table(ver_table)]),
+            );
         }
 
         Ok(toml::to_string_pretty(&toml_val)?)
@@ -818,7 +829,10 @@ pub async fn unpublish(
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let letter = first_letter(package);
-    let toml_path = dir.join("packages").join(&letter).join(format!("{package}.toml"));
+    let toml_path = dir
+        .join("packages")
+        .join(&letter)
+        .join(format!("{package}.toml"));
 
     if !toml_path.exists() {
         bail!("package '{package}' not found in registry");
@@ -837,9 +851,10 @@ pub async fn unpublish(
             if let Some(ver) = version {
                 if let Some(plat) = platform {
                     // Remove specific platform from specific version.
-                    if let Some(idx) = versions.iter().position(|v| {
-                        v.get("version").and_then(|s| s.as_str()) == Some(ver)
-                    }) {
+                    if let Some(idx) = versions
+                        .iter()
+                        .position(|v| v.get("version").and_then(|s| s.as_str()) == Some(ver))
+                    {
                         if let Some(platforms) = versions[idx]
                             .as_table_mut()
                             .and_then(|t| t.get_mut("platforms"))
@@ -853,9 +868,7 @@ pub async fn unpublish(
                     }
                 } else {
                     // Remove entire version.
-                    versions.retain(|v| {
-                        v.get("version").and_then(|s| s.as_str()) != Some(ver)
-                    });
+                    versions.retain(|v| v.get("version").and_then(|s| s.as_str()) != Some(ver));
                 }
             } else if let Some(plat) = platform {
                 // Remove platform from all versions.
@@ -879,7 +892,9 @@ pub async fn unpublish(
 
             if versions.is_empty() {
                 std::fs::remove_file(&toml_path)?;
-                printer.info(&format!("Removed package '{package}' (no versions remaining)."));
+                printer.info(&format!(
+                    "Removed package '{package}' (no versions remaining)."
+                ));
             } else {
                 std::fs::write(&toml_path, toml::to_string_pretty(&toml_val)?)?;
                 printer.info(&format!("Updated package '{package}'."));
@@ -898,7 +913,6 @@ pub async fn unpublish(
 
     Ok(())
 }
-
 
 // ---------------------------------------------------------------------------
 // Registry Query
@@ -937,7 +951,11 @@ pub async fn show(
             if let Some(desc) = pkg.get("description").and_then(|v| v.as_str()) {
                 printer.kv("Description", desc);
             }
-            if pkg.get("sysroot").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if pkg
+                .get("sysroot")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 printer.kv("Sysroot", "yes");
             }
             if let Some(hp) = pkg.get("homepage").and_then(|v| v.as_str()) {
@@ -970,9 +988,18 @@ pub async fn show(
                         if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
                             for img in images {
                                 if let Some(fmt) = img.get("format").and_then(|v| v.as_str()) {
-                                    let img_path = img.get("store_path").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let img_size = img.get("nar_size").and_then(|v| v.as_integer()).unwrap_or(0);
-                                    printer.kv(&format!("    Image ({fmt})"), &format!("{img_path} ({})", format_size(img_size as u64)));
+                                    let img_path = img
+                                        .get("store_path")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("?");
+                                    let img_size = img
+                                        .get("nar_size")
+                                        .and_then(|v| v.as_integer())
+                                        .unwrap_or(0);
+                                    printer.kv(
+                                        &format!("    Image ({fmt})"),
+                                        &format!("{img_path} ({})", format_size(img_size as u64)),
+                                    );
                                 }
                             }
                         }
@@ -1059,7 +1086,8 @@ pub async fn verify(
 
     // Collect all store path hashes from package TOMLs.
     let mut all_store_hashes: Vec<(String, String)> = Vec::new(); // (hash, pkg_name)
-    let mut all_ref_hashes: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new(); // hash -> references
+    let mut all_ref_hashes: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new(); // hash -> references
 
     // Verify package TOML files.
     if packages_dir.is_dir() {
@@ -1083,20 +1111,33 @@ pub async fn verify(
                                 continue;
                             }
                             // Extract store hashes from all version/platform entries.
-                            let pkg_name = val.get("package")
+                            let pkg_name = val
+                                .get("package")
                                 .and_then(|p| p.get("name"))
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("unknown");
                             if let Some(versions) = val.get("versions").and_then(|v| v.as_array()) {
                                 for ver in versions {
-                                    if let Some(platforms) = ver.get("platforms").and_then(|p| p.as_table()) {
+                                    if let Some(platforms) =
+                                        ver.get("platforms").and_then(|p| p.as_table())
+                                    {
                                         for (_plat, plat_val) in platforms {
-                                            if let Some(sp) = plat_val.get("store_path").and_then(|s| s.as_str()) {
+                                            if let Some(sp) =
+                                                plat_val.get("store_path").and_then(|s| s.as_str())
+                                            {
                                                 let hash = extract_hash(sp).to_string();
-                                                all_store_hashes.push((hash.clone(), pkg_name.to_string()));
-                                                let refs: Vec<String> = plat_val.get("references")
+                                                all_store_hashes
+                                                    .push((hash.clone(), pkg_name.to_string()));
+                                                let refs: Vec<String> = plat_val
+                                                    .get("references")
                                                     .and_then(|r| r.as_array())
-                                                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                                                    .map(|arr| {
+                                                        arr.iter()
+                                                            .filter_map(|v| {
+                                                                v.as_str().map(|s| s.to_string())
+                                                            })
+                                                            .collect()
+                                                    })
                                                     .unwrap_or_default();
                                                 all_ref_hashes.insert(hash, refs);
                                             }
@@ -1266,9 +1307,12 @@ pub async fn validate(
                     let toml_val: toml::Value = toml::from_str(&content)?;
                     if let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) {
                         for ver in versions {
-                            if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table()) {
+                            if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table())
+                            {
                                 for (_plat, entry) in platforms {
-                                    if let Some(nar_hash) = entry.get("nar_hash").and_then(|v| v.as_str()) {
+                                    if let Some(nar_hash) =
+                                        entry.get("nar_hash").and_then(|v| v.as_str())
+                                    {
                                         let name = toml_val
                                             .get("package")
                                             .and_then(|p| p.get("name"))
@@ -1311,11 +1355,7 @@ pub async fn validate(
         let handle = tokio::spawn(async move {
             let mut found = false;
             for cache in &mirrors {
-                let url = format!(
-                    "{}/{}.nar.zst",
-                    cache.url.trim_end_matches('/'),
-                    nar_hash
-                );
+                let url = format!("{}/{}.nar.zst", cache.url.trim_end_matches('/'), nar_hash);
                 let resp = client.head(&url).send().await;
                 if let Ok(resp) = resp {
                     if resp.status().is_success() {
@@ -1356,11 +1396,7 @@ pub async fn validate(
 // ---------------------------------------------------------------------------
 
 /// `apr status`
-pub async fn status(
-    config: &ApmConfig,
-    registry: Option<&str>,
-    printer: &Printer,
-) -> Result<()> {
+pub async fn status(config: &ApmConfig, registry: Option<&str>, printer: &Printer) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let output = git(&dir, &["status"])?;
     printer.plain(&output);
@@ -1518,11 +1554,7 @@ pub async fn merge(
 // GitHub Integration
 // ---------------------------------------------------------------------------
 
-pub async fn run_pr(
-    config: &ApmConfig,
-    command: &PrCommand,
-    printer: &Printer,
-) -> Result<()> {
+pub async fn run_pr(config: &ApmConfig, command: &PrCommand, printer: &Printer) -> Result<()> {
     match command {
         PrCommand::Create {
             title,
@@ -1531,12 +1563,33 @@ pub async fn run_pr(
             draft,
             reviewer,
             registry,
-        } => pr_create(config, title.as_deref(), body.as_deref(), base.as_deref(), *draft, reviewer, registry.as_deref(), printer).await,
+        } => {
+            pr_create(
+                config,
+                title.as_deref(),
+                body.as_deref(),
+                base.as_deref(),
+                *draft,
+                reviewer,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
         PrCommand::List {
             author,
             mine,
             registry,
-        } => pr_list(config, author.as_deref(), *mine, registry.as_deref(), printer).await,
+        } => {
+            pr_list(
+                config,
+                author.as_deref(),
+                *mine,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
         PrCommand::Show { number, registry } => {
             pr_show(config, *number, registry.as_deref(), printer).await
         }
@@ -1740,8 +1793,7 @@ pub async fn tag(
         signing_key,
         false,
     )?;
-    refresh_registry_object_store(&dir)
-        .context("refreshing dumb-HTTP object store after tag")?;
+    refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after tag")?;
 
     printer.success(&format!("Created signed tag '{name}'."));
     Ok(())
@@ -1779,10 +1831,7 @@ pub async fn bundle(
         let tag = tag_name.unwrap_or("HEAD");
         let filename = format!("{reg_name}-{tag}.bundle");
         let dest = Path::new(output_dir).join(&filename);
-        git(
-            &dir,
-            &["bundle", "create", &dest.to_string_lossy(), tag],
-        )?;
+        git(&dir, &["bundle", "create", &dest.to_string_lossy(), tag])?;
         printer.success(&format!("Created snapshot bundle: {}", dest.display()));
     }
 
@@ -1799,9 +1848,7 @@ pub async fn sign(
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let tag_name = tag.ok_or_else(|| {
-        anyhow::anyhow!(
-            "`apr sign` now signs tag objects; pass the existing tag name to re-sign"
-        )
+        anyhow::anyhow!("`apr sign` now signs tag objects; pass the existing tag name to re-sign")
     })?;
     let signing_key = key.ok_or_else(|| {
         anyhow::anyhow!("--key is required: registry release tags must be signed tag objects")
@@ -1817,8 +1864,7 @@ pub async fn sign(
         signing_key,
         true,
     )?;
-    refresh_registry_object_store(&dir)
-        .context("refreshing dumb-HTTP object store after sign")?;
+    refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after sign")?;
     printer.success(&format!("Re-signed tag '{tag_name}'."));
 
     Ok(())
@@ -1905,9 +1951,8 @@ mod tests {
 
     #[test]
     fn parse_store_path_multi_dash_name() {
-        let (name, version) = parse_store_path(
-            "/nix/store/k7j3m8abc123def456ghijklmnopqrst-my-cool-package-1.2.3",
-        );
+        let (name, version) =
+            parse_store_path("/nix/store/k7j3m8abc123def456ghijklmnopqrst-my-cool-package-1.2.3");
         assert_eq!(name, "my-cool-package");
         assert_eq!(version, "1.2.3");
     }
@@ -1928,9 +1973,8 @@ mod tests {
 
     #[test]
     fn semver_tag_list_filters_and_sorts_registry_releases() {
-        let versions = semver_versions_from_tag_list(
-            "not-a-release\n1.2.0\nv1.3.0\n1.1.9\n1.2.0\n",
-        );
+        let versions =
+            semver_versions_from_tag_list("not-a-release\n1.2.0\nv1.3.0\n1.1.9\n1.2.0\n");
         assert_eq!(
             versions,
             vec![

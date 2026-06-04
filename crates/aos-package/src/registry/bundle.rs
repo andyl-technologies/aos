@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
@@ -122,8 +122,7 @@ impl BundleManifest {
 
     /// Parse a bundle-list.toml string into a `BundleManifest`.
     pub fn parse(content: &str) -> Result<Self> {
-        let toml: ManifestToml =
-            toml::from_str(content).context("invalid bundle-list.toml")?;
+        let toml: ManifestToml = toml::from_str(content).context("invalid bundle-list.toml")?;
 
         let mut entries = Vec::with_capacity(toml.bundles.len());
         for b in toml.bundles {
@@ -201,18 +200,13 @@ impl BundleManifest {
         self.entries
             .iter()
             .filter(|e| {
-                e.bundle_type == BundleType::SkipDelta
-                    && e.base_tag.as_deref() == Some(base_tag)
+                e.bundle_type == BundleType::SkipDelta && e.base_tag.as_deref() == Some(base_tag)
             })
             .max_by_key(|e| e.creation_token)
     }
 
     /// Find sequential deltas between two creation tokens, ordered.
-    pub fn sequential_deltas_between(
-        &self,
-        from_token: u64,
-        to_token: u64,
-    ) -> Vec<&BundleEntry> {
+    pub fn sequential_deltas_between(&self, from_token: u64, to_token: u64) -> Vec<&BundleEntry> {
         self.entries
             .iter()
             .filter(|e| {
@@ -273,8 +267,7 @@ pub async fn download_bundle(
     }
 
     // Use TransferEngine with SHA-256 verification.
-    let transfer_req = TransferRequest::get(&url)
-        .with_hash(HashAlgorithm::Sha256, &entry.sha256);
+    let transfer_req = TransferRequest::get(&url).with_hash(HashAlgorithm::Sha256, &entry.sha256);
 
     let result = engine
         .execute(transfer_req)
@@ -302,11 +295,7 @@ pub async fn download_bundle(
 /// Verify a downloaded bundle file:
 /// 1. SHA-256 matches the expected hash
 /// 2. `git bundle verify` passes (pack integrity + prerequisites)
-pub async fn verify_bundle(
-    path: &Path,
-    expected_sha256: &str,
-    repo_dir: &Path,
-) -> Result<()> {
+pub async fn verify_bundle(path: &Path, expected_sha256: &str, repo_dir: &Path) -> Result<()> {
     // Step 1: SHA-256 verification.
     let content = tokio::fs::read(path)
         .await
@@ -375,11 +364,7 @@ pub async fn ensure_git_repo(repo_dir: &Path) -> Result<()> {
 /// Runs `git bundle unbundle <path>` in the cache repo directory.
 pub async fn unbundle(bundle_path: &Path, repo_dir: &Path) -> Result<()> {
     let output = Command::new("git")
-        .args([
-            "bundle",
-            "unbundle",
-            &bundle_path.to_string_lossy(),
-        ])
+        .args(["bundle", "unbundle", &bundle_path.to_string_lossy()])
         .current_dir(repo_dir)
         .output()
         .await

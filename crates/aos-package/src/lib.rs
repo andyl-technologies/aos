@@ -26,7 +26,7 @@ pub mod verify;
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 
 use aos_core::error::AosError;
@@ -825,9 +825,7 @@ pub async fn run(
             drain,
             ..
         } => {
-            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
-                ignore_sysroot_lock.as_deref(),
-            );
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             if *install_system || image_fmt.is_some() {
                 let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::install_system(
@@ -844,23 +842,28 @@ pub async fn run(
                 )
                 .await
             } else {
-                install::run(&config, packages, registry.as_deref(), dry_run, yes, &ignore, printer).await
+                install::run(
+                    &config,
+                    packages,
+                    registry.as_deref(),
+                    dry_run,
+                    yes,
+                    &ignore,
+                    printer,
+                )
+                .await
             }
         }
         PackageCommand::Remove {
             packages,
             autoremove,
         } => remove::run(&config, packages, *autoremove, dry_run, yes, printer).await,
-        PackageCommand::Autoremove => {
-            remove::run_autoremove(&config, dry_run, yes, printer).await
-        }
+        PackageCommand::Autoremove => remove::run_autoremove(&config, dry_run, yes, printer).await,
         PackageCommand::Reinstall {
             packages,
             ignore_sysroot_lock,
         } => {
-            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
-                ignore_sysroot_lock.as_deref(),
-            );
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             install::run(&config, packages, None, dry_run, yes, &ignore, printer).await
         }
         PackageCommand::Update { registry } => {
@@ -876,9 +879,7 @@ pub async fn run(
             live,
             drain,
         } => {
-            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
-                ignore_sysroot_lock.as_deref(),
-            );
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             if *upgrade_system {
                 let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::upgrade_system(&config, dry_run, kernel_mode, *drain, printer).await
@@ -896,8 +897,15 @@ pub async fn run(
             installed,
             registry,
         } => {
-            query::search(&config, pattern, *names_only, *installed, registry.as_deref(), printer)
-                .await
+            query::search(
+                &config,
+                pattern,
+                *names_only,
+                *installed,
+                registry.as_deref(),
+                printer,
+            )
+            .await
         }
         PackageCommand::Show { package } => query::show(&config, package, printer).await,
         PackageCommand::List {
@@ -906,43 +914,34 @@ pub async fn run(
             held,
             registry,
         } => {
-            query::list(&config, *installed, *upgradable, *held, registry.as_deref(), printer)
-                .await
+            query::list(
+                &config,
+                *installed,
+                *upgradable,
+                *held,
+                registry.as_deref(),
+                printer,
+            )
+            .await
         }
-        PackageCommand::Depends { package } => {
-            deps::depends(&config, package, printer).await
-        }
-        PackageCommand::Rdepends { package } => {
-            deps::rdepends(&config, package, printer).await
-        }
-        PackageCommand::Policy { package } => {
-            deps::policy(&config, package, printer).await
-        }
-        PackageCommand::Files { package } => {
-            deps::files(&config, package, printer).await
-        }
-        PackageCommand::Hold { package } => {
-            hold::run_hold(&config, package, printer).await
-        }
-        PackageCommand::Unhold { package } => {
-            hold::run_unhold(&config, package, printer).await
-        }
+        PackageCommand::Depends { package } => deps::depends(&config, package, printer).await,
+        PackageCommand::Rdepends { package } => deps::rdepends(&config, package, printer).await,
+        PackageCommand::Policy { package } => deps::policy(&config, package, printer).await,
+        PackageCommand::Files { package } => deps::files(&config, package, printer).await,
+        PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
+        PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held => hold::run_held(&config, printer).await,
         PackageCommand::Clean { generations, keep } => {
             clean::run(&config, *generations, *keep, printer).await
         }
         PackageCommand::Gc => clean::run_gc(printer).await,
-        PackageCommand::Verify { package } => {
-            source::run_verify(&config, package, printer).await
-        }
+        PackageCommand::Verify { package } => source::run_verify(&config, package, printer).await,
         PackageCommand::Source {
             package,
             show_drv,
             fetch,
             verify,
-        } => {
-            source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await
-        }
+        } => source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await,
         PackageCommand::Rollback {
             generation,
             system: rollback_system,
@@ -968,9 +967,7 @@ pub async fn run(
                 rollback::run(&config, *generation, dry_run, printer).await
             }
         }
-        PackageCommand::Registry { command } => {
-            run_registry(&config, command, printer).await
-        }
+        PackageCommand::Registry { command } => run_registry(&config, command, printer).await,
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
@@ -1003,23 +1000,26 @@ async fn run_registry(
             branch,
             tag,
             version,
-        } => registry_add(
-            config,
-            url,
-            name.as_deref(),
-            *priority,
-            commit.as_deref(),
-            branch.as_deref(),
-            tag.as_deref(),
-            version.as_deref(),
-            printer,
-        ).await,
+        } => {
+            registry_add(
+                config,
+                url,
+                name.as_deref(),
+                *priority,
+                commit.as_deref(),
+                branch.as_deref(),
+                tag.as_deref(),
+                version.as_deref(),
+                printer,
+            )
+            .await
+        }
         RegistryCommand::Remove { name, keep_local } => {
             registry_remove(config, name, *keep_local, printer).await
         }
-        RegistryCommand::Create {
-            name, remote, ..
-        } => registry_ops::create(config, name, remote.as_deref(), printer).await,
+        RegistryCommand::Create { name, remote, .. } => {
+            registry_ops::create(config, name, remote.as_deref(), printer).await
+        }
         RegistryCommand::Publish {
             store_path,
             name,
@@ -1126,16 +1126,7 @@ async fn run_registry(
             stat,
             remote,
             registry,
-        } => {
-            registry_ops::diff(
-                config,
-                *stat,
-                *remote,
-                registry.as_deref(),
-                printer,
-            )
-            .await
-        }
+        } => registry_ops::diff(config, *stat, *remote, registry.as_deref(), printer).await,
         RegistryCommand::Validate {
             package,
             platform,
@@ -1161,16 +1152,7 @@ async fn run_registry(
             package,
             n,
             registry,
-        } => {
-            registry_ops::log(
-                config,
-                package.as_deref(),
-                *n,
-                registry.as_deref(),
-                printer,
-            )
-            .await
-        }
+        } => registry_ops::log(config, package.as_deref(), *n, registry.as_deref(), printer).await,
         RegistryCommand::Branch { command } => {
             registry_ops::run_branch(config, command, printer).await
         }
@@ -1209,9 +1191,7 @@ async fn run_registry(
             )
             .await
         }
-        RegistryCommand::Pr { command } => {
-            registry_ops::run_pr(config, command, printer).await
-        }
+        RegistryCommand::Pr { command } => registry_ops::run_pr(config, command, printer).await,
         RegistryCommand::Tag {
             name,
             message,
@@ -1246,11 +1226,7 @@ async fn run_registry(
             )
             .await
         }
-        RegistryCommand::Sign {
-            tag,
-            key,
-            registry,
-        } => {
+        RegistryCommand::Sign { tag, key, registry } => {
             registry_ops::sign(
                 config,
                 tag.as_deref(),
@@ -1263,10 +1239,7 @@ async fn run_registry(
     }
 }
 
-async fn registry_list(
-    config: &config::ApmConfig,
-    printer: &Printer,
-) -> Result<()> {
+async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<()> {
     if config.registries.is_empty() {
         printer.info("No registries configured. Add one with `apm registry add <url>`.");
         return Ok(());
@@ -1287,7 +1260,10 @@ async fn registry_list(
             .map(|m| m.to_string())
             .unwrap_or_else(|_| "invalid".to_string());
 
-        printer.header(&format!("  {} (priority {})", reg_config.name, reg_config.priority));
+        printer.header(&format!(
+            "  {} (priority {})",
+            reg_config.name, reg_config.priority
+        ));
         printer.kv("URL", &reg_config.url);
         printer.kv("Status", status);
         printer.kv("Transport", &format!("{:?}", reg_config.transport()));
@@ -1433,13 +1409,10 @@ async fn registry_remove(
     }
 
     let config_dir = config.scope.config_dir();
-    let toml_path = config_dir
-        .join("registries.d")
-        .join(format!("{name}.toml"));
+    let toml_path = config_dir.join("registries.d").join(format!("{name}.toml"));
 
     if toml_path.exists() {
-        fs::remove_file(&toml_path)
-            .with_context(|| format!("removing {}", toml_path.display()))?;
+        fs::remove_file(&toml_path).with_context(|| format!("removing {}", toml_path.display()))?;
     }
 
     if !keep_local {
@@ -1467,13 +1440,8 @@ async fn registry_remove(
 // ---------------------------------------------------------------------------
 
 fn derive_registry_name(url: &str) -> String {
-    let cleaned = url
-        .trim_end_matches('/')
-        .trim_end_matches(".git");
-    let name = cleaned
-        .rsplit('/')
-        .next()
-        .unwrap_or("unknown");
+    let cleaned = url.trim_end_matches('/').trim_end_matches(".git");
+    let name = cleaned.rsplit('/').next().unwrap_or("unknown");
     name.chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
         .collect::<String>()

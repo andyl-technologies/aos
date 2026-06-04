@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -29,9 +29,7 @@ fn resolve_home() -> PathBuf {
     }
     // Last-resort fallback: construct from /tmp with a warning.  This is
     // better than silently scattering state into /tmp directly.
-    eprintln!(
-        "warning: $HOME is not set; falling back to /tmp for user-scoped APM paths"
-    );
+    eprintln!("warning: $HOME is not set; falling back to /tmp for user-scoped APM paths");
     PathBuf::from("/tmp")
 }
 
@@ -117,8 +115,7 @@ impl ClosureMeta {
             }
             let mut tokens = line.split_whitespace();
             if let Some(node) = tokens.next() {
-                let node_deps: Vec<String> =
-                    tokens.map(|s| s.to_string()).collect();
+                let node_deps: Vec<String> = tokens.map(|s| s.to_string()).collect();
                 members.push(node.to_string());
                 deps.insert(node.to_string(), node_deps);
             }
@@ -149,10 +146,7 @@ impl ClosureMeta {
 
     /// Get the direct dependencies of a node in this closure.
     pub fn direct_deps(&self, hash: &str) -> &[String] {
-        self.deps
-            .get(hash)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+        self.deps.get(hash).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Check whether a store path hash is a member of this closure.
@@ -401,13 +395,14 @@ impl RegistryConfig {
             return Ok(TrackingMode::Tag(tag.clone()));
         }
         if let Some(ref constraint) = self.version {
-            let req = semver::VersionReq::parse(constraint)
-                .map_err(|e| anyhow::anyhow!(
+            let req = semver::VersionReq::parse(constraint).map_err(|e| {
+                anyhow::anyhow!(
                     "registry '{}': invalid version constraint '{}': {}",
                     self.name,
                     constraint,
                     e,
-                ))?;
+                )
+            })?;
             return Ok(TrackingMode::Version(req));
         }
 
@@ -469,8 +464,7 @@ impl ProfileScope {
     pub fn profile_path(&self) -> PathBuf {
         match self {
             ProfileScope::User => {
-                let user =
-                    std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
+                let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
                 PathBuf::from(PROFILES_BASE).join("per-user").join(user)
             }
             ProfileScope::System => PathBuf::from(PROFILES_BASE).join("system"),
@@ -480,9 +474,7 @@ impl ProfileScope {
     /// Path for cached registry metadata.
     pub fn cache_path(&self) -> PathBuf {
         match self {
-            ProfileScope::User => {
-                resolve_home().join(".local/share/apm/remote")
-            }
+            ProfileScope::User => resolve_home().join(".local/share/apm/remote"),
             ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("remote"),
         }
     }
@@ -506,9 +498,7 @@ impl ProfileScope {
     /// Path for local registry git clones (both read-only and read-write).
     pub fn registries_path(&self) -> PathBuf {
         match self {
-            ProfileScope::User => {
-                resolve_home().join(".local/share/apm/registries")
-            }
+            ProfileScope::User => resolve_home().join(".local/share/apm/registries"),
             ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("registries"),
         }
     }
@@ -1029,7 +1019,10 @@ last_update = "2026-02-13T10:30:00Z"
         let mut cfg = base_cfg();
         cfg.version = Some("not a valid constraint!!!".into());
         let err = cfg.tracking_mode().unwrap_err();
-        assert!(err.to_string().contains("invalid version constraint"), "got: {err}");
+        assert!(
+            err.to_string().contains("invalid version constraint"),
+            "got: {err}"
+        );
     }
 
     #[test]

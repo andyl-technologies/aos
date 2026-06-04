@@ -2,7 +2,7 @@ use std::collections::{HashSet, VecDeque};
 
 use anyhow::{Context, Result};
 
-use super::registry::{store_path_hash, RegistrySet};
+use super::registry::{RegistrySet, store_path_hash};
 use super::types::PackageMeta;
 use aos_core::error::AosError;
 
@@ -48,26 +48,19 @@ pub fn resolve_closure(
         })?;
         (reg.config.name.clone(), meta.clone())
     } else {
-        let (reg, meta) = registries.resolve(name).ok_or_else(|| {
-            AosError::PackageNotFound {
+        let (reg, meta) = registries
+            .resolve(name)
+            .ok_or_else(|| AosError::PackageNotFound {
                 name: name.to_string(),
-            }
-        })?;
+            })?;
         (reg.config.name.clone(), meta.clone())
     };
 
     let root_hash = store_path_hash(&root.store_path).to_string();
 
     // Step 2: Try precomputed closure file first.
-    if let Some(closure_meta) =
-        registries.get_closure_in(&registry_name, &root_hash)
-    {
-        return resolve_from_closure_file(
-            registries,
-            &registry_name,
-            root,
-            closure_meta,
-        );
+    if let Some(closure_meta) = registries.get_closure_in(&registry_name, &root_hash) {
+        return resolve_from_closure_file(registries, &registry_name, root, closure_meta);
     }
 
     // Step 3: Fall back to BFS over references.
@@ -97,9 +90,7 @@ fn resolve_from_closure_file(
         if *member_hash == root_hash {
             // Root is always included — use the already-resolved meta.
             closure.push(root.clone());
-        } else if let Some(dep) =
-            registries.resolve_hash_in(registry_name, member_hash)
-        {
+        } else if let Some(dep) = registries.resolve_hash_in(registry_name, member_hash) {
             closure.push(dep.clone());
         }
         // Skip unresolvable hashes (system libraries, etc.)
@@ -230,10 +221,10 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    use crate::registry::RegistrySet;
     use crate::registry::closures::{CURL_CLOSURE, ZLIB_CLOSURE};
     use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
     use crate::registry::tests::{make_registry, make_registry_with_closures};
-    use crate::registry::RegistrySet;
 
     // 1. Resolving a single package with deps produces a closure containing
     //    both the root and its resolvable dependency.

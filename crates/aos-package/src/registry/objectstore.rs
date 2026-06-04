@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Initialize `dir` as a bare sha256 git repository and point `HEAD` at the
 /// default channel branch.
@@ -36,7 +36,11 @@ pub fn init_bare_sha256(dir: &Path, default_channel: &str) -> Result<()> {
 
     run_git_dir(
         dir,
-        &["symbolic-ref", "HEAD", &format!("refs/heads/{default_channel}")],
+        &[
+            "symbolic-ref",
+            "HEAD",
+            &format!("refs/heads/{default_channel}"),
+        ],
     )?;
     assert_sha256(dir)?;
     Ok(())
@@ -80,11 +84,7 @@ pub fn loose_object_path(oid: &str) -> Result<PathBuf> {
 /// The canonical sha256 bare repo already writes loose objects under its root
 /// `objects/` directory. This helper creates the per-release pack scaffold that
 /// later pack generation fills.
-pub fn write_release_objects(
-    repo: &Path,
-    version: &semver::Version,
-    revspec: &str,
-) -> Result<()> {
+pub fn write_release_objects(repo: &Path, version: &semver::Version, revspec: &str) -> Result<()> {
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
     if !revspec.is_empty() {
@@ -114,8 +114,7 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
     let git_dir = repo_git_dir(repo)?;
 
     for pack in full_pack_files(&git_dir)? {
-        unpack_pack(&git_dir, &pack)
-            .with_context(|| format!("unpacking {}", pack.display()))?;
+        unpack_pack(&git_dir, &pack).with_context(|| format!("unpacking {}", pack.display()))?;
     }
 
     let objects = run_git_dir(&git_dir, &["rev-list", "--objects", "--all"])?;
@@ -163,8 +162,7 @@ pub fn write_alternates(repo: &Path, releases: &[semver::Version]) -> Result<()>
     sorted.sort_by(|a, b| b.cmp(a));
 
     let info_dir = git_dir.join("objects").join("info");
-    fs::create_dir_all(&info_dir)
-        .with_context(|| format!("creating {}", info_dir.display()))?;
+    fs::create_dir_all(&info_dir).with_context(|| format!("creating {}", info_dir.display()))?;
 
     let mut out = String::new();
     for version in sorted {
@@ -247,8 +245,7 @@ fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn unpack_pack(repo: &Path, pack: &Path) -> Result<()> {
-    let pack_file = fs::File::open(pack)
-        .with_context(|| format!("opening {}", pack.display()))?;
+    let pack_file = fs::File::open(pack).with_context(|| format!("opening {}", pack.display()))?;
     let output = Command::new("git")
         .arg("--git-dir")
         .arg(repo)
@@ -280,9 +277,7 @@ fn collect_full_packs(dir: &Path, packs: &mut Vec<PathBuf>) -> Result<()> {
         return Ok(());
     }
 
-    for entry in fs::read_dir(dir)
-        .with_context(|| format!("reading {}", dir.display()))?
-    {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
@@ -313,8 +308,14 @@ mod tests {
 
     #[test]
     fn release_object_dir_mapping() {
-        assert_eq!(release_object_dir(&v("1.0.0")), PathBuf::from("1/0/0/objects"));
-        assert_eq!(release_object_dir(&v("1.1.2")), PathBuf::from("1/1/2/objects"));
+        assert_eq!(
+            release_object_dir(&v("1.0.0")),
+            PathBuf::from("1/0/0/objects")
+        );
+        assert_eq!(
+            release_object_dir(&v("1.1.2")),
+            PathBuf::from("1/1/2/objects")
+        );
         assert_eq!(
             release_object_dir(&v("1.1.0-alpha.1")),
             PathBuf::from("1/1/0-alpha.1/objects"),
@@ -333,10 +334,10 @@ mod tests {
             PathBuf::from("01/23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
         );
         assert!(loose_object_path("abc").is_err());
-        assert!(loose_object_path(
-            "zz23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        )
-        .is_err());
+        assert!(
+            loose_object_path("zz23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",)
+                .is_err()
+        );
     }
 
     #[test]
@@ -371,7 +372,10 @@ mod tests {
         init_bare_sha256(&sha256, "stable").unwrap();
         assert_eq!(repo_git_dir(&sha256).unwrap(), sha256);
         assert_sha256(&sha256).unwrap();
-        assert_eq!(fs::read_to_string(sha256.join("HEAD")).unwrap(), "ref: refs/heads/stable\n");
+        assert_eq!(
+            fs::read_to_string(sha256.join("HEAD")).unwrap(),
+            "ref: refs/heads/stable\n"
+        );
 
         let worktree_status = Command::new("git")
             .args(["init", "--object-format=sha256"])
@@ -478,16 +482,18 @@ mod tests {
             let addr = listener.local_addr().unwrap();
             let (tx, rx) = mpsc::channel();
 
-            thread::spawn(move || loop {
-                if rx.try_recv().is_ok() {
-                    break;
-                }
-                match listener.accept() {
-                    Ok((stream, _)) => handle_static_request(stream, &root),
-                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(5));
+            thread::spawn(move || {
+                loop {
+                    if rx.try_recv().is_ok() {
+                        break;
                     }
-                    Err(_) => break,
+                    match listener.accept() {
+                        Ok((stream, _)) => handle_static_request(stream, &root),
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
                 }
             });
 
@@ -521,7 +527,10 @@ mod tests {
         let url_path = request_path.split('?').next().unwrap_or("/");
         let decoded = percent_decode(url_path.trim_start_matches('/'));
         let rel = PathBuf::from(decoded);
-        if rel.components().any(|component| matches!(component, Component::ParentDir)) {
+        if rel
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        {
             write_response(&mut stream, "403 Forbidden", &[], method == "HEAD");
             return;
         }
@@ -531,7 +540,12 @@ mod tests {
             Ok(body) if path.is_file() && (method == "GET" || method == "HEAD") => {
                 write_response(&mut stream, "200 OK", &body, method == "HEAD");
             }
-            _ => write_response(&mut stream, "404 Not Found", b"not found\n", method == "HEAD"),
+            _ => write_response(
+                &mut stream,
+                "404 Not Found",
+                b"not found\n",
+                method == "HEAD",
+            ),
         }
     }
 

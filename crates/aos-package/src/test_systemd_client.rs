@@ -52,9 +52,7 @@ async fn dispatch(op: &TestSystemdClientOp) -> Result<serde_json::Value> {
         TestSystemdClientOp::Start { unit } => {
             job_json("start", unit, client.start_unit(unit).await?)
         }
-        TestSystemdClientOp::Stop { unit } => {
-            job_json("stop", unit, client.stop_unit(unit).await?)
-        }
+        TestSystemdClientOp::Stop { unit } => job_json("stop", unit, client.stop_unit(unit).await?),
         TestSystemdClientOp::Restart { unit } => {
             job_json("restart", unit, client.restart_unit(unit).await?)
         }

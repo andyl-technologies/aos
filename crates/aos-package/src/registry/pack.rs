@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
@@ -73,11 +73,7 @@ pub fn scheme_deltas(
                     push_if_published(
                         &mut bases,
                         published,
-                        semver::Version::new(
-                            release.major,
-                            release.minor,
-                            release.patch - offset,
-                        ),
+                        semver::Version::new(release.major, release.minor, release.patch - offset),
                     );
                 }
             }
@@ -96,17 +92,16 @@ pub fn scheme_deltas(
 /// # Errors
 ///
 /// Returns an error if `git rev-parse` or `git pack-objects` fails.
-pub async fn full_pack(
-    repo: &Path,
-    release_commit: &str,
-    out_dir: &Path,
-) -> Result<PathBuf> {
+pub async fn full_pack(repo: &Path, release_commit: &str, out_dir: &Path) -> Result<PathBuf> {
     tokio::fs::create_dir_all(out_dir)
         .await
         .with_context(|| format!("creating {}", out_dir.display()))?;
 
-    let commit = git_output(repo, &["rev-parse", &format!("{release_commit}^{{commit}}")])
-        .await?;
+    let commit = git_output(
+        repo,
+        &["rev-parse", &format!("{release_commit}^{{commit}}")],
+    )
+    .await?;
     let prefix = out_dir.join("pack");
 
     let mut child = Command::new("git")
@@ -154,8 +149,8 @@ pub async fn thin_delta(
         .await
         .with_context(|| format!("creating {}", out_dir.display()))?;
     let out = out_dir.join(format!("delta-{from_semver}.pack"));
-    let file = std::fs::File::create(&out)
-        .with_context(|| format!("creating {}", out.display()))?;
+    let file =
+        std::fs::File::create(&out).with_context(|| format!("creating {}", out.display()))?;
 
     let mut child = Command::new("git")
         .arg("-C")
@@ -306,7 +301,10 @@ async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
 }
 
 async fn run_status(mut cmd: Command, label: &str) -> Result<()> {
-    let output = cmd.output().await.with_context(|| format!("running {label}"))?;
+    let output = cmd
+        .output()
+        .await
+        .with_context(|| format!("running {label}"))?;
     if !output.status.success() {
         bail!(
             "{label} failed: {}",
@@ -338,18 +336,12 @@ mod tests {
 
     #[test]
     fn scheme_deltas_next_major_uses_prior_major() {
-        assert_eq!(
-            scheme_deltas(&v("2.0.0"), &[v("1.0.0")]),
-            vec![v("1.0.0")],
-        );
+        assert_eq!(scheme_deltas(&v("2.0.0"), &[v("1.0.0")]), vec![v("1.0.0")],);
     }
 
     #[test]
     fn scheme_deltas_minor_dedups_to_minor_base() {
-        assert_eq!(
-            scheme_deltas(&v("1.1.0"), &[v("1.0.0")]),
-            vec![v("1.0.0")],
-        );
+        assert_eq!(scheme_deltas(&v("1.1.0"), &[v("1.0.0")]), vec![v("1.0.0")],);
     }
 
     #[test]
@@ -371,10 +363,7 @@ mod tests {
     #[test]
     fn scheme_deltas_patch_full_fan() {
         assert_eq!(
-            scheme_deltas(
-                &v("1.1.3"),
-                &[v("1.1.0"), v("1.1.1"), v("1.1.2")],
-            ),
+            scheme_deltas(&v("1.1.3"), &[v("1.1.0"), v("1.1.1"), v("1.1.2")],),
             vec![v("1.1.2"), v("1.1.1"), v("1.1.0")],
         );
     }

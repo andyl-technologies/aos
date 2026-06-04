@@ -4,9 +4,9 @@ use std::io::Write;
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
+use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
 use super::profile::meta::{self, delete_meta, list_meta};
-use super::profile::Profile;
 use super::registry::store_path_hash;
 use super::types::InstalledMeta;
 use aos_core::error::AosError;
@@ -203,10 +203,7 @@ fn find_installed(profile: &Profile, names: &[String]) -> Result<Vec<InstalledMe
     // Check that every requested name was found.
     for name in names {
         if !found_names.contains(name) {
-            return Err(AosError::PackageNotFound {
-                name: name.clone(),
-            }
-            .into());
+            return Err(AosError::PackageNotFound { name: name.clone() }.into());
         }
     }
 
@@ -255,8 +252,7 @@ fn copy_roots_except(
     // Copy usr/ roots.
     let from_usr = from.path.join("usr");
     let to_usr = to.path.join("usr");
-    std::fs::create_dir_all(&to_usr)
-        .with_context(|| format!("creating {}", to_usr.display()))?;
+    std::fs::create_dir_all(&to_usr).with_context(|| format!("creating {}", to_usr.display()))?;
 
     if from_usr.is_dir() {
         for entry in std::fs::read_dir(&from_usr)? {
@@ -278,8 +274,7 @@ fn copy_roots_except(
     // Copy src/ roots.
     let from_src = from.path.join("src");
     let to_src = to.path.join("src");
-    std::fs::create_dir_all(&to_src)
-        .with_context(|| format!("creating {}", to_src.display()))?;
+    std::fs::create_dir_all(&to_src).with_context(|| format!("creating {}", to_src.display()))?;
 
     if from_src.is_dir() {
         for entry in std::fs::read_dir(&from_src)? {
@@ -362,8 +357,8 @@ mod tests {
     use std::os::unix::fs::symlink;
     use tempfile::TempDir;
 
-    use crate::profile::meta::write_meta;
     use crate::profile::Generation;
+    use crate::profile::meta::write_meta;
     use crate::types::{ApmMeta, ProfileScope};
 
     fn test_profile(tmp: &TempDir) -> Profile {
@@ -396,8 +391,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "abc123", &sample_installed("curl", "abc123", true)).unwrap();
-        write_meta(&profile, "def456", &sample_installed("zlib", "def456", false)).unwrap();
+        write_meta(
+            &profile,
+            "abc123",
+            &sample_installed("curl", "abc123", true),
+        )
+        .unwrap();
+        write_meta(
+            &profile,
+            "def456",
+            &sample_installed("zlib", "def456", false),
+        )
+        .unwrap();
         write_meta(&profile, "ghi789", &sample_installed("jq", "ghi789", true)).unwrap();
 
         let found = find_installed(&profile, &["curl".into(), "jq".into()]).unwrap();
@@ -417,7 +422,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "abc123", &sample_installed("curl", "abc123", true)).unwrap();
+        write_meta(
+            &profile,
+            "abc123",
+            &sample_installed("curl", "abc123", true),
+        )
+        .unwrap();
 
         let result = find_installed(&profile, &["nonexistent".into()]);
         assert!(result.is_err());
@@ -431,9 +441,24 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "abc123", &sample_installed("curl", "abc123", true)).unwrap();
-        write_meta(&profile, "def456", &sample_installed("zlib", "def456", false)).unwrap();
-        write_meta(&profile, "ghi789", &sample_installed("openssl", "ghi789", false)).unwrap();
+        write_meta(
+            &profile,
+            "abc123",
+            &sample_installed("curl", "abc123", true),
+        )
+        .unwrap();
+        write_meta(
+            &profile,
+            "def456",
+            &sample_installed("zlib", "def456", false),
+        )
+        .unwrap();
+        write_meta(
+            &profile,
+            "ghi789",
+            &sample_installed("openssl", "ghi789", false),
+        )
+        .unwrap();
 
         let empty: HashSet<String> = HashSet::new();
         let orphans = find_orphans(&profile, &empty).unwrap();
@@ -453,7 +478,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "abc123", &sample_installed("curl", "abc123", true)).unwrap();
+        write_meta(
+            &profile,
+            "abc123",
+            &sample_installed("curl", "abc123", true),
+        )
+        .unwrap();
         write_meta(&profile, "def456", &sample_installed("jq", "def456", true)).unwrap();
 
         let empty: HashSet<String> = HashSet::new();
@@ -555,9 +585,24 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "abc123", &sample_installed("curl", "abc123", true)).unwrap();
-        write_meta(&profile, "def456", &sample_installed("zlib", "def456", false)).unwrap();
-        write_meta(&profile, "ghi789", &sample_installed("openssl", "ghi789", false)).unwrap();
+        write_meta(
+            &profile,
+            "abc123",
+            &sample_installed("curl", "abc123", true),
+        )
+        .unwrap();
+        write_meta(
+            &profile,
+            "def456",
+            &sample_installed("zlib", "def456", false),
+        )
+        .unwrap();
+        write_meta(
+            &profile,
+            "ghi789",
+            &sample_installed("openssl", "ghi789", false),
+        )
+        .unwrap();
 
         // Pretend zlib is already being removed.
         let mut pending: HashSet<String> = HashSet::new();
@@ -579,9 +624,17 @@ mod tests {
         fs::create_dir_all(&from_usr).unwrap();
         fs::create_dir_all(&from_src).unwrap();
         symlink("/var/lib/store/abc123-curl-1.0", from_usr.join("abc123")).unwrap();
-        symlink("/var/lib/store/src111-curl-1.0.drv", from_src.join("src111")).unwrap();
+        symlink(
+            "/var/lib/store/src111-curl-1.0.drv",
+            from_src.join("src111"),
+        )
+        .unwrap();
         symlink("/var/lib/store/def456-zlib-1.0", from_usr.join("def456")).unwrap();
-        symlink("/var/lib/store/src222-zlib-1.0.drv", from_src.join("src222")).unwrap();
+        symlink(
+            "/var/lib/store/src222-zlib-1.0.drv",
+            from_src.join("src222"),
+        )
+        .unwrap();
 
         let from_gen = Generation {
             number: 1,
