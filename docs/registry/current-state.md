@@ -615,13 +615,13 @@ consumer can do far more than the producer can produce.
 
 | Command | Implementation | Notes |
 |---|---|---|
-| `apr create` | `git init` + `packages/` + writes repo-local `registry.toml` (`registry_ops.rs:421+`) | |
+| `apr create` | `git init --object-format=sha256` + `packages/` + writes repo-local `registry.toml` (`registry_ops.rs:421+`) | sets `HEAD` to `refs/heads/stable` |
 | `apr publish` | builds package metadata + commits (`registry_ops.rs:476+`) | |
-| `apr tag NAME [-m MSG] [--key]` | `git tag [-a -m]` (`registry_ops.rs:1684-1702`) | **`--key` is ignored** (`_key`) |
+| `apr tag NAME [-m MSG] --key KEY` | `git tag -s` with SSH signing (`registry_ops.rs:1684-1702`) | `--key` is required |
 | `apr push [BRANCH] [-u] [--force]` | `git push [-u origin] [branch] [--force]` (`registry_ops.rs:1398-1430`) | FF-only by default (git's own rule) |
 | `apr pull [--rebase]` | `git pull [--rebase]` (`registry_ops.rs:1433+`) | |
 | `apr bundle [-o DIR] [--tag] [--delta-from] [--update-manifest]` | `git bundle create` into a local dir (`registry_ops.rs:1706-1744`) | `_update_manifest` is **unused dead code**; filenames `{name}-{tag}.bundle` / `{name}-{from}..{tag}.bundle` |
-| `apr sign [COMMIT] [--key]` | `git commit --amend --no-edit -S` (`registry_ops.rs:1747-1762`) | **`--key` ignored**; **`COMMIT` ignored** — only HEAD is (re)signed via amend |
+| `apr sign TAG --key KEY` | re-signs an existing release tag with `git tag -s -f` (`registry_ops.rs:1747-1762`) | commit signing retired |
 
 ### 9.2 What's absent
 
@@ -708,14 +708,11 @@ brief's as-is claims are recorded here and surfaced as open questions.
    first), so `resolve_mirror` returning the *first* entry returns the
    *highest-priority* cache. Direction was unspecified in the brief.
 
-3. **`apr sign` semantics.** Brief §2.10 cites `git commit --amend --no-edit -S`.
-   Confirmed (`registry_ops.rs:1758`), but note two behaviors not called out:
-   the `--key` argument is **ignored** (`_key`, line 1750) and the `COMMIT`
-   positional is **ignored** — `--amend` only ever (re)signs **HEAD**, never an
-   arbitrary commit.
+3. **`apr sign` semantics.** This command now re-signs an existing release tag
+   object and requires `--key`; it no longer signs commits.
 
-4. **`apr tag --key` ignored.** The `--key` argument to `apr tag` is accepted but
-   unused (`_key`, `registry_ops.rs:1688`).
+4. **`apr tag --key` is active.** `apr tag` now requires `--key` and creates a
+   signed annotated tag object.
 
 These do not contradict the brief's *intent* (target design), only its
 *as-is* description; the target docs are unaffected.

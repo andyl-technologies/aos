@@ -86,10 +86,10 @@ The commands relevant to a release, in workflow order:
 
 | Command | Function | What it actually does (CURRENT) |
 |---|---|---|
-| `apr create <name> [--remote URL]` | `create` (`registry_ops.rs:421`) | `git init`, make `packages/`, write a default `registry.toml`, initial commit, optional `git remote add origin`. |
+| `apr create <name> [--remote URL]` | `create` (`registry_ops.rs:421`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, initial commit, optional `git remote add origin`. |
 | `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` (`commit_registry`, `registry_ops.rs:385`). |
-| `apr tag <name> [--message] [--key]` | `tag` (`registry_ops.rs:1684`) | `git tag [-a -m …]`. **`--key` is accepted but ignored** (`_key`, `registry_ops.rs:1688`). |
-| `apr sign [commit] [--key]` | `sign` (`registry_ops.rs:1747`) | `git commit --amend --no-edit -S` (`registry_ops.rs:1758`) — SSH-Ed25519 sign HEAD. **`--key` ignored** (`_key`, `registry_ops.rs:1750`). |
+| `apr tag <name> [--message] --key <key>` | `tag` (`registry_ops.rs:1684`) | `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; `--key` is required. |
+| `apr sign <tag> --key <key>` | `sign` (`registry_ops.rs:1747`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`; it no longer signs commits. |
 | `apr bundle [--output] [--tag] [--delta-from] [--update-manifest]` | `bundle` (`registry_ops.rs:1706`) | `git bundle create` into a local dir. See §2.1. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
@@ -522,8 +522,8 @@ apr publish /nix/store/<hash>-curl-8.5.0 \
     --description "URL transfer tool" --license MIT --maintainer acme
 # → writes packages/c/curl.toml + closures/<hash>, then commits   (registry_ops.rs:476)
 
-apr tag 2026.06.0 --message "June release"   # plain git tag; --key ignored  (registry_ops.rs:1684)
-apr sign                                     # git commit --amend -S on HEAD (registry_ops.rs:1758)
+apr tag 2026.06.0 --message "June release" --key ./registry_signing_key
+apr sign 2026.06.0 --key ./registry_signing_key
 apr push --set-upstream --branch main        # plain git push                (registry_ops.rs:1398)
 
 # Local-only transport — git bundles, no manifest, no upload:

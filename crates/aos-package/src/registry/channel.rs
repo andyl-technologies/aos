@@ -3,6 +3,72 @@
 use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
 
+/// The number of rollout partitions in every channel.
+pub const PARTITION_COUNT: usize = 256;
+
+/// In-memory view of the 256 partition targets for one channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartitionMap {
+    targets: Vec<Option<semver::Version>>,
+}
+
+impl Default for PartitionMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PartitionMap {
+    /// Create an empty partition map.
+    pub fn new() -> Self {
+        Self {
+            targets: vec![None; PARTITION_COUNT],
+        }
+    }
+
+    /// Create a partition map with every bucket pointing at `version`.
+    pub fn all(version: semver::Version) -> Self {
+        Self {
+            targets: vec![Some(version); PARTITION_COUNT],
+        }
+    }
+
+    /// Set a partition target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bucket` is outside the fixed partition range.
+    pub fn set(&mut self, bucket: usize, version: semver::Version) -> Result<()> {
+        let slot = self
+            .targets
+            .get_mut(bucket)
+            .ok_or_else(|| anyhow::anyhow!("partition bucket {bucket} is outside 0..255"))?;
+        *slot = Some(version);
+        Ok(())
+    }
+
+    /// Get a partition target by bucket.
+    pub fn get(&self, bucket: u8) -> Option<&semver::Version> {
+        self.targets[bucket as usize].as_ref()
+    }
+
+    /// Iterate over all partition targets.
+    pub fn iter(&self) -> impl Iterator<Item = (u8, Option<&semver::Version>)> {
+        self.targets
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as u8, v.as_ref()))
+    }
+
+    /// Count partitions that target `version`.
+    pub fn count_targeting(&self, version: &semver::Version) -> usize {
+        self.targets
+            .iter()
+            .filter(|target| target.as_ref() == Some(version))
+            .count()
+    }
+}
+
 /// Compute the stable rollout bucket for a machine id.
 ///
 /// The bucket is the low byte of `sha256(machine_id)`, yielding `0..=255`.
@@ -14,6 +80,11 @@ pub fn select_bucket(machine_id: &str) -> u8 {
 /// Render a bucket as a two-digit lowercase hex partition name.
 pub fn bucket_hex(bucket: u8) -> String {
     format!("{bucket:02x}")
+}
+
+/// Return the static partition object path for a channel and bucket.
+pub fn partition_path(channel: &str, bucket: u8) -> String {
+    format!("channels/{channel}/{}", bucket_hex(bucket))
 }
 
 /// Return the deterministic probe-forward order for a bucket.
@@ -44,6 +115,55 @@ pub fn check_floor(
     Ok(())
 }
 
+/// Compute the frontier release for a partition map.
+///
+/// The frontier is the maximum semver targeted by any partition.
+pub fn compute_frontier(map: &PartitionMap) -> Option<semver::Version> {
+    map.targets.iter().filter_map(Clone::clone).max()
+}
+
+/// Refuse to publish a channel with missing partition targets.
+pub fn assert_full_partition_set(map: &PartitionMap) -> Result<()> {
+    let missing: Vec<String> = map
+        .iter()
+        .filter_map(|(bucket, target)| {
+            if target.is_none() {
+                Some(bucket_hex(bucket))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !missing.is_empty() {
+        bail!(
+            "channel partition set is incomplete; missing {} partition(s): {}",
+            missing.len(),
+            missing.join(", "),
+        );
+    }
+    Ok(())
+}
+
+/// Select the next `count` partitions to advance to `target` in ascending order.
+pub fn ascending_fill(
+    count: usize,
+    current: &PartitionMap,
+    target: &semver::Version,
+) -> Vec<u8> {
+    current
+        .iter()
+        .filter_map(|(bucket, version)| {
+            if version == Some(target) {
+                None
+            } else {
+                Some(bucket)
+            }
+        })
+        .take(count)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,6 +184,11 @@ mod tests {
         assert_eq!(bucket_hex(0), "00");
         assert_eq!(bucket_hex(5), "05");
         assert_eq!(bucket_hex(255), "ff");
+    }
+
+    #[test]
+    fn partition_path_uses_two_digit_bucket() {
+        assert_eq!(partition_path("stable", 10), "channels/stable/0a");
     }
 
     #[test]
@@ -96,5 +221,38 @@ mod tests {
     #[test]
     fn floor_allows_missing_floor() {
         assert!(check_floor(None, &v("0.1.0")).is_ok());
+    }
+
+    #[test]
+    fn frontier_is_max_semver_over_partitions() {
+        let mut map = PartitionMap::all(v("1.1.3"));
+        map.set(0, v("1.2.0")).unwrap();
+        map.set(255, v("1.0.0")).unwrap();
+
+        assert_eq!(compute_frontier(&map), Some(v("1.2.0")));
+    }
+
+    #[test]
+    fn full_partition_set_rejects_missing_targets() {
+        let mut map = PartitionMap::all(v("1.0.0"));
+        map.targets[7] = None;
+
+        let err = assert_full_partition_set(&map).unwrap_err().to_string();
+        assert!(err.contains("07"), "got: {err}");
+    }
+
+    #[test]
+    fn full_partition_set_accepts_complete_map() {
+        let map = PartitionMap::all(v("1.0.0"));
+        assert_full_partition_set(&map).unwrap();
+    }
+
+    #[test]
+    fn ascending_fill_skips_already_advanced_partitions() {
+        let mut map = PartitionMap::all(v("1.0.0"));
+        map.set(0, v("1.1.0")).unwrap();
+        map.set(2, v("1.1.0")).unwrap();
+
+        assert_eq!(ascending_fill(4, &map, &v("1.1.0")), vec![1, 3, 4, 5]);
     }
 }

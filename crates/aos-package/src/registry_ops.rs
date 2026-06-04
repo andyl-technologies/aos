@@ -13,6 +13,7 @@ use serde_json::Value;
 use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
+use crate::registry::objectstore;
 use crate::types::{
     CacheEntry, RegistryRootConfig,
 };
@@ -435,7 +436,9 @@ pub async fn create(
 
     printer.info(&format!("Initializing registry '{name}'..."));
 
-    git(&dir, &["init"])?;
+    git(&dir, &["init", "--object-format=sha256"])?;
+    git(&dir, &["symbolic-ref", "HEAD", "refs/heads/stable"])?;
+    objectstore::assert_sha256(&dir)?;
 
     // Create initial directory structure.
     std::fs::create_dir_all(dir.join("packages"))?;
@@ -1685,19 +1688,25 @@ pub async fn tag(
     config: &ApmConfig,
     name: &str,
     message: Option<&str>,
-    _key: Option<&str>,
+    key: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
+    let signing_key = key.ok_or_else(|| {
+        anyhow::anyhow!("--key is required: registry release tags must be signed tag objects")
+    })?;
 
-    if let Some(msg) = message {
-        git(&dir, &["tag", "-a", name, "-m", msg])?;
-    } else {
-        git(&dir, &["tag", name])?;
-    }
+    sign_tag(
+        &dir,
+        name,
+        "HEAD",
+        message.or(Some("AOS registry release")),
+        signing_key,
+        false,
+    )?;
 
-    printer.success(&format!("Created tag '{name}'."));
+    printer.success(&format!("Created signed tag '{name}'."));
     Ok(())
 }
 
@@ -1743,20 +1752,78 @@ pub async fn bundle(
     Ok(())
 }
 
-/// `apr sign [COMMIT]`
+/// `apr sign <TAG>`
 pub async fn sign(
     config: &ApmConfig,
-    commit: Option<&str>,
-    _key: Option<&str>,
+    tag: Option<&str>,
+    key: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
-    let target = commit.unwrap_or("HEAD");
+    let tag_name = tag.ok_or_else(|| {
+        anyhow::anyhow!(
+            "`apr sign` now signs tag objects; pass the existing tag name to re-sign"
+        )
+    })?;
+    let signing_key = key.ok_or_else(|| {
+        anyhow::anyhow!("--key is required: registry release tags must be signed tag objects")
+    })?;
+    let target = git(&dir, &["rev-list", "-n", "1", tag_name])
+        .with_context(|| format!("resolving tag '{tag_name}' target commit"))?;
 
-    // Use git commit --amend to sign the commit in place.
-    git(&dir, &["commit", "--amend", "--no-edit", "-S"])?;
-    printer.success(&format!("Signed commit {target}."));
+    sign_tag(
+        &dir,
+        tag_name,
+        &target,
+        Some("AOS registry release"),
+        signing_key,
+        true,
+    )?;
+    printer.success(&format!("Re-signed tag '{tag_name}'."));
+
+    Ok(())
+}
+
+/// Sign an annotated tag object with git's SSH signing support.
+fn sign_tag(
+    dir: &Path,
+    tag_name: &str,
+    target: &str,
+    message: Option<&str>,
+    signing_key: &str,
+    force: bool,
+) -> Result<()> {
+    let message = message.unwrap_or("AOS registry release");
+    let signing_key_config = format!("user.signingkey={signing_key}");
+    let mut command = Command::new("git");
+    command
+        .arg("-c")
+        .arg("gpg.format=ssh")
+        .arg("-c")
+        .arg(signing_key_config)
+        .arg("tag")
+        .arg("-s");
+    if force {
+        command.arg("-f");
+    }
+    command
+        .arg(tag_name)
+        .arg("-m")
+        .arg(message)
+        .arg(target)
+        .current_dir(dir);
+
+    let output = command
+        .output()
+        .with_context(|| format!("signing tag '{tag_name}' in {}", dir.display()))?;
+    if !output.status.success() {
+        bail!(
+            "git tag -s failed for '{}': {}",
+            tag_name,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
 
     Ok(())
 }
