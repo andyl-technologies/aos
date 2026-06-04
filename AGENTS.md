@@ -110,6 +110,21 @@ nix run . -- <subcommand>
 | `aos why-depends` | Explain why one derivation depends on another      |
 | `aos completions` | Generate shell completions                         |
 
+## Rust code style
+
+The `aos` CLI (`crates/`) is Rust. Write idiomatic Rust to the standard of the
+Rust stdlib and the largest, best-documented projects in the ecosystem (e.g.
+Tokio).
+
+- **Treat all code as user-facing porcelain.** Document items with rustdoc that
+  would look great on docs.rs and abide by all Rust documentation conventions —
+  summary line, `# Examples`, `# Errors`, `# Panics` sections where applicable.
+- **Avoid `unsafe` at all costs.** Use it only for an explicit, justified
+  performance need, and document the invariants with a `// SAFETY:` comment.
+- **Never use `.unwrap()` or `.expect()` in production code.** Use proper error
+  handling — propagate with `?`, return `Result`, and model errors with proper
+  types. (Tests and examples may use them where a panic is the intended signal.)
+
 ## Testing
 
 - `nix-build -A checks.eval` — pure evaluation checks
