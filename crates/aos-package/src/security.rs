@@ -232,6 +232,43 @@ pub fn verify_commit_signature(
     Ok(output.status.success())
 }
 
+/// Verify a git tag object's SSH signature against an expected Ed25519 key.
+///
+/// This mirrors [`verify_commit_signature`] but invokes `git verify-tag`.
+/// Returns `Ok(true)` when the signature is valid, `Ok(false)` when it is
+/// invalid or missing, and `Err` only for local execution/setup failures.
+pub fn verify_tag_signature(
+    repo_path: &Path,
+    tag: &str,
+    expected_key: &str,
+) -> Result<bool> {
+    let (_reg, _algo, pubkey) = parse_signing_key(expected_key)?;
+
+    let signers_content = format!("registry ssh-ed25519 {pubkey}\n");
+
+    let mut signers_file = tempfile::NamedTempFile::new()
+        .context("creating temporary allowed-signers file")?;
+    std::io::Write::write_all(&mut signers_file, signers_content.as_bytes())
+        .context("writing temporary allowed-signers file")?;
+    let signers_path = signers_file.path();
+
+    let output = std::process::Command::new("git")
+        .args([
+            "-c",
+            &format!(
+                "gpg.ssh.allowedSignersFile={}",
+                signers_path.display()
+            ),
+            "verify-tag",
+            tag,
+        ])
+        .current_dir(repo_path)
+        .output()
+        .context("running git verify-tag")?;
+
+    Ok(output.status.success())
+}
+
 // ---------------------------------------------------------------------------
 // Downgrade check
 // ---------------------------------------------------------------------------
