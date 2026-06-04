@@ -33,7 +33,7 @@ are unsigned convenience pointers and are **never** part of the trust chain.
 | `HEAD` | symref → `refs/heads/<default-channel>` (e.g. `stable`) | no | no | stock git + AOS |
 | `refs/heads/<channel>` | channels are **branches**; head = **frontier** | no (ref pointer) | **no** | stock git convenience |
 | `refs/tags/<semver>` | release: signed annotated tag → commit | **yes** | **yes** | stock (`verify-tag`) + AOS |
-| `/channel/<name>/<00..ff>` | 256 signed partition tag objects (tag name == channel name) → semver tag | **yes** | **yes** | AOS rollout only |
+| `/channels/<name>/<00..ff>` | 256 signed partition tag objects (tag name == channel name) → semver tag | **yes** | **yes** | AOS rollout only |
 
 Key consequences:
 
@@ -46,7 +46,7 @@ Key consequences:
   `refs/tags/<semver>` is itself the signed object, any third party can run
   `git verify-tag <semver>` against the trusted key without any AOS tooling.
 - **Channel partition tags are AOS-only.** They live *outside* the ref namespace at
-  `/channel/<name>/<00..ff>` (256 files), so they never appear in `info/refs` and a
+  `/channels/<name>/<00..ff>` (256 files), so they never appear in `info/refs` and a
   stock dumb clone never sees them.
 
 ---
@@ -139,7 +139,7 @@ which returns one of three decisions:
 | `KeyMismatch { stored, received }` | a *different* key is already trusted (`security.rs:182`) | **reject** — possible key substitution |
 
 This store and TOFU flow is **unchanged** in the target. The same `<registry>.pub`
-key that anchors release/channel tag verification is the key used everywhere below.
+key that anchors release/channels tag verification is the key used everywhere below.
 
 ---
 
@@ -150,7 +150,7 @@ deterministically-selected channel partition (see
 [`versioning-and-channels.md`](versioning-and-channels.md) for bucket selection):
 
 ```
-  /channel/<name>/<bucket>          refs/tags/<semver>            commit
+  /channels/<name>/<bucket>          refs/tags/<semver>            commit
   ┌────────────────────────┐        ┌────────────────────┐       ┌──────────┐
   │ SIGNED partition tag    │ ────▶ │ SIGNED release tag  │ ────▶ │  commit  │
   │ object                  │ refs  │ object              │ refs  │  (tree)  │
@@ -169,9 +169,9 @@ Each hop performs **two** checks; both must pass:
    `allowed_signers` mechanism of §2.3).
 2. **Name-binding check** — the **embedded tag-name field** inside the tag object
    equals the **expected name for its serving path**:
-   - under `/channel/<name>/<00..ff>`, every one of the 256 partition tags must have an
+   - under `/channels/<name>/<00..ff>`, every one of the 256 partition tags must have an
      embedded tag name **== `<name>`** (the channel name);
-   - under `/release/<major>/<minor>/<patch…>/` (i.e. `refs/tags/<semver>`), the
+   - under `/releases/<major>/<minor>/<patch…>/` (i.e. `refs/tags/<semver>`), the
      embedded tag name **== `<semver>`**.
 
 ### 3.1 Why name-binding matters
@@ -180,7 +180,7 @@ A bare signature check answers "did the registry owner sign *some* tag?" but **n
 "is this the tag that *belongs at this path*?" Without name-binding, an attacker (or a
 buggy mirror) who can rearrange static files could serve a validly-signed tag at the
 wrong path — e.g. place the signed `1.0.0` release tag under
-`/channel/stable/3f`, or serve the `testing` channel tag where `stable` is expected.
+`/channels/stable/3f`, or serve the `testing` channel tag where `stable` is expected.
 Both substitutions carry a genuine signature and would pass a naive verifier.
 
 Binding the **embedded tag-name == expected path name** closes this: the tag object
@@ -195,7 +195,7 @@ fn verify_channel(registry, channel, bucket) -> Result<Semver> {
     key   = key_store.lookup(registry)?            // trusted <registry>.pub  (§2.4)
 
     # hop 1: the channel partition tag
-    ptag  = fetch("/channel/{channel}/{bucket}")   # signed tag object
+    ptag  = fetch("/channels/{channel}/{bucket}")   # signed tag object
     require verify_tag_signature(ptag, key)        # §2.3
     require ptag.embedded_tag_name == channel      # NAME-BINDING (channel)
     semver = ptag.target_semver                    # tag → tag
@@ -237,13 +237,13 @@ Freshness is therefore enforced **out of band**, by three cooperating mechanisms
 
 | Mechanism | Where | What it bounds |
 |---|---|---|
-| **Low CDN TTL** on `/channel` (and `info/refs`, `objects/info`) | edge / CDN policy ([`http-layout.md`](http-layout.md)) | how long a stale rollout pointer can be served before the edge re-fetches the origin |
+| **Low CDN TTL** on `/channels` (and `info/refs`, `objects/info`) | edge / CDN policy ([`http-layout.md`](http-layout.md)) | how long a stale rollout pointer can be served before the edge re-fetches the origin |
 | **Consumer max-staleness policy** | client-side registry config | how long *this consumer* will trust a previously-fetched pointer before it MUST re-fetch and re-validate |
 | **Monotonic anti-rollback floor** | consumer (§5) | the lower bound on the accepted release, regardless of pointer age |
 
-The CDN policy ([`http-layout.md`](http-layout.md)) **MUST** keep `/channel` (and
+The CDN policy ([`http-layout.md`](http-layout.md)) **MUST** keep `/channels` (and
 `info/refs`, `objects/info`) at low TTL so a consumer re-fetches and sees rollout
-advances quickly; releases under `/release/**` are immutable and may be cached with a
+advances quickly; releases under `/releases/**` are immutable and may be cached with a
 long TTL. A consumer that cannot reach the origin to refresh a stale channel pointer
 falls back to its anti-rollback floor (§5) and its own max-staleness policy rather than
 trusting a stale pointer indefinitely.
@@ -345,10 +345,10 @@ differs (git tag vs. narinfo).
 | Is this the registry's key? | TOFU + `trusted-keys.d/<registry>.pub` (`security.rs` `KeyStore`/`tofu_check`) | root of trust |
 | Is this tag genuinely signed? | `git verify-tag` + temp `allowed_signers` (Ed25519) | yes |
 | Is this tag at the *right* path? | embedded tag-name == expected path name (channel / semver) | yes — closes cross-serving |
-| Which release does my bucket get? | signed `/channel/<name>/<bucket>` partition tag (hop 1) | yes |
+| Which release does my bucket get? | signed `/channels/<name>/<bucket>` partition tag (hop 1) | yes |
 | Which commit is that release? | signed `refs/tags/<semver>` release tag (hop 2) | yes |
 | Is the frontier branch trustworthy? | `refs/heads/<channel>` — **unsigned pointer** | **no** (convenience only) |
-| Is this pointer fresh? | low CDN TTL on `/channel` + consumer max-staleness policy + monotonic floor (no in-band expiry) | freshness, not forgery |
+| Is this pointer fresh? | low CDN TTL on `/channels` + consumer max-staleness policy + monotonic floor (no in-band expiry) | freshness, not forgery |
 | Could I be downgraded? | consumer **monotonic floor** (semver); abort = **fix-forward** | yes |
 | NAR substitution from same origin? | narinfo `Sig:` reusing the **one** Ed25519 key | yes |
 
@@ -388,8 +388,7 @@ ways:
 
 The full implementation plan for this surface is
 [`../plans/registry/workstream-04-signing-trust.md`](../plans/registry/workstream-04-signing-trust.md).
-The removed-concept guardrails (no `registry.toml`, no `[signature]` table, no
-`pubkey` field in tag messages, etc.) are enumerated in the brief §15.
+Superseded concepts live only in current-state.md (today's code) and design-brief §15.
 
 ---
 

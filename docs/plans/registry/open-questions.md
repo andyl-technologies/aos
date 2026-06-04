@@ -11,12 +11,11 @@
 > **Target model in one line:** the registry is a **bare git repository (sha256
 > object format) served as static files over dumb HTTP** — channels are
 > *branches*, releases are signed *tags*, rollout is **256 signed partition tag
-> objects** under `/channel/<name>/00..ff`, incremental fetch is **thin
+> objects** under `/channels/<name>/00..ff`, incremental fetch is **thin
 > `delta-*.pack`s**, and an optional **Nix NAR cache superset** is served at the
-> origin and located via the consumer's own client-side registry config. A signed
-> tag is a **pure signed pointer** carrying no structured payload. There is **no
-> `registry.toml` root, no `bundle-list.toml`, no git bundles, no
-> `creation_token`, no percentage rollout** (design brief §15).
+> origin and located via the consumer's own local registry/cache config. A signed
+> tag is a **pure signed pointer** carrying no structured payload. Superseded
+> concepts live only in current-state.md (today's code) and design-brief §15.
 >
 > **Audience:** implementers, architects, engineers, and reviewers who must sign
 > off before the object store, the pack/delta pipeline, and the publish pipeline
@@ -178,7 +177,7 @@ necessary packs. Neither corrupts bytes.
 | **Status** | OPEN — both the hash input and the missing-partition fallback are undecided. |
 
 **What is decided (TARGET).** A channel exposes exactly **256** partition files
-`/channel/<name>/00..ff`, each an independently-signed tag object whose tag name ==
+`/channels/<name>/00..ff`, each an independently-signed tag object whose tag name ==
 the channel name, pointing at a semver tag (brief §6). The consumer
 **deterministically self-selects one bucket** and **persists** it (e.g.
 the low byte of `sha256(machine_id)` (i.e. mod 256), written once) so a host does not flap between
@@ -240,14 +239,14 @@ apr release  (TARGET — performs the full ordered pipeline):
   1. apr publish  → write package-TOML tree → git commit (sha256)
   2. git tag -s <semver> → commit            (SSH-Ed25519 signed release tag; pure pointer)
   3. write loose objects to the root /objects/<xx>/<62hex>  (every release, centralized)
-  4. pack/delta/zstd from the release commit → /release/*/objects/pack/ (pack-only):
+  4. pack/delta/zstd from the release commit → /releases/*/objects/pack/ (pack-only):
        - full pack-<sha256>.pack (+ .idx)  at every X.Y.0
        - thin delta-<from-semver>.pack[.zst] per the §9 delta scheme
   5. git update-server-info                  (regenerate info/refs, HEAD)
-  6. write objects/info/alternates           (relative ../release/*/objects, one ../, newest→oldest)
+  6. write objects/info/alternates           (relative ../releases/*/objects, one ../, newest→oldest)
   7. upload immutable content first          (root loose objects, release packs — any order)
-  8. advance N of the 256 /channel/<name>/00..ff signed partition tags  (rollout)
-  9. low-TTL surfaces last                    (/channel/**, info/refs, HEAD, packs)
+  8. advance N of the 256 /channels/<name>/00..ff signed partition tags  (rollout)
+  9. low-TTL surfaces last                    (/channels/**, info/refs, HEAD, packs)
 ```
 
 **Open sub-questions.**
@@ -258,9 +257,9 @@ apr release  (TARGET — performs the full ordered pipeline):
    single command is the safer default for humans because the ordering
    (immutable-first, low-TTL surfaces last) is the *only* safe order.
 2. **Pluggable upload backends.** S3, rsync, and plain HTTP PUT are all
-   plausible. Unlike the superseded `registry.toml` flip, the git-native model
-   has **no single root file to atomically swap** — the "commit point" is the set
-   of low-TTL surfaces (`/channel/**`, `info/refs`, `HEAD`, `objects/info/packs`)
+   plausible. The git-native model has **no single root file to atomically
+   swap** — the "commit point" is the set
+   of low-TTL surfaces (`/channels/**`, `info/refs`, `HEAD`, `objects/info/packs`)
    that must be published *after* all immutable objects exist. The atomicity
    requirement is therefore "publish immutable objects → then publish the low-TTL
    index/partition surfaces", and it is **backend-independent** (no conditional
@@ -296,7 +295,7 @@ tagger) + the Ed25519 signature + an optional freeform human message (brief §11
 §14). Freshness is therefore enforced **out of band**, by three independent
 mechanisms:
 
-- **Low CDN TTL** on the mutable surfaces — `/channel/**`, `info/refs`,
+- **Low CDN TTL** on the mutable surfaces — `/channels/**`, `info/refs`,
   `objects/info/packs` — so a correctly-behaving CDN/mirror re-fetches the
   frontier quickly (brief §11).
 - **The consumer's own max-staleness policy** — `apm` records when it last
@@ -325,7 +324,7 @@ material. The defense is real but lives in the consumer, not in the signature.
    channel) — the availability/security tension now lives in the *consumer policy*,
    not in a signed window.
 2. **Fresh-frontier bookkeeping.** What exactly the consumer persists as "last
-   observed fresh": the timestamp of the last successful `/channel/**` fetch, the
+   observed fresh": the timestamp of the last successful `/channels/**` fetch, the
    last frontier advance, or both — and how a probe-forward fetch (Q3) interacts
    with it.
 3. **Key rotation.** One Ed25519 key serves git signing (and, if NARs are served,
@@ -355,7 +354,7 @@ policy in [workstream-05-consumer.md](./workstream-05-consumer.md).
 
 **What is decided (TARGET).** Loose objects are **centralized at the single root
 `/objects/<xx>/<62hex>`** for every release (brief §8); the per-release
-`/release/<M>/<m>/<patch...>/objects/` dirs are **pack-only** (they hold
+`/releases/<M>/<m>/<patch...>/objects/` dirs are **pack-only** (they hold
 `info/packs` + `pack/pack-<sha256>.pack(.idx)` + `pack/delta-<from>.pack`, no
 loose objects and no per-release `info/alternates`). Because loose objects are
 centralized, `objects/info/alternates` no longer serves *object completeness* — it
@@ -366,14 +365,15 @@ serves **pack discovery + the release index** (brief §4, §8).
 
 ```
 # /objects/info/alternates  — relative entries, newest→oldest, host-independent
-../release/1/1/0/objects/
-../release/1/1/0/objects/   ← (illustrative; one line per release pack dir)
-../release/1/0/0/objects/
+# (one line per release pack dir)
+../releases/1/1/2/objects/
+../releases/1/1/0/objects/
+../releases/1/0/0/objects/
 ```
 
 Git resolves a relative alternate against the repo's `objects/` URL, so each
 `../` strips the `objects` segment to reach the repo root — therefore the correct
-depth is **one `../`** (e.g. `../release/1/1/0/objects/`), *not* two. The file is
+depth is **one `../`** (e.g. `../releases/1/1/0/objects/`), *not* two. The file is
 **host-independent**: byte-identical across CDN, mirror, and localhost, with no
 hostname baked in. The dumb-HTTP walker reads `http-alternates` first then falls
 back to `alternates`, so a single relative `info/alternates` works for **HTTP and
@@ -417,12 +417,12 @@ workstream.
 | ID | Risk | Likelihood × Impact | Mitigation | Owner WS |
 |---|---|---|---|---|
 | **R1** | **sha256 dumb-HTTP client incompatibility** (Q1). Old / non-sha256 gits cannot clone or verify; no capability negotiation to detect this. | Med × Med | Pin a tested minimum git version; emit a clear "requires sha256 git" error in the consumer instead of a low-level object panic; rely on loose-object completeness for in-range clients. | WS-01, WS-05 |
-| **R2** | **Torn publish.** A consumer reads a low-TTL surface (`info/refs`, `/channel/**`, `objects/info/packs`) that names an object/pack not yet uploaded. | Low × High | Strict ordering: upload all immutable objects (loose + packs) **first**, regenerate/publish the low-TTL index and partition surfaces **last** (brief §4, §10). Loose-object completeness means a partially-published frontier still resolves via the prior release. | WS-02, WS-03 |
+| **R2** | **Torn publish.** A consumer reads a low-TTL surface (`info/refs`, `/channels/**`, `objects/info/packs`) that names an object/pack not yet uploaded. | Low × High | Strict ordering: upload all immutable objects (loose + packs) **first**, regenerate/publish the low-TTL index and partition surfaces **last** (brief §4, §10). Loose-object completeness means a partially-published frontier still resolves via the prior release. | WS-02, WS-03 |
 | **R3** | **Concurrent publishers race the partition advance.** Two `apr release` runs advancing the same channel's 256 partitions can interleave into an inconsistent rollout fraction. | Med × Med | Restrict to a single publisher per channel, or serialize the partition-advance step; the immutable-object steps are content-addressed and need no coordination. | WS-03 |
 | **R4** | **Online signing key exposure.** Removing in-band `valid_until` removes the heartbeat-re-sign pressure that wanted the Ed25519 key online for quiet channels (Q5); the remaining online-key need is key rotation, which re-signs live partitions. | Low × High | No routine re-sign — freshness is the consumer's max-staleness clock, not a signed window; sign partitions only on rollout advance; for rotation use `allowed_signers` overlap, never the long-term key online beyond the rotation event. | WS-04, WS-03 |
 | **R5** | **Delta depth too deep → consumer reconstruct cost** (Q2). A large `--depth` shifts CPU onto every consumer applying the delta chain. | Low × Med | Cap `--depth` (suggest 50); window is the free lever, not depth (brief §10); document the consumer-cost rationale. | WS-02 |
 | **R6** | **Bucket flap / skew** (Q3). Image-baked machine-ids collide into one bucket; or a host recomputes a different bucket across syncs and flaps. | Med × Low | Seed from a registry-local salt re-randomized per clone; persist the bucket index once; probe-forward without re-pinning (brief §6). | WS-03, WS-05 |
-| **R7** | **Cross-serving / name-confusion.** A signed tag object served at the wrong path (a release tag served as a channel partition, or vice-versa) tricks a consumer. | Low × High | Name-binding verification: signature valid **and** embedded tag-name field == expected path name (channel name under `/channel/*`, semver under `/release/*`); verify the whole `tag → tag → commit` chain (brief §5, §11). | WS-04, WS-05 |
+| **R7** | **Cross-serving / name-confusion.** A signed tag object served at the wrong path (a release tag served as a channel partition, or vice-versa) tricks a consumer. | Low × High | Name-binding verification: signature valid **and** embedded tag-name field == expected path name (channel name under `/channels/*`, semver under `/releases/*`); verify the whole `tag → tag → commit` chain (brief §5, §11). | WS-04, WS-05 |
 | **R8** | **Migration straddle bugs** (Q7 / §3). A half-migrated host or mirror serves/reads neither model cleanly — an old bundle-mode client hits a git-native origin, or vice-versa. | Med × High | The two models share **no wire surface** (§3.1), so there is no torn-format hazard; gate the consumer by registry capability detection (git refs present?) and bound any dual-stack window with a hard EOL. | WS-05 |
 | **R9** | **Anti-rollback floor vs. fix-forward.** A consumer that does not keep a monotonic floor could be walked backward by a misconfigured partition; conversely an over-strict floor blocks a legitimate fix-forward. | Low × High | Consumer keeps a monotonic floor (never moves to a release older than current); aborting a bad rollout is **fix-forward** (publish newer, advance partitions), never partition-decrement (brief §6). | WS-05, WS-03 |
 | **R10** | **Freeze defense vs. availability** (Q5). With no in-band `valid_until`, freshness rests on the consumer's max-staleness policy: too short breaks quiet channels; too long weakens the freeze defense; and a frozen-but-validly-signed mirror is not self-evidently stale to a host with no recent fresh-frontier observation. | Med × Med | Consumer max-staleness bound + low CDN TTL on mutable surfaces; anti-rollback floor as the hard gate; document the frozen-mirror trade-off prominently. | WS-05, WS-04, WS-03 |
@@ -440,11 +440,11 @@ workstream.
 
 ### 3.1 What is actually changing on the wire
 
-The redesign is **not** a field-swap inside one format (as the superseded
-`registry.toml` capture would have been) — it is a **wholesale replacement of the
-distribution and rollout model**. Almost nothing on the old wire survives. What
-*is* preserved is the package-TOML *tree content* and the Ed25519/SSH signing
-primitive (brief §2: "the target keeps the Ed25519/SSH signing primitive and the
+The redesign is **not** a field-swap inside one format — it is a **wholesale
+replacement of the distribution and rollout model**. Almost nothing on the old
+wire survives. What *is* preserved is the package-TOML *tree content* and the
+Ed25519/SSH signing primitive (brief §2: "the target keeps the Ed25519/SSH
+signing primitive and the
 package-TOML tree content, and replaces *everything about distribution and
 rollout*").
 
@@ -454,16 +454,16 @@ rollout*").
 | Root / manifest | `bundle-list.toml` manifest the consumer parses (`registry/bundle.rs:49`, `BundleManifest`, **Deserialize-only**) | **removed** — replaced by git refs + signed tag objects + relative `objects/info/alternates` (brief §15) | **No** |
 | Distribution unit | **git bundles** + `bundle-list.toml`; producer is a stub (`apr bundle` = `git bundle create`; dead `_update_manifest`, `registry_ops.rs:1723`) | **removed** — full packs `pack-<sha256>.pack` + thin `delta-<from>.pack[.zst]` over dumb HTTP (brief §9, §10, §15) | **No** |
 | Versioning / ordering | **calendar tags** `vYYYY.MM[.P]` ordered by `creation_token` (`registry/state.rs:131 version_to_token`, `:104 check_monotonic`) | **standard semver, no `v`**; ordering by semver + git ancestry (brief §7, §15) | **No** |
-| Selection | `pick_bundles` (`registry/update.rs:292`); tracking modes commit/branch/tag/semver (`types.rs TrackingMode`) | bucket → `/channel/<name>/<00..ff>` signed partition tag → semver tag → commit, then delta walk (brief §5, §6, §9) | **No** |
+| Selection | `pick_bundles` (`registry/update.rs:292`); tracking modes commit/branch/tag/semver (`types.rs TrackingMode`) | bucket → `/channels/<name>/<00..ff>` signed partition tag → semver tag → commit, then delta walk (brief §5, §6, §9) | **No** |
 | Rollout | none beyond tracking-mode selection | **256 signed partition tags**, publisher-advanced N/256 (brief §6) | **No** (new) |
 | Signing | signed git **commit** (`apr sign` = `git commit -S`; `git verify-commit`, `registry/git.rs:379`) + TOFU `trusted-keys.d` | signed git **tag objects** as **pure signed pointers** — no structured payload, just standard tag fields + Ed25519 signature + optional freeform message (channel partitions + release tags), SSH-Ed25519, name-binding, `tag→tag→commit` (brief §5, §11) | **Yes** (primitive), moved commit→tag |
 | Nix NAR cache | `[[caches]]` consumer reads, fallback `{registry}/nar` (`download.rs:67 resolve_mirror`, `:57 nar_url`) | cache location is **client-side registry config** (or the origin itself) — **not** advertised in tags; origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar` as a superset, narinfo `Sig:` reusing the one Ed25519 key (brief §13, §14) | **Yes** (mechanism), moved to client config |
 
-The headline: there is **no shared root file to dual-write** (the situation the
-superseded capture faced). The old model's root is `bundle-list.toml`; the new
-model has *no* root file at all — its "root" is the set of git refs and signed
-tag objects. The two models therefore occupy **disjoint wire surfaces**, which
-changes the migration calculus entirely (see R8).
+The headline: there is **no shared root file to dual-write**. The old model's
+root is `bundle-list.toml`; the new model has *no* root file at all — its "root"
+is the set of git refs and signed tag objects. The two models therefore occupy
+**disjoint wire surfaces**, which changes the migration calculus entirely (see
+R8).
 
 ### 3.2 Option A — compatibility shim (dual-publish, dual-read)
 
@@ -473,7 +473,7 @@ git-native model and fall back to bundles.
 
 ```
 Mirror during the shim window:
-  {base}/HEAD, info/refs, objects/**, /channel/**, /release/**   ← new clients (git-native)
+  {base}/HEAD, info/refs, objects/**, /channels/**, /releases/**   ← new clients (git-native)
   {base}/bundles/{name}/bundle-list.toml                          ← old clients (legacy fallback)
   {base}/bundles/{name}/*.bundle                                  ← legacy bundle blobs
 ```
@@ -524,13 +524,11 @@ registry serves only the git-native model; consumers are cut over by version.
 ### 3.4 Recommended path: clean break, gated by a thin consumer dual-detect
 
 The brief does not decide this, but its design pressure points hard at the
-**clean break**. The decisive asymmetry vs. the superseded `registry.toml`
-migration: there the two roots shared the *same* bundle/NAR blobs, so a dual-read
-shim only needed a *reader*. Here the two models share **no distribution
-surface** — bundles vs. packs, `creation_token` vs. semver, `bundle-list.toml` vs.
-git refs — so a true dual-*publish* shim means *building two complete producers*,
-one of them (`bundle-list.toml` + `creation_token` writer) brand-new code for a
-format we are killing. That cost is not worth paying.
+**clean break**. The two models share **no distribution surface** — bundles vs.
+packs, `creation_token` vs. semver, `bundle-list.toml` vs. git refs — so a true
+dual-*publish* shim means *building two complete producers*, one of them
+(`bundle-list.toml` + `creation_token` writer) brand-new code for a format we are
+killing. That cost is not worth paying.
 
 The synthesis the design implies:
 
@@ -592,7 +590,7 @@ These must hold regardless of clean break vs. shim:
    rollback; R9).
 5. **Name-binding is enforced from the first git-native fetch.** Every signed tag
    a migrating consumer accepts must pass the embedded-tag-name == expected-path
-   check (channel name under `/channel/*`, semver under `/release/*`) — there is no
+   check (channel name under `/channels/*`, semver under `/releases/*`) — there is no
    "trust this during migration" relaxation (brief §5, §11; R7).
 
 ---
@@ -631,7 +629,7 @@ surface at the origin. There is **no tag-embedded `[[caches]]`** to source from.
 
 | Factor | Implication for sequencing |
 |---|---|
-| **Disjoint URL namespace.** The Nix surface (`nix-cache-info`, `*.narinfo`, `nar/`) never overlaps the git surface (`objects/`, `/channel/`, `/release/`). | It is a **strict superset** — adding it later can never break an existing git-native consumer. It is pure additive scope. |
+| **Disjoint URL namespace.** The Nix surface (`nix-cache-info`, `*.narinfo`, `nar/`) never overlaps the git surface (`objects/`, `/channels/`, `/releases/`). | It is a **strict superset** — adding it later can never break an existing git-native consumer. It is pure additive scope. |
 | **Different consumer.** The git layer serves `apm` (and stock `git clone`); the NAR layer serves **stock `nix`** dev-shell substitution. | The two have independent users; the AOS fleet does not need the NAR layer to receive releases. |
 | **Independent signing reuse.** narinfo `Sig:` reuses the same Ed25519 key as a *separate* signature object (brief §11). No tag re-issue is involved — tags carry no cache pointer. | No new trust primitive; it slots in whenever the producer is ready. |
 | **Producer cost.** Emitting narinfos for every store path in a release closure is a non-trivial producer step, and stock-`nix` acceptance (correct `References:` basename expansion, `Sig:`, `nix-cache-info`) needs golden-file testing against a real substituter. | This is incremental producer work that does not block the git-native MVP and benefits from being landed and tested in isolation. |
