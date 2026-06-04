@@ -100,10 +100,7 @@ impl ApmConfig {
     /// Load all `.toml` files from a `registries.d/` directory.
     fn load_registry_dir(
         dir: &Path,
-        map: &mut std::collections::HashMap<
-            String,
-            (RegistryConfig, Option<RegistryState>),
-        >,
+        map: &mut std::collections::HashMap<String, (RegistryConfig, Option<RegistryState>)>,
     ) -> Result<()> {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .with_context(|| format!("reading {}", dir.display()))?
@@ -127,13 +124,11 @@ impl ApmConfig {
     }
 
     /// Parse a single registry TOML file, extracting config and optional state.
-    fn parse_registry_file(
-        path: &Path,
-    ) -> Result<(RegistryConfig, Option<RegistryState>)> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let rf: RegistryFile = toml::from_str(&content)
-            .with_context(|| format!("parsing {}", path.display()))?;
+    fn parse_registry_file(path: &Path) -> Result<(RegistryConfig, Option<RegistryState>)> {
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let rf: RegistryFile =
+            toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
 
         let config = RegistryConfig {
             name: rf.registry.name,
@@ -226,8 +221,7 @@ parallel_downloads = 16
 parallel_downloads = 2
 "#,
         );
-        let settings =
-            ApmConfig::load_settings(user_dir.path(), Some(system_dir.path())).unwrap();
+        let settings = ApmConfig::load_settings(user_dir.path(), Some(system_dir.path())).unwrap();
         assert_eq!(settings.parallel_downloads, 2);
     }
 
@@ -299,8 +293,7 @@ priority = 600
         );
 
         let registries =
-            ApmConfig::load_registries(user_dir.path(), Some(system_dir.path()))
-                .unwrap();
+            ApmConfig::load_registries(user_dir.path(), Some(system_dir.path())).unwrap();
         assert_eq!(registries.len(), 1);
         assert_eq!(registries[0].0.url, "https://mirror.example.com/core");
         assert_eq!(registries[0].0.priority, 600);

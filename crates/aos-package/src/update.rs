@@ -6,14 +6,14 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
+use crate::config::ApmConfig;
+use crate::registry::state;
+use crate::registry::{bundle, git};
+use crate::types::{RegistryConfig, RegistryState, TrackingMode, Transport};
 use aos_core::error::AosError;
 use aos_core::output::Printer;
-use crate::config::ApmConfig;
-use crate::registry::{bundle, git};
-use crate::registry::state;
-use crate::types::{RegistryConfig, RegistryState, TrackingMode, Transport};
 
 // ---------------------------------------------------------------------------
 // Sync result
@@ -109,8 +109,7 @@ pub async fn run(
 
         printer.header(&format!(
             "Fetching registry '{}' ({})...",
-            reg_config.name,
-            tracking_mode,
+            reg_config.name, tracking_mode,
         ));
 
         let result = match reg_config.transport() {
@@ -125,22 +124,20 @@ pub async fn run(
                 )
                 .await
             }
-            Transport::Git => {
-                git::sync_git(
-                    reg_config,
-                    &tracking_mode,
-                    &cache_dir,
-                    &registries_dir,
-                    &mut current_state,
-                    printer,
-                )
-                    .await
-                    .map(|r| SyncResult {
-                        new_commit: r.new_commit,
-                        packages_count: r.packages_added + r.packages_updated,
-                        packages_updated: r.packages_updated,
-                    })
-            }
+            Transport::Git => git::sync_git(
+                reg_config,
+                &tracking_mode,
+                &cache_dir,
+                &registries_dir,
+                &mut current_state,
+                printer,
+            )
+            .await
+            .map(|r| SyncResult {
+                new_commit: r.new_commit,
+                packages_count: r.packages_added + r.packages_updated,
+                packages_updated: r.packages_updated,
+            }),
         };
 
         match result {
@@ -150,13 +147,9 @@ pub async fn run(
                     .join("registries.d")
                     .join(format!("{}.toml", reg_config.name));
                 if state_path.exists() {
-                    state::save_state(&state_path, &current_state)
-                        .with_context(|| {
-                            format!(
-                                "saving state for registry '{}'",
-                                reg_config.name
-                            )
-                        })?;
+                    state::save_state(&state_path, &current_state).with_context(|| {
+                        format!("saving state for registry '{}'", reg_config.name)
+                    })?;
                 }
 
                 printer.success(&format!(
@@ -217,8 +210,7 @@ async fn sync_bundle(
     let engine = crate::download::default_engine();
 
     // Fetch the bundle manifest.
-    let manifest =
-        bundle::BundleManifest::fetch(&engine, &config.url, &config.name).await?;
+    let manifest = bundle::BundleManifest::fetch(&engine, &config.url, &config.name).await?;
 
     // Determine which bundles to download.
     let bundles_to_apply = pick_bundles(&manifest, reg_state, tracking_mode)?;
@@ -251,8 +243,7 @@ async fn sync_bundle(
         let bundle_dir = cache_dir.join(&config.name).join("bundles");
         let dest = bundle_dir.join(&entry.uri);
 
-        bundle::download_bundle(&engine, entry, &config.url, &config.name, &dest, printer)
-            .await?;
+        bundle::download_bundle(&engine, entry, &config.url, &config.name, &dest, printer).await?;
         bundle::verify_bundle(&dest, &entry.sha256, &repo_dir).await?;
         bundle::unbundle(&dest, &repo_dir).await?;
 
@@ -272,12 +263,8 @@ async fn sync_bundle(
     // Also materialise the repo-root registry.toml so resolve_mirror finds
     // [[caches]] without needing a separate copy.
     let registry_toml_target = registries_dir.join(&config.name);
-    crate::registry::git::extract_registry_root(
-        &repo_dir,
-        &new_commit,
-        &registry_toml_target,
-    )
-    .await?;
+    crate::registry::git::extract_registry_root(&repo_dir, &new_commit, &registry_toml_target)
+        .await?;
 
     // Compute the latest creation token.
     let latest_token = bundles_to_apply
@@ -325,15 +312,15 @@ fn pick_bundles<'a>(
     match tracking_mode {
         TrackingMode::Tag(tag) => {
             // Find the snapshot for this exact tag, or a delta to it.
-            if let Some(entry) = manifest.entries.iter().find(|e| {
-                e.bundle_type == bundle::BundleType::Snapshot && e.target_tag == *tag
-            }) {
+            if let Some(entry) = manifest
+                .entries
+                .iter()
+                .find(|e| e.bundle_type == bundle::BundleType::Snapshot && e.target_tag == *tag)
+            {
                 return Ok(vec![entry]);
             }
             // Try finding a delta that targets this tag.
-            if let Some(entry) = manifest.entries.iter().find(|e| {
-                e.target_tag == *tag
-            }) {
+            if let Some(entry) = manifest.entries.iter().find(|e| e.target_tag == *tag) {
                 return Ok(vec![entry]);
             }
             bail!("tag '{tag}' not found in bundle manifest");
@@ -346,15 +333,15 @@ fn pick_bundles<'a>(
             // Find all tags, parse as semver, filter by constraint, pick latest.
             let best = find_best_version_tag_in_manifest(manifest, req);
             if let Some(tag) = best {
-                if let Some(entry) = manifest.entries.iter().find(|e| {
-                    e.bundle_type == bundle::BundleType::Snapshot && e.target_tag == tag
-                }) {
+                if let Some(entry) = manifest
+                    .entries
+                    .iter()
+                    .find(|e| e.bundle_type == bundle::BundleType::Snapshot && e.target_tag == tag)
+                {
                     return Ok(vec![entry]);
                 }
                 // Try delta targeting this tag.
-                if let Some(entry) = manifest.entries.iter().rev().find(|e| {
-                    e.target_tag == tag
-                }) {
+                if let Some(entry) = manifest.entries.iter().rev().find(|e| e.target_tag == tag) {
                     return Ok(vec![entry]);
                 }
                 bail!("matched version tag '{tag}' not available as bundle");
@@ -461,7 +448,9 @@ fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
         .iter()
         .map(|p| {
             // Parse as u64 to strip leading zeros, then convert back
-            p.parse::<u64>().map(|n| n.to_string()).unwrap_or_else(|_| p.to_string())
+            p.parse::<u64>()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| p.to_string())
         })
         .collect();
 
@@ -493,11 +482,7 @@ fn extract_minor_base(tag: &str) -> String {
 /// Extract package TOML files from a git tree into the output directory.
 ///
 /// Mirrors the same logic used in `git::extract_packages`.
-async fn extract_packages_from_git(
-    repo_dir: &Path,
-    commit: &str,
-    output_dir: &Path,
-) -> Result<()> {
+async fn extract_packages_from_git(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
     // Clean the output directory first.
     if output_dir.exists() {
         tokio::fs::remove_dir_all(output_dir)
@@ -660,10 +645,7 @@ sha256 = "012def"
         let bundles = pick_bundles(&manifest, &state, &mode).unwrap();
         assert_eq!(bundles.len(), 1);
         assert_eq!(bundles[0].target_tag, "v2026.02");
-        assert_eq!(
-            bundles[0].bundle_type,
-            bundle::BundleType::Snapshot
-        );
+        assert_eq!(bundles[0].bundle_type, bundle::BundleType::Snapshot);
     }
 
     #[test]

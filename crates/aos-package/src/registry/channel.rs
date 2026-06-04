@@ -1,6 +1,6 @@
 //! Channel and rollout selection helpers.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 
 /// The number of rollout partitions in every channel.
@@ -101,10 +101,7 @@ pub fn resolve_bucket(persisted: Option<u8>, machine_id: &str) -> u8 {
 ///
 /// Equal versions are accepted as a no-op; newer versions raise the floor after
 /// the caller has verified and installed the target.
-pub fn check_floor(
-    floor: Option<&semver::Version>,
-    candidate: &semver::Version,
-) -> Result<()> {
+pub fn check_floor(floor: Option<&semver::Version>, candidate: &semver::Version) -> Result<()> {
     if let Some(floor) = floor {
         if candidate < floor {
             bail!(
@@ -146,11 +143,7 @@ pub fn assert_full_partition_set(map: &PartitionMap) -> Result<()> {
 }
 
 /// Select the next `count` partitions to advance to `target` in ascending order.
-pub fn ascending_fill(
-    count: usize,
-    current: &PartitionMap,
-    target: &semver::Version,
-) -> Vec<u8> {
+pub fn ascending_fill(count: usize, current: &PartitionMap, target: &semver::Version) -> Vec<u8> {
     current
         .iter()
         .filter_map(|(bucket, version)| {

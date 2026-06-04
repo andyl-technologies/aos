@@ -34,15 +34,15 @@ impl Registry {
     /// The cache directory should contain a `packages/` subdirectory with
     /// the registry's TOML package files organized by first letter, and
     /// optionally a `closures/` directory with precomputed closure files.
-    pub fn load(
-        cache_dir: &Path,
-        config: &RegistryConfig,
-        platform: &str,
-    ) -> Result<Self> {
+    pub fn load(cache_dir: &Path, config: &RegistryConfig, platform: &str) -> Result<Self> {
         let registry_dir = cache_dir.join(&config.name);
-        let (packages, hash_index) = parse_registry(&registry_dir, platform)
-            .with_context(|| {
-                format!("loading registry '{}' from {}", config.name, registry_dir.display())
+        let (packages, hash_index) =
+            parse_registry(&registry_dir, platform).with_context(|| {
+                format!(
+                    "loading registry '{}' from {}",
+                    config.name,
+                    registry_dir.display()
+                )
             })?;
 
         let closures = load_closures(&registry_dir).unwrap_or_default();
@@ -87,11 +87,7 @@ impl Registry {
                 if names_only {
                     name_match
                 } else {
-                    name_match
-                        || meta
-                            .description
-                            .to_lowercase()
-                            .contains(&pattern_lower)
+                    name_match || meta.description.to_lowercase().contains(&pattern_lower)
                 }
             })
             .collect()
@@ -112,11 +108,7 @@ impl RegistrySet {
     }
 
     /// Load all enabled registries from the cache directory.
-    pub fn load(
-        cache_dir: &Path,
-        configs: &[&RegistryConfig],
-        platform: &str,
-    ) -> Result<Self> {
+    pub fn load(cache_dir: &Path, configs: &[&RegistryConfig], platform: &str) -> Result<Self> {
         let mut registries = Vec::new();
         for config in configs {
             match Registry::load(cache_dir, config, platform) {
@@ -124,10 +116,7 @@ impl RegistrySet {
                 Err(e) => {
                     // Log warning but continue — a missing cache just means
                     // the registry hasn't been synced yet.
-                    eprintln!(
-                        "warning: skipping registry '{}': {}",
-                        config.name, e
-                    );
+                    eprintln!("warning: skipping registry '{}': {}", config.name, e);
                 }
             }
         }
@@ -149,11 +138,7 @@ impl RegistrySet {
     ///
     /// Used for registry-scoped closure walking: all dependencies of a
     /// package resolve from the same registry that provided it.
-    pub fn resolve_hash_in(
-        &self,
-        registry_name: &str,
-        hash: &str,
-    ) -> Option<&PackageMeta> {
+    pub fn resolve_hash_in(&self, registry_name: &str, hash: &str) -> Option<&PackageMeta> {
         self.registries
             .iter()
             .find(|r| r.config.name == registry_name)
@@ -162,11 +147,7 @@ impl RegistrySet {
 
     /// Get the precomputed closure for a store path hash within a specific
     /// registry.
-    pub fn get_closure_in(
-        &self,
-        registry_name: &str,
-        hash: &str,
-    ) -> Option<&ClosureMeta> {
+    pub fn get_closure_in(&self, registry_name: &str, hash: &str) -> Option<&ClosureMeta> {
         self.registries
             .iter()
             .find(|r| r.config.name == registry_name)
@@ -410,12 +391,7 @@ pub(crate) mod tests {
     #[test]
     fn registry_without_closures_dir() {
         let tmp = TempDir::new().unwrap();
-        let core = make_registry(
-            &tmp,
-            "aos-core",
-            500,
-            &[("curl", CURL_TOML)],
-        );
+        let core = make_registry(&tmp, "aos-core", 500, &[("curl", CURL_TOML)]);
 
         // No closures dir — get_closure returns None.
         assert!(core.get_closure("h7j3k8l2m9n4").is_none());

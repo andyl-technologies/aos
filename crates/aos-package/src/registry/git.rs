@@ -7,11 +7,11 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::process::Command;
 
-use aos_core::output::Printer;
 use crate::types::{RegistryConfig, RegistryState, SigningConfig, TrackingMode};
+use aos_core::output::Printer;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -111,11 +111,7 @@ pub async fn sync_git(
 
     printer.info(&format!(
         "Registry '{}': {} packages ({} added, {} updated, {} removed)",
-        config.name,
-        new_packages,
-        added,
-        updated,
-        removed,
+        config.name, new_packages, added, updated, removed,
     ));
 
     Ok(SyncResult {
@@ -169,11 +165,7 @@ async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
 }
 
 /// Run `git fetch` with the appropriate refspec based on tracking mode.
-async fn fetch_refs(
-    repo_dir: &Path,
-    url: &str,
-    tracking_mode: &TrackingMode,
-) -> Result<()> {
+async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) -> Result<()> {
     let mut args = vec!["fetch".to_string(), url.to_string()];
 
     match tracking_mode {
@@ -183,9 +175,7 @@ async fn fetch_refs(
         }
         TrackingMode::Branch(branch) | TrackingMode::Channel(branch) => {
             // Fetch the branch.
-            args.push(format!(
-                "refs/heads/{branch}:refs/remotes/origin/{branch}"
-            ));
+            args.push(format!("refs/heads/{branch}:refs/remotes/origin/{branch}"));
         }
         TrackingMode::Tag(tag) => {
             // Fetch the specific tag.
@@ -220,10 +210,7 @@ async fn fetch_refs(
 }
 
 /// Resolve the commit SHA to use after fetching.
-async fn resolve_fetch_head(
-    repo_dir: &Path,
-    tracking_mode: &TrackingMode,
-) -> Result<String> {
+async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Result<String> {
     let ref_to_resolve = match tracking_mode {
         TrackingMode::Commit(hash) => {
             // Already a commit hash.
@@ -298,10 +285,7 @@ async fn resolve_latest_tag(repo_dir: &Path) -> Result<String> {
 ///
 /// Lists all tags in the repo, parses each as semver (stripping `v` prefix),
 /// filters by the constraint, and resolves the latest matching tag's commit.
-async fn resolve_best_version_tag(
-    repo_dir: &Path,
-    req: &semver::VersionReq,
-) -> Result<String> {
+async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> Result<String> {
     let output = Command::new("git")
         .args(["tag", "-l"])
         .current_dir(repo_dir)
@@ -368,7 +352,9 @@ fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
     let normalized: Vec<String> = parts
         .iter()
         .map(|p| {
-            p.parse::<u64>().map(|n| n.to_string()).unwrap_or_else(|_| p.to_string())
+            p.parse::<u64>()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| p.to_string())
         })
         .collect();
 
@@ -416,11 +402,7 @@ async fn verify_commit_signature(
 /// Enforce that `new_commit` is a descendant of `old_commit` (fast-forward).
 ///
 /// Uses `git merge-base --is-ancestor` to check the relationship.
-async fn enforce_fast_forward(
-    repo_dir: &Path,
-    old_commit: &str,
-    new_commit: &str,
-) -> Result<()> {
+async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &str) -> Result<()> {
     if old_commit == new_commit {
         return Ok(());
     }
@@ -451,11 +433,7 @@ async fn enforce_fast_forward(
 ///
 /// Uses `git archive` to export the `packages/` directory from the commit
 /// and extract it into the output directory.
-async fn extract_packages(
-    repo_dir: &Path,
-    commit: &str,
-    output_dir: &Path,
-) -> Result<()> {
+async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
     // Clean the output directory first.
     if output_dir.exists() {
         tokio::fs::remove_dir_all(output_dir)
@@ -503,11 +481,7 @@ async fn extract_packages(
 ///
 /// Missing-file errors are non-fatal: `apm install` falls back to the
 /// registry URL when no cache config is present. Other git errors bubble up.
-pub async fn extract_registry_root(
-    repo_dir: &Path,
-    commit: &str,
-    target_dir: &Path,
-) -> Result<()> {
+pub async fn extract_registry_root(repo_dir: &Path, commit: &str, target_dir: &Path) -> Result<()> {
     tokio::fs::create_dir_all(target_dir)
         .await
         .with_context(|| format!("creating {}", target_dir.display()))?;
@@ -530,10 +504,7 @@ pub async fn extract_registry_root(
         {
             return Ok(());
         }
-        bail!(
-            "git show {commit}:registry.toml failed: {}",
-            stderr.trim(),
-        );
+        bail!("git show {commit}:registry.toml failed: {}", stderr.trim(),);
     }
 
     let dest = target_dir.join("registry.toml");
@@ -593,9 +564,7 @@ fn chrono_now() -> String {
     // Days since epoch to year/month/day.
     let (year, month, day) = days_to_ymd(days);
 
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 /// Convert days since Unix epoch to (year, month, day).
@@ -717,8 +686,7 @@ mod tests {
         ensure_repo(&repo_dir, "https://example.com").await.unwrap();
 
         // Same commit should always pass.
-        let result =
-            enforce_fast_forward(&repo_dir, "abc123", "abc123").await;
+        let result = enforce_fast_forward(&repo_dir, "abc123", "abc123").await;
         assert!(result.is_ok());
     }
 
@@ -734,12 +702,18 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let c_dir = tmp.path().join("c");
         tokio::fs::create_dir_all(&c_dir).await.unwrap();
-        tokio::fs::write(c_dir.join("curl.toml"), "test").await.unwrap();
-        tokio::fs::write(c_dir.join("coreutils.toml"), "test").await.unwrap();
+        tokio::fs::write(c_dir.join("curl.toml"), "test")
+            .await
+            .unwrap();
+        tokio::fs::write(c_dir.join("coreutils.toml"), "test")
+            .await
+            .unwrap();
 
         let z_dir = tmp.path().join("z");
         tokio::fs::create_dir_all(&z_dir).await.unwrap();
-        tokio::fs::write(z_dir.join("zlib.toml"), "test").await.unwrap();
+        tokio::fs::write(z_dir.join("zlib.toml"), "test")
+            .await
+            .unwrap();
 
         let count = count_toml_files(tmp.path()).await;
         assert_eq!(count, 3);
