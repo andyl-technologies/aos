@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
@@ -68,17 +68,35 @@ impl KeyStore {
     /// Searches all `trusted_dirs` for a file named `{registry}.pub`.
     /// Returns `None` if no key file is found.
     pub fn lookup(&self, registry: &str) -> Option<TrustedKey> {
+        self.lookup_all(registry).into_iter().next()
+    }
+
+    /// Look up every trusted key for `registry`.
+    ///
+    /// A registry key file may contain multiple `registry:Ed25519:<base64>`
+    /// lines during rotation overlap. Older single-line files still parse.
+    pub fn lookup_all(&self, registry: &str) -> Vec<TrustedKey> {
+        let mut keys = Vec::new();
         for (i, dir) in self.trusted_dirs.iter().enumerate() {
             let path = dir.join(format!("{registry}.pub"));
             if let Ok(content) = fs::read_to_string(&path) {
-                let line = content.trim();
-                if let Ok((reg, algo, pubkey)) = parse_signing_key(line) {
+                for line in content
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                {
+                    let Ok((reg, algo, pubkey)) = parse_signing_key(line) else {
+                        continue;
+                    };
+                    if reg != registry {
+                        continue;
+                    }
                     let source = if i == 0 {
                         KeySource::Tofu
                     } else {
                         KeySource::PreInstalled
                     };
-                    return Some(TrustedKey {
+                    keys.push(TrustedKey {
                         registry: reg,
                         algorithm: algo,
                         public_key: pubkey.clone(),
@@ -88,7 +106,7 @@ impl KeyStore {
                 }
             }
         }
-        None
+        keys
     }
 
     /// Persist a trusted key to the first (writable) directory.
@@ -104,9 +122,32 @@ impl KeyStore {
             .with_context(|| format!("creating trusted keys directory {}", dir.display()))?;
 
         let path = dir.join(format!("{}.pub", key.registry));
-        let line = format!("{}:{}:{}\n", key.registry, key.algorithm, key.public_key);
+        let new_line = format!("{}:{}:{}", key.registry, key.algorithm, key.public_key);
+        let mut lines: Vec<String> = if path.exists() {
+            fs::read_to_string(&path)
+                .with_context(|| format!("reading trusted key file {}", path.display()))?
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .filter_map(|line| {
+                    parse_signing_key(line)
+                        .ok()
+                        .map(|(registry, algorithm, public_key)| {
+                            format!("{registry}:{algorithm}:{public_key}")
+                        })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
-        fs::write(&path, &line)
+        if !lines.iter().any(|line| line == &new_line) {
+            lines.push(new_line);
+        }
+        let mut content = lines.join("\n");
+        content.push('\n');
+
+        fs::write(&path, &content)
             .with_context(|| format!("writing trusted key to {}", path.display()))?;
 
         Ok(())
@@ -121,8 +162,7 @@ impl KeyStore {
         for dir in &self.trusted_dirs {
             let path = dir.join(format!("{registry}.pub"));
             if path.exists() {
-                fs::remove_file(&path)
-                    .with_context(|| format!("removing {}", path.display()))?;
+                fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
                 return Ok(true);
             }
         }
@@ -196,19 +236,15 @@ pub fn tofu_check(
 /// `git verify-commit`.  Returns `Ok(true)` if the signature is valid,
 /// `Ok(false)` if the signature is invalid or missing, and `Err` if
 /// the git command itself could not be executed.
-pub fn verify_commit_signature(
-    repo_path: &Path,
-    commit: &str,
-    expected_key: &str,
-) -> Result<bool> {
+pub fn verify_commit_signature(repo_path: &Path, commit: &str, expected_key: &str) -> Result<bool> {
     let (_reg, _algo, pubkey) = parse_signing_key(expected_key)?;
 
     // Build a temporary allowed-signers file.
     // Format: <principal> <key-type> <base64-key>
     let signers_content = format!("registry ssh-ed25519 {pubkey}\n");
 
-    let mut signers_file = tempfile::NamedTempFile::new()
-        .context("creating temporary allowed-signers file")?;
+    let mut signers_file =
+        tempfile::NamedTempFile::new().context("creating temporary allowed-signers file")?;
     std::io::Write::write_all(&mut signers_file, signers_content.as_bytes())
         .context("writing temporary allowed-signers file")?;
     let signers_path = signers_file.path();
@@ -217,10 +253,7 @@ pub fn verify_commit_signature(
     let output = std::process::Command::new("git")
         .args([
             "-c",
-            &format!(
-                "gpg.ssh.allowedSignersFile={}",
-                signers_path.display()
-            ),
+            &format!("gpg.ssh.allowedSignersFile={}", signers_path.display()),
             "verify-commit",
             commit,
         ])
@@ -237,17 +270,13 @@ pub fn verify_commit_signature(
 /// This mirrors [`verify_commit_signature`] but invokes `git verify-tag`.
 /// Returns `Ok(true)` when the signature is valid, `Ok(false)` when it is
 /// invalid or missing, and `Err` only for local execution/setup failures.
-pub fn verify_tag_signature(
-    repo_path: &Path,
-    tag: &str,
-    expected_key: &str,
-) -> Result<bool> {
+pub fn verify_tag_signature(repo_path: &Path, tag: &str, expected_key: &str) -> Result<bool> {
     let (_reg, _algo, pubkey) = parse_signing_key(expected_key)?;
 
     let signers_content = format!("registry ssh-ed25519 {pubkey}\n");
 
-    let mut signers_file = tempfile::NamedTempFile::new()
-        .context("creating temporary allowed-signers file")?;
+    let mut signers_file =
+        tempfile::NamedTempFile::new().context("creating temporary allowed-signers file")?;
     std::io::Write::write_all(&mut signers_file, signers_content.as_bytes())
         .context("writing temporary allowed-signers file")?;
     let signers_path = signers_file.path();
@@ -255,10 +284,7 @@ pub fn verify_tag_signature(
     let output = std::process::Command::new("git")
         .args([
             "-c",
-            &format!(
-                "gpg.ssh.allowedSignersFile={}",
-                signers_path.display()
-            ),
+            &format!("gpg.ssh.allowedSignersFile={}", signers_path.display()),
             "verify-tag",
             tag,
         ])
@@ -305,9 +331,7 @@ pub fn check_downgrade(
         .current_dir(repo_path)
         .output()
         .with_context(|| {
-            format!(
-                "running git merge-base --is-ancestor {current_commit} {new_commit}"
-            )
+            format!("running git merge-base --is-ancestor {current_commit} {new_commit}")
         })?;
 
     if ff.status.success() {
@@ -320,9 +344,7 @@ pub fn check_downgrade(
         .current_dir(repo_path)
         .output()
         .with_context(|| {
-            format!(
-                "running git merge-base --is-ancestor {new_commit} {current_commit}"
-            )
+            format!("running git merge-base --is-ancestor {new_commit} {current_commit}")
         })?;
 
     if dg.status.success() {
@@ -343,9 +365,7 @@ pub fn check_downgrade(
 pub fn parse_signing_key(key_str: &str) -> Result<(String, String, String)> {
     let parts: Vec<&str> = key_str.splitn(3, ':').collect();
     if parts.len() != 3 {
-        bail!(
-            "malformed signing key: expected 'registry:algorithm:base64key', got '{key_str}'"
-        );
+        bail!("malformed signing key: expected 'registry:algorithm:base64key', got '{key_str}'");
     }
 
     let registry = parts[0].to_string();
@@ -359,9 +379,7 @@ pub fn parse_signing_key(key_str: &str) -> Result<(String, String, String)> {
         bail!("malformed signing key: public key is empty");
     }
     if algorithm != "Ed25519" {
-        bail!(
-            "unsupported signing algorithm '{algorithm}': only Ed25519 is supported"
-        );
+        bail!("unsupported signing algorithm '{algorithm}': only Ed25519 is supported");
     }
 
     Ok((registry, algorithm, public_key))
@@ -396,8 +414,7 @@ mod tests {
 
     #[test]
     fn parse_signing_key_valid() {
-        let (reg, algo, key) =
-            parse_signing_key("aos-core:Ed25519:Xk9m2base64Qp4=").unwrap();
+        let (reg, algo, key) = parse_signing_key("aos-core:Ed25519:Xk9m2base64Qp4=").unwrap();
         assert_eq!(reg, "aos-core");
         assert_eq!(algo, "Ed25519");
         assert_eq!(key, "Xk9m2base64Qp4=");
@@ -408,10 +425,7 @@ mod tests {
         let result = parse_signing_key("aos-core:RSA2048:AAAA");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("unsupported signing algorithm"),
-            "got: {err}"
-        );
+        assert!(err.contains("unsupported signing algorithm"), "got: {err}");
     }
 
     #[test]
@@ -491,6 +505,30 @@ mod tests {
     }
 
     #[test]
+    fn key_store_stores_multiple_rotation_keys() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("keys");
+        let store = KeyStore::new(vec![dir]);
+
+        for public_key in ["AAAAAAAAAA==", "BBBBBBBBBB=="] {
+            store
+                .store(&TrustedKey {
+                    registry: "my-reg".into(),
+                    algorithm: "Ed25519".into(),
+                    public_key: public_key.into(),
+                    fingerprint: key_fingerprint(public_key),
+                    source: KeySource::Tofu,
+                })
+                .unwrap();
+        }
+
+        let keys = store.lookup_all("my-reg");
+        assert_eq!(keys.len(), 2);
+        assert!(keys.iter().any(|key| key.public_key == "AAAAAAAAAA=="));
+        assert!(keys.iter().any(|key| key.public_key == "BBBBBBBBBB=="));
+    }
+
+    #[test]
     fn key_store_remove() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join("keys");
@@ -515,9 +553,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = KeyStore::new(vec![tmp.path().to_path_buf()]);
 
-        let decision =
-            tofu_check(&store, "aos-core", "aos-core:Ed25519:Xk9m2base64Qp4=")
-                .unwrap();
+        let decision = tofu_check(&store, "aos-core", "aos-core:Ed25519:Xk9m2base64Qp4=").unwrap();
         match decision {
             TofuDecision::NewKey {
                 key,
@@ -543,9 +579,7 @@ mod tests {
         .unwrap();
 
         let store = KeyStore::new(vec![dir]);
-        let decision =
-            tofu_check(&store, "aos-core", "aos-core:Ed25519:Xk9m2base64Qp4=")
-                .unwrap();
+        let decision = tofu_check(&store, "aos-core", "aos-core:Ed25519:Xk9m2base64Qp4=").unwrap();
         match decision {
             TofuDecision::AlreadyTrusted(key) => {
                 assert_eq!(key.registry, "aos-core");
@@ -560,16 +594,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join("keys");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(
-            dir.join("aos-core.pub"),
-            "aos-core:Ed25519:AAAAAAAAAA==\n",
-        )
-        .unwrap();
+        fs::write(dir.join("aos-core.pub"), "aos-core:Ed25519:AAAAAAAAAA==\n").unwrap();
 
         let store = KeyStore::new(vec![dir]);
-        let decision =
-            tofu_check(&store, "aos-core", "aos-core:Ed25519:BBBBBBBBBB==")
-                .unwrap();
+        let decision = tofu_check(&store, "aos-core", "aos-core:Ed25519:BBBBBBBBBB==").unwrap();
         match decision {
             TofuDecision::KeyMismatch { stored, received } => {
                 assert_eq!(stored.public_key, "AAAAAAAAAA==");

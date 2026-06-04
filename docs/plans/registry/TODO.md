@@ -53,7 +53,7 @@ Keep this file current as work lands.
 - [x] Add tag-object parser and name-binding checks.
 - [x] Add tag-chain verification helper.
 - [x] Rewrite producer tag/sign paths to create signed tag objects.
-- [ ] Add rotation/revocation helpers and tests.
+- [x] Add rotation/revocation helpers and tests.
 
 ## WS-05 Consumer Cutover
 
