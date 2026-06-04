@@ -465,44 +465,89 @@ still verifies `NarHash`.
 |---|---|
 | **Type** | Documentation debt (not a design decision) — flagged here so the owning docs are corrected before WS-06 lands. |
 | **Owner WS** | [WS-06](./workstream-06-nix-cache.md) (narinfo emitter), with [WS-05](./workstream-05-consumer.md) (consumer) |
-| **Status** | OPEN — the CURRENT-state citations below predate the master rebase and are now stale. |
+| **Status** | **RESOLVED** — the CURRENT-state re-grounding is done: the narinfo / nix-cache stack already exists end-to-end (verified in code below), and WS-06 is re-scoped from "build a narinfo emitter" to "integrate the existing cache into the git-native registry". |
 
 The master rebase pulled in **commit `7149acf6`** ("apm: narinfo-driven NAR
-downloads + export-format import"), which changed the CURRENT state in two ways
-that several plan/reference docs still describe as they were *before* the rebase:
+downloads + export-format import"). Re-grounding against the current tree (the
+`aos-server` / `aos-cache` / `aos-core` narinfo stack plus the narinfo-driven
+`aos-package` consumer) confirms two CURRENT-state facts that several plan/
+reference docs still described as they were *before* the rebase. Both are now
+re-grounded:
 
-1. **`download_hash` / `download_size` were removed from the registry schema.**
+1. **`download_hash` / `download_size` were removed from the registry schema —
+   narinfo `FileHash` / `FileSize` are authoritative and emit-time-computed.**
    Commit `7149acf6` dropped both fields from `PackageMeta` (now `types.rs:44-74`)
-   and from the on-disk `PlatformEntry` (`registry/parse.rs:45-51`); narinfo
-   `FileHash` / `FileSize` are now **authoritative** and the consumer reads them
-   from the narinfo, not from the package TOML. **Consequence for WS-06:** the §5.2
-   open question is effectively *resolved to emit-time compute* — the emitter must
-   compute `FileHash` / `FileSize` from the compressed `.nar.zst` at emit time
-   (option 2 in WS-06 §5.2.1), **not** read them off `PackageMeta` (option 1, which
-   assumed fields that no longer exist). WS-06 §5.1 / §5.2 / §10 / §11 (the schema
-   prereq, the builder reading `meta.download_hash`) and
+   and from the on-disk `PlatformEntry` (`registry/parse.rs:45-51`); the consumer
+   reads `FileHash` / `FileSize` from the narinfo, not from the package TOML. The
+   server **already computes them at emit time** from the compressed bytes:
+   `format_narinfo` (`crates/aos-server/src/narinfo.rs:27`) emits `FileHash:` /
+   `FileSize:` unconditionally — for `Compression::None` they coincide with
+   `NarHash` / `NarSize`, and for zstd / xz they are computed by
+   `compute_file_hash_size` (`crates/aos-server/src/compress.rs:143`,
+   `narinfo.rs:48`). **Consequence for WS-06:** the §5.2 open question is *resolved
+   to emit-time compute* — this is the option-2 behavior that already ships, not a
+   thing to build; the emitter does **not** read `FileHash` / `FileSize` off
+   `PackageMeta` (option 1 assumed fields that no longer exist). WS-06 §5.1 / §5.2 /
+   §10 / §11 (the schema prereq, the builder reading `meta.download_hash`) and
    [current-state.md](../../registry/current-state.md) (lines documenting
-   `download_hash` / `download_size` as package-TOML fields) must be re-grounded
-   accordingly.
+   `download_hash` / `download_size` as package-TOML fields) are re-grounded to this.
 
-2. **A nix-cache server already exists.** `7149acf6` (and the surrounding
-   `aos-server` work) ships a live narinfo / `nix-cache-info` surface in
-   `crates/aos-server/src/routes.rs` — `cache_info_handler` (`routes.rs:123-148`)
-   emits `Priority: 30` (`routes.rs:145`), with `narinfo_handler` / `nar_handler`
-   serving `<hash>.narinfo` and `nar/<filename>`. So the "no `nix-cache-info` /
-   narinfo emission" / "narinfo server: n/a ❌" statements in
-   [current-state.md](../../registry/current-state.md) and the greenfield framing
-   in [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) are
-   stale: WS-06 should **build on / reference the existing server**, not assume a
-   pure-greenfield emitter. Reconcile the `Priority` value used in the docs: the
-   **live server emits `Priority: 30`** (`routes.rs:145`) — use **30** consistently
-   for the served surface, and note that the `aos-cache` backends write
-   `Priority: 40` (`backend/sftp.rs:143`, `backend/fs.rs:126`). WS-06 §4's
-   `Priority: 41` example and the routes.rs citation should be re-grounded against
-   the live `30`.
+2. **The nix-cache / narinfo stack already exists and is wired end-to-end — WS-06
+   is integration, not a greenfield emitter.** The full nix-serve-style binary-
+   cache surface ships today:
+   - **Shared narinfo type** — `NarInfo` (`crates/aos-core/src/nar/info.rs:5`) with
+     `parse()` (`:19`) / `format()` (`:81`) and `store_hash()` / `basename()`
+     helpers, shared between server and consumer.
+   - **Server emitter** — `format_narinfo(&DbPathInfo, store_dir,
+     &CompressionConfig, Option<&NarInfoSigner>)` (`crates/aos-server/src/narinfo.rs:27`)
+     writes the full narinfo; `URL: nar/{store_hash}-{nar_hash colon→dash}.{ext}`
+     (`narinfo.rs:37`), `References:`/`Deriver:` as basenames, `Sig:` lines.
+   - **Ed25519 narinfo signing** — `NarInfoSigner` (`crates/aos-server/src/sign.rs`):
+     `load(key_file)` (`:14`), `sign(fingerprint) → "name:base64"` (`:44`), and the
+     exact Nix narinfo `fingerprint(store_path, nar_hash, nar_size, refs)` (`:57`),
+     applied at `narinfo.rs:87-93`. This is the "one Ed25519 key, reused for the
+     narinfo `Sig:`" the brief calls for — it already exists.
+   - **Cache-server routes** — `crates/aos-server/src/routes.rs:80-89`:
+     `/{view}/nix-cache-info` (`cache_info_handler`, `:123`, emitting
+     `Priority: 30` at `:145`), `/{view}/{hash}.narinfo` (`narinfo_handler`, `:157`),
+     `/{view}/nar/{filename}` (`nar_handler`, `:223`), plus query-missing / upload /
+     build / gc.
+   - **Cache backends** — `crates/aos-cache/src/backend/{s3,sftp,http,fs}.rs` have
+     `has`/`get`/`put_narinfo`; the backends write `Priority: 40`
+     (`backend/sftp.rs:143`, `backend/fs.rs:126`).
+   - **Narinfo-driven consumer** — `crates/aos-package/src/download.rs` (commit
+     `7149acf6`) uses `aos_core::nar::info`; `fetch_narinfos` fetches the narinfo
+     and `download_nars` consumes it; `DownloadRequest` carries the `NarInfo`;
+     `FileHash` / `NarHash` / `References` / `Deriver` all come **from** the narinfo;
+     `narinfo_url(mirror_url, store_path)` (`:74`).
 
-This is a *re-grounding* task, not a re-decision: the TARGET design is unchanged,
-but the CURRENT-state baseline the plan reasons against moved underneath it.
+   So the "no `nix-cache-info` / narinfo emission" / "narinfo server: n/a ❌"
+   statements in [current-state.md](../../registry/current-state.md) and the
+   greenfield framing in
+   [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) are
+   stale and **must not** be repeated: the Nix binary-cache surface
+   (`nix-cache-info` + `*.narinfo` + `nar/` + Ed25519 `Sig:`) is a strict superset
+   of the Nix protocol *today*, served by `aos-server` and consumed by
+   `aos-package`. Reconcile the `Priority` values: the **live server emits
+   `Priority: 30`** (`routes.rs:145`) — use **30** for the served surface, and note
+   the `aos-cache` backends write `Priority: 40` (`backend/sftp.rs:143`,
+   `backend/fs.rs:126`). WS-06 §4's `Priority: 41` example and the routes.rs
+   citation are re-grounded against the live `30`.
+
+**The remaining gap is integration, not an emitter.** That existing cache is
+store-DB-backed (`DbPathInfo`) and **decoupled** from the git registry: the git
+registry (`packages/*.toml`: `store_path` / `nar_hash` / `references` / closure)
+is the metadata layer; the narinfo and NAR blobs live in the cache, keyed by store
+hash, served and consumed independently. The remaining TARGET work for the
+git-native registry is therefore to **point the consumer at this existing cache** —
+the committed repo-root `registry.toml` `[[caches]]` (with `registries.d` override,
+or the origin co-serving the cache) — and to have the WS-06 / reference docs
+**describe** the existing `format_narinfo` / `NarInfo` field mapping rather than
+plan to build an emitter. WS-06 is re-scoped accordingly (see §4 and the [WS-06
+narinfo field-mapping doc](./workstream-06-nix-cache.md)).
+
+This was a *re-grounding* task, not a re-decision: the TARGET design is unchanged,
+and the CURRENT-state baseline is now corrected to the shipped stack above.
 
 ---
 
@@ -775,7 +820,7 @@ item is closed.
 | Q7a | Migration: clean break vs. shim | WS-05 / WS-01 / WS-03 | WS-01, WS-02, WS-03, WS-05 | Clean break + thin read-only consumer dual-detect → EOL (§3.4) |
 | Q7b | NAR superset milestone timing | WS-05 | (none — fast-follow) | Defer to fast-follow; cache lives in committed `registry.toml` `[[caches]]` (client-side `registries.d` override / origin), nothing reserved in tags (§4.3) |
 | Q8 | NAR blob `URL:` colon-retained vs. colon-free | WS-06 | WS-06 emitter | Default colon-retained; `colon_safe` switch flips `URL:` + served key to `sha256-<hex>` for edges that mangle `:` |
-| DD-1 | Doc-debt: re-ground CURRENT-state after `7149acf6` | WS-06 / WS-05 | (docs — gates WS-06 §5/§10/§11 accuracy) | Emit-time compute FileHash/FileSize (fields removed); reference existing `aos-server` nix-cache server (`Priority: 30`) |
+| DD-1 | Doc-debt: re-ground CURRENT-state after `7149acf6` — **RESOLVED** | WS-06 / WS-05 | (docs — gated WS-06 §5/§10/§11 accuracy; now re-grounded) | **Done.** Narinfo/nix-cache stack exists end-to-end (`aos-core` `NarInfo`, `aos-server` `format_narinfo`+Ed25519 `Sig:`+`Priority: 30`, `aos-cache` backends, narinfo-driven `aos-package`); FileHash/FileSize emit-time-computed (`compress.rs:143`). WS-06 re-scoped to integration: point consumer at existing cache via committed `registry.toml` `[[caches]]`; docs describe `format_narinfo`, not build it. |
 | R2/R3 | Torn publish / publisher race | WS-02 / WS-03 | WS-02, WS-03 | Immutable-first / low-TTL-last; single publisher per channel |
 | R7 | Cross-serving / name-confusion | WS-04 / WS-05 | WS-04, WS-05 | Name-binding: embedded tag-name == path name; verify `tag→tag→commit` |
 | R9 | Anti-rollback floor across cutover | WS-05 | WS-05 | Re-seed floor at git-native cutover; fix-forward only |

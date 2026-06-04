@@ -66,8 +66,13 @@ is a thin wrapper over `git` + `git bundle create`** with significant gaps — s
 [§9 Producer-side gaps](#9-producer-side-gaps-the-asymmetry).
 
 > **CURRENT vs TARGET.** Today the registry is distributed as **git bundles** +
-> a `bundle-list.toml` manifest, there is **no** `nix-cache-info`/narinfo
-> emission, and **no** producer-side manifest writer. The root file
+> a `bundle-list.toml` manifest, and there is **no** producer-side
+> (`apr`) manifest writer. A full Nix binary-cache stack (`nix-cache-info`,
+> `*.narinfo`, `nar/`, Ed25519 `Sig`) **does already exist** — but it lives
+> *outside* `aos-package`, in `aos-server` / `aos-core` / `aos-cache`, and is
+> already consumed by `aos-package`'s NAR downloader (see
+> [§6.1, *The Nix-cache / narinfo stack already exists*](#61-the-nix-cache--narinfo-stack-already-exists-current)).
+> The root file
 > `registry.toml` that *does* exist is a small repo-local config (`[registry]`,
 > `[[caches]]`, `[signing]`) — see [§3.1](#31-the-repo-local-registrytoml). The
 > **target** drops bundles and `bundle-list.toml` in favor of a bare git repo
@@ -418,6 +423,75 @@ signature.** Their integrity roots transitively in the signed git commit → TOM
 → recorded `download_hash`/`nar_hash` (see [§8](#8-signing--trust) and
 [`signing-and-trust.md`](signing-and-trust.md)).
 
+### 6.1 The Nix-cache / narinfo stack already exists (CURRENT)
+
+> **CURRENT.** A full, end-to-end Nix binary-cache surface
+> (`nix-cache-info` + `*.narinfo` + `nar/` + Ed25519 `Sig`) **already exists in
+> the tree** — served by `aos-server`, consumed by `aos-package`. It is **not** a
+> greenfield item. The important nuance is *where* it lives: this stack is
+> **store-DB-backed** (`DbPathInfo`) and **decoupled** from the git
+> registry described in §§1–5. The git registry (`packages/*.toml`) is the
+> **metadata layer**; the narinfo/NAR bytes live in the **cache**, keyed by store
+> hash, served and consumed independently. The remaining git-native-registry work
+> here is **integration** (point the consumer at this cache via the committed
+> `registry.toml` `[[caches]]`, or co-serve it from the origin), **not** building
+> an emitter.
+
+**The shared narinfo type** — `aos_core::nar::info::NarInfo`
+(`crates/aos-core/src/nar/info.rs:5-16`) carries
+`{store_path, url, compression, file_hash, file_size, nar_hash, nar_size,
+references, deriver, signatures}`, with `parse()` (`info.rs:19`),
+`format()` (`info.rs:81`), and `store_hash()` / `basename()` helpers
+(`info.rs:147-155`). This one type is shared by the server emitter and the apm
+consumer.
+
+**The server emitter** — `aos-server` is a complete nix-serve-style cache:
+
+- `format_narinfo(&DbPathInfo, store_dir, &CompressionConfig, Option<&NarInfoSigner>)`
+  (`crates/aos-server/src/narinfo.rs:27`) renders a `DbPathInfo` row to narinfo
+  text. The NAR URL is `nar/{store_hash}-{nar_hash with ':' → '-'}.{ext}`
+  (`narinfo.rs:37`).
+- **`FileHash`/`FileSize` are always emitted.** For `Compression: none` they
+  equal `NarHash`/`NarSize`; for zstd/xz they are computed **emit-time** by
+  `compute_file_hash_size` (`crates/aos-server/src/compress.rs:143`) over the
+  actual compressed stream (`narinfo.rs:45-59`). The apm consumer requires both
+  present (§6, `download.rs:191-198`), so the server populates them
+  unconditionally.
+- **Ed25519 signing** — `NarInfoSigner` (`crates/aos-server/src/sign.rs`) with
+  `load(key_file)` (`sign.rs:14`), `sign(fingerprint) → "name:base64"`
+  (`sign.rs:44`), and `fingerprint(store_path, nar_hash, nar_size, refs)`
+  (`sign.rs:57`) — emits the exact Nix narinfo fingerprint
+  (`1;{store_path};{nar_hash};{nar_size};{refs}`) and `Sig:` line, reusing one
+  Ed25519 key. `narinfo.rs:87-93` appends the live `Sig`.
+- **HTTP routes** (`crates/aos-server/src/routes.rs:80-89`):
+  `/{view}/nix-cache-info` (`cache_info_handler`, `routes.rs:123`, advertising
+  `Priority: 30` at `routes.rs:145`), `/{view}/{hash}.narinfo`
+  (`narinfo_handler`, `routes.rs:157`), `/{view}/nar/{filename}`
+  (`nar_handler`, `routes.rs:223`), plus `query-missing`, `store` upload,
+  `build`, and `gc`.
+
+**The cache backends** — `aos-cache` carries `has_narinfo`/`get_narinfo`/
+`put_narinfo` on every backend (`crates/aos-cache/src/backend/mod.rs:16-23`)
+with S3, SFTP, HTTP, and FS implementations
+(`crates/aos-cache/src/backend/{s3,sftp,http,fs}.rs`); backend-served
+`nix-cache-info` advertises `Priority: 40` (`s3.rs:133`, `sftp.rs:143`).
+
+**The consumer is already narinfo-driven** — `aos-package/src/download.rs`
+(commit `7149acf6`) is built around `aos_core::nar::info`. `fetch_narinfos`
+fetches the narinfo and `download_nars` consumes it; `DownloadRequest` carries
+nothing but the store path + cache base, and `FileHash`/`NarHash`/`References`/
+`Deriver` all come **from the fetched narinfo** (`download.rs:24-55`,
+`191-233`). The narinfo URL is built by `narinfo_url(mirror_url, store_path)`
+(`download.rs:74`); the NAR is then fetched from the narinfo's own `URL:` field.
+
+> **TARGET.** Because the emitter exists, the narinfo field mapping in the
+> TARGET docs should **describe** the existing `format_narinfo` / `NarInfo`
+> rather than plan to build one. The Nix binary-cache surface is already a
+> **strict superset** of the Nix protocol; the only remaining git-native work is
+> wiring the committed `registry.toml` `[[caches]]` (or an origin that co-serves
+> the cache) to this stack — see
+> [`nix-cache-compatibility.md`](nix-cache-compatibility.md), TARGET.
+
 ---
 
 ## 7. Versioning, tracking modes, and bundle selection (consumer)
@@ -564,9 +638,15 @@ consumer can do far more than the producer can produce.
   `--delta-from` are passed manually; `classify_delta` runs only at read time.
 - **No bundle/NAR upload to a mirror/CDN/S3 from the producer** — the only
   upload code in the tree is in `aos-cache`, and that is for NARs, not bundles.
-- **No `nix-cache-info` / narinfo emission** — the registry is not a Nix binary
-  cache today (see [`nix-cache-compatibility.md`](nix-cache-compatibility.md),
-  TARGET).
+- **No `nix-cache-info` / narinfo emission *from `apr`*** — the producer CLI
+  does not emit a Nix binary-cache surface. Note this is an `apr` gap, **not** a
+  missing capability: a full `nix-cache-info`/narinfo/nar emitter with Ed25519
+  `Sig` **already exists** in `aos-server` (`format_narinfo`, `sign.rs`) and is
+  already consumed by `aos-package` — but it is **store-DB-backed and decoupled**
+  from the git registry, not driven by `apr` (see
+  [§6.1](#61-the-nix-cache--narinfo-stack-already-exists-current) and
+  [`nix-cache-compatibility.md`](nix-cache-compatibility.md), TARGET). The
+  remaining work is **integration**, not building the emitter.
 - **No locks/atomicity** beyond git's own FF-rejection on push.
 - **No explicit "latest" pointer** — "latest" is *derived* by scanning the
   manifest for the max `creation_token`/latest snapshot.
@@ -582,7 +662,7 @@ consumer can do far more than the producer can produce.
 | Select minimal bundle set | ✅ (`update.rs:319`) | n/a |
 | `git bundle create` | n/a | ✅ (`registry_ops.rs:1706`) |
 | Upload bundles | — | ❌ |
-| narinfo / `nix-cache-info` | n/a | ❌ |
+| narinfo / `nix-cache-info` | ✅ consumer is narinfo-driven (`download.rs`, commit `7149acf6`) | ❌ from `apr`; ✅ exists in `aos-server` (`narinfo.rs`, `sign.rs`) — decoupled, store-DB-backed (§6.1) |
 | Persist `[registry.state]` | ✅ (`state.rs:37`) | n/a |
 
 > The complete producer/consumer gap mapping to remediation workstreams is in
