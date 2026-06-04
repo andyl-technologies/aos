@@ -565,8 +565,6 @@ pub struct RegistryRootConfig {
     pub registry: RegistryRootMeta,
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
-    #[serde(default)]
-    pub signing: Option<RegistrySigningConfig>,
 }
 
 /// Registry metadata in `registry.toml`.
@@ -587,12 +585,6 @@ pub struct CacheEntry {
 
 fn default_cache_priority() -> u32 {
     100
-}
-
-/// Signing configuration in `registry.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistrySigningConfig {
-    pub public_key: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -786,6 +778,27 @@ public_key = "aos-core:Ed25519:base64keyhere"
         let signing = rf.registry.signing.unwrap();
         assert!(signing.required);
         assert_eq!(signing.public_key, "aos-core:Ed25519:base64keyhere");
+    }
+
+    #[test]
+    fn registry_root_config_ignores_signing_field() {
+        let toml_str = r#"
+[registry]
+name = "aos-core"
+description = "core registry"
+
+[[caches]]
+url = "https://cache.aos.dev"
+priority = 1000
+
+[registry.signing]
+public_key = "aos-core:Ed25519:base64keyhere"
+"#;
+        let cfg: RegistryRootConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.registry.name, "aos-core");
+        assert_eq!(cfg.registry.description.as_deref(), Some("core registry"));
+        assert_eq!(cfg.caches.len(), 1);
+        assert_eq!(cfg.caches[0].url, "https://cache.aos.dev");
     }
 
     #[test]

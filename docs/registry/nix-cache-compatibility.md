@@ -270,11 +270,10 @@ narinfo + NAR from any standard static cache. The producer can reuse this
 [current-state.md](current-state.md) §3.1), not a signed tag. The git-native
 target **keeps this committed `registry.toml` `[[caches]]`** as the authoritative
 cache list (authenticated via the signed tag), and **adds** an optional
-consumer-side `registries.d/<name>.toml` override; only the signing *pubkey*
-(the `RegistrySigningConfig.public_key`, `crates/aos-package/src/types.rs:594-595`,
-reached via the `signing` field of `RegistryRootConfig`) leaves `registry.toml`
-(it moves to `keys.toml` — see [`repo-layout.md`](repo-layout.md) §3, §7). The
-parsing/sorting/selection logic below is reusable as-is.
+consumer-side `registries.d/<name>.toml` override. The in-repo signing pubkey has
+already left `registry.toml`; trust rotation/revocation lives in `keys.toml` (see
+[`repo-layout.md`](repo-layout.md) §3, §7). The parsing/sorting/selection logic
+below is reusable as-is.
 
 - `CacheEntry { url, priority }` with `default_cache_priority() == 100`
   (`crates/aos-package/src/types.rs:582-590`), nested under `RegistryRootConfig`

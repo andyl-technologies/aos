@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 pub enum KeySource {
     /// Shipped in `/etc/apm/trusted-keys.d/` or pre-provisioned by an admin.
     PreInstalled,
-    /// Accepted on first use from a registry's `signing.public_key` field.
+    /// Accepted on first use from a registry trust prompt.
     Tofu,
 }
 
