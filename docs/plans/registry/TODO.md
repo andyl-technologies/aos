@@ -12,43 +12,43 @@ Keep this file current as work lands.
 
 ## WS-01 Object Store
 
-- [ ] Add `registry::objectstore` module.
-- [ ] Implement bare sha256 repo initialization and object-format guard.
-- [ ] Implement semver release object-dir mapping.
-- [ ] Implement sha256 loose-object path validation and 2/62 split.
-- [ ] Implement relative root `objects/info/alternates` writer.
-- [ ] Implement `git update-server-info` wrapper.
-- [ ] Add focused object-store unit tests.
+- [x] Add `registry::objectstore` module.
+- [x] Implement bare sha256 repo initialization and object-format guard.
+- [x] Implement semver release object-dir mapping.
+- [x] Implement sha256 loose-object path validation and 2/62 split.
+- [x] Implement relative root `objects/info/alternates` writer.
+- [x] Implement `git update-server-info` wrapper.
+- [x] Add focused object-store unit tests.
 - [ ] Wire producer create/publish paths to sha256 object-store helpers.
 - [ ] Add dumb-HTTP clone integration coverage.
 
 ## WS-02 Packs And Deltas
 
-- [ ] Add `registry::pack` module.
-- [ ] Implement release-kind and guaranteed delta-base scheme.
-- [ ] Implement full-pack and thin-delta `git pack-objects` wrappers.
-- [ ] Implement zstd compress/decompress wrappers.
-- [ ] Implement `git index-pack` and `--fix-thin` wrappers.
-- [ ] Add focused pack/delta unit tests.
+- [x] Add `registry::pack` module.
+- [x] Implement release-kind and guaranteed delta-base scheme.
+- [x] Implement full-pack and thin-delta `git pack-objects` wrappers.
+- [x] Implement zstd compress/decompress wrappers.
+- [x] Implement `git index-pack` and `--fix-thin` wrappers.
+- [x] Add focused pack/delta unit tests.
 - [ ] Retire bundle producer/consumer path.
 
 ## WS-03 Channels And Rollouts
 
-- [ ] Add `registry::channel` module.
+- [x] Add `registry::channel` module.
 - [ ] Add `channel` config field and `TrackingMode::Channel`.
 - [ ] Replace creation-token state with semver floor, bucket, and retained releases.
-- [ ] Implement bucket selection, bucket hex rendering, and probe-forward order.
-- [ ] Implement semver floor anti-rollback check.
+- [x] Implement bucket selection, bucket hex rendering, and probe-forward order.
+- [x] Implement semver floor anti-rollback check.
 - [ ] Implement partition map/frontier helpers.
-- [ ] Add focused channel/state unit tests.
+- [x] Add focused channel/state unit tests.
 - [ ] Add `apr channel init/advance/status` command surface.
 
 ## WS-04 Signing And Trust
 
-- [ ] Add `registry::keys` module for committed `keys.toml`.
+- [x] Add `registry::keys` module for committed `keys.toml`.
 - [ ] Remove in-repo `registry.toml` signing public-key field.
-- [ ] Add `git verify-tag` helper.
-- [ ] Add tag-object parser and name-binding checks.
+- [x] Add `git verify-tag` helper.
+- [x] Add tag-object parser and name-binding checks.
 - [ ] Add tag-chain verification helper.
 - [ ] Rewrite producer tag/sign paths to create signed tag objects.
 - [ ] Add rotation/revocation helpers and tests.
