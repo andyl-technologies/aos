@@ -8,8 +8,21 @@
 }: let
   fetchurl = lib.fetchurl;
 
-  # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH)
-  mkDerivation = stdenv.mkDerivation;
+  # Raw stdenv.mkDerivation, without nuke-references injected. Used by
+  # nuke-references itself (to break the self-referential cycle).
+  rawMkDerivation = stdenv.mkDerivation;
+
+  # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
+  # wrapped to inject nuke-references into every package's buildDeps so
+  # the scrubPhase from lib/derivations.nix can rewrite build-toolchain
+  # store paths out of the output (matches nixpkgs nuke-refs idiom).
+  mkDerivation = args:
+    rawMkDerivation (
+      args
+      // {
+        buildDeps = (args.buildDeps or []) ++ [self.nuke-references];
+      }
+    );
 
   # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
   bootstrapTools = stdenv.cc;
@@ -23,6 +36,30 @@
       args
       // {
         cargo = self.rust;
+        inherit bootstrapTools;
+        extraPaths = [
+          stdenv.coreutils
+          stdenv.tar
+          stdenv.gzip
+          stdenv.bash
+        ];
+        extraLibPaths =
+          [
+            self.openssl
+            self.zlib
+          ]
+          ++ (args.extraLibPaths or []);
+      }
+    );
+
+  fetchCargoVendor = args:
+    lib.fetchCargoVendor (
+      args
+      // {
+        cargo = self.rust;
+        python3 = self.python3;
+        git = self.git;
+        caCertificates = self.ca-certificates;
         inherit bootstrapTools;
         extraPaths = [
           stdenv.coreutils
@@ -307,11 +344,19 @@
       # --- Plumbing ---
       inherit mkDerivation fetchurl lib;
       inherit mkCargoPackage mkGoPackage mkBazelPackage;
-      inherit fetchCargoDeps fetchGoModules fetchBazelDeps;
+      inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchBazelDeps;
       inherit bootstrapTools;
       fakeHash = lib.fakeHash;
       # --- Build infrastructure ---
       inherit stdenv;
+
+      # nuke-references uses the raw (un-wrapped) mkDerivation so it can't
+      # depend on itself. Every other package gets nuke-references injected
+      # into buildDeps automatically via the wrapped mkDerivation above.
+      nuke-references = import ../lib/build-support/nuke-references {
+        mkDerivation = rawMkDerivation;
+        inherit (self) bash gawk sed;
+      };
     }
     // discoverPackages ./.
     // {
@@ -329,6 +374,13 @@
       gcc = stdenv.gcc;
       glibc = stdenv.glibc;
       binutils = stdenv.binutils;
+      cc = stdenv.cc;
+      # The unwrapped gcc-14.3.0-stage2. `pkgs.gcc` is the wrapped
+      # gcc-14.3.0-wrapped; the perl Config scrub needs to substitute
+      # and block the unwrapped one, since that's what Configure
+      # records via specs/PATH.
+      gccUnwrapped = stdenv.gccStage2;
+      getent = lib.getOutput "getent" stdenv.glibc;
       bash = stdenv.bash;
       coreutils = stdenv.coreutils;
       gnumake = stdenv.gnumake;

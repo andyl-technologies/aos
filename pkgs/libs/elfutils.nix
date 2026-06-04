@@ -36,6 +36,10 @@ in
     ];
     propagatedDeps = [];
 
+    # elfutils still uses flexible-array idioms incompatible with
+    # -fstrict-flex-arrays=3.
+    hardeningDisable = ["strictflexarrays3"];
+
     phases = [
       {
         name = "unpack";

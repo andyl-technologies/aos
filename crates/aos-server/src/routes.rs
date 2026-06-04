@@ -16,6 +16,8 @@ use tokio::process::Command;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
+use aos_core::nix::aos_nix_env;
+
 use crate::access;
 use crate::auth::{self, AuthClaims, AuthResult};
 use crate::build::BuildManager;
@@ -497,6 +499,7 @@ async fn upload_path_handler(
 /// Import NAR data via `nix-store --import` and return the imported store path.
 async fn import_nar(data: &[u8]) -> Result<String, Response> {
     let mut child = Command::new("nix-store")
+        .envs(aos_nix_env())
         .arg("--import")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1026,6 +1029,7 @@ async fn gc_handler(
     // Step 3: Run `nix-store --gc` when collect is true and not a dry run.
     let collected = if body.collect && !body.dry_run {
         match Command::new("nix-store")
+            .envs(aos_nix_env())
             .arg("--gc")
             .arg("--print-freed")
             .stdout(Stdio::piped())

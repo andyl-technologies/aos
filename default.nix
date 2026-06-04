@@ -238,7 +238,31 @@ in {
       inherit pkgs lib;
       system = serverSystem;
     };
-    build = import ./lib/testing/build.nix {inherit pkgs lib;};
+    build = let
+      critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
+      hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
+      kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+    in {
+      inherit critical-pkgs hardening-probe kernel-config;
+      # Single target that pulls in the whole build-check group.
+      all = pkgs.mkDerivation {
+        pname = "aos-build-checks-all";
+        version = "0";
+        src = null;
+        buildDeps =
+          [critical-pkgs kernel-config]
+          ++ builtins.attrValues hardening-probe;
+        phases = [
+          {
+            name = "check";
+            script = ''
+              mkdir -p $out
+              echo "PASS" > $out/result
+            '';
+          }
+        ];
+      };
+    };
     tla = import ./lib/testing/tla.nix {inherit pkgs lib;};
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};

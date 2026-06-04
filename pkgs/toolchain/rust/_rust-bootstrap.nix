@@ -48,7 +48,7 @@ in
       prevRust
       openssl
     ];
-    runtimeDeps = [zlib];
+    runtimeDeps = [zlib openssl];
 
     phases = [
       {
@@ -138,7 +138,7 @@ in
                   python3 x.py install
 
                   # No patchelf available — use wrapper scripts (same pattern as rust-1_74.nix)
-                  LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${zlib}/lib"
+                  LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${zlib}/lib:${openssl}/lib"
 
                   for f in $out/bin/*; do
                     if [ -f "$f" ] && [ ! -L "$f" ]; then

@@ -4,7 +4,7 @@
 ##! Usage: `let lib = import ./lib { system = "aarch64-linux"; }; in ...`
 ##!
 ##! The `system` parameter is threaded through to all derivation builders
-##! (mkDerivation, mkShell, fetchurl, fetchgit, fetchCargoDeps, fetchGoModules)
+##! (mkDerivation, mkShell, fetchurl, fetchgit, fetchCargoDeps, fetchCargoVendor, fetchGoModules)
 ##! so that every package targets the correct platform.
 ##!
 ##! The optional `bash` parameter (a derivation) causes all builders to use
@@ -100,6 +100,7 @@
 
   platformMod = import ./platform.nix;
   derivations = import ./derivations.nix {inherit system bash;};
+  hardening = import ./hardening.nix;
   checks = import ./testing/checks.nix;
 
   # Format helpers (nixpkgs' `pkgs.formats` analog). Each entry in this
@@ -152,6 +153,7 @@
         fetchurl
         fetchgit
         fetchCargoDeps
+        fetchCargoVendor
         fetchGoModules
         fetchBazelDeps
         fakeHash
@@ -170,7 +172,9 @@
       # `trivial //` spread above, so no extra inherit is needed for it).
       inherit
         (derivations)
+        getOutput
         getBin
+        getDev
         getExe
         getExe'
         ;
@@ -187,6 +191,11 @@
 
       # Check composition helper (pure data, no deps) for use in modules
       inherit (checks) composeChecks;
+
+      # Compiler-hardening token vocabulary and set algebra. Used by the
+      # stdenv to bake the cc-wrapper's default policy and by derivations.nix
+      # to compute each package's effective AOS_HARDENING_ENABLE.
+      inherit hardening;
 
       # Structured-config format helpers. Each factory takes `{ lib,
       # pkgs, … }` at call time and returns `{ type; generate; }`.

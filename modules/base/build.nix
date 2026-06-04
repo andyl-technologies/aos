@@ -19,18 +19,17 @@
   lib,
   ...
 }: let
-  # --- Render /etc files ---
-  etcScript = lib.concatStringsSep "\n" (
-    lib.mapAttrsToList (
-      name: entry:
-        if entry ? source
-        then "mkdir -p $out/etc/$(dirname ${name})\nln -sfn ${entry.source} $out/etc/${name}"
-        else if entry ? text
-        then "mkdir -p $out/etc/$(dirname ${name})\ncat > $out/etc/${name} << 'ETCEOF'\n${entry.text}\nETCEOF"
-        else "# skipping ${name} (no text or source attribute)"
-    )
-    config.environment.etc
-  );
+  # --- composefs / EROFS inputs (spec v12 §5.3) ---
+  #
+  # Mirror the upstream nixpkgs etc.nix derivation set:
+  #   etc'         = every enabled environment.etc entry.
+  #   etcHardlinks = the subset with an octal mode — those need their
+  #                  content materialised in the basedir (the rest
+  #                  ship as composefs symlinks pointing directly into
+  #                  /nix/store from the metadata image).
+  etc' = lib.filter (e: e.enable) (lib.attrValues config.environment.etc);
+  etcHardlinks =
+    lib.filter (e: e.mode != "symlink" && e.mode != "direct-symlink") etc';
 
   makeBinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
   makeSbinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/sbin") pkgsList);
@@ -90,14 +89,138 @@ in {
       '';
     };
 
-    ## Files to install in /etc (text or source symlink).
+    ## Files to install in /etc.
+    #
+    # SPDX-License-Identifier: MIT
+    # Ported from nixpkgs:
+    #   nixos/modules/system/etc/etc.nix:120-235.
+    # Copyright (c) 2003-2026 Eelco Dolstra and the Nixpkgs/NixOS contributors.
+    #
+    # AOS port differs from upstream: the user/group string fields are
+    # omitted (the composefs dump consumes numeric uid/gid only); the
+    # mode type catches typos (`"sym-link"`, `"0o644"`) at eval time.
     environment.etc = lib.mkOption {
-      type = lib.types.attrsOf lib.types.anything;
       default = {};
+      type = lib.types.attrsOf (lib.types.submodule ({
+        name,
+        config,
+        ...
+      }: {
+        options = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = ''
+              Whether this `/etc` entry is generated. Allows a
+              downstream module to suppress an upstream-declared entry.
+            '';
+          };
+          target = lib.mkOption {
+            type = lib.types.str;
+            default = name;
+            description = ''
+              Path under `/etc` at which the entry appears. Defaults
+              to the attribute name; the explicit form is useful when
+              the attribute name can't be a valid path (e.g. when
+              keying by a sanitised identifier).
+            '';
+          };
+          text = lib.mkOption {
+            type = lib.types.nullOr lib.types.lines;
+            default = null;
+            description = ''
+              Inline file content. When `text` is set, `source` is
+              derived from it via `pkgs.writeTextFile`. If neither
+              `text` nor `source` is set, evaluation fails with the
+              standard module-system error "option `source' is not
+              defined". Setting both is unsupported (the derived
+              `source` and the user-provided `source` would merge via
+              `lib.types.path`'s `lastValue` semantics; the result is
+              well-defined but rarely what you want).
+            '';
+          };
+          source = lib.mkOption {
+            type = lib.types.path;
+            description = ''
+              On-disk path that the entry materialises. Typically a
+              `/nix/store` path produced by a derivation. Behaviour at
+              build time depends on `mode` and on whether `source` is
+              a regular file or a directory — see `mode` below.
+            '';
+          };
+          mode = lib.mkOption {
+            type =
+              lib.types.either
+              (lib.types.enum ["symlink" "direct-symlink"])
+              (lib.types.strMatching "[0-7]{3,4}");
+            default = "symlink";
+            description = ''
+              How the entry is materialised in the system EROFS image
+              that AOS uses as the bottom lower of the `/etc` overlay.
+
+              - `"symlink"` (default): when `source` is a regular file,
+                emit a single composefs symlink at `target` pointing
+                at `source`. When `source` is a directory, recurse:
+                `target` becomes a real directory in the EROFS image
+                and every descendant becomes its own composefs entry.
+                The recursion is what allows another lower (e.g.
+                ignition's per-generation writes) to merge files into
+                the same directory at runtime — overlayfs can only
+                merge two directory inodes, not a directory and a
+                symlink.
+              - `"direct-symlink"`: always emit a single composefs
+                symlink entry, regardless of `source`'s on-disk type
+                — no recursion. Use this only when you explicitly
+                want `target` to be a symlink-to-directory in the
+                EROFS image.
+              - `"0xxx"` / `"0xxxx"` (3- or 4-digit octal): copy the
+                source into the EROFS image's content basedir at
+                build time, embed only the metadata (mode, uid, gid)
+                in the EROFS image itself, and serve content from the
+                basedir via overlayfs's metacopy machinery. Use this
+                when you need a specific file mode — e.g. `"0600"`
+                for a PAM secret.
+            '';
+          };
+          uid = lib.mkOption {
+            type = lib.types.int;
+            default = 0;
+            description = ''
+              Numeric owner UID encoded in the EROFS metadata image.
+              Takes effect only for octal `mode` values; symlink
+              entries ignore ownership.
+            '';
+          };
+          gid = lib.mkOption {
+            type = lib.types.int;
+            default = 0;
+            description = ''
+              Numeric owner GID encoded in the EROFS metadata image.
+              Same caveats as `uid`.
+            '';
+          };
+        };
+        config = let
+          safe = "etc-" + lib.replaceStrings ["/"] ["-"] name;
+          basename = baseNameOf name;
+          # AOS's writeTextFile produces a directory output (stdenv/
+          # setup.sh pre-creates $out as a dir, then cp puts the file
+          # inside). Use destination="/<basename>" and reference the
+          # inner path. Mirrors the pattern at
+          # modules/roles/default.nix:75-83.
+          textDrv = pkgs.writeTextFile {
+            name = safe;
+            text = config.text;
+            destination = "/${basename}";
+          };
+        in {
+          source = lib.mkIf (config.text != null) "${textDrv}/${basename}";
+        };
+      }));
       description = ''
-        Set of files to be installed in /etc. Each attribute maps a relative
-        path under /etc to either { text = "..."; } for inline content or
-        { source = /path; } for a symlink.
+        Set of files to be installed in `/etc`. Each entry is keyed
+        by its target path under `/etc` and carries a typed submodule
+        — see `target` / `source` / `text` / `mode` / `uid` / `gid`.
       '';
     };
 
@@ -114,6 +237,20 @@ in {
           The top-level system derivation. Contains /etc, systemd units,
           and symlinks to all system packages. This is what the image builder
           and update system reference.
+        '';
+      };
+
+      ## The `${toplevel}/activate <gen>` script.
+      activateScript = lib.mkOption {
+        type = lib.types.package;
+        description = ''
+          A single executable bash script, shipped as
+          `''${toplevel}/activate`. Invoked by apm during install /
+          upgrade / rollback as `activate <gen-number>`: it rebuilds
+          this generation's `/etc` composefs overlay on the live
+          system, runs daemon reconciliation, and swaps the new `/etc`
+          in atomically. Built from `modules/base/activate.sh.in` with
+          its `@tool@` placeholders substituted for store paths.
         '';
       };
 
@@ -140,10 +277,232 @@ in {
           truth governs the system search path.
         '';
       };
+
+      ## EROFS data-only content basedir for octal-mode environment.etc
+      ## entries. Mounted as the `datadir+=` source under the /etc
+      ## overlay (spec v12 §5.3). Symlink-mode entries are not
+      ## materialised here — they ship as composefs symlinks pointing
+      ## directly into /nix/store from the metadata image.
+      etcBasedir = lib.mkOption {
+        type = lib.types.package;
+        description = ''
+          The data-only lower of the `/etc` composefs overlay. Holds
+          file content for every `environment.etc` entry whose `mode`
+          is a 3- or 4-digit octal value (i.e. needs custom
+          permissions). Mounted at `/run/etc/system-<gen>/content`
+          via overlayfs `datadir+=`.
+        '';
+      };
+
+      ## composefs-dump(5) text describing the EROFS metadata image's
+      ## inode table. First-class output so the merge-safety check
+      ## (etcMergeSafetyCheck) can inspect it as plain text without
+      ## mounting the EROFS in the Nix sandbox.
+      etcDump = lib.mkOption {
+        type = lib.types.package;
+        description = ''
+          The composefs-dump(5) text describing the EROFS metadata
+          image: one line per inode (path + filetype/mode + uid + gid
+          + payload). Consumed by `etcMetadataImage` and by
+          `etcMergeSafetyCheck`. Plain text, no privileged mount
+          required.
+        '';
+      };
+
+      ## EROFS image that becomes the system metadata lower of /etc.
+      etcMetadataImage = lib.mkOption {
+        type = lib.types.package;
+        description = ''
+          The EROFS image carrying the metadata (modes, ownership,
+          symlink targets, directory structure) of every
+          `environment.etc` entry. Mounted read-only at
+          `/run/etc/system-<gen>/metadata` and stacked above
+          `etcBasedir` via overlayfs `metacopy=on` + `redirect_dir=on`.
+        '';
+      };
+
+      ## Build-time invariant check between every role's storage
+      ## writes and the EROFS image (spec v12 §5.7).
+      etcMergeSafetyCheck = lib.mkOption {
+        type = lib.types.package;
+        description = ''
+          A derivation that asserts (at build time) the merge-safety
+          invariants between each enabled role's ignition
+          `storage.{links,files,directories}` writes and the system
+          EROFS image: every parent directory of a role write must be
+          absent or a real directory in EROFS, and every `links`/
+          `files` write path itself must be absent. Forces evaluation
+          of `etcDump`.
+        '';
+      };
     };
   };
 
   config = {
+    # --- composefs lower for /etc (spec v12 §5.3) --------------------
+    #
+    # `etcBasedir` materialises octal-mode entries as regular files
+    # under a flat tree. Symlink-mode entries don't appear here — the
+    # composefs metadata image embeds those as symlinks pointing
+    # directly into /nix/store. Mirrors nixos/modules/system/etc/
+    # etc.nix:367-388 (MIT, Eelco Dolstra et al.).
+    system.build.etcBasedir = pkgs.runCommand "etc-basedir" {} ''
+      set -euo pipefail
+
+      makeEtcEntry() {
+        src="$1"
+        target="$2"
+
+        mkdir -p "$out/$(dirname "$target")"
+        cp "$src" "$out/$target"
+      }
+
+      mkdir -p "$out"
+      ${lib.concatMapStringsSep "\n" (
+          entry:
+            lib.escapeShellArgs [
+              "makeEtcEntry"
+              "${entry.source}"
+              entry.target
+            ]
+        )
+        etcHardlinks}
+    '';
+
+    # `etcDump` runs build-composefs-dump.py against the JSON
+    # description of every enabled entry. Plain text output so the
+    # merge-safety check (§5.7) can inspect it without mounting EROFS.
+    system.build.etcDump = let
+      etcJson = pkgs.writeTextFile {
+        name = "etc-json";
+        text = builtins.toJSON etc';
+        destination = "/etc.json";
+      };
+    in
+      pkgs.runCommand "etc-dump" {} ''
+        # AOS stdenv pre-creates $out as a directory (stdenv/setup.sh).
+        # The dump is a single text file, so drop the dir and write
+        # straight to $out.
+        rmdir "$out"
+        ${pkgs.python3}/bin/python3 \
+          ${../../pkgs/system/build-composefs-dump.py} \
+          ${etcJson}/etc.json > $out
+      '';
+
+    # `etcMetadataImage` is the EROFS image consumed by overlayfs
+    # `lowerdir+=`. The `fsck.erofs` sanity check is wired in once
+    # `pkgs.erofs-utils` lands (delegated to a separate task; see
+    # spec v12 step 3).
+    system.build.etcMetadataImage = pkgs.runCommand "etc-metadata.erofs" {} ''
+      # AOS stdenv pre-creates $out as a directory; the EROFS image is
+      # a single file, so drop the dir first.
+      rmdir "$out"
+      ${pkgs.composefs}/bin/mkcomposefs --from-file ${config.system.build.etcDump} $out
+      ${pkgs.erofs-utils}/bin/fsck.erofs $out
+    '';
+
+    # `etcMergeSafetyCheck` — spec v12 §5.7. Walks every role's
+    # ignition `storage.{links,files,directories}` writes and asserts:
+    #   (1) every parent directory must be absent or a real directory
+    #       in the EROFS image (composefs filetype `4`);
+    #   (2) every `links`/`files` self-path must be absent in EROFS.
+    # Pure text inspection of `etcDump`; no privileged mount required.
+    system.build.etcMergeSafetyCheck = let
+      # Eval-time path enumeration. parentsOf walks each path from
+      # the root toward the leaf, returning every intermediate dir
+      # (but not the leaf itself). For "/etc/systemd/system/foo" we
+      # get ["/etc", "/etc/systemd", "/etc/systemd/system"].
+      parentsOf = p: let
+        parts = lib.splitString "/" (lib.removePrefix "/" p);
+      in
+        builtins.genList (
+          i: "/" + lib.concatStringsSep "/" (lib.take (i + 1) (lib.init parts))
+        ) (builtins.length parts - 1);
+
+      pathsAndParents = role: let
+        s = role.ignitionConfig.storage or {};
+        allPaths =
+          builtins.map (l: l.path) (s.links or [])
+          ++ builtins.map (f: f.path) (s.files or [])
+          ++ builtins.map (d: d.path) (s.directories or []);
+        dirSelves = builtins.map (d: d.path) (s.directories or []);
+      in
+        lib.concatMap parentsOf allPaths ++ dirSelves;
+
+      selfAbsent = role: let
+        s = role.ignitionConfig.storage or {};
+      in
+        builtins.map (l: l.path) (s.links or [])
+        ++ builtins.map (f: f.path) (s.files or []);
+
+      stripEtc = p: lib.removePrefix "/etc" p;
+
+      allDirs = lib.unique (
+        lib.concatLists (
+          lib.mapAttrsToList (
+            _: role: builtins.map stripEtc (pathsAndParents role)
+          )
+          (config.aos.roles or {})
+        )
+      );
+
+      allSelves = lib.unique (
+        lib.concatLists (
+          lib.mapAttrsToList (
+            _: role: builtins.map stripEtc (selfAbsent role)
+          )
+          (config.aos.roles or {})
+        )
+      );
+    in
+      pkgs.runCommand "etc-merge-safety" {
+        hazardDirs = lib.concatStringsSep "\n" allDirs;
+        hazardAbsent = lib.concatStringsSep "\n" allSelves;
+        passAsFile = ["hazardDirs" "hazardAbsent"];
+        dump = config.system.build.etcDump;
+      } ''
+        set -euo pipefail
+
+        # Pass 1: every hazardDirs entry must be absent or directory
+        # (composefs filetype `4`).
+        while IFS= read -r p; do
+          [ -z "$p" ] && continue
+          if ! ${pkgs.gawk}/bin/awk \
+                -v p="$p" \
+                'BEGIN { found = 0 }
+                 $1 == p {
+                   if (substr($3, 1, 1) != "4") {
+                     printf "merge hazard: %s exists in EROFS image but is not a directory (filetype %s)\n", \
+                            p, substr($3, 1, 2) > "/dev/stderr";
+                     found = 1; exit;
+                   }
+                 }
+                 END { exit found }' \
+                "$dump"; then
+            exit 1
+          fi
+        done < "$hazardDirsPath"
+
+        # Pass 2: every hazardAbsent entry must be absent.
+        while IFS= read -r p; do
+          [ -z "$p" ] && continue
+          if ! ${pkgs.gawk}/bin/awk \
+                -v p="$p" \
+                'BEGIN { found = 0 }
+                 $1 == p {
+                   printf "merge hazard: %s exists in EROFS image (filetype %s); a role would silently shadow it\n", \
+                          p, substr($3, 1, 2) > "/dev/stderr";
+                   found = 1; exit;
+                 }
+                 END { exit found }' \
+                "$dump"; then
+            exit 1
+          fi
+        done < "$hazardAbsentPath"
+
+        touch "$out"
+      '';
+
     # Enforce `config.assertions` and surface `config.warnings` at
     # `system.build.toplevel` construction time. Matches the nixpkgs
     # convention (`nixos/modules/system/activation/top-level.nix`):
@@ -180,55 +539,47 @@ in {
           phases = [
             {
               name = "build-toplevel";
+              # Named-output layout per spec v12 §1. No more
+              # `${toplevel}/etc` tree — the system /etc content lives
+              # entirely in the composefs metadata image plus basedir,
+              # mounted as the bottom lower of the /etc overlay at
+              # boot. Consumers read named-output paths directly:
+              #   etc-metadata.erofs, etc-basedir/, etc-dump,
+              #   systemd-units/, ignition-roles/, os-release,
+              #   meta/{package-name,version}, kernel, initrd.
+              # `nix-support/etc-merge-safety-check` forces the
+              # merge-safety check whenever the toplevel materialises.
+              # `activate` is the live install/upgrade/rollback driver
+              # (`activate <gen>`); apm invokes it after swinging the
+              # `current → gen-N` profile pointer.
               script = ''
-                mkdir -p $out/etc/aos $out/bin $out/sbin $out/etc/systemd
+                mkdir -p $out/meta $out/nix-support
 
-                # Render /etc files
-                ${etcScript}
+                ln -sfn ${config.system.build.etcMetadataImage} $out/etc-metadata.erofs
+                ln -sfn ${config.system.build.etcBasedir} $out/etc-basedir
+                ln -sfn ${config.system.build.etcDump} $out/etc-dump
+                ln -sfn ${config.system.build.systemdSystemUnits} $out/systemd-units
+                ln -sfn ${config.system.build.ignitionRolesBundle} $out/ignition-roles
+                ln -sfn ${config.environment.etc."os-release".source} $out/os-release
+                ln -sfn ${config.system.build.kernel} $out/kernel
+                ln -sfn ${config.system.build.initrd} $out/initrd
+                ln -sfn ${config.system.build.activateScript} $out/activate
 
-                # Stage the typed systemd unit directory produced by
-                # modules/systemd/system.nix's `generateUnits` call.
-                # Replaces the old renderUnit/renderTimer heredoc
-                # pipeline (spec v3.1 stage 4).
-                #
-                # Materialise as a real directory of symlinks rather
-                # than a single symlink to the system-units output.
-                # First-boot ignition writes role units to
-                # /var/etc/systemd/system/ (via the BindPaths in
-                # ignition-files.service), and etc-overlay-setup then
-                # mounts /etc as `lowerdir=/var/etc:/etc.lower`. If
-                # /etc.lower/systemd/system is a single symlink and
-                # /var/etc/systemd/system is a real directory, overlayfs
-                # can't merge the two — at a path where the lowers
-                # disagree on inode type, the higher-priority lower's
-                # type wins, so the entire system-units symlink target
-                # gets shadowed (sshd, dbus, networkd, chrony, nftables
-                # all become invisible). Materialising as a real
-                # directory of symlinks here keeps both lowers
-                # type-compatible and lets overlayfs do a proper
-                # name-by-name merge — the system's units stay visible
-                # alongside whatever the role's ignition merge added.
-                #
-                # `cp -RP` preserves both absolute symlinks (top-level
-                # units → /nix/store/<unit-text>/<name>.service) and
-                # relative symlinks (`*.wants/foo.service → ../foo.service`)
-                # because the directory layout under
-                # `${"\${systemdSystemUnits}"}` is reproduced exactly,
-                # and the wants/requires/upholds dirs themselves
-                # generateUnits already creates as real directories.
-                mkdir -p $out/etc/systemd/system
-                cp -RP ${config.system.build.systemdSystemUnits}/. $out/etc/systemd/system/
+                # `aos-seed-profiles.service` reads these on first boot
+                # to populate `state.json`. Plain text — `read_meta`
+                # in the service script strips the trailing newline.
+                printf '%s' "${config.aos.system.name}" > $out/meta/package-name
+                printf '%s' "${config.aos.system.version}" > $out/meta/version
 
-                # Create system PATH manifest
-                cat > $out/etc/aos/system-path << 'PATHEOF'
-                ${makeBinPath config.environment.systemPackages}
-                PATHEOF
+                # Force the build-time merge-safety check by pulling
+                # its derivation into the toplevel's closure.
+                ln -sfn ${config.system.build.etcMergeSafetyCheck} $out/nix-support/etc-merge-safety-check
 
-                # Symlink /sbin/init to systemd
-                ln -sfn ${pkgs.systemd}/lib/systemd/systemd $out/sbin/init
-
-                # Record the system packages for closure tracking
-                mkdir -p $out/nix-support
+                # Closure tracking: list every systemPackage as a
+                # /nix/store path so Nix's reference scanner pulls
+                # them into the toplevel's closure (and thereby the
+                # rootfs's, via `allClosures = [toplevel kernel] ++
+                # extraClosures` in lib/build/rootfs.nix).
                 ${lib.concatStringsSep "\n" (
                   builtins.map (
                     p: "echo ${builtins.toString p} >> $out/nix-support/system-packages"
@@ -244,6 +595,28 @@ in {
           };
         })
       );
+
+    # Substitute the `@tool@` placeholders in activate.sh.in for store
+    # paths. AOS's stdenv has no `substituteAll`, so this uses the
+    # `pkgs.runCommand` + `pkgs.sed` idiom. The body is kept in a
+    # committed `.sh.in` file (not an inline Nix string) so the script's
+    # shell `${N}` / `${prev_gen:-}` expansions don't collide with Nix's
+    # own `${…}` interpolation. `@apm@` resolves to `pkgs.aos` (the apm
+    # binary); this does not create a cycle since `pkgs.aos` is a Rust
+    # binary that does not depend on the toplevel.
+    system.build.activateScript = pkgs.runCommand "aos-activate" {} ''
+      # AOS stdenv pre-creates $out as a directory; this output is a
+      # single executable file, so drop the dir and write to $out.
+      rmdir "$out"
+      ${pkgs.sed}/bin/sed \
+        -e "s|@bash@|${pkgs.bash}|g" \
+        -e "s|@coreutils@|${pkgs.coreutils}|g" \
+        -e "s|@util-linux@|${pkgs.util-linux}|g" \
+        -e "s|@ignition@|${pkgs.ignition}|g" \
+        -e "s|@apm@|${pkgs.aos}|g" \
+        ${./activate.sh.in} > "$out"
+      chmod +x "$out"
+    '';
 
     system.build.kernel = pkgs.linux;
     system.build.systemPath =
@@ -274,11 +647,6 @@ in {
         export PATH="${config.system.build.systemPath}"
         export PAGER=less
 
-        if [ -z "$HOME" ] && [ -f /etc/passwd ]; then
-          HOME=$(${pkgs.gawk}/bin/awk -F: -v u="$(${pkgs.coreutils}/bin/id -un)" '$1==u{print $6}' /etc/passwd)
-          export HOME
-        fi
-
         if [ -f /etc/profile.local ]; then
           . /etc/profile.local
         fi
@@ -293,6 +661,19 @@ in {
       text = ''
         if [ -z "$__ETC_PROFILE_DONE" ]; then
           . /etc/profile
+        fi
+
+        if [ -n "$PS1" ]; then
+          if [ "$TERM" != "dumb" ]; then
+            PROMPT_COLOR="1;31m"
+            ((UID)) && PROMPT_COLOR="1;32m"
+            PS1="\n\[\033[$PROMPT_COLOR\][\[\e]0;\u@\h: \w\a\]\u@\h:\w]\\$\[\033[0m\] "
+            if [ "$TERM" = "xterm" ]; then
+              PS1="\[\033]2;\h:\u:\w\007\]$PS1"
+            fi
+          fi
+
+          alias ls='ls -NFh --group-directories-first --color=auto'
         fi
       '';
     };

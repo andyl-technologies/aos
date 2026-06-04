@@ -1,0 +1,19 @@
+[package]
+name = "aos-systemd"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+# p2p + bus-impl let the unit tests stand up an in-process FakeSystemd over a
+# UnixStream pair (no real D-Bus daemon). test-util keeps tokio timers fast.
+zbus = { version = "5", default-features = false, features = ["tokio", "p2p", "bus-impl"] }
+tokio = { workspace = true, features = ["test-util"] }

@@ -45,6 +45,28 @@ impl NixRunner {
     /// path.  An optional `out_link` places the result symlink at the given
     /// path instead of the default `./result`.
     pub fn build(&self, attr: &str, out_link: Option<&str>) -> Result<PathBuf> {
+        self.build_inner(attr, out_link, None)
+    }
+
+    /// Like [`build`](Self::build) but also passes `--max-jobs <n>` to
+    /// `nix-build` so derivations within this build run in parallel up
+    /// to `n` at a time. Used by `aos test` to drive the test layer at
+    /// host parallelism without depending on system-wide `nix.conf`.
+    pub fn build_with_max_jobs(
+        &self,
+        attr: &str,
+        out_link: Option<&str>,
+        max_jobs: usize,
+    ) -> Result<PathBuf> {
+        self.build_inner(attr, out_link, Some(max_jobs))
+    }
+
+    fn build_inner(
+        &self,
+        attr: &str,
+        out_link: Option<&str>,
+        max_jobs: Option<usize>,
+    ) -> Result<PathBuf> {
         let mut args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
             "-A".to_string(),
@@ -56,6 +78,11 @@ impl NixRunner {
             args.push(link.to_string());
         } else {
             args.push("--no-out-link".to_string());
+        }
+
+        if let Some(jobs) = max_jobs {
+            args.push("--max-jobs".to_string());
+            args.push(jobs.to_string());
         }
 
         let output = self.run_nix("nix-build", &args)?;

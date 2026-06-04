@@ -16,12 +16,15 @@ pub mod source;
 pub mod store;
 pub mod sysroot;
 pub mod sysroot_lock;
+pub mod test_systemd_client;
 pub mod types;
+pub mod unit_diff;
 pub mod update;
 pub mod upgrade;
 pub mod verify;
 
 use std::fs;
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
@@ -252,6 +255,80 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: RegistryCommand,
     },
+    /// Hidden: pre-/etc-swap daemon reconcile planning.
+    ///
+    /// Called only from the toplevel's `activate` script while it holds the
+    /// switch lock. Diffs live `/etc` against the candidate overlay, stops
+    /// units that must be torn down under their old definitions, and prints a
+    /// race-free plan path for the post-swap phase.
+    #[command(name = "activate-pre-etc-swap", hide = true)]
+    ActivatePreEtcSwap {
+        #[arg(long = "gen")]
+        generation: u32,
+        #[arg(long)]
+        candidate_etc: PathBuf,
+    },
+    /// Hidden: post-/etc-swap daemon reconcile apply.
+    ///
+    /// Called only from the toplevel's `activate` script while it holds the
+    /// switch lock. Reads the pre-swap plan, reloads systemd against the new
+    /// `/etc`, applies reload/restart/start actions, and runs the health gate.
+    #[command(name = "activate-post-etc-swap", hide = true)]
+    ActivatePostEtcSwap {
+        #[arg(long)]
+        plan: PathBuf,
+    },
+    /// Hidden: exercise the `aos_systemd::SystemdClient` directly.
+    ///
+    /// Test vehicle for the fleet test at
+    /// `tests/fleet/apm-systemd-client.nix`. The `_` prefix marks it
+    /// internal — hidden from `--help`, no stability promise, may break
+    /// between versions. It talks to systemd over D-Bus and needs no apm
+    /// config, so `run()` dispatches it before `ApmConfig::load`.
+    #[command(name = "_test-systemd-client", hide = true)]
+    TestSystemdClient {
+        #[command(subcommand)]
+        op: TestSystemdClientOp,
+    },
+}
+
+/// Operations for the hidden `apm _test-systemd-client` subcommand. Each maps
+/// one-for-one onto a [`aos_systemd::SystemdClient`] method; the handler in
+/// [`test_systemd_client`] serialises the result to JSON on stdout.
+#[derive(Subcommand)]
+pub enum TestSystemdClientOp {
+    /// Start a unit (mode "replace") and wait for its job to settle.
+    Start { unit: String },
+    /// Stop a unit and wait for its job to settle.
+    Stop { unit: String },
+    /// Restart a unit and wait for its job to settle.
+    Restart { unit: String },
+    /// Reload a unit (runs `ExecReload=`) and wait for its job to settle.
+    Reload { unit: String },
+    /// Start a unit in "isolate" mode and wait for its job to settle.
+    Isolate { unit: String },
+    /// `Manager.Reload()` — the D-Bus equivalent of `systemctl daemon-reload`.
+    DaemonReload,
+    /// Clear the failed state of a single unit (`--unit`) or all units.
+    ResetFailed {
+        #[arg(long)]
+        unit: Option<String>,
+    },
+    /// Whether a unit's `ActiveState == "active"`.
+    IsActive { unit: String },
+    /// List units matching an optional glob `--pattern` / `--state` filter.
+    ListUnits {
+        #[arg(long)]
+        pattern: Option<String>,
+        #[arg(long)]
+        state: Option<String>,
+    },
+    /// Read a single `org.freedesktop.systemd1.Unit` property.
+    Property { unit: String, name: String },
+    /// Scan for failed (and failed-and-auto-restarting) units.
+    FailedUnits,
+    /// Drain late `JobRemoved` signals until the bus goes quiet.
+    Settle,
 }
 
 impl PackageCommand {
@@ -699,6 +776,32 @@ pub async fn run(
     yes: bool,
     printer: &Printer,
 ) -> Result<()> {
+    // The hidden systemd-client test vehicle talks to systemd over D-Bus and
+    // needs no apm config or profile. Dispatch it before `ApmConfig::load`
+    // below so it works on a system with no apm state (mirrors how `main.rs`
+    // early-returns `Completions`/`Serve` before building the NixRunner).
+    if let PackageCommand::TestSystemdClient { op } = command {
+        return test_systemd_client::run(op, printer).await;
+    }
+
+    // The hidden activate split runs during the activate script while that
+    // script holds the switch lock. These paths talk to systemd over D-Bus,
+    // need no apm config, and must return their own 0/1/2 exit codes (which
+    // `main.rs` would otherwise flatten to 1).
+    if let PackageCommand::ActivatePreEtcSwap {
+        generation,
+        candidate_etc,
+    } = command
+    {
+        let code =
+            sysroot::activate_pre_etc_swap(*generation, candidate_etc, dry_run, printer).await;
+        std::process::exit(code);
+    }
+    if let PackageCommand::ActivatePostEtcSwap { plan } = command {
+        let code = sysroot::activate_post_etc_swap(plan, printer).await;
+        std::process::exit(code);
+    }
+
     let system = command.is_system();
     let scope = if system {
         ProfileScope::System
@@ -867,6 +970,16 @@ pub async fn run(
         }
         PackageCommand::Registry { command } => {
             run_registry(&config, command, printer).await
+        }
+        // Dispatched by the early-return above, before `ApmConfig::load`.
+        PackageCommand::TestSystemdClient { .. } => {
+            unreachable!("TestSystemdClient is handled before ApmConfig::load")
+        }
+        PackageCommand::ActivatePreEtcSwap { .. } => {
+            unreachable!("ActivatePreEtcSwap is handled before ApmConfig::load")
+        }
+        PackageCommand::ActivatePostEtcSwap { .. } => {
+            unreachable!("ActivatePostEtcSwap is handled before ApmConfig::load")
         }
     }
 }

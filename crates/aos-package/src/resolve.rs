@@ -20,8 +20,8 @@ pub struct ResolvedClosure {
     /// All dependencies including root, in dependency order (deps before
     /// dependents).  The root is always the last element.
     pub closure: Vec<PackageMeta>,
-    /// Sum of `download_size` across all closure members.
-    pub total_download_size: u64,
+    /// Sum of uncompressed `nar_size` across all closure members.
+    pub total_nar_size: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -110,13 +110,13 @@ fn resolve_from_closure_file(
         closure.push(root.clone());
     }
 
-    let total_download_size: u64 = closure.iter().map(|m| m.download_size).sum();
+    let total_nar_size: u64 = closure.iter().map(|m| m.nar_size).sum();
 
     Ok(ResolvedClosure {
         registry_name: registry_name.to_string(),
         root,
         closure,
-        total_download_size,
+        total_nar_size,
     })
 }
 
@@ -165,13 +165,13 @@ fn resolve_via_bfs(
         closure.push(current);
     }
 
-    let total_download_size: u64 = closure.iter().map(|m| m.download_size).sum();
+    let total_nar_size: u64 = closure.iter().map(|m| m.nar_size).sum();
 
     Ok(ResolvedClosure {
         registry_name: registry_name.to_string(),
         root,
         closure,
-        total_download_size,
+        total_nar_size,
     })
 }
 
@@ -256,7 +256,7 @@ mod tests {
         let names: Vec<&str> = resolved.closure.iter().map(|m| m.name.as_str()).collect();
         assert!(names.contains(&"curl"));
         assert!(names.contains(&"zlib"));
-        assert!(resolved.total_download_size > 0);
+        assert!(resolved.total_nar_size > 0);
     }
 
     // 2. Resolving a package that doesn't exist returns PackageNotFound.
@@ -385,9 +385,9 @@ mod tests {
         assert!(unique.is_empty());
     }
 
-    // 10. Download size is summed correctly across closure members.
+    // 10. NAR size is summed correctly across closure members.
     #[test]
-    fn total_download_size_computed() {
+    fn total_nar_size_computed() {
         let tmp = TempDir::new().unwrap();
         let core = make_registry(
             &tmp,
@@ -398,10 +398,9 @@ mod tests {
         let set = RegistrySet::new(vec![core]);
 
         let resolved = resolve_closure(&set, "curl", None).unwrap();
-        // curl download_size = 1048576, zlib download_size = 196608
-        let expected: u64 = resolved.closure.iter().map(|m| m.download_size).sum();
-        assert_eq!(resolved.total_download_size, expected);
-        assert!(resolved.total_download_size > 0);
+        let expected: u64 = resolved.closure.iter().map(|m| m.nar_size).sum();
+        assert_eq!(resolved.total_nar_size, expected);
+        assert!(resolved.total_nar_size > 0);
     }
 
     // -----------------------------------------------------------------------
@@ -433,7 +432,7 @@ mod tests {
         let names: Vec<&str> = resolved.closure.iter().map(|m| m.name.as_str()).collect();
         assert!(names.contains(&"curl"));
         assert!(names.contains(&"zlib"));
-        assert!(resolved.total_download_size > 0);
+        assert!(resolved.total_nar_size > 0);
     }
 
     // 12. Leaf package with closure file resolves to just itself.

@@ -182,8 +182,6 @@ in rec {
     store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-$pkg_name-$pkg_version"
     nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
     nar_size = 1024
-    download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-    download_size = 512
     closure_size = 2048
     source_drv = ""
     source_nar_hash = ""
@@ -215,8 +213,6 @@ in rec {
     store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-$pkg_name-$pkg_version"
     nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
     nar_size = 1024
-    download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-    download_size = 512
     closure_size = 2048
     source_drv = ""
     source_nar_hash = ""
@@ -227,8 +223,6 @@ in rec {
     store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-$pkg_name-image-$pkg_version"
     nar_hash = "sha256:1111111111111111111111111111111111111111111111111111"
     nar_size = 4096
-    download_hash = "sha256:1111111111111111111111111111111111111111111111111111"
-    download_size = 2048
     TOMLEOF
         }
 
@@ -316,8 +310,6 @@ in rec {
     store_path = "/nix/store/$store_hash-$pkg_name-$pkg_version"
     nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
     nar_size = 1024
-    download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-    download_size = 512
     closure_size = 2048
     source_drv = ""
     source_nar_hash = ""

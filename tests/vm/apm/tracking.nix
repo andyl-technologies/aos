@@ -48,8 +48,6 @@ in {
       store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hello-1.0.0"
       nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
       nar_size = 1024
-      download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-      download_size = 512
       closure_size = 2048
       source_drv = ""
       source_nar_hash = ""
