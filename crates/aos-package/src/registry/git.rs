@@ -1,15 +1,20 @@
-//! Native git transport for registry sync.
+//! Native git/dumb-HTTP transport for registry sync.
 //!
 //! Used when a registry is configured with `git://`, `git+https://`, or
 //! `git+ssh://` URL schemes. Runs `git fetch` directly against a git server,
 //! verifies commit signatures and fast-forward constraints, and extracts
 //! package TOML files into the local registry cache.
 
+use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
+use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 use tokio::process::Command;
 
+use crate::download::join_cache_url;
+use crate::registry::{channel, verify};
 use crate::types::{RegistryConfig, RegistryState, SigningConfig, TrackingMode};
 use aos_core::output::Printer;
 
@@ -61,11 +66,15 @@ pub async fn sync_git(
     fetch_refs(&repo_dir, &git_url, tracking_mode).await?;
 
     // Step 3: Determine the new HEAD commit.
-    let new_commit = resolve_fetch_head(&repo_dir, tracking_mode).await?;
+    let new_commit = if let TrackingMode::Channel(channel_name) = tracking_mode {
+        resolve_channel_head(config, &git_url, channel_name, &repo_dir, state).await?
+    } else {
+        resolve_fetch_head(&repo_dir, tracking_mode).await?
+    };
 
     // Step 4: Verify commit signature if signing.required.
     if let Some(ref signing) = config.signing {
-        if signing.required {
+        if signing.required && !matches!(tracking_mode, TrackingMode::Channel(_)) {
             verify_commit_signature(&repo_dir, &new_commit, signing).await?;
         }
     }
@@ -106,6 +115,10 @@ pub async fn sync_git(
     };
 
     // Update state.
+    if let Some(version) = state.floor.clone() {
+        retain_release(state, &version);
+    }
+    prune_unretained_release_dirs(&repo_dir, &state.retained).await?;
     state.last_commit = Some(new_commit.clone());
     state.last_update = Some(chrono_now());
 
@@ -130,6 +143,7 @@ pub async fn sync_git(
 ///
 /// `git+https://...` -> `https://...`
 /// `git+ssh://...` -> `ssh://...`
+/// `http(s)://...` -> unchanged for dumb HTTP.
 /// `git://...` -> `git://...` (unchanged)
 fn normalize_git_url(url: &str) -> String {
     if let Some(rest) = url.strip_prefix("git+") {
@@ -150,15 +164,18 @@ async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
         .with_context(|| format!("creating {}", repo_dir.display()))?;
 
     let output = Command::new("git")
-        .args(["init", "--bare"])
+        .args(["init", "--bare", "--object-format=sha256"])
         .current_dir(repo_dir)
         .output()
         .await
-        .context("running git init --bare")?;
+        .context("running git init --bare --object-format=sha256")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git init --bare failed: {}", stderr.trim());
+        bail!(
+            "git init --bare --object-format=sha256 failed: {}",
+            stderr.trim()
+        );
     }
 
     Ok(())
@@ -173,9 +190,15 @@ async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) ->
             // Fetch the specific commit.
             args.push(hash.clone());
         }
-        TrackingMode::Branch(branch) | TrackingMode::Channel(branch) => {
+        TrackingMode::Branch(branch) => {
             // Fetch the branch.
             args.push(format!("refs/heads/{branch}:refs/remotes/origin/{branch}"));
+        }
+        TrackingMode::Channel(channel) => {
+            args.push(format!(
+                "refs/heads/{channel}:refs/remotes/origin/{channel}"
+            ));
+            args.push("refs/tags/*:refs/tags/*".to_string());
         }
         TrackingMode::Tag(tag) => {
             // Fetch the specific tag.
@@ -246,6 +269,242 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+async fn resolve_channel_head(
+    config: &RegistryConfig,
+    base_url: &str,
+    channel_name: &str,
+    repo_dir: &Path,
+    state: &mut RegistryState,
+) -> Result<String> {
+    let signing_key = config
+        .signing
+        .as_ref()
+        .map(|signing| signing.public_key.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "channel tracking for '{}' requires a trusted signing.public_key",
+                config.name,
+            )
+        })?;
+    let release_tags = semver_tag_object_map(repo_dir).await?;
+    let assigned_bucket = state
+        .bucket
+        .unwrap_or_else(|| channel::select_bucket(&machine_id_seed(&config.name)));
+
+    let mut last_error = None;
+    for bucket in channel::probe_order(assigned_bucket) {
+        match fetch_and_verify_partition(
+            base_url,
+            channel_name,
+            bucket,
+            repo_dir,
+            signing_key,
+            &release_tags,
+        )
+        .await
+        {
+            Ok(Some(resolved)) => {
+                let floor = state
+                    .floor
+                    .as_deref()
+                    .map(semver::Version::parse)
+                    .transpose()
+                    .context("parsing registry semver floor")?;
+                channel::check_floor(floor.as_ref(), &resolved.semver)?;
+
+                state.bucket.get_or_insert(assigned_bucket);
+                state.floor = Some(resolved.semver.to_string());
+                retain_release(state, &resolved.semver.to_string());
+                return Ok(resolved.commit);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+    }
+
+    if let Some(err) = last_error {
+        bail!("channel '{channel_name}' has no usable partition: {err}");
+    }
+    bail!("channel '{channel_name}' has no usable partition")
+}
+
+async fn fetch_and_verify_partition(
+    base_url: &str,
+    channel_name: &str,
+    bucket: u8,
+    repo_dir: &Path,
+    signing_key: &str,
+    release_tags: &BTreeMap<String, semver::Version>,
+) -> Result<Option<verify::VerifiedRelease>> {
+    let url = join_cache_url(base_url, &channel::partition_path(channel_name, bucket));
+    let response = reqwest::get(&url)
+        .await
+        .with_context(|| format!("fetching channel partition {url}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        bail!("GET {url} failed with {}", response.status());
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("reading channel partition {url}"))?;
+    let content = String::from_utf8_lossy(&bytes);
+    let tag = verify::parse_tag_object(&content)
+        .with_context(|| format!("parsing channel partition {url}"))?;
+    verify::verify_name_binding(&tag, channel_name)?;
+    if tag.target_type != verify::TagTarget::Tag {
+        bail!(
+            "channel partition {url} targets {:?}, expected tag",
+            tag.target_type,
+        );
+    }
+    let Some(release) = release_tags.get(&tag.object) else {
+        return Ok(None);
+    };
+
+    let channel_oid = hash_tag_object(repo_dir, &bytes)?;
+    verify::verify_tag_chain(
+        repo_dir,
+        &channel_oid,
+        channel_name,
+        &release.to_string(),
+        signing_key,
+    )
+    .map(Some)
+}
+
+fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
+    let mut child = std::process::Command::new("git")
+        .args(["hash-object", "-w", "-t", "tag", "--stdin"])
+        .current_dir(repo_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("running git hash-object for channel tag")?;
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin was piped")
+        .write_all(bytes)
+        .context("writing channel tag to git hash-object")?;
+    let output = child
+        .wait_with_output()
+        .context("waiting for git hash-object")?;
+    if !output.status.success() {
+        bail!(
+            "git hash-object failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
+    let output = Command::new("git")
+        .args(["tag", "-l"])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .context("listing tags for channel resolution")?;
+    if !output.status.success() {
+        bail!(
+            "git tag -l failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    let mut map = BTreeMap::new();
+    for tag in String::from_utf8_lossy(&output.stdout).lines() {
+        let tag = tag.trim();
+        let Ok(version) = semver::Version::parse(tag) else {
+            continue;
+        };
+        let oid = resolve_tag_object(repo_dir, tag).await?;
+        map.insert(oid, version);
+    }
+    Ok(map)
+}
+
+async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", &format!("{tag}^{{tag}}")])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .with_context(|| format!("resolving tag object for {tag}"))?;
+    if !output.status.success() {
+        bail!(
+            "git rev-parse {tag}^{{tag}} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn machine_id_seed(registry: &str) -> String {
+    std::fs::read_to_string("/etc/machine-id")
+        .map(|id| format!("{registry}:{}", id.trim()))
+        .unwrap_or_else(|_| registry.to_string())
+}
+
+fn retain_release(state: &mut RegistryState, release: &str) {
+    if !state.retained.iter().any(|existing| existing == release) {
+        state.retained.push(release.to_string());
+        state.retained.sort_by(|a, b| {
+            match (semver::Version::parse(a), semver::Version::parse(b)) {
+                (Ok(a_version), Ok(b_version)) => a_version.cmp(&b_version),
+                _ => a.cmp(b),
+            }
+        });
+    }
+}
+
+async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> Result<()> {
+    let releases = repo_dir.join("releases");
+    if !releases.exists() {
+        return Ok(());
+    }
+    let retained: std::collections::HashSet<_> = retained.iter().cloned().collect();
+    let mut major_dirs = tokio::fs::read_dir(&releases)
+        .await
+        .with_context(|| format!("reading {}", releases.display()))?;
+    while let Some(major) = major_dirs.next_entry().await? {
+        if !major.file_type().await?.is_dir() {
+            continue;
+        }
+        let mut minor_dirs = tokio::fs::read_dir(major.path()).await?;
+        while let Some(minor) = minor_dirs.next_entry().await? {
+            if !minor.file_type().await?.is_dir() {
+                continue;
+            }
+            let mut patch_dirs = tokio::fs::read_dir(minor.path()).await?;
+            while let Some(patch) = patch_dirs.next_entry().await? {
+                if !patch.file_type().await?.is_dir() {
+                    continue;
+                }
+                let version = format!(
+                    "{}.{}.{}",
+                    major.file_name().to_string_lossy(),
+                    minor.file_name().to_string_lossy(),
+                    patch.file_name().to_string_lossy(),
+                );
+                if !retained.contains(&version) {
+                    tokio::fs::remove_dir_all(patch.path())
+                        .await
+                        .with_context(|| format!("removing {}", patch.path().display()))?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Find the latest tag in the repo (by version sort).

@@ -57,12 +57,12 @@ Keep this file current as work lands.
 
 ## WS-05 Consumer Cutover
 
-- [ ] Resolve channel bucket to verified semver tag and commit.
-- [ ] Run floor check before object fetch.
+- [x] Resolve channel bucket to verified semver tag and commit.
+- [x] Run floor check before object fetch.
 - [ ] Implement delta/full/loose object fetch resolution.
-- [ ] Persist retained release set and prune obsolete objects.
-- [ ] Resolve committed `registry.toml` `[[caches]]` from verified tree.
-- [ ] Remove `bundle-list.toml` selection from `apm update`.
+- [x] Persist retained release set and prune obsolete objects.
+- [x] Resolve committed `registry.toml` `[[caches]]` from verified tree.
+- [x] Remove `bundle-list.toml` selection from `apm update`.
 
 ## WS-06 Nix Cache Generation
 
