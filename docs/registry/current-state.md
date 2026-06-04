@@ -171,13 +171,21 @@ public_key = "aos-core:Ed25519:base64keyhere"
 >    circular for bootstrap. The target `registry.toml` is therefore just
 >    `[registry]` (name/description) + `[[caches]]`.
 > 2. **A new committed `keys.toml` trust roster is added** (decision D): the
->    active signing key(s) + a revoked list. Bootstrap trust stays **TOFU-pinned
+>    active signing key(s) + a revoked list, with **no role field and no `root`
+>    entry** — just `id` + `key` per active key. The trust model is **≥2
+>    overlapping active keys** (decided, brief §14/§16.8); there is **no**
+>    offline-root / operational two-tier and **no** TUF-style root role. The git
+>    lineage (signed tag → commit → parent chain) provides continuity, so a
+>    separate root tier is unnecessary. Bootstrap trust stays **TOFU-pinned
 >    client-side** (`trusted-keys.d/<registry>.pub`, §8.3), not from `keys.toml`.
->    Rotation publishes `keys.toml` listing old + new keys (overlap) in a tag
->    signed by the currently-trusted key; revocation lists the bad key signed by
->    a key the consumer trusts that is *not* the revoked one (a dedicated offline
->    root/anchor key, or ≥2 overlapping active keys — TUF-style; an open choice,
->    brief §16).
+>    **Rotation** publishes `keys.toml` listing old + new keys (overlap window) in
+>    a tag signed by a currently-trusted key; the consumer verifies and pins the
+>    new key, then the old key is dropped on a later publish. **Planned
+>    retirement** lists the key under `revoked`, signed by one of the *other*
+>    overlapping active keys. **Compromise** is handled **out-of-band**: the
+>    consumer re-pins via `trusted-keys.d` (`apr trust`) — an in-repo key cannot
+>    credibly revoke itself, and compromise is rare enough that out-of-band is
+>    acceptable.
 >
 > The `[[caches]]` NAR-cache pointers **stay in this committed `registry.toml`**
 > (authenticated via the tag), *not* in the signed tags (which carry **no**

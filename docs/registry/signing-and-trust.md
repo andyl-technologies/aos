@@ -175,22 +175,23 @@ old key from the roster and sign with the new key alone. The overlap window is w
 makes the handoff seamless: no consumer is ever asked to trust a key it cannot reach
 through a key it already trusts.
 
-**Revocation (compromise).** To retire a compromised key, list it under the roster's
-revoked entries — but the `keys.toml` carrying that revocation **must be signed by a
-key the consumer trusts that is *not* the revoked one.** A single key cannot credibly
-revoke itself. Two structures satisfy this:
+**The trust model: ≥2 overlapping active keys.** There is no offline-root /
+operational two-tier and no TUF-style root role. The **git lineage** (signed tag →
+commit → parent chain) provides continuity, so a separate root tier is unnecessary.
+`keys.toml` lists the **active signing key(s)** — `id` + `key`, with **no role field**
+and **no `root` entry** — plus a **revoked** list. Two cases:
 
-- **TUF-style root/operational split** — a dedicated **offline root (anchor) key**
-  (the one TOFU-pinned in `trusted-keys.d`) signs `keys.toml`, while a separate
-  **operational key** signs day-to-day release and channel tags. Compromise of the
-  hot operational key is recoverable: the offline root signs a `keys.toml` revoking it
-  and naming a fresh operational key.
-- **≥2 overlapping active keys** — keep two active signing keys so a `keys.toml`
-  revoking one can still be signed by the other.
+- **Planned retirement (in-repo).** To retire a key on purpose, list it under the
+  roster's revoked entries in a `keys.toml` **signed by one of the *other* overlapping
+  active keys** — a key cannot credibly revoke itself, so retirement always rides on a
+  second still-trusted active key.
+- **Compromise (out-of-band).** A compromised key is handled **out of band**: the
+  consumer **re-pins** via `trusted-keys.d` (`apr trust`). An in-repo key cannot
+  credibly revoke itself, and compromise is rare enough that the out-of-band re-pin is
+  acceptable rather than maintaining a dedicated offline root.
 
-Whether to adopt the dedicated-root model or a single-key-with-overlap model is an
-**open choice** — see [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md)
-§16 (and whether the roster is a standalone `keys.toml` or a `[keys]` block in
+This is **decided** — see [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md)
+§14 (and that the roster is a standalone `keys.toml`, not a `[keys]` block in
 `registry.toml`).
 
 > **NAR safety (defence in depth).** An authenticated-but-wrong `[[caches]]` pointer
@@ -442,7 +443,7 @@ ways:
 | Key format `name:Ed25519:<base64>` | `parse_signing_key` (`security.rs:306`) | unchanged |
 | Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) | unchanged (the bootstrap anchor) |
 | Signing pubkey location | `[registry.signing].public_key` inside `registry.toml` (`RegistryRootConfig`) | **removed** from `registry.toml`; trust = `keys.toml` roster + TOFU |
-| Key rotation / revocation | — (single pinned key, no roster) | committed `keys.toml` roster: overlap-window rotation, root/operational (or ≥2-key) revocation (§2.5) |
+| Key rotation / revocation | — (single pinned key, no roster) | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
 | Signature *production* | `apr sign` = `git commit --amend -S` (`registry_ops.rs:1770`) | `git tag -s` on **tag objects** |
 | Tag creation | `apr tag` = `git tag -a` with `--message`, else lightweight `git tag` (both **unsigned**) (`registry_ops.rs:1706-1710`) | `git tag -s` (signed) for channel + release tags |
 | Signature *verification* | `verify_commit_signature` = `git verify-commit` (`security.rs:199`) | `git verify-tag` (same allowed-signers mechanism) |
