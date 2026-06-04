@@ -55,7 +55,7 @@ static files over dumb HTTP**, where:
   and a relative `objects/info/alternates` — **no bundles, no `bundle-list.toml`**;
 - versions are **semver** (no `v`) ordered by **git ancestry** — **no
   `creation_token`**;
-- rollout is **256 signed partition tag objects** under `/channel/<name>/00..ff`
+- rollout is **256 signed partition tag objects** under `/channels/<name>/00..ff`
   with the channel **branch head = frontier** — **no percentage rollout**;
 - the trust anchor moves from a signed **commit** to signed **tag objects**
   with **name-binding** verification (`tag → tag → commit`);
@@ -78,7 +78,7 @@ expensive-producer / trivial-consumer one.
  │ *.bundle (git bundles)    │              │ loose objects + pack-<sha>    │
  │ creation_token ordering   │              │ + thin delta-<from>.pack      │
  │ signed COMMIT             │              │ semver + git ancestry         │
- │ no rollout model           │              │ signed TAG objects, /channel/ │
+ │ no rollout model           │              │ signed TAG objects, /channels/ │
  │ pick_bundles() consumer    │              │ <name>/00..ff (256 partitions)│
  │ NO upload                  │              │ full publish pipeline         │
  └───────────────────────────┘              └───────────────────────────────┘
@@ -96,10 +96,10 @@ expensive-producer / trivial-consumer one.
 | Object format | Default sha1 — no `--object-format`: producer `git init` (`registry_ops.rs:438`), consumer `git init --bare` (`bundle.rs:359`). | **sha256** everywhere; loose object path = first 2 / remaining 62 hex of the 64-char hash (brief §8). |
 | Dumb-HTTP shim | None produced. The repo is never `update-server-info`'d; there is no `HEAD`/`info/refs`/`objects/info/*` publish step anywhere. | `HEAD` (symref → default channel), `info/refs` (via `git update-server-info` on every publish), `objects/info/packs`, `objects/info/alternates` (brief §4, §8, §12). |
 | Loose object location | None — a bundle carries the whole pack; the consumer unbundles into one flat object store (`unbundle`, `bundle.rs:376`). | **ALL** loose objects (every release) are centralized at the single root `/objects/<xx>/<62hex>` (brief §4, §7, §8). |
-| Per-release object dirs | None. | `/release/<major>/<minor>/<patch[-pre][+build]>/objects/` are **pack-only**: `info/packs` + `pack/pack-<sha256>.pack(.idx)` + `pack/delta-<from>.pack`, with **no** loose `<xx>/<…>` objects and **no** per-release `info/alternates` (brief §4, §7). |
-| Distributed object index | `bundle-list.toml` (`BundleManifest`, `bundle.rs:48-53`). | Root `objects/info/alternates` with **relative** entries `../release/<M>/<m>/<patch…>/objects/` (one `../`), newest→oldest; host-independent and byte-identical across CDN/mirror/localhost. Serves **pack discovery + the release index** (loose completeness lives at the root, brief §8). |
+| Per-release object dirs | None. | `/releases/<major>/<minor>/<patch[-pre][+build]>/objects/` are **pack-only**: `info/packs` + `pack/pack-<sha256>.pack(.idx)` + `pack/delta-<from>.pack`, with **no** loose `<xx>/<…>` objects and **no** per-release `info/alternates` (brief §4, §7). |
+| Distributed object index | `bundle-list.toml` (`BundleManifest`, `bundle.rs:48-53`). | Root `objects/info/alternates` with **relative** entries `../releases/<M>/<m>/<patch…>/objects/` (one `../`), newest→oldest; host-independent and byte-identical across CDN/mirror/localhost. Serves **pack discovery + the release index** (loose completeness lives at the root, brief §8). |
 | Loose-object completeness | Not guaranteed — only packed objects inside bundles. | **ALL objects exist loose** under the root `/objects/<xx>/<…>` as the correctness fallback; packs are an efficiency layer (brief §8). |
-| CDN TTL policy | Not modeled. | `/channel/**`, `/objects/info/**`, per-release `objects/info/**` → low TTL; `/release/**` + other `/objects/**` → immutable/high TTL (brief §4). |
+| CDN TTL policy | Not modeled. | `/channels/**`, `/objects/info/**`, per-release `objects/info/**` → low TTL; `/releases/**` + other `/objects/**` → immutable/high TTL (brief §4). |
 
 **Concrete code that disappears or is repurposed:** `ensure_git_repo`
 (`bundle.rs:349`) becomes "init a sha256 bare repo + lay out dirs"; the consumer
@@ -132,7 +132,7 @@ and `unbundle` (`bundle.rs:376`) — all replaced by `pack-objects` /
 |--------|---------|--------|
 | Version scheme | Calendar tags `vYYYY.MM[.P]` encoded to a monotonic **`creation_token`** (`state.rs version_to_token:131`, `token_to_version:173`). | **Standard semver, no `v` prefix** (`1.1.2`, `1.0.0-beta+exp.sha.5114f85`); precedence by semver rules + git ancestry (brief §7). The whole `creation_token` scheme is **removed** (brief §15). |
 | Ordering source | `entries.sort_by_key(creation_token)` (`bundle.rs:171`); `entries_since` / `latest_snapshot` / `skip_delta_from` / `sequential_deltas_between` (`bundle.rs:181-224`) all key off the token. | git **ancestry** + semver precedence; no scalar token. |
-| Channel model | A git **branch** the consumer tracks via `TrackingMode::Branch` (`types.rs:282-302`) — but there is no rollout structure on top. | A channel = **branch** (`refs/heads/<channel>`, head = **frontier**) **plus 256 signed partition tag objects** `/channel/<name>/00..ff` (brief §5, §6). |
+| Channel model | A git **branch** the consumer tracks via `TrackingMode::Branch` (`types.rs:282-302`) — but there is no rollout structure on top. | A channel = **branch** (`refs/heads/<channel>`, head = **frontier**) **plus 256 signed partition tag objects** `/channels/<name>/00..ff` (brief §5, §6). |
 | Rollout mechanism | **None.** No partitions, no percentage, no `[channels.<name>.rollout]`. `pick_bundles` just picks the newest reachable bundle (`update.rs:292-391`). | **Publisher-controlled 256-partition rollout**: to roll to N/256, point N partition tags at the new semver tag and leave the rest on the prior release (brief §6). |
 | Consumer bucket | None. | Deterministic, **persisted** bucket: the low byte of `sha256(machine_id)` (i.e. mod 256), written once; probe-forward `(bucket+1) mod 256` if a partition is missing (brief §6). |
 | Frontier | n/a. | `refs/heads/<channel>` head = the commit of the newest release **any** partition targets; stock `git pull <channel>` always gets the frontier (brief §6). |
@@ -153,9 +153,9 @@ and `unbundle` (`bundle.rs:376`) — all replaced by `pack-objects` /
 | Signed object | The **commit**: `apr sign` = `git commit --amend --no-edit -S` (`registry_ops.rs:1770`); verified with `git verify-commit` + a temp `allowed_signers` file (`verify_commit_signature`, `security.rs:199-229`). | The **tag objects**: both channel partition tags and release semver tags are annotated tags as **pure signed pointers** — standard git tag fields (object, type, tag name, tagger) + an SSH Ed25519 signature + an optional freeform human message; **no structured payload** (brief §11). |
 | Primitive | SSH-format Ed25519; `parse_signing_key` `name:Ed25519:<base64>` (`security.rs:306-326`); TOFU + `trusted-keys.d/<registry>.pub`. **Survives unchanged.** | Same primitive, reused for tag-object signatures (brief §11). |
 | Tag verification | **Absent** — there is `verify_commit_signature` but **no** `verify-tag` path; `apr tag` (`registry_ops.rs:1696-1714`) creates an *unsigned* annotated tag (`git tag -a … -m`) only when `--message` is given, else a lightweight tag (`git tag <name>`) (`registry_ops.rs:1706-1710`), and ignores `_key` (`registry_ops.rs:1700`). | `git verify-tag` of the whole **`tag → tag → commit`** chain (channel partition tag → semver tag → commit) (brief §5, §11). |
-| Name-binding | None. | Verify signature **and** the embedded tag-name field equals the expected path name (channel name under `/channel/*`, semver under `/release/*`), binding a tag object to its serving path to prevent cross-serving (brief §5). |
+| Name-binding | None. | Verify signature **and** the embedded tag-name field equals the expected path name (channel name under `/channels/*`, semver under `/releases/*`), binding a tag object to its serving path to prevent cross-serving (brief §5). |
 | Tag-message body | Free-text `-m` message (`registry_ops.rs:1707`). | **No structured payload** — an optional freeform human message only. A signed tag is a pure signed pointer; there is no tag-message TOML, no `[meta]`/`schema`/`valid_until`, no in-band `[[caches]]` (brief §11). |
-| Freshness / rotation | None. | **No in-band `valid_until`.** Freshness = low CDN TTL on `/channel` (and `info/refs`, `objects/info`) + the consumer's own max-staleness policy + the monotonic anti-rollback floor. Trade-off: weaker than an in-band signed expiry against a frozen-but-validly-signed mirror (brief §11). |
+| Freshness / rotation | None. | **No in-band `valid_until`.** Freshness = low CDN TTL on `/channels` (and `info/refs`, `objects/info`) + the consumer's own max-staleness policy + the monotonic anti-rollback floor. Trade-off: weaker than an in-band signed expiry against a frozen-but-validly-signed mirror (brief §11). |
 | Branch trust | n/a. | Branch refs are **unsigned convenience pointers**, never in the trust chain (brief §5, §11). |
 
 **Concrete code to extend/replace:** add a `verify_tag_signature` alongside
@@ -170,9 +170,9 @@ instead of an unsigned annotated tag + a signed commit.
 | Aspect | CURRENT | TARGET |
 |--------|---------|--------|
 | Config root | `registry.toml` written at `create` (`registry_ops.rs:443-450`), read by `read_registry_toml` (`registry_ops.rs:392-402`), caches resolved via `resolve_mirrors` (`registry_ops.rs:405-414`). | **Removed entirely** (brief §15). Cache location is **client-side** (the consumer's local registry config) or the origin itself — **not** advertised in signed tags; the origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar` as a stock-nix superset, narinfo signing reusing the one Ed25519 key (brief §13). |
-| Manifest writer | **Stub** — `apr bundle` (`registry_ops.rs:1718-1755`) only `git bundle create`s; `_update_manifest` is ignored (`registry_ops.rs:1723`); **no `bundle-list.toml` writer exists**. | A real publish pipeline writes loose objects to the root `/objects/`, emits per-release packs/deltas under `/release/*/objects/pack/`, regenerates `objects/info/packs` + the relative `objects/info/alternates`, runs `update-server-info`, advances partitions, and uploads (brief §10, §4, §6). |
+| Manifest writer | **Stub** — `apr bundle` (`registry_ops.rs:1718-1755`) only `git bundle create`s; `_update_manifest` is ignored (`registry_ops.rs:1723`); **no `bundle-list.toml` writer exists**. | A real publish pipeline writes loose objects to the root `/objects/`, emits per-release packs/deltas under `/releases/*/objects/pack/`, regenerates `objects/info/packs` + the relative `objects/info/alternates`, runs `update-server-info`, advances partitions, and uploads (brief §10, §4, §6). |
 | Upload | **None at all** — `apr push` / `apr pull` (`registry_ops.rs:1410-1462`) push the *git working repo*; there is **no static-artifact upload** of bundles/objects to a CDN/origin. | An **upload backend** ships the static tree (loose objects, packs, refs shims, channel partition files) to the origin; pluggability is an open question (brief §16.4). |
-| Atomicity / concurrency | Not modeled. | Publish must be atomic w.r.t. the CDN: write new immutable objects first, then mutate the low-TTL `info/*` + `/channel/*` — see [publishing.md](../../registry/publishing.md). |
+| Atomicity / concurrency | Not modeled. | Publish must be atomic w.r.t. the CDN: write new immutable objects first, then mutate the low-TTL `info/*` + `/channels/*` — see [publishing.md](../../registry/publishing.md). |
 
 ---
 
@@ -200,7 +200,7 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 | `bundle-list.toml` | `bundle.rs:48-225` | `objects/info/packs` + relative `objects/info/alternates` |
 | git **bundles** | `registry_ops.rs:1718-1755`, `bundle.rs:376` | loose objects + `pack-<sha>.pack` + thin `delta-*.pack` |
 | `[latest]` / `[components]` / `[capabilities]` | config concepts (not in code) | ref namespace (branches/tags) + object store |
-| percentage rollout / `[channels.<name>.rollout]` / baseline+candidate | never implemented (brief §15) | 256 signed partition tag objects `/channel/<name>/00..ff` |
+| percentage rollout / `[channels.<name>.rollout]` / baseline+candidate | never implemented (brief §15) | 256 signed partition tag objects `/channels/<name>/00..ff` |
 | calendar versioning + `creation_token` | `state.rs:131-187`, `bundle.rs:34-224`, `update.rs:256-390` | semver (no `v`) + git ancestry |
 | by-hash `[[bundles]]` / `[[deltas]]` index | `bundle.rs:59-92` | git object store + relative `info/alternates` |
 | `previous_tag` / per-version `previous` framing | `registry_ops.rs:626-628,735-739` | semver precedence + the delta-scheme graph |
@@ -225,7 +225,7 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 |---|------------------------|---------|------------|
 | G1 | sha1 default → **sha256** `git init --object-format=sha256` | §8 | WS-01 |
 | G2 | no dumb-HTTP shim → `HEAD` / `info/refs` / `update-server-info` | §4,§8,§12 | WS-01 |
-| G3 | flat unbundle store → **per-release `/release/.../objects/`** dirs | §4,§7 | WS-01 |
+| G3 | flat unbundle store → **per-release `/releases/.../objects/`** dirs | §4,§7 | WS-01 |
 | G4 | `bundle-list.toml` index → `objects/info/packs` + relative **`info/alternates`** | §8 | WS-01 |
 | G5 | no loose-object guarantee → **all objects loose, centralized at root `/objects/`** | §4,§7,§8 | WS-01 |
 | G6 | no CDN TTL model → explicit per-path TTL policy | §4 | WS-01 |
@@ -236,7 +236,7 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 | G11 | n/a → `info/packs` lists **full packs only** | §10,§12 | WS-02 |
 | G12 | `creation_token` → **semver (no `v`) + git ancestry** | §7 | WS-03 |
 | G13 | bare branch tracking → branch **frontier head** | §5,§6 | WS-03 |
-| G14 | no rollout → **256 signed partition tags `/channel/<name>/00..ff`** | §6 | WS-03 |
+| G14 | no rollout → **256 signed partition tags `/channels/<name>/00..ff`** | §6 | WS-03 |
 | G15 | no bucket → deterministic persisted low byte of `sha256(machine_id)` (i.e. mod 256) | §6 | WS-03 |
 | G16 | token monotonic check → **semver floor + fix-forward** | §6 | WS-03 |
 | G17 | signed **commit** → signed **tag objects** | §11 | WS-04 |
@@ -260,7 +260,7 @@ load-bearing in today's code and must be deleted, not merely bypassed:
   the **sha256 dumb-HTTP clone against real client git versions** (brief §16.1),
   since dumb HTTP has no capability negotiation.
 - **WS-02 and WS-03 are largely independent** once WS-01 lands: packs/deltas
-  ride in the object store; channels/partitions ride in the ref + `/channel`
+  ride in the object store; channels/partitions ride in the ref + `/channels`
   namespaces. They re-converge in the **publish pipeline**
   ([publishing.md](../../registry/publishing.md)).
 - **WS-04 is a focused extension** of the surviving signing primitive — the main

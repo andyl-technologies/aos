@@ -2,11 +2,8 @@
 
 > **Status:** Plan (target). Grounded by
 > [`design-brief.md`](./design-brief.md) §9–§10. This workstream replaces the
-> current **git-bundle** transport (`bundle-list.toml` manifest + `git bundle
-> create/verify/unbundle`) with a **git-native pack/thin-delta pipeline** served
-> over dumb HTTP. Anything describing bundles, `creation_token`, snapshot/skip/
-> sequential bundle classification, or `bundle-list.toml` is **removed** from the
-> target (see brief §15).
+> current **git-bundle** transport with a **git-native pack/thin-delta pipeline**
+> served over dumb HTTP.
 >
 > **Scope:** the producer side of pack generation (full packs at `X.Y.0`, the
 > guaranteed thin-delta scheme, `pack-objects` tuning, the zstd transport trick,
@@ -65,11 +62,11 @@ trust chain, so file-level SHA-256 is no longer a manifest field.
 
 - A bundle **carries refs and prerequisites** in a self-describing header. The
   target moves refs out of artifacts entirely: channels are branches, releases
-  are signed tag objects, and the 256 partition tags live at `/channel/*` (brief
+  are signed tag objects, and the 256 partition tags live at `/channels/*` (brief
   §5). A bundle's ref payload would duplicate (and could contradict) that.
 - Bundles can't be composed with the dumb-HTTP object store / `info/alternates`
   layout (workstream-01). The target wants packs that drop straight into
-  `/release/<…>/objects/pack/` and loose objects that land in the single root
+  `/releases/<…>/objects/pack/` and loose objects that land in the single root
   `/objects/` and satisfy any stock client.
 - The `creation_token` ordering the bundle manifest depends on is removed (brief
   §15). The target orders by **semver + git ancestry**.
@@ -87,7 +84,7 @@ in the single **root** `/objects/<xx>/<62-hex>` (D):
 ```
 /objects/<xx>/<62-hex>                      ← ALL loose objects (every release), ROOT only
 
-/release/<major>/<minor>/<patch[-pre][+build]>/objects/
+/releases/<major>/<minor>/<patch[-pre][+build]>/objects/
   info/packs                                ← lists self-contained pack-<sha>.pack ONLY
   pack/
     pack-<sha256>.pack   (+ .idx)           ← FULL pack; present only at X.Y.0
@@ -236,7 +233,7 @@ git -C "$REPO" rev-parse "$RELEASE_COMMIT^{commit}" \
 After writing, **list it** in the per-release `objects/info/packs` and
 regenerate the root `objects/info/alternates`/`info/refs` (workstream-01). The
 `info/alternates` entries are **relative** paths
-`../release/<M>/<m>/<patch…>/objects/` (newest→oldest, one `../`), so it is
+`../releases/<M>/<m>/<patch…>/objects/` (newest→oldest, one `../`), so it is
 host-independent and serves **pack discovery + the release index** — not object
 completeness, since all loose objects are centralized at the root.
 
@@ -366,7 +363,7 @@ brief §10/§4/§6):
                                   │  3. --compression=0 on all (§7)      │
                                   │  4. zstd --ultra (+ optional dict)   │
                                   │  5. write .pack[.zst]/.idx into      │
-                                  │     /release/<…>/objects/pack/;      │
+                                  │     /releases/<…>/objects/pack/;      │
                                   │     loose objects → root /objects/   │
                                   │  6. list full pack in info/packs     │
                                   │     (NOT thin deltas)                │

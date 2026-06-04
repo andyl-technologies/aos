@@ -13,11 +13,9 @@
 >
 > **CURRENT vs TARGET.** This is one of the docs being **rewritten** onto the
 > git-native registry architecture. Sections labeled **CURRENT** describe behavior
-> that exists in the code today, cited as `path:line`. Sections labeled **TARGET**
-> describe the design intent from the
-> [design brief](../plans/registry/design-brief.md) (§5–§7). The current code still
-> implements the *old* calendar-tag / `creation_token` / git-bundle scheme; that
-> scheme is **superseded** and is documented here only as the migration baseline.
+> that exists in the code today, cited as `path:line` (today's code still uses
+> calendar tags + `creation_token`). Sections labeled **TARGET** describe the design
+> intent from the [design brief](../plans/registry/design-brief.md) (§5–§7).
 
 Related reference docs:
 [README](./README.md) ·
@@ -52,7 +50,7 @@ us versioning and fleet rollout:
 |---|---|---|---|
 | **Release** | semver git **tag** `refs/tags/<semver>` → commit | **yes** | stock git (`verify-tag`) + AOS |
 | **Channel (branch)** | `refs/heads/<channel>`, head = **frontier** | no (ref pointer) | stock git convenience |
-| **Channel (rollout)** | **256 signed partition tag objects** `/channel/<name>/00..ff` | **yes** | AOS rollout only |
+| **Channel (rollout)** | **256 signed partition tag objects** `/channels/<name>/00..ff` | **yes** | AOS rollout only |
 
 The release tag is the **immutable, signed unit of distribution**. The channel
 *branch* is an **unsigned convenience pointer** at the rollout *frontier* (the
@@ -68,13 +66,13 @@ bucketed rollout surface** the AOS client actually follows.
    refs/heads/stable ─────────────┘  (unsigned; newest release any partition targets)
 
    channel partitions (signed tag objects, name == "stable", → semver tag):
-     /channel/stable/00 ─► 1.1.0    ─┐
-     /channel/stable/01 ─► 1.1.0     │  publisher has advanced 4/256
-     /channel/stable/02 ─► 1.1.0     │  partitions to 1.1.0 ...
-     /channel/stable/03 ─► 1.1.0    ─┘
-     /channel/stable/04 ─► 1.0.0    ─┐
+     /channels/stable/00 ─► 1.1.0    ─┐
+     /channels/stable/01 ─► 1.1.0     │  publisher has advanced 4/256
+     /channels/stable/02 ─► 1.1.0     │  partitions to 1.1.0 ...
+     /channels/stable/03 ─► 1.1.0    ─┘
+     /channels/stable/04 ─► 1.0.0    ─┐
      ...                             │  ... and left 252/256 on the prior
-     /channel/stable/ff ─► 1.0.0    ─┘  release 1.0.0
+     /channels/stable/ff ─► 1.0.0    ─┘  release 1.0.0
 ```
 
 > **Design philosophy.** Rollout is an **AOS-fleet** concept, not a `git clone`
@@ -97,8 +95,7 @@ Releases use **standard [semver](https://semver.org/), with no `v` prefix**:
 ```
 
 A release is a **signed git tag** `refs/tags/<semver>` pointing at a commit. There
-is no calendar component, no `creation_token`, and no `v` prefix — those belong to
-the superseded scheme in §6.
+is no calendar component and no `v` prefix.
 
 ### 2.2 Precedence & ordering
 
@@ -129,14 +126,14 @@ the delta graph.
 ### 2.3 Path encoding of a release
 
 A release's object store lives under
-`/release/<major>/<minor>/<patch…>/`, where the **third segment is everything after
+`/releases/<major>/<minor>/<patch…>/`, where the **third segment is everything after
 `major.minor`** — including any `-prerelease` and `+build` suffix:
 
 | Semver | Release path |
 |---|---|
-| `1.1.2` | `/release/1/1/2/` |
-| `1.1.0-alpha.1` | `/release/1/1/0-alpha.1/` |
-| `1.0.0-beta+exp.sha.5114f85` | `/release/1/0/0-beta+exp.sha.5114f85/` |
+| `1.1.2` | `/releases/1/1/2/` |
+| `1.1.0-alpha.1` | `/releases/1/1/0-alpha.1/` |
+| `1.0.0-beta+exp.sha.5114f85` | `/releases/1/0/0-beta+exp.sha.5114f85/` |
 
 Releases are **immutable** once published and may carry a long CDN TTL (see
 [http-layout](./http-layout.md) §CDN policy).
@@ -164,7 +161,7 @@ the **frontier**: the newest release *any* of the channel's 256 partitions targe
 ```
 HEAD ──symref──► refs/heads/stable ──► commit(1.1.0)   ← frontier
                                             ▲
-                 newest release any /channel/stable/<00..ff> targets
+                 newest release any /channels/stable/<00..ff> targets
 ```
 
 > **Implication.** `git pull stable` always advances to the frontier — there is no
@@ -185,10 +182,10 @@ out," not "what the median host runs."
 Each channel exposes **exactly 256** partition files:
 
 ```
-/channel/<name>/00
-/channel/<name>/01
+/channels/<name>/00
+/channels/<name>/01
    ...
-/channel/<name>/ff         (one byte (two hex digits, 00–ff) → 256 partitions)
+/channels/<name>/ff         (one byte (two hex digits, 00–ff) → 256 partitions)
 ```
 
 Each file is an **independently signed annotated tag object** whose **tag name field
@@ -201,12 +198,12 @@ trust chain is therefore:
 ```
 signed partition tag  ──►  signed semver tag  ──►  commit
    (name == channel)          (name == semver)
-   under /channel/<name>/      under /release/...
+   under /channels/<name>/      under /releases/...
 ```
 
 Verification checks **both** the Ed25519/SSH signature **and** the embedded
-tag-name field against the expected name — the channel name under `/channel/*`, the
-semver under `/release/*`. This **name-binding** binds a tag object to its serving
+tag-name field against the expected name — the channel name under `/channels/*`, the
+semver under `/releases/*`. This **name-binding** binds a tag object to its serving
 path and prevents cross-serving a tag from one path at another. See
 [signing-and-trust](./signing-and-trust.md) for the signature format.
 
@@ -216,7 +213,7 @@ path and prevents cross-serving a tag from one path at another. See
 > **probe-forward** (§5.3) — it does **not** treat a single missing partition as a
 > channel-wide failure.
 
-These 256 tag objects live **outside** the git ref namespace (under `/channel/*`, not
+These 256 tag objects live **outside** the git ref namespace (under `/channels/*`, not
 `refs/`). They are **AOS-only**; stock dumb-HTTP git never sees them and is
 unaffected.
 
@@ -248,7 +245,7 @@ On `apm update`, an AOS client resolves its target release like this:
 
 ```
 1. bucket  ← persisted low byte of sha256(machine_id) (mod 256)  (§5.1)
-2. fetch   /channel/<name>/<bucket>                          (signed partition tag)
+2. fetch   /channels/<name>/<bucket>                          (signed partition tag)
 3. verify  signature + tag-name field == <name>             (name-binding, §4)
 4. follow  partition tag → semver tag; verify sig + name == <semver>
 5. target  ← that semver release; resolve objects via packs/deltas/loose
@@ -267,7 +264,7 @@ probes forward deterministically:
 ```
 b ← bucket
 repeat up to 256 times:
-    try /channel/<name>/<hex(b)>
+    try /channels/<name>/<hex(b)>
     if present AND verifies → use it
     else b ← (b + 1) mod 256
 if none usable → channel is unavailable → fail closed (do not invent a target)
@@ -294,10 +291,10 @@ publisher ramps `1/256 → 16/256 → 128/256 → 256/256`; the cohort is monoto
 reshuffled.
 
 ```
- step 0   advance 1/256     /channel/stable/00 → 1.1.0       canary (one bucket, ~0.4%)
- step 1   advance 16/256    /channel/stable/00..0f → 1.1.0   widen if healthy (~6%)
- step 2   advance 128/256   /channel/stable/00..7f → 1.1.0   half the fleet (50%)
- step 3   advance 256/256   /channel/stable/00..ff → 1.1.0   complete (100%)
+ step 0   advance 1/256     /channels/stable/00 → 1.1.0       canary (one bucket, ~0.4%)
+ step 1   advance 16/256    /channels/stable/00..0f → 1.1.0   widen if healthy (~6%)
+ step 2   advance 128/256   /channels/stable/00..7f → 1.1.0   half the fleet (50%)
+ step 3   advance 256/256   /channels/stable/00..ff → 1.1.0   complete (100%)
 ```
 
 Key properties:
@@ -310,10 +307,9 @@ Key properties:
   to the new release and the rollout is done.
 - **The branch head tracks the frontier** (§3.1): as soon as the first partition is
   advanced to `1.1.0`, `refs/heads/stable` points at `commit(1.1.0)`.
-- **The granularity is ~0.39% (1/256).** This replaces the superseded percentage
-  rollout (any `0..100` value) with a fixed 256-way partitioning — coarser, but it
-  needs **no central host registry** and no per-host reporting: the deterministic
-  bucket *is* the cohort assignment.
+- **The granularity is ~0.39% (1/256).** Fixed 256-way partitioning is coarser than
+  an arbitrary percentage, but it needs **no central host registry** and no per-host
+  reporting: the deterministic bucket *is* the cohort assignment.
 
 ---
 
@@ -460,9 +456,9 @@ name `1.0.0`. Two hosts, both on `channel = "stable"`, both currently at floor
 
 ```
 Host A:  bucket = low byte of sha256(machine_id_A) (mod 256) = 02
-         /channel/stable/02 → 1.1.0  (advanced)  → adopt 1.1.0; floor ← 1.1.0
+         /channels/stable/02 → 1.1.0  (advanced)  → adopt 1.1.0; floor ← 1.1.0
 Host B:  bucket = low byte of sha256(machine_id_B) (mod 256) = 0xb7
-         /channel/stable/b7 → 1.0.0  (held)       → no-op; stays at 1.0.0
+         /channels/stable/b7 → 1.0.0  (held)       → no-op; stays at 1.0.0
 ```
 
 When the publisher later advances to `8/256`, Host A is unaffected (already at
@@ -486,18 +482,18 @@ back to `1.0.0` (consumers' floor would reject it). Instead:
 
 ```
 1. publish 1.1.1 (signed tag → fixed commit, descendant of 1.1.0)
-2. advance the affected partitions: /channel/stable/00..07 → 1.1.1
+2. advance the affected partitions: /channels/stable/00..07 → 1.1.1
 3. hosts at floor 1.1.0 see a NEWER release → adopt 1.1.1 (passes the floor)
    hosts at floor 1.0.0 (held buckets) see 1.0.0 still on their partition → unchanged
 ```
 
 ### 9.4 TARGET — probe-forward fallback
 
-Host bucket = `7f`, but `/channel/stable/7f` 404s (CDN propagation gap):
+Host bucket = `7f`, but `/channels/stable/7f` 404s (CDN propagation gap):
 
 ```
-try /channel/stable/7f  → 404
-try /channel/stable/80  → present + verifies  → use it
+try /channels/stable/7f  → 404
+try /channels/stable/80  → present + verifies  → use it
 ```
 
 The host transiently follows partition `80`'s release for this run; once partition
@@ -507,7 +503,7 @@ The host transiently follows partition `80`'s release for this run; once partiti
 
 ## 10. Cross-references
 
-- **HTTP/object layout** of `/channel/*`, `/release/*`, `refs`, `HEAD`,
+- **HTTP/object layout** of `/channels/*`, `/releases/*`, `refs`, `HEAD`,
   `info/alternates`, and CDN TTLs: [http-layout](./http-layout.md).
 - **The three ref layers, name-binding, and the `tag → tag → commit` trust chain:**
   [signing-and-trust](./signing-and-trust.md).

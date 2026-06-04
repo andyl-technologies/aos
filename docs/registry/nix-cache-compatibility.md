@@ -70,13 +70,10 @@ correctness depends on the other:
             └──────────────────────────────────────────┘
 ```
 
-> **Why "orthogonal" and not "disjoint namespaces":** an earlier capture framed
-> the two as two URL prefixes on one mandatory origin, and a later one advertised
-> the cache through a tag-embedded `[[caches]]` table. In the git-native target,
-> the cache is neither pinned to the same origin nor advertised in-band: its
-> location is the consumer's client-side registry config, or simply the origin
-> serving the stock-Nix surface itself. The metadata layer is authoritative; the
-> NAR cache is a client-configured, swappable substituter.
+The cache is neither pinned to the same origin nor advertised in-band: its
+location is the consumer's local registry/cache config, or simply the origin
+serving the stock-Nix surface itself. The metadata layer is authoritative; the
+NAR cache is a client-configured, swappable substituter.
 
 ---
 
@@ -133,11 +130,9 @@ three superset endpoints:
 - A consumer may configure multiple substituter URLs; ordering/preference is a
   stock-Nix concern, driven by each cache's `nix-cache-info` `Priority` (§5), not
   by any in-band AOS field.
-- Because the cache list is client-side (the consumer's own `registry.toml`, §4)
-  or simply the origin itself — rather than embedded in a signed tag — there is no
-  unsigned *in-band* side-channel served by the origin to reconcile.
-  (`bundle-list.toml`, `[latest]`, `[components]`, and `[capabilities]` are
-  **removed** from the target — design brief §15.)
+- Because the cache list is client-side (the consumer's local registry/cache
+  config) or simply the origin itself — rather than embedded in a signed tag —
+  there is no unsigned *in-band* side-channel served by the origin to reconcile.
 
 ---
 
@@ -147,10 +142,11 @@ The NAR **blob layer** already exists and carries straight over; the git-native
 metadata and the narinfo emitter do not yet exist.
 
 **Cache parsing & resolution (CURRENT).** The code already reads a `[[caches]]`
-array from a standalone **`registry.toml`** inside the registry clone — a
-**client-side** config file, not a signed tag. The target keeps cache selection
-client-side (§3); it is **not** moved into any signed tag. The
-parsing/sorting/selection logic below is reusable as-is.
+array from a **repo-local `registry.toml`** (parsed by `RegistryRootConfig`, living
+*inside* the registry git repo — see [current-state.md](current-state.md) §3.1), not
+a signed tag. The git-native target **removes `registry.toml` entirely**; cache
+selection moves to the consumer's **client-side `registries.d/<name>.toml`** (or the
+origin). The parsing/sorting/selection logic below is reusable as-is.
 
 - `CacheEntry { url, priority }` with `default_cache_priority() == 100`
   (`crates/aos-package/src/types.rs:585-593`), nested under `RegistryRootConfig`
@@ -181,9 +177,9 @@ on-disk `PackageToml` (deserialized in
 signature maps to a field already on that struct (§6).
 
 What is **missing** today: there is no `nix-cache-info` emitter and no
-`*.narinfo` emitter anywhere in the tree. The cache list stays where it is —
-read from the client-side `registry.toml` (or pointed straight at the origin) —
-so no migration into a signed tag is needed.
+`*.narinfo` emitter anywhere in the tree. The cache list is never embedded in a
+signed tag — in the target it is the consumer's client-side `registries.d/<name>.toml`
+(or the origin directly) — so no migration into a tag is needed.
 
 ---
 
@@ -207,8 +203,8 @@ Priority: 41
 
 > Note: the `nix-cache-info` `Priority` is the **Nix-cache** preference knob,
 > consumed by stock `nix` to order substituters. It is distinct from the
-> client-side `priority` field AOS's `registry.toml` uses to order the caches a
-> consumer has configured (§3, §4).
+> client-side `priority` field the consumer's local registry/cache config uses to
+> order the caches it has configured (§3, §4).
 
 ---
 
@@ -380,7 +376,7 @@ running stock `nix` consumes it as an ordinary binary cache. The substituter URL
 is whatever the consumer **configures client-side** (§3) — typically the origin
 itself if the origin also serves the stock-Nix surface, or a separate cache host.
 There is no tag to resolve: the URL is named directly in `nix.conf` or the AOS
-client's `registry.toml`.
+client's local registry/cache config.
 
 ### 10.1 `nix.conf`
 
@@ -461,9 +457,9 @@ already done in `download.rs`; the work is the metadata projection and signing o
 the **producer** side):
 
 1. **Client-side cache selection stays put** — the existing `CacheEntry` shape
-   (`types.rs:585-593`) keeps living in the consumer's `registry.toml` (or the
-   consumer points straight at the origin). Nothing is embedded in a signed tag
-   (§3); no migration is required here.
+   (`types.rs:585-593`) keeps living in the consumer's local registry/cache config
+   (or the consumer points straight at the origin). Nothing is embedded in a signed
+   tag (§3); no migration is required here.
 2. A **`nix-cache-info` stub** emitter (§5) — `StoreDir` supplied by the publish
    pipeline.
 3. A **narinfo generator** keyed by store-path hash, projecting `PackageMeta`
