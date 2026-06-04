@@ -289,8 +289,8 @@ git -c gpg.format=ssh -c user.signingkey=<key> \
 #   then publish that tag object's bytes to /channels/stable/<n>
 ```
 
-- The signing key is a registry **operational** Ed25519 key from the `keys.toml`
-  roster (§7.5; a single-key registry uses its sole key, brief §11);
+- The signing key is one of the registry's **active** Ed25519 keys from the
+  `keys.toml` roster (§7.5; a single-key registry uses its sole key, brief §11);
   `apr sign`'s today-unused `_key` arg (`registry_ops.rs:1761`) becomes live.
 - The tag carries **no structured payload** (optional freeform note only). The
   cache/substituter location lives in the committed repo-root `registry.toml`
@@ -340,17 +340,15 @@ see the layout reference
 ```toml
 schema = 1
 
-[[keys]]                       # currently-valid signing key(s)
-id   = "aos-core-ops-2026"
+[[keys]]                       # currently-active signing key(s) — no role field
+id   = "aos-core-2026"
 key  = "aos-core:Ed25519:<base64>"   # the parse_signing_key wire format
-role = "operational"                 # signs day-to-day release/channel tags
-[[keys]]
-id   = "aos-core-root"
+[[keys]]                       # overlap: a second active key vouches for the first
+id   = "aos-core-2026b"
 key  = "aos-core:Ed25519:<base64>"
-role = "root"                        # offline anchor; signs keys.toml itself
 
-[[revoked]]                    # keys no longer trusted (compromise/retirement)
-id     = "aos-core-ops-2025"
+[[revoked]]                    # keys no longer trusted (planned retirement)
+id     = "aos-core-2025"
 reason = "rotated"
 ```
 
@@ -358,10 +356,10 @@ Producer-side implementation:
 
 - **Emit `keys.toml`** at registry create / key-management time, writing it into
   the committed tree next to `registry.toml` (the same write site as
-  `registry_ops.rs:443-450`). `role` distinguishes the offline **root/anchor**
-  key (signs `keys.toml` for rotation/revocation) from the **operational** key
-  (signs day-to-day tags), TUF-style; a single-key registry may omit `root` and
-  rely on overlap-only rotation (open choice, brief §16).
+  `registry_ops.rs:443-450`). The roster lists **active signing key(s)** with no
+  role field; the model is **≥2 overlapping active keys** so a survivor can
+  disown a retired key (brief §14). The git lineage (signed tag → commit →
+  parent chain) supplies continuity, so there is no separate offline-root tier.
 - **Remove `signing.public_key` from `RegistryRootConfig`.** CURRENT
   `RegistryRootConfig` (`types.rs:566-573`) carries a `[registry.signing]`
   pubkey; the TARGET **drops** it (a key inside a file authenticated *by* that
@@ -377,12 +375,15 @@ Producer-side implementation:
   overlap window) inside a tag signed by the **currently-trusted** key. A
   consumer that already trusts the old key verifies the tag, parses `keys.toml`,
   and pins the new key; a later publish drops the old key (§8.3).
-- **Revocation** — list the bad key under `[[revoked]]` in a `keys.toml` **signed
-  by a key the consumer trusts that is *not* the revoked one.** That requires
-  either a dedicated offline **root** key that signs `keys.toml` while a separate
-  **operational** key signs everyday tags (TUF-style), or **≥2 overlapping active
-  keys** so a survivor can disown the compromised one. Root-vs-single is an open
-  choice (brief §16).
+- **Planned retirement** — list the retired key under `[[revoked]]` in a
+  `keys.toml` **signed by one of the *other* overlapping active keys** — never by
+  the key being retired. This is the **≥2 overlapping active keys** model (brief
+  §14): a survivor disowns the retired key, and the git lineage gives continuity
+  so no offline-root tier is needed.
+- **Compromise** — handled **out-of-band**: the consumer re-pins via
+  `trusted-keys.d` (`apr trust`). An in-repo key cannot credibly revoke itself,
+  and compromise is rare enough that the out-of-band re-pin is the accepted
+  fallback (brief §14).
 
 ---
 
@@ -430,7 +431,7 @@ is not an error: the consumer holds on its current pinned release.
 
 After the chain resolves to a commit (§8), the consumer reconstructs the tree and
 reads **`keys.toml`** (alongside `registry.toml`). It parses `[[keys]]` (each
-`id` / `key` / `role`, the `key` in `parse_signing_key`'s
+`id` / `key`, the `key` in `parse_signing_key`'s
 `registry:Ed25519:base64` form, `security.rs:306`) and `[[revoked]]`. Because the
 tree is authenticated transitively by the signed tag (tag → commit → tree → file,
 brief §14), `keys.toml` needs **no** standalone signature object. Its shape is the
@@ -455,11 +456,15 @@ Once `keys.toml` is parsed from a tag verified against a currently-trusted key:
   `KeyStore::store`, `security.rs:97`), so a subsequent tag signed by only the new
   key still verifies. No `KeyMismatch` prompt is needed when the new key arrives
   inside a roster signed by the trusted old key.
-- **Revocation** — a `[[revoked]]` entry is honoured **only when** the `keys.toml`
-  carrying it verified against a trusted key that is itself **not** the revoked
-  one (an offline **root**/anchor key, or a second overlapping active key). The
-  consumer then refuses any tag signed by a revoked key. A revocation that could
-  only be vouched for by the revoked key is **not** trusted.
+- **Planned retirement** — a `[[revoked]]` entry is honoured **only when** the
+  `keys.toml` carrying it verified against a trusted key that is itself **not** the
+  revoked one — i.e. one of the **≥2 overlapping active keys**. The consumer then
+  refuses any tag signed by a retired key. A `[[revoked]]` entry that could only
+  be vouched for by the revoked key itself is **not** trusted.
+- **Compromise** — an in-repo `[[revoked]]` entry cannot self-revoke a single
+  compromised key, so compromise is handled **out-of-band**: the consumer re-pins
+  the replacement key via `trusted-keys.d` (`apr trust`). This is the accepted
+  fallback (brief §14), not an open question.
 
 > **Why the cache list is not the trust boundary.** An authenticated-but-wrong
 > `[[caches]]` pointer (from either `registry.toml` or client-side
@@ -489,7 +494,7 @@ Once `keys.toml` is parsed from a tag verified against a currently-trusted key:
 | bundle signing | `apr bundle` (`registry_ops.rs:1716`) | **remove** (bundles dropped, brief §15) |
 | emit/parse `keys.toml` roster | — | **new** (active keys + revoked; tree file, brief §14) |
 | `signing.public_key` in `registry.toml` | `RegistryRootConfig` (`types.rs:566-573`) | **remove** (key trust → `keys.toml` + TOFU) |
-| rotation/revocation verify | — | **new** (root/operational or ≥2 keys; §8.3) |
+| rotation/revocation verify | — | **new** (≥2 overlapping active keys; §8.3) |
 
 ---
 
@@ -521,8 +526,8 @@ Once `keys.toml` is parsed from a tag verified against a currently-trusted key:
     (§8.1). TOFU bootstrap (`trusted-keys.d`) is **unchanged** (§8.2).
 11. **Rotation/revocation verify** (G9) — pin a rotated key from an
     overlap-window roster signed by the trusted key; honour `[[revoked]]` only
-    when the roster verified against a non-revoked (root/anchor or ≥2-overlap)
-    key (§8.3).
+    when the roster verified against a non-revoked **overlapping active** key;
+    compromise falls back to out-of-band `apr trust` re-pin (§8.3).
 
 Dependency order: 1 → (2,3) → 4 → 5 → 6 → (7,8); 9 any time; 10 → 11
 (10 depends on 4–6 for the verified tree it reads).
@@ -539,9 +544,12 @@ Dependency order: 1 → (2,3) → 4 → 5 → 6 → (7,8); 9 any time; 10 → 11
   floor mitigate this (§5). Key-rotation cadence — open-questions #5.
 - **Key rotation UX:** the planned path is an overlap-window `keys.toml` roster
   signed by the trusted key (§7.6/§8.3) so a rotated key arrives pre-vouched
-  rather than as a bare `tofu_check` → `KeyMismatch` (`security.rs:182`). Whether
-  to keep an explicit `apr trust` re-pin fallback, and root-vs-single trust model,
-  are open (brief §16).
+  rather than as a bare `tofu_check` → `KeyMismatch` (`security.rs:182`). The
+  trust model is **decided**: **≥2 overlapping active keys** (no offline-root
+  tier — git lineage gives continuity), with an explicit out-of-band `apr trust`
+  re-pin as the **compromise** fallback (brief §14). The one remaining open point
+  is cosmetic — standalone `keys.toml` vs a `[keys]` block in `registry.toml`
+  (leaning standalone; brief §16.8).
 - **Floor persistence location** and per-channel vs. global scope — coordinate
   with [workstream-05](./workstream-05-consumer.md) install state.
 - **Narinfo `Sig:` reuse:** if the origin also serves NARs
@@ -553,7 +561,7 @@ Dependency order: 1 → (2,3) → 4 → 5 → 6 → (7,8); 9 any time; 10 → 11
 
 ## See also
 
-- Brief: [design-brief.md](./design-brief.md) §11 (signing & trust), §5 (ref model / name-binding), §14 (repo-tree config & trust files), §15 (removed), §16 (open: trust model)
+- Brief: [design-brief.md](./design-brief.md) §11 (signing & trust), §5 (ref model / name-binding), §14 (repo-tree config & trust files — decided: ≥2 overlapping active keys), §15 (removed), §16.8 (decided trust model)
 - Plan: [README.md](./README.md) · [gap-analysis.md](./gap-analysis.md) ·
   [workstream-01-object-store.md](./workstream-01-object-store.md) ·
   [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md) ·

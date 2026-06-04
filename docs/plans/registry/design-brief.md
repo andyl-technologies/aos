@@ -336,12 +336,15 @@ tag, and not (primarily) client-side:
   (§15).
 - **`keys.toml`** (git-repo-root): the **trust roster** — active signing key(s) + a
   revoked list. Bootstrap trust is TOFU-pinned **client-side** (`trusted-keys.d/<registry>.pub`).
+  The model is **≥2 overlapping active keys** — the git lineage (signed tag → commit →
+  parent chain) provides the continuity, so no separate offline-root tier is needed.
   **Rotation** = publish `keys.toml` listing old + new keys (overlap window) in a tag
-  signed by the currently-trusted key; consumers verify and pin the new key.
-  **Revocation** = list the bad key, signed by a key the consumer trusts that is **not**
-  the revoked one — so keep an offline **root/anchor** key (TOFU-pinned) that signs
-  `keys.toml` while a separate operational key signs day-to-day tags (TUF-style root
-  rotation), or maintain ≥2 overlapping active keys. (Root-vs-single is an open choice — §16.)
+  signed by a currently-trusted key; consumers verify and pin the new key, then the old
+  key is dropped on a later publish. **Planned retirement** = list the key under
+  `revoked`, signed by one of the *other* overlapping active keys. **Compromise** is
+  handled **out-of-band**: the consumer re-pins via `trusted-keys.d` (`apr trust`) — an
+  in-repo key can't credibly revoke itself, and compromise is rare enough that the
+  out-of-band path is acceptable. (Decided — was §16.)
 
 The committed **tree** is therefore `registry.toml` + `keys.toml` +
 `packages/<x>/<name>.toml` + `closures/<hash>` + `.gitattributes` — distinct from the
@@ -391,11 +394,12 @@ URLs (replaced by **relative `info/alternates`** entries, host-independent).
    shim) — and whether the NAR cache superset (origin-served narinfo, located via
    the committed `registry.toml` `[[caches]]` with client-side `registries.d` as an
    optional override) ships in the same milestone or later.
-8. `keys.toml` trust model: a dedicated offline **root/anchor** key + rotating
-   **operational** key (TUF-style, robust against operational-key compromise) vs a
-   single key with overlap-only rotation (simpler, but compromise needs out-of-band
-   re-pinning). And whether the roster is a standalone `keys.toml` or a `[keys]` block
-   in `registry.toml`.
+8. **(Decided)** `keys.toml` trust model = **≥2 overlapping active keys** (rotation via
+   overlap; the git lineage gives continuity, no offline-root tier). Planned retirement
+   is an in-repo `revoked` entry signed by another overlapping key; **compromise** is
+   handled **out-of-band** (consumer re-pins via `trusted-keys.d` / `apr trust`). Still
+   open only: whether the roster is a standalone `keys.toml` or a `[keys]` block in
+   `registry.toml` (leaning standalone `keys.toml`).
 
 ---
 
