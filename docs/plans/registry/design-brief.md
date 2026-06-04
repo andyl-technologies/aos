@@ -27,13 +27,13 @@
   static files over dumb HTTP**. The package metadata *is* the git tree content.
 - **Channel** — a named release line (e.g. `stable`, `testing`). Modeled as a git
   **branch** (`refs/heads/<channel>`) whose head is the rollout **frontier**, and
-  as **256 signed partition tag objects** (`/channel/<name>/00..ff`) for rollout.
+  as **256 signed partition tag objects** (`/channels/<name>/00..ff`) for rollout.
 - **Partition / bucket** — one of exactly **256** channel partitions, one byte (`00`–`ff`). A
   consumer deterministically self-selects one bucket. The publisher advances
   partitions independently to control rollout.
 - **Release** — an immutable semver version (e.g. `1.1.0`, `1.0.0-beta+exp.sha.5114f85`,
   **no `v` prefix**). A signed git **tag** (`refs/tags/<semver>`) → commit, with its
-  object store under `/release/<major>/<minor>/<patch…>/`.
+  object store under `/releases/<major>/<minor>/<patch…>/`.
 - **Signed tag object** — an annotated git tag carrying an SSH-format **Ed25519**
   signature. It carries **no structured payload** (no TOML, no `[[caches]]`, no
   `valid_until`) — only the standard git tag fields plus an optional freeform
@@ -47,7 +47,7 @@
 - **Frontier** — the newest release any channel partition targets; the value of the
   channel's branch head.
 - **Dumb HTTP** — git's static-file transport (`HEAD`, `info/refs`, loose objects,
-  `objects/info/packs`, `objects/info/http-alternates`).
+  `objects/info/packs`, `objects/info/alternates`).
 
 ---
 
@@ -89,7 +89,7 @@ makes it simultaneously:
   (`nix-cache-info`/narinfo/`nar`); the consumer's cache/substituter location is
   **client-side config** (or the origin itself), never advertised in signed tags.
 
-The AOS client additionally uses the `/channel` partition tags (signed, bucketed
+The AOS client additionally uses the `/channels` partition tags (signed, bucketed
 rollout) and the thin `delta-*.pack`s (cheap incremental fetch). These ride
 *alongside* the standard git surface without conflicting.
 
@@ -107,14 +107,14 @@ benefits).
   info/refs                        ← update-server-info: refs/heads/<channels> + refs/tags/<semvers> [low TTL]
   objects/                         ← THE single object store
     info/packs                     ← typically empty (full packs live per-release)        [low TTL]
-    info/alternates                ← RELATIVE "../release/<…>/objects/" entries (one ../), [low TTL]
+    info/alternates                ← RELATIVE "../releases/<…>/objects/" entries (one ../), [low TTL]
                                        newest→oldest; host-independent; pack discovery + release index
     <xx>/<62-hex>                  ← ALL loose objects (every release), sha256 2/62 split  [immutable, high TTL]
-  channel/
+  channels/
     <name>/                                                                              [low TTL]
       00 .. ff                     ← 256 SIGNED tag objects (one byte; tag name == <name>),
                                        each → a semver tag (rollout partitions)
-  release/
+  releases/
     <major>/<minor>/<patch[-prerelease][+build]>/                                        [long TTL, immutable]
       objects/                              ← PACKS ONLY (no loose objects here)
         info/packs                           ← lists this release's pack-<sha256>.pack
@@ -123,8 +123,8 @@ benefits).
 ```
 
 CDN policy (explicit requirements):
-- `/channel/**` — **MUST** be low TTL (fast rollout updates).
-- `/release/**` — **MAY** be long TTL (releases are immutable after publish).
+- `/channels/**` — **MUST** be low TTL (fast rollout updates).
+- `/releases/**` — **MAY** be long TTL (releases are immutable after publish).
 - `/objects/info/**` and per-release `objects/info/packs` — **MUST** be low TTL
   (`packs`, `alternates`, `info/refs`, `HEAD` change on publish).
 - All other `/objects/**` (loose objects, packs) — immutable; **MAY** have very
@@ -139,11 +139,11 @@ CDN policy (explicit requirements):
 | `HEAD` | symref → `refs/heads/<default-channel>` | no | stock + AOS |
 | `refs/heads/<channel>` | **channels are branches**; head = **frontier** (newest release any partition targets) | no (ref pointer) | stock git convenience |
 | `refs/tags/<semver>` | release: signed tag → commit | **yes** | stock (`verify-tag`) + AOS |
-| `/channel/<name>/<00..ff>` | 256 signed partition tag objects (name == channel) → semver tag | **yes** | AOS rollout only |
+| `/channels/<name>/<00..ff>` | 256 signed partition tag objects (name == channel) → semver tag | **yes** | AOS rollout only |
 
 **Trust chain:** AOS verification is `signed partition tag → signed semver tag →
 commit`, checking both the signature **and** the embedded tag-name field against the
-expected name (channel name under `/channel/*`, semver under `/release/*`) — this
+expected name (channel name under `/channels/*`, semver under `/releases/*`) — this
 binds a tag object to its serving path and prevents cross-serving. Branch refs are
 **unsigned convenience pointers**, never part of the trust chain; stock-git users can
 still `git verify-tag <semver>` because the release tags are the signed objects.
@@ -152,7 +152,7 @@ still `git verify-tag <semver>` because the release tags are the signed objects.
 
 ## 6. Channels & rollouts
 
-- A channel exposes exactly **256** partition files `/channel/<name>/00..ff` (one byte), each an
+- A channel exposes exactly **256** partition files `/channels/<name>/00..ff` (one byte), each an
   independently-signed tag object (tag name == channel name) pointing at a semver
   tag. There **must always be 256**; if one is missing a client **may** use another
   (deterministic probe-forward `(bucket+1) mod 256`).
@@ -180,8 +180,8 @@ still `git verify-tag <semver>` because the release tags are the signed objects.
   `1.0.0-beta+exp.sha.5114f85`. Ordering and precedence follow semver rules
   (the calendar/`creation_token` scheme is gone from the target).
 - A release is a signed tag `refs/tags/<semver>` → commit. Its object store lives at
-  `/release/<major>/<minor>/<patch…>/` where the third segment is everything after
-  `major.minor` (e.g. `1.0.0-beta+exp.sha.5114f85` → `/release/1/0/0-beta+exp.sha.5114f85/`).
+  `/releases/<major>/<minor>/<patch…>/` where the third segment is everything after
+  `major.minor` (e.g. `1.0.0-beta+exp.sha.5114f85` → `/releases/1/0/0-beta+exp.sha.5114f85/`).
 - Releases are **immutable** once published (long CDN TTL).
 
 ---
@@ -192,8 +192,8 @@ still `git verify-tag <semver>` because the release tags are the signed objects.
   path is the first 2 / remaining 62 hex chars of the 64-char sha256.
 - **`info/refs` + `HEAD`** make the repo a valid dumb-HTTP bare repo; regenerated via
   `git update-server-info` on every publish.
-- **`objects/info/alternates`** lists every `/release/*/objects/` dir as a
-  **relative** path (`../release/<…>/objects/`), newest→oldest. Git resolves relative
+- **`objects/info/alternates`** lists every `/releases/*/objects/` dir as a
+  **relative** path (`../releases/<…>/objects/`), newest→oldest. Git resolves relative
   alternates against the repo's `objects/` URL, so the file is **byte-identical across
   every endpoint** (CDN, mirror, localhost) — no hostname is baked in. The relative
   depth is **one** `../` (resolved relative to `objects/`, where `../` strips the
@@ -203,7 +203,7 @@ still `git verify-tag <semver>` because the release tags are the signed objects.
   URLs.
 - **ALL loose objects are centralized** at the root `/objects/<xx>/<…>` (every
   release) — the guaranteed completeness fallback. The per-release
-  `/release/*/objects/` dirs are **pack-only**; the alternates therefore serve **pack
+  `/releases/*/objects/` dirs are **pack-only**; the alternates therefore serve **pack
   discovery + the release index**, not object completeness.
 
 ---
@@ -274,7 +274,7 @@ central root `/objects/` loose store — no thin packs needed.
 - **One Ed25519 key** continues to serve git signing; the Nix-cache narinfo `Sig:`
   (if the origin also serves NARs) can reuse the same key (separate signature object).
 - **Tags carry no in-band metadata** — no `valid_until` (or any TOML). **Freshness**
-  is a transport + consumer concern: low CDN TTL on `/channel` (and `info/refs`,
+  is a transport + consumer concern: low CDN TTL on `/channels` (and `info/refs`,
   `objects/info`), plus the consumer's own max-staleness policy and the monotonic
   anti-rollback floor. (Trade-off: weaker than an in-band signed expiry against a
   *frozen-but-validly-signed* mirror — tracked in open questions.)
@@ -296,7 +296,7 @@ transparently clonable, the origin serves the standard shim: `HEAD`, `info/refs`
   apply a thin pack); AOS clients discover them by the `delta-<semver>` convention.
 - **Channels are branches**, **releases are tags**, **`HEAD` = the default channel**
   (e.g. `stable`); the 256 partition tag objects live outside the ref namespace at
-  `/channel/*` and are AOS-only.
+  `/channels/*` and are AOS-only.
 - **Loose objects guarantee correctness** for any stock client; conventionally-named
   full packs restore speed.
 - **sha256 + dumb HTTP** requires a client git that supports sha256 (no capability
@@ -337,7 +337,7 @@ pointer · `[components]` · `[capabilities]` · the percentage-based rollout, t
 (replaced by the git object store + `info/alternates`) · the **tag-message TOML**
 (`[meta]` / `schema` / `valid_until`) and tag-embedded **`[[caches]]`** (tags carry no
 structured payload; cache config is client-side) · **per-release loose objects** (all
-loose objects are centralized in the root `/objects/`; `/release/*/objects/` are
+loose objects are centralized in the root `/objects/`; `/releases/*/objects/` are
 pack-only) · **absolute `http-alternates`** URLs (replaced by **relative
 `info/alternates`** entries, host-independent).
 
