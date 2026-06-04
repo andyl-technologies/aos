@@ -78,23 +78,24 @@ new one — never a partition tag pointing at a commit whose objects are missing
 `apr …` expands to `package registry …`. All producer logic lives in
 [`crates/aos-package/src/registry_ops.rs`](../../crates/aos-package/src/registry_ops.rs).
 Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml` +
-`closures/<hash>`) and distributes via **git bundles**. None of the TARGET
-git-native pipeline (sha256 object store, signed semver/partition tags, packs,
-deltas, `update-server-info`, `info/alternates`, upload) exists yet.
+`closures/<hash>`) and still has legacy **git bundle** commands. The sha256
+object-store scaffolding, signed release tags, `update-server-info`, and root
+`objects/info/alternates` refresh hooks now exist; pack/delta generation,
+channel partition tags, and upload are still pending.
 
 The commands relevant to a release, in workflow order:
 
 | Command | Function | What it actually does (CURRENT) |
 |---|---|---|
-| `apr create <name> [--remote URL]` | `create` (`registry_ops.rs:421`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, initial commit, optional `git remote add origin`. |
-| `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` (`commit_registry`, `registry_ops.rs:385`). |
-| `apr tag <name> [--message] --key <key>` | `tag` (`registry_ops.rs:1684`) | `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; `--key` is required. |
-| `apr sign <tag> --key <key>` | `sign` (`registry_ops.rs:1747`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`; it no longer signs commits. |
+| `apr create <name> [--remote URL]` | `create` (`registry_ops.rs:421`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, initial commit, then refresh dumb-HTTP object indexes; optional `git remote add origin`. |
+| `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` and refresh `objects/info/alternates` + `update-server-info`. |
+| `apr tag <name> [--message] --key <key>` | `tag` (`registry_ops.rs:1684`) | `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; `--key` is required; semver tags also prepare a release object dir during the object-store refresh. |
+| `apr sign <tag> --key <key>` | `sign` (`registry_ops.rs:1747`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
 | `apr bundle [--output] [--tag] [--delta-from] [--update-manifest]` | `bundle` (`registry_ops.rs:1706`) | `git bundle create` into a local dir. See §2.1. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
-There is **no** `apr release`, no pack/delta generation, no `update-server-info`,
-no partition-tag advancement, and no upload command in the tree today.
+There is **no** `apr release`, no pack/delta generation, no partition-tag
+advancement, and no upload command in the tree today.
 
 ### 2.1 CURRENT: `apr bundle` = `git bundle create` only
 
@@ -533,8 +534,8 @@ apr bundle --delta-from 2026.05.0 --tag 2026.06.0     # delta bundle    (registr
 ```
 
 Everything after `apr push` is incomplete: the operator hand-copies bundles to a
-mirror; there is no pack/delta/zstd publish pipeline, no `update-server-info`, no
-`info/alternates`, no signed channel partition tags, and no upload.
+mirror; there is no pack/delta/zstd publish pipeline, no signed channel
+partition tags, and no upload.
 
 ### 12.2 TARGET (the §10/§4/§6 pipeline, e.g. a future `apr release`)
 
