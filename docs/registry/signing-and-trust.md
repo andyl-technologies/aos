@@ -438,8 +438,8 @@ ways:
 | Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) | unchanged (the bootstrap anchor) |
 | Signing pubkey location | removed from in-repo `registry.toml`; bootstrap trust is client-side TOFU | trust = `keys.toml` roster + TOFU |
 | Key rotation / revocation | `keys.toml` parser plus rotation-pin/revocation helpers exist; publish/key-management wiring still pending | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
-| Signature *production* | `apr tag --key` / `apr sign <tag> --key` create signed release tag objects | publish pipeline signs channel partition tags |
-| Tag creation | `apr tag` requires `--key` and runs `git tag -s` | channel partition tags still pending |
+| Signature *production* | `apr tag --key` / `apr sign <tag> --key` create signed release tag objects; `apr channel init/advance --key` writes signed channel partition tag files | upload-integrated publish pipeline still pending |
+| Tag creation | `apr tag` requires `--key` and runs `git tag -s`; `apr channel` creates raw signed partition tag files | consumer verification path still pending |
 | Signature *verification* | `verify_commit_signature` = `git verify-commit` (`security.rs:199`) | `git verify-tag` (same allowed-signers mechanism) |
 | What is signed | the HEAD **commit** | **`tag → tag → commit`** chain (partition + release tags) |
 | Name-binding | none | embedded tag-name == expected path name (channel / semver) |
