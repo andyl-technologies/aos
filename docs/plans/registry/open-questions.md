@@ -415,6 +415,95 @@ This is two distinct decisions, each large enough for its own section:
 - **NAR-superset milestone timing** →
   [§4](#4-does-the-nar-cache-superset-ship-this-milestone).
 
+### Q8 — NAR blob `URL:` key: colon-retained wire key vs. colon-free fallback
+
+| | |
+|---|---|
+| **Source** | Not in brief §16 — a WS-06 deployment decision surfaced by [workstream-06-nix-cache.md](./workstream-06-nix-cache.md) §7 (F388 / F389). |
+| **Owner WS** | [WS-06](./workstream-06-nix-cache.md) (narinfo emitter), informs [WS-05](./workstream-05-consumer.md) §8 (consumer cache resolution) |
+| **Status** | OPEN — a per-deployment edge-compatibility choice, not a wire-format change. |
+
+**What is decided (CURRENT).** The blob is served at `{cache}/nar/<key>.nar.zst`
+where the emitted narinfo `URL:` field carries the key verbatim and the consumer
+fetches it via `join_cache_url(mirror, narinfo.url)` (`download.rs:65-71`,
+`:184`) — so the **wire** key is whatever the producer writes into `URL:`. Today
+the cache-supplied `URL:` retains the full `sha256:<hex>` form, colon included.
+On disk the consumer rewrites colon→dash for filesystem safety
+(`nar_cache_filename`, `download.rs:313-317` → `sha256-<hex>.nar.zst`), but that
+rewrite is **local only** and does **not** change the wire key.
+
+**What is open.** Whether the emitter writes the colon-retained key
+(`nar_url_key` → `sha256:<hex>`, WS-06 §7) or the colon-free fallback
+(`nar_url_key_colon_free` → `sha256-<hex>`, the same transform the consumer
+already applies on disk) into `URL:` — and serves the blob under the matching
+name. The two must agree: `URL:` and the served object key are a single
+deployment-wide choice (a `colon_safe: bool` on the emitter config, WS-06 §7).
+
+**Why it is open.** S3 permits a literal `:` in object keys, but some CDN / edge
+layers percent-encode or reject it. If the chosen edge mangles the colon, the
+emitter must switch to `nar_url_key_colon_free` **and** set `URL:` to match, so a
+stock `nix` substituter and `apm` both resolve the blob. This is a property of
+the *serving infrastructure*, not the registry format — hence a per-deployment
+flag rather than a format decision.
+
+**Recommendation.** Default to the **colon-retained** key (matches the CURRENT
+`download.rs` path with no consumer change); expose a `colon_safe` emitter switch
+that flips both `URL:` and the served key to `sha256-<hex>` for edges that mangle
+the colon. Pin the colon-handling guarantee in
+[nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) §9 once
+the target edge layers are known.
+
+**Failure mode.** Pure reachability, never corruption: a mismatched `URL:` vs.
+served-key (or a colon mangled by an edge that was assumed colon-safe) yields a
+404 on NAR fetch, not bad bytes — `apm` still verifies the compressed stream
+against the narinfo `FileHash` (`download.rs:191-204`) and a stock `nix` host
+still verifies `NarHash`.
+
+### DD-1 — Doc-debt: re-ground the CURRENT-state baseline against the master rebase
+
+| | |
+|---|---|
+| **Type** | Documentation debt (not a design decision) — flagged here so the owning docs are corrected before WS-06 lands. |
+| **Owner WS** | [WS-06](./workstream-06-nix-cache.md) (narinfo emitter), with [WS-05](./workstream-05-consumer.md) (consumer) |
+| **Status** | OPEN — the CURRENT-state citations below predate the master rebase and are now stale. |
+
+The master rebase pulled in **commit `7149acf6`** ("apm: narinfo-driven NAR
+downloads + export-format import"), which changed the CURRENT state in two ways
+that several plan/reference docs still describe as they were *before* the rebase:
+
+1. **`download_hash` / `download_size` were removed from the registry schema.**
+   Commit `7149acf6` dropped both fields from `PackageMeta` (now `types.rs:44-74`)
+   and from the on-disk `PlatformEntry` (`registry/parse.rs:45-51`); narinfo
+   `FileHash` / `FileSize` are now **authoritative** and the consumer reads them
+   from the narinfo, not from the package TOML. **Consequence for WS-06:** the §5.2
+   open question is effectively *resolved to emit-time compute* — the emitter must
+   compute `FileHash` / `FileSize` from the compressed `.nar.zst` at emit time
+   (option 2 in WS-06 §5.2.1), **not** read them off `PackageMeta` (option 1, which
+   assumed fields that no longer exist). WS-06 §5.1 / §5.2 / §10 / §11 (the schema
+   prereq, the builder reading `meta.download_hash`) and
+   [current-state.md](../../registry/current-state.md) (lines documenting
+   `download_hash` / `download_size` as package-TOML fields) must be re-grounded
+   accordingly.
+
+2. **A nix-cache server already exists.** `7149acf6` (and the surrounding
+   `aos-server` work) ships a live narinfo / `nix-cache-info` surface in
+   `crates/aos-server/src/routes.rs` — `cache_info_handler` (`routes.rs:123-148`)
+   emits `Priority: 30` (`routes.rs:145`), with `narinfo_handler` / `nar_handler`
+   serving `<hash>.narinfo` and `nar/<filename>`. So the "no `nix-cache-info` /
+   narinfo emission" / "narinfo server: n/a ❌" statements in
+   [current-state.md](../../registry/current-state.md) and the greenfield framing
+   in [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) are
+   stale: WS-06 should **build on / reference the existing server**, not assume a
+   pure-greenfield emitter. Reconcile the `Priority` value used in the docs: the
+   **live server emits `Priority: 30`** (`routes.rs:145`) — use **30** consistently
+   for the served surface, and note that the `aos-cache` backends write
+   `Priority: 40` (`backend/sftp.rs:143`, `backend/fs.rs:126`). WS-06 §4's
+   `Priority: 41` example and the routes.rs citation should be re-grounded against
+   the live `30`.
+
+This is a *re-grounding* task, not a re-decision: the TARGET design is unchanged,
+but the CURRENT-state baseline the plan reasons against moved underneath it.
+
 ---
 
 ## 2. Risk register
@@ -685,6 +774,8 @@ item is closed.
 | Q6 | Relative `info/alternates` (one `../`, HTTP + local-FS) | WS-01 | WS-01 layout | One host-independent relative `info/alternates`, one-`../`; no `http-alternates` |
 | Q7a | Migration: clean break vs. shim | WS-05 / WS-01 / WS-03 | WS-01, WS-02, WS-03, WS-05 | Clean break + thin read-only consumer dual-detect → EOL (§3.4) |
 | Q7b | NAR superset milestone timing | WS-05 | (none — fast-follow) | Defer to fast-follow; cache lives in committed `registry.toml` `[[caches]]` (client-side `registries.d` override / origin), nothing reserved in tags (§4.3) |
+| Q8 | NAR blob `URL:` colon-retained vs. colon-free | WS-06 | WS-06 emitter | Default colon-retained; `colon_safe` switch flips `URL:` + served key to `sha256-<hex>` for edges that mangle `:` |
+| DD-1 | Doc-debt: re-ground CURRENT-state after `7149acf6` | WS-06 / WS-05 | (docs — gates WS-06 §5/§10/§11 accuracy) | Emit-time compute FileHash/FileSize (fields removed); reference existing `aos-server` nix-cache server (`Priority: 30`) |
 | R2/R3 | Torn publish / publisher race | WS-02 / WS-03 | WS-02, WS-03 | Immutable-first / low-TTL-last; single publisher per channel |
 | R7 | Cross-serving / name-confusion | WS-04 / WS-05 | WS-04, WS-05 | Name-binding: embedded tag-name == path name; verify `tag→tag→commit` |
 | R9 | Anti-rollback floor across cutover | WS-05 | WS-05 | Re-seed floor at git-native cutover; fix-forward only |

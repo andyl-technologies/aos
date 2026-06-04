@@ -81,18 +81,18 @@ doc references their *hooks* but does not implement them.
 
 | Concern | Today | Citation |
 |---|---|---|
-| Repo init | `git init` (non-bare, **sha1**, default format) | `registry_ops.rs:438` |
-| Bundle scratch repo | `git init --bare` (sha1) | `bundle.rs:359`, `git.rs:150` |
+| Repo init | `git init` (non-bare, **sha1**, default format) | `registry_ops.rs:438` (`create`, `fn` at :421) |
+| Bundle scratch repo | `git init --bare` (sha1) | `bundle.rs:358` (`ensure_git_repo`, `fn` at :349), `git.rs:157` (`ensure_repo`, `fn` at :147) |
 | Object format | sha1 implicit everywhere; no `--object-format` flag anywhere | `grep --object-format` → none |
 | Distribution | git **bundles** + `bundle-list.toml` (consumer-parsed) | `registry/bundle.rs` |
 | Object store layout | single flat `.git/objects`; no per-release dirs, no `info/alternates` | — |
 | Dumb-HTTP surface | none generated (`update-server-info` not called anywhere) | `grep update-server-info` → none |
-| Registry root | a `registry.toml` (`RegistryRootConfig`) parsed at repo root | `types.rs:565-573`, `registry_ops.rs:391-402` |
-| Versions | calendar tags ordered by `creation_token` | `types.rs:259` (`last_creation_token`), `state.rs version_to_token` |
+| Registry root | a `registry.toml` (`RegistryRootConfig`) parsed at repo root | `types.rs:564-570`, `registry_ops.rs:392-402` (`read_registry_toml`) |
+| Versions | calendar tags ordered by `creation_token` | `types.rs:256` (`last_creation_token`), `registry/state.rs:131` (`version_to_token`) |
 
 The current registry is **content** (nested package TOMLs + `closures/<hash>`)
-shipped as **git bundles**. `PackageMeta` (`types.rs:43-77`) is the in-memory
-projection; `RegistryRootConfig`/`CacheEntry` (`types.rs:567`, `types.rs:585`)
+shipped as **git bundles**. `PackageMeta` (`types.rs:44-74`) is the in-memory
+projection; `RegistryRootConfig`/`CacheEntry` (`types.rs:564`, `types.rs:582`)
 read a root `registry.toml` for mirror/cache URLs. None of that is the *target*
 transport. See [current-state](../../registry/current-state.md) for the full
 as-is.
@@ -114,14 +114,18 @@ as-is.
 Signed tags carry **no structured payload** (a signed tag is a pure signed
 pointer — standard git tag fields + Ed25519 signature + optional freeform
 message). The cache/NAR-substituter location lives in the committed git-repo-root
-`registry.toml` `[[caches]]` (`RegistryRootConfig`, `types.rs:566-573`),
+`registry.toml` `[[caches]]` (`RegistryRootConfig.caches: Vec<CacheEntry>`,
+`types.rs:564-570`; `CacheEntry` at `types.rs:582`),
 authenticated via the signed tag — **not** advertised in a signed tag, and not
 *solely* client-side; the consumer's local `registries.d/<name>.toml` is an
 optional override/supplement (HIGHER priority wins; brief §14). That git-repo-root
 `registry.toml` is **kept** as a committed tree file (§3.3); only the intermediate
 *signed-HTTP-root* `registry.toml` is removed (brief §15). The **signing pubkey**
-is removed from `registry.toml` (key trust moves to the new committed `keys.toml`
-+ client-side TOFU; [repo-layout.md](../../registry/repo-layout.md) §2–§3).
+(`RegistrySigningConfig.public_key`, `types.rs:594-596`, reached via the
+`signing: Option<RegistrySigningConfig>` field of `RegistryRootConfig` at
+`types.rs:569`) is removed from `registry.toml` (key trust moves to the new
+committed `keys.toml` + client-side TOFU;
+[repo-layout.md](../../registry/repo-layout.md) §2–§3).
 Superseded concepts live only in
 [current-state](../../registry/current-state.md) (today's code) and design-brief
 §15.
@@ -169,9 +173,13 @@ everything after `major.minor`** (brief §7):
 | `1.1.0-alpha.1` | `/releases/1/1/0-alpha.1/objects/` |
 | `1.0.0-beta+exp.sha.5114f85` | `/releases/1/0/0-beta+exp.sha.5114f85/objects/` |
 
-Versions are **semver, no `v` prefix** (brief §7). Note the current code stores
-calendar tags like `v2026.03` (`types.rs:909`, `types.rs:932`) — that scheme and
-the `v` prefix are gone in the target.
+Versions are **semver, no `v` prefix** (brief §7) — modeled by `semver::Version`
+(the existing `parse_tag_as_semver(tag: &str) -> Option<semver::Version>` at
+`update.rs:456` already produces this type; there is no bespoke `Semver`/`FromSemver`
+type in the repo). Note the current code stores calendar tags like `v2026.03`
+(e.g. `cfg.tag = Some("v2026.03".into())` at `types.rs:902` and `:935`, and the
+`version_to_token("v2026.02.3")` tests at `registry/state.rs:197-227`) — that
+scheme and the `v` prefix are gone in the target.
 
 ### 3.2 CDN TTL policy (brief §4)
 
@@ -214,8 +222,9 @@ content.
 
 > **Two `registry.toml` files, not the same thing (brief §14/§15).** The
 > git-repo-**root** `registry.toml` above is a **committed tree file**
-> (`RegistryRootConfig`, `types.rs:566-573`) — `[registry]` + `[[caches]]`, with
-> the signing pubkey **removed** (a key in a file authenticated by that key is
+> (`RegistryRootConfig`, `types.rs:564-570`) — `[registry]` + `[[caches]]`, with
+> the signing pubkey **removed** (drop the `signing: Option<RegistrySigningConfig>`
+> field at `types.rs:569`; a key in a file authenticated by that key is
 > circular for bootstrap; trust lives in `keys.toml` + client-side TOFU). It is
 > **not** the removed intermediate *signed-HTTP-root* `registry.toml` (the mutable
 > origin file with `[latest]`/`[channels]`/`[components]`/`[capabilities]`/
@@ -243,10 +252,13 @@ git init --bare --object-format=sha256 <repo-dir>
 git --git-dir=<repo-dir> symbolic-ref HEAD refs/heads/stable
 ```
 
-- `git init` at `registry_ops.rs:438` (non-bare, sha1) is replaced by the bare
-  sha256 form for the **canonical published repo**. (A working clone the
-  publisher edits in may stay non-bare; the *published* artifact is bare.)
-- The bundle scratch-repo inits at `bundle.rs:359` and `git.rs:150` are part of
+- `git(&dir, &["init"])` at `registry_ops.rs:438` (inside `pub async fn create`,
+  `fn` at `:421`; non-bare, sha1) is replaced by the bare sha256 form for the
+  **canonical published repo**. (A working clone the publisher edits in may stay
+  non-bare; the *published* artifact is bare.)
+- The bundle scratch-repo inits at `bundle.rs:358` (`ensure_git_repo`, `fn` at
+  `:349`) and `git.rs:157` (`ensure_repo`, `fn` at `:147`) — both `["init",
+  "--bare"]` (sha1) — are part of
   the **retired bundle path** (brief §15) and are removed by WS-02, not edited
   here.
 - Add a guard: refuse to operate on a repo whose `git rev-parse
@@ -414,13 +426,16 @@ host binary.
 
 ### 6.1 Eval / unit (Rust, `crates/aos-package`)
 
-| Test | Asserts |
-|---|---|
-| `objectstore::release_path_mapping` | semver → `/releases/M/m/<third>/objects/` for the §3.1 table (incl. `-prerelease+build`) |
-| `objectstore::alternates_ordering` | release dirs emitted **newest → oldest** by semver precedence |
-| `objectstore::alternates_relative` | every line is a relative path with **one `../`** resolving to a real release `objects/` dir; host-independent (no hostname) |
-| `objectstore::object_format_guard` | refuse a repo whose `rev-parse --show-object-format` ≠ `sha256` |
-| `objectstore::loose_path_split` | sha256 oid → `<first-2>/<last-62>` loose path |
+All in `#[cfg(test)] mod tests` inside `registry/objectstore.rs` (same pattern as
+the `version_to_token_*` tests in `registry/state.rs:197-227`):
+
+| `#[test] fn` | Exercises | Asserts |
+|---|---|---|
+| `test_release_object_dir_mapping` | `release_object_dir` | semver → `M/m/<third>/objects` for the §3.1 table (incl. `1.1.0-alpha.1`, `1.0.0-beta+exp.sha.5114f85`) |
+| `test_alternates_ordering` | `write_alternates` | release dirs emitted **newest → oldest** by `semver::Version` precedence (unsorted input is re-sorted) |
+| `test_alternates_relative_one_dotdot` | `write_alternates` | every line is relative with **one `../`** resolving to a real release `objects/` dir; host-independent (no hostname, byte-identical) |
+| `test_assert_sha256_rejects_sha1` | `assert_sha256` + `init_bare_sha256` | a `git init` (sha1) repo → `Err`; an `init_bare_sha256` repo → `Ok` |
+| `test_loose_object_path_split` | `loose_object_path` | 64-hex oid → `<first-2>/<last-62>`; a non-64-hex / non-hex input → `Err` |
 
 ### 6.2 Integration (build → serve → clone)
 
@@ -455,23 +470,54 @@ A scripted test (CI check, analogous to `nix-build -A checks.eval`):
 
 ### 7.1 New module
 
-`crates/aos-package/src/registry/objectstore.rs` — owns:
+**New module** `crates/aos-package/src/registry/objectstore.rs` (registered in
+`crates/aos-package/src/registry/mod.rs` alongside the existing `bundle`,
+`git`, `state`, `closures`, `parse` submodules). It owns the following functions
+(real types — `&Path`, `semver::Version`, `anyhow::Result`):
 
-- `fn init_bare_sha256(dir, default_channel) -> Result<()>` — `git init --bare
-  --object-format=sha256` + `symbolic-ref HEAD`.
-- `fn release_object_dir(version: &semver::Version) -> PathBuf` — §3.1 mapping.
-- `fn write_release_objects(repo, version, revspec)` — Step 2: loose objects to
-  root `/objects/`, packs to `/releases/<…>/objects/pack/`.
-- `fn ensure_loose_completeness(repo)` — Step 3.
-- `fn refresh_server_info(repo)` — wraps `git update-server-info` (Step 4).
-- `fn write_alternates(repo, releases_newest_first)` — Step 5: relative
-  `objects/info/alternates`, one `../`, host-independent.
-- `fn assert_sha256(repo)` — object-format guard.
+```rust
+/// Step 1 — `git init --bare --object-format=sha256` + `symbolic-ref HEAD`.
+pub fn init_bare_sha256(dir: &Path, default_channel: &str) -> Result<()>;
+
+/// §3.1 mapping — pure, total, no I/O. `1.1.0-alpha.1` → `1/1/0-alpha.1/objects`.
+/// The third segment is everything after `major.minor` (pre-release + build).
+pub fn release_object_dir(version: &semver::Version) -> PathBuf;
+
+/// sha256 oid (64 hex) → `<first-2>/<last-62>` loose path. Pure.
+pub fn loose_object_path(oid: &str) -> Result<PathBuf>;
+
+/// Step 2 — write the `<from>..<to>` new loose objects to the root `/objects/`,
+/// and this release's packs under `release_object_dir(version)/pack/`.
+/// `revspec` is the same revset WS-02 uses for deltas (objects in `to` not `from`).
+pub fn write_release_objects(repo: &Path, version: &semver::Version, revspec: &str) -> Result<()>;
+
+/// Step 3 — explode pack-only objects back to loose form so every reachable
+/// object resolves loose from the root `/objects/`.
+pub fn ensure_loose_completeness(repo: &Path) -> Result<()>;
+
+/// Step 4 — wraps `git update-server-info` (regenerates `info/refs` +
+/// `objects/info/packs`).
+pub fn refresh_server_info(repo: &Path) -> Result<()>;
+
+/// Step 5 — write the relative, host-independent `objects/info/alternates`
+/// (one `../` per line, newest → oldest). Sorts internally by semver precedence.
+pub fn write_alternates(repo: &Path, releases_newest_first: &[semver::Version]) -> Result<()>;
+
+/// Object-format guard — `Err` unless `git rev-parse --show-object-format`
+/// is exactly `sha256`. Uses `git_try` (not `git`) so a non-repo / missing-flag
+/// failure becomes a typed error rather than a `bail!`.
+pub fn assert_sha256(repo: &Path) -> Result<()>;
+```
 
 This sits **below** the pack/delta module (WS-02) and the channel/tag module
-(WS-03), which call into it. It reuses the existing `git(dir, args)` helper
-pattern (`registry_ops.rs:79`) and the `git_allow_fail` variant
-(`registry_ops.rs:94`) for the format guard.
+(WS-03), which call into it. It reuses the existing `git(dir: &Path, args:
+&[&str]) -> Result<String>` helper (`registry_ops.rs:79`) and the
+allow-fail variant `git_try(dir: &Path, args: &[&str]) -> Result<(bool, String,
+String)>` (`registry_ops.rs:96`, currently `#[allow(dead_code)]` — this module
+becomes its first live consumer) for the `assert_sha256` format guard. Both
+helpers are file-private in `registry_ops.rs`; either move them into
+`registry/git.rs` (which already has a parallel `git(repo_dir)` builder around
+`:150`) and re-export, or duplicate the two small wrappers into `objectstore.rs`.
 
 ### 7.2 Command surface
 
@@ -481,13 +527,35 @@ object-store primitives are invoked by the publish pipeline. Per
 `apr release` / `apr publish` may wrap the whole pipeline (commit → tag/sign →
 pack/delta/zstd → `update-server-info` → advance partitions → upload); this
 workstream contributes the `update-server-info` + `info/alternates` steps to
-that command. The existing `apr bundle` (= `git bundle create`) and the
-`bundle.rs` writer are **removed** as part of retiring bundles (brief §15, done
-in WS-02).
+that command. The `apr` subcommands are the `RegistryCommand` enum
+(`crates/aos-package/src/lib.rs:349`, dispatched in its `run`/`execute` arm at
+`lib.rs:1215+`). The existing `RegistryCommand::Bundle` variant (`lib.rs:620`,
+dispatched at `:1231` → `registry_ops::bundle` at `registry_ops.rs:1706`,
+= `git bundle create`) and the `bundle.rs` writer are **removed** as part of
+retiring bundles (brief §15, done in WS-02); the `RegistryCommand::Create`
+variant (`lib.rs:352`, dispatched at `:1020` → `registry_ops::create` at `:421`,
+whose `git(&dir, &["init"])` at `:438` is the sha1 init) is the one this WS
+re-points at `objectstore::init_bare_sha256`.
 
 `apr` also gains an internal/debug verb (or `apr doctor`-style check) that runs
-`assert_sha256` + the loose-completeness walk against a published repo, reusing
-§6's logic for operator validation.
+`objectstore::assert_sha256` + the loose-completeness walk against a published
+repo, reusing §6's logic for operator validation. Concretely, add a
+`RegistryCommand::Doctor { registry: Option<String> }` variant to the enum at
+`lib.rs:349` with a dispatch arm next to `Create`/`Bundle`, calling
+`objectstore::assert_sha256` then `objectstore::ensure_loose_completeness` in a
+read-only check mode.
+
+**Existing tests/consumers this WS breaks when bundles retire (coordinate with
+WS-02):** the `pick_bundles_*` tests in `update.rs:655-779` and `sync_bundle`
+(`update.rs:209`) / `pick_bundles` (`update.rs:319`) consume the bundle manifest
+and become dead once `BundleManifest`/`bundle.rs` is removed; the
+`download_bundle`/`verify_bundle` paths (`registry/bundle.rs:251`, `:305`) and
+`classify_delta` (`:238`) go with them. The monotonic-token machinery
+(`state::check_monotonic` at `registry/state.rs:104`, `version_to_token` at
+`:131`, and their `check_monotonic_*` / `version_to_token_*` tests at
+`registry/state.rs:197-270`) is tied to `creation_token`, which the target drops
+in favor of `semver::Version` precedence — those tests must be removed or
+re-pointed at semver ordering, not the calendar-token encoding.
 
 ---
 
@@ -510,17 +578,20 @@ in WS-02).
    reads `http-alternates` first then falls back to `alternates`, so a single
    **relative** `info/alternates` (one `../`, host-independent) covers both HTTP
    and local-FS access — no separate `http-alternates` file is maintained.
-5. **`registry.toml` clarification (`types.rs:566-573`):** the git-repo-root
+5. **`registry.toml` clarification (`types.rs:564-570`):** the git-repo-root
    `registry.toml` (`RegistryRootConfig`) is **kept** as a committed tree file
    (`[registry]` + `[[caches]]`), authenticated via the signed tag — see §3.3 and
    [repo-layout.md](../../registry/repo-layout.md). The cache/NAR-substituter
-   location stays in its `[[caches]]` (not moved into signed tags, which carry no
-   payload; the client-side `registries.d/<name>.toml` only *supplements* it). What
-   is removed: the intermediate *signed-HTTP-root* `registry.toml` (brief §15) and
-   the **signing pubkey** field (moves to the new committed `keys.toml` + TOFU;
-   WS-04). This WS continues to *write* the root `registry.toml`
-   (`registry_ops.rs:443-450`) minus the pubkey; coordinate the key-field removal
-   and `keys.toml` introduction with WS-04.
+   location stays in its `[[caches]]` (`Vec<CacheEntry>`, `types.rs:582`) — not
+   moved into signed tags, which carry no payload; the client-side
+   `registries.d/<name>.toml` only *supplements* it. What is removed: the
+   intermediate *signed-HTTP-root* `registry.toml` (brief §15) and the **signing
+   pubkey** field (`RegistrySigningConfig.public_key`, `types.rs:594-596`, the
+   `signing` field of `RegistryRootConfig` at `types.rs:569`; moves to the new
+   committed `keys.toml` + TOFU; WS-04). This WS continues to *write* the root
+   `registry.toml` (`registry_ops.rs:443-450`, inside `pub async fn create` at
+   `:421`) minus the pubkey; coordinate the key-field removal and `keys.toml`
+   introduction with WS-04.
 6. **Atomicity across a CDN (§4 Step 6):** content-before-pointer ordering holds
    at the origin, but CDN edge caches with mixed TTLs can briefly serve a new
    `info/refs` with a stale `info/alternates`. Loose objects + immutable content
@@ -532,8 +603,8 @@ in WS-02).
 ## 9. Definition of done
 
 - [ ] `objectstore.rs` implements all §7.1 functions; the `git init` path
-      (`registry_ops.rs:438`) emits a **sha256 bare** canonical repo with
-      `HEAD → refs/heads/<default-channel>`.
+      (`registry_ops.rs:438`, in `pub async fn create` at `:421`) emits a
+      **sha256 bare** canonical repo with `HEAD → refs/heads/<default-channel>`.
 - [ ] Publish regenerates `info/refs` + `objects/info/packs` via
       `update-server-info`, and rewrites the relative `objects/info/alternates`
       (one `../`, newest → oldest) on every release.

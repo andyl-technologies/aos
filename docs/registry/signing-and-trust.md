@@ -82,9 +82,9 @@ decoded key bytes (`key_fingerprint`, `security.rs:338`).
 
 Git is configured for SSH signing (`gpg.format = ssh`). Signature *production* is
 `apr sign`, which today amends the HEAD commit with `git commit --amend --no-edit -S`
-in [`crates/aos-package/src/registry_ops.rs:1770`](../../crates/aos-package/src/registry_ops.rs).
+in [`crates/aos-package/src/registry_ops.rs:1758`](../../crates/aos-package/src/registry_ops.rs).
 Tag creation today is `apr tag`
-([`registry_ops.rs:1706-1710`](../../crates/aos-package/src/registry_ops.rs)): when a
+([`registry_ops.rs:1694-1697`](../../crates/aos-package/src/registry_ops.rs)): when a
 `--message` is given it runs `git tag -a <name> -m <msg>` (annotated), otherwise it
 runs `git tag <name>` (lightweight). Either way it is **not yet signed** (`-s`).
 
@@ -127,7 +127,7 @@ directories, managed by `KeyStore` ([`security.rs:52`](../../crates/aos-package/
   (`security.rs:97`), writing the canonical `registry:algorithm:public_key` line
   (`security.rs:107`).
 - Pre-installed keys ship in `/etc/apm/trusted-keys.d/` (`KeySource::PreInstalled`,
-  `security.rs:22`).
+  `security.rs:23`).
 
 **Trust-On-First-Use** is `tofu_check` ([`security.rs:159`](../../crates/aos-package/src/security.rs)),
 which returns one of three decisions:
@@ -442,10 +442,10 @@ ways:
 |---|---|---|
 | Key format `name:Ed25519:<base64>` | `parse_signing_key` (`security.rs:306`) | unchanged |
 | Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) | unchanged (the bootstrap anchor) |
-| Signing pubkey location | `[registry.signing].public_key` inside `registry.toml` (`RegistryRootConfig`) | **removed** from `registry.toml`; trust = `keys.toml` roster + TOFU |
+| Signing pubkey location | `[registry.signing].public_key` inside `registry.toml` (`RegistrySigningConfig`, the `signing` field of `RegistryRootConfig`) | **removed** from `registry.toml`; trust = `keys.toml` roster + TOFU |
 | Key rotation / revocation | — (single pinned key, no roster) | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
-| Signature *production* | `apr sign` = `git commit --amend -S` (`registry_ops.rs:1770`) | `git tag -s` on **tag objects** |
-| Tag creation | `apr tag` = `git tag -a` with `--message`, else lightweight `git tag` (both **unsigned**) (`registry_ops.rs:1706-1710`) | `git tag -s` (signed) for channel + release tags |
+| Signature *production* | `apr sign` = `git commit --amend -S` (`registry_ops.rs:1758`) | `git tag -s` on **tag objects** |
+| Tag creation | `apr tag` = `git tag -a` with `--message`, else lightweight `git tag` (both **unsigned**) (`registry_ops.rs:1694-1697`) | `git tag -s` (signed) for channel + release tags |
 | Signature *verification* | `verify_commit_signature` = `git verify-commit` (`security.rs:199`) | `git verify-tag` (same allowed-signers mechanism) |
 | What is signed | the HEAD **commit** | **`tag → tag → commit`** chain (partition + release tags) |
 | Name-binding | none | embedded tag-name == expected path name (channel / semver) |

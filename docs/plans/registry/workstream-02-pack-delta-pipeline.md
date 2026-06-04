@@ -42,14 +42,14 @@ The current transport is a git-**bundle** pipeline. Cited code in
 
 | Concern | Current implementation | `path:line` |
 |---|---|---|
-| Artifact format | git **bundles** (`*.bundle`), refs + prereqs baked in | `bundle.rs:3-5` |
-| Bundle taxonomy | `Snapshot` / `SequentialDelta` / `SkipDelta` enum | `bundle.rs:22-31` |
-| Manifest | `bundle-list.toml` parsed by the **consumer** | `bundle.rs:59-92`, `124-178` |
-| Ordering key | `creation_token: u64` (calendar) | `bundle.rs:36-45`, `170-171` |
-| Tag scheme | calendar `vYYYY.MM[.P]`, classified by dot-segment count | `bundle.rs:238-243` |
-| Integrity | SHA-256 of bundle file + `git bundle verify` | `bundle.rs:305-346` |
-| Apply | `git bundle unbundle` into a bare cache repo | `bundle.rs:349-404` |
-| Producer | **stub** — `apr bundle` = `git bundle create`; no manifest writer, no upload (brief §2) | — |
+| Artifact format | git **bundles** (`*.bundle`), refs + prereqs baked in | `bundle.rs:1-6` (module doc) |
+| Bundle taxonomy | `BundleType::Snapshot` / `SequentialDelta` / `SkipDelta` enum | `bundle.rs:22-31` |
+| Manifest | `bundle-list.toml` parsed by the **consumer** (`ManifestToml`/`BundleManifest::parse`) | `bundle.rs:59-92`, `124-178` |
+| Ordering key | `creation_token: u64` (calendar) | `bundle.rs:33-45` (field), `171` (`sort_by_key`) |
+| Tag scheme | calendar `vYYYY.MM[.P]`, classified by dot-segment count (`classify_delta`) | `bundle.rs:238-243` |
+| Integrity | SHA-256 of bundle file + `git bundle verify` (`verify_bundle`) | `bundle.rs:305-346` |
+| Apply | `git bundle unbundle` into a bare cache repo (`unbundle`) | `bundle.rs:376-404` |
+| Producer | **stub** — `apr bundle` (`registry_ops.rs:1706-1744`) = `git bundle create`; no manifest writer, no upload (brief §2) | — |
 | Selection | `latest_snapshot` / `skip_delta_from` / `sequential_deltas_between` over `creation_token` | `bundle.rs:189-224` |
 
 Everything in the table above is **deleted or rewritten** in the target. The
@@ -383,46 +383,210 @@ uploaded (brief §4 TTL policy; workstream-01 for the index writes).
 New module replacing `bundle.rs`'s producer/transport role (suggested
 `crates/aos-package/src/registry/pack.rs`):
 
-1. **Delete the bundle transport path.** Remove `BundleType`, `BundleEntry`,
-   `BundleManifest`, `classify_delta`, `download_bundle`, `verify_bundle`,
-   `unbundle`, and the `bundle-list.toml` parser
+1. **Delete the bundle transport path.** Remove `BundleType` (`bundle.rs:22-31`),
+   `BundleEntry` (`bundle.rs:33-45`), `BundleManifest` (`bundle.rs:47-53`),
+   `classify_delta` (`bundle.rs:238-243`), `download_bundle` (`bundle.rs:251-300`),
+   `verify_bundle` (`bundle.rs:305-346`), `unbundle` (`bundle.rs:376-404`), and the
+   `bundle-list.toml` parser (`ManifestToml`/`ManifestHeader`/`BundleEntryToml` at
+   `bundle.rs:59-92`, `BundleManifest::parse` at `bundle.rs:124-178`, and the
+   selectors `entries_since`/`latest_snapshot`/`skip_delta_from`/`sequential_deltas_between`
+   at `bundle.rs:181-224`)
    ([`bundle.rs:22-243`, `251-404`](../../../crates/aos-package/src/registry/bundle.rs)).
    Keep `ensure_git_repo` (`bundle.rs:349-371`) and `resolve_tag`
    (`bundle.rs:407-421`) — they're format-agnostic and still useful.
-2. **`fn full_pack(repo, release_commit, out_dir)`** — runs the §6
-   `pack-objects --revs` invocation, names by content sha256, returns the pack
-   path for `info/packs` listing.
-3. **`fn thin_delta(repo, from_commit, to_commit, from_semver, out_dir)`** — runs
-   the §5 `pack-objects --revs --thin --stdout`, writes
-   `delta-<from-semver>.pack`.
-4. **`fn scheme_deltas(release: &Semver) -> Vec<FromSemver>`** — pure function
-   returning the §4 guaranteed delta set for a given release (major/minor/patch
-   fan, deduplicated). Unit-testable in isolation.
-5. **`fn zstd_compress(path, opts)` / `fn zstd_decompress(path, opts)`** — the §7
-   `--ultra -22 --long=27` (+ optional `-D dict`) wrappers.
-6. **`fn index_pack_fix_thin(repo, pack)` / `fn index_pack(repo, pack)`** — client
-   completion (§9).
-7. **`fn train_dictionary(release_line, packs)`** — optional (§7); gated behind a
-   flag pending brief §16.2.
+
+   **Consumers this breaks (must be cut over in the same change):**
+   - **`update.rs::sync_bundle`** (`update.rs:209-316`) is built entirely on the
+     deleted surface: it calls `BundleManifest::fetch`, `pick_bundles`,
+     `ensure_git_repo`, `download_bundle`, `verify_bundle`, `unbundle`,
+     `resolve_tag`, and `state::check_monotonic`. Delete `sync_bundle` and its
+     helper `pick_bundles` (`update.rs:318-418`), which dispatches over
+     `BundleType::Snapshot`/`skip_delta_from`/`sequential_deltas_between` and
+     `state::token_to_version`.
+   - **`update.rs::run`** (`update.rs:116-144`) dispatches on
+     `reg_config.transport()`; the `Transport::HttpBundle => sync_bundle(...)` arm
+     (`update.rs:117-127`) is removed, leaving only the `Transport::Git` arm
+     (`git::sync_git`). The `Transport` enum (`types.rs`) loses its `HttpBundle`
+     variant.
+   - **`update.rs::find_best_version_tag_in_manifest`** (`update.rs:427-451`),
+     `parse_tag_as_semver` (`update.rs:456-477`) and `extract_minor_base`
+     (`update.rs:483-491`) are bundle-manifest-only and go with `pick_bundles`.
+     Their replacement (semver tag selection over a git ref list, not a manifest)
+     lands in workstream-03/05.
+   - **`registry_ops.rs::bundle`** (`registry_ops.rs:1706-1744`, the `apr bundle`
+     subcommand `= git bundle create`) is the producer stub and is replaced by the
+     `pack`-module producers (Tasks 2-5). Drop the `BundleCommand` CLI wiring.
+   - **`state.rs::check_monotonic`/`token_to_version`/`version_to_token`**
+     (`state.rs:104-184`) encode the calendar `creation_token` ordering the
+     bundle path depended on. They become dead once `sync_bundle` is gone; the
+     monotonic-downgrade guard is re-expressed on **semver + signed-tag ancestry**
+     in workstream-04/05.
+
+   **Tests this breaks (delete or port):**
+   - `bundle.rs` tests `parse_manifest`, `entries_sorted_by_creation_token`,
+     `snapshot_classification`, `delta_classification` (`bundle.rs:533-559`),
+     `entries_since_filters_correctly`, `latest_snapshot_returns_most_recent`,
+     `skip_delta_from_finds_correct_delta`, `sequential_deltas_between_tokens`,
+     `classify_delta_skip_vs_sequential`, and the `parse_manifest_*` set — all
+     assert on the deleted manifest/`BundleType` surface. Port only the *intent*
+     of `delta_classification` into the new `scheme_deltas` tests (Test plan).
+   - `update.rs` tests `pick_bundles_*` (9 tests, `update.rs:655-769`; the
+     `pick_bundles` fn is at `update.rs:319`),
+     `find_best_version_tag_*` (`update.rs:780-825`), `extract_minor_base_*`
+     (`update.rs:827-835`) — all exercise the deleted `pick_bundles`/manifest
+     selectors and are removed.
+   - `state.rs` tests `version_to_token_*`/`token_to_version_*`/
+     `token_version_round_trip`/`check_monotonic_*` (`state.rs:196-274`) cover the
+     removed token encoding. The `load_state_*`/`save_state_*` tests
+     (`state.rs:276-443`) stay — they exercise `[registry.state]` round-tripping
+     and the `[registry.signing] public_key` preservation, which both survive.
+2. **`full_pack` — the §6 `pack-objects --revs` wrapper.** New
+   `crates/aos-package/src/registry/pack.rs`:
+
+   ```rust
+   /// Generate a self-contained full pack over `release_commit` (§6).
+   /// Writes `pack-<sha256>.pack` + `.idx` under `out_dir`; returns the
+   /// `.pack` path (its basename is what gets listed in `info/packs`).
+   pub async fn full_pack(
+       repo: &Path,
+       release_commit: &str,
+       out_dir: &Path,
+   ) -> anyhow::Result<PathBuf>;
+   ```
+
+   Internally: `git -C repo rev-parse <commit>^{commit}` piped on stdin to
+   `git pack-objects --revs --no-reuse-object --no-reuse-delta --window=350
+   --depth=50 --threads=0 --compression=0 <out_dir>/pack`. `pack-objects` prints
+   the resulting pack sha256 to stdout; `full_pack` reads it and returns
+   `out_dir/pack-<sha256>.pack`. Reuse the `git`-subprocess error-handling shape
+   of `bundle.rs::ensure_git_repo` (`Command::new("git")` + `output.status`
+   check + `bail!`).
+3. **`thin_delta` — the §5 `pack-objects --revs --thin --stdout` wrapper.** In
+   `pack.rs`:
+
+   ```rust
+   /// Generate a thin delta pack: objects in `to_commit` not in `from_commit`,
+   /// deltas may reference `from`'s objects (§5). Writes
+   /// `delta-<from_semver>.pack` (no `.idx`); returns its path.
+   pub async fn thin_delta(
+       repo: &Path,
+       from_commit: &str,
+       to_commit: &str,
+       from_semver: &semver::Version,
+       out_dir: &Path,
+   ) -> anyhow::Result<PathBuf>;
+   ```
+
+   Internally: `printf '%s\n^%s\n' <to> <from>` on stdin to `git pack-objects
+   --revs --thin --stdout --no-reuse-object --no-reuse-delta --window=350
+   --depth=50 --threads=0 --compression=0`, redirecting stdout to
+   `out_dir/delta-<from_semver>.pack`. The filename component is
+   `from_semver.to_string()` (e.g. `delta-1.1.0.pack`).
+4. **`scheme_deltas` — pure §4 delta-set generator.** In `pack.rs`. The
+   "Semver"/"FromSemver" types in the prior draft **do not exist**; use
+   `semver::Version` end-to-end:
+
+   ```rust
+   /// Kind of a release, derived from its semver triple.
+   pub enum ReleaseKind { Major, Minor, Patch }
+
+   /// Classify a release by its (major, minor, patch) triple (§4).
+   pub fn release_kind(v: &semver::Version) -> ReleaseKind;
+
+   /// The §4 guaranteed delta bases for `release`, given the set of
+   /// already-published releases on the line (needed to find "prior major",
+   /// "last minor", and to clamp/dedup the last-3-patches fan against the
+   /// minor base). Returns base versions, newest→oldest, deduplicated.
+   pub fn scheme_deltas(
+       release: &semver::Version,
+       published: &[semver::Version],
+   ) -> Vec<semver::Version>;
+   ```
+
+   `scheme_deltas` is the producer-side counterpart of the consumer walk
+   (workstream-05); it owns the dedup/collapse rule in §4 (a `Z-k` slot that
+   lands on/before the minor base collapses into the minor base). Unit-testable
+   with no git/IO.
+5. **`zstd_compress` / `zstd_decompress` — the §7 transport wrappers.** In
+   `pack.rs`:
+
+   ```rust
+   /// zstd `--ultra -22 --long=27` (+ optional trained dict) → `<path>.zst` (§7).
+   pub async fn zstd_compress(
+       path: &Path,
+       dict: Option<&Path>,
+   ) -> anyhow::Result<PathBuf>;
+
+   /// zstd `-d --long=27` (+ optional dict) → strips `.zst` (§7/§9).
+   pub async fn zstd_decompress(
+       path: &Path,
+       dict: Option<&Path>,
+   ) -> anyhow::Result<PathBuf>;
+   ```
+
+   Shell out to the **AOS-built `zstd`** (`pkgs.zstd`; never a host zstd, per
+   CLAUDE.md). `--long=27` is pinned on both sides (§7 callout); a window
+   mismatch makes `zstd -d` refuse the long matches, so the constant is shared
+   (`const ZSTD_LONG: &str = "27";`).
+6. **`index_pack_fix_thin` / `index_pack` — client completion (§9).** In
+   `pack.rs`:
+
+   ```rust
+   /// `git index-pack --fix-thin <pack>` — re-attach bases from the local
+   /// object store and write `<pack>.idx`. Required for every `delta-*.pack` (§9).
+   pub async fn index_pack_fix_thin(repo: &Path, pack: &Path) -> anyhow::Result<()>;
+
+   /// `git index-pack <pack>` — self-contained full pack; just write `.idx` (§9).
+   pub async fn index_pack(repo: &Path, pack: &Path) -> anyhow::Result<()>;
+   ```
+
+   These replace the deleted `bundle.rs::unbundle` as the client-apply primitive
+   in the new `git::sync_*` path (workstream-05 wires them in).
+7. **`train_dictionary` — optional §7 dictionary trainer.** In `pack.rs`:
+
+   ```rust
+   /// `zstd --train <packs...> -o <out>` over a release line's delta packs (§7).
+   /// Gated behind a config flag pending brief §16.2.
+   pub async fn train_dictionary(
+       packs: &[PathBuf],
+       out: &Path,
+   ) -> anyhow::Result<PathBuf>;
+   ```
 
 ### Test plan
 
-- **`scheme_deltas`** table tests on **semver** (not `creation_token`/calendar):
-  `1.0.0` → `[(prior major).0.0]` (or empty if first); `1.1.0` →
-  `[1.0.0 (last minor), 1.0.0 (current major)]` dedup → `[1.0.0]`; `1.1.2` →
-  `[1.1.1, 1.1.0, 1.1.0]` dedup → `[1.1.1, 1.1.0]`. Mirror the *intent* of the old
-  `delta_classification` tests
-  ([`bundle.rs:533-559`](../../../crates/aos-package/src/registry/bundle.rs)) but
-  on semver ancestry.
-- **Round-trip**: `full_pack` → `zstd_compress` → `zstd_decompress` →
-  `index_pack` reproduces a clonable store; `thin_delta` → `zstd` → `zstd -d` →
-  `index_pack --fix-thin` against a store holding the base reproduces the target
-  commit.
-- **Stock-git compat**: a `git clone` (dumb HTTP, sha256) of an `X.Y.0` release
-  using only `info/packs`-listed full packs + loose objects succeeds without ever
+- **`scheme_deltas` table tests on `semver::Version`** (not `creation_token`/
+  calendar). All in `pack.rs`'s `#[cfg(test)] mod tests`, using
+  `semver::Version::parse(...)`:
+  - `#[test] fn scheme_deltas_first_major_is_empty` — `1.0.0` with no prior
+    major → `[]`.
+  - `#[test] fn scheme_deltas_minor_dedups_to_minor_base` — `1.1.0` →
+    `[1.0.0 (last minor), 1.0.0 (current major)]` dedup → `[1.0.0]`.
+  - `#[test] fn scheme_deltas_patch_collapses_to_minor_base` — `1.1.2` →
+    `[1.1.1, 1.1.0, minor-base 1.1.0]` (the `Z-2` slot lands on the minor base)
+    dedup → `[1.1.1, 1.1.0]`.
+  - `#[test] fn scheme_deltas_patch_full_fan` — `1.1.3` →
+    `[1.1.2, 1.1.1, 1.1.0]` (`Z-3` collapses into the minor base).
+  - `#[test] fn release_kind_classifies_triple` — `release_kind` returns
+    `Major`/`Minor`/`Patch` for `X.0.0`/`X.Y.0`/`X.Y.Z`.
+
+  These port the *intent* of the removed bundle test
+  `delta_classification`
+  ([`bundle.rs:533-559`](../../../crates/aos-package/src/registry/bundle.rs)) onto
+  semver ancestry — the calendar `classify_delta` it tested is deleted (Task 1).
+- **Round-trip** (`#[test] fn round_trip_full_pack`, `fn round_trip_thin_delta`):
+  `full_pack` → `zstd_compress` → `zstd_decompress` → `index_pack` reproduces a
+  clonable store; `thin_delta` → `zstd_compress` → `zstd_decompress` →
+  `index_pack_fix_thin` against a store holding the base reproduces the target
+  commit. Build a throwaway repo in a `tempfile::TempDir` (the existing
+  `update.rs`/`state.rs` tests already use `tempfile`).
+- **Stock-git compat** (`#[test] fn stock_git_clone_full_pack_only`): a `git
+  clone` (dumb HTTP, sha256) of an `X.Y.0` release using only
+  `info/packs`-listed full packs + root loose objects succeeds without ever
   touching a `delta-*.pack`.
-- **Size assertion**: `--compression=0` + `zstd --ultra` produces a smaller
-  `.pack.zst` than `--compression=9` + `zstd` on the same release (validates §7).
+- **Size assertion** (`#[test] fn compression0_plus_zstd_beats_zlib9`):
+  `--compression=0` + `zstd --ultra` produces a smaller `.pack.zst` than
+  `--compression=9` + `zstd` on the same release (validates §7).
 
 ---
 
@@ -454,4 +618,11 @@ New module replacing `bundle.rs`'s producer/transport role (suggested
   [`current-state.md`](../../registry/current-state.md),
   [`README.md`](../../registry/README.md).
 - Current code (to remove/refactor):
-  [`crates/aos-package/src/registry/bundle.rs`](../../../crates/aos-package/src/registry/bundle.rs).
+  [`crates/aos-package/src/registry/bundle.rs`](../../../crates/aos-package/src/registry/bundle.rs)
+  (the entire bundle surface),
+  [`crates/aos-package/src/update.rs`](../../../crates/aos-package/src/update.rs)
+  (`sync_bundle`/`pick_bundles`/`find_best_version_tag_in_manifest` consumers),
+  [`crates/aos-package/src/registry/state.rs`](../../../crates/aos-package/src/registry/state.rs)
+  (`check_monotonic`/`token_to_version` calendar-token logic),
+  [`crates/aos-package/src/registry_ops.rs`](../../../crates/aos-package/src/registry_ops.rs)
+  (the `apr bundle` producer stub at `registry_ops.rs:1706-1744`).

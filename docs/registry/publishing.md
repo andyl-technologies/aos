@@ -88,27 +88,27 @@ The commands relevant to a release, in workflow order:
 |---|---|---|
 | `apr create <name> [--remote URL]` | `create` (`registry_ops.rs:421`) | `git init`, make `packages/`, write a default `registry.toml`, initial commit, optional `git remote add origin`. |
 | `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` (`commit_registry`, `registry_ops.rs:385`). |
-| `apr tag <name> [--message] [--key]` | `tag` (`registry_ops.rs:1696`) | `git tag [-a -m …]`. **`--key` is accepted but ignored** (`_key`, `registry_ops.rs:1700`). |
-| `apr sign [commit] [--key]` | `sign` (`registry_ops.rs:1759`) | `git commit --amend --no-edit -S` (`registry_ops.rs:1770`) — SSH-Ed25519 sign HEAD. **`--key` ignored** (`_key`, `registry_ops.rs:1762`). |
-| `apr bundle [--output] [--tag] [--delta-from] [--update-manifest]` | `bundle` (`registry_ops.rs:1718`) | `git bundle create` into a local dir. See §2.1. |
-| `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1410`) | `git push [-u origin] [branch] [--force]`. |
+| `apr tag <name> [--message] [--key]` | `tag` (`registry_ops.rs:1684`) | `git tag [-a -m …]`. **`--key` is accepted but ignored** (`_key`, `registry_ops.rs:1688`). |
+| `apr sign [commit] [--key]` | `sign` (`registry_ops.rs:1747`) | `git commit --amend --no-edit -S` (`registry_ops.rs:1758`) — SSH-Ed25519 sign HEAD. **`--key` ignored** (`_key`, `registry_ops.rs:1750`). |
+| `apr bundle [--output] [--tag] [--delta-from] [--update-manifest]` | `bundle` (`registry_ops.rs:1706`) | `git bundle create` into a local dir. See §2.1. |
+| `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
 There is **no** `apr release`, no pack/delta generation, no `update-server-info`,
 no partition-tag advancement, and no upload command in the tree today.
 
 ### 2.1 CURRENT: `apr bundle` = `git bundle create` only
 
-The producer's entire transport step today is `apr bundle` (`registry_ops.rs:1718`),
+The producer's entire transport step today is `apr bundle` (`registry_ops.rs:1706`),
 which runs `git bundle create` into a local output directory (default `bundles/`):
 
 - **Snapshot:** `git bundle create <dir>/<reg>-<tag>.bundle <tag>`
-  (`registry_ops.rs:1750`).
+  (`registry_ops.rs:1738`).
 - **Delta:** with `--delta-from <from>`,
   `git bundle create <dir>/<reg>-<from>..<tag>.bundle <from>..<tag>`
-  (`registry_ops.rs:1741`).
+  (`registry_ops.rs:1729`).
 
 What it does **not** do: it does not write any manifest (`--update-manifest` is
-dead code — `_update_manifest`, `registry_ops.rs:1723`), does not generate packs
+dead code — `_update_manifest`, `registry_ops.rs:1711`), does not generate packs
 or thin deltas independent of the bundle envelope, does not run
 `update-server-info`, does not touch any channel/partition pointer, and **does
 not upload anything**. The operator must hand-copy the resulting `.bundle` files
@@ -522,13 +522,13 @@ apr publish /nix/store/<hash>-curl-8.5.0 \
     --description "URL transfer tool" --license MIT --maintainer acme
 # → writes packages/c/curl.toml + closures/<hash>, then commits   (registry_ops.rs:476)
 
-apr tag 2026.06.0 --message "June release"   # plain git tag; --key ignored  (registry_ops.rs:1696)
-apr sign                                     # git commit --amend -S on HEAD (registry_ops.rs:1770)
-apr push --set-upstream --branch main        # plain git push                (registry_ops.rs:1410)
+apr tag 2026.06.0 --message "June release"   # plain git tag; --key ignored  (registry_ops.rs:1684)
+apr sign                                     # git commit --amend -S on HEAD (registry_ops.rs:1758)
+apr push --set-upstream --branch main        # plain git push                (registry_ops.rs:1398)
 
 # Local-only transport — git bundles, no manifest, no upload:
-apr bundle --tag 2026.06.0                            # snapshot bundle (registry_ops.rs:1750)
-apr bundle --delta-from 2026.05.0 --tag 2026.06.0     # delta bundle    (registry_ops.rs:1741)
+apr bundle --tag 2026.06.0                            # snapshot bundle (registry_ops.rs:1738)
+apr bundle --delta-from 2026.05.0 --tag 2026.06.0     # delta bundle    (registry_ops.rs:1729)
 # → files land in ./bundles/ ; publishing them to a mirror is out of scope
 ```
 

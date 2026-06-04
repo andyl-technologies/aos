@@ -256,23 +256,23 @@ as-is so the migration is explicit; none of it survives into the target (brief
 §15).
 
 **Producer (`apr bundle`).** `registry_ops::bundle`
-(`crates/aos-package/src/registry_ops.rs:1718`) shells out to `git bundle create`:
+(`crates/aos-package/src/registry_ops.rs:1706`) shells out to `git bundle create`:
 
 - snapshot: `git bundle create <out>/<reg>-<tag>.bundle <tag>`
-  (`registry_ops.rs:1748-1752`)
+  (`registry_ops.rs:1736-1739`)
 - delta: `git bundle create <out>/<reg>-<from>..<tag>.bundle <from>..<tag>`
-  (`registry_ops.rs:1740-1745`)
+  (`registry_ops.rs:1727-1730`)
 
 There is **no manifest writer and no upload** — the `update_manifest` flag is
-ignored (`_update_manifest`, `registry_ops.rs:1723`). The CLI surface is
+ignored (`_update_manifest`, `registry_ops.rs:1711`). The CLI surface is
 `RegistryCommand::Bundle { output, tag, delta_from, update_manifest, registry }`
-(`crates/aos-package/src/lib.rs:543`, dispatched at `lib.rs:1118`).
+(`crates/aos-package/src/lib.rs:620`, dispatched at `lib.rs:1231`).
 
 **Consumer.** `registry::bundle::fetch` (`bundle.rs:100`) downloads bundles, runs
 `git bundle verify` for pack integrity + prerequisites (`bundle.rs:325-336`), and
 `git bundle unbundle`s into the local bare repo (`bundle.rs:376-388`).
-`pick_bundles` (`crates/aos-package/src/update.rs:292`, called from
-`update.rs:207`) selects a minimal bundle set from a `BundleManifest` given the
+`pick_bundles` (`crates/aos-package/src/update.rs:319`, called from
+`update.rs:224`) selects a minimal bundle set from a `BundleManifest` given the
 host's `RegistryState` and `TrackingMode`.
 
 **Why it's replaced.** Bundles carry refs and prerequisites and require a
