@@ -27,7 +27,7 @@ unmodified — **channels are branches**, **releases are signed semver tags**, a
 *may also* advertise itself as a **Nix binary cache** (`nix-cache-info` /
 `*.narinfo` / `nar/`) so a stock `nix` substituter can pull the same artifacts.
 The AOS client (`apm`) layers two extra, *additive* surfaces that ride alongside
-without conflict: signed **`/channel/<name>/0..f`** partition tags for bucketed
+without conflict: signed **`/channel/<name>/00..ff`** partition tags for bucketed
 rollout, and **thin `delta-*.pack`s** for cheap incremental fetch. One Ed25519 key
 signs the release and channel tags. The governing design principle is **asymmetric
 cost: make publishing as expensive as possible so that consumption is as cheap as
@@ -85,7 +85,7 @@ in [`http-layout.md`](./http-layout.md).
                       │    nar/<…>  (advertised via [[caches]])      │
                       │                                              │
   apm (AOS) ─────────▶│  AOS-ONLY ADDITIONS  (additive, ⊇)           │  ◀── apm's extra reach
-                      │    channel/<name>/0..f   (signed partitions) │
+                      │    channel/<name>/00..ff (signed partitions) │
                       │    release/…/delta-<semver>.pack  (thin)     │
                       └──────────────────────────────────────────────┘
 ```
@@ -120,8 +120,8 @@ there is no out-of-band index. (Brief §5.)
   │  Ed25519-signed; stock git can `git verify-tag <semver>`                     │
   └────────────────────────────────────▲───────────────────────────────────────┘
                                         │  AOS rollout overlay (outside ref ns)
-  ┌─ /channel/<name>/0..f ──────────────┴───────────────────────────────────────┐
-  │  16 SIGNED partition tag objects (tag name == channel) → a semver tag        │
+  ┌─ /channel/<name>/00..ff ────────────┴───────────────────────────────────────┐
+  │  256 SIGNED partition tag objects (tag name == channel) → a semver tag       │
   │  AOS-only; the bucketed-rollout selector                                     │
   └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -131,7 +131,7 @@ there is no out-of-band index. (Brief §5.)
 | `HEAD` | symref → `refs/heads/<default-channel>` | no | stock git + AOS |
 | `refs/heads/<channel>` | channels-as-branches; head = **frontier** (newest release any partition targets) | no (ref pointer) | stock git convenience |
 | `refs/tags/<semver>` | release: signed tag → commit | **yes** | stock (`verify-tag`) + AOS |
-| `/channel/<name>/<0..f>` | 16 signed partition tag objects (name == channel) → semver tag | **yes** | AOS rollout only |
+| `/channel/<name>/<00..ff>` | 256 signed partition tag objects (name == channel) → semver tag | **yes** | AOS rollout only |
 
 ### 3.1 Layer A — `HEAD`
 
@@ -144,7 +144,7 @@ changes). Unsigned — it is a pointer, not a trust anchor.
 
 A **channel** is a named release line modeled as a git branch
 `refs/heads/<channel>`. Its head always points at the **frontier**: the commit of
-the *newest release any of the channel's 16 partitions currently targets* — the
+the *newest release any of the channel's 256 partitions currently targets* — the
 rollout target, not necessarily what every host runs.
 
 The implication is deliberate: a stock `git pull <channel>` always gets the
@@ -165,13 +165,13 @@ against the registry's public key — the signed release tags *are* the trust an
 for stock clients. See [`signing-and-trust.md`](./signing-and-trust.md) and
 [`tag-metadata.md`](./tag-metadata.md).
 
-### 3.4 The rollout overlay — `/channel/<name>/0..f`
+### 3.4 The rollout overlay — `/channel/<name>/00..ff`
 
-Outside the ref namespace, each channel exposes exactly **16** files
-`/channel/<name>/0..f`, each an independently-signed tag object whose **tag name ==
+Outside the ref namespace, each channel exposes exactly **256** files
+`/channel/<name>/00..ff`, each an independently-signed tag object whose **tag name ==
 the channel name**, pointing at a semver tag. These are the **rollout partitions**:
 a consumer deterministically self-selects one bucket (e.g.
-`sha256(machine_id) mod 16`, persisted once so it never flaps), and the publisher
+the low byte of `sha256(machine_id)` (i.e. mod 256), persisted once so it never flaps), and the publisher
 advances buckets independently to control fleet exposure. They live outside
 `refs/` precisely so a stock git client never sees them. Detailed in
 [`versioning-and-channels.md`](./versioning-and-channels.md).
@@ -222,7 +222,7 @@ efficiency. End to end (TARGET):
 
 ```
   apm update / upgrade:
-    1. bucket    b = sha256(machine_id) mod 16            (persisted once)
+    1. bucket    b = the low byte of sha256(machine_id) (i.e. mod 256)  (persisted once)
     2. channel   GET /channel/<channel>/<b>               → signed partition tag
                  verify sig + name-binding (name == <channel>)
     3. semver    follow partition tag → refs/tags/<semver> (signed)
@@ -298,7 +298,7 @@ reader never sees a torn state:
                   --compression=0  →  zstd --ultra -22 --long=27
   4. index        git update-server-info  (regenerate info/refs, objects/info/packs)
                   write objects/info/http-alternates (all /release/*/objects, new→old)
-  5. partitions   advance N of /channel/<name>/0..f to the new semver tag (signed)
+  5. partitions   advance N of /channel/<name>/00..ff to the new semver tag (signed)
   6. upload       immutable /release/** first;  /channel/** + info/** flipped last
 ```
 
@@ -318,10 +318,10 @@ and flipped last. Full producer workflow, atomicity, and concurrency are in
 
 ### 6.2 Rollout (publisher-controlled, fix-forward)
 
-To roll a new release to *N*/16 of the fleet, point *N* partitions at the new
+To roll a new release to *N*/256 of the fleet, point *N* partitions at the new
 semver tag and leave the rest on the prior release; this answers "where does the
 rest of the fleet go" explicitly — the un-advanced partitions still name the prior
-release. Advance partitions as confidence grows; completion = all 16 point at the
+release. Advance partitions as confidence grows; completion = all 256 point at the
 new release. Aborting a bad rollout is **fix-forward** (publish a newer release and
 point partitions at it), never partition-decrement — the consumer's monotonic floor
 would block a decrement anyway. See
@@ -348,7 +348,7 @@ in [`current-state.md`](./current-state.md), not the target:
 
 `registry.toml` (the single signed root) · `bundle-list.toml` · git **bundles** ·
 the `[latest]` pointer · `[components]` · `[capabilities]` · percentage-based
-rollouts and the `[channels.<name>.rollout]` sub-block (replaced by 16 partitions) ·
+rollouts and the `[channels.<name>.rollout]` sub-block (replaced by 256 partitions) ·
 calendar versioning and `creation_token` ordering (replaced by semver + git
 ancestry) · the by-hash `[[bundles]]`/`[[deltas]]` index (replaced by the git object
 store + `http-alternates`). The tag-message TOML carries **only** `[meta]` and
@@ -364,7 +364,7 @@ store + `http-alternates`). The tag-message TOML carries **only** `[meta]` and
 - [`http-layout.md`](./http-layout.md) — full HTTP/object layout, CDN TTLs,
   `info/refs` / `HEAD` / `http-alternates`, stock-git dumb-HTTP compatibility.
 - [`versioning-and-channels.md`](./versioning-and-channels.md) — semver,
-  channels-as-branches, frontier head, the 16-partition rollout, bucket selection,
+  channels-as-branches, frontier head, the 256-partition rollout, bucket selection,
   anti-rollback.
 - [`packs-and-deltas.md`](./packs-and-deltas.md) — pack-objects, thin vs full
   packs, the delta graph, client resolution + retention, zstd.

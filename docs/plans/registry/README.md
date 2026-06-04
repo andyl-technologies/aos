@@ -35,7 +35,7 @@ artifact is simultaneously:
   `[[caches]]` entry whose `url` may be **relative** (same origin) or absolute.
 
 On top of that standard surface the AOS client uses two AOS-only conventions that
-ride *alongside* git without conflicting: the `/channel/<name>/0..f` **signed
+ride *alongside* git without conflicting: the `/channel/<name>/00..ff` **signed
 partition tags** (bucketed rollout) and the thin `delta-<from-semver>.pack`s
 (cheap incremental fetch).
 
@@ -79,8 +79,8 @@ whole thing.
         │                                 │                                 │
   stock `git clone`               AOS client (`apm`)               stock `nix` substituter
         │                                 │                                 │
-  HEAD → refs/heads/<default>      /channel/<name>/0..f             [[caches]] url (rel/abs)
-  refs/heads/<channel>  (branch)     16 signed partition tags         nix-cache-info
+  HEAD → refs/heads/<default>      /channel/<name>/00..ff           [[caches]] url (rel/abs)
+  refs/heads/<channel>  (branch)     256 signed partition tags        nix-cache-info
   refs/tags/<semver>    (tag)      bucket → channel tag → semver      <storehash>.narinfo (Sig:)
   loose objects + full packs         tag → commit (name-bound)        nar/<…> (content-addressed)
                                    thin delta-<from>.pack[.zst]
@@ -89,7 +89,7 @@ whole thing.
         ┌─────────────────────────────────┴─────────────────────────────────┐
         │  Trust root: ONE Ed25519 key (SSH-format git signatures)           │
         │   • signs release tags (refs/tags/<semver> → commit)               │
-        │   • signs the 16 channel partition tags (/channel/<name>/0..f)     │
+        │   • signs the 256 channel partition tags (/channel/<name>/00..ff) │
         │   • may reuse for narinfo Sig: if the origin also serves NARs       │
         └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -103,7 +103,7 @@ From [design brief §5](./design-brief.md):
 | `HEAD` | symref → `refs/heads/<default-channel>` (e.g. `stable`) | no | stock + AOS |
 | `refs/heads/<channel>` | **channels are branches**; head = **frontier** (newest release any partition targets) | no (ref pointer) | stock git convenience |
 | `refs/tags/<semver>` | release: signed tag → commit | **yes** | stock (`verify-tag`) + AOS |
-| `/channel/<name>/<0..f>` | **16 signed partition tag objects** (tag name == channel) → semver tag | **yes** | AOS rollout only |
+| `/channel/<name>/<00..ff>` | **256 signed partition tag objects** (tag name == channel) → semver tag | **yes** | AOS rollout only |
 
 **Trust chain (name-bound):** AOS verifies `signed partition tag → signed semver
 tag → commit`, checking both the signature **and** the embedded tag-name field
@@ -120,8 +120,8 @@ the trust chain.
 | Superset of git | dumb-HTTP shim: `HEAD`, `info/refs` (`update-server-info`), `objects/info/http-alternates` | §12 |
 | Superset of Nix | `[[caches]]` entry, relative or absolute `url`; `nix-cache-info` + narinfo + `nar/` | §13 |
 | Channels = branches | `refs/heads/<channel>` head = rollout **frontier** | §6 |
-| 16-partition rollout | `/channel/<name>/0..f`, N/16 advanced to control blast radius | §6 |
-| Bucketed consumers | deterministic, persisted `sha256(machine_id) mod 16` | §6 |
+| 256-partition rollout | `/channel/<name>/00..ff`, N/256 advanced to control blast radius | §6 |
+| Bucketed consumers | deterministic, persisted: the low byte of `sha256(machine_id)` (i.e. `mod 256`) | §6 |
 | Guaranteed delta graph | full pack at every `X.Y.0`; thin `delta-*.pack`s on a fixed schedule | §9 |
 | zstd-over-stored packs | `pack-objects --compression=0` then `zstd --ultra -22 --long=27` | §10 |
 | Signed tag objects | SSH-format Ed25519, name-binding, `tag→tag→commit` | §11 |
@@ -134,8 +134,8 @@ could not:
 
 1. **Stock-git clonability** — any sha256-capable `git clone <url>` works; loose
    objects guarantee correctness, full packs restore speed.
-2. **Publisher-controlled 16-partition rollout** — advance N/16 partitions to put
-   a release in front of exactly N/16 of the fleet; the un-advanced partitions
+2. **Publisher-controlled 256-partition rollout** — advance N/256 partitions to put
+   a release in front of exactly N/256 of the fleet; the un-advanced partitions
    still name the prior release, answering "where does the rest of the fleet go".
 3. **Cheap incremental fetch** — a guaranteed, walkable thin-delta graph + the
    zstd-over-stored-pack trick beat zlib-9 while staying git-valid.
@@ -159,7 +159,7 @@ asymmetry:
 | Calendar `creation_token` ordering | present (`registry/state.rs:131` `version_to_token`) | **TARGET drops this** (→ semver + git ancestry) |
 | Git **bundles** + `bundle-list.toml` | parse present (`registry/bundle.rs`) | stub (`apr bundle` = `git bundle create`); **TARGET drops bundles** |
 | **sha256 object format** | absent (sha1 today) | absent |
-| **16 signed partition tags** / channel branches | absent | absent |
+| **256 signed partition tags** / channel branches | absent | absent |
 | **Thin/full pack + delta scheme** | absent | absent |
 | **zstd-over-stored packs** | absent | absent |
 | **`http-alternates` distributed object store** | absent | absent |
@@ -183,7 +183,7 @@ registry in a consistent, deployable state.
 | **M1** | Object store | sha256 bare repo, dumb-HTTP layout, `info/refs`/`HEAD`/`http-alternates`/`update-server-info`, per-release object dirs | [WS-01](./workstream-01-object-store.md) |
 | **M2** | Pack & delta pipeline | `pack-objects` thin/full, the delta-scheme graph, zstd-over-stored, expensive-producer tuning | [WS-02](./workstream-02-pack-delta-pipeline.md) |
 | **M3** | Signing & trust | signed tag objects, name-binding, `tag→tag→commit`, `valid_until`, anti-rollback/fix-forward | [WS-04](./workstream-04-signing-trust.md) |
-| **M4** | Channels & rollouts | 16 signed partition tags, channels-as-branches/frontier, bucket selection, publisher rollout control | [WS-03](./workstream-03-channels-rollouts.md) |
+| **M4** | Channels & rollouts | 256 signed partition tags, channels-as-branches/frontier, bucket selection, publisher rollout control | [WS-03](./workstream-03-channels-rollouts.md) |
 | **M5** | Consumer cutover | bucket → channel tag → semver tag → commit, delta walk + retention, name-bound verification, `[[caches]]` superset | [WS-05](./workstream-05-consumer.md) |
 
 ```
@@ -227,7 +227,7 @@ follows the on-disk specs; the **milestone order** above sequences signing
 |---|---|---|---|
 | 01 | [Object store](./workstream-01-object-store.md) | sha256 bare repo, dumb-HTTP layout, `info/refs`/`HEAD`/`http-alternates`/`update-server-info`, per-release object dirs | §4, §8 |
 | 02 | [Pack & delta pipeline](./workstream-02-pack-delta-pipeline.md) | `pack-objects` thin/full, the delta scheme graph, client resolution + retention, zstd-over-stored, expensive-producer tuning | §9, §10 |
-| 03 | [Channels & rollouts](./workstream-03-channels-rollouts.md) | 16 signed partition tags, channels-as-branches/frontier, deterministic bucket selection, publisher rollout control | §5, §6, §7 |
+| 03 | [Channels & rollouts](./workstream-03-channels-rollouts.md) | 256 signed partition tags, channels-as-branches/frontier, deterministic bucket selection, publisher rollout control | §5, §6, §7 |
 | 04 | [Signing & trust](./workstream-04-signing-trust.md) | signed tag objects, name-binding, `tag→tag→commit`, sha256, `valid_until`, anti-rollback/fix-forward | §5, §11 |
 | 05 | [Consumer](./workstream-05-consumer.md) | bucket → channel tag → semver tag → commit resolution, delta walk, retention, name-bound verification, Nix `[[caches]]` superset | §6, §9, §13 |
 
@@ -237,7 +237,7 @@ WS-01 is the keystone: a **sha256 bare repo with the dumb-HTTP shim and the
 distributed per-release object store** is the substrate every other workstream
 builds on — there is nothing to pack, sign, roll out, or consume until the object
 layout exists. WS-02 (packs/deltas) and WS-04 (signing/trust) then proceed in
-parallel over disjoint surfaces (objects vs tags). WS-03 layers the 16-partition
+parallel over disjoint surfaces (objects vs tags). WS-03 layers the 256-partition
 rollout and channel branches on top of WS-04's signed-tag primitive. WS-05 flips
 the consumer to resolve buckets, walk the delta graph, verify name-binding, and
 read the `[[caches]]` superset — only after a producer can publish all of it, so
@@ -261,7 +261,7 @@ check an implementation without leaving this page. The brief is authoritative.
     info/http-alternates           ← ALL /release/*/objects dirs, newest→oldest  [low TTL]
     <xx>/<62-hex>                  ← loose objects, sha256 2/62 split            [immutable]
   channel/
-    <name>/0 .. f                  ← 16 SIGNED tag objects (tag == <name>)        [low TTL]
+    <name>/00 .. ff               ← 256 SIGNED tag objects (tag == <name>)       [low TTL]
   release/
     <major>/<minor>/<patch[-prerelease][+build]>/                                [long TTL]
       objects/
@@ -311,17 +311,17 @@ Window is the free lever; cap **depth** (deep chains cost the *consumer* CPU).
 `zstd -d | git index-pack --fix-thin`. Ship `.idx` only for full packs; thin
 deltas are `.pack[.zst]` only.
 
-### 16-partition rollout (§6)
+### 256-partition rollout (§6)
 
 ```
-/channel/stable/   0 1 2 3 4 5 6 7 8 9 a b c d e f      (16 signed tag objects)
-   roll N/16 to new release  →  point N partitions at new semver tag
-   the other (16-N) partitions still name the prior release
-   completion  →  all 16 point at the new release
+/channel/stable/   00 01 02 .. fd fe ff                 (256 signed tag objects)
+   roll N/256 to new release  →  point N partitions at new semver tag
+   the other (256-N) partitions still name the prior release
+   completion  →  all 256 point at the new release
 ```
 
-Consumer bucket: deterministic + persisted (`sha256(machine_id) mod 16`),
-probe-forward `(bucket+1) mod 16` if a partition is missing. Branch head
+Consumer bucket: deterministic + persisted (the low byte of `sha256(machine_id)`,
+i.e. `mod 256`), probe-forward `(bucket+1) mod 256` if a partition is missing. Branch head
 `refs/heads/<channel>` = the **frontier** (newest release any partition targets).
 
 ### Tag-message TOML (§14) — exactly `[meta]` + `[[caches]]`
@@ -368,7 +368,7 @@ namespace carries pointers, the object store carries everything else.
 - [http-layout.md](../../registry/http-layout.md) — full HTTP/object layout, CDN
   TTLs, `info/refs`/`HEAD`/`http-alternates`, stock-git dumb-HTTP compatibility.
 - [versioning-and-channels.md](../../registry/versioning-and-channels.md) — semver
-  (no `v`), channels-as-branches, frontier head, the 16-partition rollout, bucket
+  (no `v`), channels-as-branches, frontier head, the 256-partition rollout, bucket
   selection, anti-rollback.
 - [packs-and-deltas.md](../../registry/packs-and-deltas.md) — pack-objects, thin vs
   full packs, the delta-scheme graph, client resolution + retention, zstd.
@@ -381,7 +381,7 @@ namespace carries pointers, the object store carries everything else.
 - [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) — the Nix
   binary-cache superset via relative `[[caches]]`.
 - [apt-comparison.md](../../registry/apt-comparison.md) — the APT comparison: signed
-  flat-file lineage, bundles/pdiff → git packs/thin deltas, percentage → 16 partitions.
+  flat-file lineage, bundles/pdiff → git packs/thin deltas, percentage → 256 partitions.
 
 ---
 
@@ -396,9 +396,9 @@ to read this plan:
 - **Registry (target)** — a bare git repo, **sha256** object format, served as
   static files over **dumb HTTP**. The package metadata *is* the git tree content.
 - **Channel** — a named release line (`stable`, `testing`); a git **branch**
-  (`refs/heads/<channel>`, head = frontier) plus **16 signed partition tags**
-  (`/channel/<name>/0..f`).
-- **Partition / bucket** — one of exactly **16** channel partitions (`0`–`f`); a
+  (`refs/heads/<channel>`, head = frontier) plus **256 signed partition tags**
+  (`/channel/<name>/00..ff`).
+- **Partition / bucket** — one of exactly **256** channel partitions (`00`–`ff`); a
   consumer deterministically self-selects one bucket.
 - **Release** — an immutable **semver** version (no `v` prefix); a signed git tag
   `refs/tags/<semver>` → commit, with objects under `/release/<major>/<minor>/<patch…>/`.
