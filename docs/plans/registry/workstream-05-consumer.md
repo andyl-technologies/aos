@@ -426,8 +426,8 @@ loose-object floor.
 > verification is `signed partition tag → signed semver tag → commit`, checking
 > the **signature** *and* the embedded **tag-name field** against the expected
 > name. This binds a tag object to its serving path and prevents cross-serving.
-> The trusted-key set is the committed `keys.toml` trust roster, bootstrapped by
-> a client-side TOFU-pinned anchor (§6.3).
+> The trusted-key set is the committed `keys.toml` trust roster (≥2 overlapping
+> active keys, no root tier), bootstrapped by a client-side TOFU pin (§6.3).
 
 ### 6.1 The two checks, applied to each tag object
 
@@ -456,7 +456,7 @@ Ed25519 signature + an optional freeform human message — so the only thing par
 out of it is the tag-name header (for name-binding); there is no structured tag
 payload to read.
 
-### 6.3 Trust roster — `keys.toml` (rotation & revocation)
+### 6.3 Trust roster — `keys.toml` (rotation, retirement & compromise)
 
 > **TARGET.** Per [brief §14](./design-brief.md#14-tag-payload-repo-tree-config--trust-files):
 > the set of trusted signing keys lives in a **committed git-repo-root
@@ -465,26 +465,32 @@ payload to read.
 > is **not** in `registry.toml` (a key inside a file authenticated by that key is
 > circular for bootstrap). See [`repo-layout.md`](../../registry/repo-layout.md)
 > §3.
+>
+> **Trust model — decided: ≥2 overlapping active keys.** There is **no**
+> offline-root / operational two-tier and **no** TUF-style root role. The **git
+> lineage** (signed tag → commit → parent chain) provides continuity, so a
+> separate root tier is unnecessary. `keys.toml` lists the active signing key(s)
+> — `id` + `key`, **no role field**, **no `root` entry** — plus a `revoked` list.
 
 - **Bootstrap trust is TOFU-pinned client-side**, **not** read from `keys.toml`:
-  initial trust is the anchor key in `trusted-keys.d/<registry>.pub`
-  (`security.rs`, `types.rs` `trusted_keys_dirs()`). The consumer verifies the
-  tag chain (§6.1) with the pinned key, *then* reads `keys.toml` from the
-  resolved tree.
+  initial trust is the pinned key in `trusted-keys.d/<registry>.pub`
+  (`security.rs`, `types.rs` `trusted_keys_dirs()`). `keys.toml` does **not**
+  bootstrap trust. The consumer verifies the tag chain (§6.1) with the pinned
+  key, *then* reads `keys.toml` from the resolved tree.
 - **Rotation:** the publisher commits `keys.toml` listing **both** the old and
   new keys (an overlap window) in a tag signed by the **currently-trusted** key.
   A consumer that trusts the old key verifies the tag, reads `keys.toml`, and
   **pins the new key**. A later publish drops the old key.
-- **Revocation:** list the bad key under `[[revoked]]`, in a `keys.toml` **signed
-  by a key the consumer trusts that is *not* the revoked one**. This requires
-  either a dedicated **offline root/anchor** key that signs `keys.toml` while a
-  separate **operational** key signs day-to-day release/channel tags (TUF-style),
-  or **≥2 overlapping active keys**. Root-vs-single is an open choice
-  ([brief §16](./design-brief.md#16-open-questions--to-confirm-in-implementation)).
+- **Planned retirement:** list the key under `revoked`, in a `keys.toml` **signed
+  by one of the *other* overlapping active keys**. With ≥2 overlapping active
+  keys this needs no separate signing tier.
+- **Compromise** is handled **out-of-band**: the consumer **re-pins** via
+  `trusted-keys.d` (`apr trust`). An in-repo key cannot credibly revoke itself,
+  and compromise is rare enough that the out-of-band re-pin is acceptable.
 
-The consumer therefore follows `keys.toml` for active-key/revocation state on
+The consumer therefore follows `keys.toml` for active-key/retirement state on
 **every** resolution after the TOFU bootstrap, with the client-side
-`trusted-keys.d/<registry>.pub` anchor as the only out-of-band trust input.
+`trusted-keys.d/<registry>.pub` pin as the only out-of-band trust input.
 
 ### 6.4 Verification ordering (fail-closed)
 
@@ -740,8 +746,9 @@ content-addressed and SHA-256-verified (§8 NAR-safety note).
 - [ ] `git verify-tag`-style Ed25519 check on each tag object + name-binding
       string comparison (§6); reuse `security.rs` primitives.
 - [ ] Read the committed `keys.toml` trust roster from the resolved tree; honour
-      active keys + `[[revoked]]`; bootstrap-trust via client-side TOFU
-      `trusted-keys.d/<registry>.pub` anchor; follow rotation/revocation (§6.3).
+      active keys (`id` + `key`, no role field) + `revoked`; bootstrap-trust via
+      client-side TOFU `trusted-keys.d/<registry>.pub` pin; follow overlap
+      rotation + planned retirement; handle compromise out-of-band (re-pin) (§6.3).
 - [ ] Fail-closed ordering: verify chain *before* fetching objects (§6.4).
 
 **Fetch:**
