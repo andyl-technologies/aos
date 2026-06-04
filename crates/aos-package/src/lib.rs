@@ -593,6 +593,11 @@ pub enum RegistryCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+    /// Channel rollout operations
+    Channel {
+        #[command(subcommand)]
+        command: ChannelCommand,
+    },
 
     // ----- GitHub Integration -----
     /// GitHub Pull Request operations
@@ -676,6 +681,51 @@ pub enum BranchCommand {
     Delete {
         /// Branch name
         name: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Channel rollout subcommands.
+#[derive(Subcommand)]
+pub enum ChannelCommand {
+    /// Initialize all channel partitions at one release
+    Init {
+        /// Channel name
+        channel: String,
+        /// Semver release tag
+        semver: String,
+        /// Signing key
+        #[arg(long)]
+        key: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Advance channel partitions to a release
+    Advance {
+        /// Channel name
+        channel: String,
+        /// Semver release tag
+        semver: String,
+        /// Number of partitions to advance by ascending fill
+        #[arg(long)]
+        count: Option<usize>,
+        /// Explicit comma-separated partition list, decimal or hex
+        #[arg(long)]
+        partitions: Option<String>,
+        /// Signing key
+        #[arg(long)]
+        key: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show channel partition state
+    Status {
+        /// Channel name
+        channel: String,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1192,6 +1242,9 @@ async fn run_registry(
             .await
         }
         RegistryCommand::Pr { command } => registry_ops::run_pr(config, command, printer).await,
+        RegistryCommand::Channel { command } => {
+            registry_ops::run_channel(config, command, printer).await
+        }
         RegistryCommand::Tag {
             name,
             message,

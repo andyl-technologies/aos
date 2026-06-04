@@ -4,6 +4,7 @@
 //! registries. It operates on local git clones stored at
 //! `~/.local/share/apm/registries/<name>/`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -13,9 +14,11 @@ use serde_json::Value;
 use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
+use crate::registry::channel::{self, PartitionMap};
 use crate::registry::objectstore;
+use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
 use crate::types::{CacheEntry, RegistryRootConfig};
-use crate::{BranchCommand, PrCommand};
+use crate::{BranchCommand, ChannelCommand, PrCommand};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -92,6 +95,22 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Run a git command in the registry directory, returning raw stdout bytes.
+fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+    }
+
+    Ok(output.stdout)
 }
 
 /// Run a git command that is allowed to fail, returning (success, stdout, stderr).
@@ -1468,6 +1487,142 @@ pub async fn run_branch(
     }
 }
 
+/// Channel rollout subcommands.
+pub async fn run_channel(
+    config: &ApmConfig,
+    command: &ChannelCommand,
+    printer: &Printer,
+) -> Result<()> {
+    match command {
+        ChannelCommand::Init {
+            channel,
+            semver,
+            key,
+            registry,
+        } => {
+            let version = semver::Version::parse(semver)
+                .with_context(|| format!("parsing release semver '{semver}'"))?;
+            channel_init(config, channel, &version, key, registry.as_deref(), printer).await
+        }
+        ChannelCommand::Advance {
+            channel,
+            semver,
+            count,
+            partitions,
+            key,
+            registry,
+        } => {
+            let version = semver::Version::parse(semver)
+                .with_context(|| format!("parsing release semver '{semver}'"))?;
+            channel_advance(
+                config,
+                channel,
+                &version,
+                *count,
+                partitions.as_deref(),
+                key,
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+        ChannelCommand::Status { channel, registry } => {
+            channel_status(config, channel, registry.as_deref(), printer).await
+        }
+    }
+}
+
+async fn channel_init(
+    config: &ApmConfig,
+    channel_name: &str,
+    version: &semver::Version,
+    signing_key: &str,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    validate_channel_name(channel_name)?;
+    let dir = registry_dir(config, registry)?;
+    assert_release_tag_exists(&dir, version)?;
+
+    let mut map = PartitionMap::new();
+    for bucket in 0..=u8::MAX {
+        write_channel_partition_tag(&dir, channel_name, bucket, version, signing_key)?;
+        map.set(bucket as usize, version.clone())?;
+    }
+    update_channel_frontier(&dir, channel_name, &map)?;
+
+    printer.success(&format!(
+        "Initialized channel '{channel_name}' with 256/256 partitions on {version}."
+    ));
+    Ok(())
+}
+
+async fn channel_advance(
+    config: &ApmConfig,
+    channel_name: &str,
+    version: &semver::Version,
+    count: Option<usize>,
+    partitions: Option<&str>,
+    signing_key: &str,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    validate_channel_name(channel_name)?;
+    let dir = registry_dir(config, registry)?;
+    assert_release_tag_exists(&dir, version)?;
+
+    let mut map = read_channel_partition_map(&dir, channel_name)?;
+    channel::assert_full_partition_set(&map)?;
+    let selected = select_partitions_for_advance(count, partitions, &map, version)?;
+    if selected.is_empty() {
+        printer.info("No partitions selected for advancement.");
+        return Ok(());
+    }
+
+    for bucket in &selected {
+        write_channel_partition_tag(&dir, channel_name, *bucket, version, signing_key)?;
+        map.set(*bucket as usize, version.clone())?;
+    }
+    update_channel_frontier(&dir, channel_name, &map)?;
+
+    printer.success(&format!(
+        "Advanced channel '{channel_name}' {} partition(s) to {version}.",
+        selected.len()
+    ));
+    Ok(())
+}
+
+async fn channel_status(
+    config: &ApmConfig,
+    channel_name: &str,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    validate_channel_name(channel_name)?;
+    let dir = registry_dir(config, registry)?;
+    let map = read_channel_partition_map(&dir, channel_name)?;
+    let frontier = channel::compute_frontier(&map);
+    let missing = map.iter().filter(|(_, target)| target.is_none()).count();
+    let mut counts: BTreeMap<semver::Version, usize> = BTreeMap::new();
+    for (_, target) in map.iter() {
+        if let Some(version) = target {
+            *counts.entry(version.clone()).or_default() += 1;
+        }
+    }
+
+    printer.header(&format!("Channel: {channel_name}"));
+    if let Some(frontier) = frontier {
+        printer.kv("Frontier", &frontier.to_string());
+    } else {
+        printer.kv("Frontier", "none");
+    }
+    printer.kv("Missing partitions", &missing.to_string());
+    for (version, count) in counts.iter().rev() {
+        printer.kv(&version.to_string(), &format!("{count}/256"));
+    }
+    Ok(())
+}
+
 /// `apr push`
 pub async fn push(
     config: &ApmConfig,
@@ -1870,6 +2025,174 @@ pub async fn sign(
     Ok(())
 }
 
+fn validate_channel_name(channel_name: &str) -> Result<()> {
+    if channel_name.is_empty()
+        || channel_name.contains('/')
+        || channel_name.starts_with('-')
+        || channel_name.contains("..")
+    {
+        bail!("channel name must be a single non-empty ref segment");
+    }
+    Ok(())
+}
+
+fn assert_release_tag_exists(dir: &Path, version: &semver::Version) -> Result<String> {
+    let tag = version.to_string();
+    git(dir, &["rev-parse", &format!("{tag}^{{tag}}")])
+        .with_context(|| format!("resolving signed release tag '{tag}'"))
+}
+
+fn release_commit(dir: &Path, version: &semver::Version) -> Result<String> {
+    let tag = version.to_string();
+    git(dir, &["rev-parse", &format!("{tag}^{{commit}}")])
+        .with_context(|| format!("resolving release tag '{tag}' commit"))
+}
+
+fn select_partitions_for_advance(
+    count: Option<usize>,
+    partitions: Option<&str>,
+    map: &PartitionMap,
+    version: &semver::Version,
+) -> Result<Vec<u8>> {
+    match (count, partitions) {
+        (Some(_), Some(_)) => bail!("use only one of --count or --partitions"),
+        (None, None) => bail!("one of --count or --partitions is required"),
+        (Some(count), None) => {
+            if count > channel::PARTITION_COUNT {
+                bail!("--count must be <= {}", channel::PARTITION_COUNT);
+            }
+            Ok(channel::ascending_fill(count, map, version))
+        }
+        (None, Some(spec)) => parse_partition_list(spec),
+    }
+}
+
+fn parse_partition_list(spec: &str) -> Result<Vec<u8>> {
+    let mut buckets = Vec::new();
+    for raw in spec.split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let bucket = parse_partition(raw)?;
+        if !buckets.contains(&bucket) {
+            buckets.push(bucket);
+        }
+    }
+    if buckets.is_empty() {
+        bail!("partition list is empty");
+    }
+    Ok(buckets)
+}
+
+fn parse_partition(raw: &str) -> Result<u8> {
+    if let Some(hex) = raw.strip_prefix("0x") {
+        return u8::from_str_radix(hex, 16)
+            .with_context(|| format!("invalid hex partition '{raw}'"));
+    }
+    if raw.bytes().any(|b| matches!(b, b'a'..=b'f' | b'A'..=b'F')) {
+        return u8::from_str_radix(raw, 16)
+            .with_context(|| format!("invalid hex partition '{raw}'"));
+    }
+    raw.parse::<u8>()
+        .with_context(|| format!("invalid decimal partition '{raw}'"))
+}
+
+fn read_channel_partition_map(dir: &Path, channel_name: &str) -> Result<PartitionMap> {
+    let release_tags = semver_tag_object_map(dir)?;
+    let git_dir = objectstore::repo_git_dir(dir)?;
+    let channel_dir = git_dir.join("channels").join(channel_name);
+    let mut map = PartitionMap::new();
+
+    for bucket in 0..=u8::MAX {
+        let path = channel_dir.join(channel::bucket_hex(bucket));
+        if !path.exists() {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let tag = parse_tag_object(&content)
+            .with_context(|| format!("parsing channel partition {}", path.display()))?;
+        verify_name_binding(&tag, channel_name)?;
+        if tag.target_type != TagTarget::Tag {
+            bail!(
+                "channel partition {} targets {:?}, expected tag",
+                path.display(),
+                tag.target_type,
+            );
+        }
+        let version = release_tags.get(&tag.object).ok_or_else(|| {
+            anyhow::anyhow!(
+                "channel partition {} points at unknown release tag object {}",
+                path.display(),
+                tag.object,
+            )
+        })?;
+        map.set(bucket as usize, version.clone())?;
+    }
+    Ok(map)
+}
+
+fn semver_tag_object_map(dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
+    let mut map = BTreeMap::new();
+    for version in semver_tag_versions(dir)? {
+        let oid = assert_release_tag_exists(dir, &version)?;
+        map.insert(oid, version);
+    }
+    Ok(map)
+}
+
+fn write_channel_partition_tag(
+    dir: &Path,
+    channel_name: &str,
+    bucket: u8,
+    version: &semver::Version,
+    signing_key: &str,
+) -> Result<()> {
+    let target = format!("{version}^{{tag}}");
+    let message = format!(
+        "AOS channel {channel_name} partition {}",
+        channel::bucket_hex(bucket)
+    );
+    sign_tag(
+        dir,
+        channel_name,
+        &target,
+        Some(&message),
+        signing_key,
+        true,
+    )?;
+    let tag_ref = format!("refs/tags/{channel_name}^{{tag}}");
+    let oid = git(dir, &["rev-parse", &tag_ref])?;
+    let payload = git_raw(dir, &["cat-file", "-p", &oid])?;
+
+    let git_dir = objectstore::repo_git_dir(dir)?;
+    let channel_dir = git_dir.join("channels").join(channel_name);
+    std::fs::create_dir_all(&channel_dir)
+        .with_context(|| format!("creating {}", channel_dir.display()))?;
+    let partition = channel_dir.join(channel::bucket_hex(bucket));
+    std::fs::write(&partition, payload)
+        .with_context(|| format!("writing {}", partition.display()))?;
+
+    git(dir, &["tag", "-d", channel_name])
+        .with_context(|| format!("deleting temporary channel tag '{channel_name}'"))?;
+    Ok(())
+}
+
+fn update_channel_frontier(dir: &Path, channel_name: &str, map: &PartitionMap) -> Result<()> {
+    channel::assert_full_partition_set(map)?;
+    let frontier = channel::compute_frontier(map)
+        .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}' has no frontier"))?;
+    let commit = release_commit(dir, &frontier)?;
+    git(
+        dir,
+        &["update-ref", &format!("refs/heads/{channel_name}"), &commit],
+    )?;
+    refresh_registry_object_store(dir)
+        .context("refreshing dumb-HTTP object store after channel update")?;
+    Ok(())
+}
+
 /// Sign an annotated tag object with git's SSH signing support.
 fn sign_tag(
     dir: &Path,
@@ -1981,6 +2304,29 @@ mod tests {
                 semver::Version::parse("1.1.9").unwrap(),
                 semver::Version::parse("1.2.0").unwrap(),
             ],
+        );
+    }
+
+    #[test]
+    fn partition_list_accepts_decimal_and_hex() {
+        assert_eq!(
+            parse_partition_list("0,1,0a,0xff,1").unwrap(),
+            vec![0, 1, 10, 255],
+        );
+        assert!(parse_partition_list("").is_err());
+        assert!(parse_partition_list("256").is_err());
+    }
+
+    #[test]
+    fn channel_advance_selector_requires_one_mode() {
+        let map = PartitionMap::all(semver::Version::parse("1.0.0").unwrap());
+        let target = semver::Version::parse("1.1.0").unwrap();
+
+        assert!(select_partitions_for_advance(None, None, &map, &target).is_err());
+        assert!(select_partitions_for_advance(Some(1), Some("0"), &map, &target).is_err());
+        assert_eq!(
+            select_partitions_for_advance(Some(3), None, &map, &target).unwrap(),
+            vec![0, 1, 2],
         );
     }
 

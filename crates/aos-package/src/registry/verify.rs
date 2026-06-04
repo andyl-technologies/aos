@@ -118,7 +118,7 @@ pub fn verify_tag_chain(
     })
 }
 
-fn parse_tag_object(content: &str) -> Result<TagObject> {
+pub fn parse_tag_object(content: &str) -> Result<TagObject> {
     let mut object = None;
     let mut target_type = None;
     let mut name = None;

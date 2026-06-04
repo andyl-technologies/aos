@@ -618,6 +618,7 @@ consumer can do far more than the producer can produce.
 | `apr create` | `git init --object-format=sha256` + `packages/` + writes repo-local `registry.toml` (`registry_ops.rs:421+`) | sets `HEAD` to `refs/heads/stable`; refreshes dumb-HTTP object indexes |
 | `apr publish` | builds package metadata + commits (`registry_ops.rs:476+`) | refreshes `objects/info/alternates` and `update-server-info` after commit |
 | `apr tag NAME [-m MSG] --key KEY` | `git tag -s` with SSH signing (`registry_ops.rs:1684-1702`) | `--key` is required |
+| `apr channel init/advance/status` | writes raw signed partition tag files, updates frontier branch, or summarizes partition counts (`registry_ops.rs`) | upload and consumer rollout resolution still pending |
 | `apr push [BRANCH] [-u] [--force]` | `git push [-u origin] [branch] [--force]` (`registry_ops.rs:1398-1430`) | FF-only by default (git's own rule) |
 | `apr pull [--rebase]` | `git pull [--rebase]` (`registry_ops.rs:1433+`) | |
 | `apr bundle [-o DIR] [--tag] [--delta-from] [--update-manifest]` | `git bundle create` into a local dir (`registry_ops.rs:1706-1744`) | `_update_manifest` is **unused dead code**; filenames `{name}-{tag}.bundle` / `{name}-{from}..{tag}.bundle` |
