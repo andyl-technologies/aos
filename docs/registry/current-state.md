@@ -146,12 +146,11 @@ Notes:
 ### 3.1 The repo-local `registry.toml`
 
 This file lives **inside** the registry git repo — it is a **committed tree
-file**, parsed by `RegistryRootConfig` (`types.rs:564-570`). It is *not* the
+file**, parsed by `RegistryRootConfig` (`types.rs:564-568`). It is *not* the
 removed intermediate signed-HTTP-root `registry.toml` (a mutable origin file
 carrying `[latest]`/`[channels]`/`[components]`/`[capabilities]`/`[[bundles]]`/
 `[signature]`); that intermediate file never existed in the code and is gone
-from the target. The CURRENT committed file carries `[registry]` +
-`[[caches]]` + `[signing].public_key`:
+from the target. The committed file now carries `[registry]` + `[[caches]]`:
 
 ```toml
 [registry]
@@ -162,47 +161,14 @@ description = "AOS core packages"
 [[caches]]
 url = "https://cache.aos.dev/nar"
 priority = 100
-
-# Optional signing pubkey advertised to clients (TOFU; see §8).
-[signing]
-public_key = "aos-core:Ed25519:base64keyhere"
 ```
 
 - `[[caches]]` each carry `url` + `priority` (`CacheEntry`, default priority
   `100`, `types.rs:582-586`).
-- `[signing].public_key` carries the registry's Ed25519 key string — the
-  `[signing]` table is the `signing` field of `RegistryRootConfig`
-  (`types.rs:569`), deserialized as `RegistrySigningConfig`
-  (`types.rs:594-596`); `public_key` lives on `RegistrySigningConfig`, **not**
-  directly on `RegistryRootConfig`.
+- The previous in-tree signing pubkey field was removed from
+  `RegistryRootConfig`; trust bootstrap is client-side TOFU, and committed
+  `keys.toml` carries the target rotation/revocation roster.
 
-> **TARGET.** The git-repo-root `registry.toml` is **kept** as a committed tree
-> file (the same `RegistryRootConfig`), authenticated transitively by the signed
-> tag (tag → commit → tree → file). Two deltas vs. CURRENT:
->
-> 1. **The signing pubkey is removed** (decision B). The
->    `RegistrySigningConfig` (`[signing].public_key`, the `signing` field of
->    `RegistryRootConfig`) no
->    longer lives here — a key inside a file authenticated *by* that key is
->    circular for bootstrap. The target `registry.toml` is therefore just
->    `[registry]` (name/description) + `[[caches]]`.
-> 2. **A new committed `keys.toml` trust roster is added** (decision D): the
->    active signing key(s) + a revoked list, with **no role field and no `root`
->    entry** — just `id` + `key` per active key. The trust model is **≥2
->    overlapping active keys** (decided, brief §14/§16.8); there is **no**
->    offline-root / operational two-tier and **no** TUF-style root role. The git
->    lineage (signed tag → commit → parent chain) provides continuity, so a
->    separate root tier is unnecessary. Bootstrap trust stays **TOFU-pinned
->    client-side** (`trusted-keys.d/<registry>.pub`, §8.3), not from `keys.toml`.
->    **Rotation** publishes `keys.toml` listing old + new keys (overlap window) in
->    a tag signed by a currently-trusted key; the consumer verifies and pins the
->    new key, then the old key is dropped on a later publish. **Planned
->    retirement** lists the key under `revoked`, signed by one of the *other*
->    overlapping active keys. **Compromise** is handled **out-of-band**: the
->    consumer re-pins via `trusted-keys.d` (`apr trust`) — an in-repo key cannot
->    credibly revoke itself, and compromise is rare enough that out-of-band is
->    acceptable.
->
 > The `[[caches]]` NAR-cache pointers **stay in this committed `registry.toml`**
 > (authenticated via the tag), *not* in the signed tags (which carry **no**
 > structured payload — no `[meta]`, no `[[caches]]`) and *not* solely
