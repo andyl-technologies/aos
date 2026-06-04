@@ -65,7 +65,7 @@ trust chain, so file-level SHA-256 is no longer a manifest field.
 
 - A bundle **carries refs and prerequisites** in a self-describing header. The
   target moves refs out of artifacts entirely: channels are branches, releases
-  are signed tag objects, and the 16 partition tags live at `/channel/*` (brief
+  are signed tag objects, and the 256 partition tags live at `/channel/*` (brief
   §5). A bundle's ref payload would duplicate (and could contradict) that.
 - Bundles can't be composed with the dumb-HTTP object store / `http-alternates`
   layout (workstream-01). The target wants packs that drop straight into
