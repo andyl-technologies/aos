@@ -141,6 +141,66 @@ which returns one of three decisions:
 This store and TOFU flow is **unchanged** in the target. The same `<registry>.pub`
 key that anchors release/channels tag verification is the key used everywhere below.
 
+### 2.5 The trust roster — `keys.toml` (TARGET)
+
+Bootstrap trust is **client-side**: the `<registry>.pub` pinned in `trusted-keys.d`
+via TOFU (§2.4) is the anchor and the **only** thing that is true before any object is
+fetched. The signing pubkey is therefore **removed** from the committed
+`registry.toml` — a key stored inside a file that is authenticated *by* that key is
+circular for bootstrap (it can attest to nothing the consumer doesn't already have to
+trust out of band). See [`repo-layout.md`](repo-layout.md) §2 for the
+`registry.toml` shape (which now carries only `[registry]` + `[[caches]]`).
+
+Instead the registry publishes a **`keys.toml` trust roster** — a committed tree file
+listing the **active signing key(s)** and a **revoked list**, authenticated like every
+other tree file by the signed tag (tag → commit → tree → file). It does **not**
+bootstrap trust; it *evolves* a trust the consumer already holds. The on-disk shape and
+fields live in [`repo-layout.md`](repo-layout.md) §3.
+
+```
+  trusted-keys.d/<registry>.pub          keys.toml (in the committed tree)
+  ┌──────────────────────────┐           ┌─────────────────────────────────┐
+  │ TOFU-pinned ANCHOR (§2.4) │           │ active keys + revoked list      │
+  │ client-side, out of band  │ ──verify──▶ authenticated by the signed tag │
+  │ THE bootstrap root        │  the tag  │ (tag → commit → tree → file)    │
+  └──────────────────────────┘           └─────────────────────────────────┘
+        trust starts here                  trust EVOLVES here (rotate/revoke)
+```
+
+**Rotation (overlap window).** To roll the signing key forward, publish a `keys.toml`
+that lists **both** the old and the new key in a tag **signed by the currently-trusted
+key**. A consumer that already trusts the old key verifies that tag, reads `keys.toml`,
+and **pins the new key** (updating its TOFU store). A later release can then drop the
+old key from the roster and sign with the new key alone. The overlap window is what
+makes the handoff seamless: no consumer is ever asked to trust a key it cannot reach
+through a key it already trusts.
+
+**Revocation (compromise).** To retire a compromised key, list it under the roster's
+revoked entries — but the `keys.toml` carrying that revocation **must be signed by a
+key the consumer trusts that is *not* the revoked one.** A single key cannot credibly
+revoke itself. Two structures satisfy this:
+
+- **TUF-style root/operational split** — a dedicated **offline root (anchor) key**
+  (the one TOFU-pinned in `trusted-keys.d`) signs `keys.toml`, while a separate
+  **operational key** signs day-to-day release and channel tags. Compromise of the
+  hot operational key is recoverable: the offline root signs a `keys.toml` revoking it
+  and naming a fresh operational key.
+- **≥2 overlapping active keys** — keep two active signing keys so a `keys.toml`
+  revoking one can still be signed by the other.
+
+Whether to adopt the dedicated-root model or a single-key-with-overlap model is an
+**open choice** — see [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md)
+§16 (and whether the roster is a standalone `keys.toml` or a `[keys]` block in
+`registry.toml`).
+
+> **NAR safety (defence in depth).** An authenticated-but-wrong `[[caches]]` pointer
+> cannot serve bad bytes: NARs are **content-addressed and SHA-256-verified** on
+> download. The trust that actually matters is the **tag/commit chain governed by
+> `keys.toml`**, not the cache list — a mis-signed or mis-pointed cache yields a hash
+> mismatch and a rejected fetch, not a compromised closure. See
+> [`repo-layout.md`](repo-layout.md) §3 and
+> [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
+
 ---
 
 ## 3. The trust chain — `tag → tag → commit` with name-binding
@@ -323,9 +383,11 @@ A single Ed25519 key per registry covers **both** trust surfaces:
 1. **Git tag signatures** — the `tag → tag → commit` chain above (the primary use).
 2. **Nix narinfo `Sig:`** — if the origin *also* serves a NAR binary cache, the
    `<storehash>.narinfo` `Sig:` field can reuse the **same** Ed25519 key. The cache
-   location is **not** advertised in any signed tag: it is the **consumer's
-   client-side configuration** (its local registry config) or the origin itself. The
-   origin MAY serve the stock-nix superset (`nix-cache-info`,
+   location is **not** carried in any signed tag (tags are pure pointers): it lives in
+   the committed `registry.toml` `[[caches]]` (authenticated via the tag —
+   [`repo-layout.md`](repo-layout.md) §2), with the consumer's client-side
+   `registries.d/<name>.toml` as an optional override/supplement (higher priority
+   wins). The origin MAY serve the stock-nix superset (`nix-cache-info`,
    `<storehash>.narinfo`, `nar/…`) — see
    [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
 
@@ -343,6 +405,7 @@ differs (git tag vs. narinfo).
 | Concern | Mechanism | Authority? |
 |---|---|---|
 | Is this the registry's key? | TOFU + `trusted-keys.d/<registry>.pub` (`security.rs` `KeyStore`/`tofu_check`) | root of trust |
+| How do keys rotate / get revoked? | committed `keys.toml` trust roster (§2.5), signed by an already-trusted (non-revoked) key | yes — evolves an anchored trust |
 | Is this tag genuinely signed? | `git verify-tag` + temp `allowed_signers` (Ed25519) | yes |
 | Is this tag at the *right* path? | embedded tag-name == expected path name (channel / semver) | yes — closes cross-serving |
 | Which release does my bucket get? | signed `/channels/<name>/<bucket>` partition tag (hop 1) | yes |
@@ -377,7 +440,9 @@ ways:
 | Capability | CURRENT (code today) | TARGET |
 |---|---|---|
 | Key format `name:Ed25519:<base64>` | `parse_signing_key` (`security.rs:306`) | unchanged |
-| Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) | unchanged |
+| Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) | unchanged (the bootstrap anchor) |
+| Signing pubkey location | `[registry.signing].public_key` inside `registry.toml` (`RegistryRootConfig`) | **removed** from `registry.toml`; trust = `keys.toml` roster + TOFU |
+| Key rotation / revocation | — (single pinned key, no roster) | committed `keys.toml` roster: overlap-window rotation, root/operational (or ≥2-key) revocation (§2.5) |
 | Signature *production* | `apr sign` = `git commit --amend -S` (`registry_ops.rs:1770`) | `git tag -s` on **tag objects** |
 | Tag creation | `apr tag` = `git tag -a` with `--message`, else lightweight `git tag` (both **unsigned**) (`registry_ops.rs:1706-1710`) | `git tag -s` (signed) for channel + release tags |
 | Signature *verification* | `verify_commit_signature` = `git verify-commit` (`security.rs:199`) | `git verify-tag` (same allowed-signers mechanism) |
@@ -396,6 +461,7 @@ Superseded concepts live only in current-state.md (today's code) and design-brie
 
 - [`README.md`](README.md) — registry doc index and glossary.
 - [`architecture.md`](architecture.md) — git-over-dumb-HTTP, the three ref layers.
+- [`repo-layout.md`](repo-layout.md) — the committed git tree: `registry.toml` (pubkey removed) + `keys.toml` trust roster + `packages/` + `closures/`.
 - [`http-layout.md`](http-layout.md) — HTTP/object layout, CDN TTLs, sha256 object store.
 - [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, 256-partition rollout, bucket selection, anti-rollback.
 - [`packs-and-deltas.md`](packs-and-deltas.md) — what the verified commit's object store contains.

@@ -32,9 +32,11 @@ smart-protocol negotiation. The consumer's job is six steps:
 5. **Delta-walk fetch** — pick a thin `delta-*.pack` whose base is retained, walk
    backward otherwise, fall to full pack, fall to loose objects; complete with
    `git index-pack --fix-thin`; apply retention.
-6. **Nix cache wiring** — resolve the NAR substituter from **client-side
-   registry config** (or the origin itself) and register it for NAR
-   substitution. The substituter location is **not** advertised in signed tags.
+6. **Nix cache wiring** — resolve the NAR substituter from the **committed
+   git-repo-root `registry.toml` `[[caches]]`** (authenticated via the tag), with
+   the **client-side `registries.d`** as an optional override (or the origin
+   itself) and register it for NAR substitution. The substituter location is
+   **not** advertised in signed tags.
 
 ---
 
@@ -167,7 +169,8 @@ apm update / apm upgrade
 │
 ├─ 6. retention: keep object trees for X.0.0 / X.Y.0 / X.Y.Z          (§5.4)
 │
-├─ 7. wire NAR substituter from client-side config (or origin)        (§8)
+├─ 7. wire NAR substituter from committed registry.toml [[caches]]    (§8)
+│        (client-side registries.d override; else origin)
 │
 └─ 8. persist state: floor=semver, bucket, retained set                (§3.5)
 ```
@@ -417,11 +420,14 @@ loose-object floor.
 
 ## 6. Chain verification (name-binding)
 
-> **TARGET.** Per [brief §5](./design-brief.md#5-ref-model--three-layers) and
-> [§11](./design-brief.md#11-signing--trust): AOS verification is
-> `signed partition tag → signed semver tag → commit`, checking the **signature**
-> *and* the embedded **tag-name field** against the expected name. This binds a
-> tag object to its serving path and prevents cross-serving.
+> **TARGET.** Per [brief §5](./design-brief.md#5-ref-model--three-layers),
+> [§11](./design-brief.md#11-signing--trust), and
+> [§14](./design-brief.md#14-tag-payload-repo-tree-config--trust-files): AOS
+> verification is `signed partition tag → signed semver tag → commit`, checking
+> the **signature** *and* the embedded **tag-name field** against the expected
+> name. This binds a tag object to its serving path and prevents cross-serving.
+> The trusted-key set is the committed `keys.toml` trust roster, bootstrapped by
+> a client-side TOFU-pinned anchor (§6.3).
 
 ### 6.1 The two checks, applied to each tag object
 
@@ -450,7 +456,37 @@ Ed25519 signature + an optional freeform human message — so the only thing par
 out of it is the tag-name header (for name-binding); there is no structured tag
 payload to read.
 
-### 6.3 Verification ordering (fail-closed)
+### 6.3 Trust roster — `keys.toml` (rotation & revocation)
+
+> **TARGET.** Per [brief §14](./design-brief.md#14-tag-payload-repo-tree-config--trust-files):
+> the set of trusted signing keys lives in a **committed git-repo-root
+> `keys.toml`** — the **trust roster** (active signing key(s) + a revoked list),
+> authenticated via the signed tag like every other tree file. The signing pubkey
+> is **not** in `registry.toml` (a key inside a file authenticated by that key is
+> circular for bootstrap). See [`repo-layout.md`](../../registry/repo-layout.md)
+> §3.
+
+- **Bootstrap trust is TOFU-pinned client-side**, **not** read from `keys.toml`:
+  initial trust is the anchor key in `trusted-keys.d/<registry>.pub`
+  (`security.rs`, `types.rs` `trusted_keys_dirs()`). The consumer verifies the
+  tag chain (§6.1) with the pinned key, *then* reads `keys.toml` from the
+  resolved tree.
+- **Rotation:** the publisher commits `keys.toml` listing **both** the old and
+  new keys (an overlap window) in a tag signed by the **currently-trusted** key.
+  A consumer that trusts the old key verifies the tag, reads `keys.toml`, and
+  **pins the new key**. A later publish drops the old key.
+- **Revocation:** list the bad key under `[[revoked]]`, in a `keys.toml` **signed
+  by a key the consumer trusts that is *not* the revoked one**. This requires
+  either a dedicated **offline root/anchor** key that signs `keys.toml` while a
+  separate **operational** key signs day-to-day release/channel tags (TUF-style),
+  or **≥2 overlapping active keys**. Root-vs-single is an open choice
+  ([brief §16](./design-brief.md#16-open-questions--to-confirm-in-implementation)).
+
+The consumer therefore follows `keys.toml` for active-key/revocation state on
+**every** resolution after the TOFU bootstrap, with the client-side
+`trusted-keys.d/<registry>.pub` anchor as the only out-of-band trust input.
+
+### 6.4 Verification ordering (fail-closed)
 
 ```text
 1. fetch partition tag  → verify sig → check name == channel   (else REJECT)
@@ -548,42 +584,81 @@ window operationally rather than cryptographically.
 
 ---
 
-## 8. Nix binary-cache superset wiring (client-side config)
+## 8. Nix binary-cache superset wiring (committed `[[caches]]` + client override)
 
-> **TARGET.** Per [brief §13](./design-brief.md#13-nix-binary-cache-superset):
-> the NAR substituter location is the **consumer's client-side configuration**
-> (its local registry config) or the **origin itself** — it is **not** advertised
-> in signed tags. Signed tags are pure signed pointers and carry no `[[caches]]`
-> entry, no `url`, and no structured payload (§6.2). The consumer registers the
-> configured substituter for NAR substitution.
+> **TARGET.** Per [brief §13](./design-brief.md#13-nix-binary-cache-superset)
+> and [§14](./design-brief.md#14-tag-payload-repo-tree-config--trust-files): the
+> NAR substituter location lives in the **committed git-repo-root
+> `registry.toml` `[[caches]]`** — a tree file authenticated transitively by the
+> signed tag (tag → commit → tree → file), **not** advertised in the tag itself.
+> Signed tags are pure signed pointers and carry no `[[caches]]` entry, no `url`,
+> and no structured payload (§6.2). The consumer's client-side
+> `registries.d/<name>.toml` is an **optional override/supplement** (higher
+> priority wins). The consumer registers the resolved substituter(s) for NAR
+> substitution.
 
 ### 8.1 Where the substituter location comes from
 
 The substituter is **not** discovered from the verified tag — there is no
-tag-embedded `[[caches]]`. Two sources, resolved client-side:
+tag-embedded `[[caches]]`. It is read from the **committed `registry.toml`
+`[[caches]]`** in the resolved tree, optionally overridden client-side:
 
 ```toml
-# registries.d/<name>.toml  →  [registry]   (client-side config)
+# registry.toml  (git-repo-ROOT, a COMMITTED TREE FILE in the resolved commit;
+#  authenticated via the signed tag — see repo-layout.md)
+[registry]
+name        = "aos-core"
+description = "AOS core packages"
+
+[[caches]]
+url      = "https://cache.aos.dev"   # absolute, OR relative (e.g. "./nar") = same origin
+priority = 1000                      # HIGHER wins (resolve_mirrors sorts descending)
+
+[[caches]]
+url      = "./nar"
+priority = 100                       # fallback
+```
+
+```toml
+# registries.d/<name>.toml  →  [registry]   (CLIENT-SIDE override/supplement; OPTIONAL)
 [registry]
 origin     = "https://registry.aos.dev/core/"
-# optional explicit substituter(s); if omitted, the origin is the cache:
+# optional explicit substituter(s) that override/supplement the committed [[caches]]:
 cache_url  = "./nar"        # relative to origin, OR absolute
 ```
 
-- **Explicit `cache_url`** in the local registry config — relative to the origin
-  or absolute.
+- **Committed `[[caches]]`** in the git-repo-root `registry.toml` (the existing
+  `RegistryRootConfig`, `types.rs:566-573`) is the **primary** source —
+  authenticated via the tag (tag → commit → tree → file), so it is signed-by-
+  extension without anything being placed in the tag. The `[[caches]]` entries
+  are `CacheEntry { url, priority }`; `resolve_mirrors` sorts **descending**
+  (higher `priority` preferred). See
+  [`repo-layout.md`](../../registry/repo-layout.md) §2 for the committed-tree
+  shape.
+- **Client-side `registries.d/<name>.toml`** is an **optional override/
+  supplement** — when present it takes precedence (higher priority wins), letting
+  an operator pin a local mirror without re-publishing the tree.
 - **The origin itself** — the origin MAY serve the standard Nix binary-cache
   surface (`nix-cache-info`, `<storehash>.narinfo`, `nar/`) as a superset for
-  stock `nix`, so a consumer with no explicit `cache_url` can substitute straight
-  from the origin.
+  stock `nix`, so a relative `[[caches]]` `url`/`cache_url` (or an omitted one)
+  resolves straight to the origin.
 
 Tags are pure signed pointers (§6.2): the consumer reads no `[[caches]]` entry
-or any other structured payload out of a tag object.
+or any other structured payload out of a tag object — the `[[caches]]` it honours
+is the one **inside the committed tree**, not the tag.
+
+> **NAR safety.** An authenticated-but-wrong cache pointer **cannot** serve bad
+> bytes: NARs are content-addressed and SHA-256-verified on download
+> ([`repo-layout.md`](../../registry/repo-layout.md) §3). The trust that matters
+> is the **tag/commit chain** (governed by `keys.toml`, §6), not the cache list —
+> so the `[[caches]]` pointer needs only integrity-by-extension, which the signed
+> tree already gives it.
 
 ### 8.2 Relative-URL resolution
 
-A client-side `cache_url` (when relative) is resolved against the **registry
-origin** (the base URL the partition/releases was fetched from):
+A relative cache `url` — whether from the committed `[[caches]]` or a client-side
+`cache_url` — is resolved against the **registry origin** (the base URL the
+partition/releases was fetched from):
 
 ```text
 registry origin:  https://registry.aos.dev/core/
@@ -605,15 +680,17 @@ Ed25519 key ([brief §11](./design-brief.md#11-signing--trust),
 
 | Step | Action |
 |---|---|
-| Read config | Read `cache_url` (if any) from the **client-side** `[registry]` config; otherwise default to the origin as the cache. |
-| Resolve | Resolve a relative `cache_url` against the origin (§8.2). |
-| Register | Wire the resolved cache(s) into the substituter set, ordered by `priority` (from client-side config). |
-| Substitute | NAR substitution then proceeds through the standard Nix path — orthogonal to the git-object metadata layer. |
+| Read config | Read `[[caches]]` from the **committed** git-repo-root `registry.toml` in the resolved tree (primary); merge any client-side `registries.d/<name>.toml` override/supplement; otherwise default to the origin as the cache. |
+| Resolve | Resolve a relative cache `url` (committed or client-side) against the origin (§8.2). |
+| Register | Wire the resolved cache(s) into the substituter set, ordered by `priority` (HIGHER wins; client-side override takes precedence). |
+| Substitute | NAR substitution then proceeds through the standard Nix path — orthogonal to the git-object metadata layer; a wrong pointer can't serve bad bytes (NARs are SHA-256-verified). |
 
 The cache mechanism is **orthogonal** to git-object fetch: the git layer delivers
 package metadata (the `packages/` tree); the binary-cache layer delivers build
 artifacts (NARs). A consumer that only needs metadata can ignore the cache; one
-doing substitution reads its client-side config.
+doing substitution reads the committed `registry.toml` `[[caches]]` (with any
+client-side override). Even so, a wrong cache pointer is harmless — NARs are
+content-addressed and SHA-256-verified (§8 NAR-safety note).
 
 ---
 
@@ -662,7 +739,10 @@ doing substitution reads its client-side config.
 
 - [ ] `git verify-tag`-style Ed25519 check on each tag object + name-binding
       string comparison (§6); reuse `security.rs` primitives.
-- [ ] Fail-closed ordering: verify chain *before* fetching objects (§6.3).
+- [ ] Read the committed `keys.toml` trust roster from the resolved tree; honour
+      active keys + `[[revoked]]`; bootstrap-trust via client-side TOFU
+      `trusted-keys.d/<registry>.pub` anchor; follow rotation/revocation (§6.3).
+- [ ] Fail-closed ordering: verify chain *before* fetching objects (§6.4).
 
 **Fetch:**
 
@@ -680,9 +760,11 @@ doing substitution reads its client-side config.
 
 **Nix cache:**
 
-- [ ] Read `cache_url` from **client-side** `[registry]` config (default: the
-      origin); resolve relative `cache_url` against origin; register substituters
-      by `priority` (§8). No tag-embedded `[[caches]]` is parsed.
+- [ ] Read `[[caches]]` from the **committed** git-repo-root `registry.toml` in
+      the resolved tree (primary); merge any **client-side** `registries.d` override
+      (higher `priority` wins; default: the origin); resolve relative `url`s
+      against origin; register substituters by `priority` (§8). No tag-embedded
+      `[[caches]]` is parsed.
 
 ---
 
@@ -698,6 +780,10 @@ doing substitution reads its client-side config.
 - [http-layout.md](../../registry/http-layout.md) — the static surface the
   consumer reads (`/channels`, `/releases`, relative `info/alternates`, root
   `/objects/` loose objects).
+- [repo-layout.md](../../registry/repo-layout.md) — the committed git **tree**
+  the consumer reconstructs after fetch: `registry.toml` `[[caches]]`,
+  `keys.toml` trust roster, `packages/`, `closures/` (distinct from the served
+  object store).
 - [versioning-and-channels.md](../../registry/versioning-and-channels.md) —
   semver, 256-partition rollout, bucket selection, anti-rollback.
 - [packs-and-deltas.md](../../registry/packs-and-deltas.md) — the delta scheme

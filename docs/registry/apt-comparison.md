@@ -352,8 +352,10 @@ immutable, content-addressed snapshot; there is nothing extra to run or store.
 APT's `pool` holds `.deb`s consumed only by APT. AOS's origin can *additionally*
 serve a **Nix NAR binary cache** — `nix-cache-info` / `<storehash>.narinfo` /
 `nar/` — so stock `nix` dev-shell substitution works as a strict superset. The
-substituter location is **not** advertised in signed tags; it is the consumer's
-**client-side configuration** (its local registry config) or the origin itself.
+substituter location is **not** advertised in signed tags; it lives in the
+committed repo-root `registry.toml` `[[caches]]` (a tree file authenticated
+transitively by the signed tag), with the consumer's client-side `registries.d`
+as an optional override (or the origin itself).
 The same Ed25519 key signs narinfos (separate signature object). See
 [`nix-cache-compatibility.md`](./nix-cache-compatibility.md) and design-brief §13.
 
