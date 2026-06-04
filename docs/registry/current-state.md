@@ -67,11 +67,16 @@ is a thin wrapper over `git` + `git bundle create`** with significant gaps — s
 
 > **CURRENT vs TARGET.** Today the registry is distributed as **git bundles** +
 > a `bundle-list.toml` manifest, and there is **no** producer-side
-> (`apr`) manifest writer. A full Nix binary-cache stack (`nix-cache-info`,
-> `*.narinfo`, `nar/`, Ed25519 `Sig`) **does already exist** — but it lives
-> *outside* `aos-package`, in `aos-server` / `aos-core` / `aos-cache`, and is
-> already consumed by `aos-package`'s NAR downloader (see
-> [§6.1, *The Nix-cache / narinfo stack already exists*](#61-the-nix-cache--narinfo-stack-already-exists-current)).
+> (`apr`) manifest writer. The narinfo **format + sign + FileHash logic**
+> (`NarInfo`, `format_narinfo`, `NarInfoSigner`, `compute_file_hash_size`) already
+> exists — but it lives *outside* `aos-package`, in `aos-server` / `aos-core`, as
+> part of a **live, store-DB-backed cache server** (`aos-server`, a nix-serve-style
+> host serving its *own* Nix store). The **consumer** side is already narinfo-driven
+> (`aos-package`'s NAR downloader). What does **not** exist yet is the **producer**:
+> ahead-of-time generation of static `nix-cache-info` / `*.narinfo` / `nar/` files
+> for the registry's own store paths. The target registry **runs no server** — it
+> *reuses* that format/sign logic as a library to emit dumb static CDN files (see
+> [§6.1, *The Nix-cache / narinfo logic exists as a reusable library*](#61-the-nix-cache--narinfo-logic-exists-as-a-reusable-library-current)).
 > The root file
 > `registry.toml` that *does* exist is a small repo-local config (`[registry]`,
 > `[[caches]]`, `[signing]`) — see [§3.1](#31-the-repo-local-registrytoml). The
@@ -423,52 +428,66 @@ signature.** Their integrity roots transitively in the signed git commit → TOM
 → recorded `download_hash`/`nar_hash` (see [§8](#8-signing--trust) and
 [`signing-and-trust.md`](signing-and-trust.md)).
 
-### 6.1 The Nix-cache / narinfo stack already exists (CURRENT)
+### 6.1 The Nix-cache / narinfo logic exists as a reusable library (CURRENT)
 
-> **CURRENT.** A full, end-to-end Nix binary-cache surface
-> (`nix-cache-info` + `*.narinfo` + `nar/` + Ed25519 `Sig`) **already exists in
-> the tree** — served by `aos-server`, consumed by `aos-package`. It is **not** a
-> greenfield item. The important nuance is *where* it lives: this stack is
-> **store-DB-backed** (`DbPathInfo`) and **decoupled** from the git
-> registry described in §§1–5. The git registry (`packages/*.toml`) is the
-> **metadata layer**; the narinfo/NAR bytes live in the **cache**, keyed by store
-> hash, served and consumed independently. The remaining git-native-registry work
-> here is **integration** (point the consumer at this cache via the committed
-> `registry.toml` `[[caches]]`, or co-serve it from the origin), **not** building
-> an emitter.
+> **CURRENT.** The narinfo **format + sign + FileHash/FileSize logic** already
+> exists in the tree (`NarInfo`, `format_narinfo`, `NarInfoSigner`,
+> `compute_file_hash_size`). It is **not** greenfield. But it is important to be
+> precise about *what* exists and what does not:
+>
+> - It exists today only as the engine of a **live cache server** — `aos-server`
+>   is a **nix-serve-style host that dynamically serves its own Nix store**, one
+>   request at a time, from the local store DB (`DbPathInfo` via
+>   `state.store.path_info`). **The registry never runs this server.** The target
+>   registry is dumb static files on a CDN (§13 of the
+>   [design brief](../plans/registry/design-brief.md)) with **no process at
+>   serve-time**.
+> - The **consumer** is done: `aos-package`'s NAR downloader is already
+>   narinfo-driven and consumes a *dumb static* narinfo cache as-is.
+> - The **producer** does not exist yet: nothing in the tree generates the static
+>   `nix-cache-info` / `*.narinfo` / `nar/<…>.nar.zst` files **for the registry's
+>   own store paths** ahead-of-time and uploads them to a CDN. That is the real
+>   remaining work (WS-06, §9.2) — and it **reuses** the format/sign logic below
+>   *as a library*, rather than running `aos-server`.
 
 **The shared narinfo type** — `aos_core::nar::info::NarInfo`
 (`crates/aos-core/src/nar/info.rs:5-16`) carries
 `{store_path, url, compression, file_hash, file_size, nar_hash, nar_size,
 references, deriver, signatures}`, with `parse()` (`info.rs:19`),
 `format()` (`info.rs:81`), and `store_hash()` / `basename()` helpers
-(`info.rs:147-155`). This one type is shared by the server emitter and the apm
-consumer.
+(`info.rs:147-155`). This one type is shared by the cache server and the apm
+consumer, and is the type a future producer would emit.
 
-**The server emitter** — `aos-server` is a complete nix-serve-style cache:
+**The reusable formatting / signing logic** (today wired into `aos-server`'s live
+cache, reusable by a static producer):
 
 - `format_narinfo(&DbPathInfo, store_dir, &CompressionConfig, Option<&NarInfoSigner>)`
-  (`crates/aos-server/src/narinfo.rs:27`) renders a `DbPathInfo` row to narinfo
+  (`crates/aos-server/src/narinfo.rs:27`) renders one path's metadata to narinfo
   text. The NAR URL is `nar/{store_hash}-{nar_hash with ':' → '-'}.{ext}`
   (`narinfo.rs:37`).
 - **`FileHash`/`FileSize` are always emitted.** For `Compression: none` they
-  equal `NarHash`/`NarSize`; for zstd/xz they are computed **emit-time** by
+  equal `NarHash`/`NarSize`; for zstd/xz they are computed by
   `compute_file_hash_size` (`crates/aos-server/src/compress.rs:143`) over the
   actual compressed stream (`narinfo.rs:45-59`). The apm consumer requires both
-  present (§6, `download.rs:191-198`), so the server populates them
-  unconditionally.
+  present (§6, `download.rs:191-198`), so the logic populates them
+  unconditionally. A static producer can call `compute_file_hash_size` the same
+  way, or capture the FileHash/FileSize at build time.
 - **Ed25519 signing** — `NarInfoSigner` (`crates/aos-server/src/sign.rs`) with
   `load(key_file)` (`sign.rs:14`), `sign(fingerprint) → "name:base64"`
   (`sign.rs:44`), and `fingerprint(store_path, nar_hash, nar_size, refs)`
   (`sign.rs:57`) — emits the exact Nix narinfo fingerprint
   (`1;{store_path};{nar_hash};{nar_size};{refs}`) and `Sig:` line, reusing one
-  Ed25519 key. `narinfo.rs:87-93` appends the live `Sig`.
-- **HTTP routes** (`crates/aos-server/src/routes.rs:80-89`):
-  `/{view}/nix-cache-info` (`cache_info_handler`, `routes.rs:123`, advertising
-  `Priority: 30` at `routes.rs:145`), `/{view}/{hash}.narinfo`
-  (`narinfo_handler`, `routes.rs:157`), `/{view}/nar/{filename}`
+  Ed25519 key. `narinfo.rs:87-93` appends the `Sig`.
+- **HTTP routes — these belong to the live server only.** The handlers at
+  `crates/aos-server/src/routes.rs:80-89` — `/{view}/nix-cache-info`
+  (`cache_info_handler`, `routes.rs:123`, advertising `Priority: 30` at
+  `routes.rs:145`), `/{view}/{hash}.narinfo` (`narinfo_handler`,
+  `routes.rs:157`, which reads from `state.store.path_info`), `/{view}/nar/{filename}`
   (`nar_handler`, `routes.rs:223`), plus `query-missing`, `store` upload,
-  `build`, and `gc`.
+  `build`, and `gc` — are the **live host-store server** (a different use case).
+  **The registry does not run these handlers.** The producer reuses the
+  `format_narinfo` / `NarInfoSigner` / `compute_file_hash_size` functions above
+  (not the routes) to emit static files.
 
 **The cache backends** — `aos-cache` carries `has_narinfo`/`get_narinfo`/
 `put_narinfo` on every backend (`crates/aos-cache/src/backend/mod.rs:16-23`)
@@ -483,13 +502,19 @@ nothing but the store path + cache base, and `FileHash`/`NarHash`/`References`/
 `Deriver` all come **from the fetched narinfo** (`download.rs:24-55`,
 `191-233`). The narinfo URL is built by `narinfo_url(mirror_url, store_path)`
 (`download.rs:74`); the NAR is then fetched from the narinfo's own `URL:` field.
+This consumer works against **any** dumb static narinfo cache — it does not care
+whether a server or a producer produced the files.
 
-> **TARGET.** Because the emitter exists, the narinfo field mapping in the
-> TARGET docs should **describe** the existing `format_narinfo` / `NarInfo`
-> rather than plan to build one. The Nix binary-cache surface is already a
-> **strict superset** of the Nix protocol; the only remaining git-native work is
-> wiring the committed `registry.toml` `[[caches]]` (or an origin that co-serves
-> the cache) to this stack — see
+> **TARGET.** The registry's Nix binary cache is **dumb static files on the HTTP
+> CDN, generated ahead-of-time at publish — no server at serve-time** (design
+> brief §13). The producer (WS-06) **reuses** `format_narinfo` / `NarInfo` /
+> `NarInfoSigner` / `compute_file_hash_size` as a **library** to generate, for each
+> registry store path, a static `<storehash>.narinfo` (with `FileHash`/`FileSize`
+> and an Ed25519 `Sig`), a `nar/<…>.nar.zst`, and a `nix-cache-info`, then
+> **uploads** them to the CDN. The committed `registry.toml` `[[caches]]` points
+> consumers at that static cache base (client-side `registries.d` is an optional
+> override). The result is a **strict superset** of the Nix binary-cache protocol
+> consumable by stock `nix` — without running `aos-server`. See
 > [`nix-cache-compatibility.md`](nix-cache-compatibility.md), TARGET.
 
 ---
@@ -638,15 +663,19 @@ consumer can do far more than the producer can produce.
   `--delta-from` are passed manually; `classify_delta` runs only at read time.
 - **No bundle/NAR upload to a mirror/CDN/S3 from the producer** — the only
   upload code in the tree is in `aos-cache`, and that is for NARs, not bundles.
-- **No `nix-cache-info` / narinfo emission *from `apr`*** — the producer CLI
-  does not emit a Nix binary-cache surface. Note this is an `apr` gap, **not** a
-  missing capability: a full `nix-cache-info`/narinfo/nar emitter with Ed25519
-  `Sig` **already exists** in `aos-server` (`format_narinfo`, `sign.rs`) and is
-  already consumed by `aos-package` — but it is **store-DB-backed and decoupled**
-  from the git registry, not driven by `apr` (see
-  [§6.1](#61-the-nix-cache--narinfo-stack-already-exists-current) and
-  [`nix-cache-compatibility.md`](nix-cache-compatibility.md), TARGET). The
-  remaining work is **integration**, not building the emitter.
+- **No static `nix-cache-info` / narinfo / `nar` *producer*** — nothing in the
+  tree generates the static binary-cache files (`nix-cache-info`,
+  `<storehash>.narinfo`, `nar/<…>.nar.zst`) for the registry's own store paths
+  ahead-of-time and uploads them to a CDN. The narinfo **format + sign +
+  FileHash logic** *does* exist (`format_narinfo`, `NarInfoSigner`,
+  `compute_file_hash_size`) — but it lives inside `aos-server`'s **live,
+  store-DB-backed cache server** (a nix-serve-style host serving its *own* store),
+  which **the registry never runs** (see
+  [§6.1](#61-the-nix-cache--narinfo-logic-exists-as-a-reusable-library-current)).
+  The TARGET producer (WS-06) **reuses that logic as a library** to emit the
+  static files at publish — genuine ahead-of-time generation + upload work, not
+  "just integration" and not a running server (see
+  [`nix-cache-compatibility.md`](nix-cache-compatibility.md), TARGET).
 - **No locks/atomicity** beyond git's own FF-rejection on push.
 - **No explicit "latest" pointer** — "latest" is *derived* by scanning the
   manifest for the max `creation_token`/latest snapshot.
@@ -662,7 +691,7 @@ consumer can do far more than the producer can produce.
 | Select minimal bundle set | ✅ (`update.rs:319`) | n/a |
 | `git bundle create` | n/a | ✅ (`registry_ops.rs:1706`) |
 | Upload bundles | — | ❌ |
-| narinfo / `nix-cache-info` | ✅ consumer is narinfo-driven (`download.rs`, commit `7149acf6`) | ❌ from `apr`; ✅ exists in `aos-server` (`narinfo.rs`, `sign.rs`) — decoupled, store-DB-backed (§6.1) |
+| narinfo / `nix-cache-info` | ✅ consumer is narinfo-driven (`download.rs`, commit `7149acf6`) | ❌ no static-file producer; format/sign **logic** reusable from `aos-server` (`narinfo.rs`, `sign.rs`) — but that's a live host-store server the registry never runs (§6.1) |
 | Persist `[registry.state]` | ✅ (`state.rs:37`) | n/a |
 
 > The complete producer/consumer gap mapping to remediation workstreams is in
@@ -729,7 +758,7 @@ These do not contradict the brief's *intent* (target design), only its
 - [`repo-layout.md`](repo-layout.md) — the committed git **tree** (`registry.toml` `[[caches]]`, `keys.toml`, `packages/`, `closures/`, `.gitattributes`) and the tree ↔ HTTP mapping; distinct from the served object store (TARGET).
 - [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, the 256-partition rollout, bucket selection, anti-rollback (TARGET).
 - [`packs-and-deltas.md`](packs-and-deltas.md) — pack-objects, thin vs full packs, the delta scheme graph, zstd (TARGET).
-- [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — the Nix binary-cache superset (located via the committed `registry.toml` `[[caches]]`, client-side `registries.d` as optional override; origin serves `nix-cache-info`/narinfo/nar) (TARGET).
+- [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — the Nix binary-cache superset as **dumb static CDN files generated ahead-of-time at publish** (no server at serve-time), located via the committed `registry.toml` `[[caches]]`, client-side `registries.d` as optional override (TARGET).
 - [`signing-and-trust.md`](signing-and-trust.md) — signed tag objects, name-binding, `tag→tag→commit`, TOFU (TARGET).
 - [`publishing.md`](publishing.md) — producer pipeline & concurrency (TARGET).
 - [`apt-comparison.md`](apt-comparison.md) — APT format comparison and adopted improvements.

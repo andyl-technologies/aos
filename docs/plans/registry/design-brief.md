@@ -307,15 +307,33 @@ transparently clonable, the origin serves the standard shim: `HEAD`, `info/refs`
 
 ---
 
-## 13. Nix binary cache superset
+## 13. Nix binary cache superset — AOT static on the CDN
 
-Orthogonal to the git-object metadata layer: the origin MAY also serve a Nix binary
-cache (`nix-cache-info` / `<storehash>.narinfo` / `nar/`), a strict superset for stock
-`nix` dev-shell substitution. The cache/substituter location comes from the registry's
-**committed git-repo-root `registry.toml`** (`[[caches]]`, authenticated via the signed
-tag — §14), with the consumer's client-side `registries.d/<name>.toml` as an optional
-override. It is **not** advertised in signed tags (tags carry no `[[caches]]`).
-Narinfo signing, if served, reuses the one Ed25519 key.
+The registry's Nix binary cache is **dumb static files on the HTTP CDN**, generated
+**ahead-of-time at publish** — there is **no server** at serve-time. Like the git
+objects/packs and the channel/release files, the cache artifacts are pre-built and
+uploaded: `{cache-base}/nix-cache-info`, `{cache-base}/<storehash>.narinfo`,
+`{cache-base}/nar/<…>.nar.zst`. A stock `nix` (or `apm`) consumes them as an ordinary
+static binary cache — the strict superset — with zero dynamic serving. This is the
+registry's core principle: **as much as possible done ahead of time, so serving scales
+as dumb static distribution.**
+
+- **Reuse, don't run.** AOS already has the narinfo formatting/signing **logic** —
+  `aos-core/nar/info.rs` (`NarInfo` format/parse), `aos-server/narinfo.rs`
+  (`format_narinfo`), `aos-server/sign.rs` (`NarInfoSigner`: Ed25519 fingerprint +
+  `Sig`), `aos-server/compress.rs` (`compute_file_hash_size` for `FileHash`/`FileSize`).
+  The **producer reuses these as a library** to *generate the static AOT files*. The
+  live `aos-server` cache (a host serving its **own** Nix store, nix-serve-style) is a
+  **different use case** — the registry never runs it.
+- **Consumer is done.** `aos-package/download.rs` is already narinfo-driven (commit
+  `7149acf6`) and consumes a dumb static narinfo cache as-is.
+- **Pointer.** The cache base URL is the committed git-repo-root `registry.toml`
+  `[[caches]]` (authenticated via the signed tag — §14), client-side `registries.d`
+  override optional; never in the tag. Narinfo signing reuses the one Ed25519 key.
+
+So the **producer work** (WS-06) is the **AOT generation + CDN upload** of the static
+narinfo/`nar`/`nix-cache-info` files, reusing the existing format/sign logic — not a
+greenfield emitter, and **not** a running server.
 
 ---
 

@@ -465,14 +465,27 @@ still verifies `NarHash`.
 |---|---|
 | **Type** | Documentation debt (not a design decision) — flagged here so the owning docs are corrected before WS-06 lands. |
 | **Owner WS** | [WS-06](./workstream-06-nix-cache.md) (narinfo emitter), with [WS-05](./workstream-05-consumer.md) (consumer) |
-| **Status** | **RESOLVED** — the CURRENT-state re-grounding is done: the narinfo / nix-cache stack already exists end-to-end (verified in code below), and WS-06 is re-scoped from "build a narinfo emitter" to "integrate the existing cache into the git-native registry". |
+| **Status** | **RESOLVED** — the CURRENT-state re-grounding is done: the narinfo *format / sign* **logic** already exists (verified in code below) and is **reusable as a library**, and WS-06 is re-scoped from "build a narinfo emitter from scratch" to "**AOT-generate and upload static cache files** by reusing that logic". The registry serves the cache as **dumb static files on the CDN** — it does **not** run a server. |
 
 The master rebase pulled in **commit `7149acf6`** ("apm: narinfo-driven NAR
 downloads + export-format import"). Re-grounding against the current tree (the
 `aos-server` / `aos-cache` / `aos-core` narinfo stack plus the narinfo-driven
 `aos-package` consumer) confirms two CURRENT-state facts that several plan/
 reference docs still described as they were *before* the rebase. Both are now
-re-grounded:
+re-grounded.
+
+**The correct serving model (brief §13).** The registry's Nix binary cache is
+**dumb static files on the HTTP CDN, generated ahead-of-time (AOT) at publish** —
+there is **no server at serve-time**. The artifacts are pre-built and uploaded
+(`{cache-base}/nix-cache-info`, `{cache-base}/<storehash>.narinfo`,
+`{cache-base}/nar/<…>.nar.zst`) and a stock `nix` / `apm` consumes them as an
+ordinary static binary cache (the strict superset). The narinfo **format + sign +
+FileHash** code below is therefore relevant as a **reusable generation library** —
+the producer calls it to *emit the static files at publish* — **not** as a running
+handler the registry stands up. The live `aos-server` nix-cache routes
+(`cache_info_handler` / `narinfo_handler` / `nar_handler`) are a *different use
+case*: a host serving its **own** Nix store dynamically (nix-serve-style). **The
+registry never runs that server.**
 
 1. **`download_hash` / `download_size` were removed from the registry schema —
    narinfo `FileHash` / `FileSize` are authoritative and emit-time-computed.**
@@ -492,62 +505,95 @@ re-grounded:
    [current-state.md](../../registry/current-state.md) (lines documenting
    `download_hash` / `download_size` as package-TOML fields) are re-grounded to this.
 
-2. **The nix-cache / narinfo stack already exists and is wired end-to-end — WS-06
-   is integration, not a greenfield emitter.** The full nix-serve-style binary-
-   cache surface ships today:
+2. **The narinfo format / sign / FileHash *logic* already exists and is reusable
+   as a generation library — so WS-06 reuses it, it does not build an emitter from
+   scratch (and it does not stand up a server).** The pieces the AOT producer will
+   call to *emit static files at publish* all ship today:
    - **Shared narinfo type** — `NarInfo` (`crates/aos-core/src/nar/info.rs:5`) with
      `parse()` (`:19`) / `format()` (`:81`) and `store_hash()` / `basename()`
-     helpers, shared between server and consumer.
-   - **Server emitter** — `format_narinfo(&DbPathInfo, store_dir,
+     helpers, shared between server and consumer. The producer reuses this type +
+     `format()` to serialize the static `<storehash>.narinfo` files.
+   - **narinfo formatting** — `format_narinfo(&DbPathInfo, store_dir,
      &CompressionConfig, Option<&NarInfoSigner>)` (`crates/aos-server/src/narinfo.rs:27`)
-     writes the full narinfo; `URL: nar/{store_hash}-{nar_hash colon→dash}.{ext}`
-     (`narinfo.rs:37`), `References:`/`Deriver:` as basenames, `Sig:` lines.
+     writes the full narinfo body; `URL: nar/{store_hash}-{nar_hash colon→dash}.{ext}`
+     (`narinfo.rs:37`), `References:`/`Deriver:` as basenames, `Sig:` lines. This is
+     the format/sign **routine the producer reuses** to generate each static narinfo
+     — not a handler the registry serves at request time.
    - **Ed25519 narinfo signing** — `NarInfoSigner` (`crates/aos-server/src/sign.rs`):
      `load(key_file)` (`:14`), `sign(fingerprint) → "name:base64"` (`:44`), and the
      exact Nix narinfo `fingerprint(store_path, nar_hash, nar_size, refs)` (`:57`),
      applied at `narinfo.rs:87-93`. This is the "one Ed25519 key, reused for the
-     narinfo `Sig:`" the brief calls for — it already exists.
-   - **Cache-server routes** — `crates/aos-server/src/routes.rs:80-89`:
-     `/{view}/nix-cache-info` (`cache_info_handler`, `:123`, emitting
-     `Priority: 30` at `:145`), `/{view}/{hash}.narinfo` (`narinfo_handler`, `:157`),
-     `/{view}/nar/{filename}` (`nar_handler`, `:223`), plus query-missing / upload /
-     build / gc.
+     narinfo `Sig:`" the brief calls for — the producer reuses it to sign the static
+     narinfo files at publish.
+   - **FileHash / FileSize compute** — `compute_file_hash_size`
+     (`crates/aos-server/src/compress.rs:143`, called at `narinfo.rs:48`) computes
+     `FileHash:` / `FileSize:` over the compressed bytes (for `Compression::None`
+     they coincide with `NarHash` / `NarSize`). The producer reuses this (or captures
+     the values at build time) when generating each static narinfo.
+   - **Live nix-cache routes are a *different use case*, NOT what the registry runs** —
+     `crates/aos-server/src/routes.rs:80-89` (`cache_info_handler` `:123` emitting
+     `Priority: 30` at `:145`, `narinfo_handler` `:157`, `nar_handler` `:223`) serve a
+     host's **own** Nix store dynamically, nix-serve-style. The registry **does not run
+     this server**; it reuses the format/sign *library* above to pre-generate dumb
+     static files. They are cited here only as the home of the reusable code and to
+     reconcile the `Priority` value (below), not as a serving surface the registry
+     stands up.
    - **Cache backends** — `crates/aos-cache/src/backend/{s3,sftp,http,fs}.rs` have
      `has`/`get`/`put_narinfo`; the backends write `Priority: 40`
      (`backend/sftp.rs:143`, `backend/fs.rs:126`).
-   - **Narinfo-driven consumer** — `crates/aos-package/src/download.rs` (commit
+   - **Narinfo-driven consumer (DONE)** — `crates/aos-package/src/download.rs` (commit
      `7149acf6`) uses `aos_core::nar::info`; `fetch_narinfos` fetches the narinfo
      and `download_nars` consumes it; `DownloadRequest` carries the `NarInfo`;
      `FileHash` / `NarHash` / `References` / `Deriver` all come **from** the narinfo;
-     `narinfo_url(mirror_url, store_path)` (`:74`).
+     `narinfo_url(mirror_url, store_path)` (`:74`). The consumer already reads a
+     **dumb static** narinfo cache as-is — no consumer change is needed.
 
    So the "no `nix-cache-info` / narinfo emission" / "narinfo server: n/a ❌"
    statements in [current-state.md](../../registry/current-state.md) and the
-   greenfield framing in
-   [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) are
-   stale and **must not** be repeated: the Nix binary-cache surface
-   (`nix-cache-info` + `*.narinfo` + `nar/` + Ed25519 `Sig:`) is a strict superset
-   of the Nix protocol *today*, served by `aos-server` and consumed by
-   `aos-package`. Reconcile the `Priority` values: the **live server emits
-   `Priority: 30`** (`routes.rs:145`) — use **30** for the served surface, and note
-   the `aos-cache` backends write `Priority: 40` (`backend/sftp.rs:143`,
-   `backend/fs.rs:126`). WS-06 §4's `Priority: 41` example and the routes.rs
-   citation are re-grounded against the live `30`.
+   *greenfield-emitter* framing in
+   [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) are stale:
+   the narinfo **format/sign/FileHash logic** exists and is reusable. But do **not**
+   over-correct into the opposite error — the registry does **not** "serve" narinfo
+   via a running handler, and WS-06 is **not** merely "point `[[caches]]` at the
+   existing cache server". The registry's cache is **dumb static AOT files**;
+   `format_narinfo` / `NarInfoSigner` / `compute_file_hash_size` are the **generation
+   library** the producer reuses. Reconcile the `Priority` value: the
+   reusable formatting routine emits `Priority: 30` (`routes.rs:145`) — use **30** for
+   the generated `nix-cache-info`, and note the `aos-cache` backends write
+   `Priority: 40` (`backend/sftp.rs:143`, `backend/fs.rs:126`). WS-06 §4's
+   `Priority: 41` example is re-grounded against `30`.
 
-**The remaining gap is integration, not an emitter.** That existing cache is
-store-DB-backed (`DbPathInfo`) and **decoupled** from the git registry: the git
-registry (`packages/*.toml`: `store_path` / `nar_hash` / `references` / closure)
-is the metadata layer; the narinfo and NAR blobs live in the cache, keyed by store
-hash, served and consumed independently. The remaining TARGET work for the
-git-native registry is therefore to **point the consumer at this existing cache** —
-the committed repo-root `registry.toml` `[[caches]]` (with `registries.d` override,
-or the origin co-serving the cache) — and to have the WS-06 / reference docs
-**describe** the existing `format_narinfo` / `NarInfo` field mapping rather than
-plan to build an emitter. WS-06 is re-scoped accordingly (see §4 and the [WS-06
-narinfo field-mapping doc](./workstream-06-nix-cache.md)).
+**The remaining gap is the PRODUCER — AOT generation + upload, not an emitter-server
+and not pure integration.** The format/sign logic above is store-DB-backed
+(`DbPathInfo`) for the live-host use case and is **decoupled** from the git registry:
+the git registry (`packages/*.toml`: `store_path` / `nar_hash` / `references` /
+closure) is the metadata layer. The real TARGET work for the git-native registry
+(WS-06) is to **GENERATE the static cache files at publish and UPLOAD them to the
+CDN**, reusing the existing format/sign code as a library. Concretely, at publish,
+for each store path in the registry's package closures:
 
-This was a *re-grounding* task, not a re-decision: the TARGET design is unchanged,
-and the CURRENT-state baseline is now corrected to the shipped stack above.
+- generate the static `<storehash>.narinfo` (reuse `NarInfo` + `format_narinfo` +
+  the `NarInfoSigner` `Sig:`),
+- compute `FileHash` / `FileSize` (reuse `compute_file_hash_size`, or capture at
+  build time),
+- produce the `nar/<…>.nar.zst` blob,
+- emit `nix-cache-info` (`Priority: 30`),
+- and **upload all of these as static CDN files**,
+
+plus commit the repo-root `registry.toml` `[[caches]]` pointer to the CDN cache base
+(authenticated transitively by the signed tag; `registries.d` override optional). The
+consumer side (`download.rs`) is already done; this producer AOT generation + upload
+is **genuine remaining work** — it reuses the existing format/sign logic rather than
+writing a greenfield emitter, but it is *not* "already done", *not* "integration
+only", and *not* a running server. WS-06 is re-scoped accordingly (see §4 and the
+[WS-06 narinfo field-mapping doc](./workstream-06-nix-cache.md)).
+
+This was a *re-grounding* task, not a re-decision: the TARGET design (dumb static
+AOT cache on the CDN, brief §13) is unchanged, and the CURRENT-state baseline is now
+corrected to "the format/sign logic is a reusable library; the producer AOT
+generation + upload is the WS-06 work" — avoiding **both** the earlier "client-side
+only" error and the "a running `aos-server` cache serves it / it is already done"
+error.
 
 ---
 
@@ -820,7 +866,7 @@ item is closed.
 | Q7a | Migration: clean break vs. shim | WS-05 / WS-01 / WS-03 | WS-01, WS-02, WS-03, WS-05 | Clean break + thin read-only consumer dual-detect → EOL (§3.4) |
 | Q7b | NAR superset milestone timing | WS-05 | (none — fast-follow) | Defer to fast-follow; cache lives in committed `registry.toml` `[[caches]]` (client-side `registries.d` override / origin), nothing reserved in tags (§4.3) |
 | Q8 | NAR blob `URL:` colon-retained vs. colon-free | WS-06 | WS-06 emitter | Default colon-retained; `colon_safe` switch flips `URL:` + served key to `sha256-<hex>` for edges that mangle `:` |
-| DD-1 | Doc-debt: re-ground CURRENT-state after `7149acf6` — **RESOLVED** | WS-06 / WS-05 | (docs — gated WS-06 §5/§10/§11 accuracy; now re-grounded) | **Done.** Narinfo/nix-cache stack exists end-to-end (`aos-core` `NarInfo`, `aos-server` `format_narinfo`+Ed25519 `Sig:`+`Priority: 30`, `aos-cache` backends, narinfo-driven `aos-package`); FileHash/FileSize emit-time-computed (`compress.rs:143`). WS-06 re-scoped to integration: point consumer at existing cache via committed `registry.toml` `[[caches]]`; docs describe `format_narinfo`, not build it. |
+| DD-1 | Doc-debt: re-ground CURRENT-state after `7149acf6` — **RESOLVED** | WS-06 / WS-05 | (docs — gated WS-06 §5/§10/§11 accuracy; now re-grounded) | **Done.** Cache = **dumb static AOT files on the CDN, no server** (brief §13). The narinfo **format/sign logic** is a reusable library: `aos-core` `NarInfo`+`format()`, `aos-server` `format_narinfo`+`NarInfoSigner` Ed25519 `Sig:`+`Priority: 30`, `compute_file_hash_size` (`compress.rs:143`). **Consumer done** (narinfo-driven `download.rs`). **WS-06 = PRODUCER work**: at publish, *generate* the static `<storehash>.narinfo` / `nar/<…>.nar.zst` / `nix-cache-info` by **reusing** that format/sign code, and **upload** them to the CDN, plus the committed `registry.toml` `[[caches]]` pointer. Not a running server, not "integration only". |
 | R2/R3 | Torn publish / publisher race | WS-02 / WS-03 | WS-02, WS-03 | Immutable-first / low-TTL-last; single publisher per channel |
 | R7 | Cross-serving / name-confusion | WS-04 / WS-05 | WS-04, WS-05 | Name-binding: embedded tag-name == path name; verify `tag→tag→commit` |
 | R9 | Anti-rollback floor across cutover | WS-05 | WS-05 | Re-seed floor at git-native cutover; fix-forward only |
