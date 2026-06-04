@@ -81,7 +81,7 @@ Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml` +
 `closures/<hash>`) and still has legacy **git bundle** commands. The sha256
 object-store scaffolding, signed release tags, `update-server-info`, and root
 `objects/info/alternates` refresh hooks now exist; pack/delta generation,
-channel partition tags, and upload are still pending.
+upload, and consumer rollout resolution are still pending.
 
 The commands relevant to a release, in workflow order:
 
@@ -91,11 +91,12 @@ The commands relevant to a release, in workflow order:
 | `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` and refresh `objects/info/alternates` + `update-server-info`. |
 | `apr tag <name> [--message] --key <key>` | `tag` (`registry_ops.rs:1684`) | `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; `--key` is required; semver tags also prepare a release object dir during the object-store refresh. |
 | `apr sign <tag> --key <key>` | `sign` (`registry_ops.rs:1747`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
+| `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
 | `apr bundle [--output] [--tag] [--delta-from] [--update-manifest]` | `bundle` (`registry_ops.rs:1706`) | `git bundle create` into a local dir. See §2.1. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
-There is **no** `apr release`, no pack/delta generation, no partition-tag
-advancement, and no upload command in the tree today.
+There is **no** `apr release`, no pack/delta generation, and no upload command
+in the tree today.
 
 ### 2.1 CURRENT: `apr bundle` = `git bundle create` only
 
@@ -534,8 +535,7 @@ apr bundle --delta-from 2026.05.0 --tag 2026.06.0     # delta bundle    (registr
 ```
 
 Everything after `apr push` is incomplete: the operator hand-copies bundles to a
-mirror; there is no pack/delta/zstd publish pipeline, no signed channel
-partition tags, and no upload.
+mirror; there is no pack/delta/zstd publish pipeline and no upload.
 
 ### 12.2 TARGET (the §10/§4/§6 pipeline, e.g. a future `apr release`)
 

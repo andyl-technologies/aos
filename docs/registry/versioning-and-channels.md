@@ -414,9 +414,10 @@ pub enum TrackingMode {
 }
 ```
 
-The `Channel` variant and `channel = "stable"` config field now exist, but the
-256 signed partition overlay remains target work (§3–§6). The natural mapping
-under the target model:
+The `Channel` variant and `channel = "stable"` config field now exist, and
+producer-side `apr channel init/advance/status` can write the 256 signed
+partition overlay. Consumer bucket resolution through that overlay remains
+target work (§3–§6). The natural mapping under the target model:
 
 | Today's intent | Target mechanism |
 |---|---|
