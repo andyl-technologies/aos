@@ -27,8 +27,9 @@ static files over dumb HTTP**. The package metadata *is* the git tree content,
 so the registry is simultaneously a **superset of git's dumb-HTTP transport** (a
 stock `git clone <url>` works — **channels are branches**, **releases are tags**)
 and a **superset of the Nix binary cache** (the origin MAY serve
-`nix-cache-info` / `<storehash>.narinfo` / `nar/`; the substituter location is
-the consumer's client-side registry config or the origin itself, **never**
+`nix-cache-info` / `<storehash>.narinfo` / `nar/`; the substituter location lives
+in the committed `registry.toml` `[[caches]]`, with the consumer's client-side
+`registries.d` as an optional override (or the origin itself), **never**
 advertised in signed tags). Release lines are
 **standard semver, no `v` prefix**; a **channel** (`stable`, `testing`) is a git
 branch whose head is the rollout **frontier** plus **256 signed partition tag
@@ -95,6 +96,7 @@ It does **not** specify the implementation tasks; those are enumerated in the
 | [README.md](README.md) | This file — purpose, audience map, glossary, doc index, one-paragraph overview. |
 | [architecture.md](architecture.md) | Git-repo-over-dumb-HTTP; superset of git **and** Nix; the three ref layers; how `apm` and stock git both consume; the asymmetric-cost philosophy. |
 | [current-state.md](current-state.md) | The as-is implementation, grounded in code (`crates/aos-package/`) — today's bundle / `creation_token` / nested-TOML registry, including producer-side gaps. **Light edit only.** |
+| [repo-layout.md](repo-layout.md) | The **committed git tree** a commit contains (`registry.toml` + `keys.toml` + `packages/` + `closures/` + `.gitattributes`) and the tree↔HTTP mapping — distinct from the served object store. |
 | [http-layout.md](http-layout.md) | The full HTTP/object layout, CDN TTLs, the single root sha256 loose-object store, `info/refs` / `HEAD` / relative `info/alternates`, and the stock git dumb-HTTP compatibility surface. |
 | [versioning-and-channels.md](versioning-and-channels.md) | Semver (no `v` prefix), channels-as-branches, the frontier head, the 256-partition rollout, deterministic bucket selection, and anti-rollback. |
 | [packs-and-deltas.md](packs-and-deltas.md) | `git pack-objects`, thin vs full packs, the guaranteed delta-scheme graph, client resolution + retention, and the `--compression=0` + zstd trick. |
@@ -182,10 +184,11 @@ surface without conflicting.
 | **Name-binding** | The verification rule that a tag object's signature is valid **and** its embedded tag-name field equals the expected serving-path name (channel name under `/channels/*`, semver under `/releases/*`) — binds a tag to its path and prevents cross-serving. |
 | **Freshness** | There is **no in-band signed expiry**. Freshness = a low CDN TTL on `/channels` (and `info/refs`, `objects/info`) + the consumer's own max-staleness policy + the monotonic anti-rollback floor. Trade-off: weaker than an in-band signed `valid_until` against a frozen-but-validly-signed mirror. |
 | **Anti-rollback** | A consumer keeps a monotonic floor and never moves to a release older than its current one. Aborting a bad rollout is **fix-forward** (publish a newer release, point partitions at it), never partition-decrement. |
-| **NAR** | Nix ARchive — the serialized form of a store path; the actual build artifact, stored content-addressed and zstd-compressed (`<hash>.nar.zst`) under the cache location (the origin itself, or wherever the consumer's client-side config points). |
-| **Binary-cache location** | The NAR substituter is **not advertised in signed tags**. It is the **consumer's client-side registry config**, or the **origin itself** when the origin serves the cache surface. Makes the origin a (superset) Nix binary cache without embedding cache config in the trust chain. |
+| **NAR** | Nix ARchive — the serialized form of a store path; the actual build artifact, stored content-addressed and zstd-compressed (`<hash>.nar.zst`) under the cache location (see **Binary-cache location** below: the committed `registry.toml` `[[caches]]`, the consumer's client-side `registries.d` override, or the origin itself). |
+| **Binary-cache location** | The NAR substituter is **not advertised in signed tags**. It lives in the committed git-repo-root `registry.toml` `[[caches]]` (authenticated transitively by the tag → commit → tree → file; see [repo-layout.md](repo-layout.md)), optionally overridden/supplemented by the consumer's client-side `registries.d/<name>.toml` (**higher priority wins**); a relative cache URL means the **origin itself**. An authenticated-but-wrong cache pointer still cannot serve bad bytes — NARs are content-addressed and SHA-256-verified. |
+| **`keys.toml`** | A **committed tree file** (TARGET) — the **trust roster** listing active signing key(s) + a revoked list, authenticated via the signed tag. It does **not** bootstrap trust (a key in a file authenticated by that key is circular); see [repo-layout.md](repo-layout.md) and [signing-and-trust.md](signing-and-trust.md). |
 | **narinfo / `nix-cache-info`** | The standard Nix binary-cache HTTP surface (`<storehash>.narinfo` per store path; the fixed `nix-cache-info` stub marking an origin as a cache) the origin **MAY** serve for stock `nix` substitution; narinfo signing **reuses the one Ed25519 key**. |
-| **TOFU** | Trust On First Use — a registry's Ed25519 signing key is pinned the first time it is seen unless already admin-provisioned in `trusted-keys.d/<registry>.pub`. |
+| **TOFU** | Trust On First Use — bootstrap trust is **client-side**, not from `keys.toml`: a registry's Ed25519 signing key is pinned the first time it is seen unless already admin-provisioned in `trusted-keys.d/<registry>.pub`. After pinning, key rotation/revocation is governed by the committed `keys.toml` roster (see [repo-layout.md](repo-layout.md)). |
 
 ---
 

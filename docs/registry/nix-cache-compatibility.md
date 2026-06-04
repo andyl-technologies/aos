@@ -6,18 +6,21 @@
 >
 > **Status legend:** **CURRENT** = behavior present in the code today (cited as
 > `path:line`). **TARGET** = the design decided in the
-> [design brief](../plans/registry/design-brief.md) §13 (and §11 for signing),
-> not yet fully built.
+> [design brief](../plans/registry/design-brief.md) §13 (and §14 for the committed
+> `registry.toml` `[[caches]]`, §11 for signing), not yet fully built.
 
 This document explains how an AOS registry origin is, by design, a **strict
 superset** of the standard Nix binary-cache (substituter) protocol. The
 NAR-cache surface is **orthogonal** to the git-object metadata layer: it is not
 part of the trust chain that `apm` walks. Its location is **not** advertised in
 signed tags — signed tags are pure signed pointers and carry no structured
-payload. The substituter location is the **consumer's client-side
-configuration** (its local registry config) or the **origin itself**, which may
-serve the stock-Nix surface (`nix-cache-info` / `<storehash>.narinfo` / `nar/`)
-alongside the git metadata.
+payload. The substituter location lives in the **committed git-repo-root
+`registry.toml`** `[[caches]]` table (a tree file authenticated transitively by
+the signed tag — see
+[`repo-layout.md`](repo-layout.md)), with the consumer's client-side
+`registries.d/<name>.toml` as an **optional override/supplement**. The origin
+that serves the git metadata MAY also serve the stock-Nix surface
+(`nix-cache-info` / `<storehash>.narinfo` / `nar/`) alongside it.
 
 See also:
 [README.md](README.md) ·
@@ -28,7 +31,8 @@ See also:
 [packs-and-deltas.md](packs-and-deltas.md) ·
 [signing-and-trust.md](signing-and-trust.md) ·
 [publishing.md](publishing.md) ·
-[apt-comparison.md](apt-comparison.md)
+[apt-comparison.md](apt-comparison.md) ·
+[repo-layout.md](repo-layout.md)
 
 ---
 
@@ -49,31 +53,36 @@ An AOS registry origin serves **two layers that do not depend on each other**:
    / `nar/` surface. A stock `nix` substituter consumes this layer for dev-shell
    substitution. It is a **strict superset** of the standard Nix binary cache.
 
-The link between them is deliberately thin. The git layer does **not** point at
-the NAR-cache layer at all — signed tags carry no cache advertisement. The
-substituter location is the **consumer's client-side configuration** or the
-**origin itself**; the NAR cache may physically live anywhere — co-located with
-the git repo on the same origin or on a separate host. Neither layer's
-correctness depends on the other:
+The link between them is deliberately thin. The **signed tag** carries no cache
+advertisement — but the git layer does name the cache, in the **committed
+git-repo-root `registry.toml`** `[[caches]]` table inside the tree the signed tag
+authenticates (tag → commit → tree → file; see
+[`repo-layout.md`](repo-layout.md)). The NAR cache may physically live anywhere —
+co-located with the git repo on the same origin (a relative `[[caches]]` url like
+`./nar`) or on a separate host (an absolute url). A consumer's client-side
+`registries.d/<name>.toml` may **override or supplement** that committed list.
+Neither layer's correctness depends on the other:
 
 ```
             ┌──────────────────────────────────────────┐
   apm   ──► │  git metadata layer  (bare sha256 repo)   │  ← trust root
             │  channels=branches · releases=signed tags │     (signed tags)
             │  signed tag = pure signed pointer         │     (no cache payload)
-            └──────────────────────────────────────────┘
-                                                           ▼ client-side config
-            ┌──────────────────────────────────────────┐    (or the origin itself)
+            │  tree: registry.toml [[caches]] ──────────┼──┐  (authenticated via tag)
+            └──────────────────────────────────────────┘  │
+                                                           ▼ committed [[caches]]
+            ┌──────────────────────────────────────────┐    (+ client-side override)
   nix   ──► │  NAR-cache layer                          │  ← NOT in apm trust chain
             │  nix-cache-info · <storehash>.narinfo     │     (per-narinfo Sig:)
             │  nar/<key>.nar.zst                        │
             └──────────────────────────────────────────┘
 ```
 
-The cache is neither pinned to the same origin nor advertised in-band: its
-location is the consumer's local registry/cache config, or simply the origin
-serving the stock-Nix surface itself. The metadata layer is authoritative; the
-NAR cache is a client-configured, swappable substituter.
+The cache is **named in-tree, not in the tag**: its location comes from the
+committed `registry.toml` `[[caches]]` (authenticated via the tag), which the
+consumer's client-side `registries.d/<name>.toml` may override. The metadata
+layer is authoritative; the NAR cache is a content-addressed, swappable
+substituter whose pointer the tag chain governs.
 
 ---
 
@@ -106,20 +115,29 @@ the **strict superset**.
 
 The cache is **not** advertised in any signed tag. Signed tags are pure signed
 pointers and carry no structured payload — there is no tag-message TOML, no
-`[meta]`, no `[[caches]]`. The substituter location instead comes from one of two
-places:
+`[meta]`, no `[[caches]]` *in the tag*. Instead the cache list lives in the
+**committed git-repo-root `registry.toml`** `[[caches]]` table — a tree file
+authenticated transitively by the signed tag (tag → commit → tree → file), the
+existing `RegistryRootConfig` (`crates/aos-package/src/types.rs:566-573`). See
+[`repo-layout.md`](repo-layout.md) §2 for the full tree shape.
 
-1. **Client-side configuration.** The consumer's own local registry config names
-   the substituter(s) it trusts, exactly as a stock `nix` host lists
-   `extra-substituters` in `nix.conf` (§10). This is the authoritative source of
-   "which cache do I use".
-2. **The origin itself.** The origin that serves the git metadata **may** also
-   serve the stock-Nix surface (`nix-cache-info` / `<storehash>.narinfo` / `nar/`)
-   under its own URL. A consumer that simply points at the origin gets both
-   layers from one host with no separate advertisement step.
+The substituter location therefore comes from:
 
-Whichever base URL the consumer selects, the standard Nix relative paths give the
-three superset endpoints:
+1. **Committed `registry.toml` `[[caches]]` (the authoritative source).** Each
+   entry is `CacheEntry { url, priority }`. The `url` may be **absolute** (a
+   separate cache host) or **relative** (e.g. `./nar`, the same origin that serves
+   the git metadata). Because the file is in the tree the signed tag covers, the
+   cache pointer is **authenticated** — though, as §1 and §8.1 note, an
+   authenticated-but-wrong pointer still cannot serve bad bytes (NARs are
+   content-addressed).
+2. **Client-side `registries.d/<name>.toml` (optional override/supplement).** The
+   consumer may add or override caches locally, exactly as a stock `nix` host lists
+   `extra-substituters` in `nix.conf` (§10). Where the client-side list and the
+   committed list both name a cache, the **higher priority wins** (entries are
+   sorted descending — §4).
+
+Whichever base URL is selected, the standard Nix relative paths give the three
+superset endpoints:
 
 ```
 <cache-url>/nix-cache-info             Nix: capability stub   (§5)
@@ -127,12 +145,13 @@ three superset endpoints:
 <cache-url>/nar/<key>.nar.zst          Nix: NAR blob          (§9)
 ```
 
-- A consumer may configure multiple substituter URLs; ordering/preference is a
-  stock-Nix concern, driven by each cache's `nix-cache-info` `Priority` (§5), not
-  by any in-band AOS field.
-- Because the cache list is client-side (the consumer's local registry/cache
-  config) or simply the origin itself — rather than embedded in a signed tag —
-  there is no unsigned *in-band* side-channel served by the origin to reconcile.
+- A consumer may end up with multiple substituter URLs (committed + client-side);
+  ordering across them follows the AOS `priority` field (descending, higher wins —
+  §4), while a stock `nix` host orders *its own* substituters by each cache's
+  `nix-cache-info` `Priority` (§5). These are distinct knobs.
+- Because the cache list is **in-tree (signed-by-extension) plus an optional
+  client-side override** — rather than embedded in a signed tag — there is no
+  unsigned *in-band* side-channel served by the origin to reconcile.
 
 ---
 
@@ -142,11 +161,14 @@ The NAR **blob layer** already exists and carries straight over; the git-native
 metadata and the narinfo emitter do not yet exist.
 
 **Cache parsing & resolution (CURRENT).** The code already reads a `[[caches]]`
-array from a **repo-local `registry.toml`** (parsed by `RegistryRootConfig`, living
+array from a **repo-root `registry.toml`** (parsed by `RegistryRootConfig`, living
 *inside* the registry git repo — see [current-state.md](current-state.md) §3.1), not
-a signed tag. The git-native target **removes `registry.toml` entirely**; cache
-selection moves to the consumer's **client-side `registries.d/<name>.toml`** (or the
-origin). The parsing/sorting/selection logic below is reusable as-is.
+a signed tag. The git-native target **keeps this committed `registry.toml`
+`[[caches]]`** as the authoritative cache list (authenticated via the signed tag),
+and **adds** an optional consumer-side `registries.d/<name>.toml` override; only the
+signing *pubkey* leaves `registry.toml` (it moves to `keys.toml` — see
+[`repo-layout.md`](repo-layout.md) §3, §7). The parsing/sorting/selection logic
+below is reusable as-is.
 
 - `CacheEntry { url, priority }` with `default_cache_priority() == 100`
   (`crates/aos-package/src/types.rs:585-593`), nested under `RegistryRootConfig`
@@ -178,8 +200,9 @@ signature maps to a field already on that struct (§6).
 
 What is **missing** today: there is no `nix-cache-info` emitter and no
 `*.narinfo` emitter anywhere in the tree. The cache list is never embedded in a
-signed tag — in the target it is the consumer's client-side `registries.d/<name>.toml`
-(or the origin directly) — so no migration into a tag is needed.
+signed tag — in the target it stays in the committed `registry.toml` `[[caches]]`
+(authenticated via the tag), plus an optional client-side `registries.d/<name>.toml`
+override — so no migration into a tag is needed.
 
 ---
 
@@ -202,9 +225,10 @@ Priority: 41
 | `Priority` | Lower = preferred. Stock `cache.nixos.org` is `40`. | Operator policy knob. Use `> 40` to be consulted **after** the upstream cache for shared paths, or `< 40` to prefer AOS. |
 
 > Note: the `nix-cache-info` `Priority` is the **Nix-cache** preference knob,
-> consumed by stock `nix` to order substituters. It is distinct from the
-> client-side `priority` field the consumer's local registry/cache config uses to
-> order the caches it has configured (§3, §4).
+> consumed by stock `nix` to order substituters. It is distinct from the AOS
+> `priority` field in the committed `registry.toml` `[[caches]]` (and any
+> client-side `registries.d` override), which orders the caches `apm` has
+> resolved (§3, §4).
 
 ---
 
@@ -350,10 +374,12 @@ cache URL (§3). Two facts constrain it:
    `{mirror_url}/{nar_hash}.nar.zst` with the full `sha256:<hex>` retained
    (`crates/aos-package/src/download.rs:57-60`). On disk it rewrites the colon to
    a dash (`download.rs:232-235`), but the **wire** filename keeps the colon.
-2. **Cache placement (client-side).** The cache may be co-located with the git
-   repo on one origin or on a separate host; which one a consumer uses is its
-   client-side config (§3). The narinfo `URL:` is resolved relative to whichever
-   cache base the client selected (§3, §10).
+2. **Cache placement (committed `[[caches]]`, optionally overridden).** The cache
+   may be co-located with the git repo on one origin (a relative `[[caches]]` url
+   like `./nar`) or on a separate host (an absolute url); the pointer lives in the
+   committed `registry.toml` `[[caches]]`, which a client-side `registries.d`
+   override may supersede (§3). The narinfo `URL:` is resolved relative to whichever
+   cache base `apm` ends up selecting (§3, §10).
 
 ```
 <cache-url>/nar/sha256:<hex>.nar.zst   <-- AOS wire key (colon retained)
@@ -372,11 +398,13 @@ cache URL (§3). Two facts constrain it:
 ## 10. Using the AOS cache as a dev-shell substituter (TARGET)
 
 Once a cache emits `nix-cache-info` + `*.narinfo` (§5, §6), a non-AOS host
-running stock `nix` consumes it as an ordinary binary cache. The substituter URL
-is whatever the consumer **configures client-side** (§3) — typically the origin
-itself if the origin also serves the stock-Nix surface, or a separate cache host.
-There is no tag to resolve: the URL is named directly in `nix.conf` or the AOS
-client's local registry/cache config.
+running stock `nix` consumes it as an ordinary binary cache. A **stock `nix`
+host has no AOS git layer**, so it simply names the substituter URL directly in
+`nix.conf` (§10.1). An **AOS host**, by contrast, resolves the cache from the
+committed `registry.toml` `[[caches]]` (authenticated via the tag), optionally
+overridden by its client-side `registries.d/<name>.toml` (§3). Either way there
+is no tag to decode — the cache pointer is a tree file or local config, not a tag
+payload.
 
 ### 10.1 `nix.conf`
 
@@ -429,7 +457,7 @@ nix build .#devShell \
 ### 10.4 What a substitution looks like
 
 ```
-host nix                         AOS cache (client-configured URL)
+host nix                         AOS cache (URL from registry.toml [[caches]] / override)
    │                                   │
    │  GET /nix-cache-info               │   StoreDir/Priority/WantMassQuery  (§5)
    │ ─────────────────────────────────►│
@@ -444,9 +472,9 @@ host nix                         AOS cache (client-configured URL)
 
 `apm` on an AOS host, meanwhile, walks the git metadata layer (channel partition
 tag → semver tag → commit → package TOML) and fetches NARs by content hash from
-its client-configured cache (or the origin itself) — verifying `download_hash`
-(`download.rs:102-115`), never the narinfo `Sig:`. The two clients share the
-blobs but trust them via independent layers (§1).
+the cache named in the committed `registry.toml` `[[caches]]` (or a client-side
+override) — verifying `download_hash` (`download.rs:102-115`), never the narinfo
+`Sig:`. The two clients share the blobs but trust them via independent layers (§1).
 
 ---
 
@@ -456,10 +484,12 @@ From design brief §13, the delta to reach the target (the blob layer in §4 is
 already done in `download.rs`; the work is the metadata projection and signing on
 the **producer** side):
 
-1. **Client-side cache selection stays put** — the existing `CacheEntry` shape
-   (`types.rs:585-593`) keeps living in the consumer's local registry/cache config
-   (or the consumer points straight at the origin). Nothing is embedded in a signed
-   tag (§3); no migration is required here.
+1. **Cache list stays in the committed `registry.toml`** — the existing
+   `CacheEntry` shape (`types.rs:585-593`) keeps living in the git-repo-root
+   `registry.toml` `[[caches]]` (authenticated via the signed tag —
+   [`repo-layout.md`](repo-layout.md) §2), with an optional client-side
+   `registries.d/<name>.toml` override. Nothing is embedded in a signed tag (§3); no
+   migration is required here.
 2. A **`nix-cache-info` stub** emitter (§5) — `StoreDir` supplied by the publish
    pipeline.
 3. A **narinfo generator** keyed by store-path hash, projecting `PackageMeta`
@@ -483,6 +513,8 @@ consumer-side Nix substituter superset) and
 
 - [architecture.md](architecture.md) — the git-over-dumb-HTTP layer and where the
   NAR cache sits relative to it.
+- [repo-layout.md](repo-layout.md) — the committed git tree, including
+  `registry.toml` `[[caches]]` (where the cache list lives) and `keys.toml`.
 - [http-layout.md](http-layout.md) — full HTTP/object layout and CDN TTLs.
 - [signing-and-trust.md](signing-and-trust.md) — the one-key model, name-binding,
   `tag → tag → commit`.

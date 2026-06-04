@@ -108,14 +108,21 @@ as-is.
 | Pack discovery / release index | relative `objects/info/alternates`, newest → oldest | §4, §8 |
 | Dumb-HTTP surface | `HEAD` + `info/refs` + `objects/info/packs` (via `update-server-info`) | §8, §12 |
 | Loose-object guarantee | **all** loose objects live at root `/objects/`; packs are efficiency only | §8 |
-| Removed | `registry.toml` root, `bundle-list.toml`, git bundles, `creation_token` | §15 |
+| Committed tree (not served) | root `registry.toml` (`[registry]` + `[[caches]]`, pubkey removed) + `keys.toml` + `packages/` + `closures/` + `.gitattributes` ([repo-layout.md](../../registry/repo-layout.md)) | §14 |
+| Removed | the *signed-HTTP-root* `registry.toml`, `bundle-list.toml`, git bundles, `creation_token` | §15 |
 
 Signed tags carry **no structured payload** (a signed tag is a pure signed
 pointer — standard git tag fields + Ed25519 signature + optional freeform
-message), and the cache/NAR-substituter location is **client-side config** (the
-consumer's local registry/cache config) or the origin itself, never advertised
-in a signed tag. `RegistryRootConfig` (`types.rs:567`) is retired by WS-04; this
-workstream only stops *writing* it. Superseded concepts live only in
+message). The cache/NAR-substituter location lives in the committed git-repo-root
+`registry.toml` `[[caches]]` (`RegistryRootConfig`, `types.rs:566-573`),
+authenticated via the signed tag — **not** advertised in a signed tag, and not
+*solely* client-side; the consumer's local `registries.d/<name>.toml` is an
+optional override/supplement (HIGHER priority wins; brief §14). That git-repo-root
+`registry.toml` is **kept** as a committed tree file (§3.3); only the intermediate
+*signed-HTTP-root* `registry.toml` is removed (brief §15). The **signing pubkey**
+is removed from `registry.toml` (key trust moves to the new committed `keys.toml`
++ client-side TOFU; [repo-layout.md](../../registry/repo-layout.md) §2–§3).
+Superseded concepts live only in
 [current-state](../../registry/current-state.md) (today's code) and design-brief
 §15.
 
@@ -177,6 +184,46 @@ the `v` prefix are gone in the target.
 
 This workstream only *emits* the files; mapping globs to a CDN config is a
 deployment concern documented in [publishing](../../registry/publishing.md).
+
+### 3.3 Committed git tree (vs. the served object store)
+
+The layout above (§3) is the **served object store** — the dumb-HTTP encoding of
+git objects (`/objects/**`, `/channels/**`, `/releases/**`, `HEAD`, `info/refs`).
+It is **distinct** from the **committed git tree**: the files a commit *contains*,
+what you'd see on `git checkout`. Those files are never served as literal HTTP
+paths — they are encoded inside the git objects this workstream produces, and the
+consumer reconstructs them after assembling objects (brief §14). The committed
+tree is:
+
+```
+<repo root>/                          ← a commit's tree (what `git checkout` yields)
+  registry.toml                       ← [registry] name/description + [[caches]] only (pubkey REMOVED)
+  keys.toml                           ← trust roster: active signing key(s) + revoked list
+  .gitattributes                      ← "closures/** -diff"
+  packages/<first-letter>/<name>.toml ← per-package metadata, sharded by first letter
+  closures/<hash>                     ← dependency adjacency list
+```
+
+The whole tree is authenticated transitively by the **signed tag**
+(tag → commit → tree → file), so every file is signed-by-extension **without**
+anything being placed in the tag (tags are pure pointers; brief §14). The full
+structure, field semantics, and CURRENT-vs-TARGET deltas live in the reference
+doc [repo-layout.md](../../registry/repo-layout.md) — this workstream only
+*produces the objects* that encode this tree; it does not define the tree's
+content.
+
+> **Two `registry.toml` files, not the same thing (brief §14/§15).** The
+> git-repo-**root** `registry.toml` above is a **committed tree file**
+> (`RegistryRootConfig`, `types.rs:566-573`) — `[registry]` + `[[caches]]`, with
+> the signing pubkey **removed** (a key in a file authenticated by that key is
+> circular for bootstrap; trust lives in `keys.toml` + client-side TOFU). It is
+> **not** the removed intermediate *signed-HTTP-root* `registry.toml` (the mutable
+> origin file with `[latest]`/`[channels]`/`[components]`/`[capabilities]`/
+> `[[bundles]]`/`[signature]`), which is retired entirely (brief §15). Caches live
+> in this committed `[[caches]]` (authenticated via the tag), **not** in signed
+> tags; the consumer's client-side `registries.d/<name>.toml` is an optional
+> override/supplement (HIGHER priority wins). See
+> [repo-layout.md](../../registry/repo-layout.md) §2–§3.
 
 ---
 
@@ -463,12 +510,17 @@ in WS-02).
    reads `http-alternates` first then falls back to `alternates`, so a single
    **relative** `info/alternates` (one `../`, host-independent) covers both HTTP
    and local-FS access — no separate `http-alternates` file is maintained.
-5. **Retiring `RegistryRootConfig`/`registry.toml` (`types.rs:567`):** the
-   cache/NAR-substituter location becomes **client-side** config (or the origin
-   itself) — it is **not** moved into signed tags, which carry no structured
-   payload (WS-04). This WS stops *writing* `registry.toml`
-   (`registry_ops.rs:443-450`); WS-04 removes the type. Coordinate so no path
-   reads a now-absent root config.
+5. **`registry.toml` clarification (`types.rs:566-573`):** the git-repo-root
+   `registry.toml` (`RegistryRootConfig`) is **kept** as a committed tree file
+   (`[registry]` + `[[caches]]`), authenticated via the signed tag — see §3.3 and
+   [repo-layout.md](../../registry/repo-layout.md). The cache/NAR-substituter
+   location stays in its `[[caches]]` (not moved into signed tags, which carry no
+   payload; the client-side `registries.d/<name>.toml` only *supplements* it). What
+   is removed: the intermediate *signed-HTTP-root* `registry.toml` (brief §15) and
+   the **signing pubkey** field (moves to the new committed `keys.toml` + TOFU;
+   WS-04). This WS continues to *write* the root `registry.toml`
+   (`registry_ops.rs:443-450`) minus the pubkey; coordinate the key-field removal
+   and `keys.toml` introduction with WS-04.
 6. **Atomicity across a CDN (§4 Step 6):** content-before-pointer ordering holds
    at the origin, but CDN edge caches with mixed TTLs can briefly serve a new
    `info/refs` with a stale `info/alternates`. Loose objects + immutable content
@@ -492,5 +544,8 @@ in WS-02).
       per-release `info/alternates`).
 - [ ] §6 eval tests + the serve→stock-clone integration test pass with
       AOS-built git over a static HTTP server.
-- [ ] No `registry.toml` root, no `bundle-list.toml`, no git bundles emitted
-      (brief §15); thin `delta-*.pack`s are absent from `info/packs`.
+- [ ] No *signed-HTTP-root* `registry.toml`, no `bundle-list.toml`, no git bundles
+      emitted (brief §15); the **committed** git-repo-root `registry.toml`
+      (`[registry]` + `[[caches]]`, pubkey removed) + `keys.toml` remain tree files
+      ([repo-layout.md](../../registry/repo-layout.md)); thin `delta-*.pack`s are
+      absent from `info/packs`.

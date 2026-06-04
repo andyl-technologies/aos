@@ -28,7 +28,7 @@ generation pipeline — those live in siblings:
 | Pack-objects, thin vs full packs, delta graph, zstd | [`packs-and-deltas.md`](packs-and-deltas.md) |
 | Signed tag objects, name-binding, `tag→tag→commit`, trust | [`signing-and-trust.md`](signing-and-trust.md) |
 | The producer publish pipeline end-to-end | [`publishing.md`](publishing.md) |
-| Nix binary-cache superset (client-side cache config, narinfo, `nar/`) | [`nix-cache-compatibility.md`](nix-cache-compatibility.md) |
+| Nix binary-cache superset (`registry.toml` `[[caches]]`, narinfo, `nar/`) | [`nix-cache-compatibility.md`](nix-cache-compatibility.md) |
 | Comparison to APT/dpkg flat-file repositories | [`apt-comparison.md`](apt-comparison.md) |
 
 Plan-side: [`docs/plans/registry/README.md`](../plans/registry/README.md),
@@ -119,9 +119,10 @@ Three properties hold by construction:
    full packs. See §7.
 2. **It is a superset of the Nix binary cache.** The origin MAY additionally serve a
    `nix-cache-info` / `*.narinfo` / `nar/` surface (the superset for stock nix);
-   narinfo signing reuses the one Ed25519 key. The substituter location is the
-   *consumer's* local registry/cache config (or the origin itself) — it is **not**
-   advertised in signed tags. That surface is documented in
+   narinfo signing reuses the one Ed25519 key. The substituter location lives in the
+   committed repo-root `registry.toml` `[[caches]]` (a tree file authenticated
+   transitively by the signed tag), with the consumer's client-side `registries.d`
+   as an optional override — it is **not** advertised in the signed tag itself. That surface is documented in
    [`nix-cache-compatibility.md`](nix-cache-compatibility.md); it is orthogonal to
    the git-object layout here.
 3. **The AOS layer is additive.** `/channels/<name>/00..ff` and the thin
@@ -161,6 +162,15 @@ objects. This is the guaranteed-correctness fallback: a client that cannot or wi
 use packs can always reconstruct any commit by walking the root loose store over plain
 HTTP GETs. Packs (§4.4) are a pure efficiency layer *on top of* the loose store, never
 a replacement for it.
+
+> **What lives inside these objects.** The registry's committed git **tree**
+> (`registry.toml`, `keys.toml`, `packages/<x>/<name>.toml`, `closures/<hash>`,
+> `.gitattributes`) is **not** served at literal HTTP paths — it is **encoded inside
+> the `/objects` store** (as blob/tree/commit objects, loose and/or packed). A consumer
+> resolves a channel bucket → semver tag → commit, reconstructs the commit's tree from
+> the fetched objects, and only then reads those files. That committed-tree content,
+> and its tree ↔ HTTP mapping, is documented in
+> [`repo-layout.md`](repo-layout.md) (E).
 
 ### 4.3 Distributed pack store: per-release pack dirs + `info/alternates`
 
