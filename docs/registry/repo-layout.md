@@ -90,31 +90,37 @@ bootstrap trust — initial trust is **TOFU-pinned client-side** in
 schema = 1
 
 # Currently-valid signing keys (name:Ed25519:<base64>, the parse_signing_key format).
+# The model is >=2 OVERLAPPING active keys (no role field, no "root" tier).
 [[keys]]
-id     = "aos-core-ops-2026"
+id     = "aos-core-2026a"
 key    = "aos-core:Ed25519:<base64>"
-role   = "operational"        # signs day-to-day release/channel tags
 [[keys]]
-id     = "aos-core-root"
+id     = "aos-core-2026b"
 key    = "aos-core:Ed25519:<base64>"
-role   = "root"               # offline anchor; signs keys.toml (rotation/revocation)
 
-# Keys no longer trusted (compromise or retirement).
+# Keys no longer trusted (planned retirement or rotated-out).
 [[revoked]]
-id     = "aos-core-ops-2025"
+id     = "aos-core-2025"
 reason = "rotated"
 ```
 
-**Rotation (planned):** publish `keys.toml` listing both old and new keys (an overlap
-window) in a tag signed by the currently-trusted key; a consumer that trusts the old
-key verifies the tag, reads `keys.toml`, and pins the new key. Later, publish with only
-the new key.
+**Trust model (decided — design-brief §14, §16.8):** **≥2 overlapping active keys.**
+There is **no** offline-root / operational two-tier and **no** TUF-style root role — the
+**git lineage** (signed tag → commit → parent chain) provides the continuity, so a
+separate root tier is unnecessary.
 
-**Revocation (compromise):** list the bad key under `[[revoked]]`, **signed by a key
-the consumer trusts that is *not* the revoked one.** This requires either a dedicated
-offline **root** key (TUF-style: the root signs `keys.toml`, a separate operational key
-signs everyday tags) or **≥2 overlapping active keys**. The root-vs-single trust model
-is an open choice — design-brief §16.
+**Rotation (planned):** publish `keys.toml` listing both old and new keys (an overlap
+window) in a tag signed by a currently-trusted key; a consumer that trusts the old key
+verifies the tag, reads `keys.toml`, and pins the new key. Later, publish with only the
+new key (the old key is dropped).
+
+**Planned retirement:** list the key under `[[revoked]]`, **signed by one of the
+*other* overlapping active keys.** Because there are always ≥2 active keys, a retiring
+key never has to revoke itself.
+
+**Compromise:** handled **out-of-band** — the consumer re-pins via `trusted-keys.d`
+(`apr trust`). An in-repo key cannot credibly revoke itself, and compromise is rare
+enough that the out-of-band re-pin is acceptable.
 
 > **Defence-in-depth note:** even an authenticated-but-wrong cache pointer can't serve
 > bad bytes — NARs are content-addressed and SHA-256-verified on download
@@ -214,7 +220,7 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 | `packages/<x>/<name>.toml` | nested `PackageToml` | unchanged |
 | `closures/<hash>` | adjacency list | unchanged |
 | `.gitattributes` | `closures/** -diff` | unchanged |
-| bootstrap trust | `signing.public_key` + TOFU `trusted-keys.d` | TOFU `trusted-keys.d` (anchor) + `keys.toml` rotation |
+| bootstrap trust | `signing.public_key` + TOFU `trusted-keys.d` | TOFU `trusted-keys.d` (pin) + `keys.toml` overlap rotation |
 
 See also: [`signing-and-trust.md`](signing-and-trust.md) (keys, rotation/revocation),
 [`http-layout.md`](http-layout.md) (served layout), `current-state.md` (the as-is

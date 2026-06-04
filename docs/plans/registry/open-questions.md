@@ -332,7 +332,15 @@ material. The defense is real but lives in the consumer, not in the signature.
    narinfo `Sig:`) (brief §11). Rotating it means re-signing live channel
    partitions and accepting both keys via `allowed_signers` during the overlap
    window. Because there is no per-tag expiry, the only forcing function for
-   re-sign is a rotation event itself.
+   re-sign is a rotation event itself. The **trust model is decided** (brief §14,
+   §16.8): **≥2 overlapping active keys**, no offline-root / operational tier — the
+   git lineage (signed tag → commit → parent chain) provides the continuity.
+   `keys.toml` (a git-repo-root tree file) lists the active signing key(s) with **no
+   role field** and a `revoked` list. Bootstrap is TOFU (`trusted-keys.d/<registry>.pub`),
+   rotation is the overlap publish above, planned retirement is a `revoked` entry
+   signed by one of the *other* overlapping active keys, and **compromise is handled
+   out-of-band** (the consumer re-pins via `trusted-keys.d` / `apr trust`). The cadence
+   itself (how often to rotate) is the only open knob here.
 4. **Clock-skew tolerance** on the client when evaluating its own max-staleness
    bound against `now`.
 
