@@ -3,10 +3,10 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::security::parse_signing_key;
+use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
 
 /// A currently active registry signing key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,7 +20,6 @@ pub struct RosterKey {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevokedKey {
     pub id: String,
-    pub key: String,
     #[serde(default)]
     pub reason: Option<String>,
 }
@@ -45,10 +44,10 @@ pub fn load_keys_toml(root: &Path) -> Result<Option<KeysToml>> {
     if !path.exists() {
         return Ok(None);
     }
-    let content = fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let roster: KeysToml = toml::from_str(&content)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let content =
+        fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let roster: KeysToml =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
     validate_roster(&roster)?;
     Ok(Some(roster))
 }
@@ -62,10 +61,54 @@ pub fn write_keys_toml(root: &Path, roster: &KeysToml) -> Result<()> {
     Ok(())
 }
 
+/// Return an active roster key by id.
+pub fn active_key_by_id<'a>(roster: &'a KeysToml, id: &str) -> Option<&'a RosterKey> {
+    roster.active.iter().find(|entry| entry.id == id)
+}
+
+/// Return true if the roster declares `id` revoked.
+pub fn is_revoked(roster: &KeysToml, id: &str) -> bool {
+    roster.revoked.iter().any(|entry| entry.id == id)
+}
+
+/// Pin every active roster key into the writable trusted-key store.
+///
+/// This is used during key rotation after the roster's containing commit has
+/// already been verified by a currently trusted key.
+pub fn pin_rotated_keys(store: &KeyStore, registry: &str, roster: &KeysToml) -> Result<usize> {
+    validate_roster(roster)?;
+    let mut pinned = 0;
+    for entry in &roster.active {
+        let (entry_registry, algorithm, public_key) = parse_signing_key(&entry.key)
+            .with_context(|| format!("invalid active key '{}'", entry.id))?;
+        if entry_registry != registry {
+            bail!(
+                "active key '{}' belongs to registry '{}', expected '{}'",
+                entry.id,
+                entry_registry,
+                registry,
+            );
+        }
+        store.store(&TrustedKey {
+            registry: entry_registry,
+            algorithm,
+            fingerprint: key_fingerprint(&public_key),
+            public_key,
+            source: KeySource::Tofu,
+        })?;
+        pinned += 1;
+    }
+    Ok(pinned)
+}
+
 /// Return the revoked ids that are effective when vouched by `vouching_key_id`.
 ///
 /// A key cannot credibly revoke itself; self-vouched revocations are ignored.
 pub fn effective_revocations(roster: &KeysToml, vouching_key_id: &str) -> Vec<String> {
+    if active_key_by_id(roster, vouching_key_id).is_none() || is_revoked(roster, vouching_key_id) {
+        return Vec::new();
+    }
+
     roster
         .revoked
         .iter()
@@ -80,8 +123,9 @@ fn validate_roster(roster: &KeysToml) -> Result<()> {
             .with_context(|| format!("invalid active key '{}'", entry.id))?;
     }
     for entry in &roster.revoked {
-        parse_signing_key(&entry.key)
-            .with_context(|| format!("invalid revoked key '{}'", entry.id))?;
+        if entry.id.is_empty() {
+            bail!("revoked key id is empty");
+        }
     }
     Ok(())
 }
@@ -99,12 +143,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let roster = KeysToml {
             active: vec![
-                RosterKey { id: "old".into(), key: KEY1.into() },
-                RosterKey { id: "new".into(), key: KEY2.into() },
+                RosterKey {
+                    id: "old".into(),
+                    key: KEY1.into(),
+                },
+                RosterKey {
+                    id: "new".into(),
+                    key: KEY2.into(),
+                },
             ],
             revoked: vec![RevokedKey {
                 id: "retired".into(),
-                key: KEY1.into(),
                 reason: Some("planned retirement".into()),
             }],
         };
@@ -137,10 +186,12 @@ key = "not-a-key"
     #[test]
     fn revocation_honoured_when_vouched_by_survivor() {
         let roster = KeysToml {
-            active: vec![],
+            active: vec![RosterKey {
+                id: "new".into(),
+                key: KEY2.into(),
+            }],
             revoked: vec![RevokedKey {
                 id: "old".into(),
-                key: KEY1.into(),
                 reason: None,
             }],
         };
@@ -150,13 +201,70 @@ key = "not-a-key"
     #[test]
     fn revocation_ignored_when_only_self_vouched() {
         let roster = KeysToml {
-            active: vec![],
-            revoked: vec![RevokedKey {
+            active: vec![RosterKey {
                 id: "old".into(),
                 key: KEY1.into(),
+            }],
+            revoked: vec![RevokedKey {
+                id: "old".into(),
                 reason: None,
             }],
         };
         assert!(effective_revocations(&roster, "old").is_empty());
+    }
+
+    #[test]
+    fn revocation_ignored_when_voucher_not_active() {
+        let roster = KeysToml {
+            active: vec![RosterKey {
+                id: "new".into(),
+                key: KEY2.into(),
+            }],
+            revoked: vec![RevokedKey {
+                id: "old".into(),
+                reason: None,
+            }],
+        };
+        assert!(effective_revocations(&roster, "unknown").is_empty());
+    }
+
+    #[test]
+    fn rotation_pins_new_overlapping_key() {
+        let tmp = TempDir::new().unwrap();
+        let store = KeyStore::new(vec![tmp.path().join("trusted")]);
+        let roster = KeysToml {
+            active: vec![
+                RosterKey {
+                    id: "old".into(),
+                    key: KEY1.into(),
+                },
+                RosterKey {
+                    id: "new".into(),
+                    key: KEY2.into(),
+                },
+            ],
+            revoked: vec![],
+        };
+
+        assert_eq!(pin_rotated_keys(&store, "aos-core", &roster).unwrap(), 2);
+        let pinned = store.lookup_all("aos-core");
+        assert_eq!(pinned.len(), 2);
+        assert!(pinned.iter().any(|key| key.public_key == "YWJjZA=="));
+        assert!(pinned.iter().any(|key| key.public_key == "ZWZnaA=="));
+    }
+
+    #[test]
+    fn rotation_rejects_key_for_other_registry() {
+        let tmp = TempDir::new().unwrap();
+        let store = KeyStore::new(vec![tmp.path().join("trusted")]);
+        let roster = KeysToml {
+            active: vec![RosterKey {
+                id: "foreign".into(),
+                key: "other:Ed25519:YWJjZA==".into(),
+            }],
+            revoked: vec![],
+        };
+
+        assert!(pin_rotated_keys(&store, "aos-core", &roster).is_err());
     }
 }
