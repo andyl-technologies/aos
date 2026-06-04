@@ -10,9 +10,10 @@
 >
 > **Grounding:** [design-brief.md](./design-brief.md) **§6** (channels &
 > rollouts), **§9** (packs & the delta scheme — client resolution + retention),
-> **§11** (signing & trust — name-binding), and **§13** (Nix `[[caches]]`
-> superset). The brief is authoritative for intent; this doc translates that
-> intent into a concrete change set on the `apm update` / `apm upgrade` path.
+> **§11** (signing & trust — name-binding), and **§13** (Nix binary-cache
+> superset — client-side substituter config). The brief is authoritative for
+> intent; this doc translates that intent into a concrete change set on the
+> `apm update` / `apm upgrade` path.
 
 This is the `apm`-side counterpart to the producer workstreams
 ([01 object store](./workstream-01-object-store.md),
@@ -33,8 +34,9 @@ smart-protocol negotiation, and (per [§15 of the brief](./design-brief.md#15-re
 5. **Delta-walk fetch** — pick a thin `delta-*.pack` whose base is retained, walk
    backward otherwise, fall to full pack, fall to loose objects; complete with
    `git index-pack --fix-thin`; apply retention.
-6. **Nix `[[caches]]` wiring** — read the tag-message TOML's `[[caches]]` (which
-   may be relative) and register it for NAR substitution.
+6. **Nix cache wiring** — resolve the NAR substituter from **client-side
+   registry config** (or the origin itself) and register it for NAR
+   substitution. The substituter location is **not** advertised in signed tags.
 
 ---
 
@@ -62,8 +64,8 @@ It re-uses the existing Ed25519/SSH verification primitives (WS-04,
 > **CURRENT.** Today's consumer fetches a `bundle-list.toml` manifest, selects
 > git **bundles** by `creation_token`, unbundles them into a local repo, extracts
 > package TOMLs, and persists a `creation_token` floor. None of bucket selection,
-> the 256-partition tag chain, thin `delta-*.pack` walking, or `[[caches]]`-from-
-> tag-message exist. This section maps the surfaces WS-05 replaces.
+> the 256-partition tag chain, thin `delta-*.pack` walking, or client-side
+> NAR-substituter wiring exist. This section maps the surfaces WS-05 replaces.
 
 ### 2.1 The sync entry point
 
@@ -90,7 +92,7 @@ the CURRENT analogue of the TARGET delta-walk. Its three-strategy logic —
 a self-contained pack), but it operates on `BundleEntry`s keyed by
 `creation_token` and `target_tag`, not on git thin packs keyed by semver. The
 TARGET replaces the *unit* (bundle → thin `delta-*.pack`), the *index* (manifest
-→ git object store + `http-alternates`), and the *ordering key* (`creation_token`
+→ git object store + `info/alternates`), and the *ordering key* (`creation_token`
 → semver + git ancestry), while keeping the prefer-delta-then-full-then-loose
 shape.
 
@@ -167,7 +169,7 @@ apm update / apm upgrade
 │
 ├─ 6. retention: keep object trees for X.0.0 / X.Y.0 / X.Y.Z          (§5.4)
 │
-├─ 7. parse target's tag-message TOML  →  register [[caches]]          (§8)
+├─ 7. wire NAR substituter from client-side config (or origin)        (§8)
 │
 └─ 8. persist state: floor=semver, bucket, retained set                (§3.5)
 ```
@@ -181,10 +183,21 @@ flow is **always completable** even if every pack is missing or corrupt.
 |---|---|---|
 | `/channel/<name>/<bucket>` | signed partition tag → semver tag | sig + name == `<name>` |
 | `refs/tags/<semver>` (via `info/refs`) | signed release tag → commit | sig + name == `<semver>` |
-| `objects/info/http-alternates` | all `/release/*/objects` dirs, newest→oldest; doubles as release index | — |
+| `objects/info/alternates` | relative `../release/*/objects/` entries, newest→oldest; pack discovery + release index | — |
 | `/release/<M>/<m>/<p…>/objects/info/packs` | self-contained full packs only | idx self-check |
 | `/release/<M>/<m>/<p…>/objects/pack/delta-<from>.pack[.zst]` | thin AOS deltas (NOT in `info/packs`) | `index-pack --fix-thin` |
-| `/release/<M>/<m>/<p…>/objects/<xx>/<62hex>` | loose objects (sha256 2/62) | sha256 == path |
+| `/objects/<xx>/<62hex>` | loose objects (sha256 2/62), centralized at the root | sha256 == path |
+
+The `objects/info/alternates` entries are **relative** paths, newest→oldest, e.g.
+`../release/1/1/0/objects/`. Git resolves relative alternates against the repo's
+`objects/` URL, so each `../` strips the trailing `objects` segment to reach the
+repo root — therefore the correct depth is **one** `../`, not two. The file is
+**host-independent** (byte-identical across CDN, mirror, and `localhost` — no
+hostname is baked in). The dumb-HTTP walker reads `http-alternates` first then
+falls back to `alternates`, so a single relative `info/alternates` works for HTTP
+**and** local-FS clones. Because loose objects are centralized at the root
+`/objects/`, alternates serve **pack discovery + the release index**, not object
+completeness.
 
 See [`http-layout.md`](../../registry/http-layout.md) and
 [`packs-and-deltas.md`](../../registry/packs-and-deltas.md) for the full layout.
@@ -321,7 +334,7 @@ resolve_objects(from C, to T):
           fetch delta-<B>.pack[.zst]   →  index-pack --fix-thin   →  DONE
 
   # 2. walk releases backward looking for a usable delta or a full pack
-  for R in releases_between(T, C) newest→oldest (via http-alternates):
+  for R in releases_between(T, C) newest→oldest (via info/alternates):
       if R is X.Y.0 and full pack present:
           fetch pack-<sha256>.pack (+ .idx)
           then walk forward applying deltas R → … → T          →  DONE
@@ -332,14 +345,17 @@ resolve_objects(from C, to T):
   fetch the X.Y.0 full pack covering T's minor, then deltas to T →  DONE
 
   # 4. last resort: loose objects over dumb HTTP (ALWAYS correct)
-  enumerate missing objects, GET /release/*/objects/<xx>/<62hex> →  DONE
+  enumerate missing objects, GET /objects/<xx>/<62hex>            →  DONE
 ```
 
 - **Cross-major jumps** degrade to "minor-base full pack + walk": fetch the
   `X.Y.0` full pack of the target's minor, then apply the patch deltas up to `T`.
-- **Loose-object fallback** is unconditional correctness: ALL objects exist loose
-  under `/objects/<xx>/<…>` ([brief §8](./design-brief.md#8-object-store--dumb-http-details)),
-  resolved across per-release stores via `objects/info/http-alternates`. A sha256
+- **Loose-object fallback** is unconditional correctness: ALL objects (every
+  release) exist loose under the single root `/objects/<xx>/<…>`
+  ([brief §8](./design-brief.md#8-object-store--dumb-http-details)) and are
+  reachable directly — no alternates traversal is needed for object
+  completeness. The relative `objects/info/alternates` instead serves **pack
+  discovery + the release index** (the per-release pack-only stores). A sha256
   loose object is self-verifying (content hash == path).
 
 This is the TARGET shape of the CURRENT `pick_bundles` three-strategy logic
@@ -391,8 +407,9 @@ longer in the set, and persist the set (§3.5).
 ### 5.5 Stock-git graceful degradation (for contrast)
 
 A stock dumb `git clone` of a patch release cannot apply thin packs (they are not
-in `info/packs`), so it pulls the **minor-base full pack** via `http-alternates`
-plus the patch's **loose new objects** — no AOS logic, no thin packs, still
+in `info/packs`), so it pulls the **minor-base full pack** via the relative
+`info/alternates` plus the patch's **loose new objects** (from the root
+`/objects/`) — no AOS logic, no thin packs, still
 correct ([brief §9](./design-brief.md#9-packs--the-delta-scheme),
 [§12](./design-brief.md#12-stock-git-dumb-http-compatibility)). The AOS consumer
 is strictly faster (thin deltas) but degrades to exactly this path via the
@@ -429,9 +446,11 @@ analogue + `allowed_signers` / `trusted-keys.d/<registry>.pub`, TOFU,
 `parse_signing_key` `name:Ed25519:<base64>`). The CURRENT code already verifies
 SSH-format Ed25519 git signatures (commits, via `git verify-commit`); the TARGET
 applies the same primitive to **tag objects** (`git verify-tag`) and adds the
-name-binding string comparison on the parsed tag header. The tag-message **TOML**
-([`tag-metadata.md`](../../registry/tag-metadata.md)) is parsed *after* signature
-verification, never before.
+name-binding string comparison on the parsed tag header. A signed tag is a **pure
+signed pointer** — standard git tag fields (object, type, tag name, tagger) + the
+Ed25519 signature + an optional freeform human message — so the only thing parsed
+out of it is the tag-name header (for name-binding); there is no structured tag
+payload to read.
 
 ### 6.3 Verification ordering (fail-closed)
 
@@ -439,7 +458,7 @@ verification, never before.
 1. fetch partition tag  → verify sig → check name == channel   (else REJECT)
 2. follow to semver tag → verify sig → check name == semver     (else REJECT)
 3. follow to commit     (commit content is hash-addressed; objects self-verify)
-4. parse semver tag-message TOML  (valid_until freshness, [[caches]])  (§8, §7)
+4. anti-rollback: semver(target) >= floor ?  (else REFUSE)             (§7)
 5. only now is the target commit trusted enough to fetch & check out
 ```
 
@@ -512,68 +531,91 @@ downloads. This reconciles the discrepancy flagged in
 - Rollout gates **adoption order**, the floor gates **direction**; the two are
   orthogonal and both fail-closed.
 
+### 7.4 Freshness (no in-band `valid_until`)
+
+There is **no** in-band signed `valid_until` expiry — signed tags carry no
+structured payload (§6.2). Freshness is instead the combination of:
+
+- a **low CDN TTL** on the mutable surface (`/channel`, `info/refs`,
+  `objects/info`), so a host re-reads the publisher's current pointer quickly;
+- the consumer's own **max-staleness policy** (how long it tolerates not having
+  re-resolved); and
+- the monotonic **anti-rollback floor** (§7.1), which prevents moving backward.
+
+**Trade-off.** This is *weaker* than an in-band signed expiry against a
+**frozen-but-validly-signed mirror**: a mirror that serves an old, correctly
+signed `/channel` pointer cannot be detected by signature alone, since the tag
+has no embedded expiry. The low CDN TTL + max-staleness policy bound the staleness
+window operationally rather than cryptographically.
+
 ---
 
-## 8. Nix `[[caches]]` superset wiring
+## 8. Nix binary-cache superset wiring (client-side config)
 
-> **TARGET.** Per [brief §13](./design-brief.md#13-nix-binary-cache-superset) and
-> [§14](./design-brief.md#14-tag-message-toml-schema): the verified semver tag's
-> message carries a `[[caches]]` entry whose `url` may be **relative** (same
-> origin) or absolute. The consumer registers it for NAR substitution.
+> **TARGET.** Per [brief §13](./design-brief.md#13-nix-binary-cache-superset):
+> the NAR substituter location is the **consumer's client-side configuration**
+> (its local registry config) or the **origin itself** — it is **not** advertised
+> in signed tags. Signed tags are pure signed pointers and carry no `[[caches]]`
+> entry, no `url`, and no structured payload (§6.2). The consumer registers the
+> configured substituter for NAR substitution.
 
-### 8.1 The tag-message TOML (only `[meta]` + `[[caches]]`)
+### 8.1 Where the substituter location comes from
+
+The substituter is **not** discovered from the verified tag — there is no
+tag-embedded `[[caches]]`. Two sources, resolved client-side:
 
 ```toml
-[meta]
-schema      = 1
-valid_until = "2026-06-30T00:00:00Z"   # releases: generous signature-trust window
-
-[[caches]]
-url      = "./nar"                      # relative (same origin) OR absolute
-priority = 100
+# registries.d/<name>.toml  →  [registry]   (client-side config)
+[registry]
+origin     = "https://registry.aos.dev/core/"
+# optional explicit substituter(s); if omitted, the origin is the cache:
+cache_url  = "./nar"        # relative to origin, OR absolute
 ```
 
-**No other top-level tables exist** — not `[latest]`, `[components]`,
-`[capabilities]`, `[[bundles]]`, `[[deltas]]`, `pubkey`, or `[signature]`
-([brief §14](./design-brief.md#14-tag-message-toml-schema)). The tag *object*
-carries the signature; the ref namespace carries pointers; the object store
-carries everything else. See [`tag-metadata.md`](../../registry/tag-metadata.md).
+- **Explicit `cache_url`** in the local registry config — relative to the origin
+  or absolute.
+- **The origin itself** — the origin MAY serve the standard Nix binary-cache
+  surface (`nix-cache-info`, `<storehash>.narinfo`, `nar/`) as a superset for
+  stock `nix`, so a consumer with no explicit `cache_url` can substitute straight
+  from the origin.
+
+There is **no** tag-message TOML to parse, so no `[meta]`, no `schema`, no
+`valid_until`, and no `[[caches]]` table are read out of any tag object.
 
 ### 8.2 Relative-URL resolution
 
-A `[[caches]].url` is resolved relative to the **registry origin** (the base URL
-the partition/release was fetched from):
+A client-side `cache_url` (when relative) is resolved against the **registry
+origin** (the base URL the partition/release was fetched from):
 
 ```text
 registry origin:  https://registry.aos.dev/core/
-[[caches]].url:   "./nar"
+cache_url:        "./nar"
 resolved cache:   https://registry.aos.dev/core/nar/
                       ├─ nix-cache-info
                       ├─ <storehash>.narinfo
                       └─ nar/<...>.nar[.zst]
 ```
 
-An absolute `url` (`https://cache.example/…`) is used verbatim. The resolved
-cache exposes the standard Nix binary-cache surface (`nix-cache-info`,
-`<storehash>.narinfo`, `nar/`) — a strict superset for stock `nix` dev-shell
-substitution. narinfo `Sig:` (if served) reuses the one Ed25519 key
-([brief §11](./design-brief.md#11-signing--trust),
+An absolute `cache_url` (`https://cache.example/…`) is used verbatim. The
+resolved cache (or the origin) exposes the standard Nix binary-cache surface
+(`nix-cache-info`, `<storehash>.narinfo`, `nar/`) — a strict superset for stock
+`nix` dev-shell substitution. narinfo `Sig:` (if served) reuses the **one**
+Ed25519 key ([brief §11](./design-brief.md#11-signing--trust),
 [`nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md)).
 
 ### 8.3 Consumer responsibilities
 
 | Step | Action |
 |---|---|
-| Parse | After chain verification (§6), parse the semver tag-message TOML; read `[meta].valid_until` and each `[[caches]]`. |
-| Freshness | For releases, `valid_until` is a **generous** signature-trust / key-rotation lifetime (it must not fight the long release TTL). Treat an expired release `valid_until` per [`signing-and-trust.md`](../../registry/signing-and-trust.md); channels use it as the freshness knob (paired with low CDN TTL). |
-| Resolve | Resolve each `[[caches]].url` against the origin (§8.2). |
-| Register | Wire the resolved cache(s) into the substituter set, ordered by `priority`. |
+| Read config | Read `cache_url` (if any) from the **client-side** `[registry]` config; otherwise default to the origin as the cache. |
+| Resolve | Resolve a relative `cache_url` against the origin (§8.2). |
+| Register | Wire the resolved cache(s) into the substituter set, ordered by `priority` (from client-side config). |
 | Substitute | NAR substitution then proceeds through the standard Nix path — orthogonal to the git-object metadata layer. |
 
-The `[[caches]]` mechanism is **orthogonal** to git-object fetch: the git layer
-delivers package metadata (the `packages/` tree); the `[[caches]]` layer delivers
-build artifacts (NARs). A consumer that only needs metadata can ignore
-`[[caches]]`; one doing substitution reads it.
+The cache mechanism is **orthogonal** to git-object fetch: the git layer delivers
+package metadata (the `packages/` tree); the binary-cache layer delivers build
+artifacts (NARs). A consumer that only needs metadata can ignore the cache; one
+doing substitution reads its client-side config.
 
 ---
 
@@ -583,7 +625,7 @@ build artifacts (NARs). A consumer that only needs metadata can ignore
 |---|---|---|
 | `sync_bundle` ([`update.rs:193`](../../../crates/aos-package/src/update.rs)) | git-native resolve+fetch (§3) | drops bundle manifest fetch |
 | `pick_bundles` ([`update.rs:292`](../../../crates/aos-package/src/update.rs)) | `resolve_objects` delta-walk (§5.2) | bundle → thin `delta-*.pack`; token → semver+ancestry |
-| `BundleManifest::fetch` ([`update.rs:203`](../../../crates/aos-package/src/update.rs)) | `info/refs` + `http-alternates` reads (§3.2) | manifest → git object store |
+| `BundleManifest::fetch` ([`update.rs:203`](../../../crates/aos-package/src/update.rs)) | `info/refs` + `info/alternates` reads (§3.2) | manifest → git object store |
 | `bundle::unbundle` / `resolve_tag` ([`update.rs:240`,`:249`](../../../crates/aos-package/src/update.rs)) | `index-pack --fix-thin` + tag-chain resolve (§5.3, §6) | bundles → thin packs + signed tags |
 | `check_monotonic` + gating ([`state.rs:104`](../../../crates/aos-package/src/registry/state.rs), [`update.rs:263`](../../../crates/aos-package/src/update.rs)) | unconditional semver floor (§7.2) | fixes gating bug; deletes token math |
 | `version_to_token`/`token_to_version` ([`state.rs:131`,`:173`](../../../crates/aos-package/src/registry/state.rs)) | **deleted** (§15) | calendar scheme removed |
@@ -640,8 +682,9 @@ build artifacts (NARs). A consumer that only needs metadata can ignore
 
 **Nix cache:**
 
-- [ ] Parse semver tag-message TOML (`[meta]` + `[[caches]]` only); resolve
-      relative `url` against origin; register substituters by `priority` (§8).
+- [ ] Read `cache_url` from **client-side** `[registry]` config (default: the
+      origin); resolve relative `cache_url` against origin; register substituters
+      by `priority` (§8). No tag-embedded `[[caches]]` is parsed.
 
 ---
 
@@ -655,19 +698,18 @@ build artifacts (NARs). A consumer that only needs metadata can ignore
 - [current-state.md](../../registry/current-state.md) — the as-is bundle /
   `creation_token` implementation this WS replaces.
 - [http-layout.md](../../registry/http-layout.md) — the static surface the
-  consumer reads (`/channel`, `/release`, `http-alternates`, loose objects).
+  consumer reads (`/channel`, `/release`, relative `info/alternates`, root
+  `/objects/` loose objects).
 - [versioning-and-channels.md](../../registry/versioning-and-channels.md) —
   semver, 256-partition rollout, bucket selection, anti-rollback.
 - [packs-and-deltas.md](../../registry/packs-and-deltas.md) — the delta scheme
   graph, client resolution + retention, `index-pack --fix-thin`, zstd.
-- [tag-metadata.md](../../registry/tag-metadata.md) — the `[meta]` + `[[caches]]`
-  tag-message TOML schema.
 - [signing-and-trust.md](../../registry/signing-and-trust.md) — signed tag
-  objects, name-binding, `tag→tag→commit`, `valid_until`, anti-rollback.
+  objects (pure signed pointers), name-binding, `tag→tag→commit`, anti-rollback.
 - [publishing.md](../../registry/publishing.md) — the producer pipeline that
   emits the surface this consumer reads.
 - [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) — the
-  Nix binary-cache superset via relative `[[caches]]`.
+  Nix binary-cache superset via client-side substituter config / the origin.
 - [apt-comparison.md](../../registry/apt-comparison.md) — phased-rollout /
   pdiff → 256-partition / thin-delta lineage.
 
@@ -676,8 +718,8 @@ build artifacts (NARs). A consumer that only needs metadata can ignore
 - [design-brief.md](./design-brief.md) — §6, §9, §11, §13 (authoritative intent).
 - [README.md](./README.md) — milestone roadmap and sequencing.
 - [gap-analysis.md](./gap-analysis.md) — current vs target gap map.
-- [workstream-01-object-store.md](./workstream-01-object-store.md) — the object
-  store + `http-alternates` the consumer fetches from.
+- [workstream-01-object-store.md](./workstream-01-object-store.md) — the root
+  `/objects/` store + relative `info/alternates` the consumer fetches from.
 - [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md)
   — the thin/full pack + zstd artifacts the consumer applies.
 - [workstream-03-channels-rollouts.md](./workstream-03-channels-rollouts.md) —

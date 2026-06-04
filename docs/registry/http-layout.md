@@ -16,8 +16,8 @@
 
 This document is the canonical description of *what bytes live at what URLs* on an
 AOS registry origin, and *how a CDN must cache each path*. It deliberately does
-**not** re-derive the ref/trust model, the rollout semantics, the pack/delta
-generation pipeline, or the tag-message schema — those live in siblings:
+**not** re-derive the ref/trust model, the rollout semantics, or the pack/delta
+generation pipeline — those live in siblings:
 
 | Concern | Document |
 |---|---|
@@ -26,10 +26,9 @@ generation pipeline, or the tag-message schema — those live in siblings:
 | **HTTP/object layout, CDN TTLs, dumb-HTTP shim (this doc)** | `http-layout.md` |
 | Semver, channels-as-branches, 256-partition rollout, frontier | [`versioning-and-channels.md`](versioning-and-channels.md) |
 | Pack-objects, thin vs full packs, delta graph, zstd | [`packs-and-deltas.md`](packs-and-deltas.md) |
-| Channel/release tag-message TOML schema | [`tag-metadata.md`](tag-metadata.md) |
 | Signed tag objects, name-binding, `tag→tag→commit`, trust | [`signing-and-trust.md`](signing-and-trust.md) |
 | The producer publish pipeline end-to-end | [`publishing.md`](publishing.md) |
-| Nix binary-cache superset (`[[caches]]`, narinfo, `nar/`) | [`nix-cache-compatibility.md`](nix-cache-compatibility.md) |
+| Nix binary-cache superset (client-side cache config, narinfo, `nar/`) | [`nix-cache-compatibility.md`](nix-cache-compatibility.md) |
 | Comparison to APT/dpkg flat-file repositories | [`apt-comparison.md`](apt-comparison.md) |
 
 Plan-side: [`docs/plans/registry/README.md`](../plans/registry/README.md),
@@ -98,22 +97,19 @@ paths plus an additive `/channel` and per-release object layer.
   info/refs                        ← update-server-info: refs/heads/<channels> + refs/tags/<semvers> [low TTL]
   objects/
     info/packs                     ← lists self-contained pack-<sha>.pack ONLY           [low TTL]
-    info/http-alternates           ← ALL /release/*/objects dirs, newest→oldest          [low TTL]
-                                       (doubles as the full release index)
-    info/alternates                ← OPTIONAL human/agent-readable mirror of the above   [low TTL]
-    <xx>/<62-hex>                  ← loose objects, sha256 2/62 split (dumb HTTP)         [immutable, high TTL]
+    info/alternates                ← RELATIVE "../release/*/objects/" dirs, newest→oldest [low TTL]
+                                       (pack discovery + the full release index)
+    <xx>/<62-hex>                  ← ALL loose objects, sha256 2/62 split (dumb HTTP)     [immutable, high TTL]
   channel/
     <name>/                                                                              [low TTL]
       00 .. ff                     ← 256 SIGNED tag objects (tag name == <name>),
                                        each → a semver tag (rollout partitions)
   release/
     <major>/<minor>/<patch[-prerelease][+build]>/                                        [long TTL, immutable]
-      objects/
-        info/packs
-        info/http-alternates
+      objects/                               ← PACK-ONLY (no loose objects, no info/alternates)
+        info/packs                           ← lists this release's full pack(s)
         pack/pack-<sha256>.pack (+ .idx)     ← self-contained "full" pack at X.Y.0 anchors
         pack/delta-<from-semver>.pack         ← THIN deltas; AOS-only; NOT listed in info/packs
-        <xx>/<62-hex>                         ← this release's new loose objects [immutable, high TTL]
 ```
 
 Three properties hold by construction:
@@ -121,9 +117,11 @@ Three properties hold by construction:
 1. **It is a superset of git dumb HTTP.** A stock `git clone <url>` works: channels
    are branches, releases are tags, fetched from loose objects + conventionally-named
    full packs. See §7.
-2. **It is a superset of the Nix binary cache.** A `[[caches]]` entry (possibly a
-   *relative* URL on the same origin) advertises a `nix-cache-info` / `*.narinfo` /
-   `nar/` surface. That surface is documented in
+2. **It is a superset of the Nix binary cache.** The origin MAY additionally serve a
+   `nix-cache-info` / `*.narinfo` / `nar/` surface (the superset for stock nix);
+   narinfo signing reuses the one Ed25519 key. The substituter location is the
+   *consumer's* client-side registry config (or the origin itself) — it is **not**
+   advertised in signed tags. That surface is documented in
    [`nix-cache-compatibility.md`](nix-cache-compatibility.md); it is orthogonal to
    the git-object layout here.
 3. **The AOS layer is additive.** `/channel/<name>/00..ff` and the thin
@@ -156,48 +154,57 @@ Example: object `3a7f…` (64 chars) → `objects/3a/7f…` (the trailing 62 cha
 
 ### 4.2 Completeness guarantee: every object exists loose
 
-**Every object that any release needs exists as a loose object** under
-`objects/<xx>/<…>` (the root store) or under a per-release
-`release/<…>/objects/<xx>/<…>` store. This is the guaranteed-correctness fallback:
-a client that cannot or will not use packs can always reconstruct any commit by
-walking loose objects over plain HTTP GETs. Packs (§4.4) are a pure efficiency layer
-*on top of* the loose store, never a replacement for it.
+**Every object that any release needs exists as a loose object** under the single
+root store `objects/<xx>/<…>`. All loose objects for every release are centralized
+here; the per-release `release/<…>/objects/` dirs are **pack-only** and hold no loose
+objects. This is the guaranteed-correctness fallback: a client that cannot or will not
+use packs can always reconstruct any commit by walking the root loose store over plain
+HTTP GETs. Packs (§4.4) are a pure efficiency layer *on top of* the loose store, never
+a replacement for it.
 
-### 4.3 Distributed object store: per-release dirs + `http-alternates`
+### 4.3 Distributed pack store: per-release pack dirs + `info/alternates`
 
-The object store is **split across one directory per release** so that an immutable
-release's objects can be cached forever while the root store stays small and churny.
-The root store stitches the per-release stores together into one logical store via a
-git **alternates** mechanism:
+The **packs** are **split across one directory per release** so that an immutable
+release's pack can be cached forever while the root store's index stays small and
+churny. (All *loose* objects already live centralized at the root — §4.2; the
+per-release dirs are pack-only.) The root store stitches the per-release pack stores
+together into one logical store via a git **alternates** mechanism:
 
-- `objects/info/http-alternates` lists **every** `release/<…>/objects/` directory,
-  newest release first (design-brief §8). One relative URL per line, each ending in
-  `/objects/`. Git's dumb HTTP fetcher follows each entry as an additional object
-  store, so a fetch that misses in the root store falls through to the per-release
-  stores.
+- `objects/info/alternates` lists **every** `release/<…>/objects/` directory, newest
+  release first (design-brief §8). One **relative** path per line, each ending in
+  `/objects/`. Git's fetcher (HTTP and local-FS) follows each entry as an additional
+  object store, so pack discovery falls through to the per-release stores.
 - This file **doubles as the full release index**: because it lists every release's
   object dir newest→oldest, reading it tells a client (or a human) the complete,
   ordered set of published releases without parsing refs.
 
-Use **`http-alternates`** (URL-reachable, relative or absolute URLs) — *not* plain
-`alternates` (which expects local filesystem paths) — for the served, distributed
-store. `objects/info/alternates` MAY additionally be maintained as a readable mirror
-of the same list for humans and agents; whether it is worth the upkeep is an open
-question (design-brief §16.6).
+The entries are **relative paths**, e.g. `../release/1/2/0/objects/`. Git resolves a
+relative alternate against the repo's own `objects/` URL, and each `../` strips one
+path segment — so `../` strips the `objects` segment to land at the repo root,
+meaning the correct depth is **one** `../`. Because the entries bake in no hostname,
+the file is **host-independent**: byte-identical across CDN, mirror, and localhost.
+
+The dumb-HTTP walker reads `info/http-alternates` first and falls back to
+`info/alternates`; because the relative form is valid for both HTTP and local-FS, a
+single `info/alternates` serves every transport — no separate `http-alternates` file
+is needed.
+
+Because all loose objects are centralized at the root (§4.2), `info/alternates` now
+serves **pack discovery and the release index**, *not* object completeness.
 
 ```
-# objects/info/http-alternates  (newest release first)
-../../release/1/2/0/objects/
-../../release/1/1/3/objects/
-../../release/1/1/2/objects/
-../../release/1/1/0/objects/
-../../release/1/0/0/objects/
+# objects/info/alternates  (newest release first, relative paths)
+../release/1/2/0/objects/
+../release/1/1/3/objects/
+../release/1/1/2/objects/
+../release/1/1/0/objects/
+../release/1/0/0/objects/
 ```
 
-Each per-release `objects/` directory has its own `info/packs` and
-`info/http-alternates` so that a release subtree is itself a valid, self-describing
-object store (a release's `http-alternates` points back at its delta bases' object
-dirs).
+Each per-release `objects/` directory has its own `info/packs` so that a release
+subtree describes its own pack(s). Per-release dirs carry **no** `info/alternates`
+(they are pack-only leaves; delta-base discovery is driven by the root index, not by
+chained per-release alternates).
 
 ### 4.4 Packs: full vs thin
 
@@ -246,7 +253,7 @@ and client resolution/retention all live in
 <tag-sha256>\trefs/tags/1.2.0
 ```
 
-Because regenerating `info/refs`, `info/packs`, `info/http-alternates`, and `HEAD`
+Because regenerating `info/refs`, `info/packs`, `info/alternates`, and `HEAD`
 is exactly what `git update-server-info` (plus the AOS pack/alternates writers) does,
 those paths are the *only* mutable-on-publish parts of the root tree and must be
 low-TTL (§6).
@@ -270,8 +277,10 @@ SSH-Ed25519-signed git tag object whose **tag-name field equals the channel name
 - These files are **layout, not refs**: they are not in `info/refs`, so a stock
   `git clone` never sees them. That is intentional — rollout is an AOS-fleet concept.
 - They change frequently (every rollout advance), so `/channel/**` is **low TTL**
-  (§6). The tag message carries a `valid_until` freshness knob paired with that low
-  TTL ([`tag-metadata.md`](tag-metadata.md)).
+  (§6). Freshness comes from that low CDN TTL combined with the consumer's own
+  max-staleness policy and the monotonic anti-rollback floor — there is **no in-band
+  `valid_until`** in the tag (§6). The trade-off: this is weaker than an in-band
+  signed expiry against a frozen-but-validly-signed mirror.
 
 A single partition file is just the raw bytes of a git tag object; a client fetches
 `/channel/stable/<bucket>`, verifies the signature and the name binding, follows the
@@ -289,17 +298,16 @@ on publish is small and segregated from what is immutable**. CDN TTLs follow dir
 |---|---|---|
 | `/channel/**` | **low (MUST)** | Rollout advances must propagate fast; partition tags repoint frequently. |
 | `/HEAD`, `/info/refs` | **low (MUST)** | Rewritten by `update-server-info` on every publish. |
-| `/objects/info/**` (`packs`, `http-alternates`, `alternates`) | **low (MUST)** | The pack list and release index change on every publish. |
-| per-release `release/**/objects/info/**` | **low (MUST)** | Same reason, scoped to a release subtree. |
+| `/objects/info/**` (`packs`, `alternates`) | **low (MUST)** | The pack list and release index change on every publish. |
+| per-release `release/**/objects/info/packs` | **low (MUST)** | Same reason, scoped to a release subtree. |
 | `/objects/<xx>/<…>` (root loose objects) | **immutable, high (MAY)** | A given object id is content-addressed and never changes. |
 | `/release/**` everything else (loose objects, `pack/`) | **long, immutable (MAY)** | Releases are immutable once published. |
 
 Two rules summarise it:
 
 1. **Mutable-on-publish ⇒ low TTL.** The root index paths (`HEAD`, `info/refs`,
-   `objects/info/packs`, `objects/info/http-alternates`, optional
-   `objects/info/alternates`) plus each release's `objects/info/**` and the whole
-   `/channel/**` tree.
+   `objects/info/packs`, `objects/info/alternates`) plus each release's
+   `objects/info/packs` and the whole `/channel/**` tree.
 2. **Content-addressed or immutable-by-contract ⇒ high TTL.** All loose objects (the
    id *is* the content hash) and everything under a published `/release/<…>/` subtree
    (releases never mutate).
@@ -308,6 +316,12 @@ This is the asymmetric-cost philosophy realised at the cache edge: publishing re
 a handful of low-TTL index files; the bulk of bytes (objects and packs) is immutable
 and served from cache near-permanently.
 
+The low CDN TTL on `/channel` (and `info/refs`, `objects/info`) is also the
+**freshness mechanism**: there is no in-band signed `valid_until` (C). Freshness is
+the low TTL plus the consumer's own max-staleness policy plus the monotonic
+anti-rollback floor; the trade-off is that this is weaker than an in-band signed
+expiry against a frozen-but-validly-signed mirror.
+
 ```
                  publish event
                       │
@@ -315,10 +329,10 @@ and served from cache near-permanently.
         ▼                            ▼
   LOW TTL (rewritten)         HIGH TTL (immutable)
   HEAD                        objects/<xx>/<…>
-  info/refs                   release/<…>/objects/<xx>/<…>
-  objects/info/packs          release/<…>/objects/pack/*
-  objects/info/http-alternates
-  release/<…>/objects/info/*
+  info/refs                   release/<…>/objects/pack/*
+  objects/info/packs
+  objects/info/alternates
+  release/<…>/objects/info/packs
   channel/<name>/00..ff
 ```
 
@@ -339,19 +353,21 @@ regenerated on every publish:
   `ref: refs/heads/stable`). Determines the default checkout for `git clone`.
 - **`info/refs`** — the advertised ref list from `git update-server-info`: channel
   branches and release tags (peeled).
-- **`objects/info/http-alternates`** — the distributed object store, so git's dumb
-  fetcher resolves per-release object dirs as one logical store (§4.3).
+- **`objects/info/alternates`** — the distributed pack store as relative paths, so
+  git's fetcher (HTTP via `http-alternates` fallback, or local-FS) resolves
+  per-release object dirs as one logical store (§4.3).
 
 A stock client reads `HEAD` + `info/refs` to learn the refs, then fetches objects
-from `objects/info/packs` (full packs) and the loose store, following
-`http-alternates` into the per-release stores as needed.
+from the root loose store and the full packs listed in `info/packs`, following
+`info/alternates` into the per-release pack stores as needed.
 
 ### 7.2 Pack naming: `pack-<sha256>.pack`, no `full.pack`
 
 The self-contained full pack is named **`pack-<sha256>.pack`** (+ `.idx`) and listed
-in `objects/info/packs`, which is precisely what stock dumb git expects. There is
-**no** separate semantic `full.pack` name — that alias is dropped entirely so there
-is no duplicate file and no special-casing (design-brief §12).
+in that **release's** `objects/info/packs`, discovered by the client following the
+root `objects/info/alternates` into the per-release pack store — precisely what stock
+dumb git expects. There is **no** separate semantic `full.pack` name — that alias is
+dropped entirely so there is no duplicate file and no special-casing (design-brief §12).
 
 ### 7.3 Thin delta packs are invisible to stock git
 
@@ -376,7 +392,8 @@ help AOS and are completely transparent to stock git.
   live outside the ref namespace at `/channel/*` and are AOS-only (§5).
 - **Graceful degradation for patch releases:** a stock dumb clone of a *patch*
   release (which ships no full pack) pulls the minor-base full pack via
-  `http-alternates` plus the patch's loose new objects — **no thin packs needed**.
+  `info/alternates` plus the patch's loose new objects from the root store — **no
+  thin packs needed**.
 - **Loose objects guarantee correctness** for any stock client; the
   conventionally-named full packs restore speed. Worst case, a client degrades to
   fetching loose objects one GET at a time, which is always correct (§4.2).
@@ -404,9 +421,9 @@ channel rolling `1.1.0` out to 4/256 of the fleet (buckets `00`–`03` advanced,
   info/refs                              stable, testing, 1.0.0, 1.1.0       [low]
   objects/
     info/packs                           (root packs, if any)               [low]
-    info/http-alternates                 ../../release/1/1/0/objects/       [low]
-                                         ../../release/1/0/0/objects/
-    a3/7f…                               (root loose objects)               [high]
+    info/alternates                      ../release/1/1/0/objects/          [low]
+                                         ../release/1/0/0/objects/
+    a3/7f…                               (ALL loose objects, both releases) [high]
   channel/
     stable/
       00 → tag(name=stable) → 1.1.0       (advanced)                        [low]
@@ -416,18 +433,14 @@ channel rolling `1.1.0` out to 4/256 of the fleet (buckets `00`–`03` advanced,
       04 → tag(name=stable) → 1.0.0       (held back)                       [low]
       …                                                                     [low]
       ff → tag(name=stable) → 1.0.0       (held back)                       [low]
-  release/
+  release/                               (PACK-ONLY — no loose, no alternates)
     1/0/0/objects/
       info/packs                         pack-<sha>.pack                    [low]
-      info/http-alternates               (empty — base of the line)        [low]
       pack/pack-<sha256>.pack (+ .idx)   self-contained full pack          [immutable]
-      <xx>/<…>                           1.0.0 loose objects               [immutable]
     1/1/0/objects/
       info/packs                         pack-<sha>.pack                    [low]
-      info/http-alternates               ../../../1/0/0/objects/           [low]
       pack/pack-<sha256>.pack (+ .idx)   full pack at the 1.1.0 minor      [immutable]
       pack/delta-1.0.0.pack (+ .zst)     thin delta from 1.0.0 (AOS-only)  [immutable]
-      <xx>/<…>                           1.1.0 new loose objects           [immutable]
 ```
 
 Reading the example:
@@ -454,14 +467,12 @@ segment is everything after `major.minor`; design-brief §7).
 | `/HEAD` | symref → default channel branch | yes | low |
 | `/info/refs` | channel branches + release tags | yes | low |
 | `/objects/info/packs` | full packs only | yes | low |
-| `/objects/info/http-alternates` | per-release object dirs, newest→oldest; release index | yes | low |
-| `/objects/info/alternates` | optional readable mirror | yes | low |
-| `/objects/<xx>/<62-hex>` | root loose objects (sha256) | no (content-addressed) | high |
+| `/objects/info/alternates` | relative per-release object dirs, newest→oldest; pack discovery + release index | yes | low |
+| `/objects/<xx>/<62-hex>` | ALL loose objects, every release (sha256) | no (content-addressed) | high |
 | `/channel/<name>/00..ff` | 256 signed partition tag objects | yes | low |
-| `/release/<M>/<m>/<patch…>/objects/info/**` | per-release index | yes | low |
+| `/release/<M>/<m>/<patch…>/objects/info/packs` | per-release pack index | yes | low |
 | `/release/<M>/<m>/<patch…>/objects/pack/pack-<sha>.pack(.idx)` | self-contained full pack (X.Y.0 anchors) | no | high |
 | `/release/<M>/<m>/<patch…>/objects/pack/delta-<from>.pack(.zst)` | thin AOS-only delta | no | high |
-| `/release/<M>/<m>/<patch…>/objects/<xx>/<62-hex>` | release's new loose objects | no | high |
 
 ---
 
@@ -470,10 +481,10 @@ segment is everything after `major.minor`; design-brief §7).
 | Aspect | CURRENT (`bundle.rs`) | TARGET (this doc) |
 |---|---|---|
 | Transport unit | git **bundles** (`*.bundle`) | bare git repo, dumb HTTP static files |
-| Manifest | `bundle-list.toml` parsed by consumer (`bundle.rs:124`) | none — refs + `http-alternates` + `/channel` |
+| Manifest | `bundle-list.toml` parsed by consumer (`bundle.rs:124`) | none — refs + `info/alternates` + `/channel` |
 | Object format | sha1 (git default in bundles) | **sha256** (`git init --object-format=sha256`) |
-| Object store | opaque inside bundles | loose `objects/<xx>/<62-hex>` + per-release dirs |
-| Release index | `[[bundles]]` snapshot entries | `objects/info/http-alternates` (doubles as index) |
+| Object store | opaque inside bundles | all loose `objects/<xx>/<62-hex>` at root + per-release pack dirs |
+| Release index | `[[bundles]]` snapshot entries | `objects/info/alternates` (doubles as index) |
 | Versioning | calendar `vYYYY.MM[.P]` + `creation_token` (`bundle.rs:238-243`) | semver, no `v` prefix |
 | Deltas | `*.delta.bundle`, classified by segment count | thin `delta-<from-semver>.pack`, not in `info/packs` |
 | Full snapshot | snapshot bundle | `pack-<sha256>.pack` at X.Y.0 anchors |
@@ -482,4 +493,4 @@ segment is everything after `major.minor`; design-brief §7).
 
 The target removes (design-brief §15): `bundle-list.toml`, git bundles,
 `creation_token` ordering, calendar versioning, and the by-hash `[[bundles]]`/
-`[[deltas]]` index — replaced by the git object store + `http-alternates`.
+`[[deltas]]` index — replaced by the git object store + `info/alternates`.

@@ -15,7 +15,7 @@
 > release to fetch is [workstream-03](./workstream-03-channels-rollouts.md); the
 > full client resolution walk + retention is
 > [workstream-05](./workstream-05-consumer.md); the sha256 bare repo and
-> `http-alternates` object layout this rides on is
+> `info/alternates` object layout this rides on is
 > [workstream-01](./workstream-01-object-store.md).
 
 ---
@@ -67,9 +67,10 @@ trust chain, so file-level SHA-256 is no longer a manifest field.
   target moves refs out of artifacts entirely: channels are branches, releases
   are signed tag objects, and the 256 partition tags live at `/channel/*` (brief
   §5). A bundle's ref payload would duplicate (and could contradict) that.
-- Bundles can't be composed with the dumb-HTTP object store / `http-alternates`
+- Bundles can't be composed with the dumb-HTTP object store / `info/alternates`
   layout (workstream-01). The target wants packs that drop straight into
-  `/release/<…>/objects/pack/` and loose objects that satisfy any stock client.
+  `/release/<…>/objects/pack/` and loose objects that land in the single root
+  `/objects/` and satisfy any stock client.
 - The `creation_token` ordering the bundle manifest depends on is removed (brief
   §15). The target orders by **semver + git ancestry**.
 
@@ -77,9 +78,15 @@ trust chain, so file-level SHA-256 is no longer a manifest field.
 
 ## 3. TARGET artifacts per release
 
-A release's pack artifacts live under its per-release object dir (workstream-01):
+A release's **pack** artifacts live under its per-release object dir
+(workstream-01). This dir is **pack-only**: it holds `info/packs` + the `pack/`
+tree, and **no** loose `<xx>/<62-hex>` objects and **no** per-release
+`info/alternates`. All loose objects (this release's NEW objects included) live
+in the single **root** `/objects/<xx>/<62-hex>` (D):
 
 ```
+/objects/<xx>/<62-hex>                      ← ALL loose objects (every release), ROOT only
+
 /release/<major>/<minor>/<patch[-pre][+build]>/objects/
   info/packs                                ← lists self-contained pack-<sha>.pack ONLY
   pack/
@@ -87,7 +94,7 @@ A release's pack artifacts live under its per-release object dir (workstream-01)
     pack-<sha256>.pack.zst                  ← zstd-wrapped full pack (transport)
     delta-<from-semver>.pack                ← THIN delta; AOS-only; NOT in info/packs
     delta-<from-semver>.pack.zst            ← zstd-wrapped thin delta (transport)
-  <xx>/<62-hex>                             ← this release's NEW loose objects
+                                            ← NO loose <xx>/<62-hex> here; NO info/alternates
 ```
 
 Rules (brief §9, §10, §12):
@@ -121,8 +128,9 @@ major/minor/patch.
 Notes:
 
 - **Patch releases have no full pack.** A stock dumb clone of a patch pulls the
-  minor-base full pack (via `http-alternates`) plus the patch's loose new
-  objects — graceful degradation, no thin packs (brief §9, §12).
+  minor-base full pack (discovered via the relative `info/alternates` release
+  index) plus the patch's loose new objects from the root `/objects/` — graceful
+  degradation, no thin packs (brief §9, §12).
 - The patch fan of "last 3 patches + minor base" is co-designed with the client
   **retention** rule (brief §9): a client on `X.Y.Z` keeps object trees for at
   least `X.0.0`, `X.Y.0`, and `X.Y.Z`, so a usable delta base is always present.
@@ -226,7 +234,11 @@ git -C "$REPO" rev-parse "$RELEASE_COMMIT^{commit}" \
   covers the same surface for AOS clients that already hold the base.
 
 After writing, **list it** in the per-release `objects/info/packs` and
-regenerate `objects/info/http-alternates`/`info/refs` (workstream-01).
+regenerate the root `objects/info/alternates`/`info/refs` (workstream-01). The
+`info/alternates` entries are **relative** paths
+`../release/<M>/<m>/<patch…>/objects/` (newest→oldest, one `../`), so it is
+host-independent and serves **pack discovery + the release index** — not object
+completeness, since all loose objects are centralized at the root.
 
 ---
 
@@ -354,15 +366,16 @@ brief §10/§4/§6):
                                   │  3. --compression=0 on all (§7)      │
                                   │  4. zstd --ultra (+ optional dict)   │
                                   │  5. write .pack[.zst]/.idx into      │
-                                  │     /release/<…>/objects/pack/       │
+                                  │     /release/<…>/objects/pack/;      │
+                                  │     loose objects → root /objects/   │
                                   │  6. list full pack in info/packs     │
                                   │     (NOT thin deltas)                │
                                   └─────────────────────────────────────┘
             ──▶ update-server-info (ws-01) ──▶ advance partitions (ws-03) ──▶ upload
 ```
 
-Atomicity: write all per-release immutable artifacts (loose objects, packs,
-`.zst`) **before** the low-TTL index files (`info/packs`, `http-alternates`,
+Atomicity: write all immutable artifacts (root loose objects, per-release packs,
+`.zst`) **before** the low-TTL index files (`info/packs`, `info/alternates`,
 `info/refs`) are flipped, so a CDN never advertises a pack that isn't fully
 uploaded (brief §4 TTL policy; workstream-01 for the index writes).
 
@@ -422,8 +435,8 @@ New module replacing `bundle.rs`'s producer/transport role (suggested
   generation + zstd), §12 (stock-git compat), §16.2 (open: window/depth/zstd
   defaults + dictionary).
 - [`workstream-01-object-store.md`](./workstream-01-object-store.md) — sha256 bare
-  repo, `info/packs`, `info/http-alternates`, `update-server-info`, per-release
-  object dirs.
+  repo, `info/packs`, relative `info/alternates`, `update-server-info`,
+  root loose-object store + per-release pack-only object dirs.
 - [`workstream-03-channels-rollouts.md`](./workstream-03-channels-rollouts.md) —
   which release a partition targets (the `<to>` of a delta).
 - [`workstream-04-signing-trust.md`](./workstream-04-signing-trust.md) — signed
@@ -438,7 +451,6 @@ New module replacing `bundle.rs`'s producer/transport role (suggested
   [`publishing.md`](../../registry/publishing.md),
   [`versioning-and-channels.md`](../../registry/versioning-and-channels.md),
   [`signing-and-trust.md`](../../registry/signing-and-trust.md),
-  [`tag-metadata.md`](../../registry/tag-metadata.md),
   [`nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md),
   [`apt-comparison.md`](../../registry/apt-comparison.md),
   [`architecture.md`](../../registry/architecture.md),

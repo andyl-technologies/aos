@@ -31,8 +31,11 @@ artifact is simultaneously:
 - a **superset of git dumb HTTP** — a stock `git clone <url>` works (channels are
   branches, releases are tags), using loose objects plus conventionally-named
   full packs; and
-- a **superset of the Nix binary cache** — NAR substitution is advertised via a
-  `[[caches]]` entry whose `url` may be **relative** (same origin) or absolute.
+- a **superset of the Nix binary cache** — the origin **MAY** serve
+  `nix-cache-info` + `<storehash>.narinfo` + `nar/`, so the same origin doubles as
+  a NAR substituter. The substituter location is the **consumer's client-side
+  config** (its local registry config) or the origin itself — it is **not**
+  advertised in signed tags.
 
 On top of that standard surface the AOS client uses two AOS-only conventions that
 ride *alongside* git without conflicting: the `/channel/<name>/00..ff` **signed
@@ -79,7 +82,7 @@ whole thing.
         │                                 │                                 │
   stock `git clone`               AOS client (`apm`)               stock `nix` substituter
         │                                 │                                 │
-  HEAD → refs/heads/<default>      /channel/<name>/00..ff           [[caches]] url (rel/abs)
+  HEAD → refs/heads/<default>      /channel/<name>/00..ff           client-side cache config
   refs/heads/<channel>  (branch)     256 signed partition tags        nix-cache-info
   refs/tags/<semver>    (tag)      bucket → channel tag → semver      <storehash>.narinfo (Sig:)
   loose objects + full packs         tag → commit (name-bound)        nar/<…> (content-addressed)
@@ -117,8 +120,8 @@ the trust chain.
 | Property | Mechanism | Brief |
 |---|---|---|
 | sha256 object format | `git init --object-format=sha256`; 2/62 loose-object split | §8 |
-| Superset of git | dumb-HTTP shim: `HEAD`, `info/refs` (`update-server-info`), `objects/info/http-alternates` | §12 |
-| Superset of Nix | `[[caches]]` entry, relative or absolute `url`; `nix-cache-info` + narinfo + `nar/` | §13 |
+| Superset of git | dumb-HTTP shim: `HEAD`, `info/refs` (`update-server-info`), `objects/info/alternates` (one relative `../`) | §12 |
+| Superset of Nix | client-side cache config (or the origin); `nix-cache-info` + narinfo + `nar/` | §13 |
 | Channels = branches | `refs/heads/<channel>` head = rollout **frontier** | §6 |
 | 256-partition rollout | `/channel/<name>/00..ff`, N/256 advanced to control blast radius | §6 |
 | Bucketed consumers | deterministic, persisted: the low byte of `sha256(machine_id)` (i.e. `mod 256`) | §6 |
@@ -139,8 +142,9 @@ could not:
    still name the prior release, answering "where does the rest of the fleet go".
 3. **Cheap incremental fetch** — a guaranteed, walkable thin-delta graph + the
    zstd-over-stored-pack trick beat zlib-9 while staying git-valid.
-4. **Free Nix-cache superset** — one `[[caches]]` entry turns the same origin
-   into a substituter for stock `nix` dev shells.
+4. **Free Nix-cache superset** — the same origin can serve `nix-cache-info` +
+   narinfo + `nar/`, turning it into a substituter for stock `nix` dev shells;
+   the consumer points at it via client-side config.
 
 ---
 
@@ -162,8 +166,8 @@ asymmetry:
 | **256 signed partition tags** / channel branches | absent | absent |
 | **Thin/full pack + delta scheme** | absent | absent |
 | **zstd-over-stored packs** | absent | absent |
-| **`http-alternates` distributed object store** | absent | absent |
-| **`[[caches]]` Nix-cache superset** | absent | absent |
+| **`info/alternates` pack/release-index discovery** | absent | absent |
+| **Nix-cache superset (narinfo/nar from origin)** | absent | absent |
 
 In short: the **signing primitive (Ed25519 / SSH-format git signatures) and the
 package-TOML tree content are reusable as-is**; nearly **everything about
@@ -180,11 +184,11 @@ registry in a consistent, deployable state.
 | Milestone | Theme | Delivers | Primary workstreams |
 |---|---|---|---|
 | **M0** | Grounding | Confirmed schemas, gap map, reference docs | [gap-analysis](./gap-analysis.md), `docs/registry/*` |
-| **M1** | Object store | sha256 bare repo, dumb-HTTP layout, `info/refs`/`HEAD`/`http-alternates`/`update-server-info`, per-release object dirs | [WS-01](./workstream-01-object-store.md) |
+| **M1** | Object store | sha256 bare repo, dumb-HTTP layout, `info/refs`/`HEAD`/`info/alternates`/`update-server-info`, centralized root `/objects/` + per-release pack-only dirs | [WS-01](./workstream-01-object-store.md) |
 | **M2** | Pack & delta pipeline | `pack-objects` thin/full, the delta-scheme graph, zstd-over-stored, expensive-producer tuning | [WS-02](./workstream-02-pack-delta-pipeline.md) |
-| **M3** | Signing & trust | signed tag objects, name-binding, `tag→tag→commit`, `valid_until`, anti-rollback/fix-forward | [WS-04](./workstream-04-signing-trust.md) |
+| **M3** | Signing & trust | signed tag objects (pure signed pointers), name-binding, `tag→tag→commit`, anti-rollback/fix-forward | [WS-04](./workstream-04-signing-trust.md) |
 | **M4** | Channels & rollouts | 256 signed partition tags, channels-as-branches/frontier, bucket selection, publisher rollout control | [WS-03](./workstream-03-channels-rollouts.md) |
-| **M5** | Consumer cutover | bucket → channel tag → semver tag → commit, delta walk + retention, name-bound verification, `[[caches]]` superset | [WS-05](./workstream-05-consumer.md) |
+| **M5** | Consumer cutover | bucket → channel tag → semver tag → commit, delta walk + retention, name-bound verification, client-side Nix-cache superset | [WS-05](./workstream-05-consumer.md) |
 
 ```
  M0 ──► M1 ──► M2 ──────────────┐
@@ -197,9 +201,10 @@ registry in a consistent, deployable state.
 
 Notes on the dependency edges:
 
-- **M1 → M2.** Packs and deltas are produced over the object store and the
-  per-release `objects/` dirs that WS-01 establishes; there is nothing to pack
-  until the sha256 bare repo and `http-alternates` layout exist.
+- **M1 → M2.** Packs and deltas are produced over the centralized root
+  `/objects/` and the per-release pack-only `objects/` dirs that WS-01
+  establishes; there is nothing to pack until the sha256 bare repo and
+  `info/alternates` layout exist.
 - **M1 → M3.** Name-binding verification checks tag objects against their serving
   path under `/channel/*` and `/release/*`; the signing/trust work (WS-04) builds
   on the layout WS-01 lays down.
@@ -225,11 +230,11 @@ follows the on-disk specs; the **milestone order** above sequences signing
 
 | # | Workstream | Scope | Brief refs |
 |---|---|---|---|
-| 01 | [Object store](./workstream-01-object-store.md) | sha256 bare repo, dumb-HTTP layout, `info/refs`/`HEAD`/`http-alternates`/`update-server-info`, per-release object dirs | §4, §8 |
+| 01 | [Object store](./workstream-01-object-store.md) | sha256 bare repo, dumb-HTTP layout, `info/refs`/`HEAD`/`info/alternates`/`update-server-info`, centralized root `/objects/` + per-release pack-only dirs | §4, §8 |
 | 02 | [Pack & delta pipeline](./workstream-02-pack-delta-pipeline.md) | `pack-objects` thin/full, the delta scheme graph, client resolution + retention, zstd-over-stored, expensive-producer tuning | §9, §10 |
 | 03 | [Channels & rollouts](./workstream-03-channels-rollouts.md) | 256 signed partition tags, channels-as-branches/frontier, deterministic bucket selection, publisher rollout control | §5, §6, §7 |
-| 04 | [Signing & trust](./workstream-04-signing-trust.md) | signed tag objects, name-binding, `tag→tag→commit`, sha256, `valid_until`, anti-rollback/fix-forward | §5, §11 |
-| 05 | [Consumer](./workstream-05-consumer.md) | bucket → channel tag → semver tag → commit resolution, delta walk, retention, name-bound verification, Nix `[[caches]]` superset | §6, §9, §13 |
+| 04 | [Signing & trust](./workstream-04-signing-trust.md) | signed tag objects (pure signed pointers), name-binding, `tag→tag→commit`, sha256, anti-rollback/fix-forward | §5, §11 |
+| 05 | [Consumer](./workstream-05-consumer.md) | bucket → channel tag → semver tag → commit resolution, delta walk, retention, name-bound verification, client-side Nix-cache superset | §6, §9, §13 |
 
 ### Workstream sequencing rationale
 
@@ -240,8 +245,8 @@ layout exists. WS-02 (packs/deltas) and WS-04 (signing/trust) then proceed in
 parallel over disjoint surfaces (objects vs tags). WS-03 layers the 256-partition
 rollout and channel branches on top of WS-04's signed-tag primitive. WS-05 flips
 the consumer to resolve buckets, walk the delta graph, verify name-binding, and
-read the `[[caches]]` superset — only after a producer can publish all of it, so
-it lands last.
+read the client-side Nix-cache superset — only after a producer can publish all
+of it, so it lands last.
 
 ---
 
@@ -258,19 +263,25 @@ check an implementation without leaving this page. The brief is authoritative.
   info/refs                        ← refs/heads/<channels> + refs/tags/<semvers> [low TTL]
   objects/
     info/packs                     ← lists self-contained pack-<sha>.pack only   [low TTL]
-    info/http-alternates           ← ALL /release/*/objects dirs, newest→oldest  [low TTL]
-    <xx>/<62-hex>                  ← loose objects, sha256 2/62 split            [immutable]
+    info/alternates                ← RELATIVE "../release/*/objects/", newest→old [low TTL]
+    <xx>/<62-hex>                  ← ALL loose objects (every release), 2/62 split [immutable]
   channel/
     <name>/00 .. ff               ← 256 SIGNED tag objects (tag == <name>)       [low TTL]
   release/
     <major>/<minor>/<patch[-prerelease][+build]>/                                [long TTL]
-      objects/
+      objects/                              ← PACK-ONLY (no loose, no alternates)
         info/packs
-        info/http-alternates
         pack/pack-<sha256>.pack (+ .idx)   ← full pack at X.Y.0 anchors
         pack/delta-<from-semver>.pack       ← THIN deltas; AOS-only; NOT in info/packs
-        <xx>/<62-hex>                       ← this release's new loose objects   [immutable]
 ```
+
+All loose objects are **centralized** at the root `/objects/<xx>/<62-hex>`; the
+per-release `objects/` dirs hold **packs only** (no loose objects, no per-release
+`info/alternates`). The root `objects/info/alternates` lists each release's
+pack dir as a **relative** path with a single `../` (e.g. `../release/1/1/0/objects/`),
+making the file **host-independent** (byte-identical across CDN/mirror/localhost).
+Because loose objects are centralized, alternates serve **pack discovery + the
+release index**, not object completeness.
 
 CDN policy: `/channel/**` and all `objects/info/**` **MUST** be low TTL;
 `/release/**` and immutable `/objects/**` **MAY** be very high TTL.
@@ -324,20 +335,24 @@ Consumer bucket: deterministic + persisted (the low byte of `sha256(machine_id)`
 i.e. `mod 256`), probe-forward `(bucket+1) mod 256` if a partition is missing. Branch head
 `refs/heads/<channel>` = the **frontier** (newest release any partition targets).
 
-### Tag-message TOML (§14) — exactly `[meta]` + `[[caches]]`
+### Signed tags carry no payload (§14)
 
-```toml
-[meta]
-schema      = 1                       # integer schema version
-valid_until = "2026-06-30T00:00:00Z"  # channels: freshness; releases: generous
+A signed tag is a **pure signed pointer**: the standard git tag fields (`object`,
+`type`, the tag **name**, `tagger`) + the Ed25519 (SSH-format) signature + an
+**optional freeform human message**. There is **no** structured TOML payload — no
+`[meta]`, no `schema`, no `valid_until`, no `[[caches]]` inside tag objects.
 
-[[caches]]
-url      = "./nar"                    # relative (same origin) OR absolute
-priority = 100
-```
+- **Cache config is client-side.** The NAR substituter location is the
+  **consumer's** local registry config (or the origin itself), never advertised in
+  a signed tag. The origin **MAY** serve `nix-cache-info`/`<storehash>.narinfo`/`nar`;
+  narinfo signing reuses the one Ed25519 key.
+- **Freshness has no in-band `valid_until`.** Freshness = low CDN TTL on `/channel`
+  (and `info/refs`, `objects/info`) + the consumer's own max-staleness policy + the
+  monotonic anti-rollback floor. Trade-off: this is **weaker** than an in-band
+  signed expiry against a frozen-but-validly-signed mirror.
 
-No other top-level tables exist. The tag *object* carries the signature, the ref
-namespace carries pointers, the object store carries everything else.
+The tag *object* carries the signature, the ref namespace carries pointers, the
+object store carries everything else.
 
 ---
 
@@ -351,7 +366,7 @@ namespace carries pointers, the object store carries everything else.
   producer/consumer gaps, mapped to workstreams.
 - [open-questions.md](./open-questions.md) — unresolved decisions (sha256
   dumb-HTTP client support, window/depth/zstd defaults, `machine_id` source,
-  `apr release`/`apr publish` shape, `valid_until` cadence, migration strategy).
+  `apr release`/`apr publish` shape, max-staleness policy, migration strategy).
 - Workstreams [01 Object store](./workstream-01-object-store.md) ·
   [02 Pack & delta pipeline](./workstream-02-pack-delta-pipeline.md) ·
   [03 Channels & rollouts](./workstream-03-channels-rollouts.md) ·
@@ -366,20 +381,19 @@ namespace carries pointers, the object store carries everything else.
 - [current-state.md](../../registry/current-state.md) — the as-is code (bundle /
   `creation_token` implementation), grounded in `path:line`.
 - [http-layout.md](../../registry/http-layout.md) — full HTTP/object layout, CDN
-  TTLs, `info/refs`/`HEAD`/`http-alternates`, stock-git dumb-HTTP compatibility.
+  TTLs, `info/refs`/`HEAD`/`info/alternates`, stock-git dumb-HTTP compatibility.
 - [versioning-and-channels.md](../../registry/versioning-and-channels.md) — semver
   (no `v`), channels-as-branches, frontier head, the 256-partition rollout, bucket
   selection, anti-rollback.
 - [packs-and-deltas.md](../../registry/packs-and-deltas.md) — pack-objects, thin vs
   full packs, the delta-scheme graph, client resolution + retention, zstd.
-- [tag-metadata.md](../../registry/tag-metadata.md) — the channel/release
-  tag-message TOML schema (`[meta]` + `[[caches]]`).
-- [signing-and-trust.md](../../registry/signing-and-trust.md) — signed tag objects,
-  name-binding, `tag→tag→commit`, sha256, unsigned branch refs, `valid_until`.
+- [signing-and-trust.md](../../registry/signing-and-trust.md) — signed tag objects
+  as pure signed pointers, name-binding, `tag→tag→commit`, sha256, unsigned branch
+  refs.
 - [publishing.md](../../registry/publishing.md) — the producer pipeline end-to-end
   (commit → sign → pack/delta/zstd → update-server-info → advance partitions → upload).
 - [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) — the Nix
-  binary-cache superset via relative `[[caches]]`.
+  binary-cache superset via client-side cache config (or the origin) + narinfo/nar.
 - [apt-comparison.md](../../registry/apt-comparison.md) — the APT comparison: signed
   flat-file lineage, bundles/pdiff → git packs/thin deltas, percentage → 256 partitions.
 
@@ -408,4 +422,4 @@ to read this plan:
 - **Frontier** — the newest release any channel partition targets; the value of
   the channel branch head.
 - **Dumb HTTP** — git's static-file transport (`HEAD`, `info/refs`, loose objects,
-  `objects/info/packs`, `objects/info/http-alternates`).
+  `objects/info/packs`, `objects/info/alternates`).

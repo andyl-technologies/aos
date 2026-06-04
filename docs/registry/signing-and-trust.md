@@ -16,10 +16,10 @@ objects**. See [`architecture.md`](architecture.md) for the broader picture and
 
 Related siblings:
 [`versioning-and-channels.md`](versioning-and-channels.md) (the 256-partition rollout
-and bucket selection), [`tag-metadata.md`](tag-metadata.md) (the tag-message TOML
-schema), [`publishing.md`](publishing.md) (how the producer signs and advances
-partitions), and [`nix-cache-compatibility.md`](nix-cache-compatibility.md) (the NAR
-cache that reuses the same key).
+and bucket selection), [`publishing.md`](publishing.md) (how the producer signs and
+advances partitions), and
+[`nix-cache-compatibility.md`](nix-cache-compatibility.md) (the NAR cache that reuses
+the same key).
 
 ---
 
@@ -89,9 +89,12 @@ Tag creation today is `apr tag`
 runs `git tag <name>` (lightweight). Either way it is **not yet signed** (`-s`).
 
 **TARGET delta:** `apr sign` / the publish pipeline produces **signed annotated tag
-objects** (`git tag -s -m <toml> <name>`), not signed commits. Both channel partition
-tags and release tags are signed. The signature algorithm, key format, and trust
-store are unchanged.
+objects** (`git tag -s <name>`, with an optional freeform `-m <message>`), not signed
+commits. A signed tag carries **no structured payload** — it is a pure signed pointer
+(standard git tag fields: `object`, `type`, the tag **name**, `tagger`) plus the
+Ed25519 signature and an optional human-readable message. Both channel partition tags
+and release tags are signed. The signature algorithm, key format, and trust store are
+unchanged.
 
 ### 2.3 Verification — `git verify-*` + a temporary `allowed_signers`
 
@@ -152,7 +155,7 @@ deterministically-selected channel partition (see
   │ SIGNED partition tag    │ ────▶ │ SIGNED release tag  │ ────▶ │  commit  │
   │ object                  │ refs  │ object              │ refs  │  (tree)  │
   │ tag-name == <name>      │       │ tag-name == <semver>│       │          │
-  │ message: TOML [meta]    │       │ message: TOML [meta]│       │          │
+  │ (pure signed pointer)   │       │ (pure signed ptr)   │       │          │
   │ Ed25519 SSH signature   │       │ Ed25519 SSH sig     │       │          │
   └────────────────────────┘        └────────────────────┘       └──────────┘
         hop 1: verify sig                hop 2: verify sig
@@ -226,43 +229,32 @@ branch-head-equals-frontier model.
 
 ---
 
-## 4. `valid_until` semantics
+## 4. Freshness — no in-band expiry
 
-Both channel partition tags and release tags carry a **TOML** message whose schema is
-exactly `[meta]` + `[[caches]]` (full definition in
-[`tag-metadata.md`](tag-metadata.md)):
+Signed tags carry **no in-band expiry field**. There is no `valid_until` (nor any other
+structured payload) inside a tag object — a tag is a pure signed pointer (§2.2).
+Freshness is therefore enforced **out of band**, by three cooperating mechanisms:
 
-```toml
-[meta]
-schema      = 1                      # integer schema version
-valid_until = "2026-06-30T00:00:00Z" # see semantics below
-```
+| Mechanism | Where | What it bounds |
+|---|---|---|
+| **Low CDN TTL** on `/channel` (and `info/refs`, `objects/info`) | edge / CDN policy ([`http-layout.md`](http-layout.md)) | how long a stale rollout pointer can be served before the edge re-fetches the origin |
+| **Consumer max-staleness policy** | client-side registry config | how long *this consumer* will trust a previously-fetched pointer before it MUST re-fetch and re-validate |
+| **Monotonic anti-rollback floor** | consumer (§5) | the lower bound on the accepted release, regardless of pointer age |
 
-`valid_until` is a **freshness / trust-lifetime** field, and its meaning differs by
-tag type:
-
-| Tag type | `valid_until` is… | Paired with | Rationale |
-|---|---|---|---|
-| **Channel** (`/channel/<name>/<00..ff>`) | a **freshness** knob — "this rollout pointer is current until then" | **low CDN TTL** on `/channel/**` | a stale channel pointer must expire quickly so a consumer re-fetches and sees rollout advances; a short `valid_until` plus low TTL keeps the fleet converging |
-| **Release** (`refs/tags/<semver>`) | a **generous signature-trust / key-rotation lifetime** | **long CDN TTL** on `/release/**` (releases are immutable) | a release is immutable; its `valid_until` governs how long the *signature* is considered trusted before a re-sign / key rotation, and it **must not fight** the long release TTL |
-
-Two hard constraints:
-
-- **Channel:** `valid_until` short, CDN TTL low. The CDN policy
-  ([`http-layout.md`](http-layout.md)) **MUST** keep `/channel/**` at low TTL; a
-  long `valid_until` here would defeat fast rollout.
-- **Release:** `valid_until` generous, CDN TTL long. A release's `valid_until` must
-  be long enough that it does not expire before the next planned re-sign/key-rotation
-  cadence — otherwise an immutable, long-TTL-cached release would suddenly fail
-  freshness while still being the correct artifact.
-
-An expired `valid_until` is a **freshness** failure (re-fetch / re-validate), not a
-signature-forgery failure. A consumer that cannot reach the origin to refresh an
-expired channel pointer falls back to its anti-rollback floor (§5) rather than
+The CDN policy ([`http-layout.md`](http-layout.md)) **MUST** keep `/channel` (and
+`info/refs`, `objects/info`) at low TTL so a consumer re-fetches and sees rollout
+advances quickly; releases under `/release/**` are immutable and may be cached with a
+long TTL. A consumer that cannot reach the origin to refresh a stale channel pointer
+falls back to its anti-rollback floor (§5) and its own max-staleness policy rather than
 trusting a stale pointer indefinitely.
 
-> **Open question (brief §16.5):** the exact release `valid_until` window length and
-> the re-sign / key-rotation cadence are to be confirmed in implementation. See
+> **Trade-off:** because there is no in-band signed expiry, this freshness model is
+> **weaker** than a signed `valid_until` against a **frozen-but-validly-signed mirror**.
+> A mirror that keeps serving an old, correctly-signed channel pointer cannot be caught
+> by the pointer's own contents; it is bounded only by the consumer's max-staleness
+> policy and the floor. An in-band expiry would let the producer assert "this pointer is
+> stale after T" inside the signed object itself. This is an accepted trade for keeping
+> tags as pure signed pointers; see
 > [`../plans/registry/open-questions.md`](../plans/registry/open-questions.md).
 
 ---
@@ -329,11 +321,13 @@ partition-advancement model and [`publishing.md`](publishing.md) for the pipelin
 A single Ed25519 key per registry covers **both** trust surfaces:
 
 1. **Git tag signatures** — the `tag → tag → commit` chain above (the primary use).
-2. **Nix narinfo `Sig:`** — if the origin *also* serves a NAR binary cache (advertised
-   via a relative `[[caches]]` entry — see
-   [`nix-cache-compatibility.md`](nix-cache-compatibility.md) and
-   [`tag-metadata.md`](tag-metadata.md)), the `<storehash>.narinfo` `Sig:` field can
-   reuse the **same** Ed25519 key.
+2. **Nix narinfo `Sig:`** — if the origin *also* serves a NAR binary cache, the
+   `<storehash>.narinfo` `Sig:` field can reuse the **same** Ed25519 key. The cache
+   location is **not** advertised in any signed tag: it is the **consumer's
+   client-side configuration** (its local registry config) or the origin itself. The
+   origin MAY serve the stock-nix superset (`nix-cache-info`,
+   `<storehash>.narinfo`, `nar/…`) — see
+   [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
 
 These are **separate signature objects** (a git SSH-format tag signature vs. a Nix
 narinfo `Sig:` line) produced by the **same** key material. A consumer that already
@@ -354,7 +348,7 @@ differs (git tag vs. narinfo).
 | Which release does my bucket get? | signed `/channel/<name>/<bucket>` partition tag (hop 1) | yes |
 | Which commit is that release? | signed `refs/tags/<semver>` release tag (hop 2) | yes |
 | Is the frontier branch trustworthy? | `refs/heads/<channel>` — **unsigned pointer** | **no** (convenience only) |
-| Is this pointer fresh? | `[meta].valid_until` (channel: short; release: generous) | freshness, not forgery |
+| Is this pointer fresh? | low CDN TTL on `/channel` + consumer max-staleness policy + monotonic floor (no in-band expiry) | freshness, not forgery |
 | Could I be downgraded? | consumer **monotonic floor** (semver); abort = **fix-forward** | yes |
 | NAR substitution from same origin? | narinfo `Sig:` reusing the **one** Ed25519 key | yes |
 
@@ -405,7 +399,6 @@ The removed-concept guardrails (no `registry.toml`, no `[signature]` table, no
 - [`architecture.md`](architecture.md) — git-over-dumb-HTTP, the three ref layers.
 - [`http-layout.md`](http-layout.md) — HTTP/object layout, CDN TTLs, sha256 object store.
 - [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, 256-partition rollout, bucket selection, anti-rollback.
-- [`tag-metadata.md`](tag-metadata.md) — the `[meta]` + `[[caches]]` tag-message TOML schema.
 - [`packs-and-deltas.md`](packs-and-deltas.md) — what the verified commit's object store contains.
 - [`publishing.md`](publishing.md) — producer pipeline: commit → sign → pack → advance partitions.
 - [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — NAR cache reusing the one Ed25519 key.

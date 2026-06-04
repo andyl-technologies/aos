@@ -35,8 +35,10 @@
   **no `v` prefix**). A signed git **tag** (`refs/tags/<semver>`) → commit, with its
   object store under `/release/<major>/<minor>/<patch…>/`.
 - **Signed tag object** — an annotated git tag carrying an SSH-format **Ed25519**
-  signature; its message is **TOML**. Channel partition tags and release tags are
-  signed. `tag → tag → commit` chains are used (channel partition → semver → commit).
+  signature. It carries **no structured payload** (no TOML, no `[[caches]]`, no
+  `valid_until`) — only the standard git tag fields plus an optional freeform
+  human message. Channel partition tags and release tags are signed.
+  `tag → tag → commit` chains are used (channel partition → semver → commit).
 - **Full pack** — a self-contained `pack-<sha256>.pack` (+ `.idx`) at every
   major/minor (`X.Y.0`) release.
 - **Delta pack** — a **thin** `delta-<from-semver>.pack` carrying only objects
@@ -83,8 +85,9 @@ makes it simultaneously:
 - a **superset of git dumb HTTP** — a stock `git clone <url>` works (channels are
   branches, releases are tags), using loose objects + conventionally-named full
   packs; and
-- a **superset of the Nix binary cache** — NAR substitution is advertised via a
-  `[[caches]]` entry (which may be a **relative** path pointing at the same origin).
+- a **superset of the Nix binary cache** — the origin MAY serve a Nix binary cache
+  (`nix-cache-info`/narinfo/`nar`); the consumer's cache/substituter location is
+  **client-side config** (or the origin itself), never advertised in signed tags.
 
 The AOS client additionally uses the `/channel` partition tags (signed, bucketed
 rollout) and the thin `delta-*.pack`s (cheap incremental fetch). These ride
@@ -102,31 +105,28 @@ benefits).
 /                                  ← bare git repo root (dumb HTTP)
   HEAD                             ← "ref: refs/heads/<default-channel>" (e.g. stable)   [low TTL]
   info/refs                        ← update-server-info: refs/heads/<channels> + refs/tags/<semvers> [low TTL]
-  objects/
-    info/packs                     ← lists self-contained pack-<sha>.pack only           [low TTL]
-    info/http-alternates           ← ALL /release/*/objects dirs, newest→oldest          [low TTL]
-                                       (doubles as the full release index)
-    info/alternates                ← optional human/agent-readable mirror of the above
-    <xx>/<62-hex>                  ← loose objects, sha256 2/62 split (dumb HTTP)         [immutable, high TTL]
+  objects/                         ← THE single object store
+    info/packs                     ← typically empty (full packs live per-release)        [low TTL]
+    info/alternates                ← RELATIVE "../release/<…>/objects/" entries (one ../), [low TTL]
+                                       newest→oldest; host-independent; pack discovery + release index
+    <xx>/<62-hex>                  ← ALL loose objects (every release), sha256 2/62 split  [immutable, high TTL]
   channel/
     <name>/                                                                              [low TTL]
       00 .. ff                     ← 256 SIGNED tag objects (one byte; tag name == <name>),
                                        each → a semver tag (rollout partitions)
   release/
     <major>/<minor>/<patch[-prerelease][+build]>/                                        [long TTL, immutable]
-      objects/
-        info/packs
-        info/http-alternates
+      objects/                              ← PACKS ONLY (no loose objects here)
+        info/packs                           ← lists this release's pack-<sha256>.pack
         pack/pack-<sha256>.pack (+ .idx)     ← self-contained "full" pack at X.Y.0 anchors
         pack/delta-<from-semver>.pack         ← THIN deltas; AOS-only; NOT listed in info/packs
-        <xx>/<62-hex>                         ← this release's new loose objects [immutable, high TTL]
 ```
 
 CDN policy (explicit requirements):
 - `/channel/**` — **MUST** be low TTL (fast rollout updates).
 - `/release/**` — **MAY** be long TTL (releases are immutable after publish).
-- `/objects/info/**` and per-release `objects/info/**` — **MUST** be low TTL
-  (`packs`, `http-alternates`, `info/refs`, `HEAD` change on publish).
+- `/objects/info/**` and per-release `objects/info/packs` — **MUST** be low TTL
+  (`packs`, `alternates`, `info/refs`, `HEAD` change on publish).
 - All other `/objects/**` (loose objects, packs) — immutable; **MAY** have very
   high TTL.
 
@@ -192,13 +192,19 @@ still `git verify-tag <semver>` because the release tags are the signed objects.
   path is the first 2 / remaining 62 hex chars of the 64-char sha256.
 - **`info/refs` + `HEAD`** make the repo a valid dumb-HTTP bare repo; regenerated via
   `git update-server-info` on every publish.
-- **`objects/info/http-alternates`** lists every `/release/*/objects/` dir
-  newest→oldest. Git's dumb fetcher follows it, resolving the distributed per-release
-  object store as one logical store; it **also serves as the full release index**.
-  (Use `http-alternates`, not `alternates`, for URL-reachable stores; keep
-  `alternates` optionally as a readable mirror.)
-- **ALL objects exist loose** under `/objects/<xx>/<…>` — this is the guaranteed
-  completeness fallback. Packs are an efficiency layer on top.
+- **`objects/info/alternates`** lists every `/release/*/objects/` dir as a
+  **relative** path (`../release/<…>/objects/`), newest→oldest. Git resolves relative
+  alternates against the repo's `objects/` URL, so the file is **byte-identical across
+  every endpoint** (CDN, mirror, localhost) — no hostname is baked in. The relative
+  depth is **one** `../` (resolved relative to `objects/`, where `../` strips the
+  `objects` segment to reach the repo root), **not two**. Use `info/alternates` (works
+  for both dumb-HTTP and local-filesystem access; the dumb-HTTP walker reads
+  `http-alternates` then falls back to `alternates`), not absolute `http-alternates`
+  URLs.
+- **ALL loose objects are centralized** at the root `/objects/<xx>/<…>` (every
+  release) — the guaranteed completeness fallback. The per-release
+  `/release/*/objects/` dirs are **pack-only**; the alternates therefore serve **pack
+  discovery + the release index**, not object completeness.
 
 ---
 
@@ -227,8 +233,8 @@ HTTP (always correct). Cross-major jumps degrade to "minor-base full pack + walk
 co-designed with the delta scheme so a delta base is always present.
 
 **Graceful degradation for stock git:** a stock dumb clone of a patch release pulls
-the minor-base full pack (via `http-alternates`) plus the patch's loose new objects —
-no thin packs needed.
+the minor-base full pack (via `info/alternates`) plus the patch's new objects from the
+central root `/objects/` loose store — no thin packs needed.
 
 ---
 
@@ -267,9 +273,11 @@ no thin packs needed.
   field == expected path name; verify the whole `tag → tag → commit` chain.
 - **One Ed25519 key** continues to serve git signing; the Nix-cache narinfo `Sig:`
   (if the origin also serves NARs) can reuse the same key (separate signature object).
-- **`valid_until`** (in tag-message TOML): for channels it is the **freshness** knob
-  (paired with low CDN TTL); for releases it is a **generous** signature-trust /
-  key-rotation lifetime (it must not fight the long release TTL).
+- **Tags carry no in-band metadata** — no `valid_until` (or any TOML). **Freshness**
+  is a transport + consumer concern: low CDN TTL on `/channel` (and `info/refs`,
+  `objects/info`), plus the consumer's own max-staleness policy and the monotonic
+  anti-rollback floor. (Trade-off: weaker than an in-band signed expiry against a
+  *frozen-but-validly-signed* mirror — tracked in open questions.)
 - **Branch refs are unsigned**; trust derives from the signed tags only.
 
 ---
@@ -278,11 +286,12 @@ no thin packs needed.
 
 The repo is a valid bare dumb-HTTP git repo; the AOS layer is additive. To be
 transparently clonable, the origin serves the standard shim: `HEAD`, `info/refs`
-(`update-server-info`), and `objects/info/http-alternates`. Requirements/edges:
+(`update-server-info`), and a relative `objects/info/alternates`. Requirements/edges:
 
-- **`full.pack` is named `pack-<sha256>.pack`** (+ `.idx`) and listed in
-  `objects/info/packs` so stock dumb git uses it. (We drop the semantic `full.pack`
-  name entirely — no duplicate.)
+- **`full.pack` is named `pack-<sha256>.pack`** (+ `.idx`) and listed in the
+  **release's** `objects/info/packs` (discovered via the root `info/alternates`) so
+  stock dumb git uses it. (We drop the semantic `full.pack` name entirely — no
+  duplicate.)
 - **Thin `delta-*.pack`s are NOT listed in `info/packs`** (a stock dumb client can't
   apply a thin pack); AOS clients discover them by the `delta-<semver>` convention.
 - **Channels are branches**, **releases are tags**, **`HEAD` = the default channel**
@@ -297,33 +306,24 @@ transparently clonable, the origin serves the standard shim: `HEAD`, `info/refs`
 
 ## 13. Nix binary cache superset
 
-Orthogonal to the git-object metadata layer: the registry can advertise itself as a
-NAR binary cache via a **`[[caches]]`** entry whose `url` may be **relative**
-(same origin) or absolute. The `nix-cache-info` / `<storehash>.narinfo` / `nar/`
-surface (a strict superset for stock `nix` dev-shell substitution) lives at the cache
-location. Signing of narinfos, if served, reuses the one Ed25519 key.
+Orthogonal to the git-object metadata layer: the origin MAY also serve a Nix binary
+cache (`nix-cache-info` / `<storehash>.narinfo` / `nar/`), a strict superset for stock
+`nix` dev-shell substitution. The consumer's cache/substituter location is
+**client-side configuration** (the consumer's local registry config, or the origin
+itself) — it is **not** advertised in signed tags (tags carry no `[[caches]]`).
+Narinfo signing, if served, reuses the one Ed25519 key.
 
 ---
 
-## 14. Tag-message TOML schema
+## 14. Tag objects carry no structured payload
 
-Both channel partition tags and release tags carry a **TOML** message supporting
-exactly:
-
-```toml
-[meta]
-schema      = 1                      # integer schema version
-valid_until = "2026-06-30T00:00:00Z" # channels: freshness; releases: generous
-
-[[caches]]
-url      = "./nar"                   # relative (same origin) OR absolute
-priority = 100
-```
-
-No other top-level tables (`[latest]`, `[components]`, `[capabilities]`,
-`[channels]`, `[[bundles]]`, `[[deltas]]`, `pubkey`, `[signature]`) exist — the tag
-*object* carries the signature, the ref namespace carries pointers, and the object
-store carries everything else.
+Signed tag objects are **pure signed pointers**: the standard git tag fields (object,
+type, the `tag` NAME, tagger) + the Ed25519 signature + an optional freeform human
+message. There is **no TOML**, no `[meta]`, no `schema`, no `valid_until`, and no
+`[[caches]]`. Everything else lives elsewhere — the signature is on the tag object,
+pointers are refs, objects are the store, cache/substituter config is **client-side**,
+and freshness is a transport + consumer policy (§11, §13). This keeps tags immutable,
+minimal, and free of mutable policy.
 
 ---
 
@@ -334,7 +334,12 @@ pointer · `[components]` · `[capabilities]` · the percentage-based rollout, t
 `[channels.<name>.rollout]` sub-block, and `previous_tag`/baseline+candidate framing
 (replaced by 256 partitions) · calendar versioning and `creation_token` ordering
 (replaced by semver + git ancestry) · the by-hash `[[bundles]]`/`[[deltas]]` index
-(replaced by the git object store + `http-alternates`).
+(replaced by the git object store + `info/alternates`) · the **tag-message TOML**
+(`[meta]` / `schema` / `valid_until`) and tag-embedded **`[[caches]]`** (tags carry no
+structured payload; cache config is client-side) · **per-release loose objects** (all
+loose objects are centralized in the root `/objects/`; `/release/*/objects/` are
+pack-only) · **absolute `http-alternates`** URLs (replaced by **relative
+`info/alternates`** entries, host-independent).
 
 ---
 
@@ -348,12 +353,13 @@ pointer · `[components]` · `[capabilities]` · the percentage-based rollout, t
 4. Whether `apr` grows a single `apr release`/`apr publish` command that does the
    whole pipeline (commit → tag/sign → pack/delta/zstd → update-server-info →
    advance partitions → upload) and whether upload backends are pluggable.
-5. Release `valid_until` window length and re-sign/key-rotation cadence.
-6. Whether `info/alternates` (readable mirror) is worth maintaining alongside
-   `http-alternates`.
+5. Consumer freshness/staleness policy now that there is no in-band `valid_until`
+   (max-age before warn/refuse), and the frozen-but-validly-signed-mirror trade-off.
+6. Confirm dumb-HTTP git follows a relative `info/alternates` (one `../`) across the
+   target client versions, and whether any client needs `http-alternates` too.
 7. Migration from the existing bundle/`creation_token` registries (clean break vs
-   shim) — and whether the NAR cache superset (`[[caches]]` + narinfo) ships in the
-   same milestone or later.
+   shim) — and whether the NAR cache superset (origin-served narinfo + client-side
+   cache config) ships in the same milestone or later.
 
 ---
 
@@ -372,20 +378,21 @@ code as `path:line`; cross-link siblings.
   description of today's bundle/`creation_token` implementation, and update any
   forward-looking "target" sentences to point at this git-native model.
 - `http-layout.md` — the full HTTP/object layout, CDN TTLs, object store, `info/refs`/
-  `HEAD`/`http-alternates`, **and a "stock git dumb-HTTP compatibility" section**
-  (§4, §8, §12).
+  `HEAD`/ relative `info/alternates` (centralized loose objects; pack-only release
+  dirs), **and a "stock git dumb-HTTP compatibility" section** (§4, §8, §12).
 - `versioning-and-channels.md` — semver (no `v`), channels-as-branches, frontier
   head, the 256-partition rollout, bucket selection, anti-rollback (§5–7).
 - `packs-and-deltas.md` — pack-objects, thin vs full packs, the delta scheme graph,
   client resolution + retention, and zstd (§9–10).
-- `tag-metadata.md` — the channel/release tag-message TOML schema (§14).
-- `signing-and-trust.md` — signed tag objects, name-binding, `tag→tag→commit`,
-  sha256, unsigned branch refs, `valid_until` semantics, anti-rollback (§11, §5).
+- `signing-and-trust.md` — signed tag objects (no in-band payload), name-binding,
+  `tag→tag→commit`, sha256, unsigned branch refs, freshness via CDN + consumer policy
+  (no `valid_until`), anti-rollback (§11, §5, §14).
 - `publishing.md` — the producer pipeline end-to-end (commit → sign → pack/delta/zstd
   → update-server-info → advance partitions → upload), CDN/atomicity, concurrency
   (§10, §4, §6).
-- `nix-cache-compatibility.md` — the Nix binary-cache superset via relative
-  `[[caches]]`; light edit to the new mechanism (§13).
+- `nix-cache-compatibility.md` — the Nix binary-cache superset; cache/substituter
+  location is **client-side config** (or the origin), not a tag-embedded `[[caches]]`
+  (§13).
 - `apt-comparison.md` — updated comparison: the design is now git-native + dumb-HTTP;
   keep the signed-flat-file/`pool`/phased-rollout lineage, map bundles/pdiff →
   git packs/thin-delta scheme, percentage rollout → 256 partitions.
@@ -396,14 +403,15 @@ code as `path:line`; cross-link siblings.
 - `gap-analysis.md` — current code (bundles/`creation_token`/`registry.toml`-config)
   → git-native target; enumerate gaps, map to workstreams.
 - `workstream-01-object-store.md` — sha256 bare repo, dumb-HTTP layout, `info/refs`/
-  `HEAD`/`http-alternates`/`update-server-info`, per-release object dirs.
+  `HEAD`/ relative `info/alternates`/`update-server-info`, centralized root loose
+  store, pack-only per-release object dirs.
 - `workstream-02-pack-delta-pipeline.md` — pack-objects thin/full, the delta scheme,
   zstd, expensive-producer tuning.
 - `workstream-03-channels-rollouts.md` — 256 signed partition tags, channels-as-
   branches/frontier, bucket selection, publisher rollout control.
-- `workstream-04-signing-trust.md` — signed tag objects, name-binding, sha256,
-  `valid_until`, anti-rollback/fix-forward.
+- `workstream-04-signing-trust.md` — signed tag objects (no in-band payload),
+  name-binding, sha256, freshness/anti-rollback/fix-forward (no `valid_until`).
 - `workstream-05-consumer.md` — consumer resolution (bucket → channel tag → semver
-  tag → commit), delta walk, retention, verification, and the Nix `[[caches]]`
-  superset.
+  tag → commit), delta walk, retention, verification, and the Nix cache superset
+  (client-side cache config / origin narinfo).
 - `open-questions.md` — §16 plus risks and migration strategy.

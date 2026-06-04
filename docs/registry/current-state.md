@@ -72,9 +72,9 @@ is a thin wrapper over `git` + `git bundle create`** with significant gaps — s
 > `[[caches]]`, `[signing]`) — see [§3.1](#31-the-repo-local-registrytoml). The
 > **target** drops bundles, `bundle-list.toml`, *and* this `registry.toml`
 > config entirely in favor of a bare git repo served over dumb HTTP, with
-> channel/release metadata carried by signed git tag objects (see
-> [`architecture.md`](architecture.md) and
-> [`tag-metadata.md`](tag-metadata.md), TARGET).
+> channel/release pointers carried by signed git tag objects — pure signed
+> pointers with no structured payload (see
+> [`architecture.md`](architecture.md), TARGET).
 
 ---
 
@@ -155,11 +155,12 @@ public_key = "aos-core:Ed25519:base64keyhere"
 
 > This `registry.toml` is a repo-local config file, **not** part of the target
 > wire format. The target has **no** `registry.toml` at all: channel/release
-> metadata moves into the **TOML message of signed git tag objects**, which
-> carries only `[meta]` (with `schema` + `valid_until`) and `[[caches]]` (see
-> [`tag-metadata.md`](tag-metadata.md), TARGET). The `[[caches]]` advertisement
-> survives the redesign — relocated from this file into the tag message and now
-> permitted to be a **relative** URL on the same origin (see
+> pointers move to **signed git tag objects**, which are pure signed pointers
+> carrying **no** structured payload — no `[meta]`, no `[[caches]]` (see
+> [`architecture.md`](architecture.md), TARGET). The NAR cache location is no
+> longer advertised in tags at all: it becomes the **consumer's client-side
+> configuration** (its local registry config) or the origin itself, which MAY
+> serve the Nix binary-cache superset (`nix-cache-info`/narinfo/nar) (see
 > [`nix-cache-compatibility.md`](nix-cache-compatibility.md), TARGET).
 
 ---
@@ -597,11 +598,10 @@ These do not contradict the brief's *intent* (target design), only its
 
 - [`README.md`](README.md) — registry doc index and glossary.
 - [`architecture.md`](architecture.md) — git-repo-over-dumb-HTTP; superset of git **and** Nix; the three ref layers (TARGET).
-- [`http-layout.md`](http-layout.md) — HTTP/object layout, CDN TTLs, `http-alternates`, stock dumb-HTTP compatibility (TARGET).
+- [`http-layout.md`](http-layout.md) — HTTP/object layout, CDN TTLs, relative `info/alternates`, stock dumb-HTTP compatibility (TARGET).
 - [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, the 256-partition rollout, bucket selection, anti-rollback (TARGET).
 - [`packs-and-deltas.md`](packs-and-deltas.md) — pack-objects, thin vs full packs, the delta scheme graph, zstd (TARGET).
-- [`tag-metadata.md`](tag-metadata.md) — the channel/release tag-message TOML schema (TARGET).
-- [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — the Nix binary-cache superset via relative `[[caches]]` (TARGET).
+- [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — the Nix binary-cache superset (client-side cache config; origin serves `nix-cache-info`/narinfo/nar) (TARGET).
 - [`signing-and-trust.md`](signing-and-trust.md) — signed tag objects, name-binding, `tag→tag→commit`, TOFU (TARGET).
 - [`publishing.md`](publishing.md) — producer pipeline & concurrency (TARGET).
 - [`apt-comparison.md`](apt-comparison.md) — APT format comparison and adopted improvements.
