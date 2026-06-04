@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 /// Metadata about a store path from the Nix SQLite DB.
 /// This is distinct from `aos_core::nix::PathInfo` — it includes
@@ -57,7 +57,10 @@ impl NixStore {
 
     /// Look up a store path by its full path string.
     pub fn path_info(&self, store_path: &str) -> Result<Option<DbPathInfo>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
 
         let mut stmt = conn.prepare_cached(
             "SELECT id, path, hash, narSize, deriver, sigs FROM ValidPaths WHERE path = ?1",
@@ -106,10 +109,11 @@ impl NixStore {
 
     /// Check if a store path is valid (exists in the DB).
     pub fn is_valid_path(&self, store_path: &str) -> Result<bool> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT 1 FROM ValidPaths WHERE path = ?1 LIMIT 1",
-        )?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let mut stmt = conn.prepare_cached("SELECT 1 FROM ValidPaths WHERE path = ?1 LIMIT 1")?;
         let exists = stmt
             .query_row(params![store_path], |_| Ok(()))
             .optional()?

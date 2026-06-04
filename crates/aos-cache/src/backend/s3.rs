@@ -60,10 +60,8 @@ impl CacheBackend for S3Backend {
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
         let url = self.s3_url(&format!("{store_hash}.narinfo"));
         let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
-        req.headers.push((
-            "Content-Type".to_string(),
-            "text/x-nix-narinfo".to_string(),
-        ));
+        req.headers
+            .push(("Content-Type".to_string(), "text/x-nix-narinfo".to_string()));
         self.engine
             .execute(req)
             .await
@@ -129,9 +127,7 @@ impl CacheBackend for S3Backend {
             return Ok(());
         }
 
-        let content = format!(
-            "StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n"
-        );
+        let content = format!("StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n");
         let mut req = TransferRequest::put(&url, content.into_bytes());
         req.headers
             .push(("Content-Type".to_string(), "text/plain".to_string()));

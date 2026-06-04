@@ -64,9 +64,9 @@ fn parse_module_doc(lines: &[&str]) -> Option<ModuleDoc> {
         let trimmed = line.trim();
         if trimmed.starts_with("##!") {
             // Strip the `##! ` or `##!` prefix.
-            let content = trimmed.strip_prefix("##! ").unwrap_or(
-                trimmed.strip_prefix("##!").unwrap_or(""),
-            );
+            let content = trimmed
+                .strip_prefix("##! ")
+                .unwrap_or(trimmed.strip_prefix("##!").unwrap_or(""));
             doc_lines.push(content);
         } else if trimmed.is_empty() && doc_lines.is_empty() {
             // Allow leading blank lines before `##!` block.
@@ -190,7 +190,8 @@ fn strip_doc_prefix(line: &str) -> String {
 /// Check if doc content represents a section heading (`# Heading`).
 fn is_section_heading(content: &str) -> bool {
     let trimmed = content.trim();
-    trimmed.starts_with("# ") || (trimmed.starts_with('#') && trimmed.len() > 1 && !trimmed.starts_with("##"))
+    trimmed.starts_with("# ")
+        || (trimmed.starts_with('#') && trimmed.len() > 1 && !trimmed.starts_with("##"))
 }
 
 /// Try to extract a binding name from a line like `name = ...` or `  name = ...`.
@@ -199,15 +200,13 @@ fn extract_binding_name(line: &str) -> Option<String> {
     let trimmed = line.trim();
 
     // Try ` = ` first (inline value), then ` =` at end of line (multiline value).
-    let eq_pos = trimmed
-        .find(" = ")
-        .or_else(|| {
-            if trimmed.ends_with(" =") {
-                Some(trimmed.len() - 2)
-            } else {
-                None
-            }
-        })?;
+    let eq_pos = trimmed.find(" = ").or_else(|| {
+        if trimmed.ends_with(" =") {
+            Some(trimmed.len() - 2)
+        } else {
+            None
+        }
+    })?;
     let candidate = &trimmed[..eq_pos];
 
     // The identifier must be a valid Nix identifier: [a-zA-Z_][a-zA-Z0-9_'-]*
@@ -527,7 +526,10 @@ concat = builtins.concatStringsSep;
         let parsed = parse_file(content);
         assert_eq!(parsed.items.len(), 2);
         assert_eq!(parsed.items[0].section.as_deref(), Some("List operations"));
-        assert_eq!(parsed.items[1].section.as_deref(), Some("String operations"));
+        assert_eq!(
+            parsed.items[1].section.as_deref(),
+            Some("String operations")
+        );
     }
 
     #[test]

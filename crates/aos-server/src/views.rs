@@ -70,13 +70,7 @@ impl ViewManager {
     /// Create an atomic GC root symlink: `gcroots/{view}/{ns}/{hash} -> store_path`.
     ///
     /// Uses a temp symlink + rename to avoid races.
-    pub fn create_gc_root(
-        &self,
-        view: &str,
-        ns: &str,
-        hash: &str,
-        store_path: &str,
-    ) -> Result<()> {
+    pub fn create_gc_root(&self, view: &str, ns: &str, hash: &str, store_path: &str) -> Result<()> {
         let link_dir = self.root.join("gcroots").join(view).join(ns);
         let link = link_dir.join(hash);
         let tmp = link_dir.join(format!(".{hash}.tmp"));
@@ -105,10 +99,8 @@ impl ViewManager {
         let path = meta_dir.join(format!("{hash}.json"));
         let tmp = meta_dir.join(format!(".{hash}.json.tmp"));
 
-        let data = serde_json::to_string_pretty(meta)
-            .context("serializing metadata")?;
-        fs::write(&tmp, &data)
-            .with_context(|| format!("writing {}", tmp.display()))?;
+        let data = serde_json::to_string_pretty(meta).context("serializing metadata")?;
+        fs::write(&tmp, &data).with_context(|| format!("writing {}", tmp.display()))?;
         fs::rename(&tmp, &path)
             .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
 
@@ -186,12 +178,7 @@ impl ViewManager {
     /// These roots live in the `tmp/` namespace and prevent GC from reclaiming
     /// uploaded paths before their build starts. Call `remove_tmp_roots` after
     /// the build creates proper `bin/` roots.
-    pub fn create_tmp_root(
-        &self,
-        view: &str,
-        hash: &str,
-        store_path: &str,
-    ) -> Result<()> {
+    pub fn create_tmp_root(&self, view: &str, hash: &str, store_path: &str) -> Result<()> {
         self.create_gc_root(view, "tmp", hash, store_path)?;
 
         let now = std::time::SystemTime::now()
@@ -256,12 +243,7 @@ impl ViewManager {
     }
 
     /// Create GC roots for all paths in a closure within the given view/namespace.
-    pub fn create_roots_for_closure(
-        &self,
-        view: &str,
-        ns: &str,
-        paths: &[String],
-    ) -> Result<()> {
+    pub fn create_roots_for_closure(&self, view: &str, ns: &str, paths: &[String]) -> Result<()> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("system clock error")?

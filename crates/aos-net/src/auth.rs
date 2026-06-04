@@ -211,11 +211,7 @@ impl AuthStore {
             .to_string();
 
         let mut creds = self.credentials.write().unwrap();
-        if let Some(Credential::Bearer {
-            ref mut token,
-            ..
-        }) = creds.get_mut(domain_pattern)
-        {
+        if let Some(Credential::Bearer { ref mut token, .. }) = creds.get_mut(domain_pattern) {
             *token = new_token;
         }
 

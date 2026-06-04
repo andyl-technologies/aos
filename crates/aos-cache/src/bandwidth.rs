@@ -1,11 +1,11 @@
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::Notify;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 /// Token-bucket rate limiter shared across all parallel connections.
 ///
@@ -72,12 +72,9 @@ impl BandwidthLimiter {
                 }
             } else if current > 0 {
                 // Take what's available — caller will come back for the rest.
-                let _ = self.tokens.compare_exchange(
-                    current,
-                    0,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                );
+                let _ =
+                    self.tokens
+                        .compare_exchange(current, 0, Ordering::Relaxed, Ordering::Relaxed);
                 return;
             }
             self.notify.notified().await;
@@ -146,7 +143,9 @@ impl<R: AsyncRead + Unpin> AsyncRead for RateLimitedRead<R> {
         if let Poll::Ready(Ok(())) = &result {
             let read = (buf.filled().len() - before) as u64;
             if read > 0 {
-                this.limiter.tokens.fetch_sub(read.min(current), Ordering::Relaxed);
+                this.limiter
+                    .tokens
+                    .fetch_sub(read.min(current), Ordering::Relaxed);
             }
         }
 
@@ -235,7 +234,10 @@ pub fn parse_bandwidth(s: &str) -> anyhow::Result<u64> {
 
     let result = num * multiplier as f64;
     if result < 0.0 || result > u64::MAX as f64 {
-        anyhow::bail!("bandwidth value out of range: {num_str}{}", if multiplier > 1 { " (with unit)" } else { "" });
+        anyhow::bail!(
+            "bandwidth value out of range: {num_str}{}",
+            if multiplier > 1 { " (with unit)" } else { "" }
+        );
     }
     Ok(result as u64)
 }
