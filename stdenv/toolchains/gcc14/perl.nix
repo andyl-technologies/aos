@@ -47,8 +47,8 @@ in
         # Errno_pm.PL on Linux hardcodes /usr/include/errno.h which doesn't
         # exist in Nix sandbox. Patch to use glibc's errno.h instead.
         ${prev.sed}/bin/sed -i \
-          -e "s|/usr/include/errno.h|${glibc}/include/errno.h|g" \
-          -e "s|/usr/local/include/errno.h|${glibc}/include/errno.h|g" \
+          -e "s|/usr/include/errno.h|${glibc.dev}/include/errno.h|g" \
+          -e "s|/usr/local/include/errno.h|${glibc.dev}/include/errno.h|g" \
           ext/Errno/Errno_pm.PL
 
         # Perl's Configure is not autoconf — it uses its own system
@@ -56,9 +56,9 @@ in
           -des \
           -Dprefix="$out" \
           -Dcc="${gcc}/bin/gcc" \
-          -Dccflags="-O2 -isystem ${glibc}/include" \
-          -Dcppflags="-isystem ${glibc}/include" \
-          -Dldflags="-L${glibc}/lib -static -no-pie" \
+          -Dccflags="-O2 -isystem ${glibc.dev}/include" \
+          -Dcppflags="-isystem ${glibc.dev}/include" \
+          -Dldflags="-L${glibc.static}/lib -L${glibc}/lib -static -no-pie" \
           -Dlibs="-lm -lpthread" \
           -Dar="${binutils}/bin/ar" \
           -Dfull_ar="${binutils}/bin/ar" \
@@ -68,7 +68,7 @@ in
           -Dlocincpth="" \
           -Dloclibpth="" \
           -Dglibpth="${glibc}/lib" \
-          -Dusrinc="${glibc}/include" \
+          -Dusrinc="${glibc.dev}/include" \
           -Uusedl \
           -Uusevendorprefix \
           -Dman1dir=none \

@@ -49,7 +49,15 @@ in
     ];
     runtimeDeps = [
       zlib
+      openssl
     ];
+
+    # mrustc (the C++ bootstrap compiler) has an out-of-bounds
+    # std::vector::operator[] access that _GLIBCXX_ASSERTIONS turns from
+    # silent undefined behavior into an abort. Disable the libstdc++
+    # assertions for this third-party C++ codebase; this is not a Rust
+    # language-level opt-out.
+    hardeningDisable = ["glibcxxassertions"];
 
     phases = [
       {

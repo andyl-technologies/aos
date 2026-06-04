@@ -23,10 +23,9 @@
     inherit pkgs lib;
     inherit (vm) mkVMTest;
   };
-  assertions = import ./assertions.nix;
   checks = import ./checks.nix;
 in {
-  inherit (vm) mkVMTest mkTestRootfs;
+  inherit (vm) mkVMTest mkTestDisk;
   inherit (fleet) mkFleetTest;
   inherit (firecracker) mkFirecrackerRootfs;
   inherit
@@ -41,6 +40,5 @@ in {
     mkVersionCheck
     mkDynLinkerCheck
     ;
-  inherit assertions;
   inherit (checks) composeChecks;
 }

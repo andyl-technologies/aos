@@ -97,8 +97,6 @@ in {
       store_path = "/nix/store/cccccccccccccccccccccccccccccccc-mypkg-2.0.0"
       nar_hash = "sha256:2222222222222222222222222222222222222222222222222222"
       nar_size = 2048
-      download_hash = "sha256:2222222222222222222222222222222222222222222222222222"
-      download_size = 1024
       closure_size = 4096
       source_drv = ""
       source_nar_hash = ""
@@ -281,8 +279,6 @@ in {
       store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-upgradepkg-2.0.0"
       nar_hash = "sha256:1111111111111111111111111111111111111111111111111111"
       nar_size = 2048
-      download_hash = "sha256:1111111111111111111111111111111111111111111111111111"
-      download_size = 1024
       closure_size = 4096
       source_drv = ""
       source_nar_hash = ""
@@ -295,8 +291,6 @@ in {
       store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-upgradepkg-1.0.0"
       nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
       nar_size = 1024
-      download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-      download_size = 512
       closure_size = 2048
       source_drv = ""
       source_nar_hash = ""

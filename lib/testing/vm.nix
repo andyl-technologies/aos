@@ -20,7 +20,6 @@
   pkgs,
   lib,
 }: let
-  hostJq = pkgs.jq;
   firecracker = pkgs.firecracker;
 
   # Headless rootfs builder (for integration tests without systemd/agent)
@@ -29,9 +28,6 @@
 
   # Shared rootfs helper (lib/build/rootfs.nix) — produces root.img.
   mkRootfs = import ../build/rootfs.nix;
-
-  # Shared shell assertion helpers
-  assertions = import ./assertions.nix {inherit (pkgs) aos-agent-rpc;};
 
   # ---------------------------------------------------------------------------
   # Build a rootfs ext4 image for VM testing
@@ -50,41 +46,49 @@
   #              via `-kernel`/`-initrd`, partition 1 is never mounted.
   #              Reserving 4 MiB keeps root at /dev/vda2 matching
   #              production device naming.
-  #   2  root  — ext4, sized to fit. The system's /etc is pre-split
-  #              to /etc.lower at image-build time so the production
-  #              etc-overlay-setup.service skips its first-boot remount-rw
-  #              dance on ro root.
+  #   2  root  — ext4, sized to fit. /etc is an empty mountpoint; the
+  #              system /etc content lives in the composefs EROFS image
+  #              shipped at ${toplevel}/etc-metadata.erofs, mounted by
+  #              etc-overlay-setup.service in stage-1.
   #   3  swap  — 8 MiB stub with the Linux-swap GPT GUID, no body.
   #              cryptswap.service's `Requires=` on the auto-instantiated
   #              `dev-disk-by-partlabel-swap.device` would otherwise sit
   #              queued for 90 s on every boot waiting for udev to
   #              announce a partition that doesn't exist.
-  #   4  var   — 32 MiB ext4, empty. Label `var` via GPT partlabel so
-  #              the production mount-var.service mounts it on every boot.
+  #   4  var   — 32 MiB ext4. Carries the /var/etc allowlist plus
+  #              test-specific overrides (host SSH key, SELinux off,
+  #              test units). Label `var` via GPT partlabel so
+  #              mount-var.service finds it.
+  #
+  # Spec v12 §5.4 names /var/etc as the tight host-persistent
+  # allowlist (machine-id, ssh host keys). For test infrastructure we
+  # widen that scope: the test units (aos-test.target,
+  # aos-test-agent.service) and the per-test fallbacks (nsswitch.conf,
+  # etc.) also live there. This is a deliberate test-only deviation;
+  # production roles must use the `environment.etc` route through the
+  # EROFS image.
+  #
   # `mkTestDisk` is a function of `system` only — two callers passing
   # the same system reference the same Nix derivation, which is what
   # lets fleet tests share one disk across every machine of a given
   # variant.
-  #
-  # Per-instance state (hostname, /etc/hosts, eth0 .network) is no
-  # longer baked in here; the harnesses deliver it through ignition
-  # via the metadata ISO. The default `/etc.lower/hostname` written
-  # below is `aos-test` — at runtime, ignition's `/etc/hostname`
-  # write lands on the etc-overlay's upper layer (`/var/etc/hostname`)
-  # which shadows this lower-layer file. So the baked hostname is a
-  # fallback for tests that never deliver an instance identity, and
-  # the production-faithful identity flow shadows it when used.
   mkTestDisk = {
     system,
     name ? "aos-disk",
+    # Extra derivations whose full closures land in /nix/store on the
+    # rootfs, over and above `system`'s own closure. Upgrade tests pass
+    # a second system toplevel here so `apm upgrade --system` finds its
+    # store paths already present locally (no network fetch) — see
+    # lib/build/rootfs.nix's `extraClosures` and tests/fleet/
+    # apm-system-upgrade.nix.
+    extraClosures ? [],
   }: let
     systemPackages = system.config.environment.systemPackages;
 
-    # Shell fragment spliced into the shared rootfs helper's populate
-    # phase after tree population, before mkfs. Runs with `rootfs/` as
-    # the populated tree and `$ETC_TARGET` pointing at `etc.lower` —
-    # the lower layer of the production /etc overlay (pre-split to skip
-    # the first-boot remount-rw dance).
+    # rootfsPost — shell fragment spliced into the shared rootfs
+    # helper's populate phase after tree population, before mkfs.
+    # Only touches rootfs/ paths (the system /etc tree no longer
+    # lives on the rootfs; see varSeed below).
     postPopulate = ''
       # ── systemd's /lib/* subdirs into merged-usr /usr/lib ──
       # Provides udev rules, tmpfiles.d, sysctl.d, and systemd's own
@@ -95,99 +99,25 @@
         [ -e "rootfs/usr/lib/$n" ] || ln -sfn "$d" "rootfs/usr/lib/$n"
       done
 
-      # /etc is the overlay mountpoint — the helper populated
-      # /etc.lower; leave /etc as an empty mountpoint.
-      mkdir -p rootfs/etc
-      # /run/etc-upper is where etc-overlay-setup mounts the tmpfs
-      # that carries the overlay's upper+work dirs. Pre-creating
-      # keeps the first-boot setup on the cold path.
-      mkdir -p rootfs/run/etc-upper
       # /opt/aos-test/bin holds the test agent scripts.
       mkdir -p rootfs/opt/aos-test/bin
 
-      # SELinux override — the test rootfs has no policy files and
-      # enforcing mode causes systemd to freeze when it can't load
-      # the policy. Only applies if the toplevel /etc had a config.
-      if [ -f "rootfs/$ETC_TARGET/selinux/config" ]; then
-        cat > "rootfs/$ETC_TARGET/selinux/config" << 'SELINUXCFG'
-      SELINUX=disabled
-      SELINUXTYPE=targeted
-      SELINUXCFG
-      fi
-
-      # Default hostname goes into etc.lower (the overlay's lower
-      # layer). Ignition's `/etc/hostname` write lands on the upper
-      # layer at runtime and shadows this — so tests delivering a
-      # per-instance identity through ignition see the identity
-      # fragment's hostname; tests that don't see "aos-test".
-      echo "aos-test" > "rootfs/$ETC_TARGET/hostname"
-      # Empty fstab — systemd-fstab-generator synthesizes sysroot.mount
-      # from root= on the cmdline; mount-var.service handles /var.
-      : > "rootfs/$ETC_TARGET/fstab"
-
-      # Pre-generate SSH host key so sshd can start without the keygen
-      # service (which expects /var/etc/ssh from the production overlay
-      # setup). The key lives in the etc-overlay lower layer so sshd
-      # finds it via the overlay.
-      mkdir -p "rootfs/$ETC_TARGET/ssh"
-      ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
-        -f "rootfs/$ETC_TARGET/ssh/ssh_host_ed25519_key" </dev/null
-
-      cat > "rootfs/$ETC_TARGET/os-release" << 'OSREL'
-      ID=aos
-      NAME="ANDYL OS"
-      PRETTY_NAME="ANDYL OS (test)"
-      VERSION_ID=0.1
-      OSREL
-
-      # Fallback passwd/group/shadow if toplevel didn't provide them.
-      # The users module generates these for module-defined users
-      # (chrony, sshd, etc.); writing fallbacks keeps early-boot
-      # systemd services functional when running a minimal system.
-      if [ ! -s "rootfs/$ETC_TARGET/passwd" ]; then
-        cat > "rootfs/$ETC_TARGET/passwd" << 'PASSWD'
-      root:x:0:0:root:/root:/bin/sh
-      nobody:x:65534:65534:Nobody:/:/sbin/nologin
-      systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin
-      systemd-network:x:102:102:systemd Network:/:/sbin/nologin
-      PASSWD
-      fi
-      if [ ! -s "rootfs/$ETC_TARGET/group" ]; then
-        cat > "rootfs/$ETC_TARGET/group" << 'GROUP'
-      root:x:0:
-      nobody:x:65534:
-      utmp:x:22:
-      systemd-journal:x:101:
-      systemd-network:x:102:
-      GROUP
-      fi
-      if [ ! -s "rootfs/$ETC_TARGET/shadow" ]; then
-        cat > "rootfs/$ETC_TARGET/shadow" << 'SHADOW'
-      root:!:1::::::
-      nobody:!:1::::::
-      SHADOW
-      fi
-      chmod 640 "rootfs/$ETC_TARGET/shadow"
-
-      cat > "rootfs/$ETC_TARGET/nsswitch.conf" << 'NSS'
-      passwd: files
-      group:  files
-      shadow: files
-      hosts:  files dns
-      NSS
-
       # ── Guest agent handler: one framed request from stdin → framed
-      # response to stdout. Wire format (both directions):
-      #   <ascii-decimal-len>\n<len bytes>
-      # Request bytes are the shell command (no trailing \n). Response
-      # bytes are JSON: {"exit_code":N,"stdout_b64":"...","stderr_b64":"..."}.
-      # stdout/stderr are base64-encoded so arbitrary output bytes (NUL,
-      # high-bit, embedded \n) round-trip without escaping. PING and
-      # SHUTDOWN are still recognised as the literal decoded payloads.
+      # response to stdout. Wire format (v2):
+      #   Frame:        <ascii-decimal body_len>\n<body bytes>
+      #   Request body: bash blob, OR the literal ASCII "PING"/"SHUTDOWN".
+      #   Response body:
+      #     <exit_code> <stdout_len> <stderr_len>\n<stdout bytes><stderr bytes>
+      # Header line is three space-separated ASCII-decimal integers
+      # terminated by \n; the stdout/stderr payloads are raw bytes
+      # concatenated immediately after. PING and SHUTDOWN replies are
+      # the bare 6-byte body `0 0 0\n` (no payload) — matching how
+      # bash succeed/fail responses on empty output would be encoded.
       cat > rootfs/opt/aos-test/bin/agent-handler << 'HANDLER'
       #!/bin/sh
       # LC_ALL=C makes parameter-length counting byte-based (not
-      # character-based) and keeps base64/printf locale-independent.
+      # character-based) and keeps printf locale-independent. Byte-
+      # counting matters because the outer length prefix is in bytes.
       LC_ALL=C
       export LC_ALL
       set -u
@@ -220,17 +150,13 @@
       cmd=$(cat /tmp/agent-cmd)
       echo "aos-test-agent: received ($len_line bytes)" >&2
 
-      emit_response() {
-        body="$1"
-        printf '%s\n%s' "''${#body}" "$body"
-      }
-
       if [ "$cmd" = "PING" ]; then
-        emit_response '{"status":"ready"}'
+        # Body is `0 0 0\n` (6 bytes); outer frame `6\n0 0 0\n`.
+        printf '6\n0 0 0\n'
         exit 0
       fi
       if [ "$cmd" = "SHUTDOWN" ]; then
-        emit_response '{"status":"shutdown"}'
+        printf '6\n0 0 0\n'
         # Firecracker needs reboot -f (poweroff hangs); QEMU uses poweroff -f.
         if [ -e /dev/vsock ]; then
           reboot -f
@@ -242,10 +168,15 @@
 
       bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr
       exit_code=$?
-      stdout_b64=$(base64 -w0 < /tmp/agent-stdout)
-      stderr_b64=$(base64 -w0 < /tmp/agent-stderr)
-      body="{\"exit_code\":$exit_code,\"stdout_b64\":\"$stdout_b64\",\"stderr_b64\":\"$stderr_b64\"}"
-      emit_response "$body"
+      stdout_size=$(stat -c %s /tmp/agent-stdout)
+      stderr_size=$(stat -c %s /tmp/agent-stderr)
+      header="$exit_code $stdout_size $stderr_size"
+      # +1 for the newline that terminates the header line.
+      total=$(( ''${#header} + 1 + stdout_size + stderr_size ))
+      printf '%d\n' "$total"
+      printf '%s\n' "$header"
+      cat /tmp/agent-stdout
+      cat /tmp/agent-stderr
       HANDLER
       chmod +x rootfs/opt/aos-test/bin/agent-handler
 
@@ -261,16 +192,22 @@
       # short wait (Firecracker's transport).
       cat > rootfs/opt/aos-test/bin/aos-test-agent << 'AGENT'
       #!/bin/sh
-      # See agent-handler for the wire format. LC_ALL=C: byte-counting
-      # parameter expansions and locale-independent printf/base64.
+      # See agent-handler for the wire format (v2). LC_ALL=C: byte-
+      # counting parameter expansions and locale-independent printf.
       #
-      # Each request reopens $AGENT_PORT on fd 3 (read+write) and closes
-      # it after writing the response. A persistent open across multiple
-      # host connections gets a hang-up when the host disconnects between
-      # requests and subsequent reads return EOF — fd 3 must therefore be
-      # scoped to a single request/response pair. Within one request the
-      # fd MUST stay open between the LEN line and the body bytes so the
-      # body bytes aren't lost between successive opens.
+      # virtio-serial mode: $AGENT_PORT is opened ONCE on fd 3 and held
+      # open for the whole run — the driver (aos-test-driver, qemu
+      # transport) holds a single persistent connection, so the link
+      # never tears down between requests and the self-delimiting frame
+      # format streams any number of request/response pairs over it.
+      #
+      # This must NOT reopen the port per request. A close+reopen on
+      # every request races QEMU's virtio-serial control-queue port
+      # state machine: under KVM the close and reopen land within
+      # microseconds and QEMU can be left believing the guest port is
+      # closed while the agent sits blocked in read(), so the next
+      # command's bytes are never delivered and the agent goes silent
+      # mid-run. fd 3 is reopened only on a genuine EOF (host gone).
       LC_ALL=C
       export LC_ALL
       set -u
@@ -309,25 +246,29 @@
       fi
       echo "aos-test-agent: virtio-serial mode, using port $AGENT_PORT" >&2
 
-      while true; do
-        # Open the port for both directions on fd 3 for this one request.
-        exec 3<> "$AGENT_PORT"
+      # Open the port once and hold it open for the whole run. See the
+      # header comment: reopening per request races QEMU's virtio-serial
+      # port state machine under KVM and wedges the agent mid-run.
+      exec 3<> "$AGENT_PORT"
 
+      while true; do
         if ! IFS= read -r len_line <&3; then
+          # EOF on fd 3: the host disconnected — end of run, or the
+          # driver tore the connection down after an error. Reopen and
+          # wait for a fresh connection rather than spinning on EOF.
           exec 3<&-
           sleep 0.1
+          exec 3<> "$AGENT_PORT"
           continue
         fi
         case "$len_line" in
           '''|*[!0-9]*)
             echo "aos-test-agent: malformed length line: '$len_line'" >&2
-            exec 3<&-
             continue
             ;;
         esac
         if [ "$len_line" -gt "$MAX" ]; then
           echo "aos-test-agent: request length $len_line exceeds $MAX" >&2
-          exec 3<&-
           continue
         fi
 
@@ -335,7 +276,6 @@
         actual=$(stat -c %s /tmp/agent-cmd)
         if [ "$actual" -ne "$len_line" ]; then
           echo "aos-test-agent: short read ($actual / $len_line)" >&2
-          exec 3<&-
           continue
         fi
 
@@ -343,43 +283,103 @@
         echo "aos-test-agent: received ($len_line bytes)" >&2
 
         if [ "$cmd" = "PING" ]; then
-          body='{"status":"ready"}'
-          printf '%s\n%s' "''${#body}" "$body" >&3
-          exec 3<&-
+          # Body is `0 0 0\n` (6 bytes); outer frame `6\n0 0 0\n`.
+          printf '6\n0 0 0\n' >&3
+          echo "aos-test-agent: replied (PING)" >&2
           continue
         fi
         if [ "$cmd" = "SHUTDOWN" ]; then
-          body='{"status":"shutdown"}'
-          printf '%s\n%s' "''${#body}" "$body" >&3
-          exec 3<&-
+          printf '6\n0 0 0\n' >&3
           poweroff -f
           exit 0
         fi
 
-        bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr
+        # 3<&- closes the virtio-serial port in the command's process
+        # tree — no apm/git/nix-store child inherits the transport fd.
+        bash /tmp/agent-cmd >/tmp/agent-stdout 2>/tmp/agent-stderr 3<&-
         exit_code=$?
-        stdout_b64=$(base64 -w0 < /tmp/agent-stdout)
-        stderr_b64=$(base64 -w0 < /tmp/agent-stderr)
-        body="{\"exit_code\":$exit_code,\"stdout_b64\":\"$stdout_b64\",\"stderr_b64\":\"$stderr_b64\"}"
-        printf '%s\n%s' "''${#body}" "$body" >&3
-        exec 3<&-
+        stdout_size=$(stat -c %s /tmp/agent-stdout)
+        stderr_size=$(stat -c %s /tmp/agent-stderr)
+        header="$exit_code $stdout_size $stderr_size"
+        # +1 for the newline terminating the header line.
+        total=$(( ''${#header} + 1 + stdout_size + stderr_size ))
+        # Stage the entire frame (outer length + body) in one file then
+        # emit it with a single `cat` to fd 3 — keeps the framed write
+        # atomic from the agent's side regardless of payload size.
+        {
+          printf '%d\n' "$total"
+          printf '%s\n' "$header"
+          cat /tmp/agent-stdout
+          cat /tmp/agent-stderr
+        } > /tmp/agent-frame
+        cat /tmp/agent-frame >&3
+        echo "aos-test-agent: replied ($total bytes, exit $exit_code)" >&2
       done
       AGENT
       chmod +x rootfs/opt/aos-test/bin/aos-test-agent
+    '';
 
-      # Guest agent systemd service. Drivers present a properly blocking
-      # serial backend so a live getty can coexist with the harness;
-      # no masking of serial-getty@ttyS0 is needed.
-      #
-      # The agent is gated behind aos-test.target, which is ordered
-      # After=multi-user.target. Systemd only activates aos-test.target
-      # once multi-user.target has reached "active" (i.e. all its Wants=
-      # — sshd, containerd, kubelet — have finished activating), so by
-      # the time the agent's ExecStart fires, `systemctl is-active
-      # multi-user.target` is provably true. No shell polling required.
-      mkdir -p "rootfs/$ETC_TARGET/systemd/system/multi-user.target.wants"
-      mkdir -p "rootfs/$ETC_TARGET/systemd/system/aos-test.target.wants"
-      cat > "rootfs/$ETC_TARGET/systemd/system/aos-test.target" << 'UNIT'
+    # varSeed — shell fragment spliced into the disk-assembly phase
+    # below. Populates `var/etc/...` and `var/etc/systemd/system/...`
+    # before `mkfs.ext4 -d var var.img`, so the resulting var
+    # partition surfaces these files at `/etc/<path>` via the runtime
+    # overlay (spec v12 §5.4: /var/etc is the persistent lower).
+    #
+    # The test-only entries (selinux off, baked hostname, fstab,
+    # pre-generated SSH host key, passwd/group fallbacks,
+    # nsswitch.conf, aos-test units) all live on the var partition
+    # rather than going through `environment.etc` — they're test
+    # infrastructure, not production state.
+    varSeed = ''
+      mkdir -p var/etc/systemd/system/multi-user.target.wants
+      mkdir -p var/etc/systemd/system/aos-test.target.wants
+      mkdir -p var/etc/ssh
+      mkdir -p var/etc/selinux
+
+      # SELinux off — the test rootfs has no policy files; enforcing
+      # mode would freeze systemd. The toplevel may write
+      # /etc/selinux/config from modules/security/selinux.nix; the
+      # var entry shadows it via the /var/etc overlay lower.
+      cat > var/etc/selinux/config << 'SELINUXCFG'
+      SELINUX=disabled
+      SELINUXTYPE=targeted
+      SELINUXCFG
+
+      # Empty fstab — systemd-fstab-generator synthesises
+      # sysroot.mount from `root=` on the cmdline; mount-var.service
+      # handles /var.
+      : > var/etc/fstab
+
+      # Pre-generate SSH host key so sshd starts without waiting on
+      # sshd-keygen.service (the production path writes the same
+      # /var/etc/ssh/ssh_host_ed25519_key on first boot).
+      ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
+        -f var/etc/ssh/ssh_host_ed25519_key </dev/null
+
+      # NOTE: we deliberately do NOT seed /var/etc/os-release here.
+      # /var/etc is the highest-precedence /etc-overlay lower
+      # (modules/services/ignition.nix), so a var-seed os-release would
+      # shadow the generation's EROFS os-release on every boot — masking
+      # the real NAME/VERSION_ID and breaking upgrade tests that assert
+      # the active generation's version. The toplevel's own os-release
+      # (modules/base/system.nix, baked into the EROFS) surfaces instead.
+
+      # Fallback nsswitch.conf — matches the toplevel default but
+      # shadowing here means even a minimal test system gets sane
+      # NSS resolution.
+      cat > var/etc/nsswitch.conf << 'NSS'
+      passwd: files
+      group:  files
+      shadow: files
+      hosts:  files dns
+      NSS
+
+      # Test guest agent target + service. The unit refers to
+      # /opt/aos-test/bin/aos-test-agent which lives on the rootfs
+      # (postPopulate creates it). The aos-test.target is ordered
+      # After=multi-user.target so by the time the agent fires,
+      # systemctl is-active multi-user.target is provably true.
+      cat > var/etc/systemd/system/aos-test.target << 'UNIT'
       [Unit]
       Description=AOS VM Test Harness Ready
       After=multi-user.target
@@ -388,7 +388,7 @@
       [Install]
       WantedBy=multi-user.target
       UNIT
-      cat > "rootfs/$ETC_TARGET/systemd/system/aos-test-agent.service" << 'UNIT'
+      cat > var/etc/systemd/system/aos-test-agent.service << 'UNIT'
       [Unit]
       Description=AOS VM Test Guest Agent
       After=systemd-udevd.service aos-test.target
@@ -405,19 +405,15 @@
       WantedBy=aos-test.target
       UNIT
       ln -sfn ../aos-test.target \
-        "rootfs/$ETC_TARGET/systemd/system/multi-user.target.wants/aos-test.target"
+        var/etc/systemd/system/multi-user.target.wants/aos-test.target
       ln -sfn ../aos-test-agent.service \
-        "rootfs/$ETC_TARGET/systemd/system/aos-test.target.wants/aos-test-agent.service"
+        var/etc/systemd/system/aos-test.target.wants/aos-test-agent.service
     '';
 
     rootfs = mkRootfs {
       inherit pkgs lib system;
       pname = "vm-disk-${name}-rootfs";
       label = "aos-root";
-      # /etc.lower layout — stage-2 etc-overlay-setup.service mounts an
-      # overlayfs on /etc with /etc.lower as the base lower layer.
-      etcTarget = "etc.lower";
-      unwrapStoreSymlinks = true;
       # Leave the image at its initial over-provisioned size — tests
       # can write a lot during execution. 2048 MiB floor matches the
       # pre-refactor behavior.
@@ -428,13 +424,16 @@
       # reference socat at a runtime-only path (not via environment.
       # systemPackages), so include explicitly to guarantee its closure
       # lands in /nix/store. The other three are no-ops if already in
-      # toplevel's closure.
-      extraClosures = [
-        pkgs.systemd
-        pkgs.coreutils
-        pkgs.bash
-        pkgs.socat
-      ];
+      # toplevel's closure. Caller-supplied `extraClosures` (e.g. a
+      # second system toplevel for upgrade tests) are appended.
+      extraClosures =
+        [
+          pkgs.systemd
+          pkgs.coreutils
+          pkgs.bash
+          pkgs.socat
+        ]
+        ++ extraClosures;
       # Symlink farm into /usr/bin, /usr/sbin, /usr/libexec. Ordering
       # is first-wins for collisions — coreutils before systemd so
       # coreutils' `env` / `ls` / etc. don't get shadowed.
@@ -471,6 +470,11 @@
 
             # ── /var partition staging ──────────────────────────────────
             mkdir -p var
+
+            # Spec v12 model: the test-only /etc overrides + test units
+            # live on /var/etc (the persistent overlay lower), not on
+            # the rootfs's /etc tree (which is now empty by design).
+            ${varSeed}
 
             # fakeroot so the var partition's files land as uid/gid 0.
             fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img 32M
@@ -707,33 +711,18 @@
 
         hasMetadata = instanceMetadata != null;
 
-        # Firecracker has no CD-ROM support, so the ISO is attached as a
-        # read-only virtio-blk drive. blkid probes the ISO9660 superblock
-        # regardless of transport, so the guest-side detector still finds
-        # /dev/disk/by-label/aos-metadata.
-        fcMetadataDrive =
-          if hasMetadata
-          then ''
-            ,
-              {
-                "drive_id": "metadata",
-                "path_on_host": "$(pwd)/metadata.iso",
-                "is_root_device": false,
-                "is_read_only": true,
-                "cache_type": "Unsafe",
-                "io_engine": "Sync"
-              }''
-          else "";
-        # Compose checks into script, then append testScript if provided
-        checksScript =
+        # Compose Python check fragments into the test source, then
+        # append the user's testScript if provided. Both halves are
+        # Python now; see lib/testing/checks.nix:composeChecks.
+        checksPy =
           if checks != []
           then checksLib.composeChecks {inherit groupName checks;}
           else "";
-        composedScript =
-          if checksScript != "" && testScript != null
-          then checksScript + "\n" + testScript
-          else if checksScript != ""
-          then checksScript
+        composedTestPy =
+          if checksPy != "" && testScript != null
+          then checksPy + "\n" + testScript
+          else if checksPy != ""
+          then checksPy
           else if testScript != null
           then testScript
           else throw "mkVMTest '${name}': must provide either testScript or checks (or both)";
@@ -743,198 +732,74 @@
           then memory
           else 2048;
 
+        # Driver manifest. The aos-test-driver consumes this JSON to
+        # build one FirecrackerMachine; the testScript runs as a
+        # Python module via runpy with `vm` exposed as a global. See
+        # the v1 spec ("Manifest schema") for the full field list.
+        manifest = {
+          inherit name timeout;
+          machines = [
+            {
+              name = "vm";
+              transport = "firecracker";
+              kernel = builtins.toString systemKernel;
+              initrd = "${builtins.toString systemInitrd}/initrd.img";
+              disk = "${builtins.toString systemDisk}/disk.img";
+              metadata =
+                if hasMetadata
+                then "${builtins.toString systemMetadataDisk}/metadata.iso"
+                else null;
+              memory_mib = effectiveMemory;
+              vcpu_count = 2;
+            }
+          ];
+        };
+        manifestFile = pkgs.writeTextFile {
+          name = "aos-vm-test-${name}-manifest.json";
+          text = builtins.toJSON manifest;
+          destination = "/manifest.json";
+        };
+        testPyFile = pkgs.writeTextFile {
+          name = "aos-vm-test-${name}-test.py";
+          text = composedTestPy;
+          destination = "/test.py";
+        };
+
         driverBuildDeps = [
           pkgs.coreutils
-          hostJq
           firecracker
-          pkgs.aos-agent-rpc
+          pkgs.socat
+          pkgs.python3
+          pkgs.aos-test-driver
         ];
 
         # -----------------------------------------------------------------------
-        # Firecracker driver test script (system mode)
+        # Firecracker driver script (system mode)
         # -----------------------------------------------------------------------
-        # The VM boots through the production initrd path (stage-1 systemd
-        # → ignition stages → switch-root → stage-2 systemd), matching the
-        # real boot sequence. Firecracker's `boot_args` replaces the image's
-        # built-in cmdline; no `ignition.platform.id=` or
-        # `ignition.config.url=` kargs — `aos-platform-detect.service`
-        # infers the platform from DMI (→ `qemu`) and mounts the ISO9660
-        # metadata channel when the test harness attaches one.
-        firecrackerScript = ''
+        # The host-side glue is now thin: write manifest + test.py into
+        # $TMPDIR, exec aos-test-driver, copy logs into $out. Boot
+        # plumbing (Firecracker JSON, vsock handshake, agent wait,
+        # shutdown) lives in aos_test_driver/firecracker.py.
+        firecrackerDriverScript = ''
           set -eu
 
-          AGENT_SOCK="$TMPDIR/agent.sock"
-          SERIAL_LOG="$TMPDIR/serial.log"
-          FC_LOG="$TMPDIR/firecracker.log"
-          VSOCK_UDS="$TMPDIR/vm.vsock"
-          FC_CFG="$TMPDIR/fc-config.json"
-
-          # Copy disk image to writable location (Firecracker needs rw for system tests)
-          cp $DISK/disk.img disk.img
-          chmod u+w disk.img
-
-          # Copy the metadata ISO (when attached) to a writable location.
-          # virtio-blk backends open the file at launch and hold it for the
-          # run — a local copy isolates the run from any read-side caching
-          # quirks with store files on certain filesystems.
-          ${lib.optionalString hasMetadata ''
-            cp $METADATA/metadata.iso metadata.iso
-            chmod u+w metadata.iso
-          ''}
-
-          # Find the uncompressed kernel image (Firecracker requires vmlinux, not vmlinuz)
-          VMLINUX=$(ls $KERNEL/boot/vmlinux-* | head -1)
-          INITRD_IMG=$INITRD/initrd.img
-
-          # Generate a unique CID from the builder PID (range 3-65535)
-          GUEST_CID=$(( ($$ % 65533) + 3 ))
-
-          echo "Driver: firecracker"
-          echo "Kernel: $VMLINUX"
-          echo "Initrd: $INITRD_IMG"
-          echo "Disk:   disk.img ($(ls -lh disk.img | awk '{print $5}'))"
-          echo "CID: $GUEST_CID"
-          echo "Vsock UDS: $VSOCK_UDS"
-          ls -la /dev/kvm 2>/dev/null && echo "KVM: available" || echo "KVM: NOT available"
-
-          # Write Firecracker JSON config
-          cat > "$FC_CFG" << FCCFGEOF
-          {
-            "boot-source": {
-              "kernel_image_path": "$VMLINUX",
-              "initrd_path": "$INITRD_IMG",
-              "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0"
-            },
-            "drives": [
-              {
-                "drive_id": "rootfs",
-                "path_on_host": "$(pwd)/disk.img",
-                "is_root_device": false,
-                "is_read_only": false,
-                "cache_type": "Unsafe",
-                "io_engine": "Sync"
-              }${fcMetadataDrive}
-            ],
-            "machine-config": {
-              "vcpu_count": 2,
-              "mem_size_mib": ${builtins.toString effectiveMemory},
-              "smt": false,
-              "track_dirty_pages": false,
-              "huge_pages": "None"
-            },
-            "vsock": {
-              "guest_cid": $GUEST_CID,
-              "uds_path": "$VSOCK_UDS"
-            },
-            "network-interfaces": []
-          }
-          FCCFGEOF
-
-          # Clear LD_LIBRARY_PATH — AOS build libs can conflict
+          # AOS build libs can conflict with the driver's child processes
+          # (Firecracker, python's own runtime linker). Match what the
+          # bash driver did.
           unset LD_LIBRARY_PATH
 
-          # Firecracker wires the guest's ttyS0 to its own stdin/stdout. Feed
-          # stdin from a FIFO that has a permanent, silent writer (sleep holds
-          # the write end open RDWR but never writes). Guest reads from ttyS0
-          # then block indefinitely — no EOF → no agetty respawn — so the debug
-          # profile's autologin can coexist with the harness.
-          FC_STDIN="$TMPDIR/fc-stdin"
-          mkfifo "$FC_STDIN"
-          sleep infinity <>"$FC_STDIN" &
-          FC_STDIN_PID=$!
+          cp ${manifestFile}/manifest.json "$TMPDIR/manifest.json"
+          cp ${testPyFile}/test.py         "$TMPDIR/test.py"
 
-          # Launch Firecracker (serial output goes to stdout, redirected to file)
-          firecracker --no-api --config-file "$FC_CFG" \
-            < "$FC_STDIN" > "$SERIAL_LOG" 2>"$FC_LOG" &
-          FC_PID=$!
-          echo "Firecracker PID: $FC_PID"
-          sleep 1
-          if ! kill -0 "$FC_PID" 2>/dev/null; then
-            echo "ERROR: Firecracker exited immediately!"
-            echo "--- Firecracker log ---"
-            cat "$FC_LOG" 2>/dev/null || true
-            echo "--- Serial log ---"
-            cat "$SERIAL_LOG" 2>/dev/null || true
-            exit 1
-          fi
+          ${pkgs.aos-test-driver}/bin/aos-test-driver \
+            --manifest "$TMPDIR/manifest.json" \
+            --test     "$TMPDIR/test.py"
 
-          cleanup() {
-            kill "$FC_PID" 2>/dev/null || true
-            wait "$FC_PID" 2>/dev/null || true
-            kill "$FC_STDIN_PID" 2>/dev/null || true
-            wait "$FC_STDIN_PID" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-
-          # Wait for the vsock UDS to appear (Firecracker creates it on start)
-          echo "Waiting for vsock UDS..."
-          VSOCK_WAIT=0
-          while [ ! -S "$VSOCK_UDS" ]; do
-            sleep 0.1
-            VSOCK_WAIT=$((VSOCK_WAIT + 1))
-            if [ "$VSOCK_WAIT" -gt 100 ]; then
-              echo "ERROR: vsock UDS did not appear within 10s"
-              cat "$FC_LOG" 2>/dev/null || true
-              exit 1
-            fi
+          mkdir -p "$out"
+          for log in "$TMPDIR"/*-serial.log "$TMPDIR"/*-firecracker.log; do
+            [ -f "$log" ] && cp "$log" "$out/"
           done
-          echo "vsock UDS ready."
-
-          # Import shared test helpers (run_in_guest, assert_success, assert_output_contains).
-          ${assertions.vmHelpers}
-
-          # Wait for guest agent using PING/PONG
-          echo "Waiting for guest agent..."
-          START_TIME=$(date +%s)
-          DEADLINE=$((START_TIME + ${builtins.toString timeout}))
-          AGENT_READY=0
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            if kill -0 "$FC_PID" 2>/dev/null; then
-              RESPONSE=$(run_in_guest "PING" 2>/dev/null || true)
-              if echo "$RESPONSE" | grep -q '"ready"'; then
-                echo "Guest agent ready."
-                AGENT_READY=1
-                break
-              fi
-            else
-              echo "ERROR: Firecracker exited while waiting for agent"
-              echo "--- Firecracker log ---"
-              cat "$FC_LOG" 2>/dev/null || true
-              echo "--- Serial log ---"
-              cat "$SERIAL_LOG" 2>/dev/null || true
-              exit 1
-            fi
-            sleep 0.5
-          done
-
-          if [ "$AGENT_READY" -ne 1 ]; then
-            echo "TIMEOUT: Guest agent did not become ready within ${builtins.toString timeout}s"
-            echo "--- Firecracker log ---"
-            cat "$FC_LOG" 2>/dev/null || true
-            echo "--- Serial log ---"
-            cat "$SERIAL_LOG" 2>/dev/null || true
-            exit 1
-          fi
-
-          echo ""
-          echo "==> Running test: ${name}"
-          echo ""
-
-          ${composedScript}
-
-          echo ""
-          echo "Shutting down guest..."
-          run_in_guest "SHUTDOWN" || true
-          sleep 2
-          # Firecracker exits on reboot -f from guest
-          wait "$FC_PID" 2>/dev/null || true
-          trap - EXIT
-
-          echo ""
-          echo "==> All tests passed for: ${name}"
-          mkdir -p $out
-          cp "$SERIAL_LOG" $out/serial.log 2>/dev/null || true
-          echo "PASS" > $out/result
+          echo PASS > "$out/result"
         '';
       in
         pkgs.mkDerivation {
@@ -944,15 +809,10 @@
 
           buildDeps = driverBuildDeps;
 
-          DISK = builtins.toString systemDisk;
-          KERNEL = builtins.toString systemKernel;
-          INITRD = builtins.toString systemInitrd;
-          METADATA = lib.optionalString hasMetadata (builtins.toString systemMetadataDisk);
-
           phases = [
             {
               name = "test";
-              script = firecrackerScript;
+              script = firecrackerDriverScript;
             }
           ];
 

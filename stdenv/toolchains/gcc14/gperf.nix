@@ -49,10 +49,10 @@ in
         export LIBRARY_PATH="${glibc}/lib"
         CC="${gcc}/bin/gcc" \
         CXX="${gcc}/bin/g++" \
-        CFLAGS="-O2 -isystem ${glibc}/include" \
-        CXXFLAGS="-O2 -isystem ${glibc}/include" \
-        CPPFLAGS="-isystem ${glibc}/include" \
-        LDFLAGS="-L${glibc}/lib -static -no-pie" \
+        CFLAGS="-O2 -isystem ${glibc.dev}/include" \
+        CXXFLAGS="-O2 -isystem ${glibc.dev}/include" \
+        CPPFLAGS="-isystem ${glibc.dev}/include" \
+        LDFLAGS="-L${glibc.static}/lib -L${glibc}/lib -static -no-pie" \
         "$TMPDIR/gperf-3.1/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config}

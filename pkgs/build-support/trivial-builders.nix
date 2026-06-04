@@ -86,6 +86,16 @@
       # spread. These are Nix-level scheduling hints, not build inputs.
       inherit allowSubstitutes preferLocalBuild;
 
+      # writeTextFile (and writeShellScriptBin built on top of it) materializes
+      # *exactly* the text Nix interpolated, store-path references and all.
+      # Every `${foo}/bin/bar` substitution in `text` is intentional — that's
+      # the whole API contract. Letting scrubPhase rewrite those hashes would
+      # turn every generated wrapper script into a runtime exec failure
+      # (regression observed: nix-overlay-setup-start invoked
+      #  /nix/store/eeee…-util-linux-2.41/bin/mount and exited 127, leaving
+      # the initrd unable to switch root).
+      dontNukeRefs = true;
+
       phases = [
         {
           name = "build";
@@ -166,6 +176,13 @@
       {
         inherit name;
         src = null;
+        # Same rationale as writeTextFile above: callers (the systemd-lib
+        # generators, the cmdline / os-release composers, etc.) interpolate
+        # store paths into the buildCommand body and into the produced files,
+        # and they want those interpolations to survive verbatim. Opt out of
+        # scrubPhase so the produced output isn't byte-rewritten on the way
+        # to $out. Callers that need scrubbing can override.
+        dontNukeRefs = true;
         phases = [
           {
             name = "build";

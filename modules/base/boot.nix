@@ -51,22 +51,34 @@
           "virtio_pci"
           "virtio_net"
           "ext4"
-          # isofs is required so aos-platform-detect.service can mount
-          # the ISO9660 `aos-metadata` channel — used by VM tests and
-          # by bare-metal operators who attach metadata via IPMI
-          # virtual media.
           "isofs"
+          "usb_storage"
+          "uas"
           "overlay"
           "dm-crypt"
           "qemu_fw_cfg"
+          # Cloud NIC drivers — stage-1 ignition brings up DHCP on
+          # network-dependent platforms to fetch instance metadata.
+          # systemd-modules-load ignores absent/hardware-missing modules,
+          # so listing drivers irrelevant to a given platform is safe.
+          "ena" # AWS Nitro
+          "gve" # GCP gVNIC
+          "hv_netvsc" # Azure / Hyper-V
+          "mlx5_core" # Azure accelerated networking (ConnectX-5+)
+          "mlx4_en" # Mellanox ConnectX-3 (pulls mlx4_core via modprobe)
         ];
         description = ''
           Kernel modules to include in the initrd. These are loaded
           early in boot before the root filesystem is mounted. The
           defaults cover virtio (QEMU/KVM block, PCI, net), ext4
-          root, ISO9660 metadata channel, overlayfs for /etc,
-          dm-crypt for encrypted swap, and qemu_fw_cfg for ignition's
-          QEMU platform reader.
+          root, ISO9660 metadata channel, USB mass storage
+          (usb_storage/uas) for bare-metal IPMI virtual media,
+          overlayfs for /etc, dm-crypt for encrypted swap,
+          qemu_fw_cfg for ignition's QEMU platform reader, and the
+          cloud NIC drivers (ena/gve/hv_netvsc/mlx5_core/mlx4_en)
+          that stage-1 ignition networking needs to DHCP for instance
+          metadata. (af_packet is builtin — CONFIG_PACKET=y — so it is
+          not listed here.)
         '';
       };
     };

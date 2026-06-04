@@ -1,6 +1,8 @@
 use std::process::Stdio;
 
+use aos_core::nix::aos_nix_env;
 use axum::body::Body;
+use sha2::{Digest, Sha256};
 use tokio::process::Command;
 use tokio_util::io::ReaderStream;
 use anyhow::{Context as _, Result};
@@ -44,6 +46,7 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
     match compression {
         Compression::None => {
             let mut child = Command::new("nix-store")
+                .envs(aos_nix_env())
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -62,6 +65,7 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
             // Use std::process for the dump command so we can pipe its
             // ChildStdout directly into the zstd process as Stdio.
             let mut dump = std::process::Command::new("nix-store")
+                .envs(aos_nix_env())
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -93,6 +97,7 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
         }
         Compression::Xz { level } => {
             let mut dump = std::process::Command::new("nix-store")
+                .envs(aos_nix_env())
                 .args(["--dump", store_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -123,4 +128,81 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
             Ok(Body::from_stream(stream))
         }
     }
+}
+
+/// Compute (file_hash, file_size) of a store path's compressed NAR — i.e.
+/// the SHA-256 and byte length of exactly what `nar_stream` would emit for
+/// the given `Compression`. Used to populate the `FileHash` / `FileSize`
+/// fields of the narinfo response (`format_narinfo`); the corresponding
+/// `NarHash` / `NarSize` come from the Nix DB and describe the uncompressed
+/// NAR instead.
+///
+/// Buffers the whole compressed stream in memory — fine for the small
+/// paths typical in tests and `apm install` consumers, but a future
+/// streaming-hash refactor would be friendlier to large closures.
+pub fn compute_file_hash_size(
+    store_path: &str,
+    compression: Compression,
+) -> Result<(String, u64)> {
+    use std::process::Command as StdCommand;
+
+    let output = match compression {
+        Compression::None => StdCommand::new("nix-store")
+            .envs(aos_nix_env())
+            .args(["--dump", store_path])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .with_context(|| format!("nix-store --dump {store_path}"))?,
+        Compression::Zstd { level } => {
+            let mut dump = StdCommand::new("nix-store")
+                .envs(aos_nix_env())
+                .args(["--dump", store_path])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .with_context(|| format!("spawning nix-store --dump {store_path}"))?;
+            let dump_stdout: Stdio = dump.stdout.take().context("no stdout")?.into();
+            let level_arg = format!("-{level}");
+            let out = StdCommand::new("zstd")
+                .args(["-c", &level_arg])
+                .stdin(dump_stdout)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .context("spawning zstd")?;
+            dump.wait().ok();
+            out
+        }
+        Compression::Xz { level } => {
+            let mut dump = StdCommand::new("nix-store")
+                .envs(aos_nix_env())
+                .args(["--dump", store_path])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .with_context(|| format!("spawning nix-store --dump {store_path}"))?;
+            let dump_stdout: Stdio = dump.stdout.take().context("no stdout")?.into();
+            let level_arg = format!("-{level}");
+            let out = StdCommand::new("xz")
+                .args(["-c", "-T0", &level_arg])
+                .stdin(dump_stdout)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .context("spawning xz")?;
+            dump.wait().ok();
+            out
+        }
+    };
+
+    if !output.status.success() {
+        anyhow::bail!("compression pipeline failed for {store_path}");
+    }
+
+    let digest = Sha256::digest(&output.stdout);
+    Ok((
+        format!("sha256:{}", hex::encode(digest)),
+        output.stdout.len() as u64,
+    ))
 }

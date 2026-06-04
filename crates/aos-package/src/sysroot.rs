@@ -7,15 +7,23 @@
 //! to determine if a reboot is needed.
 
 use std::collections::HashSet;
+use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 use aos_core::output::Printer;
+use aos_systemd::{FailedUnitsReport, JobResult, SystemdClient};
 
 use crate::config::ApmConfig;
-use crate::download::{download_nars, resolve_mirror, DownloadRequest};
+use crate::unit_diff::{self, UnitDiff};
+use crate::download::{
+    default_engine, download_nars, fetch_narinfos, resolve_mirror, DownloadRequest,
+    ResolvedDownload,
+};
 use crate::registry::{store_path_hash, RegistrySet};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
@@ -124,9 +132,26 @@ pub async fn install_system(
         .copied()
         .collect();
 
-    // Step 3: Print summary.
+    // Step 3: Plan + fetch narinfo for missing paths so the summary can
+    // show real compressed sizes and download_nars has the cache's URLs.
     printer.step(3, 8, "Planning...");
-    let download_size: u64 = to_download.iter().map(|m| m.download_size).sum();
+    let requests = build_download_requests(&closures, &to_download, config)?;
+    let engine = std::sync::Arc::new(default_engine());
+    let resolved: Vec<ResolvedDownload> = if requests.is_empty() {
+        Vec::new()
+    } else {
+        fetch_narinfos(
+            std::sync::Arc::clone(&engine),
+            &requests,
+            config.settings.parallel_downloads,
+            printer,
+        )
+        .await?
+    };
+    let download_size: u64 = resolved
+        .iter()
+        .map(|r| r.narinfo.file_size.unwrap_or(0))
+        .sum();
     let total_refs = toplevel_meta.references.len();
     printer.kv("Package", &format!("{} {}", pkg_name, toplevel_meta.version));
     printer.kv("Closure paths", &format!("{}", all_metas.len()));
@@ -145,13 +170,12 @@ pub async fn install_system(
     }
 
     // Step 5: Download missing NARs.
-    if !to_download.is_empty() {
+    if !resolved.is_empty() {
         printer.step(4, 8, "Downloading...");
-        let requests = build_download_requests(&closures, &to_download, config)?;
         let nar_cache = config.nar_cache_path();
 
         let results = download_nars(
-            &requests,
+            &resolved,
             &nar_cache,
             config.settings.parallel_downloads,
             printer,
@@ -169,9 +193,14 @@ pub async fn install_system(
 
         printer.step(6, 8, "Importing...");
         for result in &results {
-            import_nar(&result.local_path, &result.store_path)
-                .await
-                .with_context(|| format!("importing {}", result.store_path))?;
+            import_nar(
+                &result.local_path,
+                &result.store_path,
+                &result.references,
+                result.deriver.as_deref(),
+            )
+            .await
+            .with_context(|| format!("importing {}", result.store_path))?;
         }
     } else {
         printer.info("All paths already in store.");
@@ -211,36 +240,48 @@ pub async fn install_system(
         .with_context(|| format!("creating toplevel symlink in gen-{gen_num}"))?;
 
     state.generations.push(new_gen);
-    state.current = gen_num;
     save_generation_state(&profile_path, &state)?;
-
-    // Atomic switch: current -> gen-N
-    let current_link = profile_path.join("current");
-    let tmp_link = profile_path.join(".current.tmp");
-    let _ = std::fs::remove_file(&tmp_link);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(format!("gen-{gen_num}"), &tmp_link)?;
-    std::fs::rename(&tmp_link, &current_link)?;
 
     // Step 8: Activation and kernel comparison.
     printer.step(8, 8, "Activating...");
 
-    // Run activation script if it exists.
+    // Run the toplevel's activate script with the generation number. It
+    // rebuilds this gen's /etc overlay, reconciles running daemons, and
+    // swaps /etc in atomically (daemon reconciliation now happens inside
+    // the activate script, not here). Its exit code is the authority on
+    // what happened (see modules/base/activate.sh.in):
+    //   0      switch succeeded, every unit healthy
+    //   5      switch succeeded; only stale-mount cleanup failed (cosmetic)
+    //   6      switch succeeded but some units failed — the upgrade is
+    //          applied and the gen stays live, but apm exits non-zero
+    //   1/2/3  failed before the swap; the previous gen is still live
+    //   4      swap incomplete; /etc indeterminate — operator must intervene
+    let mut activate_degraded = false;
     let activate_script = format!("{}/activate", toplevel_meta.store_path);
     if Path::new(&activate_script).exists() {
         let status = std::process::Command::new(&activate_script)
+            .arg(gen_num.to_string())
             .status()
             .with_context(|| format!("running {activate_script}"))?;
-        if !status.success() {
-            printer.warning("Activation script returned non-zero exit code.");
+        match status.code() {
+            Some(0) => {}
+            Some(5) => printer.warning(
+                "Activation succeeded, but cleanup of the previous \
+                 generation's mounts failed (stale /run/etc mounts).",
+            ),
+            Some(6) => activate_degraded = true,
+            Some(4) => anyhow::bail!(
+                "FATAL: the /etc swap is incomplete; the running system's \
+                 /etc may be in an indeterminate state. Manual intervention \
+                 is required (gen-{gen_num})."
+            ),
+            other => anyhow::bail!(
+                "Activation failed before the /etc swap (exit {other:?}); the \
+                 previous generation is still live."
+            ),
         }
     }
-
-    // Diff services if both old and new toplevels have etc/systemd.
-    if let Some(ref old) = old_gen {
-        let diff = diff_services(&old.toplevel, &toplevel_meta.store_path);
-        run_service_diff(&diff, printer);
-    }
+    commit_current_generation(&profile_path, &mut state, gen_num)?;
 
     // Handle kernel upgrade according to the chosen mode.
     let old_kernel_path = old_gen.as_ref().and_then(|g| g.kernel_path.clone());
@@ -268,6 +309,14 @@ pub async fn install_system(
         }
         _ => "",
     };
+
+    if activate_degraded {
+        anyhow::bail!(
+            "System generation {gen_num} is live, but one or more units failed \
+             to (re)start (see the reconcile report above). The upgrade was \
+             applied; the failing units need attention."
+        );
+    }
 
     printer.success(&format!(
         "System generation {gen_num} active: {} {}{}",
@@ -422,31 +471,37 @@ pub async fn rollback_system(
         return Ok(());
     }
 
-    // Switch current symlink.
-    state.current = target.number;
-    save_generation_state(&profile_path, &state)?;
-
-    let current_link = profile_path.join("current");
-    let tmp_link = profile_path.join(".current.tmp");
-    let _ = std::fs::remove_file(&tmp_link);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(format!("gen-{}", target.number), &tmp_link)?;
-    std::fs::rename(&tmp_link, &current_link)?;
-
-    // Run activation on the target toplevel.
+    // Run the target generation's activate script with its gen number.
+    // It rebuilds the target gen's /etc overlay, reconciles daemons, and
+    // swaps /etc in atomically. Exit-code contract matches install (see
+    // modules/base/activate.sh.in).
+    let mut activate_degraded = false;
     let activate_script = format!("{}/activate", target.toplevel);
     if Path::new(&activate_script).exists() {
         let status = std::process::Command::new(&activate_script)
+            .arg(target.number.to_string())
             .status()
             .with_context(|| format!("running {activate_script}"))?;
-        if !status.success() {
-            printer.warning("Activation script returned non-zero exit code.");
+        match status.code() {
+            Some(0) => {}
+            Some(5) => printer.warning(
+                "Rollback activation succeeded, but cleanup of the previous \
+                 generation's mounts failed (stale /run/etc mounts).",
+            ),
+            Some(6) => activate_degraded = true,
+            Some(4) => anyhow::bail!(
+                "FATAL: the /etc swap is incomplete; the running system's \
+                 /etc may be in an indeterminate state. Manual intervention \
+                 is required (gen-{})." ,
+                target.number
+            ),
+            other => anyhow::bail!(
+                "Rollback activation failed before the /etc swap (exit \
+                 {other:?}); the previous generation is still live."
+            ),
         }
     }
-
-    // Diff services.
-    let diff = diff_services(&current.toplevel, &target.toplevel);
-    run_service_diff(&diff, printer);
+    commit_current_generation(&profile_path, &mut state, target.number)?;
 
     // Handle kernel upgrade according to the chosen mode.
     handle_kernel_upgrade(
@@ -458,6 +513,18 @@ pub async fn rollback_system(
         printer,
     )
     .await?;
+
+    if activate_degraded {
+        anyhow::bail!(
+            "Rolled back to system generation {} ({} {}), which is now live, \
+             but one or more units failed to (re)start (see the reconcile \
+             report above). The rollback was applied; the failing units need \
+             attention.",
+            target.number,
+            target.package_name,
+            target.version,
+        );
+    }
 
     printer.success(&format!(
         "Rolled back to system generation {} ({} {}).",
@@ -594,16 +661,22 @@ async fn download_image(
     let mirror_url = resolve_image_mirror(config, meta);
     let request = DownloadRequest {
         store_path: img.store_path.clone(),
-        nar_hash: img.nar_hash.clone(),
-        download_hash: img.download_hash.clone(),
-        download_size: img.download_size,
         mirror_url,
     };
+
+    let engine = std::sync::Arc::new(default_engine());
+    let resolved = fetch_narinfos(
+        std::sync::Arc::clone(&engine),
+        &[request],
+        config.settings.parallel_downloads,
+        printer,
+    )
+    .await?;
 
     let nar_cache = config.nar_cache_path();
 
     let results = download_nars(
-        &[request],
+        &resolved,
         &nar_cache,
         config.settings.parallel_downloads,
         printer,
@@ -618,7 +691,13 @@ async fn download_image(
     let result = &results[0];
     verify_download_hash(&result.local_path, &result.download_hash)?;
     verify_nar_hash(&result.local_path, &result.nar_hash)?;
-    import_nar(&result.local_path, &result.store_path).await?;
+    import_nar(
+        &result.local_path,
+        &result.store_path,
+        &result.references,
+        result.deriver.as_deref(),
+    )
+    .await?;
 
     // Copy the image file from the store path to the output.
     // The image store path typically contains a single large file.
@@ -690,6 +769,23 @@ fn save_generation_state(profile_path: &Path, state: &SystemGenerationState) -> 
     Ok(())
 }
 
+fn commit_current_generation(
+    profile_path: &Path,
+    state: &mut SystemGenerationState,
+    generation: u32,
+) -> Result<()> {
+    state.current = generation;
+    save_generation_state(profile_path, state)?;
+
+    let current_link = profile_path.join("current");
+    let tmp_link = profile_path.join(".current.tmp");
+    let _ = std::fs::remove_file(&tmp_link);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(format!("gen-{generation}"), &tmp_link)?;
+    std::fs::rename(&tmp_link, &current_link)?;
+    Ok(())
+}
+
 /// Get the current sysroot's store path, if any.
 fn current_sysroot_store_path() -> Result<Option<String>> {
     let profile_path = ProfileScope::System.profile_path();
@@ -705,116 +801,393 @@ fn current_sysroot_store_path() -> Result<Option<String>> {
 }
 
 // ---------------------------------------------------------------------------
-// Service diffing
+// Daemon reconciliation reporting helpers
+//
+// The old toplevel-vs-toplevel `diff_services` path was removed when daemon
+// reconciliation moved into the activate script's hidden pre/post split (see
+// `activate_pre_etc_swap` / `activate_post_etc_swap`, which diff the live
+// `/etc` against the candidate `/etc` via `crate::unit_diff`). These two
+// helpers — per-job warning and the failed-units report formatter — are still
+// used by that reconciler and by the kernel-upgrade path.
 // ---------------------------------------------------------------------------
 
-/// Represents the diff between two toplevels' systemd units.
-struct ServiceDiff {
-    added: Vec<String>,
-    removed: Vec<String>,
-    changed: Vec<String>,
-}
-
-/// Compute the service diff between an old and new toplevel.
-fn diff_services(old_toplevel: &str, new_toplevel: &str) -> ServiceDiff {
-    let old_units = list_unit_files(old_toplevel);
-    let new_units = list_unit_files(new_toplevel);
-
-    let old_set: HashSet<&str> = old_units.iter().map(|(n, _)| n.as_str()).collect();
-    let new_set: HashSet<&str> = new_units.iter().map(|(n, _)| n.as_str()).collect();
-
-    let added: Vec<String> = new_set
-        .difference(&old_set)
-        .map(|s| s.to_string())
-        .collect();
-    let removed: Vec<String> = old_set
-        .difference(&new_set)
-        .map(|s| s.to_string())
-        .collect();
-
-    // Changed: same name, different content hash.
-    let old_map: std::collections::HashMap<&str, &str> = old_units
-        .iter()
-        .map(|(n, h)| (n.as_str(), h.as_str()))
-        .collect();
-    let new_map: std::collections::HashMap<&str, &str> = new_units
-        .iter()
-        .map(|(n, h)| (n.as_str(), h.as_str()))
-        .collect();
-
-    let changed: Vec<String> = old_set
-        .intersection(&new_set)
-        .filter(|name| old_map.get(*name) != new_map.get(*name))
-        .map(|s| s.to_string())
-        .collect();
-
-    ServiceDiff {
-        added,
-        removed,
-        changed,
+/// Warn (but do not fail) when a unit lifecycle job ended in something other
+/// than `done`. The hard failure is the post-activation `failed_units` scan
+/// in [`activate_post_etc_swap`] — a job can report a transient non-`done` result
+/// yet the unit still settle active, so the authoritative gate is the final
+/// state.
+fn warn_if_job_not_done(printer: &Printer, verb: &str, unit: &str, result: &JobResult) {
+    if !result.is_done() {
+        printer.warning(&format!(
+            "  {verb} {unit}: systemd job result '{}'",
+            result.label(),
+        ));
     }
 }
 
-/// List unit files under a toplevel's etc/systemd/system/ directory.
-/// Returns (unit_name, content_hash) pairs.
-fn list_unit_files(toplevel: &str) -> Vec<(String, String)> {
-    let units_dir = PathBuf::from(toplevel).join("etc/systemd/system");
-    let mut results = Vec::new();
+/// Render a [`FailedUnitsReport`] for human display: a one-line summary per
+/// failed unit (state / sub-state / exit status) followed by its captured
+/// `systemctl status` dump, indented.
+fn format_failed_units(report: &FailedUnitsReport) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{} service(s) failed during activation:",
+        report.failed.len(),
+    );
+    for u in &report.failed {
+        let status = match u.exec_main_status {
+            Some(code) => code.to_string(),
+            None => "n/a".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "  - {} (active={}, sub={}, ExecMainStatus={})",
+            u.name, u.active_state, u.sub_state, status,
+        );
+        for line in u.status_dump.lines() {
+            let _ = writeln!(out, "      {line}");
+        }
+    }
+    out
+}
 
-    if let Ok(entries) = std::fs::read_dir(&units_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                let content = std::fs::read(&path).unwrap_or_default();
-                // Simple fingerprint: length + djb2 hash of content.
-                let hash = format!("{}-{:x}", content.len(), djb2_hash(&content));
-                results.push((name, hash));
-            }
+// ---------------------------------------------------------------------------
+// Live daemon reconciliation (`apm activate-{pre,post}-etc-swap`)
+// ---------------------------------------------------------------------------
+
+/// Exit codes for the hidden activation reconciler subcommands. The activate
+/// script maps these into its own 0/3/4/5/6 contract.
+const RECONCILE_OK: i32 = 0;
+const RECONCILE_FAILED_UNITS: i32 = 1;
+const RECONCILE_CATASTROPHIC: i32 = 2;
+
+const PLAN_SCHEMA_VERSION: u32 = 1;
+
+/// Where the activation orchestrator keeps the switch lock and plan files. It
+/// lives on tmpfs (`/run`), so crash debris disappears on reboot.
+const APM_RUN_DIR: &str = "/run/apm";
+
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Plan {
+    schema_version: u32,
+    generation: u32,
+    /// Stopped by the pre-swap phase. Best-effort, informational.
+    stopped: Vec<String>,
+    /// Remaining post-swap actions, already in apply order.
+    to_reload: Vec<String>,
+    to_restart: Vec<String>,
+    to_start: Vec<String>,
+    /// Units reconciled because an `X-Reload-Triggers` path changed.
+    blanket_targets: Vec<String>,
+    warnings: Vec<String>,
+}
+
+/// `apm activate-pre-etc-swap` — compute the live-vs-candidate diff while the
+/// old `/etc` is still live, stop removed / stop-if-changed units under their
+/// old definitions, and print the post-swap plan path on stdout.
+pub async fn activate_pre_etc_swap(
+    generation: u32,
+    candidate_etc: &Path,
+    dry_run: bool,
+    printer: &Printer,
+) -> i32 {
+    match activate_pre_etc_swap_inner(generation, candidate_etc, dry_run, printer).await {
+        Ok(code) => code,
+        Err(e) => {
+            printer.error(&format!("activate-pre-etc-swap: {e:#}"));
+            RECONCILE_CATASTROPHIC
+        }
+    }
+}
+
+async fn activate_pre_etc_swap_inner(
+    generation: u32,
+    candidate_etc: &Path,
+    dry_run: bool,
+    printer: &Printer,
+) -> Result<i32> {
+    // `compute_diff` takes /etc roots and appends `systemd/system` itself.
+    // In this phase live `/etc` is intentionally the old generation.
+    let diff = unit_diff::compute_diff(Path::new("/etc"), candidate_etc);
+    for w in &diff.warnings {
+        printer.warning(w);
+    }
+
+    if dry_run {
+        print_diff(&diff, printer);
+        return Ok(RECONCILE_OK);
+    }
+
+    // The candidate systemd tree must exist and be readable; otherwise the
+    // diff would look like "everything removed" and stop live units.
+    let candidate_units = candidate_etc.join("systemd/system");
+    if !candidate_units.is_dir() {
+        bail!(
+            "candidate /etc has no readable systemd/system dir: {}",
+            candidate_units.display()
+        );
+    }
+
+    let run_dir = Path::new(APM_RUN_DIR);
+    ensure_secure_run_dir(run_dir)?;
+
+    let client = SystemdClient::connect()
+        .await
+        .context("connecting to systemd over D-Bus")?;
+
+    let plan = plan_from_diff(generation, diff);
+    let plan_path = write_plan(run_dir, &plan)?;
+
+    printer.info(&format!(
+        "Preparing daemon reconcile plan for generation {generation}..."
+    ));
+
+    // Clear stale failed state for this whole switch before any action. We do
+    // not reset after the post-swap apply, because that would mask failures
+    // introduced by this activation before the health scan.
+    client.reset_failed().await.context("reset-failed")?;
+
+    for unit in &plan.stopped {
+        printer.plain(&format!("  stopping   {unit}"));
+        match client.stop_unit(unit).await {
+            Ok(outcome) => warn_if_job_not_done(printer, "stop", unit, &outcome.result),
+            Err(e) => printer.warning(&format!("  stop {unit}: {e:#}")),
         }
     }
 
-    results
+    println!("{}", plan_path.display());
+    Ok(RECONCILE_OK)
 }
 
-/// Execute service diff operations via systemctl.
-fn run_service_diff(diff: &ServiceDiff, printer: &Printer) {
-    if diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty() {
-        return;
+/// `apm activate-post-etc-swap` — consume the plan after `/etc` has been
+/// swapped, reload systemd, apply reload/restart/start actions, and scan the
+/// final failed-unit state.
+pub async fn activate_post_etc_swap(plan_path: &Path, printer: &Printer) -> i32 {
+    match activate_post_etc_swap_inner(plan_path, printer).await {
+        Ok(code) => code,
+        Err(e) => {
+            printer.error(&format!("activate-post-etc-swap: {e:#}"));
+            RECONCILE_CATASTROPHIC
+        }
     }
+}
 
-    // Daemon reload first.
-    let _ = std::process::Command::new("systemctl")
-        .arg("daemon-reload")
-        .status();
+async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Result<i32> {
+    let plan = read_validated_plan(plan_path)?;
+    ensure_secure_run_dir(Path::new(APM_RUN_DIR))?;
 
-    for unit in &diff.removed {
-        printer.plain(&format!("  Stopping: {unit}"));
-        let _ = std::process::Command::new("systemctl")
-            .args(["stop", unit])
-            .status();
-    }
+    let client = SystemdClient::connect()
+        .await
+        .context("connecting to systemd over D-Bus")?;
 
-    for unit in &diff.changed {
-        printer.plain(&format!("  Restarting: {unit}"));
-        let _ = std::process::Command::new("systemctl")
-            .args(["restart", unit])
-            .status();
-    }
-
-    for unit in &diff.added {
-        printer.plain(&format!("  Starting: {unit}"));
-        let _ = std::process::Command::new("systemctl")
-            .args(["start", unit])
-            .status();
-    }
-
-    printer.plain(&format!(
-        "Services: {} added, {} removed, {} changed.",
-        diff.added.len(),
-        diff.removed.len(),
-        diff.changed.len(),
+    printer.info(&format!(
+        "Applying daemon reconcile plan for generation {}...",
+        plan.generation
     ));
+    if !plan.blanket_targets.is_empty() {
+        printer.info(&format!(
+            "reload-trigger driven: {}",
+            plan.blanket_targets.join(" ")
+        ));
+    }
+
+    client.daemon_reload().await.context("daemon-reload")?;
+
+    for unit in &plan.to_reload {
+        printer.plain(&format!("  reloading  {unit}"));
+        let outcome = client
+            .reload_unit(unit)
+            .await
+            .with_context(|| format!("reloading {unit}"))?;
+        warn_if_job_not_done(printer, "reload", unit, &outcome.result);
+    }
+
+    for unit in &plan.to_restart {
+        printer.plain(&format!("  restarting {unit}"));
+        let outcome = client
+            .restart_unit(unit)
+            .await
+            .with_context(|| format!("restarting {unit}"))?;
+        warn_if_job_not_done(printer, "restart", unit, &outcome.result);
+    }
+
+    for unit in &plan.to_start {
+        printer.plain(&format!("  starting   {unit}"));
+        let outcome = client
+            .start_unit(unit)
+            .await
+            .with_context(|| format!("starting {unit}"))?;
+        warn_if_job_not_done(printer, "start", unit, &outcome.result);
+    }
+
+    // Drain late job events so the scan below sees settled unit states. Do not
+    // reset failed state here; pre-swap reset already cleared stale failures.
+    let late = client.settle().await.context("settling job events")?;
+    if late > 0 {
+        printer.info(&format!("settled {late} late job event(s)"));
+    }
+
+    // Authoritative health gate: a (re)started unit can knock over a dependent
+    // one, so scan all units, not just the ones we touched.
+    let report = client
+        .failed_units()
+        .await
+        .context("scanning for failed units")?;
+
+    let _ = std::fs::remove_file(plan_path);
+
+    if !report.is_empty() {
+        printer.error(&format_failed_units(&report));
+        return Ok(RECONCILE_FAILED_UNITS);
+    }
+
+    printer.success(&format!(
+        "Reconcile complete: {} stopped, {} reloaded, {} restarted, {} started.",
+        plan.stopped.len(),
+        plan.to_reload.len(),
+        plan.to_restart.len(),
+        plan.to_start.len(),
+    ));
+    Ok(RECONCILE_OK)
+}
+
+fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
+    let install_only = std::mem::take(&mut diff.install_only);
+    for unit in install_only {
+        if !diff.to_start.contains(&unit) {
+            diff.to_start.push(unit);
+        }
+    }
+
+    Plan {
+        schema_version: PLAN_SCHEMA_VERSION,
+        generation,
+        stopped: diff.to_stop,
+        to_reload: diff.to_reload,
+        to_restart: diff.to_restart,
+        to_start: diff.to_start,
+        blanket_targets: diff.blanket_targets,
+        warnings: diff.warnings,
+    }
+}
+
+/// Create `/run/apm` securely if absent; otherwise reject anything other than a
+/// root-owned 0700 directory.
+fn ensure_secure_run_dir(dir: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("chmod 0700 {}", dir.display()))?;
+        }
+        Err(e) => return Err(e).with_context(|| format!("stat {}", dir.display())),
+    }
+
+    validate_secure_dir(dir)
+}
+
+fn validate_secure_dir(dir: &Path) -> Result<()> {
+    let meta = std::fs::symlink_metadata(dir).with_context(|| format!("stat {}", dir.display()))?;
+    if meta.file_type().is_symlink() || !meta.file_type().is_dir() {
+        bail!("{} is not a real directory", dir.display());
+    }
+    if !root_owned_for_runtime(meta.uid()) {
+        bail!("{} is not owned by root", dir.display());
+    }
+    let mode = meta.mode() & 0o777;
+    if mode != 0o700 {
+        bail!("{} has mode {mode:o}, expected 700", dir.display());
+    }
+    Ok(())
+}
+
+fn write_plan(run_dir: &Path, plan: &Plan) -> Result<PathBuf> {
+    let f = tempfile::Builder::new()
+        .prefix("plan-")
+        .suffix(".json")
+        .tempfile_in(run_dir)
+        .with_context(|| format!("creating plan in {}", run_dir.display()))?;
+    serde_json::to_writer(f.as_file(), plan).context("serializing activation plan")?;
+    let _ = f.as_file().sync_all();
+    let (_, path) = f
+        .keep()
+        .with_context(|| format!("persisting plan in {}", run_dir.display()))?;
+    Ok(path)
+}
+
+fn read_validated_plan(path: &Path) -> Result<Plan> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .with_context(|| format!("opening plan {}", path.display()))?;
+
+    let meta = fstat_file(&file).with_context(|| format!("stat plan {}", path.display()))?;
+    if (meta.st_mode & libc::S_IFMT) != libc::S_IFREG {
+        bail!("plan {} is not a regular file", path.display());
+    }
+    if !root_owned_for_runtime(meta.st_uid) {
+        bail!("plan {} is not owned by root", path.display());
+    }
+    let mode = meta.st_mode & 0o777;
+    if mode != 0o600 {
+        bail!("plan {} has mode {mode:o}, expected 600", path.display());
+    }
+
+    let plan: Plan = serde_json::from_reader(file)
+        .with_context(|| format!("parsing plan {}", path.display()))?;
+    if plan.schema_version != PLAN_SCHEMA_VERSION {
+        bail!(
+            "plan {} has schema version {}, expected {}",
+            path.display(),
+            plan.schema_version,
+            PLAN_SCHEMA_VERSION
+        );
+    }
+    Ok(plan)
+}
+
+fn fstat_file(file: &std::fs::File) -> Result<libc::stat> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `stat` points to valid writable storage and `file` owns a live fd.
+    let rc = unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("fstat");
+    }
+    // SAFETY: fstat returned success, so it initialized the struct.
+    Ok(unsafe { stat.assume_init() })
+}
+
+fn root_owned_for_runtime(uid: u32) -> bool {
+    uid == 0 || cfg!(test)
+}
+
+/// Print the reconciliation plan without applying it (`--dry-run`).
+fn print_diff(diff: &UnitDiff, printer: &Printer) {
+    let show = |label: &str, units: &[String]| {
+        let body = if units.is_empty() {
+            "(none)".to_string()
+        } else {
+            units.join(" ")
+        };
+        printer.plain(&format!("  {label:<9}{body}"));
+    };
+    show("stop:", &diff.to_stop);
+    show("reload:", &diff.to_reload);
+    show("restart:", &diff.to_restart);
+    show("start:", &diff.to_start);
+    if !diff.install_only.is_empty() {
+        show("install:", &diff.install_only);
+    }
+    if !diff.blanket_targets.is_empty() {
+        printer.plain(&format!(
+            "  (reload-trigger driven: {})",
+            diff.blanket_targets.join(" ")
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -960,7 +1333,12 @@ async fn handle_kernel_upgrade(
             } else {
                 printer.plain("Rebooting (kernel unchanged)...");
             }
-            run_command("systemctl", &["reboot"])?;
+            // Queue the reboot over D-Bus (`Manager.Reboot`) rather than
+            // shelling out to `systemctl reboot`. Constructed lazily, only on
+            // this arm. Returns once systemd has queued the transition; this
+            // process then exits or is torn down as systemd stops the system.
+            let client = SystemdClient::connect().await?;
+            client.reboot().await?;
         }
         KernelUpgradeMode::Live => {
             if kernel_changed {
@@ -1022,16 +1400,27 @@ async fn drain_workloads(toplevel: &str, printer: &Printer) -> Result<()> {
         return Ok(());
     }
 
-    // Fall back to systemd drain target if it exists.
-    let status = std::process::Command::new("systemctl")
-        .args(["is-active", "drain.target"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    if status.map(|s| s.success()).unwrap_or(false) {
+    // Fall back to the systemd `drain.target` if it exists. The client is
+    // constructed lazily here, only on the no-drain-script path (the common
+    // case ships a drain script and returns above). `start_unit` awaits the
+    // job, giving us the old `systemctl start --wait` semantics for free.
+    let client = SystemdClient::connect().await?;
+    if client.is_active("drain.target").await? {
         printer.plain("Draining workloads via drain.target...");
-        run_command("systemctl", &["isolate", "drain.target"])?;
-        run_command("systemctl", &["start", "--wait", "drain-complete.target"])?;
+        let isolate = client.isolate_unit("drain.target").await?;
+        if !isolate.result.is_done() {
+            bail!(
+                "isolating drain.target failed: systemd job result '{}'",
+                isolate.result.label(),
+            );
+        }
+        let complete = client.start_unit("drain-complete.target").await?;
+        if !complete.result.is_done() {
+            bail!(
+                "drain-complete.target failed: systemd job result '{}'",
+                complete.result.label(),
+            );
+        }
         printer.plain("Drain complete.");
     }
 
@@ -1081,7 +1470,7 @@ fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> String {
     if let Some((cfg, _)) = config.registries.first() {
         return resolve_mirror(cfg);
     }
-    "https://cache.aos.dev/nar".to_string()
+    "https://cache.aos.dev".to_string()
 }
 
 fn build_download_requests(
@@ -1100,7 +1489,7 @@ fn build_download_requests(
             let mirror_url = if let Some(cfg) = reg_config {
                 resolve_mirror(cfg)
             } else {
-                format!("https://registry.aos.dev/{}/nar", c.registry_name)
+                format!("https://registry.aos.dev/{}", c.registry_name)
             };
             (c.registry_name.clone(), mirror_url)
         })
@@ -1129,9 +1518,6 @@ fn build_download_requests(
 
         requests.push(DownloadRequest {
             store_path: meta.store_path.clone(),
-            nar_hash: meta.nar_hash.clone(),
-            download_hash: meta.download_hash.clone(),
-            download_size: meta.download_size,
             mirror_url: mirror_url.clone(),
         });
     }
@@ -1173,7 +1559,13 @@ fn format_size(bytes: u64) -> String {
 }
 
 /// Simple DJB2 hash for content fingerprinting (not cryptographic).
-fn djb2_hash(data: &[u8]) -> u64 {
+///
+/// `pub(crate)` so the live-vs-candidate diff engine in [`crate::unit_diff`]
+/// can share the same deterministic, dependency-free hash. The unit
+/// fingerprint is only ever compared within a single activation reconcile
+/// process, so a non-cryptographic hash is sufficient and lets us avoid
+/// pulling in `twox-hash` (which would churn the vendored Cargo deps hash).
+pub(crate) fn djb2_hash(data: &[u8]) -> u64 {
     let mut hash: u64 = 5381;
     for &byte in data {
         hash = hash.wrapping_mul(33).wrapping_add(byte as u64);
@@ -1291,14 +1683,6 @@ mod tests {
     }
 
     #[test]
-    fn diff_services_empty() {
-        let diff = diff_services("/nonexistent/old", "/nonexistent/new");
-        assert!(diff.added.is_empty());
-        assert!(diff.removed.is_empty());
-        assert!(diff.changed.is_empty());
-    }
-
-    #[test]
     fn format_size_values() {
         assert_eq!(format_size(500), "500 B");
         assert_eq!(format_size(2048), "2.0 KiB");
@@ -1338,5 +1722,169 @@ mod tests {
     fn kernel_upgrade_mode_default() {
         let mode = KernelUpgradeMode::default();
         assert_eq!(mode, KernelUpgradeMode::Advisory);
+    }
+
+    #[test]
+    fn format_failed_units_lists_each_unit() {
+        use aos_systemd::FailedUnit;
+
+        let report = FailedUnitsReport {
+            failed: vec![
+                FailedUnit {
+                    name: "broken.service".into(),
+                    active_state: "failed".into(),
+                    sub_state: "failed".into(),
+                    exec_main_status: Some(1),
+                    status_dump: "● broken.service - Broken\n   Active: failed".into(),
+                },
+                FailedUnit {
+                    name: "stuck.service".into(),
+                    active_state: "activating".into(),
+                    sub_state: "auto-restart".into(),
+                    exec_main_status: None,
+                    status_dump: String::new(),
+                },
+            ],
+        };
+
+        let out = format_failed_units(&report);
+        assert!(out.contains("2 service(s) failed during activation"), "{out}");
+        assert!(out.contains("broken.service"), "{out}");
+        assert!(out.contains("ExecMainStatus=1"), "{out}");
+        // The captured status dump is included, indented.
+        assert!(out.contains("      ● broken.service - Broken"), "{out}");
+        // A unit with no ExecMainStatus renders as n/a.
+        assert!(out.contains("stuck.service"), "{out}");
+        assert!(out.contains("ExecMainStatus=n/a"), "{out}");
+    }
+
+    // --- activate plan helpers -----------------------------------------
+
+    #[test]
+    fn plan_round_trips_through_json() {
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 42,
+            stopped: vec!["old.service".to_string()],
+            to_reload: vec!["reload.service".to_string()],
+            to_restart: vec!["restart.socket".to_string(), "restart.service".to_string()],
+            to_start: vec!["new.service".to_string()],
+            blanket_targets: vec!["nftables.service".to_string()],
+            warnings: vec!["warning".to_string()],
+        };
+
+        let json = serde_json::to_string(&plan).unwrap();
+        let parsed: Plan = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, plan);
+        assert_eq!(parsed.schema_version, PLAN_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn plan_from_diff_folds_install_only_into_start() {
+        let diff = UnitDiff {
+            to_start: vec!["y.service".to_string(), "dup.service".to_string()],
+            install_only: vec![
+                "x.service".to_string(),
+                "dup.service".to_string(),
+                "z.service".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let plan = plan_from_diff(7, diff);
+        assert_eq!(
+            plan.to_start,
+            vec![
+                "y.service".to_string(),
+                "dup.service".to_string(),
+                "x.service".to_string(),
+                "z.service".to_string(),
+            ]
+        );
+        assert_eq!(plan.generation, 7);
+    }
+
+    #[test]
+    fn write_plan_file_is_regular_root_readable_0600() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 1,
+            ..Default::default()
+        };
+
+        let path = write_plan(tmp.path(), &plan).unwrap();
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert!(meta.file_type().is_file());
+        assert_eq!(meta.mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn read_validated_plan_rejects_symlink() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 1,
+            ..Default::default()
+        };
+        let target = write_plan(tmp.path(), &plan).unwrap();
+        let link = tmp.path().join("plan-link.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(read_validated_plan(&link).is_err());
+    }
+
+    #[test]
+    fn read_validated_plan_rejects_wrong_mode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 1,
+            ..Default::default()
+        };
+        let path = write_plan(tmp.path(), &plan).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(read_validated_plan(&path).is_err());
+    }
+
+    #[test]
+    fn read_validated_plan_round_trips() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 9,
+            to_start: vec!["new.service".to_string()],
+            ..Default::default()
+        };
+
+        let path = write_plan(tmp.path(), &plan).unwrap();
+        let parsed = read_validated_plan(&path).unwrap();
+        assert_eq!(parsed, plan);
+    }
+
+    #[test]
+    fn ensure_secure_run_dir_creates_0700_and_validates() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("apm");
+
+        ensure_secure_run_dir(&dir).unwrap();
+        let meta = std::fs::symlink_metadata(&dir).unwrap();
+        assert!(meta.file_type().is_dir());
+        assert_eq!(meta.mode() & 0o777, 0o700);
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(ensure_secure_run_dir(&dir).is_err());
+    }
+
+    #[test]
+    fn print_diff_does_not_panic() {
+        let printer = Printer::new(0, true, false);
+        let diff = UnitDiff {
+            to_restart: vec!["x.service".to_string()],
+            blanket_targets: vec!["x.service".to_string()],
+            ..Default::default()
+        };
+        print_diff(&diff, &printer);
     }
 }

@@ -12,9 +12,20 @@ Supersedes `2026-04-16_initrd_vm_qemu_instructions.md`.
 
 Write to `tests/ignition-test.json` at the repo root. Not checked in.
 
+All `storage.files[].path` entries that should be visible at runtime
+under `/etc/<x>` must be declared as `/etc/<x>`. Ignition runs with
+`--root=/run/etc/ignition-<gen>` and writes the file at
+`/run/etc/ignition-<gen>/etc/<x>`; the per-gen ignition lower of the
+`/etc` overlay then surfaces it at `/etc/<x>` in stage-2. A
+`/var/etc/<x>` path (or any non-`/etc` path) lands in the per-gen
+tmpfs subtree which the overlay never exposes — silently lost.
+`/etc/machine-id` is no longer set here either: the initrd's
+`aos-machine-id.service` seeds `/var/etc/machine-id` on first boot
+from `/proc/sys/kernel/random/uuid`.
+
 ```json
 {
-  "ignition": { "version": "3.4.0" },
+  "ignition": { "version": "3.5.0" },
   "storage": {
     "disks": [
       {
@@ -38,11 +49,9 @@ Write to `tests/ignition-test.json` at the repo root. Not checked in.
         "label": "aos-var",   "wipeFilesystem": false }
     ],
     "files": [
-      { "path": "/var/etc/hostname",    "mode": 420, "overwrite": true,
+      { "path": "/etc/hostname",    "mode": 420, "overwrite": true,
         "contents": { "source": "data:,aos-test-server" } },
-      { "path": "/var/etc/machine-id",  "mode": 420, "overwrite": true,
-        "contents": { "source": "data:,b5a2f1c8e6d04a3f9b7e2d1c8a5f3e7d" } },
-      { "path": "/var/etc/ssh/authorized_keys/root", "mode": 384,
+      { "path": "/etc/ssh/authorized_keys/root", "mode": 384,
         "overwrite": true,
         "contents": { "source": "data:;base64,REPLACE_ME_RUN_ssh-add_-L_pipe_base64_-w0" } }
     ]
@@ -81,11 +90,16 @@ self-contained. (If direct-kernel-boot is ever needed, use
 
 ## 2. Prepare a writable disk
 
+`$VMDIR` is a per-run scratch directory holding the disk image, the
+OVMF vars snapshot, and the serial/QMP sockets. The rest of this doc
+assumes you keep the same shell — re-export it if you start fresh.
+
 ```sh
-cp result/aos-aos.img /tmp/kal/tmp/aos-vm.img
-chmod u+w /tmp/kal/tmp/aos-vm.img
-truncate -s 40G /tmp/kal/tmp/aos-vm.img
-nix-shell -p gptfdisk --run "sgdisk -e /tmp/kal/tmp/aos-vm.img"
+export VMDIR=$(mktemp -d)
+cp result/aos-aos.img "$VMDIR/aos-vm.img"
+chmod u+w "$VMDIR/aos-vm.img"
+truncate -s 40G "$VMDIR/aos-vm.img"
+nix-shell -p gptfdisk --run "sgdisk -e $VMDIR/aos-vm.img"
 ```
 
 `sgdisk -e` relocates the GPT backup header to the end of the 40 GiB disk
@@ -107,8 +121,8 @@ store path of the requested package (one path, no trailing newline
 from `printf %s`). Snapshot the vars file to a writable copy per VM:
 
 ```sh
-cp $OVMF/FV/OVMF_VARS.fd /tmp/kal/tmp/aos-vm-OVMF_VARS.fd
-chmod u+w /tmp/kal/tmp/aos-vm-OVMF_VARS.fd
+cp "$OVMF/FV/OVMF_VARS.fd" "$VMDIR/aos-vm-OVMF_VARS.fd"
+chmod u+w "$VMDIR/aos-vm-OVMF_VARS.fd"
 ```
 
 ## 4. Launch QEMU
@@ -121,13 +135,13 @@ nix-shell -p qemu --run "qemu-system-x86_64 \
   -smp 2 \
   -display gtk \
   -drive if=pflash,format=raw,readonly=on,file=$OVMF/FV/OVMF_CODE.fd \
-  -drive if=pflash,format=raw,file=/tmp/kal/tmp/aos-vm-OVMF_VARS.fd \
-  -drive file=/tmp/kal/tmp/aos-vm.img,format=raw,if=virtio \
+  -drive if=pflash,format=raw,file=$VMDIR/aos-vm-OVMF_VARS.fd \
+  -drive file=$VMDIR/aos-vm.img,format=raw,if=virtio \
   -fw_cfg name=opt/com.coreos/config,file=$(pwd)/tests/ignition-test.json \
   -nic user,model=virtio-net-pci,hostfwd=tcp::2222-:22 \
-  -chardev socket,id=ttyS0,path=/tmp/kal/tmp/aos-vm-ttyS0.sock,server=on,wait=off,logfile=/tmp/kal/tmp/aos-vm-ttyS0.log \
+  -chardev socket,id=ttyS0,path=$VMDIR/aos-vm-ttyS0.sock,server=on,wait=off,logfile=$VMDIR/aos-vm-ttyS0.log \
   -serial chardev:ttyS0 \
-  -qmp unix:/tmp/kal/tmp/aos-vm-qmp.sock,server=on,wait=off"
+  -qmp unix:$VMDIR/aos-vm-qmp.sock,server=on,wait=off"
 ```
 
 Notable flags:
@@ -149,14 +163,14 @@ Talk to `ttyS0` from the host:
 ```sh
 # Interactive session. Ctrl+] (0x1d) detaches without killing the guest.
 nix-shell -p socat --run \
-  "socat -,rawer,escape=0x1d UNIX-CONNECT:/tmp/kal/tmp/aos-vm-ttyS0.sock"
+  "socat -,rawer,escape=0x1d UNIX-CONNECT:$VMDIR/aos-vm-ttyS0.sock"
 
 # Script a command and tail the serial log for the response.
-: > /tmp/kal/tmp/aos-vm-ttyS0.log
+: > "$VMDIR/aos-vm-ttyS0.log"
 nix-shell -p socat --run \
   "printf 'systemctl --failed\n' | \
-   socat -t 5 - UNIX-CONNECT:/tmp/kal/tmp/aos-vm-ttyS0.sock"
-tail -c 4000 /tmp/kal/tmp/aos-vm-ttyS0.log
+   socat -t 5 - UNIX-CONNECT:$VMDIR/aos-vm-ttyS0.sock"
+tail -c 4000 "$VMDIR/aos-vm-ttyS0.log"
 ```
 
 Graceful shutdown via QMP:
@@ -166,7 +180,7 @@ nix-shell -p socat --run "{ \
   printf '%s\n' '{\"execute\": \"qmp_capabilities\"}' \
                 '{\"execute\": \"system_powerdown\"}'; \
   sleep 2; \
-} | socat -t 5 - UNIX-CONNECT:/tmp/kal/tmp/aos-vm-qmp.sock"
+} | socat -t 5 - UNIX-CONNECT:$VMDIR/aos-vm-qmp.sock"
 ```
 
 Force-quit if the guest isn't responding:
@@ -175,7 +189,7 @@ Force-quit if the guest isn't responding:
 nix-shell -p socat --run "{ \
   printf '%s\n' '{\"execute\": \"qmp_capabilities\"}' \
                 '{\"execute\": \"quit\"}'; \
-} | socat -t 2 - UNIX-CONNECT:/tmp/kal/tmp/aos-vm-qmp.sock"
+} | socat -t 2 - UNIX-CONNECT:$VMDIR/aos-vm-qmp.sock"
 ```
 
 SSH in once ignition has run (the `authorized_keys/root` line in §0's
@@ -227,22 +241,24 @@ and OVMF variables from a previous run may point at stale boot entries:
 ```sh
 # Shut down (QMP system_powerdown or quit — see §5).
 
-# Remove stale sockets and logs.
-rm -f /tmp/kal/tmp/aos-vm-ttyS0.sock /tmp/kal/tmp/aos-vm-qmp.sock
-rm -f /tmp/kal/tmp/aos-vm-ttyS0.log
+# Remove stale sockets and logs. (Or just `rm -rf "$VMDIR"` and start
+# from §2 with a fresh mktemp -d — sometimes simpler than surgically
+# resetting individual files.)
+rm -f "$VMDIR/aos-vm-ttyS0.sock" "$VMDIR/aos-vm-qmp.sock"
+rm -f "$VMDIR/aos-vm-ttyS0.log"
 
 # Reset OVMF vars. A stale VARS.fd can carry UEFI boot entries that
 # reference the previous ESP's EFI/Linux/aos-<old-version>.efi path,
 # which no longer exists, leaving sd-boot on the recovery screen.
-cp "$OVMF/FV/OVMF_VARS.fd" /tmp/kal/tmp/aos-vm-OVMF_VARS.fd
-chmod u+w /tmp/kal/tmp/aos-vm-OVMF_VARS.fd
+cp "$OVMF/FV/OVMF_VARS.fd" "$VMDIR/aos-vm-OVMF_VARS.fd"
+chmod u+w "$VMDIR/aos-vm-OVMF_VARS.fd"
 
 # Re-init the disk (ignition needs a fresh canvas if partition layout
 # shifted between image builds).
-cp result/aos-aos.img /tmp/kal/tmp/aos-vm.img
-chmod u+w /tmp/kal/tmp/aos-vm.img
-truncate -s 40G /tmp/kal/tmp/aos-vm.img
-nix-shell -p gptfdisk --run "sgdisk -e /tmp/kal/tmp/aos-vm.img"
+cp result/aos-aos.img "$VMDIR/aos-vm.img"
+chmod u+w "$VMDIR/aos-vm.img"
+truncate -s 40G "$VMDIR/aos-vm.img"
+nix-shell -p gptfdisk --run "sgdisk -e $VMDIR/aos-vm.img"
 
 # Relaunch per §4.
 ```
@@ -262,7 +278,11 @@ the guest:
    `PLATFORM_ID=qemu` (fw_cfg path) or `PLATFORM_ID=file` (ISO path
    from §6).
 4. **Ignition succeeded and saw the env file** — `ps` finds no
-   ignition process, `/var/etc/.ignition-result.json` is present, and
+   ignition process, `/etc/.ignition-result.json` is present (written
+   by ignition-files into the per-gen ignition lower; the `/etc`
+   overlay surfaces it. It does NOT persist across reboots — the
+   per-gen tmpfs is recreated on every boot — but it is present
+   immediately after first boot), and
    `journalctl -u ignition-fetch.service` confirms the platform
    matches what the detector chose. Cross-check the env propagation:
    `systemctl show ignition-fetch.service -p Environment` lists
@@ -279,8 +299,9 @@ the guest:
    Loader: systemd-boot` and `Default Boot Loader Entry:
    aos-<version>.efi`.
 
-Capture `journalctl -b -o short-iso > /tmp/kal/tmp/aos-vm-boot.log`
-for the archive.
+Capture `journalctl -b -o short-iso > "$VMDIR/aos-vm-boot.log"`
+for the archive (run from the host: `ssh -p 2222 root@127.0.0.1
+journalctl -b -o short-iso > "$VMDIR/aos-vm-boot.log"`).
 
 ## 9. Gotchas
 
@@ -305,7 +326,7 @@ for the archive.
 - **Connect to the serial socket *before* the VM reaches
   multi-user.target** or you'll miss the early boot log. The
   `logfile=` option on the `-chardev socket` entry persists everything
-  to `/tmp/kal/tmp/aos-vm-ttyS0.log`, so post-hoc inspection is still
+  to `$VMDIR/aos-vm-ttyS0.log`, so post-hoc inspection is still
   possible — but live debugging of an ignition failure needs a
   concurrent `socat` session.
 - **`systemd.gpt-auto=0` is mandatory** in the baked-in UKI cmdline.

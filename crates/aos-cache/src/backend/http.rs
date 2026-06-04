@@ -15,7 +15,9 @@ use super::{AuthOptions, CacheBackend};
 pub struct HttpBackend {
     engine: Arc<TransferEngine>,
     base_url: String,
-    view: String,
+    /// Scheme + host[:port] only — the auth endpoint lives at the root,
+    /// not under the view path that `base_url` encodes.
+    origin: String,
     /// Extra headers added to every request.
     headers: Vec<(String, String)>,
     is_aos: bool,
@@ -38,7 +40,18 @@ impl HttpBackend {
         engine: Arc<TransferEngine>,
     ) -> Result<Self> {
         let base_url = url.trim_end_matches('/').to_string();
-        let view = auth.view.clone();
+
+        let origin = url::Url::parse(&base_url)
+            .ok()
+            .and_then(|u| {
+                let scheme = u.scheme().to_string();
+                let host = u.host_str()?.to_string();
+                Some(match u.port() {
+                    Some(p) => format!("{scheme}://{host}:{p}"),
+                    None => format!("{scheme}://{host}"),
+                })
+            })
+            .unwrap_or_else(|| base_url.clone());
 
         // Parse custom headers.
         let mut headers = Vec::new();
@@ -53,7 +66,7 @@ impl HttpBackend {
         let mut backend = Self {
             engine,
             base_url,
-            view,
+            origin,
             headers,
             is_aos,
         };
@@ -67,8 +80,10 @@ impl HttpBackend {
     }
 
     async fn authenticate(&mut self, provisioning_token: &str) -> Result<()> {
-        let url = format!("{}/oauth2/token", self.base_url);
-        let mut req = TransferRequest::put(&url, b"grant_type=client_credentials".to_vec());
+        // `oauth2/token` is a top-level route, NOT view-scoped — use
+        // `self.origin`, not `self.base_url` (which already encodes the view).
+        let url = format!("{}/oauth2/token", self.origin);
+        let mut req = TransferRequest::post(&url, b"grant_type=client_credentials".to_vec());
         req.headers
             .push(("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string()));
         req.headers
@@ -115,20 +130,14 @@ impl HttpBackend {
         req
     }
 
+    // `base_url` already encodes the view (e.g. `http://host:15000/default`);
+    // callers MUST NOT append `self.view` a second time.
     fn narinfo_url(&self, store_hash: &str) -> String {
-        if self.is_aos {
-            format!("{}/{}/{}.narinfo", self.base_url, self.view, store_hash)
-        } else {
-            format!("{}/{}.narinfo", self.base_url, store_hash)
-        }
+        format!("{}/{}.narinfo", self.base_url, store_hash)
     }
 
     fn nar_url(&self, url: &str) -> String {
-        if self.is_aos {
-            format!("{}/{}/{}", self.base_url, self.view, url)
-        } else {
-            format!("{}/{}", self.base_url, url)
-        }
+        format!("{}/{}", self.base_url, url)
     }
 }
 
@@ -156,6 +165,15 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
+        if self.is_aos {
+            // AOS servers generate narinfo on demand from the ValidPaths DB
+            // (see `narinfo_handler` in aos-server/src/routes.rs:155-219).
+            // There is no PUT-narinfo route — uploading a NAR via
+            // `PUT /{view}/store/{hash}` or `POST /{view}/upload-pack`
+            // registers the path and the narinfo becomes synthesisable.
+            let _ = (store_hash, content);
+            return Ok(());
+        }
         let url = self.narinfo_url(store_hash);
         let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
         req.headers.push((
@@ -185,6 +203,20 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
+        // TODO(aos-cache push >1MB): when is_aos == true, this path is
+        // broken on two axes:
+        //   1. URL: PUT goes to {base_url}/nar/{filename}, but the
+        //      server's only PUT route is /{view}/store/{hash}
+        //      (aos-server/src/routes.rs). 405.
+        //   2. Body: the server pipes `body` into `nix-store --import`,
+        //      which expects (raw NAR + ExportTrailer), not compressed
+        //      NAR. See `streaming_import` in aos-cache/src/compress.rs
+        //      for the inverse format.
+        // Untriggered in-tree under default `--batch-threshold 1MB`.
+        // Fixing properly needs either a new server route accepting
+        // compressed .nar.zst + metadata, or a client refactor to emit
+        // uncompressed NAR + trailer. A cross-failing test in
+        // tests/fleet/apm-e2e.nix (`step 3.9`) guards the eventual fix.
         let url = self.nar_url(&format!("nar/{filename}"));
         let mut req = TransferRequest::put(&url, data.to_vec());
         req.headers.push((
@@ -202,11 +234,10 @@ impl CacheBackend for HttpBackend {
     async fn query_missing(&self, store_hashes: &[&str]) -> Result<Vec<String>> {
         if self.is_aos {
             // AOS server has a batch endpoint.
-            let url = format!("{}/{}/query-missing", self.base_url, self.view);
+            let url = format!("{}/query-missing", self.base_url);
             let paths: Vec<String> = store_hashes.iter().map(|h| h.to_string()).collect();
             let body = serde_json::to_vec(&serde_json::json!({ "paths": paths }))?;
-            let mut req = TransferRequest::put(&url, body);
-            req.method = aos_net::Method::Put; // POST semantics via PUT
+            let mut req = TransferRequest::post(&url, body);
             req.headers.push((
                 "Content-Type".to_string(),
                 "application/json".to_string(),
@@ -246,8 +277,8 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn upload_pack(&self, data: &[u8]) -> Result<Vec<String>> {
-        let url = format!("{}/{}/upload-pack", self.base_url, self.view);
-        let mut req = TransferRequest::put(&url, data.to_vec());
+        let url = format!("{}/upload-pack", self.base_url);
+        let mut req = TransferRequest::post(&url, data.to_vec());
         req.headers.push((
             "Content-Type".to_string(),
             "application/octet-stream".to_string(),
@@ -262,6 +293,56 @@ impl CacheBackend for HttpBackend {
         let resp_body = result
             .body
             .ok_or_else(|| anyhow::anyhow!("empty upload-pack response"))?;
-        serde_json::from_slice(&resp_body).context("parsing upload-pack response")
+        // Server wraps the imported paths in
+        // `{accepted, rejected, paths}` (aos-server/src/routes.rs's
+        // `upload_pack_handler`). Extract just the `paths` array; the
+        // counts are tracing-only metadata.
+        #[derive(serde::Deserialize)]
+        struct UploadPackResponse {
+            paths: Vec<String>,
+        }
+        let parsed: UploadPackResponse =
+            serde_json::from_slice(&resp_body).context("parsing upload-pack response")?;
+        Ok(parsed.paths)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::AuthOptions;
+    use aos_net::TransferEngineConfig;
+
+    async fn make_backend(base_url: &str) -> HttpBackend {
+        let engine = Arc::new(TransferEngine::new(TransferEngineConfig::default()));
+        let auth = AuthOptions {
+            view: "default".to_string(),
+            ..Default::default()
+        };
+        HttpBackend::new(base_url, &auth, engine).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn origin_strips_view_path() {
+        let backend = make_backend("http://127.0.0.1:15000/default").await;
+        assert_eq!(backend.origin, "http://127.0.0.1:15000");
+    }
+
+    #[tokio::test]
+    async fn narinfo_url_does_not_double_view() {
+        let backend = make_backend("http://127.0.0.1:15000/default").await;
+        assert_eq!(
+            backend.narinfo_url("abc"),
+            "http://127.0.0.1:15000/default/abc.narinfo"
+        );
+    }
+
+    #[tokio::test]
+    async fn nar_url_does_not_double_view() {
+        let backend = make_backend("http://127.0.0.1:15000/default").await;
+        assert_eq!(
+            backend.nar_url("nar/x.nar.zst"),
+            "http://127.0.0.1:15000/default/nar/x.nar.zst"
+        );
     }
 }

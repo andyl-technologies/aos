@@ -8,9 +8,13 @@
 # the harness.
 #
 # `fleetMachineType.options.roles`'s `enum` is derived from this
-# machine's chosen `system.config.aos.roles`. The type is forced
-# lazily — only when a `roles` value is type-checked, by which time
-# `config.system` has been merged from the user's definition.
+# machine's chosen `system.config.aos.roles`, filtered to roles where
+# `bundle = true` on that system — only bundled roles are listable,
+# since a role not bundled on the host has no ignition fragment at
+# `/etc/aos/ignition-roles/<name>` for the synthesised merge entry to
+# point at. The type is forced lazily — only when a `roles` value is
+# type-checked, by which time `config.system` has been merged from the
+# user's definition.
 {
   lib,
   pkgs,
@@ -48,23 +52,44 @@
       };
 
       roles = mkOption {
-        # Type-level enum derived from this machine's chosen system.
-        # `availableRoles` is forced lazily — only when a `roles` value
-        # is type-checked, by which time `config.system` has been
-        # merged from the user's definition.
+        # Type-level enum derived from this machine's chosen system,
+        # restricted to roles where `bundle = true` — only bundled
+        # roles have a fragment at `/etc/aos/ignition-roles/<name>` on
+        # the running host for the synthesised
+        # `ignition.config.merge` entry to resolve. `availableRoles`
+        # is forced lazily — only when a `roles` value is type-checked,
+        # by which time `config.system` has been merged from the
+        # user's definition.
         type = let
-          availableRoles =
-            builtins.attrNames (config.system.config.aos.roles or {});
+          availableRoles = builtins.attrNames (
+            lib.filterAttrs
+            (_: role: role.bundle)
+            (config.system.config.aos.roles or {})
+          );
         in
           types.listOf (types.enum availableRoles);
         default = [];
         description = ''
-          Names of `aos.roles.<name>` to activate on this machine. Each
-          name is converted into a
+          Names of `aos.roles.<name>` to activate at runtime on this
+          machine. Each name is converted into a
           `{ source = "file:///etc/aos/ignition-roles/<name>"; }`
-          entry on the machine's `ignition.config.merge` list. Roles
-          are pre-baked into the image — no on-the-fly system
-          re-evaluation.
+          entry on the machine's `ignition.config.merge` list. The
+          listed roles must have `bundle = true` on the chosen system
+          — otherwise the fragment is not on disk and the merge would
+          fail at first boot.
+        '';
+      };
+
+      extraClosures = mkOption {
+        type = types.listOf types.package;
+        default = [];
+        description = ''
+          Extra Nix derivations whose full closures land in /nix/store on
+          this machine's rootfs. Used by upgrade tests that need a second
+          system toplevel pre-staged on disk so `apm upgrade --system`
+          doesn't have to traverse the network for store paths (the
+          pre-staged path is registered valid in the Nix DB at test time;
+          see tests/fleet/apm-system-upgrade.nix).
         '';
       };
 
@@ -97,7 +122,20 @@
     options = {
       name = mkOption {type = types.str;};
       machines = mkOption {type = types.attrsOf fleetMachineType;};
-      testScript = mkOption {type = types.lines;};
+      testScript = mkOption {
+        type = types.lines;
+        description = ''
+          Python fragment run by the AOS test driver
+          (pkgs/tools/aos/aos-test-driver) once every machine's agent
+          is reachable. Each machine is exposed as a Python global
+          named after its attribute key (e.g. `controlplane`,
+          `worker`); call `controlplane.succeed("...")`,
+          `controlplane.wait_until_succeeds("...", timeout=60)`,
+          etc. — see
+          `pkgs/tools/aos/aos-test-driver/aos_test_driver/machine.py`
+          for the full Machine API.
+        '';
+      };
       timeout = mkOption {
         type = types.int;
         default = 300;

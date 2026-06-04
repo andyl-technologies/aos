@@ -28,6 +28,14 @@
     sha256 = "18slj57b3zizzmc1bn4b6x8rygijfjjmwfzipdvyyzrbspaa5x21";
   };
 
+  # CET instrumentation for the GCC target runtime libraries is x86-only.
+  # This pairs with glibc's --enable-cet so the shadowstack token can be
+  # default-enabled on x86_64.
+  cetFlag =
+    if targetPlatform.isx86_64
+    then "--enable-cet"
+    else "";
+
   gmp-src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gmp/gmp-6.3.0.tar.xz";
     sha256 = "1kc3dy4jxand0y118yb9715g9xy1fnzqgkwxy02vd57y2fhg2pcw";
@@ -82,14 +90,21 @@ in
               # Same layout as stage1 but pointing at new packages — so the gcc we
               # build here picks its runtime libc and kernel ABI from the final tier.
               mkdir -p "$TMPDIR/sysroot/usr/include"
-              ln -sf ${glibc}/include/* "$TMPDIR/sysroot/usr/include/"
+              ln -sf ${glibc.dev}/include/* "$TMPDIR/sysroot/usr/include/"
               for d in ${linuxHeaders}/*; do
                 bn=$(basename "$d")
                 rm -f "$TMPDIR/sysroot/usr/include/$bn"
                 ln -sf "$d" "$TMPDIR/sysroot/usr/include/$bn"
               done
-              ln -sf ${glibc}/lib "$TMPDIR/sysroot/usr/lib"
-              ln -sf ${glibc}/lib "$TMPDIR/sysroot/lib"
+              # Real dirs (not symlinks to $glibc/lib) so we can mix shared
+              # libs from $out/lib and static archives from $static/lib —
+              # libgomp's configure runs xgcc with -static and needs both.
+              mkdir -p "$TMPDIR/sysroot/usr/lib" "$TMPDIR/sysroot/lib"
+              for f in ${glibc}/lib/* ${glibc.static}/lib/*.a; do
+                bn=$(basename "$f")
+                ln -sf "$f" "$TMPDIR/sysroot/usr/lib/$bn"
+                ln -sf "$f" "$TMPDIR/sysroot/lib/$bn"
+              done
 
               # Touch autotools inputs first, then .c/.h, then autotools outputs
               for dir in . gmp mpfr mpc isl; do
@@ -122,8 +137,8 @@ in
               #    prev.glibc out of gccStage1's $out). So every consumer must
               #    supply headers itself, which is what this ccwrap does.
               mkdir -p "$TMPDIR/ccwrap"
-              printf '#!/bin/sh\nexec ${gccStage1}/bin/gcc -B${glibc}/lib -static -no-pie -L${glibc}/lib -idirafter ${glibc}/include -idirafter ${linuxHeaders} "$@"\n' > "$TMPDIR/ccwrap/gcc"
-              printf '#!/bin/sh\nexec ${gccStage1}/bin/g++ -B${glibc}/lib -static -no-pie -L${glibc}/lib -idirafter ${glibc}/include -idirafter ${linuxHeaders} "$@"\n' > "$TMPDIR/ccwrap/g++"
+              printf '#!/bin/sh\nexec ${gccStage1}/bin/gcc -B${glibc}/lib -static -no-pie -L${glibc.static}/lib -L${glibc}/lib -idirafter ${glibc.dev}/include -idirafter ${linuxHeaders} "$@"\n' > "$TMPDIR/ccwrap/gcc"
+              printf '#!/bin/sh\nexec ${gccStage1}/bin/g++ -B${glibc}/lib -static -no-pie -L${glibc.static}/lib -L${glibc}/lib -idirafter ${glibc.dev}/include -idirafter ${linuxHeaders} "$@"\n' > "$TMPDIR/ccwrap/g++"
               chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
               ln -sf gcc "$TMPDIR/ccwrap/cc"
               ln -sf g++ "$TMPDIR/ccwrap/c++"
@@ -132,7 +147,7 @@ in
               cd "$TMPDIR/build"
 
               # CC/CXX point at the ccwrap. CFLAGS/CXXFLAGS do NOT inject
-              # -isystem ${glibc}/include: that would place glibc's stdlib.h
+              # -isystem ${glibc.dev}/include: that would place glibc's stdlib.h
               # BEFORE the C++ stdlib dir, which breaks #include_next <stdlib.h>
               # in <cstdlib> once gccStage1's specs file has its idirafter paths
               # scrubbed (Phase 2a). Headers come exclusively from the ccwrap's
@@ -141,7 +156,7 @@ in
               CC="$TMPDIR/ccwrap/gcc" CXX="$TMPDIR/ccwrap/g++" \
               CFLAGS="-O2 -static" \
               CXXFLAGS="-O2 -static" \
-              LDFLAGS="-L${glibc}/lib -static" \
+              LDFLAGS="-L${glibc.static}/lib -L${glibc}/lib -static" \
               "$TMPDIR/gcc-14.3.0/configure" \
                 --prefix="$out" \
                 --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${targetPlatform.config} \
@@ -150,6 +165,7 @@ in
                 --disable-multilib --disable-bootstrap \
                 --disable-libsanitizer --disable-libvtv \
                 --enable-default-pie --enable-default-ssp \
+                ${cetFlag} \
                 --with-native-system-header-dir="/usr/include" \
                 --with-build-sysroot="$TMPDIR/sysroot" \
                 --program-transform-name=
@@ -221,15 +237,15 @@ in
                 bn="$(basename "$f")"
                 install -m 644 "$f" "$SPEC_DIR/$bn" 2>/dev/null || true
               done
-              install -m 644 ${glibc}/lib/libc.a "$SPEC_DIR/libc.a" 2>/dev/null || true
-              install -m 644 ${glibc}/lib/libm.a "$SPEC_DIR/libm.a" 2>/dev/null || true
-              install -m 644 ${glibc}/lib/libpthread.a "$SPEC_DIR/libpthread.a" 2>/dev/null || true
+              install -m 644 ${glibc.static}/lib/libc.a "$SPEC_DIR/libc.a" 2>/dev/null || true
+              install -m 644 ${glibc.static}/lib/libm.a "$SPEC_DIR/libm.a" 2>/dev/null || true
+              install -m 644 ${glibc.static}/lib/libpthread.a "$SPEC_DIR/libpthread.a" 2>/dev/null || true
 
               # Install specs: -idirafter to this tier's glibc/linuxHeaders. No
               # scrubbing — those paths point to final-tier packages which are
               # legitimately part of the closure.
               "$out/bin/gcc" -dumpspecs > "$SPEC_DIR/specs"
-              ${prev.sed}/bin/sed -i '/^\*cpp:$/{n; s|^|-idirafter ${glibc}/include -idirafter ${linuxHeaders} |}' \
+              ${prev.sed}/bin/sed -i '/^\*cpp:$/{n; s|^|-idirafter ${glibc.dev}/include -idirafter ${linuxHeaders} |}' \
                 "$SPEC_DIR/specs" 2>/dev/null || true
 
               # libgcc_s.so linker-script stubs (--disable-shared makes the real

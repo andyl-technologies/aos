@@ -1,0 +1,40 @@
+#! @shell@
+# nuke-refs [-e <storePath>]... <file>...
+#
+# Replaces every /nix/store/<32-char hash>- prefix in each file with
+# /nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-, except for the hashes
+# named via `-e`. Mirrors nixpkgs' nuke-refs interface, modulo perl.
+set -eu
+keep=""
+while getopts e: o; do
+  case "$o" in
+    e) h=$(@sed@ -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p' <<<"$OPTARG")
+       [ -n "$h" ] || { echo "nuke-refs: -e needs a store path" >&2; exit 1; }
+       keep="${keep:+$keep|}$h" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+for f in "$@"; do
+  [ -L "$f" ] && continue
+  [ -f "$f" ] || continue
+  LC_ALL=C @awk@ -v keep="$keep" '
+    BEGIN { dummy = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }
+    {
+      out = ""
+      s   = $0
+      while (match(s, /\/nix\/store\/[a-z0-9]{32}-/)) {
+        h = substr(s, RSTART + 11, 32)
+        if (keep != "" && h ~ ("^(" keep ")$")) {
+          out = out substr(s, 1, RSTART + RLENGTH - 1)
+        } else {
+          out = out substr(s, 1, RSTART + 10) dummy "-"
+        }
+        s = substr(s, RSTART + RLENGTH)
+      }
+      print out s
+    }
+  ' "$f" > "$f.nukerefs.tmp"
+  chmod --reference="$f" "$f.nukerefs.tmp"
+  mv "$f.nukerefs.tmp" "$f"
+done

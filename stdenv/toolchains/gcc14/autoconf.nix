@@ -56,9 +56,9 @@ in
 
         export LIBRARY_PATH="${glibc}/lib"
         CC="${gcc}/bin/gcc" \
-        CFLAGS="-O2 -isystem ${glibc}/include" \
-        CPPFLAGS="-isystem ${glibc}/include" \
-        LDFLAGS="-L${glibc}/lib -static -no-pie" \
+        CFLAGS="-O2 -isystem ${glibc.dev}/include" \
+        CPPFLAGS="-isystem ${glibc.dev}/include" \
+        LDFLAGS="-L${glibc.static}/lib -L${glibc}/lib -static -no-pie" \
         M4="${m4}/bin/m4" \
         PERL="${perl}/bin/perl" \
         "$TMPDIR/autoconf-2.72/configure" \

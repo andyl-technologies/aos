@@ -24,11 +24,19 @@
 #     SYSTEM_DATA_UNIT_DIR lookup. See spec §5.5.
 #   - `lndir` is replaced by a plain shell loop that walks
 #     `$pkg/etc/systemd/<type>` and `$pkg/lib/systemd/<type>`. See §5.6.
-#   - All six `X-*` switch-to-configuration emissions are dropped
-#     (`X-Restart-Triggers`, `X-Reload-Triggers`, `X-RestartIfChanged`,
-#     `X-ReloadIfChanged`, `X-StopIfChanged`, `X-NotSocketActivated`).
-#     AOS uses sysupdate-based rolling updates with reboots, not in-place
-#     systemctl reconciliation. See spec §5.2.
+#   - The `X-*` switch-to-configuration emissions were originally dropped
+#     here. The live in-place `apm upgrade --system` path
+#     (2026-05-27_apm_system_upgrade_refactor_v2 §6.4) restores them: the
+#     `unitConfig` mixin emits `X-RestartIfChanged`, `X-ReloadIfChanged`,
+#     `X-StopOnRemoval`, `X-StopOnReconfiguration`, `X-OnlyManualStart`,
+#     `X-NotSocketActivated`, and `X-Reload-Triggers` into `[Unit]`, and
+#     the `serviceConfig` mixin adds the service-only `X-StopIfChanged`.
+#     Unlike upstream — which splits these between `[Unit]` and `[Service]`
+#     and uses `pkgs.writeText` for the trigger lists — AOS renders the
+#     whole contract into `[Unit]` and uses a plain space-joined path list
+#     for `X-Reload-Triggers`. `X-Restart-Triggers` stays dropped
+#     (`restartTriggers` is out of scope). Every emission is gated on a
+#     non-default value, so default-config units render unchanged.
 #   - `serviceConfig`'s `nixosConfig = config` closure is removed along
 #     with `enableStrictShellChecks` (spec §5.4/§5.8). `serviceConfig`
 #     is now a pure `{ name, lib, config, ... }:` submodule fragment.
@@ -722,10 +730,23 @@ in rec {
         // optionalAttrs (config.partOf != []) {PartOf = builtins.toString config.partOf;}
         // optionalAttrs (config.conflicts != []) {Conflicts = builtins.toString config.conflicts;}
         // optionalAttrs (config.requisite != []) {Requisite = builtins.toString config.requisite;}
-        # Upstream's `X-Restart-Triggers` / `X-Reload-Triggers` emissions
-        # were dropped here (spec §5.2): they use `pkgs.writeText` (which
-        # the AOS port doesn't bring in) and are consumed only by
-        # `switch-to-configuration`, which AOS doesn't use.
+        # switch-to-configuration `X-*` contract keys (restored, spec §6.4).
+        # Each is gated on a non-default value so a default-config unit
+        # emits nothing — preserving byte-identical unit text from the
+        # reboot-only era. `X-Reload-Triggers` is a plain space-joined path
+        # list (no `pkgs.writeText`: the reconciler reads the paths, not a
+        # store file). `X-StopIfChanged` is emitted from the `serviceConfig`
+        # mixin instead — `stopIfChanged` is a service-only option, so
+        # reading it here would fail on non-service unit types.
+        // optionalAttrs (!config.restartIfChanged) {X-RestartIfChanged = "false";}
+        // optionalAttrs config.reloadIfChanged {X-ReloadIfChanged = "true";}
+        // optionalAttrs (!config.stopOnRemoval) {X-StopOnRemoval = "false";}
+        // optionalAttrs config.stopOnReconfiguration {X-StopOnReconfiguration = "true";}
+        // optionalAttrs config.onlyManualStart {X-OnlyManualStart = "true";}
+        // optionalAttrs config.notSocketActivated {X-NotSocketActivated = "true";}
+        // optionalAttrs (config.reloadTriggers != []) {
+          X-Reload-Triggers = builtins.toString config.reloadTriggers;
+        }
         // optionalAttrs (config.description != "") {
           Description = config.description;
         }
@@ -763,6 +784,12 @@ in rec {
       environment.PATH =
         mkIf (config.path != [])
         "${makeBinPath config.path}:${makeSearchPath "sbin" config.path}";
+      # `X-StopIfChanged=false` is emitted here rather than in the shared
+      # `unitConfig` mixin because `stopIfChanged` is a service-only option
+      # (reading it on a non-service unit type would fail). It still lands
+      # in the `[Unit]` section via the merge into `config.unitConfig`.
+      # Default (`true`) emits nothing (spec §6.4).
+      unitConfig = optionalAttrs (!config.stopIfChanged) {X-StopIfChanged = "false";};
       # Upstream's `enableStrictShellChecks = mkOptionDefault …` assignment
       # was dropped here (spec §5.4) along with the `nixosConfig = config`
       # closure that fed it.
@@ -1049,6 +1076,24 @@ in rec {
       Slice = def.sliceConfig;
     });
   };
+
+  # networkToText — render a systemd-networkd `.network` file body. Unlike
+  # the `*ToUnit` renderers above this is NOT a unit: a `.network` lands in
+  # /etc/systemd/network/ (networkd config), has no `[Unit]`/`[Install]`
+  # sections, and so does not flow through `commonUnitText`/`generateUnits`.
+  # It is the same INI shape as a unit body, so `settingsToSections` (and its
+  # list-value → repeated-keys handling) applies directly. Empty sections are
+  # filtered so an unset `dhcpV4Config` etc. emits nothing. Initrd-scoped for
+  # now (boot.initrd.systemd.network); stage-2 networking.nix still hand-writes
+  # its heredocs — converging it is a deliberate follow-up.
+  networkToText = def:
+    settingsToSections (filterAttrs (_: s: s != {}) {
+      Match = def.matchConfig;
+      Link = def.linkConfig;
+      Network = def.networkConfig;
+      DHCPv4 = def.dhcpV4Config;
+      DHCPv6 = def.dhcpV6Config;
+    });
 
   # The maximum number of characters allowed in a GPT partition label.
   # Corresponds to GPT_LABEL_MAX from systemd's gpt.h.

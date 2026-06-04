@@ -61,8 +61,20 @@
     // lib.mapAttrs' (_: withName systemdLib.timerToUnit) cfg.timers
     // lib.mapAttrs' (_: withName systemdLib.pathToUnit) cfg.paths
     // lib.mapAttrs' (_: withName systemdLib.sliceToUnit) cfg.slices
-    // lib.listToAttrs (builtins.map (withName systemdLib.mountToUnit) cfg.mounts)
-    // lib.listToAttrs (builtins.map (withName systemdLib.automountToUnit) cfg.automounts);
+    // lib.listToAttrs (map (withName systemdLib.mountToUnit) cfg.mounts)
+    // lib.listToAttrs (map (withName systemdLib.automountToUnit) cfg.automounts);
+
+  # Render the typed `boot.initrd.systemd.network` tree to a directory of
+  # `<name>.network` files. These are networkd config (not units), so they
+  # skip `generateUnits`/`renderedInitrdUnits` and are handed to the cpio
+  # assembler as a separate directory it copies into /etc/systemd/network/.
+  initrdNetworkDir = pkgs.runCommand "initrd-systemd-networks" {} ''
+    mkdir -p $out
+    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (
+        name: def: "cp ${builtins.toFile "${name}.network" (systemdLib.networkToText def)} $out/${name}.network"
+      )
+      cfg.network)}
+  '';
 in {
   options.boot.initrd.systemd = {
     enable = lib.mkEnableOption "a systemd-based initrd (tier ii, not yet implemented)";
@@ -121,6 +133,19 @@ in {
       description = "Typed .automount units to include in the systemd initrd. Keyed by `where`, not by name.";
     };
 
+    network = lib.mkOption {
+      type = systemdTypes.initrdNetworks;
+      default = {};
+      description = ''
+        Typed systemd-networkd `.network` files for the initrd. Each
+        attribute renders to `/etc/systemd/network/<name>.network` (the
+        `.network` suffix is appended). Unlike the unit options above
+        these are networkd *config*, not units, so they bypass
+        `generateUnits` and are copied into the initrd directly. Used by
+        stage-1 ignition networking to DHCP for instance metadata.
+      '';
+    };
+
     maskedUnits = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [];
@@ -146,19 +171,58 @@ in {
   };
 
   config = {
-    # Stage-1 runs with an empty /etc (just /etc/os-release and a few
-    # basics from the cpio builder), so systemd-sysctl and
-    # systemd-tmpfiles read no config and exit successfully with
-    # nothing to do. systemd then serializes the "done" state across
-    # initrd→rootfs switch-root and stage-2 never re-runs them — so the
-    # real /etc/sysctl.d/* and /etc/tmpfiles.d/* on the rootfs are
-    # silently ignored. Mask both in the initrd to force stage-2 to run
-    # them fresh against the real /etc.
-    boot.initrd.systemd.maskedUnits = [
-      "systemd-sysctl.service"
-      "systemd-tmpfiles-setup.service"
-      "systemd-tmpfiles-setup-dev.service"
-    ];
+    # Re-run stage-1 config oneshots against the real /etc in stage-2.
+    #
+    # systemd-modules-load / systemd-sysctl / systemd-tmpfiles-setup run once
+    # in the initrd against stage-1's near-empty /etc. systemd serializes unit
+    # *state* across the initrd→rootfs switch-root but deliberately drops any
+    # un-run *job* (src/core/unit-serialize.c — job serialization is guarded by
+    # `if (!switching_root)`). These units are oneshot `RemainAfterExit=yes`,
+    # so they end the initrd as `active (exited)`; that state is carried into
+    # stage-2, where `sysinit.target` treats them as already satisfied and
+    # never re-runs them — so the real /etc/{modules-load,sysctl,tmpfiles}.d/*
+    # are silently ignored (e.g. br_netfilter never loads, k3s bridge sysctls
+    # fail). Same family as systemd issue #38765.
+    #
+    # `initrd-cleanup` does `isolate initrd-switch-root.target`, which would
+    # stop these and reset them — but only for units *outside* that target's
+    # dependency closure. `ignition-fetch.service` has
+    # `Requires=systemd-modules-load.service` and is pulled in via
+    # initrd-root-fs.target, so modules-load sits *inside* the closure and is
+    # never stopped. Masking them in the initrd is also wrong: modules-load
+    # genuinely has work there (loads isofs / dm_crypt for ignition).
+    #
+    # Fix: `RemainAfterExit=no` in the initrd only. The oneshot still runs (and
+    # still satisfies `Requires=`/`After=` — a successful oneshot start counts),
+    # but drops straight back to `inactive` instead of lingering `active`. The
+    # serialized state is then `inactive` regardless of switch-root job timing
+    # or closure membership, so stage-2 starts each one fresh against the real
+    # /etc. Stage-2 keeps the stock `RemainAfterExit=yes`.
+    boot.initrd.systemd.services =
+      lib.genAttrs [
+        "systemd-sysctl"
+        "systemd-tmpfiles-setup"
+        "systemd-tmpfiles-setup-dev"
+      ] (_: {
+        overrideStrategy = "asDropin";
+        serviceConfig.RemainAfterExit = false;
+      })
+      // {
+        # ignition-fetch.service has Requires=systemd-modules-load.service,
+        # so if modules-load fails the unit, ignition is blocked and the
+        # initrd drops to emergency.target. modules-load already ignores
+        # missing (-ENOENT) and hardware-absent (-ENODEV) modules; it exits
+        # non-zero (1) only when a module is present but fails to insert.
+        # SuccessExitStatus=0 1 keeps even that non-fatal, matching the
+        # stage-2 drop-in in modules/base/kernel.nix.
+        "systemd-modules-load" = {
+          overrideStrategy = "asDropin";
+          serviceConfig = {
+            RemainAfterExit = false;
+            SuccessExitStatus = "0 1";
+          };
+        };
+      };
 
     system.build.systemdInitrdUnits = systemdLib.generateUnits {
       type = "initrd";
@@ -178,6 +242,7 @@ in {
       kernel = config.system.build.kernel;
       kernelModules = config.aos.boot.initrd.modules;
       initrdUnits = config.system.build.systemdInitrdUnits;
+      inherit initrdNetworkDir;
       maskedUnits = cfg.maskedUnits;
       ignitionRoles = config.system.build.ignitionRolesBundle;
     };

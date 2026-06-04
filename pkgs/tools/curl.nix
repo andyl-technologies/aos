@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  patch,
+  patchelf,
   pkg-config,
   perl,
   openssl,
@@ -37,6 +39,15 @@ in
       openssl
       zlib
       nghttp2
+    ];
+
+    # Guard: keep the autotools build toolchain out of curl's
+    # `--version`-baked CC/PKG_CONFIG_PATH strings.
+    disallowedReferences = [
+      gnumake
+      pkg-config
+      patch
+      patchelf
     ];
 
     phases = [

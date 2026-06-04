@@ -6,8 +6,9 @@
 ##!     mkShell        — development shell environment
 ##!     fetchurl       — fetch a file by URL (fixed-output derivation)
 ##!     fetchgit       — fetch a Git repository (fixed-output derivation)
-##!     fetchCargoDeps — vendor Cargo dependencies (fixed-output derivation)
-##!     fetchGoModules — download Go module dependencies (fixed-output derivation)
+##!     fetchCargoDeps   — vendor Cargo dependencies (fixed-output derivation)
+##!     fetchCargoVendor — lockfile-driven Cargo vendoring (FOD staging + pure assembly)
+##!     fetchGoModules   — download Go module dependencies (fixed-output derivation)
 ##!     fakeHash       — placeholder hash for iterating on FODs
 ##!     replacePhase   — replace a phase by name
 ##!     addPhaseAfter  — insert a phase after a named phase
@@ -44,6 +45,7 @@
     platformIsCompatible
     constraintsCompatible
     ;
+  hardening = import ./hardening.nix;
 
   # ---------------------------------------------------------------------------
   # Default phase definitions
@@ -149,23 +151,82 @@
     script = ''
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
-        find "$out" -type f -name '*.so*' -exec strip --strip-unneeded {} \; 2>/dev/null || true
-        find "$out" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
-        if [ -d "$out/bin" ]; then
-          find "$out/bin" -type f -exec strip -s {} \; 2>/dev/null || true
-        fi
-        if [ -d "$out/sbin" ]; then
-          find "$out/sbin" -type f -exec strip -s {} \; 2>/dev/null || true
-        fi
-        if [ -d "$out/libexec" ]; then
-          find "$out/libexec" -type f -exec strip -s {} \; 2>/dev/null || true
-        fi
+        for o in ''${outputs:-out}; do
+          eval "p=\"\''${$o:-}\""
+          [ -d "$p" ] || continue
+          find "$p" -type f -name '*.so*' -exec strip --strip-unneeded {} \; 2>/dev/null || true
+          find "$p" -type f -name '*.a' -exec strip -S {} \; 2>/dev/null || true
+          for d in bin sbin libexec; do
+            if [ -d "$p/$d" ]; then
+              find "$p/$d" -type f -exec strip -s {} \; 2>/dev/null || true
+            fi
+          done
+        done
       fi
 
       if [ -z "''${dontPatchELF:-}" ] && command -v patchelf >/dev/null 2>&1; then
         echo "shrinking ELF RPATHs..."
-        find "$out" -type f \( -name '*.so*' -o -perm -u+x \) | while read f; do
-          patchelf --shrink-rpath "$f" 2>/dev/null || true
+        for o in ''${outputs:-out}; do
+          eval "p=\"\''${$o:-}\""
+          [ -d "$p" ] || continue
+          find "$p" -type f \( -name '*.so*' -o -perm -u+x \) | while read f; do
+            patchelf --shrink-rpath "$f" 2>/dev/null || true
+          done
+        done
+      fi
+    '';
+  };
+
+  # Scrub phase: rewrite build-time /nix/store/<hash>- references inside
+  # the output so the Nix reference scanner doesn't pull build-only
+  # toolchain paths into the runtime closure. Runs after fixup for every
+  # derivation; appended unconditionally so cargo/go/bazel phase
+  # templates (which bundle their own fixup) also get scrubbed.
+  #
+  # Preserves references to declared outputs, runtimeDeps, propagatedDeps,
+  # and per-package `nukeRefsKeep`. Set `dontNukeRefs = true` on the
+  # caller to skip (e.g. for nuke-references itself).
+  scrubPhase = {
+    name = "scrub";
+    script = ''
+      if [ -n "''${dontNukeRefs:-}" ]; then
+        echo "scrub: skipped (dontNukeRefs set)"
+      elif ! command -v nuke-refs >/dev/null 2>&1; then
+        echo "scrub: nuke-refs not on PATH, skipping" >&2
+      else
+        echo "scrubbing build-time refs..."
+
+        # Build the -e keep list: every declared output, every runtime /
+        # propagated dep, plus the per-package extension `nukeRefsKeep`.
+        # The env vars are nixpkgs-style ($buildInputs = runtimeDeps,
+        # $propagatedBuildInputs = propagatedDeps).
+        keep_args=""
+        for o in ''${outputs:-out}; do
+          eval "p=\"\''${$o:-}\""
+          [ -n "$p" ] && keep_args="$keep_args -e $p"
+        done
+        for p in ''${buildInputs:-} ''${propagatedBuildInputs:-} ''${nukeRefsKeep:-}; do
+          [ -n "$p" ] && keep_args="$keep_args -e $p"
+        done
+
+        # Default target set: every executable, every shared lib, every
+        # pkgconfig/.la/Makefile/sysconfig file. These are the locations
+        # autotools/python embed build-tool paths into. Python's
+        # __pycache__ is included because import compiles _sysconfigdata
+        # to .pyc at install time, baking the build-time toolchain refs
+        # into a binary blob that the .py-only pattern would miss.
+        for o in ''${outputs:-out}; do
+          eval "p=\"\''${$o:-}\""
+          [ -d "$p" ] || continue
+          find "$p" \( \
+               -path "*/bin/*" -o -path "*/sbin/*" -o -path "*/libexec/*" \
+            -o -name "*.so" -o -name "*.so.*" \
+            -o -name "*.pc"  -o -name "*.la" \
+            -o -name "Makefile" \
+            -o -name "_sysconfigdata*.py"  -o -name "_sysconfigdata*.pyc" \
+            -o -name "_sysconfig_vars*.json" \
+            \) -type f -print0 \
+          | xargs -0 -r nuke-refs $keep_args
         done
       fi
     '';
@@ -250,15 +311,27 @@
   # Derivation path helpers
   # ---------------------------------------------------------------------------
 
-  ## Return the "bin" output of a derivation. In AOS every derivation is
-  ## single-output (see `outputs ? [ "out" ]` below), so this is the identity
-  ## function. Kept for API compatibility with `getExe` / `getExe'` — call
-  ## sites can express intent today and will benefit automatically if AOS
-  ## ever grows multi-output support.
+  ## Return a named output of a derivation. Falls back to the derivation
+  ## itself (its default output) when the named output doesn't exist —
+  ## lets call sites express intent without forcing every package to
+  ## split outputs.
+  ## # Type
+  ## `string -> derivation -> derivation`
+  getOutput = name: drv:
+    assert isDerivation drv;
+      drv.${name} or drv;
+
+  ## Return the "bin" output of a derivation, or the default output if
+  ## no `bin` output is declared.
   ## # Type
   ## `derivation -> derivation`
-  getBin = drv:
-    assert isDerivation drv; drv;
+  getBin = drv: getOutput "bin" drv;
+
+  ## Return the "dev" output of a derivation, or the default output if
+  ## no `dev` output is declared.
+  ## # Type
+  ## `derivation -> derivation`
+  getDev = drv: getOutput "dev" drv;
 
   ## Return the absolute path of a named binary inside a derivation. Use
   ## when you want a specific tool rather than the "main" one.
@@ -296,6 +369,24 @@
   in ''
     #!${shell}
     set -euo pipefail
+
+    # Restore env-var attrs when running with __structuredAttrs = true.
+    # Idempotent: when NIX_ATTRS_SH_FILE isn't set (the default), this
+    # is a no-op.
+    #
+    # Under __structuredAttrs Nix exposes `outputs` as a bash associative
+    # array (declare -A outputs=([out]=/nix/store/… [dev]=/nix/store/…))
+    # but does NOT set each output name as a scalar. Re-declare them so
+    # phase scripts that reference $out / $dev / etc. keep working.
+    if [ -n "''${NIX_ATTRS_SH_FILE:-}" ]; then
+      . "$NIX_ATTRS_SH_FILE"
+      if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then
+        for __o in "''${!outputs[@]}"; do
+          declare -g "$__o=''${outputs[$__o]}"
+        done
+        unset __o
+      fi
+    fi
 
     # Source the stdenv setup if available
     if [ -n "''${stdenv:-}" ] && [ -f "$stdenv/setup.sh" ]; then
@@ -412,6 +503,17 @@
     postInstall ? "",
     passthru ? {},
     checks ? null,
+    # ── Compiler-hardening policy ─────────────────────────────────────
+    # Per-package opt-in / opt-out over the central token set. The
+    # effective set is (defaultHardeningFlags ++ hardeningEnable) minus
+    # hardeningDisable, with implication and platform-filtering rules from
+    # lib/hardening.nix, exported to the builder as AOS_HARDENING_ENABLE
+    # and consumed by the cc-wrapper. `hardeningDisable = [ "all" ]` clears
+    # every token; unknown tokens are evaluation errors. defaultHardeningFlags
+    # is supplied by the stdenv and is normally not set per package.
+    hardeningEnable ? [],
+    hardeningDisable ? [],
+    defaultHardeningFlags ? [],
     # ── Reference-control attrs (Nix-enforced at build time) ──────────
     # Pass-through to `builtins.derivation`. If set, Nix fails the build
     # if the output's closure (or direct references) breaks the rule.
@@ -437,8 +539,15 @@
     allowedReferences ? null,
     disallowedRequisites ? [],
     disallowedReferences ? [],
+    # Per-output reference checks. When set, the derivation runs with
+    # __structuredAttrs = true so Nix honors outputChecks.<out>.disallowed*
+    # / allowed* on a per-output basis. Example:
+    #   outputChecks = { out = { disallowedReferences = [ gcc ]; }; };
+    # When null (default), behaves identically to historical mkDerivation.
+    outputChecks ? null,
     ...
   }: let
+    useStructuredAttrs = outputChecks != null;
     # Accept either `name` (direct) or `pname` (computed as pname-version).
     name =
       args.name
@@ -492,10 +601,17 @@
     # debug sections embed gcc store paths that drag the ~230 MB compiler
     # into every package's closure. Skip if the caller already supplied
     # a fixup — the cargo/go/bazel phase templates bundle their own.
+    #
+    # scrubPhase always runs last, regardless of whether the caller
+    # supplied a custom fixup. Inlining it into fixup would skip it
+    # whenever cargo/go/bazel templates override the fixup phase.
     allPhases =
-      if builtins.any (p: p.name == "fixup") finalPhases
-      then finalPhases
-      else finalPhases ++ [fixupPhase];
+      (
+        if builtins.any (p: p.name == "fixup") finalPhases
+        then finalPhases
+        else finalPhases ++ [fixupPhase]
+      )
+      ++ [scrubPhase];
 
     builder = phasesToScript allPhases shell;
 
@@ -529,14 +645,27 @@
       "postInstall"
       "passthru"
       "checks"
+      "hardeningEnable"
+      "hardeningDisable"
+      "defaultHardeningFlags"
       "allowedRequisites"
       "allowedReferences"
       "disallowedRequisites"
       "disallowedReferences"
+      "outputChecks"
     ];
 
     # ── Chaining constraint validation ────────────────────────────────
     buildPlatform = mkPlatform system;
+
+    # Effective compiler-hardening token set, exported to the builder for
+    # the cc-wrapper to translate into flags. Tokens are filtered for the
+    # platform the output runs on; for native builds that is buildPlatform.
+    hardeningEnableStr = hardening.effectiveString {
+      inherit name hardeningEnable hardeningDisable;
+      defaultFlags = defaultHardeningFlags;
+      platform = buildPlatform;
+    };
 
     # Our execution constraint — where this derivation's output runs.
     ourExecute =
@@ -650,22 +779,42 @@
             # Prefer store dir parameter
             NIX_STORE_DIR = storeDir;
 
-            # Reference-control blacklists. Empty list = no constraint, so
-            # unconditional inclusion is safe. See the arg docstring above.
-            inherit disallowedRequisites disallowedReferences;
+            # Effective hardening tokens for the cc-wrapper. Always set (even
+            # to "") so a build that opts out via hardeningDisable = [ "all" ]
+            # is distinguishable from a non-build environment, where the
+            # wrapper falls back to its baked-in default policy.
+            AOS_HARDENING_ENABLE = hardeningEnableStr;
           }
+          # Reference-control blacklists. Empty list = no constraint, so
+          # unconditional inclusion is safe. Under __structuredAttrs the
+          # top-level disallowed* attrs are inert and trigger a Nix
+          # warning; per-output equivalents live in `outputChecks`.
+          // (
+            if !useStructuredAttrs
+            then {inherit disallowedRequisites disallowedReferences;}
+            else {}
+          )
           # Reference-control whitelists. `null` = unconstrained; we only
           # forward them to builtins.derivation when actually set, so the
           # default path is a no-op (preserves historical behavior for any
           # unaudited derivation).
           // (
-            if allowedRequisites != null
+            if allowedRequisites != null && !useStructuredAttrs
             then {inherit allowedRequisites;}
             else {}
           )
           // (
-            if allowedReferences != null
+            if allowedReferences != null && !useStructuredAttrs
             then {inherit allowedReferences;}
+            else {}
+          )
+          # Per-output reference checks require __structuredAttrs = true.
+          // (
+            if useStructuredAttrs
+            then {
+              __structuredAttrs = true;
+              inherit outputChecks;
+            }
             else {}
           )
           // extraArgs
@@ -1021,6 +1170,109 @@
     };
 
   # ---------------------------------------------------------------------------
+  # fetchCargoVendor
+  # ---------------------------------------------------------------------------
+  # fetchCargoVendor { cargo; python3; git; caCertificates; bootstrapTools;
+  #                    src; hash; sourceRoot?; cargoPatches?; }
+  #
+  # Lockfile-driven Cargo vendoring (ported from nixpkgs's fetchCargoVendor /
+  # fetch-cargo-vendor-util-v2 design). Two stages:
+  #
+  #   1. vendorStaging (FOD, content-hashed): reads Cargo.lock and downloads
+  #      every crates.io tarball + clones every git source at its exact sha.
+  #      Output layout: { Cargo.lock, tarballs/<crate>-<ver>.tar.gz,
+  #                       git/<sha>/<repo contents> }.
+  #
+  #   2. final vendor (regular derivation): walks the lockfile again, locates
+  #      each git-sourced crate inside its tree by running `cargo metadata`
+  #      to match crate name, copies the crate's subtree, resolves workspace
+  #      inheritance via replace-workspace-values.py, and writes
+  #      .cargo/config.toml with @vendor@ placeholders.
+  #
+  # The build-time consumer (cargoPhases) substitutes @vendor@ with the
+  # absolute store path before invoking cargo.
+  #
+  # Unlike fetchCargoDeps, no manual gitDeps list is needed — git sources
+  # (including monorepo crates) are discovered from Cargo.lock automatically.
+  fetchCargoVendor = {
+    cargo,
+    python3,
+    git,
+    caCertificates,
+    bootstrapTools,
+    src,
+    hash,
+    sourceRoot ? null,
+    cargoPatches ? [],
+    extraLibPaths ? [],
+    extraPaths ? [],
+    name ? "cargo-vendor",
+    system ? defaultSystem,
+  }: let
+    utilDir = ./cargo-vendor;
+    ldLibPath = builtins.concatStringsSep ":" (
+      builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
+    );
+
+    # Stage 1: fetch all crates.io tarballs and clone all git sources.
+    vendorStaging = builtins.derivation {
+      name = "${name}-staging";
+      inherit system;
+      builder = builderPath;
+      args = [
+        "-c"
+        ''
+          set -euo pipefail
+          export PATH="${cargo}/bin:${python3}/bin:${git}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
+          export GIT_SSL_CAINFO="${caCertificates}/etc/ssl/certs/ca-certificates.crt"
+          export SSL_CERT_FILE="$GIT_SSL_CAINFO"
+          ${
+            if extraLibPaths != []
+            then "export LD_LIBRARY_PATH=\"${ldLibPath}\""
+            else ""
+          }
+
+          mkdir -p "$TMPDIR/src"
+          cd "$TMPDIR/src"
+          tar xf "${src}" || cp -r "${src}" source
+          cd ${
+            if sourceRoot != null
+            then sourceRoot
+            else "$(ls -d */)"
+          }
+
+          ${builtins.concatStringsSep "\n" (builtins.map (p: "patch -p1 < ${p}") cargoPatches)}
+
+          python3 ${utilDir}/fetch-cargo-vendor-util.py \
+            create-vendor-staging Cargo.lock "$out"
+        ''
+      ];
+
+      outputHash = hash;
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+
+      preferLocalBuild = true;
+    };
+  in
+    # Stage 2: pure transformation of staging into cargo vendor layout.
+    builtins.derivation {
+      inherit name system;
+      builder = builderPath;
+      args = [
+        "-c"
+        ''
+          set -euo pipefail
+          export PATH="${cargo}/bin:${python3}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
+          python3 ${utilDir}/fetch-cargo-vendor-util.py \
+            create-vendor "${vendorStaging}" "$out"
+        ''
+      ];
+
+      preferLocalBuild = true;
+    };
+
+  # ---------------------------------------------------------------------------
   # fetchGoModules
   # ---------------------------------------------------------------------------
   # fetchGoModules { go; bootstrapTools; src; hash; sourceRoot?; }
@@ -1292,6 +1544,7 @@ in {
     fetchurl
     fetchgit
     fetchCargoDeps
+    fetchCargoVendor
     fetchGoModules
     fetchBazelDeps
     fakeHash
@@ -1304,7 +1557,9 @@ in {
     ;
 
   inherit
+    getOutput
     getBin
+    getDev
     getExe
     getExe'
     ;

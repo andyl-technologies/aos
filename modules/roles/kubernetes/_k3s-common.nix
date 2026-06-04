@@ -31,9 +31,10 @@
   ];
 
   # Forwarding + bridge call-iptables. `bridge.bridge-nf-call-*`
-  # require br_netfilter to be loaded before they can be set —
-  # systemd-sysctl re-applies after each modules-load batch, so
-  # this works as long as br_netfilter is in the module list above.
+  # only exist once br_netfilter is loaded; the stock
+  # systemd-sysctl.service is ordered After=systemd-modules-load.service,
+  # so as long as br_netfilter is in the module list above it loads
+  # first and these keys are writable when systemd-sysctl runs.
   sysctls = {
     "net.ipv4.ip_forward" = "1";
     "net.ipv6.conf.all.forwarding" = "1";
@@ -55,7 +56,6 @@
     # `after = [...preflight.service]` sit on the role's
     # `k3s.service` (declared inline per role, since k3s.service
     # itself diverges between roles in `ExecStart` and ports).
-    enabled = true;
     wantedBy = ["multi-user.target"];
     before = ["k3s.service"];
 

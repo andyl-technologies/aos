@@ -151,13 +151,12 @@ in {
     # the unit to "skipped", which is-active reports as
     # "inactive"), or systemd's EnvironmentFile= parser rejected
     # the file's contents, or one of the required vars is empty.
-    wait_until_succeeds_on controlplane \
-      "systemctl is-active k3s-preflight.service" 60 \
-      "controlplane k3s-preflight reaches active"
-
-    wait_until_succeeds_on worker \
-      "systemctl is-active k3s-preflight.service" 60 \
-      "worker k3s-preflight reaches active"
+    controlplane.wait_until_succeeds(
+        "systemctl is-active k3s-preflight.service", timeout=60
+    )
+    worker.wait_until_succeeds(
+        "systemctl is-active k3s-preflight.service", timeout=60
+    )
 
     # ── k3s.service active on both ─────────────────────────────────
     # `Type=notify` flips active once k3s emits READY=1 on its
@@ -166,13 +165,12 @@ in {
     # node-registration done. On 2-vCPU VMs cert-gen + apiserver
     # bootstrap typically takes 60-120s; the timeout below has
     # slack for a slow runner.
-    wait_until_succeeds_on controlplane \
-      "systemctl is-active k3s.service" 240 \
-      "controlplane k3s.service reaches active"
-
-    wait_until_succeeds_on worker \
-      "systemctl is-active k3s.service" 240 \
-      "worker k3s.service reaches active"
+    controlplane.wait_until_succeeds(
+        "systemctl is-active k3s.service", timeout=240
+    )
+    worker.wait_until_succeeds(
+        "systemctl is-active k3s.service", timeout=240
+    )
 
     # ── Apiserver reachable + healthy on the control plane ────────
     # /healthz returns the literal string "ok" when the apiserver
@@ -186,12 +184,11 @@ in {
     # probe via `kubectl get --raw=/healthz`, which authenticates
     # using the admin client cert from /etc/rancher/k3s/k3s.yaml
     # — same endpoint, same response body, just past the authn
-    # gate. (curl with --cacert+--cert+--key would also work; the
-    # kubectl form is shorter and avoids hard-coding tls paths.)
-    wait_until_succeeds_on controlplane \
-      "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get --raw=/healthz | grep -qx 'ok'" \
-      60 \
-      "controlplane apiserver /healthz returns ok"
+    # gate.
+    controlplane.wait_until_succeeds(
+        "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get --raw=/healthz | grep -qx 'ok'",
+        timeout=60,
+    )
 
     # ── Worker registered + Ready ─────────────────────────────────
     # With `--disable-agent`, the control-plane is invisible in
@@ -202,25 +199,24 @@ in {
     # /etc/hosts + os.Hostname()), agent pulled flannel config
     # from the apiserver, kubelet started, configureNode wrote
     # the Node object.
-    wait_until_succeeds_on controlplane \
-      "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get node worker -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' | grep -Fxq True" \
-      180 \
-      "worker node Ready (cross-host registration)"
+    controlplane.wait_until_succeeds(
+        r"""${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \
+            get node worker \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' \
+            | grep -Fxq True""",
+        timeout=180,
+    )
 
     # ── Sanity: exactly one Node exists ───────────────────────────
-    # `assert_output_on` uses `grep -q` (substring match), so
-    # passing "1" as the expected value would also match "11", "12",
-    # … Use `assert_on` with a numeric `test -eq` instead — that
-    # asserts an exact integer equality and returns exit 0/1.
-    #
-    # `\$(…)` is load-bearing: the testScript is concatenated into
-    # the outer build-host shell (lib/testing/fleet.nix), so an
-    # un-escaped `$(…)` would substitute *there* — running kubectl
-    # against the build host's missing /etc/rancher/k3s/k3s.yaml.
-    # Escaping defers the substitution until `assert_on` ships the
-    # string into the guest's shell, where the kubeconfig exists.
-    assert_on controlplane \
-      "test \$(${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes --no-headers | wc -l) -eq 1" \
-      "exactly one node registered (control-plane is invisible by design)"
+    # The bash-escape gymnastics around `\$(…)` are gone: Python
+    # strings are not subject to host-side shell expansion, so the
+    # command we write is the command the agent runs.
+    out = controlplane.succeed(
+        "${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes --no-headers"
+    )
+    assert len(out.splitlines()) == 1, (
+        f"expected exactly one node (control-plane is invisible by design),"
+        f" got {out!r}"
+    )
   '';
 }

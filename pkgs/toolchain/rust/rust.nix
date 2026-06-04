@@ -20,6 +20,13 @@ in
     pname = "rust";
     inherit version;
 
+    # $out is the lean production toolchain (rustc + cargo + std) that every
+    # cargo package links against. $dev carries the developer tooling
+    # (clippy, rustfmt, rust-analyzer) and the std source — only realized when
+    # something references rust.dev (e.g. the dev shell), so it stays out of
+    # the build closure of ordinary cargo packages.
+    outputs = ["out" "dev"];
+
     src = fetchurl {
       urls = [
         "https://static.rust-lang.org/dist/rustc-${version}-src.tar.gz"
@@ -42,6 +49,7 @@ in
     runtimeDeps = [
       llvm
       zlib
+      openssl
     ];
 
     phases = [
@@ -74,7 +82,7 @@ in
           [build]
           docs = false
           extended = true
-          tools = ["cargo"]
+          tools = ["cargo", "rustdoc", "clippy", "rustfmt", "rust-analyzer", "src"]
           vendor = true
           cargo = "${rust-1_92}/bin/cargo"
           rustc = "${rust-1_92}/bin/rustc"
@@ -121,6 +129,12 @@ in
                   export OPENSSL_INCLUDE_DIR=${openssl}/include
                   export OPENSSL_NO_VENDOR=1
                   export OPENSSL_STATIC=0
+                  # Installs the default extended set selected by `tools` —
+                  # including the rust-src component ("src" in tools), consumed
+                  # by rust-analyzer via RUST_SRC_PATH. NOT a separate
+                  # `x.py install src`: that treats "src" as a path filter,
+                  # matches a docs step, and panics on the absent doc dir
+                  # (docs = false).
                   python3 x.py install
 
                   # No patchelf available — use wrapper scripts
@@ -141,6 +155,31 @@ in
                       fi
                     fi
                   done
+
+                  # ── Split developer tooling into the $dev output ──────────
+                  # clippy / rustfmt / rust-analyzer and the std source are
+                  # only needed in the dev shell — not by the cargo builds that
+                  # link $out — so they move to $dev to keep $out lean. Each
+                  # binary was wrapped above with $out/lib (where
+                  # librustc_driver lives) on LD_LIBRARY_PATH; moving the
+                  # wrapper means rewriting the baked .unwrapped path to its
+                  # new $dev location. rustc, cargo and rustdoc stay in $out.
+                  mkdir -p $dev/bin
+                  for t in cargo-clippy clippy-driver cargo-fmt rustfmt rust-analyzer; do
+                    [ -e "$out/bin/$t" ] || continue
+                    mv "$out/bin/$t" "$dev/bin/$t"
+                    if [ -e "$out/bin/$t.unwrapped" ]; then
+                      mv "$out/bin/$t.unwrapped" "$dev/bin/$t.unwrapped"
+                      sed -i "s|$out/bin/$t.unwrapped|$dev/bin/$t.unwrapped|" "$dev/bin/$t"
+                    fi
+                  done
+
+                  # rust-src installs the std source under the sysroot; relocate
+                  # it to $dev so it is not dragged into every $out consumer.
+                  if [ -d "$out/lib/rustlib/src" ]; then
+                    mkdir -p $dev/lib/rustlib
+                    mv "$out/lib/rustlib/src" "$dev/lib/rustlib/src"
+                  fi
         '';
       }
     ];

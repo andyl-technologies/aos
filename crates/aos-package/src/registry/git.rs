@@ -46,6 +46,7 @@ pub async fn sync_git(
     config: &RegistryConfig,
     tracking_mode: &TrackingMode,
     cache_dir: &Path,
+    registries_dir: &Path,
     state: &mut RegistryState,
     printer: &Printer,
 ) -> Result<SyncResult> {
@@ -79,6 +80,12 @@ pub async fn sync_git(
     let old_packages = count_toml_files(&output_dir).await;
     extract_packages(&repo_dir, &new_commit, &output_dir).await?;
     let new_packages = count_toml_files(&output_dir).await;
+
+    // Step 6b: Materialise registry.toml from the repo root so resolve_mirror
+    // can find the [[caches]] entries. Without this, the only fallback is
+    // the registry URL itself, which fails for git:// transports.
+    let registry_toml_target = registries_dir.join(&config.name);
+    extract_registry_root(&repo_dir, &new_commit, &registry_toml_target).await?;
 
     // Compute rough stats. Without a detailed diff we approximate:
     // - If this is the first sync, everything is "added"
@@ -492,6 +499,50 @@ async fn extract_packages(
     Ok(())
 }
 
+/// Extract the repo-root `registry.toml` into `target_dir/registry.toml`.
+///
+/// Missing-file errors are non-fatal: `apm install` falls back to the
+/// registry URL when no cache config is present. Other git errors bubble up.
+pub async fn extract_registry_root(
+    repo_dir: &Path,
+    commit: &str,
+    target_dir: &Path,
+) -> Result<()> {
+    tokio::fs::create_dir_all(target_dir)
+        .await
+        .with_context(|| format!("creating {}", target_dir.display()))?;
+
+    let output = Command::new("git")
+        .args(["show", &format!("{commit}:registry.toml")])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .context("running git show :registry.toml")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Missing root registry.toml is fine — resolve_mirror falls back to
+        // the registry URL. Any other failure (corrupt object, IO error)
+        // bubbles up.
+        if stderr.contains("does not exist")
+            || stderr.contains("exists on disk, but not in")
+            || stderr.contains("path 'registry.toml'")
+        {
+            return Ok(());
+        }
+        bail!(
+            "git show {commit}:registry.toml failed: {}",
+            stderr.trim(),
+        );
+    }
+
+    let dest = target_dir.join("registry.toml");
+    tokio::fs::write(&dest, &output.stdout)
+        .await
+        .with_context(|| format!("writing {}", dest.display()))?;
+    Ok(())
+}
+
 /// Count .toml files in a packages directory.
 async fn count_toml_files(dir: &Path) -> usize {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
@@ -570,6 +621,18 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a `git` command for fixture setup with the developer's global
+    /// and system config neutralized, so tests don't inherit `~/.gitconfig`
+    /// settings (gpg signing, hooks, templates, etc.). Repo-local identity is
+    /// still set explicitly by each test via `git config`.
+    fn git(dir: &Path) -> Command {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+        cmd
+    }
 
     #[test]
     fn normalize_git_plus_https() {
@@ -693,23 +756,16 @@ mod tests {
         tokio::fs::create_dir_all(&work_dir).await.unwrap();
 
         // Init a regular repo.
-        let output = Command::new("git")
-            .args(["init"])
-            .current_dir(&work_dir)
-            .output()
-            .await
-            .unwrap();
+        let output = git(&work_dir).args(["init"]).output().await.unwrap();
         assert!(output.status.success());
 
         // Configure git user for commit.
-        let _ = Command::new("git")
+        let _ = git(&work_dir)
             .args(["config", "user.email", "test@test.com"])
-            .current_dir(&work_dir)
             .output()
             .await;
-        let _ = Command::new("git")
+        let _ = git(&work_dir)
             .args(["config", "user.name", "Test"])
-            .current_dir(&work_dir)
             .output()
             .await;
 
@@ -721,19 +777,14 @@ mod tests {
             .unwrap();
 
         // Add and commit.
-        let _ = Command::new("git")
-            .args(["add", "."])
-            .current_dir(&work_dir)
-            .output()
-            .await;
-        let _ = Command::new("git")
+        let _ = git(&work_dir).args(["add", "."]).output().await;
+        let _ = git(&work_dir)
             .args(["commit", "-m", "initial"])
-            .current_dir(&work_dir)
             .output()
             .await;
 
         // Clone as bare repo.
-        let output = Command::new("git")
+        let output = git(&work_dir)
             .args([
                 "clone",
                 "--bare",
@@ -746,9 +797,8 @@ mod tests {
         assert!(output.status.success());
 
         // Get the commit SHA.
-        let output = Command::new("git")
+        let output = git(&repo_dir)
             .args(["rev-parse", "HEAD"])
-            .current_dir(&repo_dir)
             .output()
             .await
             .unwrap();
@@ -775,39 +825,26 @@ mod tests {
         tokio::fs::create_dir_all(&work_dir).await.unwrap();
 
         // Init repo.
-        let _ = Command::new("git")
-            .args(["init"])
-            .current_dir(&work_dir)
-            .output()
-            .await
-            .unwrap();
-        let _ = Command::new("git")
+        let _ = git(&work_dir).args(["init"]).output().await.unwrap();
+        let _ = git(&work_dir)
             .args(["config", "user.email", "test@test.com"])
-            .current_dir(&work_dir)
             .output()
             .await;
-        let _ = Command::new("git")
+        let _ = git(&work_dir)
             .args(["config", "user.name", "Test"])
-            .current_dir(&work_dir)
             .output()
             .await;
 
         // First commit.
         tokio::fs::write(work_dir.join("a.txt"), "a").await.unwrap();
-        let _ = Command::new("git")
-            .args(["add", "."])
-            .current_dir(&work_dir)
-            .output()
-            .await;
-        let _ = Command::new("git")
+        let _ = git(&work_dir).args(["add", "."]).output().await;
+        let _ = git(&work_dir)
             .args(["commit", "-m", "first"])
-            .current_dir(&work_dir)
             .output()
             .await;
 
-        let output = Command::new("git")
+        let output = git(&work_dir)
             .args(["rev-parse", "HEAD"])
-            .current_dir(&work_dir)
             .output()
             .await
             .unwrap();
@@ -815,20 +852,14 @@ mod tests {
 
         // Second commit.
         tokio::fs::write(work_dir.join("b.txt"), "b").await.unwrap();
-        let _ = Command::new("git")
-            .args(["add", "."])
-            .current_dir(&work_dir)
-            .output()
-            .await;
-        let _ = Command::new("git")
+        let _ = git(&work_dir).args(["add", "."]).output().await;
+        let _ = git(&work_dir)
             .args(["commit", "-m", "second"])
-            .current_dir(&work_dir)
             .output()
             .await;
 
-        let output = Command::new("git")
+        let output = git(&work_dir)
             .args(["rev-parse", "HEAD"])
-            .current_dir(&work_dir)
             .output()
             .await
             .unwrap();

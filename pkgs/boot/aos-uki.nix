@@ -42,9 +42,10 @@ in
     inherit version;
     src = null;
 
-    # systemd itself carries the wrapped ukify (see pkgs/system/systemd.nix's
-    # fixup phase — the wrapper puts pefile/pyelftools on PYTHONPATH).
-    buildDeps = [systemd];
+    # systemd carries `ukify` (and pefile/pyelftools via the wrapper) in
+    # its `tools` output. The main systemd output is still needed for
+    # the linuxx64.efi.stub (consumed via ${effectiveStub} below).
+    buildDeps = [systemd.tools systemd];
     runtimeDeps = [];
 
     phases = [
@@ -67,7 +68,7 @@ in
             exit 1
           fi
 
-          ${systemd}/bin/ukify build \
+          ${systemd.tools}/bin/ukify build \
             --stub=${effectiveStub} \
             --linux="$vmlinuz" \
             --initrd=${initrd}/initrd.img \

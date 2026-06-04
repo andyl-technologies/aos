@@ -9,6 +9,11 @@ use aos_server::{self, bootstrap, build, config, drain, routes, sign, store, tls
 
 /// `aos serve` — start the HTTP binary cache server.
 pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
+    // Install a stderr tracing subscriber so aos-server's request
+    // instrumentation (`tracing::info!` in routes.rs etc.) reaches
+    // journald. Without this the daemon's logs are silently dropped.
+    crate::logging::init();
+
     printer.info(&format!("Loading config from {}", config_path.display()));
     let cfg = config::load_config(config_path).context("loading server configuration")?;
 

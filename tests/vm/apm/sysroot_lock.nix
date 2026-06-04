@@ -150,8 +150,6 @@
                 store_path = "${pkg.storePath}"
                 nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
                 nar_size = 1024
-                download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                download_size = 512
                 closure_size = 2048
                 source_drv = ""
                 source_nar_hash = ""
@@ -165,8 +163,6 @@
                       store_path = "${img.storePath}"
                       nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
                       nar_size = ${builtins.toString img.narSize}
-                      download_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-                      download_size = ${builtins.toString img.downloadSize}
                     '') (pkg.images or []))
                   else ""
                 }
@@ -198,7 +194,6 @@
     sysrootRegistryPath,
     userRegistryPath,
     sysrootState ? null,
-    storePaths ? [],
   }: ''
         # Use /tmp for all writable state
         export HOME=/tmp/home
@@ -253,17 +248,13 @@
       else ""
     }
 
-        # Register real store paths in the Nix database so that
-        # nix-store --check-validity succeeds for them.
-        # The VM rootfs has /nix/store but no Nix database.
-        # First initialise the store DB, then register each path.
-        mkdir -p /nix/var/nix/db /nix/var/nix/gcroots /nix/var/nix/temproots /nix/var/nix/userpool
+        # Headless rootfsDeps tests do not boot stage-2 systemd, so seed the
+        # Nix DB from the same registration stream full images load at boot.
         export NIX_REMOTE=""
-        nix-store --init
-        ${builtins.concatStringsSep "\n" (builtins.map (p: ''
-        printf '%s\n\n0\n' "${builtins.toString p}" | nix-store --register-validity
-      '')
-      storePaths)}
+        nix-store --init || true
+        nix-store --load-db < /aos-registration
+        mkdir -p /nix/var/nix/gcroots
+        ln -sfn /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
   '';
 
   # Store path hash extraction helper — takes the first component before '-'
@@ -390,7 +381,6 @@
     sysrootRegistryPath = sysrootRegistry;
     userRegistryPath = userRegistry;
     sysrootState = sysrootStateJson;
-    storePaths = allPlaceholders;
   };
 in {
   # --------------------------------------------------------------------------

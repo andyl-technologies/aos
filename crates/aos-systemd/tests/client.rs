@@ -1,0 +1,162 @@
+//! Unit tests for `SystemdClient` driven by an in-process `FakeSystemd` over a
+//! zbus p2p connection. See `common/mod.rs` for the harness.
+
+mod common;
+
+use std::time::Duration;
+
+use aos_systemd::JobResult;
+use common::Harness;
+
+/// Cap every client await so a logic bug surfaces as a fast failure rather
+/// than a hung test.
+async fn with_timeout<F, T>(fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::time::timeout(Duration::from_secs(5), fut)
+        .await
+        .expect("operation timed out (likely a missed signal / Subscribe bug)")
+}
+
+async fn wait_until<F: Fn() -> bool>(pred: F) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        if pred() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("condition not satisfied within timeout");
+}
+
+#[tokio::test]
+async fn subscribe_called_before_signal_streams() {
+    // Regression guard for the §5.4 pitfall: Subscribe() must be issued during
+    // connect, before anything else. (The fake's subscribe-gated emission also
+    // means every job test below implicitly proves Subscribe enabled signals.)
+    let h = Harness::new().await;
+    let calls = h.calls();
+    assert_eq!(
+        calls.first().map(String::as_str),
+        Some("subscribe"),
+        "Subscribe must be the first manager call; got {calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn job_done() {
+    let h = Harness::new().await;
+    h.set_next_result("done");
+    let outcome = with_timeout(h.client.restart_unit("foo.service")).await.unwrap();
+    assert_eq!(outcome.result, JobResult::Done);
+}
+
+#[tokio::test]
+async fn job_failed() {
+    let h = Harness::new().await;
+    h.set_next_result("failed");
+    let outcome = with_timeout(h.client.start_unit("foo.service")).await.unwrap();
+    assert_eq!(outcome.result, JobResult::Failed);
+}
+
+#[tokio::test]
+async fn job_timeout() {
+    let h = Harness::new().await;
+    h.set_next_result("timeout");
+    let outcome = with_timeout(h.client.start_unit("foo.service")).await.unwrap();
+    assert_eq!(outcome.result, JobResult::Timeout);
+}
+
+#[tokio::test]
+async fn job_dependency() {
+    let h = Harness::new().await;
+    h.set_next_result("dependency");
+    let outcome = with_timeout(h.client.start_unit("foo.service")).await.unwrap();
+    assert_eq!(outcome.result, JobResult::Dependency);
+}
+
+#[tokio::test]
+async fn job_unknown_preserves_label() {
+    let h = Harness::new().await;
+    h.set_next_result("canceled");
+    let outcome = with_timeout(h.client.restart_unit("foo.service")).await.unwrap();
+    assert_eq!(outcome.result, JobResult::Unknown("canceled".to_string()));
+    assert_eq!(outcome.result.label(), "canceled");
+}
+
+#[tokio::test]
+async fn settle_drains_late_messages() {
+    let h = Harness::new().await;
+    // Five standalone JobRemoved events with no awaiter.
+    for i in 0..5 {
+        h.emit_job_removed(100 + i, "late.service", "done").await;
+    }
+    let drained = with_timeout(h.client.settle()).await.unwrap();
+    assert_eq!(drained, 5, "settle should count all five late events");
+}
+
+#[tokio::test]
+async fn reloading_flag_flips() {
+    let h = Harness::new().await;
+    assert!(!h.client.is_reloading());
+
+    h.emit_reloading(true).await;
+    wait_until(|| h.client.is_reloading()).await;
+
+    h.emit_reloading(false).await;
+    wait_until(|| !h.client.is_reloading()).await;
+}
+
+#[tokio::test]
+async fn concurrent_jobs_route_by_path() {
+    // Ten concurrent jobs, alternating done/failed by unit name. Each awaiter
+    // must wake with *its own* result — the core path-keyed-routing property.
+    let h = Harness::new().await;
+    for i in 0..10 {
+        let result = if i % 2 == 0 { "done" } else { "failed" };
+        h.set_unit_result(&format!("u{i}.service"), result);
+    }
+
+    let futures = (0..10)
+        .map(|i| h.client.restart_unit(format!("u{i}.service").leak()))
+        .collect::<Vec<_>>();
+    let outcomes = with_timeout(futures_util::future::join_all(futures)).await;
+
+    for (i, outcome) in outcomes.into_iter().enumerate() {
+        let outcome = outcome.unwrap();
+        let expected = if i % 2 == 0 {
+            JobResult::Done
+        } else {
+            JobResult::Failed
+        };
+        assert_eq!(outcome.result, expected, "unit u{i} routed to wrong result");
+    }
+}
+
+#[tokio::test]
+async fn reboot_calls_manager_reboot() {
+    // Replaces the old microVM systemctl-binary reboot assertion: prove apm
+    // issues Manager.Reboot over D-Bus, without actually rebooting anything.
+    let h = Harness::new().await;
+    with_timeout(h.client.reboot()).await.unwrap();
+    assert!(
+        h.calls().contains(&"reboot".to_string()),
+        "expected a reboot call; got {:?}",
+        h.calls()
+    );
+}
+
+#[tokio::test]
+async fn daemon_reload_calls_manager_reload() {
+    let h = Harness::new().await;
+    with_timeout(h.client.daemon_reload()).await.unwrap();
+    assert!(h.calls().contains(&"reload".to_string()));
+}
+
+#[tokio::test]
+async fn reset_failed_calls_through() {
+    let h = Harness::new().await;
+    with_timeout(h.client.reset_failed()).await.unwrap();
+    assert!(h.calls().contains(&"reset_failed".to_string()));
+}

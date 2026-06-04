@@ -22,6 +22,8 @@
 ##!   - `mount-var.service`         — mounts /var partition (created by
 ##!                                    Ignition) before ignition-files
 ##!   - `etc-overlay-setup.service` — /etc overlay with /var/etc + /etc.lower
+##!   - `nix-overlay-setup.service` — /nix overlay with persistent upper
+##!                                    on /var (writable Nix store layer)
 {
   pkgs,
   lib,
@@ -42,6 +44,9 @@
     pkgs.systemd
     pkgs.coreutils
     pkgs.bash
+    # jq is needed by aos-seed-profiles.service to assemble apm's
+    # initial state.json. Spec v12 §6.1.1.
+    pkgs.jq
   ];
   ignitionPath = lib.concatStringsSep ":" [
     (lib.makeBinPath ignitionTools)
@@ -50,12 +55,21 @@
 
   # Shared config for every ignition stage unit: inherit the platform
   # env from aos-platform-detect, wire PATH for the shell-outs, and
-  # run a oneshot that stays active across subsequent stages.
-  stageServiceConfig = stage: {
+  # run a oneshot that stays active across subsequent stages. `root`
+  # defaults to `/sysroot` (which is what the fetch / disks / mount
+  # stages want); the files stage overrides it to the per-gen
+  # /run/etc/ignition-<gen> path. The per-gen path lives in the
+  # initrd's `/run` tmpfs so that systemd-initrd's `mount --move /run
+  # /sysroot/run` during switch_root carries it (and its sub-mounts)
+  # into stage-2 — see the note above `run-etc-setup.service` below.
+  stageServiceConfig = {
+    stage,
+    root ? "/sysroot",
+  }: {
     Type = "oneshot";
     RemainAfterExit = true;
     EnvironmentFile = "/run/ignition/platform.env";
-    ExecStart = "${pkgs.ignition}/bin/ignition --platform=\${PLATFORM_ID} --root=/sysroot --stage=${stage} --log-to-stdout";
+    ExecStart = "${pkgs.ignition}/bin/ignition --platform=\${PLATFORM_ID} --root=${root} --stage=${stage} --log-to-stdout";
     StandardOutput = "journal+console";
     StandardError = "journal+console";
   };
@@ -88,6 +102,117 @@ in {
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };
+      };
+
+      # Bring up DHCP networking before ignition-fetch, but ONLY on
+      # network-dependent platforms. aos-platform-detect drops
+      # /run/ignition/need-network for cloud platforms; the
+      # ConditionPathExists makes this gate a no-op (and, crucially, pull in
+      # nothing) on file/qemu/metal. The whole initrd.target closure is one
+      # transaction at boot, so a static Wants=network-online.target can't be
+      # gated — only a fresh, additive `systemctl start` issued here, after
+      # the post-udev ISO-aware detector ran, is correct. The start blocks
+      # until network-online.target is reached (wait-online is pulled via the
+      # .wants symlink the builder installs). wait-online sits behind a weak
+      # Wants= of the target, so a wait-online timeout doesn't fail the
+      # target's job — but SuccessExitStatus=0 1 keeps even a non-zero
+      # systemctl result best-effort rather than failing the gate and (via
+      # ignition-fetch's Requires=) wedging boot into emergency. ExecStart is
+      # not shell-parsed, so no `|| true` here — SuccessExitStatus is the hatch.
+      "aos-ignition-network" = {
+        description = "Bring up networking for ignition (network-dependent platforms only)";
+        wantedBy = ["initrd-root-fs.target"];
+        requires = ["aos-platform-detect.service"];
+        after = ["aos-platform-detect.service"];
+        before = ["ignition-fetch.service"];
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "/run/ignition/need-network";
+        };
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${pkgs.systemd}/bin/systemctl start network-online.target";
+          SuccessExitStatus = "0 1";
+        };
+      };
+
+      # Best-effort wait-online: succeed as soon as ANY managed link is
+      # routable. Without --any the default "all links online" wedges ~90 s
+      # whenever a second NIC is managed but has no DHCP server (e.g. the
+      # fleet test's mcast NIC). overrideStrategy=asDropin emits only a
+      # <unit>.d/overrides.conf over the upstream unit symlinked by the
+      # builder; the empty-then-set ExecStart list is the systemd reset idiom.
+      "systemd-networkd-wait-online" = {
+        overrideStrategy = "asDropin";
+        serviceConfig.ExecStart = [
+          ""
+          "${pkgs.systemd}/lib/systemd/systemd-networkd-wait-online --any"
+        ];
+      };
+
+      # Relocate the GPT backup header to the true end of the boot disk
+      # before ignition's disks stage runs. The server image is built
+      # sized-to-fit (modules/image/_builder.nix): its backup GPT header
+      # sits right after root-a, so the primary header's LastUsableLBA
+      # describes the *image*, not the device it is written to. When that
+      # image lands on a larger disk — bare-metal `dd`, or a custom cloud
+      # image (e.g. DigitalOcean) on a bigger volume — ignition's disks
+      # stage cannot create or grow partitions past the stale boundary and
+      # fails with "Could not create partition N from X to Y" (sgdisk exit
+      # 4). `sgdisk -e` moves the backup header to the real end of the
+      # device and expands LastUsableLBA; it is a no-op when the image
+      # already spans the disk (disk == image size, or the qemu-uefi doc's
+      # host-side `sgdisk -e`). Ignition itself won't do this: its disks
+      # stage is strictly declarative and treats the existing table as
+      # authoritative input — repairing the GPT is the boot pipeline's job.
+      #
+      # Gated to the pre-provisioning boot only: once ignition has laid out
+      # the disk the var partition exists and the backup header is already
+      # at the end, so we skip and never rewrite the GPT on later boots.
+      "aos-gpt-relocate" = {
+        description = "Relocate GPT backup header to end of boot disk";
+        wantedBy = ["initrd-root-fs.target"];
+        before = [
+          "ignition-disks.service"
+          "initrd-root-fs.target"
+        ];
+        requires = ["systemd-udev-settle.service"];
+        after = ["systemd-udev-settle.service"];
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "/dev/disk/by-partlabel/root-a";
+        };
+        environment.PATH = ignitionPath;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          StandardOutput = "journal+console";
+          StandardError = "journal+console";
+        };
+        script = ''
+          set -euo pipefail
+
+          # The var partition is created by ignition, never by the image.
+          # Its presence means ignition already provisioned this disk and
+          # the GPT spans the full device — nothing to relocate.
+          if [ -e /dev/disk/by-partlabel/var ]; then
+            echo "aos-gpt-relocate: disk already provisioned (var present); skipping"
+            exit 0
+          fi
+
+          part=$(readlink -f /dev/disk/by-partlabel/root-a)
+          disk=$(lsblk -ndo PKNAME "$part" 2>/dev/null || true)
+          if [ -z "$disk" ]; then
+            echo "aos-gpt-relocate: cannot resolve parent disk of $part; skipping" >&2
+            exit 0
+          fi
+          disk="/dev/$disk"
+
+          echo "aos-gpt-relocate: relocating GPT backup header to end of $disk"
+          sgdisk -e "$disk"
+          sgdisk -v "$disk" || true
+        '';
       };
 
       "aos-growfs" = {
@@ -124,14 +249,16 @@ in {
           "systemd-modules-load.service"
           "systemd-udevd.service"
           "aos-platform-detect.service"
+          "aos-ignition-network.service"
         ];
         after = [
           "systemd-modules-load.service"
           "systemd-udevd.service"
           "aos-platform-detect.service"
+          "aos-ignition-network.service"
         ];
         environment.PATH = ignitionPath;
-        serviceConfig = stageServiceConfig "fetch";
+        serviceConfig = stageServiceConfig {stage = "fetch";};
       };
 
       "ignition-disks" = {
@@ -145,14 +272,16 @@ in {
         requires = [
           "systemd-udevd.service"
           "aos-platform-detect.service"
+          "aos-gpt-relocate.service"
         ];
         after = [
           "ignition-fetch.service"
           "systemd-udevd.service"
           "aos-platform-detect.service"
+          "aos-gpt-relocate.service"
         ];
         environment.PATH = ignitionPath;
-        serviceConfig = stageServiceConfig "disks";
+        serviceConfig = stageServiceConfig {stage = "disks";};
       };
 
       "ignition-mount" = {
@@ -175,7 +304,7 @@ in {
         ];
         environment.PATH = ignitionPath;
         serviceConfig =
-          stageServiceConfig "mount"
+          stageServiceConfig {stage = "mount";}
           // {
             # Run umount on service stop (i.e. during initrd-cleanup)
             # so filesystems ignition mounted are torn down cleanly
@@ -188,96 +317,61 @@ in {
         description = "Ignition (files)";
         wantedBy = ["initrd-fs.target"];
         before = [
-          "initrd-parse-etc.service"
+          "etc-overlay-setup.service"
           "initrd-switch-root.target"
           "initrd-fs.target"
         ];
         requires = [
           "aos-platform-detect.service"
           "mount-var.service"
+          "aos-seed-profiles.service"
+          "run-etc-setup.service"
         ];
         after = [
           "ignition-mount.service"
           "aos-platform-detect.service"
           "mount-var.service"
+          "aos-seed-profiles.service"
+          "run-etc-setup.service"
         ];
         environment.PATH = ignitionPath;
+        # Write into the per-gen lower under /run/etc/ignition-<gen>/.
+        # Ignition's `--root=$ign` prepends $ign to absolute paths,
+        # so a `storage.links.path = "/etc/foo"` write lands at
+        # `$ign/etc/foo`. The per-gen subtree is created by the
+        # ExecStartPre below; etc-overlay-setup mounts it as the
+        # role lowerdir in the three-layer /etc overlay.
+        #
+        # `--root` and the ExecStartPre target the initrd's own
+        # /run/etc/... (not /sysroot/run/etc/...) so the per-gen
+        # subtree is rooted under the /run tmpfs that
+        # systemd-initrd's switch_root moves to /sysroot/run — i.e.
+        # so the per-gen path remains reachable post-pivot as
+        # /run/etc/ignition-<gen>/ rather than getting shadowed by
+        # the moved /run mount.
         serviceConfig =
-          stageServiceConfig "files"
+          stageServiceConfig {
+            stage = "files";
+            root = "/run/etc/ignition-\${AOS_PROFILE_GEN}";
+          }
           // {
-            # Ignition writes systemd unit files at /etc/systemd/system/<name>
-            # and its preset at /etc/systemd/system-preset/20-ignition.preset
-            # — both paths are hardcoded in upstream
-            # (internal/exec/util/path.go and unit.go). /sysroot is mounted
-            # ro at this point, so direct writes would fail with EROFS.
-            #
-            # BindPaths runs in this service's private mount namespace:
-            # the bind appears only here, the underlying writes go to the
-            # rw /var partition, and the original /sysroot/etc content is
-            # left untouched on disk. Stage 2 surfaces the writes through
-            # the /etc overlay's `lowerdir=/var/etc:/etc.lower` layering
-            # set up by etc-overlay-setup.service.
-            BindPaths = "/sysroot/var/etc:/sysroot/etc";
+            EnvironmentFile = [
+              "/run/ignition/platform.env"
+              "/run/aos-profile-gen.env"
+            ];
+            ExecStartPre =
+              "${pkgs.coreutils}/bin/mkdir -p "
+              + "/run/etc/ignition-\${AOS_PROFILE_GEN}/etc";
           };
       };
 
-      # Apply ignition's systemd presets to /sysroot. Runs after
-      # ignition-files writes the preset file (via the same BindPaths
-      # redirect into /var/etc/systemd/system-preset/20-ignition.preset)
-      # and before etc-overlay-setup mounts the /etc overlay. Inside
-      # this service's private mount namespace, /sysroot/etc is bound
-      # to /sysroot/var/etc so the symlinks the script lays down end
-      # up on the rw /var partition; stage 2 sees them through the
-      # /var/etc lower layer of the eventual /etc overlay.
-      #
-      # We don't use `systemctl preset-all`: AOS systemd is built with
-      # `--sysconfdir=$out/etc` (pkgs/system/systemd.nix:238), so its
-      # compiled-in SYSTEM_CONFIG_UNIT_DIR points inside the read-only
-      # systemd package, and `systemctl enable` writes symlinks there
-      # rather than under /etc/systemd/system — fails on every unit.
-      # The inline script below applies our preset file directly,
-      # walking each enabled unit's `[Install]` section to lay down
-      # the four directive types (Alias / WantedBy / RequiredBy /
-      # UpheldBy) the renderer in lib/modules/systemd/lib.nix emits.
-      "aos-ignition-preset" = {
-        description = "Apply ignition's systemd presets to /sysroot";
-        wantedBy = ["initrd-fs.target"];
-        before = [
-          "etc-overlay-setup.service"
-          "initrd-fs.target"
-        ];
-        requires = [
-          "ignition-files.service"
-          "sysroot.mount"
-          "mount-var.service"
-        ];
-        after = [
-          "ignition-files.service"
-          "sysroot.mount"
-          "mount-var.service"
-        ];
-        unitConfig = {
-          DefaultDependencies = "no";
-          # The preset file lives at /var/etc/systemd/system-preset/
-          # on disk; in this service's private namespace it surfaces
-          # at /sysroot/etc/systemd/system-preset/ via the BindPaths
-          # below. ConditionPathExists is evaluated by PID 1 BEFORE
-          # the namespace is set up, so check the on-disk path
-          # directly to gate the unit on whether ignition wrote a
-          # preset file at all.
-          ConditionPathExists = "/sysroot/var/etc/systemd/system-preset/20-ignition.preset";
-        };
-        # awk / ln / mkdir / coreutils for the inline script below.
-        # `gawk` isn't in `ignitionPath` (the existing ignition stages
-        # don't need it); prepend it here.
-        environment.PATH = "${pkgs.gawk}/bin:${ignitionPath}";
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          BindPaths = "/sysroot/var/etc:/sysroot/etc";
-        };
-        script = builtins.readFile ./aos-ignition-preset.bash;
-      };
+      # aos-ignition-preset.service was removed in spec v12 §6.1.6 —
+      # the [Install] symlinks now ride in the system EROFS image
+      # (via environment.etc."systemd/system" and the composefs dump
+      # script's directory recursion at spec v12 §5.2) and in the
+      # per-gen ignition lower (via render-role.nix's predicted
+      # storage.links, spec v12 §5.6). The runtime preset-walker is
+      # redundant.
 
       # Mount the /var partition created by ignition-disks so that
       # ignition-files can write to /sysroot/var/etc/* and the mount
@@ -317,13 +411,9 @@ in {
           fi
           # Standard /var subdirectories expected by systemd and daemons.
           mkdir -p /sysroot/var/{log,lib,tmp}
-          # /var/etc is the persistent lower layer of the production
-          # /etc overlay (set up later by etc-overlay-setup). Create it
-          # eagerly so ignition-files / aos-ignition-preset can use it
-          # as a BindPaths source — those services bind /sysroot/var/etc
-          # over /sysroot/etc inside their private mount namespaces so
-          # ignition's hardcoded /etc/systemd/* writes land on the rw
-          # /var partition instead of failing on ro /sysroot.
+          # /var/etc is the host-persistent allowlist of the /etc
+          # overlay (spec v12 §5.4) — created eagerly so
+          # aos-machine-id and sshd-keygen find it on first boot.
           mkdir -p /sysroot/var/etc
           # /var/run → /run is the modern-Linux convention; many daemons
           # (dbus, various PID files) still reference /var/run paths.
@@ -331,12 +421,22 @@ in {
         '';
       };
 
-      # /etc overlay: moves the image's /etc → /etc.lower on first boot,
-      # then mounts an overlayfs at /etc with two lower layers:
-      #   1. /var/etc   — persistent state written by ignition (shadows)
-      #   2. /etc.lower — immutable image /etc
-      # The upper layer is a tmpfs under /run so runtime writes to /etc
-      # are not persisted across reboots.
+      # /etc overlay (spec v12 §6.1.4) — three-layer composition:
+      #
+      #   lowerdir+=/var/etc                      — host-persistent allowlist
+      #                                             (machine-id, ssh host keys)
+      #   lowerdir+=/run/etc/ignition-<gen>/etc   — per-gen role lower
+      #                                             (ignition's storage.links
+      #                                             from render-role.nix)
+      #   lowerdir+=/run/etc/system-<gen>/metadata — system EROFS (composefs)
+      #   datadir+= /run/etc/system-<gen>/content  — basedir for octal-mode
+      #                                              entries (metacopy)
+      #   upperdir = /run/etc/upper-<gen>/upper    — tmpfs, runtime writes
+      #
+      # The active toplevel is read at runtime by
+      # `readlink /sysroot/var/lib/profiles/system/current/toplevel`;
+      # baking `${config.system.build.toplevel}` here would create an
+      # initrd→toplevel→initrd cycle (the toplevel ships the initrd).
       "etc-overlay-setup" = {
         description = "Set Up /etc Overlay Filesystem";
         wantedBy = ["initrd-fs.target"];
@@ -348,11 +448,117 @@ in {
           "sysroot.mount"
           "mount-var.service"
           "ignition-files.service"
+          "aos-seed-profiles.service"
+          "run-etc-setup.service"
+          "nix-overlay-setup.service"
+          "aos-machine-id.service"
         ];
         after = [
           "sysroot.mount"
           "mount-var.service"
           "ignition-files.service"
+          "aos-seed-profiles.service"
+          "run-etc-setup.service"
+          "nix-overlay-setup.service"
+          "aos-machine-id.service"
+          "initrd-root-fs.target"
+        ];
+        unitConfig.DefaultDependencies = "no";
+        environment.PATH = ignitionPath;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -euo pipefail
+          . /run/aos-profile-gen.env
+
+          # Resolve the active toplevel at runtime; do NOT bake
+          # ${"\${config.system.build.toplevel}"} into this script
+          # (initrd→toplevel→initrd cycle). nix-overlay-setup mounts
+          # /sysroot/nix as the merged overlay, so /sysroot$toplevel
+          # resolves through that.
+          toplevel=$(readlink /sysroot/var/lib/profiles/system/current/toplevel)
+          gen=$AOS_PROFILE_GEN
+          # Per-gen mountpoints live under the initrd's own /run/etc
+          # (the tmpfs that run-etc-setup.service mounted before
+          # this unit runs). systemd-initrd does `mount --move /run
+          # /sysroot/run` during switch_root, which carries the
+          # /run/etc sub-mounts into stage-2 unchanged. Placing them
+          # on /sysroot/run/etc instead would make /run/etc a sibling
+          # of the moved /run rather than a child of it, so the
+          # moved /run would shadow the whole subtree post-pivot.
+          sys=/run/etc/system-$gen
+          ign=/run/etc/ignition-$gen
+          upper_root=/run/etc/upper-$gen
+
+          mkdir -p "$sys/metadata" "$sys/content" \
+                   "$upper_root/upper" "$upper_root/work"
+          # $ign/etc already exists from ignition-files.service's
+          # ExecStartPre.
+
+          # $toplevel is a /nix/store/... path; prefix /sysroot
+          # because the real root is still under /sysroot in the
+          # initrd. /sysroot/nix is the merged overlay (set up by
+          # nix-overlay-setup.service, which we ordered After).
+          #
+          # `etc-basedir` and `etc-metadata.erofs` are symlinks inside
+          # the toplevel that point at other /nix/store/... paths.
+          # `mount --bind` follows those symlinks, but the resolved
+          # /nix/store/... target isn't reachable from PID 1's
+          # process root in the initrd — only /sysroot/nix/store/
+          # is. Read the symlinks ourselves and prefix /sysroot so
+          # the bind sources resolve in the initrd's view.
+          basedir=$(readlink "/sysroot$toplevel/etc-basedir")
+          metadata=$(readlink "/sysroot$toplevel/etc-metadata.erofs")
+          ${pkgs.util-linux}/bin/mount --bind \
+            "/sysroot$basedir" "$sys/content"
+          ${pkgs.util-linux}/bin/mount -t erofs -o ro,nodev,nosuid \
+            "/sysroot$metadata" "$sys/metadata"
+
+          # /sysroot/var/etc keeps its /sysroot prefix because /var is
+          # mounted on /sysroot/var in stage-1; the overlay records
+          # vfsmount refs at mount time, so the literal source string
+          # in the option line never gets re-resolved post-pivot.
+          ${pkgs.util-linux}/bin/mount -t overlay overlay -o \
+            nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$ign/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/upper,workdir=$upper_root/work \
+            /sysroot/etc
+
+          # Inspection symlinks (relative targets so they survive
+          # switch_root). Created under the initrd's /run/etc so they
+          # move into stage-2 along with the rest of /run.
+          ln -sfn system-$gen   /run/etc/system
+          ln -sfn ignition-$gen /run/etc/ignition
+          ln -sfn upper-$gen    /run/etc/upper
+        '';
+      };
+
+      # /nix overlay: stack a writable upper on /var over the image's
+      # immutable /nix.lower so the Nix package manager can install new
+      # store paths at runtime. The image builder ships /nix.lower
+      # populated and /nix as an empty mountpoint (lib/build/rootfs.nix),
+      # so this unit is unconditional — no first-boot rename, no
+      # remount,rw window, identical on fresh installs and post-upgrade
+      # boots.
+      #
+      # Once the Nix DB is seeded, GC safety depends on roots. The lower
+      # filesystem cannot be physically deleted, but unreferenced lower store
+      # paths can still be hidden by overlay whiteouts; the stage-2 GC-root
+      # bridge keeps the live AOS profile closure reachable.
+      "nix-overlay-setup" = {
+        description = "Set Up /nix Overlay Filesystem";
+        wantedBy = ["initrd-fs.target"];
+        before = [
+          "initrd-fs.target"
+          "initrd-switch-root.target"
+        ];
+        requires = [
+          "sysroot.mount"
+          "mount-var.service"
+        ];
+        after = [
+          "sysroot.mount"
+          "mount-var.service"
           "initrd-root-fs.target"
         ];
         environment.PATH = ignitionPath;
@@ -364,43 +570,203 @@ in {
           set -euo pipefail
           sysroot=/sysroot
 
-          # 1. First-boot setup: move /etc aside and create the
-          #    /run/etc-upper mountpoint. Root is read-only so we
-          #    remount rw briefly for these on-disk changes.
-          needs_rw=false
-          if [ ! -d "$sysroot/etc.lower" ]; then needs_rw=true; fi
-          if [ ! -d "$sysroot/run/etc-upper" ]; then needs_rw=true; fi
+          # Upper and work must share a filesystem (overlayfs requires
+          # workdir to be on the same fs as upperdir for atomic
+          # rename-into-upper). Both live on the /var partition.
+          mkdir -p "$sysroot/var/lib/nix-overlay/upper"
+          mkdir -p "$sysroot/var/lib/nix-overlay/work"
 
-          if [ "$needs_rw" = true ]; then
-            mount -o remount,rw "$sysroot"
-            if [ ! -d "$sysroot/etc.lower" ]; then
-              mv "$sysroot/etc" "$sysroot/etc.lower"
-              mkdir -p "$sysroot/etc"
-            fi
-            mkdir -p "$sysroot/run/etc-upper"
-            mount -o remount,ro "$sysroot"
+          if ! mountpoint -q "$sysroot/nix"; then
+            ${pkgs.util-linux}/bin/mount -t overlay overlay \
+              -o nosuid,nodev,lowerdir="$sysroot/nix.lower",upperdir="$sysroot/var/lib/nix-overlay/upper",workdir="$sysroot/var/lib/nix-overlay/work" \
+              "$sysroot/nix"
           fi
-
-          # 2. Tmpfs for the overlay upper/work dirs. The mountpoint
-          #    on the root ext4 means this appears as a sibling of /run
-          #    in findmnt rather than nested — cosmetic only, the overlay
-          #    functions correctly either way.
-          if ! mountpoint -q "$sysroot/run/etc-upper"; then
-            mount -t tmpfs -o nosuid,nodev,mode=755 tmpfs "$sysroot/run/etc-upper"
-          fi
-          mkdir -p "$sysroot/run/etc-upper/upper"
-          mkdir -p "$sysroot/run/etc-upper/work"
-
-          # 3. Ensure /var/etc exists on the persistent /var partition.
-          mkdir -p "$sysroot/var/etc/ssh/authorized_keys"
-
-          # 4. Mount the overlay. /var/etc is listed first so its files
-          #    shadow /etc.lower; the tmpfs upper captures runtime writes.
-          ${pkgs.util-linux}/bin/mount -t overlay overlay \
-            -o nosuid,nodev,lowerdir="$sysroot/var/etc:$sysroot/etc.lower",upperdir="$sysroot/run/etc-upper/upper",workdir="$sysroot/run/etc-upper/work" \
-            "$sysroot/etc"
         '';
       };
+
+      # Seed apm system-profile state on first boot. Reads the
+      # toplevel path from `/sysroot/aos-toplevel` (the seed pointer
+      # the rootfs ships at lib/build/rootfs.nix) rather than
+      # interpolating `${config.system.build.toplevel}` directly —
+      # the initrd builder's closure scan
+      # (modules/base/_initrd-builder.nix) would otherwise drag the
+      # toplevel into the initrd's closure and create a cycle
+      # (toplevel ships the initrd). Spec v12 §6.1.1, §6.1.
+      "aos-seed-profiles" = {
+        description = "Seed apm system-profile state on first boot";
+        wantedBy = ["initrd-fs.target"];
+        before = [
+          "ignition-files.service"
+          "run-etc-setup.service"
+          "aos-machine-id.service"
+          "initrd-fs.target"
+        ];
+        requires = [
+          "sysroot.mount"
+          "mount-var.service"
+          "nix-overlay-setup.service"
+        ];
+        after = [
+          "sysroot.mount"
+          "mount-var.service"
+          "nix-overlay-setup.service"
+        ];
+        unitConfig.DefaultDependencies = "no";
+        environment.PATH = ignitionPath;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -euo pipefail
+          profile_dir=/sysroot/var/lib/profiles/system
+
+          # The seed pointer is a symlink the rootfs builder writes at
+          # /aos-toplevel -> /nix/store/<hash>-toplevel. readlink
+          # returns the literal target (a /nix/store/... path); we
+          # access toplevel-resident files by prefixing /sysroot
+          # because the real root is still under /sysroot in the
+          # initrd. /sysroot/nix is the merged overlay (set up by
+          # nix-overlay-setup.service, which we ordered After).
+          toplevel=$(readlink /sysroot/aos-toplevel)
+
+          read_meta() {
+            tr -d '\n' < "/sysroot$toplevel/meta/$1" 2>/dev/null \
+              || printf 'unknown'
+          }
+
+          if [ ! -e "$profile_dir/state.json" ]; then
+            mkdir -p "$profile_dir/gen-1"
+            ln -sfn "$toplevel" "$profile_dir/gen-1/toplevel"
+            ln -sfn gen-1 "$profile_dir/current"
+            # `registry: "seed"` is a sentinel for the gen baked into
+            # the image (no apm install). The apm follow-up may
+            # special-case it or migrate the schema to Option<String>;
+            # until then the sentinel keeps the file parseable by
+            # today's apm (which types `registry` as String,
+            # non-optional, at crates/aos-package/src/types.rs:622).
+            ${pkgs.jq}/bin/jq -n \
+              --arg pn  "$(read_meta package-name)" \
+              --arg ver "$(read_meta version)" \
+              --arg top "$toplevel" \
+              --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '{
+                 current: 1,
+                 next: 2,
+                 generations: [{
+                   number: 1,
+                   toplevel: $top,
+                   package_name: $pn,
+                   version: $ver,
+                   registry: "seed",
+                   created_at: $now,
+                   kernel_path: ($top + "/kernel")
+                 }]
+               }' > "$profile_dir/state.json"
+          fi
+
+          link=$(readlink "$profile_dir/current")
+          GEN=''${link#gen-}
+          printf 'AOS_PROFILE_GEN=%s\n' "$GEN" > /run/aos-profile-gen.env
+        '';
+      };
+
+      # Mount a tmpfs on /run/etc once, before anything else writes
+      # under it. ignition-files writes its per-gen
+      # /run/etc/ignition-<gen>/ subtree here, and etc-overlay-setup
+      # later creates the system/upper mountpoints alongside.
+      #
+      # Why the initrd's /run rather than /sysroot/run:
+      # systemd-initrd-switch-root does `mount --move /run
+      # /sysroot/run` (then pivots) when handing off to stage-2. The
+      # move carries the initrd's /run mount and any sub-mounts of
+      # it; a separate mount on /sysroot/run/etc would be parented
+      # to the sysroot fs, end up as a sibling of the moved /run
+      # mount post-pivot, and be shadowed (path traversal goes
+      # through the moved /run's empty /etc directory). Mounting
+      # /run/etc here makes it a true child of the initrd's /run,
+      # so the move carries it and its sub-mounts (the system EROFS,
+      # the content bind, the per-gen ignition lower, the tmpfs
+      # upper) into stage-2 still reachable at /run/etc/... by path.
+      "run-etc-setup" = {
+        description = "Mount /run/etc tmpfs";
+        wantedBy = ["initrd-fs.target"];
+        before = [
+          "ignition-files.service"
+          "etc-overlay-setup.service"
+          "initrd-fs.target"
+        ];
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathIsMountPoint = "!/run/etc";
+        };
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /run/etc";
+          ExecStart =
+            "${pkgs.util-linux}/bin/mount -t tmpfs -o nosuid,nodev,mode=755 "
+            + "tmpfs /run/etc";
+        };
+      };
+
+      # Seed /var/etc/machine-id on first boot, before
+      # etc-overlay-setup mounts the overlay (so stage-2
+      # systemd-machine-id-setup.service sees the file via the
+      # /var/etc lower and skips regeneration). Replaces the
+      # legacy rootfs-builder `touch /etc/machine-id` write. Stage-1
+      # placement avoids the race where stage-2's
+      # systemd-machine-id-setup writes to the tmpfs upperdir,
+      # regenerating the ID every reboot. Spec v12 §6.1.5.
+      "aos-machine-id" = {
+        description = "Seed /var/etc/machine-id on first boot";
+        wantedBy = ["initrd-fs.target"];
+        before = [
+          "etc-overlay-setup.service"
+          "initrd-fs.target"
+        ];
+        requires = [
+          "sysroot.mount"
+          "mount-var.service"
+        ];
+        after = [
+          "sysroot.mount"
+          "mount-var.service"
+        ];
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "!/sysroot/var/etc/machine-id";
+        };
+        environment.PATH = ignitionPath;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -euo pipefail
+          mkdir -p /sysroot/var/etc
+          # /proc/sys/kernel/random/uuid emits
+          # "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\n". systemd's
+          # machine-id format is 32 lowercase hex chars (no dashes)
+          # followed by a newline; tr removes the dashes, the
+          # trailing newline from /proc survives.
+          tr -d '-' < /proc/sys/kernel/random/uuid \
+            > /sysroot/var/etc/machine-id
+          chmod 0444 /sysroot/var/etc/machine-id
+        '';
+      };
+    };
+
+    # DHCP on every physical NIC in the initrd. Kind=!* excludes virtual
+    # links (bridges/bonds/etc.); matching only physical ether devices
+    # mirrors the stage-2 80-dhcp.network and nixpkgs' default. Brought up
+    # only when the aos-ignition-network gate fires (cloud platforms).
+    boot.initrd.systemd.network."80-dhcp" = {
+      matchConfig = {
+        Type = "ether";
+        Kind = "!*";
+      };
+      networkConfig.DHCP = "yes";
     };
   };
 }

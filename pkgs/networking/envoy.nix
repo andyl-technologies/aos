@@ -269,6 +269,10 @@ in
     inherit tools;
     caCertificates = ca-certificates;
 
+    # The Bazel build already passes --linkopt=-no-pie and
+    # --host_linkopt=-no-pie; make the policy explicit.
+    hardeningDisable = ["pie"];
+
     postPatch = postPatchScript;
     bazelTarget = "//source/exe:envoy-static";
     bazelFlags = [
@@ -355,10 +359,12 @@ in
           # Fix glibc include path: cc-wrapper uses -idirafter which puts glibc-2.39
           # after GCC's builtin glibc-2.34. Add -isystem to put it first.
           # Must use two --copt entries (not -isystem=path, which means sysroot-relative).
+          # Headers live in glibc.dev (multi-output split); shared libs in glibc.out.
           GLIBC=$(cat ${bootstrapTools}/nix-support/orig-libc)
+          GLIBC_DEV=$(cat ${bootstrapTools}/nix-support/orig-libc-dev)
           INTERP=$(cat ${bootstrapTools}/nix-support/dynamic-linker)
-          echo "build --copt=-isystem --copt=$GLIBC/include" >> .bazelrc
-          echo "build --host_copt=-isystem --host_copt=$GLIBC/include" >> .bazelrc
+          echo "build --copt=-isystem --copt=$GLIBC_DEV/include" >> .bazelrc
+          echo "build --host_copt=-isystem --host_copt=$GLIBC_DEV/include" >> .bazelrc
           # Fix library path and dynamic linker for linking
           echo "build --linkopt=-L$GLIBC/lib" >> .bazelrc
           echo "build --host_linkopt=-L$GLIBC/lib" >> .bazelrc
