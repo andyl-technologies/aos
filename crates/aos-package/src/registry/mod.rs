@@ -1,8 +1,13 @@
 pub mod bundle;
+pub mod channel;
 pub mod closures;
 pub mod git;
+pub mod keys;
+pub mod objectstore;
+pub mod pack;
 pub mod parse;
 pub mod state;
+pub mod verify;
 
 use std::collections::HashMap;
 use std::path::Path;
