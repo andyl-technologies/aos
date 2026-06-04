@@ -86,11 +86,12 @@ pub fn write_release_objects(
     revspec: &str,
 ) -> Result<()> {
     assert_sha256(repo)?;
+    let git_dir = repo_git_dir(repo)?;
     if !revspec.is_empty() {
-        run_git_dir(repo, &["rev-list", "--objects", revspec])?;
+        run_git_dir(&git_dir, &["rev-list", "--objects", revspec])?;
     }
 
-    let objects_dir = repo.join("releases").join(release_object_dir(version));
+    let objects_dir = git_dir.join("releases").join(release_object_dir(version));
     fs::create_dir_all(objects_dir.join("info"))
         .with_context(|| format!("creating {}", objects_dir.join("info").display()))?;
     fs::create_dir_all(objects_dir.join("pack"))
@@ -110,19 +111,20 @@ pub fn write_release_objects(
 /// missing as a loose object.
 pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
     assert_sha256(repo)?;
+    let git_dir = repo_git_dir(repo)?;
 
-    for pack in full_pack_files(repo)? {
-        unpack_pack(repo, &pack)
+    for pack in full_pack_files(&git_dir)? {
+        unpack_pack(&git_dir, &pack)
             .with_context(|| format!("unpacking {}", pack.display()))?;
     }
 
-    let objects = run_git_dir(repo, &["rev-list", "--objects", "--all"])?;
+    let objects = run_git_dir(&git_dir, &["rev-list", "--objects", "--all"])?;
     let mut missing = Vec::new();
     for line in objects.lines() {
         let Some(oid) = line.split_whitespace().next() else {
             continue;
         };
-        let loose = repo.join("objects").join(loose_object_path(oid)?);
+        let loose = git_dir.join("objects").join(loose_object_path(oid)?);
         if !loose.exists() {
             missing.push(oid.to_string());
         }
@@ -145,7 +147,8 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
 /// Returns an error if `git update-server-info` fails.
 pub fn refresh_server_info(repo: &Path) -> Result<()> {
     assert_sha256(repo)?;
-    run_git_dir(repo, &["update-server-info"])?;
+    let git_dir = repo_git_dir(repo)?;
+    run_git_dir(&git_dir, &["update-server-info"])?;
     Ok(())
 }
 
@@ -155,10 +158,11 @@ pub fn refresh_server_info(repo: &Path) -> Result<()> {
 /// The entries intentionally use a single `../` so the file is host-independent
 /// for both local and dumb-HTTP access.
 pub fn write_alternates(repo: &Path, releases: &[semver::Version]) -> Result<()> {
+    let git_dir = repo_git_dir(repo)?;
     let mut sorted = releases.to_vec();
     sorted.sort_by(|a, b| b.cmp(a));
 
-    let info_dir = repo.join("objects").join("info");
+    let info_dir = git_dir.join("objects").join("info");
     fs::create_dir_all(&info_dir)
         .with_context(|| format!("creating {}", info_dir.display()))?;
 
@@ -181,11 +185,8 @@ pub fn write_alternates(repo: &Path, releases: &[semver::Version]) -> Result<()>
 /// Returns an error if the repository cannot be inspected or if its object
 /// format is not exactly `sha256`.
 pub fn assert_sha256(repo: &Path) -> Result<()> {
-    let format = if repo.join(".git").exists() {
-        run_git_worktree(repo, &["rev-parse", "--show-object-format"])?
-    } else {
-        run_git_dir(repo, &["rev-parse", "--show-object-format"])?
-    };
+    let git_dir = repo_git_dir(repo)?;
+    let format = run_git_dir(&git_dir, &["rev-parse", "--show-object-format"])?;
     if format.trim() != "sha256" {
         bail!(
             "registry repo {} uses object format '{}', expected sha256",
@@ -196,28 +197,39 @@ pub fn assert_sha256(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
+/// Resolve a registry path to the git directory that stores served objects.
+///
+/// Bare published registries use `repo` itself. Local producer checkouts use
+/// their `.git` directory, which is the byte tree mirrored for dumb HTTP.
+pub fn repo_git_dir(repo: &Path) -> Result<PathBuf> {
+    if repo.join("objects").is_dir() && repo.join("HEAD").exists() {
+        return Ok(repo.to_path_buf());
+    }
+
     let output = Command::new("git")
-        .arg("--git-dir")
+        .arg("-C")
         .arg(repo)
-        .args(args)
+        .args(["rev-parse", "--absolute-git-dir"])
         .output()
-        .with_context(|| format!("running git {} in {}", args.join(" "), repo.display()))?;
+        .with_context(|| format!("resolving git dir for {}", repo.display()))?;
 
     if !output.status.success() {
         bail!(
-            "git {} failed: {}",
-            args.join(" "),
+            "git rev-parse --absolute-git-dir failed: {}",
             String::from_utf8_lossy(&output.stderr).trim(),
         );
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        bail!("git rev-parse --absolute-git-dir returned an empty path");
+    }
+    Ok(PathBuf::from(path))
 }
 
-fn run_git_worktree(repo: &Path, args: &[&str]) -> Result<String> {
+fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
-        .arg("-C")
+        .arg("--git-dir")
         .arg(repo)
         .args(args)
         .output()
@@ -287,6 +299,12 @@ fn collect_full_packs(dir: &Path, packs: &mut Vec<PathBuf>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::path::Component;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn v(s: &str) -> semver::Version {
@@ -324,8 +342,10 @@ mod tests {
     #[test]
     fn alternates_are_relative_and_newest_first() {
         let tmp = TempDir::new().unwrap();
-        write_alternates(tmp.path(), &[v("1.0.0"), v("1.2.0"), v("1.1.2")]).unwrap();
-        let content = fs::read_to_string(tmp.path().join("objects/info/alternates")).unwrap();
+        let repo = tmp.path().join("repo.git");
+        init_bare_sha256(&repo, "stable").unwrap();
+        write_alternates(&repo, &[v("1.0.0"), v("1.2.0"), v("1.1.2")]).unwrap();
+        let content = fs::read_to_string(repo.join("objects/info/alternates")).unwrap();
         assert_eq!(
             content,
             "../releases/1/2/0/objects/\n../releases/1/1/2/objects/\n../releases/1/0/0/objects/\n",
@@ -349,6 +369,7 @@ mod tests {
         assert!(assert_sha256(&sha1).is_err());
 
         init_bare_sha256(&sha256, "stable").unwrap();
+        assert_eq!(repo_git_dir(&sha256).unwrap(), sha256);
         assert_sha256(&sha256).unwrap();
         assert_eq!(fs::read_to_string(sha256.join("HEAD")).unwrap(), "ref: refs/heads/stable\n");
 
@@ -359,6 +380,7 @@ mod tests {
             .unwrap();
         assert!(worktree_status.success());
         assert_sha256(&sha256_worktree).unwrap();
+        assert!(repo_git_dir(&sha256_worktree).unwrap().ends_with(".git"));
     }
 
     #[test]
@@ -371,5 +393,176 @@ mod tests {
         let dir = repo.join("releases/1/2/3/objects");
         assert!(dir.join("info").is_dir());
         assert!(dir.join("pack").is_dir());
+    }
+
+    #[test]
+    fn dumb_http_clone_reads_static_sha256_repo() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo.git");
+        let work = tmp.path().join("work");
+        let clone = tmp.path().join("clone");
+        init_bare_sha256(&repo, "stable").unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("registry.toml"), "[registry]\nname = \"test\"\n").unwrap();
+
+        let add = Command::new("git")
+            .arg("--git-dir")
+            .arg(&repo)
+            .arg("--work-tree")
+            .arg(&work)
+            .args(["add", "registry.toml"])
+            .status()
+            .unwrap();
+        assert!(add.success());
+        let commit = Command::new("git")
+            .arg("--git-dir")
+            .arg(&repo)
+            .arg("--work-tree")
+            .arg(&work)
+            .args([
+                "-c",
+                "user.name=AOS Test",
+                "-c",
+                "user.email=aos@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "init",
+            ])
+            .status()
+            .unwrap();
+        assert!(commit.success());
+
+        write_alternates(&repo, &[]).unwrap();
+        ensure_loose_completeness(&repo).unwrap();
+        refresh_server_info(&repo).unwrap();
+
+        let Some(server) = StaticServer::start(repo) else {
+            eprintln!("skipping dumb-HTTP clone test: local TCP bind is unavailable");
+            return;
+        };
+        let output = Command::new("git")
+            .env("GIT_SMART_HTTP", "0")
+            .arg("clone")
+            .arg(&server.url)
+            .arg(&clone)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git clone failed: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert_eq!(
+            fs::read_to_string(clone.join("registry.toml")).unwrap(),
+            "[registry]\nname = \"test\"\n",
+        );
+    }
+
+    struct StaticServer {
+        url: String,
+        stop: Option<mpsc::Sender<()>>,
+    }
+
+    impl StaticServer {
+        fn start(root: PathBuf) -> Option<Self> {
+            let listener = match TcpListener::bind("127.0.0.1:0") {
+                Ok(listener) => listener,
+                Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                    return None;
+                }
+                Err(err) => panic!("binding local static test server failed: {err}"),
+            };
+            listener.set_nonblocking(true).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (tx, rx) = mpsc::channel();
+
+            thread::spawn(move || loop {
+                if rx.try_recv().is_ok() {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => handle_static_request(stream, &root),
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            });
+
+            Some(Self {
+                url: format!("http://{addr}/"),
+                stop: Some(tx),
+            })
+        }
+    }
+
+    impl Drop for StaticServer {
+        fn drop(&mut self) {
+            if let Some(stop) = self.stop.take() {
+                let _ = stop.send(());
+            }
+        }
+    }
+
+    fn handle_static_request(mut stream: TcpStream, root: &Path) {
+        let mut first = String::new();
+        {
+            let mut reader = BufReader::new(&mut stream);
+            if reader.read_line(&mut first).is_err() {
+                return;
+            }
+        }
+
+        let mut parts = first.split_whitespace();
+        let method = parts.next().unwrap_or("");
+        let request_path = parts.next().unwrap_or("/");
+        let url_path = request_path.split('?').next().unwrap_or("/");
+        let decoded = percent_decode(url_path.trim_start_matches('/'));
+        let rel = PathBuf::from(decoded);
+        if rel.components().any(|component| matches!(component, Component::ParentDir)) {
+            write_response(&mut stream, "403 Forbidden", &[], method == "HEAD");
+            return;
+        }
+
+        let path = root.join(rel);
+        match fs::read(&path) {
+            Ok(body) if path.is_file() && (method == "GET" || method == "HEAD") => {
+                write_response(&mut stream, "200 OK", &body, method == "HEAD");
+            }
+            _ => write_response(&mut stream, "404 Not Found", b"not found\n", method == "HEAD"),
+        }
+    }
+
+    fn write_response(stream: &mut TcpStream, status: &str, body: &[u8], head_only: bool) {
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+        );
+        if !head_only {
+            let _ = stream.write_all(body);
+        }
+    }
+
+    fn percent_decode(input: &str) -> String {
+        let bytes = input.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                    if let Ok(value) = u8::from_str_radix(hex, 16) {
+                        out.push(value);
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).into_owned()
     }
 }

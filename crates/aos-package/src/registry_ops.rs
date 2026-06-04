@@ -389,6 +389,35 @@ fn commit_registry(dir: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refresh the static dumb-HTTP object indexes after refs or commits change.
+fn refresh_registry_object_store(dir: &Path) -> Result<()> {
+    objectstore::assert_sha256(dir)?;
+    let releases = semver_tag_versions(dir)?;
+    for release in &releases {
+        objectstore::write_release_objects(dir, release, &release.to_string())
+            .with_context(|| format!("preparing release object dir for {release}"))?;
+    }
+    objectstore::write_alternates(dir, &releases)?;
+    objectstore::ensure_loose_completeness(dir)?;
+    objectstore::refresh_server_info(dir)?;
+    Ok(())
+}
+
+fn semver_tag_versions(dir: &Path) -> Result<Vec<semver::Version>> {
+    let tags = git(dir, &["tag", "--list"])?;
+    Ok(semver_versions_from_tag_list(&tags))
+}
+
+fn semver_versions_from_tag_list(tags: &str) -> Vec<semver::Version> {
+    let mut versions: Vec<semver::Version> = tags
+        .lines()
+        .filter_map(|tag| semver::Version::parse(tag.trim()).ok())
+        .collect();
+    versions.sort();
+    versions.dedup();
+    versions
+}
+
 /// Read and parse registry.toml from a registry directory.
 fn read_registry_toml(dir: &Path) -> Result<Option<RegistryRootConfig>> {
     let path = dir.join("registry.toml");
@@ -455,6 +484,8 @@ description = ""
     // Initial commit.
     git(&dir, &["add", "-A"])?;
     git(&dir, &["commit", "-m", &format!("Initialize registry '{name}'")])?;
+    refresh_registry_object_store(&dir)
+        .context("refreshing dumb-HTTP object store after registry creation")?;
 
     // Set remote if specified.
     if let Some(url) = remote {
@@ -585,6 +616,8 @@ pub async fn publish(
         );
         let msg = message.unwrap_or(&default_msg);
         commit_registry(&dir, msg)?;
+        refresh_registry_object_store(&dir)
+            .context("refreshing dumb-HTTP object store after publish")?;
         printer.success(&format!("Committed: {msg}"));
     } else {
         printer.info("Skipped commit (--no-commit).");
@@ -858,6 +891,8 @@ pub async fn unpublish(
         let default_msg = format!("unpublish {package}");
         let msg = message.unwrap_or(&default_msg);
         commit_registry(&dir, msg)?;
+        refresh_registry_object_store(&dir)
+            .context("refreshing dumb-HTTP object store after unpublish")?;
         printer.success(&format!("Committed: {msg}"));
     }
 
@@ -1705,6 +1740,8 @@ pub async fn tag(
         signing_key,
         false,
     )?;
+    refresh_registry_object_store(&dir)
+        .context("refreshing dumb-HTTP object store after tag")?;
 
     printer.success(&format!("Created signed tag '{name}'."));
     Ok(())
@@ -1780,6 +1817,8 @@ pub async fn sign(
         signing_key,
         true,
     )?;
+    refresh_registry_object_store(&dir)
+        .context("refreshing dumb-HTTP object store after sign")?;
     printer.success(&format!("Re-signed tag '{tag_name}'."));
 
     Ok(())
@@ -1885,6 +1924,20 @@ mod tests {
     fn first_letter_basic() {
         assert_eq!(first_letter("curl"), "c");
         assert_eq!(first_letter("Zlib"), "z");
+    }
+
+    #[test]
+    fn semver_tag_list_filters_and_sorts_registry_releases() {
+        let versions = semver_versions_from_tag_list(
+            "not-a-release\n1.2.0\nv1.3.0\n1.1.9\n1.2.0\n",
+        );
+        assert_eq!(
+            versions,
+            vec![
+                semver::Version::parse("1.1.9").unwrap(),
+                semver::Version::parse("1.2.0").unwrap(),
+            ],
+        );
     }
 
     #[test]
