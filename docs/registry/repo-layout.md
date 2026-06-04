@@ -217,7 +217,7 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 | File | CURRENT (today's code) | TARGET |
 |---|---|---|
 | `registry.toml` | `[registry]` + `[[caches]]` | unchanged shape |
-| `keys.toml` | parser/helpers exist; not emitted by create yet | committed trust roster (active keys + revoked) |
+| `keys.toml` | parser plus rotation-pin/revocation helpers exist; not emitted by create yet | committed trust roster (active keys + revoked) |
 | `packages/<x>/<name>.toml` | nested `PackageToml` | unchanged |
 | `closures/<hash>` | adjacency list | unchanged |
 | `.gitattributes` | `closures/** -diff` | unchanged |
