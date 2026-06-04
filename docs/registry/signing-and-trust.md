@@ -80,21 +80,15 @@ decoded key bytes (`key_fingerprint`, `security.rs:338`).
 
 ### 2.2 SSH-format Ed25519 git signatures
 
-Git is configured for SSH signing (`gpg.format = ssh`). Signature *production* is
-`apr sign`, which today amends the HEAD commit with `git commit --amend --no-edit -S`
-in [`crates/aos-package/src/registry_ops.rs:1758`](../../crates/aos-package/src/registry_ops.rs).
-Tag creation today is `apr tag`
-([`registry_ops.rs:1694-1697`](../../crates/aos-package/src/registry_ops.rs)): when a
-`--message` is given it runs `git tag -a <name> -m <msg>` (annotated), otherwise it
-runs `git tag <name>` (lightweight). Either way it is **not yet signed** (`-s`).
-
-**TARGET delta:** `apr sign` / the publish pipeline produces **signed annotated tag
-objects** (`git tag -s <name>`, with an optional freeform `-m <message>`), not signed
-commits. A signed tag carries **no structured payload** — it is a pure signed pointer
-(standard git tag fields: `object`, `type`, the tag **name**, `tagger`) plus the
-Ed25519 signature and an optional human-readable message. Both channel partition tags
-and release tags are signed. The signature algorithm, key format, and trust store are
-unchanged.
+Git is configured for SSH signing (`gpg.format = ssh`). Signature production now
+uses **signed annotated tag objects** (`git tag -s <name>`, with an optional
+freeform `-m <message>`), not signed commits. `apr tag <name> --key <key>` creates
+a signed release tag; `apr sign <tag> --key <key>` re-signs an existing release
+tag object. A signed tag carries **no structured payload** — it is a pure signed
+pointer (standard git tag fields: `object`, `type`, the tag **name**, `tagger`)
+plus the Ed25519 signature and an optional human-readable message. The signature
+algorithm, key format, and trust store are unchanged. Channel partition tag
+production remains publish/rollout work.
 
 ### 2.3 Verification — `git verify-*` + a temporary `allowed_signers`
 
@@ -444,8 +438,8 @@ ways:
 | Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) | unchanged (the bootstrap anchor) |
 | Signing pubkey location | removed from in-repo `registry.toml`; bootstrap trust is client-side TOFU | trust = `keys.toml` roster + TOFU |
 | Key rotation / revocation | `keys.toml` parser/helpers exist; publish wiring still pending | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
-| Signature *production* | `apr sign` = `git commit --amend -S` (`registry_ops.rs:1758`) | `git tag -s` on **tag objects** |
-| Tag creation | `apr tag` = `git tag -a` with `--message`, else lightweight `git tag` (both **unsigned**) (`registry_ops.rs:1694-1697`) | `git tag -s` (signed) for channel + release tags |
+| Signature *production* | `apr tag --key` / `apr sign <tag> --key` create signed release tag objects | publish pipeline signs channel partition tags |
+| Tag creation | `apr tag` requires `--key` and runs `git tag -s` | channel partition tags still pending |
 | Signature *verification* | `verify_commit_signature` = `git verify-commit` (`security.rs:199`) | `git verify-tag` (same allowed-signers mechanism) |
 | What is signed | the HEAD **commit** | **`tag → tag → commit`** chain (partition + release tags) |
 | Name-binding | none | embedded tag-name == expected path name (channel / semver) |

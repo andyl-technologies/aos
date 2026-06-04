@@ -5,6 +5,8 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
+use crate::security::verify_tag_signature;
+
 /// The target type recorded in a git tag object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagTarget {
@@ -19,6 +21,13 @@ pub struct TagObject {
     pub object: String,
     pub target_type: TagTarget,
     pub tagger_when: Option<i64>,
+}
+
+/// Verified release selected by a channel partition tag chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedRelease {
+    pub semver: semver::Version,
+    pub commit: String,
 }
 
 /// Read a tag object by oid/ref using `git cat-file -p`.
@@ -53,6 +62,62 @@ pub fn verify_name_binding(tag: &TagObject, expected_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Verify `channel tag -> semver tag -> commit` and return the trusted release.
+///
+/// `channel_tag` may be an object id or ref for the partition tag. `release_tag`
+/// is the expected semver tag name, without `refs/tags/`.
+pub fn verify_tag_chain(
+    repo: &Path,
+    channel_tag: &str,
+    channel_name: &str,
+    release_tag: &str,
+    expected_key: &str,
+) -> Result<VerifiedRelease> {
+    if !verify_tag_signature(repo, channel_tag, expected_key)? {
+        bail!("channel tag '{channel_tag}' is not signed by the trusted key");
+    }
+    if !verify_tag_signature(repo, release_tag, expected_key)? {
+        bail!("release tag '{release_tag}' is not signed by the trusted key");
+    }
+
+    let channel = read_tag_object(repo, channel_tag)
+        .with_context(|| format!("reading channel tag '{channel_tag}'"))?;
+    verify_name_binding(&channel, channel_name)?;
+    if channel.target_type != TagTarget::Tag {
+        bail!(
+            "channel tag '{channel_tag}' targets {:?}, expected tag",
+            channel.target_type,
+        );
+    }
+
+    let release_oid = resolve_tag_object(repo, release_tag)?;
+    if channel.object != release_oid {
+        bail!(
+            "channel tag '{channel_tag}' points at {}, expected release tag object {}",
+            channel.object,
+            release_oid,
+        );
+    }
+
+    let release = read_tag_object(repo, release_tag)
+        .with_context(|| format!("reading release tag '{release_tag}'"))?;
+    verify_name_binding(&release, release_tag)?;
+    if release.target_type != TagTarget::Commit {
+        bail!(
+            "release tag '{release_tag}' targets {:?}, expected commit",
+            release.target_type,
+        );
+    }
+
+    let semver = semver::Version::parse(release_tag)
+        .with_context(|| format!("release tag '{release_tag}' is not semver"))?;
+
+    Ok(VerifiedRelease {
+        semver,
+        commit: release.object,
+    })
+}
+
 fn parse_tag_object(content: &str) -> Result<TagObject> {
     let mut object = None;
     let mut target_type = None;
@@ -85,6 +150,21 @@ fn parse_tag_object(content: &str) -> Result<TagObject> {
             .ok_or_else(|| anyhow::anyhow!("tag object missing type header"))?,
         tagger_when,
     })
+}
+
+fn resolve_tag_object(repo: &Path, tag: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", &format!("{tag}^{{tag}}")])
+        .current_dir(repo)
+        .output()
+        .with_context(|| format!("running git rev-parse {tag}^{{tag}}"))?;
+    if !output.status.success() {
+        bail!(
+            "git rev-parse {tag}^{{tag}} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn parse_tagger_when(tagger: &str) -> Option<i64> {
@@ -135,5 +215,11 @@ release 1.2.3
         let tag = parse_tag_object(&text).unwrap();
         assert_eq!(tag.name, "stable");
         assert_eq!(tag.target_type, TagTarget::Tag);
+    }
+
+    #[test]
+    fn semver_release_name_is_required_for_verified_release() {
+        assert!(semver::Version::parse("1.2.3").is_ok());
+        assert!(semver::Version::parse("v1.2.3").is_err());
     }
 }

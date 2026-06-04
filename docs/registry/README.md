@@ -155,10 +155,11 @@ surface without conflicting.
 
 > **CURRENT vs TARGET.** Today the registry is a git repo of **nested package
 > TOMLs** distributed as **git bundles** with a `bundle-list.toml` manifest and
-> **calendar `creation_token`** ordering; signing is SSH-format Ed25519 on the
-> git **commit** (`apr sign` = `git commit -S`). The sha256 object store, the
-> `/channels` partition tags, the thin delta packs, the semver scheme, and the
-> origin-served Nix-cache superset are **TARGET**. See
+> **calendar `creation_token`** ordering; release-tag signing now uses
+> SSH-format Ed25519 signed tag objects (`apr tag --key` /
+> `apr sign <tag> --key`). The served dumb-HTTP object store, the `/channels`
+> partition tags, the thin delta packs, the semver scheme, and the origin-served
+> Nix-cache superset are **TARGET**. See
 > [current-state.md](current-state.md) for the grounded as-is and
 > [architecture.md](architecture.md) for the target.
 

@@ -181,7 +181,11 @@ pub fn write_alternates(repo: &Path, releases: &[semver::Version]) -> Result<()>
 /// Returns an error if the repository cannot be inspected or if its object
 /// format is not exactly `sha256`.
 pub fn assert_sha256(repo: &Path) -> Result<()> {
-    let format = run_git_dir(repo, &["rev-parse", "--show-object-format"])?;
+    let format = if repo.join(".git").exists() {
+        run_git_worktree(repo, &["rev-parse", "--show-object-format"])?
+    } else {
+        run_git_dir(repo, &["rev-parse", "--show-object-format"])?
+    };
     if format.trim() != "sha256" {
         bail!(
             "registry repo {} uses object format '{}', expected sha256",
@@ -195,6 +199,25 @@ pub fn assert_sha256(repo: &Path) -> Result<()> {
 fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .arg("--git-dir")
+        .arg(repo)
+        .args(args)
+        .output()
+        .with_context(|| format!("running git {} in {}", args.join(" "), repo.display()))?;
+
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn run_git_worktree(repo: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
         .arg(repo)
         .args(args)
         .output()
@@ -315,6 +338,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let sha1 = tmp.path().join("sha1.git");
         let sha256 = tmp.path().join("sha256.git");
+        let sha256_worktree = tmp.path().join("sha256-worktree");
 
         let sha1_status = Command::new("git")
             .args(["init", "--bare"])
@@ -327,6 +351,14 @@ mod tests {
         init_bare_sha256(&sha256, "stable").unwrap();
         assert_sha256(&sha256).unwrap();
         assert_eq!(fs::read_to_string(sha256.join("HEAD")).unwrap(), "ref: refs/heads/stable\n");
+
+        let worktree_status = Command::new("git")
+            .args(["init", "--object-format=sha256"])
+            .arg(&sha256_worktree)
+            .status()
+            .unwrap();
+        assert!(worktree_status.success());
+        assert_sha256(&sha256_worktree).unwrap();
     }
 
     #[test]

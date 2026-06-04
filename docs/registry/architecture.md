@@ -335,8 +335,8 @@ or partition that references them; `/channels/**` and the `info/**` shims are lo
 and flipped last. Full producer workflow, atomicity, and concurrency are in
 [`publishing.md`](./publishing.md).
 
-> **CURRENT.** The producer is a thin wrapper over `git`: `apr sign` =
-> `git commit --amend --no-edit -S` (`registry_ops.rs:1770`); `apr push` = `git push`
+> **CURRENT.** The producer is still a thin wrapper over `git`: `apr tag --key`
+> and `apr sign <tag> --key` create signed release tag objects; `apr push` = `git push`
 > with FF enforcement (`registry_ops.rs:1410`); `apr bundle` only runs
 > `git bundle create` into a local `bundles/` dir and its `_update_manifest`
 > parameter is **dead code** (`registry_ops.rs:1718`). There is **no** pack/delta

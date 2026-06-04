@@ -19,7 +19,8 @@ Keep this file current as work lands.
 - [x] Implement relative root `objects/info/alternates` writer.
 - [x] Implement `git update-server-info` wrapper.
 - [x] Add focused object-store unit tests.
-- [ ] Wire producer create/publish paths to sha256 object-store helpers.
+- [x] Wire producer create path to sha256 object-store helpers.
+- [ ] Wire publish path to object-store refresh/alternates helpers.
 - [ ] Add dumb-HTTP clone integration coverage.
 
 ## WS-02 Packs And Deltas
@@ -40,7 +41,7 @@ Keep this file current as work lands.
 - [ ] Remove legacy creation-token state when the bundle path is retired.
 - [x] Implement bucket selection, bucket hex rendering, and probe-forward order.
 - [x] Implement semver floor anti-rollback check.
-- [ ] Implement partition map/frontier helpers.
+- [x] Implement partition map/frontier helpers.
 - [x] Add focused channel/state unit tests.
 - [ ] Add `apr channel init/advance/status` command surface.
 
@@ -50,8 +51,8 @@ Keep this file current as work lands.
 - [x] Remove in-repo `registry.toml` signing public-key field.
 - [x] Add `git verify-tag` helper.
 - [x] Add tag-object parser and name-binding checks.
-- [ ] Add tag-chain verification helper.
-- [ ] Rewrite producer tag/sign paths to create signed tag objects.
+- [x] Add tag-chain verification helper.
+- [x] Rewrite producer tag/sign paths to create signed tag objects.
 - [ ] Add rotation/revocation helpers and tests.
 
 ## WS-05 Consumer Cutover

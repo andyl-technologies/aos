@@ -634,10 +634,10 @@ pub enum RegistryCommand {
         #[arg(long)]
         registry: Option<String>,
     },
-    /// Sign a commit
+    /// Re-sign an existing release tag
     Sign {
-        /// Commit to sign (default: HEAD)
-        commit: Option<String>,
+        /// Tag name to re-sign
+        tag: Option<String>,
         /// Signing key
         #[arg(long)]
         key: Option<String>,
@@ -1247,13 +1247,13 @@ async fn run_registry(
             .await
         }
         RegistryCommand::Sign {
-            commit,
+            tag,
             key,
             registry,
         } => {
             registry_ops::sign(
                 config,
-                commit.as_deref(),
+                tag.as_deref(),
                 key.as_deref(),
                 registry.as_deref(),
                 printer,
