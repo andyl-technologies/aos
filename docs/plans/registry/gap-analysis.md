@@ -1,518 +1,304 @@
-# AOS Registry — Gap Analysis
+# AOS Registry — Gap Analysis (current code → git-native target)
 
-> **Status:** Implementation plan. Current-vs-target gap analysis for the AOS
-> package registry. Every **CURRENT** claim is grounded in code (`path:line`);
-> every **TARGET** is grounded in the
-> [design brief](./design-brief.md) (§2.11, §4, §6). When code and the brief's
-> as-is description disagree, this doc records the code's actual behavior and the
-> [open-questions](./open-questions.md) doc carries the discrepancy.
+> **Status:** Plan-grade gap analysis. Grounding source is
+> [`design-brief.md`](./design-brief.md) (§2, §3, §15 in particular). When this
+> doc disagrees with the brief on *target intent*, the brief wins; when it
+> disagrees with the code on *current state*, the code wins — every CURRENT
+> claim below is cited as `path:line`.
 >
-> **Audience:** implementers, architects, engineers, and the reviewers who
-> sequence the registry workstreams.
-
-## Purpose & how to read this doc
-
-This document enumerates **every producer/consumer gap** between the registry as
-it exists today and the target design, then maps each gap to the
-[workstream](./README.md) that closes it. It is the bridge between the
-[design-brief](./design-brief.md) (intent) and the five workstream specs:
-
-- [workstream-01-registry-root.md](./workstream-01-registry-root.md) — the
-  `registry.toml` schema, its **serializer** (the missing writer), inline
-  signing, and by-hash references.
-- [workstream-02-publish-pipeline.md](./workstream-02-publish-pipeline.md) — the
-  `apr release` ordering, bundle + manifest generation, `creation_token`
-  computation, upload backends, and git-CAS + conditional-PUT publish.
-- [workstream-03-nix-cache.md](./workstream-03-nix-cache.md) — narinfo +
-  `nix-cache-info` emission, references-basename expansion, and per-narinfo
-  Ed25519 signatures.
-- [workstream-04-channels-rollouts.md](./workstream-04-channels-rollouts.md) —
-  symbolic channels, phased rollouts, components, `valid_until`/freshness,
-  capability flags.
-- [workstream-05-consumer.md](./workstream-05-consumer.md) — consumer changes to
-  read the `registry.toml` root, track channels, enforce expiry/freeze, fetch
-  by-hash, and fail closed on omission.
-
-For the as-is reference (no plan framing) see
-[../../registry/current-state.md](../../registry/current-state.md); for the
-target reference set see [../../registry/README.md](../../registry/README.md).
-
-Each gap below is labelled **CURRENT** (grounded `path:line`) → **TARGET**
-(grounded in the brief) → **Workstream** (where it is closed).
+> **Audience:** implementers and architects sequencing the registry redesign.
+>
+> This doc enumerates the delta between today's **git-bundle /
+> `bundle-list.toml` / `creation_token` / `registry.toml`** registry and the
+> **git-native, sha256-over-dumb-HTTP** target, then maps every gap to one of the
+> five workstreams.
 
 ---
 
-## 1. The core asymmetry in one sentence
+## 1. How to read this doc
 
-The **consumer side is rich and complete**; the **producer side is a thin shell
-over `git` and `git bundle create`** with no manifest writer, no token
-computation, no delta classification, no upload, and no Nix-cache emission. The
-target design closes that asymmetry and additively layers a Nix binary-cache
-protocol over the same HTTP origin.
+Each gap is labelled **CURRENT** (what the code does today, with a `path:line`
+cite) versus **TARGET** (what the brief mandates), then routed to a workstream:
+
+| WS | Doc | Scope |
+|----|-----|-------|
+| WS-01 | [workstream-01-object-store.md](./workstream-01-object-store.md) | sha256 bare repo, dumb-HTTP layout, `info/refs`/`HEAD`/`http-alternates`/`update-server-info`, per-release object dirs |
+| WS-02 | [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md) | `pack-objects` thin/full, the delta-scheme graph, zstd, expensive-producer tuning |
+| WS-03 | [workstream-03-channels-rollouts.md](./workstream-03-channels-rollouts.md) | 16 signed partition tags, channels-as-branches/frontier, bucket selection, publisher rollout control |
+| WS-04 | [workstream-04-signing-trust.md](./workstream-04-signing-trust.md) | signed **tag objects**, name-binding, sha256, `valid_until`, anti-rollback/fix-forward |
+| WS-05 | [workstream-05-consumer.md](./workstream-05-consumer.md) | consumer resolution (bucket → channel tag → semver tag → commit), delta walk, retention, verification, the Nix `[[caches]]` superset |
+
+The detailed as-is narrative lives in
+[current-state.md](../../registry/current-state.md); the target reference set is
+[architecture.md](../../registry/architecture.md),
+[http-layout.md](../../registry/http-layout.md),
+[versioning-and-channels.md](../../registry/versioning-and-channels.md),
+[packs-and-deltas.md](../../registry/packs-and-deltas.md),
+[tag-metadata.md](../../registry/tag-metadata.md),
+[signing-and-trust.md](../../registry/signing-and-trust.md),
+[publishing.md](../../registry/publishing.md), and
+[nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md). For
+migration/risk see [open-questions.md](./open-questions.md); for sequencing see
+[the plan README](./README.md).
+
+---
+
+## 2. Executive summary
+
+Today's registry is a git repo of nested package TOMLs distributed as **git
+bundles** indexed by a consumer-parsed **`bundle-list.toml`**, ordered by a
+calendar **`creation_token`**, with a `registry.toml` config root and an SSH
+Ed25519 **commit** signature. The target is a **bare sha256 git repo served as
+static files over dumb HTTP**, where:
+
+- distribution is **loose objects + conventionally-named packs + thin
+  `delta-*.pack`s** discovered via `objects/info/packs` and
+  `objects/info/http-alternates` — **no bundles, no `bundle-list.toml`**;
+- versions are **semver** (no `v`) ordered by **git ancestry** — **no
+  `creation_token`**;
+- rollout is **16 signed partition tag objects** under `/channel/<name>/0..f`
+  with the channel **branch head = frontier** — **no percentage rollout**;
+- the trust anchor moves from a signed **commit** to signed **tag objects**
+  with **name-binding** verification (`tag → tag → commit`);
+- there is a **producer publish pipeline** (commit → sign → pack/delta/zstd →
+  `update-server-info` → advance partitions → upload) where today there is only
+  a `git bundle create` stub and **no upload path at all**.
+
+What survives unchanged: the **package-TOML tree content** and the **Ed25519 /
+SSH signing primitive** (`security.rs`). Everything about *distribution* and
+*rollout* is replaced. The asymmetric-cost philosophy (brief §3) inverts the
+current cheap-producer / consumer-parses-a-manifest model into an
+expensive-producer / trivial-consumer one.
 
 ```
-                  CONSUMER (rich)                       PRODUCER (stub)
-   ┌──────────────────────────────────────┐  ┌──────────────────────────────────┐
-   │ parse bundle-list.toml  (bundle.rs)   │  │ git init / commit  (registry_ops) │
-   │ creation_token decode   (state.rs)    │  │ git bundle create  (apr bundle)   │
-   │ classify snap/seq/skip  (bundle.rs)   │  │ git push (FF)      (apr push)     │
-   │ pick minimal bundle set (update.rs)   │  │ git commit --amend -S (apr sign)  │
-   │ semver / TrackingMode   (update.rs)   │  │ ──────────────────────────────────│
-   │ verify commit signature (security.rs) │  │ ✗ no manifest WRITER              │
-   │ TOFU / trusted-keys     (security.rs) │  │ ✗ no token COMPUTE                │
-   │ NAR fetch + sha256      (download.rs) │  │ ✗ no delta CLASSIFY               │
-   │ persist [registry.state](update.rs)   │  │ ✗ no UPLOAD                       │
-   └──────────────────────────────────────┘  │ ✗ no narinfo / nix-cache-info     │
-                                              │ ✗ no atomic root FLIP             │
-                                              └──────────────────────────────────┘
+ CURRENT                                     TARGET
+ ┌───────────────────────────┐              ┌───────────────────────────────┐
+ │ registry.toml (config)    │              │ (gone — tag-message TOML only)│
+ │ bundle-list.toml          │   ───────►   │ objects/info/packs            │
+ │   [[bundles]] by token    │              │ objects/info/http-alternates  │
+ │ *.bundle (git bundles)    │              │ loose objects + pack-<sha>    │
+ │ creation_token ordering   │              │ + thin delta-<from>.pack      │
+ │ signed COMMIT             │              │ semver + git ancestry         │
+ │ no rollout model           │              │ signed TAG objects, /channel/ │
+ │ pick_bundles() consumer    │              │   <name>/0..f (16 partitions) │
+ │ NO upload                  │              │ full publish pipeline         │
+ └───────────────────────────┘              └───────────────────────────────┘
 ```
 
-The capability matrix from the brief (§2.11), reproduced with the code that
-proves each cell:
+---
 
-| Capability | Consumer | Producer | Grounding |
-|---|---|---|---|
-| Parse `bundle-list.toml` | ✅ | — | `registry/bundle.rs:124` (`BundleManifest::parse`) |
-| **Write** `bundle-list.toml` | n/a | ❌ | `ManifestToml`/`BundleEntryToml` are `#[derive(Deserialize)]` only — no `Serialize` (`registry/bundle.rs:59`, `:75`) |
-| `creation_token` encode | ✅ (decode used) | ❌ | `version_to_token` defined `registry/state.rs:131`, but only `update.rs` calls it consumer-side |
-| `creation_token` decode | ✅ | — | `token_to_version` `registry/state.rs:174` |
-| Classify snapshot/sequential/skip | ✅ (read-time) | ❌ | `classify_delta` `registry/bundle.rs:238` runs only during parse |
-| Select minimal bundle set | ✅ | n/a | `pick_bundles` (`update.rs`) |
-| Upload bundles | — | ❌ | only NAR upload exists, in `aos-cache` |
-| narinfo / `nix-cache-info` | n/a | ❌ | no emitter anywhere in the tree |
-| Persist `[registry.state]` | ✅ | n/a | `RegistryState` + `sync_bundle` |
-| Atomic "latest" pointer flip | n/a | ❌ | "latest" derived by `latest_snapshot()` / max token (`bundle.rs:189`) |
+## 3. Gap inventory
+
+### 3.1 Object store & dumb-HTTP layout → **WS-01**
+
+| Aspect | CURRENT | TARGET |
+|--------|---------|--------|
+| Repo identity | A working git clone of package TOMLs at `~/.local/share/apm/registries/<name>/`; the consumer keeps a *bare* cache repo created on demand only to unbundle into. | A **published bare sha256 repo** that *is* the distribution surface (brief §3, §8). |
+| Object format | Default sha1 — no `--object-format`: producer `git init` (`registry_ops.rs:438`), consumer `git init --bare` (`bundle.rs:359`). | **sha256** everywhere; loose object path = first 2 / remaining 62 hex of the 64-char hash (brief §8). |
+| Dumb-HTTP shim | None produced. The repo is never `update-server-info`'d; there is no `HEAD`/`info/refs`/`objects/info/*` publish step anywhere. | `HEAD` (symref → default channel), `info/refs` (via `git update-server-info` on every publish), `objects/info/packs`, `objects/info/http-alternates` (brief §4, §8, §12). |
+| Per-release object dirs | None — a bundle carries the whole pack; the consumer unbundles into one flat object store (`unbundle`, `bundle.rs:376`). | `/release/<major>/<minor>/<patch[-pre][+build]>/objects/`, each with its own `info/packs` + `info/http-alternates` + loose objects + packs (brief §4, §7). |
+| Distributed object index | `bundle-list.toml` (`BundleManifest`, `bundle.rs:48-53`). | `objects/info/http-alternates` listing **every** `/release/*/objects/` dir newest→oldest; doubles as the **full release index** (brief §8). |
+| Loose-object completeness | Not guaranteed — only packed objects inside bundles. | **ALL objects exist loose** under `/objects/<xx>/<…>` as the correctness fallback; packs are an efficiency layer (brief §8). |
+| CDN TTL policy | Not modeled. | `/channel/**`, `/objects/info/**`, per-release `objects/info/**` → low TTL; `/release/**` + other `/objects/**` → immutable/high TTL (brief §4). |
+
+**Concrete code that disappears or is repurposed:** `ensure_git_repo`
+(`bundle.rs:349`) becomes "init a sha256 bare repo + lay out dirs"; the consumer
+no longer `unbundle`s (`bundle.rs:376`) but fetches loose objects/packs over
+dumb HTTP.
 
 ---
 
-## 2. Producer-side gaps (the asymmetry, §2.11)
+### 3.2 Pack & delta pipeline → **WS-02**
 
-These are the gaps that make the producer a stub. Each entry: the **CURRENT**
-behavior with code citation, the **TARGET** behavior from the brief, and the
-**Workstream** that closes it.
+| Aspect | CURRENT | TARGET |
+|--------|---------|--------|
+| Transport unit | **git bundle** (`git bundle create`, `registry_ops.rs:1739-1751`). Bundles carry refs + prerequisites. | **packs**: self-contained `pack-<sha256>.pack` (+ `.idx`) at every `X.Y.0`, and **thin** `delta-<from-semver>.pack` for incrementals (brief §9, §10). |
+| Producer pack generation | Just `git bundle create <dest> <rev\|range>` (`registry_ops.rs:1739-1751`). No `pack-objects`, no tuning, no zstd. | `git pack-objects --revs` (full) and `git pack-objects --revs --thin` reading `"<to>\n^<from>\n"` (delta); expensive flags `--no-reuse-object --no-reuse-delta --window=350 --depth=50 --threads=0` (brief §10). |
+| Delta classification | Heuristic on tag *segment count* in `classify_delta` (`bundle.rs:238-243`), yielding `SequentialDelta` / `SkipDelta` (`bundle.rs:23-31`). | A **guaranteed, walkable delta graph** keyed on semver: every `X.0.0` ships `delta-<(X-1).0.0>`; every `X.Y.0 (Y>0)` ships `delta-<X.(Y-1).0>` + `delta-<X.0.0>`; every `X.Y.Z (Z>0)` ships the last-3-patch deltas + `delta-<X.Y.0>` (brief §9). |
+| Compression | git default zlib inside the bundle; `.nar.zst` is the *artifact* convention (`registry_ops.rs:1290`), not the pack. | The **zstd trick**: `git pack-objects --compression=0` (delta-encoded, no entropy coding) then `zstd --ultra -22 --long=27` the whole `.pack`; serve `.pack.zst`; optional trained dictionary per release line (brief §10). |
+| `.idx` shipping | Implicit in the bundle. | `.idx` only for **full** packs; thin deltas are `.pack[.zst]` only — the client builds the idx with `git index-pack --fix-thin` (brief §10). |
+| `info/packs` listing | n/a. | Lists **self-contained full packs only**; thin `delta-*.pack`s are **NOT** listed (a stock dumb client can't apply a thin pack) (brief §10, §12). |
 
-### G-P1 — No `bundle-list.toml` / root writer
-
-- **CURRENT.** The consumer can *parse* the manifest but nothing can *emit* one.
-  The serde types backing the manifest are deserialize-only:
-  `ManifestToml` (`registry/bundle.rs:59`), `ManifestHeader`
-  (`registry/bundle.rs:66`), and `BundleEntryToml` (`registry/bundle.rs:75`) all
-  derive `Deserialize` and **not** `Serialize`. `BundleManifest` itself
-  (`registry/bundle.rs:48`) has no `to_string`/`write` path. The producer's
-  `registry.toml` is created once, by hand, as a literal format string in
-  `create` (`registry_ops.rs:444-450`) carrying only `[registry] name/description`
-  — not the bundle index, not signing, not caches.
-- **TARGET.** Collapse the root to a single signed `registry.toml` whose body
-  *includes* the bundle/delta index (kill `bundle-list.toml`), serialized by a
-  real writer (brief §4.3, §6 Tier-1 #2). The root carries `[meta]`
-  (`schema` integer, `name`, `date`, `valid_until`), `pubkey`, `[latest]`,
-  `[channels.<name>]`, `[components.<name>]`, a single by-hash `[[bundles]]` table
-  (deltas folded in, distinguished by `type`), `[[caches]]`, and a `[signature]`
-  block.
-- **Workstream.** [workstream-01-registry-root.md](./workstream-01-registry-root.md).
-
-### G-P2 — `apr bundle` is a bare `git bundle create`; `_update_manifest` is dead code
-
-- **CURRENT.** `bundle` (`registry_ops.rs:1718`) creates one `.bundle` file with
-  `git bundle create` into a local `bundles/` dir and prints success. It accepts
-  an `_update_manifest: bool` parameter that is **never read** — the underscore
-  prefix marks it as deliberately unused (`registry_ops.rs:1723`). It never
-  computes a token, never classifies the delta type, and never writes any index.
-  The snapshot/delta choice is purely a function of whether the caller passed
-  `--delta-from` (`registry_ops.rs:1734`).
-- **TARGET.** A real publish pipeline generates the bundles **and** the manifest
-  entries (`creation_token`, `type`, `tag` for snapshots / `from_tag`+`to_tag` for
-  deltas, `sha256`, `size`) for the just-landed commit (brief §4.4 step 2). Delta
-  classification is computed, not implied by a flag.
-- **Workstream.** [workstream-02-publish-pipeline.md](./workstream-02-publish-pipeline.md)
-  (manifest entries land in the root defined by WS-01).
-
-### G-P3 — No producer-side `creation_token` computation
-
-- **CURRENT.** `version_to_token` (`registry/state.rs:131`) and `check_monotonic`
-  (`registry/state.rs:104`) exist and are correct (`YYYY*1_000_000 + MM*10_000 +
-  P`, month 1–12, patch ≤ 9999), but they are invoked **only on the consumer**
-  (during `update`). No producer code path derives a token from a tag when
-  emitting a bundle entry, because no producer code emits bundle entries at all
-  (see G-P1).
-- **TARGET.** The publish pipeline computes `creation_token` for each generated
-  bundle from its target tag, and stamps it into the root's bundle table; the
-  signed `[latest].creation_token` becomes the monotonic anti-rollback anchor (brief §4.3,
-  §4.4).
-- **Workstream.** [workstream-02-publish-pipeline.md](./workstream-02-publish-pipeline.md)
-  (reuses the existing `version_to_token`).
-
-### G-P4 — No automatic delta-type classification on the producer
-
-- **CURRENT.** `classify_delta` (`registry/bundle.rs:238`) decides skip-vs-
-  sequential from the dotted-segment count of the `from` tag, but it runs only at
-  **parse time** on the consumer. The producer's `apr bundle` makes a snapshot
-  unless `--delta-from <tag>` is passed manually (`registry_ops.rs:1734`); it
-  never decides *which* deltas to cut or labels them.
-- **TARGET.** The pipeline decides, for the landed tag, which snapshot/sequential/
-  skip bundles to cut and labels each entry's `type` in the root (brief §4.4,
-  §6 Tier-3 — borrow APT's explicit from/to/hash delta shape). The same
-  classification rule used at read-time is applied at write-time.
-- **Workstream.** [workstream-02-publish-pipeline.md](./workstream-02-publish-pipeline.md).
-
-### G-P5 — No upload of bundles to a mirror/CDN/S3
-
-- **CURRENT.** `apr bundle` writes bundles to a **local** `bundles/` directory
-  only (`registry_ops.rs:1729-1730`). The only upload code in the tree lives in
-  `aos-cache`, and it uploads **NARs**, not bundles or the root. `apr push`
-  (`registry_ops.rs:1410`) pushes the **git repo**, not the HTTP artifacts.
-- **TARGET.** The pipeline uploads immutable, content-addressed objects (nars,
-  `*.narinfo`, `*.bundle`) first, then flips the root last via conditional PUT;
-  upload backends should be pluggable (S3, rsync, plain PUT) (brief §4.4 steps
-  3–4, §7 item 6).
-- **Workstream.** [workstream-02-publish-pipeline.md](./workstream-02-publish-pipeline.md).
-
-### G-P6 — No narinfo / `nix-cache-info` emission
-
-- **CURRENT.** Nothing in the tree emits `*.narinfo` or `nix-cache-info`. The
-  registry is **not** a Nix binary cache today (brief §3.2). The producer records
-  every narinfo-equivalent field into the package TOML already
-  (`build_package_toml`, `registry_ops.rs:595` — `store_path`, `nar_hash`,
-  `nar_size`, `download_hash`, `download_size`, `references`, `source_drv`), but
-  there is no projection of those into the Nix wire format and no per-narinfo
-  `Sig:`.
-- **TARGET.** A narinfo generator keyed by store-path hash, a `nix-cache-info`
-  stub, co-located NAR blobs, **references-basename expansion** (`<hash>` →
-  `<hash>-<name>`), and per-narinfo Ed25519 `Sig:` — a strict superset over the
-  disjoint Nix URL namespace (brief §4.1, §4.2). The package TOML already holds
-  the source fields; the work is the projection + basename expansion +
-  signature.
-- **Workstream.** [workstream-03-nix-cache.md](./workstream-03-nix-cache.md).
-
-### G-P7 — No publish atomicity beyond git's FF rejection
-
-- **CURRENT.** The only concurrency guard is git's fast-forward rejection on
-  push: `apr push` is `git push [-u origin] [branch] [--force]`
-  (`registry_ops.rs:1420-1433`). There is no lock service and no atomic flip of
-  any HTTP root (there is no HTTP root index to flip — see G-P1). `apr sign` is
-  `git commit --amend --no-edit -S` (`registry_ops.rs:1770`), which **rewrites
-  HEAD** and must therefore run *before* push, not after.
-- **TARGET.** Keep git ref CAS as the lock (FF-only push serializes publishes for
-  free; losers `pull --rebase` + retry), then make the *winner* flip the
-  `registry.toml` root **last**, atomically, via conditional PUT (S3
-  `If-Match`/`If-None-Match` ETag CAS) so readers see old-root or new-root, never
-  torn (brief §4.4). The strict publish order is: publish → sign → push (CAS) →
-  generate → upload immutable objects → flip root.
-- **Workstream.** [workstream-02-publish-pipeline.md](./workstream-02-publish-pipeline.md).
-
-### G-P8 — No explicit "latest" pointer
-
-- **CURRENT.** "Latest" is **derived**, not pointed to. The consumer computes it
-  by scanning the manifest for the max `creation_token` snapshot
-  (`latest_snapshot()`, `registry/bundle.rs:189`). A dumb-HTTP listing can hide
-  newer entries and the consumer would silently use stale data.
-- **TARGET.** "Latest" becomes an **explicit signed field** `[latest] { tag,
-  creation_token, head }` in the root, flipped atomically as the publish's last step
-  (brief §4.3, §4.4). With the authentic `[latest].head` commit SHA the consumer
-  can **fail closed** on omission rather than degrade silently (brief §4.5).
-- **Workstream.** [workstream-01-registry-root.md](./workstream-01-registry-root.md)
-  (schema) + [workstream-02-publish-pipeline.md](./workstream-02-publish-pipeline.md)
-  (atomic flip).
+**Concrete code that disappears:** `BundleType` (`bundle.rs:23`), `classify_delta`
+(`bundle.rs:238`), `verify_bundle`'s `git bundle verify` step (`bundle.rs:326`),
+and `unbundle` (`bundle.rs:376`) — all replaced by `pack-objects` /
+`index-pack --fix-thin`.
 
 ---
 
-## 3. Producer-side gaps from the APT-improvements list (§6)
+### 3.3 Versioning, channels & rollout → **WS-03**
 
-These are not in the original §2.11 asymmetry list but are required to reach the
-target; the brief's §6 prioritizes them. None exist in code today.
+| Aspect | CURRENT | TARGET |
+|--------|---------|--------|
+| Version scheme | Calendar tags `vYYYY.MM[.P]` encoded to a monotonic **`creation_token`** (`state.rs version_to_token:131`, `token_to_version:173`). | **Standard semver, no `v` prefix** (`1.1.2`, `1.0.0-beta+exp.sha.5114f85`); precedence by semver rules + git ancestry (brief §7). The whole `creation_token` scheme is **removed** (brief §15). |
+| Ordering source | `entries.sort_by_key(creation_token)` (`bundle.rs:171`); `entries_since` / `latest_snapshot` / `skip_delta_from` / `sequential_deltas_between` (`bundle.rs:181-224`) all key off the token. | git **ancestry** + semver precedence; no scalar token. |
+| Channel model | A git **branch** the consumer tracks via `TrackingMode::Branch` (`types.rs:282-302`) — but there is no rollout structure on top. | A channel = **branch** (`refs/heads/<channel>`, head = **frontier**) **plus 16 signed partition tag objects** `/channel/<name>/0..f` (brief §5, §6). |
+| Rollout mechanism | **None.** No partitions, no percentage, no `[channels.<name>.rollout]`. `pick_bundles` just picks the newest reachable bundle (`update.rs:292-391`). | **Publisher-controlled 16-partition rollout**: to roll to N/16, point N partition tags at the new semver tag and leave the rest on the prior release (brief §6). |
+| Consumer bucket | None. | Deterministic, **persisted** bucket: `sha256(machine_id) mod 16`, written once; probe-forward `(bucket+1) mod 16` if a partition is missing (brief §6). |
+| Frontier | n/a. | `refs/heads/<channel>` head = the commit of the newest release **any** partition targets; stock `git pull <channel>` always gets the frontier (brief §6). |
+| Anti-rollback | `check_monotonic(old_token, latest_token)` on `creation_token` (`state.rs:104`, called from `update.rs:263-266`). | A **monotonic semver floor** per consumer; a bad rollout is **fix-forward** (publish newer, advance partitions), never partition-decrement (brief §6). |
 
-### G-A1 — `valid_until` signed expiry (Tier 1)
-
-- **CURRENT.** No expiry anywhere. `check_monotonic` (`registry/state.rs:104`)
-  defends rollback by sequence but cannot detect a **freeze** (a mirror stuck on
-  a validly-signed-but-old root) — there is no time-based field to check.
-- **TARGET.** Add an APT-`Valid-Until`-style `valid_until` to the signed root;
-  re-sign each publish with expiry = publish + N; clients reject an expired root
-  (brief §4.5 "Freeze", §6 Tier-1 #1).
-- **Workstream.** [workstream-04-channels-rollouts.md](./workstream-04-channels-rollouts.md)
-  (field + re-sign cadence) — root schema slot in
-  [workstream-01-registry-root.md](./workstream-01-registry-root.md); consumer
-  enforcement in [workstream-05-consumer.md](./workstream-05-consumer.md).
-
-### G-A2 — `by-hash` discipline for index references (Tier 1)
-
-- **CURRENT.** The consumer addresses bundles by `entry.uri` under
-  `{base}/bundles/{registry}/{uri}` (`download_bundle`, `registry/bundle.rs:259`)
-  and verifies the bundle's `sha256` (`registry/bundle.rs:277`,
-  `verify_bundle:305`), but the index it reads is `bundle-list.toml` — a mutable,
-  named root. A client mid-publish can read a torn index.
-- **TARGET.** The signed root references bundles/indices by their hashed key
-  (APT `by-hash`) so a client that read root@T resolves a consistent set even
-  after root@T+1 lands (brief §4.3, §6 Tier-1 #2). Mostly discipline atop the
-  existing content-addressing.
-- **Workstream.** [workstream-01-registry-root.md](./workstream-01-registry-root.md)
-  (by-hash references in the root) + consumer fetch in
-  [workstream-05-consumer.md](./workstream-05-consumer.md).
-
-### G-A3 — Symbolic channels decoupled from tags (Tier 1)
-
-- **CURRENT.** No channels. `TrackingMode { Commit, Branch, Tag,
-  Version(VersionReq), Default }` (brief §2.5; `types.rs`) tracks concrete refs
-  or a semver range; there is no symbolic `stable`/`testing` alias and no place
-  in the root to define one (`create` writes only `[registry]`,
-  `registry_ops.rs:444`).
-- **TARGET.** `[channels.stable] { tag = "v2026.02.3", creation_token, rollout }`
-  (subtable form, keyed by name) in the signed root; promotion is one atomic
-  signed flip; clients track `channel = "stable"` (brief §4.3, §6 Tier-1 #3).
-- **Workstream.** [workstream-04-channels-rollouts.md](./workstream-04-channels-rollouts.md)
-  (producer + schema) + [workstream-05-consumer.md](./workstream-05-consumer.md)
-  (a new tracking mode).
-
-### G-A4 — Phased / staged rollouts (Tier 1)
-
-- **CURRENT.** None. Bundle selection (`pick_bundles`) is all-or-nothing per
-  tracking mode; there is no per-machine gating.
-- **TARGET.** `rollout = N` (percent) on a channel target; clients gate on
-  `sha256(machine_id : channel_name)` — the **channel name**, explicitly **not**
-  the target tag, so cohorts stay stable across promotions (APT
-  `Phased-Update-Percentage`) for canary / blast-radius control. A host in the
-  held cohort stays at its current `last_creation_token` (no-op); there is no
-  `previous_tag` field (brief §4.3, §6 Tier-1 #4; gating function is open — §7
-  item 4).
-- **Workstream.** [workstream-04-channels-rollouts.md](./workstream-04-channels-rollouts.md)
-  + [workstream-05-consumer.md](./workstream-05-consumer.md).
-
-### G-A5 — Components within a registry (Tier 2)
-
-- **CURRENT.** None. Packages bucket by first letter only
-  (`first_letter`/`packages/<x>/<name>.toml`, `registry_ops.rs:149`,
-  `:527-531`); there is no trust/license/stability partition.
-- **TARGET.** `[components.<name>]` subtables (keyed by name, each with a
-  `description`; `main/contrib/non-free` analogue) in one signed root (brief §4.3,
-  §6 Tier-2 #5).
-- **Workstream.** [workstream-04-channels-rollouts.md](./workstream-04-channels-rollouts.md).
-
-### G-A6 — Capability flags in the signed root (Tier 2)
-
-- **CURRENT.** None. The consumer assumes a fixed protocol; the manifest carries
-  a bare integer `version` (`ManifestHeader.version`, `registry/bundle.rs:67`),
-  not feature flags.
-- **TARGET.** `[meta.capabilities]` boolean feature flags in the root for graceful
-  degradation + forward compat (APT `Acquire-By-Hash: yes`) (brief §4.3, §6
-  Tier-2 #6).
-- **Workstream.** [workstream-04-channels-rollouts.md](./workstream-04-channels-rollouts.md)
-  (schema slot lives in WS-01's `[meta.capabilities]` table).
-
-### G-A7 — Hash agility (Tier 2, largely already present)
-
-- **CURRENT.** Hashes already carry explicit prefixes: `nar_hash` is the full
-  `sha256:<hex>` string and NAR filenames literally contain the colon
-  (`download.rs` `nar_url` → `{mirror}/{nar_hash}.nar.zst`, brief §2.8). Bundle
-  `sha256` is hex without a prefix (`verify_bundle`, `registry/bundle.rs:316`).
-- **TARGET.** Tolerate multiple algorithms via explicit prefixes everywhere so a
-  future migration isn't a flag day (brief §6 Tier-2 #7). Mostly a
-  forward-compatibility discipline; little code change.
-- **Workstream.** [workstream-01-registry-root.md](./workstream-01-registry-root.md)
-  (prefix discipline in the schema).
-
-### G-A8 — Provides / file-index (Tier 2)
-
-- **CURRENT.** None. No "which package ships `/usr/bin/foo`" index.
-- **TARGET.** Optional `Contents-<arch>`-style file index — a discoverability win
-  (brief §6 Tier-2 #8). Lowest priority.
-- **Workstream.** Deferred; tracked in
-  [open-questions.md](./open-questions.md). Not assigned to a Tier-1/2 workstream.
-
-### G-A9 — Bundle mirror list with priority + failover (Tier 2)
-
-- **CURRENT.** `[[caches]]` priority + failover exists **for NARs only**:
-  `resolve_mirrors` reads `registry.toml` `[[caches]]`, sorts by
-  `priority` descending (`registry_ops.rs:405-413`), and `validate`/`download`
-  walk them in order. Bundles are fetched from a single `base_url`
-  (`download_bundle`, `registry/bundle.rs:259`); there is no bundle-mirror list.
-- **TARGET.** Extend the `[[caches]]` priority/failover model to **bundle**
-  mirrors (brief §6 Tier-2 #9).
-- **Workstream.** [workstream-02-publish-pipeline.md](./workstream-02-publish-pipeline.md)
-  (root advertises bundle mirrors) + [workstream-05-consumer.md](./workstream-05-consumer.md)
-  (consumer failover).
+**Concrete code that disappears:** `version_to_token` / `token_to_version` /
+`check_monotonic` (`state.rs`), the `last_creation_token` plumbing
+(`update.rs:256-271`), the segment-counting `extract_minor_base`
+(`update.rs:456-464`), and all of `pick_bundles`' token strategies
+(`update.rs:344-390`).
 
 ---
 
-## 4. Consumer-side gaps (smaller — the consumer is already rich)
+### 3.4 Signing & trust → **WS-04**
 
-The consumer is mostly complete, but the **target root** and the **target
-threat model** add new consumer behavior.
+| Aspect | CURRENT | TARGET |
+|--------|---------|--------|
+| Signed object | The **commit**: `apr sign` = `git commit --amend --no-edit -S` (`registry_ops.rs:1770`); verified with `git verify-commit` + a temp `allowed_signers` file (`verify_commit_signature`, `security.rs:199-229`). | The **tag objects**: both channel partition tags and release semver tags are annotated tags carrying an SSH Ed25519 signature with a **TOML message** (brief §11, §14). |
+| Primitive | SSH-format Ed25519; `parse_signing_key` `name:Ed25519:<base64>` (`security.rs:306-326`); TOFU + `trusted-keys.d/<registry>.pub`. **Survives unchanged.** | Same primitive, reused for tag-object signatures (brief §11). |
+| Tag verification | **Absent** — there is `verify_commit_signature` but **no** `verify-tag` path; `apr tag` (`registry_ops.rs:1696-1714`) creates an *unsigned* annotated tag (`git tag -a … -m`) only when `--message` is given, else a lightweight tag (`git tag <name>`) (`registry_ops.rs:1706-1710`), and ignores `_key` (`registry_ops.rs:1700`). | `git verify-tag` of the whole **`tag → tag → commit`** chain (channel partition tag → semver tag → commit) (brief §5, §11). |
+| Name-binding | None. | Verify signature **and** the embedded tag-name field equals the expected path name (channel name under `/channel/*`, semver under `/release/*`), binding a tag object to its serving path to prevent cross-serving (brief §5). |
+| Tag-message schema | Free-text `-m` message (`registry_ops.rs:1707`). | **TOML**: exactly `[meta]` (`schema`, `valid_until`) + optional `[[caches]]` (`url`, `priority`). No other top-level tables (brief §14). |
+| Freshness / rotation | None. | `valid_until` is **freshness** for channels (paired with low CDN TTL) and a **generous** signature-trust/rotation lifetime for releases (must not fight the long release TTL) (brief §11). |
+| Branch trust | n/a. | Branch refs are **unsigned convenience pointers**, never in the trust chain (brief §5, §11). |
 
-### G-C1 — Reads `bundle-list.toml`, not the signed `registry.toml` root
-
-- **CURRENT.** The consumer fetches `{base}/bundles/{name}/bundle-list.toml`
-  (`BundleManifest::fetch`, `registry/bundle.rs:100`) — a separate, unsigned
-  index file. The `registry.toml` it knows about is the **local clone's**
-  `[registry]/[[caches]]/signing` file (`RegistryRootConfig`, `types.rs:567`),
-  read via `resolve_mirrors`/`read_registry_toml` (`registry_ops.rs:392`,
-  `:405`), not an HTTP-served signed root carrying the bundle index.
-- **TARGET.** Fetch the single signed `registry.toml` root over dumb HTTP; the
-  bundle index lives **inside** it (brief §4.3). The consumer drops
-  `bundle-list.toml` (or reads it only via a migration shim — §7 item 7).
-- **Workstream.** [workstream-05-consumer.md](./workstream-05-consumer.md).
-
-### G-C2 — No expiry / freeze check
-
-- **CURRENT.** The consumer's only freshness/anti-rollback defense is
-  `check_monotonic` on the `creation_token` (`registry/state.rs:104`). It cannot
-  detect a frozen-but-valid root.
-- **TARGET.** Reject an expired root by checking `valid_until` (brief §4.5).
-- **Workstream.** [workstream-05-consumer.md](./workstream-05-consumer.md)
-  (paired with the producer G-A1 in WS-04).
-
-### G-C3 — No fail-closed on omission
-
-- **CURRENT.** If a listing/mirror hides newer bundles, the consumer falls back
-  to the latest snapshot it *can* see (`pick_bundles` default branch →
-  `latest_snapshot()`, brief §2.6 step 4 / 6c) and proceeds — silent staleness.
-- **TARGET.** With the signed `[latest].head`, the consumer **fails closed**
-  (can't reach the signed target ⇒ error, not silent stale data); freeze
-  degrades to DoS, not silent rollback (brief §4.5 "Omission").
-- **Workstream.** [workstream-05-consumer.md](./workstream-05-consumer.md).
-
-### G-C4 — No by-hash fetch of root-referenced objects
-
-- **CURRENT.** Bundles are fetched by `uri` from a mutable path
-  (`download_bundle`, `registry/bundle.rs:259`); the index itself is the mutable
-  `bundle-list.toml`.
-- **TARGET.** Fetch index-referenced objects by their hashed key so a mid-publish
-  read never tears (brief §4.3; pairs with producer G-A2).
-- **Workstream.** [workstream-05-consumer.md](./workstream-05-consumer.md).
-
-### G-C5 — No channel / rollout tracking mode
-
-- **CURRENT.** `TrackingMode` (brief §2.5) has no `Channel` variant and no
-  rollout-bucket logic.
-- **TARGET.** Track `channel = "stable"`, resolve it through the root's
-  `[channels.<name>]`, and honor `rollout = N` via `sha256(machine_id : channel_name)`
-  (hashed over the **channel name**, not the target tag, so cohorts stay stable
-  across promotions; a held host stays at its current `last_creation_token`)
-  (brief §4.3; pairs with producer G-A3/G-A4).
-- **Workstream.** [workstream-05-consumer.md](./workstream-05-consumer.md).
-
-### G-C6 — narinfo `Sig:` consumption is not required (clarification, not a gap to close in WS-05)
-
-- **CURRENT.** `apm` authenticates NARs **transitively**: the Ed25519-signed git
-  commit authenticates the tree → every TOML → every NAR sha256
-  (`download.rs` verifies NARs by content hash, brief §2.8, §3.3). There is no
-  per-NAR signature today and `apm` does not need one.
-- **TARGET.** The per-narinfo `Sig:` exists **only** to satisfy stock `nix`
-  without `require-sigs = false` (brief §4.2); `apm`'s trust still roots in the
-  signed commit. So this is a **producer** emission gap (G-P6), not a new `apm`
-  verification requirement.
-- **Workstream.** Emission in
-  [workstream-03-nix-cache.md](./workstream-03-nix-cache.md); no change to `apm`
-  verification.
+**Concrete code to extend/replace:** add a `verify_tag_signature` alongside
+`verify_commit_signature` (`security.rs:199`); make `apr tag` / `apr sign`
+produce **signed tag objects with TOML messages** instead of an unsigned
+annotated tag + a signed commit.
 
 ---
 
-## 5. Things that are already correct (do NOT re-build)
+### 3.5 Producer pipeline & config root → orchestrated in [publishing.md](../../registry/publishing.md)
 
-The brief's §6 Tier-3 and §5 "parity or ahead" lists. These are grounded so a
-reviewer does not mistake them for gaps:
-
-| Already done | Grounding | Notes |
-|---|---|---|
-| Per-repo key pinning (TOFU + `trusted-keys.d`) | `security.rs` TOFU + `trusted_keys_dirs()` (`types.rs`); brief §2.10 | ≈ APT `signed-by=` |
-| SSH-Ed25519 commit signature verification | `verify_commit_signature` (`security.rs` ~199) | brief §2.10 |
-| Reproducible snapshots | git tags (`apr tag`, `registry_ops.rs:1696`) | ≈ snapshot.debian.org |
-| Incremental updates (pdiff analogue) | snapshot/sequential/skip bundle deltas (`registry/bundle.rs`) | ≈ APT pdiff |
-| Atomic publish lock | git FF CAS on push (`registry_ops.rs:1420`) | ≥ APT rsync mirror races |
-| Downgrade / fork detection | `check_downgrade` (`security.rs` ~256), `check_monotonic` (`state.rs:104`) | FastForward/SameCommit/Downgrade/Diverged |
-| NAR content-hash verification | `download.rs` sha256 (brief §2.8) | no per-NAR sig needed |
-| `[[caches]]` priority/failover (NARs) | `resolve_mirrors` (`registry_ops.rs:405`) | extend to bundles (G-A9) |
-
-The brief is explicit (§6 Tier-3): borrow only APT's *index-file shape* (explicit
-from/to/hash per delta) for expressing deltas inside `registry.toml`; do **not**
-re-add the Tier-3 capabilities.
+| Aspect | CURRENT | TARGET |
+|--------|---------|--------|
+| Config root | `registry.toml` written at `create` (`registry_ops.rs:443-450`), read by `read_registry_toml` (`registry_ops.rs:392-402`), caches resolved via `resolve_mirrors` (`registry_ops.rs:405-414`). | **Removed entirely** (brief §15). Cache advertisement moves into the tag-message `[[caches]]` table (brief §13, §14). |
+| Manifest writer | **Stub** — `apr bundle` (`registry_ops.rs:1718-1755`) only `git bundle create`s; `_update_manifest` is ignored (`registry_ops.rs:1723`); **no `bundle-list.toml` writer exists**. | A real publish pipeline emits packs/deltas, regenerates `objects/info/packs` + `http-alternates`, runs `update-server-info`, advances partitions, and uploads (brief §10, §4, §6). |
+| Upload | **None at all** — `apr push` / `apr pull` (`registry_ops.rs:1410-1462`) push the *git working repo*; there is **no static-artifact upload** of bundles/objects to a CDN/origin. | An **upload backend** ships the static tree (loose objects, packs, refs shims, channel partition files) to the origin; pluggability is an open question (brief §16.4). |
+| Atomicity / concurrency | Not modeled. | Publish must be atomic w.r.t. the CDN: write new immutable objects first, then mutate the low-TTL `info/*` + `/channel/*` — see [publishing.md](../../registry/publishing.md). |
 
 ---
 
-## 6. Gap → workstream rollup
+### 3.6 Consumer (`apm update`) → **WS-05**
 
-The single table an implementer can sequence against. **Severity:** S =
-security/correctness, O = operational, C = compat/forward-looking.
-
-| ID | Gap (short) | Side | Sev | Workstream |
-|---|---|---|---|---|
-| G-P1 | No root/manifest **writer** (serde is Deserialize-only) | Producer | S | [WS-01](./workstream-01-registry-root.md) |
-| G-P2 | `apr bundle` bare; `_update_manifest` dead | Producer | O | [WS-02](./workstream-02-publish-pipeline.md) |
-| G-P3 | No producer `creation_token` compute | Producer | S | [WS-02](./workstream-02-publish-pipeline.md) |
-| G-P4 | No producer delta classification | Producer | O | [WS-02](./workstream-02-publish-pipeline.md) |
-| G-P5 | No bundle/root **upload** | Producer | O | [WS-02](./workstream-02-publish-pipeline.md) |
-| G-P6 | No narinfo / `nix-cache-info` emission | Producer | S | [WS-03](./workstream-03-nix-cache.md) |
-| G-P7 | No atomic root flip beyond git FF | Producer | S | [WS-02](./workstream-02-publish-pipeline.md) |
-| G-P8 | "Latest" derived, not a signed pointer | Producer | S | [WS-01](./workstream-01-registry-root.md) + [WS-02](./workstream-02-publish-pipeline.md) |
-| G-A1 | `valid_until` signed expiry | Producer | S | [WS-04](./workstream-04-channels-rollouts.md) |
-| G-A2 | `by-hash` index references | Both | S | [WS-01](./workstream-01-registry-root.md) + [WS-05](./workstream-05-consumer.md) |
-| G-A3 | Symbolic channels | Both | O | [WS-04](./workstream-04-channels-rollouts.md) + [WS-05](./workstream-05-consumer.md) |
-| G-A4 | Phased rollouts | Both | O | [WS-04](./workstream-04-channels-rollouts.md) + [WS-05](./workstream-05-consumer.md) |
-| G-A5 | Components | Producer | C | [WS-04](./workstream-04-channels-rollouts.md) |
-| G-A6 | Capability flags | Producer | C | [WS-04](./workstream-04-channels-rollouts.md) |
-| G-A7 | Hash agility (prefixes) | Producer | C | [WS-01](./workstream-01-registry-root.md) |
-| G-A8 | Provides / file-index | Producer | C | Deferred — [open-questions](./open-questions.md) |
-| G-A9 | Bundle mirror list + failover | Both | O | [WS-02](./workstream-02-publish-pipeline.md) + [WS-05](./workstream-05-consumer.md) |
-| G-C1 | Read signed `registry.toml` root | Consumer | S | [WS-05](./workstream-05-consumer.md) |
-| G-C2 | Expiry / freeze check | Consumer | S | [WS-05](./workstream-05-consumer.md) |
-| G-C3 | Fail-closed on omission | Consumer | S | [WS-05](./workstream-05-consumer.md) |
-| G-C4 | By-hash fetch | Consumer | S | [WS-05](./workstream-05-consumer.md) |
-| G-C5 | Channel / rollout tracking mode | Consumer | O | [WS-05](./workstream-05-consumer.md) |
-
-**The four gaps that change the product** (brief §6 closing): G-A1 `valid_until`
-(freeze defense), G-A2 `by-hash` (torn-publish safety) — both
-security/correctness — and G-A3 channels, G-A4 rollouts — both operational.
-
-### Suggested sequencing
-
-1. **WS-01** first: the root schema + serializer is the keystone — G-P1 and G-P8
-   block almost everything (no writer ⇒ no index ⇒ no atomic flip ⇒ no channels).
-2. **WS-02** next: with a serializable root, the publish pipeline (G-P2/3/4/5/7)
-   becomes implementable; it reuses the existing `version_to_token` and
-   `classify_delta` logic at write-time.
-3. **WS-03** can proceed in parallel with WS-02: narinfo/`nix-cache-info`
-   emission (G-P6) is additive over a disjoint URL namespace and depends only on
-   data already in the package TOMLs.
-4. **WS-04** layers channels/rollouts/`valid_until`/capabilities (G-A1/3/4/5/6)
-   onto the WS-01 root.
-5. **WS-05** lands the consumer-side counterparts (G-C1–C5, the read sides of
-   G-A2/3/4/9) once the producer emits the new root.
+| Aspect | CURRENT | TARGET |
+|--------|---------|--------|
+| Transport selection | `Transport::HttpBundle` vs `Transport::Git` (`types.rs:270-322`); `sync_bundle` fetches `bundle-list.toml` then runs `pick_bundles` (`update.rs:193-391`). | A single **dumb-HTTP git fetch** path: bucket → channel partition tag → semver tag → commit, then delta-walk or full-pack or loose-object fetch (brief §9; [WS-05](./workstream-05-consumer.md)). |
+| Selection logic | `pick_bundles` token strategies: skip delta → sequential deltas → latest snapshot (`update.rs:367-390`). | **Delta resolution + retention**: prefer a `delta-<B>.pack` at target T whose base B the client retains; else walk releases backward; else a full pack; else loose objects (always correct). Retention keeps the `X.0.0`, `X.Y.0`, `X.Y.Z` trees (brief §9). |
+| Integrity | `verify_bundle` = sha256 of the bundle file + `git bundle verify` (`bundle.rs:305-346`). | `git index-pack --fix-thin` (completes thin packs) + signed-tag-chain verification + name-binding (brief §5, §10). |
+| State | `last_commit` + `last_creation_token` + `last_update` (`update.rs:270-272`). | `last_commit` + **semver floor** + persisted **bucket**; no token. |
+| Nix cache | `nar_hash` / `nar_size` baked into package TOMLs (`registry_ops.rs:633-651`); validated against caches read from `registry.toml` (`validate`, `registry_ops.rs:1210-1326`). | NAR substitution advertised via the tag-message **`[[caches]]`** entry (relative or absolute `url`) — a strict superset of the Nix binary cache (brief §13; [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md)). |
 
 ---
 
-## 7. Discrepancies vs the brief (record for open-questions)
+## 4. Removed concepts (do **not** carry forward)
 
-These are places where the **code** and the brief's prose differ in detail. The
-code wins for current state per the brief's own rule (§0); the items are carried
-into [open-questions.md](./open-questions.md).
+Per brief §15, the target **must not** reintroduce any of these — several are
+load-bearing in today's code and must be deleted, not merely bypassed:
 
-- **Brief §2.10 vs code on `apr tag --key`.** The brief says `apr tag` "supports
-  `--message`/`--key`". In code, `tag` (`registry_ops.rs:1696`) accepts a `_key:
-  Option<&str>` that is **never used** (underscore-prefixed,
-  `registry_ops.rs:1700`); only `--message` is honored
-  (`registry_ops.rs:1706-1710`). Same for `sign`'s `_key`
-  (`registry_ops.rs:1762`). Signing key selection is whatever git's
-  `user.signingkey`/`gpg.format=ssh` config resolves, not a CLI argument.
-- **Brief §2.11 / §2.4 manifest filename vs target.** The consumer hard-codes the
-  filename `bundle-list.toml` in both `fetch` (`registry/bundle.rs:106`) and the
-  module docs (`registry/bundle.rs:4`), while the target (§4.3) removes
-  `bundle-list.toml` entirely and moves the index into `registry.toml`. The
-  consumer change (G-C1) and any migration shim (§7 item 7) must reconcile this.
-- **`RegistrySigningConfig.public_key` encoding.** The brief (§4.2) wants two
-  published encodings derivable from one key (`aos-core:Ed25519:<base64>` for
-  `apm`; `<name>:<base64>` for Nix). Today `RegistryRootConfig.signing` holds a
-  single `public_key` (`types.rs:597`); WS-01/WS-03 must confirm whether one
-  stored field yields both encodings or two are stored.
-- **Package-TOML field names are asserted, not yet schema-frozen.** The brief
-  §2.3/§7 item 1 flags this; the producer's `build_package_toml`
-  (`registry_ops.rs:595-781`) is the authoritative current shape (e.g.
-  `download_hash`/`download_size` default to the NAR's own hash/size,
-  `registry_ops.rs:692-693`). The reference schema doc must be derived from this
-  function, not from prose. Note this is a naming/freeze question, **not** a
-  flat-vs-nested shape discrepancy: the on-disk package TOML is the **nested**
-  `PackageToml` shape (`[package]` header + `[[versions]]` + `[versions.platforms.<platform>]`,
-  written by `build_package_toml` and deserialized by `PackageToml` et al. in
-  `registry/parse.rs:14-70`). `PackageMeta` (`types.rs:43-77`) is **not** the
-  on-disk type — it is the flattened per-(package, platform) in-memory projection
-  produced by `parse_package_toml` (`registry/parse.rs:133-178`), carrying
-  flattened `platform`/`version`/`sysroot`/`previous`/`images`. The brief's nested
-  sketch matches the code; there is no flat-vs-nested brief-vs-code discrepancy.
+| Removed concept | Where it lives today | Replacement |
+|-----------------|----------------------|-------------|
+| `registry.toml` (config root) | `registry_ops.rs:392-450` | tag-message TOML (`[meta]` + `[[caches]]`) |
+| `bundle-list.toml` | `bundle.rs:48-225` | `objects/info/packs` + `objects/info/http-alternates` |
+| git **bundles** | `registry_ops.rs:1718-1755`, `bundle.rs:376` | loose objects + `pack-<sha>.pack` + thin `delta-*.pack` |
+| `[latest]` / `[components]` / `[capabilities]` | config concepts (not in code) | ref namespace (branches/tags) + object store |
+| percentage rollout / `[channels.<name>.rollout]` / baseline+candidate | never implemented (brief §15) | 16 signed partition tag objects `/channel/<name>/0..f` |
+| calendar versioning + `creation_token` | `state.rs:131-187`, `bundle.rs:34-224`, `update.rs:256-390` | semver (no `v`) + git ancestry |
+| by-hash `[[bundles]]` / `[[deltas]]` index | `bundle.rs:59-92` | git object store + `http-alternates` |
+| `previous_tag` / per-version `previous` framing | `registry_ops.rs:626-628,735-739` | semver precedence + the delta-scheme graph |
+
+---
+
+## 5. Surviving primitives (reuse, don't rebuild)
+
+| Primitive | Where | Role in target |
+|-----------|-------|----------------|
+| Package-TOML tree content | `build_package_toml` (`registry_ops.rs:595-781`) | Unchanged — it is the git **tree content** the objects encode (brief §2). |
+| Closure adjacency files | `write_closure_files` (`registry_ops.rs:305-352`) | Unchanged tree content; rides inside the object store. |
+| Ed25519/SSH signing | `parse_signing_key` (`security.rs:306`), `verify_commit_signature` (`security.rs:199`), TOFU + `trusted-keys.d` | Reused for **tag-object** signatures; add a tag-verify path + name-binding (WS-04). |
+| `git` subprocess plumbing | `git()` (`registry_ops.rs:79-92`) | Reused; new callers run `pack-objects`, `index-pack`, `update-server-info`, signed `tag -s`. |
+| Transfer engine (sha256-verified GET) | `TransferRequest::get(..).with_hash` (`bundle.rs:276-282`) | Reused to fetch loose objects/packs over dumb HTTP. |
+
+---
+
+## 6. Gap → workstream traceability matrix
+
+| # | Gap (CURRENT → TARGET) | Brief § | Workstream |
+|---|------------------------|---------|------------|
+| G1 | sha1 default → **sha256** `git init --object-format=sha256` | §8 | WS-01 |
+| G2 | no dumb-HTTP shim → `HEAD` / `info/refs` / `update-server-info` | §4,§8,§12 | WS-01 |
+| G3 | flat unbundle store → **per-release `/release/.../objects/`** dirs | §4,§7 | WS-01 |
+| G4 | `bundle-list.toml` index → `objects/info/packs` + **`http-alternates`** | §8 | WS-01 |
+| G5 | no loose-object guarantee → **all objects loose** fallback | §8 | WS-01 |
+| G6 | no CDN TTL model → explicit per-path TTL policy | §4 | WS-01 |
+| G7 | `git bundle create` → `git pack-objects` full/thin | §10 | WS-02 |
+| G8 | `classify_delta` heuristic → **guaranteed delta-scheme graph** | §9 | WS-02 |
+| G9 | zlib-in-bundle → **`--compression=0` + `zstd --ultra -22 --long=27`** | §10 | WS-02 |
+| G10 | bundle carries idx → `.idx` only for full packs; thin = `--fix-thin` | §10 | WS-02 |
+| G11 | n/a → `info/packs` lists **full packs only** | §10,§12 | WS-02 |
+| G12 | `creation_token` → **semver (no `v`) + git ancestry** | §7 | WS-03 |
+| G13 | bare branch tracking → branch **frontier head** | §5,§6 | WS-03 |
+| G14 | no rollout → **16 signed partition tags `/channel/<name>/0..f`** | §6 | WS-03 |
+| G15 | no bucket → deterministic persisted `sha256(machine_id) mod 16` | §6 | WS-03 |
+| G16 | token monotonic check → **semver floor + fix-forward** | §6 | WS-03 |
+| G17 | signed **commit** → signed **tag objects** | §11 | WS-04 |
+| G18 | no `verify-tag` → `verify-tag` over `tag → tag → commit` | §5,§11 | WS-04 |
+| G19 | no name-binding → **name-binding** (tag-name == path name) | §5 | WS-04 |
+| G20 | free-text tag msg → **TOML** (`[meta]` + `[[caches]]` only) | §14 | WS-04 |
+| G21 | no freshness → `valid_until` (channel freshness / release rotation) | §11 | WS-04 |
+| G22 | `pick_bundles` token strategies → **delta walk + retention** | §9 | WS-05 |
+| G23 | bundle verify → `index-pack --fix-thin` + signed-chain verify | §5,§10 | WS-05 |
+| G24 | `registry.toml` caches / `validate` → tag-message **`[[caches]]`** | §13 | WS-05 |
+| G25 | `apr bundle` stub + **no upload** → full publish + upload pipeline | §10,§4,§6 | WS-01/02/03 |
+| G26 | `registry.toml` config root → **removed** | §15 | WS-04 (schema) |
+
+---
+
+## 7. Sequencing notes & risks
+
+- **WS-01 is the foundation.** A valid sha256 dumb-HTTP bare repo
+  (objects + `info/refs` + `HEAD` + `http-alternates`) must exist before packs,
+  channels, or signing can be layered on. It also de-risks the biggest unknown:
+  the **sha256 dumb-HTTP clone against real client git versions** (brief §16.1),
+  since dumb HTTP has no capability negotiation.
+- **WS-02 and WS-03 are largely independent** once WS-01 lands: packs/deltas
+  ride in the object store; channels/partitions ride in the ref + `/channel`
+  namespaces. They re-converge in the **publish pipeline**
+  ([publishing.md](../../registry/publishing.md)).
+- **WS-04 is a focused extension** of the surviving signing primitive — the main
+  new code is `verify_tag_signature` + name-binding + the TOML message schema;
+  the Ed25519/TOFU machinery (`security.rs`) is reused as-is.
+- **WS-05 is a near-rewrite** of `sync_bundle` / `pick_bundles`
+  (`update.rs:193-391`): the token strategies, `BundleManifest`, and the
+  `unbundle` path all go away, replaced by dumb-HTTP fetch + delta walk +
+  retention + signed-chain verification.
+- **Clean break vs shim** for existing `creation_token`/bundle registries is an
+  open question (brief §16.7); track it in
+  [open-questions.md](./open-questions.md). The recommended default is a clean
+  break — the on-disk and on-wire formats share almost nothing — with
+  [current-state.md](../../registry/current-state.md) retained as the historical
+  description of the old code.
+- **Risk: producer cost.** The expensive-producer flags (`--window=350`,
+  multiple delta bases, `zstd --ultra -22`) make publishing genuinely slow; that
+  is intentional (asymmetric cost, brief §3) but must be budgeted in CI and
+  reflected in the pipeline design.
+
+---
+
+## 8. Cross-references
+
+- Plan set: [README](./README.md) · [design-brief](./design-brief.md) ·
+  [open-questions](./open-questions.md) ·
+  [WS-01](./workstream-01-object-store.md) ·
+  [WS-02](./workstream-02-pack-delta-pipeline.md) ·
+  [WS-03](./workstream-03-channels-rollouts.md) ·
+  [WS-04](./workstream-04-signing-trust.md) ·
+  [WS-05](./workstream-05-consumer.md)
+- Reference set: [README](../../registry/README.md) ·
+  [architecture](../../registry/architecture.md) ·
+  [current-state](../../registry/current-state.md) ·
+  [http-layout](../../registry/http-layout.md) ·
+  [versioning-and-channels](../../registry/versioning-and-channels.md) ·
+  [packs-and-deltas](../../registry/packs-and-deltas.md) ·
+  [tag-metadata](../../registry/tag-metadata.md) ·
+  [signing-and-trust](../../registry/signing-and-trust.md) ·
+  [publishing](../../registry/publishing.md) ·
+  [nix-cache-compatibility](../../registry/nix-cache-compatibility.md) ·
+  [apt-comparison](../../registry/apt-comparison.md)
