@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::security::verify_tag_signature;
 
@@ -211,7 +211,9 @@ release 1.2.3
 
     #[test]
     fn tag_target_parses_tag_hop() {
-        let text = TAG_TEXT.replace("type commit", "type tag").replace("tag 1.2.3", "tag stable");
+        let text = TAG_TEXT
+            .replace("type commit", "type tag")
+            .replace("tag 1.2.3", "tag stable");
         let tag = parse_tag_object(&text).unwrap();
         assert_eq!(tag.name, "stable");
         assert_eq!(tag.target_type, TagTarget::Tag);

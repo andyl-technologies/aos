@@ -136,13 +136,11 @@ pub fn clear_fhs_tree(generation: &Generation) -> Result<()> {
             .with_context(|| format!("reading file type of {}", entry.path().display()))?;
 
         if ft.is_dir() {
-            std::fs::remove_dir_all(entry.path()).with_context(|| {
-                format!("removing FHS directory {}", entry.path().display())
-            })?;
+            std::fs::remove_dir_all(entry.path())
+                .with_context(|| format!("removing FHS directory {}", entry.path().display()))?;
         } else if ft.is_symlink() || ft.is_file() {
-            std::fs::remove_file(entry.path()).with_context(|| {
-                format!("removing FHS entry {}", entry.path().display())
-            })?;
+            std::fs::remove_file(entry.path())
+                .with_context(|| format!("removing FHS entry {}", entry.path().display()))?;
         }
     }
 
@@ -217,13 +215,8 @@ fn create_fhs_symlink(gen_dir: &Path, rel_path: &str, target: &Path) -> Result<(
             .with_context(|| format!("removing existing entry {}", link_path.display()))?;
     }
 
-    symlink(target, &link_path).with_context(|| {
-        format!(
-            "symlinking {} -> {}",
-            link_path.display(),
-            target.display(),
-        )
-    })?;
+    symlink(target, &link_path)
+        .with_context(|| format!("symlinking {} -> {}", link_path.display(), target.display(),))?;
 
     Ok(())
 }
@@ -289,32 +282,33 @@ mod tests {
     fn single_package_merge() {
         let tmp = TempDir::new().unwrap();
         let gn = make_generation(&tmp, 1);
-        let sp = make_store_path(
-            &tmp,
-            "abc123-curl-8.5.0",
-            &["bin/curl", "lib/libcurl.so.4"],
-        );
+        let sp = make_store_path(&tmp, "abc123-curl-8.5.0", &["bin/curl", "lib/libcurl.so.4"]);
 
-        let result = build_fhs_tree(
-            &gn,
-            &[("curl".to_string(), sp.clone())],
-            &test_printer(),
-        )
-        .unwrap();
+        let result =
+            build_fhs_tree(&gn, &[("curl".to_string(), sp.clone())], &test_printer()).unwrap();
 
         assert_eq!(result.symlinks_created, 2);
         assert!(result.conflicts.is_empty());
 
         // Verify symlinks exist and point to the right place.
         let bin_curl = gn.path.join("bin/curl");
-        assert!(bin_curl.symlink_metadata().unwrap().file_type().is_symlink());
-        assert_eq!(
-            fs::read_link(&bin_curl).unwrap(),
-            sp.join("bin/curl"),
+        assert!(
+            bin_curl
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
+        assert_eq!(fs::read_link(&bin_curl).unwrap(), sp.join("bin/curl"),);
 
         let lib_curl = gn.path.join("lib/libcurl.so.4");
-        assert!(lib_curl.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(
+            lib_curl
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(
             fs::read_link(&lib_curl).unwrap(),
             sp.join("lib/libcurl.so.4"),
@@ -420,18 +414,11 @@ mod tests {
         let sp = make_store_path(
             &tmp,
             "abc-curl",
-            &[
-                "share/man/man1/curl.1",
-                "share/man/man3/libcurl.3",
-            ],
+            &["share/man/man1/curl.1", "share/man/man3/libcurl.3"],
         );
 
-        let result = build_fhs_tree(
-            &gn,
-            &[("curl".to_string(), sp.clone())],
-            &test_printer(),
-        )
-        .unwrap();
+        let result =
+            build_fhs_tree(&gn, &[("curl".to_string(), sp.clone())], &test_printer()).unwrap();
 
         assert_eq!(result.symlinks_created, 2);
 
@@ -458,12 +445,7 @@ mod tests {
         // Package only has bin/curl — no lib, share, etc.
         let sp = make_store_path(&tmp, "abc-curl", &["bin/curl"]);
 
-        build_fhs_tree(
-            &gn,
-            &[("curl".to_string(), sp)],
-            &test_printer(),
-        )
-        .unwrap();
+        build_fhs_tree(&gn, &[("curl".to_string(), sp)], &test_printer()).unwrap();
 
         // bin/ should exist (has content).
         assert!(gn.path.join("bin").is_dir());
@@ -552,27 +534,23 @@ mod tests {
         let sp = make_store_path(
             &tmp,
             "abc-curl",
-            &[
-                "bin/curl",
-                "lib/libcurl.so",
-                "share/man/man1/curl.1",
-            ],
+            &["bin/curl", "lib/libcurl.so", "share/man/man1/curl.1"],
         );
 
         // Create usr/ to simulate a real generation with GC roots.
         fs::create_dir_all(gn.path.join("usr")).unwrap();
 
-        build_fhs_tree(
-            &gn,
-            &[("curl".to_string(), sp)],
-            &test_printer(),
-        )
-        .unwrap();
+        build_fhs_tree(&gn, &[("curl".to_string(), sp)], &test_printer()).unwrap();
 
         // Verify symlinks are present.
         assert!(gn.path.join("bin/curl").symlink_metadata().is_ok());
         assert!(gn.path.join("lib/libcurl.so").symlink_metadata().is_ok());
-        assert!(gn.path.join("share/man/man1/curl.1").symlink_metadata().is_ok());
+        assert!(
+            gn.path
+                .join("share/man/man1/curl.1")
+                .symlink_metadata()
+                .is_ok()
+        );
 
         clear_fhs_tree(&gn).unwrap();
 
@@ -593,18 +571,11 @@ mod tests {
         let sp = make_store_path(
             &tmp,
             "abc-openssl",
-            &[
-                "etc/ssl/openssl.cnf",
-                "include/openssl/ssl.h",
-            ],
+            &["etc/ssl/openssl.cnf", "include/openssl/ssl.h"],
         );
 
-        let result = build_fhs_tree(
-            &gn,
-            &[("openssl".to_string(), sp.clone())],
-            &test_printer(),
-        )
-        .unwrap();
+        let result =
+            build_fhs_tree(&gn, &[("openssl".to_string(), sp.clone())], &test_printer()).unwrap();
 
         assert_eq!(result.symlinks_created, 2);
 
@@ -615,7 +586,13 @@ mod tests {
 
         // include/ scanning: the child is the `openssl` directory.
         let inc_openssl = gn.path.join("include/openssl");
-        assert!(inc_openssl.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(
+            inc_openssl
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(
             fs::read_link(&inc_openssl).unwrap(),
             sp.join("include/openssl"),

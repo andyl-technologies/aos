@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::types::{RegistryFile, RegistryState};
 
@@ -23,10 +23,10 @@ pub fn load_state(path: &Path) -> Result<Option<RegistryState>> {
         return Ok(None);
     }
 
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let rf: RegistryFile = toml::from_str(&content)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let rf: RegistryFile =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
 
     Ok(rf.registry.state)
 }
@@ -35,8 +35,8 @@ pub fn load_state(path: &Path) -> Result<Option<RegistryState>> {
 ///
 /// Preserves user-edited fields — only appends or replaces the state section.
 pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
     // Build the new state section text.
     let mut state_lines = String::from("\n[registry.state]\n");
@@ -88,8 +88,7 @@ pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
         format!("{trimmed}{state_lines}")
     };
 
-    std::fs::write(path, &new_content)
-        .with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(path, &new_content).with_context(|| format!("writing {}", path.display()))?;
 
     Ok(())
 }
@@ -181,7 +180,11 @@ pub fn version_to_token(tag: &str) -> Result<u64> {
     };
 
     if patch > 9999 {
-        bail!("patch number {} exceeds maximum (9999) in tag '{}'", patch, tag);
+        bail!(
+            "patch number {} exceeds maximum (9999) in tag '{}'",
+            patch,
+            tag
+        );
     }
 
     Ok(year * 1_000_000 + month * 10_000 + patch)
