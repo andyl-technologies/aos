@@ -202,9 +202,11 @@ weaker than an in-band signed expiry against a frozen-but-validly-signed mirror 
 a mirror can replay an old (still-correctly-signed) partition pointer, and only
 the consumer's max-staleness policy and floor catch it.
 
-**Cache config is client-side**, never tag-embedded. The Nix binary-cache / NAR
-substituter location is the *consumer's* local registry config or the origin
-itself — it is **not** advertised in signed tags. The origin MAY serve the stock
+**Cache config lives in the committed `registry.toml`**, never tag-embedded. The
+Nix binary-cache / NAR substituter location lives in the committed repo-root
+`registry.toml` `[[caches]]` (a tree file authenticated transitively by the signed
+tag), with the consumer's client-side `registries.d` as an optional override — it
+is **not** advertised in the signed tag itself. The origin MAY serve the stock
 nix superset (`nix-cache-info`, `<storehash>.narinfo`, `nar/…`); narinfo signing
 reuses the same one Ed25519 key.
 

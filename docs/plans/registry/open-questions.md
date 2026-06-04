@@ -13,7 +13,8 @@
 > *branches*, releases are signed *tags*, rollout is **256 signed partition tag
 > objects** under `/channels/<name>/00..ff`, incremental fetch is **thin
 > `delta-*.pack`s**, and an optional **Nix NAR cache superset** is served at the
-> origin and located via the consumer's own local registry/cache config. A signed
+> origin and located via the committed repo-root `registry.toml` `[[caches]]`
+> (with the consumer's client-side `registries.d` as an optional override). A signed
 > tag is a **pure signed pointer** carrying no structured payload. Superseded
 > concepts live only in current-state.md (today's code) and design-brief §15.
 >
@@ -395,7 +396,7 @@ established.
 
 | | |
 |---|---|
-| **Brief §16.7** | "Migration from the existing bundle/`creation_token` registries (clean break vs shim) — and whether the NAR cache superset (origin-served narinfo, located via client-side config) ships in the same milestone or later." |
+| **Brief §16.7** | "Migration from the existing bundle/`creation_token` registries (clean break vs shim) — and whether the NAR cache superset (origin-served narinfo, located via the committed `registry.toml` `[[caches]]` with client-side `registries.d` override) ships in the same milestone or later." |
 | **Owner WS** | [WS-05](./workstream-05-consumer.md) (consumer cutover), [WS-03](./workstream-03-channels-rollouts.md) (channel/ref model), all producer WS |
 | **Status** | OPEN — the two highest-leverage questions. Own their own sections below. |
 
@@ -457,7 +458,7 @@ rollout*").
 | Selection | `pick_bundles` (`registry/update.rs:292`); tracking modes commit/branch/tag/semver (`types.rs TrackingMode`) | bucket → `/channels/<name>/<00..ff>` signed partition tag → semver tag → commit, then delta walk (brief §5, §6, §9) | **No** |
 | Rollout | none beyond tracking-mode selection | **256 signed partition tags**, publisher-advanced N/256 (brief §6) | **No** (new) |
 | Signing | signed git **commit** (`apr sign` = `git commit -S`; `git verify-commit`, `registry/git.rs:379`) + TOFU `trusted-keys.d` | signed git **tag objects** as **pure signed pointers** — no structured payload, just standard tag fields + Ed25519 signature + optional freeform message (channel partitions + release tags), SSH-Ed25519, name-binding, `tag→tag→commit` (brief §5, §11) | **Yes** (primitive), moved commit→tag |
-| Nix NAR cache | `[[caches]]` consumer reads, fallback `{registry}/nar` (`download.rs:67 resolve_mirror`, `:57 nar_url`) | cache location is **client-side registry config** (or the origin itself) — **not** advertised in tags; origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar` as a superset, narinfo `Sig:` reusing the one Ed25519 key (brief §13, §14) | **Yes** (mechanism), moved to client config |
+| Nix NAR cache | `[[caches]]` consumer reads, fallback `{registry}/nar` (`download.rs:67 resolve_mirror`, `:57 nar_url`) | cache location lives in the committed repo-root `registry.toml` `[[caches]]` (authenticated transitively by the signed tag), with client-side `registries.d` as an optional override (or the origin itself) — **not** advertised in tags; origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar` as a superset, narinfo `Sig:` reusing the one Ed25519 key (brief §13, §14) | **Yes** (mechanism), committed `registry.toml` + client override |
 
 The headline: there is **no shared root file to dual-write**. The old model's
 root is `bundle-list.toml`; the new model has *no* root file at all — its "root"
@@ -598,7 +599,8 @@ These must hold regardless of clean break vs. shim:
 ## 4. Does the NAR-cache superset ship this milestone?
 
 > This is the second half of **Q7** (brief §16.7): "whether the NAR cache
-> superset (origin-served narinfo, located via client-side config) ships in the
+> superset (origin-served narinfo, located via the committed `registry.toml`
+> `[[caches]]` with client-side `registries.d` override) ships in the
 > same milestone or later." It is a milestone-sequencing question, not a
 > wire-format question.
 
@@ -650,8 +652,9 @@ the NAR-cache superset as a fast-follow milestone**, because:
    the cache from client-side config, so adding the producer narinfo surface later
    is low-coupling.
 
-There is **no tag-schema coordination point** — because the cache location is
-client-side config (or the origin), not a tag-embedded pointer, turning the
+There is **no tag-schema coordination point** — because the cache location lives in
+the committed `registry.toml` `[[caches]]` (client-side `registries.d` override, or
+the origin), not a tag-embedded pointer, turning the
 superset on later is a pure producer-plus-client-config change: no tag re-issue,
 no schema bump, nothing reserved in the signed material. Document the cache surface
 in
@@ -673,7 +676,7 @@ item is closed.
 | Q5 | Consumer max-staleness policy + key-rotation cadence | WS-05 / WS-04 / WS-03 | WS-05 consumer, WS-04 trust | Consumer max-staleness bound (~7–14d) + low CDN TTL + anti-rollback floor; rotate-only re-sign |
 | Q6 | Relative `info/alternates` (one `../`, HTTP + local-FS) | WS-01 | WS-01 layout | One host-independent relative `info/alternates`, one-`../`; no `http-alternates` |
 | Q7a | Migration: clean break vs. shim | WS-05 / WS-01 / WS-03 | WS-01, WS-02, WS-03, WS-05 | Clean break + thin read-only consumer dual-detect → EOL (§3.4) |
-| Q7b | NAR superset milestone timing | WS-05 | (none — fast-follow) | Defer to fast-follow; cache is client-side config / origin, nothing reserved in tags (§4.3) |
+| Q7b | NAR superset milestone timing | WS-05 | (none — fast-follow) | Defer to fast-follow; cache lives in committed `registry.toml` `[[caches]]` (client-side `registries.d` override / origin), nothing reserved in tags (§4.3) |
 | R2/R3 | Torn publish / publisher race | WS-02 / WS-03 | WS-02, WS-03 | Immutable-first / low-TTL-last; single publisher per channel |
 | R7 | Cross-serving / name-confusion | WS-04 / WS-05 | WS-04, WS-05 | Name-binding: embedded tag-name == path name; verify `tag→tag→commit` |
 | R9 | Anti-rollback floor across cutover | WS-05 | WS-05 | Re-seed floor at git-native cutover; fix-forward only |

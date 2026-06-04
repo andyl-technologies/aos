@@ -33,9 +33,10 @@ artifact is simultaneously:
   full packs; and
 - a **superset of the Nix binary cache** — the origin **MAY** serve
   `nix-cache-info` + `<storehash>.narinfo` + `nar/`, so the same origin doubles as
-  a NAR substituter. The substituter location is the **consumer's client-side
-  config** (its local registry config) or the origin itself — it is **not**
-  advertised in signed tags.
+  a NAR substituter. The substituter location lives in the committed repo-root
+  `registry.toml` `[[caches]]` (a tree file authenticated transitively by the
+  signed tag), with the consumer's client-side `registries.d` as an optional
+  override/supplement — it is **not** advertised in the signed tag itself.
 
 On top of that standard surface the AOS client uses two AOS-only conventions that
 ride *alongside* git without conflicting: the `/channels/<name>/00..ff` **signed
@@ -71,7 +72,7 @@ whole thing.
         │                                 │                                 │
   stock `git clone`               AOS client (`apm`)               stock `nix` substituter
         │                                 │                                 │
-  HEAD → refs/heads/<default>      /channels/<name>/00..ff           client-side cache config
+  HEAD → refs/heads/<default>      /channels/<name>/00..ff           registry.toml [[caches]]
   refs/heads/<channel>  (branch)     256 signed partition tags        nix-cache-info
   refs/tags/<semver>    (tag)      bucket → channel tag → semver      <storehash>.narinfo (Sig:)
   loose objects + full packs         tag → commit (name-bound)        nar/<…> (content-addressed)
@@ -110,7 +111,7 @@ the trust chain.
 |---|---|---|
 | sha256 object format | `git init --object-format=sha256`; 2/62 loose-object split | §8 |
 | Superset of git | dumb-HTTP shim: `HEAD`, `info/refs` (`update-server-info`), `objects/info/alternates` (one relative `../`) | §12 |
-| Superset of Nix | client-side cache config (or the origin); `nix-cache-info` + narinfo + `nar/` | §13 |
+| Superset of Nix | committed `registry.toml` `[[caches]]` (client-side `registries.d` override; or the origin); `nix-cache-info` + narinfo + `nar/` | §13 |
 | Channels = branches | `refs/heads/<channel>` head = rollout **frontier** | §6 |
 | 256-partition rollout | `/channels/<name>/00..ff`, N/256 advanced to control blast radius | §6 |
 | Bucketed consumers | deterministic, persisted: the low byte of `sha256(machine_id)` (i.e. `mod 256`) | §6 |
@@ -133,7 +134,8 @@ could not:
    zstd-over-stored-pack trick beat zlib-9 while staying git-valid.
 4. **Free Nix-cache superset** — the same origin can serve `nix-cache-info` +
    narinfo + `nar/`, turning it into a substituter for stock `nix` dev shells;
-   the consumer points at it via client-side config.
+   the location lives in the committed `registry.toml` `[[caches]]` (client-side
+   `registries.d` as an optional override).
 
 ---
 
@@ -331,9 +333,11 @@ A signed tag is a **pure signed pointer**: the standard git tag fields (`object`
 **optional freeform human message**. There is **no** structured TOML payload — no
 `[meta]`, no `schema`, no `valid_until`, no `[[caches]]` inside tag objects.
 
-- **Cache config is client-side.** The NAR substituter location is the
-  **consumer's** local registry config (or the origin itself), never advertised in
-  a signed tag. The origin **MAY** serve `nix-cache-info`/`<storehash>.narinfo`/`nar`;
+- **Cache config lives in the committed `registry.toml`.** The NAR substituter
+  location lives in the committed repo-root `registry.toml` `[[caches]]` (a tree
+  file authenticated transitively by the signed tag), with the consumer's
+  client-side `registries.d` as an optional override (or the origin itself), never
+  advertised in the signed tag itself. The origin **MAY** serve `nix-cache-info`/`<storehash>.narinfo`/`nar`;
   narinfo signing reuses the one Ed25519 key.
 - **Freshness has no in-band `valid_until`.** Freshness = low CDN TTL on `/channels`
   (and `info/refs`, `objects/info`) + the consumer's own max-staleness policy + the
@@ -369,6 +373,12 @@ object store carries everything else.
   superset-of-git-and-Nix model, the three ref layers, asymmetric-cost philosophy.
 - [current-state.md](../../registry/current-state.md) — the as-is code (bundle /
   `creation_token` implementation), grounded in `path:line`.
+- [repo-layout.md](../../registry/repo-layout.md) — the **committed git tree** (what a
+  commit contains, distinct from the served object store): the target trust files
+  `registry.toml` (`[registry]` name/description + `[[caches]]`, **signing pubkey
+  removed**) and the new `keys.toml` roster (active signing key(s) + revoked list,
+  bootstrap trust TOFU-pinned client-side), plus `packages/<x>/<name>.toml`,
+  `closures/<hash>`, and `.gitattributes`.
 - [http-layout.md](../../registry/http-layout.md) — full HTTP/object layout, CDN
   TTLs, `info/refs`/`HEAD`/`info/alternates`, stock-git dumb-HTTP compatibility.
 - [versioning-and-channels.md](../../registry/versioning-and-channels.md) — semver
@@ -382,7 +392,8 @@ object store carries everything else.
 - [publishing.md](../../registry/publishing.md) — the producer pipeline end-to-end
   (commit → sign → pack/delta/zstd → update-server-info → advance partitions → upload).
 - [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) — the Nix
-  binary-cache superset via client-side cache config (or the origin) + narinfo/nar.
+  binary-cache superset located via the committed `registry.toml` `[[caches]]`
+  (client-side `registries.d` override; or the origin) + narinfo/nar.
 - [apt-comparison.md](../../registry/apt-comparison.md) — the APT comparison: signed
   flat-file lineage, bundles/pdiff → git packs/thin deltas, percentage → 256 partitions.
 

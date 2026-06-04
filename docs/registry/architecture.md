@@ -82,7 +82,7 @@ in [`http-layout.md`](./http-layout.md).
                       │                                              │
   nix substituter ───▶│  NIX BINARY-CACHE SURFACE  (optional, ⊇)     │  ◀── superset #2
   (stock)             │    nix-cache-info · <storehash>.narinfo      │
-                      │    nar/<…>  (client-side cache config)       │
+                      │    nar/<…>  (registry.toml [[caches]])       │
                       │                                              │
   apm (AOS) ─────────▶│  AOS-ONLY ADDITIONS  (additive, ⊇)           │  ◀── apm's extra reach
                       │    channels/<name>/00..ff (signed partitions) │
@@ -167,6 +167,20 @@ once published (long CDN TTL). A stock-git user can authenticate any release wit
 tags *are* the trust anchor for stock clients. See
 [`signing-and-trust.md`](./signing-and-trust.md).
 
+**Registry-level config lives in the committed tree, not in the tag.** Because the
+tag is a pure pointer, anything a consumer needs *about* the registry —
+the NAR cache pointers (`registry.toml` `[[caches]]`) and the signing-key trust
+roster (`keys.toml`: active key(s) + revoked list) — lives as **committed files in
+the git tree** and is authenticated *transitively* by the signed tag: the chain
+runs **tag → commit → tree → file** (extending the verification hops below). A key
+inside a file authenticated by that key would be circular for bootstrap, so the
+signing pubkey is *not* in `registry.toml`; the `keys.toml` roster is governed by a
+TOFU-pinned anchor key (client-side `trusted-keys.d/<registry>.pub`), with rotation
+and revocation published as new `keys.toml` versions in signed tags. The committed
+tree is therefore `registry.toml` + `keys.toml` + `packages/<x>/<name>.toml` +
+`closures/<hash>` + `.gitattributes`, distinct from the served object store. See
+[`repo-layout.md`](./repo-layout.md) for the full tree and the tree ↔ HTTP mapping.
+
 ### 3.4 The rollout overlay — `/channels/<name>/00..ff`
 
 Outside the ref namespace, each channel exposes exactly **256** files
@@ -190,9 +204,13 @@ path**:
 
 This **name-binding** check binds a tag object to the path it is served from and
 prevents a cross-serving attack (replaying a validly-signed tag at the wrong URL).
-Branch refs carry no signature and are never trusted; their only job is stock-git
-convenience. Full detail and the threat model are in
-[`signing-and-trust.md`](./signing-and-trust.md).
+Once the chain reaches the **commit**, every file in its **tree** — including the
+registry-level config (`registry.toml` `[[caches]]`) and the `keys.toml` trust
+roster — is authenticated by extension (**tag → commit → tree → file**), so no
+config or cache pointer ever needs to ride *in* the tag. Branch refs carry no
+signature and are never trusted; their only job is stock-git convenience. Full
+detail and the threat model are in [`signing-and-trust.md`](./signing-and-trust.md);
+the committed tree layout is in [`repo-layout.md`](./repo-layout.md).
 
 ---
 
@@ -250,9 +268,11 @@ anti-rollback in [`versioning-and-channels.md`](./versioning-and-channels.md).
 
 ### 4.3 Stock `nix` (superset #2, optional)
 
-Orthogonal to the git-object layer, the NAR binary-cache location is the
-**consumer's client-side configuration** (its local registry config) or the origin
-itself — it is *not* advertised in any signed tag. The origin **may** serve the
+Orthogonal to the git-object layer, the NAR binary-cache location lives in the
+committed repo-root `registry.toml` `[[caches]]` (a tree file authenticated
+transitively by the signed tag), with the consumer's client-side `registries.d`
+as an optional override (or the origin itself) — it is *not* advertised in any
+signed tag. The origin **may** serve the
 `nix-cache-info` / `<storehash>.narinfo` / `nar/` surface, a strict superset for
 stock `nix` dev-shell substitution; narinfo `Sig:` signatures (if served) reuse the
 one Ed25519 key. The AOS-namespace and git-object surfaces are untouched and
@@ -356,6 +376,10 @@ Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
 - [`http-layout.md`](./http-layout.md) — full HTTP/object layout, CDN TTLs,
   `info/refs` / `HEAD` / relative `info/alternates`, root-centralized loose
   `/objects/`, stock-git dumb-HTTP compatibility.
+- [`repo-layout.md`](./repo-layout.md) — the committed git **tree** content
+  (`registry.toml` `[[caches]]`, `keys.toml` trust roster, `packages/`, `closures/`,
+  `.gitattributes`), authenticated via the signed tag (tag → commit → tree → file),
+  and the tree ↔ HTTP mapping.
 - [`versioning-and-channels.md`](./versioning-and-channels.md) — semver,
   channels-as-branches, frontier head, the 256-partition rollout, bucket selection,
   anti-rollback.
@@ -365,7 +389,8 @@ Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
   signed pointers, name-binding, `tag→tag→commit`, sha256, unsigned branch refs.
 - [`publishing.md`](./publishing.md) — the producer pipeline end to end.
 - [`nix-cache-compatibility.md`](./nix-cache-compatibility.md) — the Nix
-  binary-cache superset via client-side cache config.
+  binary-cache superset located via the committed `registry.toml` `[[caches]]`
+  (client-side `registries.d` as optional override).
 - [`apt-comparison.md`](./apt-comparison.md) — git-native + dumb-HTTP vs. APT's
   signed-flat-file / `pool` / phased-rollout lineage.
 - Plan set: [`design-brief.md`](../plans/registry/design-brief.md) (grounding

@@ -5,9 +5,11 @@
 > with no structured payload), **name-binding verification**, the
 > **`tag → tag → commit`** trust chain, **sha256** object format, **freshness**
 > via CDN TTL + consumer policy + monotonic floor, and
-> **anti-rollback / fix-forward**. Grounded in §11 and §5 of the
-> [design brief](./design-brief.md); reuses the existing TOFU +
-> `trusted-keys.d` primitives.
+> **anti-rollback / fix-forward**, and the **`keys.toml` trust roster** (active +
+> revoked keys) that governs key rotation/revocation. Grounded in §11, §5, and §14
+> of the [design brief](./design-brief.md); reuses the existing TOFU +
+> `trusted-keys.d` primitives. The committed-tree placement of `registry.toml` /
+> `keys.toml` is detailed in [`repo-layout.md`](../../registry/repo-layout.md).
 >
 > **Labeling:** **CURRENT** describes today's code (cited as `path:line`);
 > **TARGET** describes the git-native model this workstream builds.
@@ -88,6 +90,7 @@ objects, name-binding, and the two-hop chain.
 | G6 | **Freshness** enforcement | none | CDN TTL + consumer max-staleness policy + monotonic floor (no in-band expiry) |
 | G7 | **Anti-rollback floor** | commit-ancestry only (`check_downgrade`) | persisted semver monotonic floor + fix-forward |
 | G8 | Tags are **pure signed pointers** | unsigned, free-form message | `git tag -s`, no structured payload (optional freeform note only) |
+| G9 | **Trust roster in tree** | pubkey lives in `registry.toml` (`RegistryRootConfig`, `types.rs:566-573`) | `keys.toml` (active + revoked); pubkey **removed** from `registry.toml`; TOFU unchanged |
 
 ---
 
@@ -209,8 +212,9 @@ Enforcement:
   simply stops producing new pointers and the consumer holds.
 - **Release immutability** needs no freshness signal: an immutable, long-cached
   release stays installable indefinitely. Trust in a release derives from its
-  signature against a currently-trusted Ed25519 key (key rotation is handled via
-  `trusted-keys.d`, §8), not from an expiry stamp.
+  signature against a currently-trusted Ed25519 key (the trust roster and its
+  rotation/revocation are handled via `keys.toml` + `trusted-keys.d` TOFU, §7.5
+  / §8), not from an expiry stamp.
 
 > **Trade-off (brief §11).** Without an in-band signed expiry, this freshness
 > model is **weaker against a frozen-but-validly-signed mirror**: a mirror that
@@ -285,11 +289,14 @@ git -c gpg.format=ssh -c user.signingkey=<key> \
 #   then publish that tag object's bytes to /channels/stable/<n>
 ```
 
-- The signing key is the registry's existing Ed25519 key (one key, brief §11);
+- The signing key is a registry **operational** Ed25519 key from the `keys.toml`
+  roster (§7.5; a single-key registry uses its sole key, brief §11);
   `apr sign`'s today-unused `_key` arg (`registry_ops.rs:1761`) becomes live.
 - The tag carries **no structured payload** (optional freeform note only). The
-  cache/substituter location is **client-side** consumer config or the origin
-  itself (§7.4), never advertised in a signed tag.
+  cache/substituter location lives in the committed repo-root `registry.toml`
+  `[[caches]]` (authenticated transitively by the signed tag), with the consumer's
+  client-side `registries.d` as an optional override (or the origin itself; §7.4) —
+  never advertised in the signed tag itself.
 - The publish step copies the signed tag *object bytes* to the 256
   `/channels/<name>/<n>` paths — the rollout coordinate is the path, the embedded
   name stays the channel name (§3.3).
@@ -309,15 +316,73 @@ generated structured payload.
 have no place in the signed-tag trust chain; trust derives from tag objects, not
 bundle headers.
 
-### 7.4 Cache config is client-side, not tag-embedded
+### 7.4 Cache config lives in the committed `registry.toml`, not tag-embedded
 
 The Nix binary-cache / NAR substituter location is **not** advertised in signed
-tags. It is the **consumer's client-side configuration** (its local registry
-config) or the **origin itself**. The origin **MAY** serve the stock-nix
+tags. It lives in the committed repo-root `registry.toml` `[[caches]]` (a tree
+file authenticated transitively by the signed tag), with the consumer's
+client-side `registries.d` as an optional override (or the **origin itself**).
+The origin **MAY** serve the stock-nix
 superset — `nix-cache-info`, `<storehash>.narinfo`, and `nar/` — and narinfo
-signing **reuses the one Ed25519 key** (a separate signature object; brief
+signing **reuses** a registry signing key (a separate signature object; brief
 §11/§13). The producer never embeds a `[[caches]]` table or any substituter URL
 inside a tag.
+
+### 7.5 Trust roster lives in `keys.toml`, not in `registry.toml` (G9)
+
+The committed tree carries a dedicated **`keys.toml`** — the **trust roster**:
+the **active signing key(s)** plus a **revoked** list (brief §14). It is a
+committed tree file, authenticated transitively by the signed tag
+(tag → commit → tree → file), and is distinct from the HTTP-served object store —
+see the layout reference
+[`repo-layout.md`](../../registry/repo-layout.md) §3 for the on-disk shape.
+
+```toml
+schema = 1
+
+[[keys]]                       # currently-valid signing key(s)
+id   = "aos-core-ops-2026"
+key  = "aos-core:Ed25519:<base64>"   # the parse_signing_key wire format
+role = "operational"                 # signs day-to-day release/channel tags
+[[keys]]
+id   = "aos-core-root"
+key  = "aos-core:Ed25519:<base64>"
+role = "root"                        # offline anchor; signs keys.toml itself
+
+[[revoked]]                    # keys no longer trusted (compromise/retirement)
+id     = "aos-core-ops-2025"
+reason = "rotated"
+```
+
+Producer-side implementation:
+
+- **Emit `keys.toml`** at registry create / key-management time, writing it into
+  the committed tree next to `registry.toml` (the same write site as
+  `registry_ops.rs:443-450`). `role` distinguishes the offline **root/anchor**
+  key (signs `keys.toml` for rotation/revocation) from the **operational** key
+  (signs day-to-day tags), TUF-style; a single-key registry may omit `root` and
+  rely on overlap-only rotation (open choice, brief §16).
+- **Remove `signing.public_key` from `RegistryRootConfig`.** CURRENT
+  `RegistryRootConfig` (`types.rs:566-573`) carries a `[registry.signing]`
+  pubkey; the TARGET **drops** it (a key inside a file authenticated *by* that
+  key is circular for bootstrap, brief §14). The default-`registry.toml` writer
+  (`registry_ops.rs:443-450`) stops emitting `[registry.signing]`; its reader
+  (`registry_ops.rs:393`) stops parsing it. Key trust now comes from `keys.toml`
+  + client-side TOFU (§8.2). The git-repo-root `registry.toml` retains only
+  `[registry]` name/description + `[[caches]]`.
+
+### 7.6 Rotation & revocation (producer side)
+
+- **Rotation** — publish `keys.toml` listing **both** the old and the new key (an
+  overlap window) inside a tag signed by the **currently-trusted** key. A
+  consumer that already trusts the old key verifies the tag, parses `keys.toml`,
+  and pins the new key; a later publish drops the old key (§8.3).
+- **Revocation** — list the bad key under `[[revoked]]` in a `keys.toml` **signed
+  by a key the consumer trusts that is *not* the revoked one.** That requires
+  either a dedicated offline **root** key that signs `keys.toml` while a separate
+  **operational** key signs everyday tags (TUF-style), or **≥2 overlapping active
+  keys** so a survivor can disown the compromised one. Root-vs-single is an open
+  choice (brief §16).
 
 ---
 
@@ -361,6 +426,48 @@ is not an error: the consumer holds on its current pinned release.
 > hard-fails verification — fix-forward is to provision the new key in
 > `trusted-keys.d`.
 
+### 8.1 Parse `keys.toml` from the verified tree
+
+After the chain resolves to a commit (§8), the consumer reconstructs the tree and
+reads **`keys.toml`** (alongside `registry.toml`). It parses `[[keys]]` (each
+`id` / `key` / `role`, the `key` in `parse_signing_key`'s
+`registry:Ed25519:base64` form, `security.rs:306`) and `[[revoked]]`. Because the
+tree is authenticated transitively by the signed tag (tag → commit → tree → file,
+brief §14), `keys.toml` needs **no** standalone signature object. Its shape is the
+[`repo-layout.md`](../../registry/repo-layout.md) §3 roster.
+
+### 8.2 TOFU bootstrap is unchanged — `keys.toml` does **not** bootstrap trust
+
+Initial trust is still **TOFU-pinned client-side** in
+`trusted-keys.d/<registry>.pub` (`KeyStore`, `security.rs:52-131`;
+`tofu_check`, `security.rs:159`) — the existing primitives reused as-is (§2.1).
+`keys.toml` is read **only after** a tag has already verified against a
+TOFU-pinned key; it can never be the *first* source of trust, since a key inside a
+tag-authenticated file is circular for bootstrap (brief §14). The no-key and
+`KeyMismatch` flows above are unaffected.
+
+### 8.3 Verify rotation / revocation
+
+Once `keys.toml` is parsed from a tag verified against a currently-trusted key:
+
+- **Rotation** — the verified roster lists old + new keys (overlap). The consumer
+  **pins the new key** (persist alongside / into `trusted-keys.d` via
+  `KeyStore::store`, `security.rs:97`), so a subsequent tag signed by only the new
+  key still verifies. No `KeyMismatch` prompt is needed when the new key arrives
+  inside a roster signed by the trusted old key.
+- **Revocation** — a `[[revoked]]` entry is honoured **only when** the `keys.toml`
+  carrying it verified against a trusted key that is itself **not** the revoked
+  one (an offline **root**/anchor key, or a second overlapping active key). The
+  consumer then refuses any tag signed by a revoked key. A revocation that could
+  only be vouched for by the revoked key is **not** trusted.
+
+> **Why the cache list is not the trust boundary.** An authenticated-but-wrong
+> `[[caches]]` pointer (from either `registry.toml` or client-side
+> `registries.d/<name>.toml`) cannot serve bad bytes: NARs are content-addressed
+> and SHA-256-verified on download (`download.rs:102-115`). The trust that matters
+> is the **tag/commit** chain governed by `keys.toml` — see
+> [`repo-layout.md`](../../registry/repo-layout.md) §3.
+
 ---
 
 ## 9. Reused vs. new code
@@ -380,6 +487,9 @@ is not an error: the consumer holds on its current pinned release.
 | semver monotonic floor | — | **new** (persisted alongside install state) |
 | freshness (CDN TTL + max-staleness policy) | — | **new** (no in-band `valid_until`) |
 | bundle signing | `apr bundle` (`registry_ops.rs:1716`) | **remove** (bundles dropped, brief §15) |
+| emit/parse `keys.toml` roster | — | **new** (active keys + revoked; tree file, brief §14) |
+| `signing.public_key` in `registry.toml` | `RegistryRootConfig` (`types.rs:566-573`) | **remove** (key trust → `keys.toml` + TOFU) |
+| rotation/revocation verify | — | **new** (root/operational or ≥2 keys; §8.3) |
 
 ---
 
@@ -404,8 +514,18 @@ is not an error: the consumer holds on its current pinned release.
    `candidate < floor`, compose with `check_downgrade`; never decrement
    partitions.
 9. **Remove `apr bundle`** from the trust path (brief §15).
+10. **`keys.toml` roster** (G9) — emit `keys.toml` (active keys + revoked) into
+    the committed tree at create/key-management; **remove `signing.public_key`
+    from `RegistryRootConfig`** and its default-writer/reader
+    (`registry_ops.rs:443-450,393`); parse `keys.toml` from the verified tree
+    (§8.1). TOFU bootstrap (`trusted-keys.d`) is **unchanged** (§8.2).
+11. **Rotation/revocation verify** (G9) — pin a rotated key from an
+    overlap-window roster signed by the trusted key; honour `[[revoked]]` only
+    when the roster verified against a non-revoked (root/anchor or ≥2-overlap)
+    key (§8.3).
 
-Dependency order: 1 → (2,3) → 4 → 5 → 6 → (7,8); 9 any time.
+Dependency order: 1 → (2,3) → 4 → 5 → 6 → (7,8); 9 any time; 10 → 11
+(10 depends on 4–6 for the verified tree it reads).
 
 ---
 
@@ -417,21 +537,23 @@ Dependency order: 1 → (2,3) → 4 → 5 → 6 → (7,8); 9 any time.
   a mirror can pin a fleet to an old (legitimately-signed, floor-passing) release
   past its CDN TTL; only the consumer's max-staleness policy and the monotonic
   floor mitigate this (§5). Key-rotation cadence — open-questions #5.
-- **Key rotation UX:** a rotated key surfaces as `tofu_check` → `KeyMismatch`
-  (`security.rs:182`); decide between pre-provisioning into `trusted-keys.d` vs.
-  an explicit `apr trust` re-pin flow.
+- **Key rotation UX:** the planned path is an overlap-window `keys.toml` roster
+  signed by the trusted key (§7.6/§8.3) so a rotated key arrives pre-vouched
+  rather than as a bare `tofu_check` → `KeyMismatch` (`security.rs:182`). Whether
+  to keep an explicit `apr trust` re-pin fallback, and root-vs-single trust model,
+  are open (brief §16).
 - **Floor persistence location** and per-channel vs. global scope — coordinate
   with [workstream-05](./workstream-05-consumer.md) install state.
 - **Narinfo `Sig:` reuse:** if the origin also serves NARs
   ([nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md)), the
-  same one Ed25519 key signs narinfos as a separate signature object (brief
-  §11/§13).
+  same Ed25519 signing key (from the `keys.toml` roster) signs narinfos as a
+  separate signature object (brief §11/§13).
 
 ---
 
 ## See also
 
-- Brief: [design-brief.md](./design-brief.md) §11 (signing & trust), §5 (ref model / name-binding)
+- Brief: [design-brief.md](./design-brief.md) §11 (signing & trust), §5 (ref model / name-binding), §14 (repo-tree config & trust files), §15 (removed), §16 (open: trust model)
 - Plan: [README.md](./README.md) · [gap-analysis.md](./gap-analysis.md) ·
   [workstream-01-object-store.md](./workstream-01-object-store.md) ·
   [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md) ·
@@ -439,6 +561,7 @@ Dependency order: 1 → (2,3) → 4 → 5 → 6 → (7,8); 9 any time.
   [workstream-05-consumer.md](./workstream-05-consumer.md) ·
   [open-questions.md](./open-questions.md)
 - Reference: [signing-and-trust.md](../../registry/signing-and-trust.md) ·
+  [repo-layout.md](../../registry/repo-layout.md) (committed-tree placement of `registry.toml` / `keys.toml`) ·
   [versioning-and-channels.md](../../registry/versioning-and-channels.md) ·
   [http-layout.md](../../registry/http-layout.md) ·
   [architecture.md](../../registry/architecture.md) ·
