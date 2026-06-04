@@ -324,6 +324,9 @@ public_key = "aos-core:Ed25519:abc123"
 [registry.state]
 last_commit = "deadbeef"
 last_creation_token = 2026020003
+floor = "1.2.0"
+bucket = 10
+retained = ["1.0.0", "1.2.0"]
 last_update = "2026-02-13T10:30:00Z"
 "#,
         )
@@ -335,6 +338,9 @@ last_update = "2026-02-13T10:30:00Z"
         let s = state.unwrap();
         assert_eq!(s.last_commit.unwrap(), "deadbeef");
         assert_eq!(s.last_creation_token.unwrap(), 2026020003);
+        assert_eq!(s.floor.unwrap(), "1.2.0");
+        assert_eq!(s.bucket.unwrap(), 10);
+        assert_eq!(s.retained, vec!["1.0.0", "1.2.0"]);
     }
 
     #[test]

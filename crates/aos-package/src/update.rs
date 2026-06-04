@@ -673,6 +673,7 @@ sha256 = "012def"
             last_commit: Some("abc".into()),
             last_creation_token: Some(2026020002),
             last_update: None,
+            ..RegistryState::default()
         };
         let mode = TrackingMode::Default;
 
@@ -688,6 +689,7 @@ sha256 = "012def"
             last_commit: Some("abc".into()),
             last_creation_token: Some(2026020000),
             last_update: None,
+            ..RegistryState::default()
         };
         let mode = TrackingMode::Default;
 
@@ -707,6 +709,7 @@ sha256 = "012def"
             last_commit: Some("abc".into()),
             last_creation_token: Some(2026020001),
             last_update: None,
+            ..RegistryState::default()
         };
         let mode = TrackingMode::Default;
 
