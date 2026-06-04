@@ -27,7 +27,7 @@ cite) versus **TARGET** (what the brief mandates), then routed to a workstream:
 | WS-03 | [workstream-03-channels-rollouts.md](./workstream-03-channels-rollouts.md) | 256 signed partition tags, channels-as-branches/frontier, bucket selection, publisher rollout control |
 | WS-04 | [workstream-04-signing-trust.md](./workstream-04-signing-trust.md) | signed **tag objects** (pure signed pointers), name-binding, sha256, anti-rollback/fix-forward, the new committed **`keys.toml`** trust roster (pubkey moves out of `registry.toml`) |
 | WS-05 | [workstream-05-consumer.md](./workstream-05-consumer.md) | consumer resolution (bucket → channel tag → semver tag → commit), delta walk, retention, verification, client-side Nix-cache consumption |
-| WS-06 | [workstream-06-nix-cache.md](./workstream-06-nix-cache.md) | **integration only** — the `nix-cache-info`/`<storehash>.narinfo`/`nar/` emitter, `References` basename expansion, per-narinfo Ed25519 `Sig:` (Nix-fingerprint over StorePath/NarHash/NarSize/References), NAR blob URL key scheme, and origin-as-substituter **already exist** (`aos-server`, `aos-core`, `aos-cache`) and are consumed by `aos-package`; the remaining work is wiring registry.toml `[[caches]]` → that existing cache + optional origin co-serving |
+| WS-06 | [workstream-06-nix-cache.md](./workstream-06-nix-cache.md) | **producer-side AOT generation** — the registry's Nix binary cache is **dumb static files on the CDN**, pre-generated at publish (no running server). The narinfo **format/sign/FileHash logic** (`aos-server`, `aos-core`) and the narinfo-driven **consumer** (`aos-package`) already exist and are reused; the work is generating the static `nix-cache-info`/`<storehash>.narinfo`/`nar/<…>.nar.zst` files (reusing that logic as a library) + uploading them to the CDN + the committed `registry.toml` `[[caches]]` pointer to the cache base |
 
 The detailed as-is narrative lives in
 [current-state.md](../../registry/current-state.md); the target reference set is
@@ -255,7 +255,7 @@ download (`download_one`, `download.rs:178`; the `with_hash(Sha256, …)` check 
 
 | Aspect | CURRENT | TARGET |
 |--------|---------|--------|
-| Config root | `registry.toml` written at `create` (`registry_ops.rs:443-450`), read by `read_registry_toml` (`registry_ops.rs:392-402`), caches resolved via `resolve_mirrors` (`registry_ops.rs:405-414`). Carries `[registry]` + `[[caches]]` + `[registry.signing].public_key` (`RegistryRootConfig`, `types.rs:564-570`). | **The git-repo-root `registry.toml` is KEPT** as a committed tree file — `[registry]` name/description + `[[caches]]` only — authenticated transitively by the signed tag. The **signing pubkey is removed** from it (→ `keys.toml`, §3.4). Only the intermediate *signed-HTTP-root* `registry.toml` (`[latest]`/`[channels]`/`[components]`/`[capabilities]`/`[[bundles]]`/`[signature]`) is removed (brief §14, §15; [repo-layout.md §2](../../registry/repo-layout.md)). An `aos-server` origin **already serves** `nix-cache-info`/`<storehash>.narinfo`/`nar` as a stock-nix superset today (`cache_info_handler`/`narinfo_handler`/`nar_handler`, `aos-server/src/routes.rs:80-89`, `:123`, `:157`, `:223`), with narinfo signing reusing one Ed25519 key (`NarInfoSigner`, `aos-server/src/sign.rs`); WS-06 only wires `[[caches]]` to it and optionally co-serves it from the registry origin (brief §13). |
+| Config root | `registry.toml` written at `create` (`registry_ops.rs:443-450`), read by `read_registry_toml` (`registry_ops.rs:392-402`), caches resolved via `resolve_mirrors` (`registry_ops.rs:405-414`). Carries `[registry]` + `[[caches]]` + `[registry.signing].public_key` (`RegistryRootConfig`, `types.rs:564-570`). | **The git-repo-root `registry.toml` is KEPT** as a committed tree file — `[registry]` name/description + `[[caches]]` only — authenticated transitively by the signed tag. The **signing pubkey is removed** from it (→ `keys.toml`, §3.4). Only the intermediate *signed-HTTP-root* `registry.toml` (`[latest]`/`[channels]`/`[components]`/`[capabilities]`/`[[bundles]]`/`[signature]`) is removed (brief §14, §15; [repo-layout.md §2](../../registry/repo-layout.md)). The registry **does not run a server**: its Nix binary cache is **dumb static files on the CDN**, AOT-generated at publish (`nix-cache-info`/`<storehash>.narinfo`/`nar/<…>.nar.zst`). The narinfo **format/sign logic** is reusable as a library to *generate* those static files (`format_narinfo` `aos-server/src/narinfo.rs:27`, `NarInfoSigner` Ed25519 fingerprint+`Sig` `aos-server/src/sign.rs:7,44,57`, `compute_file_hash_size` `aos-server/src/compress.rs:143`). The live `aos-server` handlers (`cache_info_handler`/`narinfo_handler`/`nar_handler`, `aos-server/src/routes.rs:80-89,:123,:157,:223`) are a **different use case** — a host dynamically serving its **own** `NixStore` (`narinfo_handler` reads `state.store.path_info`, `routes.rs:195`); the registry never runs them. WS-06 reuses the format/sign logic to emit the static files and points `[[caches]]` at the CDN cache base (brief §13). |
 | Manifest writer | **Stub** — `apr bundle` (`bundle` fn, `registry_ops.rs:1706-1744`) only `git bundle create`s; `_update_manifest` is ignored (`registry_ops.rs:1711`); **no `bundle-list.toml` writer exists**. | A real publish pipeline writes loose objects to the root `/objects/`, emits per-release packs/deltas under `/releases/*/objects/pack/`, regenerates `objects/info/packs` + the relative `objects/info/alternates`, runs `update-server-info`, advances partitions, and uploads (brief §10, §4, §6). |
 | Upload | **None at all** — `apr push` (`registry_ops.rs:1398`) / `apr pull` (`registry_ops.rs:1433`) push the *git working repo*; there is **no static-artifact upload** of bundles/objects to a CDN/origin. | An **upload backend** ships the static tree (loose objects, packs, refs shims, channel partition files) to the origin; pluggability is an open question (brief §16.4). |
 | Atomicity / concurrency | Not modeled. | Publish must be atomic w.r.t. the CDN: write new immutable objects first, then mutate the low-TTL `info/*` + `/channels/*` — see [publishing.md](../../registry/publishing.md). **Concurrent publishers are serialized** (F351, now **COVERED** — see DEEPEN below). |
@@ -295,7 +295,7 @@ nix-cache cluster.
 | Selection logic | `pick_bundles` token strategies: skip delta → sequential deltas → latest snapshot (`update.rs:394-417`). | **Delta resolution + retention**: prefer a `delta-<B>.pack` at target T whose base B the client retains; else walk releases backward; else a full pack; else loose objects (always correct). Retention keeps the `X.0.0`, `X.Y.0`, `X.Y.Z` trees (brief §9). |
 | Integrity | `verify_bundle` = sha256 of the bundle file + `git bundle verify` (`bundle.rs:305-346`, the `git bundle verify` step at `bundle.rs:326`). | `git index-pack --fix-thin` (completes thin packs) + signed-tag-chain verification + name-binding (brief §5, §10). |
 | State | `last_commit` + `last_creation_token` + `last_update` (written at `update.rs:297-299`; fields on `RegistryState` in `state.rs`). | `last_commit` + **semver floor** (`version_floor`) + persisted **bucket**; no token (see §3.3 DEEPEN). |
-| Nix cache | `nar_hash` / `nar_size` baked into package TOMLs (`build_package_toml`, `registry_ops.rs:632-633`); validated against caches read from `registry.toml` (`validate`, `registry_ops.rs:1198-1313`; the `<hash>.nar.zst` HEAD probe at `registry_ops.rs:1277`). | Caches **stay in the committed git-repo-root `registry.toml`** (`[[caches]]`, authenticated via the signed tag); the consumer's client-side `registries.d/<name>.toml` is an **optional override/supplement** (higher priority wins, `resolve_mirrors` sorts descending, `registry_ops.rs:409`). NAR bytes are content-addressed + SHA-256-verified (`download_one`, `download.rs:178`; `with_hash(Sha256, …)` at `download.rs:203-204`), so an authenticated-but-wrong pointer can't serve bad bytes. An `aos-server` origin **already serves** `nix-cache-info`/`<storehash>.narinfo`/`nar`, a strict superset of the Nix binary cache (narinfo signing reusing one Ed25519 key), and `aos-package`'s consumer is **already narinfo-driven** (`fetch_narinfos`/`download_nars` consume the fetched `NarInfo`; `FileHash`/`NarHash`/`References`/`Deriver` all come from it — `download.rs:107`,`:178`,`:74`). So WS-06 is **integration, not building an emitter** — point `[[caches]]` at the existing cache (+ optional origin co-serving) (brief §13, §14; [WS-06](./workstream-06-nix-cache.md), [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md), [repo-layout.md §2](../../registry/repo-layout.md)). |
+| Nix cache | `nar_hash` / `nar_size` baked into package TOMLs (`build_package_toml`, `registry_ops.rs:632-633`); validated against caches read from `registry.toml` (`validate`, `registry_ops.rs:1198-1313`; the `<hash>.nar.zst` HEAD probe at `registry_ops.rs:1277`). | Caches **stay in the committed git-repo-root `registry.toml`** (`[[caches]]`, authenticated via the signed tag); the consumer's client-side `registries.d/<name>.toml` is an **optional override/supplement** (higher priority wins, `resolve_mirrors` sorts descending, `registry_ops.rs:409`). NAR bytes are content-addressed + SHA-256-verified (`download_one`, `download.rs:178`; `with_hash(Sha256, …)` at `download.rs:203-204`), so an authenticated-but-wrong pointer can't serve bad bytes. The registry serves its Nix cache as **dumb static CDN files** (a strict superset of the Nix binary cache), AOT-generated at publish — not from a running server. The narinfo **format/sign logic** is reusable to *generate* those files (`format_narinfo`, `NarInfoSigner`, `compute_file_hash_size`), and `aos-package`'s consumer is **already narinfo-driven** (`fetch_narinfos`/`download_nars` consume the fetched `NarInfo`; `FileHash`/`NarHash`/`References`/`Deriver` all come from it — `download.rs:107`,`:178`,`:204`). So WS-06's **producer side** generates+uploads the static narinfo/`nar` files (reusing that logic), and `[[caches]]` points the consumer at the CDN cache base (brief §13, §14; [WS-06](./workstream-06-nix-cache.md), [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md), [repo-layout.md §2](../../registry/repo-layout.md)). |
 
 **Consumer resolution + retention (DEEPEN).** WS-05 rewrites `sync_bundle`
 (`update.rs:209-418`) and deletes `pick_bundles` (`update.rs:319-418`). The
@@ -401,7 +401,7 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 | G25 | `apr bundle` stub + **no upload** → full publish + upload pipeline | §10,§4,§6 | WS-01/02/03 |
 | G26 | signed-**HTTP-root** `registry.toml` (intermediate design) → **removed**; git-repo-root `registry.toml` **kept** as a committed tree file | §14,§15 | WS-04 |
 | G27 | concurrent publishers unmodeled → **ref-CAS / If-Match serialization** (`git update-ref` compare-and-swap; loser re-derives the frontier) — **F351 now COVERED** | §6,§12 | WS-01/WS-03 |
-| G28 | nix-cache emitter/signing/consumer **already exist** (`format_narinfo` `aos-server/src/narinfo.rs:27`, `NarInfoSigner` `aos-server/src/sign.rs`, `cache_info_handler` `aos-server/src/routes.rs:123`, narinfo-driven `aos-package/src/download.rs`) → the gap is **integration**: registry.toml `[[caches]]` points the consumer at this existing cache (+ optional origin co-serving). **The `nix-cache-info`/`<storehash>.narinfo`/`nar/` superset, `References` basename expansion, per-narinfo Ed25519 `Sig:`, NAR blob URL key, and origin-as-substituter are NOT gaps.** | §13,§11 | WS-06 |
+| G28 | no static Nix-cache on the CDN → **producer-side AOT generation** of dumb static `nix-cache-info`/`<storehash>.narinfo`/`nar/<…>.nar.zst` + CDN upload + `registry.toml` `[[caches]]` pointer. The narinfo **format/sign/FileHash logic** (`format_narinfo` `aos-server/src/narinfo.rs:27`, `NarInfoSigner` `aos-server/src/sign.rs:7`, `compute_file_hash_size` `aos-server/src/compress.rs:143`) and the **narinfo-driven consumer** (`aos-package/src/download.rs`) already exist and are **reused as a library**; the live `routes.rs` handlers (serving the server's **own** store) are a different use case the registry never runs. | §13,§11 | WS-06 |
 
 ---
 
@@ -423,18 +423,30 @@ load-bearing in today's code and must be deleted, not merely bypassed:
   (`update.rs:209-418`): the token strategies, `BundleManifest`, and the
   `unbundle` path all go away, replaced by dumb-HTTP fetch + delta walk +
   retention + signed-chain verification.
-- **WS-06 is integration, not new infrastructure, and is orthogonal** to the git
-  trust chain. The origin-side `nix-cache-info`/narinfo/`nar/` surface **already
-  exists end-to-end**: `aos-server` emits and signs it (`format_narinfo`
-  `aos-server/src/narinfo.rs:27`, emit-time `FileHash`/`FileSize` via
-  `compute_file_hash_size` `aos-server/src/compress.rs:143`, per-narinfo Ed25519
-  `Sig:` via `NarInfoSigner` `aos-server/src/sign.rs`), `aos-cache` backends
-  write narinfos (`put_narinfo`, `aos-cache/src/backend/{fs,s3,sftp,http}.rs`),
-  and `aos-package` **already consumes it narinfo-driven** (`download.rs`, commit
-  `7149acf6`). The remaining work is **wiring**: registry.toml `[[caches]]` points
-  the consumer at this cache (decoupled from the git registry, keyed by store
-  hash), with the registry origin optionally co-serving it. The NAR surface is
-  content-addressed and independent of the tag/commit lineage.
+- **WS-06 is producer-side AOT generation**, reusing existing logic — and is
+  orthogonal to the git trust chain. The registry **does not run a server**: its
+  Nix binary cache is **dumb static files on the CDN**, pre-generated at publish
+  (`{cache-base}/nix-cache-info`, `{cache-base}/<storehash>.narinfo`,
+  `{cache-base}/nar/<…>.nar.zst`), so serving scales as dumb static distribution
+  (brief §13). What already exists and is **reused as a library** is the narinfo
+  **format/sign/FileHash logic** — `NarInfo` format/parse (`aos-core/src/nar/info.rs`),
+  `format_narinfo` (`aos-server/src/narinfo.rs:27`), `compute_file_hash_size`
+  (`FileHash`/`FileSize`, `aos-server/src/compress.rs:143`), and the per-narinfo
+  Ed25519 `Sig:` (`NarInfoSigner` fingerprint+sign, `aos-server/src/sign.rs:7,44,57`)
+  — together with the **already-narinfo-driven consumer** (`aos-package/src/download.rs`,
+  commit `7149acf6`). The **genuine WS-06 work** is the producer: at publish, for
+  each store path in the registry packages, *generate* the static
+  `<storehash>.narinfo` (reuse `NarInfo` + `format_narinfo` + `Sig`), compute
+  `FileHash`/`FileSize` (reuse `compute_file_hash_size` or capture at build),
+  produce `nar/<…>.nar.zst`, emit `nix-cache-info`, and **upload all as static CDN
+  files**, plus the committed `registry.toml` `[[caches]]` pointer to the cache base.
+  This is AOT generation + upload (not "integration only"), reusing the format/sign
+  code (not greenfield). The **live `aos-server` cache handlers** (`cache_info_handler`/
+  `narinfo_handler`/`nar_handler`, `routes.rs:80-89`) are a **different use case** —
+  a host dynamically serving its **own** `NixStore` (`narinfo_handler` reads
+  `state.store.path_info`, `routes.rs:195`), nix-serve-style — which the registry
+  **never runs**. The NAR surface is content-addressed and independent of the
+  tag/commit lineage.
 - **Clean break vs shim** for existing `creation_token`/bundle registries is an
   open question (brief §16.7); track it in
   [open-questions.md](./open-questions.md). The recommended default is a clean
