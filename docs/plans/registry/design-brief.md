@@ -1,469 +1,409 @@
 # AOS Registry — Design Brief & Decision Log
 
-> **Status:** Design capture. This document is the verbatim-intent record of the
-> design conversation that produced the `docs/registry/` reference set and the
-> `docs/plans/registry/` implementation plan. It is the **grounding source** for
-> every other registry document. When a reference or plan doc disagrees with the
-> code, the code wins for *current state* and this brief wins for *intent*.
+> **Status:** Design capture (current). This is the authoritative grounding source
+> for the `docs/registry/` reference set and the `docs/plans/registry/` plan set.
+> When a doc disagrees with the code, the code wins for *current state*; this brief
+> wins for *target intent*.
 >
-> **Audience:** implementers, architects, engineers, and the doc-authoring
-> agents that derive the reference/plan docs from it.
-
----
-
-## 0. How this brief came to be
-
-This brief captures a working design conversation about the AOS package registry.
-The conversation moved through, in order:
-
-1. How the registry, `apr` commands, and git bundles work **today**.
-2. The producer/consumer **asymmetry** (consumer is rich; producer is a stub).
-3. A correction: the **registry HTTP server is self-contained** (git bundles +
-   manifest only); it is **not** the NAR/binary-cache server.
-4. Whether the registry could **also** be a Nix binary-cache substituter for
-   non-AOS dev-shell hosts — and the conclusion that it can be a **strict
-   superset** because the protocols occupy disjoint URL namespaces.
-5. **Signing**: one Ed25519 key, SSH-format git commit signatures, transitive
-   authentication of NARs via the signed commit, and reuse of the *same key* for
-   Nix narinfo signatures.
-6. **Publishing & concurrency**: `apr push` is just `git push`; the FF-only ref
-   update is the only concurrency guard; there are no locks; "latest" is derived,
-   not pointed to; `bundle-list.toml` is a poor name for a root.
-7. The decision to **collapse to a single signed `registry.toml` root** and serve
-   over **dumb HTTP as the lowest common denominator**, with **S3 as an optional
-   admin fast-path**, keeping the index **inside the registry files**.
-8. A structured comparison to the **APT repository format**, which the design
-   converges on, and a prioritized list of **APT improvements to adopt**.
-
-Everything below is the distilled, decision-level record of that conversation.
+> **Important:** the target architecture is a **git-native registry served over
+> dumb HTTP**. An earlier capture briefly explored a single signed `registry.toml`
+> root with git-bundle deltas; that approach has been **superseded** and the docs
+> are being rewritten to the model below. Anything describing `registry.toml`,
+> `bundle-list.toml`, git *bundles*, a `[latest]` table, `[components]`,
+> `[capabilities]`, calendar `creation_token` ordering, or percentage-based
+> rollouts is **removed** from the target (it may still appear in `current-state.md`
+> as a description of today's *code*).
+>
+> **Audience:** implementers, architects, engineers, and the doc-authoring agents.
 
 ---
 
 ## 1. Glossary
 
-- **AOS** — ANDYL OS. Hermetic-from-source Nix-based distribution.
-- **`apm`** — the package-management CLI front-end. Same binary as `aos`,
-  dispatched by `argv[0]`: `apm …` ⇒ implicit `package …`.
-- **`apr`** — the AOS Package Registry CLI. Same binary; `apr …` ⇒ implicit
-  `package registry …` (`crates/aos/src/main.rs`, argv[0] detection ~lines 37–61;
-  binary alias declared in `crates/aos/Cargo.toml` `[[bin]] name = "apr"`).
-- **Registry** — a **git repository of TOML metadata** (`packages/<x>/<name>.toml`
-  + `closures/<hash>`), distributed over HTTP and consumed by `apm`. It is *not*
-  the blob store.
-- **Producer side** — `apr` operations that mutate and publish a registry.
-- **Consumer side** — `apm update`/`apm upgrade` operations that sync and install.
-- **NAR** — Nix ARchive, the serialized form of a store path; the actual build
-  artifact. Stored content-addressed and zstd-compressed.
-- **Bundle** — a `git bundle` file packing the registry git repo (or a delta of
-  it) so it can be distributed over dumb HTTP.
-- **`creation_token`** — a monotonic integer derived from a calendar version tag
-  used to order bundles. `year*1_000_000 + month*10_000 + patch`.
-- **Snapshot / sequential delta / skip delta** — the three bundle kinds.
-- **narinfo** — the per-store-path text metadata file of the standard Nix binary
-  cache HTTP protocol.
+- **AOS / `apm` / `apr`** — ANDYL OS; the package-management CLI (`apm` ⇒ implicit
+  `package`); the registry CLI (`apr` ⇒ implicit `package registry`). Same binary,
+  argv[0] dispatch (`crates/aos/src/main.rs`).
+- **Registry (target)** — a **bare git repository, sha256 object format, served as
+  static files over dumb HTTP**. The package metadata *is* the git tree content.
+- **Channel** — a named release line (e.g. `stable`, `testing`). Modeled as a git
+  **branch** (`refs/heads/<channel>`) whose head is the rollout **frontier**, and
+  as **16 signed partition tag objects** (`/channel/<name>/0..f`) for rollout.
+- **Partition / bucket** — one of exactly **16** channel partitions (`0`–`f`). A
+  consumer deterministically self-selects one bucket. The publisher advances
+  partitions independently to control rollout.
+- **Release** — an immutable semver version (e.g. `1.1.0`, `1.0.0-beta+exp.sha.5114f85`,
+  **no `v` prefix**). A signed git **tag** (`refs/tags/<semver>`) → commit, with its
+  object store under `/release/<major>/<minor>/<patch…>/`.
+- **Signed tag object** — an annotated git tag carrying an SSH-format **Ed25519**
+  signature; its message is **TOML**. Channel partition tags and release tags are
+  signed. `tag → tag → commit` chains are used (channel partition → semver → commit).
+- **Full pack** — a self-contained `pack-<sha256>.pack` (+ `.idx`) at every
+  major/minor (`X.Y.0`) release.
+- **Delta pack** — a **thin** `delta-<from-semver>.pack` carrying only objects
+  introduced between two release commits; completed on the client with
+  `git index-pack --fix-thin`.
+- **Frontier** — the newest release any channel partition targets; the value of the
+  channel's branch head.
+- **Dumb HTTP** — git's static-file transport (`HEAD`, `info/refs`, loose objects,
+  `objects/info/packs`, `objects/info/http-alternates`).
 
 ---
 
-## 2. Current state (as-is) — grounded facts
+## 2. Current state (as-is) — summary
 
-All paths relative to repo root. Crate is `crates/aos-package/` unless noted.
+The detailed, code-grounded as-is lives in `docs/registry/current-state.md` and is
+**unchanged** by this redesign (it describes today's code, which still does the old
+thing). In brief, today:
 
-### 2.1 CLI dispatch
-- `crates/aos/Cargo.toml` declares two `[[bin]]` targets, `aos` and `apr`, both
-  `path = "src/main.rs"`.
-- `main.rs` (~37–61) inspects `argv[0]`'s file name (tolerating a `-unwrapped`
-  suffix): `apr` ⇒ prepend `package registry`; `apm` ⇒ prepend `package`.
-- All registry producer logic lives in `crates/aos-package/src/registry_ops.rs`
-  (module doc: *"Registry management operations ('apr' / 'apm registry')"*).
+- A registry is a git repo of **nested** package TOMLs (`PackageToml` in
+  `crates/aos-package/src/registry/parse.rs:14-70`, written by `build_package_toml`
+  `registry_ops.rs:595-781`) plus `closures/<hash>` adjacency files;
+  `PackageMeta` (`types.rs:43-77`) is the flattened in-memory projection.
+- Distribution is via **git bundles** + a `bundle-list.toml` manifest the *consumer*
+  parses (`registry/bundle.rs`); the producer side is a stub (`apr bundle` =
+  `git bundle create`; no manifest writer; no upload).
+- Versions are **calendar tags** (`vYYYY.MM[.P]`) ordered by `creation_token`
+  (`state.rs version_to_token`); tracking modes are commit/branch/tag/semver
+  (`types.rs TrackingMode`); selection is `pick_bundles` (`update.rs`).
+- Signing already uses **SSH-format Ed25519** git signatures (`apr sign` =
+  `git commit -S`; verified via `git verify-commit` + allowed_signers in
+  `security.rs`), with TOFU + `trusted-keys.d/<registry>.pub`.
 
-### 2.2 Storage layout (local)
-From `types.rs` (~466–513) and `registry_ops.rs:28` (`registry_dir`):
-
-| Scope | Producer git repo (`apr` writes) | Consumer cache (`apm update` writes) |
-|-------|----------------------------------|--------------------------------------|
-| user  | `~/.local/share/apm/registries/{name}/` | `~/.local/share/apm/remote/{name}/` |
-| system| `/var/lib/apm/registries/{name}/`       | `/var/lib/apm/remote/{name}/`        |
-
-- Per-registry config: `~/.config/apm/registries.d/{name}.toml` (or `/etc/apm/…`).
-- Trusted keys: `~/.config/apm/trusted-keys.d/{registry}.pub` (and system dirs);
-  see `types.rs` `trusted_keys_dirs()` (~501–513).
-- Registry repo root file: `registry.toml` inside the repo, schema
-  `RegistryRootConfig { registry, caches: Vec<CacheEntry>, signing:
-  Option<RegistrySigningConfig> }` (`types.rs` ~566–599). `[[caches]]` entries
-  carry `url` + `priority`; `signing` carries `public_key`.
-
-### 2.3 Registry git repo contents
-- `packages/<x>/<name>.toml` — per-package metadata. Established fields from the
-  conversation (implementers MUST confirm exact names against `types.rs`):
-  `[package]` → name, description, license, maintainer, sysroot (bool),
-  homepage. `[[versions]]` → version, previous.
-  `[versions.platforms.<platform>]` → store_path, nar_hash, nar_size,
-  download_hash, download_size, closure_size, source_drv, source_nar_hash,
-  references (list of dependency **hashes**), and `[[…images]]` (format,
-  store_path, nar_hash) for sysroot images.
-- `closures/<hash>` — adjacency list: `<root-hash> <dep-hash> <dep-hash> …` per
-  line; leaves have no deps.
-
-### 2.4 Bundle distribution (HTTP transport) — consumer side
-- `registry/bundle.rs`:
-  - `BundleType { Snapshot, SequentialDelta, SkipDelta }` (~22–31).
-  - `BundleEntry { uri, creation_token, sha256, size, bundle_type, base_tag,
-    target_tag }` (~34–45).
-  - `BundleManifest { registry, version, entries }` parsed from
-    `bundle-list.toml` (`ManifestToml`/`BundleEntryToml` are **`Deserialize`
-    only** — there is no serializer).
-  - `BundleManifest::fetch` (~100) builds URL
-    `{base_url}/bundles/{registry_name}/bundle-list.toml`.
-  - `download_bundle` (~251) → `{base_url}/bundles/{registry_name}/{entry.uri}`,
-    verified with SHA-256.
-  - `verify_bundle` (~305) → SHA-256 match **and** `git bundle verify`.
-  - `unbundle` (~376) → `git bundle unbundle` into the consumer cache repo.
-  - `classify_delta(from,_to)` (~227–243) → a delta whose `from` tag has ≤2
-    dotted parts (a minor base `vYYYY.MM`) is a **SkipDelta**; otherwise
-    **SequentialDelta**.
-  - Manifest helpers (~180–224): `entries_since(token)`, `latest_snapshot()`,
-    `skip_delta_from(base_tag)`, `sequential_deltas_between(from,to)`.
-
-### 2.5 Semver + version selection — consumer side
-- Dependency: standard `semver` crate (`Cargo.toml`).
-- `types.rs` `TrackingMode { Commit, Branch, Tag, Version(semver::VersionReq),
-  Default }` (~277–305); `RegistryConfig::tracking_mode()` validates **at most
-  one** of commit/branch/tag/version is set (~307–401).
-- `update.rs`:
-  - `parse_tag_as_semver` (~429–450): strip `v`, strip leading zeros, pad
-    2-component tags to `.0`. `v2026.02` → `2026.2.0`, `v2026.02.3` → `2026.2.3`.
-  - `find_best_version_tag_in_manifest` (~393–424): filter manifest tags by the
-    `VersionReq`, pick the **highest** matching; non-semver tags skipped.
-  - `pick_bundles` (~291–391): the incremental selection algorithm (see §2.6).
-- `registry/state.rs`:
-  - `version_to_token` (~123–166): `year*1_000_000 + month*10_000 + patch`;
-    rejects non `vYYYY.MM[.P]`, month 1–12, patch ≤ 9999.
-  - `token_to_version` (~168–184): inverse; patch 0 renders as a 2-part base tag.
-  - `check_monotonic` (~101–117): rejects `new_token <= old_token` (downgrade /
-    stale-mirror defense).
-
-### 2.6 `pick_bundles` selection algorithm (consumer)
-Given the manifest, persisted `RegistryState`, and `TrackingMode`:
-1. **Tag mode** → snapshot with matching `target_tag`, else any delta targeting it.
-2. **Commit mode** → bundle transport can't resolve arbitrary commits; falls
-   through to default.
-3. **Version mode** → `find_best_version_tag_in_manifest`, then snapshot/delta to it.
-4. **No prior state** → `latest_snapshot()`.
-5. **Up to date** (`entries_since(current)` empty) → `[]`.
-6. **Incremental** (have state): (a) **skip delta** from current minor base if a
-   newer one exists; else (b) **sequential delta chain** with
-   `current < token <= latest`; else (c) **latest snapshot** fallback.
-
-### 2.7 State persistence
-- `RegistryState { last_commit, last_creation_token, last_update }`
-  (`types.rs` ~253–262), serialized under `[registry.state]` in the per-registry
-  config file. `sync_bundle` updates all three after a successful sync (~269–272).
-
-### 2.8 NAR download (separate from the registry)
-- `download.rs`: `nar_url(mirror_url, nar_hash)` → `{mirror_url}/{nar_hash}.nar.zst`
-  where `nar_hash` is the full `sha256:<hex>` string (the filename literally
-  contains a colon). `resolve_mirror` (~67–82) reads `[[caches]]` from the local
-  registry clone (sorted by priority), falling back to `{registry.url}/nar`.
-- NARs are verified by **SHA-256 content hash**, not by signature.
-
-### 2.9 Git transport (alternative to bundles)
-- `git://`, `git+https://`, `git+ssh://` URLs use `registry/git.rs`: `git fetch`,
-  fast-forward enforcement, optional commit-signature verification, then extract
-  TOMLs into the cache. URL scheme selects transport (`types.rs` ~315–323):
-  `http(s)://` ⇒ HttpBundle, `git*` ⇒ Git.
-
-### 2.10 Signing & trust — current
-- `apr sign` = `git commit --amend --no-edit -S` (`registry_ops.rs:1770`).
-- `apr tag` supports `--message`/`--key`; `apr push` = `git push [-u origin]
-  [branch] [--force]` (`registry_ops.rs:1410–1442`).
-- `security.rs`:
-  - `verify_commit_signature` (~199–233): builds a temporary `allowed_signers`
-    file (`registry ssh-ed25519 <pubkey>`) and runs `git -c
-    gpg.ssh.allowedSignersFile=… verify-commit <commit>`. **SSH-format Ed25519**
-    signatures.
-  - `parse_signing_key` (~306+): key string format `registry:algorithm:base64key`;
-    **rejects any algorithm but `Ed25519`**. Example `aos-core:Ed25519:base64…`.
-  - TOFU: a key is either admin-provisioned in `…/trusted-keys.d/{registry}.pub`
-    or accepted on first use from the registry's `signing.public_key`, then pinned.
-  - `check_downgrade` (~256–296): `git merge-base --is-ancestor` →
-    FastForward / SameCommit / Downgrade / Diverged.
-
-### 2.11 Producer-side gaps (the asymmetry)
-The producer is a thin wrapper over `git` plus `git bundle create`. **Absent:**
-- No `bundle-list.toml` **writer** anywhere (manifest types are `Deserialize`-only).
-- `apr bundle` (`registry_ops.rs:1718`) only runs `git bundle create` into a local
-  `bundles/` dir; its `_update_manifest` parameter is **unused dead code**.
-- No producer-side `creation_token` computation (the encode fn exists in
-  `state.rs` but is only called consumer-side).
-- No automatic delta-type classification on the producer (`--tag`/`--delta-from`
-  are passed manually).
-- No upload of bundles to a mirror/CDN/S3 (the only upload code in the tree is in
-  `aos-cache`, and that's for NARs, not bundles).
-- No narinfo / `nix-cache-info` emission.
-- No locks/atomicity beyond git's own FF-rejection on push.
-- No "latest" pointer (derived by scanning the manifest for max `creation_token`).
-
-| Capability | Consumer | Producer |
-|---|---|---|
-| Parse `bundle-list.toml` | ✅ | — |
-| **Write** `bundle-list.toml` | n/a | ❌ |
-| `creation_token` encode/decode | ✅ | ❌ |
-| Classify snapshot/sequential/skip | ✅ (read-time) | ❌ |
-| Select minimal bundle set | ✅ | n/a |
-| Upload bundles | — | ❌ |
-| narinfo / nix-cache-info | n/a | ❌ |
-| Persist `[registry.state]` | ✅ | n/a |
+The **target** keeps the Ed25519/SSH signing primitive and the package-TOML tree
+content, and replaces *everything about distribution and rollout* with the
+git-native model below.
 
 ---
 
-## 3. Key clarifications established in conversation
+## 3. Target architecture — overview
 
-1. **The registry HTTP server is self-contained**: it serves only
-   `{base}/bundles/{name}/bundle-list.toml` and `{base}/bundles/{name}/{uri}`
-   (git bundles of TOML metadata). It is **not** the NAR server. NAR blobs live
-   on a separate cache/mirror (`[[caches]]` or `{registry.url}/nar`).
-2. The registry today is **not** a Nix binary cache and cannot be consumed by a
-   stock `nix` substituter (git bundles ≠ narinfo; no `nix-cache-info`).
-3. **NARs are authenticated transitively**: the Ed25519-signed git commit
-   authenticates the whole tree (git is a Merkle DAG) → every TOML → every NAR
-   SHA-256 recorded in those TOMLs. There is no per-NAR signature today, and the
-   AOS client does not need one.
+The registry is a **bare git repository (sha256) published as static files**, which
+makes it simultaneously:
 
----
+- a **superset of git dumb HTTP** — a stock `git clone <url>` works (channels are
+  branches, releases are tags), using loose objects + conventionally-named full
+  packs; and
+- a **superset of the Nix binary cache** — NAR substitution is advertised via a
+  `[[caches]]` entry (which may be a **relative** path pointing at the same origin).
 
-## 4. Target design (the decisions)
+The AOS client additionally uses the `/channel` partition tags (signed, bucketed
+rollout) and the thin `delta-*.pack`s (cheap incremental fetch). These ride
+*alongside* the standard git surface without conflicting.
 
-### 4.1 Strict superset of the Nix binary-cache protocol
-The registry HTTP origin will serve **both** protocols, which occupy **disjoint
-URL namespaces**, so adding Nix support is additive (a strict superset), not a
-conflict:
-
-- Nix protocol (consumed by stock `nix` for dev-shell substitution):
-  - `{base}/nix-cache-info` (fixed name; `StoreDir`, `Priority`, `WantMassQuery`).
-  - `{base}/<storehash>.narinfo` (keyed by 32-char base32 **store-path** hash).
-  - `{base}/nar/<…>.nar.zst` (content-addressed blobs).
-- AOS protocol (consumed by `apm`):
-  - `{base}/registry.toml` (the single signed root — see §4.3).
-  - `{base}/bundles/{name}/…` (git bundles, discovered via the root's index).
-
-Nix's narinfo indirection (store-hash narinfo → content-addressed nar) is exactly
-how AOS already names blobs, so the models align. The package TOMLs already carry
-nearly every narinfo field:
-
-| narinfo | AOS package TOML | notes |
-|---|---|---|
-| StorePath | store_path | |
-| URL | derived (`nar/<download_hash>.nar.zst`, relative) | |
-| Compression | constant `zstd` | |
-| FileHash / FileSize | download_hash / download_size | compressed `.nar.zst` |
-| NarHash / NarSize | nar_hash / nar_size | uncompressed |
-| References | references | ⚠️ must expand bare hashes → `<hash>-<name>` basenames |
-| Deriver | source_drv | optional |
-| **Sig** | — | **must be generated (Ed25519)** |
-
-What must be built: a narinfo generator keyed by store-path hash, a
-`nix-cache-info` stub, co-located/served NAR blobs, references-basename
-expansion, and per-narinfo Ed25519 signatures.
-
-### 4.2 One Ed25519 key, two protocols
-- **Same keypair** signs git commits (SSH signature) **and** narinfos (Nix
-  `(StorePath,NarHash,NarSize,References)` fingerprint). The *signatures differ*
-  (different signed messages); the *key is shared* (one secret to manage).
-- **Two published public-key encodings** from that one key: `registry:Ed25519:
-  <base64>` for `apm` TOFU, and `<name>:<base64>` for Nix `trusted-public-keys`.
-- `apm`'s trust still roots in the signed commit (transitive). The per-narinfo
-  `Sig:` exists **only** to satisfy stock `nix` without `require-sigs = false`.
-
-### 4.3 Single signed root: `registry.toml` (kill `bundle-list.toml`)
-- Collapse the root to **one** signed file, `registry.toml`. `bundle-list.toml`
-  is removed; its bundle enumeration moves **into** `registry.toml`.
-- `nix-cache-info` remains a separate file only because Nix hardcodes its name —
-  it is a generated stub, not a competing index.
-- **Dumb HTTP is the lowest common denominator.** Normal clients fetch the one
-  known root file; they never rely on directory listing. **S3 `ListObjects` is an
-  optional admin fast-path** (richer queries), never required for correctness.
-  Therefore the enumerated index lives **inside the registry files**.
-- The root must be **inline-signed** (single object, like APT `InRelease`) so a
-  client fetches root+signature atomically with no race.
-- The root references bundles/indices **by hash** (APT `by-hash` discipline) so a
-  client that read root@T still resolves a consistent set even after root@T+1.
-
-Proposed `registry.toml` (target) carries at least:
-- `[meta]` schema/version, `name`, `date`, **`valid_until`** (freeze defense),
-  `[capabilities]` feature flags.
-- `pubkey` (Ed25519; both encodings derivable).
-- **`[latest]`** signed pointer: `tag`, `token`, `head` (authentic git commit
-  SHA) — the freshness / anti-rollback anchor a dumb-HTTP listing can't provide.
-- **`[channels]`** symbolic aliases (`stable`, `testing`) → concrete tags, each
-  optionally with a **rollout** percentage (phased updates).
-- **`[components]`** optional intra-registry partitions (trust/license/stability).
-- Bundle/delta tables (by-hash): per bundle `uri`/key, `creation_token`, `type`,
-  `from`/`to` tags, `sha256`, `size` — the pdiff-style delta index.
-- The inline signature line(s).
-
-### 4.4 Publishing & concurrency model
-- **Git ref CAS is the lock.** `apr push` is FF-only `git push`; the atomic ref
-  update serializes publishes for free. Losers get non-FF rejection and
-  `pull --rebase` + retry. No separate lock service.
-- **Publish ordering** (the only safe order):
-  1. `apr publish` → commit → `apr sign` (SSH-Ed25519) → `git push` (CAS winner).
-  2. Only the winner generates artifacts from the landed commit: bundles,
-     narinfos, `nix-cache-info`.
-  3. Upload **immutable, content-addressed** objects first (nars, `*.narinfo`,
-     `*.bundle`) — idempotent, any order.
-  4. **Flip the root last, atomically** — `registry.toml` via conditional PUT
-     (S3 `If-Match`/`If-None-Match` ETag CAS) to prevent lost updates. Readers see
-     old-root or new-root, never torn, because everything the new root references
-     already exists.
-- "Latest" becomes an **explicit signed field** (`[latest]`), flipped atomically
-  as the last step — not re-derived by scanning.
-
-### 4.5 Trust / threat model (target)
-- **Tamper / MITM**: signed root + signed commit + content hashes ⇒ bytes are
-  pinned; a mirror cannot substitute content.
-- **Rollback**: `check_monotonic` on `[latest].token` + git
-  `merge-base --is-ancestor` (no ancestor regressions).
-- **Freeze** (mirror stuck on a validly-signed-but-old root): add APT-style
-  **`valid_until`** expiry to the signed root; a client rejects an expired root.
-  Sequence-based `[latest]` alone can't see this.
-- **Omission** (listing hides newer bundles): with the signed `[latest].head`,
-  the client **fails closed** (can't reach the signed target) rather than
-  silently using stale data; freeze degrades to DoS, not silent rollback.
+Design philosophy: **make publishing as expensive as possible so consumption is as
+cheap as possible** (asymmetric cost — the producer pays once, every consumer
+benefits).
 
 ---
 
-## 5. APT comparison (why this design is well-precedented)
+## 4. HTTP / object layout & CDN cache policy
 
-APT is the canonical proof that a **signed flat-file index over dumb HTTP** scales
-to thousands of mirrors. The AOS design converges on it.
+```
+/                                  ← bare git repo root (dumb HTTP)
+  HEAD                             ← "ref: refs/heads/<default-channel>" (e.g. stable)   [low TTL]
+  info/refs                        ← update-server-info: refs/heads/<channels> + refs/tags/<semvers> [low TTL]
+  objects/
+    info/packs                     ← lists self-contained pack-<sha>.pack only           [low TTL]
+    info/http-alternates           ← ALL /release/*/objects dirs, newest→oldest          [low TTL]
+                                       (doubles as the full release index)
+    info/alternates                ← optional human/agent-readable mirror of the above
+    <xx>/<62-hex>                  ← loose objects, sha256 2/62 split (dumb HTTP)         [immutable, high TTL]
+  channel/
+    <name>/                                                                              [low TTL]
+      0 .. f                       ← 16 SIGNED tag objects (tag name == <name>),
+                                       each → a semver tag (rollout partitions)
+  release/
+    <major>/<minor>/<patch[-prerelease][+build]>/                                        [long TTL, immutable]
+      objects/
+        info/packs
+        info/http-alternates
+        pack/pack-<sha256>.pack (+ .idx)     ← self-contained "full" pack at X.Y.0 anchors
+        pack/delta-<from-semver>.pack         ← THIN deltas; AOS-only; NOT listed in info/packs
+        <xx>/<62-hex>                         ← this release's new loose objects [immutable, high TTL]
+```
 
-| APT | AOS registry (target) |
-|---|---|
-| `InRelease` (inline-signed root: indices + hashes + `Valid-Until`) | `registry.toml` (inline-signed root: bundle index + hashes + `valid_until` + `[latest]`) |
-| OpenPGP/GPG signature | Ed25519 (one key: SSH-commit + narinfo forms) |
-| `Packages` stanzas (`Filename`→pool, Size, SHA256, `Depends`) | bundle index in root; `*.narinfo` for Nix; deps as **explicit closures** not `Depends` |
-| `pool/` content-organized `.deb`s | `nar/<…>.nar.zst` content-addressed + `bundles/*.bundle` |
-| `dists/<suite>/<component>/binary-<arch>/` | registry name + component + platform |
-| `by-hash/SHA256/<h>` (consistency) | content-addressed keys + atomic root flip (native) |
-| `Packages.diff/Index` (pdiff) | snapshot/sequential/skip bundle deltas + `creation_token` |
-| `Valid-Until` (time freshness) | `valid_until` + monotonic `[latest].token` |
-| dumb-HTTP, static-mirror-friendly | dumb-HTTP LCD; S3 listing = admin bonus |
-
-**Where AOS deliberately differs / improves:** git Merkle-DAG metadata (atomic
-CAS push, signed history, rollback/fork detection) instead of regenerated flat
-`Packages`; content-addressed store that *is* a Nix cache; explicit closures
-instead of solver `Depends`; one Ed25519 key serving two protocols.
-
-**Where AOS is already at parity or ahead:** per-repo key pinning (TOFU +
-`trusted-keys.d` ≈ APT `signed-by=`); reproducible snapshots (git tags ≈/≥
-snapshot.debian.org); incremental updates (bundle deltas ≈ pdiff); atomic publish
-(git FF CAS ≥ APT rsync mirror races); single-file inline-signed root (`registry.
-toml` ≈ `InRelease`).
-
----
-
-## 6. APT improvements to adopt (prioritized feature list)
-
-### Tier 1 — close real gaps
-1. **`valid_until` signed expiry** — freeze defense the current sequence-based
-   `[latest]` can't provide. Cheap. Re-sign each publish with expiry = publish + N.
-2. **`by-hash` discipline for index references** — the root references bundles by
-   their hashed key so a client mid-publish never tears. Mostly discipline atop
-   existing content-addressing.
-3. **Symbolic channels decoupled from tags** — `[channels] stable = "v2026.02.3"`;
-   promotion is one atomic signed flip; clients track `channel = "stable"`.
-4. **Phased / staged rollouts** — `rollout = N` on a channel target; clients gate
-   on a deterministic hash of machine-id. Canary releases / blast-radius control
-   for fleets. (APT `Phased-Update-Percentage`.)
-
-### Tier 2 — worth it, lower urgency
-5. **Components within a registry** (`main/contrib/non-free` analogue) — trust /
-   license / stability tiers in one signed root.
-6. **Capability flags in the signed root** — advertise optional features for
-   graceful degradation + forward compat (APT `Acquire-By-Hash: yes`).
-7. **Hash agility** — explicit algorithm prefixes everywhere (already `sha256:`);
-   tolerate multiple so a future migration isn't a flag day.
-8. **Provides / file-index** (APT `Contents-<arch>`) — "which package ships
-   `/usr/bin/foo`"; a discoverability win Nix usually needs `nix-index` for.
-9. **Bundle mirror list w/ priority + failover** — extend the `[[caches]]`
-   priority model to bundle mirrors.
-
-### Tier 3 — already covered or AOS ahead (do not re-add)
-- Per-repo key pinning (have it), reproducible snapshots (git tags), pdiff
-  (bundle deltas), atomic publish (git FF CAS), single-file inline-signed root
-  (planned). Borrow only APT's *Index-file shape* (explicit from/to/hash per
-  delta) for expressing deltas inside `registry.toml`.
-
-**The four that change the product:** `valid_until` (freeze defense), `by-hash`
-discipline (torn-publish safety), symbolic channels (promotion UX), phased
-rollouts (fleet blast-radius control). The first two are correctness/security;
-the last two are operational.
+CDN policy (explicit requirements):
+- `/channel/**` — **MUST** be low TTL (fast rollout updates).
+- `/release/**` — **MAY** be long TTL (releases are immutable after publish).
+- `/objects/info/**` and per-release `objects/info/**` — **MUST** be low TTL
+  (`packs`, `http-alternates`, `info/refs`, `HEAD` change on publish).
+- All other `/objects/**` (loose objects, packs) — immutable; **MAY** have very
+  high TTL.
 
 ---
 
-## 7. Open questions / decisions to confirm during implementation
+## 5. Ref model — three layers
 
-1. Exact `packages/*.toml` field names/shape — confirm against `types.rs` before
-   enshrining in the reference schema doc.
-2. NAR co-location: serve NARs under `{base}/nar/` on the registry origin, or keep
-   them on a separate cache and only point narinfo `URL:` at it? (Both work; pick
-   per deployment.)
-3. narinfo `URL:` colon-in-filename (`sha256:<hex>.nar.zst`) — confirm acceptable
-   through the chosen CDN/edge (S3 allows colons; some edges re-encode).
-4. Rollout gating function — exact deterministic hash (machine-id + channel/tag)
-   and how clients learn their percentage bucket.
-5. `valid_until` window length and re-sign cadence/automation.
-6. Whether `apr` gains a real `apr publish-bundles`/`apr release` command that
-   performs the §4.4 ordering end-to-end (generate → upload → flip), and whether
-   upload backends are pluggable (S3, rsync, plain PUT).
-7. Migration: do existing `bundle-list.toml` mirrors get a compatibility shim, or
-   is this a clean break with a schema-version bump?
+| Path / ref | What | Signed? | Consumer |
+|---|---|---|---|
+| `HEAD` | symref → `refs/heads/<default-channel>` | no | stock + AOS |
+| `refs/heads/<channel>` | **channels are branches**; head = **frontier** (newest release any partition targets) | no (ref pointer) | stock git convenience |
+| `refs/tags/<semver>` | release: signed tag → commit | **yes** | stock (`verify-tag`) + AOS |
+| `/channel/<name>/<0..f>` | 16 signed partition tag objects (name == channel) → semver tag | **yes** | AOS rollout only |
+
+**Trust chain:** AOS verification is `signed partition tag → signed semver tag →
+commit`, checking both the signature **and** the embedded tag-name field against the
+expected name (channel name under `/channel/*`, semver under `/release/*`) — this
+binds a tag object to its serving path and prevents cross-serving. Branch refs are
+**unsigned convenience pointers**, never part of the trust chain; stock-git users can
+still `git verify-tag <semver>` because the release tags are the signed objects.
 
 ---
 
-## 8. Document map (authoring specs)
+## 6. Channels & rollouts
 
-The reference set (`docs/registry/`) describes the **target state** for users,
-implementers, architects, engineers. The plan set (`docs/plans/registry/`)
-describes **what must change** to reach it. Every doc must cross-link siblings
-with relative links, cite current code as `path:line` where describing as-is
-behavior, and clearly label **CURRENT** vs **TARGET** where both appear.
+- A channel exposes exactly **16** partition files `/channel/<name>/0..f`, each an
+  independently-signed tag object (tag name == channel name) pointing at a semver
+  tag. There **must always be 16**; if one is missing a client **may** use another
+  (deterministic probe-forward `(bucket+1) mod 16`).
+- **Consumer bucket selection** is deterministic and persisted (e.g.
+  `sha256(machine_id) mod 16`, written once) so a host does not flap between buckets.
+- **Publisher-controlled rollout:** to roll a new release to N/16 of the fleet, point
+  N partitions at the new semver tag and leave the rest on the prior release. This
+  *answers "where does the rest of the fleet go"* explicitly — the un-advanced
+  partitions still name the prior release. Advance partitions as confidence grows;
+  completion = all 16 point at the new release.
+- **Branch head = frontier:** `refs/heads/<channel>` points at the commit of the
+  newest release any partition targets (the rollout target). Implication: stock
+  `git pull <channel>` always gets the frontier (no rollout protection) — acceptable,
+  because rollout is an AOS-fleet concept, not a git-clone concept.
+- **Anti-rollback:** a consumer keeps a monotonic floor (never moves to a release
+  older than its current one). Aborting a bad rollout is **fix-forward** (publish a
+  newer release and point partitions at it), never partition-decrement (the floor
+  would block that anyway).
 
-**`docs/registry/` (reference / target state):**
-- `README.md` — purpose, audience map, glossary, doc index, one-paragraph overview.
-- `architecture.md` — layered model (trust root / metadata / blobs), how `apm`
-  and `nix` both consume, dumb-HTTP-LCD philosophy, the strict-superset idea.
-- `current-state.md` — the as-is (§2), grounded in code, including the producer gaps.
-- `http-layout.md` — wire/object layout (§4.1, §4.3): namespaces, dumb-HTTP vs S3,
-  by-hash, object keys, bundle key grammar.
-- `registry-toml.md` — the signed root schema (§4.3) with a full annotated example.
-- `bundles-and-deltas.md` — bundle model, `creation_token`, snapshot/sequential/
-  skip, `pick_bundles` selection, incremental update (§2.4–2.6).
-- `nix-cache-compatibility.md` — strict superset (§4.1): narinfo mapping,
-  `nix-cache-info`, nar layout, dev-shell substituter usage + example config.
-- `signing-and-trust.md` — one Ed25519 key (§4.2), git + narinfo signatures, TOFU
-  / trusted-keys, transitive authentication, threat model (§4.5).
-- `publishing.md` — producer workflow & concurrency (§4.4): `apr` commands, git
-  CAS lock, atomic publish ordering, conditional-PUT root flip.
-- `versioning-and-channels.md` — calendar/semver versioning, tracking modes,
-  symbolic channels, phased rollouts, components.
-- `apt-comparison.md` — §5 comparison + §6 adopted improvements.
+---
 
-**`docs/plans/registry/` (implementation plan):**
-- `README.md` — plan overview, target summary, milestone roadmap, sequencing,
-  links to design-brief + workstreams.
-- `design-brief.md` — **this file** (the captured conversation + decisions).
-- `gap-analysis.md` — current vs target, enumerated producer/consumer gaps (§2.11),
-  mapped to workstreams.
-- `workstream-01-registry-root.md` — `registry.toml` schema, serializer (the
-  missing writer), inline signing, by-hash references.
-- `workstream-02-publish-pipeline.md` — `apr release` ordering, bundle + manifest
-  generation, `creation_token` computation, upload backends, git CAS + conditional
-  PUT.
-- `workstream-03-nix-cache.md` — narinfo + `nix-cache-info` emission, references
-  basename expansion, per-narinfo Ed25519 `Sig`, dev-shell substituter wiring.
-- `workstream-04-channels-rollouts.md` — symbolic channels, phased rollouts,
-  components, `valid_until`/freshness, capability flags.
-- `workstream-05-consumer.md` — consumer changes: read `registry.toml` root,
-  channel tracking, expiry/freeze checks, by-hash fetch, fail-closed omission.
-- `open-questions.md` — §7 plus risks and migration strategy.
+## 7. Releases & versioning
+
+- Versions are **standard semver, no `v` prefix**: `1.1.2`, `1.1.0-alpha.1`,
+  `1.0.0-beta+exp.sha.5114f85`. Ordering and precedence follow semver rules
+  (the calendar/`creation_token` scheme is gone from the target).
+- A release is a signed tag `refs/tags/<semver>` → commit. Its object store lives at
+  `/release/<major>/<minor>/<patch…>/` where the third segment is everything after
+  `major.minor` (e.g. `1.0.0-beta+exp.sha.5114f85` → `/release/1/0/0-beta+exp.sha.5114f85/`).
+- Releases are **immutable** once published (long CDN TTL).
+
+---
+
+## 8. Object store & dumb-HTTP details
+
+- **sha256 for all git operations** (`git init --object-format=sha256`); loose object
+  path is the first 2 / remaining 62 hex chars of the 64-char sha256.
+- **`info/refs` + `HEAD`** make the repo a valid dumb-HTTP bare repo; regenerated via
+  `git update-server-info` on every publish.
+- **`objects/info/http-alternates`** lists every `/release/*/objects/` dir
+  newest→oldest. Git's dumb fetcher follows it, resolving the distributed per-release
+  object store as one logical store; it **also serves as the full release index**.
+  (Use `http-alternates`, not `alternates`, for URL-reachable stores; keep
+  `alternates` optionally as a readable mirror.)
+- **ALL objects exist loose** under `/objects/<xx>/<…>` — this is the guaranteed
+  completeness fallback. Packs are an efficiency layer on top.
+
+---
+
+## 9. Packs & the delta scheme
+
+**Guaranteed, walkable delta graph** (the producer commits to producing exactly
+these, so clients can plan):
+
+- **Every `X.Y.0` (major or minor)** release ships a self-contained **full pack**
+  `pack-<sha256>.pack` (+ `.idx`).
+- **Every major `X.0.0`** additionally ships `delta-<(X-1).0.0>.pack` (from the last
+  major).
+- **Every minor `X.Y.0` (Y>0)** additionally ships `delta-<X.(Y-1).0>.pack` (last
+  minor) and `delta-<X.0.0>.pack` (current major).
+- **Every patch `X.Y.Z` (Z>0)** ships `delta-<X.Y.(Z-1)>.pack`,
+  `delta-<X.Y.(Z-2)>.pack`, `delta-<X.Y.(Z-3)>.pack` (last 3 patches, where they
+  exist) and `delta-<X.Y.0>.pack` (current minor). Patch releases have **no** full pack.
+
+**Client resolution** (current C → target T): prefer a `delta-<B>.pack` at T whose
+base B the client retains; else walk releases backward until a usable delta or a full
+pack is found; else fetch a full pack; else fall back to **loose objects** over dumb
+HTTP (always correct). Cross-major jumps degrade to "minor-base full pack + walk".
+
+**Client retention:** a client on `X.Y.Z` keeps object trees for at least `X.0.0`
+(current major), `X.Y.0` (current minor), and `X.Y.Z` (current patch). This is
+co-designed with the delta scheme so a delta base is always present.
+
+**Graceful degradation for stock git:** a stock dumb clone of a patch release pulls
+the minor-base full pack (via `http-alternates`) plus the patch's loose new objects —
+no thin packs needed.
+
+---
+
+## 10. Pack generation (producer) & zstd
+
+- **No git bundles** (those carry refs/prereqs; refs are replaced by signed tag
+  objects).
+- **Deltas:** `git pack-objects --revs --thin` reading `"<to>\n^<from>\n"` →
+  objects in `<to>` not `<from>`, deltas may reference `<from>`'s objects. Client
+  completes with `git index-pack --fix-thin`.
+- **Full packs:** `git pack-objects --revs` (non-thin) over the release commit →
+  emit directly as `pack-<sha256>.pack` + `.idx`.
+- **Expensive-producer flags:** `--no-reuse-object --no-reuse-delta --window=<large,
+  e.g. 350> --depth=<moderate, e.g. 50> --threads=0`. Window is the free lever; cap
+  **depth** because deep delta chains cost the *consumer* CPU to reconstruct. The
+  producer may also try multiple delta bases and ship the smallest.
+- **zstd (the working trick):** git's pack format hard-codes zlib per object, so
+  zstd-ing a `--compression=9` pack is near-useless (already DEFLATEd). Instead emit
+  `git pack-objects --compression=0` (level-0 = "stored", valid zlib framing, **no**
+  entropy coding, but git's **delta encoding is still applied**), then
+  `zstd --ultra -22 --long=27` the whole `.pack`. zstd then does the entropy coding
+  over the delta-encoded stream, beating zlib-9, while the pack stays git-valid.
+  Serve `.pack.zst`; client `zstd -d | git index-pack --fix-thin`. A zstd **trained
+  dictionary** across a release line's small delta packs is an optional further win.
+- Ship `.idx` only for self-contained **full** packs; thin delta packs are
+  `.pack[.zst]` only (the client's `--fix-thin` builds the idx).
+
+---
+
+## 11. Signing & trust
+
+- **Signed tag objects** (SSH-format Ed25519, reusing the existing `apr sign` /
+  `security.rs` primitives and `parse_signing_key` `name:Ed25519:<base64>` format,
+  TOFU + `trusted-keys.d`). Both channel partition tags and release tags are signed.
+- **Name-binding verification** (per §5): signature valid **and** embedded tag-name
+  field == expected path name; verify the whole `tag → tag → commit` chain.
+- **One Ed25519 key** continues to serve git signing; the Nix-cache narinfo `Sig:`
+  (if the origin also serves NARs) can reuse the same key (separate signature object).
+- **`valid_until`** (in tag-message TOML): for channels it is the **freshness** knob
+  (paired with low CDN TTL); for releases it is a **generous** signature-trust /
+  key-rotation lifetime (it must not fight the long release TTL).
+- **Branch refs are unsigned**; trust derives from the signed tags only.
+
+---
+
+## 12. Stock git dumb-HTTP compatibility
+
+The repo is a valid bare dumb-HTTP git repo; the AOS layer is additive. To be
+transparently clonable, the origin serves the standard shim: `HEAD`, `info/refs`
+(`update-server-info`), and `objects/info/http-alternates`. Requirements/edges:
+
+- **`full.pack` is named `pack-<sha256>.pack`** (+ `.idx`) and listed in
+  `objects/info/packs` so stock dumb git uses it. (We drop the semantic `full.pack`
+  name entirely — no duplicate.)
+- **Thin `delta-*.pack`s are NOT listed in `info/packs`** (a stock dumb client can't
+  apply a thin pack); AOS clients discover them by the `delta-<semver>` convention.
+- **Channels are branches**, **releases are tags**, **`HEAD` = the default channel**
+  (e.g. `stable`); the 16 partition tag objects live outside the ref namespace at
+  `/channel/*` and are AOS-only.
+- **Loose objects guarantee correctness** for any stock client; conventionally-named
+  full packs restore speed.
+- **sha256 + dumb HTTP** requires a client git that supports sha256 (no capability
+  negotiation in dumb protocol).
+
+---
+
+## 13. Nix binary cache superset
+
+Orthogonal to the git-object metadata layer: the registry can advertise itself as a
+NAR binary cache via a **`[[caches]]`** entry whose `url` may be **relative**
+(same origin) or absolute. The `nix-cache-info` / `<storehash>.narinfo` / `nar/`
+surface (a strict superset for stock `nix` dev-shell substitution) lives at the cache
+location. Signing of narinfos, if served, reuses the one Ed25519 key.
+
+---
+
+## 14. Tag-message TOML schema
+
+Both channel partition tags and release tags carry a **TOML** message supporting
+exactly:
+
+```toml
+[meta]
+schema      = 1                      # integer schema version
+valid_until = "2026-06-30T00:00:00Z" # channels: freshness; releases: generous
+
+[[caches]]
+url      = "./nar"                   # relative (same origin) OR absolute
+priority = 100
+```
+
+No other top-level tables (`[latest]`, `[components]`, `[capabilities]`,
+`[channels]`, `[[bundles]]`, `[[deltas]]`, `pubkey`, `[signature]`) exist — the tag
+*object* carries the signature, the ref namespace carries pointers, and the object
+store carries everything else.
+
+---
+
+## 15. Removed from the target (do not document as target)
+
+`registry.toml` (entirely) · `bundle-list.toml` · git **bundles** · the `[latest]`
+pointer · `[components]` · `[capabilities]` · the percentage-based rollout, the
+`[channels.<name>.rollout]` sub-block, and `previous_tag`/baseline+candidate framing
+(replaced by 16 partitions) · calendar versioning and `creation_token` ordering
+(replaced by semver + git ancestry) · the by-hash `[[bundles]]`/`[[deltas]]` index
+(replaced by the git object store + `http-alternates`).
+
+---
+
+## 16. Open questions / to confirm in implementation
+
+1. sha256 dumb-HTTP clone tested against target git client versions (no capability
+   negotiation).
+2. Exact `pack-objects` window/depth and zstd level defaults (and whether to ship a
+   trained dictionary per release line).
+3. Bucket-selection input (`machine_id` source) and the probe-forward fallback order.
+4. Whether `apr` grows a single `apr release`/`apr publish` command that does the
+   whole pipeline (commit → tag/sign → pack/delta/zstd → update-server-info →
+   advance partitions → upload) and whether upload backends are pluggable.
+5. Release `valid_until` window length and re-sign/key-rotation cadence.
+6. Whether `info/alternates` (readable mirror) is worth maintaining alongside
+   `http-alternates`.
+7. Migration from the existing bundle/`creation_token` registries (clean break vs
+   shim) — and whether the NAR cache superset (`[[caches]]` + narinfo) ships in the
+   same milestone or later.
+
+---
+
+## 17. Document map (authoring specs)
+
+Reference set (`docs/registry/`, target state) and plan set
+(`docs/plans/registry/`, gap → target). Every doc: precise, structured, with tables /
+ASCII diagrams / TOML & shell examples; label **CURRENT** vs **TARGET**; cite current
+code as `path:line`; cross-link siblings.
+
+**`docs/registry/`:**
+- `README.md` — purpose, audience, glossary, doc index, one-paragraph overview.
+- `architecture.md` — git-repo-over-dumb-HTTP; superset of git **and** Nix; the three
+  ref layers; how `apm` and stock git both consume; asymmetric-cost philosophy (§3–5).
+- `current-state.md` — the as-is code (§2); **light edit only** — keep it an accurate
+  description of today's bundle/`creation_token` implementation, and update any
+  forward-looking "target" sentences to point at this git-native model.
+- `http-layout.md` — the full HTTP/object layout, CDN TTLs, object store, `info/refs`/
+  `HEAD`/`http-alternates`, **and a "stock git dumb-HTTP compatibility" section**
+  (§4, §8, §12).
+- `versioning-and-channels.md` — semver (no `v`), channels-as-branches, frontier
+  head, the 16-partition rollout, bucket selection, anti-rollback (§5–7).
+- `packs-and-deltas.md` — pack-objects, thin vs full packs, the delta scheme graph,
+  client resolution + retention, and zstd (§9–10).
+- `tag-metadata.md` — the channel/release tag-message TOML schema (§14).
+- `signing-and-trust.md` — signed tag objects, name-binding, `tag→tag→commit`,
+  sha256, unsigned branch refs, `valid_until` semantics, anti-rollback (§11, §5).
+- `publishing.md` — the producer pipeline end-to-end (commit → sign → pack/delta/zstd
+  → update-server-info → advance partitions → upload), CDN/atomicity, concurrency
+  (§10, §4, §6).
+- `nix-cache-compatibility.md` — the Nix binary-cache superset via relative
+  `[[caches]]`; light edit to the new mechanism (§13).
+- `apt-comparison.md` — updated comparison: the design is now git-native + dumb-HTTP;
+  keep the signed-flat-file/`pool`/phased-rollout lineage, map bundles/pdiff →
+  git packs/thin-delta scheme, percentage rollout → 16 partitions.
+
+**`docs/plans/registry/`:**
+- `README.md` — plan overview, target summary, milestone roadmap, sequencing.
+- `design-brief.md` — **this file**.
+- `gap-analysis.md` — current code (bundles/`creation_token`/`registry.toml`-config)
+  → git-native target; enumerate gaps, map to workstreams.
+- `workstream-01-object-store.md` — sha256 bare repo, dumb-HTTP layout, `info/refs`/
+  `HEAD`/`http-alternates`/`update-server-info`, per-release object dirs.
+- `workstream-02-pack-delta-pipeline.md` — pack-objects thin/full, the delta scheme,
+  zstd, expensive-producer tuning.
+- `workstream-03-channels-rollouts.md` — 16 signed partition tags, channels-as-
+  branches/frontier, bucket selection, publisher rollout control.
+- `workstream-04-signing-trust.md` — signed tag objects, name-binding, sha256,
+  `valid_until`, anti-rollback/fix-forward.
+- `workstream-05-consumer.md` — consumer resolution (bucket → channel tag → semver
+  tag → commit), delta walk, retention, verification, and the Nix `[[caches]]`
+  superset.
+- `open-questions.md` — §16 plus risks and migration strategy.

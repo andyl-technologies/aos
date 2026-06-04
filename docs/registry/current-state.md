@@ -6,11 +6,14 @@
 > [design brief](../plans/registry/design-brief.md), the **code wins** and the
 > divergence is recorded explicitly (see [Discrepancies](#11-discrepancies-vs-the-design-brief)).
 >
-> For the **target** design (signed `registry.toml` root, Nix-cache superset,
-> channels, rollouts), see [`architecture.md`](architecture.md),
-> [`registry-toml.md`](registry-toml.md), and
-> [`http-layout.md`](http-layout.md). For *what must change* to get there, see
-> [`gap-analysis.md`](../plans/registry/gap-analysis.md) and the workstreams.
+> For the **target** design (a git-native registry served over dumb HTTP —
+> channels-as-branches, 16-partition rollouts, signed tag objects, thin delta
+> packs, Nix-cache superset), see [`architecture.md`](architecture.md),
+> [`http-layout.md`](http-layout.md),
+> [`versioning-and-channels.md`](versioning-and-channels.md), and
+> [`packs-and-deltas.md`](packs-and-deltas.md). For *what must change* to get
+> there, see [`gap-analysis.md`](../plans/registry/gap-analysis.md) and the
+> workstreams.
 >
 > **Audience:** users, implementers, architects, engineers.
 
@@ -62,13 +65,16 @@ delta selection, downgrade defense, signature verification). The **producer side
 is a thin wrapper over `git` + `git bundle create`** with significant gaps — see
 [§9 Producer-side gaps](#9-producer-side-gaps-the-asymmetry).
 
-> **CURRENT vs TARGET.** Today there is **no** signed `registry.toml` root
-> served over HTTP, **no** `nix-cache-info`/narinfo emission, and **no**
-> producer-side manifest writer. The root file `registry.toml` that *does* exist
-> is a small repo-local config (`[registry]`, `[[caches]]`, `[signing]`), not the
-> signed inline-signed root of the target design. See
-> [§11](#11-discrepancies-vs-the-design-brief) and
-> [`registry-toml.md`](registry-toml.md) (TARGET).
+> **CURRENT vs TARGET.** Today the registry is distributed as **git bundles** +
+> a `bundle-list.toml` manifest, there is **no** `nix-cache-info`/narinfo
+> emission, and **no** producer-side manifest writer. The root file
+> `registry.toml` that *does* exist is a small repo-local config (`[registry]`,
+> `[[caches]]`, `[signing]`) — see [§3.1](#31-the-repo-local-registrytoml). The
+> **target** drops bundles, `bundle-list.toml`, *and* this `registry.toml`
+> config entirely in favor of a bare git repo served over dumb HTTP, with
+> channel/release metadata carried by signed git tag objects (see
+> [`architecture.md`](architecture.md) and
+> [`tag-metadata.md`](tag-metadata.md), TARGET).
 
 ---
 
@@ -147,10 +153,14 @@ public_key = "aos-core:Ed25519:base64keyhere"
   `100`, `types.rs:583-593`).
 - `[signing].public_key` carries the registry's Ed25519 key string.
 
-> This `registry.toml` is **not** served over HTTP as a signed root and carries
-> none of the target fields (`[meta].valid_until`, `[latest]`, `[channels]`,
-> `[components]`, bundle-by-hash index, inline signature). Those belong to the
-> TARGET design in [`registry-toml.md`](registry-toml.md).
+> This `registry.toml` is a repo-local config file, **not** part of the target
+> wire format. The target has **no** `registry.toml` at all: channel/release
+> metadata moves into the **TOML message of signed git tag objects**, which
+> carries only `[meta]` (with `schema` + `valid_until`) and `[[caches]]` (see
+> [`tag-metadata.md`](tag-metadata.md), TARGET). The `[[caches]]` advertisement
+> survives the redesign — relocated from this file into the tag message and now
+> permitted to be a **relative** URL on the same origin (see
+> [`nix-cache-compatibility.md`](nix-cache-compatibility.md), TARGET).
 
 ---
 
@@ -225,10 +235,12 @@ lists **`PackageMeta`'s flattened fields**:
 `SysrootImageEntry` (`types.rs:606-614`) carries `format`, `store_path`,
 `nar_hash`, `nar_size`, `download_hash`, `download_size`.
 
-> **Forward reference.**
-> [`workstream-04`](../plans/registry/workstream-04-channels-rollouts.md) plans
-> to add an optional `component` field to `PackageMeta` (and the corresponding
-> on-disk entry) so packages can be grouped under named components.
+> **TARGET note.** The redesign keeps this nested package-TOML **tree content**
+> unchanged — the package metadata *is* the git tree, consumed by both `apm` and
+> stock `git clone`. What changes is everything *around* it (distribution,
+> rollout, signing surface). The earlier `[components]`/component-grouping idea is
+> **removed** from the target (see
+> [`architecture.md`](architecture.md), TARGET).
 
 ### 4.2 `closures/<hash>` — adjacency-list closures
 
@@ -385,7 +397,11 @@ else (incl. `http(s)://`) ⇒ `HttpBundle`.
 - `token_to_version(token)` (`state.rs:173-184`): inverse; patch `0` renders as a
   2-part base tag (`v2026.02`).
 - `check_monotonic(old, new)` (`state.rs:104-117`): rejects `new <= old`
-  (downgrade / stale-mirror defense).
+  (downgrade / stale-mirror defense). **Gap:** its only call site
+  (`update.rs:262-264`) is gated by `if latest_token > old_token`, so a genuine
+  downgrade (`latest <= old`) silently **skips** the guard entirely — the check
+  only fires on the strictly-increasing path it would already accept (see
+  [`versioning-and-channels.md`](versioning-and-channels.md) §8.4, TARGET).
 
 ### 7.3 Semver parsing of tags
 
@@ -523,8 +539,8 @@ consumer can do far more than the producer can produce.
 
 > The complete producer/consumer gap mapping to remediation workstreams is in
 > [`gap-analysis.md`](../plans/registry/gap-analysis.md) and
-> [`workstream-01`](../plans/registry/workstream-01-registry-root.md) /
-> [`workstream-02`](../plans/registry/workstream-02-publish-pipeline.md).
+> [`workstream-01`](../plans/registry/workstream-01-object-store.md) /
+> [`workstream-02`](../plans/registry/workstream-02-pack-delta-pipeline.md).
 
 ---
 
@@ -580,19 +596,19 @@ These do not contradict the brief's *intent* (target design), only its
 ## 12. Cross-references
 
 - [`README.md`](README.md) — registry doc index and glossary.
-- [`architecture.md`](architecture.md) — layered model and the strict-superset idea (TARGET).
-- [`http-layout.md`](http-layout.md) — wire/object layout, namespaces, by-hash (TARGET).
-- [`registry-toml.md`](registry-toml.md) — the signed root schema (TARGET).
-- [`bundles-and-deltas.md`](bundles-and-deltas.md) — bundle model, `creation_token`, `pick_bundles`.
-- [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — narinfo / `nix-cache-info` (TARGET).
-- [`signing-and-trust.md`](signing-and-trust.md) — one Ed25519 key, TOFU, threat model.
-- [`publishing.md`](publishing.md) — producer workflow & concurrency (TARGET).
-- [`versioning-and-channels.md`](versioning-and-channels.md) — versioning, channels, rollouts.
+- [`architecture.md`](architecture.md) — git-repo-over-dumb-HTTP; superset of git **and** Nix; the three ref layers (TARGET).
+- [`http-layout.md`](http-layout.md) — HTTP/object layout, CDN TTLs, `http-alternates`, stock dumb-HTTP compatibility (TARGET).
+- [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, the 16-partition rollout, bucket selection, anti-rollback (TARGET).
+- [`packs-and-deltas.md`](packs-and-deltas.md) — pack-objects, thin vs full packs, the delta scheme graph, zstd (TARGET).
+- [`tag-metadata.md`](tag-metadata.md) — the channel/release tag-message TOML schema (TARGET).
+- [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — the Nix binary-cache superset via relative `[[caches]]` (TARGET).
+- [`signing-and-trust.md`](signing-and-trust.md) — signed tag objects, name-binding, `tag→tag→commit`, TOFU (TARGET).
+- [`publishing.md`](publishing.md) — producer pipeline & concurrency (TARGET).
 - [`apt-comparison.md`](apt-comparison.md) — APT format comparison and adopted improvements.
 - Plan set: [`gap-analysis.md`](../plans/registry/gap-analysis.md),
-  [`workstream-01`](../plans/registry/workstream-01-registry-root.md),
-  [`workstream-02`](../plans/registry/workstream-02-publish-pipeline.md),
-  [`workstream-03`](../plans/registry/workstream-03-nix-cache.md),
-  [`workstream-04`](../plans/registry/workstream-04-channels-rollouts.md),
+  [`workstream-01`](../plans/registry/workstream-01-object-store.md),
+  [`workstream-02`](../plans/registry/workstream-02-pack-delta-pipeline.md),
+  [`workstream-03`](../plans/registry/workstream-03-channels-rollouts.md),
+  [`workstream-04`](../plans/registry/workstream-04-signing-trust.md),
   [`workstream-05`](../plans/registry/workstream-05-consumer.md),
   [`open-questions.md`](../plans/registry/open-questions.md).
