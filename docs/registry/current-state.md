@@ -87,7 +87,7 @@ is a thin wrapper over `git` + `git bundle create`** with significant gaps — s
 One binary, three entry points selected by `argv[0]`:
 
 - `crates/aos/Cargo.toml` declares two `[[bin]]` targets, `aos` and `apr`, both
-  `path = "src/main.rs"` (`crates/aos/Cargo.toml:6-11`). The `apm` name is an
+  `path = "src/main.rs"` (`crates/aos/Cargo.toml:6-12`). The `apm` name is an
   install-time alias of the same binary.
 - `main.rs` inspects `argv[0]`'s file name, tolerating a leading `.` and a
   trailing `-unwrapped` suffix (so wrapper scripts that
@@ -111,7 +111,7 @@ All **registry producer logic** lives in
 
 ## 3. Storage layout (local)
 
-Resolved from `types.rs` `ProfileScope` (`types.rs:443-517`) and
+Resolved from `types.rs` `ProfileScope` (`types.rs:442-514`) and
 `registry_ops.rs` `registry_dir` (`registry_ops.rs:26-29`).
 
 | Concern | User scope | System scope |
@@ -136,7 +136,7 @@ Notes:
 ### 3.1 The repo-local `registry.toml`
 
 This file lives **inside** the registry git repo — it is a **committed tree
-file**, parsed by `RegistryRootConfig` (`types.rs:566-573`). It is *not* the
+file**, parsed by `RegistryRootConfig` (`types.rs:564-570`). It is *not* the
 removed intermediate signed-HTTP-root `registry.toml` (a mutable origin file
 carrying `[latest]`/`[channels]`/`[components]`/`[capabilities]`/`[[bundles]]`/
 `[signature]`); that intermediate file never existed in the code and is gone
@@ -159,14 +159,20 @@ public_key = "aos-core:Ed25519:base64keyhere"
 ```
 
 - `[[caches]]` each carry `url` + `priority` (`CacheEntry`, default priority
-  `100`, `types.rs:583-593`).
-- `[signing].public_key` carries the registry's Ed25519 key string.
+  `100`, `types.rs:582-586`).
+- `[signing].public_key` carries the registry's Ed25519 key string — the
+  `[signing]` table is the `signing` field of `RegistryRootConfig`
+  (`types.rs:569`), deserialized as `RegistrySigningConfig`
+  (`types.rs:594-596`); `public_key` lives on `RegistrySigningConfig`, **not**
+  directly on `RegistryRootConfig`.
 
 > **TARGET.** The git-repo-root `registry.toml` is **kept** as a committed tree
 > file (the same `RegistryRootConfig`), authenticated transitively by the signed
 > tag (tag → commit → tree → file). Two deltas vs. CURRENT:
 >
-> 1. **The signing pubkey is removed** (decision B). `[signing].public_key` no
+> 1. **The signing pubkey is removed** (decision B). The
+>    `RegistrySigningConfig` (`[signing].public_key`, the `signing` field of
+>    `RegistryRootConfig`) no
 >    longer lives here — a key inside a file authenticated *by* that key is
 >    circular for bootstrap. The target `registry.toml` is therefore just
 >    `[registry]` (name/description) + `[[caches]]`.
@@ -236,14 +242,14 @@ references = ["…", "…"]
 
 This nested `[package]` / `[[versions]]` / `[versions.platforms.<platform>]`
 shape is what the code deserializes (`PackageToml` / `PackageHeader` /
-`VersionEntry` / `PlatformEntry`, `registry/parse.rs:14-70`) and what the
-producer **writes** (`build_package_toml`, `registry_ops.rs:595-781`). It
+`VersionEntry` / `PlatformEntry`, `registry/parse.rs:14-66`) and what the
+producer **writes** (`build_package_toml`, `registry_ops.rs:595-769`). It
 matches the nested sketch in the design brief §2.3 — there is **no**
 flat-vs-nested divergence.
 
-`PackageMeta` (`types.rs:43-77`) is **not** the on-disk type. It is the
+`PackageMeta` (`types.rs:44-74`) is **not** the on-disk type. It is the
 **flattened, in-memory projection** of one (package, platform) pair, produced by
-`parse_package_toml` (`registry/parse.rs:133-178`), which walks the nested TOML,
+`parse_package_toml` (`registry/parse.rs:129-170`), which walks the nested TOML,
 selects the first (latest) version carrying the requested platform, and hoists
 the header/version/platform fields into a single flat record. The table below
 lists **`PackageMeta`'s flattened fields**:
@@ -270,8 +276,8 @@ lists **`PackageMeta`'s flattened fields**:
 | `previous` | string? | previous version in the chain (sysroot) |
 | `images` | list of `SysrootImageEntry` | pre-compiled images (sysroot only) |
 
-`SysrootImageEntry` (`types.rs:606-614`) carries `format`, `store_path`,
-`nar_hash`, `nar_size`, `download_hash`, `download_size`.
+`SysrootImageEntry` (`types.rs:604-609`) carries `format`, `store_path`,
+`nar_hash`, `nar_size`.
 
 > **TARGET note.** The redesign keeps this nested package-TOML **tree content**
 > unchanged — the package metadata *is* the git tree, consumed by both `apm` and
@@ -282,7 +288,7 @@ lists **`PackageMeta`'s flattened fields**:
 
 ### 4.2 `closures/<hash>` — adjacency-list closures
 
-Parsed by `ClosureMeta::parse` (`types.rs:107-135`). The file is an adjacency
+Parsed by `ClosureMeta::parse` (`types.rs:109-132`). The file is an adjacency
 list, one line per store path, first token = node, remaining tokens = its direct
 dependency hashes; the first line is the root. Blank lines and `#` comments are
 skipped.
@@ -385,22 +391,26 @@ strip a leading `v`, split on `.`; if `from` has **≤ 2** dotted segments
 
 Implemented in `crates/aos-package/src/download.rs`.
 
-- `nar_url(mirror_url, nar_hash)` →
-  **`{mirror_url}/{nar_hash}.nar.zst`** (`download.rs:57-60`), where `nar_hash`
-  is the **full `sha256:<hex>` string** — the URL filename literally contains a
-  colon (`download.rs:281-294`, e.g.
-  `https://cache.aos.dev/nar/sha256:abc123.nar.zst`).
-- `resolve_mirror` (`download.rs:67-82`) reads `[[caches]]` from the **local
+- NAR/narinfo URLs are built by `join_cache_url(base, path)`
+  (`download.rs:65-71`, trims a trailing `/` on base and a leading `/` on path)
+  and `narinfo_url(mirror_url, store_path)` →
+  **`{mirror_url}/{storeHash}.narinfo`** (`download.rs:74-77`). The NAR itself is
+  fetched at `join_cache_url(mirror_url, narinfo.url)` — i.e. the relative path
+  from the narinfo's `URL:` field (`download.rs:184`), not a colon-bearing
+  `{nar_hash}.nar.zst` literal.
+- `resolve_mirror` (`download.rs:85-97`) reads `[[caches]]` from the **local
   registry clone** via `registry_ops::resolve_mirrors` and returns the
-  **first** entry; with no caches it falls back to **`{registry.url}/nar`**.
+  **first** entry; with no caches it falls back to **`{registry.url}`**.
 - `resolve_mirrors` (`registry_ops.rs:405-414`) sorts the caches **descending by
   priority** (highest priority first), so "first" = highest priority. *(The
   brief §2.8 says "sorted by priority" without specifying direction; the code is
   descending — see [§11](#11-discrepancies-vs-the-design-brief).)*
-- Downloads verify the **compressed** file against `download_hash`
-  (`download.rs:102-111`); the local cache filename replaces the colon with a
-  dash: `sha256-<hex>.nar.zst` (`download.rs:232-236`).
-- `download_nars` (`download.rs:158-222`) runs downloads in parallel under a
+- Downloads verify the **compressed** file against the narinfo `FileHash`
+  (falling back to `NarHash` for uncompressed NARs) via
+  `TransferRequest::with_hash(Sha256, …)` in `download_one`
+  (`download.rs:191-204`); the local cache filename replaces the colon with a
+  dash: `sha256-<hex>.nar.zst` (`nar_cache_filename`, `download.rs:314-317`).
+- `download_nars` (`download.rs:246-307`) runs downloads in parallel under a
   semaphore (default 4, `parallel_downloads`), failing fast on first error.
 
 **NARs are authenticated only by their SHA-256 content hash, not by a
@@ -415,13 +425,13 @@ signature.** Their integrity roots transitively in the signed git commit → TOM
 ### 7.1 Tracking modes
 
 `TrackingMode { Commit, Branch, Tag, Version(semver::VersionReq), Default }`
-(`types.rs:281-293`). `RegistryConfig::tracking_mode()` (`types.rs:347-400`)
+(`types.rs:279-290`). `RegistryConfig::tracking_mode()` (`types.rs:349-397`)
 validates that **at most one** of `commit`/`branch`/`tag`/`version` is set
-(the legacy `pin` field merges into `tag`, `types.rs:230-232`, `354`), erroring
+(the legacy `pin` field merges into `tag`, `types.rs:227-229`, `351`), erroring
 otherwise; with none set it returns `Default` (default-branch HEAD).
 
 Transport is derived from the URL scheme (`RegistryConfig::transport`,
-`types.rs:315-323`): `git://`, `git+https://`, `git+ssh://` ⇒ `Git`; everything
+`types.rs:312-321`): `git://`, `git+https://`, `git+ssh://` ⇒ `Git`; everything
 else (incl. `http(s)://`) ⇒ `HttpBundle`.
 
 ### 7.2 calendar-version ↔ creation_token
@@ -436,7 +446,7 @@ else (incl. `http(s)://`) ⇒ `HttpBundle`.
   2-part base tag (`v2026.02`).
 - `check_monotonic(old, new)` (`state.rs:104-117`): rejects `new <= old`
   (downgrade / stale-mirror defense). **Gap:** its only call site
-  (`update.rs:262-264`) is gated by `if latest_token > old_token`, so a genuine
+  (`update.rs:291-292`) is gated by `if latest_token > old_token`, so a genuine
   downgrade (`latest <= old`) silently **skips** the guard entirely — the check
   only fires on the strictly-increasing path it would already accept (see
   [`versioning-and-channels.md`](versioning-and-channels.md) §8.4, TARGET).
@@ -445,17 +455,17 @@ else (incl. `http(s)://`) ⇒ `HttpBundle`.
 
 `crates/aos-package/src/update.rs`:
 
-- `parse_tag_as_semver(tag)` (`update.rs:429-450`): strip leading `v`, strip
+- `parse_tag_as_semver(tag)` (`update.rs:456-477`): strip leading `v`, strip
   leading zeros per component, pad 2-component tags to `.0`.
   `v2026.02` → `2026.2.0`; `v2026.02.3` → `2026.2.3`. Non-semver tags → `None`.
-- `find_best_version_tag_in_manifest(manifest, req)` (`update.rs:400-424`):
+- `find_best_version_tag_in_manifest(manifest, req)` (`update.rs:427-451`):
   filter manifest target tags by the `VersionReq`, return the **highest**
   matching; unparseable tags are silently skipped.
-- `extract_minor_base(tag)` (`update.rs:456-464`): `v2026.02.3` → `v2026.02`.
+- `extract_minor_base(tag)` (`update.rs:483-491`): `v2026.02.3` → `v2026.02`.
 
 ### 7.4 `pick_bundles` — the incremental selection algorithm
 
-`pick_bundles(manifest, reg_state, tracking_mode)` (`update.rs:291-391`):
+`pick_bundles(manifest, reg_state, tracking_mode)` (`update.rs:319-418`):
 
 ```
 1. Tag(tag)      → snapshot with target_tag == tag, else any entry targeting tag,
@@ -475,7 +485,7 @@ else (incl. `http(s)://`) ⇒ `HttpBundle`.
 ### 7.5 Persisted state
 
 `RegistryState { last_commit, last_creation_token, last_update }`
-(`types.rs:253-262`), serialized under `[registry.state]` in the per-registry
+(`types.rs:251-259`), serialized under `[registry.state]` in the per-registry
 config file. `load_state`/`save_state` (`state.rs:21-95`) preserve user-edited
 fields and only replace/append the `[registry.state]` section. A successful sync
 updates all three fields.
@@ -534,20 +544,20 @@ consumer can do far more than the producer can produce.
 
 | Command | Implementation | Notes |
 |---|---|---|
-| `apr create` | `git init` + `packages/` + writes repo-local `registry.toml` (`registry_ops.rs:420+`) | |
+| `apr create` | `git init` + `packages/` + writes repo-local `registry.toml` (`registry_ops.rs:421+`) | |
 | `apr publish` | builds package metadata + commits (`registry_ops.rs:476+`) | |
-| `apr tag NAME [-m MSG] [--key]` | `git tag [-a -m]` (`registry_ops.rs:1696-1714`) | **`--key` is ignored** (`_key`) |
-| `apr push [BRANCH] [-u] [--force]` | `git push [-u origin] [branch] [--force]` (`registry_ops.rs:1410-1442`) | FF-only by default (git's own rule) |
-| `apr pull [--rebase]` | `git pull [--rebase]` (`registry_ops.rs:1445+`) | |
-| `apr bundle [-o DIR] [--tag] [--delta-from] [--update-manifest]` | `git bundle create` into a local dir (`registry_ops.rs:1718-1756`) | `_update_manifest` is **unused dead code**; filenames `{name}-{tag}.bundle` / `{name}-{from}..{tag}.bundle` |
-| `apr sign [COMMIT] [--key]` | `git commit --amend --no-edit -S` (`registry_ops.rs:1759-1774`) | **`--key` ignored**; **`COMMIT` ignored** — only HEAD is (re)signed via amend |
+| `apr tag NAME [-m MSG] [--key]` | `git tag [-a -m]` (`registry_ops.rs:1684-1702`) | **`--key` is ignored** (`_key`) |
+| `apr push [BRANCH] [-u] [--force]` | `git push [-u origin] [branch] [--force]` (`registry_ops.rs:1398-1430`) | FF-only by default (git's own rule) |
+| `apr pull [--rebase]` | `git pull [--rebase]` (`registry_ops.rs:1433+`) | |
+| `apr bundle [-o DIR] [--tag] [--delta-from] [--update-manifest]` | `git bundle create` into a local dir (`registry_ops.rs:1706-1744`) | `_update_manifest` is **unused dead code**; filenames `{name}-{tag}.bundle` / `{name}-{from}..{tag}.bundle` |
+| `apr sign [COMMIT] [--key]` | `git commit --amend --no-edit -S` (`registry_ops.rs:1747-1762`) | **`--key` ignored**; **`COMMIT` ignored** — only HEAD is (re)signed via amend |
 
 ### 9.2 What's absent
 
 - **No `bundle-list.toml` writer** anywhere — the manifest types are
   `Deserialize`-only (`bundle.rs:59-92`).
 - **`apr bundle` cannot maintain the manifest** — its `_update_manifest`
-  parameter is unused (`registry_ops.rs:1723`).
+  parameter is unused (`registry_ops.rs:1711`).
 - **No producer-side `creation_token` computation** — `version_to_token` exists
   (`state.rs:131-166`) but is called consumer-side only.
 - **No automatic delta-type classification on the producer** — `--tag` and
@@ -569,8 +579,8 @@ consumer can do far more than the producer can produce.
 | **Write** `bundle-list.toml` | n/a | ❌ |
 | `creation_token` encode/decode | ✅ (`state.rs`) | ❌ (encode exists, unused) |
 | Classify snapshot/sequential/skip | ✅ read-time (`bundle.rs:238`) | ❌ |
-| Select minimal bundle set | ✅ (`update.rs:291`) | n/a |
-| `git bundle create` | n/a | ✅ (`registry_ops.rs:1718`) |
+| Select minimal bundle set | ✅ (`update.rs:319`) | n/a |
+| `git bundle create` | n/a | ✅ (`registry_ops.rs:1706`) |
 | Upload bundles | — | ❌ |
 | narinfo / `nix-cache-info` | n/a | ❌ |
 | Persist `[registry.state]` | ✅ (`state.rs:37`) | n/a |
@@ -588,7 +598,7 @@ For `git://`, `git+https://`, `git+ssh://` URLs, the consumer uses
 `crates/aos-package/src/registry/git.rs` instead of the bundle path: `git fetch`,
 fast-forward enforcement, optional commit-signature verification, then TOML
 extraction into the cache. The transport is chosen purely by URL scheme
-(`types.rs:315-323`). The HTTP-bundle path (§5) is the dumb-HTTP
+(`types.rs:312-321`). The HTTP-bundle path (§5) is the dumb-HTTP
 lowest-common-denominator; the git path is the richer alternative when a real git
 endpoint is available.
 
@@ -603,11 +613,11 @@ brief's as-is claims are recorded here and surfaced as open questions.
 1. **Package TOML shape (no discrepancy).** Brief §2.3 sketches a nested
    `[package]` / `[[versions]]` / `[versions.platforms.<platform>]` layout, and
    the code **agrees**: the on-disk format is that nested shape, deserialized by
-   `PackageToml` et al. (`registry/parse.rs:14-70`) and written by
-   `build_package_toml` (`registry_ops.rs:595-781`). The flat `PackageMeta`
-   (`types.rs:43-77`) is **not** the on-disk type — it is the in-memory
+   `PackageToml` et al. (`registry/parse.rs:14-66`) and written by
+   `build_package_toml` (`registry_ops.rs:595-769`). The flat `PackageMeta`
+   (`types.rs:44-74`) is **not** the on-disk type — it is the in-memory
    per-(package, platform) projection produced by `parse_package_toml`
-   (`registry/parse.rs:133-178`) (see [§4.1](#41-packagesnametoml--per-package-per-platform-metadata)).
+   (`registry/parse.rs:129-170`) (see [§4.1](#41-packagesnametoml--per-package-per-platform-metadata)).
    The earlier brief-vs-code contradiction recorded here was spurious; the
    [gap-analysis](../plans/registry/gap-analysis.md) grounds the shape in
    `build_package_toml`.
@@ -618,13 +628,13 @@ brief's as-is claims are recorded here and surfaced as open questions.
    *highest-priority* cache. Direction was unspecified in the brief.
 
 3. **`apr sign` semantics.** Brief §2.10 cites `git commit --amend --no-edit -S`.
-   Confirmed (`registry_ops.rs:1770`), but note two behaviors not called out:
-   the `--key` argument is **ignored** (`_key`, line 1762) and the `COMMIT`
+   Confirmed (`registry_ops.rs:1758`), but note two behaviors not called out:
+   the `--key` argument is **ignored** (`_key`, line 1750) and the `COMMIT`
    positional is **ignored** — `--amend` only ever (re)signs **HEAD**, never an
    arbitrary commit.
 
 4. **`apr tag --key` ignored.** The `--key` argument to `apr tag` is accepted but
-   unused (`_key`, `registry_ops.rs:1700`).
+   unused (`_key`, `registry_ops.rs:1688`).
 
 These do not contradict the brief's *intent* (target design), only its
 *as-is* description; the target docs are unaffected.
