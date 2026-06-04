@@ -188,9 +188,11 @@ max-staleness policy, and the monotonic anti-rollback floor — rather than a si
 `valid_until` inside the tag. The trade-off: this is weaker than an in-band signed
 expiry against a frozen-but-validly-signed mirror.
 
-The Nix binary-cache / NAR substituter location is **client-side** configuration on
-the consumer (its local registry config) or the origin itself — never embedded in a
-signed tag. The origin **MAY** serve `nix-cache-info` / `<storehash>.narinfo` / `nar`
+The Nix binary-cache / NAR substituter location lives in the committed repo-root
+`registry.toml` `[[caches]]` (a tree file authenticated transitively by the signed
+tag), with the consumer's client-side `registries.d/<name>.toml` as an optional
+override/supplement — never embedded in the signed tag itself. The origin **MAY**
+serve `nix-cache-info` / `<storehash>.narinfo` / `nar`
 as the stock-nix superset; narinfo signing reuses the one Ed25519 key.
 
 ---
@@ -574,7 +576,7 @@ open question (design brief §16.4;
 - [versioning-and-channels.md](./versioning-and-channels.md) — semver, channels-as-branches, frontier, the 256-partition rollout, bucket selection, anti-rollback.
 - [packs-and-deltas.md](./packs-and-deltas.md) — the delta-scheme graph, client resolution + retention, `index-pack --fix-thin`, zstd.
 - [signing-and-trust.md](./signing-and-trust.md) — signed tag objects (pure signed pointers), name-binding, `tag→tag→commit`, sha256, unsigned branch refs.
-- [nix-cache-compatibility.md](./nix-cache-compatibility.md) — the Nix binary-cache superset via client-side cache config.
+- [nix-cache-compatibility.md](./nix-cache-compatibility.md) — the Nix binary-cache superset located via the committed `registry.toml` `[[caches]]` (client-side `registries.d` as optional override).
 - [apt-comparison.md](./apt-comparison.md) — git-native + dumb-HTTP vs APT signed-flat-file / `pool` / phased rollout.
 - Plan: [design-brief.md](../plans/registry/design-brief.md) (§10, §4, §6 authoritative for this doc),
   [gap-analysis.md](../plans/registry/gap-analysis.md),

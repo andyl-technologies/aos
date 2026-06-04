@@ -86,8 +86,11 @@ makes it simultaneously:
   branches, releases are tags), using loose objects + conventionally-named full
   packs; and
 - a **superset of the Nix binary cache** — the origin MAY serve a Nix binary cache
-  (`nix-cache-info`/narinfo/`nar`); the consumer's cache/substituter location is
-  **client-side config** (or the origin itself), never advertised in signed tags.
+  (`nix-cache-info`/narinfo/`nar`); the cache/substituter location lives in the
+  committed repo-root `registry.toml` `[[caches]]` (a tree file authenticated
+  transitively by the signed tag), with the consumer's client-side `registries.d`
+  as an optional override (or the origin itself), never advertised in the signed
+  tag itself.
 
 The AOS client additionally uses the `/channels` partition tags (signed, bucketed
 rollout) and the thin `delta-*.pack`s (cheap incremental fetch). These ride
@@ -308,38 +311,65 @@ transparently clonable, the origin serves the standard shim: `HEAD`, `info/refs`
 
 Orthogonal to the git-object metadata layer: the origin MAY also serve a Nix binary
 cache (`nix-cache-info` / `<storehash>.narinfo` / `nar/`), a strict superset for stock
-`nix` dev-shell substitution. The consumer's cache/substituter location is
-**client-side configuration** (the consumer's local registry config, or the origin
-itself) — it is **not** advertised in signed tags (tags carry no `[[caches]]`).
+`nix` dev-shell substitution. The cache/substituter location comes from the registry's
+**committed git-repo-root `registry.toml`** (`[[caches]]`, authenticated via the signed
+tag — §14), with the consumer's client-side `registries.d/<name>.toml` as an optional
+override. It is **not** advertised in signed tags (tags carry no `[[caches]]`).
 Narinfo signing, if served, reuses the one Ed25519 key.
 
 ---
 
-## 14. Tag objects carry no structured payload
+## 14. Tag payload, repo-tree config & trust files
 
-Signed tag objects are **pure signed pointers**: the standard git tag fields (object,
-type, the `tag` NAME, tagger) + the Ed25519 signature + an optional freeform human
-message. There is **no TOML**, no `[meta]`, no `schema`, no `valid_until`, and no
-`[[caches]]`. Everything else lives elsewhere — the signature is on the tag object,
-pointers are refs, objects are the store, cache/substituter config is **client-side**,
-and freshness is a transport + consumer policy (§11, §13). This keeps tags immutable,
-minimal, and free of mutable policy.
+**Signed tags carry no structured payload** — pure signed pointers: the standard git
+tag fields (object, type, the `tag` NAME, tagger) + the Ed25519 signature + an optional
+freeform human message. No TOML, `[meta]`, `schema`, `valid_until`, or `[[caches]]`.
+
+Registry-level config instead lives as **committed files in the git tree**,
+authenticated transitively by the signed tag (tag → commit → tree → file) — not in the
+tag, and not (primarily) client-side:
+
+- **`registry.toml`** (git-repo-**root**; the existing `RegistryRootConfig`): `[registry]`
+  name/description + `[[caches]]`. The signing pubkey is **removed** from it (a key
+  inside a file authenticated by that key is circular for bootstrap). This is the
+  git-repo-root file, **not** the removed intermediate *signed-HTTP-root* `registry.toml`
+  (§15).
+- **`keys.toml`** (git-repo-root): the **trust roster** — active signing key(s) + a
+  revoked list. Bootstrap trust is TOFU-pinned **client-side** (`trusted-keys.d/<registry>.pub`).
+  **Rotation** = publish `keys.toml` listing old + new keys (overlap window) in a tag
+  signed by the currently-trusted key; consumers verify and pin the new key.
+  **Revocation** = list the bad key, signed by a key the consumer trusts that is **not**
+  the revoked one — so keep an offline **root/anchor** key (TOFU-pinned) that signs
+  `keys.toml` while a separate operational key signs day-to-day tags (TUF-style root
+  rotation), or maintain ≥2 overlapping active keys. (Root-vs-single is an open choice — §16.)
+
+The committed **tree** is therefore `registry.toml` + `keys.toml` +
+`packages/<x>/<name>.toml` + `closures/<hash>` + `.gitattributes` — distinct from the
+HTTP-served object store (`/objects`, `/channels`, `/releases`); see the reference doc
+`repo-layout.md`. Freshness and cache/substituter selection stay out of the tag (§11, §13).
 
 ---
 
 ## 15. Removed from the target (do not document as target)
 
-`registry.toml` (entirely) · `bundle-list.toml` · git **bundles** · the `[latest]`
-pointer · `[components]` · `[capabilities]` · the percentage-based rollout, the
+The intermediate design's **signed-HTTP-root `registry.toml`** (a mutable origin file
+with `[latest]` / `[channels]` / `[components]` / `[capabilities]` / `[[bundles]]` /
+`[signature]`) · `bundle-list.toml` · git **bundles** · the `[latest]` pointer ·
+`[components]` · `[capabilities]` · the percentage-based rollout, the
 `[channels.<name>.rollout]` sub-block, and `previous_tag`/baseline+candidate framing
 (replaced by 256 partitions) · calendar versioning and `creation_token` ordering
 (replaced by semver + git ancestry) · the by-hash `[[bundles]]`/`[[deltas]]` index
 (replaced by the git object store + `info/alternates`) · the **tag-message TOML**
 (`[meta]` / `schema` / `valid_until`) and tag-embedded **`[[caches]]`** (tags carry no
-structured payload; cache config is client-side) · **per-release loose objects** (all
-loose objects are centralized in the root `/objects/`; `/releases/*/objects/` are
-pack-only) · **absolute `http-alternates`** URLs (replaced by **relative
-`info/alternates`** entries, host-independent).
+payload) · the **signing pubkey inside `registry.toml`** (key trust is `keys.toml` +
+TOFU) · **per-release loose objects** (all loose objects are centralized in the root
+`/objects/`; `/releases/*/objects/` are pack-only) · **absolute `http-alternates`**
+URLs (replaced by **relative `info/alternates`** entries, host-independent).
+
+> **Kept (not removed):** the **git-repo-root `registry.toml`** (`[registry]`
+> name/description + `[[caches]]`, the existing `RegistryRootConfig`) is a committed
+> tree file, authenticated via the signed tag — see §14 and `repo-layout.md`. Do not
+> conflate it with the removed signed-HTTP-root file above.
 
 ---
 
@@ -358,8 +388,14 @@ pack-only) · **absolute `http-alternates`** URLs (replaced by **relative
 6. Confirm dumb-HTTP git follows a relative `info/alternates` (one `../`) across the
    target client versions, and whether any client needs `http-alternates` too.
 7. Migration from the existing bundle/`creation_token` registries (clean break vs
-   shim) — and whether the NAR cache superset (origin-served narinfo + client-side
-   cache config) ships in the same milestone or later.
+   shim) — and whether the NAR cache superset (origin-served narinfo, located via
+   the committed `registry.toml` `[[caches]]` with client-side `registries.d` as an
+   optional override) ships in the same milestone or later.
+8. `keys.toml` trust model: a dedicated offline **root/anchor** key + rotating
+   **operational** key (TUF-style, robust against operational-key compromise) vs a
+   single key with overlap-only rotation (simpler, but compromise needs out-of-band
+   re-pinning). And whether the roster is a standalone `keys.toml` or a `[keys]` block
+   in `registry.toml`.
 
 ---
 
@@ -380,19 +416,25 @@ code as `path:line`; cross-link siblings.
 - `http-layout.md` — the full HTTP/object layout, CDN TTLs, object store, `info/refs`/
   `HEAD`/ relative `info/alternates` (centralized loose objects; pack-only release
   dirs), **and a "stock git dumb-HTTP compatibility" section** (§4, §8, §12).
+- `repo-layout.md` — the committed git **tree** content (`registry.toml` with
+  `[[caches]]`, `keys.toml`, `packages/<x>/<name>.toml`, `closures/<hash>`,
+  `.gitattributes`) and the **tree ↔ HTTP** mapping; distinct from the served object
+  store (§4, §8, §14).
 - `versioning-and-channels.md` — semver (no `v`), channels-as-branches, frontier
   head, the 256-partition rollout, bucket selection, anti-rollback (§5–7).
 - `packs-and-deltas.md` — pack-objects, thin vs full packs, the delta scheme graph,
   client resolution + retention, and zstd (§9–10).
 - `signing-and-trust.md` — signed tag objects (no in-band payload), name-binding,
   `tag→tag→commit`, sha256, unsigned branch refs, freshness via CDN + consumer policy
-  (no `valid_until`), anti-rollback (§11, §5, §14).
+  (no `valid_until`), anti-rollback, and the **`keys.toml` trust roster** (TOFU
+  bootstrap, rotation/revocation, no pubkey in `registry.toml`) (§11, §5, §14).
 - `publishing.md` — the producer pipeline end-to-end (commit → sign → pack/delta/zstd
   → update-server-info → advance partitions → upload), CDN/atomicity, concurrency
   (§10, §4, §6).
 - `nix-cache-compatibility.md` — the Nix binary-cache superset; cache/substituter
-  location is **client-side config** (or the origin), not a tag-embedded `[[caches]]`
-  (§13).
+  location is the **committed git-repo-root `registry.toml` `[[caches]]`** (or the
+  origin), with client-side `registries.d` as an override — not a tag-embedded
+  `[[caches]]` (§13, §14).
 - `apt-comparison.md` — updated comparison: the design is now git-native + dumb-HTTP;
   keep the signed-flat-file/`pool`/phased-rollout lineage, map bundles/pdiff →
   git packs/thin-delta scheme, percentage rollout → 256 partitions.
@@ -413,5 +455,6 @@ code as `path:line`; cross-link siblings.
   name-binding, sha256, freshness/anti-rollback/fix-forward (no `valid_until`).
 - `workstream-05-consumer.md` — consumer resolution (bucket → channel tag → semver
   tag → commit), delta walk, retention, verification, and the Nix cache superset
-  (client-side cache config / origin narinfo).
+  (committed `registry.toml` `[[caches]]`, client-side `registries.d` override /
+  origin narinfo).
 - `open-questions.md` — §16 plus risks and migration strategy.

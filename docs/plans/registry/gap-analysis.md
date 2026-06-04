@@ -25,7 +25,7 @@ cite) versus **TARGET** (what the brief mandates), then routed to a workstream:
 | WS-01 | [workstream-01-object-store.md](./workstream-01-object-store.md) | sha256 bare repo, dumb-HTTP layout, `info/refs`/`HEAD`/`info/alternates`/`update-server-info`, centralized root `/objects/` + pack-only per-release dirs |
 | WS-02 | [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md) | `pack-objects` thin/full, the delta-scheme graph, zstd, expensive-producer tuning |
 | WS-03 | [workstream-03-channels-rollouts.md](./workstream-03-channels-rollouts.md) | 256 signed partition tags, channels-as-branches/frontier, bucket selection, publisher rollout control |
-| WS-04 | [workstream-04-signing-trust.md](./workstream-04-signing-trust.md) | signed **tag objects** (pure signed pointers), name-binding, sha256, anti-rollback/fix-forward |
+| WS-04 | [workstream-04-signing-trust.md](./workstream-04-signing-trust.md) | signed **tag objects** (pure signed pointers), name-binding, sha256, anti-rollback/fix-forward, the new committed **`keys.toml`** trust roster (pubkey moves out of `registry.toml`) |
 | WS-05 | [workstream-05-consumer.md](./workstream-05-consumer.md) | consumer resolution (bucket → channel tag → semver tag → commit), delta walk, retention, verification, the Nix-cache superset |
 
 The detailed as-is narrative lives in
@@ -72,7 +72,9 @@ expensive-producer / trivial-consumer one.
 ```
  CURRENT                                     TARGET
  ┌───────────────────────────┐              ┌───────────────────────────────┐
- │ registry.toml (config)    │              │ (gone — client-side config)   │
+ │ signed-HTTP-root          │              │ (gone — committed-tree files) │
+ │   registry.toml           │   ───────►   │ registry.toml (caches) + KEPT │
+ │ registry.toml signing.pub │              │ keys.toml (trust roster) NEW  │
  │ bundle-list.toml          │   ───────►   │ objects/info/packs            │
  │   [[bundles]] by token    │              │ objects/info/alternates       │
  │ *.bundle (git bundles)    │              │ loose objects + pack-<sha>    │
@@ -157,11 +159,19 @@ and `unbundle` (`bundle.rs:376`) — all replaced by `pack-objects` /
 | Tag-message body | Free-text `-m` message (`registry_ops.rs:1707`). | **No structured payload** — an optional freeform human message only. A signed tag is a pure signed pointer; there is no tag-message TOML, no `[meta]`/`schema`/`valid_until`, no in-band `[[caches]]` (brief §11). |
 | Freshness / rotation | None. | **No in-band `valid_until`.** Freshness = low CDN TTL on `/channels` (and `info/refs`, `objects/info`) + the consumer's own max-staleness policy + the monotonic anti-rollback floor. Trade-off: weaker than an in-band signed expiry against a frozen-but-validly-signed mirror (brief §11). |
 | Branch trust | n/a. | Branch refs are **unsigned convenience pointers**, never in the trust chain (brief §5, §11). |
+| Trust roster | **None as a file.** The single trusted pubkey lives in `registry.toml`'s `[registry.signing].public_key` (`RegistrySigningConfig`, `types.rs:593-596`, on `RegistryRootConfig`, `types.rs:563-570`); the consumer also TOFU-pins `trusted-keys.d/<registry>.pub` (`security.rs`). | A **new committed tree file `keys.toml`** — the trust roster: active signing key(s) + a revoked list, authenticated transitively by the signed tag (tag → commit → tree → file). The signing **pubkey is removed from `registry.toml`** (a key inside a file authenticated *by* that key is circular for bootstrap) (brief §14; [repo-layout.md §2-§3](../../registry/repo-layout.md)). |
+| Bootstrap trust | TOFU-pinned `trusted-keys.d/<registry>.pub` **plus** the in-tree `signing.public_key`. | **TOFU only** for the anchor (`trusted-keys.d/<registry>.pub`); `keys.toml` does **not** bootstrap trust — it governs **rotation** (publish `keys.toml` listing old+new keys in a tag signed by the currently-trusted key; consumer pins the new key) and **revocation** (list the bad key, signed by a key the consumer trusts that is **not** the revoked one → a dedicated offline **root/anchor** key signs `keys.toml` while a separate **operational** key signs day-to-day tags, TUF-style, or keep ≥2 overlapping active keys). Root-vs-single is an open choice (brief §16). |
 
 **Concrete code to extend/replace:** add a `verify_tag_signature` alongside
 `verify_commit_signature` (`security.rs:199`); make `apr tag` / `apr sign`
 produce **signed tag objects (pure signed pointers, optional freeform message)**
-instead of an unsigned annotated tag + a signed commit.
+instead of an unsigned annotated tag + a signed commit; **drop
+`RegistrySigningConfig` / `signing.public_key` from `RegistryRootConfig`**
+(`types.rs:563-570,593-596`) and read the active/revoked keys from the new
+committed `keys.toml` instead. NAR safety is independent of all this: an
+authenticated-but-wrong cache pointer cannot serve bad bytes — NARs are
+content-addressed and SHA-256-verified on download — so the trust that matters is
+the tag/commit chain that `keys.toml` governs, not the cache list.
 
 ---
 
@@ -169,7 +179,7 @@ instead of an unsigned annotated tag + a signed commit.
 
 | Aspect | CURRENT | TARGET |
 |--------|---------|--------|
-| Config root | `registry.toml` written at `create` (`registry_ops.rs:443-450`), read by `read_registry_toml` (`registry_ops.rs:392-402`), caches resolved via `resolve_mirrors` (`registry_ops.rs:405-414`). | **Removed entirely** (brief §15). Cache location is **client-side** (the consumer's local registry config) or the origin itself — **not** advertised in signed tags; the origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar` as a stock-nix superset, narinfo signing reusing the one Ed25519 key (brief §13). |
+| Config root | `registry.toml` written at `create` (`registry_ops.rs:443-450`), read by `read_registry_toml` (`registry_ops.rs:392-402`), caches resolved via `resolve_mirrors` (`registry_ops.rs:405-414`). Carries `[registry]` + `[[caches]]` + `[registry.signing].public_key` (`RegistryRootConfig`, `types.rs:563-570`). | **The git-repo-root `registry.toml` is KEPT** as a committed tree file — `[registry]` name/description + `[[caches]]` only — authenticated transitively by the signed tag. The **signing pubkey is removed** from it (→ `keys.toml`, §3.4). Only the intermediate *signed-HTTP-root* `registry.toml` (`[latest]`/`[channels]`/`[components]`/`[capabilities]`/`[[bundles]]`/`[signature]`) is removed (brief §14, §15; [repo-layout.md §2](../../registry/repo-layout.md)). The origin MAY additionally serve `nix-cache-info`/`<storehash>.narinfo`/`nar` as a stock-nix superset, narinfo signing reusing the one Ed25519 key (brief §13). |
 | Manifest writer | **Stub** — `apr bundle` (`registry_ops.rs:1718-1755`) only `git bundle create`s; `_update_manifest` is ignored (`registry_ops.rs:1723`); **no `bundle-list.toml` writer exists**. | A real publish pipeline writes loose objects to the root `/objects/`, emits per-release packs/deltas under `/releases/*/objects/pack/`, regenerates `objects/info/packs` + the relative `objects/info/alternates`, runs `update-server-info`, advances partitions, and uploads (brief §10, §4, §6). |
 | Upload | **None at all** — `apr push` / `apr pull` (`registry_ops.rs:1410-1462`) push the *git working repo*; there is **no static-artifact upload** of bundles/objects to a CDN/origin. | An **upload backend** ships the static tree (loose objects, packs, refs shims, channel partition files) to the origin; pluggability is an open question (brief §16.4). |
 | Atomicity / concurrency | Not modeled. | Publish must be atomic w.r.t. the CDN: write new immutable objects first, then mutate the low-TTL `info/*` + `/channels/*` — see [publishing.md](../../registry/publishing.md). |
@@ -184,7 +194,7 @@ instead of an unsigned annotated tag + a signed commit.
 | Selection logic | `pick_bundles` token strategies: skip delta → sequential deltas → latest snapshot (`update.rs:367-390`). | **Delta resolution + retention**: prefer a `delta-<B>.pack` at target T whose base B the client retains; else walk releases backward; else a full pack; else loose objects (always correct). Retention keeps the `X.0.0`, `X.Y.0`, `X.Y.Z` trees (brief §9). |
 | Integrity | `verify_bundle` = sha256 of the bundle file + `git bundle verify` (`bundle.rs:305-346`). | `git index-pack --fix-thin` (completes thin packs) + signed-tag-chain verification + name-binding (brief §5, §10). |
 | State | `last_commit` + `last_creation_token` + `last_update` (`update.rs:270-272`). | `last_commit` + **semver floor** + persisted **bucket**; no token. |
-| Nix cache | `nar_hash` / `nar_size` baked into package TOMLs (`registry_ops.rs:633-651`); validated against caches read from `registry.toml` (`validate`, `registry_ops.rs:1210-1326`). | NAR substituter location is **client-side config** (the consumer's local registry config) or the origin itself — not advertised in signed tags. The origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar`, a strict superset of the Nix binary cache, narinfo signing reusing the one Ed25519 key (brief §13; [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md)). |
+| Nix cache | `nar_hash` / `nar_size` baked into package TOMLs (`registry_ops.rs:633-651`); validated against caches read from `registry.toml` (`validate`, `registry_ops.rs:1210-1326`). | Caches **stay in the committed git-repo-root `registry.toml`** (`[[caches]]`, authenticated via the signed tag); the consumer's client-side `registries.d/<name>.toml` is an **optional override/supplement** (higher priority wins, `resolve_mirrors` sorts descending). NAR bytes are content-addressed + SHA-256-verified, so an authenticated-but-wrong pointer can't serve bad bytes. The origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar`, a strict superset of the Nix binary cache, narinfo signing reusing the one Ed25519 key (brief §13, §14; [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md), [repo-layout.md §2](../../registry/repo-layout.md)). |
 
 ---
 
@@ -195,7 +205,8 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 
 | Removed concept | Where it lives today | Replacement |
 |-----------------|----------------------|-------------|
-| `registry.toml` (config root) | `registry_ops.rs:392-450` | client-side registry config (cache location) + signed pure-pointer tags |
+| signed-**HTTP-root** `registry.toml` (mutable origin file: `[latest]`/`[channels]`/`[components]`/`[capabilities]`/`[[bundles]]`/`[signature]`) | intermediate-design concept (never in code) | committed-tree files (registry.toml + keys.toml) authenticated by the signed tag (tag → commit → tree → file) — see **Kept** note below |
+| `[registry.signing].public_key` inside `registry.toml` | `RegistrySigningConfig` on `RegistryRootConfig` (`types.rs:563-570,593-596`) | **`keys.toml`** trust roster (active + revoked) + TOFU `trusted-keys.d/<registry>.pub` anchor |
 | tag-message TOML / `[meta]` / `schema` / `valid_until` / in-band `[[caches]]` | target concepts (never in code) | signed tags are pure signed pointers (optional freeform message); freshness via CDN TTL + consumer policy + anti-rollback floor |
 | `bundle-list.toml` | `bundle.rs:48-225` | `objects/info/packs` + relative `objects/info/alternates` |
 | git **bundles** | `registry_ops.rs:1718-1755`, `bundle.rs:376` | loose objects + `pack-<sha>.pack` + thin `delta-*.pack` |
@@ -205,6 +216,15 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 | by-hash `[[bundles]]` / `[[deltas]]` index | `bundle.rs:59-92` | git object store + relative `info/alternates` |
 | `previous_tag` / per-version `previous` framing | `registry_ops.rs:626-628,735-739` | semver precedence + the delta-scheme graph |
 
+> **Kept (not removed) — do not over-delete:** the **git-repo-root `registry.toml`**
+> (the existing `RegistryRootConfig`, `types.rs:563-570`) survives as a committed tree
+> file carrying `[registry]` + `[[caches]]`, authenticated via the signed tag. Only its
+> `[registry.signing].public_key` moves out (→ `keys.toml`). Do **not** conflate it with
+> the removed signed-HTTP-root `registry.toml` above. The `[[caches]]` list is **not**
+> moved client-side — it stays in the tree; the consumer's `registries.d/<name>.toml` is
+> an optional override. See [repo-layout.md §2-§3](../../registry/repo-layout.md) and
+> brief §14.
+
 ---
 
 ## 5. Surviving primitives (reuse, don't rebuild)
@@ -213,6 +233,7 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 |-----------|-------|----------------|
 | Package-TOML tree content | `build_package_toml` (`registry_ops.rs:595-781`) | Unchanged — it is the git **tree content** the objects encode (brief §2). |
 | Closure adjacency files | `write_closure_files` (`registry_ops.rs:305-352`) | Unchanged tree content; rides inside the object store. |
+| `registry.toml` `[[caches]]` + `resolve_mirrors` | `RegistryRootConfig` (`types.rs:563-570`), `CacheEntry` (`types.rs:582-586`), `resolve_mirrors` (`registry_ops.rs:405-414`) | Reused — `[registry]` + `[[caches]]` stay as a committed tree file authenticated by the tag; only `signing.public_key` is dropped (→ `keys.toml`, WS-04). |
 | Ed25519/SSH signing | `parse_signing_key` (`security.rs:306`), `verify_commit_signature` (`security.rs:199`), TOFU + `trusted-keys.d` | Reused for **tag-object** signatures; add a tag-verify path + name-binding (WS-04). |
 | `git` subprocess plumbing | `git()` (`registry_ops.rs:79-92`) | Reused; new callers run `pack-objects`, `index-pack`, `update-server-info`, signed `tag -s`. |
 | Transfer engine (sha256-verified GET) | `TransferRequest::get(..).with_hash` (`bundle.rs:276-282`) | Reused to fetch loose objects/packs over dumb HTTP. |
@@ -244,11 +265,13 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 | G19 | no name-binding → **name-binding** (tag-name == path name) | §5 | WS-04 |
 | G20 | unsigned tag → **signed pure-pointer tag** (optional freeform msg, no payload) | §11 | WS-04 |
 | G21 | no freshness → **CDN TTL + consumer max-staleness + anti-rollback floor** (no in-band `valid_until`) | §11 | WS-04 |
+| G21b | no trust-roster file → **new committed `keys.toml`** (active keys + revoked), tag-authenticated; rotation/revocation + TOFU anchor | §14 | WS-04 |
+| G21c | `signing.public_key` in `registry.toml` → **moved out** to `keys.toml` (circular-bootstrap fix) | §14 | WS-04 |
 | G22 | `pick_bundles` token strategies → **delta walk + retention** | §9 | WS-05 |
 | G23 | bundle verify → `index-pack --fix-thin` + signed-chain verify | §5,§10 | WS-05 |
-| G24 | `registry.toml` caches / `validate` → **client-side cache config** + origin nix-cache superset | §13 | WS-05 |
+| G24 | `registry.toml` caches / `validate` → **caches stay in committed `registry.toml`** (tag-authenticated) + optional client-side override + origin nix-cache superset | §13,§14 | WS-05 |
 | G25 | `apr bundle` stub + **no upload** → full publish + upload pipeline | §10,§4,§6 | WS-01/02/03 |
-| G26 | `registry.toml` config root → **removed** (client-side config) | §15 | WS-04 |
+| G26 | signed-**HTTP-root** `registry.toml` (intermediate design) → **removed**; git-repo-root `registry.toml` **kept** as a committed tree file | §14,§15 | WS-04 |
 
 ---
 
@@ -295,6 +318,7 @@ load-bearing in today's code and must be deleted, not merely bypassed:
 - Reference set: [README](../../registry/README.md) ·
   [architecture](../../registry/architecture.md) ·
   [current-state](../../registry/current-state.md) ·
+  [repo-layout](../../registry/repo-layout.md) ·
   [http-layout](../../registry/http-layout.md) ·
   [versioning-and-channels](../../registry/versioning-and-channels.md) ·
   [packs-and-deltas](../../registry/packs-and-deltas.md) ·

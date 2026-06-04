@@ -70,11 +70,15 @@ is a thin wrapper over `git` + `git bundle create`** with significant gaps — s
 > emission, and **no** producer-side manifest writer. The root file
 > `registry.toml` that *does* exist is a small repo-local config (`[registry]`,
 > `[[caches]]`, `[signing]`) — see [§3.1](#31-the-repo-local-registrytoml). The
-> **target** drops bundles, `bundle-list.toml`, *and* this `registry.toml`
-> config entirely in favor of a bare git repo served over dumb HTTP, with
-> channel/releases pointers carried by signed git tag objects — pure signed
-> pointers with no structured payload (see
-> [`architecture.md`](architecture.md), TARGET).
+> **target** drops bundles and `bundle-list.toml` in favor of a bare git repo
+> served over dumb HTTP, with channel/releases pointers carried by signed git
+> tag objects — pure signed pointers with no structured payload (see
+> [`architecture.md`](architecture.md), TARGET). The git-repo-root
+> `registry.toml` is **kept** (it is a committed tree file, authenticated
+> transitively by the signed tag), but its `[signing].public_key` is **removed**
+> and a new committed `keys.toml` trust roster is added — see
+> [§3.1](#31-the-repo-local-registrytoml) and
+> [`repo-layout.md`](repo-layout.md), TARGET.
 
 ---
 
@@ -131,8 +135,13 @@ Notes:
 
 ### 3.1 The repo-local `registry.toml`
 
-This file lives **inside** the registry git repo and is parsed by
-`RegistryRootConfig` (`types.rs:566-599`):
+This file lives **inside** the registry git repo — it is a **committed tree
+file**, parsed by `RegistryRootConfig` (`types.rs:566-573`). It is *not* the
+removed intermediate signed-HTTP-root `registry.toml` (a mutable origin file
+carrying `[latest]`/`[channels]`/`[components]`/`[capabilities]`/`[[bundles]]`/
+`[signature]`); that intermediate file never existed in the code and is gone
+from the target. The CURRENT committed file carries `[registry]` +
+`[[caches]]` + `[signing].public_key`:
 
 ```toml
 [registry]
@@ -153,15 +162,35 @@ public_key = "aos-core:Ed25519:base64keyhere"
   `100`, `types.rs:583-593`).
 - `[signing].public_key` carries the registry's Ed25519 key string.
 
-> This `registry.toml` is a repo-local config file, **not** part of the target
-> wire format. The target has **no** `registry.toml` at all: channel/releases
-> pointers move to **signed git tag objects**, which are pure signed pointers
-> carrying **no** structured payload — no `[meta]`, no `[[caches]]` (see
-> [`architecture.md`](architecture.md), TARGET). The NAR cache location is no
-> longer advertised in tags at all: it becomes the **consumer's client-side
-> configuration** (its local registry config) or the origin itself, which MAY
-> serve the Nix binary-cache superset (`nix-cache-info`/narinfo/nar) (see
-> [`nix-cache-compatibility.md`](nix-cache-compatibility.md), TARGET).
+> **TARGET.** The git-repo-root `registry.toml` is **kept** as a committed tree
+> file (the same `RegistryRootConfig`), authenticated transitively by the signed
+> tag (tag → commit → tree → file). Two deltas vs. CURRENT:
+>
+> 1. **The signing pubkey is removed** (decision B). `[signing].public_key` no
+>    longer lives here — a key inside a file authenticated *by* that key is
+>    circular for bootstrap. The target `registry.toml` is therefore just
+>    `[registry]` (name/description) + `[[caches]]`.
+> 2. **A new committed `keys.toml` trust roster is added** (decision D): the
+>    active signing key(s) + a revoked list. Bootstrap trust stays **TOFU-pinned
+>    client-side** (`trusted-keys.d/<registry>.pub`, §8.3), not from `keys.toml`.
+>    Rotation publishes `keys.toml` listing old + new keys (overlap) in a tag
+>    signed by the currently-trusted key; revocation lists the bad key signed by
+>    a key the consumer trusts that is *not* the revoked one (a dedicated offline
+>    root/anchor key, or ≥2 overlapping active keys — TUF-style; an open choice,
+>    brief §16).
+>
+> The `[[caches]]` NAR-cache pointers **stay in this committed `registry.toml`**
+> (authenticated via the tag), *not* in the signed tags (which carry **no**
+> structured payload — no `[meta]`, no `[[caches]]`) and *not* solely
+> client-side; the consumer's `registries.d/<name>.toml` is an optional
+> override/supplement (higher priority wins). An authenticated-but-wrong cache
+> pointer still can't serve bad bytes — NARs are content-addressed and SHA-256
+> verified (§6), so the trust that matters is the tag/commit chain governed by
+> `keys.toml`. The committed **tree** is `registry.toml` + `keys.toml` +
+> `packages/<x>/<name>.toml` + `closures/<hash>` + `.gitattributes`, distinct
+> from the served object store — see [`repo-layout.md`](repo-layout.md), TARGET,
+> for the full tree and the Nix binary-cache superset
+> ([`nix-cache-compatibility.md`](nix-cache-compatibility.md), TARGET).
 
 ---
 
@@ -599,9 +628,10 @@ These do not contradict the brief's *intent* (target design), only its
 - [`README.md`](README.md) — registry doc index and glossary.
 - [`architecture.md`](architecture.md) — git-repo-over-dumb-HTTP; superset of git **and** Nix; the three ref layers (TARGET).
 - [`http-layout.md`](http-layout.md) — HTTP/object layout, CDN TTLs, relative `info/alternates`, stock dumb-HTTP compatibility (TARGET).
+- [`repo-layout.md`](repo-layout.md) — the committed git **tree** (`registry.toml` `[[caches]]`, `keys.toml`, `packages/`, `closures/`, `.gitattributes`) and the tree ↔ HTTP mapping; distinct from the served object store (TARGET).
 - [`versioning-and-channels.md`](versioning-and-channels.md) — semver, channels-as-branches, the 256-partition rollout, bucket selection, anti-rollback (TARGET).
 - [`packs-and-deltas.md`](packs-and-deltas.md) — pack-objects, thin vs full packs, the delta scheme graph, zstd (TARGET).
-- [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — the Nix binary-cache superset (client-side cache config; origin serves `nix-cache-info`/narinfo/nar) (TARGET).
+- [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — the Nix binary-cache superset (located via the committed `registry.toml` `[[caches]]`, client-side `registries.d` as optional override; origin serves `nix-cache-info`/narinfo/nar) (TARGET).
 - [`signing-and-trust.md`](signing-and-trust.md) — signed tag objects, name-binding, `tag→tag→commit`, TOFU (TARGET).
 - [`publishing.md`](publishing.md) — producer pipeline & concurrency (TARGET).
 - [`apt-comparison.md`](apt-comparison.md) — APT format comparison and adopted improvements.
