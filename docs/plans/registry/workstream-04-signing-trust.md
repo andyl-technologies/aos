@@ -1,9 +1,10 @@
 # Workstream 04 — Signing & Trust
 
 > **Plan doc.** Implements the signing and trust layer of the git-native AOS
-> registry: **signed tag objects** (SSH-format Ed25519), **name-binding
-> verification**, the **`tag → tag → commit`** trust chain, **sha256** object
-> format, **`valid_until`** freshness/lifetime enforcement, and
+> registry: **signed tag objects** (SSH-format Ed25519, a pure signed pointer
+> with no structured payload), **name-binding verification**, the
+> **`tag → tag → commit`** trust chain, **sha256** object format, **freshness**
+> via CDN TTL + consumer policy + monotonic floor, and
 > **anti-rollback / fix-forward**. Grounded in §11 and §5 of the
 > [design brief](./design-brief.md); reuses the existing TOFU +
 > `trusted-keys.d` primitives.
@@ -28,13 +29,13 @@ consumer-side resolution that *calls* this gate lives in
 
 Reference docs this workstream realizes:
 [signing-and-trust.md](../../registry/signing-and-trust.md) and the trust columns
-of [versioning-and-channels.md](../../registry/versioning-and-channels.md); the
-tag-message schema it verifies is
-[tag-metadata.md](../../registry/tag-metadata.md).
+of [versioning-and-channels.md](../../registry/versioning-and-channels.md). A
+signed tag carries no structured payload, so there is no tag-message schema to
+verify.
 
 | Concern | Workstream | This doc's role |
 |---|---|---|
-| sha256 bare repo, dumb HTTP, `http-alternates` | [01](./workstream-01-object-store.md) | requires sha256; verifies objects fetched over it |
+| sha256 bare repo, dumb HTTP, `info/alternates` | [01](./workstream-01-object-store.md) | requires sha256; verifies objects fetched over it |
 | thin/full packs, zstd, delta graph | [02](./workstream-02-pack-delta-pipeline.md) | verifies the *commit* a delta resolves to |
 | 256 partition tags, frontier branch, bucket | [03](./workstream-03-channels-rollouts.md) | signs + name-binds the 256 partition tags |
 | consumer resolution & retention | [05](./workstream-05-consumer.md) | exposes the verify gate it calls |
@@ -72,8 +73,8 @@ objects, name-binding, and the two-hop chain.
   `apr tag` (`registry_ops.rs:1696-1714`) creates an annotated tag with
   `git tag -a <name> -m <msg>` **only when `--message` is given**, otherwise a
   lightweight `git tag <name>` — and in neither case does it **sign** (the
-  `_key` arg is unused); when a message is present it is **free-form**, not the
-  TOML schema.
+  `_key` arg is unused). When a message is present it is free-form, which the
+  TARGET keeps: a signed tag's message stays an optional freeform human note.
 
 ### 2.2 Gaps vs. TARGET
 
@@ -84,9 +85,9 @@ objects, name-binding, and the two-hop chain.
 | G3 | **Name-binding** | none | embedded tag-name field == serving path name |
 | G4 | **`tag → tag → commit`** chain | none | partition tag → semver tag → commit, each checked |
 | G5 | **sha256** objects | repo is sha1 today | `git init --object-format=sha256` |
-| G6 | **`valid_until`** enforcement | none | channel freshness vs. release generous lifetime |
+| G6 | **Freshness** enforcement | none | CDN TTL + consumer max-staleness policy + monotonic floor (no in-band expiry) |
 | G7 | **Anti-rollback floor** | commit-ancestry only (`check_downgrade`) | persisted semver monotonic floor + fix-forward |
-| G8 | Tag **message = TOML** | free-form (`registry_ops.rs:1707`) | `[meta]` + `[[caches]]` only |
+| G8 | Tags are **pure signed pointers** | unsigned, free-form message | `git tag -s`, no structured payload (optional freeform note only) |
 
 ---
 
@@ -118,7 +119,7 @@ git-clone concept. AOS trust derives **only** from the signed tags.
 │  tag-name field: "stable"  │          │  tag-name field: "1.4.2"   │        │ commit   │
 │  type: tag                 │          │  type: commit              │        │ (tree)   │
 │  → refs/tags/1.4.2         │          │  → <commit-sha256>         │        └─────────┘
-│  message: [meta]+[[caches]]│          │  message: [meta]+[[caches]]│
+│  message: optional freeform│          │  message: optional freeform│
 │  SSH Ed25519 signature     │          │  SSH Ed25519 signature     │
 └───────────────────────────┘          └───────────────────────────┘
        ▲ HOP 1 (channel)                        ▲ HOP 2 (release)
@@ -184,41 +185,40 @@ implications are:
 
 ---
 
-## 5. `valid_until` semantics (G6)
+## 5. Freshness — no in-band `valid_until` (G6)
 
-`valid_until` lives in the tag-message TOML `[meta]` table (see
-[tag-metadata.md](../../registry/tag-metadata.md)):
+Signed tags carry **no** in-band expiry. There is no `valid_until` field (tags
+have no structured payload at all — §3.1). Freshness is instead a composition of
+three out-of-band mechanisms:
 
-```toml
-[meta]
-schema      = 1
-valid_until = "2026-06-30T00:00:00Z"
-```
+| Mechanism | Where it lives | What it does |
+|---|---|---|
+| **Low CDN TTL** | origin/CDN cache headers on `/channel`, `info/refs`, `objects/info` | bounds how stale a served rollout pointer / ref advertisement can be |
+| **Consumer max-staleness policy** | consumer's local registry config | caps how old a fetched `/channel` pointer the consumer will *act on* |
+| **Monotonic anti-rollback floor** | persisted consumer install state (§6.2) | refuses any candidate older than the highest semver ever run |
 
-Its meaning is **path-dependent** (brief §11) and must be enforced accordingly:
+Enforcement:
 
-| Tag kind | `valid_until` role | Window | Pairs with |
-|---|---|---|---|
-| `/channel/<name>/<n>` partition tag | **freshness** — "this rollout pointer is current" | **short** | low CDN TTL on `/channel/**` |
-| `refs/tags/<semver>` release tag | **signature-trust / key-rotation lifetime** | **generous** | long CDN TTL on `/release/**` |
+- **Channel freshness** comes from the **low CDN TTL** on `/channel/**` (and
+  `info/refs`, `objects/info`) plus the **consumer's own max-staleness policy**:
+  a consumer that fetches a partition pointer older than its policy allows treats
+  the rollout pointer as **stale** and does **not** advance to a new frontier (it
+  may keep running its current pinned release). A live publisher re-signs and
+  re-publishes partition tags on each rollout step, so a healthy fleet always
+  fetches a fresh pointer through the low-TTL edge; a *stuck/abandoned* channel
+  simply stops producing new pointers and the consumer holds.
+- **Release immutability** needs no freshness signal: an immutable, long-cached
+  release stays installable indefinitely. Trust in a release derives from its
+  signature against a currently-trusted Ed25519 key (key rotation is handled via
+  `trusted-keys.d`, §8), not from an expiry stamp.
 
-Enforcement rules:
-
-- **Channel freshness.** A consumer that fetches a partition tag whose
-  `valid_until` is in the past treats the rollout pointer as **stale**: it does
-  **not** advance to a new frontier on a stale pointer (it may keep running its
-  current pinned release). Because `/channel/**` is low-TTL, a live publisher
-  re-signs partition tags with a fresh `valid_until` on each rollout step, so a
-  healthy fleet never sees expiry; a *stuck/abandoned* channel visibly expires.
-- **Release generosity.** A release tag's `valid_until` is the lifetime of its
-  **signature trust**, sized to the key-rotation cadence (open-questions #5), and
-  **must not fight the long release TTL** — an immutable, long-cached release
-  stays installable for its full window. Expiry here means "re-sign or rotate the
-  key," not "the release vanished."
-
-> **Pitfall.** Do **not** reuse a single short TTL for both. A short release
-> `valid_until` would make long-cached, immutable releases spuriously
-> "untrusted." Channel = short, release = generous.
+> **Trade-off (brief §11).** Without an in-band signed expiry, this freshness
+> model is **weaker against a frozen-but-validly-signed mirror**: a mirror that
+> serves a stale-but-genuinely-signed `/channel` pointer past its CDN TTL is
+> only caught by the consumer's max-staleness policy and the monotonic floor,
+> not by a signed `valid_until` the mirror cannot forge. The floor still blocks
+> any *rollback*; the residual exposure is a mirror **pinning** a fleet to an old
+> (but legitimately-signed and floor-passing) release.
 
 ---
 
@@ -268,35 +268,39 @@ pointless — the consumer's floor blocks it anyway. The trust layer therefore
 
 CURRENT `apr sign` amends and signs the *commit* (`registry_ops.rs:1770`).
 TARGET signs the **release tag** and the **256 channel partition tags** with
-SSH/Ed25519, each carrying the TOML message. The git mechanics:
+SSH/Ed25519. Each tag is a **pure signed pointer** — standard git tag fields
+(object, type, name, tagger) + the signature + an optional freeform human
+message, with **no** structured payload. The git mechanics:
 
 ```sh
-# Release tag (HOP-2): annotated, SSH-signed, TOML message, name == semver.
+# Release tag (HOP-2): annotated, SSH-signed, name == semver. -m is an
+# optional freeform human note (or omit for no message body).
 git -c gpg.format=ssh -c user.signingkey=<key> \
-    tag -s 1.4.2 -F release-1.4.2.toml <commit-sha256>
+    tag -s 1.4.2 -m "release 1.4.2" <commit-sha256>
 
 # Channel partition tag (HOP-1): name == channel; targets the semver tag.
 # Done once per partition the rollout advances (see workstream-03).
 git -c gpg.format=ssh -c user.signingkey=<key> \
-    tag -s -f stable -F channel-stable.toml refs/tags/1.4.2
+    tag -s -f stable -m "stable → 1.4.2" refs/tags/1.4.2
 #   then publish that tag object's bytes to /channel/stable/<n>
 ```
 
 - The signing key is the registry's existing Ed25519 key (one key, brief §11);
   `apr sign`'s today-unused `_key` arg (`registry_ops.rs:1761`) becomes live.
-- The tag **message** is generated to the canonical schema — exactly `[meta]`
-  (`schema`, `valid_until`) and optional `[[caches]]` (`url`, `priority`), **no
-  other tables** (brief §14, [tag-metadata.md](../../registry/tag-metadata.md)).
+- The tag carries **no structured payload** — no `[meta]`, no `valid_until`, no
+  `[[caches]]`. The cache/substituter location is **client-side** consumer
+  config or the origin itself (§7.4), never advertised in a signed tag.
 - The publish step copies the signed tag *object bytes* to the 256
   `/channel/<name>/<n>` paths — the rollout coordinate is the path, the embedded
   name stays the channel name (§3.3).
 
-### 7.2 `apr tag` → TOML message + sign (G8)
+### 7.2 `apr tag` → sign (G8)
 
 CURRENT `apr tag` (`registry_ops.rs:1696-1714`) writes an annotated tag with a
 free-form `-m` message only when `--message` is given (otherwise a lightweight
 `git tag <name>`), and never signs. TARGET routes tag creation through the §7.1
-signing path with a generated TOML message.
+signing path. The message stays an **optional freeform human note** — no
+generated structured payload.
 
 ### 7.3 Drop `apr bundle` from the trust surface
 
@@ -304,6 +308,16 @@ signing path with a generated TOML message.
 **removed** from the target (brief §15). Bundles carry their own refs/prereqs and
 have no place in the signed-tag trust chain; trust derives from tag objects, not
 bundle headers.
+
+### 7.4 Cache config is client-side, not tag-embedded
+
+The Nix binary-cache / NAR substituter location is **not** advertised in signed
+tags. It is the **consumer's client-side configuration** (its local registry
+config) or the **origin itself**. The origin **MAY** serve the stock-nix
+superset — `nix-cache-info`, `<storehash>.narinfo`, and `nar/` — and narinfo
+signing **reuses the one Ed25519 key** (a separate signature object; brief
+§11/§13). The producer never embeds a `[[caches]]` table or any substituter URL
+inside a tag.
 
 ---
 
@@ -322,13 +336,12 @@ verify_and_select(channel, bucket):
   assert tag_name(ptag) == channel               # NAME-BINDING (brief §5)
   assert ptag.type == "tag"
   semver = ptag.target                           # refs/tags/<semver>
-  assert valid_until(ptag) not past              # channel FRESHNESS (else: stale → hold)
+  assert ptag_age <= consumer.max_staleness      # channel FRESHNESS (else: stale → hold)
   # --- HOP 2: release tag ---
   rtag = fetch_tag(semver)
   assert verify_tag_signature(rtag, key)
   assert tag_name(rtag) == semver                # NAME-BINDING
   assert rtag.type == "commit"
-  assert valid_until(rtag) not past              # release GENEROUS lifetime
   commit = rtag.target
   # --- anti-rollback ---
   assert semver >= floor                         # SEMVER FLOOR  (brief §6)
@@ -360,12 +373,12 @@ is not an error: the consumer holds on its current pinned release.
 | key fingerprint | `key_fingerprint` (`security.rs:338`) | **reuse as-is** |
 | commit-ancestry downgrade | `check_downgrade` (`security.rs:256`) | **reuse** (compose with semver floor) |
 | `allowed_signers` + verify | `verify_commit_signature` (`security.rs:199`) | **retarget** to `verify-tag` / tag bytes |
-| sign tags (not commit) | `apr sign` (`registry_ops.rs:1759`) | **rewrite** → `git tag -s` + TOML msg |
-| tag w/ TOML message | `apr tag` (`registry_ops.rs:1696`) | **rewrite** → schema'd message + sign |
+| sign tags (not commit) | `apr sign` (`registry_ops.rs:1759`) | **rewrite** → `git tag -s` (pure signed pointer) |
+| sign tag, freeform message | `apr tag` (`registry_ops.rs:1696`) | **rewrite** → sign; optional freeform note |
 | name-binding (embedded tag-name) | — | **new** |
 | `tag → tag → commit` walk | — | **new** |
 | semver monotonic floor | — | **new** (persisted alongside install state) |
-| `valid_until` parse + enforce | — | **new** (channel-vs-release semantics) |
+| freshness (CDN TTL + max-staleness policy) | — | **new** (no in-band `valid_until`) |
 | bundle signing | `apr bundle` (`registry_ops.rs:1716`) | **remove** (bundles dropped, brief §15) |
 
 ---
@@ -375,18 +388,18 @@ is not an error: the consumer holds on its current pinned release.
 1. **sha256 repo** (G5) — `git init --object-format=sha256` at registry
    create (`create`, `registry_ops.rs:421`). Coordinated with
    [workstream-01](./workstream-01-object-store.md).
-2. **Tag-message TOML** (G8) — generate/parse exactly `[meta]` + `[[caches]]`
-   ([tag-metadata.md](../../registry/tag-metadata.md)); reject extra tables.
+2. **Pure signed tags** (G8) — tags carry no structured payload; the message is
+   an optional freeform human note only. No TOML schema to generate or parse.
 3. **Sign tag objects** (G1) — rewrite `apr sign`/`apr tag` to
-   `git -c gpg.format=ssh tag -s -F <toml>`; activate the `_key` arg.
+   `git -c gpg.format=ssh tag -s`; activate the `_key` arg.
 4. **Tag verification** (G2) — retarget `verify_commit_signature` to `verify-tag`
    / raw tag-object bytes; read the embedded tag-name and target.
 5. **Name-binding** (G3) — assert embedded tag-name == expected serving-path name
    (channel name | semver) at both hops.
 6. **Chain walk** (G4) — `verify_and_select` (§8): HOP-1 partition → HOP-2 semver
    → commit, signature + name + type/target at each hop.
-7. **`valid_until`** (G6) — enforce short channel freshness vs. generous release
-   lifetime; do not let release expiry fight long TTL.
+7. **Freshness** (G6) — enforce channel freshness from low CDN TTL + the
+   consumer's max-staleness policy; no in-band `valid_until`.
 8. **Semver floor + fix-forward** (G7) — persist the monotonic floor, refuse
    `candidate < floor`, compose with `check_downgrade`; never decrement
    partitions.
@@ -400,8 +413,10 @@ Dependency order: 1 → (2,3) → 4 → 5 → 6 → (7,8); 9 any time.
 
 - **sha256 client support** over dumb HTTP (no negotiation) —
   [open-questions.md](./open-questions.md) #1.
-- **Release `valid_until` window** length and re-sign/key-rotation cadence —
-  open-questions #5; must not fight long release TTL (§5).
+- **Frozen-but-validly-signed mirror** exposure — without in-band signed expiry,
+  a mirror can pin a fleet to an old (legitimately-signed, floor-passing) release
+  past its CDN TTL; only the consumer's max-staleness policy and the monotonic
+  floor mitigate this (§5). Key-rotation cadence — open-questions #5.
 - **Key rotation UX:** a rotated key surfaces as `tofu_check` → `KeyMismatch`
   (`security.rs:182`); decide between pre-provisioning into `trusted-keys.d` vs.
   an explicit `apr trust` re-pin flow.
@@ -424,7 +439,6 @@ Dependency order: 1 → (2,3) → 4 → 5 → 6 → (7,8); 9 any time.
   [workstream-05-consumer.md](./workstream-05-consumer.md) ·
   [open-questions.md](./open-questions.md)
 - Reference: [signing-and-trust.md](../../registry/signing-and-trust.md) ·
-  [tag-metadata.md](../../registry/tag-metadata.md) ·
   [versioning-and-channels.md](../../registry/versioning-and-channels.md) ·
   [http-layout.md](../../registry/http-layout.md) ·
   [architecture.md](../../registry/architecture.md) ·
