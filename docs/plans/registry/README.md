@@ -180,6 +180,7 @@ registry in a consistent, deployable state.
 | **M3** | Signing & trust | signed tag objects (pure signed pointers), name-binding, `tag→tag→commit`, anti-rollback/fix-forward | [WS-04](./workstream-04-signing-trust.md) |
 | **M4** | Channels & rollouts | 256 signed partition tags, channels-as-branches/frontier, bucket selection, publisher rollout control | [WS-03](./workstream-03-channels-rollouts.md) |
 | **M5** | Consumer cutover | bucket → channel tag → semver tag → commit, delta walk + retention, name-bound verification, client-side Nix-cache superset | [WS-05](./workstream-05-consumer.md) |
+| **M6** | Nix-cache emitter | `nix-cache-info` + `<storehash>.narinfo` + `nar/`, References basename expansion, per-narinfo Ed25519 `Sig:`, origin-as-substituter | [WS-06](./workstream-06-nix-cache.md) |
 
 ```
  M0 ──► M1 ──► M2 ──────────────┐
@@ -188,6 +189,9 @@ registry in a consistent, deployable state.
                                 │
                                 ▼
                                M5  (consumer reads the new surface)
+                                │
+                                ▼
+                               M6  (origin emits the Nix-cache superset)
 ```
 
 Notes on the dependency edges:
@@ -209,6 +213,11 @@ Notes on the dependency edges:
 - **M2 is parallelizable with M3.** The pack/delta pipeline (objects only) and
   the signing/trust primitive (tags only) touch disjoint surfaces and can proceed
   concurrently once the object store exists.
+- **M3 → M6.** The Nix-cache emitter (WS-06) reuses the one Ed25519 key from
+  WS-04 for the per-narinfo `Sig:`, so the signing/trust primitive must exist
+  first. The narinfo/`nar/` surface is otherwise orthogonal to the git trust
+  chain (NARs are content-addressed), so M6 can land after M3 independently of
+  the consumer cutover (M5).
 
 ---
 
@@ -226,6 +235,7 @@ follows the on-disk specs; the **milestone order** above sequences signing
 | 03 | [Channels & rollouts](./workstream-03-channels-rollouts.md) | 256 signed partition tags, channels-as-branches/frontier, deterministic bucket selection, publisher rollout control | §5, §6, §7 |
 | 04 | [Signing & trust](./workstream-04-signing-trust.md) | signed tag objects (pure signed pointers), name-binding, `tag→tag→commit`, sha256, anti-rollback/fix-forward | §5, §11 |
 | 05 | [Consumer](./workstream-05-consumer.md) | bucket → channel tag → semver tag → commit resolution, delta walk, retention, name-bound verification, client-side Nix-cache superset | §6, §9, §13 |
+| 06 | [Nix cache](./workstream-06-nix-cache.md) | origin-side `nix-cache-info`/`<storehash>.narinfo`/`nar/` emitter, References basename expansion, per-narinfo Ed25519 `Sig:`, origin-as-substituter | §13, §11 |
 
 ### Workstream sequencing rationale
 
@@ -237,7 +247,10 @@ parallel over disjoint surfaces (objects vs tags). WS-03 layers the 256-partitio
 rollout and channel branches on top of WS-04's signed-tag primitive. WS-05 flips
 the consumer to resolve buckets, walk the delta graph, verify name-binding, and
 read the client-side Nix-cache superset — only after a producer can publish all
-of it, so it lands last.
+of it, so it lands last. WS-06 adds the **origin-side** Nix-cache emitter
+(`nix-cache-info`/narinfo/`nar/`); it reuses WS-04's signing key for the
+per-narinfo `Sig:` but is otherwise orthogonal to the git trust chain (NARs are
+content-addressed), so it can follow WS-04 independently of WS-05.
 
 ---
 
@@ -364,7 +377,8 @@ object store carries everything else.
   [02 Pack & delta pipeline](./workstream-02-pack-delta-pipeline.md) ·
   [03 Channels & rollouts](./workstream-03-channels-rollouts.md) ·
   [04 Signing & trust](./workstream-04-signing-trust.md) ·
-  [05 Consumer](./workstream-05-consumer.md).
+  [05 Consumer](./workstream-05-consumer.md) ·
+  [06 Nix cache](./workstream-06-nix-cache.md).
 
 ### Reference set (`docs/registry/`, describes the **TARGET** state)
 

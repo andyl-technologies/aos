@@ -40,8 +40,8 @@ The two **TARGET** deltas vs. CURRENT are: the signing pubkey moves **out** of
 ## 2. `registry.toml` — registry-level config (root of the tree)
 
 The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
-(`crates/aos-package/src/types.rs:566-573`), read at `registry_ops.rs:393` and written
-with a default at `registry_ops.rs:443-450`.
+(`crates/aos-package/src/types.rs:563-570`), read by `read_registry_toml`
+(`registry_ops.rs:391-402`) and written with a default at `registry_ops.rs:443-450`.
 
 > **Do not confuse this with the removed signed-HTTP-root `registry.toml`.** An
 > intermediate design briefly proposed a *mutable file served at the origin root*
@@ -68,13 +68,14 @@ priority = 100                         # fallback
 ```
 
 - `[[caches]]` is `CacheEntry { url, priority }`, `default_cache_priority() == 100`
-  (`types.rs:585-593`). `resolve_mirrors` sorts **descending** (higher first,
+  (`types.rs:582-590`). `resolve_mirrors` sorts **descending** (higher first,
   `registry_ops.rs:405-414`); `resolve_mirror` takes the first
-  (`download.rs:67-82`). See [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
+  (`download.rs:85-97`). See [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
 - **No signing key here (TARGET).** The CURRENT `RegistryRootConfig` also carries
-  `signing.public_key`; in the target that is **removed** — a key inside a file
-  authenticated *by* that key is circular for bootstrap. Key trust lives in
-  `keys.toml` + client-side TOFU (§3).
+  an optional `signing` field of type `RegistrySigningConfig`, which holds
+  `public_key` (`types.rs:593-596`); in the target that is **removed** — a key
+  inside a file authenticated *by* that key is circular for bootstrap. Key trust
+  lives in `keys.toml` + client-side TOFU (§3).
 
 ---
 
@@ -124,7 +125,7 @@ enough that the out-of-band re-pin is acceptable.
 
 > **Defence-in-depth note:** even an authenticated-but-wrong cache pointer can't serve
 > bad bytes — NARs are content-addressed and SHA-256-verified on download
-> (`download.rs:102-115`). So the trust that matters is the *tag/commit* chain (which
+> (`download_one`, `download.rs:191-204`). So the trust that matters is the *tag/commit* chain (which
 > `keys.toml` governs), not the cache list.
 
 ---
@@ -132,10 +133,10 @@ enough that the out-of-band re-pin is acceptable.
 ## 4. `packages/<first-letter>/<name>.toml` — package metadata
 
 Sharded one subdirectory per first letter of the package name (`first_letter`,
-`registry_ops.rs:149`; layout `parse.rs:74,82`; written by `build_package_toml`,
-`registry_ops.rs:527-528,784-785`). The on-disk shape is the **nested** `PackageToml`
-(`registry/parse.rs:14-70`); the consumer flattens it into `PackageMeta`
-(`types.rs:43-77`) in memory.
+`registry_ops.rs:149`; layout documented at `parse.rs:74`, walked at `parse.rs:89-102`;
+written by `build_package_toml`, `registry_ops.rs:527-528,784-785`). The on-disk shape
+is the **nested** `PackageToml` (`registry/parse.rs:14-66`); the consumer flattens it
+into `PackageMeta` (`types.rs:43-74`) in memory.
 
 ```toml
 [package]
@@ -171,7 +172,8 @@ git-native redesign.
 
 ## 5. `closures/<hash>` — dependency graph
 
-One file per root store-path hash, an **adjacency list** (`registry_ops.rs:303-346`):
+One file per root store-path hash, an **adjacency list** (`write_closure_files`,
+`registry_ops.rs:305-352`):
 
 ```
 <root-hash> <dep-hash> <dep-hash> <dep-hash>
@@ -215,7 +217,7 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 
 | File | CURRENT (today's code) | TARGET |
 |---|---|---|
-| `registry.toml` | `[registry]` + `[[caches]]` + `[registry.signing].public_key` (`RegistryRootConfig`) | `[registry]` + `[[caches]]` — **pubkey removed** |
+| `registry.toml` | `[registry]` + `[[caches]]` + `[signing].public_key` (`RegistryRootConfig.signing: RegistrySigningConfig`) | `[registry]` + `[[caches]]` — **pubkey removed** |
 | `keys.toml` | — (pubkey lives in `registry.toml`) | **new** trust roster (active keys + revoked) |
 | `packages/<x>/<name>.toml` | nested `PackageToml` | unchanged |
 | `closures/<hash>` | adjacency list | unchanged |

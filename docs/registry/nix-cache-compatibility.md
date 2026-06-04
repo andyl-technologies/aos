@@ -118,7 +118,7 @@ pointers and carry no structured payload — there is no tag-message TOML, no
 `[meta]`, no `[[caches]]` *in the tag*. Instead the cache list lives in the
 **committed git-repo-root `registry.toml`** `[[caches]]` table — a tree file
 authenticated transitively by the signed tag (tag → commit → tree → file), the
-existing `RegistryRootConfig` (`crates/aos-package/src/types.rs:566-573`). See
+existing `RegistryRootConfig` (`crates/aos-package/src/types.rs:564-570`). See
 [`repo-layout.md`](repo-layout.md) §2 for the full tree shape.
 
 The substituter location therefore comes from:
@@ -166,36 +166,39 @@ array from a **repo-root `registry.toml`** (parsed by `RegistryRootConfig`, livi
 a signed tag. The git-native target **keeps this committed `registry.toml`
 `[[caches]]`** as the authoritative cache list (authenticated via the signed tag),
 and **adds** an optional consumer-side `registries.d/<name>.toml` override; only the
-signing *pubkey* leaves `registry.toml` (it moves to `keys.toml` — see
+signing *pubkey* (the `RegistrySigningConfig.public_key`,
+`crates/aos-package/src/types.rs:594-595`, reached via the `signing` field of
+`RegistryRootConfig`) leaves `registry.toml` (it moves to `keys.toml` — see
 [`repo-layout.md`](repo-layout.md) §3, §7). The parsing/sorting/selection logic
 below is reusable as-is.
 
 - `CacheEntry { url, priority }` with `default_cache_priority() == 100`
-  (`crates/aos-package/src/types.rs:585-593`), nested under `RegistryRootConfig`
-  (`types.rs:566-573`).
+  (`crates/aos-package/src/types.rs:582-590`), nested under `RegistryRootConfig`
+  (`types.rs:564-570`).
 - `resolve_mirrors` reads the caches and sorts them **descending by priority**
   (higher first), returning `Vec<CacheEntry>`
   (`crates/aos-package/src/registry_ops.rs:405-414`).
 - `resolve_mirror` picks the first (highest-priority) cache, else falls back to
-  `{registry.url}/nar` (`crates/aos-package/src/download.rs:67-82`).
+  the registry URL itself (`crates/aos-package/src/download.rs:85-97`).
 
 **Blob download (CURRENT).** Content-addressed and zstd-compressed:
 
-- `nar_url(mirror_url, nar_hash)` builds `{mirror_url}/{nar_hash}.nar.zst`, using
-  the **full** `sha256:<hex>` string — the literal colon is kept in the wire
-  filename (`crates/aos-package/src/download.rs:57-60`).
-- The compressed file is verified by SHA-256 of its bytes against
-  `download_hash` (`crates/aos-package/src/download.rs:102-115`), **not** by a
-  signature.
+- The NAR blob URL is `join_cache_url(mirror_url, narinfo.url)` — the cache base
+  joined with the narinfo-supplied `URL:` path
+  (`crates/aos-package/src/download.rs:65-71`, applied at `download.rs:184`).
+- The compressed file is verified by SHA-256 of its bytes against the narinfo
+  `FileHash` (falling back to `NarHash` when uncompressed) — wired into the
+  transfer request via `.with_hash(...)`
+  (`crates/aos-package/src/download.rs:191-204`), **not** by a signature.
 - On disk the consumer rewrites the colon to a dash for filesystem safety:
   `nar_cache_filename` → `sha256-<hex>.nar.zst`
-  (`crates/aos-package/src/download.rs:232-235`).
+  (`crates/aos-package/src/download.rs:314-317`).
 
 **narinfo source data (CURRENT).** The fields a narinfo needs already exist in
 the flattened in-memory `PackageMeta`
-(`crates/aos-package/src/types.rs:43-77`), which is the projection of the nested
+(`crates/aos-package/src/types.rs:43-74`), which is the projection of the nested
 on-disk `PackageToml` (deserialized in
-`crates/aos-package/src/registry/parse.rs`). Every narinfo field except the
+`crates/aos-package/src/registry/parse.rs:15`). Every narinfo field except the
 signature maps to a field already on that struct (§6).
 
 What is **missing** today: there is no `nix-cache-info` emitter and no
@@ -236,31 +239,31 @@ Priority: 41
 
 A narinfo is line-oriented `Key: value` text. The table maps each narinfo field
 to the corresponding field on the flattened `PackageMeta`
-(`crates/aos-package/src/types.rs:43-77`). This is the authoritative mapping from
+(`crates/aos-package/src/types.rs:44-74`). This is the authoritative mapping from
 design brief §13, reconciled with the actual struct.
 
 | narinfo field | Source (`PackageMeta` field / derivation) | Code reference | Notes |
 |---|---|---|---|
 | `StorePath` | `store_path` | `types.rs:53` | Full store path, e.g. `/nix/store/<hash>-<name>`. |
-| `URL` | derived: `nar/<key>.nar.zst` (relative to cache) | n/a (`download.rs:57`) | Relative path to the blob under the configured cache URL. See §9 for the exact key. |
+| `URL` | derived: `nar/<key>.nar.zst` (relative to cache) | n/a (`download.rs:65-77`) | Relative path to the blob under the configured cache URL; on the consumer side this is the narinfo `URL:` field joined via `join_cache_url`. See §9 for the exact key. |
 | `Compression` | constant `zstd` | n/a | AOS NARs are always zstd-compressed (`.nar.zst`). |
-| `FileHash` | `download_hash` (`sha256:<hex>`) | `types.rs:57-58` | Hash of the **compressed** `.nar.zst` file. |
-| `FileSize` | `download_size` | `types.rs:59` | Size in bytes of the compressed file. |
-| `NarHash` | `nar_hash` (`sha256:<hex>`) | `types.rs:54` | Hash of the **uncompressed** NAR. |
+| `FileHash` | — (not on `PackageMeta`; producer-derived) | n/a (consumer reads narinfo `FileHash`, `download.rs:191-204`) | Hash of the **compressed** `.nar.zst` file. Not stored on `PackageMeta` or in the package TOML (`PlatformEntry`, `parse.rs:44-57`); the emitter computes it at publish time and the consumer trusts the narinfo. |
+| `FileSize` | — (not on `PackageMeta`; producer-derived) | n/a (consumer reads narinfo `FileSize`, `download.rs:206`) | Size in bytes of the compressed file. Not stored on `PackageMeta` or in the package TOML; emitter-supplied. |
+| `NarHash` | `nar_hash` (`sha256:<hex>`) | `types.rs:55` | Hash of the **uncompressed** NAR. |
 | `NarSize` | `nar_size` | `types.rs:56` | Size in bytes of the uncompressed NAR. |
-| `References` | `references` (**bare hashes**) | `types.rs:60-61` | ⚠️ Must be expanded `<hash>` → `<hash>-<name>` basenames; see §7. |
-| `Deriver` | `source_drv` | `types.rs:64` | Optional. The `.drv` basename, e.g. `<hash>-<name>.drv`. |
+| `References` | `references` (**bare hashes**) | `types.rs:57-58` | ⚠️ Must be expanded `<hash>` → `<hash>-<name>` basenames; see §7. |
+| `Deriver` | `source_drv` | `types.rs:59-60` | Optional. The `.drv` basename, e.g. `<hash>-<name>.drv`. |
 | `Sig` | — (must be generated) | n/a | **Not present in any TOML.** Ed25519 narinfo signature; see §8. |
 | `System` | `platform` (optional, omittable) | `types.rs:52` | Nix tolerates absence; not required. |
 | `CA` | — (omit) | n/a | AOS paths are input-addressed; `CA` omitted. |
 
 Fields AOS carries but a narinfo does not need:
 
-- `closure_size` (`types.rs:66-67`) — AOS-side total closure size; Nix recomputes
+- `closure_size` (`types.rs:63-64`) — AOS-side total closure size; Nix recomputes
   closures from `References`.
-- `source_nar_hash` (`types.rs:65`) — provenance of the source derivation; not a
+- `source_nar_hash` (`types.rs:61-62`) — provenance of the source derivation; not a
   narinfo field.
-- `sysroot` / `previous` / `images` (`types.rs:69-76`) — AOS sysroot semantics;
+- `sysroot` / `previous` / `images` (`types.rs:65-73`) — AOS sysroot semantics;
   irrelevant to the narinfo *fields*. But the `images` entries are themselves
   store paths and each gets its own narinfo — see §6.2.
 
@@ -282,7 +285,7 @@ Sig: aos-core:base64signature==
 ### 6.2 Sysroot images are their own store paths (TARGET)
 
 For sysroot packages, each pre-compiled image (`SysrootImageEntry`, carried in
-`PackageMeta.images`, `types.rs:74-76` and defined at `types.rs:607-614`) is
+`PackageMeta.images`, `types.rs:71-73` and defined at `types.rs:604-609`) is
 itself a distinct store path with its own `store_path` / `nar_hash` /
 `download_hash`. Each such image therefore gets its **own**
 `<storehash>.narinfo`, emitted exactly like a regular package narinfo (§6) —
@@ -296,9 +299,9 @@ rather than the top-level `PackageMeta`).
 
 This is the **one non-mechanical transform** in the mapping. AOS stores the
 `references` field as a list of **bare store-path hashes** — "Store path hashes
-of direct runtime references" (`crates/aos-package/src/types.rs:60-61`). The
+of direct runtime references" (`crates/aos-package/src/types.rs:57-58`). The
 closure files (`closures/<hash>`) use the same bare-hash adjacency-list format
-(`types.rs:90-95`).
+(`ClosureMeta`, `types.rs:80-102`).
 
 Nix narinfo `References`, by contrast, requires **store-path basenames** of the
 form `<hash>-<name>`. The emitter must resolve each bare hash to its full
@@ -336,8 +339,8 @@ signs the git tags (design brief §11):
   the *signatures differ*, but there is **one secret to manage**.
 - **Two published public-key encodings** from that one key:
   - `aos-core:Ed25519:<base64>` — the apm form for TOFU / `trusted-keys.d` (the
-    `SigningConfig.public_key` format, `crates/aos-package/src/types.rs:249-250`,
-    parsed as `<name>:Ed25519:<base64>` by `parse_signing_key` in `security.rs`).
+    `SigningConfig.public_key` format, `crates/aos-package/src/types.rs:243-248`,
+    parsed as `<name>:Ed25519:<base64>` by `parse_signing_key` in `security.rs:306`).
   - `<name>:<base64>` — the nix form for Nix `trusted-public-keys`.
 
 ### 8.1 Why a per-narinfo `Sig` exists at all
@@ -346,7 +349,7 @@ signs the git tags (design brief §11):
 `tag → tag → commit` authenticates the whole git tree (a Merkle DAG) → every
 package TOML → every NAR SHA-256 recorded in those TOMLs (design brief §5, §11).
 So `apm` needs **no** per-NAR signature; NARs are authenticated transitively and
-verified by content hash (`download.rs:102-115`).
+verified by content hash (`download.rs:191-204`).
 
 The per-narinfo `Sig:` exists **only** to satisfy a stock `nix` substituter
 without forcing the operator to set `require-sigs = false`. It is a compatibility
@@ -370,10 +373,12 @@ name-binding, and the `tag → tag → commit` chain.
 The narinfo `URL:` is a relative path the cache must serve, under the configured
 cache URL (§3). Two facts constrain it:
 
-1. **CURRENT blob key.** The consumer downloads from
-   `{mirror_url}/{nar_hash}.nar.zst` with the full `sha256:<hex>` retained
-   (`crates/aos-package/src/download.rs:57-60`). On disk it rewrites the colon to
-   a dash (`download.rs:232-235`), but the **wire** filename keeps the colon.
+1. **CURRENT blob key.** The consumer downloads from the cache base joined with
+   the narinfo `URL:` field — `join_cache_url(mirror_url, narinfo.url)`
+   (`crates/aos-package/src/download.rs:65-71`, applied at `download.rs:184`); the
+   AOS wire convention keeps the full `sha256:<hex>` with the literal colon. On
+   disk the consumer rewrites the colon to a dash (`nar_cache_filename`,
+   `download.rs:314-317`), but the **wire** filename keeps the colon.
 2. **Cache placement (committed `[[caches]]`, optionally overridden).** The cache
    may be co-located with the git repo on one origin (a relative `[[caches]]` url
    like `./nar`) or on a separate host (an absolute url); the pointer lives in the
@@ -389,7 +394,7 @@ cache URL (§3). Two facts constrain it:
 > **Colon-in-filename caveat:** S3 allows a literal `:` in object keys, but some
 > CDN/edge layers percent-encode or reject it. If the chosen edge mangles the
 > colon, the emitter must serve the blob under a colon-free key (e.g. the
-> `sha256-<hex>` form the consumer already uses on disk, `download.rs:232-235`)
+> `sha256-<hex>` form the consumer already uses on disk, `download.rs:314-317`)
 > and set `URL:` to match. This is a deployment decision; see
 > [open-questions.md](../plans/registry/open-questions.md).
 
@@ -473,7 +478,7 @@ host nix                         AOS cache (URL from registry.toml [[caches]] / 
 `apm` on an AOS host, meanwhile, walks the git metadata layer (channel partition
 tag → semver tag → commit → package TOML) and fetches NARs by content hash from
 the cache named in the committed `registry.toml` `[[caches]]` (or a client-side
-override) — verifying `download_hash` (`download.rs:102-115`), never the narinfo
+override) — verifying the content hash (`download.rs:191-204`), never the narinfo
 `Sig:`. The two clients share the blobs but trust them via independent layers (§1).
 
 ---
@@ -485,7 +490,7 @@ already done in `download.rs`; the work is the metadata projection and signing o
 the **producer** side):
 
 1. **Cache list stays in the committed `registry.toml`** — the existing
-   `CacheEntry` shape (`types.rs:585-593`) keeps living in the git-repo-root
+   `CacheEntry` shape (`types.rs:582-590`) keeps living in the git-repo-root
    `registry.toml` `[[caches]]` (authenticated via the signed tag —
    [`repo-layout.md`](repo-layout.md) §2), with an optional client-side
    `registries.d/<name>.toml` override. Nothing is embedded in a signed tag (§3); no
@@ -502,10 +507,13 @@ the **producer** side):
    key plumbing is stock Nix.
 
 These map to plan
+[workstream-06-nix-cache.md](../plans/registry/workstream-06-nix-cache.md) (the
+origin-side `nix-cache-info`/narinfo/`nar/` emitter, References basename
+expansion, and per-narinfo `Sig:` — the producer work in items 2–6 above),
 [workstream-05-consumer.md](../plans/registry/workstream-05-consumer.md) (the
-consumer-side Nix substituter superset) and
+consumer-side Nix substituter superset, item 7), and
 [workstream-04-signing-trust.md](../plans/registry/workstream-04-signing-trust.md)
-(the one-key signing model).
+(the one-key signing model reused by item 5).
 
 ---
 
@@ -520,7 +528,8 @@ consumer-side Nix substituter superset) and
   `tag → tag → commit`.
 - [current-state.md](current-state.md) — the as-is bundle/`creation_token`
   implementation.
-- Plan: [workstream-05-consumer.md](../plans/registry/workstream-05-consumer.md),
+- Plan: [workstream-06-nix-cache.md](../plans/registry/workstream-06-nix-cache.md),
+  [workstream-05-consumer.md](../plans/registry/workstream-05-consumer.md),
   [workstream-04-signing-trust.md](../plans/registry/workstream-04-signing-trust.md),
   [open-questions.md](../plans/registry/open-questions.md),
   [design-brief.md](../plans/registry/design-brief.md) §13, §11.

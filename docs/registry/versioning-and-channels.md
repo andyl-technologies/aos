@@ -390,20 +390,20 @@ ancestry (§2.2, §7.1).
 ### 8.2 Tag → semver projection (CURRENT)
 
 Calendar tags are *also* projected to semver by `parse_tag_as_semver`
-(`crates/aos-package/src/update.rs:429-450`) — strip the leading `v`, parse each
+(`crates/aos-package/src/update.rs:456-477`) — strip the leading `v`, parse each
 component as `u64` to drop leading zeros, pad a 2-component tag to `X.Y.0` — so a
 host can write `version = "~2026.3"` and match `v2026.03`. Best-match selection is
-`find_best_version_tag_in_manifest` (`update.rs:400-424`). In the **target**, this
+`find_best_version_tag_in_manifest` (`update.rs:427-451`). In the **target**, this
 projection is unnecessary: versions are *already* `MAJOR.MINOR.PATCH` semver with no
 `v` and no calendar normalization.
 
 ### 8.3 Tracking modes (CURRENT)
 
 A host subscribes via `~/.config/apm/registries.d/{name}.toml`; the resolved mode is
-`TrackingMode` (`crates/aos-package/src/types.rs:281-293`):
+`TrackingMode` (`crates/aos-package/src/types.rs:279-290`):
 
 ```rust
-// types.rs:281
+// types.rs:279
 pub enum TrackingMode {
     Commit(String),                  // frozen to an exact commit hash
     Branch(String),                  // track HEAD of a named branch
@@ -426,10 +426,10 @@ addition (§3–§6). The natural mapping under the target model:
 ### 8.4 Monotonic check (CURRENT, conditional)
 
 The current downgrade guard is `check_monotonic` (`state.rs:104-117`), called from
-`update.rs:263-267`:
+`update.rs:290-294`:
 
 ```rust
-// update.rs:262
+// update.rs:289
 // Downgrade protection: check monotonic ordering.
 if let Some(old_token) = reg_state.last_creation_token {
     if latest_token > old_token {
