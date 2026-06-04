@@ -46,7 +46,7 @@ Keep this file current as work lands.
 ## WS-04 Signing And Trust
 
 - [x] Add `registry::keys` module for committed `keys.toml`.
-- [ ] Remove in-repo `registry.toml` signing public-key field.
+- [x] Remove in-repo `registry.toml` signing public-key field.
 - [x] Add `git verify-tag` helper.
 - [x] Add tag-object parser and name-binding checks.
 - [ ] Add tag-chain verification helper.
@@ -72,7 +72,7 @@ Keep this file current as work lands.
 
 ## Docs Cleanup
 
-- [ ] Clear completed current-state sections from `docs/registry/*` as old behavior
+- [x] Clear completed current-state sections from `docs/registry/*` as old behavior
       is removed from code.
 - [ ] Keep `docs/registry/current-state.md` only for remaining as-is behavior and
       historical reference.
