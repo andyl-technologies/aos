@@ -2,11 +2,16 @@
 ##! python http.server serving / over HTTP on :8000, applied via
 ##! ignition first-boot.
 ##!
-##! The role's typed definition is unconditional — the image builder
-##! may want to materialise its `ignitionConfigDrv` even on hosts
-##! that don't locally activate it. Side effects (systemPackages,
-##! the integration check) live behind `lib.mkIf cfg.enable`, so the
-##! file is inert on hosts whose profile didn't activate the role.
+##! The role's typed definition is set unconditionally (`aos.roles.
+##! test-http-server = { … }`) so per-role assertions and the
+##! fleet-spec enum can introspect it on every host. Side effects
+##! (`environment.systemPackages`, the integration check) live behind
+##! `lib.mkIf cfg.bundle`, and the role's ignition fragment lands in
+##! `/etc/aos/ignition-roles/test-http-server` only on hosts that set
+##! `bundle = true`. Activation is still a separate runtime decision —
+##! the fragment takes effect only when an ignition merge points at
+##! it (e.g. the fleet harness's `roles = ["test-http-server"]`
+##! shorthand, or cloud-init userdata in production).
 {
   config,
   lib,
@@ -18,16 +23,21 @@ in {
   config = lib.mkMerge [
     {
       aos.roles.test-http-server = {
+        # Open 8000/tcp — required for fleet tests where peer machines
+        # reach this server over the multicast L2. Set unconditionally
+        # so it rides the role's ignitionConfig and takes effect only
+        # on hosts that activate the role at first boot.
+        firewall.allowedTCP = [8000];
+
         systemd.services.test-http-server = {
           description = "Test python http.server on :8000";
 
-          # `wantedBy` populates [Install] WantedBy= via the renderer
-          # extended in §3.2; `enabled = true` is what writes
-          # `enable test-http-server.service` to the ignition preset
-          # file, which `systemctl preset-all` (added to the initrd
-          # by §6 step 2) then turns into the runtime .wants symlink.
+          # `wantedBy` populates [Install] WantedBy= via the renderer.
+          # Under the composefs /etc model (spec v12 §5.6) the install
+          # symlink is laid down at image build time through
+          # render-role.nix's predicted storage.links — no runtime
+          # preset walker is involved.
           wantedBy = ["multi-user.target"];
-          enabled = true;
 
           serviceConfig = {
             # Bind to all addresses so the same role works for both
@@ -36,25 +46,30 @@ in {
             # over the multicast L2). This is a test role; firewalling is
             # not in scope.
             ExecStart = "${pkgs.python3}/bin/python3 -m http.server --bind 0.0.0.0 8000";
-            WorkingDirectory = "/";
+            WorkingDirectory = "%S";
+            StateDirectory = "test-http-server";
             Restart = "on-failure";
-            # Hardening — http.server reads /, writes nothing.
             DynamicUser = true;
             ProtectSystem = "strict";
             ProtectHome = true;
             PrivateTmp = true;
           };
         };
+
+        systemd.services.aos-upgrade-removed = {
+          description = "Upgrade-test removed oneshot";
+          wantedBy = ["multi-user.target"];
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.coreutils}/bin/true";
+            ExecStop = "${pkgs.coreutils}/bin/touch /run/removed-stop-ran";
+            RemainAfterExit = true;
+          };
+        };
       };
     }
 
-    (lib.mkIf cfg.enable {
-      # Open 8000/tcp on the host firewall — required for fleet tests
-      # where peer machines reach this server over the multicast L2.
-      # Without it, the standard security level's default-deny INPUT
-      # chain drops inbound HTTP. No-op for single-VM loopback tests.
-      aos.firewall.allowedTCP = [8000];
-
+    (lib.mkIf cfg.bundle {
       # The unit's ExecStart references ${pkgs.python3} (an absolute
       # store path). Ignition can write the unit but can't pull store
       # paths out of nowhere — the closure must already contain them.
@@ -83,23 +98,22 @@ in {
             name = "unit-file-written";
             description = "ignition-files wrote test-http-server.service to /etc";
             script = ''
-              assert_output_contains \
-                "test -f /etc/systemd/system/test-http-server.service && echo OK" \
-                "OK" \
-                "ignition-files should have created the unit file"
+              vm.succeed("test -f /etc/systemd/system/test-http-server.service")
             '';
           }
           {
             name = "wants-symlink-present";
-            description = "aos-ignition-preset created the multi-user.target.wants symlink";
+            description = "render-role.nix's storage.links produced the multi-user.target.wants symlink";
             script = ''
-              # aos-ignition-preset (initrd) parses the preset file
-              # ignition wrote and creates the corresponding `.wants` /
-              # `.requires` / `.upholds` / Alias= symlinks under
-              # /var/etc/systemd/system/, which the /etc overlay
-              # surfaces at /etc/systemd/system/. The presence of this
-              # symlink — not `systemctl is-enabled` — is what makes
-              # systemd's job-runner pull the unit into the boot.
+              # Under spec v12 §5.6, render-role.nix predicts the
+              # install symlinks `generateUnits` lays down (top-level
+              # unit files + .wants/.requires/.upholds + aliases) and
+              # ignition writes each as a `storage.links` entry into
+              # the per-gen role lower at
+              # /run/etc/ignition-<gen>/etc/systemd/system/. The /etc
+              # overlay's three-layer mount surfaces that lower at
+              # /etc/systemd/system/, so the install symlink is
+              # observable as a path on disk.
               #
               # We deliberately do NOT use `systemctl is-enabled`
               # here: AOS systemd is built with --sysconfdir=$out/etc
@@ -107,23 +121,20 @@ in {
               # lookup checks paths inside its own read-only nix-store
               # directory rather than /etc/systemd/system, and reports
               # `disabled` even when the .wants symlink is actually
-              # present and active. Same root cause that makes
-              # `systemctl preset-all` fail (see modules/services/
-              # ignition.nix's aos-ignition-preset.service comment).
-              # The symlink-presence check is the load-bearing one.
-              assert_success \
-                "test -L /etc/systemd/system/multi-user.target.wants/test-http-server.service" \
-                "multi-user.target.wants/test-http-server.service symlink should exist"
+              # present and active. The symlink-presence check is the
+              # load-bearing one.
+              vm.succeed(
+                  "test -L /etc/systemd/system/multi-user.target.wants/test-http-server.service"
+              )
             '';
           }
           {
             name = "unit-active";
             description = "stage-2 systemd activated the unit via WantedBy=multi-user.target";
             script = ''
-              assert_output_contains \
-                "systemctl is-active test-http-server.service" \
-                "active" \
-                "test-http-server.service should be active after multi-user.target"
+              assert "active" in vm.succeed(
+                  "systemctl is-active test-http-server.service"
+              )
             '';
           }
           {
@@ -134,10 +145,9 @@ in {
               # the <h1> of its index page. That string is the most stable
               # marker we can assert without depending on what files
               # happen to be in /.
-              assert_output_contains \
-                "curl -s http://127.0.0.1:8000/" \
-                "Directory listing for /" \
-                "http.server should serve the root index over loopback"
+              assert "Directory listing for /" in vm.succeed(
+                  "curl -s http://127.0.0.1:8000/"
+              )
             '';
           }
           {
@@ -154,19 +164,16 @@ in {
               # `system.build.ignitionRolesBundle` (e.g. a stray broken
               # symlink) would fire here with a clear failure instead
               # of an opaque ignition-fetch error on next boot.
-              assert_success \
-                "test -f /etc/aos/ignition-roles/test-http-server" \
-                "stage-2 /etc/aos/ignition-roles/test-http-server should be a regular file (resolved through the bundle symlink)"
+              vm.succeed("test -f /etc/aos/ignition-roles/test-http-server")
               # The role's serialised JSON contains the unit name
               # verbatim — the renderer in lib/modules/ignition/systemd.nix
               # emits `name = "test-http-server.service"` into
               # `units[].name`. Loose-by-design: we only check that the
               # marker string is present, not that the full JSON
               # structure round-trips.
-              assert_output_contains \
-                "cat /etc/aos/ignition-roles/test-http-server" \
-                "test-http-server.service" \
-                "stage-2 mirror should expose the role's serialised ignition config"
+              assert "test-http-server.service" in vm.succeed(
+                  "cat /etc/aos/ignition-roles/test-http-server"
+              )
             '';
           }
         ];

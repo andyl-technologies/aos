@@ -14,42 +14,42 @@
         name = "journald-running";
         description = "systemd-journald is active";
         script = ''
-          assert_success "systemctl is-active systemd-journald" "journald is running"
+          vm.succeed("systemctl is-active systemd-journald")
         '';
       }
       {
         name = "networkd-unit";
         description = "systemd-networkd unit is installed";
         script = ''
-          assert_success "systemctl cat systemd-networkd.service" "networkd unit exists"
+          vm.succeed("systemctl cat systemd-networkd.service")
         '';
       }
       {
         name = "sshd-unit-exists";
         description = "sshd service unit is installed";
         script = ''
-          assert_success "systemctl cat sshd.service" "sshd.service unit exists"
+          vm.succeed("systemctl cat sshd.service")
         '';
       }
       {
         name = "sshd-config";
         description = "sshd configuration file is present";
         script = ''
-          assert_success "test -f /etc/ssh/sshd_config" "sshd_config exists"
+          vm.succeed("test -f /etc/ssh/sshd_config")
         '';
       }
       {
         name = "chrony-unit-exists";
         description = "chronyd service unit is installed";
         script = ''
-          assert_success "systemctl cat chronyd.service" "chronyd.service unit exists"
+          vm.succeed("systemctl cat chronyd.service")
         '';
       }
       {
         name = "chrony-config";
         description = "chrony configuration file is present";
         script = ''
-          assert_success "test -f /etc/chrony.conf" "chrony.conf exists"
+          vm.succeed("test -f /etc/chrony.conf")
         '';
       }
     ];

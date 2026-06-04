@@ -27,10 +27,10 @@ in
 
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-afGz52Nyc5PI1EZu4a5mXidJg8gIeo4tp4jnBVvooxQ=";
+      hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
     };
 
-    buildDeps = [perl pkg-config openssl protobuf];
+    buildDeps = [perl pkg-config openssl protobuf git];
     runtimeDeps = [openssl];
 
     preBuild = ''
@@ -42,7 +42,8 @@ in
       export PROTOC="${protobuf}/bin/protoc"
     '';
 
-    doCheck = false;
+    doCheck = true;
+    cargoTestFlags = "--workspace";
 
     postInstall = ''
           mv $out/bin/aos $out/bin/.aos-unwrapped

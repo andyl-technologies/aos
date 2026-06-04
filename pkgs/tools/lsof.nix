@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  patch,
+  patchelf,
   pkg-config,
   linux-headers,
   libtirpc,
@@ -27,6 +29,15 @@ in
     ];
     runtimeDeps = [libtirpc];
     propagatedDeps = [];
+
+    # Guard: keep the autotools build toolchain out of lsof's
+    # `-v`-baked PKG_CONFIG_PATH / CC strings.
+    disallowedReferences = [
+      gnumake
+      pkg-config
+      patch
+      patchelf
+    ];
 
     phases = [
       {

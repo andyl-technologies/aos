@@ -301,92 +301,89 @@ in {
           name = "sshd-active";
           description = "sshd service is active";
           script = ''
-            assert_success "systemctl is-active sshd" \
-              "sshd service is active"
+            vm.succeed("systemctl is-active sshd")
           '';
         }
         {
           name = "sshd-config";
           description = "sshd_config exists";
           script = ''
-            assert_success "test -f /etc/ssh/sshd_config" \
-              "sshd_config exists"
+            vm.succeed("test -f /etc/ssh/sshd_config")
           '';
         }
         {
           name = "password-auth-disabled";
           description = "Password authentication is disabled";
           script = ''
-            assert_output_contains "cat /etc/ssh/sshd_config" "PasswordAuthentication no" \
-              "Password authentication is disabled"
+            assert "PasswordAuthentication no" in vm.succeed("cat /etc/ssh/sshd_config")
           '';
         }
         {
           name = "sshd-use-pam";
           description = "sshd is configured to use PAM";
           script = ''
-            assert_output_contains "cat /etc/ssh/sshd_config" "UsePAM ${
+            assert "UsePAM ${
               if cfg.usePAM
               then "yes"
               else "no"
-            }" \
-              "UsePAM is ${
-              if cfg.usePAM
-              then "enabled"
-              else "disabled"
-            }"
+            }" in vm.succeed("cat /etc/ssh/sshd_config")
           '';
         }
         {
           name = "sshd-pam-config";
           description = "/etc/pam.d/sshd is present";
           script = ''
-            assert_success "test -f /etc/pam.d/sshd" "sshd PAM config exists"
+            vm.succeed("test -f /etc/pam.d/sshd")
           '';
         }
         {
           name = "sshd-pam-env-rule";
           description = "sshd PAM session stack invokes pam_env";
           script = ''
-            assert_output_contains "cat /etc/pam.d/sshd" "pam_env.so" \
-              "pam_env.so is in sshd PAM stack"
+            assert "pam_env.so" in vm.succeed("cat /etc/pam.d/sshd")
           '';
         }
         {
           name = "pam-environment-has-path";
           description = "/etc/pam/environment publishes PATH";
           script = ''
-            assert_output_contains "cat /etc/pam/environment" "PATH" \
-              "PATH is set in /etc/pam/environment"
+            assert "PATH" in vm.succeed("cat /etc/pam/environment")
           '';
         }
         {
           name = "sshd-pam-limits-rule";
           description = "sshd PAM session stack invokes pam_limits";
           script = ''
-            assert_output_contains "cat /etc/pam.d/sshd" "pam_limits.so" \
-              "pam_limits.so is in sshd PAM stack"
+            assert "pam_limits.so" in vm.succeed("cat /etc/pam.d/sshd")
           '';
         }
         {
           name = "ssh-noninteractive-inherits-path";
           description = "non-interactive ssh inherits the system PATH via pam_env";
           script = ''
-            GUEST_SCRIPT=$(cat <<'GUESTSCRIPT'
-            set -e
-            ssh-keygen -t ed25519 -N "" -f /tmp/aos-test-key -q
-            cat /tmp/aos-test-key.pub > /etc/ssh/authorized_keys/root
-            systemctl is-active --quiet sshd || systemctl start sshd
-            ssh -i /tmp/aos-test-key \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o BatchMode=yes \
-              -o LogLevel=ERROR \
-              root@127.0.0.1 'echo $PATH'
-            GUESTSCRIPT
+            import textwrap
+
+            # The bash blob runs on the guest: generate a keypair, install
+            # it as root's authorized_keys, then ssh to localhost and echo
+            # the inherited PATH. The Python source carries the inner
+            # `'echo $PATH'` literally — no host-side shell expansion.
+            ssh_output = vm.succeed(
+                textwrap.dedent(r"""
+                    set -e
+                    ssh-keygen -t ed25519 -N "" -f /tmp/aos-test-key -q
+                    cat /tmp/aos-test-key.pub > /etc/ssh/authorized_keys/root
+                    systemctl is-active --quiet sshd || systemctl start sshd
+                    ssh -i /tmp/aos-test-key \
+                      -o StrictHostKeyChecking=no \
+                      -o UserKnownHostsFile=/dev/null \
+                      -o BatchMode=yes \
+                      -o LogLevel=ERROR \
+                      root@127.0.0.1 'echo $PATH'
+                """).strip()
             )
-            assert_output_contains "$GUEST_SCRIPT" "${config.system.build.systemPath}" \
-              "non-interactive ssh inherits the full system PATH via pam_env"
+            assert "${config.system.build.systemPath}" in ssh_output, (
+                f"non-interactive ssh PATH missing expected entries: {ssh_output!r}"
+            )
           '';
         }
       ];

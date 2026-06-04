@@ -36,7 +36,7 @@ in
 
         # CC wrapper: always pass -static (libtool strips -static from LDFLAGS)
         mkdir -p "$TMPDIR/ccwrap"
-        printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
+        printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${glibc.static}/lib -L${glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
         chmod +x "$TMPDIR/ccwrap/gcc"
         export PATH="$TMPDIR/ccwrap:$PATH"
 
@@ -62,9 +62,9 @@ in
 
         export LIBRARY_PATH="${glibc}/lib"
         CC="$TMPDIR/ccwrap/gcc" \
-        CFLAGS="-O2 -isystem ${glibc}/include" \
-        CPPFLAGS="-isystem ${glibc}/include" \
-        LDFLAGS="-L${glibc}/lib -static -no-pie" \
+        CFLAGS="-O2 -isystem ${glibc.dev}/include" \
+        CPPFLAGS="-isystem ${glibc.dev}/include" \
+        LDFLAGS="-L${glibc.static}/lib -L${glibc}/lib -static -no-pie" \
         "$TMPDIR/make-4.4/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \

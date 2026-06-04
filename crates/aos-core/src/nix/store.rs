@@ -4,6 +4,8 @@ use std::process::{Child, Command, Stdio};
 
 use anyhow::{Context, Result};
 
+use super::env::aos_nix_env;
+
 /// Metadata for a store path, from nix-store queries or Nix DB.
 #[derive(Debug, Clone)]
 pub struct PathInfo {
@@ -31,7 +33,8 @@ impl NixCli {
     /// Instantiate an attribute from a file -> .drv path.
     pub fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let mut cmd = Command::new("nix-instantiate");
-        cmd.arg("-f").arg(file).arg("-A").arg(attr);
+        cmd.envs(aos_nix_env())
+            .arg("-f").arg(file).arg("-A").arg(attr);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -52,7 +55,7 @@ impl NixCli {
     /// Instantiate a raw expression -> .drv path.
     pub fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         let mut cmd = Command::new("nix-instantiate");
-        cmd.arg("-E").arg(expr);
+        cmd.envs(aos_nix_env()).arg("-E").arg(expr);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -73,7 +76,8 @@ impl NixCli {
     /// Build a derivation from a file + attribute -> store path.
     pub fn build(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let mut cmd = Command::new("nix-build");
-        cmd.arg(file).arg("-A").arg(attr).arg("--no-out-link");
+        cmd.envs(aos_nix_env())
+            .arg(file).arg("-A").arg(attr).arg("--no-out-link");
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -94,6 +98,7 @@ impl NixCli {
     /// Build a .drv directly -> output store path.
     pub fn realise(&self, drv: &str) -> Result<String> {
         let output = Command::new("nix-store")
+            .envs(aos_nix_env())
             .args(["--realise", drv])
             .stderr(Stdio::inherit())
             .output()
@@ -111,6 +116,7 @@ impl NixCli {
     /// Get recursive closure of a store path.
     pub fn closure(&self, path: &str) -> Result<Vec<String>> {
         let output = Command::new("nix-store")
+            .envs(aos_nix_env())
             .args(["-qR", path])
             .stderr(Stdio::inherit())
             .output()
@@ -164,6 +170,7 @@ impl NixCli {
     /// Check if a store path is valid locally.
     pub fn is_valid(&self, path: &str) -> Result<bool> {
         let status = Command::new("nix-store")
+            .envs(aos_nix_env())
             .args(["--check-validity", path])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -176,6 +183,7 @@ impl NixCli {
     #[allow(dead_code)] // public API
     pub fn nar_dump(&self, path: &str) -> Result<Child> {
         Command::new("nix-store")
+            .envs(aos_nix_env())
             .args(["--dump", path])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -187,6 +195,7 @@ impl NixCli {
     #[allow(dead_code)] // public API
     pub fn nar_export(&self, path: &str) -> Result<Child> {
         Command::new("nix-store")
+            .envs(aos_nix_env())
             .args(["--export", path])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -198,6 +207,7 @@ impl NixCli {
     #[allow(dead_code)] // public API
     pub fn nar_import(&self, mut data: impl Read) -> Result<Vec<String>> {
         let mut child = Command::new("nix-store")
+            .envs(aos_nix_env())
             .arg("--import")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -223,6 +233,7 @@ impl NixCli {
 /// Run a single `nix-store -q <flag> <path>` query.
 fn run_nix_store_query(path: &str, flag: &str) -> Result<String> {
     let output = Command::new("nix-store")
+        .envs(aos_nix_env())
         .args(["-q", flag, path])
         .stderr(Stdio::null())
         .output()

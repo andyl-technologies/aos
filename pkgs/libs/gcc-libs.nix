@@ -31,10 +31,14 @@
     sha256 = "1b6layaybj039fajx8dpy2zvcfy7s02y3y4lficz16vac0fsd0jk";
   };
 
-  # Get paths from cc-wrapper metadata (trim trailing newlines)
+  # Pull derivations (not just paths) from cc-wrapper's passthru so we
+  # can reach the multi-output glibc's $dev / $static. orig-libc /
+  # orig-cc in nix-support/ are string paths; reading them via readFile
+  # would lose the attribute set. The dynamic-linker file remains a
+  # readFile since it's a plain path to ld-linux.so inside glibc.$out.
+  glibc = bootstrapTools.libc;
+  gcc = bootstrapTools.cc;
   trim = s: lib.removeSuffix "\n" s;
-  glibc = trim (builtins.readFile "${bootstrapTools}/nix-support/orig-libc");
-  gcc = trim (builtins.readFile "${bootstrapTools}/nix-support/orig-cc");
   interp = trim (builtins.readFile "${bootstrapTools}/nix-support/dynamic-linker");
 in
   # Use mkDerivation but bypass the cc-wrapper by setting CC/CXX directly
@@ -48,6 +52,11 @@ in
     buildDeps = [];
     runtimeDeps = [];
     propagatedDeps = [];
+
+    # Builds the GCC target runtime libraries with explicit raw-GCC flags,
+    # bypassing the production wrapper. Keep it outside the package hardening
+    # policy so verification does not expect wrapper effects here.
+    hardeningDisable = ["all"];
 
     phases = [
       {
@@ -97,9 +106,16 @@ in
 
           # Set up target sysroot
           mkdir -p "$TMPDIR/sysroot/usr/include"
-          ln -sf ${glibc}/include/* "$TMPDIR/sysroot/usr/include/"
-          ln -sf ${glibc}/lib "$TMPDIR/sysroot/usr/lib"
-          ln -sf ${glibc}/lib "$TMPDIR/sysroot/lib"
+          ln -sf ${glibc.dev}/include/* "$TMPDIR/sysroot/usr/include/"
+          # Real lib dirs (not symlinks to $glibc/lib) so we can mix
+          # shared libs from $out/lib and static archives from $static/lib —
+          # -static linking finds them.
+          mkdir -p "$TMPDIR/sysroot/usr/lib" "$TMPDIR/sysroot/lib"
+          for f in ${glibc}/lib/* ${glibc.static}/lib/*.a; do
+            bn=$(basename "$f")
+            ln -sf "$f" "$TMPDIR/sysroot/usr/lib/$bn"
+            ln -sf "$f" "$TMPDIR/sysroot/lib/$bn"
+          done
 
           mkdir -p "$TMPDIR/build"
           cd "$TMPDIR/build"
@@ -108,8 +124,8 @@ in
           # CC_FOR_BUILD must include -static because GMP configure runs
           # $CC_FOR_BUILD conftest.c without CFLAGS — the resulting dynamic
           # executable can't run in the sandbox (linker path not available).
-          # No -isystem ${glibc}/include here: ${gcc} is the wrapped tier
-          # gcc which already injects -idirafter ${glibc}/include via its
+          # No -isystem ${glibc.dev}/include here: ${gcc} is the wrapped tier
+          # gcc which already injects -idirafter ${glibc.dev}/include via its
           # specs. -isystem would place stdlib.h before the C++ stdlib dir,
           # and GCC dedups includes — so the later -idirafter is dropped
           # as redundant, leaving stdlib.h only at the prepended position
@@ -119,7 +135,7 @@ in
           CC_FOR_BUILD="${gcc}/bin/gcc -static" \
           CFLAGS="-O2 -static" \
           CXXFLAGS="-O2 -static" \
-          LDFLAGS="-L${glibc}/lib -static" \
+          LDFLAGS="-L${glibc.static}/lib -L${glibc}/lib -static" \
           CFLAGS_FOR_BUILD="-O2 -static" \
           LDFLAGS_FOR_BUILD="-static" \
           AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \

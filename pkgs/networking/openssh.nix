@@ -7,7 +7,7 @@
   openssl,
   zlib,
 }: let
-  version = "10.0p1";
+  version = "10.3p1";
 in
   mkDerivation {
     pname = "openssh";
@@ -17,7 +17,7 @@ in
       urls = [
         "https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${version}.tar.gz"
       ];
-      hash = "sha256-AhoucJoO30JQsSVr1anlAEEakN3avqgw7VnO+Q652Fw=";
+      hash = "sha256-VmgqNruS3PS08Bb9jsjnQFm3mo3iXBXWcNcx59GORfQ=";
     };
 
     buildDeps = [gnumake];

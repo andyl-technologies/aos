@@ -33,6 +33,10 @@ in
       libsepol
     ];
 
+    # SELinux userspace has unchecked memory-copy patterns that trip
+    # _FORTIFY_SOURCE. Disabling fortify disables fortify3 too.
+    hardeningDisable = ["fortify"];
+
     phases = [
       {
         name = "unpack";

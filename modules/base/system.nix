@@ -15,10 +15,13 @@
 }: let
   cfg = config.aos.system;
 
-  # The helper functions referenced by `script` (`run_in_guest`,
-  # `assert_success`, `assert_output_contains`) are defined in
-  # `lib/testing/assertions.nix` and injected into the host-side
-  # shell that runs each check against the VM's guest agent.
+  # `script` is Python source — run by the AOS test driver
+  # (pkgs/tools/aos/aos-test-driver) against the guest agent. Each
+  # check sees the system under test as the `vm` module global; use
+  # `vm.succeed("...")`, `vm.fail("...")`,
+  # `vm.wait_until_succeeds("...", timeout=60)`, etc. — see
+  # `pkgs/tools/aos/aos-test-driver/aos_test_driver/machine.py` for
+  # the full Machine API.
   checkType = lib.types.submodule {
     options = {
       name = lib.mkOption {
@@ -32,10 +35,12 @@
       script = lib.mkOption {
         type = lib.types.lines;
         description = ''
-          Shell fragment run on the host against the guest agent.
-          See `lib/testing/assertions.nix` for the helper vocabulary
-          (`run_in_guest`, `assert_success`,
-          `assert_output_contains`).
+          Python fragment run by the AOS test driver against the
+          guest agent. The VM under test is the `vm` module global.
+          See `pkgs/tools/aos/aos-test-driver/aos_test_driver/machine.py`
+          for the Machine API (`succeed`, `fail`,
+          `wait_until_succeeds`, `wait_for_unit`, `wait_for_file`,
+          `execute`).
         '';
       };
     };
@@ -166,34 +171,32 @@ in {
       checks = [
         {
           name = "os-release";
-          description = "os-release contains ANDYL OS";
+          description = "os-release identifies the configured OS name + version";
           script = ''
-            assert_output_contains "cat /etc/os-release" "ANDYL OS" \
-              "os-release contains ANDYL OS"
+            osrel = vm.succeed("cat /etc/os-release")
+            assert 'NAME="${cfg.name}"' in osrel, osrel
+            assert "VERSION_ID=${cfg.version}" in osrel, osrel
           '';
         }
         {
           name = "hostname";
           description = "Hostname is set";
           script = ''
-            assert_success "test -f /etc/hostname" \
-              "/etc/hostname exists"
+            vm.succeed("test -f /etc/hostname")
           '';
         }
         {
           name = "systemd-running";
           description = "systemd reached multi-user.target";
           script = ''
-            assert_success "systemctl is-active multi-user.target" \
-              "systemd reached multi-user.target"
+            vm.succeed("systemctl is-active multi-user.target")
           '';
         }
         {
           name = "kernel-version";
           description = "Kernel version is 6.18.x";
           script = ''
-            assert_output_contains "uname -r" "6.18" \
-              "kernel version is 6.18.x"
+            assert "6.18" in vm.succeed("uname -r")
           '';
         }
       ];
@@ -206,40 +209,35 @@ in {
           name = "runtime-dir";
           description = "systemd runtime directory exists";
           script = ''
-            assert_success "test -d /run/systemd/system" \
-              "systemd runtime directory exists"
+            vm.succeed("test -d /run/systemd/system")
           '';
         }
         {
           name = "timers";
           description = "systemd timers are functional";
           script = ''
-            assert_success "systemctl list-timers --no-pager" \
-              "systemd timers are functional"
+            vm.succeed("systemctl list-timers --no-pager")
           '';
         }
         {
           name = "list-services";
           description = "systemctl can list services";
           script = ''
-            assert_success "systemctl list-units --type=service --no-pager" \
-              "systemctl can list services"
+            vm.succeed("systemctl list-units --type=service --no-pager")
           '';
         }
         {
           name = "journal";
           description = "journalctl can read system journal";
           script = ''
-            assert_success "journalctl --no-pager -n 5" \
-              "journalctl can read system journal"
+            vm.succeed("journalctl --no-pager -n 5")
           '';
         }
         {
           name = "etc-writable";
           description = "/etc is writable for updates";
           script = ''
-            assert_success "touch /etc/test-write && rm /etc/test-write" \
-              "/etc is writable for updates"
+            vm.succeed("touch /etc/test-write && rm /etc/test-write")
           '';
         }
       ];
@@ -275,9 +273,13 @@ in {
     };
 
     # Timezone: symlink /etc/localtime to the zoneinfo database.
-    # This is the standard mechanism for glibc and systemd.
+    # This is the standard mechanism for glibc and systemd. Source is
+    # the hermetic `pkgs.tzdata` package, not the host's
+    # `/usr/share/zoneinfo` (which is unspecified inside the Nix
+    # sandbox and would break the composefs dump script's
+    # `os.path.isdir(source)` probe).
     environment.etc."localtime" = {
-      source = "/usr/share/zoneinfo/${cfg.timezone}";
+      source = "${pkgs.tzdata}/share/zoneinfo/${cfg.timezone}";
     };
 
     # Write the timezone name for tools that read it as a string.

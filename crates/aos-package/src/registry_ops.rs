@@ -631,8 +631,6 @@ fn build_package_toml(
              store_path = \"{}\"\n\
              nar_hash = \"{}\"\n\
              nar_size = {}\n\
-             download_hash = \"{}\"\n\
-             download_size = {}\n\
              closure_size = {}\n\
              source_drv = \"\"\n\
              source_nar_hash = \"\"\n\
@@ -640,8 +638,6 @@ fn build_package_toml(
             info.path,
             info.nar_hash,
             info.nar_size,
-            info.nar_hash, // download_hash defaults to nar_hash
-            info.nar_size, // download_size defaults to nar_size
             info.closure_size,
             info.references
                 .iter()
@@ -656,12 +652,8 @@ fn build_package_toml(
                  format = \"{fmt}\"\n\
                  store_path = \"{}\"\n\
                  nar_hash = \"{}\"\n\
-                 nar_size = {}\n\
-                 download_hash = \"{}\"\n\
-                 download_size = {}\n",
+                 nar_size = {}\n",
                 img_info.path,
-                img_info.nar_hash,
-                img_info.nar_size,
                 img_info.nar_hash,
                 img_info.nar_size,
             ));
@@ -689,8 +681,6 @@ fn build_package_toml(
             t.insert("store_path".into(), toml::Value::String(info.path.clone()));
             t.insert("nar_hash".into(), toml::Value::String(info.nar_hash.clone()));
             t.insert("nar_size".into(), toml::Value::Integer(info.nar_size as i64));
-            t.insert("download_hash".into(), toml::Value::String(info.nar_hash.clone()));
-            t.insert("download_size".into(), toml::Value::Integer(info.nar_size as i64));
             t.insert("closure_size".into(), toml::Value::Integer(info.closure_size as i64));
             t.insert("source_drv".into(), toml::Value::String(String::new()));
             t.insert("source_nar_hash".into(), toml::Value::String(String::new()));
@@ -710,8 +700,6 @@ fn build_package_toml(
                         m.insert("store_path".into(), toml::Value::String(img.path.clone()));
                         m.insert("nar_hash".into(), toml::Value::String(img.nar_hash.clone()));
                         m.insert("nar_size".into(), toml::Value::Integer(img.nar_size as i64));
-                        m.insert("download_hash".into(), toml::Value::String(img.nar_hash.clone()));
-                        m.insert("download_size".into(), toml::Value::Integer(img.nar_size as i64));
                         toml::Value::Table(m)
                     })
                     .collect();
@@ -1877,8 +1865,6 @@ version = "8.5.0"
 store_path = "/nix/store/old-curl-8.5.0"
 nar_hash = "sha256:old"
 nar_size = 100
-download_hash = "sha256:old"
-download_size = 100
 closure_size = 500
 source_drv = ""
 source_nar_hash = ""

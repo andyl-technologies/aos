@@ -5,7 +5,7 @@
 ##! dmesg access control, network hardening, and filesystem protections.
 ##!
 ##! Absorbed TOML config values:
-##!   [security.hardening] enable, sysctl, kernel_lockdown, core_dump
+##!   [security.hardening] enable, sysctl, core_dump
 {
   config,
   pkgs,
@@ -20,17 +20,17 @@
   );
 in {
   options.aos.security.hardening = {
-    ## Enable system hardening (sysctl, lockdown, core dump restrictions).
+    ## Enable system hardening (sysctl, core dump restrictions).
     ##
     ## # See Also
-    ## - `aos.security.hardening.sysctl`, `aos.security.hardening.kernelLockdown`
+    ## - `aos.security.hardening.sysctl`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
       description = ''
-        Enable system hardening. Applies security-focused sysctl settings,
-        kernel lockdown mode, and core dump restrictions. Enabled by default
-        because AOS is a server OS where security is paramount.
+        Enable system hardening. Applies security-focused sysctl settings
+        and core dump restrictions. Enabled by default because AOS is a
+        server OS where security is paramount.
       '';
     };
 
@@ -96,29 +96,6 @@ in {
       '';
     };
 
-    ## Kernel lockdown mode (none, integrity, confidentiality).
-    ##
-    ## # Examples
-    ## ```nix
-    ## aos.security.hardening.kernelLockdown = "confidentiality";
-    ## ```
-    kernelLockdown = lib.mkOption {
-      type = lib.types.enum [
-        "none"
-        "integrity"
-        "confidentiality"
-      ];
-      default = "integrity";
-      description = ''
-        Kernel lockdown mode:
-        - none: no restrictions
-        - integrity: prevents modification of the running kernel
-          (blocks kexec, module signature bypass, /dev/mem writes)
-        - confidentiality: integrity + prevents reading kernel memory
-          (blocks /proc/kcore, eBPF, perf)
-      '';
-    };
-
     coreDump = {
       ## Allow core dumps (disabled by default for security).
       enable = lib.mkOption {
@@ -134,55 +111,88 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # Key-free runtime hardening on the kernel command line. These match the
+    # reproducible kernel config: zero-on-alloc/free, no slab cache merging,
+    # and per-syscall kernel-stack offset randomization. vsyscall=none removes
+    # the legacy fixed-address vsyscall page on x86_64.
+    aos.boot.kernelParams =
+      [
+        "init_on_alloc=1"
+        "init_on_free=1"
+        "slab_nomerge"
+        "randomize_kstack_offset=on"
+      ]
+      ++ lib.optional (lib.hasPrefix "x86_64" pkgs.stdenv.system) "vsyscall=none";
+
     system.checks.kernel-security = {
       description = "Kernel sysctl hardening checks";
       checks = [
+        # Value-asserting sysctl reads are wrapped in wait_until_succeeds:
+        # systemd-sysctl.service applies /etc/sysctl.d/*.conf during boot
+        # and a bare `cat` can race the apply (the 2026-05-19 microvm-races
+        # briefing's Shape 2 — reproduced under host load even after the
+        # initrd-oneshot re-run fix in b0f3fe1). The existence-only checks
+        # below (`test -f …`) are kernel-build features that don't race.
         {
           name = "aslr";
           description = "ASLR is fully enabled (randomize_va_space=2)";
           script = ''
-            assert_output_contains "cat /proc/sys/kernel/randomize_va_space" "2" \
-              "ASLR is fully enabled"
+            vm.wait_until_succeeds(
+                "grep -q '^2$' /proc/sys/kernel/randomize_va_space"
+            )
           '';
         }
         {
           name = "syncookies";
           description = "TCP syncookies are enabled";
           script = ''
-            assert_output_contains "cat /proc/sys/net/ipv4/tcp_syncookies" "1" \
-              "TCP syncookies are enabled"
+            vm.wait_until_succeeds(
+                "grep -q '^1$' /proc/sys/net/ipv4/tcp_syncookies"
+            )
           '';
         }
         {
           name = "protected-hardlinks";
-          description = "Protected hardlinks sysctl exists";
+          description = "Protected hardlinks are enabled";
           script = ''
-            assert_success "test -f /proc/sys/fs/protected_hardlinks" \
-              "Protected hardlinks sysctl is accessible"
+            vm.wait_until_succeeds(
+                "grep -q '^1$' /proc/sys/fs/protected_hardlinks"
+            )
           '';
         }
         {
           name = "protected-symlinks";
-          description = "Protected symlinks sysctl exists";
+          description = "Protected symlinks are enabled";
           script = ''
-            assert_success "test -f /proc/sys/fs/protected_symlinks" \
-              "Protected symlinks sysctl is accessible"
+            vm.wait_until_succeeds(
+                "grep -q '^1$' /proc/sys/fs/protected_symlinks"
+            )
+          '';
+        }
+        {
+          name = "randomize-kstack-offset";
+          description = "Kernel-stack offset randomization is on where available";
+          script = ''
+            # The control exists only on architectures that support it; treat
+            # an absent file as a pass and a present file as a value check.
+            vm.succeed(
+                "! test -e /proc/sys/kernel/randomize_kstack_offset || "
+                "grep -q '^1$' /proc/sys/kernel/randomize_kstack_offset"
+            )
           '';
         }
         {
           name = "proc-isolation";
           description = "PID 1 visible in /proc";
           script = ''
-            assert_success "test -d /proc/1" \
-              "PID 1 visible in /proc"
+            vm.succeed("test -d /proc/1")
           '';
         }
         {
           name = "syskernel";
           description = "/sys/kernel is accessible";
           script = ''
-            assert_success "test -d /sys/kernel" \
-              "/sys/kernel is accessible"
+            vm.succeed("test -d /sys/kernel")
           '';
         }
       ];
@@ -195,24 +205,32 @@ in {
           name = "dmesg-restrict";
           description = "dmesg_restrict is enabled";
           script = ''
-            assert_output_contains "cat /proc/sys/kernel/dmesg_restrict" "1" \
-              "dmesg_restrict is enabled"
+            # Poll: systemd-sysctl applies this from /etc/sysctl.d/* during
+            # boot and a bare cat races the apply under host I/O load
+            # (microvm-races briefing Shape 2). The aos-sysctl-late-apply
+            # service in modules/base/kernel.nix re-runs sysctl late in
+            # boot to win over the early-stage race; this poll is the
+            # defensive layer that lets the test survive even if the
+            # late-apply itself slips.
+            vm.wait_until_succeeds(
+                "grep -q '^1$' /proc/sys/kernel/dmesg_restrict"
+            )
           '';
         }
         {
           name = "kptr-restrict";
-          description = "kptr_restrict is set";
+          description = "kptr_restrict hides kernel pointers (=2)";
           script = ''
-            assert_success "test -f /proc/sys/kernel/kptr_restrict" \
-              "kptr_restrict sysctl exists"
+            vm.wait_until_succeeds(
+                "grep -q '^2$' /proc/sys/kernel/kptr_restrict"
+            )
           '';
         }
         {
           name = "ptrace-scope";
           description = "ptrace scope is restricted";
           script = ''
-            assert_success "test -f /proc/sys/kernel/yama/ptrace_scope" \
-              "ptrace_scope sysctl exists"
+            vm.succeed("test -f /proc/sys/kernel/yama/ptrace_scope")
           '';
         }
       ];
@@ -272,11 +290,6 @@ in {
         }
       '';
     };
-
-    # Kernel lockdown parameter — added to boot command line.
-    # Only add the parameter if lockdown is not "none".
-    aos.boot.kernelParams =
-      lib.optional (cfg.kernelLockdown != "none") "lockdown=${cfg.kernelLockdown}";
 
     # Resource limits to prevent core dumps at the process level.
     environment.etc."security/limits.d/aos-hardening.conf" = lib.mkIf (!cfg.coreDump.enable) {

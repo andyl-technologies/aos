@@ -56,7 +56,6 @@
     inherit pkgs lib system;
     pname = "aos-image-${name}-rootfs";
     label = "aos-root";
-    etcTarget = "etc";
     shrinkToFit = true;
     headroomMiB = 64;
   };
@@ -66,7 +65,10 @@
     kernel = system.config.system.build.kernel;
     initrd = system.config.system.build.initrd;
     cmdline = kernelParams;
-    osRelease = "${system.config.system.build.toplevel}/etc/os-release";
+    # The toplevel now ships a top-level `os-release` symlink (named-
+    # output layout from spec v12 §1); the previous `etc/os-release`
+    # path is gone along with the rest of `${toplevel}/etc/`.
+    osRelease = "${system.config.system.build.toplevel}/os-release";
   };
 
   ukiFilename = "aos-${name}-${version}.efi";

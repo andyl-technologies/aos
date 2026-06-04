@@ -65,6 +65,13 @@
         packages = [
           aos.pkgs.aos
           aos.pkgs.just
+          aos.pkgs.rust
+          aos.pkgs.rust.dev
+          aos.pkgs.bootstrapTools
+          aos.pkgs.perl
+          aos.pkgs.pkg-config
+          aos.pkgs.openssl
+          aos.pkgs.protobuf
         ];
         binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
       in {
@@ -87,6 +94,13 @@
             )
             + ''
               export AOS_ROOT="$(pwd)"
+              export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
+              export OPENSSL_DIR="${aos.pkgs.openssl}"
+              export OPENSSL_LIB_DIR="${aos.pkgs.openssl}/lib"
+              export OPENSSL_INCLUDE_DIR="${aos.pkgs.openssl}/include"
+              export OPENSSL_NO_VENDOR=1
+              export OPENSSL_STATIC=0
+              export PROTOC="${aos.pkgs.protobuf}/bin/protoc"
             '';
         };
       }
