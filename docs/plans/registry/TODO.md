@@ -8,7 +8,7 @@ Keep this file current as work lands.
 
 - [x] Fetch latest `origin/master`.
 - [x] Create implementation branch from `origin/master`.
-- [ ] Open PR.
+- [x] Open PR.
 
 ## WS-01 Object Store
 
