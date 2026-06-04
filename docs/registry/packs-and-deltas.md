@@ -23,7 +23,6 @@
 [current-state](./current-state.md) ·
 [http-layout](./http-layout.md) ·
 [versioning-and-channels](./versioning-and-channels.md) ·
-[tag-metadata](./tag-metadata.md) ·
 [signing-and-trust](./signing-and-trust.md) ·
 [publishing](./publishing.md) ·
 [nix-cache-compatibility](./nix-cache-compatibility.md) ·
@@ -51,7 +50,7 @@ universality:
 
 | Layer | Artifact | Who reads it | Guarantee |
 |---|---|---|---|
-| **Loose objects** | `/objects/<xx>/<62-hex>` and per-release `/release/.../objects/<xx>/<62-hex>` | any dumb-HTTP git client | **always complete** — correctness fallback |
+| **Loose objects** | `/objects/<xx>/<62-hex>` (central root only — every release) | any dumb-HTTP git client | **always complete** — correctness fallback |
 | **Full pack** | `pack-<sha256>.pack` (+ `.idx`) at `X.Y.0` anchors | stock git (listed in `info/packs`) + AOS | self-contained |
 | **Thin delta pack** | `delta-<from-semver>.pack` (`.zst`) | **AOS only** (not listed in `info/packs`) | needs base; cheapest |
 
@@ -89,8 +88,9 @@ Every **major or minor** release — any version whose patch component is `0`
 - A full pack is built **non-thin** — it references no objects outside itself.
 
 Patch releases (`X.Y.Z`, `Z>0`) deliberately ship **no full pack**; a stock
-client reconstructs them from the minor-base full pack plus the patch's loose new
-objects (see [§6](#6-graceful-degradation-for-stock-git)).
+client reconstructs them from the minor-base full pack plus the patch's new loose
+objects (from the central root `/objects/`, see
+[§6](#6-graceful-degradation-for-stock-git)).
 
 ---
 
@@ -163,9 +163,12 @@ resolution walks from cheapest to most-universal:
    have, fetch that anchor's `pack-<sha256>.pack` (self-contained), then any
    remaining deltas forward to `T`.
 4. **Loose fallback.** If no pack path resolves, fetch the needed **loose
-   objects** over dumb HTTP via `objects/info/http-alternates` (which lists every
-   per-release `objects/` dir newest→oldest and doubles as the full release
-   index). This is **always correct** for any sha256-capable git client.
+   objects** over dumb HTTP from the central root `/objects/<xx>/<62-hex>`, where
+   the loose objects for **every** release live. (`objects/info/alternates` lists
+   every per-release `objects/` dir newest→oldest and doubles as the full release
+   index — but it serves **pack discovery + the release index**, not object
+   completeness, since loose objects are centralized.) This is **always correct**
+   for any sha256-capable git client.
 
 **Cross-major jumps** degrade to *“minor-base full pack + walk”*: fetch the
 target major/minor's full pack, then apply forward patch deltas to reach `T`,
@@ -180,7 +183,7 @@ rather than chaining many small deltas across a major boundary.
    │                                          no
    ├─ reach an X.Y.0 anchor? ── yes ─▶ fetch full pack-<sha256>.pack, then forward deltas ─▶ done
    │                            no
-   └─ fetch loose objects via http-alternates (always correct) ─▶ done
+   └─ fetch loose objects from root /objects/ (always correct) ─▶ done
 ```
 
 ---
@@ -211,14 +214,38 @@ thin pack. Instead:
 
 - Cloning a **`X.Y.0`** release uses its self-contained `pack-<sha256>.pack`
   directly (listed in `info/packs`).
-- Cloning a **patch `X.Y.Z`** pulls the **minor-base full pack** (resolved via
-  `objects/info/http-alternates`) **plus** the patch's **loose new objects** under
-  its `/release/.../objects/<xx>/<62-hex>` dir. No thin packs needed; correctness
-  is guaranteed by the loose objects.
+- Cloning a **patch `X.Y.Z`** pulls the **minor-base full pack** (discovered via
+  the minor release's `objects/info/alternates`) **plus** the patch's **new loose
+  objects** from the central root `/objects/<xx>/<62-hex>` (all loose objects, for
+  every release, live there). No thin packs needed; correctness is guaranteed by
+  the loose objects.
 
 The AOS-only thin deltas are a strict efficiency add-on that never breaks the
 stock surface. See
 [http-layout.md](./http-layout.md) for the dumb-HTTP compatibility contract.
+
+### 6.1 The relative `info/alternates` file
+
+Pack discovery and the release index both ride on a single
+`objects/info/alternates` whose entries are **relative** paths to each
+per-release `objects/` dir, newest→oldest:
+
+```
+../release/1/1/0/objects/
+../release/1/0/0/objects/
+```
+
+Git resolves a relative alternate against the **repo's `objects/` URL**, so each
+`../` strips the `objects` segment to reach the repo root — therefore the correct
+depth is **one** `../`, not two. The file is **host-independent**: it bakes in no
+hostname and is byte-identical across CDN, mirror, and `localhost`. The dumb-HTTP
+walker reads `http-alternates` first and **falls back to `alternates`**, so a
+single relative `info/alternates` works for **HTTP and local-FS** alike.
+
+Because loose objects are **centralized** at the root `/objects/`, alternates no
+longer carry object completeness — they serve **pack discovery** (where each
+release's `objects/pack/` lives) and the **release index** (the enumerable list
+of releases). Object correctness is the root `/objects/` store's job.
 
 ---
 
@@ -251,7 +278,7 @@ host's `RegistryState` and `TrackingMode`.
 
 **Why it's replaced.** Bundles carry refs and prerequisites and require a
 parsed-by-consumer manifest. The target moves refs into signed tag objects and
-the object index into git's native `info/packs` + `http-alternates`, leaving bare
+the object index into git's native `info/packs` + `info/alternates`, leaving bare
 `*.pack` files. The `BundleType::Snapshot`/delta distinction maps onto
 full-pack/thin-delta; `pick_bundles` maps onto §4 client resolution.
 
@@ -260,7 +287,7 @@ full-pack/thin-delta; `pick_bundles` maps onto §4 client resolution.
 | `git bundle create <tag>` | `git pack-objects --revs` (full, non-thin) |
 | `git bundle create <from>..<tag>` | `git pack-objects --revs --thin` (delta) |
 | `git bundle verify` + `unbundle` | `git index-pack --fix-thin` |
-| `bundle-list.toml` manifest | `info/packs` + `http-alternates` (git-native) |
+| `bundle-list.toml` manifest | `info/packs` + `info/alternates` (git-native) |
 | `pick_bundles` over manifest | §4 client resolution over the §3 graph |
 | `creation_token` ordering | semver + git ancestry |
 
@@ -270,6 +297,13 @@ full-pack/thin-delta; `pick_bundles` maps onto §4 client resolution.
 
 All generation is plain `git pack-objects` reading a revision list on stdin; no
 bundles, no smart-HTTP server.
+
+**Write layout.** The producer writes **loose objects to the central root
+`/objects/`** (every release's loose objects land there, never under
+`/release/`). Packs go under each release's pack-only
+`/release/<M>/<m>/<patch...>/objects/pack/`, which holds `info/packs`,
+`pack/pack-<sha256>.pack(.idx)`, and `pack/delta-<from>.pack` — and **no** loose
+`<xx>/<..>` objects and **no** per-release `info/alternates`.
 
 ### 8.1 Deltas (thin)
 
@@ -397,11 +431,11 @@ PRODUCER (pays once, expensively)              CONSUMER (cheap, every host)
 │ commit metadata tree             │          │ resolve C → T (§4)                  │
 │ tag + sign release (semver)      │          │  prefer retained-base delta         │
 │ pack-objects:                    │   HTTP   │  else walk back / full pack         │
-│  full   (--revs, non-thin)       │  ──────▶ │  else loose via http-alternates     │
+│  full   (--revs, non-thin)       │  ──────▶ │  else loose from root /objects/     │
 │  deltas (--revs --thin,          │   .pack  │ fetch .pack.zst                     │
 │          --compression=0)        │   .zst   │  zstd -d | index-pack --fix-thin    │
 │ zstd --ultra -22 the .pack       │          │ retain X.0.0 / X.Y.0 / X.Y.Z (§5)   │
-│ write info/packs + http-alternates│          │ verify signed tag chain (separate)  │
+│ write info/packs + info/alternates│          │ verify signed tag chain (separate)  │
 └──────────────────────────────────┘          └────────────────────────────────────┘
 ```
 

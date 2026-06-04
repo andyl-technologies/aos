@@ -25,7 +25,6 @@ Related reference docs:
 [current-state](./current-state.md) ·
 [http-layout](./http-layout.md) ·
 [packs-and-deltas](./packs-and-deltas.md) ·
-[tag-metadata](./tag-metadata.md) ·
 [signing-and-trust](./signing-and-trust.md) ·
 [publishing](./publishing.md) ·
 [nix-cache-compatibility](./nix-cache-compatibility.md) ·
@@ -193,7 +192,10 @@ Each channel exposes **exactly 256** partition files:
 ```
 
 Each file is an **independently signed annotated tag object** whose **tag name field
-equals the channel name** (`<name>`), pointing at a **semver release tag**. The full
+equals the channel name** (`<name>`), pointing at a **semver release tag**. A signed
+partition tag is a **pure signed pointer**: standard git tag fields (object, type, the
+tag name, tagger) + the Ed25519 signature + an optional freeform human message. It
+carries **no structured payload** — no embedded cache list, no expiry. The full
 trust chain is therefore:
 
 ```
@@ -206,9 +208,7 @@ Verification checks **both** the Ed25519/SSH signature **and** the embedded
 tag-name field against the expected name — the channel name under `/channel/*`, the
 semver under `/release/*`. This **name-binding** binds a tag object to its serving
 path and prevents cross-serving a tag from one path at another. See
-[signing-and-trust](./signing-and-trust.md) and
-[tag-metadata](./tag-metadata.md) for the signature format and the tag-message TOML
-(only `[meta]` + `[[caches]]`).
+[signing-and-trust](./signing-and-trust.md) for the signature format.
 
 > **Invariant: there must always be 256.** A complete channel has all of `00..ff`
 > present and signed. If a partition file is temporarily missing or fails
@@ -508,18 +508,17 @@ The host transiently follows partition `80`'s release for this run; once partiti
 ## 10. Cross-references
 
 - **HTTP/object layout** of `/channel/*`, `/release/*`, `refs`, `HEAD`,
-  `http-alternates`, and CDN TTLs: [http-layout](./http-layout.md).
+  `info/alternates`, and CDN TTLs: [http-layout](./http-layout.md).
 - **The three ref layers, name-binding, and the `tag → tag → commit` trust chain:**
   [signing-and-trust](./signing-and-trust.md).
-- **The tag-message TOML** carried by partition and release tags (only `[meta]` +
-  `[[caches]]`): [tag-metadata](./tag-metadata.md).
 - **How a resolved release is fetched** (full packs, thin deltas, retention, loose
   fallback): [packs-and-deltas](./packs-and-deltas.md).
 - **The producer pipeline** that tags/signs, packs, runs `update-server-info`, and
   **advances partitions**: [publishing](./publishing.md).
 - **As-is grounding** for tracking modes, state, and the calendar/`creation_token`
   baseline: [current-state](./current-state.md).
-- **The Nix binary-cache superset** advertised via relative `[[caches]]`:
+- **The Nix binary-cache superset** (`nix-cache-info`/`.narinfo`/`nar`), configured
+  client-side or served by the origin — never advertised in signed tags:
   [nix-cache-compatibility](./nix-cache-compatibility.md).
 - **APT precedent** (signed flat-file lineage, `pool`, phased rollout → 256
   partitions): [apt-comparison](./apt-comparison.md).

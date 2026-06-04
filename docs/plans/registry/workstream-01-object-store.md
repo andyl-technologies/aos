@@ -13,7 +13,7 @@
 > [WS-04 signing/trust](./workstream-04-signing-trust.md), and
 > [WS-05 consumer](./workstream-05-consumer.md). This workstream **owns** the
 > object/ref topology, `HEAD`, `info/refs`, `update-server-info`,
-> `objects/info/http-alternates`, the per-release object dirs, and the
+> `objects/info/alternates`, the per-release pack-only dirs, and the
 > stock-git dumb-HTTP compatibility surface. It does **not** own pack/delta
 > generation, channel partition tags, or signature verification (those are
 > WS-02/03/04 respectively, and only referenced here).
@@ -49,19 +49,24 @@ Build the object-store layer so that:
 2. The repo is served verbatim as static files and a **stock `git clone
    <url>`** (with a sha256-capable git) works: `HEAD`, `info/refs`, loose
    objects, and conventionally-named full packs are all in place.
-3. The object store is **distributed across per-release directories** and
-   stitched into one logical store via **`objects/info/http-alternates`**
-   (newest → oldest), which doubles as the full release index.
-4. **All objects exist loose** under `objects/<xx>/<62-hex>` — the guaranteed
-   completeness fallback; packs are a pure efficiency layer (WS-02).
+3. **All loose objects are centralized at the root `/objects/`** under
+   `objects/<xx>/<62-hex>` — every release's loose objects live there, and that
+   single store is the guaranteed completeness fallback. The per-release
+   `/release/*/objects/` dirs are **pack-only**.
+4. The per-release pack-only dirs are stitched in via a **relative**
+   **`objects/info/alternates`** (newest → oldest), which doubles as the full
+   release index and as **pack discovery** (packs are a pure efficiency layer,
+   WS-02). The file is **host-independent** (byte-identical across CDN, mirror,
+   and localhost).
 5. A single producer step (the publish pipeline; WS-02/03 own the full flow)
-   regenerates `info/refs` + `HEAD` via **`git update-server-info`** and
-   rewrites `http-alternates` on every publish.
+   regenerates `info/refs` + `objects/info/packs` + `HEAD` via
+   **`git update-server-info`** and rewrites `objects/info/alternates` on every
+   publish.
 
 **Success = a CI test** that builds a multi-release repo, serves the directory
 over a trivial static HTTP server, and `git clone`s it with stock git into a
-byte-identical working tree — plus an AOS-side fetch that resolves objects
-through `http-alternates`.
+byte-identical working tree — plus an AOS-side fetch that discovers per-release
+packs through the relative `info/alternates`.
 
 **Out of scope here:** thin/full pack and zstd generation (WS-02), the 256
 channel partition tags and frontier branch head (WS-03), tag signing and
@@ -80,7 +85,7 @@ doc references their *hooks* but does not implement them.
 | Bundle scratch repo | `git init --bare` (sha1) | `bundle.rs:359`, `git.rs:150` |
 | Object format | sha1 implicit everywhere; no `--object-format` flag anywhere | `grep --object-format` → none |
 | Distribution | git **bundles** + `bundle-list.toml` (consumer-parsed) | `registry/bundle.rs` |
-| Object store layout | single flat `.git/objects`; no per-release dirs, no `http-alternates` | — |
+| Object store layout | single flat `.git/objects`; no per-release dirs, no `info/alternates` | — |
 | Dumb-HTTP surface | none generated (`update-server-info` not called anywhere) | `grep update-server-info` → none |
 | Registry root | a `registry.toml` (`RegistryRootConfig`) parsed at repo root | `types.rs:565-573`, `registry_ops.rs:391-402` |
 | Versions | calendar tags ordered by `creation_token` | `types.rs:259` (`last_creation_token`), `state.rs version_to_token` |
@@ -99,20 +104,23 @@ as-is.
 | Repo init | `git init --bare --object-format=sha256` | §8 |
 | Object id | 64-hex sha256; loose path `objects/<xx>/<62-hex>` | §8 |
 | Distribution | static files over dumb HTTP (no bundles) | §3, §10 |
-| Object store | distributed per-release dirs, unified by `http-alternates` | §8 |
-| Dumb-HTTP surface | `HEAD` + `info/refs` (via `update-server-info`) | §8, §12 |
-| Release index | `objects/info/http-alternates`, newest → oldest | §4, §8 |
-| Loose-object guarantee | **all** objects exist loose; packs are efficiency only | §8 |
+| Loose objects | **centralized at root `/objects/`**; per-release dirs are pack-only | §8 |
+| Pack discovery / release index | relative `objects/info/alternates`, newest → oldest | §4, §8 |
+| Dumb-HTTP surface | `HEAD` + `info/refs` + `objects/info/packs` (via `update-server-info`) | §8, §12 |
+| Loose-object guarantee | **all** loose objects live at root `/objects/`; packs are efficiency only | §8 |
 | Removed | `registry.toml` root, `bundle-list.toml`, git bundles, `creation_token` | §15 |
 
 > **Removed (do not reintroduce — brief §15):** `registry.toml` as a registry
 > root, `bundle-list.toml`, git **bundles**, `[latest]`/`[components]`/
 > `[capabilities]`, percentage rollouts, `creation_token`/calendar versioning,
-> by-hash `[[bundles]]`/`[[deltas]]`. The root cache advertisement moves into the
-> **signed tag-message TOML** (`[[caches]]`, owned by WS-04 /
-> [tag-metadata](../../registry/tag-metadata.md)), **not** a file at the repo
-> root. `RegistryRootConfig` (`types.rs:567`) is retired by WS-04; this
-> workstream only stops *writing* it.
+> by-hash `[[bundles]]`/`[[deltas]]`. The cache/NAR-substituter location is
+> **client-side configuration** (the consumer's local registry config) or the
+> origin itself — it is **not** advertised in signed tags and **not** a file at
+> the repo root. Signed tags carry **no structured payload**: a signed tag is a
+> pure signed pointer (standard git tag fields + Ed25519 signature + optional
+> freeform message), so there is no tag-embedded `[[caches]]` (WS-04).
+> `RegistryRootConfig` (`types.rs:567`) is retired by WS-04; this workstream
+> only stops *writing* it.
 
 ---
 
@@ -129,21 +137,19 @@ is owned by [WS-03](./workstream-03-channels-rollouts.md).)
   info/refs                        ← update-server-info: refs/heads/<channels> + refs/tags/<semvers> [low TTL]
   objects/
     info/packs                     ← lists self-contained pack-<sha>.pack only           [low TTL]
-    info/http-alternates           ← ALL /release/*/objects dirs, newest→oldest          [low TTL]
-                                       (doubles as the full release index)
-    info/alternates                ← optional human/agent-readable mirror of the above
-    <xx>/<62-hex>                  ← loose objects, sha256 2/62 split (dumb HTTP)         [immutable, high TTL]
+    info/alternates                ← relative "../release/*/objects/" dirs, newest→oldest [low TTL]
+                                       (pack discovery + the full release index;
+                                        host-independent, byte-identical everywhere)
+    <xx>/<62-hex>                  ← ALL loose objects (every release), sha256 2/62 split [immutable, high TTL]
   channel/                         ← OWNED BY WS-03 (256 signed partition tags)
     <name>/
       00 .. ff
   release/
     <major>/<minor>/<patch[-prerelease][+build]>/                                        [long TTL, immutable]
-      objects/
+      objects/                     ← PACK-ONLY (no loose <xx>/<..>, no info/alternates)
         info/packs
-        info/http-alternates
         pack/pack-<sha256>.pack (+ .idx)     ← self-contained "full" pack (WS-02)
         pack/delta-<from-semver>.pack         ← THIN deltas (WS-02); NOT in info/packs
-        <xx>/<62-hex>                         ← this release's new loose objects [immutable, high TTL]
 ```
 
 ### 3.1 Release-path mapping rule
@@ -168,7 +174,7 @@ the `v` prefix are gone in the target.
 | Path glob | TTL | Why |
 |---|---|---|
 | `/channel/**` | **low** (MUST) | fast rollout updates |
-| `/objects/info/**` and per-release `objects/info/**` | **low** (MUST) | `packs`, `http-alternates`, `info/refs`, `HEAD` change on publish |
+| `/objects/info/**` and per-release `objects/info/**` | **low** (MUST) | `packs`, `alternates`, `info/refs`, `HEAD` change on publish |
 | `/release/**` (objects, packs) | **long** (MAY) | releases immutable after publish |
 | `/objects/<xx>/**` (loose), packs | **very high** (MAY) | content-addressed, immutable |
 
@@ -207,25 +213,26 @@ git --git-dir=<repo-dir> symbolic-ref HEAD refs/heads/stable
 > the dumb protocol, so the client git must natively support sha256. Tracked in
 > [open-questions](./open-questions.md).
 
-### Step 2 — release object directory placement
+### Step 2 — loose objects to root; per-release pack-only dirs
 
-When a release commit is finalized, its **new objects** must land under the
-release's own object dir so the store is naturally partitioned by release (this
-is what `http-alternates` later stitches together).
+All loose objects are **centralized at the root `/objects/`**. When a release
+commit is finalized, its **new loose objects** are written to the root
+`/objects/<xx>/<62-hex>` (every release shares that one store). The
+`/release/<…>/objects/` dir is **pack-only**: it holds `info/packs` and the
+release's `pack/pack-<sha256>.pack(.idx)` + `pack/delta-<from>.pack` (WS-02),
+and contains **no loose `<xx>/<..>` objects** and **no per-release
+`info/alternates`**.
 
-Two viable mechanics (decide in implementation; see §8 open items):
+The producer therefore:
 
-- **(a) Per-release `objects/` via `GIT_OBJECT_DIRECTORY`.** Compute the new
-  objects for this release (objects in `<to>` not in `<from>`, the same revset
-  WS-02 uses for deltas) and write *only those* loose objects into
-  `/release/<…>/objects/`, leaving older objects in their original release dirs.
-- **(b) Repack-then-split.** Let git write objects normally, then move the
-  release's new loose objects (set difference against the prior frontier) into
-  the release dir.
+- writes the release's new loose objects (objects in `<to>` not in `<from>`, the
+  same revset WS-02 uses for deltas) into the **root** `/objects/`;
+- writes that release's packs under `/release/<…>/objects/pack/`.
 
-Either way the invariant is: **an object is written under exactly one release
-dir** (the release that introduced it), and the union of all release object dirs
-+ the root `objects/` is the complete store.
+The invariant is: **every loose object lives at the root `/objects/`** (a single
+complete loose store), while each release dir holds only that release's packs.
+The relative root `info/alternates` (Step 5) enumerates the pack-only release
+dirs for pack discovery and as the release index.
 
 ### Step 3 — loose-object completeness guarantee
 
@@ -241,7 +248,7 @@ git --git-dir=<repo> unpack-objects -r < some.pack   # or keep loose alongside
 ```
 
 The completeness check (a test, §6) walks `info/refs` tips and asserts every
-reachable object is retrievable **loose** through the `http-alternates` union.
+reachable object is retrievable **loose** from the root `/objects/` store.
 
 ### Step 4 — generate dumb-HTTP shim (`HEAD` + `info/refs`)
 
@@ -260,37 +267,38 @@ head) and after packs change (WS-02). `HEAD` is set once by Step 1's
 There is **no current call to `update-server-info`** anywhere
 (`grep` → none) — this is net-new.
 
-### Step 5 — write `objects/info/http-alternates`
+### Step 5 — write `objects/info/alternates`
 
-**TARGET:** the registry's object store is distributed; `http-alternates` is the
-glue and the release index.
+**TARGET:** loose objects are centralized at the root, so `info/alternates` is
+not for object completeness — it is the glue for **pack discovery** and the
+**release index**.
 
-- Content: one **relative** URL path per line, each pointing at a
+- Content: one **relative** path per line, each pointing at a
   `/release/<…>/objects/` directory, ordered **newest → oldest** by semver
-  precedence.
+  precedence. Git resolves relative alternates against the repo's `objects/`
+  URL, so each `../` strips the `objects` segment to reach the repo root —
+  therefore the correct depth is **one `../`** (not two):
 
 ```
-# objects/info/http-alternates  (newest → oldest)
-../../../release/1/2/0/objects/
-../../../release/1/1/2/objects/
-../../../release/1/1/0/objects/
-../../../release/1/0/0/objects/
+# objects/info/alternates  (newest → oldest)
+../release/1/2/0/objects/
+../release/1/1/2/objects/
+../release/1/1/0/objects/
+../release/1/0/0/objects/
 ```
 
-- Git's dumb fetcher reads `http-alternates`, treats each listed dir as an
-  additional object store, and resolves the whole distributed store as one
-  logical store (brief §8). Newest-first ordering means recent objects are found
-  with the fewest probes.
+- The file is **host-independent**: byte-identical across CDN, mirror, and
+  localhost, because the paths are relative and no hostname is baked in.
+- Git's dumb-HTTP walker reads `objects/info/http-alternates` first then falls
+  back to `objects/info/alternates`, so a single **relative** `info/alternates`
+  works for **both HTTP and local-FS** access — no separate `http-alternates`
+  file is needed. (Loose objects live at the root, so these alternates serve
+  pack discovery + the release index, not object completeness.)
 - This file **doubles as the full release index** — a consumer (or human) reads
   it to enumerate every published release without a separate manifest. This is
   what replaces the old `bundle-list.toml` (brief §15).
-- Use `http-alternates` (URL-reachable), **not** `alternates` (local FS paths),
-  for the served store. Optionally also write `objects/info/alternates` as a
-  human/agent-readable mirror (brief §4, §8; this is open-question §16.6 —
-  whether maintaining the mirror is worth it).
-- Each **per-release** `objects/info/http-alternates` lets a stock client that
-  starts from a release dir still reach older releases' objects (graceful
-  degradation, §5).
+- The per-release dirs are **pack-only**, so there is **no** per-release
+  `info/alternates`; the single root `info/alternates` enumerates them all.
 
 ### Step 6 — atomic publish ordering
 
@@ -298,10 +306,10 @@ To keep the served repo always-consistent for concurrent clients, the publisher
 writes in **content-before-pointer** order:
 
 ```
-1. write new loose objects + packs under /release/<new>/objects/   (immutable, safe to publish early)
-2. write/refresh per-release objects/info/{packs,http-alternates}
+1. write new loose objects to root /objects/; write packs under /release/<new>/objects/pack/  (immutable, safe to publish early)
+2. write/refresh per-release objects/info/packs
 3. git update-server-info        → root info/refs, objects/info/packs
-4. rewrite root objects/info/http-alternates (prepend new release)
+4. rewrite root objects/info/alternates (prepend new release)
 5. (WS-03) advance channel partition tags + frontier branch head
 6. upload, then bust low-TTL caches for info/** and channel/**
 ```
@@ -329,23 +337,25 @@ This workstream is responsible for the **transparent-clone** property (brief
 | Releases are tags | `refs/tags/<semver>` present in `info/refs` (signed by WS-04) |
 | Full packs are stock-usable | named `pack-<sha256>.pack` (+ `.idx`), **listed in `objects/info/packs`** (WS-02 emits; this WS lists) |
 | Thin deltas hidden from stock | `delta-<semver>.pack` **NOT** in `info/packs` (a stock dumb client can't apply a thin pack) |
-| Loose objects guarantee correctness | every reachable object retrievable loose via the `http-alternates` union |
+| Loose objects guarantee correctness | every reachable object retrievable loose from the root `/objects/` store |
+| Relative pack discovery | `objects/info/alternates` (one `../`, host-independent) lists pack-only release dirs |
 | sha256 transport | `--object-format=sha256`; **no capability negotiation** in dumb protocol — client git must support sha256 |
 
 **Graceful degradation (brief §9, §12):** a stock dumb clone of a *patch*
-release pulls the **minor-base full pack** (reached via `http-alternates`) plus
-the patch's loose new objects — no thin packs needed. The 256 channel partition
-tags live **outside** the ref namespace at `/channel/*` (WS-03), so they never
-pollute a stock client's `refs/tags/*`.
+release pulls the **minor-base full pack** (reached via the relative
+`info/alternates`) plus the loose objects from the root `/objects/` store — no
+thin packs needed. The 256 channel partition tags live **outside** the ref
+namespace at `/channel/*` (WS-03), so they never pollute a stock client's
+`refs/tags/*`.
 
 ```
 stock git clone <url>
   → GET HEAD                       (ref: refs/heads/stable)
   → GET info/refs                  (refs/heads/* + refs/tags/*)
   → GET objects/info/packs         (pack-<sha>.pack list)
-  → GET objects/info/http-alternates
-       → follow ../../release/X/Y/0/objects/  (full pack)
-       → follow ../../release/X/Y/Z/objects/  (patch loose objects)
+  → GET objects/info/alternates    (relative, one "../")
+       → follow ../release/X/Y/0/objects/  (full pack, pack-only dir)
+  → GET objects/<xx>/<62-hex>      (loose objects from the root store)
   → checkout works.  delta-*.pack never touched.
 ```
 
@@ -363,8 +373,8 @@ host binary.
 | Test | Asserts |
 |---|---|
 | `objectstore::release_path_mapping` | semver → `/release/M/m/<third>/objects/` for the §3.1 table (incl. `-prerelease+build`) |
-| `objectstore::http_alternates_ordering` | release dirs emitted **newest → oldest** by semver precedence |
-| `objectstore::http_alternates_relative` | every line is a relative path resolving to a real release `objects/` dir |
+| `objectstore::alternates_ordering` | release dirs emitted **newest → oldest** by semver precedence |
+| `objectstore::alternates_relative` | every line is a relative path with **one `../`** resolving to a real release `objects/` dir; host-independent (no hostname) |
 | `objectstore::object_format_guard` | refuse a repo whose `rev-parse --show-object-format` ≠ `sha256` |
 | `objectstore::loose_path_split` | sha256 oid → `<first-2>/<last-62>` loose path |
 
@@ -374,18 +384,19 @@ A scripted test (CI check, analogous to `nix-build -A checks.eval`):
 
 1. `git init --bare --object-format=sha256` a scratch repo; create 4 releases
    (`1.0.0`, `1.1.0`, `1.1.2`, `1.2.0`) with distinct file trees; tag each.
-2. Place each release's new objects under `/release/<…>/objects/`; write per-
-   release + root `info/{packs,http-alternates}`; run `update-server-info`;
-   set `HEAD → refs/heads/stable`.
+2. Place each release's new loose objects under the root `/objects/`; write each
+   release's packs under `/release/<…>/objects/pack/` with per-release
+   `info/packs`; write the root `info/{packs,alternates}` (relative, one `../`);
+   run `update-server-info`; set `HEAD → refs/heads/stable`.
 3. Serve the directory with an AOS static HTTP server.
 4. **Stock clone:** `git clone <url> out` with sha256-capable git; assert the
    checkout of `refs/heads/stable` and of each `refs/tags/<semver>` matches the
    source tree byte-for-byte.
-5. **Alternates resolution:** delete the root loose objects for an old release;
-   re-clone; assert objects resolve through `http-alternates` from the per-
-   release dirs (no missing-object error).
+5. **Pack discovery via alternates:** assert the relative `info/alternates`
+   resolves each `../release/<…>/objects/` pack-only dir (one `../`), and that
+   the file is byte-identical when served from a different host/CDN prefix.
 6. **Loose-completeness:** with `objects/info/packs` emptied, assert a dumb
-   fetch still completes via loose objects only.
+   fetch still completes via the root `/objects/` loose store only.
 
 ### 6.3 Negative tests
 
@@ -405,10 +416,12 @@ A scripted test (CI check, analogous to `nix-build -A checks.eval`):
 - `fn init_bare_sha256(dir, default_channel) -> Result<()>` — `git init --bare
   --object-format=sha256` + `symbolic-ref HEAD`.
 - `fn release_object_dir(version: &semver::Version) -> PathBuf` — §3.1 mapping.
-- `fn write_release_objects(repo, version, revspec)` — Step 2 placement.
+- `fn write_release_objects(repo, version, revspec)` — Step 2: loose objects to
+  root `/objects/`, packs to `/release/<…>/objects/pack/`.
 - `fn ensure_loose_completeness(repo)` — Step 3.
 - `fn refresh_server_info(repo)` — wraps `git update-server-info` (Step 4).
-- `fn write_http_alternates(repo, releases_newest_first)` — Step 5.
+- `fn write_alternates(repo, releases_newest_first)` — Step 5: relative
+  `objects/info/alternates`, one `../`, host-independent.
 - `fn assert_sha256(repo)` — object-format guard.
 
 This sits **below** the pack/delta module (WS-02) and the channel/tag module
@@ -423,7 +436,7 @@ object-store primitives are invoked by the publish pipeline. Per
 [design-brief §16.4](./design-brief.md) (open question), a single
 `apr release` / `apr publish` may wrap the whole pipeline (commit → tag/sign →
 pack/delta/zstd → `update-server-info` → advance partitions → upload); this
-workstream contributes the `update-server-info` + `http-alternates` steps to
+workstream contributes the `update-server-info` + `info/alternates` steps to
 that command. The existing `apr bundle` (= `git bundle create`) and the
 `bundle.rs` writer are **removed** as part of retiring bundles (brief §15, done
 in WS-02).
@@ -443,21 +456,25 @@ in WS-02).
 2. **sha256 client support (brief §16.1):** no dumb-protocol capability
    negotiation; the consumer's git must support sha256. Needs a tested
    floor-version matrix → [open-questions](./open-questions.md).
-3. **`http-alternates` depth & probe cost:** as the release count grows, the
-   newest→oldest list grows; a stock client may probe many dirs for an old
-   object. Newest-first ordering and the loose-completeness fallback mitigate,
-   but very long histories may want periodic root-level repacking (efficiency
-   only; never correctness).
-4. **`info/alternates` mirror (brief §16.6):** whether to maintain the readable
-   `alternates` mirror alongside `http-alternates`. Default: emit
-   `http-alternates` only; add the mirror if agents/operators need it.
-5. **Retiring `RegistryRootConfig`/`registry.toml` (`types.rs:567`):** the cache
-   advertisement moves into the signed tag-message `[[caches]]` (WS-04). This WS
-   stops *writing* `registry.toml` (`registry_ops.rs:443-450`); WS-04 removes the
-   type. Coordinate so no path reads a now-absent root config.
+3. **`info/alternates` depth & probe cost:** as the release count grows, the
+   newest→oldest list grows; a client may probe many pack-only dirs for an old
+   release's pack. Newest-first ordering and the root loose-object store
+   mitigate (loose objects are always one fetch from the root), but very long
+   histories may want periodic root-level repacking (efficiency only; never
+   correctness).
+4. **Single relative `info/alternates` (brief §16.6):** the dumb-HTTP walker
+   reads `http-alternates` first then falls back to `alternates`, so a single
+   **relative** `info/alternates` (one `../`, host-independent) covers both HTTP
+   and local-FS access — no separate `http-alternates` file is maintained.
+5. **Retiring `RegistryRootConfig`/`registry.toml` (`types.rs:567`):** the
+   cache/NAR-substituter location becomes **client-side** config (or the origin
+   itself) — it is **not** moved into signed tags, which carry no structured
+   payload (WS-04). This WS stops *writing* `registry.toml`
+   (`registry_ops.rs:443-450`); WS-04 removes the type. Coordinate so no path
+   reads a now-absent root config.
 6. **Atomicity across a CDN (§4 Step 6):** content-before-pointer ordering holds
    at the origin, but CDN edge caches with mixed TTLs can briefly serve a new
-   `info/refs` with a stale `http-alternates`. Loose objects + immutable content
+   `info/refs` with a stale `info/alternates`. Loose objects + immutable content
    make this self-healing, but cache-bust ordering must be specified in
    [publishing](../../registry/publishing.md).
 
@@ -469,12 +486,13 @@ in WS-02).
       (`registry_ops.rs:438`) emits a **sha256 bare** canonical repo with
       `HEAD → refs/heads/<default-channel>`.
 - [ ] Publish regenerates `info/refs` + `objects/info/packs` via
-      `update-server-info`, and rewrites `objects/info/http-alternates`
-      (newest → oldest) on every release.
-- [ ] Every reachable object is retrievable **loose** through the
-      `http-alternates` union (completeness guarantee).
-- [ ] Per-release object dirs exist at `/release/<M>/<m>/<third>/objects/` per
-      §3.1, each with its own `info/{packs,http-alternates}`.
+      `update-server-info`, and rewrites the relative `objects/info/alternates`
+      (one `../`, newest → oldest) on every release.
+- [ ] Every reachable object is retrievable **loose** from the root `/objects/`
+      store (completeness guarantee); all loose objects are centralized there.
+- [ ] Per-release dirs exist at `/release/<M>/<m>/<third>/objects/` per §3.1 and
+      are **pack-only** (`info/packs` + `pack/`; no loose objects, no
+      per-release `info/alternates`).
 - [ ] §6 eval tests + the serve→stock-clone integration test pass with
       AOS-built git over a static HTTP server.
 - [ ] No `registry.toml` root, no `bundle-list.toml`, no git bundles emitted
