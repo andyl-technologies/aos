@@ -489,11 +489,15 @@ whether a server or a producer produced the files.
 
 ### 7.1 Tracking modes
 
-`TrackingMode { Commit, Branch, Tag, Version(semver::VersionReq), Default }`
+`TrackingMode { Commit, Branch, Channel, Tag, Version(semver::VersionReq), Default }`
 (`types.rs:279-290`). `RegistryConfig::tracking_mode()` (`types.rs:349-397`)
-validates that **at most one** of `commit`/`branch`/`tag`/`version` is set
+validates that **at most one** of `commit`/`branch`/`channel`/`tag`/`version` is set
 (the legacy `pin` field merges into `tag`, `types.rs:227-229`, `351`), erroring
 otherwise; with none set it returns `Default` (default-branch HEAD).
+
+`channel = "stable"` now parses to `TrackingMode::Channel("stable")`, but the
+consumer still treats it like a branch/frontier fetch until the signed
+`/channels/<name>/<00..ff>` partition resolver is wired.
 
 Transport is derived from the URL scheme (`RegistryConfig::transport`,
 `types.rs:312-321`): `git://`, `git+https://`, `git+ssh://` ⇒ `Git`; everything
