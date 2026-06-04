@@ -362,7 +362,7 @@ fn pick_bundles<'a>(
                 bail!("no tags matching version constraint '{req}' found in bundle manifest");
             }
         }
-        TrackingMode::Branch(_) | TrackingMode::Default => {
+        TrackingMode::Branch(_) | TrackingMode::Channel(_) | TrackingMode::Default => {
             // Fall through to incremental sync logic below.
         }
     }

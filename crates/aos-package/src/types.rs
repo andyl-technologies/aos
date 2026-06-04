@@ -218,6 +218,9 @@ pub struct RegistryConfig {
     /// Branch name to track HEAD of (mutually exclusive with commit/tag/version).
     #[serde(default)]
     pub branch: Option<String>,
+    /// Rollout channel to track via the channel partition overlay.
+    #[serde(default)]
+    pub channel: Option<String>,
     /// Exact tag name to pin to (mutually exclusive with commit/branch/version).
     #[serde(default)]
     pub tag: Option<String>,
@@ -273,14 +276,16 @@ pub enum Transport {
 
 /// How a registry tracks its upstream version.
 ///
-/// Exactly one mode is active at a time; when none of the four tracking
-/// fields is set, the default mode (branch HEAD of "main") is used.
+/// Exactly one mode is active at a time; when no tracking field is set, the
+/// default mode is used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrackingMode {
     /// Frozen to an exact commit hash.
     Commit(String),
     /// Track the HEAD of a named branch.
     Branch(String),
+    /// Track a rollout channel using the channel partition overlay.
+    Channel(String),
     /// Pinned to an exact tag name.
     Tag(String),
     /// Semver constraint applied to tags (e.g. `~2026.03`, `^2026`).
@@ -294,6 +299,7 @@ impl std::fmt::Display for TrackingMode {
         match self {
             TrackingMode::Commit(h) => write!(f, "commit:{}", &h[..h.len().min(12)]),
             TrackingMode::Branch(b) => write!(f, "branch:{b}"),
+            TrackingMode::Channel(c) => write!(f, "channel:{c}"),
             TrackingMode::Tag(t) => write!(f, "tag:{t}"),
             TrackingMode::Version(v) => write!(f, "version:{v}"),
             TrackingMode::Default => write!(f, "default"),
@@ -343,7 +349,7 @@ impl RegistryConfig {
 
     /// Resolve the tracking mode from the config fields.
     ///
-    /// Validates that at most one of `commit`, `branch`, `tag`, `version`
+    /// Validates that at most one of `commit`, `branch`, `channel`, `tag`, `version`
     /// (and legacy `pin`) is set.  The legacy `pin` field is treated as
     /// `tag` for backward compatibility.
     pub fn tracking_mode(&self) -> Result<TrackingMode> {
@@ -357,6 +363,9 @@ impl RegistryConfig {
         if self.branch.is_some() {
             count += 1;
         }
+        if self.channel.is_some() {
+            count += 1;
+        }
         if effective_tag.is_some() {
             count += 1;
         }
@@ -366,7 +375,7 @@ impl RegistryConfig {
 
         if count > 1 {
             bail!(
-                "registry '{}': only one of commit, branch, tag, version \
+                "registry '{}': only one of commit, branch, channel, tag, version \
                  may be set (found {})",
                 self.name,
                 count,
@@ -378,6 +387,9 @@ impl RegistryConfig {
         }
         if let Some(ref branch) = self.branch {
             return Ok(TrackingMode::Branch(branch.clone()));
+        }
+        if let Some(ref channel) = self.channel {
+            return Ok(TrackingMode::Channel(channel.clone()));
         }
         if let Some(ref tag) = effective_tag {
             return Ok(TrackingMode::Tag(tag.clone()));
@@ -536,6 +548,8 @@ pub struct RegistryFileInner {
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]
+    pub channel: Option<String>,
+    #[serde(default)]
     pub tag: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
@@ -639,6 +653,7 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
@@ -656,6 +671,7 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
@@ -673,6 +689,7 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
@@ -690,6 +707,7 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
@@ -707,6 +725,7 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
@@ -876,6 +895,7 @@ last_update = "2026-02-13T10:30:00Z"
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
@@ -906,6 +926,16 @@ last_update = "2026-02-13T10:30:00Z"
         match cfg.tracking_mode().unwrap() {
             TrackingMode::Branch(b) => assert_eq!(b, "stable"),
             other => panic!("expected Branch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_channel() {
+        let mut cfg = base_cfg();
+        cfg.channel = Some("stable".into());
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Channel(c) => assert_eq!(c, "stable"),
+            other => panic!("expected Channel, got {:?}", other),
         }
     }
 
@@ -960,6 +990,15 @@ last_update = "2026-02-13T10:30:00Z"
         let mut cfg = base_cfg();
         cfg.branch = Some("main".into());
         cfg.tag = Some("v1.0".into());
+        let err = cfg.tracking_mode().unwrap_err();
+        assert!(err.to_string().contains("only one of"), "got: {err}");
+    }
+
+    #[test]
+    fn tracking_mode_error_branch_and_channel() {
+        let mut cfg = base_cfg();
+        cfg.branch = Some("main".into());
+        cfg.channel = Some("stable".into());
         let err = cfg.tracking_mode().unwrap_err();
         assert!(err.to_string().contains("only one of"), "got: {err}");
     }

@@ -181,7 +181,7 @@ async fn fetch_refs(
             // Fetch the specific commit.
             args.push(hash.clone());
         }
-        TrackingMode::Branch(branch) => {
+        TrackingMode::Branch(branch) | TrackingMode::Channel(branch) => {
             // Fetch the branch.
             args.push(format!(
                 "refs/heads/{branch}:refs/remotes/origin/{branch}"
@@ -229,7 +229,7 @@ async fn resolve_fetch_head(
             // Already a commit hash.
             return Ok(hash.clone());
         }
-        TrackingMode::Branch(branch) => {
+        TrackingMode::Branch(branch) | TrackingMode::Channel(branch) => {
             format!("refs/remotes/origin/{branch}")
         }
         TrackingMode::Tag(tag) => {

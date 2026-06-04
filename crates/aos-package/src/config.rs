@@ -142,6 +142,7 @@ impl ApmConfig {
             enabled: rf.registry.enabled,
             commit: rf.registry.commit,
             branch: rf.registry.branch,
+            channel: rf.registry.channel,
             tag: rf.registry.tag,
             version: rf.registry.version,
             pin: rf.registry.pin,
@@ -337,6 +338,27 @@ last_update = "2026-02-13T10:30:00Z"
     }
 
     #[test]
+    fn parse_registry_with_channel() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("channel.toml");
+        fs::write(
+            &path,
+            r#"
+[registry]
+name = "aos-core"
+url = "https://registry.aos.dev/core"
+channel = "stable"
+"#,
+        )
+        .unwrap();
+
+        let (config, state) = ApmConfig::parse_registry_file(&path).unwrap();
+        assert_eq!(config.name, "aos-core");
+        assert_eq!(config.channel.as_deref(), Some("stable"));
+        assert!(state.is_none());
+    }
+
+    #[test]
     fn enabled_registries_filter() {
         let config = ApmConfig {
             settings: ApmSettings::default(),
@@ -349,6 +371,7 @@ last_update = "2026-02-13T10:30:00Z"
                         enabled: true,
                         commit: None,
                         branch: None,
+                        channel: None,
                         tag: None,
                         version: None,
                         pin: None,
@@ -364,6 +387,7 @@ last_update = "2026-02-13T10:30:00Z"
                         enabled: false,
                         commit: None,
                         branch: None,
+                        channel: None,
                         tag: None,
                         version: None,
                         pin: None,

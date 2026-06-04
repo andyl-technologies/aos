@@ -1557,6 +1557,7 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,

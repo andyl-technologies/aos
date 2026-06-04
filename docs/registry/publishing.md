@@ -533,8 +533,8 @@ apr bundle --delta-from 2026.05.0 --tag 2026.06.0     # delta bundle    (registr
 ```
 
 Everything after `apr push` is incomplete: the operator hand-copies bundles to a
-mirror; there is no pack/delta/zstd, no `update-server-info`, no `info/alternates`,
-no channel/partition tags, and no upload.
+mirror; there is no pack/delta/zstd publish pipeline, no `update-server-info`, no
+`info/alternates`, no signed channel partition tags, and no upload.
 
 ### 12.2 TARGET (the §10/§4/§6 pipeline, e.g. a future `apr release`)
 

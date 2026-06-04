@@ -409,7 +409,7 @@ The **TARGET** is everything above. Today's **CURRENT** code is the bundle /
   (`crates/aos-package/src/update.rs:292`).
 - Versions are **calendar tags** (`vYYYY.MM[.P]`) ordered by `version_to_token`
   (`crates/aos-package/src/registry/state.rs:131`); tracking modes are
-  commit/branch/tag/version (`TrackingMode`,
+  commit/branch/channel/tag/version (`TrackingMode`,
   `crates/aos-package/src/types.rs:282`).
 - Signing already uses **SSH-format Ed25519** git signatures, verified via
   `git verify-commit` + a temporary `allowed_signers`

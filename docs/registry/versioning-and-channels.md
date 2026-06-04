@@ -407,14 +407,16 @@ A host subscribes via `~/.config/apm/registries.d/{name}.toml`; the resolved mod
 pub enum TrackingMode {
     Commit(String),                  // frozen to an exact commit hash
     Branch(String),                  // track HEAD of a named branch
+    Channel(String),                 // channel config mode; partition resolver pending
     Tag(String),                     // pinned to an exact tag
     Version(semver::VersionReq),     // semver constraint on tags
     Default,                         // no field set -> default branch HEAD
 }
 ```
 
-There is **no `Channel` variant** today; channel subscription is the target
-addition (§3–§6). The natural mapping under the target model:
+The `Channel` variant and `channel = "stable"` config field now exist, but the
+256 signed partition overlay remains target work (§3–§6). The natural mapping
+under the target model:
 
 | Today's intent | Target mechanism |
 |---|---|
