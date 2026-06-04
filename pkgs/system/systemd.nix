@@ -18,6 +18,7 @@
   ninja,
   python3,
   gperf,
+  getent,
   libcap,
   libxcrypt,
   pcre2,
@@ -44,6 +45,12 @@ in
   mkDerivation {
     pname = "systemd";
     inherit version;
+
+    # Split ukify into a `tools` output so the python3-pefile and
+    # python3-pyelftools site-packages stay out of PID-1 systemd's
+    # runtime closure. aos-uki (the only consumer of ukify) pulls
+    # systemd.tools explicitly.
+    outputs = ["out" "tools"];
 
     src = fetchurl {
       urls = [
@@ -77,6 +84,7 @@ in
       ninja
       python3
       gperf
+      getent
     ];
     runtimeDeps = [
       util-linux
@@ -100,6 +108,11 @@ in
       linux-pam
     ];
     propagatedDeps = [];
+
+    # The ukify wrapper installed into $tools/bin references python3 +
+    # the pefile / pyelftools site-packages. Listed in nukeRefsKeep so
+    # scrubPhase preserves the hashes only inside the tools output.
+    nukeRefsKeep = [python3 python3-pefile python3-pyelftools];
 
     phases = [
       {
@@ -150,46 +163,6 @@ in
       {
         name = "configure";
         script = ''
-                  # Create getent shim — systemd's meson.build uses getent to look up
-                  # system users/groups (nobody, systemd-journal, etc.) during configure.
-                  # In the Nix sandbox there's no NSS, so we provide a shim that returns
-                  # the expected entries for standard system accounts.
-                  mkdir -p .shim-bin
-                  cat > .shim-bin/getent << 'GETENT'
-          #!/bin/sh
-          db="$1"; key="$2"
-          case "$db" in
-            passwd)
-              case "$key" in
-                root)              echo "root:x:0:0:root:/root:/bin/sh" ;;
-                nobody)            echo "nobody:x:65534:65534:Nobody:/:/sbin/nologin" ;;
-                systemd-journal)   echo "systemd-journal:x:101:101:systemd Journal:/:/sbin/nologin" ;;
-                systemd-network)   echo "systemd-network:x:102:102:systemd Network:/:/sbin/nologin" ;;
-                systemd-resolve)   echo "systemd-resolve:x:103:103:systemd Resolver:/:/sbin/nologin" ;;
-                systemd-timesync)  echo "systemd-timesync:x:104:104:systemd Time Sync:/:/sbin/nologin" ;;
-                systemd-coredump)  echo "systemd-coredump:x:105:105:systemd Core Dumper:/:/sbin/nologin" ;;
-                systemd-oom)       echo "systemd-oom:x:106:106:systemd Userspace OOM Killer:/:/sbin/nologin" ;;
-                *)                 exit 2 ;;
-              esac ;;
-            group)
-              case "$key" in
-                root)              echo "root:x:0:" ;;
-                nobody)            echo "nobody:x:65534:" ;;
-                utmp)              echo "utmp:x:22:" ;;
-                systemd-journal)   echo "systemd-journal:x:101:" ;;
-                systemd-network)   echo "systemd-network:x:102:" ;;
-                systemd-resolve)   echo "systemd-resolve:x:193:" ;;
-                systemd-timesync)  echo "systemd-timesync:x:194:" ;;
-                systemd-coredump)  echo "systemd-coredump:x:105:" ;;
-                systemd-oom)       echo "systemd-oom:x:106:" ;;
-                *)                 exit 2 ;;
-              esac ;;
-            *)                     exit 2 ;;
-          esac
-          GETENT
-                  chmod +x .shim-bin/getent
-                  export PATH="$(pwd)/.shim-bin:$PATH"
-
                   # Ensure meson's Python module, pefile, and pyelftools
                   # are findable both at meson-configure time and when
                   # ninja later invokes patched python3 scripts (e.g.
@@ -414,18 +387,21 @@ in
 
           # ukify: pefile must be importable when the wrapped shebang
           # runs. systemd's meson install lays the script down with a
-          # plain python3 shebang — we replace the entry on PATH with
-          # a bash wrapper that exports PYTHONPATH pointing at
-          # python3-pefile's site-packages before invoking python3 on
-          # the original script.
+          # plain python3 shebang — we relocate it into the `tools`
+          # output (so the python3 / pefile / pyelftools refs don't
+          # land in PID-1 systemd's closure) and emit a bash wrapper
+          # that exports PYTHONPATH pointing at python3-pefile's
+          # site-packages before invoking python3 on the original
+          # script.
           if [ -x "$out/bin/ukify" ]; then
-            mv "$out/bin/ukify" "$out/bin/.ukify-unwrapped"
-            cat > "$out/bin/ukify" << EOF
+            mkdir -p "$tools/bin"
+            mv "$out/bin/ukify" "$tools/bin/.ukify-unwrapped"
+            cat > "$tools/bin/ukify" << EOF
           #!${bash}/bin/bash
           export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
-          exec "${python3}/bin/python3" "$out/bin/.ukify-unwrapped" "\$@"
+          exec "${python3}/bin/python3" "$tools/bin/.ukify-unwrapped" "\$@"
           EOF
-            chmod +x "$out/bin/ukify"
+            chmod +x "$tools/bin/ukify"
           fi
         '';
       }

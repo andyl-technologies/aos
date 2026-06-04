@@ -4,6 +4,9 @@ use std::process::Stdio;
 use anyhow::{bail, Context, Result};
 use tokio::process::Command;
 
+use aos_core::nar::export::ExportTrailer;
+use aos_core::nix::aos_nix_env;
+
 use super::registry::store_path_hash;
 use super::types::PackageMeta;
 use super::verify::verify_store_path;
@@ -14,14 +17,30 @@ use super::verify::verify_store_path;
 
 /// Import a compressed NAR (`.nar.zst`) into the Nix store.
 ///
+/// The cache serves a *plain* NAR (`nix-store --dump` output), but
+/// `nix-store --import` consumes the *export* format — a NAR followed by a
+/// metadata trailer (store path, references, deriver). We reconstruct that
+/// trailer from the narinfo metadata and stream NAR + trailer into the
+/// import process.
+///
 /// Steps:
 ///   1. Decompress the `.nar.zst` file via `zstd -d` to a temporary `.nar`.
-///   2. Run `nix-store --import < decompressed.nar` to import into the store.
+///   2. Stream the NAR plus a synthesized `ExportTrailer` into
+///      `nix-store --import`.
 ///   3. Verify the resulting store path matches `expected_store_path`.
 ///   4. Clean up the temporary decompressed file.
 ///
+/// `references` and `deriver` come from the narinfo. `references` may be
+/// store-path basenames or full paths; bare basenames are resolved against
+/// the active store directory.
+///
 /// Returns the imported store path on success.
-pub async fn import_nar(nar_path: &Path, expected_store_path: &str) -> Result<String> {
+pub async fn import_nar(
+    nar_path: &Path,
+    expected_store_path: &str,
+    references: &[String],
+    deriver: Option<&str>,
+) -> Result<String> {
     // Decompress .nar.zst -> .nar alongside the original file.
     let decompressed = nar_path.with_extension("");
     let zstd_output = Command::new("zstd")
@@ -47,22 +66,54 @@ pub async fn import_nar(nar_path: &Path, expected_store_path: &str) -> Result<St
         );
     }
 
-    // Import the decompressed NAR into the store.
-    let nar_file = tokio::fs::File::open(&decompressed)
+    let nar_data = tokio::fs::read(&decompressed)
         .await
-        .with_context(|| format!("opening decompressed NAR {}", decompressed.display()))?;
+        .with_context(|| format!("reading decompressed NAR {}", decompressed.display()))?;
 
-    let import_output = Command::new("nix-store")
-        .arg("--import")
-        .stdin(nar_file.into_std().await)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .context("running nix-store --import")?;
-
-    // Clean up the decompressed file regardless of outcome.
+    // Clean up the decompressed file now that it's in memory.
     let _ = tokio::fs::remove_file(&decompressed).await;
+
+    // Resolve the store directory references are rooted under, so bare
+    // basenames from the narinfo become full paths in the export trailer.
+    let store_dir = store_dir_of(expected_store_path);
+    let full_refs: Vec<String> = references
+        .iter()
+        .map(|r| resolve_store_path(r, &store_dir))
+        .collect();
+    let full_deriver = deriver.map(|d| resolve_store_path(d, &store_dir));
+
+    let trailer = ExportTrailer::new(
+        expected_store_path,
+        full_refs,
+        full_deriver,
+    );
+
+    // Stream NAR + trailer into `nix-store --import`. aos_nix_env() routes
+    // the import at AOS_ROOT's store when that env var is set.
+    let import_output = tokio::task::spawn_blocking(move || -> Result<std::process::Output> {
+        let mut child = std::process::Command::new("nix-store")
+            .envs(aos_nix_env())
+            .arg("--import")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawning nix-store --import")?;
+        {
+            let stdin = child
+                .stdin
+                .as_mut()
+                .context("no stdin for nix-store --import")?;
+            trailer
+                .write_import_stream(stdin, &nar_data)
+                .context("writing export stream")?;
+        }
+        child
+            .wait_with_output()
+            .context("waiting for nix-store --import")
+    })
+    .await
+    .context("import task panicked")??;
 
     if !import_output.status.success() {
         let stderr = String::from_utf8_lossy(&import_output.stderr);
@@ -82,6 +133,27 @@ pub async fn import_nar(nar_path: &Path, expected_store_path: &str) -> Result<St
     verify_store_path(&imported_path, expected_store_path)?;
 
     Ok(imported_path)
+}
+
+/// Derive the store directory from a full store path.
+///
+/// `"/var/lib/aos/store/abc-foo-1.0"` → `"/var/lib/aos/store"`.
+/// Falls back to `/nix/store` when the path has no parent.
+fn store_dir_of(store_path: &str) -> String {
+    Path::new(store_path)
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "/nix/store".to_string())
+}
+
+/// Resolve a narinfo reference (bare basename or full path) to a full path
+/// rooted under `store_dir`.
+fn resolve_store_path(reference: &str, store_dir: &str) -> String {
+    if reference.starts_with('/') {
+        reference.to_string()
+    } else {
+        format!("{store_dir}/{reference}")
+    }
 }
 
 /// Extract the imported store path from `nix-store --import` stdout.
@@ -118,6 +190,7 @@ pub async fn filter_missing(store_paths: &[String]) -> Result<Vec<String>> {
 
     for path in store_paths {
         let status = Command::new("nix-store")
+            .envs(aos_nix_env())
             .args(["--check-validity", path])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -336,8 +409,6 @@ mod tests {
             store_path: format!("/var/lib/store/{hash}-{name}-1.0.0"),
             nar_hash: "sha256:0000".into(),
             nar_size: 1024,
-            download_hash: "sha256:1111".into(),
-            download_size: 512,
             references: vec![],
             source_drv: source_drv.into(),
             source_nar_hash: "sha256:2222".into(),

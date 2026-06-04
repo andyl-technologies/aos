@@ -4,7 +4,10 @@ use std::io::Write;
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
-use super::download::{download_nars, resolve_mirror, DownloadRequest};
+use super::download::{
+    default_engine, download_nars, fetch_narinfos, resolve_mirror, DownloadRequest,
+    ResolvedDownload,
+};
 use super::profile::merge::build_fhs_tree;
 use super::profile::meta::{list_meta, write_meta};
 use super::profile::Profile;
@@ -143,10 +146,18 @@ pub async fn run(
         printer.step(4, 7, "Downloading packages...");
 
         let requests = build_download_requests(&upgrade_closures, &to_download, config)?;
+        let engine = std::sync::Arc::new(default_engine());
+        let resolved: Vec<ResolvedDownload> = fetch_narinfos(
+            std::sync::Arc::clone(&engine),
+            &requests,
+            config.settings.parallel_downloads,
+            printer,
+        )
+        .await?;
         let cache_dir = config.nar_cache_path();
 
         let results = download_nars(
-            &requests,
+            &resolved,
             &cache_dir,
             config.settings.parallel_downloads,
             printer,
@@ -165,9 +176,14 @@ pub async fn run(
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
         for result in &results {
-            import_nar(&result.local_path, &result.store_path)
-                .await
-                .with_context(|| format!("importing {}", result.store_path))?;
+            import_nar(
+                &result.local_path,
+                &result.store_path,
+                &result.references,
+                result.deriver.as_deref(),
+            )
+            .await
+            .with_context(|| format!("importing {}", result.store_path))?;
         }
     } else {
         printer.info("All packages already in store, skipping download.");
@@ -410,13 +426,16 @@ fn print_upgrade_summary(
         print_held_back(held_back, printer);
     }
 
-    let download_size: u64 = to_upgrade.iter().map(|c| c.new_meta.download_size).sum();
+    let install_size: u64 = to_upgrade.iter().map(|c| c.new_meta.nar_size).sum();
 
     printer.plain(&format!(
         "\n{} upgraded, 0 newly installed, 0 to remove.",
         to_upgrade.len(),
     ));
-    printer.plain(&format!("Need to download {}.", format_size(download_size)));
+    printer.plain(&format!(
+        "{} of additional installed size.",
+        format_size(install_size),
+    ));
 }
 
 /// Print held back packages.
@@ -445,7 +464,7 @@ fn build_download_requests(
             let mirror_url = if let Some(cfg) = reg_config {
                 resolve_mirror(cfg)
             } else {
-                format!("https://registry.aos.dev/{}/nar", registry_name)
+                format!("https://registry.aos.dev/{}", registry_name)
             };
             (registry_name.clone(), mirror_url)
         })
@@ -475,9 +494,6 @@ fn build_download_requests(
 
         requests.push(DownloadRequest {
             store_path: meta.store_path.clone(),
-            nar_hash: meta.nar_hash.clone(),
-            download_hash: meta.download_hash.clone(),
-            download_size: meta.download_size,
             mirror_url: mirror_url.clone(),
         });
     }
@@ -603,8 +619,6 @@ version = "8.6.0"
 store_path = "/var/lib/store/newh4sh99xx-curl-8.6.0"
 nar_hash = "sha256:newnar"
 nar_size = 3200000
-download_hash = "sha256:newdl"
-download_size = 1100000
 closure_size = 53000000
 source_drv = "/var/lib/store/newsrc-curl-8.6.0.drv"
 source_nar_hash = "sha256:newsrc"
@@ -715,8 +729,6 @@ references = []
                     store_path: "/var/lib/store/newhash-curl-8.6.0".into(),
                     nar_hash: String::new(),
                     nar_size: 0,
-                    download_hash: String::new(),
-                    download_size: 0,
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
@@ -743,8 +755,6 @@ references = []
                     store_path: "/var/lib/store/newhash-zlib-1.3.1".into(),
                     nar_hash: String::new(),
                     nar_size: 0,
-                    download_hash: String::new(),
-                    download_size: 0,
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
@@ -789,8 +799,6 @@ references = []
                     store_path: "/var/lib/store/newhash-curl-8.6.0".into(),
                     nar_hash: String::new(),
                     nar_size: 0,
-                    download_hash: String::new(),
-                    download_size: 0,
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
@@ -817,8 +825,6 @@ references = []
                     store_path: "/var/lib/store/newhash-zlib-1.3.1".into(),
                     nar_hash: String::new(),
                     nar_size: 0,
-                    download_hash: String::new(),
-                    download_size: 0,
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
@@ -864,8 +870,6 @@ references = []
                     store_path: "/var/lib/store/newhash-curl-8.6.0".into(),
                     nar_hash: String::new(),
                     nar_size: 0,
-                    download_hash: String::new(),
-                    download_size: 0,
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
@@ -892,8 +896,6 @@ references = []
                     store_path: "/var/lib/store/newhash-zlib-1.3.1".into(),
                     nar_hash: String::new(),
                     nar_size: 0,
-                    download_hash: String::new(),
-                    download_size: 0,
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),

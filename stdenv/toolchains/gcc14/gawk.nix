@@ -56,9 +56,9 @@ in
 
         export LIBRARY_PATH="${glibc}/lib"
         CC="${gcc}/bin/gcc" \
-        CFLAGS="-O2 -isystem ${glibc}/include" \
-        CPPFLAGS="-isystem ${glibc}/include" \
-        LDFLAGS="-L${glibc}/lib -static -no-pie" \
+        CFLAGS="-O2 -isystem ${glibc.dev}/include" \
+        CPPFLAGS="-isystem ${glibc.dev}/include" \
+        LDFLAGS="-L${glibc.static}/lib -L${glibc}/lib -static -no-pie" \
         "$TMPDIR/gawk-5.3.1/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
@@ -68,6 +68,21 @@ in
         make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
 
         [ -f "$out/bin/gawk" ] && [ ! -f "$out/bin/awk" ] && ln -sf gawk "$out/bin/awk"
+
+        # gawkbug is a bug-report-generator shell script that bakes the
+        # build-time CC / CFLAGS into "CC=…" / "CFLAGS=…" lines for the
+        # user to copy into their report. The embedded paths pin
+        # gcc-14.3.0-wrapped (and stage2, 232 MiB) and glibc-2.39-dev
+        # (13 MiB) into every consumer's runtime closure — nothing else
+        # references them. Replace with the bare command name and empty
+        # flags — gawkbug is a debugging aid; it doesn't need the exact
+        # build paths to function.
+        if [ -f "$out/bin/gawkbug" ]; then
+          ${prev.sed}/bin/sed -i \
+            -e 's|^CC=.*|CC="gcc"|' \
+            -e 's|^CFLAGS=.*|CFLAGS=""|' \
+            "$out/bin/gawkbug"
+        fi
 
         echo "GNU awk 5.3.1 installed to $out"
       ''

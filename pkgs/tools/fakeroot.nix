@@ -22,7 +22,11 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [libcap];
+    # scripts/fakeroot.in is patched (below) to hardcode util-linux, sed,
+    # and coreutils store paths. These must be in runtimeDeps so the
+    # scrubPhase nuke-refs pass keeps the hashes — otherwise the wrapper
+    # script invokes /nix/store/eeeee.../bin/getopt and aborts.
+    runtimeDeps = [libcap util-linux sed coreutils];
     propagatedDeps = [];
 
     phases = [

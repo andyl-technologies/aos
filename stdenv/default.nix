@@ -46,6 +46,37 @@
   mkStdenvFromTier = tc: let
     shellPath = "${tc.bash}/bin/bash";
 
+    # Default compiler-hardening tokens applied to every package unless it
+    # opts out with hardeningDisable. See lib/hardening.nix for the token
+    # vocabulary and stdenv/cc-wrapper.nix for the flag mapping.
+    defaultHardeningFlags =
+      [
+        "stackprotector"
+        "relro"
+        "bindnow"
+        "pie"
+        "noexecstack"
+        "fortify"
+        "fortify3"
+        "stackclashprotection"
+        "format"
+        "strictflexarrays3"
+        "glibcxxassertions"
+      ]
+      # x86_64 shadow stack, enabled now that glibc and GCC are built with
+      # --enable-cet and the SHSTK probe passes. Filtered off other arches.
+      ++ lib.optional hostPlatform.isx86_64 "shadowstack";
+
+    # Platform-filtered default the wrapper bakes in as its fallback when
+    # AOS_HARDENING_ENABLE is unset (interactive / non-build use).
+    defaultHardeningStr = lib.hardening.effectiveString {
+      name = "cc-wrapper-default";
+      platform = hostPlatform;
+      defaultFlags = defaultHardeningFlags;
+      hardeningEnable = [];
+      hardeningDisable = [];
+    };
+
     ccWrapper = import ./cc-wrapper.nix {
       inherit storeDir hostPlatform;
       shell = shellPath;
@@ -53,6 +84,7 @@
       cc = tc.gcc;
       libc = tc.glibc;
       binutils_ = tc.binutils;
+      defaultHardening = defaultHardeningStr;
     };
 
     initialPath = [
@@ -111,6 +143,10 @@
           shell = args.shell or shellPath;
           storeDir = args.storeDir or storeDir;
           stdenv = stdenvDrv;
+
+          # Central hardening default. Packages keep their own hardeningEnable
+          # / hardeningDisable; this only supplies the baseline they adjust.
+          defaultHardeningFlags = args.defaultHardeningFlags or defaultHardeningFlags;
           CC = "${ccWrapper}/bin/gcc";
           CXX = "${ccWrapper}/bin/g++";
           LD = "${ccWrapper}/bin/ld";
@@ -118,6 +154,15 @@
           RANLIB = "${ccWrapper}/bin/ranlib";
           STRIP = "${ccWrapper}/bin/strip";
           CONFIG_SHELL = shellPath;
+
+          # Every ELF in the output references libc as its dynamic linker
+          # (PT_INTERP) and links against ${libc}/lib via the cc-wrapper.
+          # Bash is the build-time shell every autotools `./configure`
+          # substitutes into shebangs (#!@BASH@ → #!/nix/store/HASH/bin/bash).
+          # The scrubPhase's deny-by-default nuke-refs pass would otherwise
+          # rewrite those hashes and break binaries/scripts; preserve them
+          # here so callers don't have to redeclare as a runtimeDep.
+          nukeRefsKeep = (args.nukeRefsKeep or []) ++ [ccWrapper.libc tc.bash];
         };
     in
       lib.mkDerivation effectiveArgs;
@@ -176,6 +221,7 @@
     inherit
       (tc)
       gcc
+      gccStage2
       glibc
       binutils
       bash

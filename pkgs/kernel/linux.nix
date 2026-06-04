@@ -56,6 +56,11 @@ in
     runtimeDeps = [kmod];
     propagatedDeps = [];
 
+    # Kbuild owns the kernel's compiler and linker policy. The userspace
+    # wrapper flags (PIE, Fortify, format, control-flow) are wrong for
+    # kernel code, so opt out of the whole policy here.
+    hardeningDisable = ["all"];
+
     # Path to kernel config fragments — these are merged before building.
     configDir = ./config;
 
@@ -75,6 +80,13 @@ in
 
           # Merge our config fragments on top
           for frag in $configDir/*.config; do
+            scripts/kconfig/merge_config.sh -m .config "$frag"
+          done
+
+          # Architecture-specific fragments (e.g. x86 IBT, arm64 PAC) live in
+          # a per-arch subdirectory keyed by the kernel's ARCH name.
+          for frag in "$configDir/${kernelArch.karch}"/*.config; do
+            [ -e "$frag" ] || continue
             scripts/kconfig/merge_config.sh -m .config "$frag"
           done
 

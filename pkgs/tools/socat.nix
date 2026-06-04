@@ -3,6 +3,9 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  patch,
+  patchelf,
+  pkg-config,
   openssl,
 }: let
   version = "1.8.0.3";
@@ -21,6 +24,15 @@ in
     buildDeps = [gnumake];
     runtimeDeps = [openssl];
     propagatedDeps = [];
+
+    # Guard: keep the autotools build toolchain out of socat's
+    # `-V`-baked PKG_CONFIG_PATH / CC strings.
+    disallowedReferences = [
+      gnumake
+      pkg-config
+      patch
+      patchelf
+    ];
 
     phases = [
       {

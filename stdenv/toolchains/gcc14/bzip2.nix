@@ -33,7 +33,7 @@ in
 
         make \
           CC="${gcc}/bin/gcc" \
-          CFLAGS="-O2 -fPIC -isystem ${glibc}/include -D_FILE_OFFSET_BITS=64" \
+          CFLAGS="-O2 -fPIC -isystem ${glibc.dev}/include -D_FILE_OFFSET_BITS=64" \
           LDFLAGS="-L${glibc}/lib -Wl,-rpath,${glibc}/lib -Wl,--dynamic-linker,${glibc}/lib/ld-linux-x86-64.so.2" \
           PREFIX="$out" \
           -j"$NIX_BUILD_CORES" \

@@ -51,7 +51,7 @@ in
 
     # bindgen needs libclang.so and system headers
     LIBCLANG_PATH = "${llvm}/lib";
-    BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${glibc}/include -isystem ${linux-headers}/include";
+    BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${glibc.dev}/include -isystem ${linux-headers}/include";
 
     # Build only the firecracker binary from the workspace
     cargoFlags = "-p firecracker";

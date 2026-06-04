@@ -3,7 +3,7 @@
   mkDerivation,
   fetchurl,
 }: let
-  version = "2024-07-02";
+  version = "2026-05-14";
 in
   mkDerivation {
     pname = "ca-certificates";
@@ -13,7 +13,7 @@ in
       urls = [
         "https://curl.se/ca/cacert-${version}.pem"
       ];
-      hash = "sha256-G/RYQSVo4TSkUU9eFwoyjREJHgcccRCVXJiE7YeXKsk=";
+      hash = "sha256-hqHzNmr6x8b4rp88d5rCIRKTKMQ/CrK4gX6y82KlAlw=";
     };
 
     buildDeps = [];

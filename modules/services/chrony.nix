@@ -128,34 +128,34 @@ in {
           name = "chronyd-active";
           description = "chronyd service is active";
           script = ''
-            # chronyd may take a few seconds to finish forking (DNS resolution, etc.)
-            TRIES=0
-            while [ $TRIES -lt 15 ]; do
-              RESULT=$(run_in_guest "systemctl is-active chronyd" 2>/dev/null || true)
-              STATUS=$(echo "$RESULT" | jq -r '.stdout_b64 // empty' 2>/dev/null | base64 -d 2>/dev/null || echo "$RESULT")
-              if [ "$STATUS" = "active" ]; then
-                break
-              fi
-              TRIES=$((TRIES + 1))
-              sleep 2
-            done
-            if [ "$STATUS" != "active" ]; then
-              echo "chronyd status after retries: $STATUS"
-              echo "--- systemctl status chronyd ---"
-              run_in_guest "systemctl status chronyd 2>&1 || true" || true
-              echo "--- journalctl -u chronyd ---"
-              run_in_guest "journalctl -u chronyd --no-pager 2>&1 || true" || true
-            fi
-            assert_success "systemctl is-active chronyd" \
-              "chronyd service is active"
+            # chronyd may take a few seconds to finish forking (DNS
+            # resolution, etc.) so poll until active. wait_until_succeeds
+            # already does the polling; on deadline-fired it raises
+            # MachineFailure with the last exit + stdout — but we also
+            # want a diagnostic dump (status + journal) on failure, so
+            # use a try/except around it and capture extra context with
+            # vm.execute() before re-raising.
+            try:
+                vm.wait_until_succeeds(
+                    "systemctl is-active --quiet chronyd", timeout=30
+                )
+            except Exception:
+                _, status_out, _ = vm.execute("systemctl status chronyd 2>&1 || true")
+                _, journal_out, _ = vm.execute(
+                    "journalctl -u chronyd --no-pager 2>&1 || true"
+                )
+                print("--- systemctl status chronyd ---")
+                print(status_out.decode("utf-8", errors="replace"))
+                print("--- journalctl -u chronyd ---")
+                print(journal_out.decode("utf-8", errors="replace"))
+                raise
           '';
         }
         {
           name = "chrony-config";
           description = "chrony.conf exists";
           script = ''
-            assert_success "test -f /etc/chrony.conf" \
-              "chrony.conf exists"
+            vm.succeed("test -f /etc/chrony.conf")
           '';
         }
       ];

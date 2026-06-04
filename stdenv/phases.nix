@@ -433,8 +433,16 @@ in rec {
           export CARGO_HOME="$TMPDIR/cargo"
           mkdir -p "$CARGO_HOME"
           mkdir -p .cargo
-          printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' > .cargo/config.toml
-          ${gitSourceLines}
+          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+            # fetchCargoVendor layout: .cargo/config.toml ships pre-baked with
+            # @vendor@ placeholders for the absolute vendor directory.
+            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+              > .cargo/config.toml
+          else
+            # fetchCargoDeps layout: raw vendor dir, write config inline.
+            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' > .cargo/config.toml
+            ${gitSourceLines}
+          fi
         '';
       }
       {

@@ -4,6 +4,7 @@
 #
 {
   prev,
+  coreutils,
   gcc,
   binutils,
   glibc,
@@ -36,7 +37,7 @@ in
 
         # CC wrapper: always pass -static (libtool strips -static from LDFLAGS)
         mkdir -p "$TMPDIR/ccwrap"
-        printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
+        printf '#!/bin/sh\nexec ${gcc}/bin/gcc -L${glibc.static}/lib -L${glibc}/lib -static -no-pie "$@"\n' > "$TMPDIR/ccwrap/gcc"
         chmod +x "$TMPDIR/ccwrap/gcc"
         export PATH="$TMPDIR/ccwrap:$PATH"
 
@@ -62,9 +63,9 @@ in
 
         export LIBRARY_PATH="${glibc}/lib"
         CC="$TMPDIR/ccwrap/gcc" \
-        CFLAGS="-O2 -isystem ${glibc}/include" \
-        CPPFLAGS="-isystem ${glibc}/include" \
-        LDFLAGS="-L${glibc}/lib -static -no-pie" \
+        CFLAGS="-O2 -isystem ${glibc.dev}/include" \
+        CPPFLAGS="-isystem ${glibc.dev}/include" \
+        LDFLAGS="-L${glibc.static}/lib -L${glibc}/lib -static -no-pie" \
         "$TMPDIR/findutils-4.10.0/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${hostPlatform.config} \
@@ -72,6 +73,17 @@ in
 
         make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
         make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+
+        # ./configure substitutes the SORT path it finds on PATH (=
+        # prev.coreutils-8.32) into bin/updatedb's `sort="..."` lines.
+        # That single reference pins prev.coreutils + its glibc-2.34
+        # into every consumer's runtime closure. Rewrite to the same-
+        # tier coreutils (which has the same glibc-2.39 closure as the
+        # rest of the runtime, so no extra paths leak in).
+        if [ -f "$out/bin/updatedb" ]; then
+          ${prev.sed}/bin/sed -i 's|sort="[^"]*/bin/sort\([^"]*\)"|sort="${coreutils}/bin/sort\1"|g' \
+            "$out/bin/updatedb"
+        fi
 
         echo "GNU findutils 4.10.0 installed to $out"
       ''

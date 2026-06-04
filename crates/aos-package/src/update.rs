@@ -50,6 +50,7 @@ pub async fn run(
     }
 
     let cache_dir = config.cache_path();
+    let registries_dir = config.scope.registries_path();
     let config_dir = config.scope.config_dir();
     let mut any_synced = false;
 
@@ -114,10 +115,25 @@ pub async fn run(
 
         let result = match reg_config.transport() {
             Transport::HttpBundle => {
-                sync_bundle(reg_config, &tracking_mode, &mut current_state, &cache_dir, printer).await
+                sync_bundle(
+                    reg_config,
+                    &tracking_mode,
+                    &mut current_state,
+                    &cache_dir,
+                    &registries_dir,
+                    printer,
+                )
+                .await
             }
             Transport::Git => {
-                git::sync_git(reg_config, &tracking_mode, &cache_dir, &mut current_state, printer)
+                git::sync_git(
+                    reg_config,
+                    &tracking_mode,
+                    &cache_dir,
+                    &registries_dir,
+                    &mut current_state,
+                    printer,
+                )
                     .await
                     .map(|r| SyncResult {
                         new_commit: r.new_commit,
@@ -195,6 +211,7 @@ async fn sync_bundle(
     tracking_mode: &TrackingMode,
     reg_state: &mut RegistryState,
     cache_dir: &Path,
+    registries_dir: &Path,
     printer: &Printer,
 ) -> Result<SyncResult> {
     let engine = crate::download::default_engine();
@@ -251,6 +268,16 @@ async fn sync_bundle(
     // Extract package TOML files from the git tree.
     extract_packages_from_git(&repo_dir, &new_commit, &packages_dir).await?;
     let new_packages = count_packages(&packages_dir);
+
+    // Also materialise the repo-root registry.toml so resolve_mirror finds
+    // [[caches]] without needing a separate copy.
+    let registry_toml_target = registries_dir.join(&config.name);
+    crate::registry::git::extract_registry_root(
+        &repo_dir,
+        &new_commit,
+        &registry_toml_target,
+    )
+    .await?;
 
     // Compute the latest creation token.
     let latest_token = bundles_to_apply
