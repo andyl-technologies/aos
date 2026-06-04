@@ -1,34 +1,41 @@
-# Workstream 06 — Nix binary-cache / narinfo emitter
+# Workstream 06 — Nix binary-cache / narinfo (MOSTLY DONE — integration only)
 
-> **Status:** Implementation plan / **TARGET** design. As-is code behaviour is
-> labelled **CURRENT** and cited as `path:line`; the publish-time goal is labelled
-> **TARGET**. Where the code contradicts the brief, the code wins for *current
-> state* and the brief wins for *target intent*; discrepancies are logged in
-> [open-questions.md](./open-questions.md).
+> **Status:** **Mostly implemented.** The Nix binary-cache surface
+> (`nix-cache-info` + `*.narinfo` + `nar/` + Ed25519 `Sig:`) **already exists**,
+> is served by `aos-server`, mirrored by the `aos-cache` backends, and consumed
+> end-to-end by `aos-package` (`apm`). As-is code is labelled **ALREADY
+> IMPLEMENTED** and cited as `path:line`. The only remaining **TARGET** work is
+> *integration*: wiring the committed `registry.toml` `[[caches]]` to point the
+> consumer at the existing cache, optionally co-serving that cache from the git
+> origin, and a thin registry-specific presence/queryability check. Discrepancies
+> are logged in [open-questions.md](./open-questions.md).
 >
-> **Audience:** implementers building the `nix-cache-info` / narinfo emitter,
-> architects reasoning about the NAR-cache layer vs the git-metadata layer, and
-> engineers wiring the one-key signing model into the publish pipeline.
+> **Audience:** implementers wiring `[[caches]]` into the publish/consume path,
+> and architects reasoning about the NAR-cache layer vs the git-metadata layer.
+> There is **no emitter to build** — `aos-server::narinfo::format_narinfo` and
+> `aos-core::nar::info::format` already emit the exact stock-Nix surface.
 >
 > **Grounding:** [design-brief.md](./design-brief.md) **§13** (Nix binary-cache
 > superset) and **§11** (signing & trust — the one shared key), reconciled with
 > the reference doc
 > [`nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md) and the
-> actual code (`crates/aos-package/src/types.rs:43-77`,
-> `crates/aos-package/src/download.rs`, `crates/aos-package/src/registry/parse.rs`,
-> `crates/aos-core/src/nar/info.rs`, `crates/aos-server/src/sign.rs`). The brief
-> and the reference doc are authoritative for intent; this doc translates that
-> intent into a concrete change set on the **producer / publish** side.
+> actual code: `aos-core/src/nar/info.rs`, `aos-server/src/{narinfo.rs,
+> compress.rs,sign.rs,routes.rs}`, `aos-cache/src/backend/*`,
+> `aos-package/src/download.rs`, `aos-package/src/types.rs`,
+> `aos-package/src/registry/parse.rs`. The code wins for *current state*; the
+> reference doc remains authoritative for *target intent* of the remaining glue.
 
-This is the **producer-side** counterpart to
-[workstream-05-consumer.md](./workstream-05-consumer.md) §8 (which only *resolves*
-and *reads* a substituter) and to
+This is the **integration** counterpart to
+[workstream-05-consumer.md](./workstream-05-consumer.md) §8 (which *resolves* and
+*reads* a substituter) and to
 [workstream-04-signing-trust.md](./workstream-04-signing-trust.md) (the one-key
-model). WS-06 builds the **emitter** that projects the registry git tree's
-`PackageMeta` into the three stock-Nix static files — `nix-cache-info`,
-`<storehash>.narinfo`, `nar/<key>.nar.zst` — so a non-AOS host running stock
-`nix` can use an AOS origin as an ordinary substituter, with signatures intact and
-`require-sigs` left on.
+model). The three stock-Nix files — `nix-cache-info`, `<storehash>.narinfo`,
+`nar/<key>.nar.zst` — are **already produced** by `aos-server` (and writable to
+S3/SFTP/HTTP/FS by `aos-cache`) and **already consumed** by `apm`. A non-AOS host
+running stock `nix` can already use such an origin as an ordinary substituter,
+with signatures intact and `require-sigs` left on. WS-06's remaining job is to
+make the **registry's** committed `[[caches]]` point at that surface and to
+guarantee the registry-listed store paths are present/queryable there.
 
 The NAR-cache layer is a **strict superset** of the standard Nix binary cache and
 is **orthogonal** to the git-object trust chain that `apm` walks: it is not part
@@ -42,612 +49,299 @@ of `apm`'s trust root, and its location is named **in-tree** (the committed
 
 ```
  WS-01 object store ─┐
- WS-02 pack/delta   ─┤  emit the git-metadata layer (packages/ TOMLs = narinfo SOURCE)
+ WS-02 pack/delta   ─┤  emit the git-metadata layer (packages/ TOMLs)
  WS-03 channels     ─┤
- WS-04 signing      ─┘  the ONE Ed25519 key (also signs narinfos here)
+ WS-04 signing      ─┘  the ONE Ed25519 key (also signs narinfos)
         │
         ▼
- WS-06 NIX-CACHE EMITTER  ◄── THIS doc: project PackageMeta → nix-cache-info + *.narinfo,
-        │                      sign each narinfo with the one key, place NAR blobs
+ NIX-CACHE SURFACE  ◄── ALREADY IMPLEMENTED: aos-server emits nix-cache-info +
+   (aos-server +         *.narinfo + nar/, signs each narinfo with the key;
+    aos-cache)           aos-cache mirrors to S3/SFTP/HTTP/FS
+        │
         ▼
- WS-05 CONSUMER §8 ──► resolves the cache from committed [[caches]], reads these files
+ WS-06 INTEGRATION  ◄── THIS doc: point committed [[caches]] at that surface,
+        │                  optionally co-serve from the git origin, ensure the
+        ▼                  registry-listed store paths are present/queryable
+ WS-05 CONSUMER §8 ──► resolves the cache from committed [[caches]] (ALREADY
  stock `nix` host  ──► points extra-substituters at the cache URL, verifies Sig:
 ```
 
-WS-06 adds **no new git surface** — it reads the same `packages/<l>/<name>.toml`
-tree WS-01/02/03 already emit, and writes flat static files into the NAR-cache
-layer. The git layer is the **source of truth**; the narinfo is "just a
-reprojection of metadata AOS already holds in its git tree"
-([`nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md) §2).
+The nix-cache surface is **already produced and consumed**; WS-06 adds **no new
+emitter and no new git surface**. The git layer remains the metadata source of
+truth, but the narinfo/NAR live in the **cache** (store-DB-backed,
+`DbPathInfo`-keyed), served independently and already read by `apm`. The narinfo
+is not re-derived from `packages/*.toml` — it is emitted from the store DB and
+keyed by store hash. The git registry's TOMLs (`store_path`/`nar_hash`/
+`references`/`closure`) are the *metadata* layer; the *bytes* are in the cache.
 
-> **CURRENT.** A nix-cache *server* already exists:
+> **ALREADY IMPLEMENTED.** A full nix-serve-style cache server exists:
 > [`aos-server/src/routes.rs`](../../../crates/aos-server/src/routes.rs) serves
-> `/{view}/nix-cache-info`, `/{view}/{hash}.narinfo`, and `/{view}/nar/{filename}`
-> off its runtime SQLite. WS-06 is **not greenfield** — it reuses that surface's
-> output format and signer, and **extends** it with publish-time narinfo + `Sig:`
-> emission keyed off the committed `packages/*.toml` tree (see §2.2).
+> `/{view}/nix-cache-info` (`cache_info_handler`, [`routes.rs:123`](../../../crates/aos-server/src/routes.rs)),
+> `/{view}/{hash}.narinfo` (`narinfo_handler`, [`routes.rs:157`](../../../crates/aos-server/src/routes.rs)),
+> and `/{view}/nar/{filename}` (`nar_handler`, [`routes.rs:223`](../../../crates/aos-server/src/routes.rs))
+> off its runtime store. The narinfo body comes from
+> `narinfo::format_narinfo(&DbPathInfo, store_dir, &CompressionConfig, Some(&signer))`
+> ([`narinfo.rs:27`](../../../crates/aos-server/src/narinfo.rs)), built on the
+> shared `aos-core::nar::info` types. WS-06 is **not greenfield and not an
+> emitter** — it is integration only (see §2.5, §3).
 
 ---
 
-## 2. CURRENT state (as-is, grounded in code)
+## 2. ALREADY IMPLEMENTED (grounded in code)
 
-> **CURRENT.** Two halves of this surface already exist but on the **wrong side**
-> of the split: the *consumer* fully parses/downloads NAR blobs, and the
-> *cache-server* (`aos-server`) already emits narinfo + `nix-cache-info` — but
-> **from its runtime SQLite `DbPathInfo`**, not from the registry git tree's
-> `PackageMeta`. There is **no publish-time emitter** that projects a
-> `packages/*.toml` registry tree into static `*.narinfo` / `nix-cache-info`
-> files. That static-file projection is exactly what WS-06 builds.
+> **ALREADY IMPLEMENTED.** The full nix-cache surface exists *and is wired
+> end-to-end*: `aos-server` emits `nix-cache-info` + `*.narinfo` + serves `nar/`,
+> signs each narinfo with an Ed25519 key; `aos-cache` mirrors that surface to
+> S3/SFTP/HTTP/FS; and `aos-package` (`apm`) consumes it narinfo-first. There is
+> **nothing to build** for the emitter, the signer, the field mapping, the NAR
+> URL scheme, or the consumer. The surface is a strict superset of the Nix
+> binary-cache protocol *today*. What is missing is **integration** (§2.5).
 
-### 2.1 The NAR **blob** layer already carries over (consumer side)
-
-The content-addressed, zstd-compressed blob layer is done and reusable verbatim:
-
-- `nar_url`-style key: the consumer downloads from
-  `{mirror_url}/{nar.url}` where the cache-supplied `URL:` is `nar/<key>.nar.zst`;
-  `join_cache_url` trims slashes
-  ([`download.rs:65-77`](../../../crates/aos-package/src/download.rs)).
-- Compressed-stream verification is by **SHA-256 of the `.nar.zst` bytes** against
-  the narinfo `FileHash`, **not** by signature
-  ([`download.rs:191-204`](../../../crates/aos-package/src/download.rs)) — the
-  `(Some(h),_) | (None,"none") | (None,comp)=>bail!` match.
-- On-disk colon→dash rewrite for filesystem safety: `nar_cache_filename`
-  ([`download.rs:314-317`](../../../crates/aos-package/src/download.rs)) →
-  `sha256-<hex>.nar.zst`; the **wire** key keeps the colon.
-- `resolve_mirror` ([`download.rs:85-97`](../../../crates/aos-package/src/download.rs))
-  picks the highest-priority `[[caches]]` entry via `resolve_mirrors`, else falls
-  back to `{registry.url}` as the base.
-
-### 2.2 The narinfo data model + emitter already exist (but DB-fed)
+### 2.1 The narinfo data model + emitter ALREADY EXIST
 
 - `NarInfo` struct + `parse` / `format` / `from_path_info` / `store_hash` /
   `basename` live in
-  [`crates/aos-core/src/nar/info.rs`](../../../crates/aos-core/src/nar/info.rs).
-  `format(&NarInfo) -> String` already emits the canonical line-oriented
-  `Key: value` text (StorePath/URL/Compression/FileHash/FileSize/NarHash/NarSize/
-  References/Deriver/Sig). **WS-06 reuses this formatter verbatim** — it only needs
-  to *build* a `NarInfo` from `PackageMeta` instead of from `PathInfoParams`.
-- `aos-server` already serves the live cache surface from its DB:
-  `narinfo::format_narinfo(&DbPathInfo, ...)`
-  ([`aos-server/src/narinfo.rs:27`](../../../crates/aos-server/src/narinfo.rs)),
-  the `cache_info_handler`
-  ([`aos-server/src/routes.rs:123-148`](../../../crates/aos-server/src/routes.rs))
-  emitting `StoreDir: … \nWantMassQuery: 1\nPriority: 30\n…` (`Priority: 30` at
-  [`routes.rs:145`](../../../crates/aos-server/src/routes.rs)),
-  and the Nix fingerprint signer (see §6.1).
+  [`aos-core/src/nar/info.rs`](../../../crates/aos-core/src/nar/info.rs).
+  `format(&NarInfo) -> String` ([`info.rs:81`](../../../crates/aos-core/src/nar/info.rs))
+  emits the canonical line-oriented `Key: value` text
+  (StorePath/URL/Compression/FileHash/FileSize/NarHash/NarSize/References/Deriver/
+  Sig). This is the shared narinfo type used by both server and consumer.
+- `aos-server` already serves the live cache surface from its store DB:
+  `narinfo::format_narinfo(&DbPathInfo, store_dir, &CompressionConfig, Option<&NarInfoSigner>)`
+  ([`aos-server/src/narinfo.rs:27`](../../../crates/aos-server/src/narinfo.rs))
+  builds and renders the narinfo, populating **every** field including References
+  basename-expansion and the live `Sig:`.
+- `aos-cache` backends mirror the same surface to remote stores: each backend
+  exposes `get_narinfo` / `put_narinfo` / `has` / `get` / `put`
+  ([`aos-cache/src/backend/mod.rs:20-23`](../../../crates/aos-cache/src/backend/mod.rs);
+  [`s3.rs`](../../../crates/aos-cache/src/backend/s3.rs),
+  [`sftp.rs`](../../../crates/aos-cache/src/backend/sftp.rs),
+  [`http.rs`](../../../crates/aos-cache/src/backend/http.rs),
+  [`fs.rs`](../../../crates/aos-cache/src/backend/fs.rs)) and write `nix-cache-info`
+  with `Priority: 40` ([`fs.rs:126`](../../../crates/aos-cache/src/backend/fs.rs),
+  [`sftp.rs:143`](../../../crates/aos-cache/src/backend/sftp.rs),
+  [`s3.rs:133`](../../../crates/aos-cache/src/backend/s3.rs)).
 
-> **The CURRENT-vs-TARGET crux.** `aos-server`'s emitter is a *runtime daemon*
-> keyed off SQLite `DbPathInfo`; WS-06 is a *publish-time* emitter keyed off the
-> committed `packages/*.toml` registry tree (`PackageMeta`). Same output format
-> (`nar::info::format`), same fingerprint (`NarInfoSigner::fingerprint`),
-> **different source struct and different lifecycle** (static files written once
-> at publish, not served per-request). The two share `aos-core::nar::info`.
+> The emitter is keyed off the runtime store DB (`DbPathInfo`), **not** the git
+> tree's `PackageMeta` — and that is correct: the narinfo/NAR bytes belong to the
+> cache layer, keyed by store hash, decoupled from the git metadata layer. There
+> is no need (and no plan) to re-emit narinfos from `packages/*.toml`.
 
-### 2.3 The narinfo **source data** is already on `PackageMeta`
+### 2.2 `nix-cache-info`, narinfo, and `nar/` endpoints ALREADY served
 
-Every narinfo field except `Sig:` already exists on the flattened in-memory
-`PackageMeta` ([`types.rs:43-77`](../../../crates/aos-package/src/types.rs)), the
-projection of the nested on-disk `PackageToml` (`PlatformEntry`,
-[`registry/parse.rs:44-57`](../../../crates/aos-package/src/registry/parse.rs)).
-See the field table in §5.
+[`aos-server/src/routes.rs`](../../../crates/aos-server/src/routes.rs) registers
+all three stock-Nix endpoints ([`routes.rs:80-89`](../../../crates/aos-server/src/routes.rs)):
 
-### 2.4 What is missing today
-
-| Missing piece | Why WS-06 |
-|---|---|
-| Publish-time `nix-cache-info` emitter from registry config | §4 |
-| Publish-time `*.narinfo` emitter projecting `PackageMeta` (not `DbPathInfo`) | §5 |
-| Sysroot-image narinfos (each `SysrootImageEntry` is its own store path) | §5.4 |
-| References **bare-hash → `<hash>-<name>` basename** expansion | §5.3 |
-| Per-narinfo `Sig:` from the **one** registry key (fingerprint reuse) | §6 |
-| Two pubkey encodings: `aos-core:Ed25519:<b64>` (apm) vs `<name>:<b64>` (nix) | §6.3 |
-| NAR blob `URL:` key scheme (colon-retained + colon-free fallback) | §7 |
-| Stock-`nix` consumer docs (`extra-substituters`, `require-sigs`) | §8 |
-
----
-
-## 3. TARGET — the publish-time emitter pipeline
-
-### 3.1 End-to-end flow
-
-```
-apr publish  (after the git tree + NAR blobs are placed)
-│
-├─ 1. load RegistryRootConfig (registry.toml)  → StoreDir/Priority policy   (§4)
-│
-├─ 2. parse_registry(tree) → HashMap<name, PackageMeta>  (reuse parse.rs)   (§5.1)
-│        + build hash_index (bare-hash → store_path basename)               (§5.3)
-│
-├─ 3. for each PackageMeta:
-│        build NarInfo via package_meta_to_narinfo(meta, &index, cfg)        (§5.2)
-│        ├─ References: expand bare hashes → <hash>-<name>                   (§5.3)
-│        ├─ Sig: sign fingerprint(StorePath,NarHash,NarSize,References)      (§6)
-│        └─ for each SysrootImageEntry: its OWN narinfo                      (§5.4)
-│
-├─ 4. write  <cache-root>/<storehash>.narinfo   (nar::info::format)          (§5.5)
-│
-├─ 5. write  <cache-root>/nix-cache-info        (once per cache)             (§4)
-│
-└─ 6. ensure NAR blobs reachable at the URL: key the narinfo points at       (§7)
-```
-
-Step 6 is mostly a placement check — the blob layer (§2.1) already lays out
-`nar/<key>.nar.zst`; WS-06 only guarantees the emitted `URL:` matches the served
-key (colon caveat, §7).
-
-### 3.2 New module
-
-```
-crates/aos-package/src/registry/nix_cache.rs        ← NEW (the emitter)
-```
-
-It depends on the existing `aos-core::nar::info` (formatter), `registry/parse.rs`
-(`PackageMeta`, `build_hash_index`, `store_path_hash`), `types.rs`
-(`RegistryRootConfig`, `CacheEntry`, `SysrootImageEntry`), and a new signer (§6)
-that reuses the **one** registry Ed25519 key (WS-04).
-
----
-
-## 4. The `nix-cache-info` stub (TARGET)
-
-Nix hardcodes the filename `nix-cache-info` at the **root of the cache URL** and
-fetches it once per cache. WS-06 writes it once at publish time from registry
-policy — **not** from any per-path metadata.
-
-```
-StoreDir: /nix/store
-WantMassQuery: 1
-Priority: 30
-```
-
-| Key | Source | Notes |
+| Endpoint | Handler | Code ref |
 |---|---|---|
-| `StoreDir` | publish-pipeline input (the AOS store dir the NARs were built against) | **Not** derivable from any `types.rs` field — supplied by the publisher; commonly `/nix/store`. Must match the consuming host's store. |
-| `WantMassQuery` | constant `1` | The origin is a plain object store; mass query is cheap. |
-| `Priority` | operator policy knob (default `30`, matching the live server) | Lower = preferred. The live `cache_info_handler` emits `30` ([`routes.rs:145`](../../../crates/aos-server/src/routes.rs)); the `aos-cache` backends emit `40` ([`fs.rs:126`](../../../crates/aos-cache/src/backend/fs.rs), [`sftp.rs:143`](../../../crates/aos-cache/src/backend/sftp.rs)). Stock `cache.nixos.org` is `40`; `30` is therefore consulted **before** upstream. **Distinct** from the AOS `[[caches]]` `priority` (§4 of the ref doc). |
+| `/{view}/nix-cache-info` | `cache_info_handler` — `StoreDir`/`WantMassQuery: 1`/`Priority: 30`/`Capabilities:` | [`routes.rs:123`](../../../crates/aos-server/src/routes.rs), `Priority: 30` at [`:145`](../../../crates/aos-server/src/routes.rs) |
+| `/{view}/{hash}.narinfo` | `narinfo_handler` → `format_narinfo(&info, store_dir, compression, Some(&signer))` | [`routes.rs:157`](../../../crates/aos-server/src/routes.rs), body at [`:211`](../../../crates/aos-server/src/routes.rs) |
+| `/{view}/nar/{filename}` | `nar_handler` — streams the compressed NAR | [`routes.rs:223`](../../../crates/aos-server/src/routes.rs) |
 
-> Note the `nix-cache-info` `Priority` (Nix-cache preference, ordered by stock
-> `nix`) is a different knob from the AOS `CacheEntry.priority`
-> ([`types.rs:585-593`](../../../crates/aos-package/src/types.rs),
-> `default_cache_priority()==100`) that `apm`'s `resolve_mirrors` sorts. **Two
-> independent priority knobs** (F362).
+This is a complete nix-serve-style cache server (plus query-missing, upload,
+build, gc, and ConnectRPC services on the same port).
 
-### 4.1 Emitter signature
+### 2.3 FileHash / FileSize emit-time compute ALREADY EXISTS
 
-```rust
-/// Policy inputs for the nix-cache-info stub (publisher-supplied; NOT from
-/// PackageMeta).
-pub struct CacheInfoConfig {
-    /// The AOS store dir the NARs were built against (e.g. "/nix/store").
-    pub store_dir: String,
-    /// Nix-cache preference (lower = preferred; distinct from CacheEntry.priority).
-    pub priority: u32,
-}
+`format_narinfo` already computes `FileHash` / `FileSize` at emit time. For
+`Compression::None` they equal `NarHash` / `NarSize`; for `zstd` / `xz` it runs
+`compute_file_hash_size(&info.path, ...)`
+([`narinfo.rs:45-59`](../../../crates/aos-server/src/narinfo.rs)) which dumps and
+compresses the path once and SHA-256s the compressed bytes
+([`compress.rs:143`](../../../crates/aos-server/src/compress.rs)). Both fields are
+**always emitted** so the consumer can verify the compressed stream.
 
-/// Emit the fixed-name `nix-cache-info` capability stub.
-pub fn emit_nix_cache_info(cfg: &CacheInfoConfig) -> String {
-    format!(
-        "StoreDir: {}\nWantMassQuery: 1\nPriority: {}\n",
-        cfg.store_dir, cfg.priority,
-    )
-}
-```
+This is exactly the narinfo-driven contract `apm` relies on: `download_hash` /
+`download_size` were removed from the registry schema in commit `7149acf6` ("apm:
+narinfo-driven NAR downloads"). The package TOML no longer carries the
+compressed-NAR hash/size — the narinfo is their single source of truth, and the
+server already supplies them.
 
-This mirrors the live handler `cache_info_handler` at
-[`aos-server/src/routes.rs:123-148`](../../../crates/aos-server/src/routes.rs)
-(minus the AOS-only `Capabilities:` line, which stock `nix` ignores and which the
-static cache surface does not advertise).
+### 2.4 The Ed25519 `Sig:` (Nix fingerprint) ALREADY EXISTS
 
-**Tests** (`#[test]`):
-- `nix_cache_info_default_store_dir` — `store_dir="/nix/store"`, `priority=30`
-  ⇒ exact three-line body.
-- `nix_cache_info_custom_priority` — a custom `priority` renders verbatim.
-- `nix_cache_info_omits_capabilities` — the AOS `Capabilities:` line is **absent**
-  from the static surface.
-
----
-
-## 5. narinfo generator (TARGET)
-
-A narinfo is line-oriented `Key: value` text. WS-06 builds a `NarInfo`
-(`aos-core::nar::info::NarInfo`) from each `PackageMeta`, then renders it with the
-existing `nar::info::format`.
-
-### 5.1 Field mapping (the authoritative join)
-
-| narinfo field | Source (`PackageMeta`) | Code ref | Transform |
-|---|---|---|---|
-| `StorePath` | `store_path` | [`types.rs:53`](../../../crates/aos-package/src/types.rs) | verbatim, e.g. `/nix/store/<hash>-<name>` |
-| `URL` | derived `nar/<key>.nar.zst` | [`download.rs:65-77`](../../../crates/aos-package/src/download.rs) | key from `nar_hash` (§7) |
-| `Compression` | constant `zstd` | n/a | AOS NARs are always `.nar.zst` |
-| `FileHash` | **emit-time compute** — SHA-256 of the `.nar.zst` bytes | — | narinfo-driven; **not** on `PackageMeta` — see §5.2.1 |
-| `FileSize` | **emit-time compute** — byte length of the `.nar.zst` | — | narinfo-driven; **not** on `PackageMeta` — see §5.2.1 |
-| `NarHash` | `nar_hash` (`sha256:<hex>`) | [`types.rs:54-55`](../../../crates/aos-package/src/types.rs) | verbatim |
-| `NarSize` | `nar_size` | [`types.rs:56`](../../../crates/aos-package/src/types.rs) | verbatim |
-| `References` | `references` (**bare hashes**) | [`types.rs:57-58`](../../../crates/aos-package/src/types.rs) | ⚠️ expand `<hash>` → `<hash>-<name>` (§5.3) |
-| `Deriver` | `source_drv` basename | [`types.rs:59-60`](../../../crates/aos-package/src/types.rs) | basename of the `.drv` store path |
-| `Sig` | — generated | n/a | Ed25519 over the fingerprint (§6) |
-
-Carried by AOS but **not** narinfo fields (dropped): `closure_size`
-([`types.rs:63-64`](../../../crates/aos-package/src/types.rs) — Nix recomputes
-closures from `References`), `source_nar_hash`
-([`types.rs:61-62`](../../../crates/aos-package/src/types.rs)), `homepage` /
-`license` / `maintainer` / `description`. `System` (`platform`,
-[`types.rs:52`](../../../crates/aos-package/src/types.rs)) is **optional** and
-omittable; `CA` is omitted (AOS paths are input-addressed).
-
-#### 5.2.1 `FileHash` / `FileSize` are computed at emit time (narinfo-driven)
-
-`download_hash` / `download_size` **were removed from the registry schema** in
-commit `7149acf6` ("apm: narinfo-driven NAR downloads"): `apm` no longer reads
-the compressed-NAR hash/size from the package TOML — it fetches the narinfo first
-and reads `FileHash` / `FileSize` from there. The current `PackageMeta`
-([`types.rs:44-74`](../../../crates/aos-package/src/types.rs)) and the on-disk
-`PlatformEntry` ([`registry/parse.rs:45-51`](../../../crates/aos-package/src/registry/parse.rs))
-therefore have **no** `download_hash` / `download_size` fields — the narinfo is
-their single source of truth.
-
-The narinfo is exactly where these values live, so **WS-06 computes them at emit
-time** from the compressed blob: the emitter reads each `nar/<key>.nar.zst`,
-SHA-256s the bytes (`FileHash`), and takes its byte length (`FileSize`). No schema
-change is needed — this matches the narinfo-driven contract the consumer already
-relies on (§2.1, [`download.rs:191-204`](../../../crates/aos-package/src/download.rs)
-verifies the `.nar.zst` against the narinfo `FileHash`). The builder below takes
-`file_hash` / `file_size` as **computed inputs**, not as `PackageMeta` fields.
-
-### 5.2 Builder signature
+[`aos-server/src/sign.rs`](../../../crates/aos-server/src/sign.rs) implements the
+exact Nix narinfo fingerprint and Ed25519 signature reusing a single key:
 
 ```rust
-use aos_core::nar::info::{NarInfo, format as format_narinfo};
-use crate::types::PackageMeta;
-use crate::registry::parse::store_path_hash;
-
-/// SHA-256 / byte-length of the compressed `.nar.zst`, computed at emit time
-/// from the blob (§5.2.1). Not carried on `PackageMeta` — narinfo-driven.
-pub struct CompressedNar {
-    pub file_hash: String,   // "sha256:<hex>" of the .nar.zst bytes
-    pub file_size: u64,      // byte length of the .nar.zst
-}
-
-/// Project a registry `PackageMeta` into a Nix `NarInfo`.
-///
-/// `refs_index` maps a bare store-path hash → that path's full store-path
-/// basename, used to expand `References` into `<hash>-<name>` (§5.3). `nar`
-/// carries the emit-time-computed `.nar.zst` hash/size (§5.2.1).
-pub fn package_meta_to_narinfo(
-    meta: &PackageMeta,
-    nar: &CompressedNar,
-    refs_index: &ReferenceIndex,
-    signer: &NarInfoSigner,
-) -> anyhow::Result<NarInfo> {
-    let references = expand_references(&meta.references, refs_index)?;   // §5.3
-    let nar_key = nar_url_key(&meta.nar_hash);                            // §7
-    let mut info = NarInfo {
-        store_path: meta.store_path.clone(),
-        url: format!("nar/{nar_key}.nar.zst"),
-        compression: "zstd".to_string(),
-        file_hash: Some(nar.file_hash.clone()),   // §5.2.1 (emit-time compute)
-        file_size: Some(nar.file_size),           // §5.2.1 (emit-time compute)
-        nar_hash: meta.nar_hash.clone(),
-        nar_size: meta.nar_size,
-        references,
-        deriver: Some(basename(&meta.source_drv).to_string()),
-        signatures: Vec::new(),
-    };
-    let sig = signer.sign_narinfo(&info)?;             // §6
-    info.signatures.push(sig);
-    Ok(info)
-}
-```
-
-### 5.3 References basename expansion (the one non-mechanical transform)
-
-AOS stores `references` as **bare store-path hashes**
-([`types.rs:57-58`](../../../crates/aos-package/src/types.rs); the
-`closures/<hash>` adjacency files use the same bare-hash format,
-[`types.rs:93-101`](../../../crates/aos-package/src/types.rs)). Nix narinfo
-`References` requires **store-path basenames** `<hash>-<name>`. If left bare,
-stock `nix` **rejects** the narinfo (it validates references as basenames against
-`StoreDir`).
-
-```
-AOS references:     [ "r4q1m2kp8v3x…", "xr5is7by89v3q…" ]
-                              │                  │
-              resolve bare hash → referenced package's store_path basename
-                              │                  │
-narinfo References:  r4q1m2kp8v3x…-glibc-2.39   xr5is7by89v3q…-zlib-1.3.1
-```
-
-The name suffix is recoverable from the *referenced* package's own `store_path`
-([`types.rs:53`](../../../crates/aos-package/src/types.rs)). `build_hash_index`
-([`registry/parse.rs:176-196`](../../../crates/aos-package/src/registry/parse.rs))
-already maps a bare hash → package name; WS-06 adds a parallel
-hash → **store-path basename** map so the join yields the exact `<hash>-<name>`
-(name + version, not just name):
-
-```rust
-/// Bare store-path hash → full store-path basename (`<hash>-<name>-<ver>`).
-/// Built alongside `build_hash_index`, from every PackageMeta + every
-/// SysrootImageEntry in the registry.
-pub struct ReferenceIndex {
-    by_hash: std::collections::HashMap<String, String>, // hash → basename
-}
-
-impl ReferenceIndex {
-    pub fn build(packages: &std::collections::HashMap<String, PackageMeta>) -> Self { /* … */ }
-    pub fn basename(&self, bare_hash: &str) -> Option<&str> { /* … */ }
-}
-
-fn expand_references(
-    bare: &[String],
-    index: &ReferenceIndex,
-) -> anyhow::Result<Vec<String>> {
-    bare.iter()
-        .map(|h| index.basename(h)
-            .map(str::to_string)
-            .ok_or_else(|| anyhow::anyhow!("unresolved reference hash {h}")))
-        .collect()
-}
-```
-
-> A reference hash that resolves to **no** package in the registry is a hard error
-> (fail-closed) — a narinfo with a dangling `<hash>` would be unverifiable by the
-> consumer. This is the producer-side dual of the consumer's closure resolution.
-
-**Tests:**
-- `expand_references_curl` — using `CURL_TOML` + `ZLIB_TOML`
-  ([`parse.rs:209-259`](../../../crates/aos-package/src/registry/parse.rs)
-  fixtures), curl's `references` (zlib's bare hash `r4q1m2kp8v3x`) expands to
-  `r4q1m2kp8v3x-zlib-1.3.1`.
-- `expand_references_empty` — zlib (leaf, `references == []`) ⇒ empty vector ⇒
-  `format` omits the `References:` line.
-- `expand_references_dangling_errors` — an unknown bare hash returns
-  `Err(... "unresolved reference hash ...")`.
-
-### 5.4 Sysroot images are their own store paths (TARGET)
-
-Each `SysrootImageEntry`
-([`types.rs:603-609`](../../../crates/aos-package/src/types.rs); carried in
-`PackageMeta.images`, [`types.rs:71-73`](../../../crates/aos-package/src/types.rs);
-parsed from `[[versions.platforms.*.images]]`,
-[`registry/parse.rs:59-66`](../../../crates/aos-package/src/registry/parse.rs)) is
-a **distinct store path** with its own `store_path` / `nar_hash` / `nar_size`. Each
-image therefore gets its **own** `<storehash>.narinfo`, keyed by the image's
-store-path hash, with an identical field mapping (§5.1):
-
-```rust
-/// Build a narinfo for a sysroot image (its own store path).
-/// `SysrootImageEntry` has no `references` field, so References is empty
-/// (image NARs are self-contained system images).
-pub fn image_to_narinfo(
-    img: &SysrootImageEntry,
-    signer: &NarInfoSigner,
-) -> anyhow::Result<NarInfo> { /* maps store_path/nar_hash/nar_size; refs = [] */ }
-```
-
-**Tests:**
-- `image_narinfo_keyed_by_image_hash` — a `SysrootImageEntry`'s narinfo file name
-  uses `store_path_hash(img.store_path)`, not the parent sysroot's hash.
-- `image_narinfo_empty_references` — image narinfo has no `References:` line.
-
-### 5.5 Writing the files
-
-```rust
-/// Emit all narinfo files for a parsed registry into <cache_root>.
-/// File name = `<store_path_hash>.narinfo` (the 32-char base32 store-hash,
-/// matching `narinfo::store_hash` / `narinfo_url` on the consumer side,
-/// download.rs:74-77).
-pub fn emit_narinfos(
-    packages: &HashMap<String, PackageMeta>,
-    cache_root: &Path,
-    signer: &NarInfoSigner,
-    cfg: &CacheInfoConfig,
-) -> anyhow::Result<EmitReport> { /* writes <hash>.narinfo + nix-cache-info */ }
-```
-
-The file name uses `store_path_hash(&meta.store_path)`
-([`registry/parse.rs:201-205`](../../../crates/aos-package/src/registry/parse.rs))
-so it round-trips with the consumer's `narinfo_url`
-([`download.rs:74-77`](../../../crates/aos-package/src/download.rs)), which derives
-the same `<storehash>.narinfo` name via `narinfo::store_hash`.
-
-**Tests:**
-- `emit_narinfos_round_trips_through_parse` — emit a narinfo for curl, then
-  `aos_core::nar::info::parse` it back and assert `store_path` / `nar_hash` /
-  `references` / `deriver` survive (uses `format`↔`parse` symmetry already proven
-  by `round_trip` in [`info.rs:161`](../../../crates/aos-core/src/nar/info.rs)).
-- `emit_narinfos_filename_is_store_hash` — the written file for curl is
-  `<curl-store-hash>.narinfo`.
-- `emit_narinfos_includes_images` — a sysroot `PackageMeta` with two images emits
-  3 narinfo files (the sysroot + 2 images).
-
----
-
-## 6. Signing: one key, two signature forms (TARGET)
-
-The `Sig:` line is the **only** narinfo field with no source in AOS metadata — it
-must be generated. The design reuses the **same single Ed25519 keypair** that
-signs git tags (brief §11): one secret to manage, two *signed messages*, two
-*published pubkey encodings*.
-
-### 6.1 Reuse the existing fingerprint + signer
-
-`aos-server` **already** implements the Nix fingerprint and the Ed25519 sign over
-it ([`aos-server/src/sign.rs`](../../../crates/aos-server/src/sign.rs)):
-
-```rust
-// aos-server/src/sign.rs:57-60  (REUSE this fingerprint composition verbatim)
+// aos-server/src/sign.rs:57-60  — the Nix narinfo fingerprint
 pub fn fingerprint(store_path: &str, nar_hash: &str, nar_size: i64, refs: &[String]) -> String {
     let refs_str = refs.join(",");
     format!("1;{store_path};{nar_hash};{nar_size};{refs_str}")
 }
-// aos-server/src/sign.rs:44-54  sign() → "name:base64_sig", 32-byte ed25519 seed
+// sign.rs:44-54  sign() → "name:base64_sig"; first 32 bytes of the Nix key = ed25519 seed
+// sign.rs:14     load(key_file) parses a `name:base64` key file
 ```
 
-The fingerprint is exactly the Nix message over **`(StorePath, NarHash, NarSize,
-References)`** (the `1;…;…;…;…` form). **`refs` here must be the EXPANDED
-`<hash>-<name>` basenames** (§5.3), not the bare AOS hashes — the signed message
-must match what stock `nix` recomputes from the emitted `References:` line.
+`format_narinfo` calls `fingerprint(...)` then `signer.sign(...)` and appends the
+`Sig:` line ([`narinfo.rs:87-93`](../../../crates/aos-server/src/narinfo.rs)). The
+fingerprint's `refs` are the **expanded basenames** already produced for the
+`References:` line (§2.6) — so the signed message matches what stock `nix`
+recomputes. This is the "fingerprint Sig reusing one key" — done.
 
-WS-06 lifts this composition into a shared place so producer and daemon agree.
-Proposed home: a `Fingerprint` helper in `aos-core::nar::info` (next to `format`),
-re-exported by both `aos-server::sign` and the new `registry/nix_cache.rs`.
+### 2.5 The narinfo-driven consumer ALREADY EXISTS
 
-```rust
-/// Producer-side narinfo signer reusing the ONE registry Ed25519 key (WS-04).
-pub struct NarInfoSigner {
-    name: String,        // the cache/key name, e.g. "aos-core"
-    secret: [u8; 32],    // ed25519 seed (first 32 bytes of the Nix 64-byte key)
-}
+`apm`'s downloader is narinfo-first (commit `7149acf6`,
+[`aos-package/src/download.rs`](../../../crates/aos-package/src/download.rs)):
 
-impl NarInfoSigner {
-    /// Sign a fully-built NarInfo. Composes the fingerprint over the EXPANDED
-    /// references already on `info`, signs it, returns the `name:base64sig`
-    /// value for the `Sig:` line.
-    pub fn sign_narinfo(&self, info: &NarInfo) -> anyhow::Result<String> {
-        let fp = nar_fingerprint(
-            &info.store_path,
-            &info.nar_hash,
-            info.nar_size,
-            &info.references,         // EXPANDED basenames (§5.3)
-        );
-        Ok(self.sign(&fp))            // "name:base64sig"  (sign.rs:44-54)
-    }
-}
-```
+- `fetch_narinfos` GETs `<mirror_url>/<storeHash>.narinfo` and parses it via
+  `aos_core::nar::info` ([`download.rs:107`](../../../crates/aos-package/src/download.rs)),
+  with `narinfo_url(mirror_url, store_path)` deriving the file name from
+  `narinfo::store_hash` ([`download.rs:74`](../../../crates/aos-package/src/download.rs)).
+- `download_nars` consumes the parsed narinfo: the NAR URL is taken **from the
+  narinfo's `URL:` field** —
+  `join_cache_url(&resolved.req.mirror_url, &resolved.narinfo.url)`
+  ([`download.rs:184`](../../../crates/aos-package/src/download.rs)) — the consumer
+  never constructs a NAR key itself.
+- `FileHash` / `NarHash` / `References` / `Deriver` all come **from the narinfo**
+  ([`download.rs:191-233`](../../../crates/aos-package/src/download.rs)); the
+  compressed stream is verified by SHA-256 against the narinfo `FileHash`
+  ([`download.rs:191-204`](../../../crates/aos-package/src/download.rs)).
+- `resolve_mirror` ([`download.rs:85-97`](../../../crates/aos-package/src/download.rs))
+  already picks the highest-priority `[[caches]]` entry via `resolve_mirrors`
+  ([`registry_ops.rs:405-410`](../../../crates/aos-package/src/registry_ops.rs)),
+  falling back to `{registry.url}`.
 
-```
-apm trust:   signed tag chain ──► TOML ──► NAR sha256   (transitive; no Sig needed)
-nix trust:   narinfo Sig (Ed25519) ──► fingerprint(StorePath,NarHash,NarSize,Refs)
-                 ▲
-                 └── SAME key, DIFFERENT signed message than the git tag
-```
+### 2.6 References basename-expansion ALREADY HAPPENS server-side
 
-### 6.2 Why a per-narinfo `Sig` exists at all
+The server emits `References:` as space-separated **basenames**, mapping each
+stored reference through `basename(r)`
+([`narinfo.rs:71-74`](../../../crates/aos-server/src/narinfo.rs)). The DB stores
+full store paths, so the basename is `<hash>-<name>` directly — stock `nix`
+accepts it. No bare-hash→basename projection from the git tree is required,
+because the cache narinfos are not built from the git tree.
 
-`apm` trust is rooted in the **signed git tag chain**: tag → tag → commit
-authenticates the whole tree → every package TOML → every NAR SHA-256
-(brief §5, §11). So `apm` needs **no** per-NAR signature; NARs are authenticated
-transitively and verified by content hash
-([`download.rs:191-204`](../../../crates/aos-package/src/download.rs)). The
-per-narinfo `Sig:` exists **only** to satisfy a stock `nix` substituter without
-forcing `require-sigs = false` — a compatibility affordance, orthogonal to the
-AOS trust chain (ref doc §8.1, closes **F387**).
+### 2.7 The actual remaining gap (INTEGRATION only)
 
-### 6.3 Two published pubkey encodings (one key)
+| Remaining piece | Why WS-06 | Section |
+|---|---|---|
+| Point the committed `registry.toml` `[[caches]]` at the existing cache surface | so `apm`'s `resolve_mirror` selects the AOS cache instead of falling back to `{registry.url}` | §3, §4 |
+| (Optional) co-serve the cache from the git origin | one host can serve both dumb-HTTP git objects and the `nar/`+narinfo surface | §3, §5 |
+| Registry-specific presence/queryability check | ensure every store path the registry lists is actually present/queryable in the cache before publish | §3, §6 |
+| Stock-`nix` consumer docs (`extra-substituters`, `require-sigs`) | document pointing a non-AOS host at the (already-emitting) cache | §7 |
 
-| Form | Consumer | Encoding | Source |
-|---|---|---|---|
-| **apm** | `apm` TOFU / `trusted-keys.d` | `aos-core:Ed25519:<base64>` | `SigningConfig.public_key` ([`types.rs:246-247`](../../../crates/aos-package/src/types.rs)), parsed by `parse_signing_key` ([`security.rs:306`](../../../crates/aos-package/src/security.rs)) as `<name>:Ed25519:<base64>` |
-| **nix** | stock `nix` `trusted-public-keys` | `<name>:<base64>` | the **same** key bytes, Nix-flavored projection (drops the `:Ed25519:` algo segment) |
-
-The publisher emits **both** projections from the one key. The nix form is what a
-stock host puts in `extra-trusted-public-keys` (§8). This is **F386** (two
-encodings) and **F392** (nix-form value). The projection is mechanical:
-
-```rust
-/// nix `<name>:<base64>` from the apm `<name>:Ed25519:<base64>` form.
-pub fn nix_pubkey_from_apm(apm_key: &str) -> anyhow::Result<String> {
-    let (name, _algo, b64) = crate::security::parse_signing_key(apm_key)?;  // security.rs:306
-    Ok(format!("{name}:{b64}"))
-}
-```
-
-**Tests:**
-- `sig_value_is_name_colon_base64` — `sign_narinfo` returns a `name:…` value whose
-  prefix matches the signer name.
-- `fingerprint_uses_expanded_refs` — the signed fingerprint contains
-  `<hash>-<name>` basenames, not bare hashes (guards the §5.3↔§6 coupling).
-- `fingerprint_matches_server_form` — `nar_fingerprint(...)` is byte-identical to
-  `aos_server::sign::NarInfoSigner::fingerprint(...)` for the same inputs
-  (prevents producer/daemon drift).
-- `nix_pubkey_from_apm_drops_algo` —
-  `nix_pubkey_from_apm("aos-core:Ed25519:Xk9m2Qp4=") == "aos-core:Xk9m2Qp4="`.
-- `nix_pubkey_from_apm_rejects_rsa` — a non-Ed25519 algo errors (rides
-  `parse_signing_key`, [`security.rs:324-329`](../../../crates/aos-package/src/security.rs)).
+Note the two **independent priority knobs** (F362): the `nix-cache-info`
+`Priority:` line (Nix-cache preference, stock-`nix`-ordered; `30` from
+`cache_info_handler` at [`routes.rs:145`](../../../crates/aos-server/src/routes.rs),
+`40` from the `aos-cache` backends) is distinct from the AOS `CacheEntry.priority`
+([`types.rs:580-593`](../../../crates/aos-package/src/types.rs)) that `apm`'s
+`resolve_mirrors` sorts.
 
 ---
 
-## 7. NAR blob `URL:` key scheme (TARGET)
+## 3. TARGET — the integration steps
 
-The narinfo `URL:` is a path relative to the cache base (§4 of ref doc). Two facts
-constrain it:
-
-1. **CURRENT wire key.** The blob is served at `{cache}/nar/<nar_hash>.nar.zst`
-   with the **full `sha256:<hex>` retained** — the literal colon is kept in the
-   wire filename ([`download.rs:65-77`](../../../crates/aos-package/src/download.rs),
-   via the cache-supplied `URL:`). On disk the consumer rewrites colon→dash
-   ([`download.rs:314-317`](../../../crates/aos-package/src/download.rs)), but the
-   **wire** key keeps the colon.
-2. **Cache placement.** The cache may be co-located with the git repo (relative
-   `[[caches]]` url `./nar`) or a separate host (absolute url); `URL:` is resolved
-   relative to whichever base `apm` selects (§3 of ref doc, WS-05 §8.2).
+The surface already exists; integration is wiring, not building.
 
 ```
-<cache-url>/nar/sha256:<hex>.nar.zst        ← AOS wire key (colon retained, default)
-        └── narinfo  URL: nar/sha256:<hex>.nar.zst
+publish / serve  (the narinfo + nar/ surface is ALREADY produced by
+│                 aos-server / mirrored by aos-cache)
+│
+├─ 1. commit registry.toml [[caches]] pointing at the existing cache URL   (§4)
+│        → apm's resolve_mirror / resolve_mirrors selects it (download.rs:85)
+│
+├─ 2. (optional) co-serve nar/ + *.narinfo + nix-cache-info from the git
+│        origin host so one base URL covers both layers                    (§5)
+│
+└─ 3. presence/queryability check: every store path the registry lists is
+         present in the cache (query-missing / backend.has) before publish (§6)
 ```
 
-```rust
-/// Default wire key: colon retained (matches CURRENT download.rs path).
-/// `nar_hash` is the full "sha256:<hex>".
-pub fn nar_url_key(nar_hash: &str) -> String {
-    nar_hash.to_string()           // colon retained
-}
-
-/// Colon-free fallback (the `sha256-<hex>` form the consumer already writes on
-/// disk, download.rs:314-317) for edges that mangle the colon.
-pub fn nar_url_key_colon_free(nar_hash: &str) -> String {
-    nar_hash.replace(':', "-")     // sha256-<hex>
-}
-```
-
-> **Colon-in-filename caveat (F388/F389).** S3 allows a literal `:` in object
-> keys, but some CDN/edge layers percent-encode or reject it. If the chosen edge
-> mangles the colon, the emitter switches to `nar_url_key_colon_free` **and** sets
-> `URL:` to match — the blob is then served under `sha256-<hex>.nar.zst`. This is
-> a **deployment decision** (a `colon_safe: bool` on the emitter config); see
-> [open-questions.md](./open-questions.md).
-
-**Tests:**
-- `nar_url_key_retains_colon` — `nar_url_key("sha256:abc") == "sha256:abc"`.
-- `nar_url_key_colon_free` — `nar_url_key_colon_free("sha256:abc") == "sha256-abc"`
-  (mirrors the existing `nar_cache_filename_replaces_colon` test,
-  [`download.rs:410-415`](../../../crates/aos-package/src/download.rs)).
-- `url_field_is_relative_nar_path` — emitted `URL:` is `nar/<key>.nar.zst`, no
-  leading slash, so `join_cache_url`
-  ([`download.rs:65-71`](../../../crates/aos-package/src/download.rs)) resolves it
-  against any cache base.
+There is **no new emitter module**. The relevant code already lives in
+`aos-server` (live daemon surface), `aos-cache` (remote backends), `aos-core`
+(shared narinfo type), and `aos-package` (consumer + `[[caches]]` resolution).
 
 ---
 
-## 8. Stock-`nix` consumer wiring (TARGET, docs)
+## 4. Wire the committed `registry.toml` `[[caches]]`
 
-Once a cache emits `nix-cache-info` + `*.narinfo` (§4, §5), a non-AOS host running
-stock `nix` consumes it as an ordinary binary cache. WS-06 owns the **docs** for
-this path (the plumbing itself is stock Nix); the AOS-host resolution path is
-WS-05 §8.
+`apm`'s `resolve_mirror` already reads `registry.toml` `[[caches]]` (sorted by
+`CacheEntry.priority`) and falls back to `{registry.url}` when the list is empty
+([`download.rs:85-97`](../../../crates/aos-package/src/download.rs),
+[`registry_ops.rs:404-410`](../../../crates/aos-package/src/registry_ops.rs)). The
+integration step is to **commit** a `[[caches]]` entry pointing at the cache the
+`aos-server`/`aos-cache` surface already serves, so the consumer stops falling
+back.
 
-### 8.1 `nix.conf` (F390)
+```toml
+# registry.toml at the git-repo root
+[[caches]]
+url = "https://registry.aos.dev/core"   # the base apm appends <storeHash>.narinfo to
+priority = 100
+```
+
+`apm` then GETs `<url>/<storeHash>.narinfo` (already served by `narinfo_handler`)
+and follows the narinfo's own `URL:` to the NAR (already served by `nar_handler`).
+No producer change is needed — the narinfo's `URL:` field
+([`narinfo.rs:37`](../../../crates/aos-server/src/narinfo.rs)) is authoritative and
+the consumer follows it verbatim ([`download.rs:184`](../../../crates/aos-package/src/download.rs)).
+
+> The `nix-cache-info` `Priority:` (`30` from the server) is **unchanged** — it is
+> the stock-`nix` ordering knob, distinct from the `[[caches]]` `priority` here
+> (§2.7, F362).
+
+---
+
+## 5. (Optional) co-serve the cache from the git origin
+
+If the deployment wants a single base URL for both layers, the git origin host can
+also serve the (already-produced) `nix-cache-info` + `*.narinfo` + `nar/` surface —
+either by fronting `aos-server` or by syncing an `aos-cache` FS/HTTP backend next
+to the dumb-HTTP git tree. The relative-path narinfo `URL:` resolves against
+whatever base `apm` selects ([`join_cache_url`](../../../crates/aos-package/src/download.rs)),
+so co-serving is purely a placement/deployment choice, not a code change.
+
+---
+
+## 6. Registry-specific presence/queryability check
+
+The one registry-specific guarantee worth adding at publish time: every store path
+the committed registry lists (`packages/*.toml` `store_path`, plus each
+`SysrootImageEntry`) must be **present/queryable** in the cache the `[[caches]]`
+entry points at — otherwise `apm` would fetch a narinfo (or 404) for a path with
+no NAR. The pieces to do this already exist:
+
+- `query-missing` on the server
+  ([`routes.rs:83`](../../../crates/aos-server/src/routes.rs)) reports which store
+  hashes the cache lacks.
+- `aos-cache` backends expose `has(...)`
+  ([`backend/mod.rs`](../../../crates/aos-cache/src/backend/mod.rs)) for the same
+  check against a remote store.
+
+So the remaining work is a thin pre-publish validation that walks the registry's
+listed store paths and asserts each is present in the configured cache (failing
+closed on a missing path), reusing those existing primitives. This is the only
+registry-specific glue; it builds no narinfo and no NAR.
+
+---
+
+## 7. Stock-`nix` consumer wiring (docs)
+
+The cache **already** emits `nix-cache-info` + `*.narinfo` + `nar/` with signed
+`Sig:` (§2). A non-AOS host running stock `nix` can consume it as an ordinary
+binary cache today; WS-06 owns only the **docs** for this path (the plumbing is
+stock Nix). The AOS-host resolution path is WS-05 §8.
+
+### 7.1 `nix.conf` (F390)
 
 ```ini
 # /etc/nix/nix.conf  (or ~/.config/nix/nix.conf)
-extra-substituters         = https://registry.aos.dev/core/nar
+extra-substituters         = https://registry.aos.dev/core
 extra-trusted-public-keys  = aos-core:base64publickeyhere==
 ```
 
 - Use the `extra-` prefix (**appends** to defaults) so `cache.nixos.org` is
   retained.
-- The key value is the **`<name>:<base64>`** nix encoding — same key bytes as the
-  apm `aos-core:Ed25519:<base64>` form (§6.3, **F392**).
-- **Do not** set `require-sigs = false` (**F393**). Emitting `Sig:` (§6) is
-  precisely what lets signature verification stay on.
+- The key value is the **`<name>:<base64>`** nix encoding — the same key bytes the
+  server signs with (`sign.rs` loads a `name:base64` key, [`sign.rs:14-31`](../../../crates/aos-server/src/sign.rs))
+  and emits in the `Sig:` line (F392).
+- **Do not** set `require-sigs = false` (**F393**). The server already emits `Sig:`
+  (§2.4), which is precisely what lets signature verification stay on.
 
-### 8.2 Flake `nixConfig` acceptance caveat (F394)
+### 7.2 Flake `nixConfig` acceptance caveat (F394)
 
 ```nix
 nixConfig = {
-  extra-substituters        = [ "https://registry.aos.dev/core/nar" ];
+  extra-substituters        = [ "https://registry.aos.dev/core" ];
   extra-trusted-public-keys = [ "aos-core:base64publickeyhere==" ];
 };
 ```
@@ -656,148 +350,126 @@ Flake-level `nixConfig` substituters/keys are only used after the user accepts
 them (or the flake is already trusted). For unattended/CI hosts prefer the
 `nix.conf` form, or pass `--accept-flake-config`.
 
-### 8.3 The substitution request/verify flow (F395)
+### 7.3 The substitution request/verify flow (F395)
 
 ```
 host nix                          AOS cache (URL from registry.toml [[caches]] / override)
-   │  GET /nix-cache-info          │   StoreDir/WantMassQuery/Priority   (§4)
+   │  GET /nix-cache-info          │   StoreDir/WantMassQuery/Priority   (§2.2)
    │ ─────────────────────────────►│
-   │  GET /<storehash>.narinfo      │   field-mapped from PackageMeta     (§5)
+   │  GET /<storehash>.narinfo      │   format_narinfo(&DbPathInfo,…)     (§2.1)
    │ ─────────────────────────────►│
    │      verify Sig: against       │
-   │      trusted-public-keys (§6)  │
-   │  GET /nar/<key>.nar.zst        │   content-addressed blob            (§7)
+   │      trusted-public-keys (§2.4)│
+   │  GET /nar/<key>.nar.zst        │   content-addressed blob            (§2.2)
    │ ─────────────────────────────►│
    │      verify NarHash, decompress│
 ```
 
 `apm`, by contrast, fetches the narinfo and verifies the `.nar.zst` against its
 `FileHash` ([`download.rs:191-204`](../../../crates/aos-package/src/download.rs)),
-**never** the narinfo `Sig:` — its trust is rooted in the signed git tag chain
-(§6.2). The two clients share the same blobs and narinfo bytes but trust them via
+**never** the narinfo `Sig:` — its trust is rooted in the signed git tag chain.
+The two clients share the same blobs and narinfo bytes but trust them via
 independent layers (ref doc §1, §10.4).
 
 ---
 
-## 9. Feature coverage
+## 8. Feature coverage
 
 Features from the validation report
-([validation-report.md](./validation-report.md) §81-114, recommendation P0 #1)
-that WS-06 closes:
+([validation-report.md](./validation-report.md) §81-114, recommendation P0 #1).
+**Most are ALREADY IMPLEMENTED** — the table marks each as DONE (with the code
+that satisfies it) or as the remaining INTEGRATION work.
 
-| Feature(s) | What | This WS |
+| Feature(s) | What | Status |
 |---|---|---|
-| **F362** | Distinct AOS-`priority` vs `nix-cache-info` `Priority` | §4 (two knobs) |
-| **F363–F366** | `nix-cache-info` emitter (StoreDir / WantMassQuery / Priority) | §4 |
-| **F367–F376, F378–F383** | narinfo generator + every narinfo field mapping | §5.1, §5.2 |
-| **F377** | narinfo `Sig` generated | §6.1 |
-| **F385** | Nix fingerprint signed message `(StorePath, NarHash, NarSize, References)` | §6.1 |
-| **F386** | Two published pubkey encodings (apm + nix form) | §6.3 |
-| **F387** | per-narinfo `Sig` satisfies `require-sigs` (rationale) | §6.2 |
-| **F388 / F389** | NAR blob URL key — colon retained / colon-free fallback | §7 |
-| **F390** | Stock-`nix` host substituter wiring (`extra-substituters`) | §8.1 |
-| **F392** | Nix-form `trusted-public-keys` value `<name>:<base64>` | §6.3, §8.1 |
-| **F393** | Do **not** disable `require-sigs` | §8.1 |
-| **F394** | Flake `nixConfig` acceptance caveat | §8.2 |
-| **F395** | Substitution request/verify flow | §8.3 |
-| **F94** | Package metadata = narinfo source | §2.3, §5.1 |
-| **F354** (with WS-05) | Strict-superset cache origin (3 endpoints) | §3, §4, §5, §7 |
-| **F361** (with WS-05) | Standard relative endpoint paths (producer commitment) | §3.1, §5.5 |
+| **F362** | Distinct AOS-`priority` vs `nix-cache-info` `Priority` | DONE — server `Priority: 30` ([`routes.rs:145`](../../../crates/aos-server/src/routes.rs)) / backend `40` vs `CacheEntry.priority` ([`types.rs:580-593`](../../../crates/aos-package/src/types.rs)) |
+| **F363–F366** | `nix-cache-info` (StoreDir / WantMassQuery / Priority) | DONE — `cache_info_handler` ([`routes.rs:123`](../../../crates/aos-server/src/routes.rs)), backends ([`fs.rs:126`](../../../crates/aos-cache/src/backend/fs.rs)) |
+| **F367–F376, F378–F383** | narinfo generator + every narinfo field | DONE — `format_narinfo` ([`narinfo.rs:27`](../../../crates/aos-server/src/narinfo.rs)) + `nar::info::format` ([`info.rs:81`](../../../crates/aos-core/src/nar/info.rs)) |
+| **F377** | narinfo `Sig` generated | DONE — `format_narinfo` signs ([`narinfo.rs:87-93`](../../../crates/aos-server/src/narinfo.rs)) |
+| **F385** | Nix fingerprint `(StorePath, NarHash, NarSize, References)` | DONE — `NarInfoSigner::fingerprint` ([`sign.rs:57-60`](../../../crates/aos-server/src/sign.rs)) |
+| **F386** | Two published pubkey encodings (apm + nix form) | INTEGRATION — publish the nix `<name>:<base64>` form alongside the apm key (§7.1) |
+| **F387** | per-narinfo `Sig` satisfies `require-sigs` | DONE — server emits `Sig:` ([`narinfo.rs:87-93`](../../../crates/aos-server/src/narinfo.rs)) |
+| **F388 / F389** | NAR blob URL key (colon-in-filename handling) | DONE — server URL `nar/{hash}-{narhash}.{ext}` (colon→dash) ([`narinfo.rs:37`](../../../crates/aos-server/src/narinfo.rs)); consumer follows narinfo `URL:` verbatim ([`download.rs:184`](../../../crates/aos-package/src/download.rs)) |
+| **F390** | Stock-`nix` host substituter wiring | INTEGRATION (docs) — §7.1 |
+| **F392** | Nix-form `trusted-public-keys` value `<name>:<base64>` | DONE — server signs with a `name:base64` key ([`sign.rs:14-31,44-54`](../../../crates/aos-server/src/sign.rs)); INTEGRATION: surface that pubkey in docs/registry (§7.1) |
+| **F393** | Do **not** disable `require-sigs` | DONE — `Sig:` always emitted (§2.4) |
+| **F394** | Flake `nixConfig` acceptance caveat | INTEGRATION (docs) — §7.2 |
+| **F395** | Substitution request/verify flow | DONE (server side) — all three endpoints served (§2.2); docs §7.3 |
+| **F94** | Package metadata vs narinfo source | DONE — narinfo from store DB (`DbPathInfo`), git TOMLs are the *metadata* layer (§1, §2.1) |
+| **F354** (with WS-05) | Strict-superset cache origin (3 endpoints) | DONE — `routes.rs:80-89` (§2.2) |
+| **F361** (with WS-05) | Standard relative endpoint paths | DONE — consumer follows relative narinfo `URL:` via `join_cache_url` ([`download.rs:65-71,184`](../../../crates/aos-package/src/download.rs)) |
 
-> Cross-WS: **F386 / F392** also touch WS-04 (the key lives in `keys.toml`); WS-06
-> owns the *nix-form projection* of it. **F388/F389** ride the CURRENT
-> `download.rs` colon handling. `FileHash` / `FileSize` are computed at emit time
-> from the `.nar.zst` (§5.2.1) — narinfo-driven since commit `7149acf6`, no schema
-> change required.
+> The **only** open items are INTEGRATION: surface the cache URL in the committed
+> `[[caches]]` (§4), surface the nix-form pubkey for stock hosts (§7.1, F386/F392),
+> and the stock-`nix` docs (§7). `FileHash` / `FileSize` are already computed at
+> emit time by the server ([`narinfo.rs:45-59`](../../../crates/aos-server/src/narinfo.rs),
+> [`compress.rs:143`](../../../crates/aos-server/src/compress.rs)) — narinfo-driven
+> since commit `7149acf6`, no schema change required.
 
 ---
 
-## 10. CURRENT → TARGET mapping
+## 9. CURRENT (implemented) → remaining integration
 
-| CURRENT (`path:line`) | TARGET (WS-06) | Notes |
+| ALREADY IMPLEMENTED (`path:line`) | Remaining (WS-06 integration) | Notes |
 |---|---|---|
-| `aos-server::narinfo::format_narinfo(&DbPathInfo,…)` ([`narinfo.rs:27`](../../../crates/aos-server/src/narinfo.rs)) | publish-time `emit_narinfos(&HashMap<_,PackageMeta>,…)` (§5.5) | DB-fed runtime daemon → static file from git tree |
-| `cache_info_handler` ([`routes.rs:123-148`](../../../crates/aos-server/src/routes.rs), `Priority: 30` at `:145`) | `emit_nix_cache_info(&CacheInfoConfig)` (§4) | per-request handler → static file written once |
-| `aos-server::sign::NarInfoSigner::fingerprint` ([`sign.rs:57-60`](../../../crates/aos-server/src/sign.rs)) | shared `nar_fingerprint` in `aos-core::nar::info` (§6.1) | lift composition so producer + daemon agree |
-| `nar::info::format` ([`info.rs:81`](../../../crates/aos-core/src/nar/info.rs)) | **reused verbatim** | only the *builder* (PackageMeta→NarInfo) is new |
-| `build_hash_index` ([`parse.rs:176-196`](../../../crates/aos-package/src/registry/parse.rs)) | add parallel `ReferenceIndex` (hash → basename) (§5.3) | name index → basename index for `References` |
-| `PlatformEntry` / `PackageMeta` (no `download_hash`/`download_size`, removed in `7149acf6`) ([`parse.rs:45-51`](../../../crates/aos-package/src/registry/parse.rs), [`types.rs:44-74`](../../../crates/aos-package/src/types.rs)) | compute `FileHash`/`FileSize` at emit time from the `.nar.zst` (§5.2.1) | narinfo-driven — no schema change |
-| `nar_cache_filename` ([`download.rs:314-317`](../../../crates/aos-package/src/download.rs)) | `nar_url_key_colon_free` (§7) | same colon→dash transform, reused for the colon-free `URL:` |
-| `SigningConfig.public_key` apm form ([`types.rs:246-247`](../../../crates/aos-package/src/types.rs)) | `nix_pubkey_from_apm` projection (§6.3) | one key → nix `<name>:<base64>` |
+| `format_narinfo(&DbPathInfo,…)` emitter ([`narinfo.rs:27`](../../../crates/aos-server/src/narinfo.rs)) | — (none) | DB-fed narinfo emitter is correct; do **not** re-emit from the git tree |
+| `cache_info_handler` `nix-cache-info` ([`routes.rs:123`](../../../crates/aos-server/src/routes.rs)) | — (none) | served; backends also write it ([`fs.rs:126`](../../../crates/aos-cache/src/backend/fs.rs)) |
+| FileHash/FileSize emit-time compute ([`narinfo.rs:45-59`](../../../crates/aos-server/src/narinfo.rs), [`compress.rs:143`](../../../crates/aos-server/src/compress.rs)) | — (none) | already narinfo-driven (`7149acf6`) |
+| Ed25519 fingerprint + `Sig:` ([`sign.rs:14-60`](../../../crates/aos-server/src/sign.rs), [`narinfo.rs:87-93`](../../../crates/aos-server/src/narinfo.rs)) | publish the nix-form pubkey for stock hosts (§7.1) | sign path done; only the pubkey-surfacing is integration |
+| References basename-expansion ([`narinfo.rs:71-74`](../../../crates/aos-server/src/narinfo.rs)) | — (none) | server maps refs through `basename` already |
+| NAR URL scheme + consumer following it ([`narinfo.rs:37`](../../../crates/aos-server/src/narinfo.rs), [`download.rs:184`](../../../crates/aos-package/src/download.rs)) | — (none) | consumer follows narinfo `URL:` verbatim |
+| `resolve_mirror` / `resolve_mirrors` over `[[caches]]` ([`download.rs:85-97`](../../../crates/aos-package/src/download.rs), [`registry_ops.rs:404-410`](../../../crates/aos-package/src/registry_ops.rs)) | **commit a `[[caches]]` entry** pointing at the cache (§4) | resolution exists; the registry just needs the entry |
+| `query-missing` + backend `has` ([`routes.rs:83`](../../../crates/aos-server/src/routes.rs), [`backend/mod.rs`](../../../crates/aos-cache/src/backend/mod.rs)) | thin pre-publish presence check over registry-listed paths (§6) | reuse existing primitives |
 
 ---
 
-## 11. Task checklist
+## 10. Task checklist (integration only)
 
-**Compressed-NAR hash/size (emit-time, no schema change):**
+**Wire the cache into the registry (§4):**
 
-- [ ] Compute `FileHash` (SHA-256 of the `.nar.zst` bytes) + `FileSize` (byte
-      length) at emit time from each `nar/<key>.nar.zst` blob (§5.2.1) — these were
-      removed from the schema in `7149acf6` and are narinfo-driven. Surface them via
-      a `CompressedNar { file_hash, file_size }` input to the builder. Apply the same
-      compute to each `SysrootImageEntry`'s image blob.
+- [ ] Commit a `registry.toml` `[[caches]]` entry pointing at the existing
+      `aos-server` / `aos-cache` surface so `resolve_mirror` selects it instead of
+      falling back to `{registry.url}` ([`download.rs:85-97`](../../../crates/aos-package/src/download.rs)).
+- [ ] Verify `apm` GETs `<url>/<storeHash>.narinfo` and follows the narinfo `URL:`
+      to the NAR (end-to-end smoke test against a live cache).
 
-**`nix-cache-info` (§4):**
+**(Optional) co-serve from the git origin (§5):**
 
-- [ ] `CacheInfoConfig { store_dir, priority }` + `emit_nix_cache_info` (StoreDir
-      from publisher, not metadata; `priority` defaults to `30`).
-- [ ] Tests: `nix_cache_info_default_store_dir`, `nix_cache_info_custom_priority`,
-      `nix_cache_info_omits_capabilities`.
+- [ ] Front `aos-server` or sync an `aos-cache` FS/HTTP backend next to the
+      dumb-HTTP git tree so one base URL serves both layers.
 
-**narinfo generator (§5):**
+**Presence/queryability check (§6):**
 
-- [ ] New module `crates/aos-package/src/registry/nix_cache.rs`.
-- [ ] `package_meta_to_narinfo` building `aos_core::nar::info::NarInfo` from
-      `PackageMeta`; render via `nar::info::format`.
-- [ ] `ReferenceIndex` (hash → `<hash>-<name>` basename) + `expand_references`;
-      fail-closed on dangling hash (§5.3).
-- [ ] `image_to_narinfo` for each `SysrootImageEntry` (its own store path) (§5.4).
-- [ ] `emit_narinfos` writing `<store_path_hash>.narinfo` + `nix-cache-info`.
-- [ ] Tests: `expand_references_curl`, `expand_references_empty`,
-      `expand_references_dangling_errors`, `image_narinfo_keyed_by_image_hash`,
-      `image_narinfo_empty_references`, `emit_narinfos_round_trips_through_parse`,
-      `emit_narinfos_filename_is_store_hash`, `emit_narinfos_includes_images`.
+- [ ] Thin pre-publish validation: every registry-listed `store_path` (and each
+      `SysrootImageEntry`) is present in the configured cache, reusing
+      `query-missing` / backend `has`; fail closed on a missing path.
 
-**Signing (§6):**
+**Stock-`nix` docs + nix-form pubkey (§7, F386/F390/F392/F394):**
 
-- [ ] Lift `fingerprint` into `aos-core::nar::info` as `nar_fingerprint`; re-export
-      from `aos-server::sign` to kill drift.
-- [ ] Producer `NarInfoSigner::sign_narinfo` over the **expanded** references,
-      reusing the **one** registry Ed25519 key (WS-04).
-- [ ] `nix_pubkey_from_apm` projection (apm `<name>:Ed25519:<b64>` → nix
-      `<name>:<b64>`) via `parse_signing_key`.
-- [ ] Tests: `sig_value_is_name_colon_base64`, `fingerprint_uses_expanded_refs`,
-      `fingerprint_matches_server_form`, `nix_pubkey_from_apm_drops_algo`,
-      `nix_pubkey_from_apm_rejects_rsa`.
-
-**NAR URL key (§7):**
-
-- [ ] `nar_url_key` (colon retained) + `nar_url_key_colon_free`; a `colon_safe`
-      emitter switch.
-- [ ] Tests: `nar_url_key_retains_colon`, `nar_url_key_colon_free`,
-      `url_field_is_relative_nar_path`.
-
-**Docs (§8):**
-
+- [ ] Surface the signer's pubkey in the nix `<name>:<base64>` form for stock hosts
+      (the server already signs with a `name:base64` key, [`sign.rs:14-31`](../../../crates/aos-server/src/sign.rs)).
 - [ ] Stock-`nix` `nix.conf` / flake `nixConfig` / verify-flow guidance (already
       drafted in [`nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md)
       §10; WS-06 owns it as a deliverable).
 
+> **No emitter, signer, field-mapping, NAR-scheme, or consumer code to write** —
+> those are done (§2). The checklist above is integration and documentation only.
+
 ---
 
-## 12. Cross-references
+## 11. Cross-references
 
 ### Reference set (`docs/registry/`)
 
-- [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) — **the
-  target this WS implements**: the strict-superset idea (§2), where the cache
-  location comes from (§3), the `nix-cache-info` stub (§5), the narinfo field
-  mapping (§6), references basename expansion (§7), the one-key/two-form signing
-  (§8), the NAR blob URL key (§9), and dev-shell wiring (§10).
-- [repo-layout.md](../../registry/repo-layout.md) — the committed git tree this WS
-  reads: `registry.toml` `[[caches]]` (§2, where the cache list lives),
-  `keys.toml` trust roster (§3, the one key), `packages/*.toml` (§4, the narinfo
-  source), `closures/<hash>` (§5, the bare-hash adjacency format).
+- [nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) — the
+  strict-superset intent the *already-built* surface satisfies: the superset idea
+  (§2), where the cache location comes from (§3), the `nix-cache-info` stub (§5),
+  the narinfo field mapping (§6), references basename expansion (§7), the one-key
+  signing (§8), the NAR blob URL key (§9), and dev-shell wiring (§10).
+- [repo-layout.md](../../registry/repo-layout.md) — the committed git tree:
+  `registry.toml` `[[caches]]` (§2, the cache list WS-06 commits an entry into),
+  `keys.toml` trust roster (§3, the one key), `packages/*.toml` (§4, the metadata
+  layer), `closures/<hash>` (§5, the bare-hash adjacency format).
 - [README.md](../../registry/README.md) — purpose, glossary, doc index.
 - [architecture.md](../../registry/architecture.md) — where the NAR cache sits
   relative to the git-over-dumb-HTTP layer.
@@ -813,14 +485,13 @@ that WS-06 closes:
 - [design-brief.md](./design-brief.md) — §13 (Nix binary-cache superset), §11
   (one-key signing) — authoritative intent.
 - [validation-report.md](./validation-report.md) — §81-114 + P0 recommendation #1
-  (the F362–F395 cluster this WS closes).
+  (the F362–F395 cluster, most ALREADY satisfied by existing code).
 - [workstream-05-consumer.md](./workstream-05-consumer.md) — §8, the consumer side
-  that *resolves* and *reads* the cache this WS emits.
+  that *resolves* and *reads* the (already-emitting) cache.
 - [workstream-04-signing-trust.md](./workstream-04-signing-trust.md) — the one-key
-  model and `keys.toml` whose pubkey this WS projects into the nix `<name>:<b64>`
-  form.
+  model and `keys.toml` whose pubkey is surfaced in the nix `<name>:<b64>` form.
 - [workstream-01-object-store.md](./workstream-01-object-store.md),
   [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md) —
-  emit the `packages/*.toml` tree + `.nar.zst` blobs this WS projects/points at.
-- [open-questions.md](./open-questions.md) — the colon-in-NAR-key edge decision
-  (§7).
+  emit the `packages/*.toml` metadata tree this WS points the cache alongside.
+- [open-questions.md](./open-questions.md) — deployment edge decisions
+  (co-serve vs separate cache host; colon-in-NAR-key handling).
