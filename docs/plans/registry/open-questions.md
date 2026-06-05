@@ -180,45 +180,37 @@ necessary packs. Neither corrupts bytes.
 |---|---|
 | **Brief §16.3** | "Bucket-selection input (`machine_id` source) and the probe-forward fallback order." |
 | **Owner WS** | [WS-03](./workstream-03-channels-rollouts.md) (partition model), [WS-05](./workstream-05-consumer.md) (client selection) |
-| **Status** | OPEN — both the hash input and the missing-partition fallback are undecided. |
+| **Status** | RESOLVED — consumers use a generated registry-local salt for first assignment, persist the bucket index, and probe forward without re-pinning. |
 
 **What is decided (TARGET).** A channel exposes exactly **256** partition files
 `/channels/<name>/00..ff`, each an independently-signed tag object whose tag name ==
-the channel name, pointing at a semver tag (brief §6). The consumer
-**deterministically self-selects one bucket** and **persists** it (e.g.
-the low byte of `sha256(machine_id)` (i.e. mod 256), written once) so a host does not flap between
-buckets across promotions. The publisher rolls a release to N/256 of the fleet by
+the channel name, pointing at a semver tag (brief §6). The consumer self-selects
+one bucket on first channel sync from a generated registry-local salt and
+persists the resulting bucket index so a host does not flap between buckets
+across promotions. The publisher rolls a release to N/256 of the fleet by
 pointing N partitions at the new semver tag and leaving the rest on the prior
 release; un-advanced partitions still name the prior release (brief §6 — this is
 the explicit answer to "where does the rest of the fleet go"). Completion = all
 256 partitions point at the new release.
 
-**What is open.**
+**What is implemented.**
 
-1. **`machine_id` source on AOS.** Which identifier seeds the low byte of
-   `sha256(machine_id)` (i.e. mod 256)? Candidates: `/etc/machine-id`, systemd's machine-id, or a registry-local
-   salt persisted on first use. The choice fixes whether two hosts that share a
-   golden image (and thus a baked-in machine-id) collide into the same bucket —
-   which would skew rollout. Recommend a **registry-local salt generated once on
-   first sync** (not the image-baked machine-id) so cloned images re-randomize,
-   *and* persist the resulting bucket so it never flaps (brief §6).
-2. **Persistence semantics.** The bucket is "written once" (brief §6). Confirm:
-   is it the *input* (`machine_id`/salt) that is persisted and the bucket
-   recomputed, or the *bucket index* that is persisted directly? Persisting the
-   bucket index directly is simplest and immune to a future hash-function change;
-   persisting the input lets the partition count change later (it will not — it is
-   fixed at 256, brief §6). Recommend persisting the **bucket index** (00–ff).
-3. **Probe-forward fallback order.** "There **must always be 256**; if one is
-   missing a client **may** use another (deterministic probe-forward
-   `(bucket+1) mod 256`)" (brief §6). Open: how many probe steps before giving up,
-   and does a probe-forward host pin to the probed bucket or retry its home bucket
-   next sync? Recommend: probe `(bucket+i) mod 256` for `i = 1..255`, use the first
-   present partition, but **do not** re-persist — keep the home bucket so the host
-   returns to it once the missing partition is republished.
+1. **Bucket source.** AOS does not read `/etc/machine-id` for channel rollout
+   selection. When a registry has no persisted bucket yet, the consumer generates
+   fresh random salt and hashes `registry_name || "\0" || salt`; the low byte is
+   the rollout bucket.
+2. **Persistence semantics.** The consumer persists the resulting **bucket
+   index** (`00..ff` as `u8`) in `[registry.state]`. Existing persisted buckets
+   continue to win unchanged, which is the migration path from earlier clients.
+3. **Probe-forward fallback.** The client probes `(bucket+i) mod 256` for
+   `i = 0..255`, uses the first present/verifiable partition for the current
+   sync, and does **not** re-persist the probed bucket.
 
-**Recommendation.** Seed from a registry-local salt; persist the resulting
-bucket index 00–ff; probe-forward `(bucket+i) mod 256` without re-pinning. Spell the
-exact pre-image and the probe loop in WS-03 / WS-05 so client and producer agree.
+**Verification.** `registry::channel` tests cover deterministic registry+salt
+selection, random salt shape, persisted-bucket migration, and full probe order.
+
+**Recommendation.** Keep persisting only the bucket index, not the salt. That is
+the simplest durable contract while the partition count remains fixed at 256.
 This is operational, not a correctness gate — a wrong choice degrades to "rollout
 fractions are uneven", never "a host gets bad bytes" (the anti-rollback floor,
 brief §6, still protects every host).
@@ -603,7 +595,7 @@ workstream.
 | **R3** | **Concurrent publishers race the partition advance.** Two `apr release` runs advancing the same channel's 256 partitions can interleave into an inconsistent rollout fraction. | Med × Med | Restrict to a single publisher per channel, or serialize the partition-advance step; the immutable-object steps are content-addressed and need no coordination. | WS-03 |
 | **R4** | **Online signing key exposure.** Removing in-band `valid_until` removes the heartbeat-re-sign pressure that wanted the Ed25519 key online for quiet channels (Q5); the remaining online-key need is key rotation, which re-signs live partitions. | Low × High | No routine re-sign — freshness is the consumer's max-staleness clock, not a signed window; sign partitions only on rollout advance; for rotation use `allowed_signers` overlap, never the long-term key online beyond the rotation event. | WS-04, WS-03 |
 | **R5** | **Delta depth too deep → consumer reconstruct cost** (Q2). A large `--depth` shifts CPU onto every consumer applying the delta chain. | Low × Med | Cap `--depth` (suggest 50); window is the free lever, not depth (brief §10); document the consumer-cost rationale. | WS-02 |
-| **R6** | **Bucket flap / skew** (Q3). Image-baked machine-ids collide into one bucket; or a host recomputes a different bucket across syncs and flaps. | Med × Low | Seed from a registry-local salt re-randomized per clone; persist the bucket index once; probe-forward without re-pinning (brief §6). | WS-03, WS-05 |
+| **R6** | **Bucket flap / skew** (Q3). A host recomputes a different bucket across syncs, or cloned images share a baked-in host identifier. | Med × Low | Implemented: first assignment uses generated registry-local salt; persisted bucket index wins afterward; probe-forward does not re-pin. | WS-03, WS-05 |
 | **R7** | **Cross-serving / name-confusion.** A signed tag object served at the wrong path (a release tag served as a channel partition, or vice-versa) tricks a consumer. | Low × High | Name-binding verification: signature valid **and** embedded tag-name field == expected path name (channel name under `/channels/*`, semver under `/releases/*`); verify the whole `tag → tag → commit` chain (brief §5, §11). | WS-04, WS-05 |
 | **R8** | **Migration straddle bugs** (Q7 / §3). A half-migrated host or mirror serves/reads neither model cleanly — an old bundle-mode client hits a git-native origin, or vice-versa. | Med × High | The two models share **no wire surface** (§3.1), so there is no torn-format hazard; gate the consumer by registry capability detection (git refs present?) and bound any dual-stack window with a hard EOL. | WS-05 |
 | **R9** | **Anti-rollback floor vs. fix-forward.** A consumer that does not keep a monotonic floor could be walked backward by a misconfigured partition; conversely an over-strict floor blocks a legitimate fix-forward. | Low × High | Consumer keeps a monotonic floor (never moves to a release older than current); aborting a bad rollout is **fix-forward** (publish newer, advance partitions), never partition-decrement (brief §6). | WS-05, WS-03 |
@@ -852,7 +844,7 @@ item is closed.
 |---|---|---|---|---|
 | Q1 | sha256 dumb-HTTP client floor | WS-01 | WS-01 object store, WS-05 fetch | Pin min git version; fail-closed consumer error |
 | Q2 | `pack-objects` window/depth, zstd, dictionary | WS-02 | WS-02 pipeline | `--window=350 --depth=50 --compression=0` + `zstd --ultra -22 --long=27`; defer dictionary |
-| Q3 | Bucket-selection input + probe-forward order | WS-03 / WS-05 | WS-03 rollouts | Registry-local salt; persist bucket index; probe `(bucket+i) mod 256` no re-pin |
+| Q3 | Bucket-selection input + probe-forward order — **RESOLVED** | WS-03 / WS-05 | (none) | Registry-local salt; persist bucket index; probe `(bucket+i) mod 256` no re-pin |
 | Q4 | `apr release` shape + pluggable upload | WS-02 / WS-03 | WS-02/03 (the pipeline) | Composable verbs under one wrapper; immutable-first / low-TTL-last ordering |
 | Q5 | Consumer max-staleness policy + key-rotation cadence | WS-05 / WS-04 / WS-03 | WS-05 consumer, WS-04 trust | Consumer max-staleness bound (~7–14d) + low CDN TTL + anti-rollback floor; rotate-only re-sign |
 | Q6 | Relative `info/alternates` (one `../`, HTTP + local-FS) | WS-01 | WS-01 layout | One host-independent relative `info/alternates`, one-`../`; no `http-alternates` |
