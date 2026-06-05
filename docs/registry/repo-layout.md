@@ -33,8 +33,8 @@ anything being placed in the tag message (tags are pure pointers — see
 This is **almost unchanged** from today's code — the git-native redesign changed
 *distribution* (refs, tags, objects, packs over dumb HTTP), not the tree's content.
 The in-repo signing pubkey has moved out of `registry.toml`; `apr create` now
-emits `keys.toml` as the committed trust roster, and the remaining tree work is
-to maintain that roster through supported rotation/revocation workflows.
+emits `keys.toml` as the committed trust roster, and `apr keys list/add/retire`
+maintains that roster through supported rotation/revocation workflows.
 
 ---
 
