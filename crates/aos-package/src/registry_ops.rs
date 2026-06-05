@@ -20,7 +20,7 @@ use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
 use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
-use crate::types::{CacheEntry, RegistryRootConfig};
+use crate::types::{CacheEntry, RegistryConfig, RegistryRootConfig};
 use crate::{BranchCommand, CacheCommand, ChannelCommand, KeysCommand, PrCommand, TrustCommand};
 
 // ---------------------------------------------------------------------------
@@ -1551,11 +1551,21 @@ pub async fn run_channel(
             channel,
             semver,
             key,
+            key_id,
             registry,
         } => {
             let version = semver::Version::parse(semver)
                 .with_context(|| format!("parsing release semver '{semver}'"))?;
-            channel_init(config, channel, &version, key, registry.as_deref(), printer).await
+            channel_init(
+                config,
+                channel,
+                &version,
+                key.as_deref(),
+                key_id.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
         }
         ChannelCommand::Advance {
             channel,
@@ -1563,6 +1573,7 @@ pub async fn run_channel(
             count,
             partitions,
             key,
+            key_id,
             registry,
         } => {
             let version = semver::Version::parse(semver)
@@ -1573,7 +1584,8 @@ pub async fn run_channel(
                 &version,
                 *count,
                 partitions.as_deref(),
-                key,
+                key.as_deref(),
+                key_id.as_deref(),
                 registry.as_deref(),
                 printer,
             )
@@ -1949,21 +1961,94 @@ fn trusted_key_from_line(expected_registry: &str, key: &str) -> Result<TrustedKe
     })
 }
 
+fn resolve_producer_signing_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    key: Option<&str>,
+    key_id: Option<&str>,
+) -> Result<String> {
+    match (key, key_id) {
+        (Some(_), Some(_)) => bail!("use only one of --key or --key-id"),
+        (Some(key), None) => Ok(key.to_string()),
+        (None, Some(key_id)) => {
+            validate_roster_key_id(key_id)?;
+            let roster = load_committed_roster(dir)?;
+            if keys::is_revoked(&roster, key_id) {
+                bail!("signing key id '{key_id}' is revoked in keys.toml");
+            }
+            let active = keys::active_key_by_id(&roster, key_id).ok_or_else(|| {
+                anyhow::anyhow!("active signing key id '{key_id}' does not exist in keys.toml")
+            })?;
+            let (entry_registry, _algorithm, _public_key) = parse_signing_key(&active.key)
+                .with_context(|| format!("invalid active key '{key_id}'"))?;
+            if entry_registry != registry_name {
+                bail!(
+                    "active signing key id '{key_id}' belongs to registry '{}', expected '{}'",
+                    entry_registry,
+                    registry_name,
+                );
+            }
+
+            let registry_config =
+                registry_config_by_name(config, registry_name).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--key-id requires registry '{}' to be configured in registries.d",
+                        registry_name,
+                    )
+                })?;
+            let path = registry_config.signing_keys.get(key_id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no local private key path configured for signing key id '{key_id}'; add [registry.signing_keys] {key_id} = \"/path/to/private-key\" to the registry config or pass --key"
+                )
+            })?;
+            if path.trim().is_empty() {
+                bail!("local private key path for signing key id '{key_id}' is empty");
+            }
+            let path_buf = PathBuf::from(path);
+            if !path_buf.exists() {
+                bail!(
+                    "local private key path for signing key id '{key_id}' does not exist: {}",
+                    path_buf.display(),
+                );
+            }
+            Ok(path.clone())
+        }
+        (None, None) => bail!(
+            "--key or --key-id is required: registry release and channel tags must be signed tag objects"
+        ),
+    }
+}
+
+fn registry_config_by_name<'a>(
+    config: &'a ApmConfig,
+    registry_name: &str,
+) -> Option<&'a RegistryConfig> {
+    config
+        .registries
+        .iter()
+        .find(|(registry, _state)| registry.name == registry_name)
+        .map(|(registry, _state)| registry)
+}
+
 async fn channel_init(
     config: &ApmConfig,
     channel_name: &str,
     version: &semver::Version,
-    signing_key: &str,
+    key: Option<&str>,
+    key_id: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     validate_channel_name(channel_name)?;
-    let dir = registry_dir(config, registry)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
     assert_release_tag_exists(&dir, version)?;
 
     let mut map = PartitionMap::new();
     for bucket in 0..=u8::MAX {
-        write_channel_partition_tag(&dir, channel_name, bucket, version, signing_key)?;
+        write_channel_partition_tag(&dir, channel_name, bucket, version, &signing_key)?;
         map.set(bucket as usize, version.clone())?;
     }
     update_channel_frontier(&dir, channel_name, &map)?;
@@ -1980,12 +2065,15 @@ async fn channel_advance(
     version: &semver::Version,
     count: Option<usize>,
     partitions: Option<&str>,
-    signing_key: &str,
+    key: Option<&str>,
+    key_id: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     validate_channel_name(channel_name)?;
-    let dir = registry_dir(config, registry)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
     assert_release_tag_exists(&dir, version)?;
 
     let mut map = read_channel_partition_map(&dir, channel_name)?;
@@ -1997,7 +2085,7 @@ async fn channel_advance(
     }
 
     for bucket in &selected {
-        write_channel_partition_tag(&dir, channel_name, *bucket, version, signing_key)?;
+        write_channel_partition_tag(&dir, channel_name, *bucket, version, &signing_key)?;
         map.set(*bucket as usize, version.clone())?;
     }
     update_channel_frontier(&dir, channel_name, &map)?;
@@ -2349,20 +2437,20 @@ pub async fn tag(
     name: &str,
     message: Option<&str>,
     key: Option<&str>,
+    key_id: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
-    let signing_key = key.ok_or_else(|| {
-        anyhow::anyhow!("--key is required: registry release tags must be signed tag objects")
-    })?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
 
     sign_tag(
         &dir,
         name,
         "HEAD",
         message.or(Some("AOS registry release")),
-        signing_key,
+        &signing_key,
         false,
     )?;
     refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after tag")?;
@@ -2376,16 +2464,16 @@ pub async fn sign(
     config: &ApmConfig,
     tag: Option<&str>,
     key: Option<&str>,
+    key_id: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
     let tag_name = tag.ok_or_else(|| {
         anyhow::anyhow!("`apr sign` now signs tag objects; pass the existing tag name to re-sign")
     })?;
-    let signing_key = key.ok_or_else(|| {
-        anyhow::anyhow!("--key is required: registry release tags must be signed tag objects")
-    })?;
+    let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
     let target = git(&dir, &["rev-list", "-n", "1", tag_name])
         .with_context(|| format!("resolving tag '{tag_name}' target commit"))?;
 
@@ -2394,7 +2482,7 @@ pub async fn sign(
         tag_name,
         &target,
         Some("AOS registry release"),
-        signing_key,
+        &signing_key,
         true,
     )?;
     refresh_registry_object_store(&dir).context("refreshing dumb-HTTP object store after sign")?;
@@ -2641,7 +2729,16 @@ fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::verify_tag_signature;
     use crate::types::{ApmSettings, ProfileScope, RegistryConfig, RegistryUploadAuthConfig};
+    use base64::Engine as _;
+    use std::fs;
+    use tempfile::TempDir;
+
+    struct TestSigningFixture {
+        trusted_key: String,
+        private_key: PathBuf,
+    }
 
     #[test]
     fn parse_store_path_standard() {
@@ -2725,6 +2822,139 @@ mod tests {
     }
 
     #[test]
+    fn producer_signing_key_direct_path_bypasses_key_id_lookup() {
+        let config = ApmConfig {
+            settings: ApmSettings::default(),
+            registries: Vec::new(),
+            scope: ProfileScope::User,
+        };
+        let resolved = resolve_producer_signing_key(
+            &config,
+            Path::new("/missing"),
+            "aos-core",
+            Some("/tmp/key"),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(resolved, "/tmp/key");
+    }
+
+    #[test]
+    fn producer_signing_key_rejects_ambiguous_key_sources() {
+        let config = ApmConfig {
+            settings: ApmSettings::default(),
+            registries: Vec::new(),
+            scope: ProfileScope::User,
+        };
+        let err = resolve_producer_signing_key(
+            &config,
+            Path::new("/missing"),
+            "aos-core",
+            Some("/tmp/key"),
+            Some("initial"),
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("use only one of --key or --key-id"));
+    }
+
+    #[test]
+    fn producer_signing_key_id_resolves_configured_private_key() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let signing = write_test_signing_key(tmp.path(), "aos-core");
+        write_test_roster(&repo, "initial", &signing.trusted_key, &[]).unwrap();
+        let config = test_config_with_signing_key("aos-core", "initial", &signing.private_key);
+
+        let resolved =
+            resolve_producer_signing_key(&config, &repo, "aos-core", None, Some("initial"))
+                .unwrap();
+
+        assert_eq!(PathBuf::from(resolved), signing.private_key);
+    }
+
+    #[test]
+    fn producer_signing_key_id_rejects_missing_local_mapping() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let signing = write_test_signing_key(tmp.path(), "aos-core");
+        write_test_roster(&repo, "initial", &signing.trusted_key, &[]).unwrap();
+        let config = ApmConfig {
+            settings: ApmSettings::default(),
+            registries: vec![(test_registry_config("aos-core", None), None)],
+            scope: ProfileScope::User,
+        };
+
+        let err = resolve_producer_signing_key(&config, &repo, "aos-core", None, Some("initial"))
+            .unwrap_err();
+
+        assert!(format!("{err:#}").contains("no local private key path configured"));
+    }
+
+    #[test]
+    fn producer_signing_key_id_rejects_revoked_key() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let signing = write_test_signing_key(tmp.path(), "aos-core");
+        write_test_roster(&repo, "initial", &signing.trusted_key, &["initial"]).unwrap();
+        let config = test_config_with_signing_key("aos-core", "initial", &signing.private_key);
+
+        let err = resolve_producer_signing_key(&config, &repo, "aos-core", None, Some("initial"))
+            .unwrap_err();
+
+        assert!(format!("{err:#}").contains("revoked"));
+    }
+
+    #[test]
+    fn producer_signing_key_id_signs_verifiable_release_tag() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=main",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+
+        let signing = write_test_signing_key(tmp.path(), "aos-core");
+        write_test_roster(&repo, "initial", &signing.trusted_key, &[]).unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+
+        let config = test_config_with_signing_key("aos-core", "initial", &signing.private_key);
+        let resolved =
+            resolve_producer_signing_key(&config, &repo, "aos-core", None, Some("initial"))
+                .unwrap();
+        sign_tag(
+            &repo,
+            "1.0.0",
+            "HEAD",
+            Some("AOS registry release"),
+            &resolved,
+            false,
+        )
+        .unwrap();
+
+        assert!(verify_tag_signature(&repo, "1.0.0", &signing.trusted_key).unwrap());
+    }
+
+    #[test]
     fn registry_upload_auth_config_selects_requested_registry() {
         let config_auth = RegistryUploadAuthConfig {
             token: Some("core-token".into()),
@@ -2766,8 +2996,140 @@ mod tests {
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth,
+            signing_keys: Default::default(),
             signing: None,
         }
+    }
+
+    fn test_config_with_signing_key(registry: &str, key_id: &str, private_key: &Path) -> ApmConfig {
+        let mut registry_config = test_registry_config(registry, None);
+        registry_config.signing_keys.insert(
+            key_id.to_string(),
+            private_key.to_str().unwrap().to_string(),
+        );
+        ApmConfig {
+            settings: ApmSettings::default(),
+            registries: vec![(registry_config, None)],
+            scope: ProfileScope::User,
+        }
+    }
+
+    fn write_test_roster(
+        dir: &Path,
+        key_id: &str,
+        trusted_key: &str,
+        revoked: &[&str],
+    ) -> Result<()> {
+        let roster = KeysToml {
+            active: vec![RosterKey {
+                id: key_id.to_string(),
+                key: trusted_key.to_string(),
+            }],
+            revoked: revoked
+                .iter()
+                .map(|id| RevokedKey {
+                    id: (*id).to_string(),
+                    reason: Some("test".into()),
+                })
+                .collect(),
+            ..KeysToml::default()
+        };
+        keys::write_keys_toml(dir, &roster)
+    }
+
+    fn write_test_signing_key(root: &Path, registry: &str) -> TestSigningFixture {
+        let signing_dir = root.join("signing");
+        fs::create_dir_all(&signing_dir).unwrap();
+
+        let seed = [9u8; 32];
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let raw_public_key = signing_key.verifying_key().to_bytes();
+        let public_blob = ssh_ed25519_public_key_blob(&raw_public_key);
+        let public_blob_b64 = base64::engine::general_purpose::STANDARD.encode(public_blob);
+        let private_key = signing_dir.join("registry_ed25519");
+
+        fs::write(
+            &private_key,
+            openssh_ed25519_private_key(&seed, &raw_public_key, registry),
+        )
+        .unwrap();
+        restrict_private_key_permissions(&private_key).unwrap();
+
+        TestSigningFixture {
+            trusted_key: format!("{registry}:Ed25519:{public_blob_b64}"),
+            private_key,
+        }
+    }
+
+    fn ssh_ed25519_public_key_blob(public_key: &[u8; 32]) -> Vec<u8> {
+        let mut blob = Vec::new();
+        push_ssh_string(&mut blob, b"ssh-ed25519");
+        push_ssh_string(&mut blob, public_key);
+        blob
+    }
+
+    fn openssh_ed25519_private_key(
+        seed: &[u8; 32],
+        public_key: &[u8; 32],
+        comment: &str,
+    ) -> String {
+        let public_blob = ssh_ed25519_public_key_blob(public_key);
+        let mut private_key = Vec::new();
+        private_key.extend_from_slice(seed);
+        private_key.extend_from_slice(public_key);
+
+        let mut private = Vec::new();
+        push_u32(&mut private, 0x1234_5678);
+        push_u32(&mut private, 0x1234_5678);
+        push_ssh_string(&mut private, b"ssh-ed25519");
+        push_ssh_string(&mut private, public_key);
+        push_ssh_string(&mut private, &private_key);
+        push_ssh_string(&mut private, comment.as_bytes());
+        for pad in 1..=(8 - private.len() % 8) {
+            if private.len() % 8 == 0 {
+                break;
+            }
+            private.push(pad as u8);
+        }
+
+        let mut blob = b"openssh-key-v1\0".to_vec();
+        push_ssh_string(&mut blob, b"none");
+        push_ssh_string(&mut blob, b"none");
+        push_ssh_string(&mut blob, b"");
+        push_u32(&mut blob, 1);
+        push_ssh_string(&mut blob, &public_blob);
+        push_ssh_string(&mut blob, &private);
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
+        let mut out = "-----BEGIN OPENSSH PRIVATE KEY-----\n".to_string();
+        for chunk in encoded.as_bytes().chunks(70) {
+            out.push_str(std::str::from_utf8(chunk).unwrap());
+            out.push('\n');
+        }
+        out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
+        out
+    }
+
+    fn push_ssh_string(out: &mut Vec<u8>, value: &[u8]) {
+        push_u32(out, value.len() as u32);
+        out.extend_from_slice(value);
+    }
+
+    fn push_u32(out: &mut Vec<u8>, value: u32) {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+
+    #[cfg(unix)]
+    fn restrict_private_key_permissions(path: &Path) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("setting permissions on {}", path.display()))
+    }
+
+    #[cfg(not(unix))]
+    fn restrict_private_key_permissions(_path: &Path) -> Result<()> {
+        Ok(())
     }
 
     #[test]

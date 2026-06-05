@@ -621,20 +621,32 @@ read before editing code or docs.
       `crates/aos-package/src/registry/keys.rs`,
       `crates/aos-package/src/security.rs`, and
       `crates/aos/tests/apr_keys_cli.rs`.
-- [ ] Add producer signing-key-id selection for release and channel signing.
-      `apr tag --key`, `apr sign --key`, and `apr channel init/advance --key`
-      still accept the signing key material/path directly; operators need a
-      durable mapping from committed `keys.toml` ids to local private-key
-      material so release tags and channel partition tags can intentionally sign
-      with the active survivor/new key during overlap and retirement windows.
-      Context: `docs/registry/repo-layout.md`,
+- [x] Add producer signing-key-id selection for release and channel signing.
+      `apr tag`, `apr sign`, `apr channel init`, and `apr channel advance`
+      now accept `--key-id <id>` as a mutually exclusive alternative to direct
+      `--key <private-key-path>`. The id is validated against the committed
+      `keys.toml` active roster, rejected if revoked or registry-mismatched,
+      and resolved through the selected local `registries.d/<name>.toml`
+      `[registry.signing_keys]` private-key map. Unit coverage in
+      `crates/aos-package/src/registry_ops.rs` checks direct-key bypass,
+      ambiguous source rejection, key-id resolution, missing local mapping,
+      revoked-key rejection, and a real git SSH signed tag verified through
+      `verify_tag_signature`. Config coverage in
+      `crates/aos-package/src/config.rs` checks `signing_keys` parsing, and the
+      shared fixture serializer in `crates/aos-package/tests/common/mod.rs`
+      preserves the table for future integration/e2e fixtures. Context:
+      `docs/registry/repo-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/registry/publishing.md`,
+      `docs/registry/current-state.md`,
       `crates/aos-package/src/lib.rs`,
+      `crates/aos-package/src/types.rs`,
+      `crates/aos-package/src/config.rs`,
       `crates/aos-package/src/registry_ops.rs`,
       `crates/aos-package/src/registry/keys.rs`,
       `crates/aos-package/src/security.rs`,
-      and `crates/aos-package/tests/registry_e2e.rs`.
+      `crates/aos-package/tests/common/mod.rs`, and
+      `crates/aos-package/tests/registry_e2e.rs`.
 - [x] Add migration/capability tests for clean-break behavior. The policy is now
       ratified as a clean break: plain `http(s)://` origins must expose the
       git-native dumb-HTTP `HEAD` + `info/refs` surface; legacy-only

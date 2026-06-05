@@ -408,6 +408,7 @@ mod tests {
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
         assert_eq!(resolve_mirror(&reg), "https://registry.aos.dev/core");

@@ -66,14 +66,20 @@ Implemented producer behavior:
   key, and records/derives the survivor `--vouched-by` id for the planned
   retirement workflow. These commands commit and refresh static git indexes
   unless `--no-commit` is passed.
-- `apr publish`, `apr unpublish`, and `apr tag` update package metadata and then
-  refresh the object-store view with `objects/info/alternates` and
-  `git update-server-info`.
-- `apr tag --key` creates signed release tag objects. `apr sign <tag> --key`
-  re-signs an existing release tag.
+- `apr publish`, `apr unpublish`, and release signing commands update package
+  metadata/tag state and then refresh the object-store view with
+  `objects/info/alternates` and `git update-server-info`.
+- `apr tag` creates signed release tag objects. `apr sign <tag>` re-signs an
+  existing release tag. Both accept either `--key <private-key-path>` for
+  direct one-off signing or `--key-id <keys.toml-id>` to resolve a local private
+  key path from `[registry.signing_keys]` in the selected
+  `registries.d/<name>.toml`. `--key-id` validates the committed `keys.toml`
+  active id, rejects revoked ids, checks registry binding, and requires the
+  configured local private-key path to exist.
 - `apr channel init`, `apr channel advance`, and `apr channel status` manage the
   256 signed partition tag files under `channels/<name>/00..ff` and update the
-  frontier branch.
+  frontier branch. Channel signing uses the same `--key` / `--key-id` selection
+  rules as release signing.
 - `registry::objectstore` owns sha256 object-format checks, release object-dir
   paths, loose-object path validation, relative alternates, and
   `update-server-info`.
@@ -169,9 +175,9 @@ Implemented trust pieces:
   active-key lookup, revocation gating, and tests the survivor-vouched revocation
   rules.
 - `apr keys list/add/retire` is the producer-side command surface for committed
-  roster maintenance. Release/channel signing still selects key material through
-  `--key`; producer key-id-to-private-key selection remains a separate open
-  implementation item.
+  roster maintenance. Release/channel signing can select a committed active key
+  id via `--key-id`, with the local private key path stored outside the registry
+  in `[registry.signing_keys]`.
 - `registry::verify` parses tag objects, enforces name-binding, verifies
   `tag -> tag -> commit` release chains, and rejects non-semver release names
   where semver is required.

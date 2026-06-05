@@ -51,11 +51,11 @@ Key consequences:
 
 ---
 
-## 2. Signing primitives (CURRENT → TARGET)
+## 2. Signing primitives
 
-The cryptographic primitive is **already in the codebase** and is **kept unchanged**
-by this redesign. Only *what gets signed* changes: from a signed commit (current) to
-signed tag objects chained `tag → tag → commit` (target).
+The cryptographic primitive is **kept unchanged** by the registry design. The
+implemented registry model signs tag objects chained `tag → tag → commit`
+instead of relying on signed commits for release authority.
 
 ### 2.1 Key format — `name:Ed25519:<base64>`
 
@@ -84,11 +84,23 @@ Git is configured for SSH signing (`gpg.format = ssh`). Signature production now
 uses **signed annotated tag objects** (`git tag -s <name>`, with an optional
 freeform `-m <message>`), not signed commits. `apr tag <name> --key <key>` creates
 a signed release tag; `apr sign <tag> --key <key>` re-signs an existing release
-tag object. A signed tag carries **no structured payload** — it is a pure signed
-pointer (standard git tag fields: `object`, `type`, the tag **name**, `tagger`)
-plus the Ed25519 signature and an optional human-readable message. The signature
-algorithm, key format, and trust store are unchanged. Channel partition tag
-production remains publish/rollout work.
+tag object. Both commands also accept `--key-id <id>`, which resolves `<id>`
+through the committed active `keys.toml` roster and the producer's local
+`registries.d/<name>.toml` `[registry.signing_keys]` private-key map. Channel
+partition signing uses the same `--key` / `--key-id` rules for
+`apr channel init` and `apr channel advance`. `--key` and `--key-id` are
+mutually exclusive.
+
+```toml
+[registry.signing_keys]
+initial = "/run/secrets/aos-core-initial"
+next = "/run/secrets/aos-core-next"
+```
+
+A signed tag carries **no structured payload** — it is a pure signed pointer
+(standard git tag fields: `object`, `type`, the tag **name**, `tagger`) plus the
+Ed25519 signature and an optional human-readable message. The signature
+algorithm, key format, and trust store are unchanged.
 
 Because registry repositories use Git's sha256 object format, clients need
 **Git 2.42.0 or newer**. `apm update` enforces this before fetching by checking
@@ -97,7 +109,7 @@ Because registry repositories use Git's sha256 object format, clients need
 
 ### 2.3 Verification — `git verify-*` + a temporary `allowed_signers`
 
-Signature *verification* is `verify_commit_signature` in
+Commit signature verification is `verify_commit_signature` in
 [`security.rs:199`](../../crates/aos-package/src/security.rs). It:
 
 1. parses the expected key (`security.rs:204`);
@@ -107,12 +119,13 @@ Signature *verification* is `verify_commit_signature` in
    (`security.rs:217`) and returns `Ok(true)` iff the process exits zero
    (`security.rs:232`).
 
-**TARGET delta:** the target verifies **tag** objects, so the equivalent helper runs
-`git -c gpg.ssh.allowedSignersFile=<tmp> verify-tag <tag>` — the same allowed-signers
-mechanism, the same Ed25519 key, the same temp-file pattern. The principal in the
-allowed-signers line is the literal token `registry` (`security.rs:208`), not the
-registry's name. (Stock git users run `git verify-tag`
-themselves with the trusted key in their own allowed-signers file.)
+Tag-object verification is `verify_tag_signature` in
+[`security.rs:273`](../../crates/aos-package/src/security.rs). It runs
+`git -c gpg.ssh.allowedSignersFile=<tmp> verify-tag <tag>` with the same
+allowed-signers mechanism, the same Ed25519 key, and the same temp-file pattern.
+The principal in the allowed-signers line is the literal token `registry`, not
+the registry's name. Stock git users run `git verify-tag` themselves with the
+trusted key in their own allowed-signers file.
 
 ### 2.4 Trust store — TOFU + `trusted-keys.d`
 
@@ -191,8 +204,11 @@ active id to `[[revoked]]`, and `apr keys list` reports active/revoked ids. The
 commands validate key ids and registry binding, reject duplicate/revoked ids,
 keep an active survivor during retirement, and commit + refresh the git-static
 indexes unless `--no-commit` is passed.
-Release and channel signing still selects key material with `--key`; resolving a
-roster id to a local private key is tracked as the remaining producer UX gap.
+Release and channel signing can select a committed active roster id with
+`--key-id <id>`. The selected id must exist in `keys.toml`, must not be revoked,
+must belong to the selected registry, and must have a local private-key path in
+`[registry.signing_keys]`; direct `--key <private-key-path>` remains available
+for one-off signing.
 
 **The trust model: ≥2 overlapping active keys.** There is no offline-root /
 operational two-tier and no TUF-style root role. The **git lineage** (signed tag →
@@ -471,7 +487,7 @@ ways:
 
 ---
 
-## 9. Implementation status (CURRENT vs TARGET)
+## 9. Implementation status
 
 | Capability | CURRENT (code today) | TARGET |
 |---|---|---|
@@ -479,8 +495,8 @@ ways:
 | Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) plus `apr trust pin/list/remove` | unchanged (the bootstrap anchor) |
 | Signing pubkey location | removed from in-repo `registry.toml`; bootstrap trust is client-side TOFU | trust = `keys.toml` roster + TOFU |
 | Key rotation / revocation | `apr create` emits schema-1 `keys.toml`; `apr keys list/add/retire` maintains active and revoked roster entries with survivor checks; parser plus rotation-pin/revocation helpers exist | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
-| Signature *production* | `apr tag --key` / `apr sign <tag> --key` create signed release tag objects; `apr channel init/advance --key` writes signed channel partition tag files | implemented |
-| Tag creation | `apr tag` requires `--key` and runs `git tag -s`; `apr channel` creates raw signed partition tag files | implemented |
+| Signature *production* | `apr tag` / `apr sign <tag>` create signed release tag objects; `apr channel init/advance` writes signed channel partition tag files; all accept direct `--key` or roster-backed `--key-id` | implemented |
+| Tag creation | `apr tag` runs `git tag -s`; `apr channel` creates raw signed partition tag files | implemented |
 | Signature *verification* | channel sync verifies the partition tag, semver tag, and commit chain | `git verify-tag` (same allowed-signers mechanism) |
 | What is signed | **`tag → tag → commit`** chain (partition + release tags) | implemented |
 | Name-binding | embedded tag-name == expected path name (channel / semver) | implemented |
