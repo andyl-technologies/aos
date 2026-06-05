@@ -574,6 +574,7 @@ mod tests {
             tag: None,
             version: None,
             pin: None,
+            max_staleness_seconds: None,
             signing: None,
         };
 

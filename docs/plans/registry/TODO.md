@@ -87,6 +87,55 @@ by Rust integration/e2e tests where the item calls for tests.
 Each open item includes the full context files an implementation agent should
 read before editing code or docs.
 
+### Current Rust Test Surface
+
+- [x] Inventory the registry-adjacent Rust test surface before assigning the
+      remaining e2e work. Current coverage is mostly focused unit/module tests
+      embedded in source files; there is no `crates/aos-package/tests/` or
+      `crates/aos-cache/tests/` integration harness yet. Treat every
+      `crates/aos-package/tests/*.rs` and `crates/aos-cache/tests/*.rs` file
+      named below as a new file to create. Existing context:
+      `crates/aos-package/src/registry/objectstore.rs`,
+      `crates/aos-package/src/registry/pack.rs`,
+      `crates/aos-package/src/registry/channel.rs`,
+      `crates/aos-package/src/registry/keys.rs`,
+      `crates/aos-package/src/registry/verify.rs`,
+      `crates/aos-package/src/registry/fetch.rs`,
+      `crates/aos-package/src/registry/git.rs`,
+      `crates/aos-package/src/registry/nixcache.rs`,
+      `crates/aos-package/src/registry/parse.rs`,
+      `crates/aos-package/src/registry/state.rs`,
+      `crates/aos-package/src/registry/mod.rs`,
+      `crates/aos-package/src/download.rs`,
+      `crates/aos-package/src/config.rs`,
+      `crates/aos-package/src/types.rs`,
+      `crates/aos-package/src/lib.rs`,
+      `crates/aos-package/src/registry_ops.rs`,
+      `crates/aos-core/src/nar/info.rs`,
+      `crates/aos-core/src/nar/cache.rs`,
+      `crates/aos-cache/src/backend/http.rs`,
+      `crates/aos-cache/src/resolve.rs`, and the only existing crate-level tests
+      directory currently found, `crates/aos-systemd/tests/`.
+- [ ] Create shared integration-test fixture utilities for git-native registry
+      tests: temporary sha256 bare origins, signed tag/key material, static HTTP
+      serving, cache directory construction, command invocation helpers, and
+      assertions for persisted `registries.d` state. Keep the helpers in a new
+      test support module and use them across the e2e items below. Context:
+      `docs/registry/current-state.md`, `docs/registry/http-layout.md`,
+      `docs/registry/signing-and-trust.md`,
+      `docs/registry/publishing.md`,
+      `crates/aos-package/src/lib.rs`,
+      `crates/aos-package/src/registry_ops.rs`,
+      `crates/aos-package/src/registry/git.rs`,
+      `crates/aos-package/src/registry/objectstore.rs`,
+      `crates/aos-package/src/registry/channel.rs`,
+      `crates/aos-package/src/registry/verify.rs`,
+      `crates/aos-package/src/registry/fetch.rs`,
+      `crates/aos-package/src/registry/nixcache.rs`, and new files such as
+      `crates/aos-package/tests/common/mod.rs`,
+      `crates/aos-package/tests/registry_e2e.rs`, and
+      `crates/aos-package/tests/registry_cache_e2e.rs`.
+
 ### Cross-Cutting Rust Integration / E2E Tests
 
 - [ ] Add a full producer-to-consumer HTTP e2e test for the git-native registry:
@@ -106,14 +155,35 @@ read before editing code or docs.
       `crates/aos-package/src/registry/verify.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and a new integration file
       such as `crates/aos-package/tests/registry_e2e.rs`.
+- [ ] Add committed-tree layout integration coverage: verify the signed
+      tag->commit->tree path authenticates and extracts the root `registry.toml`,
+      committed `keys.toml`, `packages/<letter>/<name>.toml`, `closures/<hash>`,
+      and `.gitattributes`; verify client-side `registries.d` cache overrides
+      and committed `registry.toml` `[[caches]]` priority ordering are applied
+      after sync. Context: `docs/registry/repo-layout.md`,
+      `docs/registry/current-state.md`,
+      `docs/registry/nix-cache-compatibility.md`,
+      `docs/registry/signing-and-trust.md`,
+      `crates/aos-package/src/registry/parse.rs`,
+      `crates/aos-package/src/registry/closures.rs`,
+      `crates/aos-package/src/registry/git.rs`,
+      `crates/aos-package/src/registry/verify.rs`,
+      `crates/aos-package/src/config.rs`,
+      `crates/aos-package/src/types.rs`,
+      `crates/aos-package/src/download.rs`,
+      `crates/aos-package/src/registry_ops.rs`, and
+      `crates/aos-package/tests/registry_e2e.rs`.
 - [ ] Add channel rollout e2e coverage for all trust and safety gates: signed
       partition tag -> signed semver tag -> commit, embedded tag-name
       name-binding failures, probe-forward order, retained-release persistence,
-      anti-rollback floor rejection, fix-forward behavior, and stale/missing
-      partition surfaces. Context:
+      semver precedence including prerelease/build metadata, anti-rollback floor
+      rejection, fix-forward behavior, and stale/missing partition surfaces.
+      Context:
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,
+      `crates/aos-package/src/types.rs`,
+      `crates/aos-package/src/config.rs`,
       `crates/aos-package/src/registry/channel.rs`,
       `crates/aos-package/src/registry/git.rs`,
       `crates/aos-package/src/registry/verify.rs`,
@@ -139,9 +209,23 @@ read before editing code or docs.
       `docs/registry/current-state.md`, `docs/registry/publishing.md`,
       `docs/plans/registry/open-questions.md`,
       `crates/aos-package/src/registry/nixcache.rs`,
+      `crates/aos-core/src/nar/info.rs`,
       `crates/aos-core/src/nar/cache.rs`,
       `crates/aos-package/src/download.rs`,
       `crates/aos-cache/src/backend/mod.rs`, and a new integration file such as
+      `crates/aos-package/tests/registry_cache_e2e.rs`.
+- [ ] Add one-key projection coverage for git tag signatures and Nix narinfo
+      signatures: prove the same Ed25519 key material can produce the
+      `registry:Ed25519:<base64>` AOS trust form and the `<name>:<base64>` Nix
+      `trusted-public-keys` form, and that generated narinfo `Sig:` lines verify
+      under stock-Nix-compatible rules. Context:
+      `docs/registry/signing-and-trust.md`,
+      `docs/registry/nix-cache-compatibility.md`,
+      `docs/registry/repo-layout.md`,
+      `crates/aos-package/src/security.rs`,
+      `crates/aos-package/src/registry/keys.rs`,
+      `crates/aos-core/src/nar/cache.rs`,
+      `crates/aos-package/src/registry/nixcache.rs`, and
       `crates/aos-package/tests/registry_cache_e2e.rs`.
 - [x] Add cache URL-key compatibility coverage for generated narinfo `URL:`
       fields and uploaded object paths. Prove the colon-free
@@ -165,10 +249,16 @@ read before editing code or docs.
       `crates/aos-package/tests/registry_cache_e2e.rs`.
 - [ ] Add backend matrix integration tests for cache generation/upload and cache
       reads: local filesystem `file://`, mocked/static HTTP, S3-compatible
-      storage, and SFTP. Use hermetic fakes where possible and gate container or
+      storage, and SFTP. Prove repeatable `--upload-url` destination arrays can
+      include mixed `(s3, local filesystem path, SFTP)` targets, that partial
+      failures are reported after all destinations are attempted, and that each
+      backend can read the generated `nix-cache-info`, `.narinfo`, and `nar/`
+      objects it writes. Use hermetic fakes where possible and gate container or
       external-service variants behind ignored tests or feature flags. Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/publishing.md`,
+      `crates/aos-package/src/lib.rs`,
+      `crates/aos-package/src/registry_ops.rs`,
       `crates/aos-cache/src/backend/mod.rs`,
       `crates/aos-cache/src/backend/fs.rs`,
       `crates/aos-cache/src/backend/http.rs`,
@@ -182,7 +272,9 @@ read before editing code or docs.
       Context: `docs/registry/http-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,
+      `crates/aos-package/src/security.rs`,
       `crates/aos-package/src/registry/objectstore.rs`,
+      `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/git.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
 
@@ -211,8 +303,10 @@ read before editing code or docs.
       generated static Nix cache files. The publish path must upload `HEAD`,
       `info/refs`, `objects/**`, `objects/info/**`, `channels/**`,
       `releases/**`, and any cache files in the required immutable-first /
-      mutable-last order. Context: `docs/registry/http-layout.md`,
+      mutable-last order, with per-path cache-control/TTL metadata where the
+      selected backend can express it. Context: `docs/registry/http-layout.md`,
       `docs/registry/publishing.md`,
+      `docs/registry/packs-and-deltas.md`,
       `docs/plans/registry/open-questions.md`,
       `crates/aos-package/src/registry_ops.rs`,
       `crates/aos-package/src/registry/objectstore.rs`,
@@ -285,7 +379,18 @@ read before editing code or docs.
       `crates/aos-package/tests/registry_e2e.rs`.
 - [ ] Implement and test consumer max-staleness/freshness policy for frozen but
       validly signed mirrors. Cover first-sync, offline, quiet-channel, stale
-      mutable-surface, and anti-rollback interactions. Context:
+      mutable-surface, frozen-but-reachable mirror behavior, and anti-rollback
+      interactions. Do not close this until the target is either implemented or
+      explicitly documented as an accepted limitation when a mirror keeps serving
+      an old but still validly signed pointer. Partial implementation landed:
+      channel refresh failures are evaluated
+      against `[registry.state].last_update`, with a 14-day default and a
+      per-registry `max_staleness_seconds` override. Unit tests cover first-sync
+      failure, fresh failed refresh, stale failed refresh, timestamp parsing, and
+      clock-skew/future timestamp tolerance. Remaining work is broader policy
+      validation for successful refreshes that return stale-but-valid data, e2e
+      validation for offline/quiet-channel/stale-mutable-surface/anti-rollback
+      interactions, and production default tuning. Context:
       `docs/registry/signing-and-trust.md`,
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/apt-comparison.md`,
@@ -329,10 +434,13 @@ read before editing code or docs.
       `crates/aos-package/src/security.rs`.
 - [ ] Add migration/capability tests for clean-break behavior: old bundle-mode
       clients against a git-native origin, new git-native clients against an old
-      origin, and clear user-facing errors during any temporary dual-detect
-      window. Context: `docs/registry/current-state.md`,
+      origin, first git-native sync floor seeding, and clear user-facing errors
+      during any temporary dual-detect window. Also ratify the EOL/model-detect
+      policy in docs before marking this complete. Context:
+      `docs/registry/current-state.md`,
       `docs/registry/http-layout.md`,
       `docs/plans/registry/open-questions.md`,
+      `docs/plans/registry/gap-analysis.md`,
       `crates/aos-package/src/registry/git.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
@@ -368,6 +476,14 @@ read before editing code or docs.
       release/upload pipeline is implemented. Context:
       `docs/registry/README.md`, `docs/registry/current-state.md`,
       `docs/registry/publishing.md`, and `docs/registry/nix-cache-compatibility.md`.
+- [ ] Resolve remaining registry-reference doc inconsistencies as implementation
+      lands, especially stale statements about Nix narinfo `Sig:` wiring,
+      static-cache producer status, max-staleness behavior, and backend support
+      levels. Context: `docs/registry/signing-and-trust.md`,
+      `docs/registry/nix-cache-compatibility.md`,
+      `docs/registry/current-state.md`,
+      `docs/registry/publishing.md`,
+      `docs/registry/apt-comparison.md`, and `docs/plans/registry/TODO.md`.
 - [ ] Re-ground stale plan/open-question text that still describes old
       producer/cache gaps or pre-cutover implementation details. Context:
       `docs/plans/registry/open-questions.md`,

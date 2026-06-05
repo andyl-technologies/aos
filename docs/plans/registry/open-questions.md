@@ -285,7 +285,7 @@ the rollout-partition advance (step 8) is the *only* publisher-coordination poin
 |---|---|
 | **Brief §16.5** | "Consumer freshness / max-staleness policy and re-sign/key-rotation cadence." |
 | **Owner WS** | [WS-05](./workstream-05-consumer.md) (staleness policy), [WS-04](./workstream-04-signing-trust.md) (key rotation), [WS-03](./workstream-03-channels-rollouts.md) (CDN TTL) |
-| **Status** | OPEN — policy + automation, no single right number. |
+| **Status** | PARTIAL — `apm` now has a channel refresh max-staleness gate with a 14-day default and `max_staleness_seconds` override; broader e2e/policy validation and key-rotation cadence remain open. |
 
 **What is decided (TARGET).** There is **no in-band `valid_until`** — signed tags
 carry no structured payload, only a standard git tag (object, type, tag name,
@@ -316,15 +316,15 @@ material. The defense is real but lives in the consumer, not in the signature.
 
 **Open sub-questions.**
 
-1. **Default max-staleness bound** and whether it is per-registry / per-channel
-   configurable. Too long weakens the freeze defense; too short breaks low-
-   velocity deployments the moment publishing pauses (holidays, incidents, a quiet
-   channel) — the availability/security tension now lives in the *consumer policy*,
-   not in a signed window.
-2. **Fresh-frontier bookkeeping.** What exactly the consumer persists as "last
-   observed fresh": the timestamp of the last successful `/channels/**` fetch, the
-   last frontier advance, or both — and how a probe-forward fetch (Q3) interacts
-   with it.
+1. **Policy validation.** The current default is 14 days, configurable per
+   registry as `max_staleness_seconds`. This still needs production validation
+   for quiet channels, offline hosts, first syncs, stale mutable surfaces, and
+   anti-rollback interactions.
+2. **Fresh-frontier bookkeeping.** The implementation persists the timestamp of
+   the last successful sync in `[registry.state].last_update` and uses it when a
+   later channel refresh cannot fetch refs or resolve a usable partition. This is
+   the local freshness observation; it is not publisher-signed and cannot by
+   itself distinguish a reachable frozen mirror from a legitimately quiet channel.
 3. **Key rotation.** One Ed25519 key serves git signing (and, if NARs are served,
    narinfo `Sig:`) (brief §11). Rotating it means re-signing live channel
    partitions and accepting both keys via `allowed_signers` during the overlap
@@ -341,12 +341,12 @@ material. The defense is real but lives in the consumer, not in the signature.
 4. **Clock-skew tolerance** on the client when evaluating its own max-staleness
    bound against `now`.
 
-**Recommendation.** Set a default consumer max-staleness bound (suggest ~7–14
-days), configurable per registry / per channel, paired with a low CDN TTL on the
+**Recommendation.** Keep the 14-day default paired with a low CDN TTL on the
 mutable surfaces; rely on the anti-rollback floor as the hard correctness gate and
-the max-staleness clock as the freshness gate. Rotate the Ed25519 key on a fixed
-cadence (or on suspicion of compromise) with `allowed_signers` overlap; no routine
-re-sign otherwise. Document the freeze trade-off prominently in
+the max-staleness clock as the freshness gate when refresh fails. Rotate the
+Ed25519 key on a fixed cadence (or on suspicion of compromise) with
+`allowed_signers` overlap; no routine re-sign otherwise. Document the freeze
+trade-off prominently in
 [signing-and-trust.md](../../registry/signing-and-trust.md) and the staleness
 policy in [workstream-05-consumer.md](./workstream-05-consumer.md).
 
@@ -599,7 +599,7 @@ workstream.
 | **R7** | **Cross-serving / name-confusion.** A signed tag object served at the wrong path (a release tag served as a channel partition, or vice-versa) tricks a consumer. | Low × High | Name-binding verification: signature valid **and** embedded tag-name field == expected path name (channel name under `/channels/*`, semver under `/releases/*`); verify the whole `tag → tag → commit` chain (brief §5, §11). | WS-04, WS-05 |
 | **R8** | **Migration straddle bugs** (Q7 / §3). A half-migrated host or mirror serves/reads neither model cleanly — an old bundle-mode client hits a git-native origin, or vice-versa. | Med × High | The two models share **no wire surface** (§3.1), so there is no torn-format hazard; gate the consumer by registry capability detection (git refs present?) and bound any dual-stack window with a hard EOL. | WS-05 |
 | **R9** | **Anti-rollback floor vs. fix-forward.** A consumer that does not keep a monotonic floor could be walked backward by a misconfigured partition; conversely an over-strict floor blocks a legitimate fix-forward. | Low × High | Consumer keeps a monotonic floor (never moves to a release older than current); aborting a bad rollout is **fix-forward** (publish newer, advance partitions), never partition-decrement (brief §6). | WS-05, WS-03 |
-| **R10** | **Freeze defense vs. availability** (Q5). With no in-band `valid_until`, freshness rests on the consumer's max-staleness policy: too short breaks quiet channels; too long weakens the freeze defense; and a frozen-but-validly-signed mirror is not self-evidently stale to a host with no recent fresh-frontier observation. | Med × Med | Consumer max-staleness bound + low CDN TTL on mutable surfaces; anti-rollback floor as the hard gate; document the frozen-mirror trade-off prominently. | WS-05, WS-04, WS-03 |
+| **R10** | **Freeze defense vs. availability** (Q5). With no in-band `valid_until`, freshness rests on the consumer's max-staleness policy: too short breaks quiet channels; too long weakens the freeze defense; and a frozen-but-validly-signed mirror is not self-evidently stale to a host with no recent fresh-frontier observation. | Med × Med | Partially implemented: 14-day default `max_staleness_seconds` gate on failed channel refresh + low CDN TTL on mutable surfaces; anti-rollback floor as the hard gate; document the frozen-mirror trade-off prominently. | WS-05, WS-04, WS-03 |
 | **R11** | **zstd `--long` window mismatch.** A pack compressed with `--long=27` requires the consumer to decompress with a matching window (~128 MiB); a constrained client OOMs. | Low × Med | Pin the `--long` window in spec; ensure the consumer always passes the matching `-d --long`; size it against the smallest supported host. | WS-02, WS-05 |
 
 ---
@@ -846,7 +846,7 @@ item is closed.
 | Q2 | `pack-objects` window/depth, zstd, dictionary | WS-02 | WS-02 pipeline | `--window=350 --depth=50 --compression=0` + `zstd --ultra -22 --long=27`; defer dictionary |
 | Q3 | Bucket-selection input + probe-forward order — **RESOLVED** | WS-03 / WS-05 | (none) | Registry-local salt; persist bucket index; probe `(bucket+i) mod 256` no re-pin |
 | Q4 | `apr release` shape + pluggable upload | WS-02 / WS-03 | WS-02/03 (the pipeline) | Composable verbs under one wrapper; immutable-first / low-TTL-last ordering |
-| Q5 | Consumer max-staleness policy + key-rotation cadence | WS-05 / WS-04 / WS-03 | WS-05 consumer, WS-04 trust | Consumer max-staleness bound (~7–14d) + low CDN TTL + anti-rollback floor; rotate-only re-sign |
+| Q5 | Consumer max-staleness policy + key-rotation cadence | WS-05 / WS-04 / WS-03 | WS-05 consumer, WS-04 trust | Partial: 14-day `max_staleness_seconds` gate on failed channel refresh; still validate production policy/e2e and key cadence |
 | Q6 | Relative `info/alternates` (one `../`, HTTP + local-FS) | WS-01 | WS-01 layout | One host-independent relative `info/alternates`, one-`../`; no `http-alternates` |
 | Q7a | Migration: clean break vs. shim | WS-05 / WS-01 / WS-03 | WS-01, WS-02, WS-03, WS-05 | Clean break + thin read-only consumer dual-detect → EOL (§3.4) |
 | Q7b | NAR superset milestone timing | WS-05 | (none — fast-follow) | Defer to fast-follow; cache lives in committed `registry.toml` `[[caches]]` (client-side `registries.d` override / origin), nothing reserved in tags (§4.3) |

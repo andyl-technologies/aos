@@ -141,6 +141,7 @@ impl ApmConfig {
             tag: rf.registry.tag,
             version: rf.registry.version,
             pin: rf.registry.pin,
+            max_staleness_seconds: rf.registry.max_staleness_seconds,
             signing: rf.registry.signing,
         };
 
@@ -345,6 +346,7 @@ last_update = "2026-02-13T10:30:00Z"
 name = "aos-core"
 url = "https://registry.aos.dev/core"
 channel = "stable"
+max_staleness_seconds = 604800
 "#,
         )
         .unwrap();
@@ -352,6 +354,7 @@ channel = "stable"
         let (config, state) = ApmConfig::parse_registry_file(&path).unwrap();
         assert_eq!(config.name, "aos-core");
         assert_eq!(config.channel.as_deref(), Some("stable"));
+        assert_eq!(config.max_staleness_seconds, Some(604800));
         assert!(state.is_none());
     }
 
@@ -372,6 +375,7 @@ channel = "stable"
                         tag: None,
                         version: None,
                         pin: None,
+                        max_staleness_seconds: None,
                         signing: None,
                     },
                     None,
@@ -388,6 +392,7 @@ channel = "stable"
                         tag: None,
                         version: None,
                         pin: None,
+                        max_staleness_seconds: None,
                         signing: None,
                     },
                     None,
