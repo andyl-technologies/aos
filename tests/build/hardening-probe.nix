@@ -291,7 +291,8 @@
   # Unknown tokens must be rejected during evaluation, not at build time.
   badTokenThrows =
     !(
-      builtins.tryEval (
+      builtins.tryEval
+      (
         pkgs.mkDerivation {
           pname = "hardening-probe-bad-token";
           version = "0";

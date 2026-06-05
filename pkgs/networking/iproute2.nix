@@ -30,6 +30,13 @@ in
     runtimeDeps = [libmnl];
     propagatedDeps = [];
 
+    # iproute2's netlink code uses [0]/[1] trailing-array idioms that
+    # -fstrict-flex-arrays=3 narrows to a fixed size, so _FORTIFY_SOURCE
+    # aborts `ss` at runtime ("buffer overflow detected"). Step this package
+    # down to strict-flex-arrays=1 (nixpkgs' default level) — fortify3 stays on.
+    hardeningDisable = ["strictflexarrays3"];
+    hardeningEnable = ["strictflexarrays1"];
+
     phases = [
       {
         name = "unpack";
