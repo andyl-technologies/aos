@@ -143,6 +143,9 @@ Implemented trust pieces:
 
 - `security.rs` parses `registry:Ed25519:<base64>` keys, stores trusted keys, and
   verifies git signatures through SSH-format signing.
+- `apr trust pin/list/remove` manages local `trusted-keys.d/<registry>.pub`
+  anchors. Re-running `pin` appends an overlap key for rotation; `pin --replace`
+  is the explicit out-of-band re-pin path for compromised-key recovery.
 - `registry::keys` parses committed `keys.toml`, supports rotation overlap,
   active-key lookup, revocation gating, and tests the survivor-vouched revocation
   rules.

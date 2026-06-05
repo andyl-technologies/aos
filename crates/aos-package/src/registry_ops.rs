@@ -19,9 +19,9 @@ use crate::registry::keys::{self, KeysToml, RosterKey};
 use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
-use crate::security::parse_signing_key;
+use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
 use crate::types::{CacheEntry, RegistryRootConfig};
-use crate::{BranchCommand, CacheCommand, ChannelCommand, PrCommand};
+use crate::{BranchCommand, CacheCommand, ChannelCommand, PrCommand, TrustCommand};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1633,6 +1633,93 @@ pub async fn run_cache(
             Ok(())
         }
     }
+}
+
+/// Registry trust-store subcommands.
+pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) -> Result<()> {
+    let store = KeyStore::new(config.scope.trusted_keys_dirs());
+    match command {
+        TrustCommand::Pin {
+            registry,
+            key,
+            replace,
+        } => {
+            let trusted = trusted_key_from_line(registry, key)?;
+            if *replace {
+                let _ = store.remove(registry)?;
+            }
+            store.store(&trusted)?;
+            let action = if *replace { "Re-pinned" } else { "Pinned" };
+            printer.success(&format!(
+                "{action} trust key for registry '{}' ({})",
+                registry, trusted.fingerprint
+            ));
+            Ok(())
+        }
+        TrustCommand::List { registry } => {
+            let registries = match registry {
+                Some(name) => vec![name.clone()],
+                None => configured_registry_names(config),
+            };
+            if registries.is_empty() {
+                printer.info("No configured registries to inspect.");
+                return Ok(());
+            }
+            for name in registries {
+                let keys = store.lookup_all(&name);
+                if keys.is_empty() {
+                    printer.plain(&format!("{name}: no pinned keys"));
+                    continue;
+                }
+                for key in keys {
+                    printer.plain(&format!(
+                        "{}: {} {} ({:?})",
+                        name, key.algorithm, key.fingerprint, key.source
+                    ));
+                }
+            }
+            Ok(())
+        }
+        TrustCommand::Remove { registry } => {
+            if store.remove(registry)? {
+                printer.success(&format!(
+                    "Removed pinned trust keys for registry '{registry}'"
+                ));
+            } else {
+                printer.info(&format!(
+                    "No pinned trust keys found for registry '{registry}'"
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn configured_registry_names(config: &ApmConfig) -> Vec<String> {
+    config
+        .registries
+        .iter()
+        .map(|(registry, _)| registry.name.clone())
+        .collect()
+}
+
+fn trusted_key_from_line(expected_registry: &str, key: &str) -> Result<TrustedKey> {
+    let (registry, algorithm, public_key) = parse_signing_key(key)?;
+    if registry != expected_registry {
+        bail!(
+            "trust key belongs to registry '{}', expected '{}'",
+            registry,
+            expected_registry,
+        );
+    }
+    let fingerprint = key_fingerprint(&public_key);
+    Ok(TrustedKey {
+        registry,
+        algorithm,
+        public_key,
+        fingerprint,
+        source: KeySource::Tofu,
+    })
 }
 
 async fn channel_init(
