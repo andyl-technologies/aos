@@ -20,3 +20,6 @@ indicatif = { workspace = true }
 console = { workspace = true }
 base64 = { workspace = true }
 regex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
