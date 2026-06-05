@@ -259,20 +259,32 @@ read before editing code or docs.
       `crates/aos-package/src/download.rs`,
       `crates/aos-cache/src/backend/mod.rs`, and
       `crates/aos-package/tests/registry_cache_e2e.rs`.
-- [ ] Add CLI-level static-cache compatibility coverage that actually drives
-      `apr cache generate` end to end, and run the opt-in stock Nix substituter
-      check under `require-sigs` in a controlled/containerized Nix environment.
-      The generator data path is covered by
-      `crates/aos-package/tests/registry_cache_e2e.rs`, but the production CLI
-      wiring and stock client behavior should not be treated as proven until
-      this exists. Context: `docs/registry/nix-cache-compatibility.md`,
+- [x] Add CLI-level static-cache compatibility coverage that actually drives
+      `apr cache generate` end to end. `crates/aos/tests/apr_cache_cli.rs`
+      creates a temporary user APM config/registry, runs the real Cargo-built
+      `apr` binary against a real Nix-store fixture when available, verifies
+      generated `nix-cache-info` priority, and verifies the `file://`
+      `--upload-url` destination receives matching cache-info, narinfo, and NAR
+      files. Context: `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/publishing.md`,
       `docs/plans/registry/workstream-06-nix-cache.md`,
+      `crates/aos/Cargo.toml`,
+      `crates/aos/src/main.rs`,
       `crates/aos-package/src/lib.rs`,
       `crates/aos-package/src/registry_ops.rs`,
       `crates/aos-package/src/registry/nixcache.rs`,
-      `crates/aos-package/tests/registry_cache_e2e.rs`, and future CLI/e2e
-      coverage in the workspace package that owns the `apr` binary.
+      `crates/aos/tests/apr_cache_cli.rs`, and
+      `crates/aos-package/tests/registry_cache_e2e.rs`.
+- [ ] Run and stabilize stock Nix substituter verification under `require-sigs`
+      in a controlled/containerized Nix environment. The opt-in code path exists
+      in `crates/aos-package/tests/registry_cache_e2e.rs` behind
+      `AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1` with an exact-child timeout, but it
+      is not default CI evidence because the local host probe hung during
+      development. Context: `docs/registry/nix-cache-compatibility.md`,
+      `docs/plans/registry/workstream-06-nix-cache.md`,
+      `crates/aos-package/tests/registry_cache_e2e.rs`,
+      `crates/aos-package/src/registry/nixcache.rs`, and
+      `crates/aos-package/src/download.rs`.
 - [x] Add one-key projection coverage for git tag signatures and Nix narinfo
       signatures: prove the same Ed25519 key material can produce the
       `registry:Ed25519:<base64>` AOS trust form and the `<name>:<base64>` Nix
