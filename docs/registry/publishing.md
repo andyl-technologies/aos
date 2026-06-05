@@ -91,7 +91,7 @@ The commands relevant to a release, in workflow order:
 | `apr tag <name> [--message] --key <key>` | `tag` (`registry_ops.rs:1684`) | `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; `--key` is required; semver tags also prepare a release object dir during the object-store refresh. |
 | `apr sign <tag> --key <key>` | `sign` (`registry_ops.rs:1747`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
 | `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
-| `apr cache generate --output <dir> [--key <key>] [--cache-url <url>] [--upload-url <backend>]...` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path; fails closed when a path is absent locally; optionally uploads the exact generated files to one or more repeatable `--upload-url` destinations via `aos-cache`, reporting any partial destination failures, and commits the root `registry.toml` `[[caches]]` pointer. |
+| `apr cache generate --output <dir> [--key <key>] [--cache-url <url>] [--upload-url <backend>]...` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path; fails closed when a path is absent locally; optionally uploads the exact generated files to one or more repeatable `--upload-url` destinations via `aos-cache`, reporting any partial destination failures, supports HTTP/S3/SFTP auth flags, and commits the root `registry.toml` `[[caches]]` pointer. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
 There is **no** single `apr release` wrapper in the tree today; the workflow is
@@ -514,10 +514,20 @@ apr channel advance stable --release 2026.06.0 --count 32 --key ./registry_signi
 apr cache generate --output ./cache-static \
     --key ./nix_cache_signing_key \
     --cache-url https://registry.example/cache \
+    --s3-region us-east-1 \
+    --s3-profile registry-prod \
+    --s3-endpoint https://s3.example \
+    --ssh-key /run/secrets/registry_sftp_key \
     --upload-url s3://registry-cache \
     --upload-url file:///srv/registry-cache
 apr push --set-upstream --branch stable        # plain git push              (registry_ops.rs:1398)
 ```
+
+`apr cache generate` accepts the same backend-auth shape as `aos cache` uploads:
+`--token` / `AOS_TOKEN`, `--view` / `AOS_VIEW`, `--http-user`,
+`--http-password` / `AOS_HTTP_PASSWORD`, repeatable `--header`,
+`--s3-region` / `AWS_REGION`, `--s3-profile`, `--s3-endpoint`, `--ssh-key`,
+`--ssh-password` / `AOS_SSH_PASSWORD`, and `--ssh-ask-pass`.
 
 The current workflow is explicit subcommands. A future `apr release` can wrap the
 same steps into one atomic command, but the static cache generator and upload
