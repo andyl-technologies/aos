@@ -34,6 +34,7 @@ let
     "fortify3"
     "stackclashprotection"
     "format"
+    "strictflexarrays1"
     "strictflexarrays3"
     "glibcxxassertions"
     "shadowstack"
