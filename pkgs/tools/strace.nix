@@ -22,6 +22,11 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
+    # strace builds with -Werror and uses trailing zero-length arrays as
+    # flexible members; -fstrict-flex-arrays=3 then trips -Werror=array-bounds
+    # (e.g. mmsghdr.c). Same opt-out as elfutils.
+    hardeningDisable = ["strictflexarrays3"];
+
     phases = [
       {
         name = "unpack";
