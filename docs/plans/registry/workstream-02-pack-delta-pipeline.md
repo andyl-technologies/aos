@@ -6,9 +6,10 @@
 > served over dumb HTTP.
 >
 > **As-built status note:** this workstream is now archival planning context. The
-> pack/delta implementation has mostly landed; use
+> pack/delta implementation has landed locally; use
 > [`../../registry/current-state.md`](../../registry/current-state.md) and
-> [`TODO.md`](./TODO.md) for current facts and remaining validation gaps.
+> [`TODO.md`](./TODO.md) for current facts. Follow-up production validation is
+> tracked in [`validation-runbook.md`](./validation-runbook.md).
 >
 > **Scope:** the producer side of pack generation (full packs at `X.Y.0`, the
 > guaranteed thin-delta scheme, `pack-objects` tuning, the zstd transport trick,

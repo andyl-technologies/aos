@@ -1,9 +1,11 @@
 # Registry External Validation Runbook
 
-> **Status:** Handoff runbook for the remaining external validation gates in
-> [`TODO.md`](./TODO.md). This file does not replace the reference docs in
-> [`../../registry`](../../registry); it collects the commands and evidence needed
-> before the remaining unchecked TODOs can be marked complete.
+> **Status:** Follow-up PR runbook. The implementation PR is complete; these
+> external Nix VM, service-backed, fleet, and target-host checks are
+> intentionally deferred to the next validation PR and must be run before
+> claiming production validation. This file does not replace the reference docs
+> in [`../../registry`](../../registry); it collects the commands and evidence
+> needed for that follow-up work.
 
 ## 1. Stock Nix `require-sigs`
 
@@ -170,9 +172,9 @@ Primary files:
 
 ## 7. Final Operator Docs Gate
 
-After the external gates above pass, update the operator-facing docs with the
-validated commands, required environment/auth setup, supported versions, and
-production defaults.
+In the follow-up validation PR, after the external gates above pass, update the
+operator-facing docs with the validated commands, required environment/auth
+setup, supported versions, and production defaults.
 
 Primary files:
 
