@@ -30,6 +30,10 @@ indexes needed by dumb HTTP. The consumer uses native git sync for both `git://`
 / `git+*://` origins and plain `http(s)://` origins. Consumer sync requires
 Git 2.42.0 or newer and preflights both `git --version` and local
 `git init --bare --object-format=sha256` support before fetching a registry.
+For plain `http(s)://` origins it also preflights the git-native dumb-HTTP
+surface (`HEAD` and `info/refs`). Legacy bundle-only origins that expose
+`bundle-list.toml` are rejected with a clean-break error; there is no
+bundle/`creation_token` fallback in the active update path.
 
 ---
 
@@ -96,20 +100,22 @@ than one atomic `apr release` command.
 `registry::git::sync_git`:
 
 1. Normalize the origin URL.
-2. Ensure the local bare repo exists with sha256 object format.
-3. Fetch branch/tag refs with git.
-4. Resolve the target commit from the requested tracking mode.
-5. Verify trust:
+2. Preflight sha256-capable Git and, for plain `http(s)://`, the git-native
+   dumb-HTTP origin shape.
+3. Ensure the local bare repo exists with sha256 object format.
+4. Fetch branch/tag refs with git.
+5. Resolve the target commit from the requested tracking mode.
+6. Verify trust:
    - branch/tag/version/commit modes use the configured commit-signature path
      when required;
    - channel mode verifies the signed partition tag, signed semver tag, and
      commit chain with name-binding.
-6. Enforce fast-forward from the last synced commit.
-7. Extract `packages/` and `closures/` to the remote metadata cache.
-8. Extract committed root `registry.toml`, `keys.toml`, and `.gitattributes`
+7. Enforce fast-forward from the last synced commit.
+8. Extract `packages/` and `closures/` to the remote metadata cache.
+9. Extract committed root `registry.toml`, `keys.toml`, and `.gitattributes`
    so `[[caches]]` are available to NAR mirror resolution and trust-roster
    helpers can read the authenticated tree after sync.
-9. Persist registry state.
+10. Persist registry state.
 
 Channel tracking resolves a deterministic persisted bucket through
 `/channels/<name>/<bucket>`, probes forward when needed, verifies that partition

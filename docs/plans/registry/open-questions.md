@@ -601,7 +601,7 @@ workstream.
 | **R5** | **Delta depth too deep → consumer reconstruct cost** (Q2). A large `--depth` shifts CPU onto every consumer applying the delta chain. | Low × Med | Cap `--depth` (suggest 50); window is the free lever, not depth (brief §10); document the consumer-cost rationale. | WS-02 |
 | **R6** | **Bucket flap / skew** (Q3). A host recomputes a different bucket across syncs, or cloned images share a baked-in host identifier. | Med × Low | Implemented: first assignment uses generated registry-local salt; persisted bucket index wins afterward; probe-forward does not re-pin. | WS-03, WS-05 |
 | **R7** | **Cross-serving / name-confusion.** A signed tag object served at the wrong path (a release tag served as a channel partition, or vice-versa) tricks a consumer. | Low × High | Name-binding verification: signature valid **and** embedded tag-name field == expected path name (channel name under `/channels/*`, semver under `/releases/*`); verify the whole `tag → tag → commit` chain (brief §5, §11). | WS-04, WS-05 |
-| **R8** | **Migration straddle bugs** (Q7 / §3). A half-migrated host or mirror serves/reads neither model cleanly — an old bundle-mode client hits a git-native origin, or vice-versa. | Med × High | The two models share **no wire surface** (§3.1), so there is no torn-format hazard; gate the consumer by registry capability detection (git refs present?) and bound any dual-stack window with a hard EOL. | WS-05 |
+| **R8** | **Migration straddle bugs** (Q7 / §3). A half-migrated host or mirror serves/reads neither model cleanly — an old bundle-mode client hits a git-native origin, or vice-versa. | Med × High | The two models share **no wire surface** (§3.1), so there is no torn-format hazard. Implemented policy: git-native `HEAD` + `info/refs` wins; legacy-only `bundle-list.toml` origins fail with a clean-break error; bundle-mode clients are EOL at registry cutover. | WS-05 |
 | **R9** | **Anti-rollback floor vs. fix-forward.** A consumer that does not keep a monotonic floor could be walked backward by a misconfigured partition; conversely an over-strict floor blocks a legitimate fix-forward. | Low × High | Consumer keeps a monotonic floor (never moves to a release older than current); aborting a bad rollout is **fix-forward** (publish newer, advance partitions), never partition-decrement (brief §6). | WS-05, WS-03 |
 | **R10** | **Freeze defense vs. availability** (Q5). With no in-band `valid_until`, freshness rests on the consumer's max-staleness policy: too short breaks quiet channels; too long weakens the freeze defense; and a frozen-but-validly-signed mirror is not self-evidently stale to a host with no recent fresh-frontier observation. | Med × Med | Implemented locally: 14-day default `max_staleness_seconds` gate on failed channel refreshes and unchanged-but-valid signed targets + low CDN TTL on mutable surfaces; anti-rollback floor as the hard gate; still validate the default against real fleet/CDN behavior. | WS-05, WS-04, WS-03 |
 | **R11** | **zstd `--long` window mismatch.** A pack compressed with `--long=27` requires the consumer to decompress with a matching window (~128 MiB); a constrained client OOMs. | Low × Med | Pin the `--long` window in spec; ensure the consumer always passes the matching `-d --long`; size it against the smallest supported host. | WS-02, WS-05 |
@@ -686,11 +686,16 @@ registry serves only the git-native model; consumers are cut over by version.
   (`registry/state.rs`), and `pick_bundles` (`registry/update.rs:292`) are
   **deleted**, not revived.
 - **Consumer:** clients are upgraded to the git-native fetch path *before* any
-  mirror drops bundles. A consumer detects the model by probing `info/refs`; a
-  too-old client refuses a git-native registry with a clear "upgrade `apm`"
-  error. Signed tags carry no structured payload (pure signed pointers, brief
-  §11), so forward-compat for *future* git-native changes is carried by the
-  layout/refs surface, not by a versioned field inside the signed tag.
+  mirror drops bundles. The current consumer treats plain `http(s)://` origins
+  as git-native dumb-HTTP registries and preflights `HEAD` plus `info/refs`.
+  A legacy-only origin that exposes `bundle-list.toml` but not the git-native
+  surface fails with a clear "legacy bundle-mode registry" / "no longer
+  supports the bundle/creation_token registry model" error. If both surfaces are
+  present during a temporary mirror straddle, the git-native surface wins and
+  `bundle-list.toml` is ignored. Signed tags carry no structured payload (pure
+  signed pointers, brief §11), so forward-compat for *future* git-native changes
+  is carried by the layout/refs surface, not by a versioned field inside the
+  signed tag.
 
 | Pros | Cons |
 |---|---|
@@ -699,50 +704,40 @@ registry serves only the git-native model; consumers are cut over by version.
 | One distribution model; no dual-surface consistency hazard (closes R8). | Needs a "minimum client version" gate communicated and enforced. |
 | Simplest producer; fewest moving parts in the highest-risk new pipeline (WS-02). | |
 
-### 3.4 Recommended path: clean break, gated by a thin consumer dual-detect
+### 3.4 Ratified path: clean break, gated by git-native preflight
 
-The brief does not decide this, but its design pressure points hard at the
-**clean break**. The two models share **no distribution surface** — bundles vs.
-packs, `creation_token` vs. semver, `bundle-list.toml` vs. git refs — so a true
-dual-*publish* shim means *building two complete producers*, one of them
-(`bundle-list.toml` + `creation_token` writer) brand-new code for a format we are
-killing. That cost is not worth paying.
+This implementation ratifies the **clean break**. The two models share **no
+distribution surface** — bundles vs. packs, `creation_token` vs. semver,
+`bundle-list.toml` vs. git refs — so a true dual-*publish* shim would mean
+building two complete producers, one of them (`bundle-list.toml` +
+`creation_token` writer) brand-new code for a retired format. That cost is not
+being paid.
 
-The synthesis the design implies:
+The implemented policy:
 
-1. **Ship the git-native consumer with model auto-detect first (WS-05).** Teach
-   `apm` to probe `info/refs`: a registry that exposes git refs is consumed via
-   the new path; a legacy-only mirror falls through to the existing
-   `BundleManifest` / `pick_bundles` reader **that already ships today** (no new
-   code). This is a *read-only* shim — it does **not** require a `bundle-list.toml`
-   writer or a producer `creation_token` encoder. Roll this client out and let it
-   propagate.
+1. **Use the git-native consumer only.** `apm update` probes plain `http(s)://`
+   origins for `HEAD` and `info/refs`; origins with those files are consumed via
+   the git-native path. A legacy-only mirror that still exposes
+   `bundle-list.toml` is rejected with an actionable clean-break error. There is
+   no active `BundleManifest` / `pick_bundles` fallback in this client.
 2. **Producer publishes only the git-native surface (WS-01/02/03).** Do **not**
    build the bundle/`bundle-list.toml`/`creation_token` writer. New registries are
-   git-native only; any legacy mirror keeps its already-published static
-   `bundle-list.toml` + `*.bundle` files (never regenerated), which the dual-detect
-   client of step 1 still reads.
+   git-native only. Any legacy mirror keeps its already-published static
+   `bundle-list.toml` + `*.bundle` files for old clients only and is not
+   regenerated by the git-native producer.
 3. **Verify the sha256 dumb-HTTP floor (Q1) before cutover.** A clean break to
    sha256 git is only safe once the minimum git/consumer version is pinned and
    the consumer fails closed with a clear message on too-old clients.
-4. **Announce a minimum-client version and an EOL date.** Once telemetry/policy
-   shows old bundle-mode clients are drained, drop the legacy reader fallback in a
-   later `apm` release. The dead bundle producer code is deleted from day one (it
-   was never finished anyway).
+4. **Treat the cutover as the EOL boundary for bundle-mode clients per registry.**
+   Operators must upgrade clients before pointing them at git-native origins.
+   Old bundle-mode clients can keep using legacy mirrors until those mirrors are
+   retired, but git-native registries do not promise a `bundle-list.toml`
+   compatibility surface.
 
-This delivers the safety of a shim (no flag day; mixed clients coexist) **without
-the cost of building a producer for a dying format**, and converges on the clean
-break's single-model simplicity and full security/rollout model. The residual
-exposure is that already-published legacy mirrors lack the new
-rollout/anti-rollback protections — acceptable because those mirrors are
-end-of-life by construction and the EOL date bounds the window.
-
-> **Decision still required.** The above is a *recommendation derived from the
-> brief's pressure*, not a ratified decision. WS-01 / WS-03 / WS-05 owners must
-> confirm: (a) the `info/refs`-probe model-detection mechanism, (b) the
-> minimum-client-version gate and EOL policy, and (c) whether step 1's legacy
-> reader fallback is worth keeping vs. a coordinated hard cutover for a small,
-> controlled fleet.
+This converges on the clean break's single-model simplicity and full
+security/rollout model. The residual exposure is that already-published legacy
+mirrors lack the new rollout/anti-rollback protections, which is acceptable only
+because those mirrors are end-of-life by construction.
 
 ### 3.5 Migration invariants (whatever path is chosen)
 
@@ -852,7 +847,7 @@ item is closed.
 | Q4 | `apr release` shape + pluggable upload | WS-02 / WS-03 | WS-02/03 (the pipeline) | Composable verbs under one wrapper; immutable-first / low-TTL-last ordering |
 | Q5 | Consumer max-staleness policy + key-rotation cadence | WS-05 / WS-04 / WS-03 | WS-05 consumer, WS-04 trust | Partial: 14-day `max_staleness_seconds` gate on failed refreshes and unchanged valid targets; still validate production default and key cadence |
 | Q6 | Relative `info/alternates` (one `../`, HTTP + local-FS) | WS-01 | WS-01 layout | One host-independent relative `info/alternates`, one-`../`; no `http-alternates` |
-| Q7a | Migration: clean break vs. shim | WS-05 / WS-01 / WS-03 | WS-01, WS-02, WS-03, WS-05 | Clean break + thin read-only consumer dual-detect → EOL (§3.4) |
+| Q7a | Migration: clean break vs. shim — **RESOLVED** | WS-05 / WS-01 / WS-03 | (none) | Clean break: git-native `HEAD` + `info/refs` wins; legacy-only `bundle-list.toml` origins fail with a clear error; bundle-mode clients are EOL at registry cutover (§3.4) |
 | Q7b | NAR superset milestone timing | WS-05 | (none — fast-follow) | Defer to fast-follow; cache lives in committed `registry.toml` `[[caches]]` (client-side `registries.d` override / origin), nothing reserved in tags (§4.3) |
 | Q8 | NAR blob `URL:` key — **RESOLVED** | WS-06 | (none) | Colon-free static key: `nar/{storehash}-sha256-{hex}.{ext}`; producer, upload, and consumer follow the narinfo `URL:` verbatim |
 | DD-1 | Doc-debt: re-ground CURRENT-state after `7149acf6` — **RESOLVED** | WS-06 / WS-05 | (docs — gated WS-06 §5/§10/§11 accuracy; now re-grounded) | **Done.** Cache = **dumb static AOT files on the CDN, no server** (brief §13). The narinfo **format/sign logic** is a reusable library: `aos-core` `NarInfo`+`format()`, `aos-server` `format_narinfo`+`NarInfoSigner` Ed25519 `Sig:`+`Priority: 30`, `compute_file_hash_size` (`compress.rs:143`). **Consumer done** (narinfo-driven `download.rs`). **WS-06 = PRODUCER work**: at publish, *generate* the static `<storehash>.narinfo` / `nar/<…>.nar.zst` / `nix-cache-info` by **reusing** that format/sign code, and **upload** them to the CDN, plus the committed `registry.toml` `[[caches]]` pointer. Not a running server, not "integration only". |

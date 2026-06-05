@@ -82,6 +82,9 @@ pub async fn sync_git(
     // Step 1: Ensure repo.
     printer.info(&format!("Syncing registry '{}' via git...", config.name));
     ensure_sha256_capable_git().await?;
+    if is_plain_http_url(&config.url) {
+        preflight_git_native_http_origin(&git_url).await?;
+    }
     ensure_repo(&repo_dir, &git_url).await?;
     let previous_floor = state.floor.clone();
     let mut retained_before = fetch::parse_retained(&state.retained)?;
@@ -233,6 +236,58 @@ fn normalize_git_url(url: &str) -> String {
     } else {
         url.to_string()
     }
+}
+
+fn is_plain_http_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+async fn preflight_git_native_http_origin(base_url: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let head_url = join_cache_url(base_url, "HEAD");
+    let refs_url = join_cache_url(base_url, "info/refs");
+    let legacy_url = join_cache_url(base_url, "bundle-list.toml");
+
+    let head_status = probe_static_http_status(&client, &head_url).await?;
+    let refs_status = probe_static_http_status(&client, &refs_url).await?;
+    if head_status.is_success() && refs_status.is_success() {
+        return Ok(());
+    }
+
+    let legacy_status = probe_static_http_status(&client, &legacy_url).await?;
+    if legacy_status.is_success() {
+        bail!(
+            "registry origin {base_url} is a legacy bundle-mode registry (`bundle-list.toml` exists) \
+             but this apm no longer supports the bundle/creation_token registry model. \
+             Upgrade the registry origin to the git-native sha256 dumb-HTTP layout, or use an older apm only with legacy mirrors before cutover."
+        );
+    }
+
+    bail!(
+        "registry origin {base_url} is not a git-native AOS registry: expected dumb-HTTP git files \
+         HEAD and info/refs, got HEAD {head_status} and info/refs {refs_status}"
+    );
+}
+
+async fn probe_static_http_status(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<reqwest::StatusCode> {
+    let response = client
+        .head(url)
+        .send()
+        .await
+        .with_context(|| format!("probing {url}"))?;
+    if response.status() != reqwest::StatusCode::METHOD_NOT_ALLOWED {
+        return Ok(response.status());
+    }
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("probing {url}"))?;
+    Ok(response.status())
 }
 
 async fn ensure_sha256_capable_git() -> Result<()> {
