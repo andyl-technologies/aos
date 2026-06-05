@@ -371,7 +371,7 @@ Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
 
 - [`README.md`](./README.md) — purpose, audience, glossary, doc index.
 - [`current-state.md`](./current-state.md) — current git-native implementation
-  status and remaining gaps.
+  status and external validation gaps.
 - [`http-layout.md`](./http-layout.md) — full HTTP/object layout, CDN TTLs,
   `info/refs` / `HEAD` / relative `info/alternates`, root-centralized loose
   `/objects/`, stock-git dumb-HTTP compatibility.

@@ -23,9 +23,9 @@
 > *generate* the static files. The live `aos-server` cache
 > (a host serving its **own** Nix store, nix-serve-style) is a **separate use
 > case the registry never runs**. The consumer (`aos-package/download.rs`) is
-> already narinfo-driven and works against a dumb static cache. The remaining
-> producer is implemented as `apr cache generate`: it AOT-generates those static
-> files, can upload them through `aos-cache`, and can update the committed
+> already narinfo-driven and works against a dumb static cache. The producer path
+> is implemented as `apr cache generate`: it AOT-generates those static files,
+> can upload them through `aos-cache`, and can update the committed
 > `registry.toml` `[[caches]]` pointer.
 
 This document explains how an AOS registry's Nix binary cache is, by design, a

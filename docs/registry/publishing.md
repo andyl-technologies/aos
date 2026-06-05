@@ -505,30 +505,27 @@ partition. See [versioning-and-channels.md](./versioning-and-channels.md) and
 # One-time
 apr create acme --remote git@github.com:acme/registry.git
 
-# Per release — nested-TOML model
-apr publish /nix/store/<hash>-curl-8.5.0 \
-    --description "URL transfer tool" --license MIT --maintainer acme
-# → writes packages/c/curl.toml + closures/<hash>, then commits   (registry_ops.rs:476)
-
-apr tag 2026.06.0 --message "June release" --key-id initial
-apr sign 2026.06.0 --key-id initial
-apr channel init stable 2026.06.0 --key-id initial
-apr channel advance stable 2026.06.0 --count 32 --key-id initial
-apr cache generate --output ./cache-static \
-    --key ./nix_cache_signing_key \
+# Per release — guarded wrapper
+apr release 2026.06.0 \
+    --store-path /nix/store/<hash>-curl-8.5.0 \
+    --description "URL transfer tool" --license MIT --maintainer acme \
+    --key-id initial \
+    --channel stable --init-channel \
+    --cache-output ./cache-static \
+    --cache-key ./nix_cache_signing_key \
     --cache-url https://registry.example/cache \
     --s3-region us-east-1 \
     --s3-profile registry-prod \
     --s3-endpoint https://s3.example \
     --ssh-key /run/secrets/registry_sftp_key \
-    --upload-url s3://registry-cache \
-    --upload-url file:///srv/registry-cache
-apr origin upload \
-    --cache-dir ./cache-static \
     --upload-url s3://registry-origin \
     --upload-url sftp://deploy@origin.example/srv/registry
 apr push --set-upstream --branch stable        # plain git push              (registry_ops.rs:1398)
 ```
+
+The same pieces remain available as focused repair/manual commands:
+`apr publish`, `apr tag`, `apr channel init/advance`, `apr cache generate`, and
+`apr origin upload`.
 
 `apr cache generate` and `apr origin upload` accept the same backend-auth shape
 as `aos cache` uploads:
