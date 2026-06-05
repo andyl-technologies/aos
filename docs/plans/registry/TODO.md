@@ -411,20 +411,28 @@ read before editing code or docs.
 
 ### Producer / Publishing Target State
 
-- [ ] Implement the single production publish orchestrator, tentatively
-      `apr release` or `apr publish --release`, that performs the ordered
-      pipeline end to end: commit metadata, create/sign release tag, generate
-      full packs and thin deltas, compress artifacts, refresh dumb-HTTP indexes,
-      generate the static Nix cache, upload immutable artifacts first, advance
-      channel partitions, and publish low-TTL mutable surfaces last. Include
-      dry-run, resume/idempotency, clear error reporting, and a publisher
-      concurrency guard. Context: `docs/registry/architecture.md`,
-      `docs/registry/publishing.md`, `docs/registry/http-layout.md`,
-      `docs/registry/packs-and-deltas.md`,
+- [x] Implement the single production publish orchestrator as `apr release`.
+      It supports committed-tree releases and optional `--store-path` releases
+      that delegate to `apr publish`, commits `--cache-url` into
+      `registry.toml` before signing, creates/reuses the signed semver tag,
+      generates self-contained full packs at `X.Y.0` anchors and compressed
+      guaranteed thin deltas, refreshes dumb-HTTP indexes, optionally generates
+      static Nix-cache files via `--cache-output`, initializes/advances channel
+      partitions, and uploads immutable payloads before low-TTL mutable
+      refs/channels to repeatable `--upload-url` backends. It includes
+      `--dry-run`, `--resume`, clear existing-artifact errors, and a local
+      publisher lock in the git dir. Coverage includes
+      `release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer` in
+      `crates/aos-package/tests/registry_e2e.rs`, which releases a committed
+      sha256 registry tree, uploads it to `file://`, serves that uploaded
+      origin, and syncs a channel consumer from it. Real-Nix cache generation,
+      stock-Nix substituter validation, service-backed S3/SFTP upload tests,
+      and CDN/mirror behavior remain tracked by their separate TODOs. Context:
+      `docs/registry/architecture.md`, `docs/registry/publishing.md`,
+      `docs/registry/http-layout.md`, `docs/registry/packs-and-deltas.md`,
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/nix-cache-compatibility.md`,
-      `docs/plans/registry/open-questions.md`,
-      `crates/aos-package/src/lib.rs`,
+      `docs/plans/registry/open-questions.md`, `crates/aos-package/src/lib.rs`,
       `crates/aos-package/src/registry_ops.rs`,
       `crates/aos-package/src/registry/objectstore.rs`,
       `crates/aos-package/src/registry/pack.rs`,

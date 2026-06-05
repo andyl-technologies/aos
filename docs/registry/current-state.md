@@ -101,9 +101,16 @@ Implemented producer behavior:
   `info/refs`, `objects/info/**`, `channels/**`, and `nix-cache-info`) and
   applies per-path cache-control/content-type metadata where the backend
   supports it.
-
-The release pipeline is still composed from focused `apr` subcommands rather
-than one atomic `apr release` command.
+- `apr release <semver>` is the guarded producer orchestrator. It can release an
+  already committed registry tree or optionally publish a real Nix store path
+  first, commits a `[[caches]]` pointer before signing when `--cache-url` is
+  supplied, creates/reuses the signed semver tag, generates full packs at
+  `X.Y.0` anchors and compressed guaranteed thin deltas, refreshes static git
+  indexes, optionally generates static Nix-cache files with `--cache-output`,
+  initializes or advances channel partitions, and uploads the static origin to
+  repeatable backend URLs in immutable-first / mutable-last order. It has a
+  local publisher lock, `--dry-run`, and `--resume` for interrupted immutable
+  artifact generation.
 
 ---
 

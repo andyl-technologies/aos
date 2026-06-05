@@ -5,10 +5,13 @@
 //! `~/.local/share/apm/registries/<name>/`.
 
 use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use aos_cache::AuthOptions;
 use serde_json::Value;
 
 use aos_core::output::Printer;
@@ -18,13 +21,14 @@ use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
 use crate::registry::objectstore;
+use crate::registry::pack;
 use crate::registry::static_upload;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
 use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
 use crate::types::{CacheEntry, RegistryConfig, RegistryRootConfig};
 use crate::{
-    BranchCommand, CacheCommand, ChannelCommand, KeysCommand, OriginCommand, PrCommand,
-    TrustCommand,
+    BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
+    PrCommand, TrustCommand,
 };
 
 // ---------------------------------------------------------------------------
@@ -2475,6 +2479,583 @@ async fn pr_diff(
 // ---------------------------------------------------------------------------
 // Release
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct ReleaseTreeOptions {
+    pub version: semver::Version,
+    pub signing_key: String,
+    pub channel: Option<String>,
+    pub init_channel: bool,
+    pub count: Option<usize>,
+    pub partitions: Option<String>,
+    pub cache_output: Option<PathBuf>,
+    pub cache_key: Option<PathBuf>,
+    pub cache_url: Option<String>,
+    pub cache_priority: u32,
+    pub upload_urls: Vec<String>,
+    pub upload_auth: AuthOptions,
+    pub dry_run: bool,
+    pub resume: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReleaseReport {
+    pub full_pack: Option<String>,
+    pub deltas: Vec<String>,
+    pub uploaded_files: Option<usize>,
+}
+
+struct ReleaseLock {
+    path: PathBuf,
+}
+
+impl ReleaseLock {
+    fn acquire(dir: &Path) -> Result<Self> {
+        let git_dir = objectstore::repo_git_dir(dir)?;
+        let path = git_dir.join("apr-release.lock");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| {
+                format!(
+                    "acquiring release lock {}; another publisher may be running",
+                    path.display()
+                )
+            })?;
+        writeln!(file, "pid={}", std::process::id())
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for ReleaseLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// `apr release <SEMVER>`
+#[allow(clippy::too_many_arguments)]
+pub async fn release(
+    config: &ApmConfig,
+    semver: &str,
+    store_path: Option<&str>,
+    name: Option<&str>,
+    platform: Option<&str>,
+    description: Option<&str>,
+    homepage: Option<&str>,
+    license: Option<&str>,
+    maintainer: Option<&str>,
+    sysroot: bool,
+    previous: Option<&str>,
+    image_paths: &[String],
+    image_formats: &[String],
+    message: Option<&str>,
+    channel: Option<&str>,
+    init_channel: bool,
+    count: Option<usize>,
+    partitions: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
+    cache_output: Option<&Path>,
+    cache_key: Option<&Path>,
+    cache_url: Option<&str>,
+    cache_priority: u32,
+    upload_urls: &[String],
+    auth: &CacheUploadAuthArgs,
+    dry_run: bool,
+    resume: bool,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let version = semver::Version::parse(semver)
+        .with_context(|| format!("parsing release semver '{semver}'"))?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    if !dir.exists() {
+        bail!("registry directory does not exist: {}", dir.display());
+    }
+    let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+
+    if let Some(store_path) = store_path {
+        if dry_run {
+            printer.info(&format!(
+                "Would publish {store_path} into release metadata for {version}."
+            ));
+        } else {
+            let release_version = version.to_string();
+            publish(
+                config,
+                store_path,
+                name,
+                Some(release_version.as_str()),
+                platform,
+                description,
+                homepage,
+                license,
+                maintainer,
+                sysroot,
+                previous,
+                image_paths,
+                image_formats,
+                false,
+                message,
+                Some(&registry_name),
+                printer,
+            )
+            .await?;
+        }
+    }
+
+    let upload_auth =
+        auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
+    let options = ReleaseTreeOptions {
+        version,
+        signing_key,
+        channel: channel.map(ToString::to_string),
+        init_channel,
+        count,
+        partitions: partitions.map(ToString::to_string),
+        cache_output: cache_output.map(Path::to_path_buf),
+        cache_key: cache_key.map(Path::to_path_buf),
+        cache_url: cache_url.map(ToString::to_string),
+        cache_priority,
+        upload_urls: upload_urls.to_vec(),
+        upload_auth,
+        dry_run,
+        resume,
+    };
+
+    release_registry_tree(&dir, &registry_name, &options, printer).await?;
+    Ok(())
+}
+
+pub async fn release_registry_tree(
+    dir: &Path,
+    registry_name: &str,
+    options: &ReleaseTreeOptions,
+    printer: &Printer,
+) -> Result<ReleaseReport> {
+    validate_release_options(options)?;
+    if options.dry_run {
+        print_release_plan(dir, registry_name, options, printer);
+        return Ok(ReleaseReport::default());
+    }
+
+    let _lock = ReleaseLock::acquire(dir)?;
+    objectstore::assert_sha256(dir)?;
+
+    if let Some(cache_url) = &options.cache_url {
+        if nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)? {
+            printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
+            commit_registry(dir, "registry: update static cache pointer")?;
+        }
+    }
+
+    ensure_release_worktree_clean(dir)?;
+    let head = git(dir, &["rev-parse", "HEAD"])?;
+    let published_before = semver_tag_versions(dir)?
+        .into_iter()
+        .filter(|version| version != &options.version)
+        .collect::<Vec<_>>();
+
+    ensure_release_tag(dir, options, &head, printer)?;
+    refresh_registry_object_store(dir).context("refreshing dumb-HTTP object store after tag")?;
+
+    let artifacts = write_release_artifacts(dir, &published_before, options, printer).await?;
+    refresh_registry_object_store(dir)
+        .context("refreshing dumb-HTTP object store after release artifacts")?;
+
+    if let Some(output) = &options.cache_output {
+        let report = nixcache::generate_static_cache(
+            dir,
+            output,
+            options.cache_key.as_deref(),
+            options.cache_priority,
+            printer,
+        )
+        .await?;
+        printer.success(&format!(
+            "Generated static cache: {} narinfos, {} NARs in {}",
+            report.narinfos,
+            report.nars,
+            report.output_dir.display(),
+        ));
+    }
+
+    if let Some(channel) = &options.channel {
+        if options.init_channel {
+            channel_init_dir(
+                dir,
+                channel,
+                &options.version,
+                &options.signing_key,
+                printer,
+            )?;
+        } else {
+            channel_advance_dir(
+                dir,
+                channel,
+                &options.version,
+                options.count,
+                options.partitions.as_deref(),
+                &options.signing_key,
+                printer,
+            )?;
+        }
+    }
+
+    let mut report = artifacts;
+    if !options.upload_urls.is_empty() {
+        let upload = static_upload::upload_static_origin_to_all(
+            dir,
+            options.cache_output.as_deref(),
+            &options.upload_urls,
+            &options.upload_auth,
+            printer,
+        )
+        .await?;
+        report.uploaded_files = Some(upload.files);
+        printer.success(&format!(
+            "Uploaded {} static origin file(s) ({}).",
+            upload.files,
+            format_size(upload.bytes),
+        ));
+    }
+
+    printer.success(&format!("Released {registry_name} {}.", options.version));
+    Ok(report)
+}
+
+fn validate_release_options(options: &ReleaseTreeOptions) -> Result<()> {
+    match (&options.channel, options.init_channel) {
+        (None, true) => bail!("--init-channel requires --channel"),
+        (None, false) => {
+            if options.count.is_some() || options.partitions.is_some() {
+                bail!("--count and --partitions require --channel");
+            }
+        }
+        (Some(_), true) => {
+            if options.count.is_some() || options.partitions.is_some() {
+                bail!("--init-channel cannot be combined with --count or --partitions");
+            }
+        }
+        (Some(_), false) => {
+            select_partitions_for_advance(
+                options.count,
+                options.partitions.as_deref(),
+                &PartitionMap::new(),
+                &options.version,
+            )
+            .map(|_| ())?;
+        }
+    }
+
+    if options.cache_key.is_some() && options.cache_output.is_none() {
+        bail!("--cache-key requires --cache-output");
+    }
+    Ok(())
+}
+
+fn print_release_plan(
+    dir: &Path,
+    registry_name: &str,
+    options: &ReleaseTreeOptions,
+    printer: &Printer,
+) {
+    printer.header("Release plan");
+    printer.kv("Registry", registry_name);
+    printer.kv("Directory", &dir.display().to_string());
+    printer.kv("Release", &options.version.to_string());
+    printer.plain("1. ensure registry working tree is clean");
+    if let Some(cache_url) = &options.cache_url {
+        printer.plain(&format!(
+            "2. commit registry.toml cache pointer {cache_url} if needed"
+        ));
+    }
+    printer.plain("3. create signed release tag if absent");
+    printer.plain("4. generate full pack and guaranteed compressed thin deltas");
+    if options.cache_output.is_some() {
+        printer.plain("5. generate static Nix cache files");
+    }
+    if let Some(channel) = &options.channel {
+        let action = if options.init_channel {
+            "initialize"
+        } else {
+            "advance"
+        };
+        printer.plain(&format!("6. {action} channel {channel}"));
+    }
+    if !options.upload_urls.is_empty() {
+        printer.plain("7. upload immutable files first and mutable refs/channels last");
+    }
+}
+
+fn ensure_release_worktree_clean(dir: &Path) -> Result<()> {
+    let is_bare = git(dir, &["rev-parse", "--is-bare-repository"])? == "true";
+    if is_bare {
+        return Ok(());
+    }
+    let status = git(dir, &["status", "--porcelain"])?;
+    if !status.is_empty() {
+        bail!("registry working tree has uncommitted changes; commit them or use --store-path");
+    }
+    Ok(())
+}
+
+fn ensure_release_tag(
+    dir: &Path,
+    options: &ReleaseTreeOptions,
+    head: &str,
+    printer: &Printer,
+) -> Result<()> {
+    if let Some(existing_commit) = existing_release_tag_commit(dir, &options.version)? {
+        if options.resume && existing_commit == head {
+            printer.info(&format!(
+                "Release tag {} already exists at HEAD; resuming.",
+                options.version
+            ));
+            return Ok(());
+        }
+        if existing_commit == head {
+            bail!(
+                "release tag {} already exists at HEAD; pass --resume to reuse it",
+                options.version,
+            );
+        }
+        bail!(
+            "release tag {} already exists at {}, but HEAD is {}",
+            options.version,
+            existing_commit,
+            head,
+        );
+    }
+
+    sign_tag(
+        dir,
+        &options.version.to_string(),
+        head,
+        Some("AOS registry release"),
+        &options.signing_key,
+        false,
+    )?;
+    printer.success(&format!("Created signed tag '{}'.", options.version));
+    Ok(())
+}
+
+fn existing_release_tag_commit(dir: &Path, version: &semver::Version) -> Result<Option<String>> {
+    let tag = version.to_string();
+    let (tag_ok, _, tag_stderr) = git_try(dir, &["rev-parse", &format!("{tag}^{{tag}}")])?;
+    if !tag_ok {
+        let commit_probe = git_try(dir, &["rev-parse", &format!("{tag}^{{commit}}")])?;
+        if commit_probe.0 {
+            bail!("release name '{tag}' exists but is not an annotated tag object");
+        }
+        if !tag_stderr.is_empty() {
+            return Ok(None);
+        }
+        return Ok(None);
+    }
+    let commit = release_commit(dir, version)?;
+    Ok(Some(commit))
+}
+
+async fn write_release_artifacts(
+    dir: &Path,
+    published_before: &[semver::Version],
+    options: &ReleaseTreeOptions,
+    printer: &Printer,
+) -> Result<ReleaseReport> {
+    let commit = release_commit(dir, &options.version)?;
+    let release_objects = objectstore::repo_git_dir(dir)?
+        .join("releases")
+        .join(objectstore::release_object_dir(&options.version));
+    let pack_dir = release_objects.join("pack");
+    let info_dir = release_objects.join("info");
+    fs::create_dir_all(&pack_dir).with_context(|| format!("creating {}", pack_dir.display()))?;
+    fs::create_dir_all(&info_dir).with_context(|| format!("creating {}", info_dir.display()))?;
+
+    let full_pack = match pack::release_kind(&options.version) {
+        pack::ReleaseKind::Major | pack::ReleaseKind::Minor => {
+            Some(write_full_pack_artifact(dir, &commit, &pack_dir, options.resume, printer).await?)
+        }
+        pack::ReleaseKind::Patch => None,
+    };
+
+    if let Some(full_pack) = &full_pack {
+        fs::write(info_dir.join("packs"), format!("P {full_pack}\n"))
+            .with_context(|| format!("writing {}", info_dir.join("packs").display()))?;
+    }
+
+    let mut deltas = Vec::new();
+    for base in pack::scheme_deltas(&options.version, published_before) {
+        let base_commit = release_commit(dir, &base)?;
+        deltas.push(
+            write_delta_artifact(
+                dir,
+                &base,
+                &base_commit,
+                &commit,
+                &pack_dir,
+                options.resume,
+                printer,
+            )
+            .await?,
+        );
+    }
+
+    Ok(ReleaseReport {
+        full_pack,
+        deltas,
+        uploaded_files: None,
+    })
+}
+
+async fn write_full_pack_artifact(
+    dir: &Path,
+    commit: &str,
+    pack_dir: &Path,
+    resume: bool,
+    printer: &Printer,
+) -> Result<String> {
+    if let Some(existing) = existing_full_pack(pack_dir)? {
+        if resume {
+            printer.info(&format!("Full pack {existing} already exists; resuming."));
+            return Ok(existing);
+        }
+        bail!("full pack {existing} already exists; pass --resume to reuse it");
+    }
+
+    let tmp = tempfile::TempDir::new().context("creating full-pack tempdir")?;
+    let pack_path = pack::full_pack(dir, commit, tmp.path()).await?;
+    let pack_name = file_name_string(&pack_path)?;
+    fs::copy(&pack_path, pack_dir.join(&pack_name))
+        .with_context(|| format!("copying {}", pack_path.display()))?;
+    let idx_path = pack_path.with_extension("idx");
+    if idx_path.exists() {
+        let idx_name = file_name_string(&idx_path)?;
+        fs::copy(&idx_path, pack_dir.join(idx_name))
+            .with_context(|| format!("copying {}", idx_path.display()))?;
+    }
+    printer.success(&format!("Generated full pack {pack_name}."));
+    Ok(pack_name)
+}
+
+async fn write_delta_artifact(
+    dir: &Path,
+    base: &semver::Version,
+    base_commit: &str,
+    target_commit: &str,
+    pack_dir: &Path,
+    resume: bool,
+    printer: &Printer,
+) -> Result<String> {
+    let artifact_name = format!("delta-{base}.pack.zst");
+    let dest = pack_dir.join(&artifact_name);
+    if dest.exists() {
+        if resume {
+            printer.info(&format!(
+                "Delta pack {artifact_name} already exists; resuming."
+            ));
+            return Ok(artifact_name);
+        }
+        bail!("delta pack {artifact_name} already exists; pass --resume to reuse it");
+    }
+
+    let tmp = tempfile::TempDir::new().context("creating delta-pack tempdir")?;
+    let delta = pack::thin_delta(dir, base_commit, target_commit, base, tmp.path()).await?;
+    let compressed = pack::zstd_compress(&delta, None).await?;
+    fs::copy(&compressed, &dest).with_context(|| format!("copying {}", compressed.display()))?;
+    printer.success(&format!("Generated delta pack {artifact_name}."));
+    Ok(artifact_name)
+}
+
+fn existing_full_pack(pack_dir: &Path) -> Result<Option<String>> {
+    if !pack_dir.exists() {
+        return Ok(None);
+    }
+    let mut packs = Vec::new();
+    for entry in
+        fs::read_dir(pack_dir).with_context(|| format!("reading {}", pack_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with("pack-") && name.ends_with(".pack") {
+            packs.push(name.to_string());
+        }
+    }
+    packs.sort();
+    if packs.len() > 1 {
+        bail!(
+            "multiple full packs already exist in {}: {}",
+            pack_dir.display(),
+            packs.join(", "),
+        );
+    }
+    Ok(packs.into_iter().next())
+}
+
+fn file_name_string(path: &Path) -> Result<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("path has no UTF-8 filename: {}", path.display()))
+}
+
+fn channel_init_dir(
+    dir: &Path,
+    channel_name: &str,
+    version: &semver::Version,
+    signing_key: &str,
+    printer: &Printer,
+) -> Result<()> {
+    validate_channel_name(channel_name)?;
+    assert_release_tag_exists(dir, version)?;
+    let mut map = PartitionMap::new();
+    for bucket in 0..=u8::MAX {
+        write_channel_partition_tag(dir, channel_name, bucket, version, signing_key)?;
+        map.set(bucket as usize, version.clone())?;
+    }
+    update_channel_frontier(dir, channel_name, &map)?;
+    printer.success(&format!(
+        "Initialized channel '{channel_name}' with 256/256 partitions on {version}."
+    ));
+    Ok(())
+}
+
+fn channel_advance_dir(
+    dir: &Path,
+    channel_name: &str,
+    version: &semver::Version,
+    count: Option<usize>,
+    partitions: Option<&str>,
+    signing_key: &str,
+    printer: &Printer,
+) -> Result<()> {
+    validate_channel_name(channel_name)?;
+    assert_release_tag_exists(dir, version)?;
+    let mut map = read_channel_partition_map(dir, channel_name)?;
+    channel::assert_full_partition_set(&map)?;
+    let selected = select_partitions_for_advance(count, partitions, &map, version)?;
+    if selected.is_empty() {
+        printer.info("No partitions selected for advancement.");
+        return Ok(());
+    }
+    for bucket in &selected {
+        write_channel_partition_tag(dir, channel_name, *bucket, version, signing_key)?;
+        map.set(*bucket as usize, version.clone())?;
+    }
+    update_channel_frontier(dir, channel_name, &map)?;
+    printer.success(&format!(
+        "Advanced channel '{channel_name}' {} partition(s) to {version}.",
+        selected.len()
+    ));
+    Ok(())
+}
 
 /// `apr tag <NAME>`
 pub async fn tag(

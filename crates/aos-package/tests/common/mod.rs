@@ -92,6 +92,10 @@ impl RegistryFixture {
         &self.signing.trusted_key
     }
 
+    pub fn private_key_path(&self) -> &Path {
+        &self.signing.private_key
+    }
+
     #[allow(dead_code)]
     pub fn write_registry_toml(&self, cache_url: &str) -> Result<()> {
         self.write_registry_toml_with_caches(&[(cache_url, 50)])

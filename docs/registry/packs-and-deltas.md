@@ -267,9 +267,10 @@ final `git fetch` fallback for the dumb-HTTP loose-object correctness floor.
 Channel sync calls this resolver after the signed tag chain and semver floor
 check succeed, then persists the `{X.0.0, X.Y.0, X.Y.Z}` retained set.
 
-The producer pack helpers are available as focused building blocks; the current
-CLI still composes release publishing from separate `apr` subcommands rather
-than one atomic release pipeline command.
+The producer pack helpers remain available as focused building blocks, and
+`apr release` now uses them inside the ordered producer pipeline that signs the
+release, writes packs/deltas, refreshes indexes, advances channels, and uploads
+the static origin.
 
 ---
 

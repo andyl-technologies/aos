@@ -625,6 +625,92 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: OriginCommand,
     },
+    /// Run the ordered producer release pipeline
+    Release {
+        /// Semver release tag, with no `v` prefix
+        semver: String,
+        /// Optional Nix store path to publish before tagging
+        #[arg(long)]
+        store_path: Option<String>,
+        /// Package name override when --store-path is used
+        #[arg(long)]
+        name: Option<String>,
+        /// Platform override when --store-path is used
+        #[arg(long)]
+        platform: Option<String>,
+        /// Package description when --store-path is used
+        #[arg(long)]
+        description: Option<String>,
+        /// Package homepage when --store-path is used
+        #[arg(long)]
+        homepage: Option<String>,
+        /// Package license when --store-path is used
+        #[arg(long)]
+        license: Option<String>,
+        /// Package maintainer when --store-path is used
+        #[arg(long)]
+        maintainer: Option<String>,
+        /// Mark this package as a system toplevel when --store-path is used
+        #[arg(long)]
+        sysroot: bool,
+        /// Previous version in the version chain when --store-path is used
+        #[arg(long)]
+        previous: Option<String>,
+        /// Pre-compiled image store path (repeatable, paired with --image-format)
+        #[arg(long = "image")]
+        images: Vec<String>,
+        /// Image format for each --image (repeatable, paired with --image)
+        #[arg(long = "image-format")]
+        image_formats: Vec<String>,
+        /// Custom publish commit message when --store-path is used
+        #[arg(long)]
+        message: Option<String>,
+        /// Channel to initialize or advance after immutable artifacts are ready
+        #[arg(long)]
+        channel: Option<String>,
+        /// Initialize all 256 channel partitions at this release
+        #[arg(long)]
+        init_channel: bool,
+        /// Number of channel partitions to advance by ascending fill
+        #[arg(long)]
+        count: Option<usize>,
+        /// Explicit comma-separated partition list, decimal or hex
+        #[arg(long)]
+        partitions: Option<String>,
+        /// Signing key
+        #[arg(long)]
+        key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Output directory for generated static cache files
+        #[arg(long = "cache-output")]
+        cache_output: Option<PathBuf>,
+        /// Nix narinfo signing key file in `name:base64-secret` form
+        #[arg(long = "cache-key")]
+        cache_key: Option<PathBuf>,
+        /// Public cache URL to write into committed registry.toml [[caches]]
+        #[arg(long = "cache-url")]
+        cache_url: Option<String>,
+        /// Priority for generated nix-cache-info and registry [[caches]]
+        #[arg(long = "cache-priority", default_value = "40")]
+        cache_priority: u32,
+        /// Backend URL to upload the static origin to; repeat for multiple destinations
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
+        /// Authentication and backend-specific upload options
+        #[command(flatten)]
+        auth: CacheUploadAuthArgs,
+        /// Print the ordered plan without mutating the registry
+        #[arg(long)]
+        dry_run: bool,
+        /// Resume an interrupted release by skipping already-present immutable artifacts
+        #[arg(long)]
+        resume: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
 
     // ----- GitHub Integration -----
     /// GitHub Pull Request operations
@@ -1501,6 +1587,70 @@ async fn run_registry(
         }
         RegistryCommand::Origin { command } => {
             registry_ops::run_origin(config, command, printer).await
+        }
+        RegistryCommand::Release {
+            semver,
+            store_path,
+            name,
+            platform,
+            description,
+            homepage,
+            license,
+            maintainer,
+            sysroot,
+            previous,
+            images,
+            image_formats,
+            message,
+            channel,
+            init_channel,
+            count,
+            partitions,
+            key,
+            key_id,
+            cache_output,
+            cache_key,
+            cache_url,
+            cache_priority,
+            upload_urls,
+            auth,
+            dry_run,
+            resume,
+            registry,
+        } => {
+            registry_ops::release(
+                config,
+                semver,
+                store_path.as_deref(),
+                name.as_deref(),
+                platform.as_deref(),
+                description.as_deref(),
+                homepage.as_deref(),
+                license.as_deref(),
+                maintainer.as_deref(),
+                *sysroot,
+                previous.as_deref(),
+                images,
+                image_formats,
+                message.as_deref(),
+                channel.as_deref(),
+                *init_channel,
+                *count,
+                partitions.as_deref(),
+                key.as_deref(),
+                key_id.as_deref(),
+                cache_output.as_deref(),
+                cache_key.as_deref(),
+                cache_url.as_deref(),
+                *cache_priority,
+                upload_urls,
+                auth,
+                *dry_run,
+                *resume,
+                registry.as_deref(),
+                printer,
+            )
+            .await
         }
         RegistryCommand::Tag {
             name,
