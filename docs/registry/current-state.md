@@ -51,8 +51,9 @@ The dispatch lives in `crates/aos/src/main.rs`. Registry producer commands are i
 Implemented producer behavior:
 
 - `apr create` initializes a sha256 git repository, sets `HEAD` to
-  `refs/heads/stable`, writes the committed root `registry.toml`, and refreshes
-  static git indexes.
+  `refs/heads/stable`, writes the committed root `registry.toml`, writes a
+  schema-1 `keys.toml` trust roster (optionally seeded by `--trust-key` and
+  `--trust-key-id`), and refreshes static git indexes.
 - `apr publish`, `apr unpublish`, and `apr tag` update package metadata and then
   refresh the object-store view with `objects/info/alternates` and
   `git update-server-info`.

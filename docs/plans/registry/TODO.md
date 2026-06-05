@@ -277,11 +277,21 @@ by Rust integration/e2e tests where the item calls for tests.
       `crates/aos-package/src/security.rs`,
       `crates/aos-package/src/registry/keys.rs`, and
       `crates/aos-package/src/registry/verify.rs`.
-- [ ] Emit and maintain the committed `keys.toml` trust roster from producer
-      commands, starting with `apr create` and continuing through key rotation
-      and revocation operations. The parser/writer helpers exist, but
-      `docs/registry/repo-layout.md` still calls out that `keys.toml` is not
-      emitted by create yet. Context: `docs/registry/repo-layout.md`,
+- [x] Emit the initial committed `keys.toml` trust roster from `apr create`.
+      `apr create` now writes a schema-1 roster, optionally with an active
+      `--trust-key registry:Ed25519:<base64>` and optional `--trust-key-id`
+      (default `initial`), before the initial commit. Context:
+      `docs/registry/repo-layout.md`,
+      `docs/registry/signing-and-trust.md`,
+      `docs/registry/architecture.md`,
+      `crates/aos-package/src/registry_ops.rs`,
+      `crates/aos-package/src/lib.rs`,
+      `crates/aos-package/src/registry/keys.rs`, and
+      `crates/aos-package/src/security.rs`.
+- [ ] Maintain the committed `keys.toml` trust roster through producer key
+      rotation and revocation operations. The parser/writer helpers and
+      create-time emission exist, but operators still need supported rotation
+      and revocation command workflows. Context: `docs/registry/repo-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/registry/architecture.md`,
       `crates/aos-package/src/registry_ops.rs`,

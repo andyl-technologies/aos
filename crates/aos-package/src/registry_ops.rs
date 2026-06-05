@@ -15,9 +15,11 @@ use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
 use crate::registry::channel::{self, PartitionMap};
+use crate::registry::keys::{self, KeysToml, RosterKey};
 use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
+use crate::security::parse_signing_key;
 use crate::types::{CacheEntry, RegistryRootConfig};
 use crate::{BranchCommand, CacheCommand, ChannelCommand, PrCommand};
 
@@ -472,6 +474,41 @@ pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
     }
 }
 
+fn initial_keys_roster(
+    registry_name: &str,
+    trust_key: Option<&str>,
+    trust_key_id: Option<&str>,
+) -> Result<KeysToml> {
+    let mut roster = KeysToml::default();
+
+    let Some(trust_key) = trust_key else {
+        if trust_key_id.is_some() {
+            bail!("--trust-key-id requires --trust-key");
+        }
+        return Ok(roster);
+    };
+
+    let trust_key_id = trust_key_id.unwrap_or("initial");
+    if trust_key_id.trim().is_empty() {
+        bail!("--trust-key-id cannot be empty when --trust-key is provided");
+    }
+
+    let (key_registry, _algorithm, _public_key) = parse_signing_key(trust_key)?;
+    if key_registry != registry_name {
+        bail!(
+            "--trust-key belongs to registry '{}', expected '{}'",
+            key_registry,
+            registry_name,
+        );
+    }
+
+    roster.active.push(RosterKey {
+        id: trust_key_id.to_string(),
+        key: trust_key.to_string(),
+    });
+    Ok(roster)
+}
+
 // ---------------------------------------------------------------------------
 // Registry Lifecycle
 // ---------------------------------------------------------------------------
@@ -481,6 +518,8 @@ pub async fn create(
     config: &ApmConfig,
     name: &str,
     remote: Option<&str>,
+    trust_key: Option<&str>,
+    trust_key_id: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let dir = config.scope.registries_path().join(name);
@@ -508,6 +547,8 @@ description = ""
 "#
     );
     std::fs::write(dir.join("registry.toml"), &registry_toml)?;
+    let roster = initial_keys_roster(name, trust_key, trust_key_id)?;
+    keys::write_keys_toml(&dir, &roster)?;
 
     // Initial commit.
     git(&dir, &["add", "-A"])?;
@@ -2315,6 +2356,44 @@ mod tests {
                 semver::Version::parse("1.2.0").unwrap(),
             ],
         );
+    }
+
+    #[test]
+    fn initial_keys_roster_defaults_to_empty_schema_one_roster() {
+        let roster = initial_keys_roster("aos-core", None, None).unwrap();
+        assert_eq!(roster.schema, keys::KEYS_TOML_SCHEMA);
+        assert!(roster.active.is_empty());
+        assert!(roster.revoked.is_empty());
+    }
+
+    #[test]
+    fn initial_keys_roster_accepts_matching_registry_key() {
+        let roster =
+            initial_keys_roster("aos-core", Some("aos-core:Ed25519:YWJjZA=="), Some("2026a"))
+                .unwrap();
+        assert_eq!(roster.active.len(), 1);
+        assert_eq!(roster.active[0].id, "2026a");
+        assert_eq!(roster.active[0].key, "aos-core:Ed25519:YWJjZA==");
+    }
+
+    #[test]
+    fn initial_keys_roster_defaults_key_id_when_key_is_supplied() {
+        let roster =
+            initial_keys_roster("aos-core", Some("aos-core:Ed25519:YWJjZA=="), None).unwrap();
+        assert_eq!(roster.active[0].id, "initial");
+    }
+
+    #[test]
+    fn initial_keys_roster_rejects_key_id_without_key() {
+        let err = initial_keys_roster("aos-core", None, Some("2026a")).unwrap_err();
+        assert!(format!("{err:#}").contains("--trust-key-id requires --trust-key"));
+    }
+
+    #[test]
+    fn initial_keys_roster_rejects_foreign_registry_key() {
+        let err = initial_keys_roster("aos-core", Some("other:Ed25519:YWJjZA=="), Some("2026a"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("expected 'aos-core'"));
     }
 
     #[test]
