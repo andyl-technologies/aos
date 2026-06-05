@@ -354,6 +354,7 @@ fn create_download_bar(total: u64, label: &str) -> ProgressBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn join_basic() {
@@ -435,6 +436,50 @@ mod tests {
 
         let results = download_nars(&[], tmp.path(), 4, &printer).await.unwrap();
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn download_nars_uses_narinfo_supplied_colon_free_url() {
+        let printer = Printer::new(0, true, false);
+        let source = tempfile::TempDir::new().unwrap();
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let nar_bytes = b"nar-bytes";
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
+        let nar_url = "nar/abc123-sha256-def456.nar.zst";
+
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(source.path().join(nar_url), nar_bytes).unwrap();
+
+        let resolved = ResolvedDownload {
+            req: DownloadRequest {
+                store_path: "/nix/store/abc123-package".to_string(),
+                mirror_url: format!("file://{}", source.path().display()),
+            },
+            narinfo: NarInfo {
+                store_path: "/nix/store/abc123-package".to_string(),
+                url: nar_url.to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some(file_hash.clone()),
+                file_size: Some(nar_bytes.len() as u64),
+                nar_hash: "sha256:def456".to_string(),
+                nar_size: 5,
+                references: Vec::new(),
+                deriver: None,
+                signatures: Vec::new(),
+            },
+        };
+
+        let results = download_nars(&[resolved], cache_dir.path(), 1, &printer)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].download_hash, file_hash);
+        assert_eq!(
+            results[0].local_path,
+            cache_dir.path().join("sha256-def456.nar.zst"),
+        );
+        assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
     }
 
     #[tokio::test]
