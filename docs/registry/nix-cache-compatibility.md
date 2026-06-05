@@ -624,6 +624,9 @@ the registry, fails if any path is absent from the local Nix store, emits signed
 narinfos and `nar/*.nar.zst`, writes `nix-cache-info`, optionally uploads the
 files to repeatable `--upload-url` destinations without rewriting the generated
 cache-info body, and optionally commits the root `registry.toml` cache pointer.
+Upload auth can come from `[registry.upload_auth]` in the selected
+`registries.d/<name>.toml` and is then overridden by env/CLI values on
+`apr cache generate`.
 Stock-Nix host wiring remains ordinary
 `nix.conf` / flake `nixConfig` setup (§10).
 

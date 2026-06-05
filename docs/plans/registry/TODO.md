@@ -472,12 +472,20 @@ read before editing code or docs.
       `crates/aos-package/src/registry_ops.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and
       `crates/aos-cache/src/backend/mod.rs`.
-- [ ] Add persistent config-file precedence for registry upload backend auth if
-      operators need non-env, non-CLI credential configuration. The implemented
-      surface supports explicit flags and existing env bindings, but there is no
-      registry-specific auth config-file layer yet. Context:
+- [x] Add persistent config-file precedence for registry upload backend auth.
+      `registries.d/<name>.toml` now accepts an optional
+      `[registry.upload_auth]` table with the same auth shape as
+      `apr cache generate` flags: token/view, HTTP basic/header, S3
+      region/profile/endpoint, and SFTP key/password/ask-pass settings. The
+      merge rule is config defaults first, then env/CLI values from Clap override
+      those defaults, with final view fallback to `"default"`.
+      Coverage includes config-file parsing, selected-registry lookup, and
+      `CacheUploadAuthArgs::auth_options_with_config` precedence tests. Context:
       `docs/registry/publishing.md`,
       `docs/registry/nix-cache-compatibility.md`,
+      `docs/registry/current-state.md`,
+      `crates/aos-package/src/types.rs`,
+      `crates/aos-package/src/config.rs`,
       `crates/aos-package/src/lib.rs`,
       `crates/aos-package/src/registry_ops.rs`, and
       `crates/aos-cache/src/backend/mod.rs`.

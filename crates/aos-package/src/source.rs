@@ -283,6 +283,7 @@ priority = 500
                     pin: None,
                     max_staleness_seconds: None,
                     caches: Vec::new(),
+                    upload_auth: None,
                     signing: None,
                 },
                 None,

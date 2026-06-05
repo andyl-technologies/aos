@@ -143,6 +143,7 @@ impl ApmConfig {
             pin: rf.registry.pin,
             max_staleness_seconds: rf.registry.max_staleness_seconds,
             caches: rf.registry.caches,
+            upload_auth: rf.registry.upload_auth,
             signing: rf.registry.signing,
         };
 
@@ -316,6 +317,10 @@ url = "https://registry.aos.dev/core"
 required = true
 public_key = "aos-core:Ed25519:abc123"
 
+[registry.upload_auth]
+view = "prod"
+s3_region = "us-west-2"
+
 [registry.state]
 last_commit = "deadbeef"
 floor = "1.2.0"
@@ -329,6 +334,9 @@ last_update = "2026-02-13T10:30:00Z"
         let (config, state) = ApmConfig::parse_registry_file(&path).unwrap();
         assert_eq!(config.name, "aos-core");
         assert!(config.signing.is_some());
+        let upload_auth = config.upload_auth.unwrap();
+        assert_eq!(upload_auth.view.as_deref(), Some("prod"));
+        assert_eq!(upload_auth.s3_region.as_deref(), Some("us-west-2"));
         let s = state.unwrap();
         assert_eq!(s.last_commit.unwrap(), "deadbeef");
         assert_eq!(s.floor.unwrap(), "1.2.0");
@@ -378,6 +386,7 @@ max_staleness_seconds = 604800
                         pin: None,
                         max_staleness_seconds: None,
                         caches: Vec::new(),
+                        upload_auth: None,
                         signing: None,
                     },
                     None,
@@ -396,6 +405,7 @@ max_staleness_seconds = 604800
                         pin: None,
                         max_staleness_seconds: None,
                         caches: Vec::new(),
+                        upload_auth: None,
                         signing: None,
                     },
                     None,
