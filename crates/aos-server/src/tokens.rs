@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use rand::Rng;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 /// One hour in seconds, used as the grace period during token rotation.
@@ -88,8 +88,7 @@ impl TokenStore {
 
         let hash = sha256_hex(&plaintext);
 
-        let views_json =
-            serde_json::to_string(views).context("serializing views")?;
+        let views_json = serde_json::to_string(views).context("serializing views")?;
         let permissions_json =
             serde_json::to_string(permissions).context("serializing permissions")?;
 
@@ -324,8 +323,7 @@ impl TokenStore {
         let plaintext = format!("aos_{view_tag}_{random_hex}");
         let hash = sha256_hex(&plaintext);
 
-        let views_json =
-            serde_json::to_string(&old_record.views).context("serializing views")?;
+        let views_json = serde_json::to_string(&old_record.views).context("serializing views")?;
         let permissions_json =
             serde_json::to_string(&old_record.permissions).context("serializing permissions")?;
 
@@ -422,8 +420,9 @@ mod tests {
 
         let views = vec!["prod".to_string()];
         let perms = vec!["read".to_string(), "write".to_string()];
-        let (plaintext, record) =
-            store.create_token(&views, &perms, Some(1000), None, Some("test")).unwrap();
+        let (plaintext, record) = store
+            .create_token(&views, &perms, Some(1000), None, Some("test"))
+            .unwrap();
 
         assert!(plaintext.starts_with("aos_prod_"));
         assert_eq!(plaintext.len(), "aos_prod_".len() + 32);
@@ -443,7 +442,12 @@ mod tests {
     fn validate_unknown_token() {
         let (_dir, db) = tmp_db();
         let store = TokenStore::open(&db).unwrap();
-        assert!(store.validate_token("aos_fake_0000000000000000000000000000000").unwrap().is_none());
+        assert!(
+            store
+                .validate_token("aos_fake_0000000000000000000000000000000")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -451,8 +455,9 @@ mod tests {
         let (_dir, db) = tmp_db();
         let store = TokenStore::open(&db).unwrap();
 
-        let (plaintext, record) =
-            store.create_token(&["v".into()], &["r".into()], None, None, None).unwrap();
+        let (plaintext, record) = store
+            .create_token(&["v".into()], &["r".into()], None, None, None)
+            .unwrap();
         assert!(store.revoke_token(&record.id).unwrap());
         assert!(store.validate_token(&plaintext).unwrap().is_none());
 
@@ -465,8 +470,12 @@ mod tests {
         let (_dir, db) = tmp_db();
         let store = TokenStore::open(&db).unwrap();
 
-        let (_, r1) = store.create_token(&["a".into()], &[], None, None, None).unwrap();
-        let (_, _r2) = store.create_token(&["b".into()], &[], None, None, None).unwrap();
+        let (_, r1) = store
+            .create_token(&["a".into()], &[], None, None, None)
+            .unwrap();
+        let (_, _r2) = store
+            .create_token(&["b".into()], &[], None, None, None)
+            .unwrap();
         store.revoke_token(&r1.id).unwrap();
 
         let list = store.list_tokens().unwrap();
@@ -485,8 +494,9 @@ mod tests {
             .as_secs() as i64
             - 10;
 
-        let (plaintext, _) =
-            store.create_token(&["v".into()], &[], None, Some(past), None).unwrap();
+        let (plaintext, _) = store
+            .create_token(&["v".into()], &[], None, Some(past), None)
+            .unwrap();
         assert!(store.validate_token(&plaintext).unwrap().is_none());
     }
 
@@ -497,8 +507,9 @@ mod tests {
 
         let views = vec!["staging".into()];
         let perms = vec!["deploy".into()];
-        let (old_plain, old_rec) =
-            store.create_token(&views, &perms, Some(42), None, Some("rotate me")).unwrap();
+        let (old_plain, old_rec) = store
+            .create_token(&views, &perms, Some(42), None, Some("rotate me"))
+            .unwrap();
 
         let result = store.rotate_token(&old_rec.id).unwrap();
         assert!(result.is_some());

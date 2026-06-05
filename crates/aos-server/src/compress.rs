@@ -1,11 +1,11 @@
 use std::process::Stdio;
 
+use anyhow::{Context as _, Result};
 use aos_core::nix::aos_nix_env;
 use axum::body::Body;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 use tokio_util::io::ReaderStream;
-use anyhow::{Context as _, Result};
 
 /// Compression algorithm for NAR responses.
 #[derive(Debug, Clone, Copy)]
@@ -140,10 +140,7 @@ pub async fn nar_stream(store_path: &str, compression: Compression) -> Result<Bo
 /// Buffers the whole compressed stream in memory — fine for the small
 /// paths typical in tests and `apm install` consumers, but a future
 /// streaming-hash refactor would be friendlier to large closures.
-pub fn compute_file_hash_size(
-    store_path: &str,
-    compression: Compression,
-) -> Result<(String, u64)> {
+pub fn compute_file_hash_size(store_path: &str, compression: Compression) -> Result<(String, u64)> {
     use std::process::Command as StdCommand;
 
     let output = match compression {

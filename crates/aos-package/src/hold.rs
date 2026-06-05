@@ -1,8 +1,8 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::config::ApmConfig;
-use super::profile::meta;
 use super::profile::Profile;
+use super::profile::meta;
 use super::registry::store_path_hash;
 use aos_core::output::Printer;
 
@@ -42,7 +42,10 @@ pub async fn run_held(config: &ApmConfig, printer: &Printer) -> Result<()> {
     printer.header("Held packages:");
     for m in &held {
         if let Some(ref apm) = m.apm {
-            printer.plain(&format!("  {} {} ({})", apm.name, apm.version, apm.registry));
+            printer.plain(&format!(
+                "  {} {} ({})",
+                apm.name, apm.version, apm.registry
+            ));
         }
     }
 
@@ -143,7 +146,12 @@ mod tests {
 
         let result = find_hash_by_name(&profile, "nonexistent");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("package not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("package not found")
+        );
     }
 
     #[test]

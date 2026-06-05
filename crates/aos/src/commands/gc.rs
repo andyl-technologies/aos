@@ -1,7 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{create_spinner, Printer};
+use aos_core::output::{Printer, create_spinner};
 use aos_remote::AosClient;
 
 /// Default retention period for local garbage collection.
@@ -88,7 +88,9 @@ async fn run_remote(
 
     if let Some(freed) = resp.collected_bytes {
         let freed_mb = freed as f64 / (1024.0 * 1024.0);
-        printer.info(&format!("Collected: {freed_mb:.1} MB freed by nix-store --gc"));
+        printer.info(&format!(
+            "Collected: {freed_mb:.1} MB freed by nix-store --gc"
+        ));
     }
 
     printer.success("Remote GC complete");
@@ -112,11 +114,13 @@ fn run_view_gc(
     let db_path = root.join("var/nix/db/db.sqlite");
 
     if !db_path.exists() {
-        bail!("Nix store database not found at {}. Is this an AOS server?", db_path.display());
+        bail!(
+            "Nix store database not found at {}. Is this an AOS server?",
+            db_path.display()
+        );
     }
 
-    let store = NixStore::open(&db_path)
-        .context("opening Nix store database")?;
+    let store = NixStore::open(&db_path).context("opening Nix store database")?;
 
     // We need a ViewManager but we don't have full config.
     // Create a minimal one with just the target view.
@@ -151,17 +155,33 @@ fn run_view_gc(
         if dry_run {
             printer.info(&format!("Would remove {} roots (dry run)", roots.len()));
             for root_info in &roots {
-                printer.plain(&format!("  would remove: {} ({})", root_info.hash, root_info.store_path));
+                printer.plain(&format!(
+                    "  would remove: {} ({})",
+                    root_info.hash, root_info.store_path
+                ));
             }
         } else {
             for root_info in &roots {
-                let link = view_mgr.root().join("gcroots").join(view).join("bin").join(&root_info.hash);
-                let meta = view_mgr.root().join("meta").join(view).join("bin").join(format!("{}.json", root_info.hash));
+                let link = view_mgr
+                    .root()
+                    .join("gcroots")
+                    .join(view)
+                    .join("bin")
+                    .join(&root_info.hash);
+                let meta = view_mgr
+                    .root()
+                    .join("meta")
+                    .join(view)
+                    .join("bin")
+                    .join(format!("{}.json", root_info.hash));
                 if let Err(e) = std::fs::remove_file(&link) {
                     eprintln!("warning: failed to remove gc root {}: {e}", link.display());
                 }
                 if let Err(e) = std::fs::remove_file(&meta) {
-                    eprintln!("warning: failed to remove gc metadata {}: {e}", meta.display());
+                    eprintln!(
+                        "warning: failed to remove gc metadata {}: {e}",
+                        meta.display()
+                    );
                 }
             }
             printer.success(&format!("Removed {} roots from view '{view}'", roots.len()));
@@ -223,12 +243,7 @@ fn collect_default(nix: &NixRunner, printer: &Printer) -> Result<()> {
 }
 
 /// Pin a store path as a permanent GC root (no TTL expiry) in a view.
-fn pin_root(
-    _nix: &NixRunner,
-    printer: &Printer,
-    view: &str,
-    store_path: &str,
-) -> Result<()> {
+fn pin_root(_nix: &NixRunner, printer: &Printer, view: &str, store_path: &str) -> Result<()> {
     use aos_server::views::ViewManager;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -246,8 +261,8 @@ fn pin_root(
     };
     let view_mgr = ViewManager::new(root.clone(), vec![view_config]);
 
-    let hash = ViewManager::store_path_hash(store_path)
-        .context("extracting hash from store path")?;
+    let hash =
+        ViewManager::store_path_hash(store_path).context("extracting hash from store path")?;
 
     // Create the GC root symlink.
     view_mgr.create_gc_root(view, "bin", hash, store_path)?;
@@ -266,7 +281,9 @@ fn pin_root(
     });
     view_mgr.write_metadata(view, "bin", hash, &meta)?;
 
-    printer.success(&format!("Pinned {store_path} in view '{view}' (permanent, no TTL)"));
+    printer.success(&format!(
+        "Pinned {store_path} in view '{view}' (permanent, no TTL)"
+    ));
     Ok(())
 }
 

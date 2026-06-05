@@ -1,6 +1,7 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -29,9 +30,7 @@ fn resolve_home() -> PathBuf {
     }
     // Last-resort fallback: construct from /tmp with a warning.  This is
     // better than silently scattering state into /tmp directly.
-    eprintln!(
-        "warning: $HOME is not set; falling back to /tmp for user-scoped APM paths"
-    );
+    eprintln!("warning: $HOME is not set; falling back to /tmp for user-scoped APM paths");
     PathBuf::from("/tmp")
 }
 
@@ -117,8 +116,7 @@ impl ClosureMeta {
             }
             let mut tokens = line.split_whitespace();
             if let Some(node) = tokens.next() {
-                let node_deps: Vec<String> =
-                    tokens.map(|s| s.to_string()).collect();
+                let node_deps: Vec<String> = tokens.map(|s| s.to_string()).collect();
                 members.push(node.to_string());
                 deps.insert(node.to_string(), node_deps);
             }
@@ -149,10 +147,7 @@ impl ClosureMeta {
 
     /// Get the direct dependencies of a node in this closure.
     pub fn direct_deps(&self, hash: &str) -> &[String] {
-        self.deps
-            .get(hash)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+        self.deps.get(hash).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Check whether a store path hash is a member of this closure.
@@ -218,6 +213,9 @@ pub struct RegistryConfig {
     /// Branch name to track HEAD of (mutually exclusive with commit/tag/version).
     #[serde(default)]
     pub branch: Option<String>,
+    /// Rollout channel to track via the channel partition overlay.
+    #[serde(default)]
+    pub channel: Option<String>,
     /// Exact tag name to pin to (mutually exclusive with commit/branch/version).
     #[serde(default)]
     pub tag: Option<String>,
@@ -227,6 +225,20 @@ pub struct RegistryConfig {
     /// Legacy alias: old `pin` field is treated as `tag` for backward compatibility.
     #[serde(default)]
     pub pin: Option<String>,
+    /// Maximum age, in seconds, since the last successful channel sync before a
+    /// failed refresh is treated as stale. Defaults to 14 days for channels.
+    #[serde(default)]
+    pub max_staleness_seconds: Option<u64>,
+    /// Client-side binary cache override/supplement entries. These are merged
+    /// with the committed root registry.toml caches, then sorted by priority.
+    #[serde(default)]
+    pub caches: Vec<CacheEntry>,
+    /// Producer-side defaults for `apr cache generate --upload-url` backend auth.
+    #[serde(default)]
+    pub upload_auth: Option<RegistryUploadAuthConfig>,
+    /// Producer-side local private-key path map keyed by committed keys.toml id.
+    #[serde(default)]
+    pub signing_keys: BTreeMap<String, String>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
 }
@@ -247,13 +259,65 @@ pub struct SigningConfig {
     pub public_key: String,
 }
 
+/// Producer-side defaults for registry static-cache upload authentication.
+///
+/// This is read from `[registry.upload_auth]` in `registries.d/<name>.toml`.
+/// CLI flags and their env bindings override these defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryUploadAuthConfig {
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub view: Option<String>,
+    #[serde(default)]
+    pub http_user: Option<String>,
+    #[serde(default)]
+    pub http_password: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<String>,
+    #[serde(default)]
+    pub s3_region: Option<String>,
+    #[serde(default)]
+    pub s3_profile: Option<String>,
+    #[serde(default)]
+    pub s3_endpoint: Option<String>,
+    #[serde(default)]
+    pub ssh_key: Option<String>,
+    #[serde(default)]
+    pub ssh_password: Option<String>,
+    #[serde(default)]
+    pub ssh_ask_pass: bool,
+}
+
+impl RegistryUploadAuthConfig {
+    pub fn auth_options(&self) -> aos_cache::AuthOptions {
+        aos_cache::AuthOptions {
+            token: self.token.clone(),
+            view: self.view.clone().unwrap_or_else(|| "default".to_string()),
+            http_user: self.http_user.clone(),
+            http_password: self.http_password.clone(),
+            headers: self.headers.clone(),
+            s3_region: self.s3_region.clone(),
+            s3_profile: self.s3_profile.clone(),
+            s3_endpoint: self.s3_endpoint.clone(),
+            ssh_key: self.ssh_key.clone(),
+            ssh_password: self.ssh_password.clone(),
+            ssh_ask_pass: self.ssh_ask_pass,
+        }
+    }
+}
+
 /// Mutable state appended to a registry config file by `apm update`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RegistryState {
     #[serde(default)]
     pub last_commit: Option<String>,
     #[serde(default)]
-    pub last_creation_token: Option<u64>,
+    pub floor: Option<String>,
+    #[serde(default)]
+    pub bucket: Option<u8>,
+    #[serde(default)]
+    pub retained: Vec<String>,
     #[serde(default)]
     pub last_update: Option<String>,
 }
@@ -265,22 +329,24 @@ pub struct RegistryState {
 /// Transport type derived from the registry URL scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
-    /// Default: `https://` or `http://` — uses HTTP bundle distribution.
-    HttpBundle,
+    /// Default: `https://` or `http://` — uses git dumb-HTTP distribution.
+    Http,
     /// `git://`, `git+https://`, `git+ssh://` — uses native git.
     Git,
 }
 
 /// How a registry tracks its upstream version.
 ///
-/// Exactly one mode is active at a time; when none of the four tracking
-/// fields is set, the default mode (branch HEAD of "main") is used.
+/// Exactly one mode is active at a time; when no tracking field is set, the
+/// default mode is used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrackingMode {
     /// Frozen to an exact commit hash.
     Commit(String),
     /// Track the HEAD of a named branch.
     Branch(String),
+    /// Track a rollout channel using the channel partition overlay.
+    Channel(String),
     /// Pinned to an exact tag name.
     Tag(String),
     /// Semver constraint applied to tags (e.g. `~2026.03`, `^2026`).
@@ -294,6 +360,7 @@ impl std::fmt::Display for TrackingMode {
         match self {
             TrackingMode::Commit(h) => write!(f, "commit:{}", &h[..h.len().min(12)]),
             TrackingMode::Branch(b) => write!(f, "branch:{b}"),
+            TrackingMode::Channel(c) => write!(f, "channel:{c}"),
             TrackingMode::Tag(t) => write!(f, "tag:{t}"),
             TrackingMode::Version(v) => write!(f, "version:{v}"),
             TrackingMode::Default => write!(f, "default"),
@@ -305,7 +372,7 @@ impl RegistryConfig {
     /// Determine the transport from the URL scheme.
     ///
     /// Returns `Git` for `git://`, `git+https://`, or `git+ssh://` URLs.
-    /// Returns `HttpBundle` for all other URLs (including `https://` and
+    /// Returns `Http` for all other URLs (including `https://` and
     /// `http://`).  Bare scheme-only URLs (e.g. `https://` with no host)
     /// are not rejected here — callers that need a reachable URL should
     /// validate separately via [`Self::validate_url`].
@@ -316,7 +383,7 @@ impl RegistryConfig {
         {
             Transport::Git
         } else {
-            Transport::HttpBundle
+            Transport::Http
         }
     }
 
@@ -343,7 +410,7 @@ impl RegistryConfig {
 
     /// Resolve the tracking mode from the config fields.
     ///
-    /// Validates that at most one of `commit`, `branch`, `tag`, `version`
+    /// Validates that at most one of `commit`, `branch`, `channel`, `tag`, `version`
     /// (and legacy `pin`) is set.  The legacy `pin` field is treated as
     /// `tag` for backward compatibility.
     pub fn tracking_mode(&self) -> Result<TrackingMode> {
@@ -357,6 +424,9 @@ impl RegistryConfig {
         if self.branch.is_some() {
             count += 1;
         }
+        if self.channel.is_some() {
+            count += 1;
+        }
         if effective_tag.is_some() {
             count += 1;
         }
@@ -366,7 +436,7 @@ impl RegistryConfig {
 
         if count > 1 {
             bail!(
-                "registry '{}': only one of commit, branch, tag, version \
+                "registry '{}': only one of commit, branch, channel, tag, version \
                  may be set (found {})",
                 self.name,
                 count,
@@ -379,17 +449,21 @@ impl RegistryConfig {
         if let Some(ref branch) = self.branch {
             return Ok(TrackingMode::Branch(branch.clone()));
         }
+        if let Some(ref channel) = self.channel {
+            return Ok(TrackingMode::Channel(channel.clone()));
+        }
         if let Some(ref tag) = effective_tag {
             return Ok(TrackingMode::Tag(tag.clone()));
         }
         if let Some(ref constraint) = self.version {
-            let req = semver::VersionReq::parse(constraint)
-                .map_err(|e| anyhow::anyhow!(
+            let req = semver::VersionReq::parse(constraint).map_err(|e| {
+                anyhow::anyhow!(
                     "registry '{}': invalid version constraint '{}': {}",
                     self.name,
                     constraint,
                     e,
-                ))?;
+                )
+            })?;
             return Ok(TrackingMode::Version(req));
         }
 
@@ -451,8 +525,7 @@ impl ProfileScope {
     pub fn profile_path(&self) -> PathBuf {
         match self {
             ProfileScope::User => {
-                let user =
-                    std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
+                let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
                 PathBuf::from(PROFILES_BASE).join("per-user").join(user)
             }
             ProfileScope::System => PathBuf::from(PROFILES_BASE).join("system"),
@@ -462,9 +535,7 @@ impl ProfileScope {
     /// Path for cached registry metadata.
     pub fn cache_path(&self) -> PathBuf {
         match self {
-            ProfileScope::User => {
-                resolve_home().join(".local/share/apm/remote")
-            }
+            ProfileScope::User => resolve_home().join(".local/share/apm/remote"),
             ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("remote"),
         }
     }
@@ -488,9 +559,7 @@ impl ProfileScope {
     /// Path for local registry git clones (both read-only and read-write).
     pub fn registries_path(&self) -> PathBuf {
         match self {
-            ProfileScope::User => {
-                resolve_home().join(".local/share/apm/registries")
-            }
+            ProfileScope::User => resolve_home().join(".local/share/apm/registries"),
             ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("registries"),
         }
     }
@@ -536,12 +605,22 @@ pub struct RegistryFileInner {
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]
+    pub channel: Option<String>,
+    #[serde(default)]
     pub tag: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
     /// Legacy field: treated as `tag` for backward compatibility.
     #[serde(default)]
     pub pin: Option<String>,
+    #[serde(default)]
+    pub max_staleness_seconds: Option<u64>,
+    #[serde(default)]
+    pub caches: Vec<CacheEntry>,
+    #[serde(default)]
+    pub upload_auth: Option<RegistryUploadAuthConfig>,
+    #[serde(default)]
+    pub signing_keys: BTreeMap<String, String>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
     #[serde(default)]
@@ -565,8 +644,6 @@ pub struct RegistryRootConfig {
     pub registry: RegistryRootMeta,
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
-    #[serde(default)]
-    pub signing: Option<RegistrySigningConfig>,
 }
 
 /// Registry metadata in `registry.toml`.
@@ -587,12 +664,6 @@ pub struct CacheEntry {
 
 fn default_cache_priority() -> u32 {
     100
-}
-
-/// Signing configuration in `registry.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistrySigningConfig {
-    pub public_key: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -647,12 +718,17 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
-        assert_eq!(cfg.transport(), Transport::HttpBundle);
+        assert_eq!(cfg.transport(), Transport::Http);
     }
 
     #[test]
@@ -664,12 +740,17 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
-        assert_eq!(cfg.transport(), Transport::HttpBundle);
+        assert_eq!(cfg.transport(), Transport::Http);
     }
 
     #[test]
@@ -681,9 +762,14 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -698,9 +784,14 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -715,9 +806,14 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -775,6 +871,24 @@ name = "aos-core"
 url = "https://registry.aos.dev/core"
 priority = 500
 enabled = true
+max_staleness_seconds = 604800
+
+[[registry.caches]]
+url = "https://client-cache.aos.dev"
+priority = 1200
+
+[registry.upload_auth]
+token = "config-token"
+view = "prod"
+http_user = "cache-user"
+http_password = "cache-pass"
+headers = ["X-Registry: core"]
+s3_region = "us-west-2"
+s3_profile = "prod"
+s3_endpoint = "https://minio.example"
+ssh_key = "/etc/apm/cache_ed25519"
+ssh_password = "ssh-pass"
+ssh_ask_pass = true
 
 [registry.signing]
 required = true
@@ -783,9 +897,52 @@ public_key = "aos-core:Ed25519:base64keyhere"
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
         assert_eq!(rf.registry.name, "aos-core");
         assert_eq!(rf.registry.priority, 500);
+        assert_eq!(rf.registry.max_staleness_seconds, Some(604800));
+        assert_eq!(rf.registry.caches.len(), 1);
+        assert_eq!(rf.registry.caches[0].url, "https://client-cache.aos.dev");
+        assert_eq!(rf.registry.caches[0].priority, 1200);
+        let upload_auth = rf.registry.upload_auth.unwrap();
+        assert_eq!(upload_auth.token.as_deref(), Some("config-token"));
+        assert_eq!(upload_auth.view.as_deref(), Some("prod"));
+        assert_eq!(upload_auth.http_user.as_deref(), Some("cache-user"));
+        assert_eq!(upload_auth.http_password.as_deref(), Some("cache-pass"));
+        assert_eq!(upload_auth.headers, vec!["X-Registry: core"]);
+        assert_eq!(upload_auth.s3_region.as_deref(), Some("us-west-2"));
+        assert_eq!(upload_auth.s3_profile.as_deref(), Some("prod"));
+        assert_eq!(
+            upload_auth.s3_endpoint.as_deref(),
+            Some("https://minio.example")
+        );
+        assert_eq!(
+            upload_auth.ssh_key.as_deref(),
+            Some("/etc/apm/cache_ed25519")
+        );
+        assert_eq!(upload_auth.ssh_password.as_deref(), Some("ssh-pass"));
+        assert!(upload_auth.ssh_ask_pass);
         let signing = rf.registry.signing.unwrap();
         assert!(signing.required);
         assert_eq!(signing.public_key, "aos-core:Ed25519:base64keyhere");
+    }
+
+    #[test]
+    fn registry_root_config_ignores_signing_field() {
+        let toml_str = r#"
+[registry]
+name = "aos-core"
+description = "core registry"
+
+[[caches]]
+url = "https://cache.aos.dev"
+priority = 1000
+
+[registry.signing]
+public_key = "aos-core:Ed25519:base64keyhere"
+"#;
+        let cfg: RegistryRootConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.registry.name, "aos-core");
+        assert_eq!(cfg.registry.description.as_deref(), Some("core registry"));
+        assert_eq!(cfg.caches.len(), 1);
+        assert_eq!(cfg.caches[0].url, "https://cache.aos.dev");
     }
 
     #[test]
@@ -797,13 +954,17 @@ url = "https://registry.aos.dev/core"
 
 [registry.state]
 last_commit = "abc123"
-last_creation_token = 2026020003
+floor = "1.2.0"
+bucket = 10
+retained = ["1.0.0", "1.2.0"]
 last_update = "2026-02-13T10:30:00Z"
 "#;
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
         let state = rf.registry.state.unwrap();
         assert_eq!(state.last_commit.unwrap(), "abc123");
-        assert_eq!(state.last_creation_token.unwrap(), 2026020003);
+        assert_eq!(state.floor.unwrap(), "1.2.0");
+        assert_eq!(state.bucket.unwrap(), 10);
+        assert_eq!(state.retained, vec!["1.0.0", "1.2.0"]);
     }
 
     #[test]
@@ -863,9 +1024,14 @@ last_update = "2026-02-13T10:30:00Z"
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         }
     }
@@ -893,6 +1059,16 @@ last_update = "2026-02-13T10:30:00Z"
         match cfg.tracking_mode().unwrap() {
             TrackingMode::Branch(b) => assert_eq!(b, "stable"),
             other => panic!("expected Branch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracking_mode_channel() {
+        let mut cfg = base_cfg();
+        cfg.channel = Some("stable".into());
+        match cfg.tracking_mode().unwrap() {
+            TrackingMode::Channel(c) => assert_eq!(c, "stable"),
+            other => panic!("expected Channel, got {:?}", other),
         }
     }
 
@@ -952,6 +1128,15 @@ last_update = "2026-02-13T10:30:00Z"
     }
 
     #[test]
+    fn tracking_mode_error_branch_and_channel() {
+        let mut cfg = base_cfg();
+        cfg.branch = Some("main".into());
+        cfg.channel = Some("stable".into());
+        let err = cfg.tracking_mode().unwrap_err();
+        assert!(err.to_string().contains("only one of"), "got: {err}");
+    }
+
+    #[test]
     fn tracking_mode_error_commit_and_version() {
         let mut cfg = base_cfg();
         cfg.commit = Some("abc123".into());
@@ -965,7 +1150,10 @@ last_update = "2026-02-13T10:30:00Z"
         let mut cfg = base_cfg();
         cfg.version = Some("not a valid constraint!!!".into());
         let err = cfg.tracking_mode().unwrap_err();
-        assert!(err.to_string().contains("invalid version constraint"), "got: {err}");
+        assert!(
+            err.to_string().contains("invalid version constraint"),
+            "got: {err}"
+        );
     }
 
     #[test]

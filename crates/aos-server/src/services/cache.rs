@@ -15,8 +15,7 @@ use crate::pack;
 use crate::routes::AppState;
 use crate::views::ViewManager;
 
-type ResponseStream<T> =
-    Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
+type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
 type RequestStream<V> =
     Pin<Box<dyn Stream<Item = Result<buffa::view::OwnedView<V>, ConnectError>> + Send>>;
 
@@ -33,9 +32,11 @@ impl CacheService for CacheServiceImpl {
     ) -> Result<(CacheInfo, Context), ConnectError> {
         let view: &str = req.view;
 
-        let _view_config = self.state.views.get_view(view).ok_or_else(|| {
-            ConnectError::new(ErrorCode::NotFound, "unknown view")
-        })?;
+        let _view_config = self
+            .state
+            .views
+            .get_view(view)
+            .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "unknown view"))?;
 
         let response = CacheInfo {
             store_dir: self.state.store_dir.clone(),
@@ -71,9 +72,7 @@ impl CacheService for CacheServiceImpl {
             .state
             .views
             .check_visibility(view, store_hash)
-            .map_err(|e| {
-                ConnectError::new(ErrorCode::Internal, format!("visibility check: {e}"))
-            })?
+            .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("visibility check: {e}")))?
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in view"))?;
 
         let info = self
@@ -164,13 +163,16 @@ impl CacheService for CacheServiceImpl {
         }
 
         // Import via nix-store --import.
-        let imported = import_nar_data(&all_data).await.map_err(|e| {
-            ConnectError::new(ErrorCode::Internal, format!("import failed: {e}"))
-        })?;
+        let imported = import_nar_data(&all_data)
+            .await
+            .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("import failed: {e}")))?;
 
         // Create a temporary GC root.
         if let Some(hash) = ViewManager::store_path_hash(&imported) {
-            let _ = self.state.views.create_tmp_root(&view_name, hash, &imported);
+            let _ = self
+                .state
+                .views
+                .create_tmp_root(&view_name, hash, &imported);
         }
 
         Ok((
@@ -214,7 +216,7 @@ impl CacheService for CacheServiceImpl {
                 return Err(ConnectError::new(
                     ErrorCode::InvalidArgument,
                     "invalid NAR filename",
-                ))
+                ));
             }
         };
 
@@ -222,41 +224,33 @@ impl CacheService for CacheServiceImpl {
             .state
             .views
             .check_visibility(view, store_hash)
-            .map_err(|e| {
-                ConnectError::new(ErrorCode::Internal, format!("visibility check: {e}"))
-            })?
+            .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("visibility check: {e}")))?
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in view"))?;
 
         let body = compress::nar_stream(&store_path, compression)
             .await
-            .map_err(|e| {
-                ConnectError::new(ErrorCode::Internal, format!("streaming NAR: {e}"))
-            })?;
+            .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("streaming NAR: {e}")))?;
 
         // Convert the axum body stream into DownloadChunk messages.
         let offset = std::sync::atomic::AtomicI64::new(0);
         let offset = std::sync::Arc::new(offset);
 
-        let chunk_stream = body
-            .into_data_stream()
-            .map(move |result| match result {
-                Ok(bytes) => {
-                    let current_offset = offset.fetch_add(
-                        bytes.len() as i64,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
-                    Ok(DownloadChunk {
-                        data: bytes.to_vec(),
-                        offset: current_offset,
-                        total_size: 0, // unknown for streamed compression
-                        ..Default::default()
-                    })
-                }
-                Err(e) => Err(ConnectError::new(
-                    ErrorCode::Internal,
-                    format!("NAR stream error: {e}"),
-                )),
-            });
+        let chunk_stream = body.into_data_stream().map(move |result| match result {
+            Ok(bytes) => {
+                let current_offset =
+                    offset.fetch_add(bytes.len() as i64, std::sync::atomic::Ordering::Relaxed);
+                Ok(DownloadChunk {
+                    data: bytes.to_vec(),
+                    offset: current_offset,
+                    total_size: 0, // unknown for streamed compression
+                    ..Default::default()
+                })
+            }
+            Err(e) => Err(ConnectError::new(
+                ErrorCode::Internal,
+                format!("NAR stream error: {e}"),
+            )),
+        });
 
         Ok((Box::pin(chunk_stream), ctx))
     }
@@ -290,10 +284,7 @@ impl CacheService for CacheServiceImpl {
         }
 
         let entries = pack::parse_pack(&all_data).map_err(|e| {
-            ConnectError::new(
-                ErrorCode::InvalidArgument,
-                format!("invalid pack: {e}"),
-            )
+            ConnectError::new(ErrorCode::InvalidArgument, format!("invalid pack: {e}"))
         })?;
 
         let count = entries.len();
@@ -322,10 +313,7 @@ impl CacheService for CacheServiceImpl {
 }
 
 /// Parse structured narinfo text + DB info into proto NarInfo message.
-fn parse_narinfo_to_proto(
-    _narinfo_text: &str,
-    info: &crate::store::DbPathInfo,
-) -> NarInfo {
+fn parse_narinfo_to_proto(_narinfo_text: &str, info: &crate::store::DbPathInfo) -> NarInfo {
     NarInfo {
         store_path: info.path.clone(),
         nar_hash: info.nar_hash.clone(),
@@ -370,9 +358,7 @@ async fn import_nar_data(data: &[u8]) -> Result<String, String> {
         return Err(format!("nix-store --import failed: {stderr}"));
     }
 
-    let imported = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
+    let imported = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     if let Err(reason) = pack::validate_imported_path(&imported) {
         return Err(reason);

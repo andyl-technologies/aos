@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 
 use crate::cli::SystemCmd;
 use aos_core::nix::NixRunner;
-use aos_core::output::{create_spinner, Printer};
+use aos_core::output::{Printer, create_spinner};
 
 pub fn run(nix: &NixRunner, printer: &Printer, cmd: &SystemCmd) -> Result<()> {
     match cmd {
@@ -18,9 +18,7 @@ fn build(nix: &NixRunner, printer: &Printer) -> Result<()> {
     printer.info("Building system...");
 
     let spinner = create_spinner("building system");
-    let store_path = nix
-        .build(attr, None)
-        .with_context(|| "building system")?;
+    let store_path = nix.build(attr, None).with_context(|| "building system")?;
     spinner.finish_and_clear();
 
     if printer.json_if_active(&serde_json::json!({
@@ -29,10 +27,7 @@ fn build(nix: &NixRunner, printer: &Printer) -> Result<()> {
         return Ok(());
     }
 
-    printer.success(&format!(
-        "Built system -> {}",
-        store_path.display()
-    ));
+    printer.success(&format!("Built system -> {}", store_path.display()));
 
     Ok(())
 }
@@ -57,10 +52,7 @@ fn image(nix: &NixRunner, printer: &Printer) -> Result<()> {
         return Ok(());
     }
 
-    printer.success(&format!(
-        "Built image -> {}",
-        store_path.display()
-    ));
+    printer.success(&format!("Built image -> {}", store_path.display()));
 
     Ok(())
 }
@@ -71,9 +63,7 @@ fn eval(nix: &NixRunner, printer: &Printer) -> Result<()> {
     printer.info("Evaluating system...");
 
     let spinner = create_spinner("evaluating system");
-    let value = nix
-        .eval_json(attr)
-        .with_context(|| "evaluating system")?;
+    let value = nix.eval_json(attr).with_context(|| "evaluating system")?;
     spinner.finish_and_clear();
 
     if printer.json_if_active(&value) {
@@ -81,8 +71,7 @@ fn eval(nix: &NixRunner, printer: &Printer) -> Result<()> {
     }
 
     // Pretty-print the JSON for human consumption.
-    let pretty =
-        serde_json::to_string_pretty(&value).unwrap_or_else(|_| format!("{value}"));
+    let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| format!("{value}"));
     printer.plain(&pretty);
 
     printer.success("Evaluation succeeded");

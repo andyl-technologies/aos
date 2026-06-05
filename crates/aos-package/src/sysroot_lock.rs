@@ -57,7 +57,12 @@ pub fn parse_store_ref(reference: &str) -> Option<StoreRef> {
     let components: Vec<&str> = rest.split('-').collect();
     let mut version_start_idx = None;
     for (i, component) in components.iter().enumerate() {
-        if component.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if component
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+        {
             version_start_idx = Some(i);
             break;
         }
@@ -215,9 +220,7 @@ impl IgnoreSysrootLock {
 ///
 /// This is used by `check_sysroot_lock` to resolve reference hashes to
 /// package names and versions.
-pub fn build_registry_lookup(
-    config: &ApmConfig,
-) -> HashMap<String, (String, String, String)> {
+pub fn build_registry_lookup(config: &ApmConfig) -> HashMap<String, (String, String, String)> {
     let reg_configs = config.enabled_registries();
     let cache_dir = config.cache_path();
     let platform = "x86_64-linux";
@@ -233,7 +236,11 @@ pub fn build_registry_lookup(
             let hash = store_path_hash(&meta.store_path).to_string();
             lookup.insert(
                 hash,
-                (meta.name.clone(), meta.version.clone(), meta.store_path.clone()),
+                (
+                    meta.name.clone(),
+                    meta.version.clone(),
+                    meta.store_path.clone(),
+                ),
             );
             // Also index reference hashes that might not have their own
             // package entry (transitive deps that are in the registry).
@@ -258,7 +265,11 @@ pub fn build_registry_lookup(
             let hash = store_path_hash(&meta.store_path).to_string();
             lookup.insert(
                 hash,
-                (meta.name.clone(), meta.version.clone(), meta.store_path.clone()),
+                (
+                    meta.name.clone(),
+                    meta.version.clone(),
+                    meta.store_path.clone(),
+                ),
             );
         }
     }
@@ -429,24 +440,44 @@ mod tests {
         // Sysroot versions.
         m.insert(
             "aaa111".to_string(),
-            ("openssl".to_string(), "3.2.1".to_string(), "/nix/store/aaa111-openssl-3.2.1".to_string()),
+            (
+                "openssl".to_string(),
+                "3.2.1".to_string(),
+                "/nix/store/aaa111-openssl-3.2.1".to_string(),
+            ),
         );
         m.insert(
             "ccc333".to_string(),
-            ("zlib".to_string(), "1.3.0".to_string(), "/nix/store/ccc333-zlib-1.3.0".to_string()),
+            (
+                "zlib".to_string(),
+                "1.3.0".to_string(),
+                "/nix/store/ccc333-zlib-1.3.0".to_string(),
+            ),
         );
         m.insert(
             "eee555".to_string(),
-            ("glibc".to_string(), "2.39".to_string(), "/nix/store/eee555-glibc-2.39".to_string()),
+            (
+                "glibc".to_string(),
+                "2.39".to_string(),
+                "/nix/store/eee555-glibc-2.39".to_string(),
+            ),
         );
         // Package (newer) versions.
         m.insert(
             "bbb222".to_string(),
-            ("openssl".to_string(), "3.3.0".to_string(), "/nix/store/bbb222-openssl-3.3.0".to_string()),
+            (
+                "openssl".to_string(),
+                "3.3.0".to_string(),
+                "/nix/store/bbb222-openssl-3.3.0".to_string(),
+            ),
         );
         m.insert(
             "ddd444".to_string(),
-            ("zlib".to_string(), "1.3.1".to_string(), "/nix/store/ddd444-zlib-1.3.1".to_string()),
+            (
+                "zlib".to_string(),
+                "1.3.1".to_string(),
+                "/nix/store/ddd444-zlib-1.3.1".to_string(),
+            ),
         );
         m
     }
@@ -454,7 +485,11 @@ mod tests {
     #[test]
     fn check_sysroot_lock_no_violations() {
         let lookup = make_lookup();
-        let sysroot_refs = vec!["aaa111".to_string(), "ccc333".to_string(), "eee555".to_string()];
+        let sysroot_refs = vec![
+            "aaa111".to_string(),
+            "ccc333".to_string(),
+            "eee555".to_string(),
+        ];
         // Package uses the same openssl and zlib.
         let package_refs = vec!["aaa111".to_string(), "ccc333".to_string()];
 
@@ -465,7 +500,11 @@ mod tests {
     #[test]
     fn check_sysroot_lock_detects_divergence() {
         let lookup = make_lookup();
-        let sysroot_refs = vec!["aaa111".to_string(), "ccc333".to_string(), "eee555".to_string()];
+        let sysroot_refs = vec![
+            "aaa111".to_string(),
+            "ccc333".to_string(),
+            "eee555".to_string(),
+        ];
         // Package uses newer openssl and zlib.
         let package_refs = vec!["bbb222".to_string(), "ddd444".to_string()];
 
@@ -488,9 +527,17 @@ mod tests {
     #[test]
     fn check_sysroot_lock_partial_overlap() {
         let lookup = make_lookup();
-        let sysroot_refs = vec!["aaa111".to_string(), "ccc333".to_string(), "eee555".to_string()];
+        let sysroot_refs = vec![
+            "aaa111".to_string(),
+            "ccc333".to_string(),
+            "eee555".to_string(),
+        ];
         // Package uses newer openssl but same zlib, plus glibc is same.
-        let package_refs = vec!["bbb222".to_string(), "ccc333".to_string(), "eee555".to_string()];
+        let package_refs = vec![
+            "bbb222".to_string(),
+            "ccc333".to_string(),
+            "eee555".to_string(),
+        ];
 
         let violations = check_sysroot_lock(&sysroot_refs, &package_refs, &lookup);
         assert_eq!(violations.len(), 1);
@@ -549,15 +596,13 @@ mod tests {
     #[test]
     fn ignore_filter_enforce_keeps_all() {
         let ignore = IgnoreSysrootLock::Enforce;
-        let violations = vec![
-            SysrootLockViolation {
-                name: "openssl".into(),
-                sysroot_version: "3.2.1".into(),
-                sysroot_hash: "aaa".into(),
-                package_version: "3.3.0".into(),
-                package_hash: "bbb".into(),
-            },
-        ];
+        let violations = vec![SysrootLockViolation {
+            name: "openssl".into(),
+            sysroot_version: "3.2.1".into(),
+            sysroot_hash: "aaa".into(),
+            package_version: "3.3.0".into(),
+            package_hash: "bbb".into(),
+        }];
         let filtered = ignore.filter(violations);
         assert_eq!(filtered.len(), 1);
     }
@@ -615,15 +660,13 @@ mod tests {
 
     #[test]
     fn format_violation_error_message() {
-        let violations = vec![
-            SysrootLockViolation {
-                name: "openssl".into(),
-                sysroot_version: "3.2.1".into(),
-                sysroot_hash: "aaa111bb".into(),
-                package_version: "3.3.0".into(),
-                package_hash: "bbb222cc".into(),
-            },
-        ];
+        let violations = vec![SysrootLockViolation {
+            name: "openssl".into(),
+            sysroot_version: "3.2.1".into(),
+            sysroot_hash: "aaa111bb".into(),
+            package_version: "3.3.0".into(),
+            package_hash: "bbb222cc".into(),
+        }];
 
         let msg = format_violation_error(&violations, "server", "2026.03");
         assert!(msg.contains("sysroot-lock violation"));

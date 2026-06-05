@@ -61,8 +61,7 @@ impl SftpProtocol {
 
     /// Parse an SFTP URL into (host, port, username, path).
     fn parse_url(url: &str) -> Result<(String, u16, Option<String>, String)> {
-        let parsed =
-            url::Url::parse(url).with_context(|| format!("invalid SFTP URL: {url}"))?;
+        let parsed = url::Url::parse(url).with_context(|| format!("invalid SFTP URL: {url}"))?;
 
         let host = parsed
             .host_str()
@@ -157,12 +156,7 @@ impl SftpProtocol {
                 if !authenticated {
                     if let Some(ref kp) = key_path {
                         if session
-                            .userauth_pubkey_file(
-                                &user,
-                                None,
-                                Path::new(kp),
-                                password.as_deref(),
-                            )
+                            .userauth_pubkey_file(&user, None, Path::new(kp), password.as_deref())
                             .is_ok()
                         {
                             authenticated = true;
@@ -262,7 +256,9 @@ impl SftpProtocol {
         let mut chunk = vec![0u8; SFTP_CHUNK_SIZE];
 
         loop {
-            let n = file.read(&mut chunk).with_context(|| format!("reading {path}"))?;
+            let n = file
+                .read(&mut chunk)
+                .with_context(|| format!("reading {path}"))?;
             if n == 0 {
                 break;
             }
@@ -365,7 +361,9 @@ impl SftpProtocol {
         let mut buf = vec![0u8; SFTP_CHUNK_SIZE];
 
         loop {
-            let n = file.read(&mut buf).with_context(|| format!("reading {path}"))?;
+            let n = file
+                .read(&mut buf)
+                .with_context(|| format!("reading {path}"))?;
             if n == 0 {
                 break;
             }
@@ -413,8 +411,7 @@ impl Protocol for SftpProtocol {
     ) -> Result<TransferResult> {
         let (host, port, username, remote_path) = Self::parse_url(&request.url)?;
 
-        let session =
-            self.get_session(&host, port, username.as_deref(), auth)?;
+        let session = self.get_session(&host, port, username.as_deref(), auth)?;
 
         match request.method {
             Method::Get => {
@@ -491,85 +488,82 @@ impl Protocol for SftpProtocol {
                     }
                 }
             }
-            Method::Put => {
-                match &request.body {
-                    Some(TransferBody::File(path)) => {
-                        let session_clone = Arc::clone(&session);
-                        let rpath = remote_path.clone();
-                        let lpath = path.clone();
+            Method::Put => match &request.body {
+                Some(TransferBody::File(path)) => {
+                    let session_clone = Arc::clone(&session);
+                    let rpath = remote_path.clone();
+                    let lpath = path.clone();
 
-                        let bytes_written = tokio::task::spawn_blocking(move || {
-                            Self::sftp_write_from_file(&session_clone, &rpath, &lpath)
-                        })
-                        .await
-                        .context("SFTP write task panicked")??;
+                    let bytes_written = tokio::task::spawn_blocking(move || {
+                        Self::sftp_write_from_file(&session_clone, &rpath, &lpath)
+                    })
+                    .await
+                    .context("SFTP write task panicked")??;
 
-                        Ok(TransferResult {
-                            status: 200,
-                            headers: Vec::new(),
-                            bytes_transferred: bytes_written,
-                            content_length: Some(bytes_written),
-                            body: None,
-                            hash: None,
-                            resumed: false,
-                        })
-                    }
-                    Some(TransferBody::Bytes(data)) => {
-                        let data_len = data.len() as u64;
-                        let data = data.clone();
-                        let session_clone = Arc::clone(&session);
-                        let rpath = remote_path.clone();
-
-                        tokio::task::spawn_blocking(move || {
-                            Self::sftp_write_bytes(&session_clone, &rpath, &data)
-                        })
-                        .await
-                        .context("SFTP write task panicked")??;
-
-                        Ok(TransferResult {
-                            status: 200,
-                            headers: Vec::new(),
-                            bytes_transferred: data_len,
-                            content_length: Some(data_len),
-                            body: None,
-                            hash: None,
-                            resumed: false,
-                        })
-                    }
-                    Some(TransferBody::Stream(_)) => {
-                        anyhow::bail!("stream body not supported for SFTP; use TransferBody::File or TransferBody::Bytes");
-                    }
-                    None => {
-                        let session_clone = Arc::clone(&session);
-                        let rpath = remote_path.clone();
-
-                        tokio::task::spawn_blocking(move || {
-                            Self::sftp_write_bytes(&session_clone, &rpath, &[])
-                        })
-                        .await
-                        .context("SFTP write task panicked")??;
-
-                        Ok(TransferResult {
-                            status: 200,
-                            headers: Vec::new(),
-                            bytes_transferred: 0,
-                            content_length: Some(0),
-                            body: None,
-                            hash: None,
-                            resumed: false,
-                        })
-                    }
+                    Ok(TransferResult {
+                        status: 200,
+                        headers: Vec::new(),
+                        bytes_transferred: bytes_written,
+                        content_length: Some(bytes_written),
+                        body: None,
+                        hash: None,
+                        resumed: false,
+                    })
                 }
-            }
+                Some(TransferBody::Bytes(data)) => {
+                    let data_len = data.len() as u64;
+                    let data = data.clone();
+                    let session_clone = Arc::clone(&session);
+                    let rpath = remote_path.clone();
+
+                    tokio::task::spawn_blocking(move || {
+                        Self::sftp_write_bytes(&session_clone, &rpath, &data)
+                    })
+                    .await
+                    .context("SFTP write task panicked")??;
+
+                    Ok(TransferResult {
+                        status: 200,
+                        headers: Vec::new(),
+                        bytes_transferred: data_len,
+                        content_length: Some(data_len),
+                        body: None,
+                        hash: None,
+                        resumed: false,
+                    })
+                }
+                Some(TransferBody::Stream(_)) => {
+                    anyhow::bail!("stream body not supported for SFTP; use TransferBody::File or TransferBody::Bytes");
+                }
+                None => {
+                    let session_clone = Arc::clone(&session);
+                    let rpath = remote_path.clone();
+
+                    tokio::task::spawn_blocking(move || {
+                        Self::sftp_write_bytes(&session_clone, &rpath, &[])
+                    })
+                    .await
+                    .context("SFTP write task panicked")??;
+
+                    Ok(TransferResult {
+                        status: 200,
+                        headers: Vec::new(),
+                        bytes_transferred: 0,
+                        content_length: Some(0),
+                        body: None,
+                        hash: None,
+                        resumed: false,
+                    })
+                }
+            },
             Method::Head => {
                 let session_clone = Arc::clone(&session);
                 let path = remote_path.clone();
 
-                let size = tokio::task::spawn_blocking(move || {
-                    Self::sftp_stat(&session_clone, &path)
-                })
-                .await
-                .context("SFTP stat task panicked")??;
+                let size =
+                    tokio::task::spawn_blocking(move || Self::sftp_stat(&session_clone, &path))
+                        .await
+                        .context("SFTP stat task panicked")??;
 
                 match size {
                     Some(s) => Ok(TransferResult {
@@ -596,11 +590,9 @@ impl Protocol for SftpProtocol {
                 let session_clone = Arc::clone(&session);
                 let path = remote_path.clone();
 
-                tokio::task::spawn_blocking(move || {
-                    Self::sftp_delete(&session_clone, &path)
-                })
-                .await
-                .context("SFTP delete task panicked")??;
+                tokio::task::spawn_blocking(move || Self::sftp_delete(&session_clone, &path))
+                    .await
+                    .context("SFTP delete task panicked")??;
 
                 Ok(TransferResult {
                     status: 204,
@@ -639,11 +631,9 @@ impl Protocol for SftpProtocol {
         // Get file size for content_length.
         let session_stat = Arc::clone(&session);
         let stat_path = remote_path.clone();
-        let size = tokio::task::spawn_blocking(move || {
-            Self::sftp_stat(&session_stat, &stat_path)
-        })
-        .await
-        .context("SFTP stat task panicked")??;
+        let size = tokio::task::spawn_blocking(move || Self::sftp_stat(&session_stat, &stat_path))
+            .await
+            .context("SFTP stat task panicked")??;
 
         let result = TransferResult {
             status: 200,
@@ -712,8 +702,7 @@ mod tests {
 
     #[test]
     fn test_parse_url_ssh_scheme() {
-        let (host, port, _, path) =
-            SftpProtocol::parse_url("ssh://host.com/path").unwrap();
+        let (host, port, _, path) = SftpProtocol::parse_url("ssh://host.com/path").unwrap();
         assert_eq!(host, "host.com");
         assert_eq!(port, 22);
         assert_eq!(path, "/path");

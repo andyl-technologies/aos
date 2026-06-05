@@ -14,9 +14,6 @@ current state into the target lives under
 > [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md).
 > Rule of precedence: **for current state, the code wins; for intent, the brief
 > wins.**
->
-> Superseded concepts live only in [current-state.md](current-state.md) (today's
-> code) and design brief §15.
 
 ---
 
@@ -67,7 +64,7 @@ This reference set answers, for the AOS registry's **target state**:
   pack/delta/zstd → `update-server-info` → advance partitions → upload), CDN
   atomicity and concurrency.
 - *How it relates to prior art* — a structured comparison to the APT repository
-  format, mapping bundles/pdiff → git packs/thin-delta scheme and the percentage
+  format, mapping flat-file indices/pdiff → git packs/thin-delta scheme and the percentage
   rollout → 256 partitions.
 
 It does **not** specify the implementation tasks; those are enumerated in the
@@ -95,7 +92,7 @@ It does **not** specify the implementation tasks; those are enumerated in the
 |---|---|
 | [README.md](README.md) | This file — purpose, audience map, glossary, doc index, one-paragraph overview. |
 | [architecture.md](architecture.md) | Git-repo-over-dumb-HTTP; superset of git **and** Nix; the three ref layers; how `apm` and stock git both consume; the asymmetric-cost philosophy. |
-| [current-state.md](current-state.md) | The as-is implementation, grounded in code (`crates/aos-package/`) — today's bundle / `creation_token` / nested-TOML registry, including producer-side gaps. **Light edit only.** |
+| [current-state.md](current-state.md) | The as-built implementation, grounded in code (`crates/aos-package/`) — git-native sync, signed tags, channel partitions, release orchestration, static origin/cache upload, and object-store helpers. |
 | [repo-layout.md](repo-layout.md) | The **committed git tree** a commit contains (`registry.toml` + `keys.toml` + `packages/` + `closures/` + `.gitattributes`) and the tree↔HTTP mapping — distinct from the served object store. |
 | [http-layout.md](http-layout.md) | The full HTTP/object layout, CDN TTLs, the single root sha256 loose-object store, `info/refs` / `HEAD` / relative `info/alternates`, and the stock git dumb-HTTP compatibility surface. |
 | [versioning-and-channels.md](versioning-and-channels.md) | Semver (no `v` prefix), channels-as-branches, the frontier head, the 256-partition rollout, deterministic bucket selection, and anti-rollback. |
@@ -111,7 +108,7 @@ It does **not** specify the implementation tasks; those are enumerated in the
 |---|---|
 | [README.md](../plans/registry/README.md) | Plan overview, target summary, milestone roadmap, sequencing. |
 | [design-brief.md](../plans/registry/design-brief.md) | The captured design decision log (the authoritative grounding source). |
-| [gap-analysis.md](../plans/registry/gap-analysis.md) | Current code (bundles / `creation_token` / `registry.toml`-config) → git-native target; gaps mapped to workstreams. |
+| [gap-analysis.md](../plans/registry/gap-analysis.md) | Current code → git-native target; gaps mapped to workstreams. |
 | [workstream-01-object-store.md](../plans/registry/workstream-01-object-store.md) | sha256 bare repo, dumb-HTTP layout, `info/refs` / `HEAD` / relative `info/alternates` / `update-server-info`, the single root loose store and per-release pack-only dirs. |
 | [workstream-02-pack-delta-pipeline.md](../plans/registry/workstream-02-pack-delta-pipeline.md) | `pack-objects` thin/full, the delta scheme, zstd, expensive-producer tuning. |
 | [workstream-03-channels-rollouts.md](../plans/registry/workstream-03-channels-rollouts.md) | 256 signed partition tags, channels-as-branches / frontier, bucket selection, publisher rollout control. |
@@ -153,14 +150,13 @@ surface without conflicting.
    verified with NAME-BINDING (embedded tag name == serving path name)
 ```
 
-> **CURRENT vs TARGET.** Today the registry is a git repo of **nested package
-> TOMLs** distributed as **git bundles** with a `bundle-list.toml` manifest and
-> **calendar `creation_token`** ordering; signing is SSH-format Ed25519 on the
-> git **commit** (`apr sign` = `git commit -S`). The sha256 object store, the
-> `/channels` partition tags, the thin delta packs, the semver scheme, and the
-> origin-served Nix-cache superset are **TARGET**. See
-> [current-state.md](current-state.md) for the grounded as-is and
-> [architecture.md](architecture.md) for the target.
+> **CURRENT vs TARGET.** The current code now uses git-native sync for HTTP and
+> native git origins, signed release/channel tag objects, sha256 object-store
+> helpers, channel partition commands, persisted semver rollout state,
+> AOS delta/full/fallback object resolution, static Nix-cache generation, static
+> origin upload, and the `apr release` producer orchestrator. See
+> [current-state.md](current-state.md) for the grounded as-built state and
+> [architecture.md](architecture.md) for the target model.
 
 ---
 
@@ -173,7 +169,7 @@ surface without conflicting.
 | **`apr`** | The AOS Package Registry CLI. The same binary again; invoked as `apr …` it implicitly prepends `package registry …` (`crates/aos/src/main.rs:56`–`61`). The `apr` bin alias is declared in `crates/aos/Cargo.toml` (`[[bin]] name = "apr"`). |
 | **Registry (target)** | A **bare git repository in sha256 object format, served as static files over dumb HTTP**. The package metadata *is* the git tree content. |
 | **Channel** | A named release line (e.g. `stable`, `testing`), modeled as a git **branch** (`refs/heads/<channel>`) whose head is the rollout **frontier**, and as **256 signed partition tag objects** (`/channels/<name>/00..ff`) for rollout. |
-| **Partition / bucket** | One of exactly **256** channel partitions (`00`–`ff`). A consumer deterministically self-selects one bucket (e.g. the low byte of `sha256(machine_id)` (i.e. mod 256), persisted). The publisher advances partitions independently to control rollout. |
+| **Partition / bucket** | One of exactly **256** channel partitions (`00`–`ff`). A consumer self-selects one bucket on first channel sync from a registry-local random salt, persists the bucket index, and reuses it thereafter. The publisher advances partitions independently to control rollout. |
 | **Release** | An immutable **semver** version (e.g. `1.1.0`, `1.0.0-beta+exp.sha.5114f85`, **no `v` prefix**). A signed git **tag** (`refs/tags/<semver>`) → commit, with its object store under `/releases/<major>/<minor>/<patch…>/`. |
 | **Frontier** | The newest release any channel partition targets; the value of the channel's branch head (`refs/heads/<channel>`). A stock `git pull <channel>` always gets the frontier. |
 | **Signed tag object** | A **pure signed pointer**: an annotated git tag carrying the standard tag fields (object, type, the tag **name**, tagger) + an SSH-format **Ed25519** signature + an OPTIONAL freeform human message — **no structured TOML payload**. Both channel partition tags and release tags are signed; `tag → tag → commit` chains (channel partition → semver → commit) are used. |
@@ -196,8 +192,10 @@ surface without conflicting.
 
 - **CURRENT** marks behavior that exists in the code today, cited as `path:line`
   (relative to repo root, crate `crates/aos-package/` unless noted).
-- **TARGET** marks the intended design from the
-  [design brief](../plans/registry/design-brief.md) that is not yet implemented.
+- **TARGET** marks the intended protocol/design contract from the
+  [design brief](../plans/registry/design-brief.md). Some target sections are
+  now implemented; check [current-state.md](current-state.md) for as-built
+  status.
 - All inter-doc links are **relative** so the set is browsable from a checkout or
   a static site.
 - Where the code contradicts a brief current-state claim, the docs describe the

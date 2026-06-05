@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::config::ApmConfig;
-use super::profile::meta;
 use super::profile::Profile;
-use super::registry::{store_path_hash, RegistrySet};
+use super::profile::meta;
+use super::registry::{RegistrySet, store_path_hash};
 use super::types::PackageMeta;
 use aos_core::output::Printer;
 
@@ -44,8 +44,12 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
     let mut visited = HashSet::new();
     let mut ancestors = HashSet::new();
     let root = build_dep_tree(
-        meta, &registry_name, &registries, closure_meta,
-        &mut visited, &mut ancestors,
+        meta,
+        &registry_name,
+        &registries,
+        closure_meta,
+        &mut visited,
+        &mut ancestors,
     );
 
     // Print root line.
@@ -115,10 +119,7 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
         }
 
         // Fall back to recursive references traversal.
-        if let Some(pkg_meta) = registries.resolve_hash_in(
-            &apm.registry,
-            inst_hash,
-        ) {
+        if let Some(pkg_meta) = registries.resolve_hash_in(&apm.registry, inst_hash) {
             if closure_contains(pkg_meta, &apm.registry, &registries, &target_hash) {
                 dependents.push((apm.name.clone(), apm.version.clone()));
             }
@@ -304,7 +305,11 @@ fn build_dep_tree(
 
 /// Print a dependency tree node with box-drawing characters.
 fn print_tree(node: &DepNode, prefix: &str, is_last: bool, printer: &Printer) {
-    let connector = if is_last { "\u{2514}\u{2500}\u{2500}" } else { "\u{251c}\u{2500}\u{2500}" };
+    let connector = if is_last {
+        "\u{2514}\u{2500}\u{2500}"
+    } else {
+        "\u{251c}\u{2500}\u{2500}"
+    };
     let version_part = if node.version.is_empty() {
         String::new()
     } else {
@@ -425,10 +430,10 @@ fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use crate::registry::RegistrySet;
     use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
     use crate::registry::tests::make_registry;
-    use crate::registry::RegistrySet;
+    use std::fs;
     use tempfile::TempDir;
 
     // 1. Package with no references shows just itself.
@@ -472,10 +477,7 @@ mod tests {
         assert_eq!(root.children.len(), 4); // 4 references in CURL_TOML
 
         // One of the children should be zlib (resolved from its own hash).
-        let zlib_child = root
-            .children
-            .iter()
-            .find(|c| c.name == "zlib");
+        let zlib_child = root.children.iter().find(|c| c.name == "zlib");
         assert!(zlib_child.is_some());
         assert_eq!(zlib_child.unwrap().version, "1.3.1");
 
@@ -531,7 +533,11 @@ mod tests {
 
         // Capture output by manually formatting the line.
         let is_last = true;
-        let connector = if is_last { "\u{2514}\u{2500}\u{2500}" } else { "\u{251c}\u{2500}\u{2500}" };
+        let connector = if is_last {
+            "\u{2514}\u{2500}\u{2500}"
+        } else {
+            "\u{251c}\u{2500}\u{2500}"
+        };
         let line = format!("{connector} {} ({})", node.name, node.version);
         assert!(line.starts_with("\u{2514}\u{2500}\u{2500}"));
         assert!(line.contains("zlib"));
@@ -548,7 +554,11 @@ mod tests {
         };
 
         let is_last = false;
-        let connector = if is_last { "\u{2514}\u{2500}\u{2500}" } else { "\u{251c}\u{2500}\u{2500}" };
+        let connector = if is_last {
+            "\u{2514}\u{2500}\u{2500}"
+        } else {
+            "\u{251c}\u{2500}\u{2500}"
+        };
         let line = format!("{connector} {} ({})", node.name, node.version);
         assert!(line.starts_with("\u{251c}\u{2500}\u{2500}"));
         assert!(line.contains("openssl"));

@@ -137,8 +137,7 @@ where
         }
     }
 
-    Err(last_err
-        .unwrap_or_else(|| anyhow::anyhow!("retry exhausted with no error captured")))
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("retry exhausted with no error captured")))
 }
 
 /// Execute an async operation with retry logic and HTTP status classification.
@@ -187,8 +186,7 @@ where
         }
     }
 
-    Err(last_err
-        .unwrap_or_else(|| anyhow::anyhow!("retry exhausted with no error captured")))
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("retry exhausted with no error captured")))
 }
 
 /// Compute the delay for a retry attempt.

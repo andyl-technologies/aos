@@ -100,10 +100,7 @@ impl ApmConfig {
     /// Load all `.toml` files from a `registries.d/` directory.
     fn load_registry_dir(
         dir: &Path,
-        map: &mut std::collections::HashMap<
-            String,
-            (RegistryConfig, Option<RegistryState>),
-        >,
+        map: &mut std::collections::HashMap<String, (RegistryConfig, Option<RegistryState>)>,
     ) -> Result<()> {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .with_context(|| format!("reading {}", dir.display()))?
@@ -127,13 +124,11 @@ impl ApmConfig {
     }
 
     /// Parse a single registry TOML file, extracting config and optional state.
-    fn parse_registry_file(
-        path: &Path,
-    ) -> Result<(RegistryConfig, Option<RegistryState>)> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let rf: RegistryFile = toml::from_str(&content)
-            .with_context(|| format!("parsing {}", path.display()))?;
+    fn parse_registry_file(path: &Path) -> Result<(RegistryConfig, Option<RegistryState>)> {
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let rf: RegistryFile =
+            toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
 
         let config = RegistryConfig {
             name: rf.registry.name,
@@ -142,9 +137,14 @@ impl ApmConfig {
             enabled: rf.registry.enabled,
             commit: rf.registry.commit,
             branch: rf.registry.branch,
+            channel: rf.registry.channel,
             tag: rf.registry.tag,
             version: rf.registry.version,
             pin: rf.registry.pin,
+            max_staleness_seconds: rf.registry.max_staleness_seconds,
+            caches: rf.registry.caches,
+            upload_auth: rf.registry.upload_auth,
+            signing_keys: rf.registry.signing_keys,
             signing: rf.registry.signing,
         };
 
@@ -225,8 +225,7 @@ parallel_downloads = 16
 parallel_downloads = 2
 "#,
         );
-        let settings =
-            ApmConfig::load_settings(user_dir.path(), Some(system_dir.path())).unwrap();
+        let settings = ApmConfig::load_settings(user_dir.path(), Some(system_dir.path())).unwrap();
         assert_eq!(settings.parallel_downloads, 2);
     }
 
@@ -298,8 +297,7 @@ priority = 600
         );
 
         let registries =
-            ApmConfig::load_registries(user_dir.path(), Some(system_dir.path()))
-                .unwrap();
+            ApmConfig::load_registries(user_dir.path(), Some(system_dir.path())).unwrap();
         assert_eq!(registries.len(), 1);
         assert_eq!(registries[0].0.url, "https://mirror.example.com/core");
         assert_eq!(registries[0].0.priority, 600);
@@ -320,9 +318,19 @@ url = "https://registry.aos.dev/core"
 required = true
 public_key = "aos-core:Ed25519:abc123"
 
+[registry.upload_auth]
+view = "prod"
+s3_region = "us-west-2"
+
+[registry.signing_keys]
+initial = "/run/keys/aos-core-initial"
+next = "/run/keys/aos-core-next"
+
 [registry.state]
 last_commit = "deadbeef"
-last_creation_token = 2026020003
+floor = "1.2.0"
+bucket = 10
+retained = ["1.0.0", "1.2.0"]
 last_update = "2026-02-13T10:30:00Z"
 "#,
         )
@@ -331,9 +339,45 @@ last_update = "2026-02-13T10:30:00Z"
         let (config, state) = ApmConfig::parse_registry_file(&path).unwrap();
         assert_eq!(config.name, "aos-core");
         assert!(config.signing.is_some());
+        assert_eq!(
+            config.signing_keys.get("initial").map(String::as_str),
+            Some("/run/keys/aos-core-initial"),
+        );
+        assert_eq!(
+            config.signing_keys.get("next").map(String::as_str),
+            Some("/run/keys/aos-core-next"),
+        );
+        let upload_auth = config.upload_auth.unwrap();
+        assert_eq!(upload_auth.view.as_deref(), Some("prod"));
+        assert_eq!(upload_auth.s3_region.as_deref(), Some("us-west-2"));
         let s = state.unwrap();
         assert_eq!(s.last_commit.unwrap(), "deadbeef");
-        assert_eq!(s.last_creation_token.unwrap(), 2026020003);
+        assert_eq!(s.floor.unwrap(), "1.2.0");
+        assert_eq!(s.bucket.unwrap(), 10);
+        assert_eq!(s.retained, vec!["1.0.0", "1.2.0"]);
+    }
+
+    #[test]
+    fn parse_registry_with_channel() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("channel.toml");
+        fs::write(
+            &path,
+            r#"
+[registry]
+name = "aos-core"
+url = "https://registry.aos.dev/core"
+channel = "stable"
+max_staleness_seconds = 604800
+"#,
+        )
+        .unwrap();
+
+        let (config, state) = ApmConfig::parse_registry_file(&path).unwrap();
+        assert_eq!(config.name, "aos-core");
+        assert_eq!(config.channel.as_deref(), Some("stable"));
+        assert_eq!(config.max_staleness_seconds, Some(604800));
+        assert!(state.is_none());
     }
 
     #[test]
@@ -349,9 +393,14 @@ last_update = "2026-02-13T10:30:00Z"
                         enabled: true,
                         commit: None,
                         branch: None,
+                        channel: None,
                         tag: None,
                         version: None,
                         pin: None,
+                        max_staleness_seconds: None,
+                        caches: Vec::new(),
+                        upload_auth: None,
+                        signing_keys: Default::default(),
                         signing: None,
                     },
                     None,
@@ -364,9 +413,14 @@ last_update = "2026-02-13T10:30:00Z"
                         enabled: false,
                         commit: None,
                         branch: None,
+                        channel: None,
                         tag: None,
                         version: None,
                         pin: None,
+                        max_staleness_seconds: None,
+                        caches: Vec::new(),
+                        upload_auth: None,
+                        signing_keys: Default::default(),
                         signing: None,
                     },
                     None,

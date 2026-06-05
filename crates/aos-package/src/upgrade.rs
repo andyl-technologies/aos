@@ -5,13 +5,13 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::download::{
-    default_engine, download_nars, fetch_narinfos, resolve_mirror, DownloadRequest,
-    ResolvedDownload,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfos,
+    resolve_mirror,
 };
+use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
 use super::profile::meta::{list_meta, write_meta};
-use super::profile::Profile;
-use super::registry::{store_path_hash, RegistrySet};
+use super::registry::{RegistrySet, store_path_hash};
 use super::resolve::resolve_closure;
 use super::store::{create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
@@ -97,7 +97,10 @@ pub async fn run(
             .with_context(|| format!("resolving upgrade for '{}'", candidate.name))?;
         for meta in &closure.closure {
             let hash = store_path_hash(&meta.store_path).to_string();
-            if !all_new_metas.iter().any(|m| store_path_hash(&m.store_path) == hash) {
+            if !all_new_metas
+                .iter()
+                .any(|m| store_path_hash(&m.store_path) == hash)
+            {
                 all_new_metas.push(meta.clone());
             }
         }
@@ -121,11 +124,8 @@ pub async fn run(
                 let remaining = ignore_lock.filter(violations);
 
                 if !remaining.is_empty() {
-                    let msg = sysroot_lock::format_violation_error(
-                        &remaining,
-                        &sys_name,
-                        &sys_version,
-                    );
+                    let msg =
+                        sysroot_lock::format_violation_error(&remaining, &sys_name, &sys_version);
                     anyhow::bail!(msg);
                 }
             }
@@ -419,7 +419,10 @@ fn print_upgrade_summary(
 ) {
     printer.header("The following packages will be upgraded:");
     for c in to_upgrade {
-        printer.plain(&format!("  {} ({} -> {})", c.name, c.old_version, c.new_version));
+        printer.plain(&format!(
+            "  {} ({} -> {})",
+            c.name, c.old_version, c.new_version
+        ));
     }
 
     if !held_back.is_empty() {
@@ -567,9 +570,14 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
 
@@ -632,7 +640,13 @@ references = []
         let core = make_registry(&tmp, "aos-core", 500, &[("curl", CURL_TOML_NEWER)]);
         let set = RegistrySet::new(vec![core]);
 
-        let installed = vec![sample_installed("curl", "8.5.0", "h7j3k8l2m9n4", "aos-core", false)];
+        let installed = vec![sample_installed(
+            "curl",
+            "8.5.0",
+            "h7j3k8l2m9n4",
+            "aos-core",
+            false,
+        )];
 
         let candidates = find_upgradable(&installed, &set, &[]);
         assert_eq!(candidates.len(), 1);
@@ -651,7 +665,13 @@ references = []
         let core = make_registry(&tmp, "aos-core", 500, &[("curl", CURL_TOML)]);
         let set = RegistrySet::new(vec![core]);
 
-        let installed = vec![sample_installed("curl", "8.5.0", "h7j3k8l2m9n4", "aos-core", false)];
+        let installed = vec![sample_installed(
+            "curl",
+            "8.5.0",
+            "h7j3k8l2m9n4",
+            "aos-core",
+            false,
+        )];
 
         let candidates = find_upgradable(&installed, &set, &[]);
         assert!(candidates.is_empty());
@@ -916,7 +936,9 @@ references = []
     // 8. Empty candidates returns empty results.
     #[test]
     fn empty_candidates_returns_empty() {
-        let installed = vec![sample_installed("curl", "8.5.0", "hash1", "aos-core", false)];
+        let installed = vec![sample_installed(
+            "curl", "8.5.0", "hash1", "aos-core", false,
+        )];
 
         let (to_upgrade, held_back) = filter_held_and_excluded(Vec::new(), &installed, &[]);
         assert!(to_upgrade.is_empty());
