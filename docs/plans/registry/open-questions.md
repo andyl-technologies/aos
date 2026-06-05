@@ -221,63 +221,44 @@ brief §6, still protects every host).
 |---|---|
 | **Brief §16.4** | "Whether `apr` grows a single `apr release`/`apr publish` command that does the whole pipeline (commit → tag/sign → pack/delta/zstd → update-server-info → advance partitions → upload) and whether upload backends are pluggable." |
 | **Owner WS** | [WS-02](./workstream-02-pack-delta-pipeline.md) (pack/delta), [WS-03](./workstream-03-channels-rollouts.md) (advance partitions) |
-| **Status** | OPEN — the central producer-side build decision. |
+| **Status** | RESOLVED IN CODE — `apr release` is the wrapper; repeatable backend URLs are supported through the shared static-upload backend layer. |
 
-**Why it is the crux.** The producer is the asymmetry: the consumer is rich, but
-the producer side is a **stub today**. `apr bundle` is just `git bundle create`
-with **no manifest writer** and an **unused dead parameter**
-(`_update_manifest: bool` at `crates/aos-package/src/registry_ops.rs:1723`); there
-is no upload, no delta classification, no `update-server-info` orchestration.
-None of that survives into the target (git bundles are removed, brief §15), so
-the producer is effectively a greenfield build. The brief's §4 / §6 / §10 publish
-model only becomes real when one ordered sequence runs end-to-end:
+**Implemented decision.** The producer keeps the focused repair/inspection verbs
+(`apr publish`, `apr tag`, `apr channel`, `apr cache generate`, and
+`apr origin upload`) and adds one human-safe wrapper:
 
 ```
-apr release  (TARGET — performs the full ordered pipeline):
-  1. apr publish  → write package-TOML tree → git commit (sha256)
-  2. git tag -s <semver> → commit            (SSH-Ed25519 signed release tag; pure pointer)
-  3. write loose objects to the root /objects/<xx>/<62hex>  (every release, centralized)
-  4. pack/delta/zstd from the release commit → /releases/*/objects/pack/ (pack-only):
-       - full pack-<sha256>.pack (+ .idx)  at every X.Y.0
-       - thin delta-<from-semver>.pack[.zst] per the §9 delta scheme
-  5. git update-server-info                  (regenerate info/refs, HEAD)
-  6. write objects/info/alternates           (relative ../releases/*/objects, one ../, newest→oldest)
-  7. upload immutable content first          (root loose objects, release packs — any order)
-  8. advance N of the 256 /channels/<name>/00..ff signed partition tags  (rollout)
-  9. low-TTL surfaces last                    (/channels/**, info/refs, HEAD, packs)
+apr release <semver>
+  [--store-path <path>]
+  (--key <private-key-path> | --key-id <keys.toml-id>)
+  [--channel <name> (--init-channel | --count N | --partitions 00,01,...)]
+  [--cache-url <url>] [--cache-output <dir>] [--cache-key <key-file>]
+  [--upload-url <file|http|s3|sftp URL>]...
+  [--dry-run] [--resume]
 ```
 
-**Open sub-questions.**
+`apr release` can release an already committed registry tree, or it can publish a
+real local Nix store path first by delegating to `apr publish`. When `--cache-url`
+is supplied, the cache pointer is committed before the semver tag is signed so
+the release authenticates the pointer. Pack generation writes full packs at
+`X.Y.0` anchors and compressed guaranteed thin deltas at the target release.
+`--cache-output` runs static Nix-cache generation explicitly because it requires
+the listed store paths to exist locally.
 
-1. **Command surface.** One `apr release` that does everything, or composable
-   verbs (`apr pack` → `apr delta` → `apr upload` → `apr advance`) that a release
-   script chains? Composable verbs are more testable and let CI own ordering; a
-   single command is the safer default for humans because the ordering
-   (immutable-first, low-TTL surfaces last) is the *only* safe order.
-2. **Pluggable upload backends.** S3, rsync, and plain HTTP PUT are all
-   plausible. The git-native model has **no single root file to atomically
-   swap** — the "commit point" is the set
-   of low-TTL surfaces (`/channels/**`, `info/refs`, `HEAD`, `objects/info/packs`)
-   that must be published *after* all immutable objects exist. The atomicity
-   requirement is therefore "publish immutable objects → then publish the low-TTL
-   index/partition surfaces", and it is **backend-independent** (no conditional
-   PUT needed) *as long as the ordering holds* (see R2).
-3. **Where pack/delta generation runs.** On the publishing host from the landed
-   commit, or as a separate CI job that re-derives from the signed tag? The signed
-   tag makes the second option safe (the commit is content-addressed and signed),
-   but the first is simpler.
-4. **Idempotency / resume.** Steps 3–4 + 7 (immutable objects: root loose
-   objects, release packs, upload) must be safely re-runnable after a partial
-   failure — they are content-addressed, so re-upload is a no-op. Only steps
-   5/6/8/9 (index + alternates + partition advance + low-TTL surfaces) mutate
-   shared state.
+**Upload backend decision.** Upload is pluggable at the static-file backend layer:
+repeat `--upload-url` for `file://`, generic `http(s)://`, `s3://`, and
+`sftp://`/`ssh://` destinations. The uploader classifies paths and writes
+immutable payloads first (`objects/**`, `releases/**`, static-cache NARs and
+narinfos) and low-TTL mutable surfaces last (`HEAD`, `info/refs`,
+`objects/info/**`, `channels/**`, `nix-cache-info`). Service-backed S3/SFTP
+validation remains a separate TODO because it requires external services.
 
-**Recommendation.** Build composable verbs underneath a single `apr release`
-convenience wrapper; make upload a trait with S3/rsync/PUT impls; require all
-backends to honor the immutable-first / low-TTL-last ordering and document that
-the rollout-partition advance (step 8) is the *only* publisher-coordination point
-(restrict concurrent publishers per channel, see R3). This is the heart of WS-02
-/ WS-03 and gates the whole target design becoming operable.
+**Idempotency and coordination.** `--resume` skips a semver tag already pointing
+at `HEAD` and skips already-present full/delta pack artifacts; otherwise existing
+immutable artifacts fail closed with a clear "pass --resume" message. A local
+publisher lock in the git dir prevents two local `apr release` processes from
+interleaving. Multi-host publisher serialization and production CDN behavior are
+still operational validation topics (see R2/R3 and the TODO).
 
 ### Q5 — Consumer freshness / max-staleness policy and key-rotation cadence
 
@@ -595,8 +576,8 @@ workstream.
 | ID | Risk | Likelihood × Impact | Mitigation | Owner WS |
 |---|---|---|---|---|
 | **R1** | **sha256 dumb-HTTP client incompatibility** (Q1). Old / non-sha256 gits cannot clone or verify; no capability negotiation to detect this. | Med × Med | Pin a tested minimum git version; emit a clear "requires sha256 git" error in the consumer instead of a low-level object panic; rely on loose-object completeness for in-range clients. | WS-01, WS-05 |
-| **R2** | **Torn publish.** A consumer reads a low-TTL surface (`info/refs`, `/channels/**`, `objects/info/packs`) that names an object/pack not yet uploaded. | Low × High | Strict ordering: upload all immutable objects (loose + packs) **first**, regenerate/publish the low-TTL index and partition surfaces **last** (brief §4, §10). Loose-object completeness means a partially-published frontier still resolves via the prior release. | WS-02, WS-03 |
-| **R3** | **Concurrent publishers race the partition advance.** Two `apr release` runs advancing the same channel's 256 partitions can interleave into an inconsistent rollout fraction. | Med × Med | Restrict to a single publisher per channel, or serialize the partition-advance step; the immutable-object steps are content-addressed and need no coordination. | WS-03 |
+| **R2** | **Torn publish.** A consumer reads a low-TTL surface (`info/refs`, `/channels/**`, `objects/info/packs`) that names an object/pack not yet uploaded. | Low × High | `apr release` and `apr origin upload` publish immutable objects/packs/cache payloads **first** and low-TTL index/partition surfaces **last**. Loose-object completeness means a partially-published frontier still resolves via the prior release. Real CDN/mirror behavior still needs validation. | WS-02, WS-03 |
+| **R3** | **Concurrent publishers race the partition advance.** Two `apr release` runs advancing the same channel's 256 partitions can interleave into an inconsistent rollout fraction. | Med × Med | `apr release` has a local publisher lock in the git dir. Multi-host production publishers still need one external serialization point per channel; immutable-object steps are content-addressed and need no coordination. | WS-03 |
 | **R4** | **Online signing key exposure.** Removing in-band `valid_until` removes the heartbeat-re-sign pressure that wanted the Ed25519 key online for quiet channels (Q5); the remaining online-key need is key rotation, which re-signs live partitions. | Low × High | No routine re-sign — freshness is the consumer's max-staleness clock, not a signed window; sign partitions only on rollout advance; for rotation use `allowed_signers` overlap, never the long-term key online beyond the rotation event. | WS-04, WS-03 |
 | **R5** | **Delta depth too deep → consumer reconstruct cost** (Q2). A large `--depth` shifts CPU onto every consumer applying the delta chain. | Low × Med | Cap `--depth` (suggest 50); window is the free lever, not depth (brief §10); document the consumer-cost rationale. | WS-02 |
 | **R6** | **Bucket flap / skew** (Q3). A host recomputes a different bucket across syncs, or cloned images share a baked-in host identifier. | Med × Low | Implemented: first assignment uses generated registry-local salt; persisted bucket index wins afterward; probe-forward does not re-pin. | WS-03, WS-05 |
@@ -626,16 +607,16 @@ signing primitive and the
 package-TOML tree content, and replaces *everything about distribution and
 rollout*").
 
-| Layer | CURRENT | TARGET | Survives? |
+| Layer | Retired bundle model | Git-native model | Survives? |
 |---|---|---|---|
 | Package metadata | nested package TOMLs (`PackageToml`, `crates/aos-package/src/registry/parse.rs:14`) + `closures/<hash>` adjacency | **same TOML tree content**, now living as git tree objects in a sha256 bare repo (brief §3, §8) | **Yes** (content), repackaged as git objects |
-| Root / manifest | `bundle-list.toml` manifest the consumer parses (`registry/bundle.rs:49`, `BundleManifest`, **Deserialize-only**) | **removed** — replaced by git refs + signed tag objects + relative `objects/info/alternates` (brief §15) | **No** |
-| Distribution unit | **git bundles** + `bundle-list.toml`; producer is a stub (`apr bundle` = `git bundle create`; dead `_update_manifest`, `registry_ops.rs:1723`) | **removed** — full packs `pack-<sha256>.pack` + thin `delta-<from>.pack[.zst]` over dumb HTTP (brief §9, §10, §15) | **No** |
-| Versioning / ordering | **calendar tags** `vYYYY.MM[.P]` ordered by `creation_token` (`registry/state.rs:131 version_to_token`, `:104 check_monotonic`) | **standard semver, no `v`**; ordering by semver + git ancestry (brief §7, §15) | **No** |
-| Selection | `pick_bundles` (`registry/update.rs:292`); tracking modes commit/branch/tag/semver (`types.rs TrackingMode`) | bucket → `/channels/<name>/<00..ff>` signed partition tag → semver tag → commit, then delta walk (brief §5, §6, §9) | **No** |
+| Root / manifest | `bundle-list.toml` manifest | **removed** — replaced by git refs + signed tag objects + relative `objects/info/alternates` (brief §15) | **No** |
+| Distribution unit | **git bundles** + `bundle-list.toml` | **removed** — full packs `pack-<sha256>.pack` + thin `delta-<from>.pack[.zst]` over dumb HTTP (brief §9, §10, §15) | **No** |
+| Versioning / ordering | **calendar tags** `vYYYY.MM[.P]` ordered by `creation_token` | **standard semver, no `v`**; ordering by semver + git ancestry (brief §7, §15) | **No** |
+| Selection | bundle selection by manifest plus branch/tag/version tracking | bucket → `/channels/<name>/<00..ff>` signed partition tag → semver tag → commit, then delta walk (brief §5, §6, §9) | **No** |
 | Rollout | none beyond tracking-mode selection | **256 signed partition tags**, publisher-advanced N/256 (brief §6) | **No** (new) |
-| Signing | signed git **commit** (`apr sign` = `git commit -S`; `git verify-commit`, `registry/git.rs:379`) + TOFU `trusted-keys.d` | signed git **tag objects** as **pure signed pointers** — no structured payload, just standard tag fields + Ed25519 signature + optional freeform message (channel partitions + release tags), SSH-Ed25519, name-binding, `tag→tag→commit` (brief §5, §11) | **Yes** (primitive), moved commit→tag |
-| Nix NAR cache | `[[caches]]` consumer reads, fallback `{registry}/nar` (`download.rs:67 resolve_mirror`, `:57 nar_url`) | cache location lives in the committed repo-root `registry.toml` `[[caches]]` (authenticated transitively by the signed tag), with client-side `registries.d` as an optional override (or the origin itself) — **not** advertised in tags; origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar` as a superset, narinfo `Sig:` reusing the one Ed25519 key (brief §13, §14) | **Yes** (mechanism), committed `registry.toml` + client override |
+| Signing | signed git **commit** + TOFU `trusted-keys.d` | signed git **tag objects** as **pure signed pointers** — no structured payload, just standard tag fields + Ed25519 signature + optional freeform message (channel partitions + release tags), SSH-Ed25519, name-binding, `tag→tag→commit` (brief §5, §11) | **Yes** (primitive), moved commit→tag |
+| Nix NAR cache | `[[caches]]` consumer reads with fallback cache URL behavior | cache location lives in the committed repo-root `registry.toml` `[[caches]]` (authenticated transitively by the signed tag), with client-side `registries.d` as an optional override (or the origin itself) — **not** advertised in tags; origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar` as a superset, narinfo `Sig:` reusing the one Ed25519 key (brief §13, §14) | **Yes** (mechanism), committed `registry.toml` + client override |
 
 The headline: there is **no shared root file to dual-write**. The old model's
 root is `bundle-list.toml`; the new model has *no* root file at all — its "root"
@@ -658,15 +639,14 @@ Mirror during the shim window:
 
 - **Producer:** the new `apr release` writes the full git-native surface *and*
   keeps regenerating bundles + `bundle-list.toml`. This requires keeping (and
-  finishing) the **`bundle-list.toml` writer that does not exist today** — the
-  manifest types are `Deserialize`-only and `apr bundle`'s `_update_manifest`
-  parameter is **dead code** (`registry_ops.rs:1723`). So the shim is *not* free;
-  it forces *building* a serializer for a format we intend to retire, plus the
-  `creation_token` producer encoding (`version_to_token`, `state.rs:131`) that
-  only ever existed on the consumer side.
+  finishing) a **`bundle-list.toml` writer that the active code no longer
+  contains**. So the shim is *not* free; it forces building and testing a
+  serializer plus `creation_token` producer encoding for a format we intend to
+  retire.
 - **Consumer:** `apm update` probes for git refs (`info/refs` present?); on a
-  legacy-only mirror, falls back to the existing `BundleManifest::fetch` /
-  `pick_bundles` path (`registry/bundle.rs`, `registry/update.rs:292`).
+  legacy-only mirror, a shim-era client would need a bundle fallback. The active
+  git-native client instead fails legacy-only origins closed with the clean-break
+  error described in Option B.
 
 | Pros | Cons |
 |---|---|
@@ -681,10 +661,8 @@ The bundle / `bundle-list.toml` / `creation_token` surface is removed; the
 registry serves only the git-native model; consumers are cut over by version.
 
 - **Producer:** `apr release` writes only the git-native surface. The dead
-  `_update_manifest` parameter (`registry_ops.rs:1723`), `BundleManifest`
-  (`registry/bundle.rs`), `version_to_token` / `check_monotonic`
-  (`registry/state.rs`), and `pick_bundles` (`registry/update.rs:292`) are
-  **deleted**, not revived.
+  bundle-manifest writer, `creation_token` producer encoding, and bundle
+  selection path are **deleted**, not revived.
 - **Consumer:** clients are upgraded to the git-native fetch path *before* any
   mirror drops bundles. The current consumer treats plain `http(s)://` origins
   as git-native dumb-HTTP registries and preflights `HEAD` plus `info/refs`.
@@ -719,7 +697,7 @@ The implemented policy:
    origins for `HEAD` and `info/refs`; origins with those files are consumed via
    the git-native path. A legacy-only mirror that still exposes
    `bundle-list.toml` is rejected with an actionable clean-break error. There is
-   no active `BundleManifest` / `pick_bundles` fallback in this client.
+   no active bundle-mode fallback in this client.
 2. **Producer publishes only the git-native surface (WS-01/02/03).** Do **not**
    build the bundle/`bundle-list.toml`/`creation_token` writer. New registries are
    git-native only. Any legacy mirror keeps its already-published static
@@ -844,14 +822,14 @@ item is closed.
 | Q1 | sha256 dumb-HTTP client floor | WS-01 | WS-01 object store, WS-05 fetch | Pin min git version; fail-closed consumer error |
 | Q2 | `pack-objects` window/depth, zstd, dictionary | WS-02 | WS-02 pipeline | `--window=350 --depth=50 --compression=0` + `zstd --ultra -22 --long=27`; defer dictionary |
 | Q3 | Bucket-selection input + probe-forward order — **RESOLVED** | WS-03 / WS-05 | (none) | Registry-local salt; persist bucket index; probe `(bucket+i) mod 256` no re-pin |
-| Q4 | `apr release` shape + pluggable upload | WS-02 / WS-03 | WS-02/03 (the pipeline) | Composable verbs under one wrapper; immutable-first / low-TTL-last ordering |
+| Q4 | `apr release` shape + pluggable upload | WS-02 / WS-03 | WS-02/03 (the pipeline) | Resolved: `apr release` wrapper over focused verbs; repeatable file/HTTP/S3/SFTP upload URLs; immutable-first / low-TTL-last ordering |
 | Q5 | Consumer max-staleness policy + key-rotation cadence | WS-05 / WS-04 / WS-03 | WS-05 consumer, WS-04 trust | Partial: 14-day `max_staleness_seconds` gate on failed refreshes and unchanged valid targets; still validate production default and key cadence |
 | Q6 | Relative `info/alternates` (one `../`, HTTP + local-FS) | WS-01 | WS-01 layout | One host-independent relative `info/alternates`, one-`../`; no `http-alternates` |
 | Q7a | Migration: clean break vs. shim — **RESOLVED** | WS-05 / WS-01 / WS-03 | (none) | Clean break: git-native `HEAD` + `info/refs` wins; legacy-only `bundle-list.toml` origins fail with a clear error; bundle-mode clients are EOL at registry cutover (§3.4) |
 | Q7b | NAR superset milestone timing | WS-05 | (none — fast-follow) | Defer to fast-follow; cache lives in committed `registry.toml` `[[caches]]` (client-side `registries.d` override / origin), nothing reserved in tags (§4.3) |
 | Q8 | NAR blob `URL:` key — **RESOLVED** | WS-06 | (none) | Colon-free static key: `nar/{storehash}-sha256-{hex}.{ext}`; producer, upload, and consumer follow the narinfo `URL:` verbatim |
 | DD-1 | Doc-debt: re-ground CURRENT-state after `7149acf6` — **RESOLVED** | WS-06 / WS-05 | (docs — gated WS-06 §5/§10/§11 accuracy; now re-grounded) | **Done.** Cache = **dumb static AOT files on the CDN, no server** (brief §13). The narinfo **format/sign logic** is a reusable library: `aos-core` `NarInfo`+`format()`, `aos-server` `format_narinfo`+`NarInfoSigner` Ed25519 `Sig:`+`Priority: 30`, `compute_file_hash_size` (`compress.rs:143`). **Consumer done** (narinfo-driven `download.rs`). **WS-06 = PRODUCER work**: at publish, *generate* the static `<storehash>.narinfo` / `nar/<…>.nar.zst` / `nix-cache-info` by **reusing** that format/sign code, and **upload** them to the CDN, plus the committed `registry.toml` `[[caches]]` pointer. Not a running server, not "integration only". |
-| R2/R3 | Torn publish / publisher race | WS-02 / WS-03 | WS-02, WS-03 | Immutable-first / low-TTL-last; single publisher per channel |
+| R2/R3 | Torn publish / publisher race | WS-02 / WS-03 | WS-02, WS-03 | Immutable-first / low-TTL-last implemented; local publisher lock implemented; production multi-host serialization still operational |
 | R7 | Cross-serving / name-confusion | WS-04 / WS-05 | WS-04, WS-05 | Name-binding: embedded tag-name == path name; verify `tag→tag→commit` |
 | R9 | Anti-rollback floor across cutover | WS-05 | WS-05 | Re-seed floor at git-native cutover; fix-forward only |
 
