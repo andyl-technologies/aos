@@ -4,17 +4,65 @@ This checklist tracks the implementation branch for the git-native registry
 target described in `docs/registry/` and planned in `docs/plans/registry/`.
 Keep this file current as work lands.
 
-> **Implementation PR status:** local implementation and reference-doc updates
-> are complete for this PR. External infra, service, fleet, and target-host
-> validation is intentionally deferred to the follow-up Nix VM test-suite PR;
-> [`validation-runbook.md`](./validation-runbook.md) records the commands,
-> context files, and evidence needed before claiming production validation.
+> **VM validation PR status:** local implementation and reference-doc updates
+> landed in the prior PR. This PR turns the external stock-Nix, backend-array,
+> stock-Git, CDN-layout, and pack/delta validation gates into Nix VM checks under
+> `tests/vm/apm/registry_validation.nix`. The checks must be run on a KVM builder
+> before claiming production validation; fleet-specific `max_staleness_seconds`
+> tuning remains operator rollout policy rather than a repository implementation
+> item.
 
 ## Branch Setup
 
 - [x] Fetch latest `origin/master`.
-- [x] Create implementation branch from `origin/master`.
-- [x] Open PR.
+- [x] Create VM validation branch from `origin/master`.
+- [ ] Open VM validation PR.
+
+## VM Validation PR
+
+- [x] Add `tests/vm/apm/registry_validation.nix` and wire it from
+      `tests/vm/apm/default.nix`. The VM file carries the external validation
+      checks that were left after the Rust implementation PR:
+      `registry-validation-stock-nix-backend-array`,
+      `registry-validation-origin-cdn-layout`,
+      `registry-validation-stock-git-matrix`, and
+      `registry-validation-pack-delta-perf`. Context:
+      `docs/registry/nix-cache-compatibility.md`,
+      `docs/registry/http-layout.md`, `docs/registry/publishing.md`,
+      `docs/registry/packs-and-deltas.md`,
+      `docs/registry/signing-and-trust.md`,
+      `docs/registry/versioning-and-channels.md`,
+      `crates/aos-package/src/registry/nixcache.rs`,
+      `crates/aos-package/src/registry/static_upload.rs`,
+      `crates/aos-package/src/registry/fetch.rs`,
+      `crates/aos-package/src/registry/git.rs`,
+      `crates/aos-cache/src/backend/s3.rs`,
+      `crates/aos-cache/src/backend/sftp.rs`,
+      `crates/aos-net/src/protocol/s3.rs`,
+      `crates/aos-net/src/protocol/sftp.rs`,
+      `tests/vm/apm/default.nix`, and
+      `tests/vm/apm/registry_validation.nix`.
+- [x] Add a pinned minimum Git package for the stock-Git floor matrix. Context:
+      `pkgs/tools/git-2_42.nix`, `pkgs/tools/git.nix`,
+      `docs/registry/http-layout.md`, and
+      `tests/vm/apm/registry_validation.nix`.
+- [ ] Run all registry validation VM checks on
+      `dylan@builder-hil1-c13958ef`:
+      `nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array`,
+      `nix-build -A checks.vm.apm.registry-validation-origin-cdn-layout`,
+      `nix-build -A checks.vm.apm.registry-validation-stock-git-matrix`, and
+      `nix-build -A checks.vm.apm.registry-validation-pack-delta-perf`.
+      Context: `tests/vm/apm/registry_validation.nix`,
+      `lib/testing/vm.nix`, `lib/testing/firecracker.nix`, and
+      `docs/plans/registry/validation-runbook.md`.
+- [ ] Update `docs/registry/*` and `docs/plans/registry/validation-runbook.md`
+      with the VM check commands and evidence once the builder run passes.
+      Context: `docs/registry/current-state.md`,
+      `docs/registry/nix-cache-compatibility.md`,
+      `docs/registry/http-layout.md`,
+      `docs/registry/packs-and-deltas.md`,
+      `docs/registry/publishing.md`, and
+      `docs/plans/registry/validation-runbook.md`.
 
 ## WS-01 Object Store
 
@@ -285,16 +333,20 @@ read before editing code or docs.
       `crates/aos-package/src/registry/nixcache.rs`,
       `crates/aos/tests/apr_cache_cli.rs`, and
       `crates/aos-package/tests/registry_cache_e2e.rs`.
-- [x] Defer stock Nix substituter verification under `require-sigs` to the
-      follow-up Nix VM test-suite PR. The opt-in code path exists in
-      `crates/aos-package/tests/registry_cache_e2e.rs` behind
-      `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` plus
-      `AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1` with an exact-child timeout, but this
-      implementation PR does not run the host-mutating probe; controlled Nix VM
-      execution and evidence are tracked in
-      `docs/plans/registry/validation-runbook.md`. Context:
+- [ ] Validate stock Nix substituter behavior under `require-sigs` in the VM
+      test-suite PR. `registry-validation-stock-nix-backend-array` creates a
+      fixed-output store path inside the VM, generates signed static cache
+      files with `apr cache generate`, serves those files over dumb HTTP, and
+      runs stock `nix path-info --store http://...` with
+      `require-sigs = true` and the generated trusted public key. The opt-in
+      Rust path remains in `crates/aos-package/tests/registry_cache_e2e.rs`
+      behind `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` plus
+      `AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1`, but the VM check is the controlled
+      external validation gate. Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/plans/registry/workstream-06-nix-cache.md`,
+      `docs/plans/registry/validation-runbook.md`,
+      `tests/vm/apm/registry_validation.nix`,
       `crates/aos-package/tests/registry_cache_e2e.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and
       `crates/aos-package/src/download.rs`.
@@ -387,14 +439,15 @@ read before editing code or docs.
       `crates/aos-cache/src/backend/s3.rs`,
       `crates/aos-cache/src/backend/sftp.rs`, and
       `crates/aos-package/tests/registry_cache_e2e.rs`.
-- [x] Defer service-backed generated static-cache upload/readback matrix
-      execution for S3-compatible storage and SFTP to the follow-up Nix VM
-      test-suite PR. Local `file://` generated upload/readback, static HTTP
-      readback, and env-gated generated-cache upload hooks are covered in this
-      PR; the VM PR should run them against containerized or CI-provisioned
-      S3/SFTP services and prove one repeatable `--upload-url` array can mix
-      `(s3, local filesystem path, SFTP)` targets while reporting partial
-      failures only after all destinations are attempted. Context:
+- [ ] Validate service-backed generated static-cache upload/readback for an
+      array of `file://`, `s3://`, and `sftp://` destinations in the VM test
+      suite. `registry-validation-stock-nix-backend-array` starts a local
+      S3-compatible HTTP endpoint and an OpenSSH SFTP endpoint inside the VM,
+      runs `apr cache generate` with repeatable `--upload-url` values for S3,
+      local filesystem, SFTP, and one invalid URL, verifies all successful
+      destinations receive byte-identical cache outputs, and verifies the
+      aggregate partial-failure error is reported only after all destinations
+      are attempted. Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/publishing.md`,
       `crates/aos-package/src/lib.rs`,
@@ -406,7 +459,10 @@ read before editing code or docs.
       `crates/aos-cache/src/backend/sftp.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and
       `crates/aos-cache/tests/backend_matrix.rs`,
-      `crates/aos-package/tests/registry_cache_e2e.rs`.
+      `crates/aos-package/tests/registry_cache_e2e.rs`,
+      `crates/aos-net/src/protocol/s3.rs`,
+      `crates/aos-net/src/protocol/sftp.rs`, and
+      `tests/vm/apm/registry_validation.nix`.
 - [x] Add current-stock-git compatibility coverage for the pinned minimum git
       version and sha256 dumb-HTTP behavior. `crates/aos-package/tests/
       registry_e2e.rs` now includes
@@ -431,15 +487,19 @@ read before editing code or docs.
       `crates/aos-package/src/registry/git.rs`,
       `crates/aos-package/src/registry/objectstore.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [x] Defer running and publishing the supported-version stock Git compatibility
-      matrix for the pinned minimum Git version and newer clients to the
-      follow-up Nix VM test-suite PR. The host-current e2e and env-gated matrix
-      harness exist in this PR; production compatibility across the documented
-      floor and newer supported clients still needs containerized or
-      pinned-binary evidence before claiming production validation. Context:
+- [ ] Run and publish the supported-version stock Git compatibility matrix for
+      the pinned minimum Git version and newer clients in the VM test-suite PR.
+      `registry-validation-stock-git-matrix` includes the pinned
+      `pkgs."git-2_42"` floor package and the repo's current `pkgs.git`, serves
+      a sha256 bare registry over dumb HTTP inside the VM, and requires both
+      binaries to clone it as sha256. The host-current e2e and env-gated Rust
+      matrix remain useful lower-level coverage, but the VM check is the
+      production floor evidence. Context:
       `docs/registry/http-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,
+      `pkgs/tools/git-2_42.nix`,
+      `tests/vm/apm/registry_validation.nix`,
       `crates/aos-package/src/security.rs`,
       `crates/aos-package/src/registry/objectstore.rs`,
       `crates/aos-package/src/registry/pack.rs`,
@@ -462,9 +522,10 @@ read before editing code or docs.
       `release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer` in
       `crates/aos-package/tests/registry_e2e.rs`, which releases a committed
       sha256 registry tree, uploads it to `file://`, serves that uploaded
-      origin, and syncs a channel consumer from it. Real-Nix cache generation,
-      stock-Nix substituter validation, service-backed S3/SFTP upload tests,
-      and CDN/mirror behavior remain tracked by their separate TODOs. Context:
+      origin, and syncs a channel consumer from it. The VM validation PR items
+      above cover stock-Nix substituter behavior, service-backed S3/SFTP upload
+      arrays, CDN-layout metadata, stock-Git compatibility, and pack/delta
+      metrics. Context:
       `docs/registry/architecture.md`, `docs/registry/publishing.md`,
       `docs/registry/http-layout.md`, `docs/registry/packs-and-deltas.md`,
       `docs/registry/versioning-and-channels.md`,
@@ -488,8 +549,8 @@ read before editing code or docs.
       plus `static_origin_upload_e2e_syncs_uploaded_filesystem_destination` in
       `crates/aos-package/tests/registry_e2e.rs`, which uploads a real
       sha256 dumb-HTTP origin to `file://`, serves that uploaded tree, and syncs
-      a consumer from it. Service-backed S3/SFTP validation remains tracked by
-      the separate backend-matrix TODO. Context:
+      a consumer from it. The VM validation PR item above covers service-backed
+      S3/SFTP execution against in-VM endpoints. Context:
       `docs/registry/http-layout.md`,
       `docs/registry/publishing.md`,
       `docs/registry/current-state.md`,
@@ -632,13 +693,17 @@ read before editing code or docs.
       `crates/aos-package/src/registry/channel.rs`,
       `crates/aos-package/src/registry/verify.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [x] Defer production `max_staleness_seconds` default validation and tuning for
-      real fleets and CDN behavior to the follow-up Nix VM test-suite PR and
-      operator rollout work. The implementation deliberately uses the local
-      freshness clock because signed channel tags have no in-band expiry; this
-      can reject genuinely quiet channels if operators choose too short a
-      window, and a host with no recent freshness observation still cannot prove
-      a reachable unchanged pointer is malicious. Context:
+- [x] Keep production `max_staleness_seconds` default tuning as an operator
+      rollout policy, not a repository implementation blocker. The
+      implementation deliberately uses the local freshness clock because signed
+      channel tags have no in-band expiry; this can reject genuinely quiet
+      channels if operators choose too short a window, and a host with no recent
+      freshness observation still cannot prove a reachable unchanged pointer is
+      malicious. Rust unit/e2e coverage now proves first-sync failure, refresh
+      failure, and reachable unchanged signed partitions fail closed when the
+      freshness clock is stale. The VM validation PR covers the CDN-facing
+      mutable-path TTL contract; real fleet interval distributions still belong
+      in deployment rollout notes. Context:
       `docs/plans/registry/open-questions.md`,
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/http-layout.md`,
@@ -751,16 +816,20 @@ read before editing code or docs.
       `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_perf.rs`.
-- [x] Defer running the registry performance harness on target producer and
-      smallest supported consumer hosts to the follow-up validation PR. The
-      harness exists in this implementation PR; target-host evidence should tune
-      producer pack settings and consumer reconstruct cost:
-      `git pack-objects --window`, `--depth`, `--compression=0`, zstd level,
-      zstd `--long` window, optional dictionary training, and memory limits.
+- [ ] Run the registry performance harness in the VM validation PR. The Rust
+      harness exists in the implementation PR, and
+      `registry-validation-pack-delta-perf` now records VM-side
+      `REGISTRY_PERF_METRIC` values for full-pack bytes/time, thin-delta
+      bytes/time, zstd bytes/time, and consumer reconstruction time. Target-host
+      evidence should still inform producer pack settings and consumer
+      reconstruct cost: `git pack-objects --window`, `--depth`,
+      `--compression=0`, zstd level, zstd `--long` window, optional dictionary
+      training, and memory limits.
       Context:
       `docs/registry/packs-and-deltas.md`,
       `docs/registry/publishing.md`,
       `docs/plans/registry/open-questions.md`,
+      `tests/vm/apm/registry_validation.nix`,
       `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_perf.rs`.
@@ -774,14 +843,19 @@ read before editing code or docs.
       `crates/aos-package/src/registry/static_upload.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [x] Defer real CDN and mirror validation against the target HTTP layout to the
-      follow-up Nix VM/infrastructure PR. Hermetic layout regression coverage is
-      in this PR; deployed validation still needs cache-control behavior for
-      immutable and mutable surfaces, edge/mirror missing-object recovery,
-      byte-stable relative `objects/info/alternates` after mirror rewrite, and
-      mirror freshness diagnostics. Context: `docs/registry/http-layout.md`,
+- [ ] Validate the CDN/mirror HTTP layout against a service-like object backend
+      in the VM validation PR. `registry-validation-origin-cdn-layout` uploads a
+      git-native origin plus generated static-cache files to an S3-compatible
+      endpoint inside the VM, checks immutable objects/NARs/narinfos receive
+      long immutable cache-control metadata, checks mutable `HEAD`,
+      `info/refs`, `channels/**`, `objects/info/**`, and `nix-cache-info`
+      receive low-TTL metadata, verifies immutable uploads happen before mutable
+      pointers, and verifies `objects/info/alternates` remains relative.
+      Deployed CDN edge behavior and incident diagnostics remain production
+      rollout validation. Context: `docs/registry/http-layout.md`,
       `docs/registry/publishing.md`,
       `docs/registry/signing-and-trust.md`,
+      `tests/vm/apm/registry_validation.nix`,
       `crates/aos-package/src/registry/objectstore.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
@@ -838,9 +912,9 @@ read before editing code or docs.
       `crates/aos-core/src/nar/cache.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and
       `crates/aos-package/src/download.rs`.
-- [x] Add a remaining-external-validation runbook so agents/operators have one
-      place to run the stock-Nix, S3/SFTP, stock-Git, performance, CDN/mirror,
-      and max-staleness gates before claiming production validation.
+- [ ] Update the external-validation runbook so agents/operators have one place
+      to run the stock-Nix, S3/SFTP, stock-Git, performance, CDN/mirror, and
+      max-staleness policy gates before claiming production validation.
       Context: `docs/plans/registry/validation-runbook.md`,
       `docs/plans/registry/TODO.md`,
       `docs/registry/nix-cache-compatibility.md`,
@@ -849,11 +923,11 @@ read before editing code or docs.
       `docs/registry/publishing.md`,
       `docs/registry/versioning-and-channels.md`, and
       `docs/registry/signing-and-trust.md`.
-- [x] Close implementation-PR operator docs. `docs/registry/*` now documents
-      backend arrays, auth flags, `apr release`, trust management, and opt-in
-      stock-Nix verification hooks. Production validation results/defaults are
-      explicitly deferred to the follow-up Nix VM test-suite PR and
-      `docs/plans/registry/validation-runbook.md`. Context:
+- [ ] Close VM-validation operator docs. `docs/registry/*` documents backend
+      arrays, auth flags, `apr release`, trust management, and stock-Nix
+      verification hooks; this PR should replace the remaining follow-up
+      validation caveats with the VM check commands and the fleet-only
+      `max_staleness_seconds` tuning boundary. Context:
       `docs/registry/publishing.md`,
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/signing-and-trust.md`,
