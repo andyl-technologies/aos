@@ -272,16 +272,17 @@ The producer pack helpers remain available as focused building blocks, and
 release, writes packs/deltas, refreshes indexes, advances channels, and uploads
 the static origin.
 
-An opt-in perf harness lives in
-[`crates/aos-package/tests/registry_perf.rs`](../../crates/aos-package/tests/registry_perf.rs).
-It reports full-pack generation, thin-delta generation, zstd compression, and
-consumer reconstruction timings/sizes for a synthetic multi-package registry:
+The production VM perf check is:
 
 ```sh
-AOS_PACKAGE_TEST_REGISTRY_PERF=1 \
-  cargo test --manifest-path crates/Cargo.toml -p aos-package \
-  registry_pack_delta_perf_harness_reports_metrics -- --ignored --nocapture
+nix-build -A checks.vm.apm.registry-validation-pack-delta-perf
 ```
+
+It reports `REGISTRY_PERF_METRIC` lines for full-pack generation, thin-delta
+generation, zstd compression, and consumer reconstruction against a synthetic
+multi-package sha256 registry. A lower-level opt-in Rust harness lives in
+[`crates/aos-package/tests/registry_perf.rs`](../../crates/aos-package/tests/registry_perf.rs)
+for local debugging and parameter experiments.
 
 ---
 
