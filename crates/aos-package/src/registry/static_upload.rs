@@ -347,6 +347,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn static_origin_files_carry_cdn_cache_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("origin.git");
+        write_fixture_origin(&root);
+        let cache = tmp.path().join("cache");
+        write_fixture_cache(&cache);
+
+        let files = collect_static_origin_files(&root, Some(&cache)).unwrap();
+        assert_static_metadata(&files, "HEAD", "text/plain", MUTABLE_CACHE_CONTROL);
+        assert_static_metadata(&files, "info/refs", "text/plain", MUTABLE_CACHE_CONTROL);
+        assert_static_metadata(
+            &files,
+            "objects/info/alternates",
+            "text/plain",
+            MUTABLE_CACHE_CONTROL,
+        );
+        assert_static_metadata(
+            &files,
+            "channels/stable/00",
+            "application/octet-stream",
+            MUTABLE_CACHE_CONTROL,
+        );
+        assert_static_metadata(
+            &files,
+            "objects/aa/object",
+            "application/octet-stream",
+            IMMUTABLE_CACHE_CONTROL,
+        );
+        assert_static_metadata(
+            &files,
+            "releases/1/0/0/objects/pack/pack-demo.pack",
+            "application/x-git-packed-objects",
+            IMMUTABLE_CACHE_CONTROL,
+        );
+        assert_static_metadata(
+            &files,
+            "abc123.narinfo",
+            "text/x-nix-narinfo",
+            IMMUTABLE_CACHE_CONTROL,
+        );
+        assert_static_metadata(
+            &files,
+            "nar/demo.nar.zst",
+            "application/zstd",
+            IMMUTABLE_CACHE_CONTROL,
+        );
+    }
+
     #[tokio::test]
     async fn static_origin_upload_writes_filesystem_destination() {
         let tmp = tempfile::tempdir().unwrap();
@@ -460,5 +509,19 @@ mod tests {
         std::fs::write(cache.join("nix-cache-info"), b"StoreDir: /nix/store\n").unwrap();
         std::fs::write(cache.join("abc123.narinfo"), b"narinfo").unwrap();
         std::fs::write(cache.join("nar/demo.nar.zst"), b"nar").unwrap();
+    }
+
+    fn assert_static_metadata(
+        files: &[StaticOriginFile],
+        relative_path: &str,
+        content_type: &str,
+        cache_control: &str,
+    ) {
+        let file = files
+            .iter()
+            .find(|file| file.relative_path == relative_path)
+            .unwrap_or_else(|| panic!("missing static origin file {relative_path}"));
+        assert_eq!(file.content_type, content_type, "{relative_path}");
+        assert_eq!(file.cache_control, cache_control, "{relative_path}");
     }
 }

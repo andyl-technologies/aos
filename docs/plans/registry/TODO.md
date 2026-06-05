@@ -724,10 +724,21 @@ read before editing code or docs.
       `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and a new benchmark or
       integration harness such as `crates/aos-package/tests/registry_perf.rs`.
-- [ ] Validate CDN and mirror behavior against the target HTTP layout: byte
-      stable relative `objects/info/alternates`, cache-control policy for
-      immutable and mutable surfaces, missing-object recovery, and mirror
-      freshness diagnostics. Context: `docs/registry/http-layout.md`,
+- [x] Add hermetic CDN/mirror layout regression coverage for the pieces we can
+      prove without external infrastructure: byte-stable relative
+      `objects/info/alternates`, immutable-vs-mutable static-origin
+      cache-control/content-type metadata, loose-object fallback planning, and
+      corrupt-pack fallback to Git's dumb-HTTP fetch. Context:
+      `docs/registry/http-layout.md`,
+      `crates/aos-package/src/registry/objectstore.rs`,
+      `crates/aos-package/src/registry/static_upload.rs`,
+      `crates/aos-package/src/registry/fetch.rs`, and
+      `crates/aos-package/tests/registry_e2e.rs`.
+- [ ] Validate real CDN and mirror behavior against the target HTTP layout:
+      deployed cache-control behavior for immutable and mutable surfaces,
+      edge/mirror missing-object recovery, byte-stable relative
+      `objects/info/alternates` after mirror rewrite, and mirror freshness
+      diagnostics. Context: `docs/registry/http-layout.md`,
       `docs/registry/publishing.md`,
       `docs/registry/signing-and-trust.md`,
       `crates/aos-package/src/registry/objectstore.rs`,
