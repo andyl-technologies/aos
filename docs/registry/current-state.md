@@ -73,8 +73,9 @@ Implemented producer behavior:
   store path: `nix-cache-info`, `<storehash>.narinfo`, and `nar/*.nar.zst`.
   It fails closed when a listed store path is absent from the local Nix store,
   can upload the generated files to one or more repeatable `--upload-url`
-  destinations through `aos-cache` backends, and can update the committed root
-  `registry.toml` `[[caches]]` pointer.
+  destinations through `aos-cache` backends while preserving the generated
+  `nix-cache-info` body, and can update the committed root `registry.toml`
+  `[[caches]]` pointer.
 
 The release pipeline is still composed from focused `apr` subcommands rather
 than one atomic `apr release` command.
