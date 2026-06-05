@@ -32,6 +32,12 @@
 > `aos-package/src/types.rs`, `aos-package/src/registry/parse.rs`. The code wins for
 > *current state*; the design brief is authoritative for *target intent* (AOT static
 > generation, not a running server).
+>
+> **As-built status note:** this workstream is now archival planning context. The
+> static cache producer and release upload plumbing have landed locally, while
+> stock-Nix and service-backed S3/SFTP validation remain TODOs. Use
+> [`../../registry/current-state.md`](../../registry/current-state.md) and
+> [`TODO.md`](./TODO.md) for current facts.
 
 This is the **producer-side** counterpart to
 [workstream-05-consumer.md](./workstream-05-consumer.md) §8 (which *resolves* and
