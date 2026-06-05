@@ -714,16 +714,29 @@ read before editing code or docs.
 
 ### Performance / Compatibility Validation
 
-- [ ] Benchmark and tune producer pack settings and consumer reconstruct cost:
-      `git pack-objects --window`, `--depth`, `--compression=0`, zstd level,
-      zstd `--long` window, optional dictionary training, and memory limits on
-      the smallest supported host. Context:
+- [x] Add an opt-in producer/consumer performance harness for registry pack and
+      delta metrics. `crates/aos-package/tests/registry_perf.rs` builds a
+      multi-package fixture, measures full-pack generation, thin-delta
+      generation, zstd compression, full-pack reconstruction, and compressed
+      delta reconstruction, then prints byte/time metrics. It is ignored by
+      default; run it with `AOS_PACKAGE_TEST_REGISTRY_PERF=1` and optionally set
+      `AOS_PACKAGE_TEST_REGISTRY_PERF_PACKAGES=<n>`. Context:
+      `docs/registry/packs-and-deltas.md`,
+      `docs/registry/publishing.md`,
+      `crates/aos-package/src/registry/pack.rs`,
+      `crates/aos-package/src/registry/fetch.rs`, and
+      `crates/aos-package/tests/registry_perf.rs`.
+- [ ] Run the registry performance harness on target producer and smallest
+      supported consumer hosts, then tune producer pack settings and consumer
+      reconstruct cost: `git pack-objects --window`, `--depth`,
+      `--compression=0`, zstd level, zstd `--long` window, optional dictionary
+      training, and memory limits. Context:
       `docs/registry/packs-and-deltas.md`,
       `docs/registry/publishing.md`,
       `docs/plans/registry/open-questions.md`,
       `crates/aos-package/src/registry/pack.rs`,
-      `crates/aos-package/src/registry/fetch.rs`, and a new benchmark or
-      integration harness such as `crates/aos-package/tests/registry_perf.rs`.
+      `crates/aos-package/src/registry/fetch.rs`, and
+      `crates/aos-package/tests/registry_perf.rs`.
 - [x] Add hermetic CDN/mirror layout regression coverage for the pieces we can
       prove without external infrastructure: byte-stable relative
       `objects/info/alternates`, immutable-vs-mutable static-origin
