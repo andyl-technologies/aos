@@ -192,22 +192,19 @@
 
     checks = genAttrs systems checksFor;
 
-    # GitHub Actions matrix, derived from the x86_64-linux check set.
-    # Consumed by .github/workflows/ci.yml:
-    #   nix eval --json '.#githubActions.matrix'
-    # Each check becomes one matrix entry → one independent CI job/status.
-    # aarch64-linux is intentionally excluded until aarch64 runners exist.
-    githubActions = let
-      ghSystem = "x86_64-linux";
-      gh = import ./lib/ci/github-matrix.nix {inherit (aosFor ghSystem) lib;};
-    in {
-      matrix = gh.mkGithubMatrix {
-        checks = checksFor ghSystem;
-        system = ghSystem;
-        # These have dedicated always-on fast-lane jobs in ci.yml; omit
-        # them from the fan-out so each reports exactly one status.
-        exclude = ["format" "lint" "cargo-fmt" "cargo-clippy"];
-      };
-    };
+    # CI job groups: a small, fixed set of functional aggregates (lint,
+    # rust, eval, tla, build, integration, vm, fleet). Each builds its
+    # whole group with one `nix build`, so shared closures are realised
+    # once. Consumed by .github/workflows/ci.yml:
+    #   nix build .#ciGroups.x86_64-linux.<group>
+    # Checks stay individually addressable under `checks.<system>.<name>`;
+    # `ciGroups` is just how the workflow segments them into jobs.
+    ciGroups = genAttrs systems (
+      system: let
+        aos = aosFor system;
+        groups = import ./lib/ci/groups.nix {inherit (aos) lib pkgs;};
+      in
+        groups.mkCiGroups (checksFor system)
+    );
   };
 }

@@ -1,21 +1,17 @@
 name: CI
 
-# Every check AOS runs is a Nix derivation under `checks.<system>` in
-# flake.nix. This workflow does not enumerate checks by hand: it asks Nix
-# for the set (`githubActions.matrix`) and fans each one out into its own
-# job — so adding a check in Nix automatically adds a CI status here.
+# CI is segmented into a few jobs by function. Each job builds one
+# aggregate from `ciGroups` (defined in flake.nix / lib/ci/groups.nix)
+# with a single `nix build`, so a shared build closure (toolchain,
+# packages, kernel) is realised once per job instead of once per check.
 #
-# Layout:
-#   fast lane   format / lint / cargo-fmt / cargo-clippy — dedicated jobs
-#               that start immediately and give sub-minute red/green on the
-#               most common mistakes.
-#   matrix      everything else, one job per check, routed to the right
-#               runner by tier (see lib/ci/github-matrix.nix).
-#   ci-success  a single aggregate status for branch protection.
+# Adding a check never adds a job — it joins an existing group by name.
+# The individual checks remain addressable as `checks.<system>.<name>`
+# for local runs and `nix flake check`.
 #
-# Builds read pre-built store paths from the `andyl-os` Attic cache via the
-# self-hosted runners' nix.conf (see docs/ci.md for the infra prerequisite);
-# only paths affected by the diff are rebuilt.
+# Builds substitute pre-built paths from the `andyl-os` Attic cache via
+# the self-hosted runners' nix.conf (see docs/ci.md); only paths the diff
+# changes are rebuilt.
 
 on:
   pull_request:
@@ -24,7 +20,6 @@ on:
   merge_group:
 
 concurrency:
-  # One run per ref; a new push cancels the previous run's jobs.
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
@@ -32,93 +27,66 @@ permissions:
   contents: read
 
 jobs:
-  # --- Fast lane (tier 0): instant feedback, no dependency on matrix gen ---
-  nix-fmt:
-    name: nix fmt
+  lint:
+    name: lint
     runs-on: andyl-nixos-latest
     steps:
       - uses: actions/checkout@v4
-      - run: nix build -L '.#checks.x86_64-linux.format'
+      - run: nix build -L --no-link '.#ciGroups.x86_64-linux.lint'
 
-  nix-lint:
-    name: nix lint
+  eval:
+    name: eval
     runs-on: andyl-nixos-latest
     steps:
       - uses: actions/checkout@v4
-      - run: nix build -L '.#checks.x86_64-linux.lint'
+      - run: nix build -L --no-link '.#ciGroups.x86_64-linux.eval'
 
-  cargo-fmt:
-    name: cargo fmt
-    runs-on: andyl-nixos-latest
+  rust:
+    name: rust
+    runs-on: andyl-nixos-latest-32
     steps:
       - uses: actions/checkout@v4
-      - run: nix build -L '.#checks.x86_64-linux.cargo-fmt'
+      - run: nix build -L --no-link '.#ciGroups.x86_64-linux.rust'
 
-  cargo-clippy:
-    name: cargo clippy
-    runs-on: andyl-nixos-latest
+  tla:
+    name: tla
+    runs-on: andyl-nixos-latest-32
     steps:
       - uses: actions/checkout@v4
-      - run: nix build -L '.#checks.x86_64-linux.cargo-clippy'
+      - run: nix build -L --no-link '.#ciGroups.x86_64-linux.tla'
 
-  # --- Matrix generation: the single source of truth ---
-  matrix:
-    name: Generate matrix
-    runs-on: andyl-nixos-latest
-    outputs:
-      matrix: ${{ steps.gen.outputs.matrix }}
+  build:
+    name: build
+    runs-on: andyl-nixos-latest-32
     steps:
       - uses: actions/checkout@v4
-      - id: gen
-        name: Enumerate checks
-        run: |
-          set -Eeuo pipefail
-          matrix="$(nix eval --json '.#githubActions.matrix')"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          # A markdown bullet per check, rendered by Nix (no host jq) so the
-          # summary lists exactly what the fan-out will run.
-          {
-            echo "### Checks fanned out"
-            nix eval --raw '.#githubActions.matrix' --apply \
-              'm: builtins.concatStringsSep "\n" (map (e: "- `" + e.name + "` — tier " + builtins.toString e.tier + " (`" + e.runner + "`)") m.include)'
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
+      - run: nix build -L --no-link '.#ciGroups.x86_64-linux.build'
 
-  # --- Fan-out: one job per check, routed to its tier's runner ---
-  checks:
-    name: ${{ matrix.name }}
-    needs: [matrix]
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+  integration:
+    name: integration
+    runs-on: andyl-nixos-latest-32
     steps:
       - uses: actions/checkout@v4
-      - name: Build ${{ matrix.name }}
-        id: build
-        env:
-          # Space-joined `.#` targets — one for a solo check, several for an
-          # integration shard. Intentionally unquoted below so the shell
-          # word-splits it into separate build targets.
-          ATTRS: ${{ matrix.attrs }}
-        run: |
-          set -o pipefail
-          start=$SECONDS
-          # shellcheck disable=SC2086
-          nix build -L --keep-going --no-link --print-out-paths $ATTRS
-          echo "duration=$((SECONDS - start))" >> "$GITHUB_OUTPUT"
-      - name: Summary
-        if: always()
-        run: |
-          if [ "${{ steps.build.outcome }}" = "success" ]; then icon="✅"; else icon="❌"; fi
-          dur="${{ steps.build.outputs.duration }}"
-          echo "$icon \`${{ matrix.name }}\` — tier ${{ matrix.tier }} on \`${{ matrix.runner }}\` (${dur:-?}s)" \
-            >> "$GITHUB_STEP_SUMMARY"
+      - run: nix build -L --keep-going --no-link '.#ciGroups.x86_64-linux.integration'
 
-  # --- Single required status for branch protection ---
+  vm:
+    name: vm
+    runs-on: andyl-nixos-latest-32
+    steps:
+      - uses: actions/checkout@v4
+      - run: nix build -L --keep-going --no-link '.#ciGroups.x86_64-linux.vm'
+
+  fleet:
+    name: fleet
+    runs-on: andyl-nixos-latest-32
+    steps:
+      - uses: actions/checkout@v4
+      - run: nix build -L --keep-going --no-link '.#ciGroups.x86_64-linux.fleet'
+
+  # Single aggregate status for branch protection.
   ci-success:
     name: CI Success
-    needs: [nix-fmt, nix-lint, cargo-fmt, cargo-clippy, matrix, checks]
+    needs: [lint, eval, rust, tla, build, integration, vm, fleet]
     if: always()
     runs-on: andyl-nixos-latest
     steps:
