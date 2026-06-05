@@ -99,8 +99,7 @@ impl Printer {
             OutputMode::Quiet | OutputMode::Json => {}
             _ => eprintln!(
                 "{} {}",
-                self.style_step
-                    .apply_to(format!("[{current}/{total}]")),
+                self.style_step.apply_to(format!("[{current}/{total}]")),
                 msg,
             ),
         }

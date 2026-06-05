@@ -30,8 +30,7 @@ impl FsProtocol {
 
     /// Parse a file:// URL into a local path.
     fn parse_url(url: &str) -> Result<PathBuf> {
-        let parsed =
-            url::Url::parse(url).with_context(|| format!("invalid file URL: {url}"))?;
+        let parsed = url::Url::parse(url).with_context(|| format!("invalid file URL: {url}"))?;
 
         parsed
             .to_file_path()
@@ -74,28 +73,18 @@ impl Protocol for FsProtocol {
                     }),
                     TransferOutput::File(dest) => {
                         if let Some(parent) = dest.parent() {
-                            tokio::fs::create_dir_all(parent)
-                                .await
-                                .with_context(|| {
-                                    format!("creating directory {}", parent.display())
-                                })?;
+                            tokio::fs::create_dir_all(parent).await.with_context(|| {
+                                format!("creating directory {}", parent.display())
+                            })?;
                         }
 
                         let temp_path = dest.with_extension("tmp");
-                        tokio::fs::write(&temp_path, &data)
-                            .await
-                            .with_context(|| {
-                                format!("writing temp file {}", temp_path.display())
-                            })?;
-                        tokio::fs::rename(&temp_path, dest)
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "renaming {} to {}",
-                                    temp_path.display(),
-                                    dest.display()
-                                )
-                            })?;
+                        tokio::fs::write(&temp_path, &data).await.with_context(|| {
+                            format!("writing temp file {}", temp_path.display())
+                        })?;
+                        tokio::fs::rename(&temp_path, dest).await.with_context(|| {
+                            format!("renaming {} to {}", temp_path.display(), dest.display())
+                        })?;
 
                         Ok(TransferResult {
                             status: 200,
@@ -127,11 +116,9 @@ impl Protocol for FsProtocol {
             Method::Put => {
                 let data = match &request.body {
                     Some(TransferBody::Bytes(b)) => b.clone(),
-                    Some(TransferBody::File(path)) => {
-                        tokio::fs::read(path)
-                            .await
-                            .with_context(|| format!("reading {}", path.display()))?
-                    }
+                    Some(TransferBody::File(path)) => tokio::fs::read(path)
+                        .await
+                        .with_context(|| format!("reading {}", path.display()))?,
                     Some(TransferBody::Stream(_)) => {
                         anyhow::bail!("stream body not supported for file:// protocol");
                     }
@@ -143,17 +130,13 @@ impl Protocol for FsProtocol {
                 if let Some(parent) = local_path.parent() {
                     tokio::fs::create_dir_all(parent)
                         .await
-                        .with_context(|| {
-                            format!("creating directory {}", parent.display())
-                        })?;
+                        .with_context(|| format!("creating directory {}", parent.display()))?;
                 }
 
                 let temp_path = local_path.with_extension("tmp");
                 let mut file = tokio::fs::File::create(&temp_path)
                     .await
-                    .with_context(|| {
-                        format!("creating temp file {}", temp_path.display())
-                    })?;
+                    .with_context(|| format!("creating temp file {}", temp_path.display()))?;
                 file.write_all(&data).await?;
                 file.flush().await?;
                 drop(file);
@@ -178,34 +161,27 @@ impl Protocol for FsProtocol {
                     resumed: false,
                 })
             }
-            Method::Head => {
-                match tokio::fs::metadata(&local_path).await {
-                    Ok(metadata) => Ok(TransferResult {
-                        status: 200,
-                        headers: Vec::new(),
-                        bytes_transferred: 0,
-                        content_length: Some(metadata.len()),
-                        body: None,
-                        hash: None,
-                        resumed: false,
-                    }),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        Ok(TransferResult {
-                            status: 404,
-                            headers: Vec::new(),
-                            bytes_transferred: 0,
-                            content_length: None,
-                            body: None,
-                            hash: None,
-                            resumed: false,
-                        })
-                    }
-                    Err(e) => Err(anyhow::anyhow!(
-                        "stat {} failed: {e}",
-                        local_path.display()
-                    )),
-                }
-            }
+            Method::Head => match tokio::fs::metadata(&local_path).await {
+                Ok(metadata) => Ok(TransferResult {
+                    status: 200,
+                    headers: Vec::new(),
+                    bytes_transferred: 0,
+                    content_length: Some(metadata.len()),
+                    body: None,
+                    hash: None,
+                    resumed: false,
+                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TransferResult {
+                    status: 404,
+                    headers: Vec::new(),
+                    bytes_transferred: 0,
+                    content_length: None,
+                    body: None,
+                    hash: None,
+                    resumed: false,
+                }),
+                Err(e) => Err(anyhow::anyhow!("stat {} failed: {e}", local_path.display())),
+            },
             Method::Delete => {
                 tokio::fs::remove_file(&local_path)
                     .await
@@ -256,9 +232,8 @@ impl Protocol for FsProtocol {
                     .await
                     .with_context(|| format!("opening {}", local_path.display()))?;
 
-                let stream: ByteStream = Box::pin(futures_util::stream::unfold(
-                    file,
-                    |mut file| async move {
+                let stream: ByteStream =
+                    Box::pin(futures_util::stream::unfold(file, |mut file| async move {
                         let mut buf = vec![0u8; FS_CHUNK_SIZE];
                         match file.read(&mut buf).await {
                             Ok(0) => None,
@@ -266,13 +241,9 @@ impl Protocol for FsProtocol {
                                 buf.truncate(n);
                                 Some((Ok(Bytes::from(buf)), file))
                             }
-                            Err(e) => Some((
-                                Err(anyhow::anyhow!("reading file: {e}")),
-                                file,
-                            )),
+                            Err(e) => Some((Err(anyhow::anyhow!("reading file: {e}")), file)),
                         }
-                    },
-                ));
+                    }));
 
                 Ok((result, stream))
             }

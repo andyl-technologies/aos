@@ -69,8 +69,7 @@ impl S3Protocol {
     ///
     /// Format: `s3://bucket/key/path`
     fn parse_url(url: &str) -> Result<(String, String)> {
-        let parsed = url::Url::parse(url)
-            .with_context(|| format!("invalid S3 URL: {url}"))?;
+        let parsed = url::Url::parse(url).with_context(|| format!("invalid S3 URL: {url}"))?;
 
         let bucket = parsed
             .host_str()
@@ -103,8 +102,7 @@ impl S3Protocol {
                 if let Ok(metadata) = tokio::fs::metadata(path).await {
                     let existing_size = metadata.len();
                     if existing_size > 0 {
-                        get_builder =
-                            get_builder.range(format!("bytes={}-", existing_size));
+                        get_builder = get_builder.range(format!("bytes={}-", existing_size));
                         resume_offset = existing_size;
                         resumed = true;
                     }
@@ -232,8 +230,7 @@ impl S3Protocol {
                 if let Ok(metadata) = tokio::fs::metadata(path).await {
                     let existing_size = metadata.len();
                     if existing_size > 0 {
-                        get_builder =
-                            get_builder.range(format!("bytes={}-", existing_size));
+                        get_builder = get_builder.range(format!("bytes={}-", existing_size));
                         resume_offset = existing_size;
                         resumed = true;
                     }
@@ -270,10 +267,7 @@ impl S3Protocol {
                         buf.truncate(n);
                         Some((Ok(Bytes::from(buf)), reader))
                     }
-                    Err(e) => Some((
-                        Err(anyhow::anyhow!("reading S3 object chunk: {e}")),
-                        reader,
-                    )),
+                    Err(e) => Some((Err(anyhow::anyhow!("reading S3 object chunk: {e}")), reader)),
                 }
             },
         ));
@@ -297,19 +291,27 @@ impl S3Protocol {
                 let file_len = metadata.len();
 
                 if file_len > MULTIPART_THRESHOLD {
-                    self.do_multipart_upload_from_file(&client, &bucket, &key, path, file_len)
-                        .await?;
+                    self.do_multipart_upload_from_file(
+                        &client,
+                        &bucket,
+                        &key,
+                        path,
+                        file_len,
+                        &request.headers,
+                    )
+                    .await?;
                 } else {
                     // Small file: read and upload in one shot.
                     let data = tokio::fs::read(path)
                         .await
                         .with_context(|| format!("reading {}", path.display()))?;
-                    client
+                    let put = client
                         .put_object()
                         .bucket(&bucket)
                         .key(&key)
-                        .body(data.into())
-                        .send()
+                        .body(data.into());
+                    let put = apply_put_object_headers(put, &request.headers);
+                    put.send()
                         .await
                         .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
                 }
@@ -326,12 +328,13 @@ impl S3Protocol {
             }
             Some(TransferBody::Bytes(data)) => {
                 let data_len = data.len() as u64;
-                client
+                let put = client
                     .put_object()
                     .bucket(&bucket)
                     .key(&key)
-                    .body(data.clone().into())
-                    .send()
+                    .body(data.clone().into());
+                let put = apply_put_object_headers(put, &request.headers);
+                put.send()
                     .await
                     .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
 
@@ -349,12 +352,13 @@ impl S3Protocol {
                 anyhow::bail!("stream body not directly supported for S3 put via Protocol::execute(); use TransferEngine");
             }
             None => {
-                client
+                let put = client
                     .put_object()
                     .bucket(&bucket)
                     .key(&key)
-                    .body(Vec::new().into())
-                    .send()
+                    .body(Vec::new().into());
+                let put = apply_put_object_headers(put, &request.headers);
+                put.send()
                     .await
                     .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
 
@@ -379,12 +383,7 @@ impl S3Protocol {
         let client = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
 
-        let resp = client
-            .head_object()
-            .bucket(&bucket)
-            .key(&key)
-            .send()
-            .await;
+        let resp = client.head_object().bucket(&bucket).key(&key).send().await;
 
         match resp {
             Ok(output) => {
@@ -453,14 +452,11 @@ impl S3Protocol {
         key: &str,
         path: &std::path::Path,
         file_len: u64,
+        headers: &[(String, String)],
     ) -> Result<()> {
-        let create_resp = client
-            .create_multipart_upload()
-            .bucket(bucket)
-            .key(key)
-            .send()
-            .await
-            .context("S3 CreateMultipartUpload")?;
+        let create = client.create_multipart_upload().bucket(bucket).key(key);
+        let create = apply_create_multipart_headers(create, headers);
+        let create_resp = create.send().await.context("S3 CreateMultipartUpload")?;
 
         let upload_id = create_resp
             .upload_id()
@@ -491,9 +487,7 @@ impl S3Protocol {
                 .body(chunk.into())
                 .send()
                 .await
-                .with_context(|| {
-                    format!("S3 UploadPart {bucket}/{key} part {part_number}")
-                })?;
+                .with_context(|| format!("S3 UploadPart {bucket}/{key} part {part_number}"))?;
 
             let etag = upload_resp
                 .e_tag()
@@ -527,6 +521,42 @@ impl S3Protocol {
 
         Ok(())
     }
+}
+
+fn apply_put_object_headers(
+    mut builder: aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder,
+    headers: &[(String, String)],
+) -> aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder {
+    for (name, value) in headers {
+        match name.to_ascii_lowercase().as_str() {
+            "content-type" => {
+                builder = builder.content_type(value);
+            }
+            "cache-control" => {
+                builder = builder.cache_control(value);
+            }
+            _ => {}
+        }
+    }
+    builder
+}
+
+fn apply_create_multipart_headers(
+    mut builder: aws_sdk_s3::operation::create_multipart_upload::builders::CreateMultipartUploadFluentBuilder,
+    headers: &[(String, String)],
+) -> aws_sdk_s3::operation::create_multipart_upload::builders::CreateMultipartUploadFluentBuilder {
+    for (name, value) in headers {
+        match name.to_ascii_lowercase().as_str() {
+            "content-type" => {
+                builder = builder.content_type(value);
+            }
+            "cache-control" => {
+                builder = builder.cache_control(value);
+            }
+            _ => {}
+        }
+    }
+    builder
 }
 
 impl Default for S3Protocol {

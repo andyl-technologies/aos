@@ -8,7 +8,7 @@ pub mod pull;
 pub mod push;
 pub mod resolve;
 
-pub use backend::{from_url, AuthOptions, CacheBackend};
+pub use backend::{AuthOptions, CacheBackend, from_url};
 pub use list::run_list;
 pub use prefetch::run_prefetch;
 pub use pull::run_pull;

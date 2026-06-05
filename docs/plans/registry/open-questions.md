@@ -16,7 +16,9 @@
 > origin and located via the committed repo-root `registry.toml` `[[caches]]`
 > (with the consumer's client-side `registries.d` as an optional override). A signed
 > tag is a **pure signed pointer** carrying no structured payload. Superseded
-> concepts live only in current-state.md (today's code) and design-brief §15.
+> concepts now live only as pre-cutover history in this plan set; use
+> [`../../registry/current-state.md`](../../registry/current-state.md) and
+> [`TODO.md`](./TODO.md) for live status.
 >
 > **Audience:** implementers, architects, engineers, and reviewers who must sign
 > off before the object store, the pack/delta pipeline, and the publish pipeline
@@ -69,7 +71,7 @@ recommendation, and the failure mode.
 |---|---|
 | **Brief §16.1** | "sha256 dumb-HTTP clone tested against target git client versions (no capability negotiation)." |
 | **Owner WS** | [WS-01](./workstream-01-object-store.md) (object store), informs [WS-05](./workstream-05-consumer.md) (consumer fetch) |
-| **Status** | OPEN — empirical compatibility task, not a design choice. |
+| **Status** | PARTIAL — the AOS consumer floor is pinned and enforced as Git 2.42.0+ with a runtime sha256 capability probe; a stock-git matrix harness exists, but the pinned-version/container run remains an empirical compatibility task. |
 
 **Why it is open.** The dumb-HTTP transport has **no capability negotiation** —
 the client never learns the server's object format; it must already be a sha256
@@ -80,14 +82,23 @@ paths, cannot clone. The 2/62 hex split of a 64-char sha256 loose object path
 split until the client tries to verify the object, at which point it fails
 opaquely.
 
-**What must happen.** WS-01 must establish a tested floor: the minimum git
-version that can `git clone <url>` and `git verify-tag <semver>` against the
-sha256 dumb-HTTP origin, for both stock git and the libgit2/`gix` (or shell-out)
-path the AOS consumer uses. Pin that floor in
+**What has landed.** The AOS shell-out consumer now pins Git 2.42.0 as the
+minimum supported client floor for sha256 dumb-HTTP registries. Before fetching,
+`apm update` checks `git --version` and runs a local
+`git init --bare --object-format=sha256` probe, then fails with a clear
+"requires a sha256-capable git" error rather than a low-level object-format
+panic. The floor is recorded in
 [http-layout.md](../../registry/http-layout.md) and
-[signing-and-trust.md](../../registry/signing-and-trust.md), and gate the
-consumer with a clear "this registry requires a sha256-capable git" error rather
-than a low-level object-format panic.
+[signing-and-trust.md](../../registry/signing-and-trust.md). The Rust e2e suite
+also has `stock_git_configured_version_matrix_syncs_sha256_dumb_http_registry`,
+which reruns the sha256 dumb-HTTP consumer sync under each `git` binary listed in
+`AOS_PACKAGE_TEST_GIT_MATRIX`.
+
+**What remains.** WS-01 still needs the empirical stock-git compatibility matrix
+to be run and recorded against pinned/containerized target production clients:
+prove which `git clone <url>` / `git verify-tag <semver>` versions work against
+the sha256 dumb-HTTP origin. That matrix can either confirm the 2.42.0 floor or
+force an explicit floor change.
 
 **Failure mode.** Loud but late: a stock `git clone` against the origin fails
 for users on old gits with a confusing "unknown object format" / "bad object"
@@ -175,45 +186,37 @@ necessary packs. Neither corrupts bytes.
 |---|---|
 | **Brief §16.3** | "Bucket-selection input (`machine_id` source) and the probe-forward fallback order." |
 | **Owner WS** | [WS-03](./workstream-03-channels-rollouts.md) (partition model), [WS-05](./workstream-05-consumer.md) (client selection) |
-| **Status** | OPEN — both the hash input and the missing-partition fallback are undecided. |
+| **Status** | RESOLVED — consumers use a generated registry-local salt for first assignment, persist the bucket index, and probe forward without re-pinning. |
 
 **What is decided (TARGET).** A channel exposes exactly **256** partition files
 `/channels/<name>/00..ff`, each an independently-signed tag object whose tag name ==
-the channel name, pointing at a semver tag (brief §6). The consumer
-**deterministically self-selects one bucket** and **persists** it (e.g.
-the low byte of `sha256(machine_id)` (i.e. mod 256), written once) so a host does not flap between
-buckets across promotions. The publisher rolls a release to N/256 of the fleet by
+the channel name, pointing at a semver tag (brief §6). The consumer self-selects
+one bucket on first channel sync from a generated registry-local salt and
+persists the resulting bucket index so a host does not flap between buckets
+across promotions. The publisher rolls a release to N/256 of the fleet by
 pointing N partitions at the new semver tag and leaving the rest on the prior
 release; un-advanced partitions still name the prior release (brief §6 — this is
 the explicit answer to "where does the rest of the fleet go"). Completion = all
 256 partitions point at the new release.
 
-**What is open.**
+**What is implemented.**
 
-1. **`machine_id` source on AOS.** Which identifier seeds the low byte of
-   `sha256(machine_id)` (i.e. mod 256)? Candidates: `/etc/machine-id`, systemd's machine-id, or a registry-local
-   salt persisted on first use. The choice fixes whether two hosts that share a
-   golden image (and thus a baked-in machine-id) collide into the same bucket —
-   which would skew rollout. Recommend a **registry-local salt generated once on
-   first sync** (not the image-baked machine-id) so cloned images re-randomize,
-   *and* persist the resulting bucket so it never flaps (brief §6).
-2. **Persistence semantics.** The bucket is "written once" (brief §6). Confirm:
-   is it the *input* (`machine_id`/salt) that is persisted and the bucket
-   recomputed, or the *bucket index* that is persisted directly? Persisting the
-   bucket index directly is simplest and immune to a future hash-function change;
-   persisting the input lets the partition count change later (it will not — it is
-   fixed at 256, brief §6). Recommend persisting the **bucket index** (00–ff).
-3. **Probe-forward fallback order.** "There **must always be 256**; if one is
-   missing a client **may** use another (deterministic probe-forward
-   `(bucket+1) mod 256`)" (brief §6). Open: how many probe steps before giving up,
-   and does a probe-forward host pin to the probed bucket or retry its home bucket
-   next sync? Recommend: probe `(bucket+i) mod 256` for `i = 1..255`, use the first
-   present partition, but **do not** re-persist — keep the home bucket so the host
-   returns to it once the missing partition is republished.
+1. **Bucket source.** AOS does not read `/etc/machine-id` for channel rollout
+   selection. When a registry has no persisted bucket yet, the consumer generates
+   fresh random salt and hashes `registry_name || "\0" || salt`; the low byte is
+   the rollout bucket.
+2. **Persistence semantics.** The consumer persists the resulting **bucket
+   index** (`00..ff` as `u8`) in `[registry.state]`. Existing persisted buckets
+   continue to win unchanged, which is the migration path from earlier clients.
+3. **Probe-forward fallback.** The client probes `(bucket+i) mod 256` for
+   `i = 0..255`, uses the first present/verifiable partition for the current
+   sync, and does **not** re-persist the probed bucket.
 
-**Recommendation.** Seed from a registry-local salt; persist the resulting
-bucket index 00–ff; probe-forward `(bucket+i) mod 256` without re-pinning. Spell the
-exact pre-image and the probe loop in WS-03 / WS-05 so client and producer agree.
+**Verification.** `registry::channel` tests cover deterministic registry+salt
+selection, random salt shape, persisted-bucket migration, and full probe order.
+
+**Recommendation.** Keep persisting only the bucket index, not the salt. That is
+the simplest durable contract while the partition count remains fixed at 256.
 This is operational, not a correctness gate — a wrong choice degrades to "rollout
 fractions are uneven", never "a host gets bad bytes" (the anti-rollback floor,
 brief §6, still protects every host).
@@ -224,63 +227,44 @@ brief §6, still protects every host).
 |---|---|
 | **Brief §16.4** | "Whether `apr` grows a single `apr release`/`apr publish` command that does the whole pipeline (commit → tag/sign → pack/delta/zstd → update-server-info → advance partitions → upload) and whether upload backends are pluggable." |
 | **Owner WS** | [WS-02](./workstream-02-pack-delta-pipeline.md) (pack/delta), [WS-03](./workstream-03-channels-rollouts.md) (advance partitions) |
-| **Status** | OPEN — the central producer-side build decision. |
+| **Status** | RESOLVED IN CODE — `apr release` is the wrapper; repeatable backend URLs are supported through the shared static-upload backend layer. |
 
-**Why it is the crux.** The producer is the asymmetry: the consumer is rich, but
-the producer side is a **stub today**. `apr bundle` is just `git bundle create`
-with **no manifest writer** and an **unused dead parameter**
-(`_update_manifest: bool` at `crates/aos-package/src/registry_ops.rs:1723`); there
-is no upload, no delta classification, no `update-server-info` orchestration.
-None of that survives into the target (git bundles are removed, brief §15), so
-the producer is effectively a greenfield build. The brief's §4 / §6 / §10 publish
-model only becomes real when one ordered sequence runs end-to-end:
+**Implemented decision.** The producer keeps the focused repair/inspection verbs
+(`apr publish`, `apr tag`, `apr channel`, `apr cache generate`, and
+`apr origin upload`) and adds one human-safe wrapper:
 
 ```
-apr release  (TARGET — performs the full ordered pipeline):
-  1. apr publish  → write package-TOML tree → git commit (sha256)
-  2. git tag -s <semver> → commit            (SSH-Ed25519 signed release tag; pure pointer)
-  3. write loose objects to the root /objects/<xx>/<62hex>  (every release, centralized)
-  4. pack/delta/zstd from the release commit → /releases/*/objects/pack/ (pack-only):
-       - full pack-<sha256>.pack (+ .idx)  at every X.Y.0
-       - thin delta-<from-semver>.pack[.zst] per the §9 delta scheme
-  5. git update-server-info                  (regenerate info/refs, HEAD)
-  6. write objects/info/alternates           (relative ../releases/*/objects, one ../, newest→oldest)
-  7. upload immutable content first          (root loose objects, release packs — any order)
-  8. advance N of the 256 /channels/<name>/00..ff signed partition tags  (rollout)
-  9. low-TTL surfaces last                    (/channels/**, info/refs, HEAD, packs)
+apr release <semver>
+  [--store-path <path>]
+  (--key <private-key-path> | --key-id <keys.toml-id>)
+  [--channel <name> (--init-channel | --count N | --partitions 00,01,...)]
+  [--cache-url <url>] [--cache-output <dir>] [--cache-key <key-file>]
+  [--upload-url <file|http|s3|sftp URL>]...
+  [--dry-run] [--resume]
 ```
 
-**Open sub-questions.**
+`apr release` can release an already committed registry tree, or it can publish a
+real local Nix store path first by delegating to `apr publish`. When `--cache-url`
+is supplied, the cache pointer is committed before the semver tag is signed so
+the release authenticates the pointer. Pack generation writes full packs at
+`X.Y.0` anchors and compressed guaranteed thin deltas at the target release.
+`--cache-output` runs static Nix-cache generation explicitly because it requires
+the listed store paths to exist locally.
 
-1. **Command surface.** One `apr release` that does everything, or composable
-   verbs (`apr pack` → `apr delta` → `apr upload` → `apr advance`) that a release
-   script chains? Composable verbs are more testable and let CI own ordering; a
-   single command is the safer default for humans because the ordering
-   (immutable-first, low-TTL surfaces last) is the *only* safe order.
-2. **Pluggable upload backends.** S3, rsync, and plain HTTP PUT are all
-   plausible. The git-native model has **no single root file to atomically
-   swap** — the "commit point" is the set
-   of low-TTL surfaces (`/channels/**`, `info/refs`, `HEAD`, `objects/info/packs`)
-   that must be published *after* all immutable objects exist. The atomicity
-   requirement is therefore "publish immutable objects → then publish the low-TTL
-   index/partition surfaces", and it is **backend-independent** (no conditional
-   PUT needed) *as long as the ordering holds* (see R2).
-3. **Where pack/delta generation runs.** On the publishing host from the landed
-   commit, or as a separate CI job that re-derives from the signed tag? The signed
-   tag makes the second option safe (the commit is content-addressed and signed),
-   but the first is simpler.
-4. **Idempotency / resume.** Steps 3–4 + 7 (immutable objects: root loose
-   objects, release packs, upload) must be safely re-runnable after a partial
-   failure — they are content-addressed, so re-upload is a no-op. Only steps
-   5/6/8/9 (index + alternates + partition advance + low-TTL surfaces) mutate
-   shared state.
+**Upload backend decision.** Upload is pluggable at the static-file backend layer:
+repeat `--upload-url` for `file://`, generic `http(s)://`, `s3://`, and
+`sftp://`/`ssh://` destinations. The uploader classifies paths and writes
+immutable payloads first (`objects/**`, `releases/**`, static-cache NARs and
+narinfos) and low-TTL mutable surfaces last (`HEAD`, `info/refs`,
+`objects/info/**`, `channels/**`, `nix-cache-info`). Service-backed S3/SFTP
+validation remains a separate TODO because it requires external services.
 
-**Recommendation.** Build composable verbs underneath a single `apr release`
-convenience wrapper; make upload a trait with S3/rsync/PUT impls; require all
-backends to honor the immutable-first / low-TTL-last ordering and document that
-the rollout-partition advance (step 8) is the *only* publisher-coordination point
-(restrict concurrent publishers per channel, see R3). This is the heart of WS-02
-/ WS-03 and gates the whole target design becoming operable.
+**Idempotency and coordination.** `--resume` skips a semver tag already pointing
+at `HEAD` and skips already-present full/delta pack artifacts; otherwise existing
+immutable artifacts fail closed with a clear "pass --resume" message. A local
+publisher lock in the git dir prevents two local `apr release` processes from
+interleaving. Multi-host publisher serialization and production CDN behavior are
+still operational validation topics (see R2/R3 and the TODO).
 
 ### Q5 — Consumer freshness / max-staleness policy and key-rotation cadence
 
@@ -288,7 +272,7 @@ the rollout-partition advance (step 8) is the *only* publisher-coordination poin
 |---|---|
 | **Brief §16.5** | "Consumer freshness / max-staleness policy and re-sign/key-rotation cadence." |
 | **Owner WS** | [WS-05](./workstream-05-consumer.md) (staleness policy), [WS-04](./workstream-04-signing-trust.md) (key rotation), [WS-03](./workstream-03-channels-rollouts.md) (CDN TTL) |
-| **Status** | OPEN — policy + automation, no single right number. |
+| **Status** | PARTIAL — `apm` now has a channel max-staleness gate with a 14-day default and `max_staleness_seconds` override for failed refreshes and unchanged-but-valid signed channel targets; production default tuning and key-rotation cadence remain open. |
 
 **What is decided (TARGET).** There is **no in-band `valid_until`** — signed tags
 carry no structured payload, only a standard git tag (object, type, tag name,
@@ -319,15 +303,19 @@ material. The defense is real but lives in the consumer, not in the signature.
 
 **Open sub-questions.**
 
-1. **Default max-staleness bound** and whether it is per-registry / per-channel
-   configurable. Too long weakens the freeze defense; too short breaks low-
-   velocity deployments the moment publishing pauses (holidays, incidents, a quiet
-   channel) — the availability/security tension now lives in the *consumer policy*,
-   not in a signed window.
-2. **Fresh-frontier bookkeeping.** What exactly the consumer persists as "last
-   observed fresh": the timestamp of the last successful `/channels/**` fetch, the
-   last frontier advance, or both — and how a probe-forward fetch (Q3) interacts
-   with it.
+1. **Policy validation.** The current default is 14 days, configurable per
+   registry as `max_staleness_seconds`. First-sync failure, failed refreshes,
+   unchanged-but-valid signed channel targets, and anti-rollback interactions
+   have Rust coverage; the actual production default still needs fleet/CDN
+   validation.
+2. **Fresh-frontier bookkeeping.** The implementation persists the local
+   freshness timestamp in `[registry.state].last_update`. First sync and semver
+   advancement refresh it; unchanged but valid signed channel targets are
+   accepted only while the previous timestamp is within `max_staleness_seconds`,
+   and do not refresh the clock. This observation is not publisher-signed and
+   cannot by itself distinguish a reachable frozen mirror from a legitimately
+   quiet channel, so the configured window is an operator availability/security
+   trade-off.
 3. **Key rotation.** One Ed25519 key serves git signing (and, if NARs are served,
    narinfo `Sig:`) (brief §11). Rotating it means re-signing live channel
    partitions and accepting both keys via `allowed_signers` during the overlap
@@ -344,12 +332,12 @@ material. The defense is real but lives in the consumer, not in the signature.
 4. **Clock-skew tolerance** on the client when evaluating its own max-staleness
    bound against `now`.
 
-**Recommendation.** Set a default consumer max-staleness bound (suggest ~7–14
-days), configurable per registry / per channel, paired with a low CDN TTL on the
+**Recommendation.** Keep the 14-day default paired with a low CDN TTL on the
 mutable surfaces; rely on the anti-rollback floor as the hard correctness gate and
-the max-staleness clock as the freshness gate. Rotate the Ed25519 key on a fixed
-cadence (or on suspicion of compromise) with `allowed_signers` overlap; no routine
-re-sign otherwise. Document the freeze trade-off prominently in
+the max-staleness clock as the freshness gate when refresh fails. Rotate the
+Ed25519 key on a fixed cadence (or on suspicion of compromise) with
+`allowed_signers` overlap; no routine re-sign otherwise. Document the freeze
+trade-off prominently in
 [signing-and-trust.md](../../registry/signing-and-trust.md) and the staleness
 policy in [workstream-05-consumer.md](./workstream-05-consumer.md).
 
@@ -415,49 +403,37 @@ This is two distinct decisions, each large enough for its own section:
 - **NAR-superset milestone timing** →
   [§4](#4-does-the-nar-cache-superset-ship-this-milestone).
 
-### Q8 — NAR blob `URL:` key: colon-retained wire key vs. colon-free fallback
+### Q8 — NAR blob `URL:` key: colon-free static key
 
 | | |
 |---|---|
 | **Source** | Not in brief §16 — a WS-06 deployment decision surfaced by [workstream-06-nix-cache.md](./workstream-06-nix-cache.md) §7 (F388 / F389). |
 | **Owner WS** | [WS-06](./workstream-06-nix-cache.md) (narinfo emitter), informs [WS-05](./workstream-05-consumer.md) §8 (consumer cache resolution) |
-| **Status** | OPEN — a per-deployment edge-compatibility choice, not a wire-format change. |
+| **Status** | RESOLVED — the static cache producer uses a colon-free `URL:` key. |
 
-**What is decided (CURRENT).** The blob is served at `{cache}/nar/<key>.nar.zst`
-where the emitted narinfo `URL:` field carries the key verbatim and the consumer
+**What is decided.** The blob is served at `{cache}/nar/<key>.nar.zst`, where the
+emitted narinfo `URL:` field carries the relative key verbatim and the consumer
 fetches it via `join_cache_url(mirror, narinfo.url)` (`download.rs:65-71`,
-`:184`) — so the **wire** key is whatever the producer writes into `URL:`. Today
-the cache-supplied `URL:` retains the full `sha256:<hex>` form, colon included.
-On disk the consumer rewrites colon→dash for filesystem safety
-(`nar_cache_filename`, `download.rs:313-317` → `sha256-<hex>.nar.zst`), but that
-rewrite is **local only** and does **not** change the wire key.
+`:184`). The producer-side `nar_url` helper now writes
+`nar/{store_hash}-{nar_hash with ':' -> '-'}.{ext}`. For a NAR hash like
+`sha256:<hex>`, the served static object and narinfo `URL:` are both
+`nar/<storehash>-sha256-<hex>.nar.zst`.
 
-**What is open.** Whether the emitter writes the colon-retained key
-(`nar_url_key` → `sha256:<hex>`, WS-06 §7) or the colon-free fallback
-(`nar_url_key_colon_free` → `sha256-<hex>`, the same transform the consumer
-already applies on disk) into `URL:` — and serves the blob under the matching
-name. The two must agree: `URL:` and the served object key are a single
-deployment-wide choice (a `colon_safe: bool` on the emitter config, WS-06 §7).
+**Why this is closed.** Colon-free keys are accepted by ordinary filesystems,
+S3-compatible stores, SFTP paths, HTTP object keys, and CDN/edge layers that
+might otherwise percent-encode or reject a literal `:`. Because the narinfo
+`URL:` and uploaded object path are generated from the same helper, there is no
+per-deployment `colon_safe` switch in the current target.
 
-**Why it is open.** S3 permits a literal `:` in object keys, but some CDN / edge
-layers percent-encode or reject it. If the chosen edge mangles the colon, the
-emitter must switch to `nar_url_key_colon_free` **and** set `URL:` to match, so a
-stock `nix` substituter and `apm` both resolve the blob. This is a property of
-the *serving infrastructure*, not the registry format — hence a per-deployment
-flag rather than a format decision.
-
-**Recommendation.** Default to the **colon-retained** key (matches the CURRENT
-`download.rs` path with no consumer change); expose a `colon_safe` emitter switch
-that flips both `URL:` and the served key to `sha256-<hex>` for edges that mangle
-the colon. Pin the colon-handling guarantee in
-[nix-cache-compatibility.md](../../registry/nix-cache-compatibility.md) §9 once
-the target edge layers are known.
+**Verification.** `aos-core` tests cover `nar_url` and static narinfo rendering;
+`aos-package` tests cover upload preserving the narinfo `URL:` object path and
+`download_nars` following the narinfo-supplied colon-free path through a static
+`file://` cache.
 
 **Failure mode.** Pure reachability, never corruption: a mismatched `URL:` vs.
-served-key (or a colon mangled by an edge that was assumed colon-safe) yields a
-404 on NAR fetch, not bad bytes — `apm` still verifies the compressed stream
-against the narinfo `FileHash` (`download.rs:191-204`) and a stock `nix` host
-still verifies `NarHash`.
+served-key yields a 404 on NAR fetch, not bad bytes. `apm` still verifies the
+compressed stream against the narinfo `FileHash` (`download.rs:191-204`) and a
+stock `nix` host still verifies `NarHash`.
 
 ### DD-1 — Doc-debt: re-ground the CURRENT-state baseline against the master rebase
 
@@ -606,15 +582,15 @@ workstream.
 | ID | Risk | Likelihood × Impact | Mitigation | Owner WS |
 |---|---|---|---|---|
 | **R1** | **sha256 dumb-HTTP client incompatibility** (Q1). Old / non-sha256 gits cannot clone or verify; no capability negotiation to detect this. | Med × Med | Pin a tested minimum git version; emit a clear "requires sha256 git" error in the consumer instead of a low-level object panic; rely on loose-object completeness for in-range clients. | WS-01, WS-05 |
-| **R2** | **Torn publish.** A consumer reads a low-TTL surface (`info/refs`, `/channels/**`, `objects/info/packs`) that names an object/pack not yet uploaded. | Low × High | Strict ordering: upload all immutable objects (loose + packs) **first**, regenerate/publish the low-TTL index and partition surfaces **last** (brief §4, §10). Loose-object completeness means a partially-published frontier still resolves via the prior release. | WS-02, WS-03 |
-| **R3** | **Concurrent publishers race the partition advance.** Two `apr release` runs advancing the same channel's 256 partitions can interleave into an inconsistent rollout fraction. | Med × Med | Restrict to a single publisher per channel, or serialize the partition-advance step; the immutable-object steps are content-addressed and need no coordination. | WS-03 |
+| **R2** | **Torn publish.** A consumer reads a low-TTL surface (`info/refs`, `/channels/**`, `objects/info/packs`) that names an object/pack not yet uploaded. | Low × High | `apr release` and `apr origin upload` publish immutable objects/packs/cache payloads **first** and low-TTL index/partition surfaces **last**. Loose-object completeness means a partially-published frontier still resolves via the prior release. Real CDN/mirror behavior still needs validation. | WS-02, WS-03 |
+| **R3** | **Concurrent publishers race the partition advance.** Two `apr release` runs advancing the same channel's 256 partitions can interleave into an inconsistent rollout fraction. | Med × Med | `apr release` has a local publisher lock in the git dir. Multi-host production publishers still need one external serialization point per channel; immutable-object steps are content-addressed and need no coordination. | WS-03 |
 | **R4** | **Online signing key exposure.** Removing in-band `valid_until` removes the heartbeat-re-sign pressure that wanted the Ed25519 key online for quiet channels (Q5); the remaining online-key need is key rotation, which re-signs live partitions. | Low × High | No routine re-sign — freshness is the consumer's max-staleness clock, not a signed window; sign partitions only on rollout advance; for rotation use `allowed_signers` overlap, never the long-term key online beyond the rotation event. | WS-04, WS-03 |
 | **R5** | **Delta depth too deep → consumer reconstruct cost** (Q2). A large `--depth` shifts CPU onto every consumer applying the delta chain. | Low × Med | Cap `--depth` (suggest 50); window is the free lever, not depth (brief §10); document the consumer-cost rationale. | WS-02 |
-| **R6** | **Bucket flap / skew** (Q3). Image-baked machine-ids collide into one bucket; or a host recomputes a different bucket across syncs and flaps. | Med × Low | Seed from a registry-local salt re-randomized per clone; persist the bucket index once; probe-forward without re-pinning (brief §6). | WS-03, WS-05 |
+| **R6** | **Bucket flap / skew** (Q3). A host recomputes a different bucket across syncs, or cloned images share a baked-in host identifier. | Med × Low | Implemented: first assignment uses generated registry-local salt; persisted bucket index wins afterward; probe-forward does not re-pin. | WS-03, WS-05 |
 | **R7** | **Cross-serving / name-confusion.** A signed tag object served at the wrong path (a release tag served as a channel partition, or vice-versa) tricks a consumer. | Low × High | Name-binding verification: signature valid **and** embedded tag-name field == expected path name (channel name under `/channels/*`, semver under `/releases/*`); verify the whole `tag → tag → commit` chain (brief §5, §11). | WS-04, WS-05 |
-| **R8** | **Migration straddle bugs** (Q7 / §3). A half-migrated host or mirror serves/reads neither model cleanly — an old bundle-mode client hits a git-native origin, or vice-versa. | Med × High | The two models share **no wire surface** (§3.1), so there is no torn-format hazard; gate the consumer by registry capability detection (git refs present?) and bound any dual-stack window with a hard EOL. | WS-05 |
+| **R8** | **Migration straddle bugs** (Q7 / §3). A half-migrated host or mirror serves/reads neither model cleanly — an old bundle-mode client hits a git-native origin, or vice-versa. | Med × High | The two models share **no wire surface** (§3.1), so there is no torn-format hazard. Implemented policy: git-native `HEAD` + `info/refs` wins; legacy-only `bundle-list.toml` origins fail with a clean-break error; bundle-mode clients are EOL at registry cutover. | WS-05 |
 | **R9** | **Anti-rollback floor vs. fix-forward.** A consumer that does not keep a monotonic floor could be walked backward by a misconfigured partition; conversely an over-strict floor blocks a legitimate fix-forward. | Low × High | Consumer keeps a monotonic floor (never moves to a release older than current); aborting a bad rollout is **fix-forward** (publish newer, advance partitions), never partition-decrement (brief §6). | WS-05, WS-03 |
-| **R10** | **Freeze defense vs. availability** (Q5). With no in-band `valid_until`, freshness rests on the consumer's max-staleness policy: too short breaks quiet channels; too long weakens the freeze defense; and a frozen-but-validly-signed mirror is not self-evidently stale to a host with no recent fresh-frontier observation. | Med × Med | Consumer max-staleness bound + low CDN TTL on mutable surfaces; anti-rollback floor as the hard gate; document the frozen-mirror trade-off prominently. | WS-05, WS-04, WS-03 |
+| **R10** | **Freeze defense vs. availability** (Q5). With no in-band `valid_until`, freshness rests on the consumer's max-staleness policy: too short breaks quiet channels; too long weakens the freeze defense; and a frozen-but-validly-signed mirror is not self-evidently stale to a host with no recent fresh-frontier observation. | Med × Med | Implemented locally: 14-day default `max_staleness_seconds` gate on failed channel refreshes and unchanged-but-valid signed targets + low CDN TTL on mutable surfaces; anti-rollback floor as the hard gate; still validate the default against real fleet/CDN behavior. | WS-05, WS-04, WS-03 |
 | **R11** | **zstd `--long` window mismatch.** A pack compressed with `--long=27` requires the consumer to decompress with a matching window (~128 MiB); a constrained client OOMs. | Low × Med | Pin the `--long` window in spec; ensure the consumer always passes the matching `-d --long`; size it against the smallest supported host. | WS-02, WS-05 |
 
 ---
@@ -637,16 +613,16 @@ signing primitive and the
 package-TOML tree content, and replaces *everything about distribution and
 rollout*").
 
-| Layer | CURRENT | TARGET | Survives? |
+| Layer | Retired bundle model | Git-native model | Survives? |
 |---|---|---|---|
 | Package metadata | nested package TOMLs (`PackageToml`, `crates/aos-package/src/registry/parse.rs:14`) + `closures/<hash>` adjacency | **same TOML tree content**, now living as git tree objects in a sha256 bare repo (brief §3, §8) | **Yes** (content), repackaged as git objects |
-| Root / manifest | `bundle-list.toml` manifest the consumer parses (`registry/bundle.rs:49`, `BundleManifest`, **Deserialize-only**) | **removed** — replaced by git refs + signed tag objects + relative `objects/info/alternates` (brief §15) | **No** |
-| Distribution unit | **git bundles** + `bundle-list.toml`; producer is a stub (`apr bundle` = `git bundle create`; dead `_update_manifest`, `registry_ops.rs:1723`) | **removed** — full packs `pack-<sha256>.pack` + thin `delta-<from>.pack[.zst]` over dumb HTTP (brief §9, §10, §15) | **No** |
-| Versioning / ordering | **calendar tags** `vYYYY.MM[.P]` ordered by `creation_token` (`registry/state.rs:131 version_to_token`, `:104 check_monotonic`) | **standard semver, no `v`**; ordering by semver + git ancestry (brief §7, §15) | **No** |
-| Selection | `pick_bundles` (`registry/update.rs:292`); tracking modes commit/branch/tag/semver (`types.rs TrackingMode`) | bucket → `/channels/<name>/<00..ff>` signed partition tag → semver tag → commit, then delta walk (brief §5, §6, §9) | **No** |
+| Root / manifest | `bundle-list.toml` manifest | **removed** — replaced by git refs + signed tag objects + relative `objects/info/alternates` (brief §15) | **No** |
+| Distribution unit | **git bundles** + `bundle-list.toml` | **removed** — full packs `pack-<sha256>.pack` + thin `delta-<from>.pack[.zst]` over dumb HTTP (brief §9, §10, §15) | **No** |
+| Versioning / ordering | **calendar tags** `vYYYY.MM[.P]` ordered by `creation_token` | **standard semver, no `v`**; ordering by semver + git ancestry (brief §7, §15) | **No** |
+| Selection | bundle selection by manifest plus branch/tag/version tracking | bucket → `/channels/<name>/<00..ff>` signed partition tag → semver tag → commit, then delta walk (brief §5, §6, §9) | **No** |
 | Rollout | none beyond tracking-mode selection | **256 signed partition tags**, publisher-advanced N/256 (brief §6) | **No** (new) |
-| Signing | signed git **commit** (`apr sign` = `git commit -S`; `git verify-commit`, `registry/git.rs:379`) + TOFU `trusted-keys.d` | signed git **tag objects** as **pure signed pointers** — no structured payload, just standard tag fields + Ed25519 signature + optional freeform message (channel partitions + release tags), SSH-Ed25519, name-binding, `tag→tag→commit` (brief §5, §11) | **Yes** (primitive), moved commit→tag |
-| Nix NAR cache | `[[caches]]` consumer reads, fallback `{registry}/nar` (`download.rs:67 resolve_mirror`, `:57 nar_url`) | cache location lives in the committed repo-root `registry.toml` `[[caches]]` (authenticated transitively by the signed tag), with client-side `registries.d` as an optional override (or the origin itself) — **not** advertised in tags; origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar` as a superset, narinfo `Sig:` reusing the one Ed25519 key (brief §13, §14) | **Yes** (mechanism), committed `registry.toml` + client override |
+| Signing | signed git **commit** + TOFU `trusted-keys.d` | signed git **tag objects** as **pure signed pointers** — no structured payload, just standard tag fields + Ed25519 signature + optional freeform message (channel partitions + release tags), SSH-Ed25519, name-binding, `tag→tag→commit` (brief §5, §11) | **Yes** (primitive), moved commit→tag |
+| Nix NAR cache | `[[caches]]` consumer reads with fallback cache URL behavior | cache location lives in the committed repo-root `registry.toml` `[[caches]]` (authenticated transitively by the signed tag), with client-side `registries.d` as an optional override (or the origin itself) — **not** advertised in tags; origin MAY serve `nix-cache-info`/`<storehash>.narinfo`/`nar` as a superset, narinfo `Sig:` reusing the one Ed25519 key (brief §13, §14) | **Yes** (mechanism), committed `registry.toml` + client override |
 
 The headline: there is **no shared root file to dual-write**. The old model's
 root is `bundle-list.toml`; the new model has *no* root file at all — its "root"
@@ -669,15 +645,14 @@ Mirror during the shim window:
 
 - **Producer:** the new `apr release` writes the full git-native surface *and*
   keeps regenerating bundles + `bundle-list.toml`. This requires keeping (and
-  finishing) the **`bundle-list.toml` writer that does not exist today** — the
-  manifest types are `Deserialize`-only and `apr bundle`'s `_update_manifest`
-  parameter is **dead code** (`registry_ops.rs:1723`). So the shim is *not* free;
-  it forces *building* a serializer for a format we intend to retire, plus the
-  `creation_token` producer encoding (`version_to_token`, `state.rs:131`) that
-  only ever existed on the consumer side.
+  finishing) a **`bundle-list.toml` writer that the active code no longer
+  contains**. So the shim is *not* free; it forces building and testing a
+  serializer plus `creation_token` producer encoding for a format we intend to
+  retire.
 - **Consumer:** `apm update` probes for git refs (`info/refs` present?); on a
-  legacy-only mirror, falls back to the existing `BundleManifest::fetch` /
-  `pick_bundles` path (`registry/bundle.rs`, `registry/update.rs:292`).
+  legacy-only mirror, a shim-era client would need a bundle fallback. The active
+  git-native client instead fails legacy-only origins closed with the clean-break
+  error described in Option B.
 
 | Pros | Cons |
 |---|---|
@@ -692,16 +667,19 @@ The bundle / `bundle-list.toml` / `creation_token` surface is removed; the
 registry serves only the git-native model; consumers are cut over by version.
 
 - **Producer:** `apr release` writes only the git-native surface. The dead
-  `_update_manifest` parameter (`registry_ops.rs:1723`), `BundleManifest`
-  (`registry/bundle.rs`), `version_to_token` / `check_monotonic`
-  (`registry/state.rs`), and `pick_bundles` (`registry/update.rs:292`) are
-  **deleted**, not revived.
+  bundle-manifest writer, `creation_token` producer encoding, and bundle
+  selection path are **deleted**, not revived.
 - **Consumer:** clients are upgraded to the git-native fetch path *before* any
-  mirror drops bundles. A consumer detects the model by probing `info/refs`; a
-  too-old client refuses a git-native registry with a clear "upgrade `apm`"
-  error. Signed tags carry no structured payload (pure signed pointers, brief
-  §11), so forward-compat for *future* git-native changes is carried by the
-  layout/refs surface, not by a versioned field inside the signed tag.
+  mirror drops bundles. The current consumer treats plain `http(s)://` origins
+  as git-native dumb-HTTP registries and preflights `HEAD` plus `info/refs`.
+  A legacy-only origin that exposes `bundle-list.toml` but not the git-native
+  surface fails with a clear "legacy bundle-mode registry" / "no longer
+  supports the bundle/creation_token registry model" error. If both surfaces are
+  present during a temporary mirror straddle, the git-native surface wins and
+  `bundle-list.toml` is ignored. Signed tags carry no structured payload (pure
+  signed pointers, brief §11), so forward-compat for *future* git-native changes
+  is carried by the layout/refs surface, not by a versioned field inside the
+  signed tag.
 
 | Pros | Cons |
 |---|---|
@@ -710,50 +688,40 @@ registry serves only the git-native model; consumers are cut over by version.
 | One distribution model; no dual-surface consistency hazard (closes R8). | Needs a "minimum client version" gate communicated and enforced. |
 | Simplest producer; fewest moving parts in the highest-risk new pipeline (WS-02). | |
 
-### 3.4 Recommended path: clean break, gated by a thin consumer dual-detect
+### 3.4 Ratified path: clean break, gated by git-native preflight
 
-The brief does not decide this, but its design pressure points hard at the
-**clean break**. The two models share **no distribution surface** — bundles vs.
-packs, `creation_token` vs. semver, `bundle-list.toml` vs. git refs — so a true
-dual-*publish* shim means *building two complete producers*, one of them
-(`bundle-list.toml` + `creation_token` writer) brand-new code for a format we are
-killing. That cost is not worth paying.
+This implementation ratifies the **clean break**. The two models share **no
+distribution surface** — bundles vs. packs, `creation_token` vs. semver,
+`bundle-list.toml` vs. git refs — so a true dual-*publish* shim would mean
+building two complete producers, one of them (`bundle-list.toml` +
+`creation_token` writer) brand-new code for a retired format. That cost is not
+being paid.
 
-The synthesis the design implies:
+The implemented policy:
 
-1. **Ship the git-native consumer with model auto-detect first (WS-05).** Teach
-   `apm` to probe `info/refs`: a registry that exposes git refs is consumed via
-   the new path; a legacy-only mirror falls through to the existing
-   `BundleManifest` / `pick_bundles` reader **that already ships today** (no new
-   code). This is a *read-only* shim — it does **not** require a `bundle-list.toml`
-   writer or a producer `creation_token` encoder. Roll this client out and let it
-   propagate.
+1. **Use the git-native consumer only.** `apm update` probes plain `http(s)://`
+   origins for `HEAD` and `info/refs`; origins with those files are consumed via
+   the git-native path. A legacy-only mirror that still exposes
+   `bundle-list.toml` is rejected with an actionable clean-break error. There is
+   no active bundle-mode fallback in this client.
 2. **Producer publishes only the git-native surface (WS-01/02/03).** Do **not**
    build the bundle/`bundle-list.toml`/`creation_token` writer. New registries are
-   git-native only; any legacy mirror keeps its already-published static
-   `bundle-list.toml` + `*.bundle` files (never regenerated), which the dual-detect
-   client of step 1 still reads.
+   git-native only. Any legacy mirror keeps its already-published static
+   `bundle-list.toml` + `*.bundle` files for old clients only and is not
+   regenerated by the git-native producer.
 3. **Verify the sha256 dumb-HTTP floor (Q1) before cutover.** A clean break to
    sha256 git is only safe once the minimum git/consumer version is pinned and
    the consumer fails closed with a clear message on too-old clients.
-4. **Announce a minimum-client version and an EOL date.** Once telemetry/policy
-   shows old bundle-mode clients are drained, drop the legacy reader fallback in a
-   later `apm` release. The dead bundle producer code is deleted from day one (it
-   was never finished anyway).
+4. **Treat the cutover as the EOL boundary for bundle-mode clients per registry.**
+   Operators must upgrade clients before pointing them at git-native origins.
+   Old bundle-mode clients can keep using legacy mirrors until those mirrors are
+   retired, but git-native registries do not promise a `bundle-list.toml`
+   compatibility surface.
 
-This delivers the safety of a shim (no flag day; mixed clients coexist) **without
-the cost of building a producer for a dying format**, and converges on the clean
-break's single-model simplicity and full security/rollout model. The residual
-exposure is that already-published legacy mirrors lack the new
-rollout/anti-rollback protections — acceptable because those mirrors are
-end-of-life by construction and the EOL date bounds the window.
-
-> **Decision still required.** The above is a *recommendation derived from the
-> brief's pressure*, not a ratified decision. WS-01 / WS-03 / WS-05 owners must
-> confirm: (a) the `info/refs`-probe model-detection mechanism, (b) the
-> minimum-client-version gate and EOL policy, and (c) whether step 1's legacy
-> reader fallback is worth keeping vs. a coordinated hard cutover for a small,
-> controlled fleet.
+This converges on the clean break's single-model simplicity and full
+security/rollout model. The residual exposure is that already-published legacy
+mirrors lack the new rollout/anti-rollback protections, which is acceptable only
+because those mirrors are end-of-life by construction.
 
 ### 3.5 Migration invariants (whatever path is chosen)
 
@@ -859,15 +827,15 @@ item is closed.
 |---|---|---|---|---|
 | Q1 | sha256 dumb-HTTP client floor | WS-01 | WS-01 object store, WS-05 fetch | Pin min git version; fail-closed consumer error |
 | Q2 | `pack-objects` window/depth, zstd, dictionary | WS-02 | WS-02 pipeline | `--window=350 --depth=50 --compression=0` + `zstd --ultra -22 --long=27`; defer dictionary |
-| Q3 | Bucket-selection input + probe-forward order | WS-03 / WS-05 | WS-03 rollouts | Registry-local salt; persist bucket index; probe `(bucket+i) mod 256` no re-pin |
-| Q4 | `apr release` shape + pluggable upload | WS-02 / WS-03 | WS-02/03 (the pipeline) | Composable verbs under one wrapper; immutable-first / low-TTL-last ordering |
-| Q5 | Consumer max-staleness policy + key-rotation cadence | WS-05 / WS-04 / WS-03 | WS-05 consumer, WS-04 trust | Consumer max-staleness bound (~7–14d) + low CDN TTL + anti-rollback floor; rotate-only re-sign |
+| Q3 | Bucket-selection input + probe-forward order — **RESOLVED** | WS-03 / WS-05 | (none) | Registry-local salt; persist bucket index; probe `(bucket+i) mod 256` no re-pin |
+| Q4 | `apr release` shape + pluggable upload | WS-02 / WS-03 | WS-02/03 (the pipeline) | Resolved: `apr release` wrapper over focused verbs; repeatable file/HTTP/S3/SFTP upload URLs; immutable-first / low-TTL-last ordering |
+| Q5 | Consumer max-staleness policy + key-rotation cadence | WS-05 / WS-04 / WS-03 | WS-05 consumer, WS-04 trust | Partial: 14-day `max_staleness_seconds` gate on failed refreshes and unchanged valid targets; still validate production default and key cadence |
 | Q6 | Relative `info/alternates` (one `../`, HTTP + local-FS) | WS-01 | WS-01 layout | One host-independent relative `info/alternates`, one-`../`; no `http-alternates` |
-| Q7a | Migration: clean break vs. shim | WS-05 / WS-01 / WS-03 | WS-01, WS-02, WS-03, WS-05 | Clean break + thin read-only consumer dual-detect → EOL (§3.4) |
+| Q7a | Migration: clean break vs. shim — **RESOLVED** | WS-05 / WS-01 / WS-03 | (none) | Clean break: git-native `HEAD` + `info/refs` wins; legacy-only `bundle-list.toml` origins fail with a clear error; bundle-mode clients are EOL at registry cutover (§3.4) |
 | Q7b | NAR superset milestone timing | WS-05 | (none — fast-follow) | Defer to fast-follow; cache lives in committed `registry.toml` `[[caches]]` (client-side `registries.d` override / origin), nothing reserved in tags (§4.3) |
-| Q8 | NAR blob `URL:` colon-retained vs. colon-free | WS-06 | WS-06 emitter | Default colon-retained; `colon_safe` switch flips `URL:` + served key to `sha256-<hex>` for edges that mangle `:` |
+| Q8 | NAR blob `URL:` key — **RESOLVED** | WS-06 | (none) | Colon-free static key: `nar/{storehash}-sha256-{hex}.{ext}`; producer, upload, and consumer follow the narinfo `URL:` verbatim |
 | DD-1 | Doc-debt: re-ground CURRENT-state after `7149acf6` — **RESOLVED** | WS-06 / WS-05 | (docs — gated WS-06 §5/§10/§11 accuracy; now re-grounded) | **Done.** Cache = **dumb static AOT files on the CDN, no server** (brief §13). The narinfo **format/sign logic** is a reusable library: `aos-core` `NarInfo`+`format()`, `aos-server` `format_narinfo`+`NarInfoSigner` Ed25519 `Sig:`+`Priority: 30`, `compute_file_hash_size` (`compress.rs:143`). **Consumer done** (narinfo-driven `download.rs`). **WS-06 = PRODUCER work**: at publish, *generate* the static `<storehash>.narinfo` / `nar/<…>.nar.zst` / `nix-cache-info` by **reusing** that format/sign code, and **upload** them to the CDN, plus the committed `registry.toml` `[[caches]]` pointer. Not a running server, not "integration only". |
-| R2/R3 | Torn publish / publisher race | WS-02 / WS-03 | WS-02, WS-03 | Immutable-first / low-TTL-last; single publisher per channel |
+| R2/R3 | Torn publish / publisher race | WS-02 / WS-03 | WS-02, WS-03 | Immutable-first / low-TTL-last implemented; local publisher lock implemented; production multi-host serialization still operational |
 | R7 | Cross-serving / name-confusion | WS-04 / WS-05 | WS-04, WS-05 | Name-binding: embedded tag-name == path name; verify `tag→tag→commit` |
 | R9 | Anti-rollback floor across cutover | WS-05 | WS-05 | Re-seed floor at git-native cutover; fix-forward only |
 

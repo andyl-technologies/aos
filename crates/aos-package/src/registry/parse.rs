@@ -110,10 +110,7 @@ pub fn parse_registry(
                         // No entry for this platform — skip
                     }
                     Err(e) => {
-                        return Err(e.context(format!(
-                            "parsing {}",
-                            toml_path.display()
-                        )));
+                        return Err(e.context(format!("parsing {}", toml_path.display())));
                     }
                 }
             }
@@ -127,8 +124,7 @@ pub fn parse_registry(
 /// Parse a single package TOML file and extract the latest version for the
 /// given platform. Returns `None` if the platform is not available.
 pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<PackageMeta>> {
-    let toml: PackageToml =
-        toml::from_str(content).context("invalid package TOML")?;
+    let toml: PackageToml = toml::from_str(content).context("invalid package TOML")?;
 
     // Take the first (latest) version that has our platform
     for ver in &toml.versions {
@@ -173,9 +169,7 @@ pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<Packag
 ///
 /// Each package's store path hash AND all its reference hashes are indexed,
 /// enabling O(1) lookup during closure resolution.
-pub fn build_hash_index(
-    packages: &HashMap<String, PackageMeta>,
-) -> HashMap<String, String> {
+pub fn build_hash_index(packages: &HashMap<String, PackageMeta>) -> HashMap<String, String> {
     let mut index = HashMap::new();
     for (name, meta) in packages {
         let hash = store_path_hash(&meta.store_path);
@@ -184,7 +178,9 @@ pub fn build_hash_index(
         // same registry for registry-scoped resolution)
         for ref_hash in &meta.references {
             // Don't overwrite if already set — the package's own hash takes priority
-            index.entry(ref_hash.clone()).or_insert_with(|| name.clone());
+            index
+                .entry(ref_hash.clone())
+                .or_insert_with(|| name.clone());
         }
     }
     // Fix: re-insert package's own hashes to ensure they win over reference entries
@@ -269,7 +265,10 @@ mod tests {
             .unwrap();
         assert_eq!(meta.name, "curl");
         assert_eq!(meta.version, "8.5.0");
-        assert_eq!(meta.description, "Command-line tool and library for URL transfers");
+        assert_eq!(
+            meta.description,
+            "Command-line tool and library for URL transfers"
+        );
         assert_eq!(meta.homepage.as_deref(), Some("https://curl.se"));
         assert_eq!(meta.license, "MIT");
         assert_eq!(meta.platform, "x86_64-linux");

@@ -151,8 +151,9 @@ impl NixRunner {
 
         let output = self.run_nix("nix-instantiate", &args)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let value: serde_json::Value = serde_json::from_str(stdout.trim())
-            .with_context(|| format!("failed to parse JSON from nix-instantiate for attr '{attr}'"))?;
+        let value: serde_json::Value = serde_json::from_str(stdout.trim()).with_context(|| {
+            format!("failed to parse JSON from nix-instantiate for attr '{attr}'")
+        })?;
 
         Ok(value)
     }

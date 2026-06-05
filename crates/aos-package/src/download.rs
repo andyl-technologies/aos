@@ -2,17 +2,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::Semaphore;
 
+use super::types::RegistryConfig;
 use aos_core::error::AosError;
 use aos_core::nar::info::{self as narinfo, NarInfo};
 use aos_core::output::Printer;
-use aos_net::{
-    HashAlgorithm, TransferEngine, TransferEngineConfig, TransferRequest,
-};
-use super::types::RegistryConfig;
+use aos_net::{HashAlgorithm, TransferEngine, TransferEngineConfig, TransferRequest};
 
 // ---------------------------------------------------------------------------
 // Request / result types
@@ -88,7 +86,7 @@ pub fn resolve_mirror(registry: &RegistryConfig) -> String {
         .join(".local/share/apm/registries")
         .join(&registry.name);
 
-    let mirrors = crate::registry_ops::resolve_mirrors(&registries_dir);
+    let mirrors = crate::registry_ops::resolve_mirrors_for_registry(&registries_dir, registry);
     if let Some(cache) = mirrors.first() {
         return cache.url.trim_end_matches('/').to_string();
     }
@@ -114,10 +112,7 @@ pub async fn fetch_narinfos(
         return Ok(Vec::new());
     }
 
-    printer.info(&format!(
-        "Fetching {} narinfo(s)...",
-        requests.len(),
-    ));
+    printer.info(&format!("Fetching {} narinfo(s)...", requests.len(),));
 
     let semaphore = Arc::new(Semaphore::new(parallel as usize));
     let mut handles = Vec::with_capacity(requests.len());
@@ -134,7 +129,15 @@ pub async fn fetch_narinfos(
         let handle = tokio::spawn(async move {
             let result = fetch_one_narinfo(&engine, &url, &req_clone).await;
             drop(permit);
-            result.map(|info| (idx, ResolvedDownload { req: req_clone, narinfo: info }))
+            result.map(|info| {
+                (
+                    idx,
+                    ResolvedDownload {
+                        req: req_clone,
+                        narinfo: info,
+                    },
+                )
+            })
         });
 
         handles.push(handle);
@@ -142,13 +145,14 @@ pub async fn fetch_narinfos(
 
     let mut buf: Vec<Option<ResolvedDownload>> = (0..requests.len()).map(|_| None).collect();
     for handle in handles {
-        let (idx, resolved) = handle
-            .await
-            .context("narinfo task panicked")??;
+        let (idx, resolved) = handle.await.context("narinfo task panicked")??;
         buf[idx] = Some(resolved);
     }
 
-    Ok(buf.into_iter().map(|o| o.expect("all slots filled")).collect())
+    Ok(buf
+        .into_iter()
+        .map(|o| o.expect("all slots filled"))
+        .collect())
 }
 
 async fn fetch_one_narinfo(
@@ -164,8 +168,8 @@ async fn fetch_one_narinfo(
     let body = result.body.ok_or_else(|| AosError::DownloadError {
         message: format!("no response body for {url}"),
     })?;
-    let text = std::str::from_utf8(&body)
-        .with_context(|| format!("narinfo body is not UTF-8: {url}"))?;
+    let text =
+        std::str::from_utf8(&body).with_context(|| format!("narinfo body is not UTF-8: {url}"))?;
     narinfo::parse(text)
         .with_context(|| format!("parsing narinfo for {} from {url}", req.store_path))
 }
@@ -188,7 +192,10 @@ async fn download_one(
     // emits a compressed NAR. AOS-server populates it unconditionally;
     // a missing FileHash on a compressed NAR is a server bug we want to
     // catch loudly rather than silently skip.
-    let file_hash = match (&resolved.narinfo.file_hash, resolved.narinfo.compression.as_str()) {
+    let file_hash = match (
+        &resolved.narinfo.file_hash,
+        resolved.narinfo.compression.as_str(),
+    ) {
         (Some(h), _) => h.clone(),
         (None, "none") => resolved.narinfo.nar_hash.clone(),
         (None, comp) => bail!(
@@ -196,12 +203,9 @@ async fn download_one(
             resolved.req.store_path,
         ),
     };
-    let expected_hex = file_hash
-        .strip_prefix("sha256:")
-        .unwrap_or(&file_hash);
+    let expected_hex = file_hash.strip_prefix("sha256:").unwrap_or(&file_hash);
 
-    let transfer_req = TransferRequest::get(&url)
-        .with_hash(HashAlgorithm::Sha256, expected_hex);
+    let transfer_req = TransferRequest::get(&url).with_hash(HashAlgorithm::Sha256, expected_hex);
 
     let pb_size = resolved.narinfo.file_size.unwrap_or(0);
     let pb = create_download_bar(pb_size, &label);
@@ -291,9 +295,7 @@ pub async fn download_nars(
 
     let mut results = Vec::with_capacity(handles.len());
     for handle in handles {
-        let result = handle
-            .await
-            .context("download task panicked")??;
+        let result = handle.await.context("download task panicked")??;
         results.push(result);
     }
 
@@ -352,6 +354,7 @@ fn create_download_bar(total: u64, label: &str) -> ProgressBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn join_basic() {
@@ -398,9 +401,14 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
         assert_eq!(resolve_mirror(&reg), "https://registry.aos.dev/core");
@@ -416,8 +424,7 @@ mod tests {
 
     #[test]
     fn short_label_strips_store_hash() {
-        let label =
-            short_label("/var/lib/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-8.5.0");
+        let label = short_label("/var/lib/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-8.5.0");
         assert_eq!(label, "curl-8.5.0");
     }
 
@@ -431,10 +438,52 @@ mod tests {
         let printer = Printer::new(0, true, false);
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let results = download_nars(&[], tmp.path(), 4, &printer)
+        let results = download_nars(&[], tmp.path(), 4, &printer).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn download_nars_uses_narinfo_supplied_colon_free_url() {
+        let printer = Printer::new(0, true, false);
+        let source = tempfile::TempDir::new().unwrap();
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let nar_bytes = b"nar-bytes";
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
+        let nar_url = "nar/abc123-sha256-def456.nar.zst";
+
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(source.path().join(nar_url), nar_bytes).unwrap();
+
+        let resolved = ResolvedDownload {
+            req: DownloadRequest {
+                store_path: "/nix/store/abc123-package".to_string(),
+                mirror_url: format!("file://{}", source.path().display()),
+            },
+            narinfo: NarInfo {
+                store_path: "/nix/store/abc123-package".to_string(),
+                url: nar_url.to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some(file_hash.clone()),
+                file_size: Some(nar_bytes.len() as u64),
+                nar_hash: "sha256:def456".to_string(),
+                nar_size: 5,
+                references: Vec::new(),
+                deriver: None,
+                signatures: Vec::new(),
+            },
+        };
+
+        let results = download_nars(&[resolved], cache_dir.path(), 1, &printer)
             .await
             .unwrap();
-        assert!(results.is_empty());
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].download_hash, file_hash);
+        assert_eq!(
+            results[0].local_path,
+            cache_dir.path().join("sha256-def456.nar.zst"),
+        );
+        assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
     }
 
     #[tokio::test]

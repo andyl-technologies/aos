@@ -149,7 +149,8 @@ fn write_nix_string_to<W: Write>(w: &mut W, s: &str) -> Result<()> {
     let bytes = s.as_bytes();
     let len = bytes.len() as u64;
 
-    w.write_all(&len.to_le_bytes()).context("writing string length")?;
+    w.write_all(&len.to_le_bytes())
+        .context("writing string length")?;
     w.write_all(bytes).context("writing string content")?;
 
     let padding = (8 - (bytes.len() % 8)) % 8;

@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
-use super::{atomic_write, Generation, Profile};
+use super::{Generation, Profile, atomic_write};
 use crate::registry::RegistrySet;
 use crate::types::{ApmMeta, InstalledMeta};
 
@@ -23,8 +23,7 @@ pub fn write_meta(profile: &Profile, hash: &str, meta: &InstalledMeta) -> Result
         .with_context(|| format!("serializing metadata for {hash}"))?;
 
     let dest = meta_dir.join(format!("{hash}.json"));
-    atomic_write(&dest, json.as_bytes())
-        .with_context(|| format!("writing metadata for {hash}"))
+    atomic_write(&dest, json.as_bytes()).with_context(|| format!("writing metadata for {hash}"))
 }
 
 /// Read metadata for a store path hash.
@@ -136,8 +135,8 @@ pub fn held_packages(profile: &Profile) -> Result<Vec<InstalledMeta>> {
 /// Reads the existing meta, modifies the `held` field, and writes back
 /// atomically.
 pub fn set_held(profile: &Profile, hash: &str, held: bool) -> Result<()> {
-    let mut meta = read_meta(profile, hash)?
-        .with_context(|| format!("no metadata for hash {hash}"))?;
+    let mut meta =
+        read_meta(profile, hash)?.with_context(|| format!("no metadata for hash {hash}"))?;
 
     if let Some(ref mut apm) = meta.apm {
         apm.held = held;
@@ -240,10 +239,10 @@ pub fn rebuild_meta(
 
 /// Read and parse a single JSON metadata file.
 fn read_and_parse(path: &Path) -> Result<InstalledMeta> {
-    let data = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let meta: InstalledMeta = serde_json::from_str(&data)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let data =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let meta: InstalledMeta =
+        serde_json::from_str(&data).with_context(|| format!("parsing {}", path.display()))?;
     Ok(meta)
 }
 
@@ -342,8 +341,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "aaa111", &sample_meta("curl", "core", true, false)).unwrap();
-        write_meta(&profile, "bbb222", &sample_meta("zlib", "core", false, false)).unwrap();
+        write_meta(
+            &profile,
+            "aaa111",
+            &sample_meta("curl", "core", true, false),
+        )
+        .unwrap();
+        write_meta(
+            &profile,
+            "bbb222",
+            &sample_meta("zlib", "core", false, false),
+        )
+        .unwrap();
         write_meta(&profile, "ccc333", &sample_meta("jq", "extra", true, true)).unwrap();
 
         let all = list_meta(&profile).unwrap();
@@ -356,8 +365,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "aaa111", &sample_meta("curl", "core", true, false)).unwrap();
-        write_meta(&profile, "bbb222", &sample_meta("zlib", "core", false, false)).unwrap();
+        write_meta(
+            &profile,
+            "aaa111",
+            &sample_meta("curl", "core", true, false),
+        )
+        .unwrap();
+        write_meta(
+            &profile,
+            "bbb222",
+            &sample_meta("zlib", "core", false, false),
+        )
+        .unwrap();
         write_meta(&profile, "ccc333", &sample_meta("jq", "extra", true, true)).unwrap();
 
         let core_pkgs = meta_by_registry(&profile, "core").unwrap();
@@ -377,8 +396,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "aaa111", &sample_meta("curl", "core", true, false)).unwrap();
-        write_meta(&profile, "bbb222", &sample_meta("zlib", "core", false, false)).unwrap();
+        write_meta(
+            &profile,
+            "aaa111",
+            &sample_meta("curl", "core", true, false),
+        )
+        .unwrap();
+        write_meta(
+            &profile,
+            "bbb222",
+            &sample_meta("zlib", "core", false, false),
+        )
+        .unwrap();
         write_meta(&profile, "ccc333", &sample_meta("jq", "extra", true, true)).unwrap();
 
         let auto = auto_installed(&profile).unwrap();
@@ -392,8 +421,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "aaa111", &sample_meta("curl", "core", true, false)).unwrap();
-        write_meta(&profile, "bbb222", &sample_meta("zlib", "core", false, false)).unwrap();
+        write_meta(
+            &profile,
+            "aaa111",
+            &sample_meta("curl", "core", true, false),
+        )
+        .unwrap();
+        write_meta(
+            &profile,
+            "bbb222",
+            &sample_meta("zlib", "core", false, false),
+        )
+        .unwrap();
         write_meta(&profile, "ccc333", &sample_meta("jq", "extra", true, true)).unwrap();
 
         let held = held_packages(&profile).unwrap();
@@ -407,7 +446,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        write_meta(&profile, "aaa111", &sample_meta("curl", "core", true, false)).unwrap();
+        write_meta(
+            &profile,
+            "aaa111",
+            &sample_meta("curl", "core", true, false),
+        )
+        .unwrap();
 
         // Initially not held.
         let meta = read_meta(&profile, "aaa111").unwrap().unwrap();

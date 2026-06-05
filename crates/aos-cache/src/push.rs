@@ -55,10 +55,7 @@ pub async fn run_push(
     let infos = nix.path_info_batch(&path_refs)?;
 
     // 4. Query missing (in chunks of 500).
-    let store_hashes: Vec<&str> = all_paths
-        .iter()
-        .map(|p| narinfo::store_hash(p))
-        .collect();
+    let store_hashes: Vec<&str> = all_paths.iter().map(|p| narinfo::store_hash(p)).collect();
     printer.info("Querying cache for missing paths...");
     let mut missing_hashes = Vec::new();
     for chunk in store_hashes.chunks(500) {
@@ -145,11 +142,7 @@ pub async fn run_push(
 
         // Generate NAR URL.
         let comp_ext = compression_ext(compression);
-        let nar_filename = format!(
-            "{}.{}",
-            file_hash.replace(':', "-"),
-            comp_ext
-        );
+        let nar_filename = format!("{}.{}", file_hash.replace(':', "-"), comp_ext);
 
         // Generate narinfo.
         let ref_basenames: Vec<String> = info

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{create_spinner, Printer};
+use aos_core::output::{Printer, create_spinner};
 
 /// `aos why-depends <package> <dependency>` — trace why a package depends on
 /// another.
@@ -50,9 +50,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str, dependency: &str) 
             return Ok(());
         }
 
-        printer.warning(&format!(
-            "'{package}' does not depend on '{dependency}'"
-        ));
+        printer.warning(&format!("'{package}' does not depend on '{dependency}'"));
         return Ok(());
     }
 
@@ -85,9 +83,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str, dependency: &str) 
         return Ok(());
     }
 
-    printer.header(&format!(
-        "'{package}' depends on '{dependency}'"
-    ));
+    printer.header(&format!("'{package}' depends on '{dependency}'"));
     printer.kv("Package", &pkg_path.to_string_lossy());
     printer.kv("Dependency", &dep_path_str);
     printer.plain("");
