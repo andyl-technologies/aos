@@ -89,9 +89,9 @@ The commands relevant to a release, in workflow order:
 | `apr create <name> [--remote URL] [--trust-key <registry:Ed25519:base64>] [--trust-key-id <id>]` | `create` (`registry_ops.rs:421`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, write schema-1 `keys.toml`, initial commit, then refresh dumb-HTTP object indexes; optional `git remote add origin`. |
 | `apr keys list/add/retire` | `run_keys` (`registry_ops.rs`) | Maintains committed `keys.toml`: list active/revoked ids, add registry-bound active signing keys, retire active ids into `[[revoked]]` with an active survivor/vouching id, then commit and refresh dumb-HTTP object indexes unless `--no-commit` is passed. |
 | `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` and refresh `objects/info/alternates` + `update-server-info`. |
-| `apr tag <name> [--message] --key <key>` | `tag` (`registry_ops.rs:1684`) | `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; `--key` is required; semver tags also prepare a release object dir during the object-store refresh. |
-| `apr sign <tag> --key <key>` | `sign` (`registry_ops.rs:1747`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
-| `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
+| `apr tag <name> [--message] (--key <path> \| --key-id <id>)` | `tag` (`registry_ops.rs`) | Resolves the signing key directly from `--key` or from committed `keys.toml` + local `[registry.signing_keys]`, then runs `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; semver tags also prepare a release object dir during the object-store refresh. |
+| `apr sign <tag> (--key <path> \| --key-id <id>)` | `sign` (`registry_ops.rs`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
+| `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, using the same `--key` / `--key-id` signing-key selection as release tags, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
 | `apr cache generate --output <dir> [--key <key>] [--cache-url <url>] [--upload-url <backend>]...` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path; fails closed when a path is absent locally; optionally uploads the exact generated files to one or more repeatable `--upload-url` destinations via `aos-cache`, reporting any partial destination failures, supports HTTP/S3/SFTP auth flags, and commits the root `registry.toml` `[[caches]]` pointer. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
@@ -508,10 +508,10 @@ apr publish /nix/store/<hash>-curl-8.5.0 \
     --description "URL transfer tool" --license MIT --maintainer acme
 # → writes packages/c/curl.toml + closures/<hash>, then commits   (registry_ops.rs:476)
 
-apr tag 2026.06.0 --message "June release" --key ./registry_signing_key
-apr sign 2026.06.0 --key ./registry_signing_key
-apr channel init stable --release 2026.06.0 --key ./registry_signing_key
-apr channel advance stable --release 2026.06.0 --count 32 --key ./registry_signing_key
+apr tag 2026.06.0 --message "June release" --key-id initial
+apr sign 2026.06.0 --key-id initial
+apr channel init stable 2026.06.0 --key-id initial
+apr channel advance stable 2026.06.0 --count 32 --key-id initial
 apr cache generate --output ./cache-static \
     --key ./nix_cache_signing_key \
     --cache-url https://registry.example/cache \
@@ -531,11 +531,19 @@ apr push --set-upstream --branch stable        # plain git push              (re
 `--ssh-password` / `AOS_SSH_PASSWORD`, and `--ssh-ask-pass`.
 
 For persistent producer defaults, `registries.d/<name>.toml` may include
-`[registry.upload_auth]`. Config values are used as defaults; env/CLI values
-override them; `view` falls back to `"default"` if neither config nor env/CLI
-sets it.
+`[registry.signing_keys]` and `[registry.upload_auth]`.
+`[registry.signing_keys]` maps committed active `keys.toml` ids to local private
+key paths for `apr tag --key-id`, `apr sign --key-id`, and
+`apr channel init/advance --key-id`. Direct `--key <private-key-path>` remains
+available for one-off signing and is mutually exclusive with `--key-id`.
+`[registry.upload_auth]` values are used as defaults; env/CLI values override
+them; `view` falls back to `"default"` if neither config nor env/CLI sets it.
 
 ```toml
+[registry.signing_keys]
+initial = "/run/secrets/acme_registry_initial"
+next = "/run/secrets/acme_registry_next"
+
 [registry.upload_auth]
 token = "..."
 view = "prod"

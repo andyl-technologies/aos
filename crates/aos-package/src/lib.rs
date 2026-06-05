@@ -639,6 +639,9 @@ pub enum RegistryCommand {
         /// Signing key
         #[arg(long)]
         key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -650,6 +653,9 @@ pub enum RegistryCommand {
         /// Signing key
         #[arg(long)]
         key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -769,7 +775,10 @@ pub enum ChannelCommand {
         semver: String,
         /// Signing key
         #[arg(long)]
-        key: String,
+        key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -788,7 +797,10 @@ pub enum ChannelCommand {
         partitions: Option<String>,
         /// Signing key
         #[arg(long)]
-        key: String,
+        key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1465,6 +1477,7 @@ async fn run_registry(
             name,
             message,
             key,
+            key_id,
             registry,
         } => {
             registry_ops::tag(
@@ -1472,16 +1485,23 @@ async fn run_registry(
                 name,
                 message.as_deref(),
                 key.as_deref(),
+                key_id.as_deref(),
                 registry.as_deref(),
                 printer,
             )
             .await
         }
-        RegistryCommand::Sign { tag, key, registry } => {
+        RegistryCommand::Sign {
+            tag,
+            key,
+            key_id,
+            registry,
+        } => {
             registry_ops::sign(
                 config,
                 tag.as_deref(),
                 key.as_deref(),
+                key_id.as_deref(),
                 registry.as_deref(),
                 printer,
             )
@@ -1783,6 +1803,7 @@ mod tests {
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         }
     }
