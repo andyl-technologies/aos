@@ -56,6 +56,29 @@ name = "{registry_name}"
         .arg("--upload-url")
         .arg(format!("file://{}", upload_dir.display()))
         .args(["--priority", "37"])
+        .args([
+            "--token",
+            "token",
+            "--view",
+            "ops",
+            "--http-user",
+            "cache-user",
+            "--http-password",
+            "cache-pass",
+            "--header",
+            "X-Test: yes",
+            "--s3-region",
+            "us-west-2",
+            "--s3-profile",
+            "prod",
+            "--s3-endpoint",
+            "https://minio.example",
+            "--ssh-key",
+            "/tmp/aos-test-key",
+            "--ssh-password",
+            "ssh-pass",
+            "--ssh-ask-pass",
+        ])
         .output()
         .context("running apr cache generate")?;
     if !output.status.success() {

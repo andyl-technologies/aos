@@ -114,9 +114,10 @@ pub async fn generate_static_cache(
 pub async fn upload_static_cache(
     output_dir: &Path,
     upload_url: &str,
+    auth: &AuthOptions,
     printer: &Printer,
 ) -> Result<()> {
-    let cache = backend::from_url(upload_url, &AuthOptions::default()).await?;
+    let cache = backend::from_url(upload_url, auth).await?;
     let cache_info_path = output_dir.join("nix-cache-info");
     let cache_info = std::fs::read_to_string(&cache_info_path)
         .with_context(|| format!("reading {}", cache_info_path.display()))?;
@@ -164,12 +165,13 @@ pub async fn upload_static_cache(
 pub async fn upload_static_cache_to_all(
     output_dir: &Path,
     upload_urls: &[String],
+    auth: &AuthOptions,
     printer: &Printer,
 ) -> Result<()> {
     let mut failures = Vec::new();
 
     for upload_url in upload_urls {
-        if let Err(err) = upload_static_cache(output_dir, upload_url, printer).await {
+        if let Err(err) = upload_static_cache(output_dir, upload_url, auth, printer).await {
             failures.push(format!("{upload_url}: {err:#}"));
         }
     }
@@ -476,9 +478,14 @@ name = "test"
             format!("file://{}", first.path().display()),
             format!("file://{}", second.path().display()),
         ];
-        upload_static_cache_to_all(source.path(), &upload_urls, &printer)
-            .await
-            .unwrap();
+        upload_static_cache_to_all(
+            source.path(),
+            &upload_urls,
+            &AuthOptions::default(),
+            &printer,
+        )
+        .await
+        .unwrap();
 
         for dest in [first.path(), second.path()] {
             assert!(dest.join("nix-cache-info").exists());
@@ -536,6 +543,7 @@ name = "test"
         upload_static_cache(
             source.path(),
             &format!("file://{}", dest.path().display()),
+            &AuthOptions::default(),
             &printer,
         )
         .await
@@ -573,9 +581,14 @@ name = "test"
             "not-a-url".to_string(),
             format!("file://{}", good.path().display()),
         ];
-        let err = upload_static_cache_to_all(source.path(), &upload_urls, &printer)
-            .await
-            .unwrap_err();
+        let err = upload_static_cache_to_all(
+            source.path(),
+            &upload_urls,
+            &AuthOptions::default(),
+            &printer,
+        )
+        .await
+        .unwrap_err();
 
         let message = format!("{err:#}");
         assert!(message.contains("static cache upload failed for 1/2 destination"));

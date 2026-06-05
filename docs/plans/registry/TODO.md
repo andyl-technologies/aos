@@ -456,10 +456,27 @@ read before editing code or docs.
       `crates/aos-cache/src/backend/http.rs`,
       `crates/aos-cache/src/backend/s3.rs`, and
       `crates/aos-cache/src/backend/sftp.rs`.
-- [ ] Expose production auth/config flags for upload backends in the registry
+- [x] Expose production auth/env flags for upload backends in the registry
       command surface: S3 region/profile/endpoint, SFTP key/password/agent
-      behavior, HTTP token/basic/header credentials, and config-file/env
-      precedence. Context: `docs/registry/publishing.md`,
+      behavior, and HTTP token/basic/header credentials. `apr cache generate`
+      now flattens backend upload auth flags into the `Generate` command,
+      maps them into `aos_cache::AuthOptions`, and threads those options through
+      `upload_static_cache_to_all`. Coverage includes
+      `cache_upload_auth_args_map_to_backend_options` plus
+      `crates/aos/tests/apr_cache_cli.rs`, which exercises the flags on the real
+      `apr` binary while uploading to a safe `file://` destination. Context:
+      `docs/registry/publishing.md`,
+      `docs/registry/nix-cache-compatibility.md`,
+      `crates/aos/tests/apr_cache_cli.rs`,
+      `crates/aos-package/src/lib.rs`,
+      `crates/aos-package/src/registry_ops.rs`,
+      `crates/aos-package/src/registry/nixcache.rs`, and
+      `crates/aos-cache/src/backend/mod.rs`.
+- [ ] Add persistent config-file precedence for registry upload backend auth if
+      operators need non-env, non-CLI credential configuration. The implemented
+      surface supports explicit flags and existing env bindings, but there is no
+      registry-specific auth config-file layer yet. Context:
+      `docs/registry/publishing.md`,
       `docs/registry/nix-cache-compatibility.md`,
       `crates/aos-package/src/lib.rs`,
       `crates/aos-package/src/registry_ops.rs`, and

@@ -27,7 +27,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 
 use aos_core::error::AosError;
 use aos_core::output::Printer;
@@ -744,6 +744,9 @@ pub enum CacheCommand {
         /// (file://, s3://, sftp://, http://)
         #[arg(long = "upload-url")]
         upload_urls: Vec<String>,
+        /// Authentication and backend-specific upload options
+        #[command(flatten)]
+        auth: CacheUploadAuthArgs,
         /// Priority for generated nix-cache-info and registry [[caches]]
         #[arg(long, default_value = "40")]
         priority: u32,
@@ -754,6 +757,62 @@ pub enum CacheCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+}
+
+/// Authentication flags for registry static-cache uploads.
+#[derive(Debug, Clone, Args, Default)]
+pub struct CacheUploadAuthArgs {
+    /// AOS provisioning token (AOS_TOKEN env)
+    #[arg(long, env = "AOS_TOKEN")]
+    pub token: Option<String>,
+    /// AOS cache view (default: "default", AOS_VIEW env)
+    #[arg(long, env = "AOS_VIEW", default_value = "default")]
+    pub view: String,
+    /// Basic auth username for generic HTTP caches
+    #[arg(long)]
+    pub http_user: Option<String>,
+    /// Basic auth password (AOS_HTTP_PASSWORD env)
+    #[arg(long, env = "AOS_HTTP_PASSWORD")]
+    pub http_password: Option<String>,
+    /// Arbitrary HTTP header (repeatable, e.g. "Authorization: Bearer ...")
+    #[arg(long)]
+    pub header: Vec<String>,
+    /// AWS region
+    #[arg(long, env = "AWS_REGION")]
+    pub s3_region: Option<String>,
+    /// AWS credentials profile name
+    #[arg(long)]
+    pub s3_profile: Option<String>,
+    /// Custom S3-compatible endpoint (MinIO, B2, etc.)
+    #[arg(long)]
+    pub s3_endpoint: Option<String>,
+    /// Path to SSH private key
+    #[arg(long)]
+    pub ssh_key: Option<String>,
+    /// SSH password (AOS_SSH_PASSWORD env)
+    #[arg(long, env = "AOS_SSH_PASSWORD")]
+    pub ssh_password: Option<String>,
+    /// Prompt for SSH password interactively
+    #[arg(long)]
+    pub ssh_ask_pass: bool,
+}
+
+impl CacheUploadAuthArgs {
+    pub fn auth_options(&self) -> aos_cache::AuthOptions {
+        aos_cache::AuthOptions {
+            token: self.token.clone(),
+            view: self.view.clone(),
+            http_user: self.http_user.clone(),
+            http_password: self.http_password.clone(),
+            headers: self.header.clone(),
+            s3_region: self.s3_region.clone(),
+            s3_profile: self.s3_profile.clone(),
+            s3_endpoint: self.s3_endpoint.clone(),
+            ssh_key: self.ssh_key.clone(),
+            ssh_password: self.ssh_password.clone(),
+            ssh_ask_pass: self.ssh_ask_pass,
+        }
+    }
 }
 
 /// GitHub PR subcommands.
@@ -1724,6 +1783,36 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn cache_upload_auth_args_map_to_backend_options() {
+        let args = CacheUploadAuthArgs {
+            token: Some("token".into()),
+            view: "ops".into(),
+            http_user: Some("user".into()),
+            http_password: Some("pass".into()),
+            header: vec!["X-Test: yes".into()],
+            s3_region: Some("us-west-2".into()),
+            s3_profile: Some("prod".into()),
+            s3_endpoint: Some("https://minio.example".into()),
+            ssh_key: Some("/tmp/key".into()),
+            ssh_password: Some("ssh-pass".into()),
+            ssh_ask_pass: true,
+        };
+
+        let auth = args.auth_options();
+        assert_eq!(auth.token.as_deref(), Some("token"));
+        assert_eq!(auth.view, "ops");
+        assert_eq!(auth.http_user.as_deref(), Some("user"));
+        assert_eq!(auth.http_password.as_deref(), Some("pass"));
+        assert_eq!(auth.headers, vec!["X-Test: yes"]);
+        assert_eq!(auth.s3_region.as_deref(), Some("us-west-2"));
+        assert_eq!(auth.s3_profile.as_deref(), Some("prod"));
+        assert_eq!(auth.s3_endpoint.as_deref(), Some("https://minio.example"));
+        assert_eq!(auth.ssh_key.as_deref(), Some("/tmp/key"));
+        assert_eq!(auth.ssh_password.as_deref(), Some("ssh-pass"));
+        assert!(auth.ssh_ask_pass);
     }
 
     #[test]

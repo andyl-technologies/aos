@@ -165,7 +165,13 @@ async fn assert_filesystem_upload_array_round_trips(
         format!("file://{}", first.path().display()),
         format!("file://{}", second.path().display()),
     ];
-    nixcache::upload_static_cache_to_all(output_dir, &upload_urls, printer).await?;
+    nixcache::upload_static_cache_to_all(
+        output_dir,
+        &upload_urls,
+        &AuthOptions::default(),
+        printer,
+    )
+    .await?;
 
     let hash = store_hash(store_path);
     let source_narinfo = narinfo::parse(source_narinfo_text)?;
