@@ -730,14 +730,17 @@ read before editing code or docs.
       `docs/registry/current-state.md`, `docs/registry/publishing.md`,
       `docs/registry/packs-and-deltas.md`, and
       `docs/registry/nix-cache-compatibility.md`.
-- [ ] Resolve remaining registry-reference doc inconsistencies as implementation
-      lands, especially stale statements about Nix narinfo `Sig:` wiring,
-      static-cache producer status, max-staleness behavior, and backend support
-      levels. Context: `docs/registry/signing-and-trust.md`,
-      `docs/registry/nix-cache-compatibility.md`,
-      `docs/registry/current-state.md`,
-      `docs/registry/publishing.md`,
-      `docs/registry/apt-comparison.md`, and `docs/plans/registry/TODO.md`.
+- [x] Resolve remaining registry-reference doc inconsistencies as implementation
+      landed. `docs/registry/README.md`, `docs/registry/current-state.md`,
+      `docs/registry/publishing.md`, `docs/registry/packs-and-deltas.md`,
+      `docs/registry/apt-comparison.md`, `docs/registry/architecture.md`,
+      `docs/registry/repo-layout.md`, and
+      `docs/registry/nix-cache-compatibility.md` now describe the implemented
+      `apr release`, static-cache producer, signing-key-id, trust-roster, and
+      backend-upload surfaces without stale "producer gap" wording. Remaining
+      stock-Nix, S3/SFTP, CDN, max-staleness, Git-version, and benchmark caveats
+      are represented as explicit validation TODOs rather than stale reference
+      claims.
 - [ ] Re-ground stale plan/open-question text that still describes old
       producer/cache gaps or pre-cutover implementation details. Context:
       `docs/plans/registry/open-questions.md`,
