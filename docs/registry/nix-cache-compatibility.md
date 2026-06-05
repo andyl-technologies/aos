@@ -135,7 +135,8 @@ has been extracted into reusable code:
 - `crates/aos-package/src/registry/nixcache.rs` implements `apr cache generate`:
   it walks registry store paths, dumps/compresses NARs, computes `FileHash` /
   `FileSize`, writes signed `.narinfo` files and `nix-cache-info`, optionally
-  uploads them, and can commit the root `registry.toml` `[[caches]]` pointer.
+  uploads them to one or more repeatable `--upload-url` destinations, and can
+  commit the root `registry.toml` `[[caches]]` pointer.
 
 The **registry producer uses this library** to *emit static files* at publish
 time — it does **not** run `aos-server`'s request handlers
@@ -600,7 +601,7 @@ override) — verifying the content hash (`download.rs:191-204`), never the nari
 The narinfo **format / sign / FileHash logic**, the **narinfo-driven consumer**,
 and the **static producer** exist today. The registry runs **no server**: its Nix
 cache is dumb static files on the CDN, generated AOT by `apr cache generate` and
-optionally uploaded through `aos-cache`.
+optionally uploaded through `aos-cache` to one or more destinations.
 
 **Reusable logic and producer surface.** These are libraries and commands the
 producer calls; none of them is a server the registry runs.
@@ -616,8 +617,9 @@ producer calls; none of them is a server the registry runs.
 `apr cache generate` walks every package and sysroot-image store path listed by
 the registry, fails if any path is absent from the local Nix store, emits signed
 narinfos and `nar/*.nar.zst`, writes `nix-cache-info`, optionally uploads the
-files, and optionally commits the root `registry.toml` cache pointer. Stock-Nix
-host wiring remains ordinary `nix.conf` / flake `nixConfig` setup (§10).
+files to repeatable `--upload-url` destinations, and optionally commits the root
+`registry.toml` cache pointer. Stock-Nix host wiring remains ordinary
+`nix.conf` / flake `nixConfig` setup (§10).
 
 These map to plan
 [workstream-06-nix-cache.md](../plans/registry/workstream-06-nix-cache.md) (the
