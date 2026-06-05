@@ -1,8 +1,8 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::config::ApmConfig;
-use super::profile::meta;
 use super::profile::Profile;
+use super::profile::meta;
 use super::registry::RegistrySet;
 use aos_core::output::Printer;
 
@@ -36,11 +36,7 @@ pub async fn run(
         }
     } else {
         // Find the highest-numbered generation below the current one.
-        match all_gens
-            .iter()
-            .rev()
-            .find(|g| g.number < current.number)
-        {
+        match all_gens.iter().rev().find(|g| g.number < current.number) {
             Some(g) => g,
             None => bail!("no previous generation to roll back to"),
         }
@@ -102,8 +98,6 @@ mod tests {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
     }
 
-
-
     #[tokio::test]
     async fn rollback_switches_to_previous_generation() {
         let tmp = TempDir::new().unwrap();
@@ -161,10 +155,7 @@ mod tests {
         // Only one generation exists; no previous generation available.
         let all_gens = profile.list_generations().unwrap();
         let current = profile.current_generation().unwrap().unwrap();
-        let target = all_gens
-            .iter()
-            .rev()
-            .find(|g| g.number < current.number);
+        let target = all_gens.iter().rev().find(|g| g.number < current.number);
         assert!(target.is_none(), "expected no previous generation");
     }
 

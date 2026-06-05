@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{broadcast, Notify, Semaphore};
+use tokio::sync::{Notify, Semaphore, broadcast};
 
 use crate::drain::BuildState;
 use crate::routes::AppState;
@@ -141,7 +141,11 @@ impl LogBuffer {
         let (front, back) = events.as_slices();
         let skip_front = front.partition_point(|e| e.id < start_id);
         if skip_front < front.len() {
-            front[skip_front..].iter().chain(back.iter()).cloned().collect()
+            front[skip_front..]
+                .iter()
+                .chain(back.iter())
+                .cloned()
+                .collect()
         } else {
             let skip_back = back.partition_point(|e| e.id < start_id);
             back[skip_back..].to_vec()
@@ -317,9 +321,7 @@ async fn run_build(
     handle: &Arc<BuildHandle>,
 ) {
     let view_config = state.views.get_view(view);
-    let max_concurrent = view_config
-        .map(|v| v.max_concurrent_builds)
-        .unwrap_or(4);
+    let max_concurrent = view_config.map(|v| v.max_concurrent_builds).unwrap_or(4);
     let sem = mgr.view_semaphore(view, max_concurrent);
 
     // Emit queued status.
@@ -402,7 +404,9 @@ async fn run_build(
                     handle.emit(BuildEventKind::Error {
                         drv: drv_path.to_string(),
                         exit_code: None,
-                        log_tail: format!("failed to spawn nix-store after {MAX_DAEMON_RETRIES} attempts: {e}"),
+                        log_tail: format!(
+                            "failed to spawn nix-store after {MAX_DAEMON_RETRIES} attempts: {e}"
+                        ),
                     });
                     build_cleanup!(build_state, &root, mgr, state, "failed");
                     handle.done.notify_waiters();
@@ -543,10 +547,7 @@ async fn run_build(
 
     tracing::debug!(view = %view, drv = %drv_path, closure_size = closure.len(), "creating GC roots");
 
-    if let Err(e) = state
-        .views
-        .create_roots_for_closure(view, "bin", &closure)
-    {
+    if let Err(e) = state.views.create_roots_for_closure(view, "bin", &closure) {
         tracing::error!(view = %view, drv = %drv_path, error = %e, "failed to create GC roots");
         handle.emit(BuildEventKind::Error {
             drv: drv_path.to_string(),

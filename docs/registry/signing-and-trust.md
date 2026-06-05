@@ -51,11 +51,11 @@ Key consequences:
 
 ---
 
-## 2. Signing primitives (CURRENT → TARGET)
+## 2. Signing primitives
 
-The cryptographic primitive is **already in the codebase** and is **kept unchanged**
-by this redesign. Only *what gets signed* changes: from a signed commit (current) to
-signed tag objects chained `tag → tag → commit` (target).
+The cryptographic primitive is **kept unchanged** by the registry design. The
+implemented registry model signs tag objects chained `tag → tag → commit`
+instead of relying on signed commits for release authority.
 
 ### 2.1 Key format — `name:Ed25519:<base64>`
 
@@ -80,25 +80,36 @@ decoded key bytes (`key_fingerprint`, `security.rs:338`).
 
 ### 2.2 SSH-format Ed25519 git signatures
 
-Git is configured for SSH signing (`gpg.format = ssh`). Signature *production* is
-`apr sign`, which today amends the HEAD commit with `git commit --amend --no-edit -S`
-in [`crates/aos-package/src/registry_ops.rs:1758`](../../crates/aos-package/src/registry_ops.rs).
-Tag creation today is `apr tag`
-([`registry_ops.rs:1694-1697`](../../crates/aos-package/src/registry_ops.rs)): when a
-`--message` is given it runs `git tag -a <name> -m <msg>` (annotated), otherwise it
-runs `git tag <name>` (lightweight). Either way it is **not yet signed** (`-s`).
+Git is configured for SSH signing (`gpg.format = ssh`). Signature production now
+uses **signed annotated tag objects** (`git tag -s <name>`, with an optional
+freeform `-m <message>`), not signed commits. `apr tag <name> --key <key>` creates
+a signed release tag; `apr sign <tag> --key <key>` re-signs an existing release
+tag object. Both commands also accept `--key-id <id>`, which resolves `<id>`
+through the committed active `keys.toml` roster and the producer's local
+`registries.d/<name>.toml` `[registry.signing_keys]` private-key map. Channel
+partition signing uses the same `--key` / `--key-id` rules for
+`apr channel init` and `apr channel advance`. `--key` and `--key-id` are
+mutually exclusive.
 
-**TARGET delta:** `apr sign` / the publish pipeline produces **signed annotated tag
-objects** (`git tag -s <name>`, with an optional freeform `-m <message>`), not signed
-commits. A signed tag carries **no structured payload** — it is a pure signed pointer
+```toml
+[registry.signing_keys]
+initial = "/run/secrets/aos-core-initial"
+next = "/run/secrets/aos-core-next"
+```
+
+A signed tag carries **no structured payload** — it is a pure signed pointer
 (standard git tag fields: `object`, `type`, the tag **name**, `tagger`) plus the
-Ed25519 signature and an optional human-readable message. Both channel partition tags
-and release tags are signed. The signature algorithm, key format, and trust store are
-unchanged.
+Ed25519 signature and an optional human-readable message. The signature
+algorithm, key format, and trust store are unchanged.
+
+Because registry repositories use Git's sha256 object format, clients need
+**Git 2.42.0 or newer**. `apm update` enforces this before fetching by checking
+`git --version` and probing `git init --bare --object-format=sha256`; stock
+`git verify-tag` / `git clone` users need the same floor.
 
 ### 2.3 Verification — `git verify-*` + a temporary `allowed_signers`
 
-Signature *verification* is `verify_commit_signature` in
+Commit signature verification is `verify_commit_signature` in
 [`security.rs:199`](../../crates/aos-package/src/security.rs). It:
 
 1. parses the expected key (`security.rs:204`);
@@ -108,12 +119,13 @@ Signature *verification* is `verify_commit_signature` in
    (`security.rs:217`) and returns `Ok(true)` iff the process exits zero
    (`security.rs:232`).
 
-**TARGET delta:** the target verifies **tag** objects, so the equivalent helper runs
-`git -c gpg.ssh.allowedSignersFile=<tmp> verify-tag <tag>` — the same allowed-signers
-mechanism, the same Ed25519 key, the same temp-file pattern. The principal in the
-allowed-signers line is the literal token `registry` (`security.rs:208`), not the
-registry's name. (Stock git users run `git verify-tag`
-themselves with the trusted key in their own allowed-signers file.)
+Tag-object verification is `verify_tag_signature` in
+[`security.rs:273`](../../crates/aos-package/src/security.rs). It runs
+`git -c gpg.ssh.allowedSignersFile=<tmp> verify-tag <tag>` with the same
+allowed-signers mechanism, the same Ed25519 key, and the same temp-file pattern.
+The principal in the allowed-signers line is the literal token `registry`, not
+the registry's name. Stock git users run `git verify-tag` themselves with the
+trusted key in their own allowed-signers file.
 
 ### 2.4 Trust store — TOFU + `trusted-keys.d`
 
@@ -128,6 +140,16 @@ directories, managed by `KeyStore` ([`security.rs:52`](../../crates/aos-package/
   (`security.rs:107`).
 - Pre-installed keys ship in `/etc/apm/trusted-keys.d/` (`KeySource::PreInstalled`,
   `security.rs:23`).
+
+`apr trust` is the supported local trust-store CLI:
+
+- `apr trust pin <registry> <registry:Ed25519:<base64>>` writes the key to the
+  writable `trusted-keys.d` directory. Re-running `pin` with a distinct key
+  appends it, which supports overlap during key rotation.
+- `apr trust pin <registry> <key> --replace` removes existing local pins first,
+  which is the explicit out-of-band re-pin path for compromised-key recovery.
+- `apr trust list [registry]` prints pinned keys and fingerprints.
+- `apr trust remove <registry>` (alias: `unpin`) removes local pinned keys.
 
 **Trust-On-First-Use** is `tofu_check` ([`security.rs:159`](../../crates/aos-package/src/security.rs)),
 which returns one of three decisions:
@@ -174,6 +196,19 @@ and **pins the new key** (updating its TOFU store). A later release can then dro
 old key from the roster and sign with the new key alone. The overlap window is what
 makes the handoff seamless: no consumer is ever asked to trust a key it cannot reach
 through a key it already trusts.
+
+Producer maintenance for the committed roster is available through `apr keys`:
+`apr keys add <id> <registry:Ed25519:<base64>>` appends an active overlap key,
+`apr keys retire <id> [--vouched-by <survivor-id>] [--reason <text>]` moves an
+active id to `[[revoked]]`, and `apr keys list` reports active/revoked ids. The
+commands validate key ids and registry binding, reject duplicate/revoked ids,
+keep an active survivor during retirement, and commit + refresh the git-static
+indexes unless `--no-commit` is passed.
+Release and channel signing can select a committed active roster id with
+`--key-id <id>`. The selected id must exist in `keys.toml`, must not be revoked,
+must belong to the selected registry, and must have a local private-key path in
+`[registry.signing_keys]`; direct `--key <private-key-path>` remains available
+for one-off signing.
 
 **The trust model: ≥2 overlapping active keys.** There is no offline-root /
 operational two-tier and no TUF-style root role. The **git lineage** (signed tag →
@@ -302,6 +337,16 @@ Freshness is therefore enforced **out of band**, by three cooperating mechanisms
 | **Consumer max-staleness policy** | client-side registry config | how long *this consumer* will trust a previously-fetched pointer before it MUST re-fetch and re-validate |
 | **Monotonic anti-rollback floor** | consumer (§5) | the lower bound on the accepted release, regardless of pointer age |
 
+For channel-tracked registries, `apm` records its local freshness timestamp in
+`[registry.state].last_update`. The local registry config may set
+`max_staleness_seconds`; when omitted, channel sync uses a 14-day default. First
+sync and semver advancement refresh this timestamp. If a later channel refresh
+cannot fetch refs, cannot resolve a usable signed partition, or resolves an
+unchanged-but-valid signed target, `apm` compares `last_update` to that bound and
+fails closed with a staleness-oriented error once the bound is exceeded.
+Unchanged targets do not refresh the timestamp. A first sync has no prior
+freshness observation, so a failed first refresh is also a hard failure.
+
 The CDN policy ([`http-layout.md`](http-layout.md)) **MUST** keep `/channels` (and
 `info/refs`, `objects/info`) at low TTL so a consumer re-fetches and sees rollout
 advances quickly; releases under `/releases/**` are immutable and may be cached with a
@@ -399,6 +444,12 @@ same origin without provisioning a second key. The key-management surface
 (TOFU, `trusted-keys.d`, fingerprinting) is shared; only the verification *call site*
 differs (git tag vs. narinfo).
 
+The public-key encodings are format-specific projections of that same key: git
+verification stores an SSH `ssh-ed25519` public-key blob in the
+`registry:Ed25519:<base64>` AOS trust form, while stock Nix
+`trusted-public-keys` uses `<name>:<base64>` with the raw Ed25519 verifying key
+bytes.
+
 ---
 
 ## 7. Trust boundaries — summary table
@@ -436,25 +487,25 @@ ways:
 
 ---
 
-## 9. Implementation status (CURRENT vs TARGET)
+## 9. Implementation status
 
 | Capability | CURRENT (code today) | TARGET |
 |---|---|---|
 | Key format `name:Ed25519:<base64>` | `parse_signing_key` (`security.rs:306`) | unchanged |
-| Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) | unchanged (the bootstrap anchor) |
-| Signing pubkey location | `[registry.signing].public_key` inside `registry.toml` (`RegistrySigningConfig`, the `signing` field of `RegistryRootConfig`) | **removed** from `registry.toml`; trust = `keys.toml` roster + TOFU |
-| Key rotation / revocation | — (single pinned key, no roster) | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
-| Signature *production* | `apr sign` = `git commit --amend -S` (`registry_ops.rs:1758`) | `git tag -s` on **tag objects** |
-| Tag creation | `apr tag` = `git tag -a` with `--message`, else lightweight `git tag` (both **unsigned**) (`registry_ops.rs:1694-1697`) | `git tag -s` (signed) for channel + release tags |
-| Signature *verification* | `verify_commit_signature` = `git verify-commit` (`security.rs:199`) | `git verify-tag` (same allowed-signers mechanism) |
-| What is signed | the HEAD **commit** | **`tag → tag → commit`** chain (partition + release tags) |
-| Name-binding | none | embedded tag-name == expected path name (channel / semver) |
-| Anti-rollback | `check_downgrade` git-ancestry (`security.rs:256`) | semver **monotonic floor** + **fix-forward** |
-| Nix narinfo `Sig:` | not wired | reuse the one Ed25519 key |
+| Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) plus `apr trust pin/list/remove` | unchanged (the bootstrap anchor) |
+| Signing pubkey location | removed from in-repo `registry.toml`; bootstrap trust is client-side TOFU | trust = `keys.toml` roster + TOFU |
+| Key rotation / revocation | `apr create` emits schema-1 `keys.toml`; `apr keys list/add/retire` maintains active and revoked roster entries with survivor checks; parser plus rotation-pin/revocation helpers exist | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
+| Signature *production* | `apr tag` / `apr sign <tag>` create signed release tag objects; `apr channel init/advance` writes signed channel partition tag files; all accept direct `--key` or roster-backed `--key-id` | implemented |
+| Tag creation | `apr tag` runs `git tag -s`; `apr channel` creates raw signed partition tag files | implemented |
+| Signature *verification* | channel sync verifies the partition tag, semver tag, and commit chain | `git verify-tag` (same allowed-signers mechanism) |
+| What is signed | **`tag → tag → commit`** chain (partition + release tags) | implemented |
+| Name-binding | embedded tag-name == expected path name (channel / semver) | implemented |
+| Anti-rollback | semver monotonic floor + fix-forward | implemented |
+| Nix narinfo `Sig:` | `NarInfoSigner` signs static narinfos during cache generation; tests cover the same-key projection from git SSH tag signing to Nix narinfo signing | reuse the one Ed25519 key |
 
 The full implementation plan for this surface is
 [`../plans/registry/workstream-04-signing-trust.md`](../plans/registry/workstream-04-signing-trust.md).
-Superseded concepts live only in current-state.md (today's code) and design-brief §15.
+Historical removed concepts are listed in design-brief §15.
 
 ---
 
@@ -468,5 +519,5 @@ Superseded concepts live only in current-state.md (today's code) and design-brie
 - [`packs-and-deltas.md`](packs-and-deltas.md) — what the verified commit's object store contains.
 - [`publishing.md`](publishing.md) — producer pipeline: commit → sign → pack → advance partitions.
 - [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — NAR cache reusing the one Ed25519 key.
-- [`current-state.md`](current-state.md) — the as-is bundle/`creation_token` implementation.
+- [`current-state.md`](current-state.md) — current git-native implementation status.
 - Plan: [`../plans/registry/workstream-04-signing-trust.md`](../plans/registry/workstream-04-signing-trust.md), [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md), [`../plans/registry/open-questions.md`](../plans/registry/open-questions.md).

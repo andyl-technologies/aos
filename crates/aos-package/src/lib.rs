@@ -26,13 +26,13 @@ pub mod verify;
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
-use clap::Subcommand;
+use anyhow::{Context, Result, bail};
+use clap::{Args, Subcommand};
 
 use aos_core::error::AosError;
 use aos_core::output::Printer;
 use sysroot::KernelUpgradeMode;
-use types::ProfileScope;
+use types::{ProfileScope, RegistryUploadAuthConfig};
 
 /// Clap subcommand enum for `aos package` / `apm`.
 #[derive(Subcommand)]
@@ -355,6 +355,13 @@ pub enum RegistryCommand {
         /// Remote URL to set as origin
         #[arg(long)]
         remote: Option<String>,
+        /// Public trust key to write into committed keys.toml
+        /// (`registry:Ed25519:<base64>`)
+        #[arg(long = "trust-key")]
+        trust_key: Option<String>,
+        /// Identifier for --trust-key inside keys.toml
+        #[arg(long = "trust-key-id")]
+        trust_key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -391,6 +398,16 @@ pub enum RegistryCommand {
         /// Keep local clone on disk
         #[arg(long)]
         keep_local: bool,
+    },
+    /// Manage trusted registry signing keys
+    Trust {
+        #[command(subcommand)]
+        command: TrustCommand,
+    },
+    /// Manage the committed registry keys.toml roster
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
     },
 
     // ----- Package Entries -----
@@ -593,6 +610,107 @@ pub enum RegistryCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+    /// Channel rollout operations
+    Channel {
+        #[command(subcommand)]
+        command: ChannelCommand,
+    },
+    /// Static Nix-cache operations
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
+    /// Static git-origin upload operations
+    Origin {
+        #[command(subcommand)]
+        command: OriginCommand,
+    },
+    /// Run the ordered producer release pipeline
+    Release {
+        /// Semver release tag, with no `v` prefix
+        semver: String,
+        /// Optional Nix store path to publish before tagging
+        #[arg(long)]
+        store_path: Option<String>,
+        /// Package name override when --store-path is used
+        #[arg(long)]
+        name: Option<String>,
+        /// Platform override when --store-path is used
+        #[arg(long)]
+        platform: Option<String>,
+        /// Package description when --store-path is used
+        #[arg(long)]
+        description: Option<String>,
+        /// Package homepage when --store-path is used
+        #[arg(long)]
+        homepage: Option<String>,
+        /// Package license when --store-path is used
+        #[arg(long)]
+        license: Option<String>,
+        /// Package maintainer when --store-path is used
+        #[arg(long)]
+        maintainer: Option<String>,
+        /// Mark this package as a system toplevel when --store-path is used
+        #[arg(long)]
+        sysroot: bool,
+        /// Previous version in the version chain when --store-path is used
+        #[arg(long)]
+        previous: Option<String>,
+        /// Pre-compiled image store path (repeatable, paired with --image-format)
+        #[arg(long = "image")]
+        images: Vec<String>,
+        /// Image format for each --image (repeatable, paired with --image)
+        #[arg(long = "image-format")]
+        image_formats: Vec<String>,
+        /// Custom publish commit message when --store-path is used
+        #[arg(long)]
+        message: Option<String>,
+        /// Channel to initialize or advance after immutable artifacts are ready
+        #[arg(long)]
+        channel: Option<String>,
+        /// Initialize all 256 channel partitions at this release
+        #[arg(long)]
+        init_channel: bool,
+        /// Number of channel partitions to advance by ascending fill
+        #[arg(long)]
+        count: Option<usize>,
+        /// Explicit comma-separated partition list, decimal or hex
+        #[arg(long)]
+        partitions: Option<String>,
+        /// Signing key
+        #[arg(long)]
+        key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Output directory for generated static cache files
+        #[arg(long = "cache-output")]
+        cache_output: Option<PathBuf>,
+        /// Nix narinfo signing key file in `name:base64-secret` form
+        #[arg(long = "cache-key")]
+        cache_key: Option<PathBuf>,
+        /// Public cache URL to write into committed registry.toml [[caches]]
+        #[arg(long = "cache-url")]
+        cache_url: Option<String>,
+        /// Priority for generated nix-cache-info and registry [[caches]]
+        #[arg(long = "cache-priority", default_value = "40")]
+        cache_priority: u32,
+        /// Backend URL to upload the static origin to; repeat for multiple destinations
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
+        /// Authentication and backend-specific upload options
+        #[command(flatten)]
+        auth: CacheUploadAuthArgs,
+        /// Print the ordered plan without mutating the registry
+        #[arg(long)]
+        dry_run: bool,
+        /// Resume an interrupted release by skipping already-present immutable artifacts
+        #[arg(long)]
+        resume: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
 
     // ----- GitHub Integration -----
     /// GitHub Pull Request operations
@@ -612,35 +730,90 @@ pub enum RegistryCommand {
         /// Signing key
         #[arg(long)]
         key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
     },
-    /// Generate git bundles for HTTP distribution
-    Bundle {
-        /// Output directory
-        #[arg(long)]
-        output: Option<String>,
-        /// Tag to bundle
-        #[arg(long)]
-        tag: Option<String>,
-        /// Create delta from this tag
-        #[arg(long)]
-        delta_from: Option<String>,
-        /// Update the bundle-list.toml manifest
-        #[arg(long)]
-        update_manifest: bool,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Sign a commit
+    /// Re-sign an existing release tag
     Sign {
-        /// Commit to sign (default: HEAD)
-        commit: Option<String>,
+        /// Tag name to re-sign
+        tag: Option<String>,
         /// Signing key
         #[arg(long)]
         key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Registry trust-store operations.
+#[derive(Subcommand)]
+pub enum TrustCommand {
+    /// Pin a trusted registry signing key in trusted-keys.d
+    Pin {
+        /// Registry name
+        registry: String,
+        /// Signing key in registry:Ed25519:<base64> form
+        key: String,
+        /// Replace existing pinned keys for this registry before pinning
+        #[arg(long)]
+        replace: bool,
+    },
+    /// List pinned trusted keys
+    List {
+        /// Registry name to inspect
+        registry: Option<String>,
+    },
+    /// Remove pinned trusted keys for a registry
+    #[command(alias = "unpin")]
+    Remove {
+        /// Registry name
+        registry: String,
+    },
+}
+
+/// Committed registry keys.toml roster operations.
+#[derive(Subcommand)]
+pub enum KeysCommand {
+    /// List active and revoked keys in committed keys.toml
+    List {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Add an active signing key to committed keys.toml
+    Add {
+        /// Stable key id inside keys.toml
+        id: String,
+        /// Signing key in registry:Ed25519:<base64> form
+        key: String,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Retire an active signing key by moving its id to [[revoked]]
+    Retire {
+        /// Active key id to retire
+        id: String,
+        /// Human-readable retirement reason
+        #[arg(long)]
+        reason: Option<String>,
+        /// Active survivor key id expected to vouch for this retirement
+        #[arg(long = "vouched-by")]
+        vouched_by: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -680,6 +853,204 @@ pub enum BranchCommand {
         #[arg(long)]
         registry: Option<String>,
     },
+}
+
+/// Channel rollout subcommands.
+#[derive(Subcommand)]
+pub enum ChannelCommand {
+    /// Initialize all channel partitions at one release
+    Init {
+        /// Channel name
+        channel: String,
+        /// Semver release tag
+        semver: String,
+        /// Signing key
+        #[arg(long)]
+        key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Advance channel partitions to a release
+    Advance {
+        /// Channel name
+        channel: String,
+        /// Semver release tag
+        semver: String,
+        /// Number of partitions to advance by ascending fill
+        #[arg(long)]
+        count: Option<usize>,
+        /// Explicit comma-separated partition list, decimal or hex
+        #[arg(long)]
+        partitions: Option<String>,
+        /// Signing key
+        #[arg(long)]
+        key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show channel partition state
+    Status {
+        /// Channel name
+        channel: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Static cache subcommands.
+#[derive(Subcommand)]
+pub enum CacheCommand {
+    /// Generate static narinfo/NAR files for every registry store path
+    Generate {
+        /// Output directory for generated static cache files
+        #[arg(long)]
+        output: PathBuf,
+        /// Nix narinfo signing key file in `name:base64-secret` form
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// Public cache URL to write into committed registry.toml [[caches]]
+        #[arg(long)]
+        cache_url: Option<String>,
+        /// Backend URL to upload generated files to; repeat for multiple destinations
+        /// (file://, s3://, sftp://, http://)
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
+        /// Authentication and backend-specific upload options
+        #[command(flatten)]
+        auth: CacheUploadAuthArgs,
+        /// Priority for generated nix-cache-info and registry [[caches]]
+        #[arg(long, default_value = "40")]
+        priority: u32,
+        /// Do not commit registry.toml after updating [[caches]]
+        #[arg(long)]
+        no_commit: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Static git-origin subcommands.
+#[derive(Subcommand)]
+pub enum OriginCommand {
+    /// Upload the dumb-HTTP git origin surface to one or more destinations
+    Upload {
+        /// Backend URL to upload static origin files to; repeat for multiple destinations
+        /// (file://, s3://, sftp://, http://)
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
+        /// Optional generated static Nix-cache directory to upload beside the git origin
+        #[arg(long = "cache-dir")]
+        cache_dir: Option<PathBuf>,
+        /// Authentication and backend-specific upload options
+        #[command(flatten)]
+        auth: CacheUploadAuthArgs,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Authentication flags for registry static-cache uploads.
+#[derive(Debug, Clone, Args, Default)]
+pub struct CacheUploadAuthArgs {
+    /// AOS provisioning token (AOS_TOKEN env)
+    #[arg(long, env = "AOS_TOKEN")]
+    pub token: Option<String>,
+    /// AOS cache view (default: "default", AOS_VIEW env)
+    #[arg(long, env = "AOS_VIEW")]
+    pub view: Option<String>,
+    /// Basic auth username for generic HTTP caches
+    #[arg(long)]
+    pub http_user: Option<String>,
+    /// Basic auth password (AOS_HTTP_PASSWORD env)
+    #[arg(long, env = "AOS_HTTP_PASSWORD")]
+    pub http_password: Option<String>,
+    /// Arbitrary HTTP header (repeatable, e.g. "Authorization: Bearer ...")
+    #[arg(long)]
+    pub header: Vec<String>,
+    /// AWS region
+    #[arg(long, env = "AWS_REGION")]
+    pub s3_region: Option<String>,
+    /// AWS credentials profile name
+    #[arg(long)]
+    pub s3_profile: Option<String>,
+    /// Custom S3-compatible endpoint (MinIO, B2, etc.)
+    #[arg(long)]
+    pub s3_endpoint: Option<String>,
+    /// Path to SSH private key
+    #[arg(long)]
+    pub ssh_key: Option<String>,
+    /// SSH password (AOS_SSH_PASSWORD env)
+    #[arg(long, env = "AOS_SSH_PASSWORD")]
+    pub ssh_password: Option<String>,
+    /// Prompt for SSH password interactively
+    #[arg(long)]
+    pub ssh_ask_pass: bool,
+}
+
+impl CacheUploadAuthArgs {
+    pub fn auth_options(&self) -> aos_cache::AuthOptions {
+        self.auth_options_with_config(None)
+    }
+
+    pub fn auth_options_with_config(
+        &self,
+        config: Option<&RegistryUploadAuthConfig>,
+    ) -> aos_cache::AuthOptions {
+        let mut auth = config
+            .map(RegistryUploadAuthConfig::auth_options)
+            .unwrap_or_else(|| aos_cache::AuthOptions {
+                view: "default".to_string(),
+                ..aos_cache::AuthOptions::default()
+            });
+
+        if let Some(token) = &self.token {
+            auth.token = Some(token.clone());
+        }
+        if let Some(view) = &self.view {
+            auth.view = view.clone();
+        }
+        if let Some(http_user) = &self.http_user {
+            auth.http_user = Some(http_user.clone());
+        }
+        if let Some(http_password) = &self.http_password {
+            auth.http_password = Some(http_password.clone());
+        }
+        if !self.header.is_empty() {
+            auth.headers = self.header.clone();
+        }
+        if let Some(s3_region) = &self.s3_region {
+            auth.s3_region = Some(s3_region.clone());
+        }
+        if let Some(s3_profile) = &self.s3_profile {
+            auth.s3_profile = Some(s3_profile.clone());
+        }
+        if let Some(s3_endpoint) = &self.s3_endpoint {
+            auth.s3_endpoint = Some(s3_endpoint.clone());
+        }
+        if let Some(ssh_key) = &self.ssh_key {
+            auth.ssh_key = Some(ssh_key.clone());
+        }
+        if let Some(ssh_password) = &self.ssh_password {
+            auth.ssh_password = Some(ssh_password.clone());
+        }
+        auth.ssh_ask_pass = auth.ssh_ask_pass || self.ssh_ask_pass;
+        if auth.view.is_empty() {
+            auth.view = "default".to_string();
+        }
+
+        auth
+    }
 }
 
 /// GitHub PR subcommands.
@@ -825,9 +1196,7 @@ pub async fn run(
             drain,
             ..
         } => {
-            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
-                ignore_sysroot_lock.as_deref(),
-            );
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             if *install_system || image_fmt.is_some() {
                 let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::install_system(
@@ -844,23 +1213,28 @@ pub async fn run(
                 )
                 .await
             } else {
-                install::run(&config, packages, registry.as_deref(), dry_run, yes, &ignore, printer).await
+                install::run(
+                    &config,
+                    packages,
+                    registry.as_deref(),
+                    dry_run,
+                    yes,
+                    &ignore,
+                    printer,
+                )
+                .await
             }
         }
         PackageCommand::Remove {
             packages,
             autoremove,
         } => remove::run(&config, packages, *autoremove, dry_run, yes, printer).await,
-        PackageCommand::Autoremove => {
-            remove::run_autoremove(&config, dry_run, yes, printer).await
-        }
+        PackageCommand::Autoremove => remove::run_autoremove(&config, dry_run, yes, printer).await,
         PackageCommand::Reinstall {
             packages,
             ignore_sysroot_lock,
         } => {
-            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
-                ignore_sysroot_lock.as_deref(),
-            );
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             install::run(&config, packages, None, dry_run, yes, &ignore, printer).await
         }
         PackageCommand::Update { registry } => {
@@ -876,9 +1250,7 @@ pub async fn run(
             live,
             drain,
         } => {
-            let ignore = sysroot_lock::IgnoreSysrootLock::parse(
-                ignore_sysroot_lock.as_deref(),
-            );
+            let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             if *upgrade_system {
                 let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::upgrade_system(&config, dry_run, kernel_mode, *drain, printer).await
@@ -896,8 +1268,15 @@ pub async fn run(
             installed,
             registry,
         } => {
-            query::search(&config, pattern, *names_only, *installed, registry.as_deref(), printer)
-                .await
+            query::search(
+                &config,
+                pattern,
+                *names_only,
+                *installed,
+                registry.as_deref(),
+                printer,
+            )
+            .await
         }
         PackageCommand::Show { package } => query::show(&config, package, printer).await,
         PackageCommand::List {
@@ -906,43 +1285,34 @@ pub async fn run(
             held,
             registry,
         } => {
-            query::list(&config, *installed, *upgradable, *held, registry.as_deref(), printer)
-                .await
+            query::list(
+                &config,
+                *installed,
+                *upgradable,
+                *held,
+                registry.as_deref(),
+                printer,
+            )
+            .await
         }
-        PackageCommand::Depends { package } => {
-            deps::depends(&config, package, printer).await
-        }
-        PackageCommand::Rdepends { package } => {
-            deps::rdepends(&config, package, printer).await
-        }
-        PackageCommand::Policy { package } => {
-            deps::policy(&config, package, printer).await
-        }
-        PackageCommand::Files { package } => {
-            deps::files(&config, package, printer).await
-        }
-        PackageCommand::Hold { package } => {
-            hold::run_hold(&config, package, printer).await
-        }
-        PackageCommand::Unhold { package } => {
-            hold::run_unhold(&config, package, printer).await
-        }
+        PackageCommand::Depends { package } => deps::depends(&config, package, printer).await,
+        PackageCommand::Rdepends { package } => deps::rdepends(&config, package, printer).await,
+        PackageCommand::Policy { package } => deps::policy(&config, package, printer).await,
+        PackageCommand::Files { package } => deps::files(&config, package, printer).await,
+        PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
+        PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held => hold::run_held(&config, printer).await,
         PackageCommand::Clean { generations, keep } => {
             clean::run(&config, *generations, *keep, printer).await
         }
         PackageCommand::Gc => clean::run_gc(printer).await,
-        PackageCommand::Verify { package } => {
-            source::run_verify(&config, package, printer).await
-        }
+        PackageCommand::Verify { package } => source::run_verify(&config, package, printer).await,
         PackageCommand::Source {
             package,
             show_drv,
             fetch,
             verify,
-        } => {
-            source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await
-        }
+        } => source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await,
         PackageCommand::Rollback {
             generation,
             system: rollback_system,
@@ -968,9 +1338,7 @@ pub async fn run(
                 rollback::run(&config, *generation, dry_run, printer).await
             }
         }
-        PackageCommand::Registry { command } => {
-            run_registry(&config, command, printer).await
-        }
+        PackageCommand::Registry { command } => run_registry(&config, command, printer).await,
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
@@ -1003,23 +1371,42 @@ async fn run_registry(
             branch,
             tag,
             version,
-        } => registry_add(
-            config,
-            url,
-            name.as_deref(),
-            *priority,
-            commit.as_deref(),
-            branch.as_deref(),
-            tag.as_deref(),
-            version.as_deref(),
-            printer,
-        ).await,
+        } => {
+            registry_add(
+                config,
+                url,
+                name.as_deref(),
+                *priority,
+                commit.as_deref(),
+                branch.as_deref(),
+                tag.as_deref(),
+                version.as_deref(),
+                printer,
+            )
+            .await
+        }
         RegistryCommand::Remove { name, keep_local } => {
             registry_remove(config, name, *keep_local, printer).await
         }
+        RegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
+        RegistryCommand::Keys { command } => registry_ops::run_keys(config, command, printer),
         RegistryCommand::Create {
-            name, remote, ..
-        } => registry_ops::create(config, name, remote.as_deref(), printer).await,
+            name,
+            remote,
+            trust_key,
+            trust_key_id,
+            ..
+        } => {
+            registry_ops::create(
+                config,
+                name,
+                remote.as_deref(),
+                trust_key.as_deref(),
+                trust_key_id.as_deref(),
+                printer,
+            )
+            .await
+        }
         RegistryCommand::Publish {
             store_path,
             name,
@@ -1126,16 +1513,7 @@ async fn run_registry(
             stat,
             remote,
             registry,
-        } => {
-            registry_ops::diff(
-                config,
-                *stat,
-                *remote,
-                registry.as_deref(),
-                printer,
-            )
-            .await
-        }
+        } => registry_ops::diff(config, *stat, *remote, registry.as_deref(), printer).await,
         RegistryCommand::Validate {
             package,
             platform,
@@ -1161,16 +1539,7 @@ async fn run_registry(
             package,
             n,
             registry,
-        } => {
-            registry_ops::log(
-                config,
-                package.as_deref(),
-                *n,
-                registry.as_deref(),
-                printer,
-            )
-            .await
-        }
+        } => registry_ops::log(config, package.as_deref(), *n, registry.as_deref(), printer).await,
         RegistryCommand::Branch { command } => {
             registry_ops::run_branch(config, command, printer).await
         }
@@ -1209,13 +1578,85 @@ async fn run_registry(
             )
             .await
         }
-        RegistryCommand::Pr { command } => {
-            registry_ops::run_pr(config, command, printer).await
+        RegistryCommand::Pr { command } => registry_ops::run_pr(config, command, printer).await,
+        RegistryCommand::Channel { command } => {
+            registry_ops::run_channel(config, command, printer).await
+        }
+        RegistryCommand::Cache { command } => {
+            registry_ops::run_cache(config, command, printer).await
+        }
+        RegistryCommand::Origin { command } => {
+            registry_ops::run_origin(config, command, printer).await
+        }
+        RegistryCommand::Release {
+            semver,
+            store_path,
+            name,
+            platform,
+            description,
+            homepage,
+            license,
+            maintainer,
+            sysroot,
+            previous,
+            images,
+            image_formats,
+            message,
+            channel,
+            init_channel,
+            count,
+            partitions,
+            key,
+            key_id,
+            cache_output,
+            cache_key,
+            cache_url,
+            cache_priority,
+            upload_urls,
+            auth,
+            dry_run,
+            resume,
+            registry,
+        } => {
+            registry_ops::release(
+                config,
+                semver,
+                store_path.as_deref(),
+                name.as_deref(),
+                platform.as_deref(),
+                description.as_deref(),
+                homepage.as_deref(),
+                license.as_deref(),
+                maintainer.as_deref(),
+                *sysroot,
+                previous.as_deref(),
+                images,
+                image_formats,
+                message.as_deref(),
+                channel.as_deref(),
+                *init_channel,
+                *count,
+                partitions.as_deref(),
+                key.as_deref(),
+                key_id.as_deref(),
+                cache_output.as_deref(),
+                cache_key.as_deref(),
+                cache_url.as_deref(),
+                *cache_priority,
+                upload_urls,
+                auth,
+                *dry_run,
+                *resume,
+                registry.as_deref(),
+                printer,
+            )
+            .await
         }
         RegistryCommand::Tag {
             name,
             message,
             key,
+            key_id,
             registry,
         } => {
             registry_ops::tag(
@@ -1223,38 +1664,23 @@ async fn run_registry(
                 name,
                 message.as_deref(),
                 key.as_deref(),
-                registry.as_deref(),
-                printer,
-            )
-            .await
-        }
-        RegistryCommand::Bundle {
-            output,
-            tag: tag_name,
-            delta_from,
-            update_manifest,
-            registry,
-        } => {
-            registry_ops::bundle(
-                config,
-                output.as_deref(),
-                tag_name.as_deref(),
-                delta_from.as_deref(),
-                *update_manifest,
+                key_id.as_deref(),
                 registry.as_deref(),
                 printer,
             )
             .await
         }
         RegistryCommand::Sign {
-            commit,
+            tag,
             key,
+            key_id,
             registry,
         } => {
             registry_ops::sign(
                 config,
-                commit.as_deref(),
+                tag.as_deref(),
                 key.as_deref(),
+                key_id.as_deref(),
                 registry.as_deref(),
                 printer,
             )
@@ -1263,10 +1689,7 @@ async fn run_registry(
     }
 }
 
-async fn registry_list(
-    config: &config::ApmConfig,
-    printer: &Printer,
-) -> Result<()> {
+async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<()> {
     if config.registries.is_empty() {
         printer.info("No registries configured. Add one with `apm registry add <url>`.");
         return Ok(());
@@ -1287,7 +1710,10 @@ async fn registry_list(
             .map(|m| m.to_string())
             .unwrap_or_else(|_| "invalid".to_string());
 
-        printer.header(&format!("  {} (priority {})", reg_config.name, reg_config.priority));
+        printer.header(&format!(
+            "  {} (priority {})",
+            reg_config.name, reg_config.priority
+        ));
         printer.kv("URL", &reg_config.url);
         printer.kv("Status", status);
         printer.kv("Transport", &format!("{:?}", reg_config.transport()));
@@ -1433,13 +1859,10 @@ async fn registry_remove(
     }
 
     let config_dir = config.scope.config_dir();
-    let toml_path = config_dir
-        .join("registries.d")
-        .join(format!("{name}.toml"));
+    let toml_path = config_dir.join("registries.d").join(format!("{name}.toml"));
 
     if toml_path.exists() {
-        fs::remove_file(&toml_path)
-            .with_context(|| format!("removing {}", toml_path.display()))?;
+        fs::remove_file(&toml_path).with_context(|| format!("removing {}", toml_path.display()))?;
     }
 
     if !keep_local {
@@ -1467,13 +1890,8 @@ async fn registry_remove(
 // ---------------------------------------------------------------------------
 
 fn derive_registry_name(url: &str) -> String {
-    let cleaned = url
-        .trim_end_matches('/')
-        .trim_end_matches(".git");
-    let name = cleaned
-        .rsplit('/')
-        .next()
-        .unwrap_or("unknown");
+    let cleaned = url.trim_end_matches('/').trim_end_matches(".git");
+    let name = cleaned.rsplit('/').next().unwrap_or("unknown");
     name.chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
         .collect::<String>()
@@ -1557,9 +1975,14 @@ mod tests {
             enabled: true,
             commit: None,
             branch: None,
+            channel: None,
             tag: None,
             version: None,
             pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         }
     }
@@ -1599,8 +2022,8 @@ mod tests {
                     reg_config("aos-extra", 400),
                     Some(types::RegistryState {
                         last_commit: Some("deadbeef1234".into()),
-                        last_creation_token: Some(2026020003),
                         last_update: Some("2026-02-16T12:00:00Z".into()),
+                        ..types::RegistryState::default()
                     }),
                 ),
             ],
@@ -1677,6 +2100,82 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn cache_upload_auth_args_map_to_backend_options() {
+        let args = CacheUploadAuthArgs {
+            token: Some("token".into()),
+            view: Some("ops".into()),
+            http_user: Some("user".into()),
+            http_password: Some("pass".into()),
+            header: vec!["X-Test: yes".into()],
+            s3_region: Some("us-west-2".into()),
+            s3_profile: Some("prod".into()),
+            s3_endpoint: Some("https://minio.example".into()),
+            ssh_key: Some("/tmp/key".into()),
+            ssh_password: Some("ssh-pass".into()),
+            ssh_ask_pass: true,
+        };
+
+        let auth = args.auth_options();
+        assert_eq!(auth.token.as_deref(), Some("token"));
+        assert_eq!(auth.view, "ops");
+        assert_eq!(auth.http_user.as_deref(), Some("user"));
+        assert_eq!(auth.http_password.as_deref(), Some("pass"));
+        assert_eq!(auth.headers, vec!["X-Test: yes"]);
+        assert_eq!(auth.s3_region.as_deref(), Some("us-west-2"));
+        assert_eq!(auth.s3_profile.as_deref(), Some("prod"));
+        assert_eq!(auth.s3_endpoint.as_deref(), Some("https://minio.example"));
+        assert_eq!(auth.ssh_key.as_deref(), Some("/tmp/key"));
+        assert_eq!(auth.ssh_password.as_deref(), Some("ssh-pass"));
+        assert!(auth.ssh_ask_pass);
+    }
+
+    #[test]
+    fn cache_upload_auth_args_merge_config_defaults_and_overrides() {
+        let config = RegistryUploadAuthConfig {
+            token: Some("config-token".into()),
+            view: Some("prod".into()),
+            http_user: Some("config-user".into()),
+            http_password: Some("config-pass".into()),
+            headers: vec!["X-Config: yes".into()],
+            s3_region: Some("us-east-1".into()),
+            s3_profile: Some("default".into()),
+            s3_endpoint: Some("https://config-minio.example".into()),
+            ssh_key: Some("/etc/apm/config-key".into()),
+            ssh_password: Some("config-ssh-pass".into()),
+            ssh_ask_pass: true,
+        };
+        let args = CacheUploadAuthArgs {
+            token: Some("cli-token".into()),
+            view: None,
+            http_user: None,
+            http_password: Some("cli-pass".into()),
+            header: vec!["X-Cli: yes".into()],
+            s3_region: None,
+            s3_profile: Some("cli-profile".into()),
+            s3_endpoint: None,
+            ssh_key: Some("/tmp/cli-key".into()),
+            ssh_password: None,
+            ssh_ask_pass: false,
+        };
+
+        let auth = args.auth_options_with_config(Some(&config));
+        assert_eq!(auth.token.as_deref(), Some("cli-token"));
+        assert_eq!(auth.view, "prod");
+        assert_eq!(auth.http_user.as_deref(), Some("config-user"));
+        assert_eq!(auth.http_password.as_deref(), Some("cli-pass"));
+        assert_eq!(auth.headers, vec!["X-Cli: yes"]);
+        assert_eq!(auth.s3_region.as_deref(), Some("us-east-1"));
+        assert_eq!(auth.s3_profile.as_deref(), Some("cli-profile"));
+        assert_eq!(
+            auth.s3_endpoint.as_deref(),
+            Some("https://config-minio.example")
+        );
+        assert_eq!(auth.ssh_key.as_deref(), Some("/tmp/cli-key"));
+        assert_eq!(auth.ssh_password.as_deref(), Some("config-ssh-pass"));
+        assert!(auth.ssh_ask_pass);
     }
 
     #[test]

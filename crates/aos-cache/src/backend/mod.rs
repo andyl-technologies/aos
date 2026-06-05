@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use aos_net::{TransferEngine, TransferEngineConfig};
+use aos_net::{TransferEngine, TransferEngineConfig, TransferRequest};
 
 /// Trait for binary cache storage backends.
 #[async_trait]
@@ -34,6 +34,18 @@ pub trait CacheBackend: Send + Sync {
     /// Write nix-cache-info (one-time initialization).
     async fn ensure_cache_info(&self, store_dir: &str) -> Result<()>;
 
+    /// Upload an exact nix-cache-info body.
+    async fn put_cache_info(&self, content: &str) -> Result<()>;
+
+    /// Upload a static file at a backend-relative path.
+    async fn put_static_file(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        content_type: Option<&str>,
+        cache_control: Option<&str>,
+    ) -> Result<()>;
+
     /// Whether this backend supports AOSP pack upload (HTTP only).
     fn supports_pack(&self) -> bool {
         false
@@ -42,6 +54,23 @@ pub trait CacheBackend: Send + Sync {
     /// Upload a pack of small NARs (HTTP only).
     async fn upload_pack(&self, _data: &[u8]) -> Result<Vec<String>> {
         anyhow::bail!("pack upload not supported by this backend")
+    }
+}
+
+pub(crate) fn add_static_metadata_headers(
+    request: &mut TransferRequest,
+    content_type: Option<&str>,
+    cache_control: Option<&str>,
+) {
+    if let Some(content_type) = content_type {
+        request
+            .headers
+            .push(("Content-Type".to_string(), content_type.to_string()));
+    }
+    if let Some(cache_control) = cache_control {
+        request
+            .headers
+            .push(("Cache-Control".to_string(), cache_control.to_string()));
     }
 }
 
@@ -65,7 +94,6 @@ pub struct AuthOptions {
     pub ssh_key: Option<String>,
     pub ssh_password: Option<String>,
     pub ssh_ask_pass: bool,
-
 }
 
 /// Map `AuthOptions` to `aos_net` credentials and register them on the engine's auth store.
@@ -91,9 +119,7 @@ fn apply_auth_to_engine(engine: &TransferEngine, url: &str, auth: &AuthOptions) 
                         refresh: None,
                     },
                 );
-            } else if let (Some(user), Some(pass)) =
-                (&auth.http_user, &auth.http_password)
-            {
+            } else if let (Some(user), Some(pass)) = (&auth.http_user, &auth.http_password) {
                 engine.auth().set(
                     &host,
                     aos_net::Credential::Basic {
@@ -103,10 +129,7 @@ fn apply_auth_to_engine(engine: &TransferEngine, url: &str, auth: &AuthOptions) 
                 );
             }
             // Custom headers: use the first one as a Header credential if present.
-            if auth.token.is_none()
-                && auth.http_user.is_none()
-                && !auth.headers.is_empty()
-            {
+            if auth.token.is_none() && auth.http_user.is_none() && !auth.headers.is_empty() {
                 if let Some((k, v)) = auth.headers[0].split_once(':') {
                     engine.auth().set(
                         &host,
@@ -195,15 +218,11 @@ pub async fn from_url(url_str: &str, auth: &AuthOptions) -> Result<Box<dyn Cache
                 .host_str()
                 .ok_or_else(|| anyhow::anyhow!("S3 URL must have bucket name as host"))?;
             let prefix = parsed.path().trim_start_matches('/').to_string();
-            Ok(Box::new(s3::S3Backend::new(
-                bucket, &prefix, &engine,
-            )))
+            Ok(Box::new(s3::S3Backend::new(bucket, &prefix, &engine)))
         }
         "sftp" | "ssh" => {
             let path = parsed.path().to_string();
-            Ok(Box::new(sftp::SftpBackend::new(
-                url_str, &path, engine,
-            )))
+            Ok(Box::new(sftp::SftpBackend::new(url_str, &path, engine)))
         }
         other => anyhow::bail!("unsupported cache URL scheme: {other}"),
     }

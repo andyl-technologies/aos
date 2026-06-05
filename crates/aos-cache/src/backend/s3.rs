@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use aos_net::{TransferEngine, TransferRequest};
 
-use super::CacheBackend;
+use super::{CacheBackend, add_static_metadata_headers};
 
 /// S3 cache backend.
 ///
@@ -60,10 +60,8 @@ impl CacheBackend for S3Backend {
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
         let url = self.s3_url(&format!("{store_hash}.narinfo"));
         let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
-        req.headers.push((
-            "Content-Type".to_string(),
-            "text/x-nix-narinfo".to_string(),
-        ));
+        req.headers
+            .push(("Content-Type".to_string(), "text/x-nix-narinfo".to_string()));
         self.engine
             .execute(req)
             .await
@@ -129,9 +127,7 @@ impl CacheBackend for S3Backend {
             return Ok(());
         }
 
-        let content = format!(
-            "StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n"
-        );
+        let content = format!("StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n");
         let mut req = TransferRequest::put(&url, content.into_bytes());
         req.headers
             .push(("Content-Type".to_string(), "text/plain".to_string()));
@@ -139,6 +135,35 @@ impl CacheBackend for S3Backend {
             .execute(req)
             .await
             .context("writing nix-cache-info to S3")?;
+        Ok(())
+    }
+
+    async fn put_cache_info(&self, content: &str) -> Result<()> {
+        let url = self.s3_url("nix-cache-info");
+        let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
+        req.headers
+            .push(("Content-Type".to_string(), "text/plain".to_string()));
+        self.engine
+            .execute(req)
+            .await
+            .context("writing nix-cache-info to S3")?;
+        Ok(())
+    }
+
+    async fn put_static_file(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        content_type: Option<&str>,
+        cache_control: Option<&str>,
+    ) -> Result<()> {
+        let url = self.s3_url(relative_path);
+        let mut req = TransferRequest::put_file(&url, source.to_path_buf());
+        add_static_metadata_headers(&mut req, content_type, cache_control);
+        self.engine
+            .execute(req)
+            .await
+            .with_context(|| format!("S3 PutObject {url}"))?;
         Ok(())
     }
 }

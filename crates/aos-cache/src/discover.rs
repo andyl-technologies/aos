@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use aos_core::nix::drv::{self, FixedOutputDrv};
 use aos_core::nix::NixCli;
+use aos_core::nix::drv::{self, FixedOutputDrv};
 
 /// Discover all fixed-output derivations in the closure of a .drv file.
 ///

@@ -11,8 +11,10 @@
 > are being rewritten to the model below. Anything describing `registry.toml`,
 > `bundle-list.toml`, git *bundles*, a `[latest]` table, `[components]`,
 > `[capabilities]`, calendar `creation_token` ordering, or percentage-based
-> rollouts is **removed** from the target (it may still appear in `current-state.md`
-> as a description of today's *code*).
+> rollouts is **removed** from the target. If those terms appear in this plan set,
+> treat them as pre-cutover historical context unless
+> [`../../registry/current-state.md`](../../registry/current-state.md) or
+> [`TODO.md`](./TODO.md) explicitly says they are still live.
 >
 > **Audience:** implementers, architects, engineers, and the doc-authoring agents.
 
@@ -51,18 +53,20 @@
 
 ---
 
-## 2. Current state (as-is) — summary
+## 2. Current state (as-is) — historical summary
 
-The detailed, code-grounded as-is lives in `docs/registry/current-state.md` and is
-**unchanged** by this redesign (it describes today's code, which still does the old
-thing). In brief, today:
+This section is retained as the pre-cutover baseline used to write the plan. It
+does **not** describe the current implementation after the registry PR work. For
+as-built status, use
+[`../../registry/current-state.md`](../../registry/current-state.md) and
+[`TODO.md`](./TODO.md). At the time this brief was written:
 
 - A registry is a git repo of **nested** package TOMLs (`PackageToml` in
   `crates/aos-package/src/registry/parse.rs:14-70`, written by `build_package_toml`
   `registry_ops.rs:595-781`) plus `closures/<hash>` adjacency files;
   `PackageMeta` (`types.rs:43-77`) is the flattened in-memory projection.
 - Distribution is via **git bundles** + a `bundle-list.toml` manifest the *consumer*
-  parses (`registry/bundle.rs`); the producer side is a stub (`apr bundle` =
+  parses (`registry/bundle.rs`); the producer side was a stub (`apr bundle` =
   `git bundle create`; no manifest writer; no upload).
 - Versions are **calendar tags** (`vYYYY.MM[.P]`) ordered by `creation_token`
   (`state.rs version_to_token`); tracking modes are commit/branch/tag/semver

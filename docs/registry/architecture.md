@@ -33,12 +33,12 @@ signs the release and channel tags. The governing design principle is **asymmetr
 cost: make publishing as expensive as possible so that consumption is as cheap as
 possible** — the producer pays once, every consumer benefits forever.
 
-> **CURRENT.** Today the registry is a git repo of *nested package TOMLs* plus
-> `closures/<hash>` adjacency files, distributed as **git bundles** named in a
-> consumer-parsed `bundle-list.toml`, versioned by **calendar tags** ordered by
-> `creation_token`. This entire distribution/rollout layer is **replaced** by the
-> git-native model below. The Ed25519/SSH signing primitive and the package-TOML
-> tree content are the parts that carry forward. See [`current-state.md`](./current-state.md).
+> **CURRENT.** The registry now uses sha256 git repositories, dumb-HTTP index
+> refreshes, signed release/channel tag objects, channel partition commands, and
+> git-native consumer sync. The package-TOML tree content remains the metadata
+> layer. The consumer includes AOS delta/full/fallback object resolution, and
+> `apr cache generate` produces the static Nix-cache layer. See
+> [`current-state.md`](./current-state.md).
 
 ---
 
@@ -186,8 +186,8 @@ tree is therefore `registry.toml` + `keys.toml` + `packages/<x>/<name>.toml` +
 Outside the ref namespace, each channel exposes exactly **256** files
 `/channels/<name>/00..ff`, each an independently-signed tag object whose **tag name ==
 the channel name**, pointing at a semver tag. These are the **rollout partitions**:
-a consumer deterministically self-selects one bucket (e.g.
-the low byte of `sha256(machine_id)` (i.e. mod 256), persisted once so it never flaps), and the publisher
+a consumer self-selects one bucket on first channel sync from a registry-local
+random salt, persists that bucket index once so it never flaps, and the publisher
 advances buckets independently to control fleet exposure. They live outside
 `refs/` precisely so a stock git client never sees them. Detailed in
 [`versioning-and-channels.md`](./versioning-and-channels.md).
@@ -247,7 +247,7 @@ efficiency. End to end (TARGET):
 
 ```
   apm update / upgrade:
-    1. bucket    b = the low byte of sha256(machine_id) (i.e. mod 256)  (persisted once)
+    1. bucket    b = persisted bucket, or first-sync registry-local salt hash
     2. channel   GET /channels/<channel>/<b>               → signed partition tag
                  verify sig + name-binding (name == <channel>)
     3. semver    follow partition tag → refs/tags/<semver> (signed)
@@ -335,14 +335,13 @@ or partition that references them; `/channels/**` and the `info/**` shims are lo
 and flipped last. Full producer workflow, atomicity, and concurrency are in
 [`publishing.md`](./publishing.md).
 
-> **CURRENT.** The producer is a thin wrapper over `git`: `apr sign` =
-> `git commit --amend --no-edit -S` (`registry_ops.rs:1770`); `apr push` = `git push`
-> with FF enforcement (`registry_ops.rs:1410`); `apr bundle` only runs
-> `git bundle create` into a local `bundles/` dir and its `_update_manifest`
-> parameter is **dead code** (`registry_ops.rs:1718`). There is **no** pack/delta
-> pipeline, no `update-server-info`/`info/alternates` emission, no partition
-> machinery, and no upload. The gaps map to workstreams in
-> [`gap-analysis.md`](../plans/registry/gap-analysis.md).
+> **CURRENT.** `apr release` now sequences the producer-safe order above. It can
+> publish a real store path first or release an already committed registry tree,
+> signs the semver tag, generates full packs and compressed thin deltas, refreshes
+> dumb-HTTP indexes, optionally generates static Nix-cache files, advances channel
+> partitions, and uploads immutable files before low-TTL mutable refs/channels.
+> The focused `apr publish`, `apr tag`, `apr channel`, `apr cache`, and
+> `apr origin` subcommands remain available for repair and unusual workflows.
 
 ### 6.2 Rollout (publisher-controlled, fix-forward)
 
@@ -371,8 +370,8 @@ Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
 ## 7. Cross-references
 
 - [`README.md`](./README.md) — purpose, audience, glossary, doc index.
-- [`current-state.md`](./current-state.md) — the as-is code (bundles /
-  `creation_token` / nested package TOMLs).
+- [`current-state.md`](./current-state.md) — current git-native implementation
+  status and external validation gaps.
 - [`http-layout.md`](./http-layout.md) — full HTTP/object layout, CDN TTLs,
   `info/refs` / `HEAD` / relative `info/alternates`, root-centralized loose
   `/objects/`, stock-git dumb-HTTP compatibility.

@@ -1,19 +1,24 @@
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
-use aos_core::output::{create_spinner, Printer};
+use aos_core::output::{Printer, create_spinner};
 
 /// `aos lint [package]` — validate package definitions.
 pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>) -> Result<()> {
     let (attr, label) = match package {
-        Some(pkg) => (format!("checks.lint.{pkg}"), format!("lint check for '{pkg}'")),
+        Some(pkg) => (
+            format!("checks.lint.{pkg}"),
+            format!("lint check for '{pkg}'"),
+        ),
         None => ("checks.lint".to_string(), "all lint checks".to_string()),
     };
 
     printer.info(&format!("Running {label}..."));
 
     let spinner = create_spinner(&format!("running {label}"));
-    let result = nix.build(&attr, None).with_context(|| format!("running {label}"));
+    let result = nix
+        .build(&attr, None)
+        .with_context(|| format!("running {label}"));
     spinner.finish_and_clear();
 
     match result {

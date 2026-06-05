@@ -5,6 +5,12 @@
 > intent). Current-code citations use `path:line` against the tree at the time of
 > writing.
 >
+> **As-built status note:** this workstream is now archival planning context. The
+> object-store implementation has landed locally; use
+> [`../../registry/current-state.md`](../../registry/current-state.md) and
+> [`TODO.md`](./TODO.md) for current facts. Follow-up production validation is
+> tracked in [`validation-runbook.md`](./validation-runbook.md).
+>
 > **Scope of this workstream:** stand up the *foundation layer* — a **bare git
 > repository in sha256 object format**, published as static files over **dumb
 > HTTP**. This is the substrate that every later workstream rides on:
@@ -127,8 +133,9 @@ optional override/supplement (HIGHER priority wins; brief §14). That git-repo-r
 committed `keys.toml` + client-side TOFU;
 [repo-layout.md](../../registry/repo-layout.md) §2–§3).
 Superseded concepts live only in
-[current-state](../../registry/current-state.md) (today's code) and design-brief
-§15.
+archival plan context and design-brief §15; use
+[current-state](../../registry/current-state.md) and [TODO.md](./TODO.md) for
+live status.
 
 ---
 

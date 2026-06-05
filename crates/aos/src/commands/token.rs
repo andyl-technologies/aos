@@ -15,7 +15,17 @@ pub async fn run(printer: &Printer, command: &TokenCmd, socket_path: &Path) -> R
             permissions,
             expires,
             comment,
-        } => create(printer, socket_path, view, permissions, expires, comment.as_deref()).await,
+        } => {
+            create(
+                printer,
+                socket_path,
+                view,
+                permissions,
+                expires,
+                comment.as_deref(),
+            )
+            .await
+        }
         TokenCmd::List => list(printer, socket_path).await,
         TokenCmd::Revoke { token_id } => revoke(printer, socket_path, token_id).await,
         TokenCmd::Rotate { token_id } => rotate(printer, socket_path, token_id).await,
@@ -26,9 +36,12 @@ async fn send_request(
     socket_path: &Path,
     request: &serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let stream = UnixStream::connect(socket_path)
-        .await
-        .with_context(|| format!("connecting to bootstrap socket at {}", socket_path.display()))?;
+    let stream = UnixStream::connect(socket_path).await.with_context(|| {
+        format!(
+            "connecting to bootstrap socket at {}",
+            socket_path.display()
+        )
+    })?;
 
     let (reader, mut writer) = stream.into_split();
 
@@ -54,10 +67,7 @@ async fn send_request(
         anyhow::bail!("{err}");
     }
 
-    Ok(resp
-        .get("data")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null))
+    Ok(resp.get("data").cloned().unwrap_or(serde_json::Value::Null))
 }
 
 async fn create(
@@ -99,10 +109,7 @@ async fn create(
         return Ok(());
     }
 
-    let token = data
-        .get("token")
-        .and_then(|v| v.as_str())
-        .unwrap_or("???");
+    let token = data.get("token").and_then(|v| v.as_str()).unwrap_or("???");
     let id = data.get("id").and_then(|v| v.as_str()).unwrap_or("???");
 
     printer.header("Token created");
@@ -158,7 +165,9 @@ async fn list(printer: &Printer, socket_path: &Path) -> Result<()> {
             .unwrap_or_default();
         let comment = t.get("comment").and_then(|v| v.as_str()).unwrap_or("-");
 
-        printer.plain(&format!("  {id}  views={views}  perms={perms}  comment={comment}"));
+        printer.plain(&format!(
+            "  {id}  views={views}  perms={perms}  comment={comment}"
+        ));
     }
 
     Ok(())
@@ -184,14 +193,13 @@ async fn rotate(printer: &Printer, socket_path: &Path, token_id: &str) -> Result
         return Ok(());
     }
 
-    let new_token = data
-        .get("token")
-        .and_then(|v| v.as_str())
-        .unwrap_or("???");
+    let new_token = data.get("token").and_then(|v| v.as_str()).unwrap_or("???");
     let new_id = data.get("id").and_then(|v| v.as_str()).unwrap_or("???");
 
     printer.header("Token rotated");
-    printer.plain(&format!("  Old ID: {token_id}  (revoked with 1h grace period)"));
+    printer.plain(&format!(
+        "  Old ID: {token_id}  (revoked with 1h grace period)"
+    ));
     printer.plain(&format!("  New ID: {new_id}"));
     printer.plain(&format!("  Token:  {new_token}"));
     printer.plain("");

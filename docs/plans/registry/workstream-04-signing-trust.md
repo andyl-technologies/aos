@@ -11,8 +11,16 @@
 > `trusted-keys.d` primitives. The committed-tree placement of `registry.toml` /
 > `keys.toml` is detailed in [`repo-layout.md`](../../registry/repo-layout.md).
 >
-> **Labeling:** **CURRENT** describes today's code (cited as `path:line`);
-> **TARGET** describes the git-native model this workstream builds.
+> **Historical labeling:** **CURRENT** describes the pre-cutover code that existed
+> when this plan was written (cited as `path:line`); **TARGET** describes the
+> git-native model this workstream builds.
+>
+> **As-built status note:** this workstream is now archival planning context. The
+> signing/trust implementation has landed locally; use
+> [`../../registry/current-state.md`](../../registry/current-state.md) and
+> [`TODO.md`](./TODO.md) for current facts. Follow-up production validation is
+> tracked in [`validation-runbook.md`](./validation-runbook.md). Older CURRENT
+> citations below describe the pre-cutover tree.
 
 ---
 

@@ -105,9 +105,7 @@ fn dirs_cache() -> Option<PathBuf> {
     // Respect XDG_CACHE_HOME if set, otherwise use ~/.cache.
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache"))
-        })?;
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
 
     Some(base.join("aos").join("doc"))
 }

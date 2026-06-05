@@ -32,21 +32,22 @@ anything being placed in the tag message (tags are pure pointers — see
 
 This is **almost unchanged** from today's code — the git-native redesign changed
 *distribution* (refs, tags, objects, packs over dumb HTTP), not the tree's content.
-The two **TARGET** deltas vs. CURRENT are: the signing pubkey moves **out** of
-`registry.toml`, and a new `keys.toml` carries the trust roster.
+The in-repo signing pubkey has moved out of `registry.toml`; `apr create` now
+emits `keys.toml` as the committed trust roster, and `apr keys list/add/retire`
+maintains that roster through supported rotation/revocation workflows.
 
 ---
 
 ## 2. `registry.toml` — registry-level config (root of the tree)
 
 The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
-(`crates/aos-package/src/types.rs:563-570`), read by `read_registry_toml`
+(`crates/aos-package/src/types.rs:563-568`), read by `read_registry_toml`
 (`registry_ops.rs:391-402`) and written with a default at `registry_ops.rs:443-450`.
 
 > **Do not confuse this with the removed signed-HTTP-root `registry.toml`.** An
 > intermediate design briefly proposed a *mutable file served at the origin root*
-> carrying `[latest]`/`[channels]`/`[components]`/`[capabilities]`/`[[bundles]]`/
-> `[signature]`. **That** was removed (design-brief §15). The file documented here is a
+> carrying release, channel, component, capability, artifact-list, and signature
+> tables. **That** was removed (design-brief §15). The file documented here is a
 > **committed tree file**, like any package TOML, authenticated by the signed tag.
 
 **TARGET:**
@@ -71,11 +72,9 @@ priority = 100                         # fallback
   (`types.rs:582-590`). `resolve_mirrors` sorts **descending** (higher first,
   `registry_ops.rs:405-414`); `resolve_mirror` takes the first
   (`download.rs:85-97`). See [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
-- **No signing key here (TARGET).** The CURRENT `RegistryRootConfig` also carries
-  an optional `signing` field of type `RegistrySigningConfig`, which holds
-  `public_key` (`types.rs:593-596`); in the target that is **removed** — a key
-  inside a file authenticated *by* that key is circular for bootstrap. Key trust
-  lives in `keys.toml` + client-side TOFU (§3).
+- **No signing key here.** The in-repo `RegistryRootConfig.signing` field was
+  removed; a key inside a file authenticated *by* that key is circular for
+  bootstrap. Key trust lives in `keys.toml` + client-side TOFU (§3).
 
 ---
 
@@ -85,7 +84,12 @@ A dedicated committed file holding the **active signing key(s)** and a **revoked
 list**, authenticated via the signed tag like everything else. It does **not**
 bootstrap trust — initial trust is **TOFU-pinned client-side** in
 `trusted-keys.d/<registry>.pub` (`crates/aos-package/src/security.rs`,
-`types.rs` `trusted_keys_dirs()`).
+`types.rs` `trusted_keys_dirs()`). `apr create` writes this file during the
+initial commit; pass `--trust-key registry:Ed25519:<base64>` and
+optionally `--trust-key-id <id>` (default `initial`) to seed the active-key
+list, or omit `--trust-key` to write an empty schema-1 roster. Operators maintain
+the roster after creation with `apr keys add`, `apr keys retire`, and
+`apr keys list`.
 
 ```toml
 schema = 1
@@ -110,14 +114,16 @@ There is **no** offline-root / operational two-tier and **no** TUF-style root ro
 **git lineage** (signed tag → commit → parent chain) provides the continuity, so a
 separate root tier is unnecessary.
 
-**Rotation (planned):** publish `keys.toml` listing both old and new keys (an overlap
-window) in a tag signed by a currently-trusted key; a consumer that trusts the old key
-verifies the tag, reads `keys.toml`, and pins the new key. Later, publish with only the
-new key (the old key is dropped).
+**Rotation:** use `apr keys add <new-id> <new-key>` to update `keys.toml` so it
+lists both old and new keys (an overlap window), then publish the resulting
+commit in a tag signed by a currently-trusted key. A consumer that trusts the old
+key verifies the tag, reads `keys.toml`, and pins the new key. Later, publish
+with only the new key (the old key is dropped).
 
-**Planned retirement:** list the key under `[[revoked]]`, **signed by one of the
-*other* overlapping active keys.** Because there are always ≥2 active keys, a retiring
-key never has to revoke itself.
+**Planned retirement:** use `apr keys retire <id> [--vouched-by <survivor-id>]`
+to list the key under `[[revoked]]`, then publish the resulting commit in a tag
+**signed by one of the *other* overlapping active keys.** The command refuses to
+retire the last active key, so a retiring key never has to revoke itself.
 
 **Compromise:** handled **out-of-band** — the consumer re-pins via `trusted-keys.d`
 (`apr trust`). An in-repo key cannot credibly revoke itself, and compromise is rare
@@ -217,13 +223,13 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 
 | File | CURRENT (today's code) | TARGET |
 |---|---|---|
-| `registry.toml` | `[registry]` + `[[caches]]` + `[signing].public_key` (`RegistryRootConfig.signing: RegistrySigningConfig`) | `[registry]` + `[[caches]]` — **pubkey removed** |
-| `keys.toml` | — (pubkey lives in `registry.toml`) | **new** trust roster (active keys + revoked) |
+| `registry.toml` | `[registry]` + `[[caches]]` | unchanged shape |
+| `keys.toml` | emitted by `apr create` as schema-1 roster; maintained by `apr keys list/add/retire`; parser plus rotation-pin/revocation helpers exist | committed trust roster maintained through active-key rotation and revocation workflows |
 | `packages/<x>/<name>.toml` | nested `PackageToml` | unchanged |
 | `closures/<hash>` | adjacency list | unchanged |
 | `.gitattributes` | `closures/** -diff` | unchanged |
-| bootstrap trust | `signing.public_key` + TOFU `trusted-keys.d` | TOFU `trusted-keys.d` (pin) + `keys.toml` overlap rotation |
+| bootstrap trust | TOFU `trusted-keys.d` (pin) | TOFU `trusted-keys.d` (pin) + `keys.toml` overlap rotation |
 
 See also: [`signing-and-trust.md`](signing-and-trust.md) (keys, rotation/revocation),
-[`http-layout.md`](http-layout.md) (served layout), `current-state.md` (the as-is
-code), and the design brief §14.
+[`http-layout.md`](http-layout.md) (served layout), `current-state.md` (as-built
+code status), and the design brief §14.

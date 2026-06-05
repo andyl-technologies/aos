@@ -30,17 +30,12 @@ pub fn generate_self_signed(
     san: &[String],
 ) -> Result<TlsAcceptor> {
     let subjects: Vec<String> = if san.is_empty() {
-        vec![
-            "localhost".into(),
-            "127.0.0.1".into(),
-            "::1".into(),
-        ]
+        vec!["localhost".into(), "127.0.0.1".into(), "::1".into()]
     } else {
         san.to_vec()
     };
 
-    let mut params = CertificateParams::new(subjects)
-        .context("invalid SAN entries")?;
+    let mut params = CertificateParams::new(subjects).context("invalid SAN entries")?;
     params.distinguished_name.push(
         rcgen::DnType::OrganizationName,
         rcgen::DnValue::Utf8String("AOS".into()),
@@ -51,7 +46,9 @@ pub fn generate_self_signed(
     );
 
     let key_pair = KeyPair::generate().context("generating TLS key pair")?;
-    let cert = params.self_signed(&key_pair).context("signing certificate")?;
+    let cert = params
+        .self_signed(&key_pair)
+        .context("signing certificate")?;
 
     // Ensure parent directories exist.
     if let Some(parent) = cert_path.parent() {
@@ -79,11 +76,7 @@ pub fn generate_self_signed(
 }
 
 /// Load an existing cert/key pair or generate a self-signed one.
-pub fn load_or_generate(
-    cert_path: &Path,
-    key_path: &Path,
-    san: &[String],
-) -> Result<TlsAcceptor> {
+pub fn load_or_generate(cert_path: &Path, key_path: &Path, san: &[String]) -> Result<TlsAcceptor> {
     if cert_path.exists() && key_path.exists() {
         acceptor_from_pem(cert_path, key_path)
     } else {

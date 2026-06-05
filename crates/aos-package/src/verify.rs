@@ -31,7 +31,9 @@ pub fn sha256_stream(mut reader: impl Read) -> Result<String> {
     let mut buf = vec![0u8; HASH_BUF_SIZE];
 
     loop {
-        let n = reader.read(&mut buf).context("reading stream for hashing")?;
+        let n = reader
+            .read(&mut buf)
+            .context("reading stream for hashing")?;
         if n == 0 {
             break;
         }
@@ -136,9 +138,7 @@ pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Resu
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(AosError::DownloadError {
-            message: format!(
-                "nix-store --dump failed for {store_path}: {stderr}"
-            ),
+            message: format!("nix-store --dump failed for {store_path}: {stderr}"),
         }
         .into());
     }
@@ -229,7 +229,10 @@ mod tests {
     fn verify_download_hash_mismatch() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), b"hello\n").unwrap();
-        let result = verify_download_hash(tmp.path(), "sha256:0000000000000000000000000000000000000000000000000000000000000000");
+        let result = verify_download_hash(
+            tmp.path(),
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        );
         assert!(result.is_err());
 
         let err = result.unwrap_err();

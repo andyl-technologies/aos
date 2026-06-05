@@ -5,14 +5,14 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::download::{
-    default_engine, download_nars, fetch_narinfos, resolve_mirror, DownloadRequest,
-    ResolvedDownload,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfos,
+    resolve_mirror,
 };
+use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
 use super::profile::meta::write_meta;
-use super::profile::Profile;
-use super::registry::{store_path_hash, RegistrySet};
-use super::resolve::{collect_unique_metas, resolve_multiple, ResolvedClosure};
+use super::registry::{RegistrySet, store_path_hash};
+use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
@@ -80,11 +80,8 @@ pub async fn run(
                 let remaining = ignore_lock.filter(violations);
 
                 if !remaining.is_empty() {
-                    let msg = sysroot_lock::format_violation_error(
-                        &remaining,
-                        &sys_name,
-                        &sys_version,
-                    );
+                    let msg =
+                        sysroot_lock::format_violation_error(&remaining, &sys_name, &sys_version);
                     anyhow::bail!(msg);
                 }
             }
@@ -272,17 +269,13 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
 ///
 /// Copies both `usr/` and `src/` symlinks so that the new generation
 /// inherits all packages from the previous one.
-fn copy_roots(
-    from: &super::profile::Generation,
-    to: &super::profile::Generation,
-) -> Result<()> {
+fn copy_roots(from: &super::profile::Generation, to: &super::profile::Generation) -> Result<()> {
     use std::os::unix::fs::symlink;
 
     // Copy usr/ roots.
     let from_usr = from.path.join("usr");
     let to_usr = to.path.join("usr");
-    std::fs::create_dir_all(&to_usr)
-        .with_context(|| format!("creating {}", to_usr.display()))?;
+    std::fs::create_dir_all(&to_usr).with_context(|| format!("creating {}", to_usr.display()))?;
 
     if from_usr.is_dir() {
         for entry in std::fs::read_dir(&from_usr)? {
@@ -300,8 +293,7 @@ fn copy_roots(
     // Copy src/ roots.
     let from_src = from.path.join("src");
     let to_src = to.path.join("src");
-    std::fs::create_dir_all(&to_src)
-        .with_context(|| format!("creating {}", to_src.display()))?;
+    std::fs::create_dir_all(&to_src).with_context(|| format!("creating {}", to_src.display()))?;
 
     if from_src.is_dir() {
         for entry in std::fs::read_dir(&from_src)? {
@@ -331,13 +323,15 @@ pub fn copy_roots_for_upgrade(
 ) -> Result<()> {
     use std::os::unix::fs::symlink;
 
-    let skip_hashes: HashSet<&str> = to_upgrade.iter().map(|c| c.old_store_hash.as_str()).collect();
+    let skip_hashes: HashSet<&str> = to_upgrade
+        .iter()
+        .map(|c| c.old_store_hash.as_str())
+        .collect();
 
     // Copy usr/ roots, skipping upgraded packages.
     let from_usr = from.path.join("usr");
     let to_usr = to.path.join("usr");
-    std::fs::create_dir_all(&to_usr)
-        .with_context(|| format!("creating {}", to_usr.display()))?;
+    std::fs::create_dir_all(&to_usr).with_context(|| format!("creating {}", to_usr.display()))?;
 
     if from_usr.is_dir() {
         for entry in std::fs::read_dir(&from_usr)? {
@@ -360,8 +354,7 @@ pub fn copy_roots_for_upgrade(
     // Copy src/ roots, skipping upgraded packages.
     let from_src = from.path.join("src");
     let to_src = to.path.join("src");
-    std::fs::create_dir_all(&to_src)
-        .with_context(|| format!("creating {}", to_src.display()))?;
+    std::fs::create_dir_all(&to_src).with_context(|| format!("creating {}", to_src.display()))?;
 
     if from_src.is_dir() {
         for entry in std::fs::read_dir(&from_src)? {
@@ -440,7 +433,10 @@ fn print_summary(
 
     for closure in closures {
         for meta in &closure.closure {
-            let label = format!("{} ({}, {})", meta.name, meta.version, closure.registry_name);
+            let label = format!(
+                "{} ({}, {})",
+                meta.name, meta.version, closure.registry_name
+            );
             if explicit_set.contains(meta.name.as_str()) {
                 if !new_packages.iter().any(|s| s.starts_with(&meta.name)) {
                     new_packages.push(label);
@@ -553,9 +549,7 @@ fn chrono_iso8601(epoch_secs: i64) -> String {
     // Convert days since epoch to Y-M-D (simplified Gregorian).
     let (year, month, day) = days_to_ymd(days);
 
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 /// Convert days since Unix epoch (1970-01-01) to (year, month, day).
@@ -673,7 +667,13 @@ mod tests {
 
         // Verify usr/ root was copied.
         let usr_link = to_path.join("usr/abc123");
-        assert!(usr_link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(
+            usr_link
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(
             std::fs::read_link(&usr_link).unwrap().to_string_lossy(),
             "/var/lib/store/abc123-curl-8.5.0"
@@ -681,7 +681,13 @@ mod tests {
 
         // Verify src/ root was copied.
         let src_link = to_path.join("src/def456");
-        assert!(src_link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(
+            src_link
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(
             std::fs::read_link(&src_link).unwrap().to_string_lossy(),
             "/var/lib/store/def456-curl-8.5.0.drv"

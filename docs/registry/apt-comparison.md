@@ -238,9 +238,9 @@ which only diffs *consecutive* index snapshots. See
 
 ### 5.4 `Phased-Update-Percentage` → 256 signed partitions
 
-APT canaries a release to a percentage of machines; each client hashes its
-`machine-id` (plus package identity) and updates only if the hash falls under the
-current percentage. AOS keeps the heritage and discretizes it into **exactly 256
+APT canaries a release to a percentage of machines; each client hashes a stable
+machine identity (plus package identity) and updates only if the hash falls under
+the current percentage. AOS keeps the heritage and discretizes it into **exactly 256
 signed partition tags** per channel (design-brief §6):
 
 ```
@@ -249,10 +249,10 @@ signed partition tags** per channel (design-brief §6):
        each (tag name == "stable") → a semver release tag
 ```
 
-- **Consumer bucket selection** is deterministic and *persisted*:
-  the low byte of `sha256(machine_id)` (i.e. mod 256), written once so a host
-  does not flap between buckets. (APT recomputes per-package; AOS pins a stable
-  bucket per host.)
+- **Consumer bucket selection** is generated once per registry and *persisted*:
+  first sync hashes `registry_name || "\0" || registry_local_salt` to choose
+  `00..ff`, then writes that bucket so a host does not flap between buckets.
+  (APT recomputes per-package; AOS pins a stable bucket per host and registry.)
 - **Publisher-controlled rollout:** to roll a new release to N/256 of the fleet,
   point N partitions at the new semver tag; the un-advanced partitions still name
   the prior release — which **explicitly answers "where does the rest of the
@@ -277,7 +277,11 @@ freshness is **out of band**, assembled from three pieces (design-brief §11):
   the dumb-HTTP ref shim (`info/refs`, `objects/info`) — so a frozen mirror falls
   behind quickly.
 - **The consumer's own max-staleness policy** — its local registry config decides
-  how old a resolved `/channels` pointer may be before it refuses to act on it.
+  how old the last channel freshness observation may be before a failed refresh
+  or unchanged-but-valid signed channel target is treated as stale. `apm`
+  persists that observation in
+  `[registry.state].last_update`, and `max_staleness_seconds` defaults to 14 days
+  for channel sync.
 - **The monotonic anti-rollback floor** — a consumer never moves to an older
   release than one it has already accepted.
 
@@ -395,30 +399,31 @@ These are **not** re-added to the target (design-brief §15):
 
 ## 9. CURRENT vs TARGET
 
-The **TARGET** is everything above. Today's **CURRENT** code is the bundle /
-`creation_token` implementation:
+The **TARGET** is everything above. Today's **CURRENT** code has moved onto the
+git-native registry path:
 
 - A registry is a git repo of nested package TOMLs (`PackageToml`,
   `crates/aos-package/src/registry/parse.rs:15`; written by `build_package_toml`,
   `crates/aos-package/src/registry_ops.rs:595`) plus `closures/<hash>` adjacency
   files; `PackageMeta` (`crates/aos-package/src/types.rs:44`) is the flattened
   in-memory projection.
-- Distribution is via **git bundles** + a `bundle-list.toml` the *consumer*
-  parses (`crates/aos-package/src/registry/bundle.rs`); the producer side is a
-  stub. Bundle selection is `pick_bundles`
-  (`crates/aos-package/src/update.rs:292`).
-- Versions are **calendar tags** (`vYYYY.MM[.P]`) ordered by `version_to_token`
-  (`crates/aos-package/src/registry/state.rs:131`); tracking modes are
-  commit/branch/tag/version (`TrackingMode`,
-  `crates/aos-package/src/types.rs:282`).
-- Signing already uses **SSH-format Ed25519** git signatures, verified via
-  `git verify-commit` + a temporary `allowed_signers`
-  (`crates/aos-package/src/security.rs:199`), with TOFU +
-  `trusted-keys.d/<registry>.pub`.
-
-The target **keeps** the Ed25519/SSH signing primitive and the package-TOML tree
-content, and replaces *everything about distribution, indexing, and rollout* with
-the git-native model. See [`docs/plans/registry/gap-analysis.md`](../plans/registry/gap-analysis.md).
+- HTTP and native git origins are synchronized by `registry::git::sync_git`;
+  HTTP origins are treated as dumb-HTTP git repositories.
+- Versions are semver tags for release/channel verification. Tracking modes are
+  commit/branch/channel/tag/version (`TrackingMode`,
+  `crates/aos-package/src/types.rs`).
+- Channel rollout uses 256 signed partition tag objects, a persisted semver
+  floor/bucket state, and `registry::fetch` delta/full/fallback object
+  resolution.
+- Signing uses SSH-format Ed25519 tag signatures, TOFU/trusted-key storage, and
+  committed `keys.toml` rotation/revocation helpers.
+- `apr release` now orchestrates the producer-safe path: signed semver tag,
+  full packs and compressed thin deltas, static index refresh, optional static
+  cache generation, channel partition updates, and immutable-first static-origin
+  upload.
+- `apr cache generate` produces and optionally uploads the static Nix-cache
+  surface (`nix-cache-info`, `<storehash>.narinfo`, and `nar/*.nar.zst`) and can
+  commit the root `registry.toml` `[[caches]]` pointer.
 
 ---
 
@@ -461,7 +466,7 @@ is now CDN TTL + consumer policy + anti-rollback floor, with no signed expiry).
 
 - [`README.md`](./README.md) — registry reference index and glossary.
 - [`architecture.md`](./architecture.md) — git-repo-over-dumb-HTTP; superset of git and Nix.
-- [`current-state.md`](./current-state.md) — the as-is bundle/`creation_token` implementation.
+- [`current-state.md`](./current-state.md) — the current git-native implementation status.
 - [`http-layout.md`](./http-layout.md) — HTTP/object layout, object store, `info/alternates`, stock-git compat.
 - [`versioning-and-channels.md`](./versioning-and-channels.md) — semver, channels-as-branches, 256-partition rollout.
 - [`packs-and-deltas.md`](./packs-and-deltas.md) — pack-objects, thin/full packs, the delta scheme, zstd.

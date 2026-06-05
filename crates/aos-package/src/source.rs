@@ -5,15 +5,15 @@
 
 use std::process::Stdio;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
-use aos_core::error::AosError;
-use aos_core::output::Printer;
 use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::RegistrySet;
 use super::verify as hash_verify;
+use aos_core::error::AosError;
+use aos_core::output::Printer;
 
 // ---------------------------------------------------------------------------
 // Platform detection (shared helper)
@@ -40,11 +40,7 @@ fn current_platform() -> &'static str {
 /// 3. Run `nix-store --dump` on the installed store path.
 /// 4. Hash the NAR content with SHA-256.
 /// 5. Compare against the registry's `nar_hash`.
-pub async fn run_verify(
-    config: &ApmConfig,
-    package: &str,
-    printer: &Printer,
-) -> Result<()> {
+pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     printer.header(&format!("Verifying package '{package}'..."));
 
     // 1. Open profile and find installed metadata.
@@ -53,12 +49,7 @@ pub async fn run_verify(
 
     let installed = all_meta
         .iter()
-        .find(|m| {
-            m.apm
-                .as_ref()
-                .map(|a| a.name == package)
-                .unwrap_or(false)
-        })
+        .find(|m| m.apm.as_ref().map(|a| a.name == package).unwrap_or(false))
         .ok_or_else(|| AosError::PackageNotFound {
             name: package.to_string(),
         })?;
@@ -69,9 +60,11 @@ pub async fn run_verify(
     let enabled = config.enabled_registries();
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
 
-    let (_, pkg_meta) = reg_set.resolve(package).ok_or_else(|| AosError::PackageNotFound {
-        name: package.to_string(),
-    })?;
+    let (_, pkg_meta) = reg_set
+        .resolve(package)
+        .ok_or_else(|| AosError::PackageNotFound {
+            name: package.to_string(),
+        })?;
 
     let expected_hash = &pkg_meta.nar_hash;
 
@@ -85,12 +78,9 @@ pub async fn run_verify(
             Ok(())
         }
         Err(e) => {
-            if let Some(AosError::HashMismatch { expected, actual }) =
-                e.downcast_ref::<AosError>()
+            if let Some(AosError::HashMismatch { expected, actual }) = e.downcast_ref::<AosError>()
             {
-                printer.error(&format!(
-                    "MISMATCH: '{package}' has been modified on disk"
-                ));
+                printer.error(&format!("MISMATCH: '{package}' has been modified on disk"));
                 printer.kv("Expected", expected);
                 printer.kv("Actual", actual);
                 bail!(
@@ -125,14 +115,19 @@ pub async fn run_source(
     let enabled = config.enabled_registries();
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
 
-    let (reg, pkg_meta) = reg_set.resolve(package).ok_or_else(|| AosError::PackageNotFound {
-        name: package.to_string(),
-    })?;
+    let (reg, pkg_meta) = reg_set
+        .resolve(package)
+        .ok_or_else(|| AosError::PackageNotFound {
+            name: package.to_string(),
+        })?;
 
     let source_drv = &pkg_meta.source_drv;
 
     if source_drv.is_empty() {
-        bail!("package '{package}' has no source derivation recorded in registry '{}'", reg.config.name);
+        bail!(
+            "package '{package}' has no source derivation recorded in registry '{}'",
+            reg.config.name
+        );
     }
 
     // Default or --show-drv: just print the source derivation path.
@@ -206,7 +201,10 @@ pub async fn run_source(
 
         if !dump_output.status.success() {
             let stderr = String::from_utf8_lossy(&dump_output.stderr);
-            bail!("nix-store --dump failed for {built_path}: {}", stderr.trim());
+            bail!(
+                "nix-store --dump failed for {built_path}: {}",
+                stderr.trim()
+            );
         }
 
         let actual_hash = hash_verify::sha256_stream(dump_output.stdout.as_slice())?;
@@ -223,9 +221,7 @@ pub async fn run_source(
             printer.error(&format!(
                 "MISMATCH: source rebuild of '{package}' differs from installed binary"
             ));
-            bail!(
-                "source verification failed: expected {expected_hash}, got {actual_hash}"
-            );
+            bail!("source verification failed: expected {expected_hash}, got {actual_hash}");
         }
     }
 
@@ -241,17 +237,12 @@ mod tests {
     use super::*;
     use crate::config::ApmConfig;
     use crate::registry::parse::CURL_TOML;
-    use crate::types::{
-        ApmMeta, ApmSettings, InstalledMeta, ProfileScope, RegistryConfig,
-    };
+    use crate::types::{ApmMeta, ApmSettings, InstalledMeta, ProfileScope, RegistryConfig};
     use tempfile::TempDir;
 
     /// Helper: build a minimal ApmConfig with a temp cache dir containing
     /// a registry with specified packages.
-    fn make_config_with_registry(
-        tmp: &TempDir,
-        packages: &[(&str, &str)],
-    ) -> ApmConfig {
+    fn make_config_with_registry(tmp: &TempDir, packages: &[(&str, &str)]) -> ApmConfig {
         // Set up the registry cache at tmp/remote/test-reg/packages/{letter}/{name}.toml
         let cache_dir = tmp.path().join("remote");
         let reg_dir = cache_dir.join("test-reg").join("packages");
@@ -286,9 +277,14 @@ priority = 500
                     enabled: true,
                     commit: None,
                     branch: None,
+                    channel: None,
                     tag: None,
                     version: None,
                     pin: None,
+                    max_staleness_seconds: None,
+                    caches: Vec::new(),
+                    upload_auth: None,
+                    signing_keys: Default::default(),
                     signing: None,
                 },
                 None,
@@ -339,7 +335,10 @@ priority = 500
         let reg_set = RegistrySet::load(&cache_dir, &enabled, "x86_64-linux").unwrap();
 
         let (reg, meta) = reg_set.resolve("curl").unwrap();
-        assert_eq!(meta.source_drv, "/var/lib/store/i8k4l9m3n0o5-curl-8.5.0.drv");
+        assert_eq!(
+            meta.source_drv,
+            "/var/lib/store/i8k4l9m3n0o5-curl-8.5.0.drv"
+        );
         assert_eq!(meta.source_nar_hash, "sha256:112233");
         assert_eq!(reg.config.name, "test-reg");
     }
@@ -435,9 +434,12 @@ references = []
         let profile = Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap();
 
         let all_meta = meta::list_meta(&profile).unwrap();
-        let found = all_meta
-            .iter()
-            .find(|m| m.apm.as_ref().map(|a| a.name == "nonexistent").unwrap_or(false));
+        let found = all_meta.iter().find(|m| {
+            m.apm
+                .as_ref()
+                .map(|a| a.name == "nonexistent")
+                .unwrap_or(false)
+        });
         assert!(found.is_none());
     }
 }

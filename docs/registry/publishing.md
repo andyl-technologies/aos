@@ -72,54 +72,42 @@ new one — never a partition tag pointing at a commit whose objects are missing
 
 ---
 
-## 2. CURRENT state — the `apr` stub
+## 2. CURRENT state — the `apr` producer surface
 
 **CURRENT.** `apr` is the same binary as `aos`/`apm`, dispatched on `argv[0]`;
 `apr …` expands to `package registry …`. All producer logic lives in
 [`crates/aos-package/src/registry_ops.rs`](../../crates/aos-package/src/registry_ops.rs).
 Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml` +
-`closures/<hash>`) and distributes via **git bundles**. None of the TARGET
-git-native pipeline (sha256 object store, signed semver/partition tags, packs,
-deltas, `update-server-info`, `info/alternates`, upload) exists yet.
+`closures/<hash>`). The sha256 object-store scaffolding, signed release tags,
+channel partition commands, `update-server-info`, root `objects/info/alternates`
+refresh hooks, static Nix-cache generation/upload, and static git-origin upload
+now exist.
 
 The commands relevant to a release, in workflow order:
 
 | Command | Function | What it actually does (CURRENT) |
 |---|---|---|
-| `apr create <name> [--remote URL]` | `create` (`registry_ops.rs:421`) | `git init`, make `packages/`, write a default `registry.toml`, initial commit, optional `git remote add origin`. |
-| `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` (`commit_registry`, `registry_ops.rs:385`). |
-| `apr tag <name> [--message] [--key]` | `tag` (`registry_ops.rs:1684`) | `git tag [-a -m …]`. **`--key` is accepted but ignored** (`_key`, `registry_ops.rs:1688`). |
-| `apr sign [commit] [--key]` | `sign` (`registry_ops.rs:1747`) | `git commit --amend --no-edit -S` (`registry_ops.rs:1758`) — SSH-Ed25519 sign HEAD. **`--key` ignored** (`_key`, `registry_ops.rs:1750`). |
-| `apr bundle [--output] [--tag] [--delta-from] [--update-manifest]` | `bundle` (`registry_ops.rs:1706`) | `git bundle create` into a local dir. See §2.1. |
+| `apr create <name> [--remote URL] [--trust-key <registry:Ed25519:base64>] [--trust-key-id <id>]` | `create` (`registry_ops.rs:421`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, write schema-1 `keys.toml`, initial commit, then refresh dumb-HTTP object indexes; optional `git remote add origin`. |
+| `apr keys list/add/retire` | `run_keys` (`registry_ops.rs`) | Maintains committed `keys.toml`: list active/revoked ids, add registry-bound active signing keys, retire active ids into `[[revoked]]` with an active survivor/vouching id, then commit and refresh dumb-HTTP object indexes unless `--no-commit` is passed. |
+| `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` and refresh `objects/info/alternates` + `update-server-info`. |
+| `apr tag <name> [--message] (--key <path> \| --key-id <id>)` | `tag` (`registry_ops.rs`) | Resolves the signing key directly from `--key` or from committed `keys.toml` + local `[registry.signing_keys]`, then runs `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; semver tags also prepare a release object dir during the object-store refresh. |
+| `apr sign <tag> (--key <path> \| --key-id <id>)` | `sign` (`registry_ops.rs`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
+| `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, using the same `--key` / `--key-id` signing-key selection as release tags, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
+| `apr cache generate --output <dir> [--key <key>] [--cache-url <url>] [--upload-url <backend>]...` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path; fails closed when a path is absent locally; optionally uploads the exact generated files to one or more repeatable `--upload-url` destinations via `aos-cache`, reporting any partial destination failures, supports HTTP/S3/SFTP auth flags, and commits the root `registry.toml` `[[caches]]` pointer. |
+| `apr origin upload --upload-url <backend>... [--cache-dir <dir>]` | `run_origin` (`registry_ops.rs`) | Refreshes static git indexes, then uploads the full dumb-HTTP origin surface in immutable-first / mutable-last order: `objects/**`, `releases/**`, optional static-cache `nar/**` and `*.narinfo`, then `HEAD`, `info/refs`, `objects/info/**`, `channels/**`, and `nix-cache-info`; uses the same backend auth flags and partial-failure semantics as static cache uploads. |
+| `apr release <semver> [--store-path <path>] (--key <path> \| --key-id <id>) [--channel <name> (--init-channel \| --count N \| --partitions ...)] [--cache-output <dir>] [--cache-url <url>] [--upload-url <backend>]... [--dry-run] [--resume]` | `release` / `release_registry_tree` (`registry_ops.rs`) | Runs the ordered producer pipeline: optionally publishes a store path into a committed metadata tree, commits a cache pointer before signing when `--cache-url` is supplied, creates/reuses a signed semver tag, generates full packs at `X.Y.0` anchors plus compressed guaranteed thin deltas, refreshes dumb-HTTP indexes, optionally generates static Nix-cache files, initializes/advances channel partitions, and uploads the static origin in immutable-first / mutable-last order. A lock file prevents concurrent local publishers; `--dry-run` prints the plan without mutation and `--resume` skips already-present tag/pack artifacts that match HEAD. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
-There is **no** `apr release`, no pack/delta generation, no `update-server-info`,
-no partition-tag advancement, and no upload command in the tree today.
+### 2.1 CURRENT: transport/index refresh
 
-### 2.1 CURRENT: `apr bundle` = `git bundle create` only
-
-The producer's entire transport step today is `apr bundle` (`registry_ops.rs:1706`),
-which runs `git bundle create` into a local output directory (default `bundles/`):
-
-- **Snapshot:** `git bundle create <dir>/<reg>-<tag>.bundle <tag>`
-  (`registry_ops.rs:1738`).
-- **Delta:** with `--delta-from <from>`,
-  `git bundle create <dir>/<reg>-<from>..<tag>.bundle <from>..<tag>`
-  (`registry_ops.rs:1729`).
-
-What it does **not** do: it does not write any manifest (`--update-manifest` is
-dead code — `_update_manifest`, `registry_ops.rs:1711`), does not generate packs
-or thin deltas independent of the bundle envelope, does not run
-`update-server-info`, does not touch any channel/partition pointer, and **does
-not upload anything**. The operator must hand-copy the resulting `.bundle` files
-to a mirror.
-
-> **TARGET shift.** The TARGET drops git **bundles** entirely (a bundle carries
-> refs and prerequisites; refs are replaced by signed tag objects, and the object
-> store is served loose + as conventionally-named packs). Producing the dumb-HTTP
-> object store with `pack-objects` + `update-server-info` + `info/alternates`
-> replaces `apr bundle` wholesale (design brief §10, §15). The rest of this
-> document is TARGET.
+The producer now refreshes the git-native static index after create, publish,
+unpublish, tag, sign, and channel operations. The refresh path updates
+`objects/info/alternates` and `info/refs` so a dumb-HTTP origin can be served as
+static files. Pack generation helpers exist in `registry::pack`, static
+Nix-cache generation/upload is exposed through `apr cache generate`, and full
+static git-origin upload is exposed through `apr origin upload`. `apr release`
+now sequences those pieces for the common producer path and leaves the focused
+subcommands available for repair, inspection, and unusual workflows.
 
 ---
 
@@ -394,8 +382,8 @@ serving path. See [signing-and-trust.md](./signing-and-trust.md).
 partitions at it), never partition-decrement: the consumer's monotonic floor
 (anti-rollback) would block a decrement anyway (design brief §6).
 
-> Consumers self-select a bucket deterministically (e.g.
-> the low byte of `sha256(machine_id)` (i.e. mod 256), persisted) and probe-forward `(bucket+1) mod 256`
+> Consumers self-select a bucket on first channel sync from a registry-local salt,
+> persist the bucket index, and probe-forward `(bucket+1) mod 256`
 > if their partition is missing — see
 > [versioning-and-channels.md](./versioning-and-channels.md). The producer never
 > chooses *which* hosts get a bucket; it only chooses *which buckets advance*.
@@ -517,26 +505,68 @@ partition. See [versioning-and-channels.md](./versioning-and-channels.md) and
 # One-time
 apr create acme --remote git@github.com:acme/registry.git
 
-# Per release — nested-TOML model
-apr publish /nix/store/<hash>-curl-8.5.0 \
-    --description "URL transfer tool" --license MIT --maintainer acme
-# → writes packages/c/curl.toml + closures/<hash>, then commits   (registry_ops.rs:476)
-
-apr tag 2026.06.0 --message "June release"   # plain git tag; --key ignored  (registry_ops.rs:1684)
-apr sign                                     # git commit --amend -S on HEAD (registry_ops.rs:1758)
-apr push --set-upstream --branch main        # plain git push                (registry_ops.rs:1398)
-
-# Local-only transport — git bundles, no manifest, no upload:
-apr bundle --tag 2026.06.0                            # snapshot bundle (registry_ops.rs:1738)
-apr bundle --delta-from 2026.05.0 --tag 2026.06.0     # delta bundle    (registry_ops.rs:1729)
-# → files land in ./bundles/ ; publishing them to a mirror is out of scope
+# Per release — guarded wrapper
+apr release 2026.06.0 \
+    --store-path /nix/store/<hash>-curl-8.5.0 \
+    --description "URL transfer tool" --license MIT --maintainer acme \
+    --key-id initial \
+    --channel stable --init-channel \
+    --cache-output ./cache-static \
+    --cache-key ./nix_cache_signing_key \
+    --cache-url https://registry.example/cache \
+    --s3-region us-east-1 \
+    --s3-profile registry-prod \
+    --s3-endpoint https://s3.example \
+    --ssh-key /run/secrets/registry_sftp_key \
+    --upload-url s3://registry-origin \
+    --upload-url sftp://deploy@origin.example/srv/registry
+apr push --set-upstream --branch stable        # plain git push              (registry_ops.rs:1398)
 ```
 
-Everything after `apr push` is incomplete: the operator hand-copies bundles to a
-mirror; there is no pack/delta/zstd, no `update-server-info`, no `info/alternates`,
-no channel/partition tags, and no upload.
+The same pieces remain available as focused repair/manual commands:
+`apr publish`, `apr tag`, `apr channel init/advance`, `apr cache generate`, and
+`apr origin upload`.
 
-### 12.2 TARGET (the §10/§4/§6 pipeline, e.g. a future `apr release`)
+`apr cache generate` and `apr origin upload` accept the same backend-auth shape
+as `aos cache` uploads:
+`--token` / `AOS_TOKEN`, `--view` / `AOS_VIEW`, `--http-user`,
+`--http-password` / `AOS_HTTP_PASSWORD`, repeatable `--header`,
+`--s3-region` / `AWS_REGION`, `--s3-profile`, `--s3-endpoint`, `--ssh-key`,
+`--ssh-password` / `AOS_SSH_PASSWORD`, and `--ssh-ask-pass`.
+
+For persistent producer defaults, `registries.d/<name>.toml` may include
+`[registry.signing_keys]` and `[registry.upload_auth]`.
+`[registry.signing_keys]` maps committed active `keys.toml` ids to local private
+key paths for `apr tag --key-id`, `apr sign --key-id`, and
+`apr channel init/advance --key-id`. Direct `--key <private-key-path>` remains
+available for one-off signing and is mutually exclusive with `--key-id`.
+`[registry.upload_auth]` values are used as defaults; env/CLI values override
+them; `view` falls back to `"default"` if neither config nor env/CLI sets it.
+
+```toml
+[registry.signing_keys]
+initial = "/run/secrets/acme_registry_initial"
+next = "/run/secrets/acme_registry_next"
+
+[registry.upload_auth]
+token = "..."
+view = "prod"
+http_user = "cache-user"
+http_password = "..."
+headers = ["X-Registry: core"]
+s3_region = "us-west-2"
+s3_profile = "registry-prod"
+s3_endpoint = "https://s3.example"
+ssh_key = "/run/secrets/registry_sftp_key"
+ssh_password = "..."
+ssh_ask_pass = false
+```
+
+`apr release` wraps the same focused operations into one guarded producer
+workflow. Operators can still run the lower-level commands directly for
+repair/resume work or for unusual staging topologies.
+
+### 12.2 Release orchestrator
 
 ```
 build release commit  →  create + sign semver tag (refs/tags/<semver>, pure signed pointer + optional message)
@@ -559,11 +589,13 @@ upload with CDN TTLs:  /releases/**, loose, packs = long/immutable
                        /objects/info/**, info/refs, HEAD, /channels/** = low TTL
 ```
 
-Whether `apr` grows a single `apr release` / `apr publish` orchestrator that runs
-this whole pipeline (commit → tag/sign → pack/delta/zstd → update-server-info →
-advance partitions → upload), and whether upload backends are pluggable, is an
-open question (design brief §16.4;
-[open-questions.md](../plans/registry/open-questions.md)).
+`apr release` is the production wrapper for this pipeline. It supports a
+committed-tree mode and an optional `--store-path` mode; the latter delegates to
+`apr publish` first and therefore requires a real local Nix store path. Static
+cache generation is opt-in with `--cache-output` for the same reason. Uploads
+accept repeatable backend URLs (`file://`, `http(s)://`, `s3://`, and
+`sftp://`/`ssh://`) and publish immutable payloads before low-TTL mutable
+pointers.
 
 ---
 
@@ -571,7 +603,7 @@ open question (design brief §16.4;
 
 - [README.md](./README.md) — registry doc index and overview.
 - [architecture.md](./architecture.md) — git-repo-over-dumb-HTTP; superset of git and Nix; asymmetric-cost philosophy.
-- [current-state.md](./current-state.md) — full as-is grounding (the bundle/`creation_token` code).
+- [current-state.md](./current-state.md) — current git-native implementation status.
 - [http-layout.md](./http-layout.md) — the HTTP/object layout, CDN TTLs, `info/refs`/`HEAD`/`info/alternates`.
 - [versioning-and-channels.md](./versioning-and-channels.md) — semver, channels-as-branches, frontier, the 256-partition rollout, bucket selection, anti-rollback.
 - [packs-and-deltas.md](./packs-and-deltas.md) — the delta-scheme graph, client resolution + retention, `index-pack --fix-thin`, zstd.

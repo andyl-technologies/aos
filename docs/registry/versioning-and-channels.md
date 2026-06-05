@@ -11,11 +11,10 @@
 > with probe-forward fallback**), and how downgrades are prevented
 > (**monotonic anti-rollback floor + fix-forward abort**).
 >
-> **CURRENT vs TARGET.** This is one of the docs being **rewritten** onto the
-> git-native registry architecture. Sections labeled **CURRENT** describe behavior
-> that exists in the code today, cited as `path:line` (today's code still uses
-> calendar tags + `creation_token`). Sections labeled **TARGET** describe the design
-> intent from the [design brief](../plans/registry/design-brief.md) (§5–§7).
+> **CURRENT vs TARGET.** Channel config, semver rollout state, signed partition
+> tag production, channel consumer resolution, object fetch resolution, and
+> static Nix-cache producer integration are implemented. See
+> [current-state.md](current-state.md) for the as-built module map.
 
 Related reference docs:
 [README](./README.md) ·
@@ -228,23 +227,22 @@ A consumer self-selects **one** of the 256 partitions, deterministically and
 runs:
 
 ```
-bucket = the low byte of sha256(machine_id) (i.e. mod 256)   # 00..ff, computed once, then persisted
+bucket = the low byte of sha256(registry_name || "\0" || registry_local_salt)
 ```
 
-- `machine_id` is a stable per-host identifier; its exact source (e.g.
-  `/etc/machine-id`) and the encoding fed into the hash are an
-  [open question](../plans/registry/open-questions.md) (brief §16 item 3).
-- The bucket is **written once** and reused thereafter, so the host's partition
-  assignment is stable for the life of the machine. Re-deriving it every run (rather
-  than persisting) would also be deterministic, but persistence makes the contract
-  explicit and survives any future change to the hash construction.
+- `registry_local_salt` is fresh random material generated on first channel sync.
+  It deliberately does **not** come from `/etc/machine-id`, so cloned images do
+  not inherit the same rollout bucket.
+- The resulting bucket index (`00..ff`) is **written once** and reused
+  thereafter, so the host's partition assignment is stable for that registry and
+  survives future changes to the seed construction.
 
 ### 5.2 Resolution path
 
 On `apm update`, an AOS client resolves its target release like this:
 
 ```
-1. bucket  ← persisted low byte of sha256(machine_id) (mod 256)  (§5.1)
+1. bucket  ← persisted bucket index, or first-sync registry-local salt hash (§5.1)
 2. fetch   /channels/<name>/<bucket>                          (signed partition tag)
 3. verify  signature + tag-name field == <name>             (name-binding, §4)
 4. follow  partition tag → semver tag; verify sig + name == <semver>
@@ -330,11 +328,10 @@ else:
     adopt target; floor ← target
 ```
 
-This is the conceptual successor to today's `check_monotonic`
-(`crates/aos-package/src/registry/state.rs:104-117`), but the anchor moves from the
-calendar `creation_token` to **semver precedence plus a git
-`merge-base --is-ancestor` ancestry check** against the signed target commit. See
-[signing-and-trust](./signing-and-trust.md) for how the signed tag chain feeds this.
+The current consumer persists this floor in `[registry.state]` and applies it
+when channel partitions resolve to a signed semver release. See
+[signing-and-trust](./signing-and-trust.md) for how the signed tag chain feeds
+this.
 
 ### 7.2 Aborting a bad rollout is fix-forward
 
@@ -360,89 +357,34 @@ the floor check and rolls out normally. The semantics: "roll back" means "roll
 
 ---
 
-## 8. Migration baseline — the superseded calendar scheme (CURRENT)
+## 8. Current implementation status
 
-> **This entire section describes today's code, which is being replaced.** It is
-> kept as the migration baseline, not as target design. The git-native model in
-> §2–§7 supersedes all of it. Do not implement new behavior against this section.
-
-### 8.1 Calendar tags & `creation_token` (CURRENT)
-
-Today, releases are **calendar** git tags `vYYYY.MM[.P]`, parsed by
-`version_to_token` (`crates/aos-package/src/registry/state.rs:131-166`) into a
-monotonic 64-bit integer:
-
-```
-creation_token = year * 1_000_000 + month * 10_000 + patch
-```
-
-| Tag | `creation_token` |
-|---|---|
-| `v2026.02`    | `2026020000` |
-| `v2026.02.3`  | `2026020003` |
-| `v2026.12.99` | `2026120099` |
-
-The inverse is `token_to_version` (`state.rs:173-184`), which renders patch `0` as
-the 2-part base tag. The token is the *total order* and the anti-rollback anchor
-today — it is **removed** in the target, replaced by semver precedence + git
-ancestry (§2.2, §7.1).
-
-### 8.2 Tag → semver projection (CURRENT)
-
-Calendar tags are *also* projected to semver by `parse_tag_as_semver`
-(`crates/aos-package/src/update.rs:456-477`) — strip the leading `v`, parse each
-component as `u64` to drop leading zeros, pad a 2-component tag to `X.Y.0` — so a
-host can write `version = "~2026.3"` and match `v2026.03`. Best-match selection is
-`find_best_version_tag_in_manifest` (`update.rs:427-451`). In the **target**, this
-projection is unnecessary: versions are *already* `MAJOR.MINOR.PATCH` semver with no
-`v` and no calendar normalization.
-
-### 8.3 Tracking modes (CURRENT)
-
-A host subscribes via `~/.config/apm/registries.d/{name}.toml`; the resolved mode is
-`TrackingMode` (`crates/aos-package/src/types.rs:279-290`):
+A host subscribes via `~/.config/apm/registries.d/{name}.toml`; the resolved mode
+is `TrackingMode`:
 
 ```rust
 // types.rs:279
 pub enum TrackingMode {
     Commit(String),                  // frozen to an exact commit hash
     Branch(String),                  // track HEAD of a named branch
+    Channel(String),                 // bucketed signed partition resolution
     Tag(String),                     // pinned to an exact tag
     Version(semver::VersionReq),     // semver constraint on tags
     Default,                         // no field set -> default branch HEAD
 }
 ```
 
-There is **no `Channel` variant** today; channel subscription is the target
-addition (§3–§6). The natural mapping under the target model:
+The `Channel` variant and `channel = "stable"` config field are active. Producer
+commands can write the 256 signed partition overlay, and the consumer resolves
+its persisted bucket through that overlay before applying the floor check. The
+natural mapping is:
 
-| Today's intent | Target mechanism |
+| Intent | Mechanism |
 |---|---|
 | `branch = "stable"` (track a line) | `channel = "stable"` → bucketed partitions (§4–§6) |
 | `tag = "1.1.0"` (pin a release) | unchanged — signed semver tag `refs/tags/1.1.0` (§2) |
 | `commit = "<sha>"` (freeze) | unchanged — exact commit |
 | `version = "~1.1"` (constraint) | unchanged — semver `VersionReq` over signed tags |
-
-### 8.4 Monotonic check (CURRENT, conditional)
-
-The current downgrade guard is `check_monotonic` (`state.rs:104-117`), called from
-`update.rs:290-294`:
-
-```rust
-// update.rs:289
-// Downgrade protection: check monotonic ordering.
-if let Some(old_token) = reg_state.last_creation_token {
-    if latest_token > old_token {
-        state::check_monotonic(old_token, latest_token)?;
-    }
-}
-```
-
-Because the call sits **inside** `if latest_token > old_token`, the `<=` reject
-branch of `check_monotonic` is effectively unreachable from this path — a stale or
-equal token silently skips the guard. The **target** floor (§7.1) is evaluated
-**unconditionally** against semver precedence + git ancestry, closing that gap.
-Tracked in [open questions](../plans/registry/open-questions.md).
 
 ---
 
@@ -455,9 +397,9 @@ name `1.0.0`. Two hosts, both on `channel = "stable"`, both currently at floor
 `1.0.0`:
 
 ```
-Host A:  bucket = low byte of sha256(machine_id_A) (mod 256) = 02
+Host A:  persisted bucket = 02
          /channels/stable/02 → 1.1.0  (advanced)  → adopt 1.1.0; floor ← 1.1.0
-Host B:  bucket = low byte of sha256(machine_id_B) (mod 256) = 0xb7
+Host B:  persisted bucket = 0xb7
          /channels/stable/b7 → 1.0.0  (held)       → no-op; stays at 1.0.0
 ```
 
@@ -511,8 +453,8 @@ The host transiently follows partition `80`'s release for this run; once partiti
   fallback): [packs-and-deltas](./packs-and-deltas.md).
 - **The producer pipeline** that tags/signs, packs, runs `update-server-info`, and
   **advances partitions**: [publishing](./publishing.md).
-- **As-is grounding** for tracking modes, state, and the calendar/`creation_token`
-  baseline: [current-state](./current-state.md).
+- **As-built grounding** for tracking modes, state, and channel resolution:
+  [current-state](./current-state.md).
 - **The Nix binary-cache superset** (`nix-cache-info`/`.narinfo`/`nar`), configured
   client-side or served by the origin — never advertised in signed tags:
   [nix-cache-compatibility](./nix-cache-compatibility.md).

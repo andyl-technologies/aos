@@ -134,9 +134,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Show { package } => commands::show::run(&nix, &printer, package),
         Commands::Graph { package, dot } => commands::graph::run(&nix, &printer, package, *dot),
         Commands::Lint { package } => commands::lint::run(&nix, &printer, package.as_deref()),
-        Commands::Test { command, jobs } => {
-            commands::test::run(&nix, &printer, command, *jobs)
-        }
+        Commands::Test { command, jobs } => commands::test::run(&nix, &printer, command, *jobs),
         Commands::Shell => commands::shell::run(&nix, &printer),
         Commands::Repl => commands::repl::run(&nix, &printer),
         Commands::Gc {
@@ -149,7 +147,19 @@ async fn run(cli: &Cli) -> Result<()> {
             all,
             pin,
         } => {
-            commands::gc::run(&nix, &printer, *list_generations, remote.as_deref(), view.as_deref(), token.as_deref(), *collect, *dry_run, *all, pin.as_deref()).await
+            commands::gc::run(
+                &nix,
+                &printer,
+                *list_generations,
+                remote.as_deref(),
+                view.as_deref(),
+                token.as_deref(),
+                *collect,
+                *dry_run,
+                *all,
+                pin.as_deref(),
+            )
+            .await
         }
         Commands::WhyDepends {
             package,
@@ -180,9 +190,7 @@ async fn run(cli: &Cli) -> Result<()> {
             search,
             list,
             rebuild,
-        } => {
-            aos_doc::run(&nix, &printer, source, path, search, list, *rebuild).await
-        }
+        } => aos_doc::run(&nix, &printer, source, path, search, list, *rebuild).await,
         // These commands are handled in the early-return block above (before
         // NixRunner construction) and will never reach this match arm.  The
         // arms exist only to satisfy exhaustiveness checking.

@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use aos_net::{TransferEngine, TransferRequest};
 
-use super::{AuthOptions, CacheBackend};
+use super::{AuthOptions, CacheBackend, add_static_metadata_headers};
 
 /// HTTP(S) cache backend.
 ///
@@ -34,11 +34,7 @@ struct QueryMissingResponse {
 }
 
 impl HttpBackend {
-    pub async fn new(
-        url: &str,
-        auth: &AuthOptions,
-        engine: Arc<TransferEngine>,
-    ) -> Result<Self> {
+    pub async fn new(url: &str, auth: &AuthOptions, engine: Arc<TransferEngine>) -> Result<Self> {
         let base_url = url.trim_end_matches('/').to_string();
 
         let origin = url::Url::parse(&base_url)
@@ -84,10 +80,14 @@ impl HttpBackend {
         // `self.origin`, not `self.base_url` (which already encodes the view).
         let url = format!("{}/oauth2/token", self.origin);
         let mut req = TransferRequest::post(&url, b"grant_type=client_credentials".to_vec());
-        req.headers
-            .push(("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string()));
-        req.headers
-            .push(("Authorization".to_string(), format!("Bearer {provisioning_token}")));
+        req.headers.push((
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string(),
+        ));
+        req.headers.push((
+            "Authorization".to_string(),
+            format!("Bearer {provisioning_token}"),
+        ));
 
         let result = self
             .engine
@@ -136,8 +136,20 @@ impl HttpBackend {
         format!("{}/{}.narinfo", self.base_url, store_hash)
     }
 
+    fn cache_info_url(&self) -> String {
+        format!("{}/nix-cache-info", self.base_url)
+    }
+
     fn nar_url(&self, url: &str) -> String {
         format!("{}/{}", self.base_url, url)
+    }
+
+    fn static_file_url(&self, relative_path: &str) -> String {
+        format!(
+            "{}/{}",
+            self.base_url,
+            relative_path.trim_start_matches('/')
+        )
     }
 }
 
@@ -153,11 +165,7 @@ impl CacheBackend for HttpBackend {
     async fn get_narinfo(&self, store_hash: &str) -> Result<String> {
         let url = self.narinfo_url(store_hash);
         let req = self.add_headers(TransferRequest::get(&url));
-        let result = self
-            .engine
-            .execute(req)
-            .await
-            .context("fetching narinfo")?;
+        let result = self.engine.execute(req).await.context("fetching narinfo")?;
 
         result
             .body_string()
@@ -176,10 +184,8 @@ impl CacheBackend for HttpBackend {
         }
         let url = self.narinfo_url(store_hash);
         let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
-        req.headers.push((
-            "Content-Type".to_string(),
-            "text/x-nix-narinfo".to_string(),
-        ));
+        req.headers
+            .push(("Content-Type".to_string(), "text/x-nix-narinfo".to_string()));
         let req = self.add_headers(req);
         self.engine
             .execute(req)
@@ -191,11 +197,7 @@ impl CacheBackend for HttpBackend {
     async fn get_nar(&self, url: &str) -> Result<Vec<u8>> {
         let full_url = self.nar_url(url);
         let req = self.add_headers(TransferRequest::get(&full_url));
-        let result = self
-            .engine
-            .execute(req)
-            .await
-            .context("fetching NAR")?;
+        let result = self.engine.execute(req).await.context("fetching NAR")?;
 
         result
             .body
@@ -224,10 +226,7 @@ impl CacheBackend for HttpBackend {
             "application/x-nix-nar".to_string(),
         ));
         let req = self.add_headers(req);
-        self.engine
-            .execute(req)
-            .await
-            .context("uploading NAR")?;
+        self.engine.execute(req).await.context("uploading NAR")?;
         Ok(())
     }
 
@@ -238,10 +237,8 @@ impl CacheBackend for HttpBackend {
             let paths: Vec<String> = store_hashes.iter().map(|h| h.to_string()).collect();
             let body = serde_json::to_vec(&serde_json::json!({ "paths": paths }))?;
             let mut req = TransferRequest::post(&url, body);
-            req.headers.push((
-                "Content-Type".to_string(),
-                "application/json".to_string(),
-            ));
+            req.headers
+                .push(("Content-Type".to_string(), "application/json".to_string()));
             let req = self.add_headers(req);
             let result = self
                 .engine
@@ -269,6 +266,59 @@ impl CacheBackend for HttpBackend {
 
     async fn ensure_cache_info(&self, _store_dir: &str) -> Result<()> {
         // HTTP caches are assumed to already have nix-cache-info.
+        Ok(())
+    }
+
+    async fn put_cache_info(&self, content: &str) -> Result<()> {
+        if self.is_aos {
+            // AOS server cache-info is served dynamically from the view.
+            let _ = content;
+            return Ok(());
+        }
+        let url = self.cache_info_url();
+        let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
+        req.headers
+            .push(("Content-Type".to_string(), "text/plain".to_string()));
+        let req = self.add_headers(req);
+        let result = self
+            .engine
+            .execute(req)
+            .await
+            .context("uploading nix-cache-info")?;
+        if result.status >= 400 {
+            anyhow::bail!(
+                "uploading nix-cache-info failed with HTTP {}",
+                result.status
+            );
+        }
+        Ok(())
+    }
+
+    async fn put_static_file(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        content_type: Option<&str>,
+        cache_control: Option<&str>,
+    ) -> Result<()> {
+        if self.is_aos {
+            anyhow::bail!("generic static-file upload is not supported by the AOS server API");
+        }
+        let url = self.static_file_url(relative_path);
+        let mut req = TransferRequest::put_file(&url, source.to_path_buf());
+        add_static_metadata_headers(&mut req, content_type, cache_control);
+        let req = self.add_headers(req);
+        let result = self
+            .engine
+            .execute(req)
+            .await
+            .with_context(|| format!("uploading static file {url}"))?;
+        if result.status >= 400 {
+            anyhow::bail!(
+                "uploading static file {url} failed with HTTP {}",
+                result.status
+            );
+        }
         Ok(())
     }
 
