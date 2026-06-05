@@ -365,13 +365,29 @@ read before editing code or docs.
       `crates/aos-package/src/registry/nixcache.rs`,
       `crates/aos-cache/tests/backend_matrix.rs`, and
       `crates/aos-package/tests/registry_cache_e2e.rs`.
+- [x] Add an env-gated generated static-cache upload/readback matrix hook for
+      service-backed destinations. When
+      `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` and
+      `AOS_PACKAGE_TEST_GENERATED_CACHE_UPLOAD_URLS` are set,
+      `crates/aos-package/tests/registry_cache_e2e.rs` uploads the actual
+      generated Nix-cache output to a mixed destination array containing a local
+      `file://` target plus the supplied URLs, then reads back narinfo and NAR
+      payloads through the `aos-cache` backend trait. Context:
+      `docs/registry/nix-cache-compatibility.md`,
+      `crates/aos-package/src/registry/nixcache.rs`,
+      `crates/aos-cache/src/backend/mod.rs`,
+      `crates/aos-cache/src/backend/fs.rs`,
+      `crates/aos-cache/src/backend/s3.rs`,
+      `crates/aos-cache/src/backend/sftp.rs`, and
+      `crates/aos-package/tests/registry_cache_e2e.rs`.
 - [ ] Complete service-backed backend matrix integration tests for generated
       static-cache upload/readback across S3-compatible storage and SFTP, then
       prove one repeatable `--upload-url` array can mix `(s3, local filesystem
       path, SFTP)` targets and still report partial failures only after all
-      destinations are attempted. Local `file://` generated upload/readback and
-      static HTTP readback are covered; promote the ignored S3/SFTP hooks to
-      container-backed or CI-run coverage before checking this off. Context:
+      destinations are attempted. Local `file://` generated upload/readback,
+      static HTTP readback, and env-gated generated-cache upload hooks are
+      covered; run the hooks against container-backed or CI-provisioned S3/SFTP
+      services before checking this off. Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/publishing.md`,
       `crates/aos-package/src/lib.rs`,
