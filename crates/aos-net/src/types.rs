@@ -129,6 +129,19 @@ impl TransferRequest {
         }
     }
 
+    /// Create a PUT request with a local file body.
+    pub fn put_file(url: &str, path: PathBuf) -> Self {
+        Self {
+            url: url.to_string(),
+            method: Method::Put,
+            headers: Vec::new(),
+            body: Some(TransferBody::File(path)),
+            hash: None,
+            resume: false,
+            output: TransferOutput::Memory,
+        }
+    }
+
     /// Create a POST request with bytes body.
     pub fn post(url: &str, data: Vec<u8>) -> Self {
         Self {

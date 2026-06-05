@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use aos_net::{TransferEngine, TransferEngineConfig};
+use aos_net::{TransferEngine, TransferEngineConfig, TransferRequest};
 
 /// Trait for binary cache storage backends.
 #[async_trait]
@@ -37,6 +37,15 @@ pub trait CacheBackend: Send + Sync {
     /// Upload an exact nix-cache-info body.
     async fn put_cache_info(&self, content: &str) -> Result<()>;
 
+    /// Upload a static file at a backend-relative path.
+    async fn put_static_file(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        content_type: Option<&str>,
+        cache_control: Option<&str>,
+    ) -> Result<()>;
+
     /// Whether this backend supports AOSP pack upload (HTTP only).
     fn supports_pack(&self) -> bool {
         false
@@ -45,6 +54,23 @@ pub trait CacheBackend: Send + Sync {
     /// Upload a pack of small NARs (HTTP only).
     async fn upload_pack(&self, _data: &[u8]) -> Result<Vec<String>> {
         anyhow::bail!("pack upload not supported by this backend")
+    }
+}
+
+pub(crate) fn add_static_metadata_headers(
+    request: &mut TransferRequest,
+    content_type: Option<&str>,
+    cache_control: Option<&str>,
+) {
+    if let Some(content_type) = content_type {
+        request
+            .headers
+            .push(("Content-Type".to_string(), content_type.to_string()));
+    }
+    if let Some(cache_control) = cache_control {
+        request
+            .headers
+            .push(("Cache-Control".to_string(), cache_control.to_string()));
     }
 }
 
