@@ -120,22 +120,83 @@
   # entry — this avoids a duplicate GitHub status for the same check.
   # They remain real checks (`nix flake check` still runs them); they are
   # merely omitted from the fan-out view.
+  # Split a list into at most `n` contiguous, near-equal, non-empty chunks.
+  chunkInto = n: list: let
+    len = builtins.length list;
+    size =
+      if len == 0
+      then 1
+      else (len + n - 1) / n; # ceil(len / n) with integer division
+  in
+    builtins.filter (c: c != []) (
+      builtins.genList (
+        i: let
+          start = i * size;
+        in
+          builtins.filter (x: x != null) (
+            builtins.genList (
+              j: let
+                idx = start + j;
+              in
+                if idx < len
+                then builtins.elemAt list idx
+                else null
+            )
+            size
+          )
+      )
+      n
+    );
+
+  # The build target for a check name.
+  target = system: name: ".#checks.${system}.${name}";
+
+  # GitHub Actions caps a workflow's matrix at 256 jobs. AOS has ~260
+  # checks, the bulk being homogeneous per-package `integration-*` smoke
+  # tests. We keep one job (and one status) per "real" suite (server-,
+  # edge-, fleet-, tla-, build-, cargo-, eval, …) and bucket the
+  # `integration-*` family into `integrationShards` jobs, each building
+  # several checks with one `nix build`. This stays comfortably under the
+  # cap with room to grow.
+  #
+  # Every entry carries `attrs` (a space-joined list of `.#` targets, one
+  # or more) so the workflow's build step is uniform: `nix build $attrs`.
   mkGithubMatrix = {
     checks,
     system,
     exclude ? [],
+    integrationShards ? 25,
   }: let
-    entry = name: let
+    names = builtins.filter (n: !(builtins.elem n exclude)) (builtins.attrNames checks);
+
+    isIntegration = n: lib.hasPrefix "integration-" n;
+    integrationNames = builtins.filter isIntegration names;
+    soloNames = builtins.filter (n: !(isIntegration n)) names;
+
+    # One job (one status) per non-integration check.
+    soloEntry = name: let
       c = classify name;
     in {
       inherit name system;
       inherit (c) tier needsKvm runner;
-      attr = "checks.${system}.${name}";
+      attrs = target system name;
     };
-    names = builtins.filter (n: !(builtins.elem n exclude)) (builtins.attrNames checks);
+
+    # `integration-*` bucketed into shards; all are tier 2 / KVM.
+    c2 = classify "integration-";
+    shardChunks = chunkInto integrationShards integrationNames;
+    nShards = builtins.length shardChunks;
+    shardEntry = i: chunk: {
+      name = "integration ${toString (i + 1)}/${toString nShards}";
+      inherit system;
+      inherit (c2) tier needsKvm runner;
+      attrs = builtins.concatStringsSep " " (map (target system) chunk);
+    };
   in {
-    include = map entry names;
+    include =
+      (map soloEntry soloNames)
+      ++ (builtins.genList (i: shardEntry i (builtins.elemAt shardChunks i)) nShards);
   };
 in {
-  inherit mkGithubMatrix classify runners;
+  inherit mkGithubMatrix classify runners chunkInto;
 }

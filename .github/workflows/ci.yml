@@ -94,19 +94,19 @@ jobs:
       matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build ${{ matrix.attr }}
+      - name: Build ${{ matrix.name }}
         id: build
+        env:
+          # Space-joined `.#` targets — one for a solo check, several for an
+          # integration shard. Intentionally unquoted below so the shell
+          # word-splits it into separate build targets.
+          ATTRS: ${{ matrix.attrs }}
         run: |
           set -o pipefail
           start=$SECONDS
-          nix build -L --no-link --print-out-paths '.#${{ matrix.attr }}'
+          # shellcheck disable=SC2086
+          nix build -L --keep-going --no-link --print-out-paths $ATTRS
           echo "duration=$((SECONDS - start))" >> "$GITHUB_OUTPUT"
-      - name: Capture failure log
-        if: failure()
-        run: |
-          echo "::group::nix log for ${{ matrix.attr }}"
-          nix log '.#${{ matrix.attr }}' 2>/dev/null | tail -n 200 || true
-          echo "::endgroup::"
       - name: Summary
         if: always()
         run: |

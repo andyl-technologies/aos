@@ -48,10 +48,15 @@ so a new check is never silently treated as free.
   most common mistakes. (They are excluded from the matrix to avoid a
   duplicate status.)
 - **`matrix`** — one `nix eval` produces the job matrix.
-- **`checks`** — a fan-out job per check, routed to its tier's runner, with
+- **`checks`** — the fan-out, routed to each entry's tier runner, with
   `fail-fast: false` so one failure never masks the others. Each job appends
-  a one-line result (status, tier, runner, duration) to the run summary and,
-  on failure, folds the tail of `nix log` into the job output.
+  a one-line result (status, tier, runner, duration) to the run summary.
+  GitHub caps a workflow matrix at **256 jobs**; AOS has ~260 checks, so the
+  generator keeps one job (one status) per "real" suite and **buckets the
+  homogeneous `integration-*` family into `integrationShards` jobs** (each
+  building several checks with one `nix build`). Every entry carries `attrs`
+  (a space-joined list of one-or-more `.#` targets) so the build step is
+  uniform. This keeps the total well under the cap with room to grow.
 - **`ci-success`** — a single aggregate status. Make *this* the required
   status for branch protection; it turns red if any job failed.
 
