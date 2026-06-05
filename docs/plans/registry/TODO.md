@@ -213,11 +213,23 @@ read before editing code or docs.
       `crates/aos-package/src/registry/verify.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Add executable pack/delta e2e coverage for full packs, thin deltas,
+- [x] Add executable pack/delta e2e coverage for full packs, thin deltas,
       zstd-compressed pack artifacts, `git index-pack --fix-thin`, fallback from
       missing/corrupt delta to full pack, fallback from missing/corrupt full pack
       to loose-object git fetch, and pruning behavior after retained releases
-      change. Context: `docs/registry/packs-and-deltas.md`,
+      change. The coverage now lives in
+      `crates/aos-package/tests/registry_e2e.rs`:
+      `pack_delta_e2e_fetches_full_pack_and_compressed_thin_delta` builds a real
+      full pack, publishes a zstd-compressed thin delta, resolves both over
+      static HTTP, and verifies the target commit exists after
+      `index-pack --fix-thin`; `pack_delta_e2e_falls_back_from_corrupt_artifacts`
+      proves corrupt deltas fall through to the full-pack anchor plus git-fetch
+      loose fallback, and corrupt full packs fall directly to git-fetch fallback;
+      `signed_channel_http_e2e_advances_persisted_bucket` asserts retained
+      release pruning keeps retained release dirs and removes stale ones. The
+      implementation now streams thin packs through `git index-pack --fix-thin
+      --stdin` and verifies copied full-pack indexes before accepting them.
+      Context: `docs/registry/packs-and-deltas.md`,
       `docs/registry/http-layout.md`, `docs/registry/publishing.md`,
       `docs/plans/registry/open-questions.md`,
       `crates/aos-package/src/registry/pack.rs`,

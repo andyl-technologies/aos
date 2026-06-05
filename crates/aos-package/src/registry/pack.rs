@@ -222,12 +222,14 @@ pub async fn zstd_decompress(path: &Path, dict: Option<&Path>) -> Result<PathBuf
 
 /// Complete a thin pack with bases from `repo`.
 pub async fn index_pack_fix_thin(repo: &Path, pack: &Path) -> Result<()> {
+    let file = std::fs::File::open(pack).with_context(|| format!("opening {}", pack.display()))?;
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(repo)
         .arg("index-pack")
         .arg("--fix-thin")
-        .arg(pack);
+        .arg("--stdin")
+        .stdin(Stdio::from(file));
     run_status(cmd, "git index-pack --fix-thin").await
 }
 
@@ -236,6 +238,17 @@ pub async fn index_pack(repo: &Path, pack: &Path) -> Result<()> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(repo).arg("index-pack").arg(pack);
     run_status(cmd, "git index-pack").await
+}
+
+/// Verify that an indexed pack is readable and matches its index.
+pub async fn verify_pack_index(repo: &Path, idx: &Path) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(repo)
+        .arg("verify-pack")
+        .arg("-v")
+        .arg(idx);
+    run_status(cmd, "git verify-pack").await
 }
 
 /// Train a zstd dictionary over a release line's delta packs.
