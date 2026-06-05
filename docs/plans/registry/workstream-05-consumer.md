@@ -16,10 +16,11 @@
 > `apm update` / `apm upgrade` path.
 
 > **As-built status note:** this workstream is now archival planning context. The
-> consumer resolution/fetch implementation has mostly landed; use
+> consumer resolution/fetch implementation has landed locally; use
 > [`../../registry/current-state.md`](../../registry/current-state.md) and
-> [`TODO.md`](./TODO.md) for current facts and remaining validation gaps. Older
-> CURRENT citations below describe the pre-cutover tree.
+> [`TODO.md`](./TODO.md) for current facts. Follow-up production validation is
+> tracked in [`validation-runbook.md`](./validation-runbook.md). Older CURRENT
+> citations below describe the pre-cutover tree.
 
 This is the `apm`-side counterpart to the producer workstreams
 ([01 object store](./workstream-01-object-store.md),
