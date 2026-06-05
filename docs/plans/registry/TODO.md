@@ -190,12 +190,19 @@ read before editing code or docs.
       `crates/aos-package/src/download.rs`,
       `crates/aos-package/src/registry_ops.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Add channel rollout e2e coverage for all trust and safety gates: signed
+- [x] Add channel rollout e2e coverage for all trust and safety gates: signed
       partition tag -> signed semver tag -> commit, embedded tag-name
       name-binding failures, probe-forward order, retained-release persistence,
       semver precedence including prerelease/build metadata, anti-rollback floor
-      rejection, fix-forward behavior, and stale/missing partition surfaces.
-      Context:
+      rejection, fix-forward behavior, and stale/missing partition surfaces. The
+      coverage now lives in `crates/aos-package/tests/registry_e2e.rs`:
+      `signed_channel_http_e2e_advances_persisted_bucket` covers the successful
+      signed chain, bucket/floor/retained persistence, and package extraction;
+      `channel_rollout_e2e_enforces_safety_gates_and_fix_forward` covers
+      embedded-name rejection, probe-forward recovery, anti-rollback refusal,
+      fix-forward, and a prerelease/build semver target; and
+      `channel_first_sync_fails_closed_when_no_partition_is_usable` covers
+      missing first-sync partition diagnostics. Context:
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,
