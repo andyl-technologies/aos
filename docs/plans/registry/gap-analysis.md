@@ -13,6 +13,11 @@
 > **git-native, sha256-over-dumb-HTTP** target, then maps every gap to one of the
 > six workstreams.
 
+> **As-built status note:** this is an archival gap analysis for the pre-cutover
+> tree. Most local producer/consumer implementation gaps it names have now
+> landed. Use [`../../registry/current-state.md`](../../registry/current-state.md)
+> and [`TODO.md`](./TODO.md) for current status and remaining validation work.
+
 ---
 
 ## 1. How to read this doc
@@ -61,8 +66,8 @@ static files over dumb HTTP**, where:
 - the trust anchor moves from a signed **commit** to signed **tag objects**
   with **name-binding** verification (`tag → tag → commit`);
 - there is a **producer publish pipeline** (commit → sign → pack/delta/zstd →
-  `update-server-info` → advance partitions → upload) where today there is only
-  a `git bundle create` stub and **no upload path at all**.
+  `update-server-info` → advance partitions → upload); at plan-writing time the
+  producer only had a `git bundle create` stub and **no upload path at all**.
 
 What survives unchanged: the **package-TOML tree content** and the **Ed25519 /
 SSH signing primitive** (`security.rs`). Everything about *distribution* and
@@ -329,9 +334,9 @@ replace `pick_bundles_uses_skip_delta` / `pick_bundles_uses_sequential_when_no_s
 ## 4. Removed concepts (do **not** carry forward)
 
 Per brief §15, the target **must not** reintroduce any of these — several are
-load-bearing in today's code and must be deleted, not merely bypassed:
+load-bearing in the pre-cutover code and must be deleted, not merely bypassed:
 
-| Removed concept | Where it lives today | Replacement |
+| Removed concept | Where it lived at plan-writing time | Replacement |
 |-----------------|----------------------|-------------|
 | signed-**HTTP-root** `registry.toml` (mutable origin file: `[latest]`/`[channels]`/`[components]`/`[capabilities]`/`[[bundles]]`/`[signature]`) | intermediate-design concept (never in code) | committed-tree files (registry.toml + keys.toml) authenticated by the signed tag (tag → commit → tree → file) — see **Kept** note below |
 | `[registry.signing].public_key` inside `registry.toml` | `RegistrySigningConfig` (`types.rs:594-596`) on `RegistryRootConfig` (`types.rs:564-570`) | **`keys.toml`** trust roster (active + revoked) + TOFU `trusted-keys.d/<registry>.pub` anchor |

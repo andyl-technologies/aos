@@ -16,7 +16,9 @@
 > origin and located via the committed repo-root `registry.toml` `[[caches]]`
 > (with the consumer's client-side `registries.d` as an optional override). A signed
 > tag is a **pure signed pointer** carrying no structured payload. Superseded
-> concepts live only in current-state.md (today's code) and design-brief §15.
+> concepts now live only as pre-cutover history in this plan set; use
+> [`../../registry/current-state.md`](../../registry/current-state.md) and
+> [`TODO.md`](./TODO.md) for live status.
 >
 > **Audience:** implementers, architects, engineers, and reviewers who must sign
 > off before the object store, the pack/delta pipeline, and the publish pipeline
