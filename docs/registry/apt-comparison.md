@@ -238,9 +238,9 @@ which only diffs *consecutive* index snapshots. See
 
 ### 5.4 `Phased-Update-Percentage` → 256 signed partitions
 
-APT canaries a release to a percentage of machines; each client hashes its
-`machine-id` (plus package identity) and updates only if the hash falls under the
-current percentage. AOS keeps the heritage and discretizes it into **exactly 256
+APT canaries a release to a percentage of machines; each client hashes a stable
+machine identity (plus package identity) and updates only if the hash falls under
+the current percentage. AOS keeps the heritage and discretizes it into **exactly 256
 signed partition tags** per channel (design-brief §6):
 
 ```
@@ -249,10 +249,10 @@ signed partition tags** per channel (design-brief §6):
        each (tag name == "stable") → a semver release tag
 ```
 
-- **Consumer bucket selection** is deterministic and *persisted*:
-  the low byte of `sha256(machine_id)` (i.e. mod 256), written once so a host
-  does not flap between buckets. (APT recomputes per-package; AOS pins a stable
-  bucket per host.)
+- **Consumer bucket selection** is generated once per registry and *persisted*:
+  first sync hashes `registry_name || "\0" || registry_local_salt` to choose
+  `00..ff`, then writes that bucket so a host does not flap between buckets.
+  (APT recomputes per-package; AOS pins a stable bucket per host and registry.)
 - **Publisher-controlled rollout:** to roll a new release to N/256 of the fleet,
   point N partitions at the new semver tag; the un-advanced partitions still name
   the prior release — which **explicitly answers "where does the rest of the

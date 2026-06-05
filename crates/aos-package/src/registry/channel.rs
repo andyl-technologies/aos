@@ -69,12 +69,27 @@ impl PartitionMap {
     }
 }
 
-/// Compute the stable rollout bucket for a machine id.
+/// Compute the stable rollout bucket for a seed string.
 ///
-/// The bucket is the low byte of `sha256(machine_id)`, yielding `0..=255`.
-pub fn select_bucket(machine_id: &str) -> u8 {
-    let digest = Sha256::digest(machine_id.as_bytes());
+/// The bucket is the low byte of `sha256(seed)`, yielding `0..=255`.
+pub fn select_bucket(seed: &str) -> u8 {
+    let digest = Sha256::digest(seed.as_bytes());
     digest[31]
+}
+
+/// Compute a bucket from a registry-local salt.
+///
+/// The salt is generated on first channel sync and the resulting bucket index is
+/// persisted, so cloned images do not inherit an image-baked machine id and the
+/// host keeps the same rollout assignment after the first successful sync.
+pub fn select_registry_bucket(registry: &str, salt: &str) -> u8 {
+    select_bucket(&format!("{registry}\0{salt}"))
+}
+
+/// Generate a fresh bucket salt for first-time bucket assignment.
+pub fn generate_bucket_salt() -> String {
+    let random_bytes: [u8; 32] = rand::random();
+    hex::encode(random_bytes)
 }
 
 /// Render a bucket as a two-digit lowercase hex partition name.
@@ -92,9 +107,9 @@ pub fn probe_order(bucket: u8) -> Vec<u8> {
     (0..=255).map(|i| bucket.wrapping_add(i)).collect()
 }
 
-/// Use a persisted bucket when present, otherwise compute one from `machine_id`.
-pub fn resolve_bucket(persisted: Option<u8>, machine_id: &str) -> u8 {
-    persisted.unwrap_or_else(|| select_bucket(machine_id))
+/// Use a persisted bucket when present, otherwise compute one from registry salt.
+pub fn resolve_bucket(persisted: Option<u8>, registry: &str, salt: &str) -> u8 {
+    persisted.unwrap_or_else(|| select_registry_bucket(registry, salt))
 }
 
 /// Refuse candidates older than the persisted semver floor.
@@ -168,8 +183,31 @@ mod tests {
 
     #[test]
     fn bucket_is_deterministic() {
-        assert_eq!(select_bucket("machine-a"), select_bucket("machine-a"));
-        assert_ne!(select_bucket("machine-a"), select_bucket("machine-b"));
+        assert_eq!(select_bucket("seed-a"), select_bucket("seed-a"));
+        assert_ne!(select_bucket("seed-a"), select_bucket("seed-b"));
+    }
+
+    #[test]
+    fn registry_bucket_uses_registry_local_salt() {
+        assert_eq!(
+            select_registry_bucket("core", "salt-a"),
+            select_registry_bucket("core", "salt-a"),
+        );
+        assert_ne!(
+            select_registry_bucket("core", "salt-a"),
+            select_registry_bucket("core", "salt-b"),
+        );
+        assert_ne!(
+            select_registry_bucket("core", "salt-a"),
+            select_registry_bucket("extras", "salt-a"),
+        );
+    }
+
+    #[test]
+    fn generated_bucket_salt_is_hex_encoded_random_material() {
+        let salt = generate_bucket_salt();
+        assert_eq!(salt.len(), 64);
+        assert!(salt.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -197,7 +235,13 @@ mod tests {
 
     #[test]
     fn persisted_bucket_wins() {
-        assert_eq!(resolve_bucket(Some(42), "new-machine-id"), 42);
+        assert_eq!(resolve_bucket(Some(42), "core", "new-salt"), 42);
+    }
+
+    #[test]
+    fn persisted_bucket_survives_bucket_source_migration() {
+        let migrated = resolve_bucket(Some(183), "core", "registry-local-salt");
+        assert_eq!(migrated, 183);
     }
 
     #[test]
