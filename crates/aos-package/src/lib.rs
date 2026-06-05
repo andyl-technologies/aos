@@ -355,6 +355,13 @@ pub enum RegistryCommand {
         /// Remote URL to set as origin
         #[arg(long)]
         remote: Option<String>,
+        /// Public trust key to write into committed keys.toml
+        /// (`registry:Ed25519:<base64>`)
+        #[arg(long = "trust-key")]
+        trust_key: Option<String>,
+        /// Identifier for --trust-key inside keys.toml
+        #[arg(long = "trust-key-id")]
+        trust_key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1084,8 +1091,22 @@ async fn run_registry(
         RegistryCommand::Remove { name, keep_local } => {
             registry_remove(config, name, *keep_local, printer).await
         }
-        RegistryCommand::Create { name, remote, .. } => {
-            registry_ops::create(config, name, remote.as_deref(), printer).await
+        RegistryCommand::Create {
+            name,
+            remote,
+            trust_key,
+            trust_key_id,
+            ..
+        } => {
+            registry_ops::create(
+                config,
+                name,
+                remote.as_deref(),
+                trust_key.as_deref(),
+                trust_key_id.as_deref(),
+                printer,
+            )
+            .await
         }
         RegistryCommand::Publish {
             store_path,

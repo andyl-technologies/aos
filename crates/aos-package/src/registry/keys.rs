@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
 
+pub const KEYS_TOML_SCHEMA: u32 = 1;
+
 /// A currently active registry signing key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RosterKey {
@@ -25,12 +27,24 @@ pub struct RevokedKey {
 }
 
 /// Trust roster stored as the committed tree file `keys.toml`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysToml {
+    #[serde(default = "default_schema")]
+    pub schema: u32,
     #[serde(default, rename = "keys")]
     pub active: Vec<RosterKey>,
     #[serde(default)]
     pub revoked: Vec<RevokedKey>,
+}
+
+impl Default for KeysToml {
+    fn default() -> Self {
+        Self {
+            schema: KEYS_TOML_SCHEMA,
+            active: Vec::new(),
+            revoked: Vec::new(),
+        }
+    }
 }
 
 /// Load and validate `keys.toml` from a checked-out registry tree.
@@ -118,6 +132,13 @@ pub fn effective_revocations(roster: &KeysToml, vouching_key_id: &str) -> Vec<St
 }
 
 fn validate_roster(roster: &KeysToml) -> Result<()> {
+    if roster.schema != KEYS_TOML_SCHEMA {
+        bail!(
+            "unsupported keys.toml schema {}: expected {}",
+            roster.schema,
+            KEYS_TOML_SCHEMA,
+        );
+    }
     for entry in &roster.active {
         parse_signing_key(&entry.key)
             .with_context(|| format!("invalid active key '{}'", entry.id))?;
@@ -128,6 +149,10 @@ fn validate_roster(roster: &KeysToml) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn default_schema() -> u32 {
+    KEYS_TOML_SCHEMA
 }
 
 #[cfg(test)]
@@ -156,10 +181,13 @@ mod tests {
                 id: "retired".into(),
                 reason: Some("planned retirement".into()),
             }],
+            ..KeysToml::default()
         };
         write_keys_toml(tmp.path(), &roster).unwrap();
         let loaded = load_keys_toml(tmp.path()).unwrap().unwrap();
         assert_eq!(loaded, roster);
+        let content = fs::read_to_string(tmp.path().join("keys.toml")).unwrap();
+        assert!(content.contains("schema = 1"));
     }
 
     #[test]
@@ -184,6 +212,20 @@ key = "not-a-key"
     }
 
     #[test]
+    fn keys_toml_rejects_unsupported_schema() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("keys.toml"),
+            r#"
+schema = 2
+"#,
+        )
+        .unwrap();
+        let err = load_keys_toml(tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("unsupported keys.toml schema 2"));
+    }
+
+    #[test]
     fn revocation_honoured_when_vouched_by_survivor() {
         let roster = KeysToml {
             active: vec![RosterKey {
@@ -194,6 +236,7 @@ key = "not-a-key"
                 id: "old".into(),
                 reason: None,
             }],
+            ..KeysToml::default()
         };
         assert_eq!(effective_revocations(&roster, "new"), vec!["old"]);
     }
@@ -209,6 +252,7 @@ key = "not-a-key"
                 id: "old".into(),
                 reason: None,
             }],
+            ..KeysToml::default()
         };
         assert!(effective_revocations(&roster, "old").is_empty());
     }
@@ -224,6 +268,7 @@ key = "not-a-key"
                 id: "old".into(),
                 reason: None,
             }],
+            ..KeysToml::default()
         };
         assert!(effective_revocations(&roster, "unknown").is_empty());
     }
@@ -244,6 +289,7 @@ key = "not-a-key"
                 },
             ],
             revoked: vec![],
+            ..KeysToml::default()
         };
 
         assert_eq!(pin_rotated_keys(&store, "aos-core", &roster).unwrap(), 2);
@@ -263,6 +309,7 @@ key = "not-a-key"
                 key: "other:Ed25519:YWJjZA==".into(),
             }],
             revoked: vec![],
+            ..KeysToml::default()
         };
 
         assert!(pin_rotated_keys(&store, "aos-core", &roster).is_err());
