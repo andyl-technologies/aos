@@ -236,11 +236,20 @@ read before editing code or docs.
       `crates/aos-package/src/registry/fetch.rs`,
       `crates/aos-package/src/registry/objectstore.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Add a static Nix-cache e2e test that uses real Nix-store fixtures when
-      available: run `apr cache generate`, serve `nix-cache-info`,
+- [x] Add a static Nix-cache e2e test that uses real Nix-store fixtures when
+      available: generate static cache files, serve `nix-cache-info`,
       `<storehash>.narinfo`, and `nar/*.nar.zst` over static HTTP, download
-      through the `apm` narinfo path, and verify with stock `nix` substituter
-      behavior under `require-sigs` where the host has Nix installed. Context:
+      through the `apm` narinfo path, and compare the downloaded/decompressed
+      NAR bytes with `nix-store --dump`. This coverage now lives in
+      `crates/aos-package/tests/registry_cache_e2e.rs`:
+      `static_nix_cache_e2e_generates_serves_and_downloads_real_store_path`
+      creates a tiny fixed-output Nix store fixture when the host can support
+      it, calls `nixcache::generate_static_cache`, validates signed narinfo
+      output, serves the generated static tree through `StaticHttpServer`, and
+      verifies the AOS narinfo download path reconstructs the exact NAR bytes.
+      Stock `nix path-info --store <cache>` verification is present but opt-in
+      behind `AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1` and bounded with an exact-child
+      timeout because the local host probe hung during development. Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/current-state.md`, `docs/registry/publishing.md`,
       `docs/plans/registry/open-questions.md`,
@@ -248,8 +257,22 @@ read before editing code or docs.
       `crates/aos-core/src/nar/info.rs`,
       `crates/aos-core/src/nar/cache.rs`,
       `crates/aos-package/src/download.rs`,
-      `crates/aos-cache/src/backend/mod.rs`, and a new integration file such as
+      `crates/aos-cache/src/backend/mod.rs`, and
       `crates/aos-package/tests/registry_cache_e2e.rs`.
+- [ ] Add CLI-level static-cache compatibility coverage that actually drives
+      `apr cache generate` end to end, and run the opt-in stock Nix substituter
+      check under `require-sigs` in a controlled/containerized Nix environment.
+      The generator data path is covered by
+      `crates/aos-package/tests/registry_cache_e2e.rs`, but the production CLI
+      wiring and stock client behavior should not be treated as proven until
+      this exists. Context: `docs/registry/nix-cache-compatibility.md`,
+      `docs/registry/publishing.md`,
+      `docs/plans/registry/workstream-06-nix-cache.md`,
+      `crates/aos-package/src/lib.rs`,
+      `crates/aos-package/src/registry_ops.rs`,
+      `crates/aos-package/src/registry/nixcache.rs`,
+      `crates/aos-package/tests/registry_cache_e2e.rs`, and future CLI/e2e
+      coverage in the workspace package that owns the `apr` binary.
 - [x] Add one-key projection coverage for git tag signatures and Nix narinfo
       signatures: prove the same Ed25519 key material can produce the
       `registry:Ed25519:<base64>` AOS trust form and the `<name>:<base64>` Nix
