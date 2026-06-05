@@ -72,16 +72,16 @@ new one — never a partition tag pointing at a commit whose objects are missing
 
 ---
 
-## 2. CURRENT state — the `apr` stub
+## 2. CURRENT state — the `apr` producer surface
 
 **CURRENT.** `apr` is the same binary as `aos`/`apm`, dispatched on `argv[0]`;
 `apr …` expands to `package registry …`. All producer logic lives in
 [`crates/aos-package/src/registry_ops.rs`](../../crates/aos-package/src/registry_ops.rs).
 Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml` +
-`closures/<hash>`) and still has legacy **git bundle** commands. The sha256
-object-store scaffolding, signed release tags, `update-server-info`, and root
-`objects/info/alternates` refresh hooks now exist; pack/delta generation,
-upload, and consumer rollout resolution are still pending.
+`closures/<hash>`). The sha256 object-store scaffolding, signed release tags,
+channel partition commands, `update-server-info`, and root
+`objects/info/alternates` refresh hooks now exist. Pack/delta upload and static
+Nix-cache generation are still pending.
 
 The commands relevant to a release, in workflow order:
 
@@ -92,36 +92,19 @@ The commands relevant to a release, in workflow order:
 | `apr tag <name> [--message] --key <key>` | `tag` (`registry_ops.rs:1684`) | `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; `--key` is required; semver tags also prepare a release object dir during the object-store refresh. |
 | `apr sign <tag> --key <key>` | `sign` (`registry_ops.rs:1747`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
 | `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
-| `apr bundle [--output] [--tag] [--delta-from] [--update-manifest]` | `bundle` (`registry_ops.rs:1706`) | `git bundle create` into a local dir. See §2.1. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
 There is **no** `apr release`, no pack/delta generation, and no upload command
 in the tree today.
 
-### 2.1 CURRENT: `apr bundle` = `git bundle create` only
+### 2.1 CURRENT: transport/index refresh
 
-The producer's entire transport step today is `apr bundle` (`registry_ops.rs:1706`),
-which runs `git bundle create` into a local output directory (default `bundles/`):
-
-- **Snapshot:** `git bundle create <dir>/<reg>-<tag>.bundle <tag>`
-  (`registry_ops.rs:1738`).
-- **Delta:** with `--delta-from <from>`,
-  `git bundle create <dir>/<reg>-<from>..<tag>.bundle <from>..<tag>`
-  (`registry_ops.rs:1729`).
-
-What it does **not** do: it does not write any manifest (`--update-manifest` is
-dead code — `_update_manifest`, `registry_ops.rs:1711`), does not generate packs
-or thin deltas independent of the bundle envelope, does not run
-`update-server-info`, does not touch any channel/partition pointer, and **does
-not upload anything**. The operator must hand-copy the resulting `.bundle` files
-to a mirror.
-
-> **TARGET shift.** The TARGET drops git **bundles** entirely (a bundle carries
-> refs and prerequisites; refs are replaced by signed tag objects, and the object
-> store is served loose + as conventionally-named packs). Producing the dumb-HTTP
-> object store with `pack-objects` + `update-server-info` + `info/alternates`
-> replaces `apr bundle` wholesale (design brief §10, §15). The rest of this
-> document is TARGET.
+The producer now refreshes the git-native static index after create, publish,
+unpublish, tag, sign, and channel operations. The refresh path updates
+`objects/info/alternates` and `info/refs` so a dumb-HTTP origin can be served as
+static files. Pack generation helpers exist in `registry::pack`, but the
+single-command release pipeline that generates, uploads, and validates every
+pack/Nix-cache artifact remains target work.
 
 ---
 
@@ -526,16 +509,13 @@ apr publish /nix/store/<hash>-curl-8.5.0 \
 
 apr tag 2026.06.0 --message "June release" --key ./registry_signing_key
 apr sign 2026.06.0 --key ./registry_signing_key
-apr push --set-upstream --branch main        # plain git push                (registry_ops.rs:1398)
-
-# Local-only transport — git bundles, no manifest, no upload:
-apr bundle --tag 2026.06.0                            # snapshot bundle (registry_ops.rs:1738)
-apr bundle --delta-from 2026.05.0 --tag 2026.06.0     # delta bundle    (registry_ops.rs:1729)
-# → files land in ./bundles/ ; publishing them to a mirror is out of scope
+apr channel init stable --release 2026.06.0 --key ./registry_signing_key
+apr channel advance stable --release 2026.06.0 --count 32 --key ./registry_signing_key
+apr push --set-upstream --branch stable        # plain git push              (registry_ops.rs:1398)
 ```
 
-Everything after `apr push` is incomplete: the operator hand-copies bundles to a
-mirror; there is no pack/delta/zstd publish pipeline and no upload.
+Everything after `apr push` is still incomplete for CDN publication: there is no
+single pack/delta/zstd upload pipeline and no static Nix-cache generator.
 
 ### 12.2 TARGET (the §10/§4/§6 pipeline, e.g. a future `apr release`)
 
@@ -572,7 +552,7 @@ open question (design brief §16.4;
 
 - [README.md](./README.md) — registry doc index and overview.
 - [architecture.md](./architecture.md) — git-repo-over-dumb-HTTP; superset of git and Nix; asymmetric-cost philosophy.
-- [current-state.md](./current-state.md) — full as-is grounding (the bundle/`creation_token` code).
+- [current-state.md](./current-state.md) — current git-native implementation status.
 - [http-layout.md](./http-layout.md) — the HTTP/object layout, CDN TTLs, `info/refs`/`HEAD`/`info/alternates`.
 - [versioning-and-channels.md](./versioning-and-channels.md) — semver, channels-as-branches, frontier, the 256-partition rollout, bucket selection, anti-rollback.
 - [packs-and-deltas.md](./packs-and-deltas.md) — the delta-scheme graph, client resolution + retention, `index-pack --fix-thin`, zstd.
