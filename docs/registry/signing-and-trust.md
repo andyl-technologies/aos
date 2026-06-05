@@ -406,6 +406,12 @@ same origin without provisioning a second key. The key-management surface
 (TOFU, `trusted-keys.d`, fingerprinting) is shared; only the verification *call site*
 differs (git tag vs. narinfo).
 
+The public-key encodings are format-specific projections of that same key: git
+verification stores an SSH `ssh-ed25519` public-key blob in the
+`registry:Ed25519:<base64>` AOS trust form, while stock Nix
+`trusted-public-keys` uses `<name>:<base64>` with the raw Ed25519 verifying key
+bytes.
+
 ---
 
 ## 7. Trust boundaries — summary table
@@ -457,7 +463,7 @@ ways:
 | What is signed | **`tag → tag → commit`** chain (partition + release tags) | implemented |
 | Name-binding | embedded tag-name == expected path name (channel / semver) | implemented |
 | Anti-rollback | semver monotonic floor + fix-forward | implemented |
-| Nix narinfo `Sig:` | not wired | reuse the one Ed25519 key |
+| Nix narinfo `Sig:` | `NarInfoSigner` signs static narinfos during cache generation; tests cover the same-key projection from git SSH tag signing to Nix narinfo signing | reuse the one Ed25519 key |
 
 The full implementation plan for this surface is
 [`../plans/registry/workstream-04-signing-trust.md`](../plans/registry/workstream-04-signing-trust.md).
