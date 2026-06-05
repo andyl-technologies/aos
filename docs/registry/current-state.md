@@ -130,7 +130,10 @@ last_update = "2026-02-16T12:00:00Z"
 `last_commit` supports fast-forward checks. `floor` is the semver anti-rollback
 floor. `bucket` persists deterministic rollout assignment. `retained` records
 release object directories that should survive pruning. For a patch release this
-is the minimum `{X.0.0, X.Y.0, X.Y.Z}` set.
+is the minimum `{X.0.0, X.Y.0, X.Y.Z}` set. For channel tracking, `last_update`
+is the local freshness clock: first sync and semver advancement refresh it;
+unchanged but valid signed channel targets are accepted only while this timestamp
+is within `max_staleness_seconds`, and they do not refresh it.
 
 ---
 
