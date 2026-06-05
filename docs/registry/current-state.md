@@ -56,6 +56,12 @@ Implemented producer behavior:
   `refs/heads/stable`, writes the committed root `registry.toml`, writes a
   schema-1 `keys.toml` trust roster (optionally seeded by `--trust-key` and
   `--trust-key-id`), and refreshes static git indexes.
+- `apr keys list/add/retire` maintains the committed `keys.toml` trust roster.
+  `add` validates key ids and registry-bound `registry:Ed25519:<base64>` keys;
+  `retire` moves an active id to `[[revoked]]`, requires an active survivor
+  key, and records/derives the survivor `--vouched-by` id for the planned
+  retirement workflow. These commands commit and refresh static git indexes
+  unless `--no-commit` is passed.
 - `apr publish`, `apr unpublish`, and `apr tag` update package metadata and then
   refresh the object-store view with `objects/info/alternates` and
   `git update-server-info`.
@@ -149,6 +155,10 @@ Implemented trust pieces:
 - `registry::keys` parses committed `keys.toml`, supports rotation overlap,
   active-key lookup, revocation gating, and tests the survivor-vouched revocation
   rules.
+- `apr keys list/add/retire` is the producer-side command surface for committed
+  roster maintenance. Release/channel signing still selects key material through
+  `--key`; producer key-id-to-private-key selection remains a separate open
+  implementation item.
 - `registry::verify` parses tag objects, enforces name-binding, verifies
   `tag -> tag -> commit` release chains, and rejects non-semver release names
   where semver is required.
