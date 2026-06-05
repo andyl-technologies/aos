@@ -24,8 +24,10 @@ in
 
     # strace builds with -Werror and uses trailing zero-length arrays as
     # flexible members; -fstrict-flex-arrays=3 then trips -Werror=array-bounds
-    # (e.g. mmsghdr.c). Same opt-out as elfutils.
+    # (e.g. mmsghdr.c). Step down to level 1 (still hardened, but [0]/[1]
+    # trailing arrays stay flexible). Same idiom as elfutils.
     hardeningDisable = ["strictflexarrays3"];
+    hardeningEnable = ["strictflexarrays1"];
 
     phases = [
       {
