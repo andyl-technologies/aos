@@ -69,7 +69,7 @@ recommendation, and the failure mode.
 |---|---|
 | **Brief §16.1** | "sha256 dumb-HTTP clone tested against target git client versions (no capability negotiation)." |
 | **Owner WS** | [WS-01](./workstream-01-object-store.md) (object store), informs [WS-05](./workstream-05-consumer.md) (consumer fetch) |
-| **Status** | OPEN — empirical compatibility task, not a design choice. |
+| **Status** | PARTIAL — the AOS consumer floor is pinned and enforced as Git 2.42.0+ with a runtime sha256 capability probe; the stock-git version matrix remains an empirical compatibility task. |
 
 **Why it is open.** The dumb-HTTP transport has **no capability negotiation** —
 the client never learns the server's object format; it must already be a sha256
@@ -80,14 +80,19 @@ paths, cannot clone. The 2/62 hex split of a 64-char sha256 loose object path
 split until the client tries to verify the object, at which point it fails
 opaquely.
 
-**What must happen.** WS-01 must establish a tested floor: the minimum git
-version that can `git clone <url>` and `git verify-tag <semver>` against the
-sha256 dumb-HTTP origin, for both stock git and the libgit2/`gix` (or shell-out)
-path the AOS consumer uses. Pin that floor in
+**What has landed.** The AOS shell-out consumer now pins Git 2.42.0 as the
+minimum supported client floor for sha256 dumb-HTTP registries. Before fetching,
+`apm update` checks `git --version` and runs a local
+`git init --bare --object-format=sha256` probe, then fails with a clear
+"requires a sha256-capable git" error rather than a low-level object-format
+panic. The floor is recorded in
 [http-layout.md](../../registry/http-layout.md) and
-[signing-and-trust.md](../../registry/signing-and-trust.md), and gate the
-consumer with a clear "this registry requires a sha256-capable git" error rather
-than a low-level object-format panic.
+[signing-and-trust.md](../../registry/signing-and-trust.md).
+
+**What remains.** WS-01 still needs the empirical stock-git compatibility
+matrix: prove which `git clone <url>` / `git verify-tag <semver>` versions work
+against the sha256 dumb-HTTP origin across the target production clients. That
+matrix can either confirm the 2.42.0 floor or force an explicit floor change.
 
 **Failure mode.** Loud but late: a stock `git clone` against the origin fails
 for users on old gits with a confusing "unknown object format" / "bad object"
