@@ -378,10 +378,23 @@ read before editing code or docs.
       `crates/aos-package/src/registry/nixcache.rs`, and
       `crates/aos-cache/tests/backend_matrix.rs`,
       `crates/aos-package/tests/registry_cache_e2e.rs`.
-- [ ] Add stock git compatibility tests for the pinned minimum git version and
-      sha256 dumb-HTTP behavior. The current local-git smoke test is not enough
-      to prove production compatibility across supported client versions.
-      Context: `docs/registry/http-layout.md`,
+- [x] Add current-stock-git compatibility coverage for the pinned minimum git
+      version and sha256 dumb-HTTP behavior. `crates/aos-package/tests/
+      registry_e2e.rs` now includes
+      `stock_git_current_version_syncs_sha256_dumb_http_registry`, which asserts
+      the host `git --version` is at least 2.42.0, verifies the fixture origin is
+      a sha256 repository, serves it over static HTTP, and runs the actual
+      `registry::git::sync_git` consumer path. Context:
+      `docs/registry/http-layout.md`, `docs/registry/signing-and-trust.md`,
+      `crates/aos-package/src/registry/git.rs`,
+      `crates/aos-package/src/registry/objectstore.rs`, and
+      `crates/aos-package/tests/registry_e2e.rs`.
+- [ ] Add a supported-version stock Git compatibility matrix for the pinned
+      minimum Git version and newer clients. The current-stock-git e2e proves
+      this host's Git, but production compatibility across the documented floor
+      and newer supported clients still needs containerized or pinned-binary
+      coverage before this is fully proven. Context:
+      `docs/registry/http-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,
       `crates/aos-package/src/security.rs`,

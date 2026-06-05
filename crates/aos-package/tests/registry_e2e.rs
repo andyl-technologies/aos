@@ -1,6 +1,6 @@
 mod common;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use aos_package::registry::{Registry, fetch, git, keys, objectstore, pack, store_path_hash};
 use aos_package::registry_ops::resolve_mirrors_for_registry;
 use aos_package::security::verify_tag_signature;
@@ -115,8 +115,94 @@ fn assert_git_object_exists(repo: &Path, rev: &str) {
     );
 }
 
+fn current_git_version() -> Result<(String, (u32, u32, u32))> {
+    let output = Command::new("git").arg("--version").output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git --version failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let token = text
+        .strip_prefix("git version ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .ok_or_else(|| anyhow::anyhow!("could not parse {text}"))?;
+    let mut parts = token.split('.');
+    let version = (
+        parse_optional_leading_u32(parts.next())?,
+        parse_optional_leading_u32(parts.next())?,
+        parse_optional_leading_u32(parts.next())?,
+    );
+    Ok((text, version))
+}
+
+fn parse_optional_leading_u32(part: Option<&str>) -> Result<u32> {
+    let Some(part) = part else {
+        return Ok(0);
+    };
+    let digits = part
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits
+        .parse()
+        .with_context(|| format!("parsing git version component {part}"))
+}
+
 fn v(input: &str) -> semver::Version {
     semver::Version::parse(input).unwrap()
+}
+
+#[tokio::test]
+async fn stock_git_current_version_syncs_sha256_dumb_http_registry() -> Result<()> {
+    let (version_text, version) = current_git_version()?;
+    assert!(
+        version >= (2, 42, 0),
+        "expected stock Git 2.42.0 or newer for sha256 dumb-HTTP compatibility, found {version_text}",
+    );
+
+    let fixture = RegistryFixture::new("stock-git")?;
+    fixture.write_registry_toml_with_caches(&[])?;
+    fixture.write_gitattributes()?;
+    let store_path = fixture.write_package("hello", "1.0.0")?;
+    fixture.write_closure(&store_path)?;
+    let source_commit = fixture.commit_all("release 1.0.0")?;
+    fixture.publish_bare_origin()?;
+
+    let object_format = Command::new("git")
+        .arg("--git-dir")
+        .arg(fixture.origin_path())
+        .args(["config", "--get", "extensions.objectformat"])
+        .output()?;
+    assert!(object_format.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&object_format.stdout).trim(),
+        "sha256"
+    );
+
+    let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
+    let config = fixture.registry_config(server.base_url());
+    let mut state = RegistryState::default();
+    let result = git::sync_git(
+        &config,
+        &TrackingMode::Branch("main".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await?;
+
+    assert_eq!(result.new_commit, source_commit);
+    assert_eq!(result.packages_added, 1);
+    assert_eq!(state.last_commit.as_deref(), Some(source_commit.as_str()));
+    assert!(fixture.cache_dir().join("stock-git/repo.git/HEAD").exists());
+    let registry = Registry::load(fixture.cache_dir(), &config, "x86_64-linux")?;
+    let package = registry.get("hello").expect("synced package exists");
+    assert_eq!(package.store_path, store_path);
+
+    Ok(())
 }
 
 #[tokio::test]
