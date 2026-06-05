@@ -51,6 +51,13 @@ The code now initializes registry repositories with
 `objects/info/alternates` entries. `apm update` uses native git sync for both
 plain `http(s)://` origins and native git origins.
 
+The supported client floor for sha256 dumb-HTTP registries is **Git 2.42.0**.
+`apm update` preflights `git --version` and runs a local
+`git init --bare --object-format=sha256` capability probe before syncing, so an
+unsupported client fails with a clear "requires a sha256-capable git" error
+instead of a late loose-object or object-format failure. Stock `git clone` users
+must use the same Git floor or newer.
+
 The AOS-specific `/channels/<name>/00..ff` partition files are produced by
 `apr channel init/advance`, and channel consumers verify those signed tag objects
 before resolving the release commit. The release pack layout in §3 is represented

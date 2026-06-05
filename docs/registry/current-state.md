@@ -27,7 +27,9 @@ An AOS registry is a git repository of package metadata:
 
 The producer creates sha256 git repositories and refreshes the static object
 indexes needed by dumb HTTP. The consumer uses native git sync for both `git://`
-/ `git+*://` origins and plain `http(s)://` origins.
+/ `git+*://` origins and plain `http(s)://` origins. Consumer sync requires
+Git 2.42.0 or newer and preflights both `git --version` and local
+`git init --bare --object-format=sha256` support before fetching a registry.
 
 ---
 
