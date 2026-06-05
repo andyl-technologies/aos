@@ -142,6 +142,7 @@ impl ApmConfig {
             version: rf.registry.version,
             pin: rf.registry.pin,
             max_staleness_seconds: rf.registry.max_staleness_seconds,
+            caches: rf.registry.caches,
             signing: rf.registry.signing,
         };
 
@@ -376,6 +377,7 @@ max_staleness_seconds = 604800
                         version: None,
                         pin: None,
                         max_staleness_seconds: None,
+                        caches: Vec::new(),
                         signing: None,
                     },
                     None,
@@ -393,6 +395,7 @@ max_staleness_seconds = 604800
                         version: None,
                         pin: None,
                         max_staleness_seconds: None,
+                        caches: Vec::new(),
                         signing: None,
                     },
                     None,

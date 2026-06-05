@@ -165,12 +165,19 @@ read before editing code or docs.
       `crates/aos-package/src/registry/verify.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and a new integration file
       such as `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Add committed-tree layout integration coverage: verify the signed
+- [x] Add committed-tree layout integration coverage: verify the signed
       tag->commit->tree path authenticates and extracts the root `registry.toml`,
       committed `keys.toml`, `packages/<letter>/<name>.toml`, `closures/<hash>`,
       and `.gitattributes`; verify client-side `registries.d` cache overrides
       and committed `registry.toml` `[[caches]]` priority ordering are applied
-      after sync. Context: `docs/registry/repo-layout.md`,
+      after sync. The consumer now materializes `closures/` into the registry
+      metadata cache and root `registry.toml`, `keys.toml`, and `.gitattributes`
+      into the local registry tree, removing stale root-file copies when
+      upstream deletes them. `RegistryConfig` now carries client-side `caches`
+      from `registries.d`, and `resolve_mirrors_for_registry` merges those with
+      committed caches before sorting by priority. The signed-channel HTTP e2e
+      asserts closure loading, keys-roster parsing, root-file extraction, and
+      merged cache order. Context: `docs/registry/repo-layout.md`,
       `docs/registry/current-state.md`,
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/signing-and-trust.md`,

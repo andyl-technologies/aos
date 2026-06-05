@@ -145,17 +145,20 @@ pub async fn sync_git(
         enforce_fast_forward(&repo_dir, old_commit, &new_commit).await?;
     }
 
-    // Step 6: Extract packages into the cache.
-    let output_dir = cache_dir.join(&config.name).join("packages");
-    let old_packages = count_toml_files(&output_dir).await;
-    extract_packages(&repo_dir, &new_commit, &output_dir).await?;
-    let new_packages = count_toml_files(&output_dir).await;
+    // Step 6: Extract authenticated tree files used by consumers.
+    let registry_cache_dir = cache_dir.join(&config.name);
+    let packages_dir = registry_cache_dir.join("packages");
+    let old_packages = count_toml_files(&packages_dir).await;
+    extract_packages(&repo_dir, &new_commit, &packages_dir).await?;
+    extract_closures(&repo_dir, &new_commit, &registry_cache_dir.join("closures")).await?;
+    let new_packages = count_toml_files(&packages_dir).await;
 
-    // Step 6b: Materialise registry.toml from the repo root so resolve_mirror
-    // can find the [[caches]] entries. Without this, the only fallback is
-    // the registry URL itself, which fails for git:// transports.
-    let registry_toml_target = registries_dir.join(&config.name);
-    extract_registry_root(&repo_dir, &new_commit, &registry_toml_target).await?;
+    // Step 6b: Materialise root registry files so resolve_mirror and trust
+    // roster helpers can read the authenticated tree after sync. Without
+    // registry.toml, the only cache fallback is the registry URL itself, which
+    // fails for git:// transports.
+    let registry_root_target = registries_dir.join(&config.name);
+    extract_registry_root(&repo_dir, &new_commit, &registry_root_target).await?;
 
     // Compute rough stats. Without a detailed diff we approximate:
     // - If this is the first sync, everything is "added"
@@ -816,7 +819,20 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
 /// Uses `git archive` to export the `packages/` directory from the commit
 /// and extract it into the output directory.
 async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
-    // Clean the output directory first.
+    extract_tree_dir(repo_dir, commit, "packages", output_dir).await
+}
+
+/// Extract precomputed closure adjacency files from a git tree.
+async fn extract_closures(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
+    extract_tree_dir(repo_dir, commit, "closures", output_dir).await
+}
+
+async fn extract_tree_dir(
+    repo_dir: &Path,
+    commit: &str,
+    tree_path: &str,
+    output_dir: &Path,
+) -> Result<()> {
     if output_dir.exists() {
         tokio::fs::remove_dir_all(output_dir)
             .await
@@ -826,32 +842,41 @@ async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> R
         .await
         .with_context(|| format!("creating {}", output_dir.display()))?;
 
-    // Use `git archive` to produce a tar, then pipe through `tar -x`.
-    // We use std::process for pipe support (tokio's ChildStdout doesn't
-    // directly convert to Stdio for a second process).
-    let archive = std::process::Command::new("git")
-        .args(["archive", commit, "packages/"])
+    if !tree_path_exists(repo_dir, commit, tree_path).await? {
+        return Ok(());
+    }
+
+    let tarball = tempfile::NamedTempFile::new().context("creating temporary git archive")?;
+    let archive = Command::new("git")
+        .args(["archive", "--format=tar", "-o"])
+        .arg(tarball.path())
+        .arg(commit)
+        .arg(format!("{tree_path}/"))
         .current_dir(repo_dir)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .with_context(|| format!("running git archive {commit} packages/"))?;
+        .output()
+        .await
+        .with_context(|| format!("running git archive {commit} {tree_path}/"))?;
+    if !archive.status.success() {
+        bail!(
+            "git archive {commit} {tree_path}/ failed: {}",
+            String::from_utf8_lossy(&archive.stderr).trim(),
+        );
+    }
 
     let tar = std::process::Command::new("tar")
-        .args([
-            "-x",
-            "--strip-components=1",
-            "-C",
-            &output_dir.to_string_lossy(),
-        ])
-        .stdin(archive.stdout.unwrap())
+        .arg("-x")
+        .arg("--strip-components=1")
+        .arg("-f")
+        .arg(tarball.path())
+        .arg("-C")
+        .arg(output_dir)
         .output()
-        .context("running tar to extract packages")?;
+        .with_context(|| format!("running tar to extract {tree_path}"))?;
 
     if !tar.status.success() {
         let stderr = String::from_utf8_lossy(&tar.stderr);
         bail!(
-            "failed to extract packages from commit {commit}: {}",
+            "failed to extract {tree_path} from commit {commit}: {}",
             stderr.trim(),
         );
     }
@@ -859,41 +884,72 @@ async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> R
     Ok(())
 }
 
-/// Extract the repo-root `registry.toml` into `target_dir/registry.toml`.
+async fn tree_path_exists(repo_dir: &Path, commit: &str, tree_path: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["cat-file", "-e", &format!("{commit}:{tree_path}")])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .with_context(|| format!("checking tree path {commit}:{tree_path}"))?;
+    Ok(output.status.success())
+}
+
+/// Extract repo-root support files into `target_dir`.
 ///
-/// Missing-file errors are non-fatal: `apm install` falls back to the
-/// registry URL when no cache config is present. Other git errors bubble up.
+/// Missing files are non-fatal: `apm install` falls back to the registry URL
+/// when no cache config is present, and older registries may not have a
+/// committed trust roster. Any stale local copy is removed when the upstream
+/// tree no longer contains the file.
 pub async fn extract_registry_root(repo_dir: &Path, commit: &str, target_dir: &Path) -> Result<()> {
     tokio::fs::create_dir_all(target_dir)
         .await
         .with_context(|| format!("creating {}", target_dir.display()))?;
 
+    for file in ["registry.toml", "keys.toml", ".gitattributes"] {
+        extract_optional_root_file(repo_dir, commit, target_dir, file).await?;
+    }
+
+    Ok(())
+}
+
+async fn extract_optional_root_file(
+    repo_dir: &Path,
+    commit: &str,
+    target_dir: &Path,
+    file: &str,
+) -> Result<()> {
     let output = Command::new("git")
-        .args(["show", &format!("{commit}:registry.toml")])
+        .args(["show", &format!("{commit}:{file}")])
         .current_dir(repo_dir)
         .output()
         .await
-        .context("running git show :registry.toml")?;
+        .with_context(|| format!("running git show {commit}:{file}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Missing root registry.toml is fine — resolve_mirror falls back to
-        // the registry URL. Any other failure (corrupt object, IO error)
-        // bubbles up.
-        if stderr.contains("does not exist")
-            || stderr.contains("exists on disk, but not in")
-            || stderr.contains("path 'registry.toml'")
-        {
+        if is_missing_tree_path(&stderr, file) {
+            let dest = target_dir.join(file);
+            if dest.exists() {
+                tokio::fs::remove_file(&dest)
+                    .await
+                    .with_context(|| format!("removing stale {}", dest.display()))?;
+            }
             return Ok(());
         }
-        bail!("git show {commit}:registry.toml failed: {}", stderr.trim(),);
+        bail!("git show {commit}:{file} failed: {}", stderr.trim(),);
     }
 
-    let dest = target_dir.join("registry.toml");
+    let dest = target_dir.join(file);
     tokio::fs::write(&dest, &output.stdout)
         .await
         .with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
+}
+
+fn is_missing_tree_path(stderr: &str, file: &str) -> bool {
+    stderr.contains("does not exist")
+        || stderr.contains("exists on disk, but not in")
+        || stderr.contains(&format!("path '{file}'"))
 }
 
 /// Count .toml files in a packages directory.
@@ -1141,6 +1197,7 @@ mod tests {
             version: None,
             pin: None,
             max_staleness_seconds,
+            caches: Vec::new(),
             signing: Some(SigningConfig {
                 required: true,
                 public_key: "core:Ed25519:base64key".to_string(),

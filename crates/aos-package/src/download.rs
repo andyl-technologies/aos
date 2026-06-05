@@ -86,7 +86,7 @@ pub fn resolve_mirror(registry: &RegistryConfig) -> String {
         .join(".local/share/apm/registries")
         .join(&registry.name);
 
-    let mirrors = crate::registry_ops::resolve_mirrors(&registries_dir);
+    let mirrors = crate::registry_ops::resolve_mirrors_for_registry(&registries_dir, registry);
     if let Some(cache) = mirrors.first() {
         return cache.url.trim_end_matches('/').to_string();
     }
@@ -406,6 +406,7 @@ mod tests {
             version: None,
             pin: None,
             max_staleness_seconds: None,
+            caches: Vec::new(),
             signing: None,
         };
         assert_eq!(resolve_mirror(&reg), "https://registry.aos.dev/core");
