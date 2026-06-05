@@ -15,12 +15,14 @@
 > full, skim the [gap analysis](./gap-analysis.md), then dive into the
 > workstream you own.
 
-> **As-built status note:** most local implementation work described by this
-> plan has landed. Treat the workstream documents and old `path:line` citations
-> below as archival planning context, not as the live source of current code
-> facts. For the implemented registry surface and remaining validation gaps,
-> start with [`../../registry/current-state.md`](../../registry/current-state.md)
-> and [`TODO.md`](./TODO.md).
+> **As-built status note:** the local implementation work described by this plan
+> has landed. Treat the workstream documents and old `path:line` citations below
+> as archival planning context, not as the live source of current code facts. For
+> the implemented registry surface, start with
+> [`../../registry/current-state.md`](../../registry/current-state.md) and
+> [`TODO.md`](./TODO.md). External infra, fleet, and target-host validation is
+> tracked for the follow-up PR in
+> [`validation-runbook.md`](./validation-runbook.md).
 
 ---
 
