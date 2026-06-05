@@ -198,11 +198,13 @@ by Rust integration/e2e tests where the item calls for tests.
       `crates/aos-package/src/registry/channel.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and
       `crates/aos-cache/src/backend/mod.rs`.
-- [ ] Replace the single optional cache `--upload-url` with repeatable or
+- [x] Replace the single optional cache `--upload-url` with repeatable or
       array-style upload destinations, and define partial-failure semantics for
-      a destination set such as `(s3, local filesystem path, SFTP)`. Today the
-      CLI accepts one `--upload-url`, while the backend factory supports one URL
-      at a time for `file://`, `http(s)://`, `s3://`, and `sftp://`/`ssh://`.
+      a destination set such as `(s3, local filesystem path, SFTP)`. The CLI now
+      accepts repeatable `--upload-url` values and the upload helper reports
+      partial destination failures after attempting all destinations. The backend
+      factory still supports one URL per backend instance for `file://`,
+      `http(s)://`, `s3://`, and `sftp://`/`ssh://`.
       Context: `docs/registry/publishing.md`,
       `docs/registry/nix-cache-compatibility.md`,
       `crates/aos-package/src/lib.rs`,
