@@ -5,7 +5,9 @@ use aos_cache::AuthOptions;
 use aos_package::registry::{
     Registry, fetch, git, keys, objectstore, pack, static_upload, store_path_hash,
 };
-use aos_package::registry_ops::resolve_mirrors_for_registry;
+use aos_package::registry_ops::{
+    ReleaseTreeOptions, release_registry_tree, resolve_mirrors_for_registry,
+};
 use aos_package::security::verify_tag_signature;
 use aos_package::types::{CacheEntry, RegistryState, TrackingMode};
 use std::fs;
@@ -314,6 +316,91 @@ async fn static_origin_upload_e2e_syncs_uploaded_filesystem_destination() -> Res
 
     assert_eq!(result.new_commit, source_commit);
     assert_eq!(state.last_commit.as_deref(), Some(source_commit.as_str()));
+    let registry = Registry::load(fixture.cache_dir(), &config, "x86_64-linux")?;
+    let package = registry.get("hello").expect("synced package exists");
+    assert_eq!(package.store_path, store_path);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() -> Result<()> {
+    let fixture = RegistryFixture::new("release-orchestrator")?;
+    fixture.write_registry_toml_with_caches(&[])?;
+    fixture.write_gitattributes()?;
+    fixture.write_keys_toml()?;
+    let store_path = fixture.write_package("hello", "1.1.0")?;
+    fixture.write_closure(&store_path)?;
+    let source_commit = fixture.commit_all("release 1.1.0")?;
+
+    let uploaded = tempfile::TempDir::new()?;
+    let options = ReleaseTreeOptions {
+        version: v("1.1.0"),
+        signing_key: fixture.private_key_path().to_string_lossy().into_owned(),
+        channel: Some("stable".into()),
+        init_channel: true,
+        count: None,
+        partitions: None,
+        cache_output: None,
+        cache_key: None,
+        cache_url: None,
+        cache_priority: 40,
+        upload_urls: vec![format!("file://{}", uploaded.path().display())],
+        upload_auth: AuthOptions::default(),
+        dry_run: false,
+        resume: false,
+    };
+
+    let report = release_registry_tree(
+        fixture.source_path(),
+        "release-orchestrator",
+        &options,
+        &fixture.printer(),
+    )
+    .await?;
+
+    assert!(
+        report
+            .full_pack
+            .as_deref()
+            .is_some_and(|name| name.starts_with("pack-"))
+    );
+    assert!(report.deltas.is_empty());
+    assert!(report.uploaded_files.unwrap_or_default() > 0);
+    assert!(verify_tag_signature(
+        fixture.source_path(),
+        "1.1.0",
+        fixture.trusted_key(),
+    )?);
+    assert!(uploaded.path().join("channels/stable/00").exists());
+    assert!(
+        uploaded
+            .path()
+            .join("releases/1/1/0/objects/pack")
+            .read_dir()?
+            .any(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| entry.file_name().into_string().ok())
+                    .is_some_and(|name| name.starts_with("pack-") && name.ends_with(".pack"))
+            })
+    );
+
+    let server = StaticHttpServer::spawn(uploaded.path().to_path_buf()).await?;
+    let config = fixture.signed_registry_config(server.base_url(), "stable");
+    let mut state = RegistryState::default();
+    let result = git::sync_git(
+        &config,
+        &TrackingMode::Channel("stable".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await?;
+
+    assert_eq!(result.new_commit, source_commit);
+    assert_eq!(state.floor.as_deref(), Some("1.1.0"));
     let registry = Registry::load(fixture.cache_dir(), &config, "x86_64-linux")?;
     let package = registry.get("hello").expect("synced package exists");
     assert_eq!(package.store_path, store_path);

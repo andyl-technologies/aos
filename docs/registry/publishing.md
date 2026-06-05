@@ -95,10 +95,8 @@ The commands relevant to a release, in workflow order:
 | `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, using the same `--key` / `--key-id` signing-key selection as release tags, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
 | `apr cache generate --output <dir> [--key <key>] [--cache-url <url>] [--upload-url <backend>]...` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path; fails closed when a path is absent locally; optionally uploads the exact generated files to one or more repeatable `--upload-url` destinations via `aos-cache`, reporting any partial destination failures, supports HTTP/S3/SFTP auth flags, and commits the root `registry.toml` `[[caches]]` pointer. |
 | `apr origin upload --upload-url <backend>... [--cache-dir <dir>]` | `run_origin` (`registry_ops.rs`) | Refreshes static git indexes, then uploads the full dumb-HTTP origin surface in immutable-first / mutable-last order: `objects/**`, `releases/**`, optional static-cache `nar/**` and `*.narinfo`, then `HEAD`, `info/refs`, `objects/info/**`, `channels/**`, and `nix-cache-info`; uses the same backend auth flags and partial-failure semantics as static cache uploads. |
+| `apr release <semver> [--store-path <path>] (--key <path> \| --key-id <id>) [--channel <name> (--init-channel \| --count N \| --partitions ...)] [--cache-output <dir>] [--cache-url <url>] [--upload-url <backend>]... [--dry-run] [--resume]` | `release` / `release_registry_tree` (`registry_ops.rs`) | Runs the ordered producer pipeline: optionally publishes a store path into a committed metadata tree, commits a cache pointer before signing when `--cache-url` is supplied, creates/reuses a signed semver tag, generates full packs at `X.Y.0` anchors plus compressed guaranteed thin deltas, refreshes dumb-HTTP indexes, optionally generates static Nix-cache files, initializes/advances channel partitions, and uploads the static origin in immutable-first / mutable-last order. A lock file prevents concurrent local publishers; `--dry-run` prints the plan without mutation and `--resume` skips already-present tag/pack artifacts that match HEAD. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
-
-There is **no** single `apr release` wrapper in the tree today; the workflow is
-composed from the focused commands above.
 
 ### 2.1 CURRENT: transport/index refresh
 
@@ -107,8 +105,9 @@ unpublish, tag, sign, and channel operations. The refresh path updates
 `objects/info/alternates` and `info/refs` so a dumb-HTTP origin can be served as
 static files. Pack generation helpers exist in `registry::pack`, static
 Nix-cache generation/upload is exposed through `apr cache generate`, and full
-static git-origin upload is exposed through `apr origin upload`; the remaining
-packaging improvement is a single command that sequences these pieces.
+static git-origin upload is exposed through `apr origin upload`. `apr release`
+now sequences those pieces for the common producer path and leaves the focused
+subcommands available for repair, inspection, and unusual workflows.
 
 ---
 
@@ -566,11 +565,11 @@ ssh_password = "..."
 ssh_ask_pass = false
 ```
 
-The current workflow is explicit subcommands. A future `apr release` can wrap the
-same steps into one atomic command, but the static cache generator and upload
-path exist today.
+`apr release` wraps the same focused operations into one guarded producer
+workflow. Operators can still run the lower-level commands directly for
+repair/resume work or for unusual staging topologies.
 
-### 12.2 TARGET (the §10/§4/§6 pipeline, e.g. a future `apr release`)
+### 12.2 Release orchestrator
 
 ```
 build release commit  →  create + sign semver tag (refs/tags/<semver>, pure signed pointer + optional message)
@@ -593,10 +592,13 @@ upload with CDN TTLs:  /releases/**, loose, packs = long/immutable
                        /objects/info/**, info/refs, HEAD, /channels/** = low TTL
 ```
 
-Whether `apr` grows a single `apr release` / `apr publish` orchestrator that runs
-this whole pipeline (commit → tag/sign → pack/delta/zstd → update-server-info →
-advance partitions → upload) remains open (design brief §16.4;
-[open-questions.md](../plans/registry/open-questions.md)).
+`apr release` is the production wrapper for this pipeline. It supports a
+committed-tree mode and an optional `--store-path` mode; the latter delegates to
+`apr publish` first and therefore requires a real local Nix store path. Static
+cache generation is opt-in with `--cache-output` for the same reason. Uploads
+accept repeatable backend URLs (`file://`, `http(s)://`, `s3://`, and
+`sftp://`/`ssh://`) and publish immutable payloads before low-TTL mutable
+pointers.
 
 ---
 
