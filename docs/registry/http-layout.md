@@ -82,6 +82,10 @@ before resolving the release commit. The release pack layout in §3 is represent
 by `registry::pack`, and channel consumers use `registry::fetch` to prefer
 AOS thin deltas, fall back to release full-pack anchors, then fall through to
 Git's dumb-HTTP loose-object fetch.
+Static-origin upload code classifies immutable payloads and mutable pointer/index
+surfaces with the content types and cache-control values described below; local
+regression coverage checks those classifications, byte-stable relative
+`objects/info/alternates`, and corrupt-pack fallback to Git's loose-object fetch.
 
 ---
 
