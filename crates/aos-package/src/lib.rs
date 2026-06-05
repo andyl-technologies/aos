@@ -733,9 +733,10 @@ pub enum CacheCommand {
         /// Public cache URL to write into committed registry.toml [[caches]]
         #[arg(long)]
         cache_url: Option<String>,
-        /// Backend URL to upload generated files to (file://, s3://, sftp://, http://)
-        #[arg(long)]
-        upload_url: Option<String>,
+        /// Backend URL to upload generated files to; repeat for multiple destinations
+        /// (file://, s3://, sftp://, http://)
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
         /// Priority for generated nix-cache-info and registry [[caches]]
         #[arg(long, default_value = "40")]
         priority: u32,
