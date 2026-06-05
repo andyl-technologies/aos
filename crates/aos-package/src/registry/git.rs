@@ -35,6 +35,25 @@ pub struct SyncResult {
     pub packages_removed: usize,
 }
 
+const MIN_SHA256_GIT_VERSION: GitVersion = GitVersion {
+    major: 2,
+    minor: 42,
+    patch: 0,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct GitVersion {
+    major: u32,
+    minor: u32,
+    patch: u32,
+}
+
+impl std::fmt::Display for GitVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main sync flow
 // ---------------------------------------------------------------------------
@@ -60,6 +79,7 @@ pub async fn sync_git(
 
     // Step 1: Ensure repo.
     printer.info(&format!("Syncing registry '{}' via git...", config.name));
+    ensure_sha256_capable_git().await?;
     ensure_repo(&repo_dir, &git_url).await?;
     let mut retained_before = fetch::parse_retained(&state.retained)?;
     if let Some(floor) = state.floor.as_deref() {
@@ -173,6 +193,81 @@ fn normalize_git_url(url: &str) -> String {
         rest.to_string()
     } else {
         url.to_string()
+    }
+}
+
+async fn ensure_sha256_capable_git() -> Result<()> {
+    let version_output = Command::new("git")
+        .arg("--version")
+        .output()
+        .await
+        .context("running git --version")?;
+    if !version_output.status.success() {
+        bail!(
+            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
+             git --version failed: {}",
+            String::from_utf8_lossy(&version_output.stderr).trim(),
+        );
+    }
+
+    let version_text = String::from_utf8_lossy(&version_output.stdout);
+    let version = parse_git_version(&version_text).ok_or_else(|| {
+        anyhow::anyhow!(
+            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
+             could not parse `git --version` output '{}'",
+            version_text.trim(),
+        )
+    })?;
+    if version < MIN_SHA256_GIT_VERSION {
+        bail!(
+            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
+             found {} from `git --version`. Upgrade git before syncing sha256 dumb-HTTP registries.",
+            version_text.trim(),
+        );
+    }
+
+    let tmp = tempfile::TempDir::new().context("creating temporary git capability probe repo")?;
+    let output = Command::new("git")
+        .args(["init", "--bare", "--object-format=sha256"])
+        .arg(tmp.path())
+        .output()
+        .await
+        .context("running git sha256 capability probe")?;
+    if !output.status.success() {
+        bail!(
+            "this registry requires a sha256-capable git {MIN_SHA256_GIT_VERSION} or newer; \
+             {} cannot run `git init --bare --object-format=sha256`: {}",
+            version_text.trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    Ok(())
+}
+
+fn parse_git_version(output: &str) -> Option<GitVersion> {
+    let token = output
+        .trim()
+        .strip_prefix("git version ")?
+        .split_whitespace()
+        .next()?;
+    let mut parts = token.split('.');
+    let major = parse_leading_u32(parts.next()?)?;
+    let minor = parts.next().and_then(parse_leading_u32).unwrap_or(0);
+    let patch = parts.next().and_then(parse_leading_u32).unwrap_or(0);
+    Some(GitVersion {
+        major,
+        minor,
+        patch,
+    })
+}
+
+fn parse_leading_u32(part: &str) -> Option<u32> {
+    let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
     }
 }
 
@@ -894,6 +989,51 @@ mod tests {
             normalize_git_url("git://github.com/andyl/registry.git"),
             "git://github.com/andyl/registry.git"
         );
+    }
+
+    #[test]
+    fn parse_git_version_handles_common_formats() {
+        assert_eq!(
+            parse_git_version("git version 2.42.0\n"),
+            Some(GitVersion {
+                major: 2,
+                minor: 42,
+                patch: 0,
+            })
+        );
+        assert_eq!(
+            parse_git_version("git version 2.43.1 (Apple Git-155)\n"),
+            Some(GitVersion {
+                major: 2,
+                minor: 43,
+                patch: 1,
+            })
+        );
+        assert_eq!(
+            parse_git_version("git version 2.42.0.windows.1\n"),
+            Some(GitVersion {
+                major: 2,
+                minor: 42,
+                patch: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn sha256_git_floor_is_git_2_42_0() {
+        let below = parse_git_version("git version 2.41.3").unwrap();
+        let floor = parse_git_version("git version 2.42.0").unwrap();
+        let above = parse_git_version("git version 2.43.0").unwrap();
+
+        assert!(below < MIN_SHA256_GIT_VERSION);
+        assert_eq!(floor, MIN_SHA256_GIT_VERSION);
+        assert!(above > MIN_SHA256_GIT_VERSION);
+    }
+
+    #[test]
+    fn parse_git_version_rejects_unexpected_output() {
+        assert_eq!(parse_git_version("not git"), None);
+        assert_eq!(parse_git_version("git version vendor-build"), None);
     }
 
     #[test]

@@ -237,9 +237,11 @@ by Rust integration/e2e tests where the item calls for tests.
 
 ### Consumer Production Hardening
 
-- [ ] Pin and enforce the minimum supported git version for sha256 dumb-HTTP
+- [x] Pin and enforce the minimum supported git version for sha256 dumb-HTTP
       registries. Add a runtime capability check that produces a clear
-      "requires sha256 git" error before a low-level fetch or object panic.
+      "requires sha256 git" error before a low-level fetch or object panic. The
+      AOS consumer floor is Git 2.42.0, enforced with `git --version` parsing and
+      a local `git init --bare --object-format=sha256` capability probe.
       Context: `docs/registry/http-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,

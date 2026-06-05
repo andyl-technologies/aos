@@ -90,6 +90,11 @@ plus the Ed25519 signature and an optional human-readable message. The signature
 algorithm, key format, and trust store are unchanged. Channel partition tag
 production remains publish/rollout work.
 
+Because registry repositories use Git's sha256 object format, clients need
+**Git 2.42.0 or newer**. `apm update` enforces this before fetching by checking
+`git --version` and probing `git init --bare --object-format=sha256`; stock
+`git verify-tag` / `git clone` users need the same floor.
+
 ### 2.3 Verification — `git verify-*` + a temporary `allowed_signers`
 
 Signature *verification* is `verify_commit_signature` in
