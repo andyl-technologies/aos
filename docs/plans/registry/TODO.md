@@ -477,13 +477,17 @@ read before editing code or docs.
       array-style upload destinations, and define partial-failure semantics for
       a destination set such as `(s3, local filesystem path, SFTP)`. The CLI now
       accepts repeatable `--upload-url` values and the upload helper reports
-      partial destination failures after attempting all destinations. The backend
-      factory still supports one URL per backend instance for `file://`,
-      `http(s)://`, `s3://`, and `sftp://`/`ssh://`.
+      partial destination failures after attempting all destinations. Regression
+      coverage now proves both cache uploads and full static-origin uploads
+      continue past a failed middle destination and write later filesystem
+      destinations before returning the aggregate error. The backend factory
+      still supports one URL per backend instance for `file://`, `http(s)://`,
+      `s3://`, and `sftp://`/`ssh://`.
       Context: `docs/registry/publishing.md`,
       `docs/registry/nix-cache-compatibility.md`,
       `crates/aos-package/src/lib.rs`,
       `crates/aos-package/src/registry_ops.rs`,
+      `crates/aos-package/src/registry/static_upload.rs`,
       `crates/aos-package/src/registry/nixcache.rs`,
       `crates/aos-cache/src/backend/mod.rs`,
       `crates/aos-cache/src/backend/fs.rs`,
