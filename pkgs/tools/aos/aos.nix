@@ -10,14 +10,10 @@
   protobuf,
 }: let
   version = "0.1.0";
-  src = builtins.path {
-    path = ../../../crates;
-    name = "aos-crates-src";
-    filter = path: type: let
-      base = baseNameOf path;
-    in
-      base != "target" && base != ".git";
-  };
+  # Crates workspace source + vendored deps, shared with the Rust CI checks
+  # (lib/testing/rust.nix) so the cargoDeps hash lives in exactly one place.
+  workspace = import ./_workspace.nix {inherit fetchCargoDeps;};
+  inherit (workspace) src cargoDeps;
 in
   mkCargoPackage {
     pname = "aos";
@@ -25,10 +21,7 @@ in
 
     cargoFlags = "-p aos";
 
-    cargoDeps = fetchCargoDeps {
-      inherit src;
-      hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
-    };
+    inherit cargoDeps;
 
     buildDeps = [perl pkg-config openssl protobuf git];
     runtimeDeps = [openssl];

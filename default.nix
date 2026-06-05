@@ -238,6 +238,11 @@ in {
       inherit pkgs lib;
       system = serverSystem;
     };
+    # Hermeticity & convention linter behind `aos lint`.
+    lint = import ./lib/testing/nix-lint.nix {inherit pkgs lib;};
+    # Rust CI gates for the `aos` CLI workspace: cargo-fmt, cargo-clippy,
+    # cargo-test, cargo-doc (each a first-class derivation).
+    rust = import ./lib/testing/rust.nix {inherit pkgs lib;};
     build = let
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};

@@ -45,6 +45,88 @@
         );
     in
       builtins.foldl' (acc: name: acc // forSystem name) {} sysNames;
+
+    # The single, flat source of truth for CI. Every attribute is a leaf
+    # derivation (no nested attrsets) so it works uniformly with
+    # `nix flake check`, `nix build .#checks.<system>.<name>`, and the
+    # GitHub Actions matrix generator. The naming convention is what the
+    # matrix classifier keys off (see lib/ci/github-matrix.nix):
+    #   format/lint/eval/cargo-fmt/cargo-clippy/tla-*  → fast        (tier 0)
+    #   cargo-test/cargo-doc/aos/build-*               → build       (tier 1)
+    #   server-/edge-/integration-/fleet-/vm-          → virtualized (tier 2, KVM)
+    checksFor = system: let
+      aos = aosFor system;
+    in
+      {
+        # --- Fast lane: style, lint, pure eval (tier 0) ---
+        format = aos.pkgs.mkDerivation {
+          pname = "aos-format-check";
+          version = "0";
+          src = ./.;
+          buildDeps = [aos.pkgs.alejandra];
+          phases = [
+            {
+              name = "check";
+              script = ''
+                alejandra --check $src
+                mkdir -p $out
+                echo "Format check passed" > $out/result
+              '';
+            }
+          ];
+        };
+        lint = aos.checks.lint;
+        eval = aos.checks.eval;
+
+        # The `aos` CLI binary build (tier 1).
+        aos = aos.pkgs.aos;
+
+        # --- Build checks (tier 1) ---
+        build-critical-pkgs = aos.checks.build.critical-pkgs;
+        build-kernel-config = aos.checks.build.kernel-config;
+        # Aggregate the compiler-hardening probes into one job (each probe
+        # is a tiny compile, not worth its own status). Mirrors the
+        # aggregation in aos.checks.build.all.
+        build-hardening = aos.pkgs.mkDerivation {
+          pname = "aos-build-hardening";
+          version = "0";
+          src = null;
+          buildDeps = builtins.attrValues aos.checks.build.hardening-probe;
+          phases = [
+            {
+              name = "check";
+              script = ''
+                mkdir -p $out
+                echo "PASS" > $out/result
+              '';
+            }
+          ];
+        };
+      }
+      # --- Rust workspace gates: cargo-fmt, cargo-clippy, cargo-test, cargo-doc ---
+      // aos.checks.rust
+      # --- TLA+ model checks: tla-statute, tla-jobs, … (tier 0) ---
+      // prefixAttrs "tla" aos.checks.tla
+      # --- Remaining pure-eval library checks (tier 0) ---
+      // {
+        inherit
+          (aos.checks)
+          module-args
+          module-enforcement
+          ignition-format
+          fleet-spec
+          systemd-lib
+          systemd-generate
+          trivial-builders
+          ;
+      }
+      # --- Per-system module VM checks: server-*, edge-* (tier 2, KVM) ---
+      // prefixAttrs "server" aos.systems.server.checks
+      // prefixAttrs "edge" aos.systems.edge.checks
+      # --- Package integration checks, Firecracker (tier 2, KVM) ---
+      // prefixAttrs "integration" aos.checks.integration
+      # --- Fleet tests, multi-VM (tier 2, KVM) ---
+      // prefixAttrs "fleet" aos.checks.fleet;
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
@@ -108,40 +190,24 @@
 
     formatter = genAttrs systems (system: (aosFor system).pkgs.alejandra);
 
-    checks = genAttrs systems (
-      system: let
-        aos = aosFor system;
-      in
-        {
-          aos = aos.pkgs.aos;
+    checks = genAttrs systems checksFor;
 
-          format = aos.pkgs.mkDerivation {
-            pname = "aos-format-check";
-            version = "0";
-            src = ./.;
-            buildDeps = [aos.pkgs.alejandra];
-            phases = [
-              {
-                name = "check";
-                script = ''
-                  alejandra --check $src
-                  mkdir -p $out
-                  echo "Format check passed" > $out/result
-                '';
-              }
-            ];
-          };
-
-          eval = aos.checks.eval;
-          build = aos.checks.build;
-        }
-        # Per-system module checks: server-boot-basics, edge-boot-basics, etc.
-        // prefixAttrs "server" aos.systems.server.checks
-        // prefixAttrs "edge" aos.systems.edge.checks
-        # Package integration checks
-        // prefixAttrs "integration" aos.checks.integration
-        # Fleet tests (multi-VM)
-        // prefixAttrs "fleet" aos.checks.fleet
-    );
+    # GitHub Actions matrix, derived from the x86_64-linux check set.
+    # Consumed by .github/workflows/ci.yml:
+    #   nix eval --json '.#githubActions.matrix'
+    # Each check becomes one matrix entry → one independent CI job/status.
+    # aarch64-linux is intentionally excluded until aarch64 runners exist.
+    githubActions = let
+      ghSystem = "x86_64-linux";
+      gh = import ./lib/ci/github-matrix.nix {inherit (aosFor ghSystem) lib;};
+    in {
+      matrix = gh.mkGithubMatrix {
+        checks = checksFor ghSystem;
+        system = ghSystem;
+        # These have dedicated always-on fast-lane jobs in ci.yml; omit
+        # them from the fan-out so each reports exactly one status.
+        exclude = ["format" "lint" "cargo-fmt" "cargo-clippy"];
+      };
+    };
   };
 }

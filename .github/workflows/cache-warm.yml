@@ -1,0 +1,55 @@
+name: Cache Warm
+
+# AOS shares no store paths with the existing nixpkgs-derived caches —
+# everything is built from source — so PR CI is only fast if a cache holds
+# AOS's own pre-built paths. This workflow builds the entire check closure
+# on each push to master and pushes every resulting path to the `andyl-os`
+# Attic cache, which PR runs then substitute from.
+#
+# The first run is cold (the from-source world: gcc, rust, llvm, …) and can
+# take hours; subsequent runs only build what master changed.
+#
+# Prerequisite: the `andyl-os` Attic cache must exist and `ATTIC_TOKEN`
+# must grant push access to it (see docs/ci.md).
+
+on:
+  push:
+    branches: [master]
+  # Allow manual re-warming (e.g. after a cache wipe).
+  workflow_dispatch:
+
+concurrency:
+  # Never run two warmers at once; the newest master wins.
+  group: cache-warm
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    name: Build & push check closure
+    runs-on: andyl-nixos-latest-32
+    environment: deploy
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Attic cache (push)
+        uses: andyl-technologies/github-actions/setup-attic@master
+        with:
+          name: andyl-os
+          url: http://localhost:8842
+          token: ${{ secrets.ATTIC_TOKEN }}
+
+      - name: Build all checks
+        run: |
+          set -Eeuo pipefail
+          # Warm the *entire* flat check set (including the fast-lane checks
+          # the CI matrix excludes), with --keep-going so one failure doesn't
+          # abort warming the rest. setup-attic's post-build-hook pushes each
+          # path as it is realised.
+          attrs="$(nix eval --raw '.#checks.x86_64-linux' --apply \
+            'cs: builtins.concatStringsSep " " (map (n: ".#checks.x86_64-linux." + n) (builtins.attrNames cs))')"
+          # shellcheck disable=SC2086
+          nix build -L --keep-going --no-link $attrs

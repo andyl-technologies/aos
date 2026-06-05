@@ -3,12 +3,21 @@ use anyhow::{Context, Result};
 use aos_core::nix::NixRunner;
 use aos_core::output::{create_spinner, Printer};
 
-/// `aos lint [package]` — validate package definitions.
+/// `aos lint [package]` — lint the repository's Nix sources.
+///
+/// Builds the `checks.lint` derivation, which enforces AOS's hermeticity
+/// and convention rules across every `.nix` file (see
+/// `lib/testing/nix-lint.nix`). The linter always scans the whole tree;
+/// the optional `package` argument is accepted for forward compatibility
+/// but does not yet scope the scan.
 pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>) -> Result<()> {
-    let (attr, label) = match package {
-        Some(pkg) => (format!("checks.lint.{pkg}"), format!("lint check for '{pkg}'")),
-        None => ("checks.lint".to_string(), "all lint checks".to_string()),
-    };
+    let (attr, label) = ("checks.lint".to_string(), "Nix lint checks".to_string());
+
+    if let Some(pkg) = package {
+        printer.info(&format!(
+            "Per-package lint scoping is not yet supported; linting the whole tree (ignoring '{pkg}')."
+        ));
+    }
 
     printer.info(&format!("Running {label}..."));
 
