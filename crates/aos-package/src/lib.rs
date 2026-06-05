@@ -712,13 +712,6 @@ pub enum RegistryCommand {
         registry: Option<String>,
     },
 
-    // ----- GitHub Integration -----
-    /// GitHub Pull Request operations
-    Pr {
-        #[command(subcommand)]
-        command: PrCommand,
-    },
-
     // ----- Release -----
     /// Create a git tag
     Tag {
@@ -1051,80 +1044,6 @@ impl CacheUploadAuthArgs {
 
         auth
     }
-}
-
-/// GitHub PR subcommands.
-#[derive(Subcommand)]
-pub enum PrCommand {
-    /// Create a pull request
-    Create {
-        /// PR title
-        #[arg(long)]
-        title: Option<String>,
-        /// PR body
-        #[arg(long)]
-        body: Option<String>,
-        /// Base branch
-        #[arg(long)]
-        base: Option<String>,
-        /// Create as draft
-        #[arg(long)]
-        draft: bool,
-        /// Request review from
-        #[arg(long)]
-        reviewer: Vec<String>,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// List pull requests
-    List {
-        /// Filter by author
-        #[arg(long)]
-        author: Option<String>,
-        /// Show only my PRs
-        #[arg(long)]
-        mine: bool,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Show a pull request
-    Show {
-        /// PR number
-        number: u32,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Merge a pull request
-    Merge {
-        /// PR number
-        number: u32,
-        /// Squash merge
-        #[arg(long)]
-        squash: bool,
-        /// Rebase merge
-        #[arg(long)]
-        rebase: bool,
-        /// Regular merge
-        #[arg(long)]
-        merge: bool,
-        /// Delete branch after merge
-        #[arg(long)]
-        delete_branch: bool,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Show PR diff
-    Diff {
-        /// PR number
-        number: u32,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
 }
 
 /// Convert mutually-exclusive kernel mode flags into a `KernelUpgradeMode`.
@@ -1578,7 +1497,6 @@ async fn run_registry(
             )
             .await
         }
-        RegistryCommand::Pr { command } => registry_ops::run_pr(config, command, printer).await,
         RegistryCommand::Channel { command } => {
             registry_ops::run_channel(config, command, printer).await
         }
