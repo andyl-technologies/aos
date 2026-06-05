@@ -171,6 +171,7 @@ dependencies = [
  "atty",
  "base64",
  "console",
+ "ed25519-dalek",
  "glob",
  "hex",
  "humantime",
@@ -231,6 +232,7 @@ name = "aos-package"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-cache",
  "aos-core",
  "aos-net",
  "aos-systemd",

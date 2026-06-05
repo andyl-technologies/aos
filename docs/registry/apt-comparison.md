@@ -408,14 +408,14 @@ git-native registry path:
 - Versions are semver tags for release/channel verification. Tracking modes are
   commit/branch/channel/tag/version (`TrackingMode`,
   `crates/aos-package/src/types.rs`).
-- Channel rollout uses 256 signed partition tag objects and a persisted
-  semver floor/bucket state.
+- Channel rollout uses 256 signed partition tag objects, a persisted semver
+  floor/bucket state, and `registry::fetch` delta/full/fallback object
+  resolution.
 - Signing uses SSH-format Ed25519 tag signatures, TOFU/trusted-key storage, and
   committed `keys.toml` rotation/revocation helpers.
-
-The target still needs the custom AOS pack/delta fetch walk and static
-Nix-cache producer. See
-[`docs/plans/registry/TODO.md`](../plans/registry/TODO.md).
+- `apr cache generate` produces and optionally uploads the static Nix-cache
+  surface (`nix-cache-info`, `<storehash>.narinfo`, and `nar/*.nar.zst`) and can
+  commit the root `registry.toml` `[[caches]]` pointer.
 
 ---
 

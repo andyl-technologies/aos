@@ -598,6 +598,11 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: ChannelCommand,
     },
+    /// Static Nix-cache operations
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
 
     // ----- GitHub Integration -----
     /// GitHub Pull Request operations
@@ -708,6 +713,35 @@ pub enum ChannelCommand {
     Status {
         /// Channel name
         channel: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Static cache subcommands.
+#[derive(Subcommand)]
+pub enum CacheCommand {
+    /// Generate static narinfo/NAR files for every registry store path
+    Generate {
+        /// Output directory for generated static cache files
+        #[arg(long)]
+        output: PathBuf,
+        /// Nix narinfo signing key file in `name:base64-secret` form
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// Public cache URL to write into committed registry.toml [[caches]]
+        #[arg(long)]
+        cache_url: Option<String>,
+        /// Backend URL to upload generated files to (file://, s3://, sftp://, http://)
+        #[arg(long)]
+        upload_url: Option<String>,
+        /// Priority for generated nix-cache-info and registry [[caches]]
+        #[arg(long, default_value = "40")]
+        priority: u32,
+        /// Do not commit registry.toml after updating [[caches]]
+        #[arg(long)]
+        no_commit: bool,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1226,6 +1260,9 @@ async fn run_registry(
         RegistryCommand::Pr { command } => registry_ops::run_pr(config, command, printer).await,
         RegistryCommand::Channel { command } => {
             registry_ops::run_channel(config, command, printer).await
+        }
+        RegistryCommand::Cache { command } => {
+            registry_ops::run_cache(config, command, printer).await
         }
         RegistryCommand::Tag {
             name,

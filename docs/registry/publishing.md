@@ -79,9 +79,8 @@ new one — never a partition tag pointing at a commit whose objects are missing
 [`crates/aos-package/src/registry_ops.rs`](../../crates/aos-package/src/registry_ops.rs).
 Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml` +
 `closures/<hash>`). The sha256 object-store scaffolding, signed release tags,
-channel partition commands, `update-server-info`, and root
-`objects/info/alternates` refresh hooks now exist. Pack/delta upload and static
-Nix-cache generation are still pending.
+channel partition commands, `update-server-info`, root `objects/info/alternates`
+refresh hooks, and static Nix-cache generation/upload now exist.
 
 The commands relevant to a release, in workflow order:
 
@@ -92,19 +91,20 @@ The commands relevant to a release, in workflow order:
 | `apr tag <name> [--message] --key <key>` | `tag` (`registry_ops.rs:1684`) | `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; `--key` is required; semver tags also prepare a release object dir during the object-store refresh. |
 | `apr sign <tag> --key <key>` | `sign` (`registry_ops.rs:1747`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
 | `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
+| `apr cache generate --output <dir> [--key <key>] [--cache-url <url>] [--upload-url <backend>]` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path; fails closed when a path is absent locally; optionally uploads via `aos-cache` and commits the root `registry.toml` `[[caches]]` pointer. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
-There is **no** `apr release`, no pack/delta generation, and no upload command
-in the tree today.
+There is **no** single `apr release` wrapper in the tree today; the workflow is
+composed from the focused commands above.
 
 ### 2.1 CURRENT: transport/index refresh
 
 The producer now refreshes the git-native static index after create, publish,
 unpublish, tag, sign, and channel operations. The refresh path updates
 `objects/info/alternates` and `info/refs` so a dumb-HTTP origin can be served as
-static files. Pack generation helpers exist in `registry::pack`, but the
-single-command release pipeline that generates, uploads, and validates every
-pack/Nix-cache artifact remains target work.
+static files. Pack generation helpers exist in `registry::pack`, and static
+Nix-cache generation/upload is exposed through `apr cache generate`; the
+remaining packaging improvement is a single command that sequences these pieces.
 
 ---
 
@@ -511,11 +511,16 @@ apr tag 2026.06.0 --message "June release" --key ./registry_signing_key
 apr sign 2026.06.0 --key ./registry_signing_key
 apr channel init stable --release 2026.06.0 --key ./registry_signing_key
 apr channel advance stable --release 2026.06.0 --count 32 --key ./registry_signing_key
+apr cache generate --output ./cache-static \
+    --key ./nix_cache_signing_key \
+    --cache-url https://registry.example/cache \
+    --upload-url s3://registry-cache
 apr push --set-upstream --branch stable        # plain git push              (registry_ops.rs:1398)
 ```
 
-Everything after `apr push` is still incomplete for CDN publication: there is no
-single pack/delta/zstd upload pipeline and no static Nix-cache generator.
+The current workflow is explicit subcommands. A future `apr release` can wrap the
+same steps into one atomic command, but the static cache generator and upload
+path exist today.
 
 ### 12.2 TARGET (the §10/§4/§6 pipeline, e.g. a future `apr release`)
 

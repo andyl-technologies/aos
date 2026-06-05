@@ -36,8 +36,9 @@ possible** — the producer pays once, every consumer benefits forever.
 > **CURRENT.** The registry now uses sha256 git repositories, dumb-HTTP index
 > refreshes, signed release/channel tag objects, channel partition commands, and
 > git-native consumer sync. The package-TOML tree content remains the metadata
-> layer. Remaining gaps are the custom AOS pack/delta fetch path and static
-> Nix-cache producer integration. See [`current-state.md`](./current-state.md).
+> layer. The consumer includes AOS delta/full/fallback object resolution, and
+> `apr cache generate` produces the static Nix-cache layer. See
+> [`current-state.md`](./current-state.md).
 
 ---
 
@@ -338,9 +339,9 @@ and flipped last. Full producer workflow, atomicity, and concurrency are in
 > creates signed release tag objects, writes signed channel partition files,
 > updates the frontier branch, and refreshes sha256 dumb-HTTP object indexes
 > (`update-server-info` and root `objects/info/alternates`) after create,
-> publish, tag, sign, and channel operations. There is still no single
-> pack/delta/Nix-cache upload pipeline. The gaps map to workstreams in
-> [`gap-analysis.md`](../plans/registry/gap-analysis.md).
+> publish, tag, sign, and channel operations. Static Nix-cache generation and
+> upload are available through `apr cache generate`; release publishing is still
+> composed from focused subcommands rather than one atomic pipeline command.
 
 ### 6.2 Rollout (publisher-controlled, fix-forward)
 
