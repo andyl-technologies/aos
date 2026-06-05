@@ -1,4 +1,3 @@
-pub mod bundle;
 pub mod channel;
 pub mod closures;
 pub mod git;

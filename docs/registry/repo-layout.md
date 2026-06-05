@@ -46,8 +46,8 @@ The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
 
 > **Do not confuse this with the removed signed-HTTP-root `registry.toml`.** An
 > intermediate design briefly proposed a *mutable file served at the origin root*
-> carrying `[latest]`/`[channels]`/`[components]`/`[capabilities]`/`[[bundles]]`/
-> `[signature]`. **That** was removed (design-brief §15). The file documented here is a
+> carrying release, channel, component, capability, artifact-list, and signature
+> tables. **That** was removed (design-brief §15). The file documented here is a
 > **committed tree file**, like any package TOML, authenticated by the signed tag.
 
 **TARGET:**
@@ -224,5 +224,5 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 | bootstrap trust | TOFU `trusted-keys.d` (pin) | TOFU `trusted-keys.d` (pin) + `keys.toml` overlap rotation |
 
 See also: [`signing-and-trust.md`](signing-and-trust.md) (keys, rotation/revocation),
-[`http-layout.md`](http-layout.md) (served layout), `current-state.md` (the as-is
-code), and the design brief §14.
+[`http-layout.md`](http-layout.md) (served layout), `current-state.md` (as-built
+code status), and the design brief §14.
