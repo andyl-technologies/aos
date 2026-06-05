@@ -12,6 +12,7 @@
   openssl,
   zlib,
   rust-1_78,
+  llvm-18,
 }: let
   mkRustBootstrap = import ./_rust-bootstrap.nix {
     inherit
@@ -34,4 +35,5 @@ in
     srcHash = "sha256-Fy7PPH0fnZ+xbNKmKIaXgmcEFt7QEp5SSoZ1H5YUSMA=";
     changeId = 123711;
     prevRust = rust-1_78;
+    llvm = llvm-18;
   }
