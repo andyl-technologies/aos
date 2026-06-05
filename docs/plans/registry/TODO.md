@@ -395,11 +395,24 @@ read before editing code or docs.
       `crates/aos-package/src/registry/git.rs`,
       `crates/aos-package/src/registry/objectstore.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Add a supported-version stock Git compatibility matrix for the pinned
-      minimum Git version and newer clients. The current-stock-git e2e proves
-      this host's Git, but production compatibility across the documented floor
-      and newer supported clients still needs containerized or pinned-binary
-      coverage before this is fully proven. Context:
+- [x] Add an env-gated supported-version stock Git compatibility matrix harness
+      for the pinned minimum Git version and newer clients.
+      `stock_git_configured_version_matrix_syncs_sha256_dumb_http_registry`
+      reads `AOS_PACKAGE_TEST_GIT_MATRIX` as a PATH-style list of git binaries or
+      bin directories, then reruns the same sha256 dumb-HTTP sync e2e with each
+      pinned Git selected through a temporary PATH shim. The test is ignored
+      because PATH is process-global; run it explicitly with `--ignored` and
+      `--test-threads=1`. Context:
+      `docs/registry/http-layout.md`,
+      `docs/plans/registry/open-questions.md`,
+      `crates/aos-package/src/registry/git.rs`,
+      `crates/aos-package/src/registry/objectstore.rs`, and
+      `crates/aos-package/tests/registry_e2e.rs`.
+- [ ] Run and publish the supported-version stock Git compatibility matrix for
+      the pinned minimum Git version and newer clients. The host-current e2e and
+      env-gated matrix harness exist, but production compatibility across the
+      documented floor and newer supported clients still needs containerized or
+      pinned-binary evidence before this is fully proven. Context:
       `docs/registry/http-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,

@@ -65,6 +65,16 @@ The supported client floor for sha256 dumb-HTTP registries is **Git 2.42.0**.
 unsupported client fails with a clear "requires a sha256-capable git" error
 instead of a late loose-object or object-format failure. Stock `git clone` users
 must use the same Git floor or newer.
+Rust coverage includes a host-current stock Git e2e and an env-gated pinned
+matrix harness. To run the matrix, set `AOS_PACKAGE_TEST_GIT_MATRIX` to a
+PATH-style list of `git` binaries or bin directories and run:
+
+```sh
+AOS_PACKAGE_TEST_GIT_MATRIX=/path/to/git-2.42/bin/git:/path/to/git-current/bin/git \
+  cargo test --manifest-path crates/Cargo.toml -p aos-package \
+  stock_git_configured_version_matrix_syncs_sha256_dumb_http_registry -- \
+  --ignored --nocapture --test-threads=1
+```
 
 The AOS-specific `/channels/<name>/00..ff` partition files are produced by
 `apr channel init/advance`, and channel consumers verify those signed tag objects
