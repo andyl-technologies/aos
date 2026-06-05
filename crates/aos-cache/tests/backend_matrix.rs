@@ -10,6 +10,7 @@ const STORE_HASH: &str = "abc123abc123abc123abc123abc123ab";
 const MISSING_HASH: &str = "def456def456def456def456def456de";
 const NAR_FILE: &str = "abc123abc123abc123abc123abc123ab-sha256-feedface.nar.zst";
 const NAR_BYTES: &[u8] = b"static nar bytes";
+const CACHE_INFO: &str = "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 37\n";
 
 fn narinfo_text() -> String {
     format!(
@@ -33,6 +34,7 @@ async fn backend_write_read_round_trip(url: &str) -> anyhow::Result<()> {
     let narinfo = narinfo_text();
 
     backend.ensure_cache_info("/nix/store").await?;
+    backend.put_cache_info(CACHE_INFO).await?;
     backend.put_narinfo(STORE_HASH, &narinfo).await?;
     backend.put_nar(NAR_FILE, NAR_BYTES).await?;
 
@@ -59,10 +61,7 @@ async fn file_backend_writes_standard_static_cache_layout() -> anyhow::Result<()
     backend_write_read_round_trip(&url).await?;
 
     let cache_info = tokio::fs::read_to_string(cache_dir.path().join("nix-cache-info")).await?;
-    assert_eq!(
-        cache_info,
-        "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n",
-    );
+    assert_eq!(cache_info, CACHE_INFO,);
     assert_eq!(
         tokio::fs::read_to_string(cache_dir.path().join(format!("{STORE_HASH}.narinfo"))).await?,
         narinfo_text(),

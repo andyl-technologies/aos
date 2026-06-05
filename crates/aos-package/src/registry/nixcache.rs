@@ -117,7 +117,10 @@ pub async fn upload_static_cache(
     printer: &Printer,
 ) -> Result<()> {
     let cache = backend::from_url(upload_url, &AuthOptions::default()).await?;
-    cache.ensure_cache_info("/nix/store").await?;
+    let cache_info_path = output_dir.join("nix-cache-info");
+    let cache_info = std::fs::read_to_string(&cache_info_path)
+        .with_context(|| format!("reading {}", cache_info_path.display()))?;
+    cache.put_cache_info(&cache_info).await?;
 
     for entry in std::fs::read_dir(output_dir)
         .with_context(|| format!("reading {}", output_dir.display()))?
@@ -454,6 +457,11 @@ name = "test"
 
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
         std::fs::write(
+            source.path().join("nix-cache-info"),
+            nix_cache_info("/nix/store", 37),
+        )
+        .unwrap();
+        std::fs::write(
             source.path().join("abc123.narinfo"),
             "StorePath: /nix/store/abc123-pkg\n",
         )
@@ -474,6 +482,10 @@ name = "test"
 
         for dest in [first.path(), second.path()] {
             assert!(dest.join("nix-cache-info").exists());
+            assert_eq!(
+                std::fs::read_to_string(dest.join("nix-cache-info")).unwrap(),
+                nix_cache_info("/nix/store", 37),
+            );
             assert_eq!(
                 std::fs::read_to_string(dest.join("abc123.narinfo")).unwrap(),
                 "StorePath: /nix/store/abc123-pkg\n"
@@ -546,6 +558,11 @@ name = "test"
         let printer = Printer::new(0, true, false);
 
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(
+            source.path().join("nix-cache-info"),
+            nix_cache_info("/nix/store", 40),
+        )
+        .unwrap();
         std::fs::write(
             source.path().join("abc123.narinfo"),
             "StorePath: /nix/store/abc123-pkg\n",

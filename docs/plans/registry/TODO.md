@@ -313,7 +313,9 @@ read before editing code or docs.
 - [x] Add the first `aos-cache` backend integration harness. The new
       `crates/aos-cache/tests/backend_matrix.rs` covers a hermetic local
       filesystem write/read round trip and a static HTTP read round trip for
-      `nix-cache-info`, `<storehash>.narinfo`, and `nar/` objects. Context:
+      `nix-cache-info`, `<storehash>.narinfo`, and `nar/` objects, including
+      exact `nix-cache-info` body upload with a non-default priority for
+      writable backends. Context:
       `docs/registry/nix-cache-compatibility.md`,
       `crates/aos-cache/src/backend/mod.rs`,
       `crates/aos-cache/src/backend/fs.rs`,
@@ -326,15 +328,32 @@ read before editing code or docs.
       `crates/aos-cache/tests/backend_matrix.rs`,
       `crates/aos-cache/src/backend/s3.rs`, and
       `crates/aos-cache/src/backend/sftp.rs`.
-- [ ] Complete backend matrix integration tests for cache generation/upload and
-      cache reads across local filesystem `file://`, mocked/static HTTP,
-      S3-compatible storage, and SFTP. Prove repeatable `--upload-url`
-      destination arrays can include mixed `(s3, local filesystem path, SFTP)`
-      targets, that partial failures are reported after all destinations are
-      attempted, and that each backend can read the generated `nix-cache-info`,
-      `.narinfo`, and `nar/` objects it writes. Promote the ignored S3/SFTP
-      hooks to container-backed or CI-run coverage before checking this off.
-      Context:
+- [x] Preserve generated `nix-cache-info` metadata during static-cache uploads
+      and cover generated cache upload/readback through a repeatable filesystem
+      destination array. `upload_static_cache` now uploads the exact generated
+      `nix-cache-info` body instead of asking each backend to synthesize a
+      default-priority stub. `crates/aos-package/tests/registry_cache_e2e.rs`
+      uploads the generated real-store fixture cache to two `file://`
+      destinations through `upload_static_cache_to_all`, reads the uploaded
+      narinfo/NAR back through the `aos-cache` backend trait, and verifies the
+      uploaded `nix-cache-info` body matches the generated output. Context:
+      `docs/registry/nix-cache-compatibility.md`,
+      `docs/registry/publishing.md`,
+      `crates/aos-cache/src/backend/mod.rs`,
+      `crates/aos-cache/src/backend/fs.rs`,
+      `crates/aos-cache/src/backend/s3.rs`,
+      `crates/aos-cache/src/backend/sftp.rs`,
+      `crates/aos-cache/src/backend/http.rs`,
+      `crates/aos-package/src/registry/nixcache.rs`,
+      `crates/aos-cache/tests/backend_matrix.rs`, and
+      `crates/aos-package/tests/registry_cache_e2e.rs`.
+- [ ] Complete service-backed backend matrix integration tests for generated
+      static-cache upload/readback across S3-compatible storage and SFTP, then
+      prove one repeatable `--upload-url` array can mix `(s3, local filesystem
+      path, SFTP)` targets and still report partial failures only after all
+      destinations are attempted. Local `file://` generated upload/readback and
+      static HTTP readback are covered; promote the ignored S3/SFTP hooks to
+      container-backed or CI-run coverage before checking this off. Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/publishing.md`,
       `crates/aos-package/src/lib.rs`,
@@ -345,7 +364,8 @@ read before editing code or docs.
       `crates/aos-cache/src/backend/s3.rs`,
       `crates/aos-cache/src/backend/sftp.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and
-      `crates/aos-cache/tests/backend_matrix.rs`.
+      `crates/aos-cache/tests/backend_matrix.rs`,
+      `crates/aos-package/tests/registry_cache_e2e.rs`.
 - [ ] Add stock git compatibility tests for the pinned minimum git version and
       sha256 dumb-HTTP behavior. The current local-git smoke test is not enough
       to prove production compatibility across supported client versions.
