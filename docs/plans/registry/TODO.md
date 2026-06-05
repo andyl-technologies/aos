@@ -59,18 +59,18 @@ Keep this file current as work lands.
 
 - [x] Resolve channel bucket to verified semver tag and commit.
 - [x] Run floor check before object fetch.
-- [ ] Implement delta/full/loose object fetch resolution.
+- [x] Implement delta/full/loose object fetch resolution.
 - [x] Persist retained release set and prune obsolete objects.
 - [x] Resolve committed `registry.toml` `[[caches]]` from verified tree.
 - [x] Remove `bundle-list.toml` selection from `apm update`.
 
 ## WS-06 Nix Cache Generation
 
-- [ ] Extract narinfo format/sign/cache-info helpers for producer reuse.
-- [ ] Add AOT static cache generator for narinfo, NAR, and `nix-cache-info`.
-- [ ] Add publish-time completeness check for registry-listed store paths.
-- [ ] Add upload integration for static cache files.
-- [ ] Add stock-Nix/static-cache smoke coverage.
+- [x] Extract narinfo format/sign/cache-info helpers for producer reuse.
+- [x] Add AOT static cache generator for narinfo, NAR, and `nix-cache-info`.
+- [x] Add publish-time completeness check for registry-listed store paths.
+- [x] Add upload integration for static cache files.
+- [x] Add stock-Nix/static-cache smoke coverage.
 
 ## Docs Cleanup
 

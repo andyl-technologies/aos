@@ -152,9 +152,9 @@ surface without conflicting.
 
 > **CURRENT vs TARGET.** The current code now uses git-native sync for HTTP and
 > native git origins, signed release/channel tag objects, sha256 object-store
-> helpers, channel partition commands, and persisted semver rollout state.
-> Remaining target work is concentrated in the custom AOS pack/delta fetch path
-> and the origin-served static Nix-cache producer. See
+> helpers, channel partition commands, persisted semver rollout state,
+> AOS delta/full/fallback object resolution, and static Nix-cache generation.
+> See
 > [current-state.md](current-state.md) for the grounded as-built state and
 > [architecture.md](architecture.md) for the target model.
 
@@ -192,8 +192,10 @@ surface without conflicting.
 
 - **CURRENT** marks behavior that exists in the code today, cited as `path:line`
   (relative to repo root, crate `crates/aos-package/` unless noted).
-- **TARGET** marks the intended design from the
-  [design brief](../plans/registry/design-brief.md) that is not yet implemented.
+- **TARGET** marks the intended protocol/design contract from the
+  [design brief](../plans/registry/design-brief.md). Some target sections are
+  now implemented; check [current-state.md](current-state.md) for as-built
+  status.
 - All inter-doc links are **relative** so the set is browsable from a checkout or
   a static site.
 - Where the code contradicts a brief current-state claim, the docs describe the

@@ -66,14 +66,14 @@ Implemented producer behavior:
   `update-server-info`.
 - `registry::pack` owns the release delta scheme and wrappers around
   `git pack-objects`, zstd, and `git index-pack --fix-thin`.
+- `apr cache generate` emits static Nix-cache files for every registry-listed
+  store path: `nix-cache-info`, `<storehash>.narinfo`, and `nar/*.nar.zst`.
+  It fails closed when a listed store path is absent from the local Nix store,
+  can upload the generated files through `aos-cache` backends, and can update
+  the committed root `registry.toml` `[[caches]]` pointer.
 
-Remaining producer gaps:
-
-- Publish-time static Nix-cache generation is not implemented yet:
-  `nix-cache-info`, `*.narinfo`, `nar/` files, completeness checks, and upload
-  integration are still WS-06 work.
-- The pack helpers exist, but the end-to-end producer upload flow for generated
-  pack artifacts is not complete.
+The release pipeline is still composed from focused `apr` subcommands rather
+than one atomic `apr release` command.
 
 ---
 
@@ -97,14 +97,13 @@ Remaining producer gaps:
    mirror resolution.
 9. Persist registry state.
 
-Channel tracking now resolves a deterministic persisted bucket through
+Channel tracking resolves a deterministic persisted bucket through
 `/channels/<name>/<bucket>`, probes forward when needed, verifies that partition
 tag object, maps it to a signed semver release tag, checks the anti-rollback
-floor, and records the selected release in `retained`.
-
-The consumer currently delegates object transfer to git's fetch machinery. The
-target AOS-specific delta-pack walk and retention policy are represented in the
-pack/channel/object-store helpers but are not yet a complete custom fetch path.
+floor, then invokes `registry::fetch` to resolve objects. That resolver prefers
+an AOS thin delta from a retained base, falls back to the target `X.Y.0`
+full-pack anchor plus a forward delta, and finally delegates to `git fetch` for
+the dumb-HTTP loose-object correctness floor.
 
 ---
 
@@ -118,13 +117,14 @@ Per-registry config files live under `registries.d/<name>.toml`. The mutable
 last_commit = "<sha256 commit>"
 floor = "1.4.2"
 bucket = 183
-retained = ["1.4.2"]
+retained = ["1.0.0", "1.4.0", "1.4.2"]
 last_update = "2026-02-16T12:00:00Z"
 ```
 
 `last_commit` supports fast-forward checks. `floor` is the semver anti-rollback
 floor. `bucket` persists deterministic rollout assignment. `retained` records
-release object directories that should survive pruning.
+release object directories that should survive pruning. For a patch release this
+is the minimum `{X.0.0, X.Y.0, X.Y.Z}` set.
 
 ---
 
@@ -154,21 +154,11 @@ The `apm` NAR downloader is narinfo-driven today:
 - It verifies the compressed file against `FileHash` when present, falling back
   to `NarHash` for uncompressed NARs.
 
-Reusable formatting and signing logic already exists in `aos-core` and
-`aos-server`: `NarInfo`, narinfo formatting, `NarInfoSigner`, and compressed
-file hash/size calculation. What remains is an ahead-of-time producer that emits
-static Nix-cache files for registry store paths and uploads them to the selected
-origin.
+Shared formatting and signing logic now lives in `aos-core::nar::cache`:
+`render_static_narinfo`, `nix_cache_info`, `nar_url`, and `NarInfoSigner`.
+`aos-server` calls that shared library for its live cache responses, while
+`apr cache generate` calls the same library offline to write the static cache.
 
----
-
-## 8. Current gaps
-
-The git-native registry path is active, but these items remain incomplete:
-
-- A full custom AOS object fetch path over the release pack graph.
-- Static Nix-cache file generation and upload.
-- Publish-time completeness checks for every store path listed by the registry.
-- Stock-Nix smoke coverage against the generated static cache.
-
-These are tracked in [`docs/plans/registry/TODO.md`](../plans/registry/TODO.md).
+The generated narinfo layout is covered by round-trip tests and a stock-Nix
+fingerprint signature verification test; the producer-side path is covered by
+store-path collection and committed-cache-pointer tests.
