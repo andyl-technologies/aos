@@ -408,6 +408,11 @@ pub fn key_fingerprint(public_key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_core::nar::cache::{
+        NarCompression, NarInfoSigner, StaticNarInfoInput, render_static_narinfo,
+    };
+    use aos_core::nar::info;
+    use std::process::Command;
     use tempfile::TempDir;
 
     // -- parse_signing_key --------------------------------------------------
@@ -436,6 +441,105 @@ mod tests {
         assert!(parse_signing_key("justonestring").is_err());
         // Empty string.
         assert!(parse_signing_key("").is_err());
+    }
+
+    #[test]
+    fn same_ed25519_key_material_verifies_git_tag_and_narinfo_sig() {
+        let registry = "registry";
+        let seed = [7_u8; 32];
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let raw_public_key = signing_key.verifying_key().to_bytes();
+        let ssh_public_blob = ssh_ed25519_public_key_blob(&raw_public_key);
+        let ssh_public_b64 = base64::engine::general_purpose::STANDARD.encode(&ssh_public_blob);
+        let nix_public_b64 = base64::engine::general_purpose::STANDARD.encode(raw_public_key);
+
+        let aos_trust_key = format!("{registry}:Ed25519:{ssh_public_b64}");
+        let nix_trusted_public_key = format!("{registry}:{nix_public_b64}");
+        let (parsed_registry, algorithm, parsed_ssh_public_b64) =
+            parse_signing_key(&aos_trust_key).unwrap();
+        assert_eq!(parsed_registry, registry);
+        assert_eq!(algorithm, "Ed25519");
+        assert_eq!(parsed_ssh_public_b64, ssh_public_b64);
+        assert_ne!(parsed_ssh_public_b64, nix_public_b64);
+        assert!(nix_trusted_public_key.starts_with("registry:"));
+
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init"]);
+        git(&repo, &["config", "user.name", registry]);
+        git(&repo, &["config", "user.email", registry]);
+        git(&repo, &["config", "commit.gpgsign", "false"]);
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"registry\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "registry.toml"]);
+        git(&repo, &["commit", "-m", "init"]);
+
+        let private_key_path = temp.path().join("registry_signing_key");
+        fs::write(
+            &private_key_path,
+            openssh_ed25519_private_key(&seed, &raw_public_key, registry),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&private_key_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        git(
+            &repo,
+            &[
+                "-c",
+                "gpg.format=ssh",
+                "-c",
+                &format!("user.signingkey={}", private_key_path.display()),
+                "tag",
+                "-s",
+                "1.0.0",
+                "-m",
+                "release 1.0.0",
+            ],
+        );
+        assert!(verify_tag_signature(&repo, "1.0.0", &aos_trust_key).unwrap());
+
+        let signer_secret_b64 = base64::engine::general_purpose::STANDARD.encode(seed);
+        let signer =
+            NarInfoSigner::from_key_content(&format!("{registry}:{signer_secret_b64}")).unwrap();
+        let refs = vec!["/nix/store/ref111-libc".to_string()];
+        let input = StaticNarInfoInput {
+            store_path: "/nix/store/abc123-hello",
+            nar_hash: "sha256:def456",
+            nar_size: 42,
+            references: &refs,
+            deriver: None,
+            signatures: &[],
+            file_hash: "sha256:file789",
+            file_size: 24,
+            compression: NarCompression::Zstd,
+        };
+        let rendered = render_static_narinfo(&input, "/nix/store", Some(&signer));
+        let parsed = info::parse(&rendered).unwrap();
+        let (sig_name, sig_b64) = parsed.signatures[0].split_once(':').unwrap();
+        assert_eq!(sig_name, registry);
+
+        let signature_bytes = base64::engine::general_purpose::STANDARD
+            .decode(sig_b64)
+            .unwrap();
+        let signature = ed25519_dalek::Signature::try_from(signature_bytes.as_slice()).unwrap();
+        let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&raw_public_key).unwrap();
+        let fingerprint = NarInfoSigner::fingerprint(
+            &parsed.store_path,
+            &parsed.nar_hash,
+            parsed.nar_size as i64,
+            &parsed.references,
+        );
+        use ed25519_dalek::Verifier as _;
+        verifying_key
+            .verify(fingerprint.as_bytes(), &signature)
+            .unwrap();
     }
 
     // -- key_fingerprint ----------------------------------------------------
@@ -605,5 +709,77 @@ mod tests {
             }
             other => panic!("expected KeyMismatch, got {other:?}"),
         }
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap_or_else(|err| panic!("running git {args:?}: {err}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    fn ssh_ed25519_public_key_blob(public_key: &[u8; 32]) -> Vec<u8> {
+        let mut blob = Vec::new();
+        push_ssh_string(&mut blob, b"ssh-ed25519");
+        push_ssh_string(&mut blob, public_key);
+        blob
+    }
+
+    fn openssh_ed25519_private_key(
+        seed: &[u8; 32],
+        public_key: &[u8; 32],
+        comment: &str,
+    ) -> String {
+        let public_blob = ssh_ed25519_public_key_blob(public_key);
+        let mut private_key = Vec::new();
+        private_key.extend_from_slice(seed);
+        private_key.extend_from_slice(public_key);
+
+        let mut private = Vec::new();
+        push_u32(&mut private, 0x1234_5678);
+        push_u32(&mut private, 0x1234_5678);
+        push_ssh_string(&mut private, b"ssh-ed25519");
+        push_ssh_string(&mut private, public_key);
+        push_ssh_string(&mut private, &private_key);
+        push_ssh_string(&mut private, comment.as_bytes());
+        for pad in 1..=(8 - private.len() % 8) {
+            if private.len() % 8 == 0 {
+                break;
+            }
+            private.push(pad as u8);
+        }
+
+        let mut blob = b"openssh-key-v1\0".to_vec();
+        push_ssh_string(&mut blob, b"none");
+        push_ssh_string(&mut blob, b"none");
+        push_ssh_string(&mut blob, b"");
+        push_u32(&mut blob, 1);
+        push_ssh_string(&mut blob, &public_blob);
+        push_ssh_string(&mut blob, &private);
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
+        let mut out = "-----BEGIN OPENSSH PRIVATE KEY-----\n".to_string();
+        for chunk in encoded.as_bytes().chunks(70) {
+            out.push_str(std::str::from_utf8(chunk).unwrap());
+            out.push('\n');
+        }
+        out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
+        out
+    }
+
+    fn push_ssh_string(out: &mut Vec<u8>, value: &[u8]) {
+        push_u32(out, value.len() as u32);
+        out.extend_from_slice(value);
+    }
+
+    fn push_u32(out: &mut Vec<u8>, value: u32) {
+        out.extend_from_slice(&value.to_be_bytes());
     }
 }

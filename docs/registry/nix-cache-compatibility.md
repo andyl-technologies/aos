@@ -446,8 +446,12 @@ keypair that signs the git tags (design brief §11):
 - **Two published public-key encodings** from that one key:
   - `aos-core:Ed25519:<base64>` — the apm form for TOFU / `trusted-keys.d` (the
     `SigningConfig.public_key` format, `crates/aos-package/src/types.rs:243-248`,
-    parsed as `<name>:Ed25519:<base64>` by `parse_signing_key` in `security.rs:306`).
+    parsed as `<name>:Ed25519:<base64>` by `parse_signing_key` in `security.rs:306`;
+    the base64 payload is the SSH `ssh-ed25519` public-key blob used by git
+    `allowed_signers`).
   - `<name>:<base64>` — the nix form for Nix `trusted-public-keys`.
+    Its base64 payload is the raw Ed25519 verifying key bytes. It is a different
+    wire encoding of the same public key, not the same literal base64 string.
 
 ### 8.1 Why a per-narinfo `Sig` exists at all
 

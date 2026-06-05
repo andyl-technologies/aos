@@ -215,11 +215,15 @@ read before editing code or docs.
       `crates/aos-package/src/download.rs`,
       `crates/aos-cache/src/backend/mod.rs`, and a new integration file such as
       `crates/aos-package/tests/registry_cache_e2e.rs`.
-- [ ] Add one-key projection coverage for git tag signatures and Nix narinfo
+- [x] Add one-key projection coverage for git tag signatures and Nix narinfo
       signatures: prove the same Ed25519 key material can produce the
       `registry:Ed25519:<base64>` AOS trust form and the `<name>:<base64>` Nix
       `trusted-public-keys` form, and that generated narinfo `Sig:` lines verify
-      under stock-Nix-compatible rules. Context:
+      under stock-Nix-compatible rules. The coverage now signs a real git tag
+      with an OpenSSH Ed25519 private key generated from the same seed used by
+      `NarInfoSigner`, verifies the tag through the AOS `allowed_signers` path,
+      and verifies the narinfo `Sig:` with the raw Nix public-key projection.
+      Context:
       `docs/registry/signing-and-trust.md`,
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/repo-layout.md`,
