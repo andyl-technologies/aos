@@ -72,6 +72,9 @@
     if has format; then
       hardening_cflags="$hardening_cflags -Wformat -Wformat-security -Werror=format-security"
     fi
+    if has strictflexarrays1; then
+      hardening_cflags="$hardening_cflags -fstrict-flex-arrays=1"
+    fi
     if has strictflexarrays3; then
       hardening_cflags="$hardening_cflags -fstrict-flex-arrays=3"
     fi
