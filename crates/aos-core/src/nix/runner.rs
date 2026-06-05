@@ -249,21 +249,6 @@ impl NixRunner {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Execute into a `nix-shell` session (replaces the current process on
-    /// Unix).
-    pub fn shell(&self, nix_file: &Path) -> Result<()> {
-        let status = Command::new("nix-shell")
-            .arg(nix_file)
-            .current_dir(&self.root)
-            .status()
-            .context("failed to start nix-shell")?;
-
-        if !status.success() {
-            anyhow::bail!("nix-shell exited with status {status}");
-        }
-        Ok(())
-    }
-
     /// Execute into a `nix repl` session, loading `default.nix`.
     pub fn repl(&self, nix_file: &Path) -> Result<()> {
         let status = Command::new("nix")
