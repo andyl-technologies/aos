@@ -620,6 +620,11 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: CacheCommand,
     },
+    /// Static git-origin upload operations
+    Origin {
+        #[command(subcommand)]
+        command: OriginCommand,
+    },
 
     // ----- GitHub Integration -----
     /// GitHub Pull Request operations
@@ -842,6 +847,27 @@ pub enum CacheCommand {
         /// Do not commit registry.toml after updating [[caches]]
         #[arg(long)]
         no_commit: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Static git-origin subcommands.
+#[derive(Subcommand)]
+pub enum OriginCommand {
+    /// Upload the dumb-HTTP git origin surface to one or more destinations
+    Upload {
+        /// Backend URL to upload static origin files to; repeat for multiple destinations
+        /// (file://, s3://, sftp://, http://)
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
+        /// Optional generated static Nix-cache directory to upload beside the git origin
+        #[arg(long = "cache-dir")]
+        cache_dir: Option<PathBuf>,
+        /// Authentication and backend-specific upload options
+        #[command(flatten)]
+        auth: CacheUploadAuthArgs,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1472,6 +1498,9 @@ async fn run_registry(
         }
         RegistryCommand::Cache { command } => {
             registry_ops::run_cache(config, command, printer).await
+        }
+        RegistryCommand::Origin { command } => {
+            registry_ops::run_origin(config, command, printer).await
         }
         RegistryCommand::Tag {
             name,

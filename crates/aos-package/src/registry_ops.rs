@@ -18,10 +18,14 @@ use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
 use crate::registry::objectstore;
+use crate::registry::static_upload;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
 use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
 use crate::types::{CacheEntry, RegistryConfig, RegistryRootConfig};
-use crate::{BranchCommand, CacheCommand, ChannelCommand, KeysCommand, PrCommand, TrustCommand};
+use crate::{
+    BranchCommand, CacheCommand, ChannelCommand, KeysCommand, OriginCommand, PrCommand,
+    TrustCommand,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1644,6 +1648,47 @@ pub async fn run_cache(
                 }
             }
 
+            Ok(())
+        }
+    }
+}
+
+/// Static git-origin subcommands.
+pub async fn run_origin(
+    config: &ApmConfig,
+    command: &OriginCommand,
+    printer: &Printer,
+) -> Result<()> {
+    match command {
+        OriginCommand::Upload {
+            upload_urls,
+            cache_dir,
+            auth,
+            registry,
+        } => {
+            if upload_urls.is_empty() {
+                bail!("at least one --upload-url is required");
+            }
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            refresh_registry_object_store(&dir)
+                .context("refreshing static git origin before upload")?;
+            let auth =
+                auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
+            let report = static_upload::upload_static_origin_to_all(
+                &dir,
+                cache_dir.as_deref(),
+                upload_urls,
+                &auth,
+                printer,
+            )
+            .await?;
+
+            printer.success(&format!(
+                "Uploaded {} static origin file(s) ({}).",
+                report.files,
+                format_size(report.bytes),
+            ));
             Ok(())
         }
     }

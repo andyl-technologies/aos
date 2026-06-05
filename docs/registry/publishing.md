@@ -80,7 +80,8 @@ new one — never a partition tag pointing at a commit whose objects are missing
 Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml` +
 `closures/<hash>`). The sha256 object-store scaffolding, signed release tags,
 channel partition commands, `update-server-info`, root `objects/info/alternates`
-refresh hooks, and static Nix-cache generation/upload now exist.
+refresh hooks, static Nix-cache generation/upload, and static git-origin upload
+now exist.
 
 The commands relevant to a release, in workflow order:
 
@@ -93,6 +94,7 @@ The commands relevant to a release, in workflow order:
 | `apr sign <tag> (--key <path> \| --key-id <id>)` | `sign` (`registry_ops.rs`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
 | `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, using the same `--key` / `--key-id` signing-key selection as release tags, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
 | `apr cache generate --output <dir> [--key <key>] [--cache-url <url>] [--upload-url <backend>]...` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path; fails closed when a path is absent locally; optionally uploads the exact generated files to one or more repeatable `--upload-url` destinations via `aos-cache`, reporting any partial destination failures, supports HTTP/S3/SFTP auth flags, and commits the root `registry.toml` `[[caches]]` pointer. |
+| `apr origin upload --upload-url <backend>... [--cache-dir <dir>]` | `run_origin` (`registry_ops.rs`) | Refreshes static git indexes, then uploads the full dumb-HTTP origin surface in immutable-first / mutable-last order: `objects/**`, `releases/**`, optional static-cache `nar/**` and `*.narinfo`, then `HEAD`, `info/refs`, `objects/info/**`, `channels/**`, and `nix-cache-info`; uses the same backend auth flags and partial-failure semantics as static cache uploads. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
 There is **no** single `apr release` wrapper in the tree today; the workflow is
@@ -103,9 +105,10 @@ composed from the focused commands above.
 The producer now refreshes the git-native static index after create, publish,
 unpublish, tag, sign, and channel operations. The refresh path updates
 `objects/info/alternates` and `info/refs` so a dumb-HTTP origin can be served as
-static files. Pack generation helpers exist in `registry::pack`, and static
-Nix-cache generation/upload is exposed through `apr cache generate`; the
-remaining packaging improvement is a single command that sequences these pieces.
+static files. Pack generation helpers exist in `registry::pack`, static
+Nix-cache generation/upload is exposed through `apr cache generate`, and full
+static git-origin upload is exposed through `apr origin upload`; the remaining
+packaging improvement is a single command that sequences these pieces.
 
 ---
 
@@ -521,10 +524,15 @@ apr cache generate --output ./cache-static \
     --ssh-key /run/secrets/registry_sftp_key \
     --upload-url s3://registry-cache \
     --upload-url file:///srv/registry-cache
+apr origin upload \
+    --cache-dir ./cache-static \
+    --upload-url s3://registry-origin \
+    --upload-url sftp://deploy@origin.example/srv/registry
 apr push --set-upstream --branch stable        # plain git push              (registry_ops.rs:1398)
 ```
 
-`apr cache generate` accepts the same backend-auth shape as `aos cache` uploads:
+`apr cache generate` and `apr origin upload` accept the same backend-auth shape
+as `aos cache` uploads:
 `--token` / `AOS_TOKEN`, `--view` / `AOS_VIEW`, `--http-user`,
 `--http-password` / `AOS_HTTP_PASSWORD`, repeatable `--header`,
 `--s3-region` / `AWS_REGION`, `--s3-profile`, `--s3-endpoint`, `--ssh-key`,
@@ -587,8 +595,7 @@ upload with CDN TTLs:  /releases/**, loose, packs = long/immutable
 
 Whether `apr` grows a single `apr release` / `apr publish` orchestrator that runs
 this whole pipeline (commit → tag/sign → pack/delta/zstd → update-server-info →
-advance partitions → upload), and whether upload backends are pluggable, is an
-open question (design brief §16.4;
+advance partitions → upload) remains open (design brief §16.4;
 [open-questions.md](../plans/registry/open-questions.md)).
 
 ---

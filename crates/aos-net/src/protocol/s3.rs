@@ -291,19 +291,27 @@ impl S3Protocol {
                 let file_len = metadata.len();
 
                 if file_len > MULTIPART_THRESHOLD {
-                    self.do_multipart_upload_from_file(&client, &bucket, &key, path, file_len)
-                        .await?;
+                    self.do_multipart_upload_from_file(
+                        &client,
+                        &bucket,
+                        &key,
+                        path,
+                        file_len,
+                        &request.headers,
+                    )
+                    .await?;
                 } else {
                     // Small file: read and upload in one shot.
                     let data = tokio::fs::read(path)
                         .await
                         .with_context(|| format!("reading {}", path.display()))?;
-                    client
+                    let put = client
                         .put_object()
                         .bucket(&bucket)
                         .key(&key)
-                        .body(data.into())
-                        .send()
+                        .body(data.into());
+                    let put = apply_put_object_headers(put, &request.headers);
+                    put.send()
                         .await
                         .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
                 }
@@ -320,12 +328,13 @@ impl S3Protocol {
             }
             Some(TransferBody::Bytes(data)) => {
                 let data_len = data.len() as u64;
-                client
+                let put = client
                     .put_object()
                     .bucket(&bucket)
                     .key(&key)
-                    .body(data.clone().into())
-                    .send()
+                    .body(data.clone().into());
+                let put = apply_put_object_headers(put, &request.headers);
+                put.send()
                     .await
                     .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
 
@@ -343,12 +352,13 @@ impl S3Protocol {
                 anyhow::bail!("stream body not directly supported for S3 put via Protocol::execute(); use TransferEngine");
             }
             None => {
-                client
+                let put = client
                     .put_object()
                     .bucket(&bucket)
                     .key(&key)
-                    .body(Vec::new().into())
-                    .send()
+                    .body(Vec::new().into());
+                let put = apply_put_object_headers(put, &request.headers);
+                put.send()
                     .await
                     .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
 
@@ -442,14 +452,11 @@ impl S3Protocol {
         key: &str,
         path: &std::path::Path,
         file_len: u64,
+        headers: &[(String, String)],
     ) -> Result<()> {
-        let create_resp = client
-            .create_multipart_upload()
-            .bucket(bucket)
-            .key(key)
-            .send()
-            .await
-            .context("S3 CreateMultipartUpload")?;
+        let create = client.create_multipart_upload().bucket(bucket).key(key);
+        let create = apply_create_multipart_headers(create, headers);
+        let create_resp = create.send().await.context("S3 CreateMultipartUpload")?;
 
         let upload_id = create_resp
             .upload_id()
@@ -514,6 +521,42 @@ impl S3Protocol {
 
         Ok(())
     }
+}
+
+fn apply_put_object_headers(
+    mut builder: aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder,
+    headers: &[(String, String)],
+) -> aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder {
+    for (name, value) in headers {
+        match name.to_ascii_lowercase().as_str() {
+            "content-type" => {
+                builder = builder.content_type(value);
+            }
+            "cache-control" => {
+                builder = builder.cache_control(value);
+            }
+            _ => {}
+        }
+    }
+    builder
+}
+
+fn apply_create_multipart_headers(
+    mut builder: aws_sdk_s3::operation::create_multipart_upload::builders::CreateMultipartUploadFluentBuilder,
+    headers: &[(String, String)],
+) -> aws_sdk_s3::operation::create_multipart_upload::builders::CreateMultipartUploadFluentBuilder {
+    for (name, value) in headers {
+        match name.to_ascii_lowercase().as_str() {
+            "content-type" => {
+                builder = builder.content_type(value);
+            }
+            "cache-control" => {
+                builder = builder.cache_control(value);
+            }
+            _ => {}
+        }
+    }
+    builder
 }
 
 impl Default for S3Protocol {
