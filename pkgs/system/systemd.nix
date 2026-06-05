@@ -109,6 +109,13 @@ in
     ];
     propagatedDeps = [];
 
+    # systemd's many [0]/[1] trailing-array structs get narrowed to a fixed
+    # size by -fstrict-flex-arrays=3, so _FORTIFY_SOURCE aborts tools like
+    # systemd-tmpfiles at runtime ("buffer overflow detected"). Step down to
+    # level 1 (nixpkgs' default level); fortify3 and the rest stay on.
+    hardeningDisable = ["strictflexarrays3"];
+    hardeningEnable = ["strictflexarrays1"];
+
     # The ukify wrapper installed into $tools/bin references python3 +
     # the pefile / pyelftools site-packages. Listed in nukeRefsKeep so
     # scrubPhase preserves the hashes only inside the tools output.
