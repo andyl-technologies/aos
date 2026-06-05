@@ -388,6 +388,51 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn static_origin_upload_to_all_reports_partial_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("origin.git");
+        write_fixture_origin(&root);
+        let cache = tmp.path().join("cache");
+        write_fixture_cache(&cache);
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let printer = Printer::new(0, true, false);
+
+        let upload_urls = vec![
+            format!("file://{}", first.path().display()),
+            "not-a-url".to_string(),
+            format!("file://{}", second.path().display()),
+        ];
+        let err = upload_static_origin_to_all(
+            &root,
+            Some(&cache),
+            &upload_urls,
+            &AuthOptions::default(),
+            &printer,
+        )
+        .await
+        .unwrap_err();
+
+        let message = format!("{err:#}");
+        assert!(message.contains("static origin upload failed for 1/3 destination"));
+        assert!(message.contains("not-a-url"));
+        for dest in [first.path(), second.path()] {
+            assert_eq!(
+                std::fs::read(dest.join("HEAD")).unwrap(),
+                b"ref: refs/heads/stable\n"
+            );
+            assert_eq!(
+                std::fs::read(dest.join("abc123.narinfo")).unwrap(),
+                b"narinfo"
+            );
+            assert_eq!(
+                std::fs::read(dest.join("nar/demo.nar.zst")).unwrap(),
+                b"nar"
+            );
+        }
+    }
+
     fn write_fixture_origin(root: &Path) {
         std::fs::create_dir_all(root.join("info")).unwrap();
         std::fs::create_dir_all(root.join("objects/aa")).unwrap();
