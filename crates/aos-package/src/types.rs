@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
@@ -235,6 +236,9 @@ pub struct RegistryConfig {
     /// Producer-side defaults for `apr cache generate --upload-url` backend auth.
     #[serde(default)]
     pub upload_auth: Option<RegistryUploadAuthConfig>,
+    /// Producer-side local private-key path map keyed by committed keys.toml id.
+    #[serde(default)]
+    pub signing_keys: BTreeMap<String, String>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
 }
@@ -616,6 +620,8 @@ pub struct RegistryFileInner {
     #[serde(default)]
     pub upload_auth: Option<RegistryUploadAuthConfig>,
     #[serde(default)]
+    pub signing_keys: BTreeMap<String, String>,
+    #[serde(default)]
     pub signing: Option<SigningConfig>,
     #[serde(default)]
     pub state: Option<RegistryState>,
@@ -719,6 +725,7 @@ mod tests {
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Http);
@@ -740,6 +747,7 @@ mod tests {
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Http);
@@ -761,6 +769,7 @@ mod tests {
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -782,6 +791,7 @@ mod tests {
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -803,6 +813,7 @@ mod tests {
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -1020,6 +1031,7 @@ last_update = "2026-02-13T10:30:00Z"
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         }
     }

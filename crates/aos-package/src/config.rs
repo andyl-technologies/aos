@@ -144,6 +144,7 @@ impl ApmConfig {
             max_staleness_seconds: rf.registry.max_staleness_seconds,
             caches: rf.registry.caches,
             upload_auth: rf.registry.upload_auth,
+            signing_keys: rf.registry.signing_keys,
             signing: rf.registry.signing,
         };
 
@@ -321,6 +322,10 @@ public_key = "aos-core:Ed25519:abc123"
 view = "prod"
 s3_region = "us-west-2"
 
+[registry.signing_keys]
+initial = "/run/keys/aos-core-initial"
+next = "/run/keys/aos-core-next"
+
 [registry.state]
 last_commit = "deadbeef"
 floor = "1.2.0"
@@ -334,6 +339,14 @@ last_update = "2026-02-13T10:30:00Z"
         let (config, state) = ApmConfig::parse_registry_file(&path).unwrap();
         assert_eq!(config.name, "aos-core");
         assert!(config.signing.is_some());
+        assert_eq!(
+            config.signing_keys.get("initial").map(String::as_str),
+            Some("/run/keys/aos-core-initial"),
+        );
+        assert_eq!(
+            config.signing_keys.get("next").map(String::as_str),
+            Some("/run/keys/aos-core-next"),
+        );
         let upload_auth = config.upload_auth.unwrap();
         assert_eq!(upload_auth.view.as_deref(), Some("prod"));
         assert_eq!(upload_auth.s3_region.as_deref(), Some("us-west-2"));
@@ -387,6 +400,7 @@ max_staleness_seconds = 604800
                         max_staleness_seconds: None,
                         caches: Vec::new(),
                         upload_auth: None,
+                        signing_keys: Default::default(),
                         signing: None,
                     },
                     None,
@@ -406,6 +420,7 @@ max_staleness_seconds = 604800
                         max_staleness_seconds: None,
                         caches: Vec::new(),
                         upload_auth: None,
+                        signing_keys: Default::default(),
                         signing: None,
                     },
                     None,
