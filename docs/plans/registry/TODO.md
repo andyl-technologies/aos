@@ -92,9 +92,9 @@ read before editing code or docs.
 - [x] Inventory the registry-adjacent Rust test surface before assigning the
       remaining e2e work. Current coverage is mostly focused unit/module tests
       embedded in source files. `crates/aos-cache/tests/backend_matrix.rs` now
-      starts the cache backend matrix; `crates/aos-package/tests/` still does
-      not exist. Treat every `crates/aos-package/tests/*.rs` file named below as
-      a new file to create. Existing context:
+      starts the cache backend matrix; `crates/aos-package/tests/common/mod.rs`
+      and `crates/aos-package/tests/registry_e2e.rs` now start the
+      git-native registry integration harness. Existing context:
       `crates/aos-package/src/registry/objectstore.rs`,
       `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/channel.rs`,
@@ -117,11 +117,14 @@ read before editing code or docs.
       `crates/aos-cache/tests/backend_matrix.rs`,
       `crates/aos-cache/src/resolve.rs`, and the only existing crate-level tests
       directory currently found, `crates/aos-systemd/tests/`.
-- [ ] Create shared integration-test fixture utilities for git-native registry
-      tests: temporary sha256 bare origins, signed tag/key material, static HTTP
-      serving, cache directory construction, command invocation helpers, and
-      assertions for persisted `registries.d` state. Keep the helpers in a new
-      test support module and use them across the e2e items below. Context:
+- [x] Create shared integration-test fixture utilities for git-native registry
+      tests: temporary sha256 source repos and bare origins, signed tag/key
+      material, static HTTP serving, cache directory construction, git command
+      invocation helpers, and assertions for persisted `registries.d` state.
+      The first smoke test proves the fixture can sign a release tag, publish a
+      sha256 dumb-HTTP origin, sync it through `registry::git::sync_git`,
+      extract packages/root `registry.toml`, load the package registry, and
+      round-trip persisted state. Context:
       `docs/registry/current-state.md`, `docs/registry/http-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/registry/publishing.md`,
@@ -134,7 +137,7 @@ read before editing code or docs.
       `crates/aos-package/src/registry/fetch.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and new files such as
       `crates/aos-package/tests/common/mod.rs`,
-      `crates/aos-package/tests/registry_e2e.rs`, and
+      `crates/aos-package/tests/registry_e2e.rs`, and future
       `crates/aos-package/tests/registry_cache_e2e.rs`.
 
 ### Cross-Cutting Rust Integration / E2E Tests
