@@ -277,8 +277,9 @@ freshness is **out of band**, assembled from three pieces (design-brief §11):
   the dumb-HTTP ref shim (`info/refs`, `objects/info`) — so a frozen mirror falls
   behind quickly.
 - **The consumer's own max-staleness policy** — its local registry config decides
-  how old the last successful channel observation may be before a failed refresh
-  is treated as stale. `apm` persists that observation in
+  how old the last channel freshness observation may be before a failed refresh
+  or unchanged-but-valid signed channel target is treated as stale. `apm`
+  persists that observation in
   `[registry.state].last_update`, and `max_staleness_seconds` defaults to 14 days
   for channel sync.
 - **The monotonic anti-rollback floor** — a consumer never moves to an older

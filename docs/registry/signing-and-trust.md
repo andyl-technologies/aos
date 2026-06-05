@@ -301,13 +301,15 @@ Freshness is therefore enforced **out of band**, by three cooperating mechanisms
 | **Consumer max-staleness policy** | client-side registry config | how long *this consumer* will trust a previously-fetched pointer before it MUST re-fetch and re-validate |
 | **Monotonic anti-rollback floor** | consumer (§5) | the lower bound on the accepted release, regardless of pointer age |
 
-For channel-tracked registries, `apm` records the timestamp of the last successful
-sync in `[registry.state].last_update`. The local registry config may set
-`max_staleness_seconds`; when omitted, channel sync uses a 14-day default. If a
-later channel refresh cannot fetch refs or resolve a usable signed partition, `apm`
-compares `last_update` to that bound and fails closed with a staleness-oriented
-error once the bound is exceeded. A first sync has no prior freshness observation,
-so a failed first refresh is also a hard failure.
+For channel-tracked registries, `apm` records its local freshness timestamp in
+`[registry.state].last_update`. The local registry config may set
+`max_staleness_seconds`; when omitted, channel sync uses a 14-day default. First
+sync and semver advancement refresh this timestamp. If a later channel refresh
+cannot fetch refs, cannot resolve a usable signed partition, or resolves an
+unchanged-but-valid signed target, `apm` compares `last_update` to that bound and
+fails closed with a staleness-oriented error once the bound is exceeded.
+Unchanged targets do not refresh the timestamp. A first sync has no prior
+freshness observation, so a failed first refresh is also a hard failure.
 
 The CDN policy ([`http-layout.md`](http-layout.md)) **MUST** keep `/channels` (and
 `info/refs`, `objects/info`) at low TTL so a consumer re-fetches and sees rollout
