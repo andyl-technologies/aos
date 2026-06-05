@@ -12,10 +12,11 @@
 > package-TOML tree) over dumb HTTP. It is **not** the NAR/blob substitution path
 > (see [nix-cache-compatibility.md](./nix-cache-compatibility.md)).
 >
-> **CURRENT vs TARGET:** sections labeled **CURRENT** describe code that exists
-> today, cited as `path:line`. Sections labeled **TARGET** describe the design in
-> [`design-brief.md`](../plans/registry/design-brief.md) §9–§10 (with §4, §8 for
-> the object-store context) that is not yet implemented.
+> **Implementation status:** `registry::pack` implements the producer pack
+> primitives, and `registry::fetch` implements the consumer delta/full/fallback
+> resolution layer described here. The reference still uses **TARGET** on design
+> sections where it is explaining the protocol contract rather than a single
+> Rust function.
 
 **Related reference docs:**
 [README](./README.md) ·
@@ -260,10 +261,15 @@ of releases). Object correctness is the root `/objects/` store's job.
 sha256 object-format checks, release object-dir mapping, root loose-object path
 validation, relative alternates, and `git update-server-info`.
 
-The remaining implementation work is the end-to-end producer/upload flow and the
-custom AOS consumer walk over the release pack graph. Today the consumer can use
-git's fetch machinery against the dumb-HTTP repo; the AOS-specific thin-delta
-selection and retention path in §4 is still target work.
+`crates/aos-package/src/registry/fetch.rs` implements the consumer resolution
+layer: retained-base delta selection, target-anchor full-pack fallback, and a
+final `git fetch` fallback for the dumb-HTTP loose-object correctness floor.
+Channel sync calls this resolver after the signed tag chain and semver floor
+check succeed, then persists the `{X.0.0, X.Y.0, X.Y.Z}` retained set.
+
+The producer pack helpers are available as focused building blocks; the current
+CLI still composes release publishing from separate `apr` subcommands rather
+than one atomic release pipeline command.
 
 ---
 

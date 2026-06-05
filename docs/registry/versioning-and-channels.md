@@ -12,9 +12,9 @@
 > (**monotonic anti-rollback floor + fix-forward abort**).
 >
 > **CURRENT vs TARGET.** Channel config, semver rollout state, signed partition
-> tag production, and channel consumer resolution are implemented. The remaining
-> target work is mostly the custom AOS pack/delta fetch path and static Nix-cache
-> producer integration.
+> tag production, channel consumer resolution, object fetch resolution, and
+> static Nix-cache producer integration are implemented. See
+> [current-state.md](current-state.md) for the as-built module map.
 
 Related reference docs:
 [README](./README.md) ·

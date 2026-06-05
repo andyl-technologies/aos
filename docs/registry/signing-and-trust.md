@@ -437,13 +437,13 @@ ways:
 | Key format `name:Ed25519:<base64>` | `parse_signing_key` (`security.rs:306`) | unchanged |
 | Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) | unchanged (the bootstrap anchor) |
 | Signing pubkey location | removed from in-repo `registry.toml`; bootstrap trust is client-side TOFU | trust = `keys.toml` roster + TOFU |
-| Key rotation / revocation | `keys.toml` parser plus rotation-pin/revocation helpers exist; publish/key-management wiring still pending | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
-| Signature *production* | `apr tag --key` / `apr sign <tag> --key` create signed release tag objects; `apr channel init/advance --key` writes signed channel partition tag files | upload-integrated publish pipeline still pending |
-| Tag creation | `apr tag` requires `--key` and runs `git tag -s`; `apr channel` creates raw signed partition tag files | consumer verification path still pending |
-| Signature *verification* | `verify_commit_signature` = `git verify-commit` (`security.rs:199`) | `git verify-tag` (same allowed-signers mechanism) |
-| What is signed | the HEAD **commit** | **`tag → tag → commit`** chain (partition + release tags) |
-| Name-binding | none | embedded tag-name == expected path name (channel / semver) |
-| Anti-rollback | `check_downgrade` git-ancestry (`security.rs:256`) | semver **monotonic floor** + **fix-forward** |
+| Key rotation / revocation | `keys.toml` parser plus rotation-pin/revocation helpers exist | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
+| Signature *production* | `apr tag --key` / `apr sign <tag> --key` create signed release tag objects; `apr channel init/advance --key` writes signed channel partition tag files | implemented |
+| Tag creation | `apr tag` requires `--key` and runs `git tag -s`; `apr channel` creates raw signed partition tag files | implemented |
+| Signature *verification* | channel sync verifies the partition tag, semver tag, and commit chain | `git verify-tag` (same allowed-signers mechanism) |
+| What is signed | **`tag → tag → commit`** chain (partition + release tags) | implemented |
+| Name-binding | embedded tag-name == expected path name (channel / semver) | implemented |
+| Anti-rollback | semver monotonic floor + fix-forward | implemented |
 | Nix narinfo `Sig:` | not wired | reuse the one Ed25519 key |
 
 The full implementation plan for this surface is
