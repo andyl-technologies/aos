@@ -38,6 +38,12 @@ in
     ];
     propagatedDeps = [];
 
+    # dbus-daemon crash-loops on activation under -fstrict-flex-arrays=3
+    # (its trailing-array message structs trip _FORTIFY_SOURCE at runtime).
+    # Step down to level 1; fortify3 and the rest stay on.
+    hardeningDisable = ["strictflexarrays3"];
+    hardeningEnable = ["strictflexarrays1"];
+
     phases = [
       {
         name = "unpack";

@@ -37,8 +37,10 @@ in
     propagatedDeps = [];
 
     # elfutils still uses flexible-array idioms incompatible with
-    # -fstrict-flex-arrays=3.
+    # -fstrict-flex-arrays=3; step down to level 1 (keeps fortify3 and the
+    # rest, but lets [0]/[1] trailing arrays stay flexible).
     hardeningDisable = ["strictflexarrays3"];
+    hardeningEnable = ["strictflexarrays1"];
 
     phases = [
       {

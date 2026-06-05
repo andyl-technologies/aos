@@ -17,6 +17,7 @@
   srcHash,
   changeId,
   prevRust,
+  llvm,
   needsDownloadRustc ? false,
   useBootstrapToml ? false,
   disableLld ? false,
@@ -46,9 +47,10 @@ in
       bash
       which
       prevRust
+      llvm
       openssl
     ];
-    runtimeDeps = [zlib openssl];
+    runtimeDeps = [zlib openssl llvm];
 
     phases = [
       {
@@ -63,8 +65,10 @@ in
         script = ''
           # Fix arc4random: cmake detects it in glibc but the header doesn't
           # declare it. Force the check result to 0.
+          # Now that we link external LLVM via llvm-config, the vendored LLVM is
+          # not built; this fix is a harmless no-op kept for robustness.
           sed -i 's/check_symbol_exists(arc4random "stdlib.h" HAVE_DECL_ARC4RANDOM)/set(HAVE_DECL_ARC4RANDOM 0 CACHE BOOL "")/' \
-            src/llvm-project/llvm/cmake/config-ix.cmake
+            src/llvm-project/llvm/cmake/config-ix.cmake 2>/dev/null || true
 
           # Fake git so x.py doesn't panic.
           # Must return exit 1 for unknown commands (especially rev-parse),
@@ -78,7 +82,14 @@ in
           change-id = ${toString changeId}
 
           [llvm]
+          link-shared = true
           download-ci-llvm = false
+
+          [target.x86_64-unknown-linux-gnu]
+          llvm-config = "${llvm}/bin/llvm-config"
+
+          [target.aarch64-unknown-linux-gnu]
+          llvm-config = "${llvm}/bin/llvm-config"
 
           [build]
           docs = false
@@ -138,7 +149,7 @@ in
                   python3 x.py install
 
                   # No patchelf available — use wrapper scripts (same pattern as rust-1_74.nix)
-                  LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${zlib}/lib:${openssl}/lib"
+                  LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${llvm}/lib:${zlib}/lib:${openssl}/lib"
 
                   for f in $out/bin/*; do
                     if [ -f "$f" ] && [ ! -L "$f" ]; then
