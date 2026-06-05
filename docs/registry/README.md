@@ -92,7 +92,7 @@ It does **not** specify the implementation tasks; those are enumerated in the
 |---|---|
 | [README.md](README.md) | This file — purpose, audience map, glossary, doc index, one-paragraph overview. |
 | [architecture.md](architecture.md) | Git-repo-over-dumb-HTTP; superset of git **and** Nix; the three ref layers; how `apm` and stock git both consume; the asymmetric-cost philosophy. |
-| [current-state.md](current-state.md) | The as-built implementation, grounded in code (`crates/aos-package/`) — git-native sync, signed tags, channel partitions, object-store helpers, and remaining producer gaps. |
+| [current-state.md](current-state.md) | The as-built implementation, grounded in code (`crates/aos-package/`) — git-native sync, signed tags, channel partitions, release orchestration, static origin/cache upload, and object-store helpers. |
 | [repo-layout.md](repo-layout.md) | The **committed git tree** a commit contains (`registry.toml` + `keys.toml` + `packages/` + `closures/` + `.gitattributes`) and the tree↔HTTP mapping — distinct from the served object store. |
 | [http-layout.md](http-layout.md) | The full HTTP/object layout, CDN TTLs, the single root sha256 loose-object store, `info/refs` / `HEAD` / relative `info/alternates`, and the stock git dumb-HTTP compatibility surface. |
 | [versioning-and-channels.md](versioning-and-channels.md) | Semver (no `v` prefix), channels-as-branches, the frontier head, the 256-partition rollout, deterministic bucket selection, and anti-rollback. |
@@ -153,8 +153,8 @@ surface without conflicting.
 > **CURRENT vs TARGET.** The current code now uses git-native sync for HTTP and
 > native git origins, signed release/channel tag objects, sha256 object-store
 > helpers, channel partition commands, persisted semver rollout state,
-> AOS delta/full/fallback object resolution, and static Nix-cache generation.
-> See
+> AOS delta/full/fallback object resolution, static Nix-cache generation, static
+> origin upload, and the `apr release` producer orchestrator. See
 > [current-state.md](current-state.md) for the grounded as-built state and
 > [architecture.md](architecture.md) for the target model.
 
