@@ -551,13 +551,19 @@ read before editing code or docs.
       `docs/registry/http-layout.md`,
       `crates/aos-package/src/registry/git.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Add an explicit trust-management CLI for registry keys, including pin,
-      re-pin, rotation, revocation, and compromised-key workflows. The lower
-      level keystore and committed `keys.toml` helpers exist, but operators need
-      a supported command surface and e2e tests. Context:
+- [x] Add an explicit trust-management CLI for local registry trust keys,
+      including pin, re-pin, rotation overlap, unpin, and compromised-key
+      recovery workflows. `apr trust pin <registry> <registry:Ed25519:base64>`
+      pins a local trust anchor, a second pin appends a rotation-overlap key,
+      `--replace` performs explicit re-pin/recovery, `apr trust list` reports
+      pinned keys, and `apr trust remove` / `apr trust unpin` removes local
+      pins. `crates/aos/tests/apr_trust_cli.rs` covers the real CLI flow and
+      rejects registry/key name mismatches. Producer-side committed `keys.toml`
+      lifecycle remains tracked separately below. Context:
       `docs/registry/repo-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/plans/registry/open-questions.md`,
+      `crates/aos/tests/apr_trust_cli.rs`,
       `crates/aos-package/src/lib.rs`,
       `crates/aos-package/src/registry_ops.rs`,
       `crates/aos-package/src/security.rs`,

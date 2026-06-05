@@ -128,6 +128,16 @@ directories, managed by `KeyStore` ([`security.rs:52`](../../crates/aos-package/
 - Pre-installed keys ship in `/etc/apm/trusted-keys.d/` (`KeySource::PreInstalled`,
   `security.rs:23`).
 
+`apr trust` is the supported local trust-store CLI:
+
+- `apr trust pin <registry> <registry:Ed25519:<base64>>` writes the key to the
+  writable `trusted-keys.d` directory. Re-running `pin` with a distinct key
+  appends it, which supports overlap during key rotation.
+- `apr trust pin <registry> <key> --replace` removes existing local pins first,
+  which is the explicit out-of-band re-pin path for compromised-key recovery.
+- `apr trust list [registry]` prints pinned keys and fingerprints.
+- `apr trust remove <registry>` (alias: `unpin`) removes local pinned keys.
+
 **Trust-On-First-Use** is `tofu_check` ([`security.rs:159`](../../crates/aos-package/src/security.rs)),
 which returns one of three decisions:
 
@@ -456,7 +466,7 @@ ways:
 | Capability | CURRENT (code today) | TARGET |
 |---|---|---|
 | Key format `name:Ed25519:<base64>` | `parse_signing_key` (`security.rs:306`) | unchanged |
-| Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) | unchanged (the bootstrap anchor) |
+| Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) plus `apr trust pin/list/remove` | unchanged (the bootstrap anchor) |
 | Signing pubkey location | removed from in-repo `registry.toml`; bootstrap trust is client-side TOFU | trust = `keys.toml` roster + TOFU |
 | Key rotation / revocation | `apr create` emits schema-1 `keys.toml`; parser plus rotation-pin/revocation helpers exist | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
 | Signature *production* | `apr tag --key` / `apr sign <tag> --key` create signed release tag objects; `apr channel init/advance --key` writes signed channel partition tag files | implemented |
