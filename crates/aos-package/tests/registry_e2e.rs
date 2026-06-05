@@ -498,6 +498,50 @@ async fn channel_first_sync_fails_closed_when_no_partition_is_usable() -> Result
 }
 
 #[tokio::test]
+async fn channel_reachable_unchanged_partition_fails_when_freshness_is_stale() -> Result<()> {
+    let fixture = RegistryFixture::new("aos-core")?;
+    fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 100)])?;
+    fixture.write_gitattributes()?;
+    fixture.write_keys_toml()?;
+    let (_, _, channel_tag) = publish_release(&fixture, "1.0.0", "stable")?;
+    fixture.write_all_channel_partitions("stable", &channel_tag)?;
+
+    let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
+    let mut config = fixture.signed_registry_config(server.base_url(), "stable");
+    config.max_staleness_seconds = Some(60);
+    let mut state = RegistryState::default();
+    let first = git::sync_git(
+        &config,
+        &TrackingMode::Channel("stable".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await?;
+    assert_eq!(first.packages_added, 1);
+    assert_eq!(state.floor.as_deref(), Some("1.0.0"));
+    assert!(state.last_update.is_some());
+
+    state.last_update = Some("1970-01-01T00:00:00Z".to_string());
+    let err = git::sync_git(
+        &config,
+        &TrackingMode::Channel("stable".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await
+    .expect_err("unchanged stale-but-valid partition fails closed");
+    let message = format!("{err:#}");
+    assert!(message.contains("resolved unchanged release 1.0.0"));
+    assert!(message.contains("frozen-but-valid channel pointer"));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn pack_delta_e2e_fetches_full_pack_and_compressed_thin_delta() -> Result<()> {
     let fixture = RegistryFixture::new("aos-core")?;
     fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 100)])?;

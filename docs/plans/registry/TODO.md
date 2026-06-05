@@ -502,20 +502,19 @@ read before editing code or docs.
       `crates/aos-package/src/registry/git.rs`,
       `crates/aos-package/src/registry/channel.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Implement and test consumer max-staleness/freshness policy for frozen but
-      validly signed mirrors. Cover first-sync, offline, quiet-channel, stale
-      mutable-surface, frozen-but-reachable mirror behavior, and anti-rollback
-      interactions. Do not close this until the target is either implemented or
-      explicitly documented as an accepted limitation when a mirror keeps serving
-      an old but still validly signed pointer. Partial implementation landed:
-      channel refresh failures are evaluated
-      against `[registry.state].last_update`, with a 14-day default and a
-      per-registry `max_staleness_seconds` override. Unit tests cover first-sync
-      failure, fresh failed refresh, stale failed refresh, timestamp parsing, and
-      clock-skew/future timestamp tolerance. Remaining work is broader policy
-      validation for successful refreshes that return stale-but-valid data, e2e
-      validation for offline/quiet-channel/stale-mutable-surface/anti-rollback
-      interactions, and production default tuning. Context:
+- [x] Implement and test consumer max-staleness/freshness policy for frozen but
+      validly signed mirrors. Channel refresh failures are evaluated against
+      `[registry.state].last_update`, with a 14-day default and a per-registry
+      `max_staleness_seconds` override. Successful channel refreshes now refresh
+      `last_update` only on first sync or semver advancement; unchanged but
+      valid signed channel targets are accepted only while the previous
+      freshness timestamp is within the max-staleness window, and they do not
+      refresh that clock. Unit tests cover first-sync failure, fresh failed
+      refresh, stale failed refresh, timestamp parsing, first-sync/advance
+      freshness recording, quiet unchanged channels within the window, and stale
+      unchanged pointers. E2e coverage now includes first-sync failure with no
+      usable partition, a reachable but stale unchanged signed partition that
+      fails closed, and anti-rollback/fix-forward rollout behavior. Context:
       `docs/registry/signing-and-trust.md`,
       `docs/registry/versioning-and-channels.md`,
       `docs/registry/apt-comparison.md`,
@@ -523,6 +522,17 @@ read before editing code or docs.
       `crates/aos-package/src/registry/git.rs`,
       `crates/aos-package/src/registry/channel.rs`,
       `crates/aos-package/src/registry/verify.rs`, and
+      `crates/aos-package/tests/registry_e2e.rs`.
+- [ ] Validate and tune the production `max_staleness_seconds` default for real
+      fleets and CDN behavior. The implementation deliberately uses the local
+      freshness clock because signed channel tags have no in-band expiry; this
+      can reject genuinely quiet channels if operators choose too short a
+      window, and a host with no recent freshness observation still cannot prove
+      a reachable unchanged pointer is malicious. Context:
+      `docs/plans/registry/open-questions.md`,
+      `docs/registry/versioning-and-channels.md`,
+      `docs/registry/http-layout.md`,
+      `crates/aos-package/src/registry/git.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
 - [ ] Add an explicit trust-management CLI for registry keys, including pin,
       re-pin, rotation, revocation, and compromised-key workflows. The lower
