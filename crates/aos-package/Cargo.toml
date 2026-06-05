@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 aos-core = { workspace = true }
+aos-cache = { workspace = true }
 aos-net = { workspace = true }
 aos-systemd = { workspace = true }
 anyhow = { workspace = true }

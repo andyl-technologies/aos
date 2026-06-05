@@ -54,8 +54,9 @@ plain `http(s)://` origins and native git origins.
 The AOS-specific `/channels/<name>/00..ff` partition files are produced by
 `apr channel init/advance`, and channel consumers verify those signed tag objects
 before resolving the release commit. The release pack layout in §3 is represented
-by helper modules, but the full producer upload flow and custom AOS pack/delta
-fetch walk are still remaining implementation work.
+by `registry::pack`, and channel consumers use `registry::fetch` to prefer
+AOS thin deltas, fall back to release full-pack anchors, then fall through to
+Git's dumb-HTTP loose-object fetch.
 
 ---
 
@@ -471,7 +472,7 @@ segment is everything after `major.minor`; design-brief §7).
 | Object store | root loose-object validation and relative alternates helpers exist | all loose `objects/<xx>/<62-hex>` at root + per-release pack dirs |
 | Release index | `objects/info/alternates` writer exists | `objects/info/alternates` doubles as index |
 | Versioning | semver tags and channel floors | semver, no `v` prefix |
-| Deltas | pack helper module exists | thin `delta-<from-semver>.pack`, not in `info/packs` |
-| Full snapshot | pack helper module exists | `pack-<sha256>.pack` at X.Y.0 anchors |
+| Deltas | pack helper module + consumer fetch resolver exist | thin `delta-<from-semver>.pack`, not in `info/packs` |
+| Full snapshot | pack helper module + consumer fetch resolver exist | `pack-<sha256>.pack` at X.Y.0 anchors |
 | Rollout | 256 signed `/channels/<name>/00..ff` partition tags | same |
 | Stock-git clone | sha256 dumb-HTTP clone coverage exists | `git clone <url>` works (sha256-capable client) |

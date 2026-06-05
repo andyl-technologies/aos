@@ -16,6 +16,7 @@ use tokio::process::Command;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
+use aos_core::nar::cache::nix_cache_info;
 use aos_core::nix::aos_nix_env;
 
 use crate::access;
@@ -141,10 +142,8 @@ async fn cache_info_handler(
         }
     }
 
-    let body = format!(
-        "StoreDir: {}\nWantMassQuery: 1\nPriority: 30\nCapabilities: pack-upload query-missing sse-logs zstd xz content-range\n",
-        state.store_dir
-    );
+    let mut body = nix_cache_info(&state.store_dir, 30);
+    body.push_str("Capabilities: pack-upload query-missing sse-logs zstd xz content-range\n");
 
     (StatusCode::OK, [(header::CONTENT_TYPE, "text/plain")], body).into_response()
 }

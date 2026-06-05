@@ -15,10 +15,11 @@ use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
 use crate::registry::channel::{self, PartitionMap};
+use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
 use crate::types::{CacheEntry, RegistryRootConfig};
-use crate::{BranchCommand, ChannelCommand, PrCommand};
+use crate::{BranchCommand, CacheCommand, ChannelCommand, PrCommand};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1528,6 +1529,54 @@ pub async fn run_channel(
         }
         ChannelCommand::Status { channel, registry } => {
             channel_status(config, channel, registry.as_deref(), printer).await
+        }
+    }
+}
+
+/// Static Nix-cache subcommands.
+pub async fn run_cache(
+    config: &ApmConfig,
+    command: &CacheCommand,
+    printer: &Printer,
+) -> Result<()> {
+    match command {
+        CacheCommand::Generate {
+            output,
+            key,
+            cache_url,
+            upload_url,
+            priority,
+            no_commit,
+            registry,
+        } => {
+            let dir = registry_dir(config, registry.as_deref())?;
+            let report =
+                nixcache::generate_static_cache(&dir, output, key.as_deref(), *priority, printer)
+                    .await?;
+
+            printer.success(&format!(
+                "Generated static cache: {} narinfos, {} NARs in {}",
+                report.narinfos,
+                report.nars,
+                report.output_dir.display(),
+            ));
+
+            if let Some(upload_url) = upload_url {
+                nixcache::upload_static_cache(output, upload_url, printer).await?;
+            }
+
+            if let Some(cache_url) = cache_url {
+                if nixcache::upsert_registry_cache(&dir, cache_url, *priority)? {
+                    printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
+                    if !*no_commit {
+                        commit_registry(&dir, "registry: update static cache pointer")?;
+                        refresh_registry_object_store(&dir)
+                            .context("refreshing dumb-HTTP object store after cache update")?;
+                    }
+                }
+            }
+
+            Ok(())
         }
     }
 }

@@ -1,7 +1,9 @@
 pub mod channel;
 pub mod closures;
+pub mod fetch;
 pub mod git;
 pub mod keys;
+pub mod nixcache;
 pub mod objectstore;
 pub mod pack;
 pub mod parse;

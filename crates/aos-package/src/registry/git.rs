@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 use tokio::process::Command;
 
 use crate::download::join_cache_url;
-use crate::registry::{channel, verify};
+use crate::registry::{channel, fetch, verify};
 use crate::types::{RegistryConfig, RegistryState, SigningConfig, TrackingMode};
 use aos_core::output::Printer;
 
@@ -61,6 +61,14 @@ pub async fn sync_git(
     // Step 1: Ensure repo.
     printer.info(&format!("Syncing registry '{}' via git...", config.name));
     ensure_repo(&repo_dir, &git_url).await?;
+    let mut retained_before = fetch::parse_retained(&state.retained)?;
+    if let Some(floor) = state.floor.as_deref() {
+        let floor = semver::Version::parse(floor)
+            .with_context(|| format!("parsing registry semver floor {floor}"))?;
+        if !retained_before.contains(&floor) {
+            retained_before.push(floor);
+        }
+    }
 
     // Step 2: Fetch refs.
     fetch_refs(&repo_dir, &git_url, tracking_mode).await?;
@@ -71,6 +79,16 @@ pub async fn sync_git(
     } else {
         resolve_fetch_head(&repo_dir, tracking_mode).await?
     };
+
+    if matches!(tracking_mode, TrackingMode::Channel(_)) {
+        let target = state
+            .floor
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("channel resolution did not persist a semver floor"))?;
+        let target = semver::Version::parse(target)
+            .with_context(|| format!("parsing resolved channel release {target}"))?;
+        fetch::resolve_objects(&repo_dir, &git_url, &target, &retained_before, printer).await?;
+    }
 
     // Step 4: Verify commit signature if signing.required.
     if let Some(ref signing) = config.signing {
@@ -115,8 +133,13 @@ pub async fn sync_git(
     };
 
     // Update state.
-    if let Some(version) = state.floor.clone() {
-        retain_release(state, &version);
+    if let Some(version) = state.floor.as_deref() {
+        let version = semver::Version::parse(version)
+            .with_context(|| format!("parsing retained target release {version}"))?;
+        state.retained = fetch::retained_set(&version)
+            .into_iter()
+            .map(|version| version.to_string())
+            .collect();
     }
     prune_unretained_release_dirs(&repo_dir, &state.retained).await?;
     state.last_commit = Some(new_commit.clone());
@@ -316,7 +339,6 @@ async fn resolve_channel_head(
 
                 state.bucket.get_or_insert(assigned_bucket);
                 state.floor = Some(resolved.semver.to_string());
-                retain_release(state, &resolved.semver.to_string());
                 return Ok(resolved.commit);
             }
             Ok(None) => {}
@@ -453,18 +475,6 @@ fn machine_id_seed(registry: &str) -> String {
     std::fs::read_to_string("/etc/machine-id")
         .map(|id| format!("{registry}:{}", id.trim()))
         .unwrap_or_else(|_| registry.to_string())
-}
-
-fn retain_release(state: &mut RegistryState, release: &str) {
-    if !state.retained.iter().any(|existing| existing == release) {
-        state.retained.push(release.to_string());
-        state.retained.sort_by(|a, b| {
-            match (semver::Version::parse(a), semver::Version::parse(b)) {
-                (Ok(a_version), Ok(b_version)) => a_version.cmp(&b_version),
-                _ => a.cmp(b),
-            }
-        });
-    }
 }
 
 async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> Result<()> {

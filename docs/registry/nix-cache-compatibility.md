@@ -6,9 +6,9 @@
 > layer versus the NAR-cache layer.
 >
 > **Status legend:** **CURRENT** = behavior present in the code today (cited as
-> `path:line`). **TARGET** = the design decided in the
+> `path:line`). **TARGET** = the protocol/design contract from the
 > [design brief](../plans/registry/design-brief.md) §13 (and §14 for the committed
-> `registry.toml` `[[caches]]`, §11 for signing), not yet fully built.
+> `registry.toml` `[[caches]]`, §11 for signing).
 >
 > **Up front — the registry runs no server.** The registry's Nix binary cache is
 > **dumb static files on the HTTP CDN, generated ahead-of-time (AOT) at publish**
@@ -17,16 +17,16 @@
 > serve-time — a stock `nix` / `apm` reads these files as an ordinary static
 > binary cache (the strict superset). What is **not** greenfield is the narinfo
 > **format / sign / FileHash logic**: it already exists as reusable code —
-> `aos-core/nar/info.rs` (the shared `NarInfo` type), `aos-server/narinfo.rs`
-> (`format_narinfo`), `aos-server/sign.rs` (`NarInfoSigner`), and
-> `aos-server/compress.rs` (`compute_file_hash_size`). The **producer reuses these
-> as a library** to *generate* the static files. The live `aos-server` cache
+> `aos-core/nar/info.rs` (the shared `NarInfo` type) and
+> `aos-core/nar/cache.rs` (`render_static_narinfo`, `NarInfoSigner`,
+> `nix_cache_info`, and `nar_url`). The **producer reuses these as a library** to
+> *generate* the static files. The live `aos-server` cache
 > (a host serving its **own** Nix store, nix-serve-style) is a **separate use
 > case the registry never runs**. The consumer (`aos-package/download.rs`) is
 > already narinfo-driven and works against a dumb static cache. The remaining
-> work for the git-native registry is the **producer**: AOT-generating and
-> uploading those static files, plus the committed `registry.toml` `[[caches]]`
-> pointer.
+> producer is implemented as `apr cache generate`: it AOT-generates those static
+> files, can upload them through `aos-cache`, and can update the committed
+> `registry.toml` `[[caches]]` pointer.
 
 This document explains how an AOS registry's Nix binary cache is, by design, a
 **strict superset** of the standard Nix binary-cache (substituter) protocol,
@@ -125,23 +125,20 @@ them to the CDN, so any host that knows nothing about AOS can point a stock
 `nix` at the cache URL and use it as an ordinary substituter. AOS adds nothing
 the Nix protocol cannot ignore — that is the **strict superset**.
 
-**What's reusable today vs. what the producer must generate.** The narinfo
-**format / sign / FileHash logic already exists as code** — but as the body of a
-*live* `aos-server` cache (a host serving its **own** Nix store, nix-serve-style),
-**not** as the registry's static publisher:
+**What is implemented today.** The narinfo **format / sign / FileHash logic**
+has been extracted into reusable code:
 
-- `format_narinfo(&DbPathInfo, store_dir, &CompressionConfig,
-  Option<&NarInfoSigner>)` (`crates/aos-server/src/narinfo.rs:27`) renders a full
-  narinfo from a store-path's `DbPathInfo`.
-- `compute_file_hash_size` (`crates/aos-server/src/compress.rs:143`) computes the
-  `FileHash` / `FileSize` of the compressed bytes.
-- `NarInfoSigner` (`crates/aos-server/src/sign.rs`) produces the Ed25519 `Sig:`
-  over the standard Nix fingerprint.
-- The shared `NarInfo` type and its `parse`/`format` live in
-  `crates/aos-core/src/nar/info.rs`.
+- `crates/aos-core/src/nar/info.rs` defines the shared `NarInfo` type and its
+  `parse` / `format` helpers.
+- `crates/aos-core/src/nar/cache.rs` defines `render_static_narinfo`,
+  `nix_cache_info`, `nar_url`, and `NarInfoSigner`.
+- `crates/aos-package/src/registry/nixcache.rs` implements `apr cache generate`:
+  it walks registry store paths, dumps/compresses NARs, computes `FileHash` /
+  `FileSize`, writes signed `.narinfo` files and `nix-cache-info`, optionally
+  uploads them, and can commit the root `registry.toml` `[[caches]]` pointer.
 
-The **registry producer reuses these as a library** to *emit static files* at
-publish time — it does **not** run `aos-server`'s request handlers
+The **registry producer uses this library** to *emit static files* at publish
+time — it does **not** run `aos-server`'s request handlers
 (`routes.rs` `cache_info_handler` / `narinfo_handler` / `nar_handler`), which
 serve a live host's own store dynamically and are a **different use case the
 registry never runs**. The `aos-cache` backends
@@ -222,38 +219,19 @@ plus `parse()` (`info.rs:19`), `format()` (`info.rs:81`), `from_path_info()`
 (`info.rs:147`, `info.rs:153`). Both the format logic and the consumer use this
 one type; the producer reuses `format()` to emit each static `.narinfo`.
 
-**narinfo format / FileHash / NAR logic (CURRENT — reusable generation library,
-not a server the registry runs).** This logic lives inside `aos-server`'s live
-nix-serve-style cache, where a host serves its **own** store dynamically. The
-registry **does not run that server**; it reuses the formatting functions to
-*generate static files*:
+**narinfo format / FileHash / NAR logic (CURRENT).** The static producer calls
+`render_static_narinfo` (`aos-core/src/nar/cache.rs`) after it has dumped and
+zstd-compressed each NAR. The producer computes `FileHash` / `FileSize` from the
+compressed bytes it writes to `nar/`, so the narinfo and NAR file are generated
+from the same byte stream.
 
-- `format_narinfo(&DbPathInfo, store_dir, &CompressionConfig,
-  Option<&NarInfoSigner>)` (`crates/aos-server/src/narinfo.rs:27`) builds the
-  full narinfo text. `URL:` is `nar/{store_hash}-{nar_hash with ':' → '-'}.{ext}`
-  (`narinfo.rs:37`). References are emitted as **basenames** (`narinfo.rs:71-73`)
-  and `Deriver:` as a basename (`narinfo.rs:77-79`).
-- `FileHash` / `FileSize`: for `Compression::None` they equal `NarHash` /
-  `NarSize`; for zstd / xz they are computed by `compute_file_hash_size`
-  (`crates/aos-server/src/compress.rs:143`), which runs the compression pipeline
-  once and hashes the compressed bytes (`narinfo.rs:45-59`). The producer reuses
-  this (or captures the same values at build time) so both fields are always
-  present in the static narinfo, regardless of compression.
-- The `nix-cache-info` stub text and the compressed NAR blob are likewise
-  produced as static files. (In the live server these are the dynamic
-  `cache_info_handler` / `nar_handler` responses at `routes.rs:123` / `:223`;
-  the registry does **not** run those handlers — it pre-writes the same bytes to
-  the CDN.)
-
-**Per-narinfo Ed25519 `Sig:` (CURRENT — reusable, `aos-server/src/sign.rs`).**
-`NarInfoSigner::load(key_file)` (`sign.rs:14`) loads a `name:base64` Ed25519
-secret; `sign(fingerprint)` (`sign.rs:44`) returns `name:base64sig`; and
-`fingerprint(store_path, nar_hash, nar_size, refs)` (`sign.rs:57`) produces the
-exact Nix narinfo fingerprint `1;{store_path};{nar_hash};{nar_size};{refs}`.
-`format_narinfo` appends the resulting `Sig:` line when a signer is configured
-(`narinfo.rs:87-93`). The producer reuses this to **bake the `Sig:` into each
-static narinfo at publish** — the "one key, narinfo `Sig:` reusing the Nix
-fingerprint" design (§8).
+**Per-narinfo Ed25519 `Sig:` (CURRENT).** `NarInfoSigner::load(key_file)`
+(`aos-core/src/nar/cache.rs`) loads a `name:base64` Ed25519 secret;
+`sign(fingerprint)` returns `name:base64sig`; and
+`fingerprint(store_path, nar_hash, nar_size, refs)` produces the exact Nix
+narinfo fingerprint `1;{store_path};{nar_hash};{nar_size};{refs}`.
+`render_static_narinfo` appends the resulting `Sig:` line when a signer is
+configured, baking the signature into each static narinfo at publish.
 
 **Object-store I/O (CURRENT — reusable upload path, `aos-cache`).** The backend
 trait declares `has_narinfo` / `get_narinfo` / `put_narinfo`
@@ -306,14 +284,11 @@ narinfo (`download.rs:107`, parsing at `download.rs:169`); the resulting
   the transfer request via `.with_hash(...)` (`download.rs:191-204`), **not** by
   a signature.
 
-**Conclusion:** the narinfo **format / sign / FileHash logic** (reusable as a
-library) and the **narinfo-driven consumer** exist today. What the git-native
-registry must still build is the **producer**: at publish, reuse that logic to
-**AOT-generate** the static `nix-cache-info` / `<storehash>.narinfo` / `nar/`
-files and **upload them to the CDN** — there is no running server, and this is
-not "integration only" (§11). Its cache pointer is the committed `registry.toml`
-`[[caches]]` (authenticated via the tag), plus an optional client-side
-`registries.d/<name>.toml` override — so no migration into a tag is needed.
+**Conclusion:** the narinfo **format / sign / FileHash logic**, the
+**narinfo-driven consumer**, and the **static producer** exist today. The cache
+pointer remains the committed `registry.toml` `[[caches]]` (authenticated via
+the tag), plus an optional client-side `registries.d/<name>.toml` override — so
+no migration into a tag is needed.
 
 ---
 
@@ -358,26 +333,24 @@ has no meaning for a static CDN cache.
 ## 6. narinfo field mapping
 
 A narinfo is line-oriented `Key: value` text. The table below **describes the
-fields the producer writes into each static `.narinfo`**, using the reusable
-`format_narinfo` logic (`crates/aos-server/src/narinfo.rs:27`) that projects a
-`DbPathInfo` (from the store DB) into the shared `NarInfo` shape
-(`crates/aos-core/src/nar/info.rs:5`), serialized by `format()` (`info.rs:81`).
-The consumer parses the same static text back into `NarInfo` via `parse()`
-(`info.rs:19`) and reads exactly these fields
-(`crates/aos-package/src/download.rs`).
+fields the producer writes into each static `.narinfo`**, using
+`render_static_narinfo` in `crates/aos-core/src/nar/cache.rs`. That function
+projects plain `StaticNarInfoInput` into the shared `NarInfo` shape in
+`crates/aos-core/src/nar/info.rs`. The consumer parses the same static text back
+into `NarInfo` and reads exactly these fields (`crates/aos-package/src/download.rs`).
 
-| narinfo field | Source in `format_narinfo` (`DbPathInfo` → `NarInfo`) | Code reference | Notes |
-|---|---|---|---|
-| `StorePath` | `<store_dir>/<basename(info.path)>` | `narinfo.rs:62` | Full store path; `basename` from `info.rs:153`. |
-| `URL` | `nar/{store_hash}-{nar_hash with ':' → '-'}.{ext}` | `narinfo.rs:37` | Relative to the cache URL; the nix-serve-style key (§9). `ext` is `nar.zst` / `nar.xz` / `nar` per compression config. The consumer joins it via `join_cache_url` (`download.rs:184`). |
-| `Compression` | from `CompressionConfig.algorithm` (`zstd` / `xz` / `none`) | `narinfo.rs:34`, `:64` | `compression_parts` maps algorithm → name + extension. |
-| `FileHash` | compressed-bytes SHA-256 (emit-time) | `narinfo.rs:45-59`, `:65` | For `none`, equals `NarHash`; for zstd / xz, computed by `compute_file_hash_size` (`compress.rs:143`). Always emitted. Consumer treats it as authoritative for the download (`download.rs:191-204`). |
-| `FileSize` | compressed-bytes length (emit-time) | `narinfo.rs:45-59`, `:66` | For `none`, equals `NarSize`; otherwise from `compute_file_hash_size`. Always emitted. |
-| `NarHash` | `info.nar_hash` (`sha256:<hex>`) | `narinfo.rs:32`, `:67` | Hash of the **uncompressed** NAR, straight from the store DB. |
-| `NarSize` | `info.nar_size` | `narinfo.rs:68` | Size in bytes of the uncompressed NAR. |
-| `References` | `info.refs` mapped through `basename` | `narinfo.rs:71-73` | Written as `<hash>-<name>` basenames — the basename expansion (§7) **happens in the format logic** the producer reuses. |
-| `Deriver` | `basename(info.deriver)` | `narinfo.rs:77-79` | Optional. The `.drv` basename, emitted only when present. |
-| `Sig` | DB sigs + live `NarInfoSigner` signature | `narinfo.rs:82-93` | Pre-stored `info.sigs`, plus a freshly computed Ed25519 `Sig:` when a signer is configured (§8). |
+| narinfo field | Source in `render_static_narinfo` / `registry::nixcache` | Notes |
+|---|---|---|
+| `StorePath` | `<store_dir>/<basename(store_path)>` | Full store path; `basename` comes from `aos-core::nar::info`. |
+| `URL` | `nar_url(store_path, nar_hash, compression)` | Relative to the cache URL; `nar/{store_hash}-{nar_hash with ':' -> '-'}.{ext}`. The consumer joins it via `join_cache_url`. |
+| `Compression` | `NarCompression::{None,Zstd,Xz}.name()` | `zstd`, `xz`, or `none`. |
+| `FileHash` | compressed-bytes SHA-256 computed by `registry::nixcache` | Always emitted. Consumer treats it as authoritative for the download. |
+| `FileSize` | compressed-byte length computed by `registry::nixcache` | Always emitted. |
+| `NarHash` | `nix path-info --json` `narHash` | Hash of the **uncompressed** NAR, straight from the local Nix store. |
+| `NarSize` | `nix path-info --json` `narSize` | Size in bytes of the uncompressed NAR. |
+| `References` | full refs mapped through `basename` | Written as `<hash>-<name>` basenames, matching the Nix fingerprint. |
+| `Deriver` | `basename(deriver)` | Optional `.drv` basename. |
+| `Sig` | existing sigs + `NarInfoSigner` signature | Freshly computed Ed25519 `Sig:` when a signer is configured. |
 
 Stock-Nix fields AOS does **not** emit:
 
@@ -390,8 +363,7 @@ round trip is lossless for the fields AOS uses.
 
 ### 6.1 Example static narinfo
 
-Shape of the static file the producer emits via `format_narinfo`
-(`narinfo.rs:62-93`):
+Shape of the static file the producer emits via `render_static_narinfo`:
 
 ```
 StorePath: /nix/store/abc123def456abc123def456abc123de-curl-8.5.0
@@ -407,7 +379,7 @@ Sig: aos-core:base64signature==
 ```
 
 Note the `URL:` form: `nar/{store_hash}-{nar_hash}.{ext}` with the `nar_hash`'s
-colon rewritten to a dash (`narinfo.rs:37`).
+colon rewritten to a dash.
 
 ### 6.2 Sysroot images are their own store paths
 
@@ -416,8 +388,8 @@ For sysroot packages, each pre-compiled image (`SysrootImageEntry`, carried in
 itself a distinct store path with its own `store_path` / `nar_hash` /
 `download_hash`. Because narinfos are keyed by store-path hash, the producer
 emits a **separate static `<storehash>.narinfo`** for each such image, via the
-same `format_narinfo` logic (§6) — no per-image special case. The field mapping
-is identical; the image is just another `DbPathInfo`.
+same `render_static_narinfo` logic (§6) — no per-image special case. The field
+mapping is identical; the image is just another store path.
 
 ---
 
@@ -425,15 +397,15 @@ is identical; the image is just another `DbPathInfo`.
 
 Nix narinfo `References` requires **store-path basenames** of the form
 `<hash>-<name>`, not bare hashes. The reusable format logic **writes them in this
-form**: `format_narinfo` maps every entry of `info.refs` through `basename`
-before joining them space-separated (`crates/aos-server/src/narinfo.rs:71-73`).
-Since the store DB's `DbPathInfo.refs` are full store paths, the basename call
-yields the `<hash>-<name>` form stock `nix` expects in each static narinfo.
+form**: `render_static_narinfo` maps every full store-path reference through
+`basename` before joining them space-separated. Since `registry::nixcache` reads
+full references from `nix path-info --json`, the basename call yields the
+`<hash>-<name>` form stock `nix` expects in each static narinfo.
 
 ```
 DbPathInfo.refs:      [ "/nix/store/r4q1m2kp8v3x…-glibc-2.39", … ]
                                 │
-                       basename(r)            (narinfo.rs:72)
+                       basename(r)
                                 │
 narinfo References:    r4q1m2kp8v3x…-glibc-2.39  xr5is7by89v3q…-zlib-1.3.1
 ```
@@ -456,21 +428,19 @@ narinfo References:    r4q1m2kp8v3x…-glibc-2.39  xr5is7by89v3q…-zlib-1.3.1
 
 ## 8. Signing: one key, two signature forms
 
-The narinfo-signing **logic is CURRENT** (reusable): the `Sig:` line is
-generated by `NarInfoSigner` (`crates/aos-server/src/sign.rs`).
-`fingerprint(store_path, nar_hash, nar_size, refs)` (`sign.rs:57`) produces the
-standard Nix narinfo fingerprint `1;{store_path};{nar_hash};{nar_size};{refs}`;
-`sign(fingerprint)` (`sign.rs:44`) signs it with the Ed25519 secret and returns
-`name:base64sig`; and `format_narinfo` appends the `Sig:` line
-(`narinfo.rs:87-93`). The producer reuses this to **bake the `Sig:` into each
-static narinfo at publish**. The **TARGET** part is the unification with the
-git-tag key: reusing the **same single Ed25519 keypair** that signs the git tags
-(design brief §11):
+The narinfo-signing logic is implemented by `NarInfoSigner` in
+`crates/aos-core/src/nar/cache.rs`. `fingerprint(store_path, nar_hash, nar_size,
+refs)` produces the standard Nix narinfo fingerprint
+`1;{store_path};{nar_hash};{nar_size};{refs}`; `sign(fingerprint)` signs it with
+the Ed25519 secret and returns `name:base64sig`; and
+`render_static_narinfo` appends the `Sig:` line. The producer bakes the `Sig:`
+into each static narinfo at publish. The key model is the same single Ed25519
+keypair that signs the git tags (design brief §11):
 
 - **One secret key** signs (a) git tag objects via an SSH-format signature and
   (b) narinfos via the Nix fingerprint
   `(StorePath, NarHash, NarSize, References)` — the latter **already
-  implemented** by `NarInfoSigner` (`sign.rs:44,57`). The *signed messages
+  implemented** by `NarInfoSigner`. The *signed messages
   differ*, so the *signatures differ*, but there is **one secret to manage**.
 - **Two published public-key encodings** from that one key:
   - `aos-core:Ed25519:<base64>` — the apm form for TOFU / `trusted-keys.d` (the
@@ -509,15 +479,11 @@ The narinfo `URL:` is a relative path under the configured cache URL (§3),
 pointing at a **static `.nar.zst` file the producer uploaded**. The format logic
 and consumer already agree on it:
 
-1. **`URL:` written into the static narinfo (CURRENT logic).** `format_narinfo`
-   writes `nar/{store_hash}-{nar_hash with ':' → '-'}.{ext}`
-   (`crates/aos-server/src/narinfo.rs:37`) — the nix-serve-style key. The colon
-   in the `sha256:<hex>` nar hash is **already rewritten to a dash**, so the key
-   is colon-free (e.g. `nar/<storehash>-sha256-<hex>.nar.zst`). The producer
-   uploads the compressed NAR to exactly this static `.nar.zst` / `.nar.xz` /
-   `.nar` path. (In the live nix-serve host, `nar_handler` at `routes.rs:223`
-   would serve this dynamically — but the registry uploads it as a static file
-   instead.)
+1. **`URL:` written into the static narinfo.** `nar_url` writes
+   `nar/{store_hash}-{nar_hash with ':' -> '-'}.{ext}`. The colon in the
+   `sha256:<hex>` nar hash is rewritten to a dash, so the key is colon-free
+   (e.g. `nar/<storehash>-sha256-<hex>.nar.zst`). The producer uploads the
+   compressed NAR to exactly this static `.nar.zst` / `.nar.xz` / `.nar` path.
 2. **Consumer resolution (CURRENT).** `apm` downloads from the cache base joined
    with the narinfo-supplied `URL:` — `join_cache_url(mirror_url, narinfo.url)`
    (`crates/aos-package/src/download.rs:65-71`, applied at `download.rs:184`). It
@@ -531,11 +497,11 @@ and consumer already agree on it:
 
 ```
 <cache-url>/nar/<storehash>-sha256-<hex>.nar.zst   <-- emitted key (colon → dash)
-        └── narinfo URL: nar/<storehash>-sha256-<hex>.nar.zst   (narinfo.rs:37)
+        └── narinfo URL: nar/<storehash>-sha256-<hex>.nar.zst
 ```
 
 > **Colon-in-filename:** because the format logic rewrites the nar-hash colon to
-> a dash in the `URL:` (`narinfo.rs:37`), the static object key is colon-free, so
+> a dash in the `URL:`, the static object key is colon-free, so
 > CDN/edge layers that mangle a literal `:` are not a concern for the
 > generated static files. (The `aos-cache` backend keys —
 > `<storehash>.narinfo` / `nar/<filename>` — are likewise colon-free.) See
@@ -612,7 +578,7 @@ host nix              AOS static CDN cache (URL from registry.toml [[caches]] / 
    │                                   │   (dumb static files, no server)
    │  GET /nix-cache-info               │   static stub: StoreDir/Priority/WantMassQuery (§5)
    │ ─────────────────────────────────►│
-   │  GET /<storehash>.narinfo          │   static file (pre-gen via format_narinfo)     (§6)
+   │  GET /<storehash>.narinfo          │   static file (pre-gen via render_static_narinfo) (§6)
    │ ─────────────────────────────────►│
    │      verify Sig: against           │
    │      trusted-public-keys  (§8)     │
@@ -629,63 +595,38 @@ override) — verifying the content hash (`download.rs:191-204`), never the nari
 
 ---
 
-## 11. Summary: reusable logic vs. the producer work to build
+## 11. Summary: implemented static producer
 
-The narinfo **format / sign / FileHash logic** and the **narinfo-driven
-consumer** exist today. The registry runs **no server**: its Nix cache is dumb
-static files on the CDN, generated AOT at publish. So the open work is the
-**producer** — AOT-generating those static files (by reusing the existing logic
-as a library) and uploading them — plus the committed `[[caches]]` pointer.
+The narinfo **format / sign / FileHash logic**, the **narinfo-driven consumer**,
+and the **static producer** exist today. The registry runs **no server**: its Nix
+cache is dumb static files on the CDN, generated AOT by `apr cache generate` and
+optionally uploaded through `aos-cache`.
 
-**Reusable logic that exists today (CURRENT).** These are libraries the producer
-calls; none of them is a server the registry runs.
+**Reusable logic and producer surface.** These are libraries and commands the
+producer calls; none of them is a server the registry runs.
 
 | Capability | Where it lives | Cite |
 |---|---|---|
 | Shared `NarInfo` type + `parse`/`format` | `aos-core` | `nar/info.rs:5,19,81` |
-| narinfo format logic (`format_narinfo`) | `aos-server` | `narinfo.rs:27,62-93` |
-| `FileHash` / `FileSize` computation (all compressions) | `aos-server` | `narinfo.rs:45-59`; `compress.rs:143` |
-| References basename expansion | `aos-server` | `narinfo.rs:71-73` |
-| Per-narinfo Ed25519 `Sig:` (Nix fingerprint) | `aos-server` | `sign.rs:14,44,57`; `narinfo.rs:87-93` |
-| Static `nix-cache-info` writer + object-store upload (`put_*`) | `aos-cache` | `backend/mod.rs:16-23`; `backend/s3.rs:133` |
-| **Consumer (`apm`) is DONE** — reads a dumb static narinfo cache | `aos-package` | `download.rs:10,74,107,184,191-204` |
+| Static narinfo rendering, URL construction, cache-info body, and Nix `Sig:` | `aos-core` | `nar/cache.rs` |
+| Static cache generation, local completeness checks, compressed NAR writing, upload, and `[[caches]]` update | `aos-package` | `registry/nixcache.rs`; `registry_ops.rs run_cache` |
+| Static object upload backends (`put_*`) | `aos-cache` | `backend/mod.rs`; backend implementations |
+| Consumer (`apm`) reads a dumb static narinfo cache | `aos-package` | `download.rs` |
 
-**Remaining TARGET work — the producer (WS-06): AOT static-cache generation +
-upload (not a server, not "already done").**
-
-1. **Generate the static cache at publish.** For each store path in the registry
-   packages: emit the static `<storehash>.narinfo` (reusing `NarInfo` +
-   `format_narinfo` + the `Sig:` from `NarInfoSigner`); compute `FileHash` /
-   `FileSize` (reuse `compute_file_hash_size`, `compress.rs:143`, or capture the
-   same values at build time); produce `nar/<…>.nar.zst`; and emit the
-   `nix-cache-info` stub. Then **upload all of them as static CDN files** (reusing
-   the `aos-cache` `put_*` path). This is genuine AOT generation+upload work — it
-   **reuses** the existing format/sign logic rather than being greenfield, but it
-   is **not** "integration only" and there is **no running server**.
-2. **Name the cache from the git registry.** Commit a `CacheEntry`
-   (`types.rs:582-590`) into the git-repo-root `registry.toml` `[[caches]]`
-   pointing at the CDN cache base (authenticated via the signed tag —
-   [`repo-layout.md`](repo-layout.md) §2), with an optional client-side
-   `registries.d/<name>.toml` override (§3). The parsing/sorting/selection logic
-   already exists (`registry_ops.rs:405-414`, `download.rs:85-97`). Nothing is
-   embedded in a signed tag (§3); no migration is required.
-3. **Unify the signing key (optional).** The narinfo `Sig:` logic already works
-   (`sign.rs`, §8); the remaining design choice is reusing the **one** git-tag
-   Ed25519 keypair for both git-tag and narinfo signatures (design brief §11),
-   and publishing both public-key encodings (§8).
-4. **Dev-shell wiring docs** (§10) — already captured here; the substituter and
-   key plumbing is stock Nix.
+`apr cache generate` walks every package and sysroot-image store path listed by
+the registry, fails if any path is absent from the local Nix store, emits signed
+narinfos and `nar/*.nar.zst`, writes `nix-cache-info`, optionally uploads the
+files, and optionally commits the root `registry.toml` cache pointer. Stock-Nix
+host wiring remains ordinary `nix.conf` / flake `nixConfig` setup (§10).
 
 These map to plan
 [workstream-06-nix-cache.md](../plans/registry/workstream-06-nix-cache.md) (the
-producer that AOT-generates + uploads the static cache — the **real build item**,
-reusing the existing format/sign logic; **not** a running server),
+implemented producer that AOT-generates + uploads the static cache),
 [workstream-05-consumer.md](../plans/registry/workstream-05-consumer.md) (the
 consumer-side Nix substituter superset — **already narinfo-driven and done** in
 `download.rs`), and
 [workstream-04-signing-trust.md](../plans/registry/workstream-04-signing-trust.md)
-(the one-key signing model — narinfo signing **logic already implemented**; key
-unification is the remaining design item).
+(the one-key signing model).
 
 ---
 
