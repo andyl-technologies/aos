@@ -47,12 +47,10 @@ mod tests {
 
     #[test]
     fn pack_round_trip_header() {
-        let paths = vec![
-            PackPath {
-                hash: "0123456789abcdef0123456789abcdef".to_string(),
-                nar_data: vec![0xDE, 0xAD],
-            },
-        ];
+        let paths = vec![PackPath {
+            hash: "0123456789abcdef0123456789abcdef".to_string(),
+            nar_data: vec![0xDE, 0xAD],
+        }];
 
         let pack = create_pack(&paths);
 

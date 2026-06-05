@@ -1,13 +1,13 @@
-//! Registry state persistence and downgrade protection.
+//! Registry state persistence.
 //!
 //! Each registry config file (`registries.d/{name}.toml`) contains a
 //! `[registry.state]` section that is written by `apm update` to track
-//! the last-synced commit and creation token.  User-edited fields
+//! the last-synced commit and channel rollout state.  User-edited fields
 //! (name, url, signing, etc.) are preserved on every save.
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 use crate::types::{RegistryFile, RegistryState};
 
@@ -23,10 +23,10 @@ pub fn load_state(path: &Path) -> Result<Option<RegistryState>> {
         return Ok(None);
     }
 
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let rf: RegistryFile = toml::from_str(&content)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let rf: RegistryFile =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
 
     Ok(rf.registry.state)
 }
@@ -35,16 +35,31 @@ pub fn load_state(path: &Path) -> Result<Option<RegistryState>> {
 ///
 /// Preserves user-edited fields — only appends or replaces the state section.
 pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
     // Build the new state section text.
     let mut state_lines = String::from("\n[registry.state]\n");
     if let Some(ref commit) = state.last_commit {
         state_lines.push_str(&format!("last_commit = \"{commit}\"\n"));
     }
-    if let Some(token) = state.last_creation_token {
-        state_lines.push_str(&format!("last_creation_token = {token}\n"));
+    if let Some(ref floor) = state.floor {
+        state_lines.push_str(&format!("floor = \"{}\"\n", escape_toml_string(floor)));
+    }
+    if let Some(bucket) = state.bucket {
+        state_lines.push_str(&format!("bucket = {bucket}\n"));
+    }
+    if !state.retained.is_empty() {
+        state_lines.push_str("retained = [");
+        for (i, release) in state.retained.iter().enumerate() {
+            if i > 0 {
+                state_lines.push_str(", ");
+            }
+            state_lines.push('"');
+            state_lines.push_str(&escape_toml_string(release));
+            state_lines.push('"');
+        }
+        state_lines.push_str("]\n");
     }
     if let Some(ref ts) = state.last_update {
         state_lines.push_str(&format!("last_update = \"{ts}\"\n"));
@@ -70,10 +85,13 @@ pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
         format!("{trimmed}{state_lines}")
     };
 
-    std::fs::write(path, &new_content)
-        .with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(path, &new_content).with_context(|| format!("writing {}", path.display()))?;
 
     Ok(())
+}
+
+fn escape_toml_string(input: &str) -> String {
+    input.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Find the byte offset of the `[registry.state]` header in the file content.
@@ -95,95 +113,6 @@ fn find_state_section(content: &str) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// Monotonic token ordering
-// ---------------------------------------------------------------------------
-
-/// Check monotonic creation_token ordering.
-///
-/// Returns `Err` if `new_token <= old_token` (i.e. a downgrade).
-pub fn check_monotonic(old_token: u64, new_token: u64) -> Result<()> {
-    if new_token <= old_token {
-        bail!(
-            "registry downgrade detected: creation_token {} is not newer \
-             than previous token {} (version {} -> {}). \
-             This could indicate a downgrade attack or a stale mirror.",
-            new_token,
-            old_token,
-            token_to_version(old_token),
-            token_to_version(new_token),
-        );
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Version <-> token encoding
-// ---------------------------------------------------------------------------
-
-/// Encode a version tag as a creation_token.
-///
-/// Format: `YYYYMMPPP` where `YYYY` is year, `MM` is month (01-12), and
-/// `PPP` is the patch number (0 for no patch, 1+ for patches).
-///
-/// Examples:
-/// - `"v2026.02"` -> `2026020000`
-/// - `"v2026.02.3"` -> `2026020003`
-pub fn version_to_token(tag: &str) -> Result<u64> {
-    let stripped = tag.strip_prefix('v').unwrap_or(tag);
-    let parts: Vec<&str> = stripped.split('.').collect();
-
-    if parts.len() < 2 || parts.len() > 3 {
-        bail!(
-            "invalid version tag '{}': expected vYYYY.MM or vYYYY.MM.P",
-            tag
-        );
-    }
-
-    let year: u64 = parts[0]
-        .parse()
-        .with_context(|| format!("invalid year in tag '{tag}'"))?;
-    let month: u64 = parts[1]
-        .parse()
-        .with_context(|| format!("invalid month in tag '{tag}'"))?;
-
-    if !(1..=12).contains(&month) {
-        bail!("invalid month {} in tag '{}'", month, tag);
-    }
-
-    let patch: u64 = if parts.len() == 3 {
-        parts[2]
-            .parse()
-            .with_context(|| format!("invalid patch in tag '{tag}'"))?
-    } else {
-        0
-    };
-
-    if patch > 9999 {
-        bail!("patch number {} exceeds maximum (9999) in tag '{}'", patch, tag);
-    }
-
-    Ok(year * 1_000_000 + month * 10_000 + patch)
-}
-
-/// Decode a creation_token to a version string.
-///
-/// Examples:
-/// - `2026020003` -> `"v2026.02.3"`
-/// - `2026020000` -> `"v2026.02"`
-pub fn token_to_version(token: u64) -> String {
-    let patch = token % 10_000;
-    let remaining = token / 10_000;
-    let month = remaining % 100;
-    let year = remaining / 100;
-
-    if patch == 0 {
-        format!("v{year}.{month:02}")
-    } else {
-        format!("v{year}.{month:02}.{patch}")
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -192,86 +121,6 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-
-    #[test]
-    fn version_to_token_with_patch() {
-        assert_eq!(version_to_token("v2026.02.3").unwrap(), 2026020003);
-    }
-
-    #[test]
-    fn version_to_token_without_patch() {
-        assert_eq!(version_to_token("v2026.02").unwrap(), 2026020000);
-    }
-
-    #[test]
-    fn version_to_token_high_patch() {
-        assert_eq!(version_to_token("v2026.12.99").unwrap(), 2026120099);
-    }
-
-    #[test]
-    fn version_to_token_no_v_prefix() {
-        assert_eq!(version_to_token("2026.02.3").unwrap(), 2026020003);
-    }
-
-    #[test]
-    fn version_to_token_invalid_format() {
-        assert!(version_to_token("v2026").is_err());
-        assert!(version_to_token("v2026.02.3.4").is_err());
-        assert!(version_to_token("vfoo.02").is_err());
-        assert!(version_to_token("v2026.bar").is_err());
-    }
-
-    #[test]
-    fn version_to_token_invalid_month() {
-        assert!(version_to_token("v2026.13").is_err());
-        assert!(version_to_token("v2026.00").is_err());
-    }
-
-    #[test]
-    fn token_to_version_with_patch() {
-        assert_eq!(token_to_version(2026020003), "v2026.02.3");
-    }
-
-    #[test]
-    fn token_to_version_without_patch() {
-        assert_eq!(token_to_version(2026020000), "v2026.02");
-    }
-
-    #[test]
-    fn token_to_version_high_patch() {
-        assert_eq!(token_to_version(2026120099), "v2026.12.99");
-    }
-
-    #[test]
-    fn token_version_round_trip() {
-        let tags = &["v2026.02.3", "v2026.02", "v2026.12.99", "v2025.01.1"];
-        for tag in tags {
-            let token = version_to_token(tag).unwrap();
-            assert_eq!(token_to_version(token), *tag);
-        }
-    }
-
-    #[test]
-    fn check_monotonic_succeeds_when_newer() {
-        assert!(check_monotonic(2026020000, 2026020001).is_ok());
-        assert!(check_monotonic(2026010000, 2026020000).is_ok());
-    }
-
-    #[test]
-    fn check_monotonic_fails_when_equal() {
-        let result = check_monotonic(2026020003, 2026020003);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("downgrade"), "got: {err}");
-    }
-
-    #[test]
-    fn check_monotonic_fails_when_older() {
-        let result = check_monotonic(2026020003, 2026020001);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("downgrade"), "got: {err}");
-    }
 
     #[test]
     fn load_state_from_registry_file() {
@@ -290,7 +139,9 @@ public_key = "aos-core:Ed25519:base64keyhere"
 
 [registry.state]
 last_commit = "abc123def456"
-last_creation_token = 2026020003
+floor = "1.4.2"
+bucket = 183
+retained = ["1.0.0", "1.4.0", "1.4.2"]
 last_update = "2026-02-13T10:30:00Z"
 "#,
         )
@@ -298,7 +149,9 @@ last_update = "2026-02-13T10:30:00Z"
 
         let state = load_state(&path).unwrap().unwrap();
         assert_eq!(state.last_commit.unwrap(), "abc123def456");
-        assert_eq!(state.last_creation_token.unwrap(), 2026020003);
+        assert_eq!(state.floor.unwrap(), "1.4.2");
+        assert_eq!(state.bucket.unwrap(), 183);
+        assert_eq!(state.retained, vec!["1.0.0", "1.4.0", "1.4.2"]);
         assert_eq!(state.last_update.unwrap(), "2026-02-13T10:30:00Z");
     }
 
@@ -348,7 +201,9 @@ public_key = "aos-core:Ed25519:base64keyhere"
 
         let state = RegistryState {
             last_commit: Some("deadbeef".into()),
-            last_creation_token: Some(2026020003),
+            floor: Some("1.4.2".into()),
+            bucket: Some(183),
+            retained: vec!["1.0.0".into(), "1.4.0".into(), "1.4.2".into()],
             last_update: Some("2026-02-16T12:00:00Z".into()),
         };
         save_state(&path, &state).unwrap();
@@ -359,12 +214,16 @@ public_key = "aos-core:Ed25519:base64keyhere"
         assert!(content.contains("public_key"));
         assert!(content.contains("[registry.state]"));
         assert!(content.contains("last_commit = \"deadbeef\""));
-        assert!(content.contains("last_creation_token = 2026020003"));
+        assert!(content.contains("floor = \"1.4.2\""));
+        assert!(content.contains("bucket = 183"));
+        assert!(content.contains("retained = [\"1.0.0\", \"1.4.0\", \"1.4.2\"]"));
 
         // Verify it round-trips through load_state.
         let loaded = load_state(&path).unwrap().unwrap();
         assert_eq!(loaded.last_commit.unwrap(), "deadbeef");
-        assert_eq!(loaded.last_creation_token.unwrap(), 2026020003);
+        assert_eq!(loaded.floor.unwrap(), "1.4.2");
+        assert_eq!(loaded.bucket.unwrap(), 183);
+        assert_eq!(loaded.retained, vec!["1.0.0", "1.4.0", "1.4.2"]);
     }
 
     #[test]
@@ -379,7 +238,6 @@ url = "https://registry.aos.dev/core"
 
 [registry.state]
 last_commit = "old_commit"
-last_creation_token = 2026010000
 last_update = "2026-01-01T00:00:00Z"
 "#,
         )
@@ -387,7 +245,9 @@ last_update = "2026-01-01T00:00:00Z"
 
         let state = RegistryState {
             last_commit: Some("new_commit".into()),
-            last_creation_token: Some(2026020003),
+            floor: Some("1.4.2".into()),
+            bucket: Some(183),
+            retained: vec!["1.4.2".into()],
             last_update: Some("2026-02-16T12:00:00Z".into()),
         };
         save_state(&path, &state).unwrap();
@@ -395,7 +255,8 @@ last_update = "2026-01-01T00:00:00Z"
         let content = fs::read_to_string(&path).unwrap();
         assert!(!content.contains("old_commit"));
         assert!(content.contains("new_commit"));
-        assert!(content.contains("2026020003"));
+        assert!(content.contains("floor = \"1.4.2\""));
+        assert!(content.contains("bucket = 183"));
 
         // Verify user fields are preserved.
         assert!(content.contains("name = \"aos-core\""));
@@ -403,7 +264,9 @@ last_update = "2026-01-01T00:00:00Z"
 
         let loaded = load_state(&path).unwrap().unwrap();
         assert_eq!(loaded.last_commit.unwrap(), "new_commit");
-        assert_eq!(loaded.last_creation_token.unwrap(), 2026020003);
+        assert_eq!(loaded.floor.unwrap(), "1.4.2");
+        assert_eq!(loaded.bucket.unwrap(), 183);
+        assert_eq!(loaded.retained, vec!["1.4.2"]);
     }
 
     #[test]
@@ -430,8 +293,8 @@ public_key = "test:Ed25519:abc"
 
         let state = RegistryState {
             last_commit: Some("new".into()),
-            last_creation_token: Some(2026020001),
             last_update: None,
+            ..RegistryState::default()
         };
         save_state(&path, &state).unwrap();
 

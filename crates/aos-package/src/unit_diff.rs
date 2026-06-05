@@ -382,7 +382,10 @@ impl Knobs {
 }
 
 fn parse_bool(s: &str) -> bool {
-    matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "yes" | "true" | "on")
+    matches!(
+        s.trim().to_ascii_lowercase().as_str(),
+        "1" | "yes" | "true" | "on"
+    )
 }
 
 fn has_exec_reload(merged: &BTreeMap<String, BTreeMap<String, Vec<String>>>) -> bool {
@@ -404,10 +407,12 @@ fn walk(units_dir: &Path) -> UnitMap {
     };
 
     let unit = |units: &mut BTreeMap<String, LogicalUnit>, name: &str| {
-        units.entry(name.to_string()).or_insert_with(|| LogicalUnit {
-            name: name.to_string(),
-            ..Default::default()
-        });
+        units
+            .entry(name.to_string())
+            .or_insert_with(|| LogicalUnit {
+                name: name.to_string(),
+                ..Default::default()
+            });
     };
 
     for entry in entries.flatten() {
@@ -463,9 +468,7 @@ fn walk(units_dir: &Path) -> UnitMap {
                             InstallKind::Requires => {
                                 lu.install_requires.insert(base_target.clone())
                             }
-                            InstallKind::Upholds => {
-                                lu.install_upholds.insert(base_target.clone())
-                            }
+                            InstallKind::Upholds => lu.install_upholds.insert(base_target.clone()),
                         };
                     }
                 }
@@ -586,11 +589,7 @@ fn content_hash(path: &Path) -> u64 {
         for e in entries {
             let name_h = djb2_hash(e.file_name().to_string_lossy().as_bytes());
             let child = content_hash(&e.path());
-            acc = acc
-                .wrapping_mul(31)
-                .wrapping_add(name_h)
-                .rotate_left(5)
-                ^ child;
+            acc = acc.wrapping_mul(31).wrapping_add(name_h).rotate_left(5) ^ child;
         }
         acc
     } else if meta.is_file() {
@@ -623,11 +622,7 @@ pub fn compute_diff(live_etc_root: &Path, candidate_etc_root: &Path) -> UnitDiff
 
     let mut diff = UnitDiff::default();
 
-    let names: BTreeSet<&String> = live
-        .units
-        .keys()
-        .chain(candidate.units.keys())
-        .collect();
+    let names: BTreeSet<&String> = live.units.keys().chain(candidate.units.keys()).collect();
 
     for name in names {
         let l = live.units.get(name);
@@ -840,9 +835,8 @@ mod tests {
 
     #[test]
     fn parse_appends_multi_value_keys() {
-        let p = Parsed::parse(
-            "[Service]\nExecStartPre=/bin/a\nExecStartPre=/bin/b\nType=oneshot\n",
-        );
+        let p =
+            Parsed::parse("[Service]\nExecStartPre=/bin/a\nExecStartPre=/bin/b\nType=oneshot\n");
         let svc = &p.sections["Service"];
         assert_eq!(svc["ExecStartPre"], vec!["/bin/a", "/bin/b"]);
         assert_eq!(svc["Type"], vec!["oneshot"]);
@@ -851,9 +845,7 @@ mod tests {
     #[test]
     fn parse_empty_value_clears_accumulated() {
         // The drop-in reset semantic: `Key=` wipes the prior values.
-        let p = Parsed::parse(
-            "[Service]\nExecStart=/bin/old\nExecStart=\nExecStart=/bin/new\n",
-        );
+        let p = Parsed::parse("[Service]\nExecStart=/bin/old\nExecStart=\nExecStart=/bin/new\n");
         assert_eq!(p.sections["Service"]["ExecStart"], vec!["/bin/new"]);
 
         let cleared = Parsed::parse("[Service]\nEnvironment=A=1\nEnvironment=\n");
@@ -862,9 +854,8 @@ mod tests {
 
     #[test]
     fn parse_handles_comments_and_continuations() {
-        let p = Parsed::parse(
-            "# comment\n; also comment\n[Unit]\nDescription=line one \\\nand two\n",
-        );
+        let p =
+            Parsed::parse("# comment\n; also comment\n[Unit]\nDescription=line one \\\nand two\n");
         assert_eq!(p.sections["Unit"]["Description"], vec!["line one and two"]);
     }
 
@@ -981,7 +972,9 @@ mod tests {
         let lu = units_dir(live.path());
         let cu = units_dir(cand.path());
         let body = |start: &str| {
-            format!("[Unit]\nX-ReloadIfChanged=true\n[Service]\nExecStart={start}\nExecReload=/bin/reload\n")
+            format!(
+                "[Unit]\nX-ReloadIfChanged=true\n[Service]\nExecStart={start}\nExecReload=/bin/reload\n"
+            )
         };
         write(&lu, "svc.service", &body("/bin/old"));
         write(&cu, "svc.service", &body("/bin/new"));
@@ -1020,8 +1013,16 @@ mod tests {
         let cand = TempDir::new().unwrap();
         let lu = units_dir(live.path());
         let cu = units_dir(cand.path());
-        write(&lu, "var.mount", "[Mount]\nWhat=/dev/sda2\nWhere=/var\nOptions=defaults\n");
-        write(&cu, "var.mount", "[Mount]\nWhat=/dev/sda2\nWhere=/var\nOptions=noatime\n");
+        write(
+            &lu,
+            "var.mount",
+            "[Mount]\nWhat=/dev/sda2\nWhere=/var\nOptions=defaults\n",
+        );
+        write(
+            &cu,
+            "var.mount",
+            "[Mount]\nWhat=/dev/sda2\nWhere=/var\nOptions=noatime\n",
+        );
         let diff = compute_diff(live.path(), cand.path());
         assert_eq!(diff.to_reload, vec!["var.mount"]);
         assert!(diff.to_restart.is_empty());
@@ -1063,11 +1064,7 @@ mod tests {
         write(&lu, "x.slice", "[Slice]\nMemoryMax=1G\n");
         write(&cu, "x.slice", "[Slice]\nMemoryMax=2G\n");
         let diff = compute_diff(live.path(), cand.path());
-        assert!(
-            diff.to_restart.is_empty()
-                && diff.to_reload.is_empty()
-                && diff.to_stop.is_empty()
-        );
+        assert!(diff.to_restart.is_empty() && diff.to_reload.is_empty() && diff.to_stop.is_empty());
     }
 
     // --- X-Reload-Triggers (§6.6) --------------------------------------
@@ -1079,8 +1076,7 @@ mod tests {
         let lu = units_dir(live.path());
         let cu = units_dir(cand.path());
         // Identical unit file on both sides; only the trigger dir differs.
-        let body =
-            "[Unit]\nX-Reload-Triggers=/etc/sysctl.d\n[Service]\nExecStart=/bin/sysctl\n";
+        let body = "[Unit]\nX-Reload-Triggers=/etc/sysctl.d\n[Service]\nExecStart=/bin/sysctl\n";
         write(&lu, "systemd-sysctl.service", body);
         write(&cu, "systemd-sysctl.service", body);
         // /etc/sysctl.d resolves under each /etc root.
@@ -1116,8 +1112,7 @@ mod tests {
         let cand = TempDir::new().unwrap();
         let lu = units_dir(live.path());
         let cu = units_dir(cand.path());
-        let body =
-            "[Unit]\nX-Reload-Triggers=/etc/sysctl.d\n[Service]\nExecStart=/bin/sysctl\n";
+        let body = "[Unit]\nX-Reload-Triggers=/etc/sysctl.d\n[Service]\nExecStart=/bin/sysctl\n";
         write(&lu, "systemd-sysctl.service", body);
         write(&cu, "systemd-sysctl.service", body);
         write(live.path(), "sysctl.d/10.conf", "a=1\n");
@@ -1180,7 +1175,11 @@ mod tests {
         write(&cu, "svc.service", body);
         // Candidate gains a multi-user.target.wants/svc.service symlink.
         std::fs::create_dir_all(cu.join("multi-user.target.wants")).unwrap();
-        symlink("../svc.service", cu.join("multi-user.target.wants/svc.service")).unwrap();
+        symlink(
+            "../svc.service",
+            cu.join("multi-user.target.wants/svc.service"),
+        )
+        .unwrap();
 
         let diff = compute_diff(live.path(), cand.path());
         assert_eq!(diff.install_only, vec!["svc.service"]);
@@ -1216,7 +1215,10 @@ mod tests {
         write(&cu, "foo.service", "[Service]\nExecStart=/bin/new\n");
 
         let diff = compute_diff(live.path(), cand.path());
-        assert_eq!(diff.socket_map.get("foo.service"), Some(&vec!["foo.socket".to_string()]));
+        assert_eq!(
+            diff.socket_map.get("foo.service"),
+            Some(&vec!["foo.socket".to_string()])
+        );
         // Socket must be restarted before the service.
         assert_eq!(diff.to_restart, vec!["foo.socket", "foo.service"]);
     }

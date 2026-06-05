@@ -30,9 +30,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
                as an error.  The return type is polymorphic because evaluation \
                never actually produces a value.",
         parameters: &[("msg", "The error message to display.")],
-        examples: &[
-            r#"builtins.abort "something went wrong""#,
-        ],
+        examples: &[r#"builtins.abort "something went wrong""#],
         see_also: &["throw"],
     },
     // ------------------------------------------------------------------
@@ -44,10 +42,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Add two numbers.",
         body: "Returns the sum of two integers or floats.  If either argument is \
                a float the result is a float.",
-        parameters: &[
-            ("a", "First operand."),
-            ("b", "Second operand."),
-        ],
+        parameters: &[("a", "First operand."), ("b", "Second operand.")],
         examples: &[
             "builtins.add 3 5        # => 8",
             "builtins.add 1.5 2      # => 3.5",
@@ -102,9 +97,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Extracts the names of all attributes in the set and returns them \
                sorted lexicographically.",
         parameters: &[("set", "An attribute set.")],
-        examples: &[
-            r#"builtins.attrNames { b = 2; a = 1; }  # => [ "a" "b" ]"#,
-        ],
+        examples: &[r#"builtins.attrNames { b = 2; a = 1; }  # => [ "a" "b" ]"#],
         see_also: &["attrValues", "hasAttr", "getAttr"],
     },
     // ------------------------------------------------------------------
@@ -117,9 +110,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Returns a list of values from the attribute set, ordered by the \
                lexicographic sort of their corresponding names.",
         parameters: &[("set", "An attribute set.")],
-        examples: &[
-            "builtins.attrValues { b = 2; a = 1; }  # => [ 1 2 ]",
-        ],
+        examples: &["builtins.attrValues { b = 2; a = 1; }  # => [ 1 2 ]"],
         see_also: &["attrNames"],
     },
     // ------------------------------------------------------------------
@@ -146,13 +137,8 @@ static BUILTINS: [BuiltinDoc; 93] = [
         type_sig: "int -> int -> int",
         summary: "Bitwise AND of two integers.",
         body: "Returns the bitwise AND of two integers.",
-        parameters: &[
-            ("a", "First operand."),
-            ("b", "Second operand."),
-        ],
-        examples: &[
-            "builtins.bitAnd 12 10  # => 8",
-        ],
+        parameters: &[("a", "First operand."), ("b", "Second operand.")],
+        examples: &["builtins.bitAnd 12 10  # => 8"],
         see_also: &["bitOr", "bitXor"],
     },
     // ------------------------------------------------------------------
@@ -163,13 +149,8 @@ static BUILTINS: [BuiltinDoc; 93] = [
         type_sig: "int -> int -> int",
         summary: "Bitwise OR of two integers.",
         body: "Returns the bitwise OR of two integers.",
-        parameters: &[
-            ("a", "First operand."),
-            ("b", "Second operand."),
-        ],
-        examples: &[
-            "builtins.bitOr 12 10  # => 14",
-        ],
+        parameters: &[("a", "First operand."), ("b", "Second operand.")],
+        examples: &["builtins.bitOr 12 10  # => 14"],
         see_also: &["bitAnd", "bitXor"],
     },
     // ------------------------------------------------------------------
@@ -180,13 +161,8 @@ static BUILTINS: [BuiltinDoc; 93] = [
         type_sig: "int -> int -> int",
         summary: "Bitwise XOR of two integers.",
         body: "Returns the bitwise exclusive-OR of two integers.",
-        parameters: &[
-            ("a", "First operand."),
-            ("b", "Second operand."),
-        ],
-        examples: &[
-            "builtins.bitXor 12 10  # => 6",
-        ],
+        parameters: &[("a", "First operand."), ("b", "Second operand.")],
+        examples: &["builtins.bitXor 12 10  # => 6"],
         see_also: &["bitAnd", "bitOr"],
     },
     // ------------------------------------------------------------------
@@ -203,9 +179,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("attr", "The attribute name to collect."),
             ("list", "A list of attribute sets."),
         ],
-        examples: &[
-            r#"builtins.catAttrs "a" [ { a = 1; } { b = 2; } { a = 3; } ]  # => [ 1 3 ]"#,
-        ],
+        examples: &[r#"builtins.catAttrs "a" [ { a = 1; } { b = 2; } { a = 3; } ]  # => [ 1 3 ]"#],
         see_also: &["getAttr", "mapAttrs"],
     },
     // ------------------------------------------------------------------
@@ -217,10 +191,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Round a float up to the nearest integer.",
         body: "Returns the smallest integer greater than or equal to the argument.",
         parameters: &[("x", "A floating-point number.")],
-        examples: &[
-            "builtins.ceil 1.2  # => 2",
-            "builtins.ceil (-1.8)  # => -1",
-        ],
+        examples: &["builtins.ceil 1.2  # => 2", "builtins.ceil (-1.8)  # => -1"],
         see_also: &["floor"],
     },
     // ------------------------------------------------------------------
@@ -251,9 +222,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Concatenate a list of lists into a single list.",
         body: "Flattens one level of list nesting.",
         parameters: &[("lists", "A list of lists.")],
-        examples: &[
-            "builtins.concatLists [ [ 1 2 ] [ 3 ] [ 4 5 ] ]  # => [ 1 2 3 4 5 ]",
-        ],
+        examples: &["builtins.concatLists [ [ 1 2 ] [ 3 ] [ 4 5 ] ]  # => [ 1 2 3 4 5 ]"],
         see_also: &["concatMap"],
     },
     // ------------------------------------------------------------------
@@ -270,9 +239,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("f", "Function that returns a list for each element."),
             ("list", "The input list."),
         ],
-        examples: &[
-            "builtins.concatMap (x: [ x (x * 2) ]) [ 1 2 3 ]  # => [ 1 2 2 4 3 6 ]",
-        ],
+        examples: &["builtins.concatMap (x: [ x (x * 2) ]) [ 1 2 3 ]  # => [ 1 2 2 4 3 6 ]"],
         see_also: &["map", "concatLists"],
     },
     // ------------------------------------------------------------------
@@ -284,10 +251,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Join a list of strings with a separator.",
         body: "Concatenates the strings in the list, inserting the separator \
                between each pair of adjacent strings.",
-        parameters: &[
-            ("sep", "Separator string."),
-            ("list", "A list of strings."),
-        ],
+        parameters: &[("sep", "Separator string."), ("list", "A list of strings.")],
         examples: &[
             r#"builtins.concatStringsSep ", " [ "a" "b" "c" ]  # => "a, b, c""#,
             r#"builtins.concatStringsSep "/" [ "usr" "bin" ]     # => "usr/bin""#,
@@ -305,9 +269,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
                e.g. `\"x86_64-linux\"` or `\"aarch64-darwin\"`.  Commonly used \
                to select platform-specific packages.",
         parameters: &[],
-        examples: &[
-            r#"builtins.currentSystem  # => "x86_64-linux""#,
-        ],
+        examples: &[r#"builtins.currentSystem  # => "x86_64-linux""#],
         see_also: &[],
     },
     // ------------------------------------------------------------------
@@ -324,9 +286,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("a", "Value to evaluate deeply."),
             ("b", "Value to return."),
         ],
-        examples: &[
-            "builtins.deepSeq { x = 1; } \"ok\"  # => \"ok\"",
-        ],
+        examples: &["builtins.deepSeq { x = 1; } \"ok\"  # => \"ok\""],
         see_also: &["seq"],
     },
     // ------------------------------------------------------------------
@@ -340,9 +300,10 @@ static BUILTINS: [BuiltinDoc; 93] = [
                attribute set with at least `name`, `system`, and `builder`, and \
                returns a derivation value.  In practice most users call a \
                wrapper like `mkDerivation` rather than this directly.",
-        parameters: &[
-            ("attrs", "Attribute set with `name`, `system`, `builder`, and optionally `args`, `outputs`, environment variables, etc."),
-        ],
+        parameters: &[(
+            "attrs",
+            "Attribute set with `name`, `system`, `builder`, and optionally `args`, `outputs`, environment variables, etc.",
+        )],
         examples: &[
             "derivation {\n  name = \"hello\";\n  system = \"x86_64-linux\";\n  builder = \"/bin/sh\";\n  args = [ \"-c\" \"echo hello > $out\" ];\n}",
         ],
@@ -358,9 +319,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Low-level primitive that `derivation` is built on.  Returns the \
                output paths as an attribute set rather than a derivation value. \
                Rarely used directly.",
-        parameters: &[
-            ("attrs", "Same attributes as `derivation`."),
-        ],
+        parameters: &[("attrs", "Same attributes as `derivation`.")],
         examples: &[],
         see_also: &["derivation"],
     },
@@ -373,9 +332,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Return the directory part of a path string.",
         body: "Returns everything before the last `/`.  The dual of `baseNameOf`.",
         parameters: &[("path", "A path or string.")],
-        examples: &[
-            r#"builtins.dirOf "/usr/bin/env"  # => "/usr/bin""#,
-        ],
+        examples: &[r#"builtins.dirOf "/usr/bin/env"  # => "/usr/bin""#],
         see_also: &["baseNameOf"],
     },
     // ------------------------------------------------------------------
@@ -387,14 +344,8 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Divide two numbers.",
         body: "Integer division when both arguments are integers (rounds towards \
                zero).  Float division if either argument is a float.",
-        parameters: &[
-            ("a", "Dividend."),
-            ("b", "Divisor (must not be zero)."),
-        ],
-        examples: &[
-            "builtins.div 7 2    # => 3",
-            "builtins.div 7.0 2  # => 3.5",
-        ],
+        parameters: &[("a", "Dividend."), ("b", "Divisor (must not be zero).")],
+        examples: &["builtins.div 7 2    # => 3", "builtins.div 7.0 2  # => 3.5"],
         see_also: &["add", "sub", "mul"],
     },
     // ------------------------------------------------------------------
@@ -425,13 +376,8 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Access a list element by zero-based index.",
         body: "Returns the element at the given index.  Throws an error if the \
                index is out of bounds.",
-        parameters: &[
-            ("list", "The list."),
-            ("index", "Zero-based index."),
-        ],
-        examples: &[
-            r#"builtins.elemAt [ "a" "b" "c" ] 1  # => "b""#,
-        ],
+        parameters: &[("list", "The list."), ("index", "Zero-based index.")],
+        examples: &[r#"builtins.elemAt [ "a" "b" "c" ] 1  # => "b""#],
         see_also: &["head", "tail", "length"],
     },
     // ------------------------------------------------------------------
@@ -443,9 +389,10 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Fetch a Git repository.",
         body: "Clones a Git repository into the Nix store.  Accepts attributes \
                like `url`, `rev`, `ref`, `submodules`, and `shallow`.",
-        parameters: &[
-            ("attrs", "Attribute set with `url` and optional `rev`, `ref`, `submodules`, `shallow`."),
-        ],
+        parameters: &[(
+            "attrs",
+            "Attribute set with `url` and optional `rev`, `ref`, `submodules`, `shallow`.",
+        )],
         examples: &[
             "builtins.fetchGit {\n  url = \"https://github.com/NixOS/nix\";\n  ref = \"main\";\n}",
         ],
@@ -461,9 +408,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Downloads a tarball (optionally with hash verification) and \
                unpacks it into the Nix store.  Can take either a URL string \
                or an attribute set with `url`, `sha256`, and `name`.",
-        parameters: &[
-            ("attrs", "URL string, or set with `url`, `sha256`, `name`."),
-        ],
+        parameters: &[("attrs", "URL string, or set with `url`, `sha256`, `name`.")],
         examples: &[
             r#"builtins.fetchTarball "https://github.com/NixOS/nixpkgs/archive/master.tar.gz""#,
             "builtins.fetchTarball {\n  url = \"https://example.com/src.tar.gz\";\n  sha256 = \"0000000000000000000000000000000000000000000000000000\";\n}",
@@ -480,9 +425,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Fetches the given URL and stores the result as a fixed-output \
                derivation.  Unlike `fetchTarball`, it does NOT unpack the file.",
         parameters: &[("url", "URL to fetch.")],
-        examples: &[
-            r#"builtins.fetchurl "https://example.com/data.txt""#,
-        ],
+        examples: &[r#"builtins.fetchurl "https://example.com/data.txt""#],
         see_also: &["fetchTarball", "fetchGit"],
     },
     // ------------------------------------------------------------------
@@ -498,9 +441,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("pred", "Predicate function."),
             ("list", "The list to filter."),
         ],
-        examples: &[
-            "builtins.filter (x: x > 2) [ 1 2 3 4 ]  # => [ 3 4 ]",
-        ],
+        examples: &["builtins.filter (x: x > 2) [ 1 2 3 4 ]  # => [ 3 4 ]"],
         see_also: &["all", "any", "partition"],
     },
     // ------------------------------------------------------------------
@@ -529,13 +470,14 @@ static BUILTINS: [BuiltinDoc; 93] = [
                accumulator.  The accumulator is evaluated strictly at each step, \
                preventing space leaks on large lists.",
         parameters: &[
-            ("f", "Combining function `(accumulator -> element -> accumulator)`."),
+            (
+                "f",
+                "Combining function `(accumulator -> element -> accumulator)`.",
+            ),
             ("init", "Initial accumulator value."),
             ("list", "The list to fold."),
         ],
-        examples: &[
-            "builtins.foldl' (a: b: a + b) 0 [ 1 2 3 ]  # => 6",
-        ],
+        examples: &["builtins.foldl' (a: b: a + b) 0 [ 1 2 3 ]  # => 6"],
         see_also: &["map", "filter"],
     },
     // ------------------------------------------------------------------
@@ -580,9 +522,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
                indicating whether they have default values.  Only works on \
                functions with a pattern argument (`{ ... }:`).",
         parameters: &[("f", "A function with a pattern argument.")],
-        examples: &[
-            "builtins.functionArgs ({ a, b ? 1 }: a)  # => { a = false; b = true; }",
-        ],
+        examples: &["builtins.functionArgs ({ a, b ? 1 }: a)  # => { a = false; b = true; }"],
         see_also: &[],
     },
     // ------------------------------------------------------------------
@@ -598,9 +538,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("f", "Function from index to element."),
             ("n", "Number of elements to generate."),
         ],
-        examples: &[
-            "builtins.genList (i: i * 2) 4  # => [ 0 2 4 6 ]",
-        ],
+        examples: &["builtins.genList (i: i * 2) 4  # => [ 0 2 4 6 ]"],
         see_also: &["map"],
     },
     // ------------------------------------------------------------------
@@ -613,9 +551,10 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Starting from an initial set of items (each with a `key`), \
                repeatedly applies an `operator` function to discover new items \
                until no new keys appear.  Used for dependency graph traversal.",
-        parameters: &[
-            ("attrs", "Set with `startSet` (list of `{key, ...}`) and `operator` (item -> list of `{key, ...}`)."),
-        ],
+        parameters: &[(
+            "attrs",
+            "Set with `startSet` (list of `{key, ...}`) and `operator` (item -> list of `{key, ...}`).",
+        )],
         examples: &[
             "builtins.genericClosure {\n  startSet = [ { key = 1; } ];\n  operator = item: if item.key < 3 then [ { key = item.key + 1; } ] else [];\n}  # => [ { key = 1; } { key = 2; } { key = 3; } ]",
         ],
@@ -631,13 +570,8 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Returns the value of the named attribute.  Throws an error if \
                the attribute does not exist.  The string argument makes this \
                useful when the name is computed dynamically.",
-        parameters: &[
-            ("name", "Attribute name."),
-            ("set", "An attribute set."),
-        ],
-        examples: &[
-            r#"builtins.getAttr "x" { x = 42; }  # => 42"#,
-        ],
+        parameters: &[("name", "Attribute name."), ("set", "An attribute set.")],
+        examples: &[r#"builtins.getAttr "x" { x = 42; }  # => 42"#],
         see_also: &["hasAttr", "attrNames"],
     },
     // ------------------------------------------------------------------
@@ -651,9 +585,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
                empty string if it is not set.  Only available in impure \
                evaluation mode.",
         parameters: &[("var", "Name of the environment variable.")],
-        examples: &[
-            r#"builtins.getEnv "HOME"  # => "/home/user""#,
-        ],
+        examples: &[r#"builtins.getEnv "HOME"  # => "/home/user""#],
         see_also: &[],
     },
     // ------------------------------------------------------------------
@@ -709,9 +641,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("algo", "Hash algorithm name."),
             ("path", "Path to the file."),
         ],
-        examples: &[
-            r#"builtins.hashFile "sha256" ./file.txt"#,
-        ],
+        examples: &[r#"builtins.hashFile "sha256" ./file.txt"#],
         see_also: &["hashString"],
     },
     // ------------------------------------------------------------------
@@ -723,12 +653,13 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Compute the hash of a string.",
         body: "Hashes the given string using the specified algorithm.",
         parameters: &[
-            ("algo", "Hash algorithm (`\"md5\"`, `\"sha1\"`, `\"sha256\"`, `\"sha512\"`)." ),
+            (
+                "algo",
+                "Hash algorithm (`\"md5\"`, `\"sha1\"`, `\"sha256\"`, `\"sha512\"`).",
+            ),
             ("str", "The string to hash."),
         ],
-        examples: &[
-            r#"builtins.hashString "sha256" "hello""#,
-        ],
+        examples: &[r#"builtins.hashString "sha256" "hello""#],
         see_also: &["hashFile"],
     },
     // ------------------------------------------------------------------
@@ -740,9 +671,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Return the first element of a list.",
         body: "Returns the first element.  Throws an error on an empty list.",
         parameters: &[("list", "A non-empty list.")],
-        examples: &[
-            "builtins.head [ 1 2 3 ]  # => 1",
-        ],
+        examples: &["builtins.head [ 1 2 3 ]  # => 1"],
         see_also: &["tail", "elemAt"],
     },
     // ------------------------------------------------------------------
@@ -757,10 +686,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
                automatically called — you typically do `import ./file.nix { ... }` \
                to call it with arguments.",
         parameters: &[("path", "Path to a `.nix` file.")],
-        examples: &[
-            "import ./lib.nix",
-            "import ./module.nix { inherit pkgs; }",
-        ],
+        examples: &["import ./lib.nix", "import ./module.nix { inherit pkgs; }"],
         see_also: &[],
     },
     // ------------------------------------------------------------------
@@ -794,7 +720,17 @@ static BUILTINS: [BuiltinDoc; 93] = [
             "builtins.isAttrs { a = 1; }  # => true",
             "builtins.isAttrs [ 1 ]       # => false",
         ],
-        see_also: &["isBool", "isFloat", "isFunction", "isInt", "isList", "isNull", "isPath", "isString", "typeOf"],
+        see_also: &[
+            "isBool",
+            "isFloat",
+            "isFunction",
+            "isInt",
+            "isList",
+            "isNull",
+            "isPath",
+            "isString",
+            "typeOf",
+        ],
     },
     // ------------------------------------------------------------------
     // isBool
@@ -926,9 +862,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "An integer representing the version of the Nix language \
                supported by the current evaluator.",
         parameters: &[],
-        examples: &[
-            "builtins.langVersion  # => 6",
-        ],
+        examples: &["builtins.langVersion  # => 6"],
         see_also: &["nixVersion"],
     },
     // ------------------------------------------------------------------
@@ -954,10 +888,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         type_sig: "number -> number -> bool",
         summary: "Test whether the first number is less than the second.",
         body: "Returns `true` if `a < b`.  Works on both integers and floats.",
-        parameters: &[
-            ("a", "First number."),
-            ("b", "Second number."),
-        ],
+        parameters: &[("a", "First number."), ("b", "Second number.")],
         examples: &[
             "builtins.lessThan 1 2  # => true",
             "builtins.lessThan 2 1  # => false",
@@ -989,10 +920,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Apply a function to every element of a list.",
         body: "Returns a new list where each element is the result of applying \
                the function to the corresponding element of the input list.",
-        parameters: &[
-            ("f", "Function to apply."),
-            ("list", "The input list."),
-        ],
+        parameters: &[("f", "Function to apply."), ("list", "The input list.")],
         examples: &[
             "builtins.map (x: x * 2) [ 1 2 3 ]  # => [ 2 4 6 ]",
             r#"builtins.map toString [ 1 2 ]        # => [ "1" "2" ]"#,
@@ -1047,13 +975,8 @@ static BUILTINS: [BuiltinDoc; 93] = [
         type_sig: "number -> number -> number",
         summary: "Multiply two numbers.",
         body: "Returns the product of two numbers.  Float if either is float.",
-        parameters: &[
-            ("a", "First operand."),
-            ("b", "Second operand."),
-        ],
-        examples: &[
-            "builtins.mul 3 4  # => 12",
-        ],
+        parameters: &[("a", "First operand."), ("b", "Second operand.")],
+        examples: &["builtins.mul 3 4  # => 12"],
         see_also: &["add", "sub", "div"],
     },
     // ------------------------------------------------------------------
@@ -1081,9 +1004,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "The version string of the Nix evaluator.",
         body: "A string like `\"2.18.1\"` identifying the running Nix version.",
         parameters: &[],
-        examples: &[
-            r#"builtins.nixVersion  # => "2.18.1""#,
-        ],
+        examples: &[r#"builtins.nixVersion  # => "2.18.1""#],
         see_also: &["langVersion"],
     },
     // ------------------------------------------------------------------
@@ -1096,9 +1017,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "The singleton null value in Nix.  `builtins.null` is identical \
                to the literal `null`.",
         parameters: &[],
-        examples: &[
-            "builtins.null == null  # => true",
-        ],
+        examples: &["builtins.null == null  # => true"],
         see_also: &["isNull"],
     },
     // ------------------------------------------------------------------
@@ -1143,9 +1062,10 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Copies a local path to the Nix store, optionally applying a \
                filter function and/or name override.  Useful for controlling \
                which files are included in the store path.",
-        parameters: &[
-            ("attrs", "Attribute set with `path`, optional `name`, `filter`, `recursive`, `sha256`."),
-        ],
+        parameters: &[(
+            "attrs",
+            "Attribute set with `path`, optional `name`, `filter`, `recursive`, `sha256`.",
+        )],
         examples: &[
             "builtins.path {\n  path = ./src;\n  name = \"source\";\n  filter = path: type: type != \"directory\" || baseNameOf path != \".git\";\n}",
         ],
@@ -1161,9 +1081,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Returns `true` if the given path exists on disk.  Only usable \
                in impure evaluation mode or with known store paths.",
         parameters: &[("path", "The path to check.")],
-        examples: &[
-            "builtins.pathExists /etc/passwd  # => true",
-        ],
+        examples: &["builtins.pathExists /etc/passwd  # => true"],
         see_also: &["readDir", "readFile"],
     },
     // ------------------------------------------------------------------
@@ -1178,9 +1096,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
                placeholder is replaced with the actual store path during \
                realisation.",
         parameters: &[("output", "Output name, typically `\"out\"`.")],
-        examples: &[
-            r#"builtins.placeholder "out""#,
-        ],
+        examples: &[r#"builtins.placeholder "out""#],
         see_also: &["derivation"],
     },
     // ------------------------------------------------------------------
@@ -1208,9 +1124,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Returns the entire contents of the file at the given path as a \
                Nix string.  The file must be valid UTF-8.",
         parameters: &[("path", "Path to a file.")],
-        examples: &[
-            "builtins.readFile ./version.txt",
-        ],
+        examples: &["builtins.readFile ./version.txt"],
         see_also: &["readDir", "toFile"],
     },
     // ------------------------------------------------------------------
@@ -1262,13 +1176,8 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Forces evaluation of the first argument to weak head normal form \
                (top-level value, but not nested structures), then returns the \
                second argument.  For deep evaluation, use `deepSeq`.",
-        parameters: &[
-            ("a", "Value to evaluate."),
-            ("b", "Value to return."),
-        ],
-        examples: &[
-            "builtins.seq 1 \"ok\"  # => \"ok\"",
-        ],
+        parameters: &[("a", "Value to evaluate."), ("b", "Value to return.")],
+        examples: &["builtins.seq 1 \"ok\"  # => \"ok\""],
         see_also: &["deepSeq"],
     },
     // ------------------------------------------------------------------
@@ -1305,9 +1214,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("regex", "POSIX extended regular expression."),
             ("str", "String to split."),
         ],
-        examples: &[
-            r#"builtins.split ":" "a:b:c"  # => [ "a" [] "b" [] "c" ]"#,
-        ],
+        examples: &[r#"builtins.split ":" "a:b:c"  # => [ "a" [] "b" [] "c" ]"#],
         see_also: &["match"],
     },
     // ------------------------------------------------------------------
@@ -1319,9 +1226,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         summary: "Split a version string into components.",
         body: "Splits at boundaries between digits and non-digits.",
         parameters: &[("version", "A version string.")],
-        examples: &[
-            r#"builtins.splitVersion "1.2.3"  # => [ "1" "." "2" "." "3" ]"#,
-        ],
+        examples: &[r#"builtins.splitVersion "1.2.3"  # => [ "1" "." "2" "." "3" ]"#],
         see_also: &["compareVersions", "parseDrvName"],
     },
     // ------------------------------------------------------------------
@@ -1334,9 +1239,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Typically `\"/nix/store\"`.  Useful for programmatically \
                constructing store paths.",
         parameters: &[],
-        examples: &[
-            r#"builtins.storeDir  # => "/nix/store""#,
-        ],
+        examples: &[r#"builtins.storeDir  # => "/nix/store""#],
         see_also: &[],
     },
     // ------------------------------------------------------------------
@@ -1349,9 +1252,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Marks a string as a store path, adding appropriate string context \
                so that it is tracked as a dependency.  Only works in impure mode.",
         parameters: &[("path", "A Nix store path string.")],
-        examples: &[
-            r#"builtins.storePath "/nix/store/abc...-hello""#,
-        ],
+        examples: &[r#"builtins.storePath "/nix/store/abc...-hello""#],
         see_also: &["storeDir"],
     },
     // ------------------------------------------------------------------
@@ -1378,13 +1279,8 @@ static BUILTINS: [BuiltinDoc; 93] = [
         type_sig: "number -> number -> number",
         summary: "Subtract two numbers.",
         body: "Returns `a - b`.  Float if either operand is a float.",
-        parameters: &[
-            ("a", "First operand."),
-            ("b", "Second operand."),
-        ],
-        examples: &[
-            "builtins.sub 10 3  # => 7",
-        ],
+        parameters: &[("a", "First operand."), ("b", "Second operand.")],
+        examples: &["builtins.sub 10 3  # => 7"],
         see_also: &["add", "mul", "div"],
     },
     // ------------------------------------------------------------------
@@ -1402,9 +1298,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("len", "Maximum number of bytes to extract."),
             ("str", "The source string."),
         ],
-        examples: &[
-            r#"builtins.substring 0 5 "hello world"  # => "hello""#,
-        ],
+        examples: &[r#"builtins.substring 0 5 "hello world"  # => "hello""#],
         see_also: &["stringLength", "replaceStrings"],
     },
     // ------------------------------------------------------------------
@@ -1417,9 +1311,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Returns the list with its first element removed.  Throws an error \
                on an empty list.",
         parameters: &[("list", "A non-empty list.")],
-        examples: &[
-            "builtins.tail [ 1 2 3 ]  # => [ 2 3 ]",
-        ],
+        examples: &["builtins.tail [ 1 2 3 ]  # => [ 2 3 ]"],
         see_also: &["head", "elemAt"],
     },
     // ------------------------------------------------------------------
@@ -1452,9 +1344,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("name", "Filename for the store path."),
             ("contents", "The file contents."),
         ],
-        examples: &[
-            r#"builtins.toFile "hello.txt" "Hello, world!""#,
-        ],
+        examples: &[r#"builtins.toFile "hello.txt" "Hello, world!""#],
         see_also: &["readFile"],
     },
     // ------------------------------------------------------------------
@@ -1468,9 +1358,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
                booleans, and null to their JSON representation.  Derivations \
                are serialized by their store path.",
         parameters: &[("value", "The Nix value to serialize.")],
-        examples: &[
-            r#"builtins.toJSON { a = 1; b = [ 2 3 ]; }  # => "{\"a\":1,\"b\":[2,3]}""#,
-        ],
+        examples: &[r#"builtins.toJSON { a = 1; b = [ 2 3 ]; }  # => "{\"a\":1,\"b\":[2,3]}""#],
         see_also: &["fromJSON"],
     },
     // ------------------------------------------------------------------
@@ -1501,9 +1389,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
         body: "Produces an XML representation of the Nix expression.  Primarily \
                used internally by Nix for build-time data passing.",
         parameters: &[("value", "The Nix value to serialize.")],
-        examples: &[
-            "builtins.toXML { a = 1; }",
-        ],
+        examples: &["builtins.toXML { a = 1; }"],
         see_also: &["toJSON"],
     },
     // ------------------------------------------------------------------
@@ -1520,9 +1406,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("msg", "Value to print (for debugging)."),
             ("value", "Value to return."),
         ],
-        examples: &[
-            r#"builtins.trace "debug info" 42  # prints "trace: debug info", returns 42"#,
-        ],
+        examples: &[r#"builtins.trace "debug info" 42  # prints "trace: debug info", returns 42"#],
         see_also: &["traceVerbose"],
     },
     // ------------------------------------------------------------------
@@ -1539,9 +1423,7 @@ static BUILTINS: [BuiltinDoc; 93] = [
             ("msg", "Value to print if verbose tracing is on."),
             ("value", "Value to return."),
         ],
-        examples: &[
-            r#"builtins.traceVerbose "details" result"#,
-        ],
+        examples: &[r#"builtins.traceVerbose "details" result"#],
         see_also: &["trace"],
     },
     // ------------------------------------------------------------------
@@ -1578,7 +1460,17 @@ static BUILTINS: [BuiltinDoc; 93] = [
             r#"builtins.typeOf "hello"   # => "string""#,
             r#"builtins.typeOf { }       # => "set""#,
         ],
-        see_also: &["isAttrs", "isBool", "isFloat", "isFunction", "isInt", "isList", "isNull", "isPath", "isString"],
+        see_also: &[
+            "isAttrs",
+            "isBool",
+            "isFloat",
+            "isFunction",
+            "isInt",
+            "isList",
+            "isNull",
+            "isPath",
+            "isString",
+        ],
     },
     // ------------------------------------------------------------------
     // zipAttrsWith

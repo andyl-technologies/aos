@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Stdio;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::process::Command;
 
 use aos_core::nar::export::ExportTrailer;
@@ -82,11 +82,7 @@ pub async fn import_nar(
         .collect();
     let full_deriver = deriver.map(|d| resolve_store_path(d, &store_dir));
 
-    let trailer = ExportTrailer::new(
-        expected_store_path,
-        full_refs,
-        full_deriver,
-    );
+    let trailer = ExportTrailer::new(expected_store_path, full_refs, full_deriver);
 
     // Stream NAR + trailer into `nix-store --import`. aos_nix_env() routes
     // the import at AOS_ROOT's store when that env var is set.
@@ -223,10 +219,8 @@ pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
     let usr_dir = gen_dir.join("usr");
     let src_dir = gen_dir.join("src");
 
-    std::fs::create_dir_all(&usr_dir)
-        .with_context(|| format!("creating {}", usr_dir.display()))?;
-    std::fs::create_dir_all(&src_dir)
-        .with_context(|| format!("creating {}", src_dir.display()))?;
+    std::fs::create_dir_all(&usr_dir).with_context(|| format!("creating {}", usr_dir.display()))?;
+    std::fs::create_dir_all(&src_dir).with_context(|| format!("creating {}", src_dir.display()))?;
 
     for meta in packages {
         // Create usr/{hash} -> store_path
@@ -343,10 +337,7 @@ pub async fn closure_paths(store_path: &str) -> Result<Vec<String>> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "nix-store -qR failed for {store_path}: {}",
-            stderr.trim()
-        );
+        bail!("nix-store -qR failed for {store_path}: {}", stderr.trim());
     }
 
     Ok(parse_path_lines(&String::from_utf8_lossy(&output.stdout)))
@@ -454,12 +445,15 @@ mod tests {
         create_gc_roots(&gen_dir, &packages).unwrap();
 
         let usr_link = gen_dir.join("usr/abc123");
-        assert!(usr_link.symlink_metadata().unwrap().file_type().is_symlink());
-        let target = std::fs::read_link(&usr_link).unwrap();
-        assert_eq!(
-            target.to_string_lossy(),
-            "/var/lib/store/abc123-curl-1.0.0"
+        assert!(
+            usr_link
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
+        let target = std::fs::read_link(&usr_link).unwrap();
+        assert_eq!(target.to_string_lossy(), "/var/lib/store/abc123-curl-1.0.0");
     }
 
     #[test]
@@ -476,7 +470,13 @@ mod tests {
         create_gc_roots(&gen_dir, &packages).unwrap();
 
         let src_link = gen_dir.join("src/def456");
-        assert!(src_link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(
+            src_link
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         let target = std::fs::read_link(&src_link).unwrap();
         assert_eq!(
             target.to_string_lossy(),
@@ -510,16 +510,8 @@ mod tests {
         let gen_dir = tmp.path().join("gen-1");
 
         let packages = vec![
-            test_package(
-                "curl",
-                "abc123",
-                "/var/lib/store/def456-curl-1.0.0.drv",
-            ),
-            test_package(
-                "zlib",
-                "ghi789",
-                "/var/lib/store/jkl012-zlib-1.0.0.drv",
-            ),
+            test_package("curl", "abc123", "/var/lib/store/def456-curl-1.0.0.drv"),
+            test_package("zlib", "ghi789", "/var/lib/store/jkl012-zlib-1.0.0.drv"),
         ];
 
         create_gc_roots(&gen_dir, &packages).unwrap();
@@ -550,10 +542,7 @@ mod tests {
 
         let usr_link = gen_dir.join("usr/abc123");
         let target = std::fs::read_link(&usr_link).unwrap();
-        assert_eq!(
-            target.to_string_lossy(),
-            "/var/lib/store/abc123-curl-1.0.0"
-        );
+        assert_eq!(target.to_string_lossy(), "/var/lib/store/abc123-curl-1.0.0");
     }
 
     // -----------------------------------------------------------------------
@@ -626,16 +615,8 @@ mod tests {
         let gen_dir = tmp.path().join("gen-1");
 
         let packages = vec![
-            test_package(
-                "curl",
-                "abc123",
-                "/var/lib/store/def456-curl-1.0.0.drv",
-            ),
-            test_package(
-                "zlib",
-                "ghi789",
-                "/var/lib/store/jkl012-zlib-1.0.0.drv",
-            ),
+            test_package("curl", "abc123", "/var/lib/store/def456-curl-1.0.0.drv"),
+            test_package("zlib", "ghi789", "/var/lib/store/jkl012-zlib-1.0.0.drv"),
         ];
 
         create_gc_roots(&gen_dir, &packages).unwrap();
@@ -718,24 +699,14 @@ mod tests {
     fn parse_import_output_empty() {
         let result = parse_import_output("");
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("no output")
-        );
+        assert!(result.unwrap_err().to_string().contains("no output"));
     }
 
     #[test]
     fn parse_import_output_unexpected() {
         let result = parse_import_output("some unexpected output\n");
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("unexpected")
-        );
+        assert!(result.unwrap_err().to_string().contains("unexpected"));
     }
 
     // -----------------------------------------------------------------------

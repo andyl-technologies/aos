@@ -12,10 +12,11 @@
 > package-TOML tree) over dumb HTTP. It is **not** the NAR/blob substitution path
 > (see [nix-cache-compatibility.md](./nix-cache-compatibility.md)).
 >
-> **CURRENT vs TARGET:** sections labeled **CURRENT** describe code that exists
-> today, cited as `path:line`. Sections labeled **TARGET** describe the design in
-> [`design-brief.md`](../plans/registry/design-brief.md) §9–§10 (with §4, §8 for
-> the object-store context) that is not yet implemented.
+> **Implementation status:** `registry::pack` implements the producer pack
+> primitives, and `registry::fetch` implements the consumer delta/full/fallback
+> resolution layer described here. The reference still uses **TARGET** on design
+> sections where it is explaining the protocol contract rather than a single
+> Rust function.
 
 **Related reference docs:**
 [README](./README.md) ·
@@ -61,10 +62,9 @@ benefits with a small, fast fetch. Loose objects guarantee that even a stock
 `git clone` from a sha256-capable client always succeeds, with packs and deltas
 as pure speed layers on top.
 
-> **No git bundles (TARGET).** Bundles carry refs and prerequisites; in the
-> target the ref namespace is replaced by signed tag objects, so the transport
-> is bare `*.pack`/`*.pack.zst` files. Today's code still ships bundles — see
-> [§7](#7-current-the-bundle-model-being-replaced) for the as-is.
+> **No separate ref-bearing transport envelope.** The ref namespace is signed
+> tag objects, so the transport payload is bare `*.pack`/`*.pack.zst` files plus
+> the root loose-object store.
 
 ---
 
@@ -248,54 +248,47 @@ of releases). Object correctness is the root `/objects/` store's job.
 
 ---
 
-## 7. CURRENT: the bundle model being replaced
+## 7. CURRENT implementation status
 
-Today's code does **not** produce packs or deltas. It distributes the registry as
-**git bundles** plus a `bundle-list.toml` manifest. This section documents the
-as-is so the migration is explicit; none of it survives into the target (brief
-§15).
+`crates/aos-package/src/registry/pack.rs` implements the core pack primitives:
 
-**Producer (`apr bundle`).** `registry_ops::bundle`
-(`crates/aos-package/src/registry_ops.rs:1706`) shells out to `git bundle create`:
+- release-kind classification and the guaranteed delta-base scheme;
+- full-pack and thin-delta `git pack-objects` wrappers;
+- zstd compression/decompression wrappers;
+- `git index-pack` and `--fix-thin` wrappers.
 
-- snapshot: `git bundle create <out>/<reg>-<tag>.bundle <tag>`
-  (`registry_ops.rs:1736-1739`)
-- delta: `git bundle create <out>/<reg>-<from>..<tag>.bundle <from>..<tag>`
-  (`registry_ops.rs:1727-1730`)
+`registry::objectstore` implements the complementary static-object layout:
+sha256 object-format checks, release object-dir mapping, root loose-object path
+validation, relative alternates, and `git update-server-info`.
 
-There is **no manifest writer and no upload** — the `update_manifest` flag is
-ignored (`_update_manifest`, `registry_ops.rs:1711`). The CLI surface is
-`RegistryCommand::Bundle { output, tag, delta_from, update_manifest, registry }`
-(`crates/aos-package/src/lib.rs:620`, dispatched at `lib.rs:1231`).
+`crates/aos-package/src/registry/fetch.rs` implements the consumer resolution
+layer: retained-base delta selection, target-anchor full-pack fallback, and a
+final `git fetch` fallback for the dumb-HTTP loose-object correctness floor.
+Channel sync calls this resolver after the signed tag chain and semver floor
+check succeed, then persists the `{X.0.0, X.Y.0, X.Y.Z}` retained set.
 
-**Consumer.** `registry::bundle::fetch` (`bundle.rs:100`) downloads bundles, runs
-`git bundle verify` for pack integrity + prerequisites (`bundle.rs:325-336`), and
-`git bundle unbundle`s into the local bare repo (`bundle.rs:376-388`).
-`pick_bundles` (`crates/aos-package/src/update.rs:319`, called from
-`update.rs:224`) selects a minimal bundle set from a `BundleManifest` given the
-host's `RegistryState` and `TrackingMode`.
+The producer pack helpers remain available as focused building blocks, and
+`apr release` now uses them inside the ordered producer pipeline that signs the
+release, writes packs/deltas, refreshes indexes, advances channels, and uploads
+the static origin.
 
-**Why it's replaced.** Bundles carry refs and prerequisites and require a
-parsed-by-consumer manifest. The target moves refs into signed tag objects and
-the object index into git's native `info/packs` + `info/alternates`, leaving bare
-`*.pack` files. The `BundleType::Snapshot`/delta distinction maps onto
-full-pack/thin-delta; `pick_bundles` maps onto §4 client resolution.
+An opt-in perf harness lives in
+[`crates/aos-package/tests/registry_perf.rs`](../../crates/aos-package/tests/registry_perf.rs).
+It reports full-pack generation, thin-delta generation, zstd compression, and
+consumer reconstruction timings/sizes for a synthetic multi-package registry:
 
-| CURRENT (bundles) | TARGET (packs/deltas) |
-|---|---|
-| `git bundle create <tag>` | `git pack-objects --revs` (full, non-thin) |
-| `git bundle create <from>..<tag>` | `git pack-objects --revs --thin` (delta) |
-| `git bundle verify` + `unbundle` | `git index-pack --fix-thin` |
-| `bundle-list.toml` manifest | `info/packs` + `info/alternates` (git-native) |
-| `pick_bundles` over manifest | §4 client resolution over the §3 graph |
-| `creation_token` ordering | semver + git ancestry |
+```sh
+AOS_PACKAGE_TEST_REGISTRY_PERF=1 \
+  cargo test --manifest-path crates/Cargo.toml -p aos-package \
+  registry_pack_delta_perf_harness_reports_metrics -- --ignored --nocapture
+```
 
 ---
 
 ## 8. TARGET: pack generation (producer)
 
 All generation is plain `git pack-objects` reading a revision list on stdin; no
-bundles, no smart-HTTP server.
+separate transport envelope and no smart-HTTP server.
 
 **Write layout.** The producer writes **loose objects to the central root
 `/objects/`** (every release's loose objects land there, never under

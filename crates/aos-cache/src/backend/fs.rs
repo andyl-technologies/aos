@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 use aos_net::{TransferEngine, TransferRequest};
 
-use super::CacheBackend;
+use super::{CacheBackend, add_static_metadata_headers};
 
 /// Filesystem cache backend.
 ///
@@ -122,9 +122,7 @@ impl CacheBackend for FsBackend {
 
         let info_path = self.root.join("nix-cache-info");
         if !info_path.exists() {
-            let content = format!(
-                "StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n"
-            );
+            let content = format!("StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n");
             let url = self.file_url("nix-cache-info");
             let req = TransferRequest::put(&url, content.into_bytes());
             self.engine
@@ -132,6 +130,37 @@ impl CacheBackend for FsBackend {
                 .await
                 .context("writing nix-cache-info")?;
         }
+        Ok(())
+    }
+
+    async fn put_cache_info(&self, content: &str) -> Result<()> {
+        tokio::fs::create_dir_all(&self.root)
+            .await
+            .context("creating cache directory")?;
+
+        let url = self.file_url("nix-cache-info");
+        let req = TransferRequest::put(&url, content.as_bytes().to_vec());
+        self.engine
+            .execute(req)
+            .await
+            .context("writing nix-cache-info")?;
+        Ok(())
+    }
+
+    async fn put_static_file(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        content_type: Option<&str>,
+        cache_control: Option<&str>,
+    ) -> Result<()> {
+        let url = self.file_url(relative_path);
+        let mut req = TransferRequest::put_file(&url, source.to_path_buf());
+        add_static_metadata_headers(&mut req, content_type, cache_control);
+        self.engine
+            .execute(req)
+            .await
+            .with_context(|| format!("writing static file {url}"))?;
         Ok(())
     }
 }

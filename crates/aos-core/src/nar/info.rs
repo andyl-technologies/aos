@@ -47,10 +47,7 @@ pub fn parse(text: &str) -> Result<NarInfo> {
                 "NarHash" => nar_hash = Some(value.to_string()),
                 "NarSize" => nar_size = value.parse().ok(),
                 "References" => {
-                    references = value
-                        .split_whitespace()
-                        .map(String::from)
-                        .collect();
+                    references = value.split_whitespace().map(String::from).collect();
                 }
                 "Deriver" => {
                     if !value.is_empty() {

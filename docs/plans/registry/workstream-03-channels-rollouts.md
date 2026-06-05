@@ -10,6 +10,12 @@
 > & rollouts), and §7 (releases & versioning). For the reference description of
 > the finished design see
 > [`../../registry/versioning-and-channels.md`](../../registry/versioning-and-channels.md).
+>
+> **As-built status note:** this workstream is now archival planning context. The
+> channel/rollout implementation has landed locally; use
+> [`../../registry/current-state.md`](../../registry/current-state.md) and
+> [`TODO.md`](./TODO.md) for current facts. Follow-up production validation is
+> tracked in [`validation-runbook.md`](./validation-runbook.md).
 
 ---
 
@@ -214,8 +220,9 @@ nix superset (`nix-cache-info`, `<storehash>.narinfo`, `nar/…`); narinfo signi
 reuses the same one Ed25519 key.
 
 A tag carries no `[latest]`, `[[bundles]]`, `[[deltas]]`, `valid_until`, or
-`[[caches]]` — superseded concepts live only in current-state.md (today's code)
-and design-brief §15.
+`[[caches]]` — superseded concepts now live only as pre-cutover history in this
+plan set; use [`../../registry/current-state.md`](../../registry/current-state.md)
+and [`TODO.md`](./TODO.md) for live status.
 
 ---
 

@@ -2,8 +2,9 @@
 
 > **Status:** Plan overview. This is the entry point for the registry
 > implementation effort. It summarizes the **target state** (a **git-native
-> registry served over dumb HTTP**), maps the **gaps** between today's code and
-> that target, and sequences the work into five workstreams. It does **not**
+> registry served over dumb HTTP**), maps the **pre-cutover gaps** between the
+> original code and that target, and sequences the work into five workstreams. It
+> does **not**
 > restate design rationale — that lives in the
 > [design brief](./design-brief.md), which is the authoritative source of intent
 > for every doc in this set.
@@ -13,6 +14,15 @@
 > **Reading order:** start here, read the [design brief](./design-brief.md) in
 > full, skim the [gap analysis](./gap-analysis.md), then dive into the
 > workstream you own.
+
+> **As-built status note:** the local implementation work described by this plan
+> has landed. Treat the workstream documents and old `path:line` citations below
+> as archival planning context, not as the live source of current code facts. For
+> the implemented registry surface, start with
+> [`../../registry/current-state.md`](../../registry/current-state.md) and
+> [`TODO.md`](./TODO.md). External infra, fleet, and target-host validation is
+> tracked for the follow-up PR in
+> [`validation-runbook.md`](./validation-runbook.md).
 
 ---
 
@@ -47,11 +57,11 @@ Design philosophy: **make publishing as expensive as possible so consumption is
 as cheap as possible** — asymmetric cost. The producer pays once (large delta
 windows, multi-base trials, `zstd --ultra`); every consumer benefits.
 
-> **CURRENT vs TARGET labeling.** Throughout this doc set, *as-is* code behavior
-> is labeled **CURRENT** and cited as `path:line`; the design goal is labeled
-> **TARGET**. Where the code contradicts the brief's current-state narrative,
-> the code wins and the discrepancy is recorded in
-> [open-questions.md](./open-questions.md).
+> **Historical CURRENT vs TARGET labeling.** In the original plan, *as-is* code
+> behavior was labeled **CURRENT** and cited as `path:line`; the design goal was
+> labeled **TARGET**. Those CURRENT citations describe the pre-cutover tree at the
+> time the plan was written. Use the code, `docs/registry/current-state.md`, and
+> this plan's `TODO.md` for present-day status.
 
 ---
 

@@ -1,8 +1,8 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use aos_core::error::AosError;
 use aos_core::nix::NixRunner;
-use aos_core::output::{create_spinner, Printer};
+use aos_core::output::{Printer, create_spinner};
 use aos_remote::AosClient;
 
 /// `aos build <package>` or `aos build --all`.
@@ -32,10 +32,7 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>, all: bool)
         return Ok(());
     }
 
-    printer.success(&format!(
-        "Built {package} -> {}",
-        store_path.display()
-    ));
+    printer.success(&format!("Built {package} -> {}", store_path.display()));
 
     Ok(())
 }
@@ -57,7 +54,9 @@ pub async fn run_remote(
         message: "provide --token or set AOS_TOKEN for remote builds".to_string(),
     })?;
 
-    printer.info(&format!("Remote build: {package} on {remote_url} (view: {view})"));
+    printer.info(&format!(
+        "Remote build: {package} on {remote_url} (view: {view})"
+    ));
 
     // Step 1: Evaluate locally to get the .drv path.
     let spinner = create_spinner(&format!("evaluating {package}"));
@@ -132,9 +131,14 @@ pub async fn run_remote(
 
         // Upload small .drv files as a pack.
         if !pack_paths.is_empty() {
-            let spinner = create_spinner(&format!("uploading {} small paths as pack", pack_paths.len()));
+            let spinner = create_spinner(&format!(
+                "uploading {} small paths as pack",
+                pack_paths.len()
+            ));
             let pack_data = aos_core::nar::pack::create_pack(&pack_paths);
-            client.upload_pack(&pack_data).await
+            client
+                .upload_pack(&pack_data)
+                .await
                 .context("uploading path pack")?;
             spinner.finish_and_clear();
         }
@@ -143,7 +147,9 @@ pub async fn run_remote(
         if !large_paths.is_empty() {
             let spinner = create_spinner(&format!("uploading {} large paths", large_paths.len()));
             for (hash, data) in &large_paths {
-                client.upload(hash, data).await
+                client
+                    .upload(hash, data)
+                    .await
                     .with_context(|| format!("uploading {hash}"))?;
             }
             spinner.finish_and_clear();
@@ -153,28 +159,30 @@ pub async fn run_remote(
     // Step 5: Request remote build and stream events via ConnectRPC.
     printer.info("Starting remote build...");
 
-    client.build(&drv_str, |event| {
-        match event.event_type.as_str() {
-            "log" => printer.plain(&event.message),
-            "status" => printer.info(&format!("[status] {}", event.message)),
-            "complete" => {
-                printer.success(&format!("Build complete: {}", event.message));
-                return false;
+    client
+        .build(&drv_str, |event| {
+            match event.event_type.as_str() {
+                "log" => printer.plain(&event.message),
+                "status" => printer.info(&format!("[status] {}", event.message)),
+                "complete" => {
+                    printer.success(&format!("Build complete: {}", event.message));
+                    return false;
+                }
+                "error" => {
+                    printer.error(&format!("Build error: {}", event.message));
+                    return false;
+                }
+                "daemon-unavailable" => {
+                    printer.warning(&format!("[daemon] {}", event.message));
+                }
+                "drain" => {
+                    printer.warning("Server is draining; will reconnect if disconnected");
+                }
+                _ => {}
             }
-            "error" => {
-                printer.error(&format!("Build error: {}", event.message));
-                return false;
-            }
-            "daemon-unavailable" => {
-                printer.warning(&format!("[daemon] {}", event.message));
-            }
-            "drain" => {
-                printer.warning("Server is draining; will reconnect if disconnected");
-            }
-            _ => {}
-        }
-        true
-    }).await?;
+            true
+        })
+        .await?;
 
     Ok(())
 }
@@ -183,9 +191,7 @@ fn build_all(nix: &NixRunner, printer: &Printer) -> Result<()> {
     printer.info("Building all packages...");
 
     let spinner = create_spinner("building all packages");
-    let paths = nix
-        .build_all("pkgs")
-        .context("building all packages")?;
+    let paths = nix.build_all("pkgs").context("building all packages")?;
     spinner.finish_and_clear();
 
     if printer.json_if_active(&serde_json::json!({

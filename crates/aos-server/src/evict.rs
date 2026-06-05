@@ -92,8 +92,8 @@ pub fn scan_roots(views: &ViewManager, view: &str) -> Result<Vec<RootInfo>> {
         return Ok(roots);
     }
 
-    let entries = fs::read_dir(&gcroot_dir)
-        .with_context(|| format!("reading {}", gcroot_dir.display()))?;
+    let entries =
+        fs::read_dir(&gcroot_dir).with_context(|| format!("reading {}", gcroot_dir.display()))?;
 
     for entry in entries {
         let entry = entry?;
@@ -174,10 +174,7 @@ pub fn compute_unique(
 
 /// Score eviction candidates and return them sorted by score (highest first).
 /// Score = age_days * unique_size_bytes. Higher = evict first.
-pub fn score_candidates(
-    store: &NixStore,
-    roots: &[RootInfo],
-) -> Result<Vec<EvictionCandidate>> {
+pub fn score_candidates(store: &NixStore, roots: &[RootInfo]) -> Result<Vec<EvictionCandidate>> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .context("system clock error")?
@@ -264,8 +261,8 @@ pub fn evict_source_lru(
     // Collect source roots with their last_accessed timestamps.
     let mut sources: Vec<(String, i64)> = Vec::new();
 
-    let entries = fs::read_dir(&gcroot_dir)
-        .with_context(|| format!("reading {}", gcroot_dir.display()))?;
+    let entries =
+        fs::read_dir(&gcroot_dir).with_context(|| format!("reading {}", gcroot_dir.display()))?;
 
     for entry in entries {
         let entry = entry?;

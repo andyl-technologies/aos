@@ -5,6 +5,12 @@
 > current **git-bundle** transport with a **git-native pack/thin-delta pipeline**
 > served over dumb HTTP.
 >
+> **As-built status note:** this workstream is now archival planning context. The
+> pack/delta implementation has landed locally; use
+> [`../../registry/current-state.md`](../../registry/current-state.md) and
+> [`TODO.md`](./TODO.md) for current facts. Follow-up production validation is
+> tracked in [`validation-runbook.md`](./validation-runbook.md).
+>
 > **Scope:** the producer side of pack generation (full packs at `X.Y.0`, the
 > guaranteed thin-delta scheme, `pack-objects` tuning, the zstd transport trick,
 > the optional trained dictionary) plus the client-side completion primitives
@@ -40,7 +46,7 @@ fast.
 The current transport is a git-**bundle** pipeline. Cited code in
 [`crates/aos-package/src/registry/bundle.rs`](../../../crates/aos-package/src/registry/bundle.rs):
 
-| Concern | Current implementation | `path:line` |
+| Concern | Pre-cutover implementation | `path:line` |
 |---|---|---|
 | Artifact format | git **bundles** (`*.bundle`), refs + prereqs baked in | `bundle.rs:1-6` (module doc) |
 | Bundle taxonomy | `BundleType::Snapshot` / `SequentialDelta` / `SkipDelta` enum | `bundle.rs:22-31` |
@@ -49,7 +55,7 @@ The current transport is a git-**bundle** pipeline. Cited code in
 | Tag scheme | calendar `vYYYY.MM[.P]`, classified by dot-segment count (`classify_delta`) | `bundle.rs:238-243` |
 | Integrity | SHA-256 of bundle file + `git bundle verify` (`verify_bundle`) | `bundle.rs:305-346` |
 | Apply | `git bundle unbundle` into a bare cache repo (`unbundle`) | `bundle.rs:376-404` |
-| Producer | **stub** — `apr bundle` (`registry_ops.rs:1706-1744`) = `git bundle create`; no manifest writer, no upload (brief §2) | — |
+| Producer | **stub at plan-writing time** — `apr bundle` (`registry_ops.rs:1706-1744`) = `git bundle create`; no manifest writer, no upload (brief §2) | — |
 | Selection | `latest_snapshot` / `skip_delta_from` / `sequential_deltas_between` over `creation_token` | `bundle.rs:189-224` |
 
 Everything in the table above is **deleted or rewritten** in the target. The

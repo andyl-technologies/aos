@@ -81,8 +81,7 @@ impl Profile {
             let state = ProfileState::default();
             let json = serde_json::to_string_pretty(&state)
                 .context("serializing default profile state")?;
-            atomic_write(&state_path, json.as_bytes())
-                .context("writing initial state.json")?;
+            atomic_write(&state_path, json.as_bytes()).context("writing initial state.json")?;
         }
 
         Ok(Self { path, scope })
@@ -185,19 +184,16 @@ impl Profile {
         let target_name = format!("gen-{}", generation.number);
 
         // Create a temp symlink next to `current`.
-        let tmp_path = self.path.join(format!(".current.tmp.{}", std::process::id()));
+        let tmp_path = self
+            .path
+            .join(format!(".current.tmp.{}", std::process::id()));
         let _ = std::fs::remove_file(&tmp_path);
 
         symlink(&target_name, &tmp_path)
             .with_context(|| format!("creating temp symlink {}", tmp_path.display()))?;
 
-        std::fs::rename(&tmp_path, &current).with_context(|| {
-            format!(
-                "renaming {} -> {}",
-                tmp_path.display(),
-                current.display()
-            )
-        })?;
+        std::fs::rename(&tmp_path, &current)
+            .with_context(|| format!("renaming {} -> {}", tmp_path.display(), current.display()))?;
 
         // Update state to reflect the new current generation.
         let mut state = self.state()?;
@@ -249,10 +245,8 @@ impl Profile {
     /// Save state.json atomically (write to temp file, then rename).
     fn save_state(&self, state: &ProfileState) -> Result<()> {
         let state_path = self.path.join("state.json");
-        let json = serde_json::to_string_pretty(state)
-            .context("serializing profile state")?;
-        atomic_write(&state_path, json.as_bytes())
-            .context("saving state.json")
+        let json = serde_json::to_string_pretty(state).context("serializing profile state")?;
+        atomic_write(&state_path, json.as_bytes()).context("saving state.json")
     }
 }
 
@@ -310,17 +304,15 @@ fn read_root_dir(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(results),
         Err(e) => {
-            return Err(e)
-                .with_context(|| format!("reading root directory {}", dir.display()));
+            return Err(e).with_context(|| format!("reading root directory {}", dir.display()));
         }
     };
 
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
-        let target = std::fs::read_link(entry.path()).with_context(|| {
-            format!("reading symlink {}", entry.path().display())
-        })?;
+        let target = std::fs::read_link(entry.path())
+            .with_context(|| format!("reading symlink {}", entry.path().display()))?;
         results.push((name, target));
     }
 
@@ -329,9 +321,7 @@ fn read_root_dir(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
 
 /// Write data to a file atomically via a temp file and rename.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .context("path has no parent directory")?;
+    let parent = path.parent().context("path has no parent directory")?;
     let file_name = path
         .file_name()
         .context("path has no file name")?
