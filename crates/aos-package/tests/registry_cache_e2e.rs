@@ -1,0 +1,241 @@
+mod common;
+
+use std::fs;
+use std::io::Cursor;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+use aos_core::output::Printer;
+use aos_net::{TransferEngine, TransferEngineConfig};
+use aos_package::download::{
+    DownloadRequest, default_engine, download_nars, fetch_narinfos, narinfo_url,
+};
+use aos_package::registry::nixcache;
+use base64::Engine as _;
+
+use common::StaticHttpServer;
+
+#[tokio::test]
+async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -> Result<()> {
+    let Some(store_path) = tiny_store_path_fixture()? else {
+        eprintln!(
+            "skipping static Nix cache e2e: nix-store is unavailable or refused fixture setup"
+        );
+        return Ok(());
+    };
+
+    let tmp = tempfile::TempDir::new()?;
+    let registry_dir = tmp.path().join("registry");
+    let output_dir = tmp.path().join("cache");
+    let download_dir = tmp.path().join("downloads");
+    fs::create_dir_all(registry_dir.join("packages/f"))?;
+    fs::write(
+        registry_dir.join("packages/f/fixture.toml"),
+        package_toml(&store_path),
+    )?;
+
+    let (key_file, trusted_public_key) = nix_cache_key(tmp.path())?;
+    let printer = Printer::new(0, true, false);
+    let report =
+        nixcache::generate_static_cache(&registry_dir, &output_dir, Some(&key_file), 37, &printer)
+            .await?;
+    assert_eq!(report.paths, 1);
+    assert_eq!(report.narinfos, 1);
+    assert_eq!(report.nars, 1);
+    assert!(output_dir.join("nix-cache-info").exists());
+
+    let server = StaticHttpServer::spawn(output_dir.clone()).await?;
+    let mirror_url = server.base_url();
+    let narinfo_text = fetch_text(&narinfo_url(&mirror_url, &store_path)).await?;
+    assert!(narinfo_text.contains("Sig: aos-cache:"));
+
+    let engine = Arc::new(default_engine());
+    let resolved = fetch_narinfos(
+        Arc::clone(&engine),
+        &[DownloadRequest {
+            store_path: store_path.clone(),
+            mirror_url: mirror_url.clone(),
+        }],
+        1,
+        &printer,
+    )
+    .await?;
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].narinfo.store_path, store_path);
+
+    let results = download_nars(&resolved, &download_dir, 1, &printer).await?;
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].store_path, store_path);
+    assert!(results[0].local_path.exists());
+
+    let downloaded = fs::read(&results[0].local_path)?;
+    let decoded = zstd::stream::decode_all(Cursor::new(downloaded))?;
+    let expected = nix_store_dump(&store_path)?;
+    assert_eq!(decoded, expected);
+
+    assert_stock_nix_can_query_signed_cache(&mirror_url, &store_path, &trusted_public_key)?;
+    Ok(())
+}
+
+fn tiny_store_path_fixture() -> Result<Option<String>> {
+    if command_missing("nix-store") {
+        return Ok(None);
+    }
+
+    let tmp = tempfile::Builder::new()
+        .prefix("aos-cache-fixture-")
+        .tempfile_in("/private/tmp")?;
+    fs::write(tmp.path(), b"aos static cache fixture\n")?;
+    let output = Command::new("nix-store")
+        .args(["--add-fixed", "sha256"])
+        .arg(tmp.path())
+        .output()
+        .context("running nix-store --add-fixed")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!(
+            "skipping static Nix cache e2e: nix-store --add-fixed failed: {}",
+            stderr.trim(),
+        );
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
+fn nix_cache_key(root: &std::path::Path) -> Result<(std::path::PathBuf, String)> {
+    let seed = [11u8; 32];
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let public_key = signing_key.verifying_key().to_bytes();
+    let secret_b64 = base64::engine::general_purpose::STANDARD.encode(seed);
+    let public_b64 = base64::engine::general_purpose::STANDARD.encode(public_key);
+    let key_file = root.join("nix-cache.sec");
+    fs::write(&key_file, format!("aos-cache:{secret_b64}\n"))?;
+    Ok((key_file, format!("aos-cache:{public_b64}")))
+}
+
+fn package_toml(store_path: &str) -> String {
+    format!(
+        r#"[package]
+name = "fixture"
+description = "Static cache fixture"
+license = "MIT"
+maintainer = "registry@example.com"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "{store_path}"
+nar_hash = "sha256:placeholder"
+nar_size = 1
+closure_size = 1
+source_drv = "{store_path}.drv"
+source_nar_hash = "sha256:placeholder"
+references = []
+"#,
+    )
+}
+
+async fn fetch_text(url: &str) -> Result<String> {
+    let engine = TransferEngine::new(TransferEngineConfig::default());
+    let result = engine.execute(aos_net::TransferRequest::get(url)).await?;
+    let body = result
+        .body
+        .ok_or_else(|| anyhow::anyhow!("no response body for {url}"))?;
+    String::from_utf8(body).with_context(|| format!("{url} body is not UTF-8"))
+}
+
+fn nix_store_dump(store_path: &str) -> Result<Vec<u8>> {
+    let output = Command::new("nix-store")
+        .args(["--dump", store_path])
+        .output()
+        .with_context(|| format!("running nix-store --dump {store_path}"))?;
+    if !output.status.success() {
+        bail!(
+            "nix-store --dump failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    Ok(output.stdout)
+}
+
+fn assert_stock_nix_can_query_signed_cache(
+    mirror_url: &str,
+    store_path: &str,
+    trusted_public_key: &str,
+) -> Result<()> {
+    if std::env::var_os("AOS_PACKAGE_TEST_STOCK_NIX_CACHE").is_none() {
+        eprintln!(
+            "skipping stock nix signed-cache check: set AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1 to run"
+        );
+        return Ok(());
+    }
+
+    if command_missing("nix") {
+        eprintln!("skipping stock nix signed-cache check: nix is unavailable");
+        return Ok(());
+    }
+
+    let mut command = Command::new("nix");
+    command.args([
+        "--extra-experimental-features",
+        "nix-command",
+        "--option",
+        "require-sigs",
+        "true",
+        "--option",
+        "trusted-public-keys",
+        trusted_public_key,
+        "path-info",
+        "--store",
+        mirror_url,
+        store_path,
+    ]);
+
+    let Some(output) = command_output_with_timeout(command, Duration::from_secs(15))? else {
+        bail!("stock nix path-info against static cache timed out after 15s");
+    };
+    if !output.status.success() {
+        bail!(
+            "stock nix path-info against static cache failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(store_path));
+    Ok(())
+}
+
+fn command_output_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<Option<std::process::Output>> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().context("spawning timed command")?;
+    let started = Instant::now();
+    loop {
+        if child.try_wait().context("polling timed command")?.is_some() {
+            let output = child
+                .wait_with_output()
+                .context("collecting timed command output")?;
+            return Ok(Some(output));
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn command_missing(command: &str) -> bool {
+    matches!(
+        Command::new(command).arg("--version").output(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound
+    )
+}
