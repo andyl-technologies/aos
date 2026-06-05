@@ -399,6 +399,11 @@ pub enum RegistryCommand {
         #[arg(long)]
         keep_local: bool,
     },
+    /// Manage trusted registry signing keys
+    Trust {
+        #[command(subcommand)]
+        command: TrustCommand,
+    },
 
     // ----- Package Entries -----
     /// Publish a package to the registry from a store path
@@ -643,6 +648,32 @@ pub enum RegistryCommand {
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
+    },
+}
+
+/// Registry trust-store operations.
+#[derive(Subcommand)]
+pub enum TrustCommand {
+    /// Pin a trusted registry signing key in trusted-keys.d
+    Pin {
+        /// Registry name
+        registry: String,
+        /// Signing key in registry:Ed25519:<base64> form
+        key: String,
+        /// Replace existing pinned keys for this registry before pinning
+        #[arg(long)]
+        replace: bool,
+    },
+    /// List pinned trusted keys
+    List {
+        /// Registry name to inspect
+        registry: Option<String>,
+    },
+    /// Remove pinned trusted keys for a registry
+    #[command(alias = "unpin")]
+    Remove {
+        /// Registry name
+        registry: String,
     },
 }
 
@@ -1150,6 +1181,7 @@ async fn run_registry(
         RegistryCommand::Remove { name, keep_local } => {
             registry_remove(config, name, *keep_local, printer).await
         }
+        RegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
         RegistryCommand::Create {
             name,
             remote,
