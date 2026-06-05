@@ -90,19 +90,29 @@ impl RegistryFixture {
         &self.signing.trusted_key
     }
 
+    #[allow(dead_code)]
     pub fn write_registry_toml(&self, cache_url: &str) -> Result<()> {
-        fs::write(
-            self.source.join("registry.toml"),
-            format!(
-                r#"schema = 1
+        self.write_registry_toml_with_caches(&[(cache_url, 50)])
+    }
 
-[[caches]]
-url = "{cache_url}"
-priority = 50
+    pub fn write_registry_toml_with_caches(&self, caches: &[(&str, u32)]) -> Result<()> {
+        let mut content = format!(
+            r#"[registry]
+name = "{}"
+description = "Fixture registry"
 "#,
-            ),
-        )
-        .context("writing registry.toml")?;
+            self.name
+        );
+        for (url, priority) in caches {
+            content.push_str(&format!(
+                r#"
+[[caches]]
+url = "{url}"
+priority = {priority}
+"#,
+            ));
+        }
+        fs::write(self.source.join("registry.toml"), content).context("writing registry.toml")?;
         Ok(())
     }
 
@@ -249,6 +259,7 @@ key = "{}"
             version: None,
             pin: None,
             max_staleness_seconds: None,
+            caches: Vec::new(),
             signing: None,
         }
     }
@@ -267,6 +278,7 @@ key = "{}"
             version: None,
             pin: None,
             max_staleness_seconds: None,
+            caches: Vec::new(),
             signing: Some(SigningConfig {
                 required: true,
                 public_key: self.trusted_key().to_string(),

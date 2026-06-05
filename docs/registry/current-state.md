@@ -96,9 +96,10 @@ than one atomic `apr release` command.
    - channel mode verifies the signed partition tag, signed semver tag, and
      commit chain with name-binding.
 6. Enforce fast-forward from the last synced commit.
-7. Extract `packages/` to the remote metadata cache.
-8. Extract committed root `registry.toml` so `[[caches]]` are available to NAR
-   mirror resolution.
+7. Extract `packages/` and `closures/` to the remote metadata cache.
+8. Extract committed root `registry.toml`, `keys.toml`, and `.gitattributes`
+   so `[[caches]]` are available to NAR mirror resolution and trust-roster
+   helpers can read the authenticated tree after sync.
 9. Persist registry state.
 
 Channel tracking resolves a deterministic persisted bucket through

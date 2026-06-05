@@ -575,6 +575,7 @@ mod tests {
             version: None,
             pin: None,
             max_staleness_seconds: None,
+            caches: Vec::new(),
             signing: None,
         };
 
