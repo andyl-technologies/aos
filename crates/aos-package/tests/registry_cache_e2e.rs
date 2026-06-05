@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use aos_cache::backend::{self, AuthOptions};
+use aos_core::nar::info::{self as narinfo, store_hash};
 use aos_core::output::Printer;
 use aos_net::{TransferEngine, TransferEngineConfig};
 use aos_package::download::{
@@ -75,6 +77,8 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
     let expected = nix_store_dump(&store_path)?;
     assert_eq!(decoded, expected);
 
+    assert_filesystem_upload_array_round_trips(&output_dir, &store_path, &narinfo_text, &printer)
+        .await?;
     assert_stock_nix_can_query_signed_cache(&mirror_url, &store_path, &trusted_public_key)?;
     Ok(())
 }
@@ -147,6 +151,49 @@ async fn fetch_text(url: &str) -> Result<String> {
         .body
         .ok_or_else(|| anyhow::anyhow!("no response body for {url}"))?;
     String::from_utf8(body).with_context(|| format!("{url} body is not UTF-8"))
+}
+
+async fn assert_filesystem_upload_array_round_trips(
+    output_dir: &std::path::Path,
+    store_path: &str,
+    source_narinfo_text: &str,
+    printer: &Printer,
+) -> Result<()> {
+    let first = tempfile::TempDir::new()?;
+    let second = tempfile::TempDir::new()?;
+    let upload_urls = vec![
+        format!("file://{}", first.path().display()),
+        format!("file://{}", second.path().display()),
+    ];
+    nixcache::upload_static_cache_to_all(output_dir, &upload_urls, printer).await?;
+
+    let hash = store_hash(store_path);
+    let source_narinfo = narinfo::parse(source_narinfo_text)?;
+    let source_cache_info = fs::read_to_string(output_dir.join("nix-cache-info"))?;
+    let source_nar = fs::read(output_dir.join(&source_narinfo.url))?;
+
+    for upload_url in &upload_urls {
+        let uploaded = backend::from_url(upload_url, &AuthOptions::default()).await?;
+        assert!(uploaded.has_narinfo(hash).await?);
+        assert_eq!(
+            uploaded
+                .query_missing(&[hash, "missingmissingmissingmissingmiss"])
+                .await?,
+            vec!["missingmissingmissingmissingmiss".to_string()]
+        );
+        assert_eq!(uploaded.get_narinfo(hash).await?, source_narinfo_text);
+        assert_eq!(uploaded.get_nar(&source_narinfo.url).await?, source_nar);
+
+        let root = upload_url
+            .strip_prefix("file://")
+            .ok_or_else(|| anyhow::anyhow!("unexpected file upload URL {upload_url}"))?;
+        assert_eq!(
+            fs::read_to_string(std::path::Path::new(root).join("nix-cache-info"))?,
+            source_cache_info,
+        );
+    }
+
+    Ok(())
 }
 
 fn nix_store_dump(store_path: &str) -> Result<Vec<u8>> {

@@ -136,6 +136,10 @@ impl HttpBackend {
         format!("{}/{}.narinfo", self.base_url, store_hash)
     }
 
+    fn cache_info_url(&self) -> String {
+        format!("{}/nix-cache-info", self.base_url)
+    }
+
     fn nar_url(&self, url: &str) -> String {
         format!("{}/{}", self.base_url, url)
     }
@@ -254,6 +258,31 @@ impl CacheBackend for HttpBackend {
 
     async fn ensure_cache_info(&self, _store_dir: &str) -> Result<()> {
         // HTTP caches are assumed to already have nix-cache-info.
+        Ok(())
+    }
+
+    async fn put_cache_info(&self, content: &str) -> Result<()> {
+        if self.is_aos {
+            // AOS server cache-info is served dynamically from the view.
+            let _ = content;
+            return Ok(());
+        }
+        let url = self.cache_info_url();
+        let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
+        req.headers
+            .push(("Content-Type".to_string(), "text/plain".to_string()));
+        let req = self.add_headers(req);
+        let result = self
+            .engine
+            .execute(req)
+            .await
+            .context("uploading nix-cache-info")?;
+        if result.status >= 400 {
+            anyhow::bail!(
+                "uploading nix-cache-info failed with HTTP {}",
+                result.status
+            );
+        }
         Ok(())
     }
 
