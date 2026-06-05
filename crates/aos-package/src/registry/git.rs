@@ -41,6 +41,8 @@ const MIN_SHA256_GIT_VERSION: GitVersion = GitVersion {
     patch: 0,
 };
 
+const DEFAULT_CHANNEL_MAX_STALENESS_SECONDS: u64 = 14 * 24 * 60 * 60;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct GitVersion {
     major: u32,
@@ -91,11 +93,32 @@ pub async fn sync_git(
     }
 
     // Step 2: Fetch refs.
-    fetch_refs(&repo_dir, &git_url, tracking_mode).await?;
+    if matches!(tracking_mode, TrackingMode::Channel(_)) {
+        if let Err(err) = fetch_refs(&repo_dir, &git_url, tracking_mode).await {
+            return Err(channel_refresh_error(
+                config,
+                state,
+                "fetching git refs",
+                err,
+            ));
+        }
+    } else {
+        fetch_refs(&repo_dir, &git_url, tracking_mode).await?;
+    }
 
     // Step 3: Determine the new HEAD commit.
     let new_commit = if let TrackingMode::Channel(channel_name) = tracking_mode {
-        resolve_channel_head(config, &git_url, channel_name, &repo_dir, state).await?
+        match resolve_channel_head(config, &git_url, channel_name, &repo_dir, state).await {
+            Ok(commit) => commit,
+            Err(err) => {
+                return Err(channel_refresh_error(
+                    config,
+                    state,
+                    "resolving channel partition",
+                    err,
+                ));
+            }
+        }
     } else {
         resolve_fetch_head(&repo_dir, tracking_mode).await?
     };
@@ -902,6 +925,70 @@ async fn count_toml_files(dir: &Path) -> usize {
     count
 }
 
+fn channel_refresh_error(
+    config: &RegistryConfig,
+    state: &RegistryState,
+    phase: &str,
+    err: anyhow::Error,
+) -> anyhow::Error {
+    channel_refresh_error_at(config, state, phase, err, unix_now_secs())
+}
+
+fn channel_refresh_error_at(
+    config: &RegistryConfig,
+    state: &RegistryState,
+    phase: &str,
+    err: anyhow::Error,
+    now_secs: u64,
+) -> anyhow::Error {
+    let max_staleness = config
+        .max_staleness_seconds
+        .unwrap_or(DEFAULT_CHANNEL_MAX_STALENESS_SECONDS);
+    let cause = format!("{err:#}");
+
+    let Some(last_update) = state.last_update.as_deref() else {
+        return anyhow::anyhow!(
+            "registry '{}' channel refresh failed while {phase}, and no previous successful \
+             freshness observation exists: {cause}",
+            config.name,
+        );
+    };
+
+    let last_update_secs = match parse_iso8601_utc_secs(last_update) {
+        Ok(secs) => secs,
+        Err(parse_err) => {
+            return anyhow::anyhow!(
+                "registry '{}' channel refresh failed while {phase}, and last_update '{}' \
+                 could not be parsed for freshness evaluation: {parse_err:#}; original error: {cause}",
+                config.name,
+                last_update,
+            );
+        }
+    };
+    let age = now_secs.saturating_sub(last_update_secs);
+
+    if age > max_staleness {
+        anyhow::anyhow!(
+            "registry '{}' channel refresh failed while {phase}; last successful freshness \
+             observation is stale ({age}s old, max_staleness_seconds={max_staleness}): {cause}",
+            config.name,
+        )
+    } else {
+        anyhow::anyhow!(
+            "registry '{}' channel refresh failed while {phase}; last successful freshness \
+             observation is {age}s old (max_staleness_seconds={max_staleness}): {cause}",
+            config.name,
+        )
+    }
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// Return the current timestamp in ISO 8601 format.
 ///
 /// Uses a simple implementation to avoid pulling in the `chrono` crate.
@@ -926,6 +1013,42 @@ fn chrono_now() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
+fn parse_iso8601_utc_secs(input: &str) -> Result<u64> {
+    if input.len() != 20
+        || !input.ends_with('Z')
+        || &input[4..5] != "-"
+        || &input[7..8] != "-"
+        || &input[10..11] != "T"
+        || &input[13..14] != ":"
+        || &input[16..17] != ":"
+    {
+        bail!("timestamp must be YYYY-MM-DDTHH:MM:SSZ");
+    }
+
+    let year = parse_decimal(&input[0..4], "year")?;
+    let month = parse_decimal(&input[5..7], "month")?;
+    let day = parse_decimal(&input[8..10], "day")?;
+    let hour = parse_decimal(&input[11..13], "hour")?;
+    let minute = parse_decimal(&input[14..16], "minute")?;
+    let second = parse_decimal(&input[17..19], "second")?;
+
+    if hour > 23 || minute > 59 || second > 59 {
+        bail!("timestamp time is out of range");
+    }
+
+    let days = ymd_to_days(year, month, day)?;
+    Ok(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+fn parse_decimal(input: &str, field: &str) -> Result<u64> {
+    if input.is_empty() || !input.bytes().all(|b| b.is_ascii_digit()) {
+        bail!("timestamp {field} is not numeric");
+    }
+    input
+        .parse()
+        .with_context(|| format!("parsing timestamp {field}"))
+}
+
 /// Convert days since Unix epoch to (year, month, day).
 fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     // Civil date from day count algorithm (Rata Die variant).
@@ -940,6 +1063,49 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
+}
+
+fn ymd_to_days(year: u64, month: u64, day: u64) -> Result<u64> {
+    if !(1..=12).contains(&month) {
+        bail!("timestamp month is out of range");
+    }
+    let max_day = days_in_month(year, month);
+    if day == 0 || day > max_day {
+        bail!("timestamp day is out of range");
+    }
+
+    let year = year as i64;
+    let month = month as i64;
+    let day = day as i64;
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
+    let yoe = adjusted_year - era * 400;
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let doy = (153 * month_prime + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    if days < 0 {
+        bail!("timestamp predates Unix epoch");
+    }
+    Ok(days as u64)
+}
+
+fn days_in_month(year: u64, month: u64) -> u64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: u64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -960,6 +1126,97 @@ mod tests {
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1");
         cmd
+    }
+
+    fn channel_config(max_staleness_seconds: Option<u64>) -> RegistryConfig {
+        RegistryConfig {
+            name: "core".to_string(),
+            url: "https://registry.example.com/core".to_string(),
+            priority: 500,
+            enabled: true,
+            commit: None,
+            branch: None,
+            channel: Some("stable".to_string()),
+            tag: None,
+            version: None,
+            pin: None,
+            max_staleness_seconds,
+            signing: Some(SigningConfig {
+                required: true,
+                public_key: "core:Ed25519:base64key".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn parse_iso8601_utc_secs_handles_epoch_and_leap_day() {
+        assert_eq!(parse_iso8601_utc_secs("1970-01-01T00:00:00Z").unwrap(), 0);
+        assert_eq!(
+            parse_iso8601_utc_secs("2024-02-29T00:00:00Z").unwrap(),
+            1_709_164_800,
+        );
+        assert!(parse_iso8601_utc_secs("2023-02-29T00:00:00Z").is_err());
+    }
+
+    #[test]
+    fn channel_refresh_error_reports_first_sync_without_observation() {
+        let err = channel_refresh_error_at(
+            &channel_config(Some(60)),
+            &RegistryState::default(),
+            "resolving channel partition",
+            anyhow::anyhow!("offline"),
+            parse_iso8601_utc_secs("2026-06-01T00:00:00Z").unwrap(),
+        );
+        let message = format!("{err:#}");
+        assert!(message.contains("no previous successful freshness observation"));
+        assert!(message.contains("offline"));
+    }
+
+    #[test]
+    fn channel_refresh_error_reports_fresh_failed_refresh() {
+        let mut state = RegistryState {
+            last_update: Some("2026-06-01T00:00:00Z".to_string()),
+            ..RegistryState::default()
+        };
+        let err = channel_refresh_error_at(
+            &channel_config(Some(120)),
+            &state,
+            "fetching git refs",
+            anyhow::anyhow!("temporary 503"),
+            parse_iso8601_utc_secs("2026-06-01T00:01:00Z").unwrap(),
+        );
+        let message = format!("{err:#}");
+        assert!(message.contains("60s old"));
+        assert!(!message.contains(" is stale "));
+
+        state.last_update = Some("2026-06-01T00:02:30Z".to_string());
+        let err = channel_refresh_error_at(
+            &channel_config(Some(120)),
+            &state,
+            "fetching git refs",
+            anyhow::anyhow!("temporary 503"),
+            parse_iso8601_utc_secs("2026-06-01T00:02:00Z").unwrap(),
+        );
+        assert!(format!("{err:#}").contains("0s old"));
+    }
+
+    #[test]
+    fn channel_refresh_error_reports_stale_failed_refresh() {
+        let state = RegistryState {
+            last_update: Some("2026-06-01T00:00:00Z".to_string()),
+            ..RegistryState::default()
+        };
+        let err = channel_refresh_error_at(
+            &channel_config(Some(120)),
+            &state,
+            "resolving channel partition",
+            anyhow::anyhow!("all partitions missing"),
+            parse_iso8601_utc_secs("2026-06-01T00:02:01Z").unwrap(),
+        );
+        let message = format!("{err:#}");
+        assert!(message.contains("is stale (121s old"));
+        assert!(message.contains("max_staleness_seconds=120"));
+        assert!(message.contains("all partitions missing"));
     }
 
     #[test]
