@@ -32,9 +32,9 @@ anything being placed in the tag message (tags are pure pointers — see
 
 This is **almost unchanged** from today's code — the git-native redesign changed
 *distribution* (refs, tags, objects, packs over dumb HTTP), not the tree's content.
-The in-repo signing pubkey has moved out of `registry.toml`; the remaining target
-tree work is to emit `keys.toml` as the committed trust roster during registry
-creation/publish.
+The in-repo signing pubkey has moved out of `registry.toml`; `apr create` now
+emits `keys.toml` as the committed trust roster, and the remaining tree work is
+to maintain that roster through supported rotation/revocation workflows.
 
 ---
 
@@ -84,7 +84,11 @@ A dedicated committed file holding the **active signing key(s)** and a **revoked
 list**, authenticated via the signed tag like everything else. It does **not**
 bootstrap trust — initial trust is **TOFU-pinned client-side** in
 `trusted-keys.d/<registry>.pub` (`crates/aos-package/src/security.rs`,
-`types.rs` `trusted_keys_dirs()`).
+`types.rs` `trusted_keys_dirs()`). `apr create` writes this file during the
+initial commit; pass `--trust-key registry:Ed25519:<base64>` and
+optionally `--trust-key-id <id>` (default `initial`) to seed the active-key
+list, or omit `--trust-key` to write an empty schema-1 roster that can be
+populated by later key operations.
 
 ```toml
 schema = 1
@@ -217,7 +221,7 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 | File | CURRENT (today's code) | TARGET |
 |---|---|---|
 | `registry.toml` | `[registry]` + `[[caches]]` | unchanged shape |
-| `keys.toml` | parser plus rotation-pin/revocation helpers exist; not emitted by create yet | committed trust roster (active keys + revoked) |
+| `keys.toml` | emitted by `apr create` as schema-1 roster; parser plus rotation-pin/revocation helpers exist | committed trust roster maintained through active-key rotation and revocation workflows |
 | `packages/<x>/<name>.toml` | nested `PackageToml` | unchanged |
 | `closures/<hash>` | adjacency list | unchanged |
 | `.gitattributes` | `closures/** -diff` | unchanged |
