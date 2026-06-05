@@ -447,12 +447,13 @@ load-bearing in today's code and must be deleted, not merely bypassed:
   `state.store.path_info`, `routes.rs:195`), nix-serve-style — which the registry
   **never runs**. The NAR surface is content-addressed and independent of the
   tag/commit lineage.
-- **Clean break vs shim** for existing `creation_token`/bundle registries is an
-  open question (brief §16.7); track it in
-  [open-questions.md](./open-questions.md). The recommended default is a clean
-  break — the on-disk and on-wire formats share almost nothing — with
-  [current-state.md](../../registry/current-state.md) retained as the historical
-  description of the old code.
+- **Clean break vs shim** for existing `creation_token`/bundle registries is
+  resolved as a clean break (brief §16.7; see
+  [open-questions.md](./open-questions.md) §3.4). The active consumer treats
+  plain `http(s)://` origins as git-native dumb-HTTP registries, rejects
+  legacy-only `bundle-list.toml` origins with a clean error, and ignores
+  `bundle-list.toml` when the git-native surface is present. Git-native
+  producers do not regenerate the legacy bundle surface.
 - **Risk: producer cost.** The expensive-producer flags (`--window=350`,
   multiple delta bases, `zstd --ultra -22`) make publishing genuinely slow; that
   is intentional (asymmetric cost, brief §3) but must be budgeted in CI and
