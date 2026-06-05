@@ -44,3 +44,4 @@ tokio-util = { workspace = true }
 hyper-util = { workspace = true }
 tower = { workspace = true }
 libc = { workspace = true }
+git2 = { workspace = true }

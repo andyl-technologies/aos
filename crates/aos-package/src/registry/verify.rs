@@ -1,9 +1,9 @@
 //! Signed tag-object parsing and name-binding helpers.
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use git2::ObjectType;
 
 use crate::security::verify_tag_signature;
 
@@ -30,24 +30,19 @@ pub struct VerifiedRelease {
     pub commit: String,
 }
 
-/// Read a tag object by oid/ref using `git cat-file -p`.
+/// Read a tag object by object id or ref.
 ///
 /// # Errors
 ///
 /// Returns an error if the object is not readable or lacks required tag fields.
 pub fn read_tag_object(repo: &Path, oid: &str) -> Result<TagObject> {
-    let output = Command::new("git")
-        .args(["cat-file", "-p", oid])
-        .current_dir(repo)
-        .output()
-        .with_context(|| format!("running git cat-file -p {oid}"))?;
-    if !output.status.success() {
-        bail!(
-            "git cat-file -p {oid} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
+    let repo = crate::git_support::open(repo)?;
+    let (kind, data) = crate::git_support::raw_object(&repo, oid)
+        .with_context(|| format!("reading tag object {oid}"))?;
+    if kind != ObjectType::Tag {
+        bail!("object {oid} is {:?}, expected tag", kind);
     }
-    parse_tag_object(&String::from_utf8_lossy(&output.stdout))
+    parse_tag_object(&String::from_utf8_lossy(&data))
 }
 
 /// Verify that the embedded git tag-name equals the expected serving-path name.
@@ -153,18 +148,10 @@ pub fn parse_tag_object(content: &str) -> Result<TagObject> {
 }
 
 fn resolve_tag_object(repo: &Path, tag: &str) -> Result<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", &format!("{tag}^{{tag}}")])
-        .current_dir(repo)
-        .output()
-        .with_context(|| format!("running git rev-parse {tag}^{{tag}}"))?;
-    if !output.status.success() {
-        bail!(
-            "git rev-parse {tag}^{{tag}} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let repo = crate::git_support::open(repo)?;
+    crate::git_support::resolve_oid(&repo, &format!("{tag}^{{tag}}"))
+        .map(|oid| oid.to_string())
+        .with_context(|| format!("resolving tag object for {tag}"))
 }
 
 fn parse_tagger_when(tagger: &str) -> Option<i64> {

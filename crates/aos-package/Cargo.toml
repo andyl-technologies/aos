@@ -18,6 +18,7 @@ ed25519-dalek = { workspace = true }
 toml = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+flate2 = { workspace = true }
 indicatif = { workspace = true }
 console = { workspace = true }
 base64 = { workspace = true }
@@ -33,5 +34,7 @@ async-trait = { workspace = true }
 tokio-stream = { workspace = true }
 tempfile = { workspace = true }
 libc = { workspace = true }
+git2 = { workspace = true }
+ssh-key = { workspace = true }
 
 [dev-dependencies]

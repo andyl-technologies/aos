@@ -2,6 +2,7 @@ pub mod clean;
 pub mod config;
 pub mod deps;
 pub mod download;
+pub(crate) mod git_support;
 pub mod hold;
 pub mod install;
 pub mod profile;

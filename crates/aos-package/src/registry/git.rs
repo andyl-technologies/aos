@@ -1,17 +1,14 @@
 //! Native git/dumb-HTTP transport for registry sync.
 //!
 //! Used when a registry is configured with `git://`, `git+https://`, or
-//! `git+ssh://` URL schemes. Runs `git fetch` directly against a git server,
+//! `git+ssh://` URL schemes. Fetches directly against a git server,
 //! verifies commit signatures and fast-forward constraints, and extracts
 //! package TOML files into the local registry cache.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::Path;
-use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
-use tokio::process::Command;
 
 use crate::download::join_cache_url;
 use crate::registry::{channel, fetch, verify};
@@ -182,76 +179,45 @@ async fn ensure_repo(repo_dir: &Path, _url: &str) -> Result<()> {
         return Ok(());
     }
 
-    tokio::fs::create_dir_all(repo_dir)
-        .await
-        .with_context(|| format!("creating {}", repo_dir.display()))?;
-
-    let output = Command::new("git")
-        .args(["init", "--bare", "--object-format=sha256"])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .context("running git init --bare --object-format=sha256")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "git init --bare --object-format=sha256 failed: {}",
-            stderr.trim()
-        );
-    }
-
+    crate::git_support::init_sha256(repo_dir, true, "master")?;
     Ok(())
 }
 
-/// Run `git fetch` with the appropriate refspec based on tracking mode.
+/// Fetch with the appropriate refspec based on tracking mode.
 async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) -> Result<()> {
-    let mut args = vec!["fetch".to_string(), url.to_string()];
+    let mut refspecs = Vec::new();
 
     match tracking_mode {
         TrackingMode::Commit(hash) => {
             // Fetch the specific commit.
-            args.push(hash.clone());
+            refspecs.push(hash.clone());
         }
         TrackingMode::Branch(branch) => {
             // Fetch the branch.
-            args.push(format!("refs/heads/{branch}:refs/remotes/origin/{branch}"));
+            refspecs.push(format!("+refs/heads/{branch}:refs/remotes/origin/{branch}"));
         }
         TrackingMode::Channel(channel) => {
-            args.push(format!(
-                "refs/heads/{channel}:refs/remotes/origin/{channel}"
+            refspecs.push(format!(
+                "+refs/heads/{channel}:refs/remotes/origin/{channel}"
             ));
-            args.push("refs/tags/*:refs/tags/*".to_string());
+            refspecs.push("+refs/tags/*:refs/tags/*".to_string());
         }
         TrackingMode::Tag(tag) => {
             // Fetch the specific tag.
-            args.push(format!("refs/tags/{tag}:refs/tags/{tag}"));
+            refspecs.push(format!("+refs/tags/{tag}:refs/tags/{tag}"));
         }
         TrackingMode::Version(_) => {
             // Need all tags to do semver matching.
-            args.push("refs/tags/*:refs/tags/*".to_string());
+            refspecs.push("+refs/tags/*:refs/tags/*".to_string());
         }
         TrackingMode::Default => {
             // Fetch all tags.
-            args.push("refs/tags/*:refs/tags/*".to_string());
+            refspecs.push("+refs/tags/*:refs/tags/*".to_string());
         }
     }
 
-    // Add --force to allow tag updates.
-    args.push("--force".to_string());
-
-    let output = Command::new("git")
-        .args(&args)
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("running git fetch against {url}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git fetch failed: {}", stderr.trim());
-    }
-
+    crate::git_support::fetch(repo_dir, url, &refspecs)
+        .with_context(|| format!("fetching registry refs from {url}"))?;
     Ok(())
 }
 
@@ -279,19 +245,10 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
         }
     };
 
-    let output = Command::new("git")
-        .args(["rev-parse", &ref_to_resolve])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("resolving ref {ref_to_resolve}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git rev-parse {} failed: {}", ref_to_resolve, stderr.trim());
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let repo = crate::git_support::open(repo_dir)?;
+    Ok(crate::git_support::resolve_oid(&repo, &ref_to_resolve)
+        .with_context(|| format!("resolving ref {ref_to_resolve}"))?
+        .to_string())
 }
 
 async fn resolve_channel_head(
@@ -403,48 +360,14 @@ async fn fetch_and_verify_partition(
 }
 
 fn hash_tag_object(repo_dir: &Path, bytes: &[u8]) -> Result<String> {
-    let mut child = std::process::Command::new("git")
-        .args(["hash-object", "-w", "-t", "tag", "--stdin"])
-        .current_dir(repo_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running git hash-object for channel tag")?;
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin was piped")
-        .write_all(bytes)
-        .context("writing channel tag to git hash-object")?;
-    let output = child
-        .wait_with_output()
-        .context("waiting for git hash-object")?;
-    if !output.status.success() {
-        bail!(
-            "git hash-object failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let repo = crate::git_support::open(repo_dir)?;
+    Ok(crate::git_support::write_tag_object(&repo, bytes)?.to_string())
 }
 
 async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
-    let output = Command::new("git")
-        .args(["tag", "-l"])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .context("listing tags for channel resolution")?;
-    if !output.status.success() {
-        bail!(
-            "git tag -l failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
+    let repo = crate::git_support::open(repo_dir)?;
     let mut map = BTreeMap::new();
-    for tag in String::from_utf8_lossy(&output.stdout).lines() {
+    for tag in crate::git_support::tag_names(&repo)? {
         let tag = tag.trim();
         let Ok(version) = semver::Version::parse(tag) else {
             continue;
@@ -456,19 +379,12 @@ async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semve
 }
 
 async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", &format!("{tag}^{{tag}}")])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("resolving tag object for {tag}"))?;
-    if !output.status.success() {
-        bail!(
-            "git rev-parse {tag}^{{tag}} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let repo = crate::git_support::open(repo_dir)?;
+    Ok(
+        crate::git_support::resolve_oid(&repo, &format!("{tag}^{{tag}}"))
+            .with_context(|| format!("resolving tag object for {tag}"))?
+            .to_string(),
+    )
 }
 
 fn machine_id_seed(registry: &str) -> String {
@@ -519,35 +435,15 @@ async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> 
 
 /// Find the latest tag in the repo (by version sort).
 async fn resolve_latest_tag(repo_dir: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["tag", "--sort=-version:refname"])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .context("listing tags")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git tag failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let latest = stdout
-        .lines()
-        .next()
+    let repo = crate::git_support::open(repo_dir)?;
+    let latest = crate::git_support::tag_names(&repo)?
+        .into_iter()
+        .filter_map(|tag| parse_tag_as_semver(&tag).map(|version| (version, tag)))
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, tag)| tag)
         .ok_or_else(|| anyhow::anyhow!("no tags found in registry"))?;
 
-    let output = Command::new("git")
-        .args(["rev-parse", &format!("refs/tags/{latest}")])
-        .current_dir(repo_dir)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        bail!("git rev-parse refs/tags/{latest} failed");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(crate::git_support::resolve_oid(&repo, &format!("refs/tags/{latest}"))?.to_string())
 }
 
 /// Find the best tag matching a semver constraint.
@@ -555,22 +451,10 @@ async fn resolve_latest_tag(repo_dir: &Path) -> Result<String> {
 /// Lists all tags in the repo, parses each as semver (stripping `v` prefix),
 /// filters by the constraint, and resolves the latest matching tag's commit.
 async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> Result<String> {
-    let output = Command::new("git")
-        .args(["tag", "-l"])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .context("listing tags for version matching")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git tag -l failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let repo = crate::git_support::open(repo_dir)?;
     let mut best: Option<(semver::Version, String)> = None;
 
-    for tag in stdout.lines() {
+    for tag in crate::git_support::tag_names(&repo)? {
         let tag = tag.trim();
         if tag.is_empty() {
             continue;
@@ -598,18 +482,11 @@ async fn resolve_best_version_tag(repo_dir: &Path, req: &semver::VersionReq) -> 
     })?;
 
     // Resolve tag to commit.
-    let output = Command::new("git")
-        .args(["rev-parse", &format!("refs/tags/{best_tag}")])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("resolving tag {best_tag}"))?;
-
-    if !output.status.success() {
-        bail!("git rev-parse refs/tags/{best_tag} failed");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(
+        crate::git_support::resolve_oid(&repo, &format!("refs/tags/{best_tag}"))
+            .with_context(|| format!("resolving tag {best_tag}"))?
+            .to_string(),
+    )
 }
 
 /// Parse a tag string as a semver `Version`, stripping a leading `v` prefix,
@@ -638,7 +515,7 @@ fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
     semver::Version::parse(&semver_str).ok()
 }
 
-/// Verify the commit signature using `git verify-commit`.
+/// Verify the commit signature using the repository's embedded SSH signature.
 ///
 /// This checks that the commit was signed and that the signature is valid.
 /// The actual key verification depends on the user's git configuration
@@ -646,22 +523,15 @@ fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
 async fn verify_commit_signature(
     repo_dir: &Path,
     commit: &str,
-    _signing: &SigningConfig,
+    signing: &SigningConfig,
 ) -> Result<()> {
-    let output = Command::new("git")
-        .args(["verify-commit", commit])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| format!("running git verify-commit {commit}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let repo = crate::git_support::open(repo_dir)?;
+    if !crate::git_support::verify_commit_signature(&repo, commit, &signing.public_key)? {
         bail!(
             "commit signature verification failed for {commit}:\n{}\n\n\
              The registry requires signed commits (signing.required = true).\n\
              Ensure the registry maintainer's public key is trusted.",
-            stderr.trim(),
+            "missing or invalid SSH signature",
         );
     }
 
@@ -670,22 +540,14 @@ async fn verify_commit_signature(
 
 /// Enforce that `new_commit` is a descendant of `old_commit` (fast-forward).
 ///
-/// Uses `git merge-base --is-ancestor` to check the relationship.
+/// Uses repository graph ancestry to check the relationship.
 async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &str) -> Result<()> {
     if old_commit == new_commit {
         return Ok(());
     }
 
-    let output = Command::new("git")
-        .args(["merge-base", "--is-ancestor", old_commit, new_commit])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .with_context(|| {
-            format!("running git merge-base --is-ancestor {old_commit} {new_commit}")
-        })?;
-
-    if !output.status.success() {
+    let repo = crate::git_support::open(repo_dir)?;
+    if !crate::git_support::is_ancestor(&repo, old_commit, new_commit)? {
         bail!(
             "registry downgrade detected: commit {new_commit} is not a \
              descendant of previously verified commit {old_commit}.\n\n\
@@ -700,50 +562,12 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
 
 /// Extract package TOML files from a git tree into the output directory.
 ///
-/// Uses `git archive` to export the `packages/` directory from the commit
-/// and extract it into the output directory.
+/// Reads the `packages/` directory from the commit tree and writes it into
+/// the output directory.
 async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
-    // Clean the output directory first.
-    if output_dir.exists() {
-        tokio::fs::remove_dir_all(output_dir)
-            .await
-            .with_context(|| format!("cleaning {}", output_dir.display()))?;
-    }
-    tokio::fs::create_dir_all(output_dir)
-        .await
-        .with_context(|| format!("creating {}", output_dir.display()))?;
-
-    // Use `git archive` to produce a tar, then pipe through `tar -x`.
-    // We use std::process for pipe support (tokio's ChildStdout doesn't
-    // directly convert to Stdio for a second process).
-    let archive = std::process::Command::new("git")
-        .args(["archive", commit, "packages/"])
-        .current_dir(repo_dir)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .with_context(|| format!("running git archive {commit} packages/"))?;
-
-    let tar = std::process::Command::new("tar")
-        .args([
-            "-x",
-            "--strip-components=1",
-            "-C",
-            &output_dir.to_string_lossy(),
-        ])
-        .stdin(archive.stdout.unwrap())
-        .output()
-        .context("running tar to extract packages")?;
-
-    if !tar.status.success() {
-        let stderr = String::from_utf8_lossy(&tar.stderr);
-        bail!(
-            "failed to extract packages from commit {commit}: {}",
-            stderr.trim(),
-        );
-    }
-
-    Ok(())
+    let repo = crate::git_support::open(repo_dir)?;
+    crate::git_support::extract_tree_prefix(&repo, commit, Path::new("packages"), output_dir)
+        .with_context(|| format!("extracting packages from commit {commit}"))
 }
 
 /// Extract the repo-root `registry.toml` into `target_dir/registry.toml`.
@@ -755,29 +579,15 @@ pub async fn extract_registry_root(repo_dir: &Path, commit: &str, target_dir: &P
         .await
         .with_context(|| format!("creating {}", target_dir.display()))?;
 
-    let output = Command::new("git")
-        .args(["show", &format!("{commit}:registry.toml")])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .context("running git show :registry.toml")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // Missing root registry.toml is fine — resolve_mirror falls back to
-        // the registry URL. Any other failure (corrupt object, IO error)
-        // bubbles up.
-        if stderr.contains("does not exist")
-            || stderr.contains("exists on disk, but not in")
-            || stderr.contains("path 'registry.toml'")
-        {
-            return Ok(());
-        }
-        bail!("git show {commit}:registry.toml failed: {}", stderr.trim(),);
-    }
+    let repo = crate::git_support::open(repo_dir)?;
+    let Some(registry_toml) =
+        crate::git_support::read_blob_at(&repo, commit, Path::new("registry.toml"))?
+    else {
+        return Ok(());
+    };
 
     let dest = target_dir.join("registry.toml");
-    tokio::fs::write(&dest, &output.stdout)
+    tokio::fs::write(&dest, registry_toml)
         .await
         .with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
@@ -860,16 +670,19 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 mod tests {
     use super::*;
 
-    /// Build a `git` command for fixture setup with the developer's global
-    /// and system config neutralized, so tests don't inherit `~/.gitconfig`
-    /// settings (gpg signing, hooks, templates, etc.). Repo-local identity is
-    /// still set explicitly by each test via `git config`.
-    fn git(dir: &Path) -> Command {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(dir)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1");
-        cmd
+    fn init_fixture_repo(dir: &Path) -> git2::Repository {
+        let repo = crate::git_support::init_sha256(dir, false, "master").unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        drop(config);
+        repo
+    }
+
+    fn commit_fixture(repo: &git2::Repository, message: &str) -> String {
+        crate::git_support::commit_all(repo, message)
+            .unwrap()
+            .to_string()
     }
 
     #[test]
@@ -991,26 +804,9 @@ mod tests {
     #[tokio::test]
     async fn extract_packages_from_real_git_repo() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let repo_dir = tmp.path().join("registry.git");
-
-        // Create a non-bare repo, add some package files, commit, then
-        // test extraction.
         let work_dir = tmp.path().join("work");
         tokio::fs::create_dir_all(&work_dir).await.unwrap();
-
-        // Init a regular repo.
-        let output = git(&work_dir).args(["init"]).output().await.unwrap();
-        assert!(output.status.success());
-
-        // Configure git user for commit.
-        let _ = git(&work_dir)
-            .args(["config", "user.email", "test@test.com"])
-            .output()
-            .await;
-        let _ = git(&work_dir)
-            .args(["config", "user.name", "Test"])
-            .output()
-            .await;
+        let repo = init_fixture_repo(&work_dir);
 
         // Create package files.
         let pkg_dir = work_dir.join("packages").join("c");
@@ -1019,37 +815,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Add and commit.
-        let _ = git(&work_dir).args(["add", "."]).output().await;
-        let _ = git(&work_dir)
-            .args(["commit", "-m", "initial"])
-            .output()
-            .await;
-
-        // Clone as bare repo.
-        let output = git(&work_dir)
-            .args([
-                "clone",
-                "--bare",
-                &work_dir.to_string_lossy(),
-                &repo_dir.to_string_lossy(),
-            ])
-            .output()
-            .await
-            .unwrap();
-        assert!(output.status.success());
-
-        // Get the commit SHA.
-        let output = git(&repo_dir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .await
-            .unwrap();
-        let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let commit = commit_fixture(&repo, "initial");
 
         // Extract into output directory.
         let output_dir = tmp.path().join("extracted");
-        extract_packages(&repo_dir, &commit, &output_dir)
+        extract_packages(&work_dir, &commit, &output_dir)
             .await
             .unwrap();
 
@@ -1066,47 +836,15 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let work_dir = tmp.path().join("work");
         tokio::fs::create_dir_all(&work_dir).await.unwrap();
-
-        // Init repo.
-        let _ = git(&work_dir).args(["init"]).output().await.unwrap();
-        let _ = git(&work_dir)
-            .args(["config", "user.email", "test@test.com"])
-            .output()
-            .await;
-        let _ = git(&work_dir)
-            .args(["config", "user.name", "Test"])
-            .output()
-            .await;
+        let repo = init_fixture_repo(&work_dir);
 
         // First commit.
         tokio::fs::write(work_dir.join("a.txt"), "a").await.unwrap();
-        let _ = git(&work_dir).args(["add", "."]).output().await;
-        let _ = git(&work_dir)
-            .args(["commit", "-m", "first"])
-            .output()
-            .await;
-
-        let output = git(&work_dir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .await
-            .unwrap();
-        let commit1 = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let commit1 = commit_fixture(&repo, "first");
 
         // Second commit.
         tokio::fs::write(work_dir.join("b.txt"), "b").await.unwrap();
-        let _ = git(&work_dir).args(["add", "."]).output().await;
-        let _ = git(&work_dir)
-            .args(["commit", "-m", "second"])
-            .output()
-            .await;
-
-        let output = git(&work_dir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .await
-            .unwrap();
-        let commit2 = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let commit2 = commit_fixture(&repo, "second");
 
         // Fast-forward: commit1 -> commit2 should pass.
         enforce_fast_forward(&work_dir, &commit1, &commit2)

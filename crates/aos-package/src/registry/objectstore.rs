@@ -6,7 +6,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
@@ -15,33 +14,13 @@ use anyhow::{Context, Result, bail};
 ///
 /// # Errors
 ///
-/// Returns an error if `git init`, `git symbolic-ref`, or the sha256 format
-/// guard fails.
+/// Returns an error if initialization or the sha256 format guard fails.
 pub fn init_bare_sha256(dir: &Path, default_channel: &str) -> Result<()> {
     if default_channel.is_empty() || default_channel.contains('/') {
         bail!("default channel must be a single non-empty ref segment");
     }
 
-    let output = Command::new("git")
-        .args(["init", "--bare", "--object-format=sha256"])
-        .arg(dir)
-        .output()
-        .with_context(|| format!("running git init for {}", dir.display()))?;
-    if !output.status.success() {
-        bail!(
-            "git init --bare --object-format=sha256 failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    run_git_dir(
-        dir,
-        &[
-            "symbolic-ref",
-            "HEAD",
-            &format!("refs/heads/{default_channel}"),
-        ],
-    )?;
+    crate::git_support::init_sha256(dir, true, default_channel)?;
     assert_sha256(dir)?;
     Ok(())
 }
@@ -88,7 +67,9 @@ pub fn write_release_objects(repo: &Path, version: &semver::Version, revspec: &s
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
     if !revspec.is_empty() {
-        run_git_dir(&git_dir, &["rev-list", "--objects", revspec])?;
+        let repo = crate::git_support::open(&git_dir)?;
+        crate::git_support::resolve_commit_oid(&repo, revspec)
+            .with_context(|| format!("validating revspec '{revspec}'"))?;
     }
 
     let objects_dir = git_dir.join("releases").join(release_object_dir(version));
@@ -101,9 +82,8 @@ pub fn write_release_objects(repo: &Path, version: &semver::Version, revspec: &s
 
 /// Ensure every reachable object has a loose copy in the root `/objects/` store.
 ///
-/// Full packs found under the root repo and per-release pack dirs are unpacked
-/// into the root object store, then every object reachable from refs is checked
-/// for a loose `objects/xx/rest` file.
+/// Every object reachable from refs is written into the root loose-object store
+/// and then checked for a loose `objects/xx/rest` file.
 ///
 /// # Errors
 ///
@@ -112,18 +92,12 @@ pub fn write_release_objects(repo: &Path, version: &semver::Version, revspec: &s
 pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
-
-    for pack in full_pack_files(&git_dir)? {
-        unpack_pack(&git_dir, &pack).with_context(|| format!("unpacking {}", pack.display()))?;
-    }
-
-    let objects = run_git_dir(&git_dir, &["rev-list", "--objects", "--all"])?;
+    let repo = crate::git_support::open(&git_dir)?;
+    crate::git_support::ensure_loose_objects(&repo)?;
+    let objects = reachable_objects(&repo)?;
     let mut missing = Vec::new();
-    for line in objects.lines() {
-        let Some(oid) = line.split_whitespace().next() else {
-            continue;
-        };
-        let loose = git_dir.join("objects").join(loose_object_path(oid)?);
+    for oid in objects {
+        let loose = git_dir.join("objects").join(loose_object_path(&oid)?);
         if !loose.exists() {
             missing.push(oid.to_string());
         }
@@ -143,11 +117,12 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error if `git update-server-info` fails.
+/// Returns an error if metadata files cannot be written.
 pub fn refresh_server_info(repo: &Path) -> Result<()> {
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
-    run_git_dir(&git_dir, &["update-server-info"])?;
+    let repo = crate::git_support::open(&git_dir)?;
+    crate::git_support::refresh_server_info(&repo)?;
     Ok(())
 }
 
@@ -184,12 +159,11 @@ pub fn write_alternates(repo: &Path, releases: &[semver::Version]) -> Result<()>
 /// format is not exactly `sha256`.
 pub fn assert_sha256(repo: &Path) -> Result<()> {
     let git_dir = repo_git_dir(repo)?;
-    let format = run_git_dir(&git_dir, &["rev-parse", "--show-object-format"])?;
-    if format.trim() != "sha256" {
+    let opened = crate::git_support::open(&git_dir)?;
+    if let Err(err) = crate::git_support::assert_sha256(&opened) {
         bail!(
-            "registry repo {} uses object format '{}', expected sha256",
+            "registry repo {} is not a sha256 repository: {err}",
             repo.display(),
-            format.trim(),
         );
     }
     Ok(())
@@ -204,88 +178,45 @@ pub fn repo_git_dir(repo: &Path) -> Result<PathBuf> {
         return Ok(repo.to_path_buf());
     }
 
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["rev-parse", "--absolute-git-dir"])
-        .output()
+    let opened = crate::git_support::open(repo)
         .with_context(|| format!("resolving git dir for {}", repo.display()))?;
-
-    if !output.status.success() {
-        bail!(
-            "git rev-parse --absolute-git-dir failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        bail!("git rev-parse --absolute-git-dir returned an empty path");
-    }
-    Ok(PathBuf::from(path))
+    Ok(crate::git_support::git_dir(&opened))
 }
 
-fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .arg("--git-dir")
-        .arg(repo)
-        .args(args)
-        .output()
-        .with_context(|| format!("running git {} in {}", args.join(" "), repo.display()))?;
-
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
+fn reachable_objects(repo: &git2::Repository) -> Result<Vec<String>> {
+    let mut objects = std::collections::BTreeSet::new();
+    let mut refs = repo.references().context("listing refs")?;
+    for reference in &mut refs {
+        let reference = reference.context("reading ref")?;
+        if let Some(oid) = reference
+            .target()
+            .or_else(|| reference.resolve().ok()?.target())
+        {
+            objects.insert(oid.to_string());
+        }
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn unpack_pack(repo: &Path, pack: &Path) -> Result<()> {
-    let pack_file = fs::File::open(pack).with_context(|| format!("opening {}", pack.display()))?;
-    let output = Command::new("git")
-        .arg("--git-dir")
-        .arg(repo)
-        .arg("unpack-objects")
-        .arg("-r")
-        .stdin(Stdio::from(pack_file))
-        .output()
-        .context("running git unpack-objects")?;
-
-    if !output.status.success() {
-        bail!(
-            "git unpack-objects failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
+    let mut walk = repo.revwalk().context("creating git revwalk")?;
+    walk.push_glob("refs/*").context("walking refs")?;
+    for oid in walk {
+        let oid = oid?;
+        objects.insert(oid.to_string());
+        let commit = repo.find_commit(oid)?;
+        collect_tree_objects(repo, &commit.tree()?, &mut objects)?;
     }
-
-    Ok(())
+    Ok(objects.into_iter().collect())
 }
 
-fn full_pack_files(repo: &Path) -> Result<Vec<PathBuf>> {
-    let mut packs = Vec::new();
-    collect_full_packs(&repo.join("objects").join("pack"), &mut packs)?;
-    collect_full_packs(&repo.join("releases"), &mut packs)?;
-    Ok(packs)
-}
-
-fn collect_full_packs(dir: &Path, packs: &mut Vec<PathBuf>) -> Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_full_packs(&path, packs)?;
-        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with("pack-") && name.ends_with(".pack") {
-                packs.push(path);
-            }
+fn collect_tree_objects(
+    repo: &git2::Repository,
+    tree: &git2::Tree<'_>,
+    objects: &mut std::collections::BTreeSet<String>,
+) -> Result<()> {
+    objects.insert(tree.id().to_string());
+    for entry in tree {
+        objects.insert(entry.id().to_string());
+        if entry.kind() == Some(git2::ObjectType::Tree) {
+            collect_tree_objects(repo, &repo.find_tree(entry.id())?, objects)?;
         }
     }
     Ok(())
@@ -361,12 +292,7 @@ mod tests {
         let sha256 = tmp.path().join("sha256.git");
         let sha256_worktree = tmp.path().join("sha256-worktree");
 
-        let sha1_status = Command::new("git")
-            .args(["init", "--bare"])
-            .arg(&sha1)
-            .status()
-            .unwrap();
-        assert!(sha1_status.success());
+        git2::Repository::init_bare(&sha1).unwrap();
         assert!(assert_sha256(&sha1).is_err());
 
         init_bare_sha256(&sha256, "stable").unwrap();
@@ -377,12 +303,7 @@ mod tests {
             "ref: refs/heads/stable\n"
         );
 
-        let worktree_status = Command::new("git")
-            .args(["init", "--object-format=sha256"])
-            .arg(&sha256_worktree)
-            .status()
-            .unwrap();
-        assert!(worktree_status.success());
+        crate::git_support::init_sha256(&sha256_worktree, false, "master").unwrap();
         assert_sha256(&sha256_worktree).unwrap();
         assert!(repo_git_dir(&sha256_worktree).unwrap().ends_with(".git"));
     }
@@ -403,40 +324,19 @@ mod tests {
     fn dumb_http_clone_reads_static_sha256_repo() {
         let tmp = TempDir::new().unwrap();
         let repo = tmp.path().join("repo.git");
-        let work = tmp.path().join("work");
         let clone = tmp.path().join("clone");
         init_bare_sha256(&repo, "stable").unwrap();
-        fs::create_dir_all(&work).unwrap();
-        fs::write(work.join("registry.toml"), "[registry]\nname = \"test\"\n").unwrap();
-
-        let add = Command::new("git")
-            .arg("--git-dir")
-            .arg(&repo)
-            .arg("--work-tree")
-            .arg(&work)
-            .args(["add", "registry.toml"])
-            .status()
+        let opened = crate::git_support::open(&repo).unwrap();
+        let blob = opened.blob(b"[registry]\nname = \"test\"\n").unwrap();
+        let mut builder = opened.treebuilder(None).unwrap();
+        builder
+            .insert("registry.toml", blob, git2::FileMode::Blob.into())
             .unwrap();
-        assert!(add.success());
-        let commit = Command::new("git")
-            .arg("--git-dir")
-            .arg(&repo)
-            .arg("--work-tree")
-            .arg(&work)
-            .args([
-                "-c",
-                "user.name=AOS Test",
-                "-c",
-                "user.email=aos@example.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-m",
-                "init",
-            ])
-            .status()
+        let tree = opened.find_tree(builder.write().unwrap()).unwrap();
+        let sig = git2::Signature::now("AOS Test", "aos@example.invalid").unwrap();
+        opened
+            .commit(Some("refs/heads/stable"), &sig, &sig, "init", &tree, &[])
             .unwrap();
-        assert!(commit.success());
 
         write_alternates(&repo, &[]).unwrap();
         ensure_loose_completeness(&repo).unwrap();
@@ -446,18 +346,7 @@ mod tests {
             eprintln!("skipping dumb-HTTP clone test: local TCP bind is unavailable");
             return;
         };
-        let output = Command::new("git")
-            .env("GIT_SMART_HTTP", "0")
-            .arg("clone")
-            .arg(&server.url)
-            .arg(&clone)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git clone failed: {}",
-            String::from_utf8_lossy(&output.stderr),
-        );
+        git2::Repository::clone(&server.url, &clone).unwrap();
         assert_eq!(
             fs::read_to_string(clone.join("registry.toml")).unwrap(),
             "[registry]\nname = \"test\"\n",

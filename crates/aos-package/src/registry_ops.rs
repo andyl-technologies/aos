@@ -54,7 +54,10 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
             }
         }
         if names.len() == 1 {
-            return Ok(names.into_iter().next().unwrap());
+            let Some(name) = names.into_iter().next() else {
+                bail!("registry directory lookup found no registry names");
+            };
+            return Ok(name);
         }
         if names.len() > 1 {
             bail!(
@@ -82,50 +85,233 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
     );
 }
 
-/// Run a git command in the registry directory, returning stdout.
+/// Dispatch a git-shaped registry operation through libgit2, returning stdout.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    git2_dispatch(dir, args).with_context(|| {
+        format!(
+            "running git2-backed {} in {}",
+            args.join(" "),
+            dir.display()
+        )
+    })
 }
 
-/// Run a git command in the registry directory, returning raw stdout bytes.
+/// Dispatch a git-shaped registry operation through libgit2, returning raw stdout bytes.
 fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
-    }
-
-    Ok(output.stdout)
+    Ok(git(dir, args)?.into_bytes())
 }
 
-/// Run a git command that is allowed to fail, returning (success, stdout, stderr).
+/// Run a git-shaped operation that is allowed to fail, returning (success, stdout, stderr).
 #[allow(dead_code)]
 fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
+    match git(dir, args) {
+        Ok(stdout) => Ok((true, stdout, String::new())),
+        Err(err) => Ok((false, String::new(), err.to_string())),
+    }
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Ok((output.status.success(), stdout, stderr))
+fn git2_dispatch(dir: &Path, args: &[&str]) -> Result<String> {
+    match args {
+        ["init", "--object-format=sha256"] => {
+            crate::git_support::init_sha256(dir, false, "master")?;
+            Ok(String::new())
+        }
+        ["symbolic-ref", "HEAD", refname] => {
+            let repo = crate::git_support::open(dir)?;
+            repo.set_head(refname)
+                .with_context(|| format!("setting HEAD to {refname}"))?;
+            Ok(String::new())
+        }
+        ["add", "-A"] => {
+            let repo = crate::git_support::open(dir)?;
+            let mut index = repo.index().context("opening git index")?;
+            index
+                .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+                .context("adding all paths")?;
+            index.write().context("writing git index")?;
+            Ok(String::new())
+        }
+        ["commit", "-m", message] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::commit_all(&repo, message)?;
+            Ok(String::new())
+        }
+        ["tag", "--list"] | ["tag", "-l"] => {
+            let repo = crate::git_support::open(dir)?;
+            Ok(crate::git_support::tag_names(&repo)?.join("\n"))
+        }
+        ["remote", "add", name, url] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::remote_add(&repo, name, url)?;
+            Ok(String::new())
+        }
+        ["status"] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::status(&repo)
+        }
+        ["diff"] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::diff(&repo, None, None, false)
+        }
+        ["diff", "--stat"] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::diff(&repo, None, None, true)
+        }
+        ["diff", left, right] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::diff(&repo, Some(left), Some(right), false)
+        }
+        ["diff", left, right, "--stat"] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::diff(&repo, Some(left), Some(right), true)
+        }
+        ["log", "--oneline", count] => {
+            let repo = crate::git_support::open(dir)?;
+            let max = count.trim_start_matches('-').parse().unwrap_or(10);
+            crate::git_support::log(&repo, max, None)
+        }
+        ["log", "--oneline", count, "--", path] => {
+            let repo = crate::git_support::open(dir)?;
+            let max = count.trim_start_matches('-').parse().unwrap_or(10);
+            crate::git_support::log(&repo, max, Some(Path::new(path)))
+        }
+        ["branch", "-a"] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::branch_list(&repo)
+        }
+        ["branch", name] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::branch_create(&repo, name)?;
+            Ok(String::new())
+        }
+        ["checkout", name] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::checkout_branch(&repo, name)?;
+            Ok(String::new())
+        }
+        ["branch", "-d", name] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::branch_delete(&repo, name)?;
+            Ok(String::new())
+        }
+        ["rev-list", "-n", "1", rev] => {
+            let repo = crate::git_support::open(dir)?;
+            Ok(crate::git_support::resolve_commit_oid(&repo, rev)?.to_string())
+        }
+        ["rev-parse", rev] => {
+            let repo = crate::git_support::open(dir)?;
+            Ok(crate::git_support::resolve_oid(&repo, rev)?.to_string())
+        }
+        ["cat-file", "-p", rev] => {
+            let repo = crate::git_support::open(dir)?;
+            let (_kind, data) = crate::git_support::raw_object(&repo, rev)?;
+            Ok(String::from_utf8_lossy(&data).to_string())
+        }
+        ["tag", "-d", name] => {
+            let repo = crate::git_support::open(dir)?;
+            crate::git_support::delete_tag(&repo, name)?;
+            Ok(String::new())
+        }
+        ["update-ref", refname, commit] => {
+            let repo = crate::git_support::open(dir)?;
+            let oid = crate::git_support::resolve_commit_oid(&repo, commit)?;
+            repo.reference(refname, oid, true, "update ref")
+                .with_context(|| format!("updating {refname}"))?;
+            Ok(String::new())
+        }
+        ["push", rest @ ..] => git2_push(dir, rest),
+        ["pull"] => git2_pull(dir, false),
+        ["pull", "--rebase"] => git2_pull(dir, true),
+        ["merge", rest @ ..] => git2_merge(dir, rest),
+        _ => bail!("unsupported git2-backed operation: {}", args.join(" ")),
+    }
+}
+
+fn git2_push(dir: &Path, args: &[&str]) -> Result<String> {
+    let repo = crate::git_support::open(dir)?;
+    let mut force = false;
+    let mut remote = "origin";
+    let mut branch = current_branch(&repo)?;
+    let mut iter = args.iter().copied().peekable();
+    while let Some(arg) = iter.next() {
+        match arg {
+            "-u" => {
+                if let Some(next) = iter.next() {
+                    remote = next;
+                }
+            }
+            "--force" => force = true,
+            other if other != "origin" => branch = other.to_string(),
+            _ => {}
+        }
+    }
+    let prefix = if force { "+" } else { "" };
+    crate::git_support::push(
+        &repo,
+        remote,
+        &[format!("{prefix}refs/heads/{branch}:refs/heads/{branch}")],
+    )?;
+    Ok(String::new())
+}
+
+fn git2_pull(dir: &Path, rebase: bool) -> Result<String> {
+    if rebase {
+        bail!("git2-backed pull --rebase is not supported yet");
+    }
+    let repo = crate::git_support::open(dir)?;
+    let branch = current_branch(&repo)?;
+    let remote = repo
+        .find_remote("origin")
+        .context("opening origin remote")?;
+    let url = remote.url().context("reading origin URL")?.to_string();
+    let refspec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
+    crate::git_support::fetch(dir, &url, &[refspec])?;
+    fast_forward_to(&repo, &format!("refs/remotes/origin/{branch}"))?;
+    Ok(String::new())
+}
+
+fn git2_merge(dir: &Path, args: &[&str]) -> Result<String> {
+    if args
+        .iter()
+        .any(|arg| *arg == "--no-ff" || *arg == "--squash")
+    {
+        bail!("git2-backed merge currently supports fast-forward merges only");
+    }
+    let branch = args
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("merge requires a branch"))?;
+    let repo = crate::git_support::open(dir)?;
+    fast_forward_to(&repo, branch)?;
+    Ok(String::new())
+}
+
+fn fast_forward_to(repo: &git2::Repository, rev: &str) -> Result<()> {
+    let target = crate::git_support::resolve_commit_oid(repo, rev)?;
+    let head = repo.head().context("reading HEAD")?;
+    if let Some(current) = head.target() {
+        if current == target {
+            return Ok(());
+        }
+        if !repo
+            .graph_descendant_of(target, current)
+            .context("checking fast-forward relationship")?
+        {
+            bail!("cannot fast-forward HEAD to {rev}: histories have diverged");
+        }
+    }
+    let head_name = head.name().context("reading HEAD name")?.to_string();
+    repo.reference(&head_name, target, true, "fast-forward")?;
+    repo.set_head(&head_name)?;
+    repo.checkout_head(None)?;
+    Ok(())
+}
+
+fn current_branch(repo: &git2::Repository) -> Result<String> {
+    let head = repo.head().context("reading HEAD")?;
+    Ok(head
+        .shorthand()
+        .context("reading HEAD shorthand")?
+        .to_string())
 }
 
 /// Parse a Nix store path into (name, version).
@@ -2203,7 +2389,7 @@ fn update_channel_frontier(dir: &Path, channel_name: &str, map: &PartitionMap) -
     Ok(())
 }
 
-/// Sign an annotated tag object with git's SSH signing support.
+/// Sign an annotated tag object with OpenSSH SSHSIG data.
 fn sign_tag(
     dir: &Path,
     tag_name: &str,
@@ -2213,36 +2399,16 @@ fn sign_tag(
     force: bool,
 ) -> Result<()> {
     let message = message.unwrap_or("AOS registry release");
-    let signing_key_config = format!("user.signingkey={signing_key}");
-    let mut command = Command::new("git");
-    command
-        .arg("-c")
-        .arg("gpg.format=ssh")
-        .arg("-c")
-        .arg(signing_key_config)
-        .arg("tag")
-        .arg("-s");
-    if force {
-        command.arg("-f");
-    }
-    command
-        .arg(tag_name)
-        .arg("-m")
-        .arg(message)
-        .arg(target)
-        .current_dir(dir);
-
-    let output = command
-        .output()
-        .with_context(|| format!("signing tag '{tag_name}' in {}", dir.display()))?;
-    if !output.status.success() {
-        bail!(
-            "git tag -s failed for '{}': {}",
-            tag_name,
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
+    let repo = crate::git_support::open(dir)?;
+    crate::git_support::sign_tag(
+        &repo,
+        tag_name,
+        target,
+        message,
+        Path::new(signing_key),
+        force,
+    )
+    .with_context(|| format!("signing tag '{tag_name}' in {}", dir.display()))?;
     Ok(())
 }
 

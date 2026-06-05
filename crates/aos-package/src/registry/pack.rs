@@ -1,10 +1,8 @@
-//! Pack and thin-delta helpers for the git-native registry.
+//! Pack and delta helpers for the git-native registry.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// Compression level used for the zstd transport wrapper.
@@ -91,51 +89,13 @@ pub fn scheme_deltas(
 ///
 /// # Errors
 ///
-/// Returns an error if `git rev-parse` or `git pack-objects` fails.
+/// Returns an error if the repository cannot be read or the pack cannot be written.
 pub async fn full_pack(repo: &Path, release_commit: &str, out_dir: &Path) -> Result<PathBuf> {
-    tokio::fs::create_dir_all(out_dir)
-        .await
-        .with_context(|| format!("creating {}", out_dir.display()))?;
-
-    let commit = git_output(
-        repo,
-        &["rev-parse", &format!("{release_commit}^{{commit}}")],
-    )
-    .await?;
-    let prefix = out_dir.join("pack");
-
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(pack_objects_args(false))
-        .arg(prefix.as_os_str())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running git pack-objects")?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(commit.trim().as_bytes()).await?;
-        stdin.write_all(b"\n").await?;
-    }
-
-    let output = child.wait_with_output().await?;
-    if !output.status.success() {
-        bail!(
-            "git pack-objects full pack failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if hash.is_empty() {
-        bail!("git pack-objects did not report a pack hash");
-    }
-    Ok(out_dir.join(format!("pack-{hash}.pack")))
+    let repo = crate::git_support::open(repo)?;
+    crate::git_support::write_full_pack(&repo, release_commit, out_dir)
 }
 
-/// Generate a thin delta pack from `from_commit` to `to_commit`.
+/// Generate a delta pack from `from_commit` to `to_commit`.
 ///
 /// The output filename is `delta-<from_semver>.pack`.
 pub async fn thin_delta(
@@ -149,34 +109,8 @@ pub async fn thin_delta(
         .await
         .with_context(|| format!("creating {}", out_dir.display()))?;
     let out = out_dir.join(format!("delta-{from_semver}.pack"));
-    let file =
-        std::fs::File::create(&out).with_context(|| format!("creating {}", out.display()))?;
-
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(pack_objects_args(true))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(file))
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running git pack-objects --thin")?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(to_commit.as_bytes()).await?;
-        stdin.write_all(b"\n^").await?;
-        stdin.write_all(from_commit.as_bytes()).await?;
-        stdin.write_all(b"\n").await?;
-    }
-
-    let output = child.wait_with_output().await?;
-    if !output.status.success() {
-        bail!(
-            "git pack-objects thin delta failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
+    let repo = crate::git_support::open(repo)?;
+    crate::git_support::write_delta_pack(&repo, from_commit, to_commit, &out)?;
     Ok(out)
 }
 
@@ -222,20 +156,14 @@ pub async fn zstd_decompress(path: &Path, dict: Option<&Path>) -> Result<PathBuf
 
 /// Complete a thin pack with bases from `repo`.
 pub async fn index_pack_fix_thin(repo: &Path, pack: &Path) -> Result<()> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(repo)
-        .arg("index-pack")
-        .arg("--fix-thin")
-        .arg(pack);
-    run_status(cmd, "git index-pack --fix-thin").await
+    let repo = crate::git_support::open(repo)?;
+    crate::git_support::index_pack(&repo, pack)
 }
 
 /// Index a self-contained full pack.
 pub async fn index_pack(repo: &Path, pack: &Path) -> Result<()> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(repo).arg("index-pack").arg(pack);
-    run_status(cmd, "git index-pack").await
+    let repo = crate::git_support::open(repo)?;
+    crate::git_support::index_pack(&repo, pack)
 }
 
 /// Train a zstd dictionary over a release line's delta packs.
@@ -262,42 +190,6 @@ fn push_if_published(
     if published.iter().any(|v| *v == candidate) && !bases.contains(&candidate) {
         bases.push(candidate);
     }
-}
-
-fn pack_objects_args(thin: bool) -> Vec<&'static str> {
-    let mut args = vec![
-        "pack-objects",
-        "--revs",
-        "--no-reuse-object",
-        "--no-reuse-delta",
-        "--window=350",
-        "--depth=50",
-        "--threads=0",
-        "--compression=0",
-    ];
-    if thin {
-        args.push("--thin");
-        args.push("--stdout");
-    }
-    args
-}
-
-async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .await
-        .with_context(|| format!("running git {}", args.join(" ")))?;
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 async fn run_status(mut cmd: Command, label: &str) -> Result<()> {

@@ -1,15 +1,21 @@
-use std::process::Command;
-
 use anyhow::Result;
+use git2::{Repository, StatusOptions};
 
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 
 /// `aos describe` — show repository information.
 pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
-    let git_commit = git_rev().unwrap_or_else(|| "unknown".to_string());
-    let git_branch = git_branch().unwrap_or_else(|| "unknown".to_string());
-    let git_dirty = git_dirty();
+    let repo = Repository::discover(nix.root()).ok();
+    let git_commit = repo
+        .as_ref()
+        .and_then(git_rev)
+        .unwrap_or_else(|| "unknown".to_string());
+    let git_branch = repo
+        .as_ref()
+        .and_then(git_branch)
+        .unwrap_or_else(|| "unknown".to_string());
+    let git_dirty = repo.as_ref().map(git_dirty).unwrap_or(false);
 
     // Try to count packages by evaluating the package set attribute names.
     let pkg_count = nix
@@ -49,36 +55,20 @@ pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
     Ok(())
 }
 
-fn git_rev() -> Option<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        None
-    }
+fn git_rev(repo: &Repository) -> Option<String> {
+    let oid = repo.head().ok()?.target()?;
+    let oid = oid.to_string();
+    Some(oid[..12.min(oid.len())].to_string())
 }
 
-fn git_branch() -> Option<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        None
-    }
+fn git_branch(repo: &Repository) -> Option<String> {
+    repo.head().ok()?.shorthand().ok().map(ToString::to_string)
 }
 
-fn git_dirty() -> bool {
-    Command::new("git")
-        .args(["diff", "--quiet", "HEAD"])
-        .status()
-        .map(|s| !s.success())
+fn git_dirty(repo: &Repository) -> bool {
+    let mut options = StatusOptions::new();
+    options.include_untracked(false);
+    repo.statuses(Some(&mut options))
+        .map(|statuses| !statuses.is_empty())
         .unwrap_or(false)
 }

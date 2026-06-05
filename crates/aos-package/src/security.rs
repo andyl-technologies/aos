@@ -232,67 +232,22 @@ pub fn tofu_check(
 
 /// Verify a git commit's SSH signature against an expected Ed25519 public key.
 ///
-/// Creates a temporary `allowed_signers` file and invokes
-/// `git verify-commit`.  Returns `Ok(true)` if the signature is valid,
-/// `Ok(false)` if the signature is invalid or missing, and `Err` if
-/// the git command itself could not be executed.
+/// Returns `Ok(true)` if the signature is valid, `Ok(false)` if the
+/// signature is invalid or missing, and `Err` if the repository or signature
+/// cannot be inspected.
 pub fn verify_commit_signature(repo_path: &Path, commit: &str, expected_key: &str) -> Result<bool> {
-    let (_reg, _algo, pubkey) = parse_signing_key(expected_key)?;
-
-    // Build a temporary allowed-signers file.
-    // Format: <principal> <key-type> <base64-key>
-    let signers_content = format!("registry ssh-ed25519 {pubkey}\n");
-
-    let mut signers_file =
-        tempfile::NamedTempFile::new().context("creating temporary allowed-signers file")?;
-    std::io::Write::write_all(&mut signers_file, signers_content.as_bytes())
-        .context("writing temporary allowed-signers file")?;
-    let signers_path = signers_file.path();
-
-    // Configure git to use SSH signing verification with our signers file.
-    let output = std::process::Command::new("git")
-        .args([
-            "-c",
-            &format!("gpg.ssh.allowedSignersFile={}", signers_path.display()),
-            "verify-commit",
-            commit,
-        ])
-        .current_dir(repo_path)
-        .output()
-        .context("running git verify-commit")?;
-
-    // signers_file is dropped here, which removes the temp file automatically.
-    Ok(output.status.success())
+    let repo = crate::git_support::open(repo_path)?;
+    crate::git_support::verify_commit_signature(&repo, commit, expected_key)
 }
 
 /// Verify a git tag object's SSH signature against an expected Ed25519 key.
 ///
-/// This mirrors [`verify_commit_signature`] but invokes `git verify-tag`.
 /// Returns `Ok(true)` when the signature is valid, `Ok(false)` when it is
-/// invalid or missing, and `Err` only for local execution/setup failures.
+/// invalid or missing, and `Err` if the repository or signature cannot be
+/// inspected.
 pub fn verify_tag_signature(repo_path: &Path, tag: &str, expected_key: &str) -> Result<bool> {
-    let (_reg, _algo, pubkey) = parse_signing_key(expected_key)?;
-
-    let signers_content = format!("registry ssh-ed25519 {pubkey}\n");
-
-    let mut signers_file =
-        tempfile::NamedTempFile::new().context("creating temporary allowed-signers file")?;
-    std::io::Write::write_all(&mut signers_file, signers_content.as_bytes())
-        .context("writing temporary allowed-signers file")?;
-    let signers_path = signers_file.path();
-
-    let output = std::process::Command::new("git")
-        .args([
-            "-c",
-            &format!("gpg.ssh.allowedSignersFile={}", signers_path.display()),
-            "verify-tag",
-            tag,
-        ])
-        .current_dir(repo_path)
-        .output()
-        .context("running git verify-tag")?;
-
-    Ok(output.status.success())
+    let repo = crate::git_support::open(repo_path)?;
+    crate::git_support::verify_tag_signature(&repo, tag, expected_key)
 }
 
 // ---------------------------------------------------------------------------
@@ -314,8 +269,8 @@ pub enum DowngradeStatus {
 
 /// Check the relationship between `current_commit` and `new_commit`.
 ///
-/// Uses `git merge-base --is-ancestor` to determine whether the
-/// transition is a fast-forward, downgrade, divergence, or no-op.
+/// Uses repository graph ancestry to determine whether the transition is a
+/// fast-forward, downgrade, divergence, or no-op.
 pub fn check_downgrade(
     current_commit: &str,
     new_commit: &str,
@@ -325,29 +280,13 @@ pub fn check_downgrade(
         return Ok(DowngradeStatus::SameCommit);
     }
 
-    // Is current an ancestor of new? (fast-forward)
-    let ff = std::process::Command::new("git")
-        .args(["merge-base", "--is-ancestor", current_commit, new_commit])
-        .current_dir(repo_path)
-        .output()
-        .with_context(|| {
-            format!("running git merge-base --is-ancestor {current_commit} {new_commit}")
-        })?;
+    let repo = crate::git_support::open(repo_path)?;
 
-    if ff.status.success() {
+    if crate::git_support::is_ancestor(&repo, current_commit, new_commit)? {
         return Ok(DowngradeStatus::FastForward);
     }
 
-    // Is new an ancestor of current? (downgrade)
-    let dg = std::process::Command::new("git")
-        .args(["merge-base", "--is-ancestor", new_commit, current_commit])
-        .current_dir(repo_path)
-        .output()
-        .with_context(|| {
-            format!("running git merge-base --is-ancestor {new_commit} {current_commit}")
-        })?;
-
-    if dg.status.success() {
+    if crate::git_support::is_ancestor(&repo, new_commit, current_commit)? {
         return Ok(DowngradeStatus::Downgrade);
     }
 

@@ -5,7 +5,6 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use tokio::process::Command;
 
 use crate::download::join_cache_url;
 use crate::registry::pack;
@@ -150,9 +149,9 @@ pub fn plan_from_artifacts(
 
 /// Resolve and fetch objects for a target release.
 ///
-/// The resolver first tries AOS-only thin deltas, then a stock-git full-pack
-/// anchor, and finally delegates to `git fetch` for the dumb-HTTP loose-object
-/// correctness floor.
+/// The resolver first tries AOS-only delta packs, then a full-pack anchor, and
+/// finally performs a native fetch for the dumb-HTTP loose-object correctness
+/// floor.
 pub async fn resolve_objects(
     repo_dir: &Path,
     origin: &str,
@@ -279,19 +278,8 @@ async fn git_fetch_release(
     target: &semver::Version,
 ) -> Result<FetchStep> {
     let refspec = release_refspec(target);
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_dir)
-        .args(["fetch", "--force", origin, &refspec])
-        .output()
-        .await
-        .with_context(|| format!("running git fetch {refspec}"))?;
-    if !output.status.success() {
-        bail!(
-            "git fetch fallback failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
+    crate::git_support::fetch(repo_dir, origin, &[format!("+{refspec}")])
+        .with_context(|| format!("fetching fallback refspec {refspec}"))?;
     Ok(FetchStep::GitFetchFallback { refspec })
 }
 
