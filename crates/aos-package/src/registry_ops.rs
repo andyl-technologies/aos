@@ -474,6 +474,17 @@ pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
     }
 }
 
+/// Resolve mirror URLs from committed registry.toml plus client-side overrides.
+pub fn resolve_mirrors_for_registry(
+    dir: &Path,
+    registry: &crate::types::RegistryConfig,
+) -> Vec<CacheEntry> {
+    let mut caches = registry.caches.clone();
+    caches.extend(resolve_mirrors(dir));
+    caches.sort_by(|a, b| b.priority.cmp(&a.priority));
+    caches
+}
+
 fn initial_keys_roster(
     registry_name: &str,
     trust_key: Option<&str>,
