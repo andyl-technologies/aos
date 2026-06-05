@@ -379,8 +379,8 @@ serving path. See [signing-and-trust.md](./signing-and-trust.md).
 partitions at it), never partition-decrement: the consumer's monotonic floor
 (anti-rollback) would block a decrement anyway (design brief §6).
 
-> Consumers self-select a bucket deterministically (e.g.
-> the low byte of `sha256(machine_id)` (i.e. mod 256), persisted) and probe-forward `(bucket+1) mod 256`
+> Consumers self-select a bucket on first channel sync from a registry-local salt,
+> persist the bucket index, and probe-forward `(bucket+1) mod 256`
 > if their partition is missing — see
 > [versioning-and-channels.md](./versioning-and-channels.md). The producer never
 > chooses *which* hosts get a bucket; it only chooses *which buckets advance*.
