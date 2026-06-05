@@ -542,6 +542,126 @@ async fn channel_reachable_unchanged_partition_fails_when_freshness_is_stale() -
 }
 
 #[tokio::test]
+async fn channel_torn_publish_keeps_old_floor_when_partition_leads_objects() -> Result<()> {
+    let fixture = RegistryFixture::new("aos-core")?;
+    fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 100)])?;
+    fixture.write_gitattributes()?;
+    fixture.write_keys_toml()?;
+    let (v1_store_path, v1_commit, v1_channel_tag) = publish_release(&fixture, "1.0.0", "stable")?;
+    fixture.write_all_channel_partitions("stable", &v1_channel_tag)?;
+
+    let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
+    let config = fixture.signed_registry_config(server.base_url(), "stable");
+    let mut state = RegistryState::default();
+    let first = git::sync_git(
+        &config,
+        &TrackingMode::Channel("stable".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await?;
+    assert_eq!(first.new_commit, v1_commit);
+    assert_eq!(state.floor.as_deref(), Some("1.0.0"));
+    let assigned_bucket = state.bucket.expect("first sync persisted bucket");
+
+    let v2_store_path = fixture.write_package("hello", "1.1.0")?;
+    fixture.write_closure(&v2_store_path)?;
+    fixture.commit_all("release 1.1.0")?;
+    fixture.signed_tag("1.1.0", "HEAD")?;
+    let early_v2_partition = fixture.signed_channel_tag_bytes("stable", "1.1.0")?;
+    fixture.write_channel_partition("stable", assigned_bucket, &early_v2_partition)?;
+
+    let second = git::sync_git(
+        &config,
+        &TrackingMode::Channel("stable".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await?;
+
+    assert_eq!(second.new_commit, v1_commit);
+    assert_eq!(state.floor.as_deref(), Some("1.0.0"));
+    assert_eq!(state.last_commit.as_deref(), Some(v1_commit.as_str()));
+    let registry = Registry::load(fixture.cache_dir(), &config, "x86_64-linux")?;
+    let package = registry.get("hello").expect("synced package exists");
+    assert_eq!(package.version, "1.0.0");
+    assert_eq!(package.store_path, v1_store_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn channel_interleaved_partition_advances_reject_stale_publisher_rollback() -> Result<()> {
+    let fixture = RegistryFixture::new("aos-core")?;
+    fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 100)])?;
+    fixture.write_gitattributes()?;
+    fixture.write_keys_toml()?;
+    let (_, v1_commit, v1_channel_tag) = publish_release(&fixture, "1.0.0", "stable")?;
+    fixture.write_all_channel_partitions("stable", &v1_channel_tag)?;
+
+    let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
+    let config = fixture.signed_registry_config(server.base_url(), "stable");
+    let mut state = RegistryState {
+        bucket: Some(7),
+        ..RegistryState::default()
+    };
+    let first = git::sync_git(
+        &config,
+        &TrackingMode::Channel("stable".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await?;
+    assert_eq!(first.new_commit, v1_commit);
+    assert_eq!(state.floor.as_deref(), Some("1.0.0"));
+
+    let (_, v2_commit, v2_channel_tag) = publish_release(&fixture, "1.1.0", "stable")?;
+    let (_, v3_commit, v3_channel_tag) = publish_release(&fixture, "1.2.0", "stable")?;
+    fixture.write_channel_partition("stable", 7, &v3_channel_tag)?;
+    fixture.write_channel_partition("stable", 8, &v2_channel_tag)?;
+
+    let second = git::sync_git(
+        &config,
+        &TrackingMode::Channel("stable".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await?;
+    assert_eq!(second.new_commit, v3_commit);
+    assert_eq!(state.floor.as_deref(), Some("1.2.0"));
+    assert_eq!(state.last_commit.as_deref(), Some(v3_commit.as_str()));
+
+    fixture.write_channel_partition("stable", 7, &v2_channel_tag)?;
+    let err = git::sync_git(
+        &config,
+        &TrackingMode::Channel("stable".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await
+    .expect_err("stale publisher partition rollback is rejected");
+    let message = format!("{err:#}");
+    assert!(message.contains("rollback refused"), "got: {message}");
+    assert!(
+        message.contains("last successful freshness observation"),
+        "got: {message}",
+    );
+    assert_eq!(state.floor.as_deref(), Some("1.2.0"));
+    assert_eq!(state.last_commit.as_deref(), Some(v3_commit.as_str()));
+    assert_ne!(state.last_commit.as_deref(), Some(v2_commit.as_str()));
+    Ok(())
+}
+
+#[tokio::test]
 async fn pack_delta_e2e_fetches_full_pack_and_compressed_thin_delta() -> Result<()> {
     let fixture = RegistryFixture::new("aos-core")?;
     fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 100)])?;

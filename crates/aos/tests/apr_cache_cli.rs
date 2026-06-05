@@ -3,8 +3,17 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+const REAL_NIX_CACHE_TEST_ENV: &str = "AOS_PACKAGE_TEST_REAL_NIX_CACHE";
+
 #[test]
 fn apr_cache_generate_cli_uploads_static_cache() -> Result<()> {
+    if std::env::var_os(REAL_NIX_CACHE_TEST_ENV).is_none() {
+        eprintln!(
+            "skipping apr cache CLI e2e: set {REAL_NIX_CACHE_TEST_ENV}=1 to run real nix-store fixture"
+        );
+        return Ok(());
+    }
+
     let Some(store_path) = tiny_store_path_fixture()? else {
         eprintln!("skipping apr cache CLI e2e: nix or nix-store is unavailable");
         return Ok(());
