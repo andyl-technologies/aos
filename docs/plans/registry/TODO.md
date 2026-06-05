@@ -741,8 +741,13 @@ read before editing code or docs.
       stock-Nix, S3/SFTP, CDN, max-staleness, Git-version, and benchmark caveats
       are represented as explicit validation TODOs rather than stale reference
       claims.
-- [ ] Re-ground stale plan/open-question text that still describes old
-      producer/cache gaps or pre-cutover implementation details. Context:
+- [x] Re-ground stale plan/open-question text that still describes old
+      producer/cache gaps or pre-cutover implementation details. The plan README,
+      design brief, gap analysis, validation report, and workstream docs now
+      identify pre-cutover `CURRENT` citations and old producer/cache language as
+      archival planning context, and direct agents to the as-built docs plus this
+      TODO file for live status. Context:
+      `docs/plans/registry/README.md`,
       `docs/plans/registry/open-questions.md`,
       `docs/plans/registry/design-brief.md`,
       `docs/plans/registry/gap-analysis.md`,
@@ -750,8 +755,10 @@ read before editing code or docs.
       `docs/plans/registry/workstream-02-pack-delta-pipeline.md`,
       `docs/plans/registry/workstream-03-channels-rollouts.md`,
       `docs/plans/registry/workstream-04-signing-trust.md`,
-      `docs/plans/registry/workstream-05-consumer.md`, and
-      `docs/plans/registry/workstream-06-nix-cache.md`.
+      `docs/plans/registry/workstream-05-consumer.md`,
+      `docs/plans/registry/workstream-06-nix-cache.md`,
+      `docs/plans/registry/validation-report.md`,
+      and `docs/registry/current-state.md`.
 - [x] Close or re-ground `docs/plans/registry/open-questions.md` Q8 against the
       implemented colon-free static NAR `URL:` key. `docs/registry/`
       currently says `nar_url` writes `nar/{store_hash}-sha256-{hex}` and

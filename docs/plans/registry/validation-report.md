@@ -1,5 +1,12 @@
 # AOS Registry Redesign — Plan Validation Report
 
+> **Archival note:** this report audited the original plan against the target
+> reference docs before the registry implementation landed. It is useful for
+> historical coverage context, but its "uncovered", "partial", and stale
+> `path:line` findings are not live TODOs by themselves. Current remaining work is
+> tracked in [`TODO.md`](./TODO.md) and the as-built reference status is in
+> [`../../registry/current-state.md`](../../registry/current-state.md).
+
 This report validates the registry-redesign implementation plan (`gap-analysis.md` +
 `workstream-01..05`) against the six reference design docs (`architecture.md`,
 `repo-layout.md`, `http-layout.md`, `versioning-and-channels.md`,
