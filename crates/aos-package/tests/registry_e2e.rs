@@ -1,16 +1,20 @@
 mod common;
 
 use anyhow::Result;
-use aos_package::registry::{Registry, git};
+use aos_package::registry::{Registry, git, keys, store_path_hash};
+use aos_package::registry_ops::resolve_mirrors_for_registry;
 use aos_package::security::verify_tag_signature;
-use aos_package::types::{RegistryState, TrackingMode};
+use aos_package::types::{CacheEntry, RegistryState, TrackingMode};
 
 use common::{RegistryFixture, StaticHttpServer};
 
 #[tokio::test]
 async fn fixture_syncs_git_native_registry_over_static_http() -> Result<()> {
     let fixture = RegistryFixture::new("aos-core")?;
-    fixture.write_registry_toml("file:///fixture-cache")?;
+    fixture.write_registry_toml_with_caches(&[
+        ("https://cache-low.example/nar", 50),
+        ("https://cache-high.example/nar", 900),
+    ])?;
     fixture.write_gitattributes()?;
     fixture.write_keys_toml()?;
     let store_path = fixture.write_package("hello", "1.0.0")?;
@@ -71,7 +75,10 @@ async fn fixture_syncs_git_native_registry_over_static_http() -> Result<()> {
 #[tokio::test]
 async fn signed_channel_http_e2e_advances_persisted_bucket() -> Result<()> {
     let fixture = RegistryFixture::new("aos-core")?;
-    fixture.write_registry_toml("file:///fixture-cache")?;
+    fixture.write_registry_toml_with_caches(&[
+        ("https://cache-low.example/nar", 50),
+        ("https://cache-high.example/nar", 900),
+    ])?;
     fixture.write_gitattributes()?;
     fixture.write_keys_toml()?;
     let v1_store_path = fixture.write_package("hello", "1.0.0")?;
@@ -84,7 +91,11 @@ async fn signed_channel_http_e2e_advances_persisted_bucket() -> Result<()> {
     fixture.write_all_channel_partitions("stable", &v1_channel_tag)?;
 
     let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
-    let config = fixture.signed_registry_config(server.base_url(), "stable");
+    let mut config = fixture.signed_registry_config(server.base_url(), "stable");
+    config.caches.push(CacheEntry {
+        url: "https://client-cache.example/nar".into(),
+        priority: 1200,
+    });
     let mut state = RegistryState::default();
     let first = git::sync_git(
         &config,
@@ -132,6 +143,29 @@ async fn signed_channel_http_e2e_advances_persisted_bucket() -> Result<()> {
     let package = registry.get("hello").expect("synced package exists");
     assert_eq!(package.version, "1.1.0");
     assert_eq!(package.store_path, v2_store_path);
+    let store_hash = store_path_hash(&v2_store_path);
+    let closure = registry
+        .get_closure(store_hash)
+        .expect("closure was materialized from the committed tree");
+    assert!(closure.contains(store_hash));
+
+    let registry_root = fixture.registries_dir().join("aos-core");
+    assert!(registry_root.join("registry.toml").exists());
+    assert!(registry_root.join("keys.toml").exists());
+    assert!(registry_root.join(".gitattributes").exists());
+    let roster = keys::load_keys_toml(&registry_root)?.expect("keys.toml loaded");
+    assert_eq!(roster.active.len(), 1);
+    assert_eq!(roster.active[0].key, fixture.trusted_key());
+    let mirrors = resolve_mirrors_for_registry(&registry_root, &config);
+    let mirror_urls: Vec<&str> = mirrors.iter().map(|cache| cache.url.as_str()).collect();
+    assert_eq!(
+        mirror_urls,
+        vec![
+            "https://client-cache.example/nar",
+            "https://cache-high.example/nar",
+            "https://cache-low.example/nar",
+        ],
+    );
 
     let saved = fixture.assert_state_roundtrip(&state)?;
     assert_eq!(saved.floor, state.floor);

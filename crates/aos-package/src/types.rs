@@ -228,6 +228,10 @@ pub struct RegistryConfig {
     /// failed refresh is treated as stale. Defaults to 14 days for channels.
     #[serde(default)]
     pub max_staleness_seconds: Option<u64>,
+    /// Client-side binary cache override/supplement entries. These are merged
+    /// with the committed root registry.toml caches, then sorted by priority.
+    #[serde(default)]
+    pub caches: Vec<CacheEntry>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
 }
@@ -557,6 +561,8 @@ pub struct RegistryFileInner {
     #[serde(default)]
     pub max_staleness_seconds: Option<u64>,
     #[serde(default)]
+    pub caches: Vec<CacheEntry>,
+    #[serde(default)]
     pub signing: Option<SigningConfig>,
     #[serde(default)]
     pub state: Option<RegistryState>,
@@ -658,6 +664,7 @@ mod tests {
             version: None,
             pin: None,
             max_staleness_seconds: None,
+            caches: Vec::new(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Http);
@@ -677,6 +684,7 @@ mod tests {
             version: None,
             pin: None,
             max_staleness_seconds: None,
+            caches: Vec::new(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Http);
@@ -696,6 +704,7 @@ mod tests {
             version: None,
             pin: None,
             max_staleness_seconds: None,
+            caches: Vec::new(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -715,6 +724,7 @@ mod tests {
             version: None,
             pin: None,
             max_staleness_seconds: None,
+            caches: Vec::new(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -734,6 +744,7 @@ mod tests {
             version: None,
             pin: None,
             max_staleness_seconds: None,
+            caches: Vec::new(),
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -793,6 +804,10 @@ priority = 500
 enabled = true
 max_staleness_seconds = 604800
 
+[[registry.caches]]
+url = "https://client-cache.aos.dev"
+priority = 1200
+
 [registry.signing]
 required = true
 public_key = "aos-core:Ed25519:base64keyhere"
@@ -801,6 +816,9 @@ public_key = "aos-core:Ed25519:base64keyhere"
         assert_eq!(rf.registry.name, "aos-core");
         assert_eq!(rf.registry.priority, 500);
         assert_eq!(rf.registry.max_staleness_seconds, Some(604800));
+        assert_eq!(rf.registry.caches.len(), 1);
+        assert_eq!(rf.registry.caches[0].url, "https://client-cache.aos.dev");
+        assert_eq!(rf.registry.caches[0].priority, 1200);
         let signing = rf.registry.signing.unwrap();
         assert!(signing.required);
         assert_eq!(signing.public_key, "aos-core:Ed25519:base64keyhere");
@@ -911,6 +929,7 @@ last_update = "2026-02-13T10:30:00Z"
             version: None,
             pin: None,
             max_staleness_seconds: None,
+            caches: Vec::new(),
             signing: None,
         }
     }
