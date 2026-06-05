@@ -18,6 +18,12 @@ mkDerivation {
   runtimeDeps = [];
   dontStrip = true; # Go runtime metadata in custom ELF sections
 
+  # The 2017-era Go 1.4 C bootstrap predates modern glibc hardening: its
+  # Plan9-style p9jmp_buf is sized smaller than glibc's sigjmp_buf, so the
+  # fortified __longjmp_chk aborts the dist tool with "buffer overflow
+  # detected". Build the bootstrap compiler without injected hardening.
+  hardeningDisable = ["all"];
+
   phases = [
     {
       name = "unpack";
