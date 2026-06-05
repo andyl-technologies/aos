@@ -10,7 +10,6 @@ pub mod package;
 pub mod prefetch;
 pub mod repl;
 pub mod serve;
-pub mod shell;
 pub mod show;
 pub mod system;
 pub mod test;
