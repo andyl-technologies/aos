@@ -16,10 +16,11 @@
 > git-native model this workstream builds.
 >
 > **As-built status note:** this workstream is now archival planning context. The
-> signing/trust implementation has mostly landed; use
+> signing/trust implementation has landed locally; use
 > [`../../registry/current-state.md`](../../registry/current-state.md) and
-> [`TODO.md`](./TODO.md) for current facts and remaining validation gaps. Older
-> CURRENT citations below describe the pre-cutover tree.
+> [`TODO.md`](./TODO.md) for current facts. Follow-up production validation is
+> tracked in [`validation-runbook.md`](./validation-runbook.md). Older CURRENT
+> citations below describe the pre-cutover tree.
 
 ---
 

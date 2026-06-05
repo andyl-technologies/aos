@@ -6,9 +6,10 @@
 > writing.
 >
 > **As-built status note:** this workstream is now archival planning context. The
-> object-store implementation has mostly landed; use
+> object-store implementation has landed locally; use
 > [`../../registry/current-state.md`](../../registry/current-state.md) and
-> [`TODO.md`](./TODO.md) for current facts and remaining validation gaps.
+> [`TODO.md`](./TODO.md) for current facts. Follow-up production validation is
+> tracked in [`validation-runbook.md`](./validation-runbook.md).
 >
 > **Scope of this workstream:** stand up the *foundation layer* — a **bare git
 > repository in sha256 object format**, published as static files over **dumb

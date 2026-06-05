@@ -34,10 +34,11 @@
 > generation, not a running server).
 >
 > **As-built status note:** this workstream is now archival planning context. The
-> static cache producer and release upload plumbing have landed locally, while
-> stock-Nix and service-backed S3/SFTP validation remain TODOs. Use
+> static cache producer and release upload plumbing have landed locally. Use
 > [`../../registry/current-state.md`](../../registry/current-state.md) and
-> [`TODO.md`](./TODO.md) for current facts.
+> [`TODO.md`](./TODO.md) for current facts; stock-Nix and service-backed S3/SFTP
+> validation is deferred to the follow-up PR tracked in
+> [`validation-runbook.md`](./validation-runbook.md).
 
 This is the **producer-side** counterpart to
 [workstream-05-consumer.md](./workstream-05-consumer.md) §8 (which *resolves* and
