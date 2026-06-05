@@ -155,6 +155,11 @@ create a tiny fixed-output path with `nix-store --add-fixed`; set
 `AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1` as well to run the stricter stock
 `nix path-info --store <cache>` signed-substituter probe. Ordinary Rust test
 runs skip these host-store-mutating checks.
+To validate generated static-cache upload/readback against service-backed
+destinations, set `AOS_PACKAGE_TEST_GENERATED_CACHE_UPLOAD_URLS` to a whitespace-
+or comma-separated list of upload URLs such as `s3://bucket/prefix` and
+`sftp://host/path`; the e2e adds a local `file://` destination to the same array
+and verifies readback through the `aos-cache` backend trait.
 
 > **Why the projection lines up so cleanly:** Nix's two-level naming — a
 > store-hash narinfo that *indirects* to a content-addressed NAR — is exactly how

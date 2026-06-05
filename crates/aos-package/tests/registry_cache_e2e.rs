@@ -20,6 +20,7 @@ use base64::Engine as _;
 use common::StaticHttpServer;
 
 const REAL_NIX_CACHE_TEST_ENV: &str = "AOS_PACKAGE_TEST_REAL_NIX_CACHE";
+const GENERATED_CACHE_UPLOAD_URLS_ENV: &str = "AOS_PACKAGE_TEST_GENERATED_CACHE_UPLOAD_URLS";
 
 #[tokio::test]
 async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -> Result<()> {
@@ -88,6 +89,13 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
 
     assert_filesystem_upload_array_round_trips(&output_dir, &store_path, &narinfo_text, &printer)
         .await?;
+    assert_generated_cache_external_upload_matrix_round_trips(
+        &output_dir,
+        &store_path,
+        &narinfo_text,
+        &printer,
+    )
+    .await?;
     assert_stock_nix_can_query_signed_cache(&mirror_url, &store_path, &trusted_public_key)?;
     Ok(())
 }
@@ -182,12 +190,72 @@ async fn assert_filesystem_upload_array_round_trips(
     )
     .await?;
 
+    assert_uploaded_static_cache_round_trips(
+        &upload_urls,
+        output_dir,
+        store_path,
+        source_narinfo_text,
+    )
+    .await
+}
+
+async fn assert_generated_cache_external_upload_matrix_round_trips(
+    output_dir: &std::path::Path,
+    store_path: &str,
+    source_narinfo_text: &str,
+    printer: &Printer,
+) -> Result<()> {
+    let Some(raw_urls) = std::env::var_os(GENERATED_CACHE_UPLOAD_URLS_ENV) else {
+        eprintln!(
+            "skipping generated static-cache external upload matrix: set {GENERATED_CACHE_UPLOAD_URLS_ENV} to whitespace- or comma-separated upload URLs"
+        );
+        return Ok(());
+    };
+    let external_urls = raw_urls
+        .to_string_lossy()
+        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .filter(|url| !url.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if external_urls.is_empty() {
+        eprintln!(
+            "skipping generated static-cache external upload matrix: {GENERATED_CACHE_UPLOAD_URLS_ENV} is empty"
+        );
+        return Ok(());
+    }
+
+    let local = tempfile::TempDir::new()?;
+    let mut upload_urls = vec![format!("file://{}", local.path().display())];
+    upload_urls.extend(external_urls);
+    nixcache::upload_static_cache_to_all(
+        output_dir,
+        &upload_urls,
+        &AuthOptions::default(),
+        printer,
+    )
+    .await?;
+
+    assert_uploaded_static_cache_round_trips(
+        &upload_urls,
+        output_dir,
+        store_path,
+        source_narinfo_text,
+    )
+    .await
+}
+
+async fn assert_uploaded_static_cache_round_trips(
+    upload_urls: &[String],
+    output_dir: &std::path::Path,
+    store_path: &str,
+    source_narinfo_text: &str,
+) -> Result<()> {
     let hash = store_hash(store_path);
     let source_narinfo = narinfo::parse(source_narinfo_text)?;
     let source_cache_info = fs::read_to_string(output_dir.join("nix-cache-info"))?;
     let source_nar = fs::read(output_dir.join(&source_narinfo.url))?;
 
-    for upload_url in &upload_urls {
+    for upload_url in upload_urls {
         let uploaded = backend::from_url(upload_url, &AuthOptions::default()).await?;
         assert!(uploaded.has_narinfo(hash).await?);
         assert_eq!(
@@ -199,13 +267,12 @@ async fn assert_filesystem_upload_array_round_trips(
         assert_eq!(uploaded.get_narinfo(hash).await?, source_narinfo_text);
         assert_eq!(uploaded.get_nar(&source_narinfo.url).await?, source_nar);
 
-        let root = upload_url
-            .strip_prefix("file://")
-            .ok_or_else(|| anyhow::anyhow!("unexpected file upload URL {upload_url}"))?;
-        assert_eq!(
-            fs::read_to_string(std::path::Path::new(root).join("nix-cache-info"))?,
-            source_cache_info,
-        );
+        if let Some(root) = upload_url.strip_prefix("file://") {
+            assert_eq!(
+                fs::read_to_string(std::path::Path::new(root).join("nix-cache-info"))?,
+                source_cache_info,
+            );
+        }
     }
 
     Ok(())
