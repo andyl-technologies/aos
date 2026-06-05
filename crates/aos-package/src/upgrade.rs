@@ -576,6 +576,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            upload_auth: None,
             signing: None,
         };
 

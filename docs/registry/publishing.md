@@ -530,6 +530,26 @@ apr push --set-upstream --branch stable        # plain git push              (re
 `--s3-region` / `AWS_REGION`, `--s3-profile`, `--s3-endpoint`, `--ssh-key`,
 `--ssh-password` / `AOS_SSH_PASSWORD`, and `--ssh-ask-pass`.
 
+For persistent producer defaults, `registries.d/<name>.toml` may include
+`[registry.upload_auth]`. Config values are used as defaults; env/CLI values
+override them; `view` falls back to `"default"` if neither config nor env/CLI
+sets it.
+
+```toml
+[registry.upload_auth]
+token = "..."
+view = "prod"
+http_user = "cache-user"
+http_password = "..."
+headers = ["X-Registry: core"]
+s3_region = "us-west-2"
+s3_profile = "registry-prod"
+s3_endpoint = "https://s3.example"
+ssh_key = "/run/secrets/registry_sftp_key"
+ssh_password = "..."
+ssh_ask_pass = false
+```
+
 The current workflow is explicit subcommands. A future `apr release` can wrap the
 same steps into one atomic command, but the static cache generator and upload
 path exist today.

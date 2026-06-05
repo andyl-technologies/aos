@@ -80,7 +80,9 @@ Implemented producer behavior:
   It fails closed when a listed store path is absent from the local Nix store,
   can upload the generated files to one or more repeatable `--upload-url`
   destinations through `aos-cache` backends while preserving the generated
-  `nix-cache-info` body, and can update the committed root `registry.toml`
+  `nix-cache-info` body, can read producer upload-auth defaults from
+  `[registry.upload_auth]` in the selected `registries.d/<name>.toml` with
+  env/CLI overrides, and can update the committed root `registry.toml`
   `[[caches]]` pointer.
 
 The release pipeline is still composed from focused `apr` subcommands rather

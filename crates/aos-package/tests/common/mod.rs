@@ -262,6 +262,7 @@ key = "{}"
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            upload_auth: None,
             signing: None,
         }
     }
@@ -281,6 +282,7 @@ key = "{}"
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            upload_auth: None,
             signing: Some(SigningConfig {
                 required: true,
                 public_key: self.trusted_key().to_string(),
