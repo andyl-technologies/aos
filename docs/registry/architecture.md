@@ -335,13 +335,13 @@ or partition that references them; `/channels/**` and the `info/**` shims are lo
 and flipped last. Full producer workflow, atomicity, and concurrency are in
 [`publishing.md`](./publishing.md).
 
-> **CURRENT.** The producer is still mostly a thin wrapper over `git`, but it now
-> creates signed release tag objects, writes signed channel partition files,
-> updates the frontier branch, and refreshes sha256 dumb-HTTP object indexes
-> (`update-server-info` and root `objects/info/alternates`) after create,
-> publish, tag, sign, and channel operations. Static Nix-cache generation and
-> upload are available through `apr cache generate`; release publishing is still
-> composed from focused subcommands rather than one atomic pipeline command.
+> **CURRENT.** `apr release` now sequences the producer-safe order above. It can
+> publish a real store path first or release an already committed registry tree,
+> signs the semver tag, generates full packs and compressed thin deltas, refreshes
+> dumb-HTTP indexes, optionally generates static Nix-cache files, advances channel
+> partitions, and uploads immutable files before low-TTL mutable refs/channels.
+> The focused `apr publish`, `apr tag`, `apr channel`, `apr cache`, and
+> `apr origin` subcommands remain available for repair and unusual workflows.
 
 ### 6.2 Rollout (publisher-controlled, fix-forward)
 
