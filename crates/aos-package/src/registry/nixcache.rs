@@ -385,6 +385,7 @@ fn dump_zstd_nar(path: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_core::nar::info as narinfo;
     use tempfile::TempDir;
 
     #[test]
@@ -482,6 +483,60 @@ name = "test"
                 b"nar-bytes"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn static_cache_upload_preserves_narinfo_url_object_path() {
+        let source = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        let printer = Printer::new(0, true, false);
+        let store_path = "/nix/store/abc123-package";
+        let nar_hash = "sha256:def456";
+        let nar_url = nar_url(store_path, nar_hash, NarCompression::Zstd);
+
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(
+            source.path().join("nix-cache-info"),
+            nix_cache_info("/nix/store", 40),
+        )
+        .unwrap();
+        std::fs::write(
+            source.path().join("abc123.narinfo"),
+            render_static_narinfo(
+                &StaticNarInfoInput {
+                    store_path,
+                    nar_hash,
+                    nar_size: 5,
+                    references: &[],
+                    deriver: None,
+                    signatures: &[],
+                    file_hash: "sha256:0123456789abcdef",
+                    file_size: 9,
+                    compression: NarCompression::Zstd,
+                },
+                "/nix/store",
+                None,
+            ),
+        )
+        .unwrap();
+        std::fs::write(source.path().join(&nar_url), b"nar-bytes").unwrap();
+
+        upload_static_cache(
+            source.path(),
+            &format!("file://{}", dest.path().display()),
+            &printer,
+        )
+        .await
+        .unwrap();
+
+        let uploaded_narinfo = std::fs::read_to_string(dest.path().join("abc123.narinfo")).unwrap();
+        let parsed = narinfo::parse(&uploaded_narinfo).unwrap();
+        assert_eq!(parsed.url, "nar/abc123-sha256-def456.nar.zst");
+        assert_eq!(parsed.url, nar_url);
+        assert_eq!(
+            std::fs::read(dest.path().join(parsed.url)).unwrap(),
+            b"nar-bytes",
+        );
     }
 
     #[tokio::test]
