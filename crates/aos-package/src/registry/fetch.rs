@@ -164,33 +164,57 @@ pub async fn resolve_objects(
         if !retained.contains(&base) {
             continue;
         }
-        if let Some(step) = fetch_delta(repo_dir, origin, target, &base).await? {
-            printer.info(&format!(
-                "Fetched registry delta {base} -> {target} via AOS pack"
-            ));
-            return Ok(FetchPlan {
-                target: target.clone(),
-                steps: vec![step],
-            });
+        match fetch_delta(repo_dir, origin, target, &base).await {
+            Ok(Some(step)) => {
+                printer.info(&format!(
+                    "Fetched registry delta {base} -> {target} via AOS pack"
+                ));
+                return Ok(FetchPlan {
+                    target: target.clone(),
+                    steps: vec![step],
+                });
+            }
+            Ok(None) => {}
+            Err(err) => {
+                printer.warning(&format!(
+                    "Skipping unusable registry delta {base} -> {target}: {err:#}"
+                ));
+            }
         }
     }
 
     let anchor = anchor_for(target);
-    if let Some(full_step) = fetch_full_pack(repo_dir, origin, &anchor).await? {
-        let mut steps = vec![full_step];
-        if anchor != *target {
-            if let Some(delta_step) = fetch_delta(repo_dir, origin, target, &anchor).await? {
-                steps.push(delta_step);
-            } else {
-                let fallback = git_fetch_release(repo_dir, origin, target).await?;
-                steps.push(fallback);
+    match fetch_full_pack(repo_dir, origin, &anchor).await {
+        Ok(Some(full_step)) => {
+            let mut steps = vec![full_step];
+            if anchor != *target {
+                match fetch_delta(repo_dir, origin, target, &anchor).await {
+                    Ok(Some(delta_step)) => steps.push(delta_step),
+                    Ok(None) => {
+                        let fallback = git_fetch_release(repo_dir, origin, target).await?;
+                        steps.push(fallback);
+                    }
+                    Err(err) => {
+                        printer.warning(&format!(
+                            "Skipping unusable registry delta {anchor} -> {target}: {err:#}"
+                        ));
+                        let fallback = git_fetch_release(repo_dir, origin, target).await?;
+                        steps.push(fallback);
+                    }
+                }
             }
+            printer.info(&format!("Fetched registry full-pack anchor {anchor}"));
+            return Ok(FetchPlan {
+                target: target.clone(),
+                steps,
+            });
         }
-        printer.info(&format!("Fetched registry full-pack anchor {anchor}"));
-        return Ok(FetchPlan {
-            target: target.clone(),
-            steps,
-        });
+        Ok(None) => {}
+        Err(err) => {
+            printer.warning(&format!(
+                "Skipping unusable registry full-pack anchor {anchor}: {err:#}"
+            ));
+        }
     }
 
     let fallback = git_fetch_release(repo_dir, origin, target).await?;
@@ -263,6 +287,7 @@ async fn fetch_full_pack(
         tokio::fs::write(&idx_path, idx_bytes)
             .await
             .with_context(|| format!("writing {}", idx_path.display()))?;
+        pack::verify_pack_index(repo_dir, &idx_path).await?;
     } else {
         pack::index_pack(repo_dir, &pack_path).await?;
     }
