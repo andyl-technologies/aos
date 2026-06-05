@@ -37,4 +37,5 @@ in
     prevRust = rust-1_87;
     llvm = llvm-20;
     needsDownloadRustc = true;
+    disableLld = true;
   }
