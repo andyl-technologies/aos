@@ -826,6 +826,17 @@ read before editing code or docs.
       `crates/aos-core/src/nar/cache.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and
       `crates/aos-package/src/download.rs`.
+- [x] Add a remaining-external-validation runbook so agents/operators have one
+      place to run the stock-Nix, S3/SFTP, stock-Git, performance, CDN/mirror,
+      and max-staleness gates before marking the remaining TODOs complete.
+      Context: `docs/plans/registry/validation-runbook.md`,
+      `docs/plans/registry/TODO.md`,
+      `docs/registry/nix-cache-compatibility.md`,
+      `docs/registry/http-layout.md`,
+      `docs/registry/packs-and-deltas.md`,
+      `docs/registry/publishing.md`,
+      `docs/registry/versioning-and-channels.md`, and
+      `docs/registry/signing-and-trust.md`.
 - [ ] Update operator docs once backend arrays, auth flags, `apr release`, trust
       management, and stock-Nix verification are implemented and tested.
       Context: `docs/registry/publishing.md`,
