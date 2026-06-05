@@ -91,10 +91,10 @@ read before editing code or docs.
 
 - [x] Inventory the registry-adjacent Rust test surface before assigning the
       remaining e2e work. Current coverage is mostly focused unit/module tests
-      embedded in source files; there is no `crates/aos-package/tests/` or
-      `crates/aos-cache/tests/` integration harness yet. Treat every
-      `crates/aos-package/tests/*.rs` and `crates/aos-cache/tests/*.rs` file
-      named below as a new file to create. Existing context:
+      embedded in source files. `crates/aos-cache/tests/backend_matrix.rs` now
+      starts the cache backend matrix; `crates/aos-package/tests/` still does
+      not exist. Treat every `crates/aos-package/tests/*.rs` file named below as
+      a new file to create. Existing context:
       `crates/aos-package/src/registry/objectstore.rs`,
       `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/channel.rs`,
@@ -114,6 +114,7 @@ read before editing code or docs.
       `crates/aos-core/src/nar/info.rs`,
       `crates/aos-core/src/nar/cache.rs`,
       `crates/aos-cache/src/backend/http.rs`,
+      `crates/aos-cache/tests/backend_matrix.rs`,
       `crates/aos-cache/src/resolve.rs`, and the only existing crate-level tests
       directory currently found, `crates/aos-systemd/tests/`.
 - [ ] Create shared integration-test fixture utilities for git-native registry
@@ -247,14 +248,31 @@ read before editing code or docs.
       `crates/aos-cache/src/backend/s3.rs`,
       `crates/aos-cache/src/backend/sftp.rs`, and
       `crates/aos-package/tests/registry_cache_e2e.rs`.
-- [ ] Add backend matrix integration tests for cache generation/upload and cache
-      reads: local filesystem `file://`, mocked/static HTTP, S3-compatible
-      storage, and SFTP. Prove repeatable `--upload-url` destination arrays can
-      include mixed `(s3, local filesystem path, SFTP)` targets, that partial
-      failures are reported after all destinations are attempted, and that each
-      backend can read the generated `nix-cache-info`, `.narinfo`, and `nar/`
-      objects it writes. Use hermetic fakes where possible and gate container or
-      external-service variants behind ignored tests or feature flags. Context:
+- [x] Add the first `aos-cache` backend integration harness. The new
+      `crates/aos-cache/tests/backend_matrix.rs` covers a hermetic local
+      filesystem write/read round trip and a static HTTP read round trip for
+      `nix-cache-info`, `<storehash>.narinfo`, and `nar/` objects. Context:
+      `docs/registry/nix-cache-compatibility.md`,
+      `crates/aos-cache/src/backend/mod.rs`,
+      `crates/aos-cache/src/backend/fs.rs`,
+      `crates/aos-cache/src/backend/http.rs`, and
+      `crates/aos-cache/tests/backend_matrix.rs`.
+- [x] Add ignored, env-gated backend matrix hooks for external S3-compatible and
+      SFTP write/read validation. They are not production evidence until run
+      against real or containerized services, but they define the same round-trip
+      contract as the hermetic filesystem test. Context:
+      `crates/aos-cache/tests/backend_matrix.rs`,
+      `crates/aos-cache/src/backend/s3.rs`, and
+      `crates/aos-cache/src/backend/sftp.rs`.
+- [ ] Complete backend matrix integration tests for cache generation/upload and
+      cache reads across local filesystem `file://`, mocked/static HTTP,
+      S3-compatible storage, and SFTP. Prove repeatable `--upload-url`
+      destination arrays can include mixed `(s3, local filesystem path, SFTP)`
+      targets, that partial failures are reported after all destinations are
+      attempted, and that each backend can read the generated `nix-cache-info`,
+      `.narinfo`, and `nar/` objects it writes. Promote the ignored S3/SFTP
+      hooks to container-backed or CI-run coverage before checking this off.
+      Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/publishing.md`,
       `crates/aos-package/src/lib.rs`,
@@ -264,8 +282,8 @@ read before editing code or docs.
       `crates/aos-cache/src/backend/http.rs`,
       `crates/aos-cache/src/backend/s3.rs`,
       `crates/aos-cache/src/backend/sftp.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`, and a new integration file
-      such as `crates/aos-cache/tests/backend_matrix.rs`.
+      `crates/aos-package/src/registry/nixcache.rs`, and
+      `crates/aos-cache/tests/backend_matrix.rs`.
 - [ ] Add stock git compatibility tests for the pinned minimum git version and
       sha256 dumb-HTTP behavior. The current local-git smoke test is not enough
       to prove production compatibility across supported client versions.
