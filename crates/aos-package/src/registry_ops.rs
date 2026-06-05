@@ -1602,7 +1602,8 @@ pub async fn run_cache(
             no_commit,
             registry,
         } => {
-            let dir = registry_dir(config, registry.as_deref())?;
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
             let report =
                 nixcache::generate_static_cache(&dir, output, key.as_deref(), *priority, printer)
                     .await?;
@@ -1615,7 +1616,8 @@ pub async fn run_cache(
             ));
 
             if !upload_urls.is_empty() {
-                let auth = auth.auth_options();
+                let auth = auth
+                    .auth_options_with_config(registry_upload_auth_config(config, &registry_name));
                 nixcache::upload_static_cache_to_all(output, upload_urls, &auth, printer).await?;
             }
 
@@ -1915,6 +1917,17 @@ fn configured_registry_names(config: &ApmConfig) -> Vec<String> {
         .iter()
         .map(|(registry, _)| registry.name.clone())
         .collect()
+}
+
+fn registry_upload_auth_config<'a>(
+    config: &'a ApmConfig,
+    registry_name: &str,
+) -> Option<&'a crate::types::RegistryUploadAuthConfig> {
+    config
+        .registries
+        .iter()
+        .find(|(registry, _state)| registry.name == registry_name)
+        .and_then(|(registry, _state)| registry.upload_auth.as_ref())
 }
 
 fn trusted_key_from_line(expected_registry: &str, key: &str) -> Result<TrustedKey> {
@@ -2628,6 +2641,7 @@ fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{ApmSettings, ProfileScope, RegistryConfig, RegistryUploadAuthConfig};
 
     #[test]
     fn parse_store_path_standard() {
@@ -2708,6 +2722,52 @@ mod tests {
         let err = initial_keys_roster("aos-core", Some("other:Ed25519:YWJjZA=="), Some("2026a"))
             .unwrap_err();
         assert!(format!("{err:#}").contains("expected 'aos-core'"));
+    }
+
+    #[test]
+    fn registry_upload_auth_config_selects_requested_registry() {
+        let config_auth = RegistryUploadAuthConfig {
+            token: Some("core-token".into()),
+            view: Some("prod".into()),
+            ..RegistryUploadAuthConfig::default()
+        };
+        let config = ApmConfig {
+            settings: ApmSettings::default(),
+            registries: vec![
+                (test_registry_config("other", None), None),
+                (
+                    test_registry_config("core", Some(config_auth.clone())),
+                    None,
+                ),
+            ],
+            scope: ProfileScope::User,
+        };
+
+        let selected = registry_upload_auth_config(&config, "core").expect("core auth config");
+        assert_eq!(selected, &config_auth);
+        assert!(registry_upload_auth_config(&config, "missing").is_none());
+    }
+
+    fn test_registry_config(
+        name: &str,
+        upload_auth: Option<RegistryUploadAuthConfig>,
+    ) -> RegistryConfig {
+        RegistryConfig {
+            name: name.into(),
+            url: format!("https://registry.example.com/{name}"),
+            priority: 500,
+            enabled: true,
+            commit: None,
+            branch: None,
+            channel: None,
+            tag: None,
+            version: None,
+            pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            upload_auth,
+            signing: None,
+        }
     }
 
     #[test]

@@ -32,7 +32,7 @@ use clap::{Args, Subcommand};
 use aos_core::error::AosError;
 use aos_core::output::Printer;
 use sysroot::KernelUpgradeMode;
-use types::ProfileScope;
+use types::{ProfileScope, RegistryUploadAuthConfig};
 
 /// Clap subcommand enum for `aos package` / `apm`.
 #[derive(Subcommand)]
@@ -843,8 +843,8 @@ pub struct CacheUploadAuthArgs {
     #[arg(long, env = "AOS_TOKEN")]
     pub token: Option<String>,
     /// AOS cache view (default: "default", AOS_VIEW env)
-    #[arg(long, env = "AOS_VIEW", default_value = "default")]
-    pub view: String,
+    #[arg(long, env = "AOS_VIEW")]
+    pub view: Option<String>,
     /// Basic auth username for generic HTTP caches
     #[arg(long)]
     pub http_user: Option<String>,
@@ -876,19 +876,56 @@ pub struct CacheUploadAuthArgs {
 
 impl CacheUploadAuthArgs {
     pub fn auth_options(&self) -> aos_cache::AuthOptions {
-        aos_cache::AuthOptions {
-            token: self.token.clone(),
-            view: self.view.clone(),
-            http_user: self.http_user.clone(),
-            http_password: self.http_password.clone(),
-            headers: self.header.clone(),
-            s3_region: self.s3_region.clone(),
-            s3_profile: self.s3_profile.clone(),
-            s3_endpoint: self.s3_endpoint.clone(),
-            ssh_key: self.ssh_key.clone(),
-            ssh_password: self.ssh_password.clone(),
-            ssh_ask_pass: self.ssh_ask_pass,
+        self.auth_options_with_config(None)
+    }
+
+    pub fn auth_options_with_config(
+        &self,
+        config: Option<&RegistryUploadAuthConfig>,
+    ) -> aos_cache::AuthOptions {
+        let mut auth = config
+            .map(RegistryUploadAuthConfig::auth_options)
+            .unwrap_or_else(|| aos_cache::AuthOptions {
+                view: "default".to_string(),
+                ..aos_cache::AuthOptions::default()
+            });
+
+        if let Some(token) = &self.token {
+            auth.token = Some(token.clone());
         }
+        if let Some(view) = &self.view {
+            auth.view = view.clone();
+        }
+        if let Some(http_user) = &self.http_user {
+            auth.http_user = Some(http_user.clone());
+        }
+        if let Some(http_password) = &self.http_password {
+            auth.http_password = Some(http_password.clone());
+        }
+        if !self.header.is_empty() {
+            auth.headers = self.header.clone();
+        }
+        if let Some(s3_region) = &self.s3_region {
+            auth.s3_region = Some(s3_region.clone());
+        }
+        if let Some(s3_profile) = &self.s3_profile {
+            auth.s3_profile = Some(s3_profile.clone());
+        }
+        if let Some(s3_endpoint) = &self.s3_endpoint {
+            auth.s3_endpoint = Some(s3_endpoint.clone());
+        }
+        if let Some(ssh_key) = &self.ssh_key {
+            auth.ssh_key = Some(ssh_key.clone());
+        }
+        if let Some(ssh_password) = &self.ssh_password {
+            auth.ssh_password = Some(ssh_password.clone());
+        }
+        auth.ssh_ask_pass = auth.ssh_ask_pass || self.ssh_ask_pass;
+        if auth.view.is_empty() {
+            auth.view = "default".to_string();
+        }
+
+        auth
     }
 }
 
@@ -1745,6 +1782,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            upload_auth: None,
             signing: None,
         }
     }
@@ -1868,7 +1906,7 @@ mod tests {
     fn cache_upload_auth_args_map_to_backend_options() {
         let args = CacheUploadAuthArgs {
             token: Some("token".into()),
-            view: "ops".into(),
+            view: Some("ops".into()),
             http_user: Some("user".into()),
             http_password: Some("pass".into()),
             header: vec!["X-Test: yes".into()],
@@ -1891,6 +1929,52 @@ mod tests {
         assert_eq!(auth.s3_endpoint.as_deref(), Some("https://minio.example"));
         assert_eq!(auth.ssh_key.as_deref(), Some("/tmp/key"));
         assert_eq!(auth.ssh_password.as_deref(), Some("ssh-pass"));
+        assert!(auth.ssh_ask_pass);
+    }
+
+    #[test]
+    fn cache_upload_auth_args_merge_config_defaults_and_overrides() {
+        let config = RegistryUploadAuthConfig {
+            token: Some("config-token".into()),
+            view: Some("prod".into()),
+            http_user: Some("config-user".into()),
+            http_password: Some("config-pass".into()),
+            headers: vec!["X-Config: yes".into()],
+            s3_region: Some("us-east-1".into()),
+            s3_profile: Some("default".into()),
+            s3_endpoint: Some("https://config-minio.example".into()),
+            ssh_key: Some("/etc/apm/config-key".into()),
+            ssh_password: Some("config-ssh-pass".into()),
+            ssh_ask_pass: true,
+        };
+        let args = CacheUploadAuthArgs {
+            token: Some("cli-token".into()),
+            view: None,
+            http_user: None,
+            http_password: Some("cli-pass".into()),
+            header: vec!["X-Cli: yes".into()],
+            s3_region: None,
+            s3_profile: Some("cli-profile".into()),
+            s3_endpoint: None,
+            ssh_key: Some("/tmp/cli-key".into()),
+            ssh_password: None,
+            ssh_ask_pass: false,
+        };
+
+        let auth = args.auth_options_with_config(Some(&config));
+        assert_eq!(auth.token.as_deref(), Some("cli-token"));
+        assert_eq!(auth.view, "prod");
+        assert_eq!(auth.http_user.as_deref(), Some("config-user"));
+        assert_eq!(auth.http_password.as_deref(), Some("cli-pass"));
+        assert_eq!(auth.headers, vec!["X-Cli: yes"]);
+        assert_eq!(auth.s3_region.as_deref(), Some("us-east-1"));
+        assert_eq!(auth.s3_profile.as_deref(), Some("cli-profile"));
+        assert_eq!(
+            auth.s3_endpoint.as_deref(),
+            Some("https://config-minio.example")
+        );
+        assert_eq!(auth.ssh_key.as_deref(), Some("/tmp/cli-key"));
+        assert_eq!(auth.ssh_password.as_deref(), Some("config-ssh-pass"));
         assert!(auth.ssh_ask_pass);
     }
 
