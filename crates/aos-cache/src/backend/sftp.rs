@@ -140,4 +140,14 @@ impl CacheBackend for SftpBackend {
             .context("writing nix-cache-info via SFTP")?;
         Ok(())
     }
+
+    async fn put_cache_info(&self, content: &str) -> Result<()> {
+        let info_url = self.remote_url("nix-cache-info");
+        let req = TransferRequest::put(&info_url, content.as_bytes().to_vec());
+        self.engine
+            .execute(req)
+            .await
+            .context("writing nix-cache-info via SFTP")?;
+        Ok(())
+    }
 }

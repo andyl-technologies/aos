@@ -137,4 +137,16 @@ impl CacheBackend for S3Backend {
             .context("writing nix-cache-info to S3")?;
         Ok(())
     }
+
+    async fn put_cache_info(&self, content: &str) -> Result<()> {
+        let url = self.s3_url("nix-cache-info");
+        let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
+        req.headers
+            .push(("Content-Type".to_string(), "text/plain".to_string()));
+        self.engine
+            .execute(req)
+            .await
+            .context("writing nix-cache-info to S3")?;
+        Ok(())
+    }
 }

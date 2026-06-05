@@ -132,4 +132,18 @@ impl CacheBackend for FsBackend {
         }
         Ok(())
     }
+
+    async fn put_cache_info(&self, content: &str) -> Result<()> {
+        tokio::fs::create_dir_all(&self.root)
+            .await
+            .context("creating cache directory")?;
+
+        let url = self.file_url("nix-cache-info");
+        let req = TransferRequest::put(&url, content.as_bytes().to_vec());
+        self.engine
+            .execute(req)
+            .await
+            .context("writing nix-cache-info")?;
+        Ok(())
+    }
 }

@@ -34,6 +34,9 @@ pub trait CacheBackend: Send + Sync {
     /// Write nix-cache-info (one-time initialization).
     async fn ensure_cache_info(&self, store_dir: &str) -> Result<()>;
 
+    /// Upload an exact nix-cache-info body.
+    async fn put_cache_info(&self, content: &str) -> Result<()>;
+
     /// Whether this backend supports AOSP pack upload (HTTP only).
     fn supports_pack(&self) -> bool {
         false
