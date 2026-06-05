@@ -621,24 +621,6 @@ pub enum RegistryCommand {
         #[arg(long)]
         registry: Option<String>,
     },
-    /// Generate git bundles for HTTP distribution
-    Bundle {
-        /// Output directory
-        #[arg(long)]
-        output: Option<String>,
-        /// Tag to bundle
-        #[arg(long)]
-        tag: Option<String>,
-        /// Create delta from this tag
-        #[arg(long)]
-        delta_from: Option<String>,
-        /// Update the bundle-list.toml manifest
-        #[arg(long)]
-        update_manifest: bool,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
     /// Re-sign an existing release tag
     Sign {
         /// Tag name to re-sign
@@ -1261,24 +1243,6 @@ async fn run_registry(
             )
             .await
         }
-        RegistryCommand::Bundle {
-            output,
-            tag: tag_name,
-            delta_from,
-            update_manifest,
-            registry,
-        } => {
-            registry_ops::bundle(
-                config,
-                output.as_deref(),
-                tag_name.as_deref(),
-                delta_from.as_deref(),
-                *update_manifest,
-                registry.as_deref(),
-                printer,
-            )
-            .await
-        }
         RegistryCommand::Sign { tag, key, registry } => {
             registry_ops::sign(
                 config,
@@ -1621,7 +1585,6 @@ mod tests {
                     reg_config("aos-extra", 400),
                     Some(types::RegistryState {
                         last_commit: Some("deadbeef1234".into()),
-                        last_creation_token: Some(2026020003),
                         last_update: Some("2026-02-16T12:00:00Z".into()),
                         ..types::RegistryState::default()
                     }),

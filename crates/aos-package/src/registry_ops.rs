@@ -1954,45 +1954,6 @@ pub async fn tag(
     Ok(())
 }
 
-/// `apr bundle`
-#[allow(clippy::too_many_arguments)]
-pub async fn bundle(
-    config: &ApmConfig,
-    output: Option<&str>,
-    tag_name: Option<&str>,
-    delta_from: Option<&str>,
-    _update_manifest: bool,
-    registry: Option<&str>,
-    printer: &Printer,
-) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
-
-    let output_dir = output.unwrap_or("bundles");
-    std::fs::create_dir_all(output_dir)?;
-
-    let reg_name = resolve_registry_name(config, registry)?;
-
-    if let Some(from) = delta_from {
-        let tag = tag_name.unwrap_or("HEAD");
-        let filename = format!("{reg_name}-{from}..{tag}.bundle");
-        let dest = Path::new(output_dir).join(&filename);
-        let rev_range = format!("{from}..{tag}");
-        git(
-            &dir,
-            &["bundle", "create", &dest.to_string_lossy(), &rev_range],
-        )?;
-        printer.success(&format!("Created delta bundle: {}", dest.display()));
-    } else {
-        let tag = tag_name.unwrap_or("HEAD");
-        let filename = format!("{reg_name}-{tag}.bundle");
-        let dest = Path::new(output_dir).join(&filename);
-        git(&dir, &["bundle", "create", &dest.to_string_lossy(), tag])?;
-        printer.success(&format!("Created snapshot bundle: {}", dest.display()));
-    }
-
-    Ok(())
-}
-
 /// `apr sign <TAG>`
 pub async fn sign(
     config: &ApmConfig,

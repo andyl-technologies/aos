@@ -448,7 +448,7 @@ ways:
 
 The full implementation plan for this surface is
 [`../plans/registry/workstream-04-signing-trust.md`](../plans/registry/workstream-04-signing-trust.md).
-Superseded concepts live only in current-state.md (today's code) and design-brief §15.
+Historical removed concepts are listed in design-brief §15.
 
 ---
 
@@ -462,5 +462,5 @@ Superseded concepts live only in current-state.md (today's code) and design-brie
 - [`packs-and-deltas.md`](packs-and-deltas.md) — what the verified commit's object store contains.
 - [`publishing.md`](publishing.md) — producer pipeline: commit → sign → pack → advance partitions.
 - [`nix-cache-compatibility.md`](nix-cache-compatibility.md) — NAR cache reusing the one Ed25519 key.
-- [`current-state.md`](current-state.md) — the as-is bundle/`creation_token` implementation.
+- [`current-state.md`](current-state.md) — current git-native implementation status.
 - Plan: [`../plans/registry/workstream-04-signing-trust.md`](../plans/registry/workstream-04-signing-trust.md), [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md), [`../plans/registry/open-questions.md`](../plans/registry/open-questions.md).

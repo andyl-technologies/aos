@@ -698,8 +698,8 @@ unification is the remaining design item).
 - [http-layout.md](http-layout.md) — full HTTP/object layout and CDN TTLs.
 - [signing-and-trust.md](signing-and-trust.md) — the one-key model, name-binding,
   `tag → tag → commit`.
-- [current-state.md](current-state.md) — the as-is bundle/`creation_token`
-  implementation.
+- [current-state.md](current-state.md) — current git-native implementation
+  status.
 - Plan: [workstream-06-nix-cache.md](../plans/registry/workstream-06-nix-cache.md),
   [workstream-05-consumer.md](../plans/registry/workstream-05-consumer.md),
   [workstream-04-signing-trust.md](../plans/registry/workstream-04-signing-trust.md),

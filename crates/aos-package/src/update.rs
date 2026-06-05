@@ -110,7 +110,7 @@ pub async fn run(
         ));
 
         let result = match reg_config.transport() {
-            Transport::HttpBundle | Transport::Git => git::sync_git(
+            Transport::Http | Transport::Git => git::sync_git(
                 reg_config,
                 &tracking_mode,
                 &cache_dir,

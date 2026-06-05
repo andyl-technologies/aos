@@ -33,12 +33,11 @@ signs the release and channel tags. The governing design principle is **asymmetr
 cost: make publishing as expensive as possible so that consumption is as cheap as
 possible** — the producer pays once, every consumer benefits forever.
 
-> **CURRENT.** Today the registry is a git repo of *nested package TOMLs* plus
-> `closures/<hash>` adjacency files, distributed as **git bundles** named in a
-> consumer-parsed `bundle-list.toml`, versioned by **calendar tags** ordered by
-> `creation_token`. This entire distribution/rollout layer is **replaced** by the
-> git-native model below. The Ed25519/SSH signing primitive and the package-TOML
-> tree content are the parts that carry forward. See [`current-state.md`](./current-state.md).
+> **CURRENT.** The registry now uses sha256 git repositories, dumb-HTTP index
+> refreshes, signed release/channel tag objects, channel partition commands, and
+> git-native consumer sync. The package-TOML tree content remains the metadata
+> layer. Remaining gaps are the custom AOS pack/delta fetch path and static
+> Nix-cache producer integration. See [`current-state.md`](./current-state.md).
 
 ---
 
@@ -335,16 +334,12 @@ or partition that references them; `/channels/**` and the `info/**` shims are lo
 and flipped last. Full producer workflow, atomicity, and concurrency are in
 [`publishing.md`](./publishing.md).
 
-> **CURRENT.** The producer is still a thin wrapper over `git`: `apr tag --key`
-> and `apr sign <tag> --key` create signed release tag objects; `apr push` = `git push`
-> with FF enforcement (`registry_ops.rs:1410`). Create/publish/tag/sign refresh
-> the sha256 dumb-HTTP object indexes (`update-server-info` and root
-> `objects/info/alternates`), but `apr bundle` only runs
-> `git bundle create` into a local `bundles/` dir and its `_update_manifest`
-> parameter is **dead code** (`registry_ops.rs:1718`). There is **no** pack/delta
-> pipeline and no upload. `apr channel init/advance/status` now writes the
-> partition files and frontier branch, but consumer rollout resolution and
-> upload integration remain gaps. The gaps map to workstreams in
+> **CURRENT.** The producer is still mostly a thin wrapper over `git`, but it now
+> creates signed release tag objects, writes signed channel partition files,
+> updates the frontier branch, and refreshes sha256 dumb-HTTP object indexes
+> (`update-server-info` and root `objects/info/alternates`) after create,
+> publish, tag, sign, and channel operations. There is still no single
+> pack/delta/Nix-cache upload pipeline. The gaps map to workstreams in
 > [`gap-analysis.md`](../plans/registry/gap-analysis.md).
 
 ### 6.2 Rollout (publisher-controlled, fix-forward)
@@ -374,8 +369,8 @@ Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
 ## 7. Cross-references
 
 - [`README.md`](./README.md) — purpose, audience, glossary, doc index.
-- [`current-state.md`](./current-state.md) — the as-is code (bundles /
-  `creation_token` / nested package TOMLs).
+- [`current-state.md`](./current-state.md) — current git-native implementation
+  status and remaining gaps.
 - [`http-layout.md`](./http-layout.md) — full HTTP/object layout, CDN TTLs,
   `info/refs` / `HEAD` / relative `info/alternates`, root-centralized loose
   `/objects/`, stock-git dumb-HTTP compatibility.

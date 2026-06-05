@@ -3,7 +3,7 @@
 > **Audience:** users, implementers, architects, engineers, doc-authoring agents.
 > **Status:** Reference. Describes the **TARGET** on-the-wire layout for an AOS
 > registry origin — a bare git repository (sha256) published as static files over
-> dumb HTTP — and contrasts it against the **CURRENT** bundle-based layout in code.
+> dumb HTTP — and notes which pieces are already implemented in code.
 >
 > The authoritative grounding for this document is the design brief
 > ([`docs/plans/registry/design-brief.md`](../plans/registry/design-brief.md)),
@@ -22,7 +22,7 @@ generation pipeline — those live in siblings:
 | Concern | Document |
 |---|---|
 | Big-picture architecture, three ref layers, asymmetric cost | [`architecture.md`](architecture.md) |
-| As-is code (bundles, `creation_token`, `bundle-list.toml`) | [`current-state.md`](current-state.md) |
+| As-built code status | [`current-state.md`](current-state.md) |
 | **HTTP/object layout, CDN TTLs, dumb-HTTP shim (this doc)** | `http-layout.md` |
 | Semver, channels-as-branches, 256-partition rollout, frontier | [`versioning-and-channels.md`](versioning-and-channels.md) |
 | Pack-objects, thin vs full packs, delta graph, zstd | [`packs-and-deltas.md`](packs-and-deltas.md) |
@@ -43,44 +43,19 @@ Plan-side: [`docs/plans/registry/README.md`](../plans/registry/README.md),
 
 ---
 
-## 2. CURRENT layout (as-is, code-grounded)
+## 2. CURRENT implementation status
 
-Today an AOS registry is *not* served as a bare git repo. Distribution is a set of
-git **bundle** files plus a TOML manifest that the **consumer** parses. The on-the-
-wire surface is:
+The code now initializes registry repositories with
+`git init --object-format=sha256`, refreshes `info/refs` with
+`git update-server-info`, and writes host-independent relative
+`objects/info/alternates` entries. `apm update` uses native git sync for both
+plain `http(s)://` origins and native git origins.
 
-```
-{base_url}/
-  bundles/
-    {registry_name}/
-      bundle-list.toml                         ← manifest the consumer fetches & parses
-      {registry}-vYYYY.MM.bundle               ← snapshot bundles
-      {registry}-vA..vB.delta.bundle           ← delta bundles (sequential & skip)
-```
-
-- The manifest URL is constructed as
-  `{base_url}/bundles/{registry_name}/bundle-list.toml`
-  (`crates/aos-package/src/registry/bundle.rs:105-109`).
-- Each bundle is downloaded from
-  `{base_url}/bundles/{registry}/{entry.uri}` and SHA-256-verified against the
-  manifest entry (`bundle.rs:259-264`, `bundle.rs:276-277`), then validated with
-  `git bundle verify` (`bundle.rs:326-331`) and applied with `git bundle unbundle`
-  (`bundle.rs:376-392`).
-- The manifest header carries `registry`, `version`, and an optional `generated`
-  timestamp (`bundle.rs:66-73`); each `[[bundles]]` entry carries `tag`/`from_tag`/
-  `to_tag`, `type` (`snapshot`/`delta`), `uri`, `creation_token`, `size`, `sha256`
-  (`bundle.rs:75-92`).
-- Ordering and selection are driven by an integer **`creation_token`** monotonic
-  ordinal (`bundle.rs:170-171` sorts entries ascending; `entries_since`,
-  `latest_snapshot`, `skip_delta_from`, `sequential_deltas_between` at
-  `bundle.rs:181-224` are all `creation_token`-keyed).
-- Delta classification is by counting dot-segments of a `vYYYY.MM[.P]` calendar tag:
-  a 2-segment base → patch is a **skip** delta, patch → patch is **sequential**
-  (`classify_delta` at `bundle.rs:238-243`).
-
-Everything in this section is **removed** from the target; the §3 layout replaces
-it. See [`current-state.md`](current-state.md) for the full as-is picture and
-design-brief §15 for the complete removed-list.
+The AOS-specific `/channels/<name>/00..ff` partition files are produced by
+`apr channel init/advance`, and channel consumers verify those signed tag objects
+before resolving the release commit. The release pack layout in §3 is represented
+by helper modules, but the full producer upload flow and custom AOS pack/delta
+fetch walk are still remaining implementation work.
 
 ---
 
@@ -488,15 +463,15 @@ segment is everything after `major.minor`; design-brief §7).
 
 ## 10. CURRENT → TARGET summary
 
-| Aspect | CURRENT (`bundle.rs`) | TARGET (this doc) |
+| Aspect | CURRENT code | TARGET (this doc) |
 |---|---|---|
-| Transport unit | git **bundles** (`*.bundle`) | bare git repo, dumb HTTP static files |
-| Manifest | `bundle-list.toml` parsed by consumer (`bundle.rs:124`) | none — refs + `info/alternates` + `/channels` |
-| Object format | sha1 (git default in bundles) | **sha256** (`git init --object-format=sha256`) |
-| Object store | opaque inside bundles | all loose `objects/<xx>/<62-hex>` at root + per-release pack dirs |
-| Release index | `[[bundles]]` snapshot entries | `objects/info/alternates` (doubles as index) |
-| Versioning | calendar `vYYYY.MM[.P]` + `creation_token` (`bundle.rs:238-243`) | semver, no `v` prefix |
-| Deltas | `*.delta.bundle`, classified by segment count | thin `delta-<from-semver>.pack`, not in `info/packs` |
-| Full snapshot | snapshot bundle | `pack-<sha256>.pack` at X.Y.0 anchors |
-| Rollout | (none in layout) | 256 signed `/channels/<name>/00..ff` partition tags |
-| Stock-git clone | not possible | `git clone <url>` works (sha256-capable client) |
+| Transport unit | bare git repo over git/dumb HTTP | bare git repo, dumb HTTP static files |
+| Manifest | refs + `info/alternates` + `/channels` | same |
+| Object format | **sha256** | **sha256** |
+| Object store | root loose-object validation and relative alternates helpers exist | all loose `objects/<xx>/<62-hex>` at root + per-release pack dirs |
+| Release index | `objects/info/alternates` writer exists | `objects/info/alternates` doubles as index |
+| Versioning | semver tags and channel floors | semver, no `v` prefix |
+| Deltas | pack helper module exists | thin `delta-<from-semver>.pack`, not in `info/packs` |
+| Full snapshot | pack helper module exists | `pack-<sha256>.pack` at X.Y.0 anchors |
+| Rollout | 256 signed `/channels/<name>/00..ff` partition tags | same |
+| Stock-git clone | sha256 dumb-HTTP clone coverage exists | `git clone <url>` works (sha256-capable client) |
