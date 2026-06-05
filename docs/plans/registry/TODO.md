@@ -430,21 +430,41 @@ read before editing code or docs.
       `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/channel.rs`, and
       `crates/aos-package/src/registry/nixcache.rs`.
-- [ ] Add upload support for the full git-native static origin, not only the
-      generated static Nix cache files. The publish path must upload `HEAD`,
-      `info/refs`, `objects/**`, `objects/info/**`, `channels/**`,
-      `releases/**`, and any cache files in the required immutable-first /
-      mutable-last order, with per-path cache-control/TTL metadata where the
-      selected backend can express it. Context: `docs/registry/http-layout.md`,
+- [x] Add upload support for the full git-native static origin, not only the
+      generated static Nix cache files. `apr origin upload --upload-url ...`
+      now refreshes the local static git view and uploads `HEAD`, `info/refs`,
+      `objects/**`, `objects/info/**`, `channels/**`, `releases/**`, and
+      optional generated static-cache files from `--cache-dir` in
+      immutable-first / mutable-last order. Backend upload support now has a
+      generic static-file method for `file://`, generic `http(s)://`, `s3://`,
+      and `sftp://`/`ssh://`; S3 and HTTP receive per-path `Content-Type` and
+      `Cache-Control` metadata. Coverage includes
+      `registry::static_upload` unit tests for ordering and filesystem upload,
+      plus `static_origin_upload_e2e_syncs_uploaded_filesystem_destination` in
+      `crates/aos-package/tests/registry_e2e.rs`, which uploads a real
+      sha256 dumb-HTTP origin to `file://`, serves that uploaded tree, and syncs
+      a consumer from it. Service-backed S3/SFTP validation remains tracked by
+      the separate backend-matrix TODO. Context:
+      `docs/registry/http-layout.md`,
       `docs/registry/publishing.md`,
+      `docs/registry/current-state.md`,
       `docs/registry/packs-and-deltas.md`,
       `docs/plans/registry/open-questions.md`,
+      `crates/aos-package/src/lib.rs`,
       `crates/aos-package/src/registry_ops.rs`,
+      `crates/aos-package/src/registry/static_upload.rs`,
       `crates/aos-package/src/registry/objectstore.rs`,
       `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/channel.rs`,
-      `crates/aos-package/src/registry/nixcache.rs`, and
-      `crates/aos-cache/src/backend/mod.rs`.
+      `crates/aos-package/src/registry/nixcache.rs`,
+      `crates/aos-package/tests/registry_e2e.rs`,
+      `crates/aos-cache/src/backend/mod.rs`,
+      `crates/aos-cache/src/backend/fs.rs`,
+      `crates/aos-cache/src/backend/http.rs`,
+      `crates/aos-cache/src/backend/s3.rs`,
+      `crates/aos-cache/src/backend/sftp.rs`,
+      `crates/aos-net/src/types.rs`, and
+      `crates/aos-net/src/protocol/s3.rs`.
 - [x] Replace the single optional cache `--upload-url` with repeatable or
       array-style upload destinations, and define partial-failure semantics for
       a destination set such as `(s3, local filesystem path, SFTP)`. The CLI now

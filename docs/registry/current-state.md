@@ -94,6 +94,13 @@ Implemented producer behavior:
   `[registry.upload_auth]` in the selected `registries.d/<name>.toml` with
   env/CLI overrides, and can update the committed root `registry.toml`
   `[[caches]]` pointer.
+- `apr origin upload` uploads the full dumb-HTTP git origin surface to one or
+  more repeatable backend URLs after refreshing static git indexes. It uploads
+  immutable payloads (`objects/**`, `releases/**`, and optional static-cache
+  NAR/narinfo files from `--cache-dir`) before mutable surfaces (`HEAD`,
+  `info/refs`, `objects/info/**`, `channels/**`, and `nix-cache-info`) and
+  applies per-path cache-control/content-type metadata where the backend
+  supports it.
 
 The release pipeline is still composed from focused `apr` subcommands rather
 than one atomic `apr release` command.
