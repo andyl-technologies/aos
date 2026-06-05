@@ -232,6 +232,9 @@ pub struct RegistryConfig {
     /// with the committed root registry.toml caches, then sorted by priority.
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
+    /// Producer-side defaults for `apr cache generate --upload-url` backend auth.
+    #[serde(default)]
+    pub upload_auth: Option<RegistryUploadAuthConfig>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
 }
@@ -250,6 +253,54 @@ pub struct SigningConfig {
     pub required: bool,
     /// Key in `"name:Ed25519:base64key"` format.
     pub public_key: String,
+}
+
+/// Producer-side defaults for registry static-cache upload authentication.
+///
+/// This is read from `[registry.upload_auth]` in `registries.d/<name>.toml`.
+/// CLI flags and their env bindings override these defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryUploadAuthConfig {
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub view: Option<String>,
+    #[serde(default)]
+    pub http_user: Option<String>,
+    #[serde(default)]
+    pub http_password: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<String>,
+    #[serde(default)]
+    pub s3_region: Option<String>,
+    #[serde(default)]
+    pub s3_profile: Option<String>,
+    #[serde(default)]
+    pub s3_endpoint: Option<String>,
+    #[serde(default)]
+    pub ssh_key: Option<String>,
+    #[serde(default)]
+    pub ssh_password: Option<String>,
+    #[serde(default)]
+    pub ssh_ask_pass: bool,
+}
+
+impl RegistryUploadAuthConfig {
+    pub fn auth_options(&self) -> aos_cache::AuthOptions {
+        aos_cache::AuthOptions {
+            token: self.token.clone(),
+            view: self.view.clone().unwrap_or_else(|| "default".to_string()),
+            http_user: self.http_user.clone(),
+            http_password: self.http_password.clone(),
+            headers: self.headers.clone(),
+            s3_region: self.s3_region.clone(),
+            s3_profile: self.s3_profile.clone(),
+            s3_endpoint: self.s3_endpoint.clone(),
+            ssh_key: self.ssh_key.clone(),
+            ssh_password: self.ssh_password.clone(),
+            ssh_ask_pass: self.ssh_ask_pass,
+        }
+    }
 }
 
 /// Mutable state appended to a registry config file by `apm update`.
@@ -563,6 +614,8 @@ pub struct RegistryFileInner {
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
     #[serde(default)]
+    pub upload_auth: Option<RegistryUploadAuthConfig>,
+    #[serde(default)]
     pub signing: Option<SigningConfig>,
     #[serde(default)]
     pub state: Option<RegistryState>,
@@ -665,6 +718,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            upload_auth: None,
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Http);
@@ -685,6 +739,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            upload_auth: None,
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Http);
@@ -705,6 +760,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            upload_auth: None,
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -725,6 +781,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            upload_auth: None,
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -745,6 +802,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            upload_auth: None,
             signing: None,
         };
         assert_eq!(cfg.transport(), Transport::Git);
@@ -808,6 +866,19 @@ max_staleness_seconds = 604800
 url = "https://client-cache.aos.dev"
 priority = 1200
 
+[registry.upload_auth]
+token = "config-token"
+view = "prod"
+http_user = "cache-user"
+http_password = "cache-pass"
+headers = ["X-Registry: core"]
+s3_region = "us-west-2"
+s3_profile = "prod"
+s3_endpoint = "https://minio.example"
+ssh_key = "/etc/apm/cache_ed25519"
+ssh_password = "ssh-pass"
+ssh_ask_pass = true
+
 [registry.signing]
 required = true
 public_key = "aos-core:Ed25519:base64keyhere"
@@ -819,6 +890,24 @@ public_key = "aos-core:Ed25519:base64keyhere"
         assert_eq!(rf.registry.caches.len(), 1);
         assert_eq!(rf.registry.caches[0].url, "https://client-cache.aos.dev");
         assert_eq!(rf.registry.caches[0].priority, 1200);
+        let upload_auth = rf.registry.upload_auth.unwrap();
+        assert_eq!(upload_auth.token.as_deref(), Some("config-token"));
+        assert_eq!(upload_auth.view.as_deref(), Some("prod"));
+        assert_eq!(upload_auth.http_user.as_deref(), Some("cache-user"));
+        assert_eq!(upload_auth.http_password.as_deref(), Some("cache-pass"));
+        assert_eq!(upload_auth.headers, vec!["X-Registry: core"]);
+        assert_eq!(upload_auth.s3_region.as_deref(), Some("us-west-2"));
+        assert_eq!(upload_auth.s3_profile.as_deref(), Some("prod"));
+        assert_eq!(
+            upload_auth.s3_endpoint.as_deref(),
+            Some("https://minio.example")
+        );
+        assert_eq!(
+            upload_auth.ssh_key.as_deref(),
+            Some("/etc/apm/cache_ed25519")
+        );
+        assert_eq!(upload_auth.ssh_password.as_deref(), Some("ssh-pass"));
+        assert!(upload_auth.ssh_ask_pass);
         let signing = rf.registry.signing.unwrap();
         assert!(signing.required);
         assert_eq!(signing.public_key, "aos-core:Ed25519:base64keyhere");
@@ -930,6 +1019,7 @@ last_update = "2026-02-13T10:30:00Z"
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            upload_auth: None,
             signing: None,
         }
     }
