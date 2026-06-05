@@ -10,9 +10,11 @@ use aos_package::registry_ops::{
 };
 use aos_package::security::verify_tag_signature;
 use aos_package::types::{CacheEntry, RegistryState, TrackingMode};
-use std::fs;
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
+use std::{env, fs};
 
 use common::{RegistryFixture, StaticHttpServer};
 
@@ -120,8 +122,12 @@ fn assert_git_object_exists(repo: &Path, rev: &str) {
     );
 }
 
-fn current_git_version() -> Result<(String, (u32, u32, u32))> {
-    let output = Command::new("git").arg("--version").output()?;
+const GIT_MATRIX_ENV: &str = "AOS_PACKAGE_TEST_GIT_MATRIX";
+const MIN_STOCK_GIT_VERSION: (u32, u32, u32) = (2, 42, 0);
+static GIT_MATRIX_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn git_version_for(git: impl AsRef<OsStr>) -> Result<(String, (u32, u32, u32))> {
+    let output = Command::new(git).arg("--version").output()?;
     if !output.status.success() {
         anyhow::bail!(
             "git --version failed: {}",
@@ -140,6 +146,19 @@ fn current_git_version() -> Result<(String, (u32, u32, u32))> {
         parse_optional_leading_u32(parts.next())?,
     );
     Ok((text, version))
+}
+
+fn current_git_version() -> Result<(String, (u32, u32, u32))> {
+    git_version_for("git")
+}
+
+fn ensure_supported_stock_git(version_text: &str, version: (u32, u32, u32)) -> Result<()> {
+    if version < MIN_STOCK_GIT_VERSION {
+        anyhow::bail!(
+            "expected stock Git 2.42.0 or newer for sha256 dumb-HTTP compatibility, found {version_text}",
+        );
+    }
+    Ok(())
 }
 
 fn parse_optional_leading_u32(part: Option<&str>) -> Result<u32> {
@@ -161,13 +180,55 @@ fn v(input: &str) -> semver::Version {
 
 #[tokio::test]
 async fn stock_git_current_version_syncs_sha256_dumb_http_registry() -> Result<()> {
-    let (version_text, version) = current_git_version()?;
-    assert!(
-        version >= (2, 42, 0),
-        "expected stock Git 2.42.0 or newer for sha256 dumb-HTTP compatibility, found {version_text}",
-    );
+    assert_stock_git_syncs_sha256_dumb_http_registry("stock-git").await
+}
 
-    let fixture = RegistryFixture::new("stock-git")?;
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires AOS_PACKAGE_TEST_GIT_MATRIX and pinned git binaries; run with --test-threads=1"]
+async fn stock_git_configured_version_matrix_syncs_sha256_dumb_http_registry() -> Result<()> {
+    let Some(matrix) = env::var_os(GIT_MATRIX_ENV) else {
+        eprintln!(
+            "skipping stock Git matrix e2e: set {GIT_MATRIX_ENV} to a PATH-style list of git binaries or bin directories"
+        );
+        return Ok(());
+    };
+    let entries = env::split_paths(&matrix).collect::<Vec<_>>();
+    if entries.is_empty() {
+        eprintln!("skipping stock Git matrix e2e: {GIT_MATRIX_ENV} is empty");
+        return Ok(());
+    }
+
+    let _guard = GIT_MATRIX_ENV_LOCK
+        .lock()
+        .expect("stock Git matrix environment lock poisoned");
+    let _path_restore = PathRestore::capture();
+
+    for entry in entries {
+        let git_binary = matrix_git_binary(&entry);
+        let (version_text, version) = git_version_for(&git_binary)
+            .with_context(|| format!("checking {}", git_binary.display()))?;
+        ensure_supported_stock_git(&version_text, version)?;
+
+        let shim = git_path_shim(&git_binary)?;
+        set_process_path(path_with_prefix(shim.path())?);
+        assert_stock_git_syncs_sha256_dumb_http_registry("stock-git-matrix")
+            .await
+            .with_context(|| {
+                format!(
+                    "running sha256 dumb-HTTP sync under {} ({version_text})",
+                    git_binary.display(),
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
+async fn assert_stock_git_syncs_sha256_dumb_http_registry(fixture_name: &str) -> Result<()> {
+    let (version_text, version) = current_git_version()?;
+    ensure_supported_stock_git(&version_text, version)?;
+
+    let fixture = RegistryFixture::new(fixture_name)?;
     fixture.write_registry_toml_with_caches(&[])?;
     fixture.write_gitattributes()?;
     let store_path = fixture.write_package("hello", "1.0.0")?;
@@ -202,12 +263,80 @@ async fn stock_git_current_version_syncs_sha256_dumb_http_registry() -> Result<(
     assert_eq!(result.new_commit, source_commit);
     assert_eq!(result.packages_added, 1);
     assert_eq!(state.last_commit.as_deref(), Some(source_commit.as_str()));
-    assert!(fixture.cache_dir().join("stock-git/repo.git/HEAD").exists());
+    assert!(
+        fixture
+            .cache_dir()
+            .join(format!("{fixture_name}/repo.git/HEAD"))
+            .exists()
+    );
     let registry = Registry::load(fixture.cache_dir(), &config, "x86_64-linux")?;
     let package = registry.get("hello").expect("synced package exists");
     assert_eq!(package.store_path, store_path);
 
     Ok(())
+}
+
+fn matrix_git_binary(entry: &Path) -> PathBuf {
+    if entry.is_dir() {
+        entry.join("git")
+    } else {
+        entry.to_path_buf()
+    }
+}
+
+fn path_with_prefix(prefix: &Path) -> Result<std::ffi::OsString> {
+    let mut paths = vec![prefix.to_path_buf()];
+    if let Some(current) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&current));
+    }
+    env::join_paths(paths).context("joining PATH for stock Git matrix")
+}
+
+struct PathRestore {
+    original: Option<std::ffi::OsString>,
+}
+
+impl PathRestore {
+    fn capture() -> Self {
+        Self {
+            original: env::var_os("PATH"),
+        }
+    }
+}
+
+impl Drop for PathRestore {
+    fn drop(&mut self) {
+        // The stock-Git matrix test is ignored and documented as single-threaded
+        // because PATH is process-global.
+        unsafe {
+            if let Some(original) = &self.original {
+                env::set_var("PATH", original);
+            } else {
+                env::remove_var("PATH");
+            }
+        }
+    }
+}
+
+fn set_process_path(path: std::ffi::OsString) {
+    // The stock-Git matrix test is ignored and documented as single-threaded
+    // because PATH is process-global.
+    unsafe {
+        env::set_var("PATH", path);
+    }
+}
+
+#[cfg(unix)]
+fn git_path_shim(git_binary: &Path) -> Result<tempfile::TempDir> {
+    let dir = tempfile::TempDir::new()?;
+    std::os::unix::fs::symlink(git_binary, dir.path().join("git"))
+        .with_context(|| format!("creating git shim for {}", git_binary.display()))?;
+    Ok(dir)
+}
+
+#[cfg(not(unix))]
+fn git_path_shim(_git_binary: &Path) -> Result<tempfile::TempDir> {
+    anyhow::bail!("stock Git matrix path shims are only implemented on Unix test hosts")
 }
 
 #[tokio::test]

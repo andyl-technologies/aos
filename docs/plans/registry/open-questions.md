@@ -71,7 +71,7 @@ recommendation, and the failure mode.
 |---|---|
 | **Brief §16.1** | "sha256 dumb-HTTP clone tested against target git client versions (no capability negotiation)." |
 | **Owner WS** | [WS-01](./workstream-01-object-store.md) (object store), informs [WS-05](./workstream-05-consumer.md) (consumer fetch) |
-| **Status** | PARTIAL — the AOS consumer floor is pinned and enforced as Git 2.42.0+ with a runtime sha256 capability probe; the stock-git version matrix remains an empirical compatibility task. |
+| **Status** | PARTIAL — the AOS consumer floor is pinned and enforced as Git 2.42.0+ with a runtime sha256 capability probe; a stock-git matrix harness exists, but the pinned-version/container run remains an empirical compatibility task. |
 
 **Why it is open.** The dumb-HTTP transport has **no capability negotiation** —
 the client never learns the server's object format; it must already be a sha256
@@ -89,12 +89,16 @@ minimum supported client floor for sha256 dumb-HTTP registries. Before fetching,
 "requires a sha256-capable git" error rather than a low-level object-format
 panic. The floor is recorded in
 [http-layout.md](../../registry/http-layout.md) and
-[signing-and-trust.md](../../registry/signing-and-trust.md).
+[signing-and-trust.md](../../registry/signing-and-trust.md). The Rust e2e suite
+also has `stock_git_configured_version_matrix_syncs_sha256_dumb_http_registry`,
+which reruns the sha256 dumb-HTTP consumer sync under each `git` binary listed in
+`AOS_PACKAGE_TEST_GIT_MATRIX`.
 
-**What remains.** WS-01 still needs the empirical stock-git compatibility
-matrix: prove which `git clone <url>` / `git verify-tag <semver>` versions work
-against the sha256 dumb-HTTP origin across the target production clients. That
-matrix can either confirm the 2.42.0 floor or force an explicit floor change.
+**What remains.** WS-01 still needs the empirical stock-git compatibility matrix
+to be run and recorded against pinned/containerized target production clients:
+prove which `git clone <url>` / `git verify-tag <semver>` versions work against
+the sha256 dumb-HTTP origin. That matrix can either confirm the 2.42.0 floor or
+force an explicit floor change.
 
 **Failure mode.** Loud but late: a stock `git clone` against the origin fails
 for users on old gits with a confusing "unknown object format" / "bad object"
