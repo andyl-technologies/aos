@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use aos_net::{TransferEngine, TransferRequest};
 
-use super::{AuthOptions, CacheBackend};
+use super::{AuthOptions, CacheBackend, add_static_metadata_headers};
 
 /// HTTP(S) cache backend.
 ///
@@ -142,6 +142,14 @@ impl HttpBackend {
 
     fn nar_url(&self, url: &str) -> String {
         format!("{}/{}", self.base_url, url)
+    }
+
+    fn static_file_url(&self, relative_path: &str) -> String {
+        format!(
+            "{}/{}",
+            self.base_url,
+            relative_path.trim_start_matches('/')
+        )
     }
 }
 
@@ -280,6 +288,34 @@ impl CacheBackend for HttpBackend {
         if result.status >= 400 {
             anyhow::bail!(
                 "uploading nix-cache-info failed with HTTP {}",
+                result.status
+            );
+        }
+        Ok(())
+    }
+
+    async fn put_static_file(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        content_type: Option<&str>,
+        cache_control: Option<&str>,
+    ) -> Result<()> {
+        if self.is_aos {
+            anyhow::bail!("generic static-file upload is not supported by the AOS server API");
+        }
+        let url = self.static_file_url(relative_path);
+        let mut req = TransferRequest::put_file(&url, source.to_path_buf());
+        add_static_metadata_headers(&mut req, content_type, cache_control);
+        let req = self.add_headers(req);
+        let result = self
+            .engine
+            .execute(req)
+            .await
+            .with_context(|| format!("uploading static file {url}"))?;
+        if result.status >= 400 {
+            anyhow::bail!(
+                "uploading static file {url} failed with HTTP {}",
                 result.status
             );
         }

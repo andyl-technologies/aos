@@ -8,6 +8,7 @@ pub mod objectstore;
 pub mod pack;
 pub mod parse;
 pub mod state;
+pub mod static_upload;
 pub mod verify;
 
 use std::collections::HashMap;
