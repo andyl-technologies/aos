@@ -417,6 +417,10 @@ git-native registry path:
   resolution.
 - Signing uses SSH-format Ed25519 tag signatures, TOFU/trusted-key storage, and
   committed `keys.toml` rotation/revocation helpers.
+- `apr release` now orchestrates the producer-safe path: signed semver tag,
+  full packs and compressed thin deltas, static index refresh, optional static
+  cache generation, channel partition updates, and immutable-first static-origin
+  upload.
 - `apr cache generate` produces and optionally uploads the static Nix-cache
   surface (`nix-cache-info`, `<storehash>.narinfo`, and `nar/*.nar.zst`) and can
   commit the root `registry.toml` `[[caches]]` pointer.

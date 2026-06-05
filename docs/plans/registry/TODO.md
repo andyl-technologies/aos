@@ -719,13 +719,17 @@ read before editing code or docs.
 
 ### Documentation Re-Grounding
 
-- [ ] Reconcile `docs/registry/README.md` and `docs/registry/current-state.md`
-      with the production-readiness status after the backlog above lands. In
-      particular, keep the as-built/current-state language separate from target
-      language and remove "remaining producer gaps" claims once the unified
-      release/upload pipeline is implemented. Context:
-      `docs/registry/README.md`, `docs/registry/current-state.md`,
-      `docs/registry/publishing.md`, and `docs/registry/nix-cache-compatibility.md`.
+- [x] Reconcile `docs/registry/README.md` and `docs/registry/current-state.md`
+      with the production-readiness status after the local implementation
+      backlog landed. The README now lists release orchestration and static
+      origin/cache upload in the as-built summary, `current-state.md` describes
+      `apr release`, and stale "remaining producer gaps" claims were removed
+      from the reference docs. External production-readiness validation remains
+      tracked by the stock-Nix, backend-matrix, CDN, Git-version, staleness, and
+      benchmarking TODOs. Context: `docs/registry/README.md`,
+      `docs/registry/current-state.md`, `docs/registry/publishing.md`,
+      `docs/registry/packs-and-deltas.md`, and
+      `docs/registry/nix-cache-compatibility.md`.
 - [ ] Resolve remaining registry-reference doc inconsistencies as implementation
       lands, especially stale statements about Nix narinfo `Sig:` wiring,
       static-cache producer status, max-staleness behavior, and backend support
