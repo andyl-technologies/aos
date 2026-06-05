@@ -270,9 +270,14 @@ read before editing code or docs.
       `crates/aos-package/src/registry/git.rs`,
       `crates/aos-package/src/registry/objectstore.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Revisit bucket selection so rollout assignment uses a registry-local salt,
+- [x] Revisit bucket selection so rollout assignment uses a registry-local salt,
       survives cloned images and missing `/etc/machine-id`, and does not flap
       after the first sync. Add migration tests for existing persisted buckets.
+      First assignment now hashes `registry_name || "\0" || generated_salt`,
+      persists only the resulting bucket index, and leaves existing persisted
+      buckets untouched. Probe-forward still uses `(bucket+i) mod 256` without
+      re-pinning. Tests cover registry+salt selection, salt shape, persisted
+      bucket migration, and probe order.
       Context: `docs/registry/versioning-and-channels.md`,
       `docs/plans/registry/open-questions.md`,
       `crates/aos-package/src/registry/git.rs`,

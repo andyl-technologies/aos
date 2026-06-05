@@ -186,8 +186,8 @@ tree is therefore `registry.toml` + `keys.toml` + `packages/<x>/<name>.toml` +
 Outside the ref namespace, each channel exposes exactly **256** files
 `/channels/<name>/00..ff`, each an independently-signed tag object whose **tag name ==
 the channel name**, pointing at a semver tag. These are the **rollout partitions**:
-a consumer deterministically self-selects one bucket (e.g.
-the low byte of `sha256(machine_id)` (i.e. mod 256), persisted once so it never flaps), and the publisher
+a consumer self-selects one bucket on first channel sync from a registry-local
+random salt, persists that bucket index once so it never flaps, and the publisher
 advances buckets independently to control fleet exposure. They live outside
 `refs/` precisely so a stock git client never sees them. Detailed in
 [`versioning-and-channels.md`](./versioning-and-channels.md).
@@ -247,7 +247,7 @@ efficiency. End to end (TARGET):
 
 ```
   apm update / upgrade:
-    1. bucket    b = the low byte of sha256(machine_id) (i.e. mod 256)  (persisted once)
+    1. bucket    b = persisted bucket, or first-sync registry-local salt hash
     2. channel   GET /channels/<channel>/<b>               → signed partition tag
                  verify sig + name-binding (name == <channel>)
     3. semver    follow partition tag → refs/tags/<semver> (signed)

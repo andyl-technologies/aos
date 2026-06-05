@@ -407,9 +407,10 @@ async fn resolve_channel_head(
             )
         })?;
     let release_tags = semver_tag_object_map(repo_dir).await?;
-    let assigned_bucket = state
-        .bucket
-        .unwrap_or_else(|| channel::select_bucket(&machine_id_seed(&config.name)));
+    let assigned_bucket = match state.bucket {
+        Some(bucket) => bucket,
+        None => channel::select_registry_bucket(&config.name, &channel::generate_bucket_salt()),
+    };
 
     let mut last_error = None;
     for bucket in channel::probe_order(assigned_bucket) {
@@ -564,12 +565,6 @@ async fn resolve_tag_object(repo_dir: &Path, tag: &str) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn machine_id_seed(registry: &str) -> String {
-    std::fs::read_to_string("/etc/machine-id")
-        .map(|id| format!("{registry}:{}", id.trim()))
-        .unwrap_or_else(|_| registry.to_string())
 }
 
 async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> Result<()> {

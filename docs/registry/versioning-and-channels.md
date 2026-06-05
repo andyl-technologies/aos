@@ -227,23 +227,22 @@ A consumer self-selects **one** of the 256 partitions, deterministically and
 runs:
 
 ```
-bucket = the low byte of sha256(machine_id) (i.e. mod 256)   # 00..ff, computed once, then persisted
+bucket = the low byte of sha256(registry_name || "\0" || registry_local_salt)
 ```
 
-- `machine_id` is a stable per-host identifier; its exact source (e.g.
-  `/etc/machine-id`) and the encoding fed into the hash are an
-  [open question](../plans/registry/open-questions.md) (brief §16 item 3).
-- The bucket is **written once** and reused thereafter, so the host's partition
-  assignment is stable for the life of the machine. Re-deriving it every run (rather
-  than persisting) would also be deterministic, but persistence makes the contract
-  explicit and survives any future change to the hash construction.
+- `registry_local_salt` is fresh random material generated on first channel sync.
+  It deliberately does **not** come from `/etc/machine-id`, so cloned images do
+  not inherit the same rollout bucket.
+- The resulting bucket index (`00..ff`) is **written once** and reused
+  thereafter, so the host's partition assignment is stable for that registry and
+  survives future changes to the seed construction.
 
 ### 5.2 Resolution path
 
 On `apm update`, an AOS client resolves its target release like this:
 
 ```
-1. bucket  ← persisted low byte of sha256(machine_id) (mod 256)  (§5.1)
+1. bucket  ← persisted bucket index, or first-sync registry-local salt hash (§5.1)
 2. fetch   /channels/<name>/<bucket>                          (signed partition tag)
 3. verify  signature + tag-name field == <name>             (name-binding, §4)
 4. follow  partition tag → semver tag; verify sig + name == <semver>
@@ -398,9 +397,9 @@ name `1.0.0`. Two hosts, both on `channel = "stable"`, both currently at floor
 `1.0.0`:
 
 ```
-Host A:  bucket = low byte of sha256(machine_id_A) (mod 256) = 02
+Host A:  persisted bucket = 02
          /channels/stable/02 → 1.1.0  (advanced)  → adopt 1.1.0; floor ← 1.1.0
-Host B:  bucket = low byte of sha256(machine_id_B) (mod 256) = 0xb7
+Host B:  persisted bucket = 0xb7
          /channels/stable/b7 → 1.0.0  (held)       → no-op; stays at 1.0.0
 ```
 
