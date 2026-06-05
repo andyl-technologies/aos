@@ -105,7 +105,6 @@ nix run . -- <subcommand>
 | `aos prefetch`| Prefetch a URL and print its hash                       |
 | `aos describe`| Describe a package or module                            |
 | `aos system`  | System variant operations                               |
-| `aos shell`   | Enter a dev shell with a package's deps                 |
 | `aos repl`    | Open a Nix REPL with the AOS package set loaded         |
 | `aos why-depends` | Explain why one derivation depends on another      |
 | `aos completions` | Generate shell completions                         |
