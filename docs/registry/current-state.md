@@ -119,6 +119,11 @@ an AOS thin delta from a retained base, falls back to the target `X.Y.0`
 full-pack anchor plus a forward delta, and finally delegates to `git fetch` for
 the dumb-HTTP loose-object correctness floor.
 
+Channel e2e coverage includes torn-publish safety: an early mutable partition
+that names an unpublished release is skipped in favor of the old usable
+partition/floor, and an interleaved stale-publisher overwrite is rejected as a
+rollback while preserving the newer floor.
+
 ---
 
 ## 5. Registry config and state
@@ -185,4 +190,9 @@ Shared formatting and signing logic now lives in `aos-core::nar::cache`:
 
 The generated narinfo layout is covered by round-trip tests and a stock-Nix
 fingerprint signature verification test; the producer-side path is covered by
-store-path collection and committed-cache-pointer tests.
+store-path collection and committed-cache-pointer tests. Real-Nix cache e2e
+coverage exists for `apr cache generate` and the AOS narinfo downloader, but it
+is intentionally opt-in behind `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` because it
+creates a tiny fixed-output path in the host Nix store. The stricter stock
+`nix path-info --store <cache>` substituter probe additionally requires
+`AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1`.

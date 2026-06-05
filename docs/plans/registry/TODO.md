@@ -236,20 +236,23 @@ read before editing code or docs.
       `crates/aos-package/src/registry/fetch.rs`,
       `crates/aos-package/src/registry/objectstore.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [x] Add a static Nix-cache e2e test that uses real Nix-store fixtures when
-      available: generate static cache files, serve `nix-cache-info`,
+- [x] Add a static Nix-cache e2e test that uses real Nix-store fixtures:
+      generate static cache files, serve `nix-cache-info`,
       `<storehash>.narinfo`, and `nar/*.nar.zst` over static HTTP, download
       through the `apm` narinfo path, and compare the downloaded/decompressed
       NAR bytes with `nix-store --dump`. This coverage now lives in
       `crates/aos-package/tests/registry_cache_e2e.rs`:
-      `static_nix_cache_e2e_generates_serves_and_downloads_real_store_path`
-      creates a tiny fixed-output Nix store fixture when the host can support
-      it, calls `nixcache::generate_static_cache`, validates signed narinfo
-      output, serves the generated static tree through `StaticHttpServer`, and
-      verifies the AOS narinfo download path reconstructs the exact NAR bytes.
-      Stock `nix path-info --store <cache>` verification is present but opt-in
-      behind `AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1` and bounded with an exact-child
-      timeout because the local host probe hung during development. Context:
+      `static_nix_cache_e2e_generates_serves_and_downloads_real_store_path`.
+      Because the fixture uses `nix-store --add-fixed` and mutates the host Nix
+      store, normal Rust test runs skip it unless
+      `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` is set. When enabled, it calls
+      `nixcache::generate_static_cache`, validates signed narinfo output, serves
+      the generated static tree through `StaticHttpServer`, and verifies the AOS
+      narinfo download path reconstructs the exact NAR bytes. Stock
+      `nix path-info --store <cache>` verification is present as an additional
+      opt-in behind `AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1` and bounded with an
+      exact-child timeout because the local host probe hung during development.
+      Context:
       `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/current-state.md`, `docs/registry/publishing.md`,
       `docs/plans/registry/open-questions.md`,
@@ -262,8 +265,9 @@ read before editing code or docs.
 - [x] Add CLI-level static-cache compatibility coverage that actually drives
       `apr cache generate` end to end. `crates/aos/tests/apr_cache_cli.rs`
       creates a temporary user APM config/registry, runs the real Cargo-built
-      `apr` binary against a real Nix-store fixture when available, verifies
-      generated `nix-cache-info` priority, and verifies the `file://`
+      `apr` binary against a real Nix-store fixture when
+      `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` is set, verifies generated
+      `nix-cache-info` priority, and verifies the `file://`
       `--upload-url` destination receives matching cache-info, narinfo, and NAR
       files. Context: `docs/registry/nix-cache-compatibility.md`,
       `docs/registry/publishing.md`,
@@ -278,9 +282,11 @@ read before editing code or docs.
 - [ ] Run and stabilize stock Nix substituter verification under `require-sigs`
       in a controlled/containerized Nix environment. The opt-in code path exists
       in `crates/aos-package/tests/registry_cache_e2e.rs` behind
-      `AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1` with an exact-child timeout, but it
-      is not default CI evidence because the local host probe hung during
-      development. Context: `docs/registry/nix-cache-compatibility.md`,
+      `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` plus
+      `AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1` with an exact-child timeout, but it is
+      not default CI evidence because the local host probe hung during
+      development and should run only in controlled Nix hosts. Context:
+      `docs/registry/nix-cache-compatibility.md`,
       `docs/plans/registry/workstream-06-nix-cache.md`,
       `crates/aos-package/tests/registry_cache_e2e.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and
@@ -489,16 +495,25 @@ read before editing code or docs.
       `crates/aos-package/src/lib.rs`,
       `crates/aos-package/src/registry_ops.rs`, and
       `crates/aos-cache/src/backend/mod.rs`.
-- [ ] Add tests for torn-publish and concurrent-publisher failure modes:
-      intentionally expose low-TTL refs or channel partitions before immutable
-      objects, interleave two partition advances, and prove consumers either
-      keep the old floor or fail closed with actionable errors. Context:
+- [x] Add tests for torn-publish and concurrent-publisher failure modes:
+      `crates/aos-package/tests/registry_e2e.rs` now includes
+      `channel_torn_publish_keeps_old_floor_when_partition_leads_objects`,
+      which exposes an updated channel partition before its immutable release
+      tag/object graph is published and proves the consumer probes forward to
+      the old usable release/floor, and
+      `channel_interleaved_partition_advances_reject_stale_publisher_rollback`,
+      which interleaves v2/v3 partition updates and proves a stale publisher's
+      later v2 overwrite fails closed with a rollback/freshness diagnostic while
+      preserving the v3 floor. Context:
       `docs/registry/publishing.md`,
       `docs/registry/versioning-and-channels.md`,
+      `docs/registry/current-state.md`,
       `docs/plans/registry/open-questions.md`,
+      `crates/aos-package/src/registry/git.rs`,
       `crates/aos-package/src/registry_ops.rs`,
       `crates/aos-package/src/registry/channel.rs`,
-      `crates/aos-package/src/registry/fetch.rs`, and
+      `crates/aos-package/src/registry/fetch.rs`,
+      `crates/aos-package/tests/common/mod.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
 
 ### Consumer Production Hardening

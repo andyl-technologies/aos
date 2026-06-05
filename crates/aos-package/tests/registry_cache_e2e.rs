@@ -19,8 +19,17 @@ use base64::Engine as _;
 
 use common::StaticHttpServer;
 
+const REAL_NIX_CACHE_TEST_ENV: &str = "AOS_PACKAGE_TEST_REAL_NIX_CACHE";
+
 #[tokio::test]
 async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -> Result<()> {
+    if std::env::var_os(REAL_NIX_CACHE_TEST_ENV).is_none() {
+        eprintln!(
+            "skipping static Nix cache e2e: set {REAL_NIX_CACHE_TEST_ENV}=1 to run real nix-store fixture"
+        );
+        return Ok(());
+    }
+
     let Some(store_path) = tiny_store_path_fixture()? else {
         eprintln!(
             "skipping static Nix cache e2e: nix-store is unavailable or refused fixture setup"
@@ -223,7 +232,7 @@ fn assert_stock_nix_can_query_signed_cache(
 ) -> Result<()> {
     if std::env::var_os("AOS_PACKAGE_TEST_STOCK_NIX_CACHE").is_none() {
         eprintln!(
-            "skipping stock nix signed-cache check: set AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1 to run"
+            "skipping stock nix signed-cache check: set AOS_PACKAGE_TEST_REAL_NIX_CACHE=1 and AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1 to run"
         );
         return Ok(());
     }

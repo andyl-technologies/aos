@@ -149,6 +149,13 @@ related building block — object-store I/O that reads/writes the same static
 surface. A stock `nix` consumes the resulting static files unchanged; so can
 `apm` (§4).
 
+The real-Nix compatibility tests are intentionally opt-in. Set
+`AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` to run the Rust and CLI cache e2e tests that
+create a tiny fixed-output path with `nix-store --add-fixed`; set
+`AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1` as well to run the stricter stock
+`nix path-info --store <cache>` signed-substituter probe. Ordinary Rust test
+runs skip these host-store-mutating checks.
+
 > **Why the projection lines up so cleanly:** Nix's two-level naming — a
 > store-hash narinfo that *indirects* to a content-addressed NAR — is exactly how
 > AOS already names blobs. AOS records a `store_path` (carrying the store-hash)
