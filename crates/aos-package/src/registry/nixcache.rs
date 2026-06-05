@@ -562,7 +562,8 @@ name = "test"
     #[tokio::test]
     async fn upload_static_cache_to_all_reports_partial_failures() {
         let source = TempDir::new().unwrap();
-        let good = TempDir::new().unwrap();
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
         let printer = Printer::new(0, true, false);
 
         std::fs::create_dir_all(source.path().join("nar")).unwrap();
@@ -578,8 +579,9 @@ name = "test"
         .unwrap();
 
         let upload_urls = vec![
+            format!("file://{}", first.path().display()),
             "not-a-url".to_string(),
-            format!("file://{}", good.path().display()),
+            format!("file://{}", second.path().display()),
         ];
         let err = upload_static_cache_to_all(
             source.path(),
@@ -591,8 +593,11 @@ name = "test"
         .unwrap_err();
 
         let message = format!("{err:#}");
-        assert!(message.contains("static cache upload failed for 1/2 destination"));
+        assert!(message.contains("static cache upload failed for 1/3 destination"));
         assert!(message.contains("not-a-url"));
-        assert!(good.path().join("abc123.narinfo").exists());
+        for dest in [first.path(), second.path()] {
+            assert!(dest.join("nix-cache-info").exists());
+            assert!(dest.join("abc123.narinfo").exists());
+        }
     }
 }
