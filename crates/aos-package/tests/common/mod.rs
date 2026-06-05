@@ -5,6 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use aos_core::output::Printer;
+use aos_package::registry::channel;
 use aos_package::registry::objectstore;
 use aos_package::types::{RegistryConfig, RegistryState, SigningConfig};
 use base64::Engine as _;
@@ -167,6 +168,26 @@ key = "{}"
         git_stdout(&self.source, &["rev-parse", &format!("{name}^{{tag}}")])
     }
 
+    pub fn signed_channel_tag_bytes(&self, channel: &str, release_tag: &str) -> Result<Vec<u8>> {
+        git(
+            &self.source,
+            &[
+                "tag",
+                "-f",
+                "-s",
+                channel,
+                release_tag,
+                "-m",
+                &format!("{channel} -> {release_tag}"),
+            ],
+        )?;
+        git_raw(&self.source, &["cat-file", "tag", channel])
+    }
+
+    pub fn set_branch(&self, branch: &str, target: &str) -> Result<()> {
+        git(&self.source, &["branch", "-f", branch, target])
+    }
+
     pub fn publish_bare_origin(&self) -> Result<()> {
         if !self.origin.exists() {
             git(
@@ -188,6 +209,30 @@ key = "{}"
             ],
         )?;
         objectstore::refresh_server_info(&self.origin)?;
+        Ok(())
+    }
+
+    pub fn write_all_channel_partitions(&self, channel_name: &str, tag_bytes: &[u8]) -> Result<()> {
+        for bucket in 0u8..=255 {
+            self.write_channel_partition(channel_name, bucket, tag_bytes)?;
+        }
+        Ok(())
+    }
+
+    pub fn write_channel_partition(
+        &self,
+        channel_name: &str,
+        bucket: u8,
+        tag_bytes: &[u8],
+    ) -> Result<()> {
+        let path = self
+            .origin
+            .join(channel::partition_path(channel_name, bucket));
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("partition path has no parent"))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        fs::write(&path, tag_bytes).with_context(|| format!("writing {}", path.display()))?;
         Ok(())
     }
 
@@ -472,6 +517,23 @@ fn git_stdout(dir: &Path, args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed\nstdout:\n{}\nstderr:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(output.stdout)
 }
 
 fn package_toml(name: &str, version: &str, store_path: &str) -> String {

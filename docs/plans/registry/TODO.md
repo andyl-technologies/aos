@@ -142,11 +142,17 @@ read before editing code or docs.
 
 ### Cross-Cutting Rust Integration / E2E Tests
 
-- [ ] Add a full producer-to-consumer HTTP e2e test for the git-native registry:
+- [x] Add a full producer-to-consumer HTTP e2e test for the git-native registry:
       create a sha256 registry, publish multiple releases, sign tags, advance a
       channel partition, serve the static tree over HTTP, and run the consumer
       sync path through bucket selection, tag-chain verification, object fetch,
-      package extraction, and persisted state updates. Context:
+      package extraction, and persisted state updates. The coverage now lives in
+      `crates/aos-package/tests/registry_e2e.rs`:
+      `signed_channel_http_e2e_advances_persisted_bucket` publishes 1.0.0 and
+      1.1.0, serves a dumb-HTTP origin plus mutable `channels/stable/<bucket>`
+      files, verifies signed channel-tag -> signed semver-tag -> commit
+      resolution, persists bucket/floor/retained state, and confirms the loaded
+      package metadata advances to 1.1.0. Context:
       `docs/registry/architecture.md`, `docs/registry/current-state.md`,
       `docs/registry/http-layout.md`,
       `docs/registry/versioning-and-channels.md`,
