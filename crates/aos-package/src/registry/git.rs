@@ -1319,6 +1319,7 @@ mod tests {
             max_staleness_seconds,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: Some(SigningConfig {
                 required: true,
                 public_key: "core:Ed25519:base64key".to_string(),

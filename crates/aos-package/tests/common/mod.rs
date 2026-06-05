@@ -263,6 +263,7 @@ key = "{}"
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: None,
         }
     }
@@ -283,6 +284,7 @@ key = "{}"
             max_staleness_seconds: None,
             caches: Vec::new(),
             upload_auth: None,
+            signing_keys: Default::default(),
             signing: Some(SigningConfig {
                 required: true,
                 public_key: self.trusted_key().to_string(),
@@ -590,6 +592,12 @@ enabled = {}
     }
     if let Some(channel) = &config.channel {
         out.push_str(&format!("channel = \"{channel}\"\n"));
+    }
+    if !config.signing_keys.is_empty() {
+        out.push_str("\n[registry.signing_keys]\n");
+        for (id, path) in &config.signing_keys {
+            out.push_str(&format!("\"{id}\" = \"{path}\"\n"));
+        }
     }
     if let Some(signing) = &config.signing {
         out.push_str(&format!(
