@@ -51,6 +51,14 @@ The code now initializes registry repositories with
 `objects/info/alternates` entries. `apm update` uses native git sync for both
 plain `http(s)://` origins and native git origins.
 
+The migration policy is a clean break from the old bundle/`creation_token`
+registry surface. Plain `http(s)://` origins are preflighted for the git-native
+dumb-HTTP files `HEAD` and `info/refs`. If those files are absent but
+`bundle-list.toml` is present, the consumer rejects the origin with a clear
+legacy bundle-mode error; if both surfaces are present during a temporary mirror
+straddle, the git-native surface wins. Git-native producers do not emit
+`bundle-list.toml`, so old bundle-mode clients are EOL at registry cutover.
+
 The supported client floor for sha256 dumb-HTTP registries is **Git 2.42.0**.
 `apm update` preflights `git --version` and runs a local
 `git init --bare --object-format=sha256` capability probe before syncing, so an

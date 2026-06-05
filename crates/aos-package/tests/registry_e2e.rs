@@ -228,6 +228,7 @@ async fn fixture_syncs_git_native_registry_over_static_http() -> Result<()> {
     )?);
 
     fixture.publish_bare_origin()?;
+    assert!(!fixture.origin_path().join("bundle-list.toml").exists());
     let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
     let config = fixture.registry_config(server.base_url());
     let mut state = RegistryState::default();
@@ -266,6 +267,79 @@ async fn fixture_syncs_git_native_registry_over_static_http() -> Result<()> {
     let saved = fixture.assert_state_roundtrip(&state)?;
     assert_eq!(saved.last_commit, state.last_commit);
     assert_eq!(saved.last_update, state.last_update);
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_bundle_only_http_origin_fails_with_clean_break_error() -> Result<()> {
+    let fixture = RegistryFixture::new("legacy-only")?;
+    fs::create_dir_all(fixture.origin_path())?;
+    fs::write(
+        fixture.origin_path().join("bundle-list.toml"),
+        "schema = 1\n[[bundles]]\nname = \"legacy.bundle\"\n",
+    )?;
+
+    let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
+    let config = fixture.registry_config(server.base_url());
+    let mut state = RegistryState::default();
+    let err = git::sync_git(
+        &config,
+        &TrackingMode::Branch("main".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await
+    .expect_err("legacy bundle-only origin is rejected by model gate");
+
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("legacy bundle-mode registry"),
+        "got: {message}",
+    );
+    assert!(
+        message.contains("no longer supports the bundle/creation_token registry model"),
+        "got: {message}",
+    );
+    assert!(state.last_commit.is_none());
+    assert!(state.floor.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn dual_surface_http_origin_prefers_git_native_over_legacy_manifest() -> Result<()> {
+    let fixture = RegistryFixture::new("dual-surface")?;
+    fixture.write_registry_toml_with_caches(&[])?;
+    fixture.write_gitattributes()?;
+    let store_path = fixture.write_package("hello", "2.0.0")?;
+    fixture.write_closure(&store_path)?;
+    let source_commit = fixture.commit_all("release 2.0.0")?;
+    fixture.publish_bare_origin()?;
+    fs::write(
+        fixture.origin_path().join("bundle-list.toml"),
+        "schema = 1\n[[bundles]]\nname = \"legacy.bundle\"\n",
+    )?;
+
+    let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
+    let config = fixture.registry_config(server.base_url());
+    let mut state = RegistryState::default();
+    let result = git::sync_git(
+        &config,
+        &TrackingMode::Branch("main".into()),
+        fixture.cache_dir(),
+        fixture.registries_dir(),
+        &mut state,
+        &fixture.printer(),
+    )
+    .await?;
+
+    assert_eq!(result.new_commit, source_commit);
+    assert_eq!(state.last_commit.as_deref(), Some(source_commit.as_str()));
+    let registry = Registry::load(fixture.cache_dir(), &config, "x86_64-linux")?;
+    let package = registry.get("hello").expect("synced package exists");
+    assert_eq!(package.version, "2.0.0");
+    assert_eq!(package.store_path, store_path);
     Ok(())
 }
 

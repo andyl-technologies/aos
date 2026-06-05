@@ -635,11 +635,18 @@ read before editing code or docs.
       `crates/aos-package/src/registry/keys.rs`,
       `crates/aos-package/src/security.rs`,
       and `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Add migration/capability tests for clean-break behavior: old bundle-mode
-      clients against a git-native origin, new git-native clients against an old
-      origin, first git-native sync floor seeding, and clear user-facing errors
-      during any temporary dual-detect window. Also ratify the EOL/model-detect
-      policy in docs before marking this complete. Context:
+- [x] Add migration/capability tests for clean-break behavior. The policy is now
+      ratified as a clean break: plain `http(s)://` origins must expose the
+      git-native dumb-HTTP `HEAD` + `info/refs` surface; legacy-only
+      `bundle-list.toml` origins fail with a clear clean-break error; if both
+      surfaces exist, the git-native surface wins; git-native producers do not
+      emit `bundle-list.toml`, so bundle-mode clients are EOL at registry
+      cutover. Coverage in `crates/aos-package/tests/registry_e2e.rs` includes
+      `legacy_bundle_only_http_origin_fails_with_clean_break_error`,
+      `dual_surface_http_origin_prefers_git_native_over_legacy_manifest`, the
+      existing git-native fixture assertion that no `bundle-list.toml` is
+      emitted, and `signed_channel_http_e2e_advances_persisted_bucket` for first
+      git-native channel sync floor seeding. Context:
       `docs/registry/current-state.md`,
       `docs/registry/http-layout.md`,
       `docs/plans/registry/open-questions.md`,
