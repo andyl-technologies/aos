@@ -404,6 +404,11 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: TrustCommand,
     },
+    /// Manage the committed registry keys.toml roster
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
+    },
 
     // ----- Package Entries -----
     /// Publish a package to the registry from a store path
@@ -674,6 +679,47 @@ pub enum TrustCommand {
     Remove {
         /// Registry name
         registry: String,
+    },
+}
+
+/// Committed registry keys.toml roster operations.
+#[derive(Subcommand)]
+pub enum KeysCommand {
+    /// List active and revoked keys in committed keys.toml
+    List {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Add an active signing key to committed keys.toml
+    Add {
+        /// Stable key id inside keys.toml
+        id: String,
+        /// Signing key in registry:Ed25519:<base64> form
+        key: String,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Retire an active signing key by moving its id to [[revoked]]
+    Retire {
+        /// Active key id to retire
+        id: String,
+        /// Human-readable retirement reason
+        #[arg(long)]
+        reason: Option<String>,
+        /// Active survivor key id expected to vouch for this retirement
+        #[arg(long = "vouched-by")]
+        vouched_by: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
     },
 }
 
@@ -1182,6 +1228,7 @@ async fn run_registry(
             registry_remove(config, name, *keep_local, printer).await
         }
         RegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
+        RegistryCommand::Keys { command } => registry_ops::run_keys(config, command, printer),
         RegistryCommand::Create {
             name,
             remote,

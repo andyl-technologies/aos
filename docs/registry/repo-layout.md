@@ -87,8 +87,9 @@ bootstrap trust — initial trust is **TOFU-pinned client-side** in
 `types.rs` `trusted_keys_dirs()`). `apr create` writes this file during the
 initial commit; pass `--trust-key registry:Ed25519:<base64>` and
 optionally `--trust-key-id <id>` (default `initial`) to seed the active-key
-list, or omit `--trust-key` to write an empty schema-1 roster that can be
-populated by later key operations.
+list, or omit `--trust-key` to write an empty schema-1 roster. Operators maintain
+the roster after creation with `apr keys add`, `apr keys retire`, and
+`apr keys list`.
 
 ```toml
 schema = 1
@@ -113,14 +114,16 @@ There is **no** offline-root / operational two-tier and **no** TUF-style root ro
 **git lineage** (signed tag → commit → parent chain) provides the continuity, so a
 separate root tier is unnecessary.
 
-**Rotation (planned):** publish `keys.toml` listing both old and new keys (an overlap
-window) in a tag signed by a currently-trusted key; a consumer that trusts the old key
-verifies the tag, reads `keys.toml`, and pins the new key. Later, publish with only the
-new key (the old key is dropped).
+**Rotation:** use `apr keys add <new-id> <new-key>` to update `keys.toml` so it
+lists both old and new keys (an overlap window), then publish the resulting
+commit in a tag signed by a currently-trusted key. A consumer that trusts the old
+key verifies the tag, reads `keys.toml`, and pins the new key. Later, publish
+with only the new key (the old key is dropped).
 
-**Planned retirement:** list the key under `[[revoked]]`, **signed by one of the
-*other* overlapping active keys.** Because there are always ≥2 active keys, a retiring
-key never has to revoke itself.
+**Planned retirement:** use `apr keys retire <id> [--vouched-by <survivor-id>]`
+to list the key under `[[revoked]]`, then publish the resulting commit in a tag
+**signed by one of the *other* overlapping active keys.** The command refuses to
+retire the last active key, so a retiring key never has to revoke itself.
 
 **Compromise:** handled **out-of-band** — the consumer re-pins via `trusted-keys.d`
 (`apr trust`). An in-repo key cannot credibly revoke itself, and compromise is rare
@@ -221,7 +224,7 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 | File | CURRENT (today's code) | TARGET |
 |---|---|---|
 | `registry.toml` | `[registry]` + `[[caches]]` | unchanged shape |
-| `keys.toml` | emitted by `apr create` as schema-1 roster; parser plus rotation-pin/revocation helpers exist | committed trust roster maintained through active-key rotation and revocation workflows |
+| `keys.toml` | emitted by `apr create` as schema-1 roster; maintained by `apr keys list/add/retire`; parser plus rotation-pin/revocation helpers exist | committed trust roster maintained through active-key rotation and revocation workflows |
 | `packages/<x>/<name>.toml` | nested `PackageToml` | unchanged |
 | `closures/<hash>` | adjacency list | unchanged |
 | `.gitattributes` | `closures/** -diff` | unchanged |

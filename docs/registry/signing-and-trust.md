@@ -184,6 +184,16 @@ old key from the roster and sign with the new key alone. The overlap window is w
 makes the handoff seamless: no consumer is ever asked to trust a key it cannot reach
 through a key it already trusts.
 
+Producer maintenance for the committed roster is available through `apr keys`:
+`apr keys add <id> <registry:Ed25519:<base64>>` appends an active overlap key,
+`apr keys retire <id> [--vouched-by <survivor-id>] [--reason <text>]` moves an
+active id to `[[revoked]]`, and `apr keys list` reports active/revoked ids. The
+commands validate key ids and registry binding, reject duplicate/revoked ids,
+keep an active survivor during retirement, and commit + refresh the git-static
+indexes unless `--no-commit` is passed.
+Release and channel signing still selects key material with `--key`; resolving a
+roster id to a local private key is tracked as the remaining producer UX gap.
+
 **The trust model: ≥2 overlapping active keys.** There is no offline-root /
 operational two-tier and no TUF-style root role. The **git lineage** (signed tag →
 commit → parent chain) provides continuity, so a separate root tier is unnecessary.
@@ -468,7 +478,7 @@ ways:
 | Key format `name:Ed25519:<base64>` | `parse_signing_key` (`security.rs:306`) | unchanged |
 | Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) plus `apr trust pin/list/remove` | unchanged (the bootstrap anchor) |
 | Signing pubkey location | removed from in-repo `registry.toml`; bootstrap trust is client-side TOFU | trust = `keys.toml` roster + TOFU |
-| Key rotation / revocation | `apr create` emits schema-1 `keys.toml`; parser plus rotation-pin/revocation helpers exist | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
+| Key rotation / revocation | `apr create` emits schema-1 `keys.toml`; `apr keys list/add/retire` maintains active and revoked roster entries with survivor checks; parser plus rotation-pin/revocation helpers exist | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
 | Signature *production* | `apr tag --key` / `apr sign <tag> --key` create signed release tag objects; `apr channel init/advance --key` writes signed channel partition tag files | implemented |
 | Tag creation | `apr tag` requires `--key` and runs `git tag -s`; `apr channel` creates raw signed partition tag files | implemented |
 | Signature *verification* | channel sync verifies the partition tag, semver tag, and commit chain | `git verify-tag` (same allowed-signers mechanism) |

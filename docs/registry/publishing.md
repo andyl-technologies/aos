@@ -87,6 +87,7 @@ The commands relevant to a release, in workflow order:
 | Command | Function | What it actually does (CURRENT) |
 |---|---|---|
 | `apr create <name> [--remote URL] [--trust-key <registry:Ed25519:base64>] [--trust-key-id <id>]` | `create` (`registry_ops.rs:421`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, write schema-1 `keys.toml`, initial commit, then refresh dumb-HTTP object indexes; optional `git remote add origin`. |
+| `apr keys list/add/retire` | `run_keys` (`registry_ops.rs`) | Maintains committed `keys.toml`: list active/revoked ids, add registry-bound active signing keys, retire active ids into `[[revoked]]` with an active survivor/vouching id, then commit and refresh dumb-HTTP object indexes unless `--no-commit` is passed. |
 | `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` and refresh `objects/info/alternates` + `update-server-info`. |
 | `apr tag <name> [--message] --key <key>` | `tag` (`registry_ops.rs:1684`) | `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; `--key` is required; semver tags also prepare a release object dir during the object-store refresh. |
 | `apr sign <tag> --key <key>` | `sign` (`registry_ops.rs:1747`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |

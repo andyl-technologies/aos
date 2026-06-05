@@ -580,16 +580,38 @@ read before editing code or docs.
       `crates/aos-package/src/lib.rs`,
       `crates/aos-package/src/registry/keys.rs`, and
       `crates/aos-package/src/security.rs`.
-- [ ] Maintain the committed `keys.toml` trust roster through producer key
-      rotation and revocation operations. The parser/writer helpers and
-      create-time emission exist, but operators still need supported rotation
-      and revocation command workflows. Context: `docs/registry/repo-layout.md`,
+- [x] Maintain the committed `keys.toml` trust roster through producer key
+      add/list/retire operations. `apr keys list`, `apr keys add <id> <key>`,
+      and `apr keys retire <id>` now operate on the committed schema-1 roster,
+      validate key ids and `registry:Ed25519:<base64>` registry binding, reject
+      duplicate or already-revoked ids, require an active survivor for planned
+      retirement, require/derive the survivor `--vouched-by` id, and commit +
+      refresh dumb-HTTP metadata unless `--no-commit` is passed.
+      `crates/aos/tests/apr_keys_cli.rs` drives the real `apr` binary against a
+      temporary sha256 git registry and verifies commits plus `keys.toml`
+      content. Context: `docs/registry/repo-layout.md`,
       `docs/registry/signing-and-trust.md`,
       `docs/registry/architecture.md`,
-      `crates/aos-package/src/registry_ops.rs`,
+      `docs/registry/publishing.md`, `docs/registry/current-state.md`,
       `crates/aos-package/src/lib.rs`,
-      `crates/aos-package/src/registry/keys.rs`, and
-      `crates/aos-package/src/security.rs`.
+      `crates/aos-package/src/registry_ops.rs`,
+      `crates/aos-package/src/registry/keys.rs`,
+      `crates/aos-package/src/security.rs`, and
+      `crates/aos/tests/apr_keys_cli.rs`.
+- [ ] Add producer signing-key-id selection for release and channel signing.
+      `apr tag --key`, `apr sign --key`, and `apr channel init/advance --key`
+      still accept the signing key material/path directly; operators need a
+      durable mapping from committed `keys.toml` ids to local private-key
+      material so release tags and channel partition tags can intentionally sign
+      with the active survivor/new key during overlap and retirement windows.
+      Context: `docs/registry/repo-layout.md`,
+      `docs/registry/signing-and-trust.md`,
+      `docs/registry/publishing.md`,
+      `crates/aos-package/src/lib.rs`,
+      `crates/aos-package/src/registry_ops.rs`,
+      `crates/aos-package/src/registry/keys.rs`,
+      `crates/aos-package/src/security.rs`,
+      and `crates/aos-package/tests/registry_e2e.rs`.
 - [ ] Add migration/capability tests for clean-break behavior: old bundle-mode
       clients against a git-native origin, new git-native clients against an old
       origin, first git-native sync floor seeding, and clear user-facing errors

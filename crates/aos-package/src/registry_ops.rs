@@ -15,13 +15,13 @@ use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
 use crate::registry::channel::{self, PartitionMap};
-use crate::registry::keys::{self, KeysToml, RosterKey};
+use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
 use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
 use crate::types::{CacheEntry, RegistryRootConfig};
-use crate::{BranchCommand, CacheCommand, ChannelCommand, PrCommand, TrustCommand};
+use crate::{BranchCommand, CacheCommand, ChannelCommand, KeysCommand, PrCommand, TrustCommand};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1693,6 +1693,220 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
             Ok(())
         }
     }
+}
+
+/// Committed keys.toml roster subcommands.
+pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) -> Result<()> {
+    match command {
+        KeysCommand::List { registry } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            let roster = load_committed_roster(&dir)?;
+            if roster.active.is_empty() && roster.revoked.is_empty() {
+                printer.info(&format!(
+                    "Registry '{registry_name}' has no keys in keys.toml."
+                ));
+                return Ok(());
+            }
+
+            printer.header(&format!("keys.toml for registry '{registry_name}'"));
+            if roster.active.is_empty() {
+                printer.plain("active: none");
+            } else {
+                printer.plain("active:");
+                for entry in &roster.active {
+                    let (_registry, algorithm, public_key) = parse_signing_key(&entry.key)
+                        .with_context(|| format!("invalid active key '{}'", entry.id))?;
+                    printer.plain(&format!(
+                        "  {}: {} {}",
+                        entry.id,
+                        algorithm,
+                        key_fingerprint(&public_key),
+                    ));
+                }
+            }
+
+            if roster.revoked.is_empty() {
+                printer.plain("revoked: none");
+            } else {
+                printer.plain("revoked:");
+                for entry in &roster.revoked {
+                    if let Some(reason) = &entry.reason {
+                        printer.plain(&format!("  {}: {}", entry.id, reason));
+                    } else {
+                        printer.plain(&format!("  {}", entry.id));
+                    }
+                }
+            }
+            Ok(())
+        }
+        KeysCommand::Add {
+            id,
+            key,
+            no_commit,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            let mut roster = load_committed_roster(&dir)?;
+            add_roster_key(&mut roster, &registry_name, id, key)?;
+            persist_committed_roster(
+                &dir,
+                &roster,
+                *no_commit,
+                &format!("registry: add signing key {id}"),
+            )?;
+            printer.success(&format!(
+                "Added active signing key '{id}' to registry '{registry_name}'."
+            ));
+            Ok(())
+        }
+        KeysCommand::Retire {
+            id,
+            reason,
+            vouched_by,
+            no_commit,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            let mut roster = load_committed_roster(&dir)?;
+            let vouching_id = retire_roster_key(&mut roster, id, reason.as_deref(), vouched_by)?;
+            persist_committed_roster(
+                &dir,
+                &roster,
+                *no_commit,
+                &format!("registry: retire signing key {id}"),
+            )?;
+            printer.success(&format!(
+                "Retired signing key '{id}' from registry '{registry_name}' (vouched by '{vouching_id}')."
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn load_committed_roster(dir: &Path) -> Result<KeysToml> {
+    if !dir.exists() {
+        bail!("registry directory does not exist: {}", dir.display());
+    }
+    Ok(keys::load_keys_toml(dir)?.unwrap_or_default())
+}
+
+fn persist_committed_roster(
+    dir: &Path,
+    roster: &KeysToml,
+    no_commit: bool,
+    message: &str,
+) -> Result<()> {
+    keys::write_keys_toml(dir, roster)?;
+    if !no_commit {
+        commit_registry(dir, message)?;
+        refresh_registry_object_store(dir)
+            .context("refreshing dumb-HTTP object store after keys.toml update")?;
+    }
+    Ok(())
+}
+
+fn add_roster_key(roster: &mut KeysToml, registry_name: &str, id: &str, key: &str) -> Result<()> {
+    validate_roster_key_id(id)?;
+    if roster.active.iter().any(|entry| entry.id == id) {
+        bail!("active signing key id '{id}' already exists in keys.toml");
+    }
+    if roster.revoked.iter().any(|entry| entry.id == id) {
+        bail!("signing key id '{id}' is already revoked in keys.toml");
+    }
+    if roster.active.iter().any(|entry| entry.key == key) {
+        bail!("signing key already exists in keys.toml under another id");
+    }
+
+    let (key_registry, _algorithm, _public_key) = parse_signing_key(key)?;
+    if key_registry != registry_name {
+        bail!(
+            "signing key belongs to registry '{}', expected '{}'",
+            key_registry,
+            registry_name,
+        );
+    }
+
+    roster.active.push(RosterKey {
+        id: id.to_string(),
+        key: key.to_string(),
+    });
+    Ok(())
+}
+
+fn retire_roster_key(
+    roster: &mut KeysToml,
+    id: &str,
+    reason: Option<&str>,
+    vouched_by: &Option<String>,
+) -> Result<String> {
+    validate_roster_key_id(id)?;
+    let Some(position) = roster.active.iter().position(|entry| entry.id == id) else {
+        if roster.revoked.iter().any(|entry| entry.id == id) {
+            bail!("signing key id '{id}' is already revoked in keys.toml");
+        }
+        bail!("active signing key id '{id}' does not exist in keys.toml");
+    };
+
+    let survivors = roster
+        .active
+        .iter()
+        .filter(|entry| entry.id != id)
+        .map(|entry| entry.id.clone())
+        .collect::<Vec<_>>();
+    if survivors.is_empty() {
+        bail!("cannot retire signing key '{id}': keys.toml must keep an active survivor key");
+    }
+
+    let vouching_id = match vouched_by.as_deref() {
+        Some(vouching_id) => {
+            validate_roster_key_id(vouching_id)?;
+            if vouching_id == id {
+                bail!("--vouched-by must name a different active key");
+            }
+            if !survivors.iter().any(|survivor| survivor == vouching_id) {
+                bail!("--vouched-by '{vouching_id}' is not an active survivor key");
+            }
+            vouching_id.to_string()
+        }
+        None if survivors.len() == 1 => survivors[0].to_string(),
+        None => bail!(
+            "--vouched-by is required when more than one active survivor key remains ({})",
+            survivors.join(", "),
+        ),
+    };
+
+    roster.active.remove(position);
+    upsert_revoked_key(roster, id, reason);
+    Ok(vouching_id)
+}
+
+fn upsert_revoked_key(roster: &mut KeysToml, id: &str, reason: Option<&str>) {
+    let reason = reason.map(str::to_string);
+    if let Some(entry) = roster.revoked.iter_mut().find(|entry| entry.id == id) {
+        entry.reason = reason;
+    } else {
+        roster.revoked.push(RevokedKey {
+            id: id.to_string(),
+            reason,
+        });
+    }
+}
+
+fn validate_roster_key_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        bail!("key id cannot be empty");
+    }
+    if id.trim() != id
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        bail!("key id '{id}' must contain only ASCII letters, digits, '.', '-', or '_'");
+    }
+    Ok(())
 }
 
 fn configured_registry_names(config: &ApmConfig) -> Vec<String> {
