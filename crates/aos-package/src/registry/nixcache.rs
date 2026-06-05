@@ -158,6 +158,31 @@ pub async fn upload_static_cache(
     Ok(())
 }
 
+pub async fn upload_static_cache_to_all(
+    output_dir: &Path,
+    upload_urls: &[String],
+    printer: &Printer,
+) -> Result<()> {
+    let mut failures = Vec::new();
+
+    for upload_url in upload_urls {
+        if let Err(err) = upload_static_cache(output_dir, upload_url, printer).await {
+            failures.push(format!("{upload_url}: {err:#}"));
+        }
+    }
+
+    if !failures.is_empty() {
+        bail!(
+            "static cache upload failed for {}/{} destination(s):\n{}",
+            failures.len(),
+            upload_urls.len(),
+            failures.join("\n")
+        );
+    }
+
+    Ok(())
+}
+
 pub fn upsert_registry_cache(registry_dir: &Path, cache_url: &str, priority: u32) -> Result<bool> {
     let path = registry_dir.join("registry.toml");
     let content =
@@ -417,5 +442,72 @@ name = "test"
         assert!(content.contains("[[caches]]"));
         assert!(content.contains("url = \"https://cache.example\""));
         assert!(content.contains("priority = 200"));
+    }
+
+    #[tokio::test]
+    async fn upload_static_cache_to_all_writes_each_filesystem_destination() {
+        let source = TempDir::new().unwrap();
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let printer = Printer::new(0, true, false);
+
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(
+            source.path().join("abc123.narinfo"),
+            "StorePath: /nix/store/abc123-pkg\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.path().join("nar").join("abc123.nar.zst"),
+            b"nar-bytes",
+        )
+        .unwrap();
+
+        let upload_urls = vec![
+            format!("file://{}", first.path().display()),
+            format!("file://{}", second.path().display()),
+        ];
+        upload_static_cache_to_all(source.path(), &upload_urls, &printer)
+            .await
+            .unwrap();
+
+        for dest in [first.path(), second.path()] {
+            assert!(dest.join("nix-cache-info").exists());
+            assert_eq!(
+                std::fs::read_to_string(dest.join("abc123.narinfo")).unwrap(),
+                "StorePath: /nix/store/abc123-pkg\n"
+            );
+            assert_eq!(
+                std::fs::read(dest.join("nar").join("abc123.nar.zst")).unwrap(),
+                b"nar-bytes"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_static_cache_to_all_reports_partial_failures() {
+        let source = TempDir::new().unwrap();
+        let good = TempDir::new().unwrap();
+        let printer = Printer::new(0, true, false);
+
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(
+            source.path().join("abc123.narinfo"),
+            "StorePath: /nix/store/abc123-pkg\n",
+        )
+        .unwrap();
+
+        let upload_urls = vec![
+            "not-a-url".to_string(),
+            format!("file://{}", good.path().display()),
+        ];
+        let err = upload_static_cache_to_all(source.path(), &upload_urls, &printer)
+            .await
+            .unwrap_err();
+
+        let message = format!("{err:#}");
+        assert!(message.contains("static cache upload failed for 1/2 destination"));
+        assert!(message.contains("not-a-url"));
+        assert!(good.path().join("abc123.narinfo").exists());
     }
 }

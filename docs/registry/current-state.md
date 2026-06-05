@@ -69,8 +69,9 @@ Implemented producer behavior:
 - `apr cache generate` emits static Nix-cache files for every registry-listed
   store path: `nix-cache-info`, `<storehash>.narinfo`, and `nar/*.nar.zst`.
   It fails closed when a listed store path is absent from the local Nix store,
-  can upload the generated files through `aos-cache` backends, and can update
-  the committed root `registry.toml` `[[caches]]` pointer.
+  can upload the generated files to one or more repeatable `--upload-url`
+  destinations through `aos-cache` backends, and can update the committed root
+  `registry.toml` `[[caches]]` pointer.
 
 The release pipeline is still composed from focused `apr` subcommands rather
 than one atomic `apr release` command.

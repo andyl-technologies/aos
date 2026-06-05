@@ -1544,7 +1544,7 @@ pub async fn run_cache(
             output,
             key,
             cache_url,
-            upload_url,
+            upload_urls,
             priority,
             no_commit,
             registry,
@@ -1561,8 +1561,8 @@ pub async fn run_cache(
                 report.output_dir.display(),
             ));
 
-            if let Some(upload_url) = upload_url {
-                nixcache::upload_static_cache(output, upload_url, printer).await?;
+            if !upload_urls.is_empty() {
+                nixcache::upload_static_cache_to_all(output, upload_urls, printer).await?;
             }
 
             if let Some(cache_url) = cache_url {
