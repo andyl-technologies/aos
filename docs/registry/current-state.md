@@ -216,9 +216,12 @@ Shared formatting and signing logic now lives in `aos-core::nar::cache`:
 
 The generated narinfo layout is covered by round-trip tests and a stock-Nix
 fingerprint signature verification test; the producer-side path is covered by
-store-path collection and committed-cache-pointer tests. Real-Nix cache e2e
-coverage exists for `apr cache generate` and the AOS narinfo downloader, but it
-is intentionally opt-in behind `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` because it
-creates a tiny fixed-output path in the host Nix store. The stricter stock
-`nix path-info --store <cache>` substituter probe additionally requires
-`AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1`.
+store-path collection and committed-cache-pointer tests. Production validation
+for the stock-Nix substituter path and mixed cache upload destinations lives in
+the VM check
+`checks.vm.apm.registry-validation-stock-nix-backend-array`, which creates a
+tiny fixed-output path inside the VM, generates signed static cache files, serves
+them to stock Nix with `require-sigs = true`, and uploads the same cache to
+`file://`, S3-compatible, and SFTP destinations. The lower-level Rust real-Nix
+e2e remains opt-in behind `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` for local
+debugging because it mutates the host Nix store.

@@ -65,16 +65,16 @@ The supported client floor for sha256 dumb-HTTP registries is **Git 2.42.0**.
 unsupported client fails with a clear "requires a sha256-capable git" error
 instead of a late loose-object or object-format failure. Stock `git clone` users
 must use the same Git floor or newer.
-Rust coverage includes a host-current stock Git e2e and an env-gated pinned
-matrix harness. To run the matrix, set `AOS_PACKAGE_TEST_GIT_MATRIX` to a
-PATH-style list of `git` binaries or bin directories and run:
+VM validation includes a pinned stock-Git matrix. Run it on a KVM builder with:
 
 ```sh
-AOS_PACKAGE_TEST_GIT_MATRIX=/path/to/git-2.42/bin/git:/path/to/git-current/bin/git \
-  cargo test --manifest-path crates/Cargo.toml -p aos-package \
-  stock_git_configured_version_matrix_syncs_sha256_dumb_http_registry -- \
-  --ignored --nocapture --test-threads=1
+nix-build -A checks.vm.apm.registry-validation-stock-git-matrix
 ```
+
+That check serves a sha256 bare registry over dumb HTTP inside the VM and clones
+it with the pinned minimum Git 2.42.x package plus the repo's current Git
+package. Rust coverage also includes a host-current stock Git e2e and an
+env-gated pinned matrix harness for narrower local debugging.
 
 The AOS-specific `/channels/<name>/00..ff` partition files are produced by
 `apr channel init/advance`, and channel consumers verify those signed tag objects
@@ -86,6 +86,10 @@ Static-origin upload code classifies immutable payloads and mutable pointer/inde
 surfaces with the content types and cache-control values described below; local
 regression coverage checks those classifications, byte-stable relative
 `objects/info/alternates`, and corrupt-pack fallback to Git's loose-object fetch.
+The VM validation check
+`checks.vm.apm.registry-validation-origin-cdn-layout` uploads the static origin
+to an S3-compatible endpoint and inspects the recorded cache-control/content-type
+metadata and upload ordering.
 
 ---
 
