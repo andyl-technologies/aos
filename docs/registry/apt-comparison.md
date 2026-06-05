@@ -395,30 +395,27 @@ These are **not** re-added to the target (design-brief §15):
 
 ## 9. CURRENT vs TARGET
 
-The **TARGET** is everything above. Today's **CURRENT** code is the bundle /
-`creation_token` implementation:
+The **TARGET** is everything above. Today's **CURRENT** code has moved onto the
+git-native registry path:
 
 - A registry is a git repo of nested package TOMLs (`PackageToml`,
   `crates/aos-package/src/registry/parse.rs:15`; written by `build_package_toml`,
   `crates/aos-package/src/registry_ops.rs:595`) plus `closures/<hash>` adjacency
   files; `PackageMeta` (`crates/aos-package/src/types.rs:44`) is the flattened
   in-memory projection.
-- Distribution is via **git bundles** + a `bundle-list.toml` the *consumer*
-  parses (`crates/aos-package/src/registry/bundle.rs`); the producer side is a
-  stub. Bundle selection is `pick_bundles`
-  (`crates/aos-package/src/update.rs:292`).
-- Versions are **calendar tags** (`vYYYY.MM[.P]`) ordered by `version_to_token`
-  (`crates/aos-package/src/registry/state.rs:131`); tracking modes are
+- HTTP and native git origins are synchronized by `registry::git::sync_git`;
+  HTTP origins are treated as dumb-HTTP git repositories.
+- Versions are semver tags for release/channel verification. Tracking modes are
   commit/branch/channel/tag/version (`TrackingMode`,
-  `crates/aos-package/src/types.rs:282`).
-- Signing already uses **SSH-format Ed25519** git signatures, verified via
-  `git verify-commit` + a temporary `allowed_signers`
-  (`crates/aos-package/src/security.rs:199`), with TOFU +
-  `trusted-keys.d/<registry>.pub`.
+  `crates/aos-package/src/types.rs`).
+- Channel rollout uses 256 signed partition tag objects and a persisted
+  semver floor/bucket state.
+- Signing uses SSH-format Ed25519 tag signatures, TOFU/trusted-key storage, and
+  committed `keys.toml` rotation/revocation helpers.
 
-The target **keeps** the Ed25519/SSH signing primitive and the package-TOML tree
-content, and replaces *everything about distribution, indexing, and rollout* with
-the git-native model. See [`docs/plans/registry/gap-analysis.md`](../plans/registry/gap-analysis.md).
+The target still needs the custom AOS pack/delta fetch walk and static
+Nix-cache producer. See
+[`docs/plans/registry/TODO.md`](../plans/registry/TODO.md).
 
 ---
 
@@ -461,7 +458,7 @@ is now CDN TTL + consumer policy + anti-rollback floor, with no signed expiry).
 
 - [`README.md`](./README.md) — registry reference index and glossary.
 - [`architecture.md`](./architecture.md) — git-repo-over-dumb-HTTP; superset of git and Nix.
-- [`current-state.md`](./current-state.md) — the as-is bundle/`creation_token` implementation.
+- [`current-state.md`](./current-state.md) — the current git-native implementation status.
 - [`http-layout.md`](./http-layout.md) — HTTP/object layout, object store, `info/alternates`, stock-git compat.
 - [`versioning-and-channels.md`](./versioning-and-channels.md) — semver, channels-as-branches, 256-partition rollout.
 - [`packs-and-deltas.md`](./packs-and-deltas.md) — pack-objects, thin/full packs, the delta scheme, zstd.

@@ -31,14 +31,14 @@ Keep this file current as work lands.
 - [x] Implement zstd compress/decompress wrappers.
 - [x] Implement `git index-pack` and `--fix-thin` wrappers.
 - [x] Add focused pack/delta unit tests.
-- [ ] Retire bundle producer/consumer path.
+- [x] Retire bundle producer/consumer path.
 
 ## WS-03 Channels And Rollouts
 
 - [x] Add `registry::channel` module.
 - [x] Add `channel` config field and `TrackingMode::Channel`.
 - [x] Add semver floor, bucket, and retained release fields to registry state.
-- [ ] Remove legacy creation-token state when the bundle path is retired.
+- [x] Remove legacy creation-token state when the bundle path is retired.
 - [x] Implement bucket selection, bucket hex rendering, and probe-forward order.
 - [x] Implement semver floor anti-rollback check.
 - [x] Implement partition map/frontier helpers.
@@ -76,5 +76,5 @@ Keep this file current as work lands.
 
 - [x] Clear completed current-state sections from `docs/registry/*` as old behavior
       is removed from code.
-- [ ] Keep `docs/registry/current-state.md` only for remaining as-is behavior and
+- [x] Keep `docs/registry/current-state.md` only for remaining as-is behavior and
       historical reference.
