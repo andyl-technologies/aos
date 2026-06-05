@@ -83,6 +83,7 @@ pub async fn sync_git(
     printer.info(&format!("Syncing registry '{}' via git...", config.name));
     ensure_sha256_capable_git().await?;
     ensure_repo(&repo_dir, &git_url).await?;
+    let previous_floor = state.floor.clone();
     let mut retained_before = fetch::parse_retained(&state.retained)?;
     if let Some(floor) = state.floor.as_deref() {
         let floor = semver::Version::parse(floor)
@@ -107,9 +108,19 @@ pub async fn sync_git(
     }
 
     // Step 3: Determine the new HEAD commit.
+    let mut record_successful_freshness = true;
     let new_commit = if let TrackingMode::Channel(channel_name) = tracking_mode {
         match resolve_channel_head(config, &git_url, channel_name, &repo_dir, state).await {
-            Ok(commit) => commit,
+            Ok(resolved) => {
+                record_successful_freshness = channel_success_freshness_at(
+                    config,
+                    state,
+                    previous_floor.as_deref(),
+                    &resolved.semver,
+                    unix_now_secs(),
+                )?;
+                resolved.commit
+            }
             Err(err) => {
                 return Err(channel_refresh_error(
                     config,
@@ -189,7 +200,9 @@ pub async fn sync_git(
     }
     prune_unretained_release_dirs(&repo_dir, &state.retained).await?;
     state.last_commit = Some(new_commit.clone());
-    state.last_update = Some(chrono_now());
+    if record_successful_freshness {
+        state.last_update = Some(chrono_now());
+    }
 
     printer.info(&format!(
         "Registry '{}': {} packages ({} added, {} updated, {} removed)",
@@ -421,7 +434,7 @@ async fn resolve_channel_head(
     channel_name: &str,
     repo_dir: &Path,
     state: &mut RegistryState,
-) -> Result<String> {
+) -> Result<verify::VerifiedRelease> {
     let signing_key = config
         .signing
         .as_ref()
@@ -461,7 +474,7 @@ async fn resolve_channel_head(
 
                 state.bucket.get_or_insert(assigned_bucket);
                 state.floor = Some(resolved.semver.to_string());
-                return Ok(resolved.commit);
+                return Ok(resolved);
             }
             Ok(None) => {}
             Err(err) => {
@@ -952,6 +965,58 @@ fn is_missing_tree_path(stderr: &str, file: &str) -> bool {
         || stderr.contains(&format!("path '{file}'"))
 }
 
+fn channel_success_freshness_at(
+    config: &RegistryConfig,
+    state: &RegistryState,
+    previous_floor: Option<&str>,
+    resolved: &semver::Version,
+    now_secs: u64,
+) -> Result<bool> {
+    let Some(previous_floor) = previous_floor else {
+        return Ok(true);
+    };
+    let previous_floor = semver::Version::parse(previous_floor)
+        .with_context(|| format!("parsing registry semver floor {previous_floor}"))?;
+    if resolved > &previous_floor {
+        return Ok(true);
+    }
+    if resolved < &previous_floor {
+        bail!(
+            "registry '{}' channel resolved release {resolved} below monotonic floor {previous_floor}",
+            config.name,
+        );
+    }
+
+    let max_staleness = config
+        .max_staleness_seconds
+        .unwrap_or(DEFAULT_CHANNEL_MAX_STALENESS_SECONDS);
+    let Some(last_update) = state.last_update.as_deref() else {
+        bail!(
+            "registry '{}' channel refresh resolved unchanged release {resolved}, but no previous \
+             successful freshness observation exists",
+            config.name,
+        );
+    };
+    let last_update_secs = parse_iso8601_utc_secs(last_update).with_context(|| {
+        format!(
+            "registry '{}' channel refresh resolved unchanged release {resolved}, but \
+             last_update '{last_update}' could not be parsed for freshness evaluation",
+            config.name,
+        )
+    })?;
+    let age = now_secs.saturating_sub(last_update_secs);
+    if age > max_staleness {
+        bail!(
+            "registry '{}' channel refresh resolved unchanged release {resolved}; last successful \
+             freshness observation is stale ({age}s old, max_staleness_seconds={max_staleness}); \
+             refusing to accept a frozen-but-valid channel pointer",
+            config.name,
+        );
+    }
+
+    Ok(false)
+}
+
 /// Count .toml files in a packages directory.
 async fn count_toml_files(dir: &Path) -> usize {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
@@ -1274,6 +1339,76 @@ mod tests {
         assert!(message.contains("is stale (121s old"));
         assert!(message.contains("max_staleness_seconds=120"));
         assert!(message.contains("all partitions missing"));
+    }
+
+    #[test]
+    fn channel_success_freshness_records_first_sync_and_advances() {
+        assert!(
+            channel_success_freshness_at(
+                &channel_config(Some(120)),
+                &RegistryState::default(),
+                None,
+                &semver::Version::parse("1.0.0").unwrap(),
+                parse_iso8601_utc_secs("2026-06-01T00:00:00Z").unwrap(),
+            )
+            .unwrap()
+        );
+
+        let state = RegistryState {
+            floor: Some("1.0.0".to_string()),
+            last_update: Some("2026-06-01T00:00:00Z".to_string()),
+            ..RegistryState::default()
+        };
+        assert!(
+            channel_success_freshness_at(
+                &channel_config(Some(120)),
+                &state,
+                state.floor.as_deref(),
+                &semver::Version::parse("1.1.0").unwrap(),
+                parse_iso8601_utc_secs("2026-06-02T00:00:00Z").unwrap(),
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn channel_success_freshness_keeps_quiet_channel_within_window() {
+        let state = RegistryState {
+            floor: Some("1.0.0".to_string()),
+            last_update: Some("2026-06-01T00:00:00Z".to_string()),
+            ..RegistryState::default()
+        };
+        assert!(
+            !channel_success_freshness_at(
+                &channel_config(Some(120)),
+                &state,
+                state.floor.as_deref(),
+                &semver::Version::parse("1.0.0").unwrap(),
+                parse_iso8601_utc_secs("2026-06-01T00:01:00Z").unwrap(),
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn channel_success_freshness_rejects_stale_unchanged_pointer() {
+        let state = RegistryState {
+            floor: Some("1.0.0".to_string()),
+            last_update: Some("2026-06-01T00:00:00Z".to_string()),
+            ..RegistryState::default()
+        };
+        let err = channel_success_freshness_at(
+            &channel_config(Some(120)),
+            &state,
+            state.floor.as_deref(),
+            &semver::Version::parse("1.0.0").unwrap(),
+            parse_iso8601_utc_secs("2026-06-01T00:02:01Z").unwrap(),
+        )
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("resolved unchanged release 1.0.0"));
+        assert!(message.contains("is stale (121s old"));
+        assert!(message.contains("frozen-but-valid channel pointer"));
     }
 
     #[test]
