@@ -87,8 +87,6 @@ pub enum Commands {
         #[arg(long, short = 'j', global = false)]
         jobs: Option<usize>,
     },
-    /// Enter development shell
-    Shell,
     /// Interactive Nix REPL
     Repl,
     /// Garbage collection
