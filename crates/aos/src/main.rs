@@ -135,7 +135,6 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Graph { package, dot } => commands::graph::run(&nix, &printer, package, *dot),
         Commands::Lint { package } => commands::lint::run(&nix, &printer, package.as_deref()),
         Commands::Test { command, jobs } => commands::test::run(&nix, &printer, command, *jobs),
-        Commands::Shell => commands::shell::run(&nix, &printer),
         Commands::Repl => commands::repl::run(&nix, &printer),
         Commands::Gc {
             list_generations,
