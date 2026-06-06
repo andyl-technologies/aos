@@ -514,7 +514,8 @@ in {
       done
 
       for git_bin in ${gitFloor}/bin/git ${pkgs.git}/bin/git; do
-        version=$($git_bin --version | awk '{print $3}')
+        version=$($git_bin --version)
+        version=''${version##* }
         echo "==> validating stock Git $version"
         case "$version" in
           2.42.*|2.4[3-9].*|2.[5-9][0-9].*) ;;
