@@ -599,7 +599,8 @@ pointers.
 The mixed cache upload path is validated by
 `checks.vm.apm.registry-validation-stock-nix-backend-array`; the static-origin
 upload ordering and CDN metadata contract are validated by
-`checks.vm.apm.registry-validation-origin-cdn-layout`.
+`checks.vm.apm.registry-validation-origin-cdn-layout`. Both VM checks passed on
+`dylan@builder-hil1-c13958ef` on 2026-06-06.
 
 ---
 

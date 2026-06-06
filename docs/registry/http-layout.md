@@ -65,7 +65,8 @@ The supported client floor for sha256 dumb-HTTP registries is **Git 2.42.0**.
 unsupported client fails with a clear "requires a sha256-capable git" error
 instead of a late loose-object or object-format failure. Stock `git clone` users
 must use the same Git floor or newer.
-VM validation includes a pinned stock-Git matrix. Run it on a KVM builder with:
+VM validation includes a pinned stock-Git matrix. Reproduce it on a KVM builder
+with:
 
 ```sh
 nix-build -A checks.vm.apm.registry-validation-stock-git-matrix
@@ -73,8 +74,9 @@ nix-build -A checks.vm.apm.registry-validation-stock-git-matrix
 
 That check serves a sha256 bare registry over dumb HTTP inside the VM and clones
 it with the pinned minimum Git 2.42.x package plus the repo's current Git
-package. Rust coverage also includes a host-current stock Git e2e and an
-env-gated pinned matrix harness for narrower local debugging.
+package. It passed on `dylan@builder-hil1-c13958ef` on 2026-06-06 with Git
+2.42.0 and Git 2.48.1. Rust coverage also includes a host-current stock Git e2e
+and an env-gated pinned matrix harness for narrower local debugging.
 
 The AOS-specific `/channels/<name>/00..ff` partition files are produced by
 `apr channel init/advance`, and channel consumers verify those signed tag objects
@@ -89,7 +91,8 @@ regression coverage checks those classifications, byte-stable relative
 The VM validation check
 `checks.vm.apm.registry-validation-origin-cdn-layout` uploads the static origin
 to an S3-compatible endpoint and inspects the recorded cache-control/content-type
-metadata and upload ordering.
+metadata and upload ordering. It passed on `dylan@builder-hil1-c13958ef` on
+2026-06-06.
 
 ---
 

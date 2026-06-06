@@ -149,8 +149,8 @@ related building block — object-store I/O that reads/writes the same static
 surface. A stock `nix` consumes the resulting static files unchanged; so can
 `apm` (§4).
 
-Production validation for the stock-Nix/static-cache surface lives in the Nix VM
-test-suite check:
+Production validation for the stock-Nix/static-cache surface is covered by the
+Nix VM test-suite check:
 
 ```sh
 nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array
@@ -159,8 +159,9 @@ nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array
 That VM creates a tiny fixed-output store path, generates signed static cache
 files with `apr cache generate`, serves them to stock Nix with
 `require-sigs = true`, and uploads the same cache to a mixed `file://`, `s3://`,
-and `sftp://` destination array. The Rust and CLI cache e2e tests remain
-available as lower-level host-store-mutating checks behind
+and `sftp://` destination array. It passed on the KVM builder
+`dylan@builder-hil1-c13958ef` on 2026-06-06. The Rust and CLI cache e2e tests
+remain available as lower-level host-store-mutating checks behind
 `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1`; ordinary Rust test runs skip them.
 
 > **Why the projection lines up so cleanly:** Nix's two-level naming — a
@@ -644,7 +645,8 @@ Upload auth can come from `[registry.upload_auth]` in the selected
 Stock-Nix host wiring remains ordinary
 `nix.conf` / flake `nixConfig` setup (§10).
 The production validation VM check for this surface is
-`checks.vm.apm.registry-validation-stock-nix-backend-array`.
+`checks.vm.apm.registry-validation-stock-nix-backend-array`; it passed on
+`dylan@builder-hil1-c13958ef` on 2026-06-06.
 
 These map to plan
 [workstream-06-nix-cache.md](../plans/registry/workstream-06-nix-cache.md) (the

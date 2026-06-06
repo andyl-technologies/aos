@@ -18,6 +18,33 @@ nix-build -A checks.vm.apm.registry-validation-stock-git-matrix
 nix-build -A checks.vm.apm.registry-validation-pack-delta-perf
 ```
 
+## Latest Builder Evidence
+
+The full VM validation set passed on `dylan@builder-hil1-c13958ef` on
+2026-06-06:
+
+- `registry-validation-stock-nix-backend-array`:
+  `/nix/store/811yph679vqwa5l0km3pd8zpamv5jn08-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`;
+  serial evidence includes the expected
+  `static cache upload failed for 1/4 destination(s):` partial failure followed
+  by `registry stock Nix + backend array validation passed` and
+  `TEST_RESULT:PASS`.
+- `registry-validation-origin-cdn-layout`:
+  `/nix/store/p4gqcf2qkc1bsyaa8mp0mjndwn8lzd6j-aos-vm-test-apm-registry-validation-origin-cdn-layout-0`;
+  serial evidence includes `registry origin CDN layout validation passed` and
+  `TEST_RESULT:PASS`.
+- `registry-validation-stock-git-matrix`:
+  `/nix/store/ss04if4q6x8nx39psicqhcwjply2ybvy-aos-vm-test-apm-registry-validation-stock-git-matrix-0`;
+  serial evidence includes `validating stock Git 2.42.0`,
+  `validating stock Git 2.48.1`, `registry stock Git matrix validation passed`,
+  and `TEST_RESULT:PASS`.
+- `registry-validation-pack-delta-perf`:
+  `/nix/store/p50flkywxlgr10zbab1dyxys7dw14wbs-aos-vm-test-apm-registry-validation-pack-delta-perf-0`;
+  serial evidence includes `REGISTRY_PERF_METRIC full_pack_bytes=11277`,
+  `thin_delta_bytes=11294`, `zstd_delta_bytes=7187`,
+  `reconstruct_ns=2533693`, `registry pack/delta perf validation passed`, and
+  `TEST_RESULT:PASS`.
+
 ## 1. Stock Nix, Signatures, And Backend Array
 
 Check:

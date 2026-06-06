@@ -7,10 +7,10 @@ Keep this file current as work lands.
 > **VM validation PR status:** local implementation and reference-doc updates
 > landed in the prior PR. This PR turns the external stock-Nix, backend-array,
 > stock-Git, CDN-layout, and pack/delta validation gates into Nix VM checks under
-> `tests/vm/apm/registry_validation.nix`. The checks must be run on a KVM builder
-> before claiming production validation; fleet-specific `max_staleness_seconds`
-> tuning remains operator rollout policy rather than a repository implementation
-> item.
+> `tests/vm/apm/registry_validation.nix`. The checks passed on the KVM builder
+> `dylan@builder-hil1-c13958ef` on 2026-06-06; fleet-specific
+> `max_staleness_seconds` tuning remains operator rollout policy rather than a
+> repository implementation item.
 
 ## Branch Setup
 
@@ -46,16 +46,24 @@ Keep this file current as work lands.
       `pkgs/tools/git-2_42.nix`, `pkgs/tools/git.nix`,
       `docs/registry/http-layout.md`, and
       `tests/vm/apm/registry_validation.nix`.
-- [ ] Run all registry validation VM checks on
+- [x] Run all registry validation VM checks on
       `dylan@builder-hil1-c13958ef`:
       `nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array`,
       `nix-build -A checks.vm.apm.registry-validation-origin-cdn-layout`,
       `nix-build -A checks.vm.apm.registry-validation-stock-git-matrix`, and
       `nix-build -A checks.vm.apm.registry-validation-pack-delta-perf`.
+      Builder evidence from 2026-06-06: stock-Nix/backend-array output
+      `/nix/store/811yph679vqwa5l0km3pd8zpamv5jn08-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`;
+      origin/CDN output
+      `/nix/store/p4gqcf2qkc1bsyaa8mp0mjndwn8lzd6j-aos-vm-test-apm-registry-validation-origin-cdn-layout-0`;
+      stock-Git matrix output
+      `/nix/store/ss04if4q6x8nx39psicqhcwjply2ybvy-aos-vm-test-apm-registry-validation-stock-git-matrix-0`;
+      pack/delta perf output
+      `/nix/store/p50flkywxlgr10zbab1dyxys7dw14wbs-aos-vm-test-apm-registry-validation-pack-delta-perf-0`.
       Context: `tests/vm/apm/registry_validation.nix`,
       `lib/testing/vm.nix`, `lib/testing/firecracker.nix`, and
       `docs/plans/registry/validation-runbook.md`.
-- [ ] Update `docs/registry/*` and `docs/plans/registry/validation-runbook.md`
+- [x] Update `docs/registry/*` and `docs/plans/registry/validation-runbook.md`
       with the VM check commands and evidence once the builder run passes.
       Context: `docs/registry/current-state.md`,
       `docs/registry/nix-cache-compatibility.md`,
@@ -333,7 +341,7 @@ read before editing code or docs.
       `crates/aos-package/src/registry/nixcache.rs`,
       `crates/aos/tests/apr_cache_cli.rs`, and
       `crates/aos-package/tests/registry_cache_e2e.rs`.
-- [ ] Validate stock Nix substituter behavior under `require-sigs` in the VM
+- [x] Validate stock Nix substituter behavior under `require-sigs` in the VM
       test-suite PR. `registry-validation-stock-nix-backend-array` creates a
       fixed-output store path inside the VM, generates signed static cache
       files with `apr cache generate`, serves those files over dumb HTTP, and
@@ -350,6 +358,9 @@ read before editing code or docs.
       `crates/aos-package/tests/registry_cache_e2e.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and
       `crates/aos-package/src/download.rs`.
+      Builder evidence from 2026-06-06: `TEST_RESULT:PASS` and
+      `registry stock Nix + backend array validation passed` in
+      `/nix/store/811yph679vqwa5l0km3pd8zpamv5jn08-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0/serial.log`.
 - [x] Add one-key projection coverage for git tag signatures and Nix narinfo
       signatures: prove the same Ed25519 key material can produce the
       `registry:Ed25519:<base64>` AOS trust form and the `<name>:<base64>` Nix
@@ -439,7 +450,7 @@ read before editing code or docs.
       `crates/aos-cache/src/backend/s3.rs`,
       `crates/aos-cache/src/backend/sftp.rs`, and
       `crates/aos-package/tests/registry_cache_e2e.rs`.
-- [ ] Validate service-backed generated static-cache upload/readback for an
+- [x] Validate service-backed generated static-cache upload/readback for an
       array of `file://`, `s3://`, and `sftp://` destinations in the VM test
       suite. `registry-validation-stock-nix-backend-array` starts a local
       S3-compatible HTTP endpoint and an OpenSSH SFTP endpoint inside the VM,
@@ -463,6 +474,10 @@ read before editing code or docs.
       `crates/aos-net/src/protocol/s3.rs`,
       `crates/aos-net/src/protocol/sftp.rs`, and
       `tests/vm/apm/registry_validation.nix`.
+      Builder evidence from 2026-06-06: the VM reported the expected
+      `static cache upload failed for 1/4 destination(s):` partial failure for
+      `not-a-url`, then `TEST_RESULT:PASS`, proving valid `file://`, `s3://`,
+      and `sftp://` destinations were still attempted and verified.
 - [x] Add current-stock-git compatibility coverage for the pinned minimum git
       version and sha256 dumb-HTTP behavior. `crates/aos-package/tests/
       registry_e2e.rs` now includes
@@ -487,7 +502,7 @@ read before editing code or docs.
       `crates/aos-package/src/registry/git.rs`,
       `crates/aos-package/src/registry/objectstore.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Run and publish the supported-version stock Git compatibility matrix for
+- [x] Run and publish the supported-version stock Git compatibility matrix for
       the pinned minimum Git version and newer clients in the VM test-suite PR.
       `registry-validation-stock-git-matrix` includes the pinned
       `pkgs."git-2_42"` floor package and the repo's current `pkgs.git`, serves
@@ -505,6 +520,9 @@ read before editing code or docs.
       `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/git.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
+      Builder evidence from 2026-06-06: `registry stock Git matrix validation
+      passed`, validating Git 2.42.0 and Git 2.48.1 in
+      `/nix/store/ss04if4q6x8nx39psicqhcwjply2ybvy-aos-vm-test-apm-registry-validation-stock-git-matrix-0/serial.log`.
 
 ### Producer / Publishing Target State
 
@@ -816,7 +834,7 @@ read before editing code or docs.
       `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_perf.rs`.
-- [ ] Run the registry performance harness in the VM validation PR. The Rust
+- [x] Run the registry performance harness in the VM validation PR. The Rust
       harness exists in the implementation PR, and
       `registry-validation-pack-delta-perf` now records VM-side
       `REGISTRY_PERF_METRIC` values for full-pack bytes/time, thin-delta
@@ -833,6 +851,10 @@ read before editing code or docs.
       `crates/aos-package/src/registry/pack.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_perf.rs`.
+      Builder evidence from 2026-06-06: `full_pack_bytes=11277`,
+      `thin_delta_bytes=11294`, `zstd_delta_bytes=7187`, and
+      `reconstruct_ns=2533693` in
+      `/nix/store/p50flkywxlgr10zbab1dyxys7dw14wbs-aos-vm-test-apm-registry-validation-pack-delta-perf-0/serial.log`.
 - [x] Add hermetic CDN/mirror layout regression coverage for the pieces we can
       prove without external infrastructure: byte-stable relative
       `objects/info/alternates`, immutable-vs-mutable static-origin
@@ -843,7 +865,7 @@ read before editing code or docs.
       `crates/aos-package/src/registry/static_upload.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
-- [ ] Validate the CDN/mirror HTTP layout against a service-like object backend
+- [x] Validate the CDN/mirror HTTP layout against a service-like object backend
       in the VM validation PR. `registry-validation-origin-cdn-layout` uploads a
       git-native origin plus generated static-cache files to an S3-compatible
       endpoint inside the VM, checks immutable objects/NARs/narinfos receive
@@ -859,6 +881,9 @@ read before editing code or docs.
       `crates/aos-package/src/registry/objectstore.rs`,
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
+      Builder evidence from 2026-06-06: `registry origin CDN layout validation
+      passed` and `TEST_RESULT:PASS` in
+      `/nix/store/p4gqcf2qkc1bsyaa8mp0mjndwn8lzd6j-aos-vm-test-apm-registry-validation-origin-cdn-layout-0/serial.log`.
 
 ### Documentation Re-Grounding
 
@@ -912,7 +937,7 @@ read before editing code or docs.
       `crates/aos-core/src/nar/cache.rs`,
       `crates/aos-package/src/registry/nixcache.rs`, and
       `crates/aos-package/src/download.rs`.
-- [ ] Update the external-validation runbook so agents/operators have one place
+- [x] Update the external-validation runbook so agents/operators have one place
       to run the stock-Nix, S3/SFTP, stock-Git, performance, CDN/mirror, and
       max-staleness policy gates before claiming production validation.
       Context: `docs/plans/registry/validation-runbook.md`,
@@ -923,10 +948,10 @@ read before editing code or docs.
       `docs/registry/publishing.md`,
       `docs/registry/versioning-and-channels.md`, and
       `docs/registry/signing-and-trust.md`.
-- [ ] Close VM-validation operator docs. `docs/registry/*` documents backend
+- [x] Close VM-validation operator docs. `docs/registry/*` documents backend
       arrays, auth flags, `apr release`, trust management, and stock-Nix
-      verification hooks; this PR should replace the remaining follow-up
-      validation caveats with the VM check commands and the fleet-only
+      verification hooks; this PR replaces the remaining follow-up validation
+      caveats with the VM check commands and the fleet-only
       `max_staleness_seconds` tuning boundary. Context:
       `docs/registry/publishing.md`,
       `docs/registry/nix-cache-compatibility.md`,
