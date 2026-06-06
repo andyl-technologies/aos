@@ -33,63 +33,49 @@ pub fn aos_nix_env() -> Vec<(&'static str, String)> {
 mod tests {
     use super::*;
 
-    // SAFETY: tests in this module set process-global env vars. Cargo
-    // runs tests in parallel by default; mutating `AOS_ROOT` here can
-    // race with other test threads. The other tests in this crate
-    // that touch `AOS_ROOT` live in `nix::runner` (read-only) — they
-    // observe whichever value is currently set, which is acceptable
-    // for the runner's project-root lookup. If a future test depends
-    // on `AOS_ROOT` being unset, we'll need to gate this module with
-    // `--test-threads=1` or use the `serial_test` crate.
+    // `AOS_ROOT` is process-global state, and cargo runs tests in
+    // parallel within one binary. Splitting the scenarios across
+    // separate `#[test]` functions made them race: one test's
+    // `set_var("AOS_ROOT", …)` could land between another's
+    // `remove_var` and its assertion, so the "unset" case observed a
+    // value set by a sibling and failed intermittently. The only
+    // race-free way to exercise multiple `AOS_ROOT` values is to drive
+    // them sequentially from a single test with one save/restore, so
+    // they are consolidated here. The other in-crate reader of
+    // `AOS_ROOT` (`nix::runner::find_project_root`, runtime-only) has
+    // no test that depends on a particular value, so it tolerates
+    // whichever value is transiently set while this test runs.
 
     #[test]
-    fn aos_nix_env_empty_when_unset() {
-        // Snapshot whatever is set; restore after.
+    fn aos_nix_env_from_root() {
+        // Snapshot whatever the ambient environment had; restore at the
+        // end so this test leaves `AOS_ROOT` exactly as it found it.
         let saved = std::env::var("AOS_ROOT").ok();
+
+        // Unset → empty, so callers can chain `.envs(aos_nix_env())`
+        // unconditionally.
         // SAFETY: see module-level note on parallelism.
-        unsafe {
-            std::env::remove_var("AOS_ROOT");
-        }
+        unsafe { std::env::remove_var("AOS_ROOT") };
         assert!(aos_nix_env().is_empty());
-        if let Some(v) = saved {
-            // SAFETY: see module-level note on parallelism.
-            unsafe {
-                std::env::set_var("AOS_ROOT", v);
-            }
-        }
-    }
 
-    #[test]
-    fn aos_nix_env_translates_to_store_and_state_dirs() {
-        let saved = std::env::var("AOS_ROOT").ok();
+        // Set → both store and state dirs derived from the root.
         // SAFETY: see module-level note on parallelism.
-        unsafe {
-            std::env::set_var("AOS_ROOT", "/var/lib/aos-test");
-        }
+        unsafe { std::env::set_var("AOS_ROOT", "/var/lib/aos-test") };
         let env = aos_nix_env();
         assert_eq!(env.len(), 2);
         assert_eq!(env[0].0, "NIX_STORE_DIR");
         assert_eq!(env[0].1, "/var/lib/aos-test/store");
         assert_eq!(env[1].0, "NIX_STATE_DIR");
         assert_eq!(env[1].1, "/var/lib/aos-test/var/nix");
-        // Restore.
-        match saved {
-            // SAFETY: see module-level note on parallelism.
-            Some(v) => unsafe { std::env::set_var("AOS_ROOT", v) },
-            None => unsafe { std::env::remove_var("AOS_ROOT") },
-        }
-    }
 
-    #[test]
-    fn aos_nix_env_strips_trailing_slash() {
-        let saved = std::env::var("AOS_ROOT").ok();
+        // A trailing slash on the root is normalised away.
         // SAFETY: see module-level note on parallelism.
-        unsafe {
-            std::env::set_var("AOS_ROOT", "/var/lib/aos-test/");
-        }
+        unsafe { std::env::set_var("AOS_ROOT", "/var/lib/aos-test/") };
         let env = aos_nix_env();
         assert_eq!(env[0].1, "/var/lib/aos-test/store");
         assert_eq!(env[1].1, "/var/lib/aos-test/var/nix");
+
+        // Restore the ambient value.
         match saved {
             // SAFETY: see module-level note on parallelism.
             Some(v) => unsafe { std::env::set_var("AOS_ROOT", v) },
