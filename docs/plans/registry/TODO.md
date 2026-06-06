@@ -16,7 +16,7 @@ Keep this file current as work lands.
 
 - [x] Fetch latest `origin/master`.
 - [x] Create VM validation branch from `origin/master`.
-- [ ] Open VM validation PR.
+- [x] Open VM validation PR: https://github.com/andyl-technologies/aos/pull/21.
 
 ## VM Validation PR
 
