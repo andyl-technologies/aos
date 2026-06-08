@@ -18,6 +18,32 @@ nix-build -A checks.vm.apm.registry-validation-stock-git-matrix
 nix-build -A checks.vm.apm.registry-validation-pack-delta-perf
 ```
 
+## Builder Evidence: 2026-06-08
+
+The focused registry validation checks passed on
+`dylan@builder-hil1-c13958ef` from the synced checkout
+`/tmp/aos-vm-fleet-validation-20260606` with:
+
+```sh
+nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-stock-nix-backend-array --no-out-link
+nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-origin-cdn-layout --no-out-link
+nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-stock-git-matrix --no-out-link
+nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-pack-delta-perf --no-out-link
+```
+
+Passing outputs:
+
+- `stock-nix-backend-array`:
+  `/nix/store/bwp2ayp8r199n32s2csndcv43qmi38xr-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`
+- `origin-cdn-layout`:
+  `/nix/store/xfzd1yim7sx5cq9gsg6nx8kvh1hi551s-aos-vm-test-apm-registry-validation-origin-cdn-layout-0`
+- `stock-git-matrix`:
+  `/nix/store/yx7wm7m63l6smij5k57dbjlz22y3ql74-aos-vm-test-apm-registry-validation-stock-git-matrix-0`
+- `pack-delta-perf`:
+  `/nix/store/c6lg01w5ks8f2h4ginav0wfdhlf12az9-aos-vm-test-apm-registry-validation-pack-delta-perf-0`
+
+The detailed guest evidence is in each output's `serial.log`.
+
 ## 1. Stock Nix, Signatures, And Backend Array
 
 Check:
@@ -50,6 +76,12 @@ Primary files:
 - [`../../../crates/aos-cache/src/backend/s3.rs`](../../../crates/aos-cache/src/backend/s3.rs)
 - [`../../../crates/aos-cache/src/backend/sftp.rs`](../../../crates/aos-cache/src/backend/sftp.rs)
 
+Passing builder evidence: output
+`/nix/store/bwp2ayp8r199n32s2csndcv43qmi38xr-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`.
+Its `serial.log` records the expected aggregate invalid-destination diagnostic
+for `not-a-url`, then
+`registry stock Nix + backend array validation passed`.
+
 ## 2. CDN / Mirror Layout
 
 Check:
@@ -79,6 +111,11 @@ Primary files:
 - [`../../../crates/aos-package/src/registry/static_upload.rs`](../../../crates/aos-package/src/registry/static_upload.rs)
 - [`../../../crates/aos-package/src/registry/objectstore.rs`](../../../crates/aos-package/src/registry/objectstore.rs)
 
+Passing builder evidence: output
+`/nix/store/xfzd1yim7sx5cq9gsg6nx8kvh1hi551s-aos-vm-test-apm-registry-validation-origin-cdn-layout-0`.
+Its `serial.log` records
+`registry origin CDN layout validation passed`.
+
 ## 3. Stock Git Matrix
 
 Check:
@@ -104,6 +141,12 @@ Primary files:
 - [`../../../pkgs/tools/git.nix`](../../../pkgs/tools/git.nix)
 - [`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
 - [`../../../crates/aos-package/src/registry/git.rs`](../../../crates/aos-package/src/registry/git.rs)
+
+Passing builder evidence: output
+`/nix/store/yx7wm7m63l6smij5k57dbjlz22y3ql74-aos-vm-test-apm-registry-validation-stock-git-matrix-0`.
+Its `serial.log` records `validating stock Git 2.42.0`,
+`validating stock Git 2.48.1`, and
+`registry stock Git matrix validation passed`.
 
 ## 4. Pack/Delta Performance
 
@@ -135,6 +178,20 @@ Primary files:
 - [`../../../crates/aos-package/src/registry/pack.rs`](../../../crates/aos-package/src/registry/pack.rs)
 - [`../../../crates/aos-package/src/registry/fetch.rs`](../../../crates/aos-package/src/registry/fetch.rs)
 - [`../../../crates/aos-package/tests/registry_perf.rs`](../../../crates/aos-package/tests/registry_perf.rs)
+
+Passing builder evidence: output
+`/nix/store/c6lg01w5ks8f2h4ginav0wfdhlf12az9-aos-vm-test-apm-registry-validation-pack-delta-perf-0`.
+Its `serial.log` records:
+
+```text
+REGISTRY_PERF_METRIC full_pack_bytes=11276
+REGISTRY_PERF_METRIC full_pack_ns=86438382
+REGISTRY_PERF_METRIC thin_delta_bytes=11295
+REGISTRY_PERF_METRIC thin_delta_ns=49235341
+REGISTRY_PERF_METRIC zstd_delta_bytes=7191
+REGISTRY_PERF_METRIC zstd_ns=1748206
+REGISTRY_PERF_METRIC reconstruct_ns=2568679
+```
 
 ## 5. Max-Staleness Boundary
 
