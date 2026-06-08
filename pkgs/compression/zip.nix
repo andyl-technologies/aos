@@ -20,6 +20,7 @@ in
     buildDeps = [gnumake];
     runtimeDeps = [];
     propagatedDeps = [];
+    hardeningDisable = ["format"];
 
     phases = [
       {
