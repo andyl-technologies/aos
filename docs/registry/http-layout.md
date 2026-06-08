@@ -73,8 +73,13 @@ nix-build -A checks.vm.apm.registry-validation-stock-git-matrix
 
 That check serves a sha256 bare registry over dumb HTTP inside the VM and clones
 it with the pinned minimum Git 2.42.x package plus the repo's current Git
-package. Rust coverage also includes a host-current stock Git e2e and an
-env-gated pinned matrix harness for narrower local debugging.
+package. It passed on `dylan@builder-hil1-c13958ef` on 2026-06-08 with output
+`/nix/store/yx7wm7m63l6smij5k57dbjlz22y3ql74-aos-vm-test-apm-registry-validation-stock-git-matrix-0`;
+the output `serial.log` records `validating stock Git 2.42.0`,
+`validating stock Git 2.48.1`, and
+`registry stock Git matrix validation passed`. Rust coverage also includes a
+host-current stock Git e2e and an env-gated pinned matrix harness for narrower
+local debugging.
 
 The AOS-specific `/channels/<name>/00..ff` partition files are produced by
 `apr channel init/advance`, and channel consumers verify those signed tag objects
@@ -89,7 +94,10 @@ regression coverage checks those classifications, byte-stable relative
 The VM validation check
 `checks.vm.apm.registry-validation-origin-cdn-layout` uploads the static origin
 to an S3-compatible endpoint and inspects the recorded cache-control/content-type
-metadata and upload ordering.
+metadata and upload ordering. It passed on `dylan@builder-hil1-c13958ef` on
+2026-06-08 with output
+`/nix/store/xfzd1yim7sx5cq9gsg6nx8kvh1hi551s-aos-vm-test-apm-registry-validation-origin-cdn-layout-0`;
+the output `serial.log` records `registry origin CDN layout validation passed`.
 
 ---
 

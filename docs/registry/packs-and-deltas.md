@@ -280,7 +280,22 @@ nix-build -A checks.vm.apm.registry-validation-pack-delta-perf
 
 It reports `REGISTRY_PERF_METRIC` lines for full-pack generation, thin-delta
 generation, zstd compression, and consumer reconstruction against a synthetic
-multi-package sha256 registry. A lower-level opt-in Rust harness lives in
+multi-package sha256 registry. It passed on `dylan@builder-hil1-c13958ef` on
+2026-06-08 with output
+`/nix/store/c6lg01w5ks8f2h4ginav0wfdhlf12az9-aos-vm-test-apm-registry-validation-pack-delta-perf-0`
+and the following serial-log metrics:
+
+```text
+REGISTRY_PERF_METRIC full_pack_bytes=11276
+REGISTRY_PERF_METRIC full_pack_ns=86438382
+REGISTRY_PERF_METRIC thin_delta_bytes=11295
+REGISTRY_PERF_METRIC thin_delta_ns=49235341
+REGISTRY_PERF_METRIC zstd_delta_bytes=7191
+REGISTRY_PERF_METRIC zstd_ns=1748206
+REGISTRY_PERF_METRIC reconstruct_ns=2568679
+```
+
+A lower-level opt-in Rust harness lives in
 [`crates/aos-package/tests/registry_perf.rs`](../../crates/aos-package/tests/registry_perf.rs)
 for local debugging and parameter experiments.
 
