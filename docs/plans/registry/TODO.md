@@ -13,6 +13,9 @@ Keep this file current as work lands.
 > rather than a repository implementation item. Additional builder validation
 > on 2026-06-08 passed the full `checks.fleet` aggregate after the fleet
 > `apm-e2e` registry fixture was corrected to initialize a sha256 bare origin.
+> APM-specific validation on 2026-06-08 passed the full `checks.vm.apm`
+> aggregate after adding the command-surface VM check and build activity
+> Rust coverage.
 > A full `checks.integration` aggregate was also attempted, but it failed in the
 > unrelated `cross-cutting-archive-chain` libarchive check before completing;
 > the registry-requested Go CGO GCC/LLVM integration gate passed separately.
@@ -101,6 +104,86 @@ Keep this file current as work lands.
       `/nix/store/vkxg2pj9y4szwr0s72hhgkcf5ix41gp9-aos-fleet-test-apm-e2e-0`.
       Context: `tests/fleet/apm-e2e.nix`, `lib/testing/fleet.nix`,
       `lib/testing/vm.nix`, and `docs/plans/registry/validation-runbook.md`.
+
+## APM Command And Activity Coverage
+
+- [x] Add exhaustive Rust coverage for build activity event types across both
+      active transports. `crates/aos-server/src/build.rs` now covers every
+      internal SSE event emitted by `BuildEventKind`: `status`, `log`,
+      `complete`, `error`, `daemon-unavailable`, and `drain`.
+      `crates/aos-server/src/services/build.rs` covers every ConnectRPC
+      `BuildEvent.event_type` mapping and the `BuildClosure` derivation
+      override behavior. `crates/aos-server/src/routes.rs` covers the legacy
+      SSE `build-closure` wrapper event, and
+      `crates/aos-proto/src/proto/aos/build/v1/build.proto` now documents that
+      `build-closure` is an outer SSE wrapper rather than an internal
+      ConnectRPC activity kind. Local evidence from 2026-06-08:
+      `cargo test --manifest-path crates/Cargo.toml -p aos-server` passed with
+      10 tests. Context: `crates/aos-server/src/build.rs`,
+      `crates/aos-server/src/services/build.rs`,
+      `crates/aos-server/src/routes.rs`,
+      `crates/aos-proto/src/proto/aos/build/v1/build.proto`,
+      `crates/aos/src/commands/build.rs`, and `crates/aos-remote/src/client.rs`.
+- [x] Add APM package command-surface VM coverage for commands that were not
+      already strongly covered by install/remove/update/system flows.
+      `checks.vm.apm.command-surface` creates a real local registry cache and
+      profile metadata, then exercises `search`, `show`, `list`, `depends`,
+      `rdepends`, `policy`, `files`, `source`, `verify`, `clean`, `reinstall`,
+      `full-upgrade`, and side-effect-free `gc --help` coverage. It also covers
+      filters and flags such as `search --names-only`, `search --installed`,
+      `list --installed`, `list --upgradable`, `list --held`,
+      `source --show-drv`, `source --fetch`, and `clean --generations --keep`.
+      `apm gc` itself is intentionally not executed in the headless VM because
+      a real `nix-store --gc` can collect rootfs dependencies; the command
+      parser/surface is covered without mutating the VM store. Builder evidence
+      from 2026-06-08:
+      `checks.vm.apm.command-surface` passed at
+      `/nix/store/4sq0pa2na132r2ibap89mgfk9wf4sqyr-aos-vm-test-apm-command-surface-0`.
+      Context: `tests/vm/apm/packages.nix`,
+      `tests/vm/apm/fixtures.nix`, `tests/vm/apm/default.nix`,
+      `crates/aos-package/src/lib.rs`, `crates/aos-package/src/query.rs`,
+      `crates/aos-package/src/deps.rs`, `crates/aos-package/src/source.rs`,
+      `crates/aos-package/src/clean.rs`,
+      `crates/aos-package/src/install.rs`,
+      `crates/aos-package/src/upgrade.rs`,
+      `crates/aos-package/src/remove.rs`,
+      `crates/aos-package/src/rollback.rs`, and
+      `crates/aos-package/src/hold.rs`.
+- [x] Inventory the remaining APM/APR production command coverage by file so
+      future agents can trace every command family. Package install/remove,
+      upgrade, rollback, hold/unhold, query, source/verify, clean, and command
+      parser coverage lives in `tests/vm/apm/packages.nix` and the Rust files
+      listed above. `apm update` and real producer/consumer registry sync are
+      covered in `tests/fleet/apm-e2e.nix`. System install/upgrade/rollback,
+      image pulls, kernel mode flags, drain behavior, activation failure, and
+      systemd-client behavior are covered in `tests/vm/apm/system.nix`,
+      `tests/vm/apm/kernel.nix`, `tests/vm/apm/image.nix`,
+      `tests/fleet/apm-system-upgrade.nix`,
+      `tests/fleet/apm-system-activation-fail.nix`, and
+      `tests/fleet/apm-systemd-client.nix`. APR registry producer,
+      tracking/channel, cache/backend, multi-registry, RPC, and e2e lifecycle
+      coverage lives in `tests/vm/apm/registry.nix`,
+      `tests/vm/apm/tracking.nix`, `tests/vm/apm/cache.nix`,
+      `tests/vm/apm/multi_registry.nix`, `tests/vm/apm/rpc.nix`,
+      `tests/vm/apm/e2e.nix`, `tests/vm/apm/registry_validation.nix`,
+      `crates/aos/tests/apr_cache_cli.rs`,
+      `crates/aos/tests/apr_keys_cli.rs`,
+      `crates/aos/tests/apr_trust_cli.rs`,
+      `crates/aos-package/tests/registry_e2e.rs`,
+      `crates/aos-package/tests/registry_cache_e2e.rs`,
+      `crates/aos-package/tests/registry_perf.rs`, and
+      `crates/aos-cache/tests/backend_matrix.rs`.
+- [x] Run the full `checks.vm.apm` aggregate on `dylan@builder-hil1-c13958ef`
+      after adding `checks.vm.apm.command-surface`. Builder evidence from
+      2026-06-08: the aggregate command
+      `nix-build --no-out-link --expr 'let aos = import /tmp/aos-vm-fleet-validation-20260606 { system = "x86_64-linux"; }; in builtins.attrValues aos.checks.vm.apm'`
+      returned 0. The output set included the new command-surface test at
+      `/nix/store/ngqcnmlcyz4k0j3v9mn7jlw35jkvc5yq-aos-vm-test-apm-command-surface-0`
+      along with the registry, tracking, package, sysroot-lock, system, kernel,
+      image, cache, multi-registry, RPC, and e2e APM VM tests. Context:
+      `tests/vm/apm/default.nix`,
+      `tests/vm/apm/packages.nix`, `lib/testing/vm.nix`, and
+      `lib/testing/firecracker.nix`.
 
 ## Non-Registry Integration Observation
 
