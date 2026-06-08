@@ -43,7 +43,7 @@
   # patchelf. Patchelf changes the ELF portion's size, corrupting the zip
   # central directory offsets. This script splits, patches, and recombines.
   repackBazelPy = builtins.toFile "repack_bazel.py" ''
-    import zipfile, io, os, sys, subprocess, tempfile, shutil
+    import zipfile, os, sys, subprocess, tempfile, shutil
 
     bazel_path = sys.argv[1]
     interp = sys.argv[2]
@@ -58,19 +58,25 @@
     first_offset = min(zi.header_offset for zi in zf.infolist())
     elf_prefix = data[:first_offset]
 
+    flags = set(sys.argv[6:])
+    patch_elf_prefix = '--no-patch-elf-prefix' not in flags
+
     # Optionally patch LD_PRELOAD string in ELF prefix (for bootstrap wrapper)
-    if len(sys.argv) > 6 and sys.argv[6] == '--patch-ld-preload':
+    if '--patch-ld-preload' in flags:
         elf_prefix = elf_prefix.replace(b'LD_PRELOAD', b'XX_PRELOAD')
 
-    # Write ELF prefix to temp file, patchelf it, read back
     tmpdir = tempfile.mkdtemp()
-    elf_tmp = os.path.join(tmpdir, 'elf_prefix')
-    with open(elf_tmp, 'wb') as f:
-        f.write(elf_prefix)
-    os.chmod(elf_tmp, 0o755)
-    subprocess.run([patchelf_bin, '--set-interpreter', interp, '--set-rpath', rpath, elf_tmp], check=True)
-    with open(elf_tmp, 'rb') as f:
-        patched_prefix = f.read()
+    if patch_elf_prefix:
+        # Write ELF prefix to temp file, patchelf it, read back.
+        elf_tmp = os.path.join(tmpdir, 'elf_prefix')
+        with open(elf_tmp, 'wb') as f:
+            f.write(elf_prefix)
+        os.chmod(elf_tmp, 0o755)
+        subprocess.run([patchelf_bin, '--set-interpreter', interp, '--set-rpath', rpath, elf_tmp], check=True)
+        with open(elf_tmp, 'rb') as f:
+            patched_prefix = f.read()
+    else:
+        patched_prefix = elf_prefix
 
     # Extract, patchelf ELF binaries in the zip payload
     extract_dir = os.path.join(tmpdir, 'zip_contents')
@@ -94,24 +100,42 @@
         except Exception as e:
             print(f"Skipping {name}: {e}")
 
-    # Repackage
-    buf = io.BytesIO()
-    new_zf = zipfile.ZipFile(buf, 'w')
-    for zi in zf.infolist():
-        fpath = os.path.join(extract_dir, zi.filename)
-        if os.path.isfile(fpath):
-            with open(fpath, 'rb') as f:
-                file_data = f.read()
-            new_zi = zipfile.ZipInfo(zi.filename, date_time=zi.date_time)
-            new_zi.compress_type = zi.compress_type
-            new_zi.external_attr = zi.external_attr
-            new_zf.writestr(new_zi, file_data)
-    zf.close()
-    new_zf.close()
-
+    # Repackage directly after the ELF prefix. Bazel's embedded zip reader
+    # expects central-directory offsets to be relative to the whole file, while
+    # a separately generated payload zip would record offsets from byte 0 of the
+    # payload and only work with zip readers that compensate for SFX prefixes.
     with open(output_path, 'wb') as f:
         f.write(patched_prefix)
-        f.write(buf.getvalue())
+        new_zf = zipfile.ZipFile(f, 'w')
+        for zi in zf.infolist():
+            fpath = os.path.join(extract_dir, zi.filename)
+            if os.path.isfile(fpath):
+                with open(fpath, 'rb') as entry:
+                    file_data = entry.read()
+                new_zi = zipfile.ZipInfo(zi.filename, date_time=zi.date_time)
+                new_zi.compress_type = zi.compress_type
+                new_zi.external_attr = zi.external_attr
+                new_zf.writestr(new_zi, file_data)
+        new_zf.close()
+    zf.close()
+
+    # Python's zip writer can leave inherited/trailing bytes when writing after
+    # an SFX prefix. Bazel's reader requires the EOCD comment to end exactly at
+    # EOF, so trim anything after the declared EOCD end.
+    with open(output_path, 'r+b') as f:
+        out_data = f.read()
+        sig = b'PK\x05\x06'
+        max_delta = 0xffff + 22
+        start = max(0, len(out_data) - max_delta - 1024)
+        for pos in range(len(out_data) - 22, start - 1, -1):
+            if out_data[pos:pos + 4] != sig:
+                continue
+            comment_length = int.from_bytes(out_data[pos + 20:pos + 22], 'little')
+            expected_end = pos + 22 + comment_length
+            if expected_end <= len(out_data):
+                f.truncate(expected_end)
+                break
+
     os.chmod(output_path, 0o755)
     shutil.rmtree(tmpdir)
     print("Repackaged bazel binary")
@@ -174,7 +198,7 @@
                   "$RPATH" \
                   "${patchelf}/bin/patchelf" \
                   "$TMPDIR/bazel-patched" \
-                  --patch-ld-preload
+                  --no-patch-elf-prefix
 
                 # Create wrapper script (still need proc_self_exe_fix for
                 # /proc/self/exe since we invoke via explicit ld.so)
@@ -193,8 +217,10 @@
                 cd "$TMPDIR/bazel_src"
                 unzip -q ${src}
 
-                # Apply reproducibility patch
-                patch -p1 < ${./bazel-patches/test_source_sort.patch} || true
+                # Apply reproducibility patch when the target test file exists.
+                if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
+                  patch --batch -p1 < ${./bazel-patches/test_source_sort.patch} || true
+                fi
 
                 # Remove .bazelrc — it may contain options (e.g. --downloader_config)
                 # that the bootstrap bazel (older version) doesn't understand.
@@ -344,6 +370,12 @@ in
     pname = "bazel";
     inherit version;
 
+    # The binary is an ELF+zip self-extractor. Generic ELF mutation and
+    # line-oriented reference scrubbing both corrupt the appended zip payload.
+    dontStrip = true;
+    dontPatchELF = true;
+    dontNukeRefs = true;
+
     inherit src;
 
     buildDeps = [
@@ -397,8 +429,10 @@ in
         name = "patch";
         script = ''
                   # Apply patches (|| true — patches may not apply to all versions)
-                  patch -p1 < ${./bazel-patches/java_toolchain.patch} || true
-                  patch -p1 < ${./bazel-patches/test_source_sort.patch} || true
+                  patch --batch -p1 < ${./bazel-patches/java_toolchain.patch} || true
+                  if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
+                    patch --batch -p1 < ${./bazel-patches/test_source_sort.patch} || true
+                  fi
 
                   # Replace hardcoded paths throughout the source tree
                   find . -type f \( -name '*.sh' -o -name '*.bzl' -o -name 'BUILD' \
@@ -422,12 +456,12 @@ in
                     tools/python/python_bootstrap_template.txt 2>/dev/null || true
 
                   # Apply strict_action_env patch (substitute placeholder with AOS tool paths)
-                  patch -p1 < ${./bazel-patches/strict_action_env.patch} || true
+                  patch --batch -p1 < ${./bazel-patches/strict_action_env.patch} || true
                   sed -i "s|@strictActionEnvPatch@|${toolsPath}|g" \
                     src/main/java/com/google/devtools/build/lib/bazel/rules/BazelRuleClassProvider.java
 
                   # Apply bazel_rc patch and substitute placeholder
-                  patch -p1 < ${./bazel-patches/bazel_rc.patch} || true
+                  patch --batch -p1 < ${./bazel-patches/bazel_rc.patch} || true
                   sed -i "s|@bazelSystemBazelRCPath@|/dev/null|g" \
                     src/main/cpp/option_processor.cc
 

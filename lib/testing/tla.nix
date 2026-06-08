@@ -14,10 +14,17 @@
   pkgs,
   lib,
 }: let
-  tlaDir = builtins.path {
-    name = "tla-specs";
-    path = ../../tla;
-  };
+  tlaPath = ../../tla;
+  hasTlaSpecs = builtins.pathExists tlaPath;
+
+  tlaDir =
+    if hasTlaSpecs
+    then
+      builtins.path {
+        name = "tla-specs";
+        path = tlaPath;
+      }
+    else null;
 
   # Build a TLC model-checking derivation for a single TLA+ spec.
   mkTLACheck = {
@@ -383,14 +390,17 @@
       INVARIANT StreamCancellationSafety
     '';
   };
-in {
-  inherit
-    statute
-    jobs
-    workflows
-    store
-    replicasets
-    auth
-    network
-    ;
-}
+in
+  if hasTlaSpecs
+  then {
+    inherit
+      statute
+      jobs
+      workflows
+      store
+      replicasets
+      auth
+      network
+      ;
+  }
+  else {}

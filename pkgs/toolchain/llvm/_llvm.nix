@@ -201,16 +201,21 @@ in
           EOF
 
           BT="${builtins.toString pkgs.bootstrapTools}"
-          DL=$(ls $BT/lib/ld-linux-*.so.* | head -1)
-          GCC_VER=$(ls "$BT/lib/gcc/x86_64-unknown-linux-gnu/")
+          REAL_CC=$(cat "$BT/nix-support/orig-cc")
+          REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
+          REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
+          DL=$(cat "$BT/nix-support/dynamic-linker")
+          GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
           clang \
             --sysroot=/ \
-            -B$BT/lib \
-            -B$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER \
-            -isystem $BT/include-glibc \
-            -L$BT/lib \
+            -B$REAL_LIBC/lib \
+            -B$GCC_DIR \
+            -isystem $REAL_LIBC_DEV/include \
+            -L$REAL_LIBC/lib \
+            -L$GCC_DIR \
             -Wl,-dynamic-linker=$DL \
-            -Wl,-rpath,$BT/lib \
+            -Wl,-rpath,$REAL_LIBC/lib \
+            -Wl,-rpath,$GCC_DIR \
             -o /tmp/hello /tmp/hello.c
           /tmp/hello
         '';
@@ -234,20 +239,29 @@ in
           EOF
 
           BT="${builtins.toString pkgs.bootstrapTools}"
-          BT_ROOT=$(dirname $BT/lib)
-          CXX_VER=$(ls "$BT_ROOT/include/c++")
-          DL=$(ls $BT/lib/ld-linux-*.so.* | head -1)
+          REAL_CC=$(cat "$BT/nix-support/orig-cc")
+          REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
+          REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
+          DL=$(cat "$BT/nix-support/dynamic-linker")
+          CXX_VER=$(ls "$REAL_CC/include/c++")
+          GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
           clang++ \
             --sysroot=/ \
-            -isystem "$BT_ROOT/include/c++/$CXX_VER" \
-            -isystem "$BT_ROOT/include/c++/$CXX_VER/x86_64-unknown-linux-gnu" \
-            -isystem $BT/include-glibc \
-            -B$BT/lib \
-            -B$BT/lib/gcc/x86_64-unknown-linux-gnu/$CXX_VER \
-            -L$BT/lib \
-            -L$BT/lib/gcc/x86_64-unknown-linux-gnu/$CXX_VER/ \
+            -isystem "$REAL_CC/include/c++/$CXX_VER" \
+            -isystem "$REAL_CC/include/c++/$CXX_VER/x86_64-unknown-linux-gnu" \
+            -isystem "$REAL_CC/include/c++/$CXX_VER/backward" \
+            -isystem $REAL_LIBC_DEV/include \
+            -B$REAL_LIBC/lib \
+            -B$GCC_DIR \
+            -L$REAL_LIBC/lib \
+            -L$REAL_CC/lib \
+            -L$REAL_CC/lib64 \
+            -L$GCC_DIR \
             -Wl,-dynamic-linker=$DL \
-            -Wl,-rpath,$BT/lib \
+            -Wl,-rpath,$REAL_LIBC/lib \
+            -Wl,-rpath,$REAL_CC/lib \
+            -Wl,-rpath,$REAL_CC/lib64 \
+            -Wl,-rpath,$GCC_DIR \
             -o /tmp/test /tmp/test.cpp -lstdc++
           /tmp/test
         '';
@@ -333,19 +347,24 @@ in
 
           BT="${builtins.toString pkgs.bootstrapTools}"
           OPENSSL="${builtins.toString pkgs.openssl}"
-          DL=$(ls $BT/lib/ld-linux-*.so.* | head -1)
-          GCC_VER=$(ls "$BT/lib/gcc/x86_64-unknown-linux-gnu/")
+          REAL_CC=$(cat "$BT/nix-support/orig-cc")
+          REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
+          REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
+          DL=$(cat "$BT/nix-support/dynamic-linker")
+          GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
 
           clang \
             --sysroot=/ \
             -isystem $OPENSSL/include \
-            -isystem $BT/include-glibc \
-            -B$BT/lib \
-            -B$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER \
-            -L$BT/lib \
+            -isystem $REAL_LIBC_DEV/include \
+            -B$REAL_LIBC/lib \
+            -B$GCC_DIR \
+            -L$REAL_LIBC/lib \
+            -L$GCC_DIR \
             -L$OPENSSL/lib \
             -Wl,-dynamic-linker=$DL \
-            -Wl,-rpath,$BT/lib \
+            -Wl,-rpath,$REAL_LIBC/lib \
+            -Wl,-rpath,$GCC_DIR \
             -Wl,-rpath,$OPENSSL/lib \
             -o /tmp/ssl_test /tmp/ssl_test.c -lcrypto
           /tmp/ssl_test

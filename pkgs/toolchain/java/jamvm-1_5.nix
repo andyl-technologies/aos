@@ -24,6 +24,7 @@ in
       classpath-0_93
       zlib
     ];
+    hardeningDisable = ["fortify3"];
 
     phases = [
       {

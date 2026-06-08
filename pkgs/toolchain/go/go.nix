@@ -104,6 +104,7 @@ in
           export GOPATH="/tmp/go"
           export GOCACHE="/tmp/go-cache"
           export CGO_ENABLED=1
+          export CC="/usr/local/bin/gcc"
           mkdir -p "$GOPATH" "$GOCACHE"
 
           mkdir -p /tmp/cgopkg
@@ -230,6 +231,7 @@ in
           export GOPATH="/tmp/go"
           export GOCACHE="/tmp/go-cache"
           export CGO_ENABLED=1
+          export CC="/usr/local/bin/gcc"
           mkdir -p "$GOPATH" "$GOCACHE"
 
           OPENSSL="${builtins.toString pkgs.openssl}"
@@ -271,6 +273,7 @@ in
           export GOPATH="/tmp/go"
           export GOCACHE="/tmp/go-cache"
           export CGO_ENABLED=1
+          export CC="/usr/local/bin/gcc"
           mkdir -p "$GOPATH" "$GOCACHE"
 
           ZLIB="${builtins.toString pkgs.zlib}"
@@ -454,6 +457,7 @@ in
           export HOME="/tmp"
           export PATH="${self}/bin:$PATH"
           export CGO_ENABLED=1
+          export CC="/usr/local/bin/gcc"
           export CGO_CFLAGS="-I${pkgs.zlib}/include"
           export CGO_LDFLAGS="-L${pkgs.zlib}/lib -lz"
           export C_INCLUDE_PATH="${pkgs.zlib}/include:$C_INCLUDE_PATH"
