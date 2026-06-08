@@ -1,185 +1,205 @@
-# Registry External Validation Runbook
+# Registry VM Validation Runbook
 
-> **Status:** Follow-up PR runbook. The implementation PR is complete; these
-> external Nix VM, service-backed, fleet, and target-host checks are
-> intentionally deferred to the next validation PR and must be run before
-> claiming production validation. This file does not replace the reference docs
-> in [`../../registry`](../../registry); it collects the commands and evidence
-> needed for that follow-up work.
+> **Status:** VM validation PR runbook. These checks run inside the Nix-based
+> headless Firecracker VM test harness and require a KVM-capable builder. Do not
+> run them on developer laptops without KVM access. The current builder target is
+> `dylan@builder-hil1-c13958ef`.
 
-## 1. Stock Nix `require-sigs`
-
-Run only on a controlled/containerized Nix host. The test creates a tiny
-fixed-output store path and the stock-Nix probe uses `nix path-info --store` with
-`require-sigs = true`.
+The VM checks live in
+[`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
+and are exposed through
+[`../../../tests/vm/apm/default.nix`](../../../tests/vm/apm/default.nix).
+Run them from a Linux/KVM checkout synced to the builder:
 
 ```sh
-AOS_PACKAGE_TEST_REAL_NIX_CACHE=1 \
-AOS_PACKAGE_TEST_STOCK_NIX_CACHE=1 \
-  cargo test --manifest-path crates/Cargo.toml -p aos-package \
-  static_nix_cache_e2e_generates_serves_and_downloads_real_store_path -- --nocapture
+nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array
+nix-build -A checks.vm.apm.registry-validation-origin-cdn-layout
+nix-build -A checks.vm.apm.registry-validation-stock-git-matrix
+nix-build -A checks.vm.apm.registry-validation-pack-delta-perf
 ```
 
-Evidence needed:
+## Builder Evidence: 2026-06-08
 
-- command output showing the stock-Nix probe ran instead of skipped;
-- generated narinfo includes `Sig:`;
-- `nix path-info --store <cache-url> <store-path>` succeeds with signatures
-  required.
+The focused registry validation checks passed on
+`dylan@builder-hil1-c13958ef` from the synced checkout
+`/tmp/aos-vm-fleet-validation-20260606` with:
+
+```sh
+nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-stock-nix-backend-array --no-out-link
+nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-origin-cdn-layout --no-out-link
+nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-stock-git-matrix --no-out-link
+nix-build /tmp/aos-vm-fleet-validation-20260606 --argstr system x86_64-linux -A checks.vm.apm.registry-validation-pack-delta-perf --no-out-link
+```
+
+Passing outputs:
+
+- `stock-nix-backend-array`:
+  `/nix/store/bwp2ayp8r199n32s2csndcv43qmi38xr-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`
+- `origin-cdn-layout`:
+  `/nix/store/xfzd1yim7sx5cq9gsg6nx8kvh1hi551s-aos-vm-test-apm-registry-validation-origin-cdn-layout-0`
+- `stock-git-matrix`:
+  `/nix/store/yx7wm7m63l6smij5k57dbjlz22y3ql74-aos-vm-test-apm-registry-validation-stock-git-matrix-0`
+- `pack-delta-perf`:
+  `/nix/store/c6lg01w5ks8f2h4ginav0wfdhlf12az9-aos-vm-test-apm-registry-validation-pack-delta-perf-0`
+
+The detailed guest evidence is in each output's `serial.log`.
+
+## 1. Stock Nix, Signatures, And Backend Array
+
+Check:
+
+```sh
+nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array
+```
+
+This VM creates a tiny fixed-output store path, generates signed static
+Nix-cache files with `apr cache generate`, uploads the same generated cache to a
+mixed destination array, and serves the generated cache to stock Nix with
+`require-sigs = true`.
+
+Evidence required:
+
+- generated `.narinfo` contains `Sig:`;
+- stock `nix path-info --store http://127.0.0.1:18080 <store-path>` succeeds
+  with `require-sigs` and the generated trusted public key;
+- `file://`, S3-compatible, and SFTP destinations receive byte-identical
+  `nix-cache-info`, `<storehash>.narinfo`, and `nar/*` outputs;
+- an invalid fourth destination is reported as one partial failure only after
+  all valid destinations have been attempted.
 
 Primary files:
 
 - [`../../registry/nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md)
-- [`../../../crates/aos-package/tests/registry_cache_e2e.rs`](../../../crates/aos-package/tests/registry_cache_e2e.rs)
+- [`../../registry/publishing.md`](../../registry/publishing.md)
+- [`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
 - [`../../../crates/aos-package/src/registry/nixcache.rs`](../../../crates/aos-package/src/registry/nixcache.rs)
-
-## 2. Service-Backed Upload Matrix
-
-First run the backend-level S3/SFTP round trips:
-
-```sh
-AOS_CACHE_TEST_S3_URL=s3://bucket/prefix \
-  cargo test --manifest-path crates/Cargo.toml -p aos-cache \
-  s3_backend_round_trips_against_env_url -- --ignored --nocapture
-
-AOS_CACHE_TEST_SFTP_URL=sftp://user@host/path \
-  cargo test --manifest-path crates/Cargo.toml -p aos-cache \
-  sftp_backend_round_trips_against_env_url -- --ignored --nocapture
-```
-
-Then run the generated static-cache matrix against a mixed destination array. The
-test automatically prepends a local `file://` destination, so the env var should
-list the service-backed destinations:
-
-```sh
-AOS_PACKAGE_TEST_REAL_NIX_CACHE=1 \
-AOS_PACKAGE_TEST_GENERATED_CACHE_UPLOAD_URLS='s3://bucket/prefix sftp://user@host/path' \
-  cargo test --manifest-path crates/Cargo.toml -p aos-package \
-  static_nix_cache_e2e_generates_serves_and_downloads_real_store_path -- --nocapture
-```
-
-Evidence needed:
-
-- backend-level S3 and SFTP write/read round trips pass;
-- generated cache upload writes `nix-cache-info`, `<storehash>.narinfo`, and
-  `nar/*` to S3, local file, and SFTP destinations;
-- readback uses the `aos-cache` backend trait for each destination;
-- partial destination failures are reported only after all destinations are
-  attempted.
-
-Primary files:
-
-- [`../../../crates/aos-cache/tests/backend_matrix.rs`](../../../crates/aos-cache/tests/backend_matrix.rs)
-- [`../../../crates/aos-package/tests/registry_cache_e2e.rs`](../../../crates/aos-package/tests/registry_cache_e2e.rs)
 - [`../../../crates/aos-cache/src/backend/s3.rs`](../../../crates/aos-cache/src/backend/s3.rs)
 - [`../../../crates/aos-cache/src/backend/sftp.rs`](../../../crates/aos-cache/src/backend/sftp.rs)
 
-## 3. Stock Git Matrix
+Passing builder evidence: output
+`/nix/store/bwp2ayp8r199n32s2csndcv43qmi38xr-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`.
+Its `serial.log` records the expected aggregate invalid-destination diagnostic
+for `not-a-url`, then
+`registry stock Nix + backend array validation passed`.
 
-Use pinned/containerized Git binaries for the documented floor and newer
-supported clients. The matrix test is ignored because it temporarily changes
-`PATH`; run it single-threaded.
+## 2. CDN / Mirror Layout
+
+Check:
 
 ```sh
-AOS_PACKAGE_TEST_GIT_MATRIX=/path/to/git-2.42/bin/git:/path/to/git-current/bin/git \
-  cargo test --manifest-path crates/Cargo.toml -p aos-package \
-  stock_git_configured_version_matrix_syncs_sha256_dumb_http_registry -- \
-  --ignored --nocapture --test-threads=1
+nix-build -A checks.vm.apm.registry-validation-origin-cdn-layout
 ```
 
-Evidence needed:
+This VM uploads a git-native registry origin plus generated static-cache files to
+an S3-compatible endpoint and inspects the recorded upload metadata.
 
-- each listed binary reports `git version >= 2.42.0`;
-- each binary syncs the sha256 dumb-HTTP fixture through
-  `registry::git::sync_git`;
-- failures force either a documented floor change or a compatibility fix.
+Evidence required:
+
+- immutable uploads happen before mutable pointer/index uploads;
+- immutable `objects/**`, `nar/**`, and `*.narinfo` get long immutable
+  `Cache-Control`;
+- mutable `HEAD`, `info/refs`, `objects/info/**`, `channels/**`, and
+  `nix-cache-info` get low-TTL / must-revalidate `Cache-Control`;
+- content types match the reference layout;
+- `objects/info/alternates`, when present, contains only relative paths.
 
 Primary files:
 
 - [`../../registry/http-layout.md`](../../registry/http-layout.md)
-- [`../../../crates/aos-package/tests/registry_e2e.rs`](../../../crates/aos-package/tests/registry_e2e.rs)
+- [`../../registry/publishing.md`](../../registry/publishing.md)
+- [`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
+- [`../../../crates/aos-package/src/registry/static_upload.rs`](../../../crates/aos-package/src/registry/static_upload.rs)
+- [`../../../crates/aos-package/src/registry/objectstore.rs`](../../../crates/aos-package/src/registry/objectstore.rs)
+
+Passing builder evidence: output
+`/nix/store/xfzd1yim7sx5cq9gsg6nx8kvh1hi551s-aos-vm-test-apm-registry-validation-origin-cdn-layout-0`.
+Its `serial.log` records
+`registry origin CDN layout validation passed`.
+
+## 3. Stock Git Matrix
+
+Check:
+
+```sh
+nix-build -A checks.vm.apm.registry-validation-stock-git-matrix
+```
+
+This VM serves a sha256 bare registry over dumb HTTP and clones it with the
+pinned minimum Git floor and the repo's current Git package.
+
+Evidence required:
+
+- `pkgs."git-2_42"` reports Git 2.42.x;
+- `pkgs.git` reports a supported newer version;
+- both binaries clone the dumb-HTTP origin;
+- both clones report `rev-parse --show-object-format` as `sha256`.
+
+Primary files:
+
+- [`../../registry/http-layout.md`](../../registry/http-layout.md)
+- [`../../../pkgs/tools/git-2_42.nix`](../../../pkgs/tools/git-2_42.nix)
+- [`../../../pkgs/tools/git.nix`](../../../pkgs/tools/git.nix)
+- [`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
 - [`../../../crates/aos-package/src/registry/git.rs`](../../../crates/aos-package/src/registry/git.rs)
+
+Passing builder evidence: output
+`/nix/store/yx7wm7m63l6smij5k57dbjlz22y3ql74-aos-vm-test-apm-registry-validation-stock-git-matrix-0`.
+Its `serial.log` records `validating stock Git 2.42.0`,
+`validating stock Git 2.48.1`, and
+`registry stock Git matrix validation passed`.
 
 ## 4. Pack/Delta Performance
 
-Run on representative producer hardware and on the smallest supported consumer
-host. Increase package count until it resembles the production registry size.
+Check:
 
 ```sh
-AOS_PACKAGE_TEST_REGISTRY_PERF=1 \
-AOS_PACKAGE_TEST_REGISTRY_PERF_PACKAGES=500 \
-  cargo test --manifest-path crates/Cargo.toml -p aos-package \
-  registry_pack_delta_perf_harness_reports_metrics -- --ignored --nocapture
+nix-build -A checks.vm.apm.registry-validation-pack-delta-perf
 ```
 
-Evidence needed:
+This VM builds a synthetic sha256 registry, measures full-pack generation,
+thin-delta generation, zstd compression, and consumer reconstruction, and prints
+`REGISTRY_PERF_METRIC` lines.
 
-- full-pack generation time and bytes;
-- thin-delta generation time and bytes;
-- zstd compression time and bytes;
-- full-pack and compressed-delta reconstruction times;
-- decision on `pack-objects` window/depth/compression, zstd level/window, and
-  whether dictionary training is worth shipping.
+Evidence required:
+
+- `REGISTRY_PERF_METRIC full_pack_bytes=...`;
+- `REGISTRY_PERF_METRIC full_pack_ns=...`;
+- `REGISTRY_PERF_METRIC thin_delta_bytes=...`;
+- `REGISTRY_PERF_METRIC thin_delta_ns=...`;
+- `REGISTRY_PERF_METRIC zstd_delta_bytes=...`;
+- `REGISTRY_PERF_METRIC zstd_ns=...`;
+- `REGISTRY_PERF_METRIC reconstruct_ns=...`;
+- reconstructed consumer repo contains the target commit.
 
 Primary files:
 
 - [`../../registry/packs-and-deltas.md`](../../registry/packs-and-deltas.md)
-- [`../../../crates/aos-package/tests/registry_perf.rs`](../../../crates/aos-package/tests/registry_perf.rs)
+- [`../../../tests/vm/apm/registry_validation.nix`](../../../tests/vm/apm/registry_validation.nix)
 - [`../../../crates/aos-package/src/registry/pack.rs`](../../../crates/aos-package/src/registry/pack.rs)
 - [`../../../crates/aos-package/src/registry/fetch.rs`](../../../crates/aos-package/src/registry/fetch.rs)
+- [`../../../crates/aos-package/tests/registry_perf.rs`](../../../crates/aos-package/tests/registry_perf.rs)
 
-## 5. CDN / Mirror Validation
+Passing builder evidence: output
+`/nix/store/c6lg01w5ks8f2h4ginav0wfdhlf12az9-aos-vm-test-apm-registry-validation-pack-delta-perf-0`.
+Its `serial.log` records:
 
-Run against the actual CDN/mirror stack used for production origins.
+```text
+REGISTRY_PERF_METRIC full_pack_bytes=11276
+REGISTRY_PERF_METRIC full_pack_ns=86438382
+REGISTRY_PERF_METRIC thin_delta_bytes=11295
+REGISTRY_PERF_METRIC thin_delta_ns=49235341
+REGISTRY_PERF_METRIC zstd_delta_bytes=7191
+REGISTRY_PERF_METRIC zstd_ns=1748206
+REGISTRY_PERF_METRIC reconstruct_ns=2568679
+```
 
-Evidence needed:
+## 5. Max-Staleness Boundary
 
-- immutable files (`objects/<xx>/<62>`, `releases/**`, `nar/**`,
-  `*.narinfo`) receive long immutable caching;
-- mutable files (`HEAD`, `info/refs`, `objects/info/**`, `channels/**`,
-  `nix-cache-info`) receive low TTL / must-revalidate behavior;
-- `objects/info/alternates` remains byte-identical after mirroring and contains
-  only relative paths;
-- a frontier/pointer update is not visible before its referenced immutable
-  objects are readable from the edge;
-- mirror freshness diagnostics are understandable when a channel pointer is
-  stale or frozen.
-
-Primary files:
-
-- [`../../registry/http-layout.md`](../../registry/http-layout.md)
-- [`../../registry/publishing.md`](../../registry/publishing.md)
-- [`../../../crates/aos-package/src/registry/static_upload.rs`](../../../crates/aos-package/src/registry/static_upload.rs)
-- [`../../../crates/aos-package/src/registry/fetch.rs`](../../../crates/aos-package/src/registry/fetch.rs)
-
-## 6. Max-Staleness Tuning
-
-Use real fleet update cadence and CDN behavior before changing the default.
-
-Evidence needed:
-
-- distribution of successful channel refresh intervals across production hosts;
-- expected quiet-channel durations;
-- CDN/mirror stale-edge behavior and incident recovery expectations;
-- chosen `max_staleness_seconds` default plus operator override guidance.
-
-Primary files:
-
-- [`../../registry/versioning-and-channels.md`](../../registry/versioning-and-channels.md)
-- [`../../registry/signing-and-trust.md`](../../registry/signing-and-trust.md)
-- [`open-questions.md`](./open-questions.md)
-- [`../../../crates/aos-package/src/registry/git.rs`](../../../crates/aos-package/src/registry/git.rs)
-
-## 7. Final Operator Docs Gate
-
-In the follow-up validation PR, after the external gates above pass, update the
-operator-facing docs with the validated commands, required environment/auth
-setup, supported versions, and production defaults.
-
-Primary files:
-
-- [`../../registry/publishing.md`](../../registry/publishing.md)
-- [`../../registry/nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md)
-- [`../../registry/signing-and-trust.md`](../../registry/signing-and-trust.md)
-- [`../../registry/repo-layout.md`](../../registry/repo-layout.md)
-- [`../../registry/README.md`](../../registry/README.md)
+`max_staleness_seconds` default tuning is not a VM-testable implementation
+property because it depends on production update cadence, quiet-channel duration,
+and CDN incident behavior. Repository behavior is covered by Rust unit/e2e tests
+in [`../../../crates/aos-package/src/registry/git.rs`](../../../crates/aos-package/src/registry/git.rs)
+and
+[`../../../crates/aos-package/tests/registry_e2e.rs`](../../../crates/aos-package/tests/registry_e2e.rs);
+the VM CDN-layout check covers the mutable-path TTL side. Fleet default tuning
+belongs in deployment rollout notes.

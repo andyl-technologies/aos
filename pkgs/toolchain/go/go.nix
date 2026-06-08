@@ -532,6 +532,114 @@ in
           /tmp/cgotest/cgotest
         '';
       };
+
+      cgo-gcc-and-clang = testing.mkVMTest {
+        name = "cross-cutting-go-cgo-gcc-clang";
+        rootfsDeps = [
+          self
+          pkgs.llvm
+          pkgs.zlib
+        ];
+        memory = 768;
+        testScript = ''
+          export GOPATH="/tmp/gopath"
+          export GOCACHE="/tmp/gocache"
+          export HOME="/tmp"
+          export PATH="${self}/bin:${pkgs.llvm}/bin:$PATH"
+          export CGO_ENABLED=1
+          export CGO_CFLAGS="-I${pkgs.zlib}/include"
+          export CGO_LDFLAGS="-L${pkgs.zlib}/lib -lz"
+          export C_INCLUDE_PATH="${pkgs.zlib}/include:$C_INCLUDE_PATH"
+          export LIBRARY_PATH="${pkgs.zlib}/lib:$LIBRARY_PATH"
+          export LD_LIBRARY_PATH="${pkgs.zlib}/lib:$LD_LIBRARY_PATH"
+          mkdir -p "$GOPATH" "$GOCACHE" /tmp/cgo-integration
+
+          BT="${builtins.toString pkgs.bootstrapTools}"
+          DL=$(ls "$BT"/lib/ld-linux-*.so.* | head -1)
+          GCC_VER=$(ls "$BT"/lib/gcc/x86_64-unknown-linux-gnu)
+
+          cat > /tmp/clang-cgo << EOF
+          #!/bin/sh
+          exec ${pkgs.llvm}/bin/clang \\
+            --sysroot=/ \\
+            -isystem "$BT/include-glibc" \\
+            -B"$BT/lib" \\
+            -B"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
+            -L"$BT/lib" \\
+            -L"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
+            -Wl,-dynamic-linker="$DL" \\
+            -Wl,-rpath,"$BT/lib" \\
+            -Wl,-rpath,"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
+            "\$@"
+          EOF
+          chmod +x /tmp/clang-cgo
+
+          cat > /tmp/cgo-integration/main.go << 'GOEOF'
+          package main
+
+          /*
+          #include <zlib.h>
+          #include <stdlib.h>
+          #include <string.h>
+
+          int z_roundtrip(const char *src, int srcLen) {
+              unsigned long packedLen = compressBound((unsigned long)srcLen);
+              unsigned char *packed = (unsigned char *)malloc(packedLen);
+              unsigned char unpacked[128];
+              unsigned long unpackedLen = sizeof(unpacked);
+              int ret;
+
+              if (packed == NULL) {
+                  return -100;
+              }
+
+              ret = compress(packed, &packedLen, (const unsigned char *)src, (unsigned long)srcLen);
+              if (ret != Z_OK) {
+                  free(packed);
+                  return ret;
+              }
+
+              ret = uncompress(unpacked, &unpackedLen, packed, packedLen);
+              free(packed);
+              if (ret != Z_OK) {
+                  return ret;
+              }
+              if (unpackedLen != (unsigned long)srcLen) {
+                  return -101;
+              }
+              return memcmp(src, unpacked, (size_t)srcLen);
+          }
+          */
+          import "C"
+          import "fmt"
+
+          func main() {
+              input := "go cgo compiler integration"
+              if rc := C.z_roundtrip(C.CString(input), C.int(len(input))); rc != 0 {
+                  panic(fmt.Sprintf("zlib roundtrip failed: %d", int(rc)))
+              }
+              fmt.Println("go-cgo-compiler-ok")
+          }
+          GOEOF
+
+          cat > /tmp/cgo-integration/go.mod << 'GOEOF'
+          module cgo-integration
+          go 1.26
+          GOEOF
+
+          cd /tmp/cgo-integration
+
+          for cc in /usr/local/bin/gcc /tmp/clang-cgo; do
+            export CC="$cc"
+            rm -f /tmp/cgo-integration/cgo-test
+            echo "==> Building Go CGO program with CC=$CC"
+            go build -x -o /tmp/cgo-integration/cgo-test .
+            /tmp/cgo-integration/cgo-test
+          done
+
+          echo "Go CGO GCC/LLVM integration: PASS"
+        '';
+      };
     };
 
     meta = {

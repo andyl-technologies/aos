@@ -103,6 +103,66 @@ impl BuildEvent {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_sse_event(kind: BuildEventKind, event_type: &str) {
+        let frame = BuildEvent { id: 7, kind }.to_sse();
+        assert!(frame.starts_with("id: 7\n"));
+        assert!(frame.contains(&format!("event: {event_type}\n")));
+        assert!(frame.contains("data: "));
+        assert!(frame.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn sse_frames_cover_every_internal_build_activity_type() {
+        assert_sse_event(
+            BuildEventKind::Status {
+                phase: "queued".into(),
+                drv: "/nix/store/example.drv".into(),
+            },
+            "status",
+        );
+        assert_sse_event(
+            BuildEventKind::Log {
+                line: "building".into(),
+            },
+            "log",
+        );
+        assert_sse_event(
+            BuildEventKind::Complete {
+                success: true,
+                outputs: vec!["/nix/store/out".into()],
+                duration_secs: 3,
+            },
+            "complete",
+        );
+        assert_sse_event(
+            BuildEventKind::Error {
+                drv: "/nix/store/bad.drv".into(),
+                exit_code: Some(42),
+                log_tail: "failed".into(),
+            },
+            "error",
+        );
+        assert_sse_event(
+            BuildEventKind::DaemonUnavailable {
+                attempt: 2,
+                max_attempts: 3,
+                message: "daemon unavailable".into(),
+            },
+            "daemon-unavailable",
+        );
+        assert_sse_event(
+            BuildEventKind::Drain {
+                message: "server shutting down".into(),
+            },
+            "drain",
+        );
+    }
+}
+
 /// Ring buffer for replay of build events to late joiners.
 /// Caps at `MAX_LOG_EVENTS`; oldest events are dropped when full.
 pub struct LogBuffer {

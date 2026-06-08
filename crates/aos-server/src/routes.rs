@@ -812,12 +812,7 @@ async fn build_closure_handler(
         tokio::spawn(async move {
             // Replay buffered events.
             for event in handle.log_buffer.events_from(replay_from) {
-                let tagged = format!(
-                    "id: {}\nevent: {}\ndata: {}\n\n",
-                    event.id,
-                    "build-closure",
-                    serde_json::json!({"drv": drv, "inner": event.to_sse().trim()})
-                );
+                let tagged = format_build_closure_sse_event(&drv, &event);
                 if tx.send(tagged).await.is_err() {
                     return;
                 }
@@ -828,12 +823,7 @@ async fn build_closure_handler(
             loop {
                 match rx.recv().await {
                     Ok(event) => {
-                        let tagged = format!(
-                            "id: {}\nevent: {}\ndata: {}\n\n",
-                            event.id,
-                            "build-closure",
-                            serde_json::json!({"drv": drv, "inner": event.to_sse().trim()})
-                        );
+                        let tagged = format_build_closure_sse_event(&drv, &event);
                         if tx.send(tagged).await.is_err() {
                             return;
                         }
@@ -867,6 +857,15 @@ async fn build_closure_handler(
         body,
     )
         .into_response()
+}
+
+fn format_build_closure_sse_event(drv: &str, event: &crate::build::BuildEvent) -> String {
+    format!(
+        "id: {}\nevent: {}\ndata: {}\n\n",
+        event.id,
+        "build-closure",
+        serde_json::json!({"drv": drv, "inner": event.to_sse().trim()})
+    )
 }
 
 async fn upload_pack_handler(
@@ -1100,4 +1099,28 @@ async fn gc_handler(
         "collected": collected,
     }))
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_build_closure_sse_event;
+    use crate::build::{BuildEvent, BuildEventKind};
+
+    #[test]
+    fn build_closure_sse_wrapper_preserves_inner_activity_type() {
+        let event = BuildEvent {
+            id: 9,
+            kind: BuildEventKind::Log {
+                line: "building member".into(),
+            },
+        };
+
+        let frame = format_build_closure_sse_event("/nix/store/member.drv", &event);
+
+        assert!(frame.starts_with("id: 9\n"));
+        assert!(frame.contains("event: build-closure\n"));
+        assert!(frame.contains("\"drv\":\"/nix/store/member.drv\""));
+        assert!(frame.contains("event: log"));
+        assert!(frame.ends_with("\n\n"));
+    }
 }

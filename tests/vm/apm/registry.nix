@@ -1,7 +1,7 @@
 # tests/vm/apm/registry.nix — Registry management VM tests (11 tests)
 #
 # Tests for `apr` registry lifecycle commands: create, add, remove, publish,
-# unpublish, branch workflow, validate, and bundle generation.
+# unpublish, branch workflow, validate, signed tags, and clean-break behavior.
 # All tests run in headless Firecracker microVMs.
 {
   testing,
@@ -342,50 +342,45 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 9. registry-bundle — Create git bundle from registry
+  # 9. registry-bundle — Legacy selector for signed tag / no-bundle clean break
   # -------------------------------------------------------------------------
   registry-bundle = testing.mkVMTest {
-    name = "apm-registry-bundle";
-    rootfsDeps = fixtures.commonDeps;
+    name = "apm-registry-signed-tag-clean-break";
+    rootfsDeps = fixtures.commonDeps ++ [pkgs.openssh];
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
       ${fixtures.mkFakePackageToml}
 
-      echo "==> Test: apr tag and bundle"
+      echo "==> Test: apr signed tag and bundle clean break"
 
       # Create registry with packages
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
-      write_package_toml "$REG_DIR" "bundlepkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish bundlepkg 1.0.0"
+      write_package_toml "$REG_DIR" "tagpkg" "1.0.0"
+      commit_registry "$REG_DIR" "publish tagpkg 1.0.0"
 
-      # Create a tag
-      $APR tag v1.0 --registry test-reg
+      ssh-keygen -q -t ed25519 -N "" -f /tmp/release-key
+      $APR tag 1.0.0 --registry test-reg --key /tmp/release-key
 
-      # Verify tag exists
       cd "$REG_DIR"
-      assert_cmd_success "git tag -l v1.0" "tag v1.0 exists"
+      assert_cmd_success "git rev-parse 1.0.0^{tag}" \
+        "signed release tag object exists"
+      assert_cmd_output_contains "git cat-file -p 1.0.0" \
+        "BEGIN SSH SIGNATURE" "release tag object carries SSH signature"
       cd /tmp
 
-      # Generate bundle
-      mkdir -p /tmp/bundles
-      $APR bundle --tag v1.0 --output /tmp/bundles --registry test-reg
+      assert_file_not_exists "$REG_DIR/bundle-list.toml" \
+        "git-native registry does not emit bundle-list.toml"
 
-      # Verify bundle file exists (pattern: <name>-<tag>.bundle)
-      BUNDLE_FILE=$(ls /tmp/bundles/*.bundle 2>/dev/null | head -1)
-      if [ -n "$BUNDLE_FILE" ] && [ -f "$BUNDLE_FILE" ]; then
-        pass "bundle file created: $BUNDLE_FILE"
+      if $APR bundle --tag 1.0.0 --output /tmp/bundles --registry test-reg \
+        > /tmp/bundle-out 2>&1; then
+        fail "apr bundle should not exist after git-native cutover"
+      elif grep -q "unrecognized subcommand" /tmp/bundle-out; then
+        pass "apr bundle is removed with a clean CLI error"
       else
-        fail "no bundle file found in /tmp/bundles/"
-        ls -la /tmp/bundles/ 2>/dev/null || true
-      fi
-
-      # Verify bundle is a valid git bundle (must be in a git repo context)
-      if [ -n "$BUNDLE_FILE" ]; then
-        cd "$REG_DIR"
-        assert_cmd_success "git bundle verify $BUNDLE_FILE" "bundle is valid"
-        cd /tmp
+        fail "apr bundle failed with unexpected output"
+        cat /tmp/bundle-out
       fi
 
       check_fail
