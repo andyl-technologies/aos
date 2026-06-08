@@ -10,6 +10,7 @@
 #   nix-build -A checks.vm.apm.registry-create
 #   nix-build -A checks.vm.apm.tracking-branch
 #   nix-build -A checks.vm.apm.install-basic
+#   nix-build -A checks.vm.apm.command-surface
 #   nix-build -A checks.vm.apm.sysroot-lock-blocked
 #   nix-build -A checks.vm.apm.system-install
 #   nix-build -A checks.vm.apm.kernel-advisory
@@ -17,6 +18,7 @@
 #   nix-build -A checks.vm.apm.cache-push-pull
 #   nix-build -A checks.vm.apm.rpc-cache-query-missing
 #   nix-build -A checks.vm.apm.e2e-full-lifecycle
+#   nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array
 {
   testing,
   pkgs,
@@ -24,6 +26,7 @@
   aosPkg = pkgs.aos;
 
   registryTests = import ./registry.nix {inherit testing pkgs aosPkg;};
+  registryValidationTests = import ./registry_validation.nix {inherit testing pkgs aosPkg;};
   trackingTests = import ./tracking.nix {inherit testing pkgs aosPkg;};
   packageTests = import ./packages.nix {inherit testing pkgs aosPkg;};
   sysrootLockTests = import ./sysroot_lock.nix {
@@ -62,6 +65,7 @@
   };
 in
   registryTests
+  // registryValidationTests
   // trackingTests
   // packageTests
   // sysrootLockTests

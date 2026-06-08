@@ -596,6 +596,14 @@ cache generation is opt-in with `--cache-output` for the same reason. Uploads
 accept repeatable backend URLs (`file://`, `http(s)://`, `s3://`, and
 `sftp://`/`ssh://`) and publish immutable payloads before low-TTL mutable
 pointers.
+The mixed cache upload path is validated by
+`checks.vm.apm.registry-validation-stock-nix-backend-array`; the static-origin
+upload ordering and CDN metadata contract are validated by
+`checks.vm.apm.registry-validation-origin-cdn-layout`. Both checks passed on
+`dylan@builder-hil1-c13958ef` on 2026-06-08. The backend-array output was
+`/nix/store/bwp2ayp8r199n32s2csndcv43qmi38xr-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`;
+the CDN-layout output was
+`/nix/store/xfzd1yim7sx5cq9gsg6nx8kvh1hi551s-aos-vm-test-apm-registry-validation-origin-cdn-layout-0`.
 
 ---
 

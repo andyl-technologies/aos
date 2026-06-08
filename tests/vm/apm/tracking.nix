@@ -1,8 +1,9 @@
 # tests/vm/apm/tracking.nix — Registry tracking mode VM tests (7 tests)
 #
 # Tests for different registry tracking modes: branch, tag, version (~, ^),
-# commit, default, and bundle-sync.  Each test creates a local git registry
-# with appropriate refs/tags and verifies that `apm registry add` with the
+# commit, default, and git-native clean-break behavior.  Each test creates a
+# local git registry with appropriate refs/tags and verifies that
+# `apm registry add` with the
 # matching tracking flag produces the correct config, and that the tracking
 # mode semantics are correct.
 {
@@ -323,62 +324,50 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 7. tracking-bundle-sync — Bundle transport with version tracking
+  # 7. tracking-bundle-sync — Legacy selector for git-native clean-break tracking
   # -------------------------------------------------------------------------
   tracking-bundle-sync = testing.mkVMTest {
-    name = "apm-tracking-bundle-sync";
+    name = "apm-tracking-git-native-clean-break";
     rootfsDeps = fixtures.commonDeps;
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
       ${fixtures.mkFakePackageToml}
+      ${fixtures.mkRemoteRegistry}
 
-      echo "==> Test: bundle transport with version tracking config"
+      echo "==> Test: git-native version tracking after bundle cutover"
 
-      # Create a local registry, add packages, and create version tags
-      $APR create test-reg
-      REG_DIR="$REG_STORAGE/test-reg"
+      create_remote_registry /tmp/remote-git-native.git
 
-      write_package_toml "$REG_DIR" "bundlev1" "1.0.0"
-      commit_registry "$REG_DIR" "publish bundlev1 1.0.0"
-      cd "$REG_DIR"
+      git clone /tmp/remote-git-native.git /tmp/git-native-setup
+      cd /tmp/git-native-setup
       git tag v1.0.0
-      cd /tmp
-
-      write_package_toml "$REG_DIR" "bundlev2" "1.1.0"
-      commit_registry "$REG_DIR" "publish bundlev2 1.1.0"
-      cd "$REG_DIR"
+      echo "# v1.1.0" >> registry.toml
+      git add -A
+      git commit -m "v1.1.0"
       git tag v1.1.0
+      git update-server-info
+      git push origin --tags
+      git push origin "$(git branch --show-current)"
       cd /tmp
+      rm -rf /tmp/git-native-setup
 
-      # Create bundles for each version
-      mkdir -p /tmp/bundles
-      $APR bundle --tag v1.0.0 --output /tmp/bundles --registry test-reg
-      $APR bundle --tag v1.1.0 --output /tmp/bundles --registry test-reg
+      $APM registry add file:///tmp/remote-git-native.git \
+        --name git-native-reg --version "~1"
 
-      # Verify both bundles exist
-      V1_BUNDLE=$(ls /tmp/bundles/*v1.0.0* 2>/dev/null | head -1)
-      V2_BUNDLE=$(ls /tmp/bundles/*v1.1.0* 2>/dev/null | head -1)
+      assert_file_contains "$APM_CONFIG/registries.d/git-native-reg.toml" \
+        'version = "~1"' "config keeps git-native version tracking"
+      assert_cmd_output_contains "$APR list" "version" \
+        "apr list shows version tracking mode"
 
-      if [ -n "$V1_BUNDLE" ] && [ -f "$V1_BUNDLE" ]; then
-        pass "v1.0.0 bundle created"
+      if $APR bundle --tag v1.1.0 --output /tmp/bundles --registry git-native-reg \
+        > /tmp/bundle-out 2>&1; then
+        fail "apr bundle should not exist after git-native cutover"
+      elif grep -q "unrecognized subcommand" /tmp/bundle-out; then
+        pass "bundle transport command is removed"
       else
-        fail "v1.0.0 bundle not found"
-      fi
-
-      if [ -n "$V2_BUNDLE" ] && [ -f "$V2_BUNDLE" ]; then
-        pass "v1.1.0 bundle created"
-      else
-        fail "v1.1.0 bundle not found"
-      fi
-
-      # Create a delta bundle between v1.0.0 and v1.1.0
-      $APR bundle --tag v1.1.0 --delta-from v1.0.0 --output /tmp/bundles --registry test-reg
-      DELTA_BUNDLE=$(ls /tmp/bundles/*v1.0.0..v1.1.0* 2>/dev/null | head -1)
-      if [ -n "$DELTA_BUNDLE" ] && [ -f "$DELTA_BUNDLE" ]; then
-        pass "delta bundle v1.0.0..v1.1.0 created"
-      else
-        fail "delta bundle not found"
+        fail "apr bundle failed with unexpected output"
+        cat /tmp/bundle-out
       fi
 
       check_fail

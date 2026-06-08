@@ -55,10 +55,11 @@
   #              `dev-disk-by-partlabel-swap.device` would otherwise sit
   #              queued for 90 s on every boot waiting for udev to
   #              announce a partition that doesn't exist.
-  #   4  var   — 32 MiB ext4. Carries the /var/etc allowlist plus
+  #   4  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
   #              test-specific overrides (host SSH key, SELinux off,
-  #              test units). Label `var` via GPT partlabel so
-  #              mount-var.service finds it.
+  #              test units) and role state used by fleet tests.
+  #              Label `var` via GPT partlabel so mount-var.service
+  #              finds it.
   #
   # Spec v12 §5.4 names /var/etc as the tight host-persistent
   # allowlist (machine-id, ssh host keys). For test infrastructure we
@@ -467,6 +468,7 @@
           name = "assemble";
           script = ''
             set -eu
+            VAR_SIZE_MIB=256
 
             # ── /var partition staging ──────────────────────────────────
             mkdir -p var
@@ -477,7 +479,7 @@
             ${varSeed}
 
             # fakeroot so the var partition's files land as uid/gid 0.
-            fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img 32M
+            fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img "''${VAR_SIZE_MIB}M"
 
             # ── Root image from the shared rootfs helper ────────────────
             cp "$ROOT_IMG" root.img
@@ -492,7 +494,7 @@
             BOOT_SECTORS=$(( 4 * 1024 * 1024 / 512 ))   # 4 MiB
             ROOT_SECTORS=$(( root_bytes / 512 ))
             SWAP_SECTORS=$(( 8 * 1024 * 1024 / 512 ))   # 8 MiB
-            VAR_SECTORS=$((  32 * 1024 * 1024 / 512 ))  # 32 MiB
+            VAR_SECTORS=$(( VAR_SIZE_MIB * 1024 * 1024 / 512 ))
 
             BOOT_START=2048
             ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
