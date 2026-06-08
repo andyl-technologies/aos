@@ -180,7 +180,7 @@ in {
           # accepts daemon reads — doing it now would trip the same
           # guard against root's own subsequent clone/push.
           REG_DIR=/var/lib/aos-registry-server/registries/test-reg
-          git init --bare "$REG_DIR"
+          git init --bare --object-format=sha256 "$REG_DIR"
           # No `touch git-daemon-export-ok` — the unit passes
           # --export-all, which makes the marker file unnecessary.
           WORK=$(mktemp -d)
