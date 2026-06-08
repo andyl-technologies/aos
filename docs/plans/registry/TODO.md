@@ -10,7 +10,13 @@ Keep this file current as work lands.
 > `tests/vm/apm/registry_validation.nix`. The focused registry VM checks passed
 > on the KVM builder `dylan@builder-hil1-c13958ef` on 2026-06-08;
 > fleet-specific `max_staleness_seconds` tuning remains operator rollout policy
-> rather than a repository implementation item.
+> rather than a repository implementation item. Additional builder validation
+> on 2026-06-08 passed the full `checks.fleet` aggregate after the fleet
+> `apm-e2e` registry fixture was corrected to initialize a sha256 bare origin.
+> A full `checks.integration` aggregate was also attempted, but it failed in the
+> unrelated `cross-cutting-archive-chain` libarchive check before completing;
+> the registry-requested Go CGO GCC/LLVM integration gate passed separately.
+> Context for that non-registry failure: `pkgs/libs/libarchive.nix`.
 
 ## Branch Setup
 
@@ -85,6 +91,29 @@ Keep this file current as work lands.
       `Go CGO GCC/LLVM integration: PASS`. Context:
       `pkgs/toolchain/go/go.nix`, `lib/testing/vm.nix`, and
       `lib/testing/firecracker.nix`.
+- [x] Run the full fleet VM aggregate on `dylan@builder-hil1-c13958ef` after
+      adding the external registry validation checks. Builder evidence from
+      2026-06-08: `checks.fleet` passed with outputs for
+      `apm-e2e`, `apm-system-activation-fail`, `apm-system-upgrade`,
+      `apm-systemd-client`, `k3s-combined-worker`,
+      `k3s-control-plane-worker`, and `test-http-server-pair`. The final
+      `apm-e2e` run passed at
+      `/nix/store/vkxg2pj9y4szwr0s72hhgkcf5ix41gp9-aos-fleet-test-apm-e2e-0`.
+      Context: `tests/fleet/apm-e2e.nix`, `lib/testing/fleet.nix`,
+      `lib/testing/vm.nix`, and `docs/plans/registry/validation-runbook.md`.
+
+## Non-Registry Integration Observation
+
+- [x] Attempt the full `checks.integration` aggregate on
+      `dylan@builder-hil1-c13958ef` for extra confidence. The aggregate did not
+      complete: `cross-cutting-archive-chain` failed with a fortified
+      buffer-overflow abort while running the libarchive tar.gz extraction test,
+      and Nix also reported unrelated package-build failures from the same broad
+      aggregate. This is not a remaining `docs/registry` implementation item;
+      the targeted registry-adjacent integration gate above passed. Context:
+      `pkgs/libs/libarchive.nix`, `pkgs/toolchain/go/go.nix`,
+      `lib/testing/firecracker.nix`, and
+      `docs/plans/registry/TODO.md`.
 
 ## WS-01 Object Store
 
