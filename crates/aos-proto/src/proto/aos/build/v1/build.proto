@@ -20,8 +20,9 @@ message ClosureRequest {
 }
 
 message BuildEvent {
-  // Event type: "status", "log", "complete", "error",
-  // "daemon-unavailable", "drain", "build-closure"
+  // ConnectRPC event type: "status", "log", "complete", "error",
+  // "daemon-unavailable", or "drain". The legacy SSE build-closure endpoint
+  // wraps those inner events in an outer "build-closure" SSE event.
   string event_type = 1;
   string message = 2;
   int64 timestamp = 3;

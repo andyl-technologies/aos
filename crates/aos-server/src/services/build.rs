@@ -275,3 +275,96 @@ fn internal_to_proto(event: &InternalBuildEvent, drv_override: &str) -> BuildEve
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proto_for(kind: BuildEventKind) -> BuildEvent {
+        internal_to_proto(&InternalBuildEvent { id: 7, kind }, "")
+    }
+
+    #[test]
+    fn internal_build_events_map_every_activity_type_to_proto() {
+        let status = proto_for(BuildEventKind::Status {
+            phase: "queued".into(),
+            drv: "/nix/store/example.drv".into(),
+        });
+        assert_eq!(status.event_type, "status");
+        assert_eq!(status.phase, "queued");
+        assert_eq!(status.derivation, "/nix/store/example.drv");
+        assert_eq!(status.event_id, 7);
+
+        let log = proto_for(BuildEventKind::Log {
+            line: "building".into(),
+        });
+        assert_eq!(log.event_type, "log");
+        assert_eq!(log.message, "building");
+
+        let complete = proto_for(BuildEventKind::Complete {
+            success: true,
+            outputs: vec!["/nix/store/out".into()],
+            duration_secs: 3,
+        });
+        assert_eq!(complete.event_type, "complete");
+        assert!(complete.success);
+        assert_eq!(complete.outputs, vec!["/nix/store/out"]);
+        assert_eq!(complete.duration_secs, 3);
+
+        let error = proto_for(BuildEventKind::Error {
+            drv: "/nix/store/bad.drv".into(),
+            exit_code: Some(42),
+            log_tail: "failed".into(),
+        });
+        assert_eq!(error.event_type, "error");
+        assert_eq!(error.derivation, "/nix/store/bad.drv");
+        assert_eq!(error.exit_code, Some(42));
+        assert_eq!(error.log_tail, "failed");
+
+        let daemon = proto_for(BuildEventKind::DaemonUnavailable {
+            attempt: 2,
+            max_attempts: 3,
+            message: "daemon unavailable".into(),
+        });
+        assert_eq!(daemon.event_type, "daemon-unavailable");
+        assert_eq!(daemon.attempt, 2);
+        assert_eq!(daemon.max_attempts, 3);
+        assert_eq!(daemon.message, "daemon unavailable");
+
+        let drain = proto_for(BuildEventKind::Drain {
+            message: "server shutting down".into(),
+        });
+        assert_eq!(drain.event_type, "drain");
+        assert_eq!(drain.message, "server shutting down");
+    }
+
+    #[test]
+    fn closure_stream_derivation_override_applies_to_events_with_derivations() {
+        let status = internal_to_proto(
+            &InternalBuildEvent {
+                id: 1,
+                kind: BuildEventKind::Status {
+                    phase: "building".into(),
+                    drv: "/nix/store/original.drv".into(),
+                },
+            },
+            "/nix/store/closure-member.drv",
+        );
+        assert_eq!(status.event_type, "status");
+        assert_eq!(status.derivation, "/nix/store/closure-member.drv");
+
+        let error = internal_to_proto(
+            &InternalBuildEvent {
+                id: 2,
+                kind: BuildEventKind::Error {
+                    drv: "/nix/store/original.drv".into(),
+                    exit_code: None,
+                    log_tail: "querying outputs failed".into(),
+                },
+            },
+            "/nix/store/closure-member.drv",
+        );
+        assert_eq!(error.event_type, "error");
+        assert_eq!(error.derivation, "/nix/store/closure-member.drv");
+    }
+}

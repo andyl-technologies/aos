@@ -10,6 +10,7 @@
 #   nix-build -A checks.vm.apm.registry-create
 #   nix-build -A checks.vm.apm.tracking-branch
 #   nix-build -A checks.vm.apm.install-basic
+#   nix-build -A checks.vm.apm.command-surface
 #   nix-build -A checks.vm.apm.sysroot-lock-blocked
 #   nix-build -A checks.vm.apm.system-install
 #   nix-build -A checks.vm.apm.kernel-advisory
