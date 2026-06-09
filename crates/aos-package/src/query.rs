@@ -223,11 +223,10 @@ pub async fn list(
     let profile = Profile::open(config.scope)?;
     let meta_list = list_meta(&profile)?;
 
-    // Build a map: package_name -> InstalledMeta (for packages with apm section).
-    let installed_by_name: HashMap<String, &InstalledMeta> = meta_list
-        .iter()
-        .filter_map(|m| m.apm.as_ref().map(|apm| (apm.name.clone(), m)))
-        .collect();
+    // Installed state belongs to the registry that supplied the package. The
+    // same package name can exist in multiple registries with different store
+    // paths, versions, and priority.
+    let installed_by_source_map = installed_by_source(&meta_list);
 
     // Pre-load sysroot references and registry lookup for sysroot-lock checks.
     let sysroot_info_for_lock = sysroot_lock::get_sysroot_references(config);
@@ -256,7 +255,9 @@ pub async fn list(
                 None => continue,
             };
 
-            let installed = installed_by_name.get(name);
+            let installed = installed_by_source_map
+                .get(&(name.to_string(), reg.config.name.clone()))
+                .copied();
             let is_installed = installed.is_some();
 
             // Determine held status.
@@ -357,11 +358,16 @@ pub async fn list(
         }
     }
 
-    // Sort by name then registry.
-    entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    // Sort by name while preserving registry priority order for duplicate
+    // names, because entries were collected from RegistrySet in priority order.
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Deduplicate by name (highest priority registry comes first).
-    entries.dedup_by(|b, a| a.0 == b.0);
+    // The default available-package view deduplicates duplicate names by
+    // priority. Filtered views are state-oriented and should not hide an
+    // installed or upgradable package from a lower-priority registry.
+    if !installed_only && !upgradable_only && !held_only {
+        entries.dedup_by(|b, a| a.0 == b.0);
+    }
 
     // Output.
     if printer.mode() == OutputMode::Json {
@@ -476,6 +482,16 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let cache_dir = config.cache_path();
     let platform = current_platform();
     RegistrySet::load(&cache_dir, &enabled, &platform)
+}
+
+fn installed_by_source(meta_list: &[InstalledMeta]) -> HashMap<(String, String), &InstalledMeta> {
+    meta_list
+        .iter()
+        .filter_map(|m| {
+            let apm = m.apm.as_ref()?;
+            Some(((apm.name.clone(), apm.registry.clone()), m))
+        })
+        .collect()
 }
 
 /// Detect the current platform string (e.g. "x86_64-linux").
@@ -775,11 +791,8 @@ mod tests {
             false,
         );
 
-        let installed_by_name: HashMap<String, &InstalledMeta> = {
-            let mut m = HashMap::new();
-            m.insert("curl".to_string(), &curl_installed);
-            m
-        };
+        let installed = vec![curl_installed];
+        let installed_by_source_map = installed_by_source(&installed);
 
         // Filter: only installed packages.
         let mut entries = Vec::new();
@@ -788,7 +801,9 @@ mod tests {
             names.sort();
             for name in names {
                 let meta = reg.get(name).unwrap();
-                let installed = installed_by_name.get(name);
+                let installed = installed_by_source_map
+                    .get(&(name.to_string(), reg.config.name.clone()))
+                    .copied();
                 let is_installed = installed.is_some();
 
                 // installed_only filter
@@ -833,18 +848,17 @@ mod tests {
             false,
         );
 
-        let installed_by_name: HashMap<String, &InstalledMeta> = {
-            let mut m = HashMap::new();
-            m.insert("curl".to_string(), &curl_installed);
-            m.insert("zlib".to_string(), &zlib_installed);
-            m
-        };
+        let installed = vec![curl_installed, zlib_installed];
+        let installed_by_source_map = installed_by_source(&installed);
 
         let mut upgradable = Vec::new();
         for reg in registries.registries() {
             for name in reg.names() {
                 let meta = reg.get(name).unwrap();
-                if let Some(inst) = installed_by_name.get(name) {
+                if let Some(inst) = installed_by_source_map
+                    .get(&(name.to_string(), reg.config.name.clone()))
+                    .copied()
+                {
                     let installed_hash = store_path_hash(&inst.store_path);
                     let registry_hash = store_path_hash(&meta.store_path);
                     if installed_hash != registry_hash {
@@ -856,6 +870,32 @@ mod tests {
 
         assert_eq!(upgradable.len(), 1);
         assert_eq!(upgradable[0], "curl");
+    }
+
+    #[test]
+    fn installed_by_source_keeps_same_name_registries_distinct() {
+        let low = sample_installed_meta(
+            "priority-tool",
+            "9.0.0",
+            "low-priority",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-priority-tool-9.0.0",
+            false,
+        );
+        let installed = vec![low];
+        let by_source = installed_by_source(&installed);
+
+        assert!(
+            by_source
+                .get(&("priority-tool".to_string(), "high-priority".to_string()))
+                .is_none()
+        );
+        assert_eq!(
+            by_source
+                .get(&("priority-tool".to_string(), "low-priority".to_string()))
+                .and_then(|m| m.apm.as_ref())
+                .map(|apm| apm.version.as_str()),
+            Some("9.0.0")
+        );
     }
 
     // 9. search_with_registry_filter
