@@ -70,17 +70,29 @@ control, and globally-loaded kernel modules (`br_netfilter`, `vxlan`, `ip_set`).
 Describing that as "isolated" would mislead operators. The difference is that the
 manifest *records* the trade rather than burying it in a class label.
 
-Two things remain **genuinely open** under the resolved model:
+One sub-question is now **answered** and one remains **genuinely open** under the
+resolved model:
 
-**(a) Policy enforcement point and format.** Where does the allow-list / cap on
-permissions live, and who enforces it? A fleet policy ("refuse any package that
-declares `CAP_SYS_ADMIN` / `privileged-users`") could be applied at **`apm`
-install/enable time** (the installer rejects a package whose manifest exceeds the
-host policy) or at a **boot-time admission check** (the activation path refuses to
-start a container whose manifest violates policy), or both. The policy *format*
-(TOML allow/deny lists, a signed fleet policy doc, Nix-evaluated) is also
-unsettled. **DECIDE-EARLY** (shapes the manifest consumer and the install API).
-*packages-core* + *apm* + *boot*.
+**(a) Policy enforcement point — ANSWERED (see
+[permissions.md](permissions.md) §"Enforcement: package / registry / system").**
+Enforcement is **defense in depth across three layers**: the **package**
+*declares* (a signed, immutable claim — not a grant); the **registry** is the
+*publication policy + trust anchor* (binds and signs the manifest so a host can
+trust it, but cannot know any host's local policy); the **system/host** is the
+**authoritative grant** (checks the signed manifest against this host's/fleet's
+local policy — allowlists, caps, the module allowlist — and grants or denies). It
+is the only layer that can constrain what runs, because only it knows its own
+policy. The "install-time vs boot-time admission" tension is resolved:
+**policy-checked at install/enable** (apm refuses a package whose manifest
+exceeds host policy), but the **actual enforcement is mechanical
+materialization** — the generated nspawn unit contains only the flags for granted
+permissions and `aos-pkg-<pkg>-modules.service` loads only allowlisted modules,
+re-derived from the granted set each generation, with the kernel/signature layer
+backstopping modules. A package that declared more than granted simply runs with
+less. **What is still open** is the policy **file format** and **where the host
+allowlist is declared** (TOML allow/deny lists, a signed fleet policy doc,
+Nix-evaluated) — that remains TBD. **DECIDE-EARLY** (the file format only; the
+enforcement model is settled). *packages-core* + *apm* + *boot*.
 
 **(b) The validated k3s permission set under AOS nspawn.** The manifest in
 [permissions.md](permissions.md) is a *strawman* derived from known
@@ -109,15 +121,30 @@ sandbox.
 **Options.**
 - Keep module loading host-side, gated by the package target (current design).
   Honest, simple, one-way on stop.
-- Treat `kernel-modules` as a declared permission (see [permissions.md](permissions.md)):
-  any package may request it, but it is the one irreducibly host-level grant
-  (the host loads them via `aos-pkg-<pkg>-modules.service`), and a fleet policy
-  (Decision 1(a)) can refuse packages that request it.
+- Treat `kernel-modules` as a normal **allowlisted** permission (see
+  [permissions.md](permissions.md)): a package *requests* it, and the host
+  *grants* it only if every requested module is in a host **allowlist** —
+  otherwise admission fails with a clear message, exactly like a forbidden
+  capability. It is *host-fulfilled* (loaded via `aos-pkg-<pkg>-modules.service`),
+  but no longer an "exception" to the `request ∩ grant` model.
+
+**Why this is safe in AOS (defense in depth).** Two backstops bound the risk:
+(1) the module **universe is bounded automatically** — a package cannot *ship* a
+module (unsigned kernel code on an immutable, hermetic host), so the only modules
+that exist are those the host kernel was built with; the allowlist is at minimum
+"modules this kernel has," narrowable to a policy subset. (2) The **kernel is the
+ultimate backstop** — with module signing / `module.sig_enforce`, even a policy
+bug cannot load an arbitrary module. The chain is **package request → host
+allowlist → kernel signature enforcement**. Module loading is the *most
+dangerous* permission (kernel-level code execution), which is *why* it gets an
+explicit allowlisted, signature-backed grant.
 
 **Proposed next step.** *packages-core*: model `kernel.modules` as the
-`kernel-modules` permission in the `[permissions]` manifest — honored host-side,
-gated by the policy enforcement point of Decision 1(a). Document the
-non-reversibility (loaded modules persist after stop). **DECIDE-EARLY**.
+allowlisted `kernel-modules` permission in the `[permissions]` manifest —
+host-fulfilled, gated by the package target, admission-checked against the host
+allowlist (Decision 1(a)), kernel-signature backstopped. Document the
+non-reversibility (loaded modules persist after stop). **DECIDE-EARLY** (where
+the allowlist is declared rides on the still-open policy file format of 1(a)).
 
 ---
 
@@ -566,8 +593,8 @@ the package generation. Spec in [apm-integration.md](apm-integration.md) §4.1.
 
 | # | Decision | Disposition | Owner |
 |---|---|---|---|
-| 1 | Package privilege model — **RESOLVED** (unified container + `[permissions]` manifest); open: (a) policy enforcement point/format, (b) validated k3s permission set | (a) DECIDE-EARLY · (b) DECIDE-BEFORE-MVP | packages-core / apm / boot / pkgs |
-| 2 | Kernel modules as the host-level `kernel-modules` permission | DECIDE-EARLY | packages-core |
+| 1 | Package privilege model — **RESOLVED** (unified container + `[permissions]` manifest); (a) enforcement model **ANSWERED** (three-layer, system/host authoritative, mechanical materialization, registry-signed trust anchor, checked at install/enable) — only the policy *file format* / allowlist location stays open; (b) validated k3s permission set still open | (a) DECIDE-EARLY (file format) · (b) DECIDE-BEFORE-MVP | packages-core / apm / boot / pkgs |
+| 2 | Kernel modules as the **allowlisted, signature-backed** host-fulfilled `kernel-modules` permission | DECIDE-EARLY | packages-core |
 | 3 | Container networking model (veth/host/zone) | DECIDE-EARLY | packages-core / pkgs |
 | 4 | nspawn-in-VM test feasibility prototype | DECIDE-BEFORE-MVP | test-infra |
 | 5 | Container root build + delivery + signing | DECIDE-EARLY / -BEFORE-MVP | pkgs / apm |

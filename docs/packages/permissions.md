@@ -43,6 +43,18 @@ manifest, just as a privileged Android app is still an app with a manifest.
 
 ## The permission surface
 
+One unifying rule governs every entry below:
+
+> Every permission is **`requested by the package ∩ granted by host policy`**.
+> Permissions differ only in *how* a grant is fulfilled — **inside** the
+> container (caps, seccomp, devices, mounts, netns) or by a **host-side action**
+> (`modprobe` for `kernel-modules`; the host firewall for `network: host`).
+
+So `kernel-modules` is not an exception to the model — it is a normal permission
+whose grant happens to be fulfilled host-side. The package *declares* a request;
+the host *grants* it only if policy allows; the difference is just the mechanism
+that materializes the grant.
+
 These map directly onto knobs systemd-nspawn / the generated scope already
 expose. The manifest field is the package-facing name; the mechanism is what
 the package module emits.
@@ -55,7 +67,7 @@ the package module emits.
 | `host-paths` | `--bind=` (rw) / `--bind-ro=` | none | scoped storage |
 | `cgroup-delegate` | `--property=Delegate=yes` (+ controllers) | off | — (no analog) |
 | `privileged-users` | `--private-users=no` (UID 0 == host UID 0) | userns on | "runs unsandboxed" |
-| `kernel-modules` | host loads them — container cannot (see Limits) | none | system/OEM-level |
+| `kernel-modules` | host-fulfilled: `aos-pkg-<name>-modules.service` `modprobe`s allowlisted modules (see Limits) | none | system/OEM-level |
 | `syscalls` | `--system-call-filter=` / named profile | default seccomp | — |
 | `security-label` | SELinux/AppArmor context (`--selinux-context=`) | inherit | — |
 
@@ -107,7 +119,7 @@ devices          = ["/dev/net/tun", "/dev/kmsg"]
 host-paths       = [
   { path = "/var/lib/rancher", mode = "rw" },
 ]
-kernel-modules   = ["br_netfilter", "vxlan", "ip_set"]   # host loads these
+kernel-modules   = ["br_netfilter", "vxlan", "ip_set"]   # request; host loads iff allowlisted
 syscalls         = "relaxed"
 ```
 
@@ -137,19 +149,41 @@ permission services. Enabling the target grants exactly the declared
 permission set; disabling it removes the container and the host-side grants
 (modulo the one-way limits below).
 
-## The two genuinely host-level permissions (honest limits)
+## The two host-fulfilled permissions (honest limits)
+
+These two are **fulfilled host-side** rather than inside the container — but
+they are *not* exceptions to the `request ∩ grant` model above. The package
+still only *requests*; the host still decides whether to *grant*. The difference
+is the mechanism, plus an honest one-way teardown caveat for modules.
 
 1. **`kernel-modules`.** No container can load a kernel module — the kernel is
-   shared. This permission is satisfied by the **host** loading the module
-   (`aos-pkg-<name>-modules.service`), declared by the package but honored
-   host-side. It is the one permission that is irreducibly host-level, and
-   loaded modules persist after the package stops (global, one-way — same
-   caveat as the gated-target sandbox).
+   shared. The package **declares** `kernel-modules = [...]` as a *request*; the
+   host **grants** it only if every requested module is in a host **allowlist**.
+   A non-allowlisted module **fails admission with a clear message — exactly
+   like a forbidden capability**. Granted modules are loaded host-side by
+   `aos-pkg-<name>-modules.service` (gated by the package target). Two
+   AOS-specific backstops make this the safest place such a grant could live:
+   - **The module universe is bounded automatically.** A package *cannot ship* a
+     module — that would be unsigned kernel code on an immutable, hermetic host —
+     so the only modules that exist are the ones the host kernel was built with.
+     The allowlist is therefore *at minimum* "modules this kernel has," and can
+     be narrowed to a policy subset.
+   - **The kernel is the ultimate backstop.** With module signing /
+     `module.sig_enforce`, even a policy bug cannot load an arbitrary module. The
+     chain is **package request → host allowlist → kernel signature enforcement**
+     (defense in depth).
+
+   Module loading is the **most dangerous** permission — it is kernel-level code
+   execution — which is *why* it gets an explicit allowlisted, signature-backed
+   grant rather than a quiet host action. The honest caveat remains: loaded
+   modules **persist one-way** after the package stops (global — same caveat as
+   the gated-target sandbox).
 2. **`network: host`.** Choosing host networking trades the network boundary
    away: the package's ports and firewall rules are host-level, and any netns it
-   creates (k3s pods) lives in the host. The manifest makes that trade explicit
-   rather than implicit. A `network: private` package keeps a real, auto-
-   reverting network boundary.
+   creates (k3s pods) lives in the host. The grant is still host-fulfilled (the
+   host firewall, not a container-local netns), and the manifest makes that trade
+   explicit rather than implicit. A `network: private` package keeps a real,
+   auto-reverting network boundary.
 
 Everything else (mounts, devices, caps, fs writes) is scoped to the container
 and reverts on teardown — so the boundary strength is a *gradient set by the
@@ -162,14 +196,49 @@ manifest*, from "full sandbox" (empty manifest) to "packaging wrapper only"
   `aos describe <pkg>`) render the manifest — the permission prompt. This is
   the answer to "what does this package need to run?"
 - **Policy gate:** a host/fleet policy can allow-list or cap permissions
-  ("this fleet refuses `CAP_SYS_ADMIN`/`privileged-users` packages"), enforced
-  at install or enable time. `needs verification`: where the policy lives and
-  who enforces it (apm at install vs a boot-time admission check) — track as an
-  open decision in [open-questions.md](open-questions.md).
+  ("this fleet refuses `CAP_SYS_ADMIN`/`privileged-users` packages"). The
+  enforcement model — who decides, when, and how it is mechanically guaranteed —
+  is the next section. (The exact policy *file format* and where the allowlist is
+  declared is still open; see [open-questions.md](open-questions.md).)
 - **Signed & immutable:** the permission manifest is part of the package's
   signed registry metadata (see [apm-integration.md](apm-integration.md) and
   the registry signing docs), so a package cannot widen its own privileges
   after publish; a privilege change is a new signed version.
+
+## Enforcement: package / registry / system
+
+The manifest is enforced by **defense in depth across three layers, each making
+a different decision**. The phone analogy is exact: an app *declares* permissions
+in its manifest, the app store *reviews and signs* it, and your *device + its
+policy* actually grant or deny at install/run.
+
+| Layer | Decision it makes | What it can / cannot know | Phone analog |
+|---|---|---|---|
+| **Package** | **Declares** what it needs — a signed claim, immutable post-publish. **Not a grant.** | Knows its own needs; knows nothing about any host's policy. | the manifest in the APK |
+| **Registry** | **Publication policy + trust anchor.** Gates what may be distributed; **binds the manifest to the artifact and signs it** so a host can trust the declaration is authentic. | Cannot know any host's local policy. | app-store review + app signing |
+| **System / host** | **The authoritative grant.** Checks the signed manifest against *this* host's/fleet's local policy (allowlists, caps, the module allowlist) and grants or denies. | The only layer that can actually constrain what runs — because only it knows its own policy. | the OS + device policy/MDM + user consent |
+
+Two properties make this robust:
+
+1. **Enforcement is mechanical, not trust-based.** The host **materializes
+   exactly the granted set**: the generated nspawn unit contains *only* the flags
+   for granted permissions, and `aos-pkg-<name>-modules.service` loads *only*
+   allowlisted modules. A package that declared more than was granted simply runs
+   with less — the surplus is never put in the unit. Even a policy-check bug
+   cannot over-grant beyond what the host materializes, and the
+   kernel/signature layer backstops modules.
+2. **The registry signature is the trust anchor that makes host enforcement
+   meaningful.** Without it, a package could lie about its permissions to slip
+   past host policy. Registry signing is **not** policy enforcement — it is what
+   lets host enforcement *be trusted*.
+
+**Timing.** Host policy is checked at **install/enable** (apm refuses to install
+or enable a package whose manifest exceeds host policy). The **materialization**
+— unit generation plus the gated modules service — is the *actual* enforcement,
+and it is re-derived from the granted set on every generation. This resolves the
+earlier "install-time vs boot-time admission" question: **policy-checked at
+install, mechanically enforced by what gets generated, kernel-backstopped for
+modules** (see [open-questions.md](open-questions.md) Decision 1).
 
 ## What this changes elsewhere
 
@@ -180,8 +249,12 @@ manifest*, from "full sandbox" (empty manifest) to "packaging wrapper only"
   `kind = container|host` field; instead every exposing package is a container
   and carries a `[permissions]` block.
 - [open-questions.md](open-questions.md): Decision 1 (workload vs
-  infrastructure class) is resolved by this manifest; the remaining open item is
-  the *policy enforcement point* and the validated k3s permission set.
+  infrastructure class) is resolved by this manifest; the *policy enforcement
+  point* is now answered by the Enforcement section above (three-layer,
+  system/host authoritative, mechanical materialization, registry-signed trust
+  anchor, checked at install/enable). The remaining open items are the policy
+  *file format* / where the host allowlist is declared, and the validated k3s
+  permission set.
 
 ## Open questions
 
@@ -189,7 +262,9 @@ manifest*, from "full sandbox" (empty manifest) to "packaging wrapper only"
 - nspawn feature coverage in the AOS systemd build (cgroup-v2 delegation,
   `--private-users` mapping, custom seccomp) — Decision 7 in
   [open-questions.md](open-questions.md).
-- Policy enforcement point and format (install-time vs boot admission).
+- The policy **file format** and **where the host allowlist** (including the
+  `kernel-modules` allowlist) is declared — still TBD. (The enforcement *model*
+  is settled: see the Enforcement section above.)
 - Whether `CAP_SYS_MODULE` is ever granted to a container or module loading is
   *always* host-side via `kernel-modules` (lean: always host-side).
 - Config delivery into the container is a separate, still-open question — see
