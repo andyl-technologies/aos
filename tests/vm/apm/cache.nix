@@ -17,6 +17,7 @@
   jqBin = "${pkgs.jq}/bin/jq";
   curlBin = "${pkgs.curl}/bin/curl";
   grepBin = "${pkgs.grep}/bin/grep";
+  findBin = "${pkgs.findutils}/bin/find";
   aosBin = "${self}/bin/aos";
 
   # Shared preamble: loopback interface, mock Nix DB, server config.
@@ -118,6 +119,7 @@
     pkgs.sqlite
     pkgs.iproute2
     pkgs.grep
+    pkgs.findutils
   ];
 in {
   # ---------------------------------------------------------------------------
@@ -136,7 +138,9 @@ in {
       mkdir -p /tmp/test-cache/nar
 
       # Create a small test store path fixture
-      TEST_STORE_PATH="/tmp/aos/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-test-pkg-1.0"
+      TEST_STORE_HASH="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      TEST_STORE_BASENAME="$TEST_STORE_HASH-test-pkg-1.0"
+      TEST_STORE_PATH="$AOS_ROOT/store/$TEST_STORE_BASENAME"
       mkdir -p "$TEST_STORE_PATH/bin"
       echo '#!/bin/sh' > "$TEST_STORE_PATH/bin/hello"
       echo 'echo "Hello from test-pkg"' >> "$TEST_STORE_PATH/bin/hello"
@@ -148,20 +152,57 @@ in {
         "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$TEST_STORE_PATH', '$NAR_HASH', 1000000, 4096, 1, '''''');"
 
       echo "==> Test: cache push to file:// backend"
-      ${aosBin} cache push "$TEST_STORE_PATH" --to "file:///tmp/test-cache" \
-        --compression none 2>&1 || echo "WARN: push returned non-zero (may be expected for mock)"
+      if ! ${aosBin} cache push "$TEST_STORE_PATH" --to "file:///tmp/test-cache" \
+        --compression none > /tmp/cache-push-pull-push.out 2>&1; then
+        cat /tmp/cache-push-pull-push.out
+        echo "FAIL: cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-push-pull-push.out
 
-      # Verify narinfo file exists
-      NARINFO_COUNT=$(find /tmp/test-cache -name '*.narinfo' 2>/dev/null | wc -l)
+      # Verify narinfo and NAR files exist and describe the uploaded path.
+      NARINFO_COUNT=$(${findBin} /tmp/test-cache -maxdepth 1 -name '*.narinfo' 2>/dev/null | wc -l | tr -d ' ')
       echo "==> Found $NARINFO_COUNT narinfo files"
+      test "$NARINFO_COUNT" -eq 1 || { echo "FAIL: expected exactly one narinfo"; FAIL=1; }
 
-      # Verify NAR file exists
-      NAR_COUNT=$(find /tmp/test-cache/nar -name '*.nar*' 2>/dev/null | wc -l)
+      NAR_COUNT=$(${findBin} /tmp/test-cache/nar -type f -name '*.nar*' 2>/dev/null | wc -l | tr -d ' ')
       echo "==> Found $NAR_COUNT NAR files"
+      test "$NAR_COUNT" -eq 1 || { echo "FAIL: expected exactly one NAR"; FAIL=1; }
+
+      NARINFO_PATH="/tmp/test-cache/$TEST_STORE_HASH.narinfo"
+      test -f "$NARINFO_PATH" || { echo "FAIL: missing expected narinfo"; FAIL=1; }
+      ${grepBin} -F -q "StorePath: $TEST_STORE_PATH" "$NARINFO_PATH" || \
+        { echo "FAIL: narinfo missing store path"; cat "$NARINFO_PATH" 2>/dev/null || true; FAIL=1; }
+      ${grepBin} -F -q "Compression: none" "$NARINFO_PATH" || \
+        { echo "FAIL: narinfo missing compression"; cat "$NARINFO_PATH" 2>/dev/null || true; FAIL=1; }
+      ${grepBin} -F -q "URL: nar/" "$NARINFO_PATH" || \
+        { echo "FAIL: narinfo missing NAR URL"; cat "$NARINFO_PATH" 2>/dev/null || true; FAIL=1; }
+      ${grepBin} -F -q "NarHash: sha256:" "$NARINFO_PATH" || \
+        { echo "FAIL: narinfo missing NAR hash"; cat "$NARINFO_PATH" 2>/dev/null || true; FAIL=1; }
+
+      echo "==> Test: cache list sees local and cached path"
+      if ! ${aosBin} cache list "$TEST_STORE_PATH" --from "file:///tmp/test-cache" \
+        > /tmp/cache-push-pull-list.out 2>&1; then
+        cat /tmp/cache-push-pull-list.out
+        echo "FAIL: cache list failed"
+        exit 1
+      fi
+      cat /tmp/cache-push-pull-list.out
+      ${grepBin} -F -q "$TEST_STORE_HASH" /tmp/cache-push-pull-list.out || \
+        { echo "FAIL: cache list missing store path"; FAIL=1; }
+      ${grepBin} -F -q "synced" /tmp/cache-push-pull-list.out || \
+        { echo "FAIL: cache list did not report synced"; FAIL=1; }
 
       echo "==> Test: cache pull from file:// backend"
-      ${aosBin} cache pull "$TEST_STORE_PATH" --from "file:///tmp/test-cache" \
-        --dry-run 2>&1 || echo "WARN: pull returned non-zero (may be expected for mock)"
+      if ! ${aosBin} cache pull "$TEST_STORE_PATH" --from "file:///tmp/test-cache" \
+        --dry-run > /tmp/cache-push-pull-pull.out 2>&1; then
+        cat /tmp/cache-push-pull-pull.out
+        echo "FAIL: cache pull dry-run failed"
+        exit 1
+      fi
+      cat /tmp/cache-push-pull-pull.out
+      ${grepBin} -F -q "All paths already in local store." /tmp/cache-push-pull-pull.out || \
+        { echo "FAIL: cache pull did not report local store hit"; FAIL=1; }
 
       # Verify the store path is still valid
       test -d "$TEST_STORE_PATH" || { echo "FAIL: store path missing after round-trip"; FAIL=1; }
