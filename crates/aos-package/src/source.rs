@@ -213,7 +213,7 @@ pub async fn run_source(
         printer.kv("Expected NAR hash", expected_hash);
         printer.kv("Rebuilt NAR hash", &actual_hash);
 
-        if actual_hash == *expected_hash {
+        if hash_verify::sha256_hashes_equal(&actual_hash, expected_hash)? {
             printer.success(&format!(
                 "OK: source rebuild of '{package}' matches installed binary"
             ));

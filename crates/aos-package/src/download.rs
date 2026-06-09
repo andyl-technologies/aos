@@ -7,7 +7,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::Semaphore;
 
 use super::types::RegistryConfig;
+use super::verify::sha256_digest_hex;
 use aos_core::error::AosError;
+use aos_core::nar::cache::hash_path_fragment;
 use aos_core::nar::info::{self as narinfo, NarInfo};
 use aos_core::output::Printer;
 use aos_net::{HashAlgorithm, TransferEngine, TransferEngineConfig, TransferRequest};
@@ -207,9 +209,9 @@ async fn download_one(
             resolved.req.store_path,
         ),
     };
-    let expected_hex = file_hash.strip_prefix("sha256:").unwrap_or(&file_hash);
+    let expected_hex = sha256_digest_hex(&file_hash)?;
 
-    let transfer_req = TransferRequest::get(&url).with_hash(HashAlgorithm::Sha256, expected_hex);
+    let transfer_req = TransferRequest::get(&url).with_hash(HashAlgorithm::Sha256, &expected_hex);
 
     let pb_size = resolved.narinfo.file_size.unwrap_or(0);
     let pb = create_download_bar(pb_size, &label);
@@ -318,8 +320,7 @@ pub async fn download_nars(
 
 /// Generate a cache filename from a NAR hash.
 fn nar_cache_filename(nar_hash: &str) -> String {
-    let safe = nar_hash.replace(':', "-");
-    format!("{safe}.nar.zst")
+    format!("{}.nar.zst", hash_path_fragment(nar_hash))
 }
 
 /// Extract a short label from a store path for progress display.
@@ -427,6 +428,14 @@ mod tests {
         assert_eq!(
             nar_cache_filename("sha256:abcdef0123456789"),
             "sha256-abcdef0123456789.nar.zst",
+        );
+    }
+
+    #[test]
+    fn nar_cache_filename_escapes_sri_path_separators() {
+        assert_eq!(
+            nar_cache_filename("sha256-/zAx+ko="),
+            "sha256-_zAx_ko_.nar.zst",
         );
     }
 
