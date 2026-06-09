@@ -10,7 +10,7 @@ use super::download::{
 };
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
-use super::profile::meta::{list_meta, write_meta};
+use super::profile::meta::{delete_meta, list_meta, write_meta};
 use super::registry::{RegistrySet, store_path_hash};
 use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{create_gc_roots, filter_missing, import_nar};
@@ -210,10 +210,12 @@ pub async fn run(
     printer.step(6, 7, "Updating profile...");
     let prev_gen = profile.current_generation()?;
     let new_gen = profile.new_generation()?;
+    let explicit_names: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
+    let replaced_store_hashes = installed_store_hashes_for_names(&installed, &explicit_names);
 
     // Copy existing roots from the previous generation (if any).
     if let Some(ref prev) = prev_gen {
-        copy_roots(prev, &new_gen)?;
+        copy_roots_except_hashes(prev, &new_gen, &replaced_store_hashes)?;
     }
 
     // Create GC roots for all closure members.
@@ -232,7 +234,9 @@ pub async fn run(
     create_gc_roots(&new_gen.path, &unique_for_roots)?;
 
     // Write metadata -- explicit packages get explicit=true, deps get explicit=false.
-    let explicit_names: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
+    for hash in &replaced_store_hashes {
+        delete_meta(&profile, hash)?;
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -352,11 +356,28 @@ fn prune_dependency_members(closures: &mut [ResolvedClosure]) {
     }
 }
 
-/// Copy GC root symlinks from a previous generation to a new one.
-///
-/// Copies both `usr/` and `src/` symlinks so that the new generation
-/// inherits all packages from the previous one.
-fn copy_roots(from: &super::profile::Generation, to: &super::profile::Generation) -> Result<()> {
+fn installed_store_hashes_for_names(
+    installed: &[InstalledMeta],
+    package_names: &HashSet<&str>,
+) -> HashSet<String> {
+    installed
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            if package_names.contains(apm.name.as_str()) {
+                Some(store_path_hash(&meta.store_path).to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn copy_roots_except_hashes(
+    from: &super::profile::Generation,
+    to: &super::profile::Generation,
+    skip_hashes: &HashSet<String>,
+) -> Result<()> {
     use std::os::unix::fs::symlink;
 
     // Copy usr/ roots.
@@ -367,8 +388,13 @@ fn copy_roots(from: &super::profile::Generation, to: &super::profile::Generation
     if from_usr.is_dir() {
         for entry in std::fs::read_dir(&from_usr)? {
             let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if skip_hashes.contains(name_str.as_ref()) {
+                continue;
+            }
             let target = std::fs::read_link(entry.path())?;
-            let dest = to_usr.join(entry.file_name());
+            let dest = to_usr.join(&name);
             if !dest.symlink_metadata().is_ok() {
                 symlink(&target, &dest).with_context(|| {
                     format!("copying root {} -> {}", dest.display(), target.display())
@@ -385,8 +411,13 @@ fn copy_roots(from: &super::profile::Generation, to: &super::profile::Generation
     if from_src.is_dir() {
         for entry in std::fs::read_dir(&from_src)? {
             let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if skip_hashes.contains(name_str.as_ref()) {
+                continue;
+            }
             let target = std::fs::read_link(entry.path())?;
-            let dest = to_src.join(entry.file_name());
+            let dest = to_src.join(&name);
             if !dest.symlink_metadata().is_ok() {
                 symlink(&target, &dest).with_context(|| {
                     format!("copying root {} -> {}", dest.display(), target.display())
@@ -848,6 +879,27 @@ mod tests {
     }
 
     #[test]
+    fn installed_store_hashes_for_names_selects_replaced_runtime_roots() {
+        let installed = vec![
+            sample_installed(
+                "switch-tool",
+                "1.0.0",
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
+            ),
+            sample_installed(
+                "kept-tool",
+                "1.0.0",
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-kept-tool-1.0.0",
+            ),
+        ];
+        let names = HashSet::from(["switch-tool"]);
+        let hashes = installed_store_hashes_for_names(&installed, &names);
+
+        assert!(hashes.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(!hashes.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+    }
+
+    #[test]
     fn chrono_iso8601_epoch() {
         let result = chrono_iso8601(0);
         assert_eq!(result, "1970-01-01T00:00:00Z");
@@ -893,7 +945,7 @@ mod tests {
             path: to_path.clone(),
         };
 
-        copy_roots(&from_gen, &to_gen).unwrap();
+        copy_roots_except_hashes(&from_gen, &to_gen, &HashSet::new()).unwrap();
 
         // Verify usr/ root was copied.
         let usr_link = to_path.join("usr/abc123");
@@ -943,7 +995,7 @@ mod tests {
         };
 
         // Should succeed even when from has no usr/ or src/ dirs.
-        copy_roots(&from_gen, &to_gen).unwrap();
+        copy_roots_except_hashes(&from_gen, &to_gen, &HashSet::new()).unwrap();
 
         // to should have empty usr/ and src/ dirs.
         assert!(to_path.join("usr").is_dir());
@@ -976,11 +1028,70 @@ mod tests {
             path: to_path.clone(),
         };
 
-        copy_roots(&from_gen, &to_gen).unwrap();
+        copy_roots_except_hashes(&from_gen, &to_gen, &HashSet::new()).unwrap();
 
         // Existing symlink in "to" should NOT be overwritten.
         let target = std::fs::read_link(to_path.join("usr/abc123")).unwrap();
         assert_eq!(target.to_string_lossy(), "/var/lib/store/new-target");
+    }
+
+    #[test]
+    fn copy_roots_except_hashes_skips_replaced_roots() {
+        let tmp = TempDir::new().unwrap();
+
+        let from_path = tmp.path().join("gen-1");
+        let from_usr = from_path.join("usr");
+        let from_src = from_path.join("src");
+        std::fs::create_dir_all(&from_usr).unwrap();
+        std::fs::create_dir_all(&from_src).unwrap();
+        symlink(
+            "/var/lib/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
+            from_usr.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        )
+        .unwrap();
+        symlink(
+            "/var/lib/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-kept-tool-1.0.0",
+            from_usr.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        )
+        .unwrap();
+        symlink(
+            "/var/lib/store/cccccccccccccccccccccccccccccccc-switch-tool.drv",
+            from_src.join("cccccccccccccccccccccccccccccccc"),
+        )
+        .unwrap();
+
+        let from_gen = Generation {
+            number: 1,
+            path: from_path,
+        };
+        let to_path = tmp.path().join("gen-2");
+        std::fs::create_dir_all(&to_path).unwrap();
+        let to_gen = Generation {
+            number: 2,
+            path: to_path.clone(),
+        };
+        let skip_hashes = HashSet::from(["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()]);
+
+        copy_roots_except_hashes(&from_gen, &to_gen, &skip_hashes).unwrap();
+
+        assert!(
+            to_path
+                .join("usr/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(
+            to_path
+                .join("usr/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .symlink_metadata()
+                .is_ok()
+        );
+        assert!(
+            to_path
+                .join("src/cccccccccccccccccccccccccccccccc")
+                .symlink_metadata()
+                .is_ok()
+        );
     }
 
     #[test]
