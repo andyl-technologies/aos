@@ -1104,7 +1104,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 11. registry-branch-workflow — Branch create, switch, merge
+  # 11. registry-branch-workflow — Branch create, switch, merge, pull
   # -------------------------------------------------------------------------
   registry-branch-workflow = testing.mkVMTest {
     name = "apm-registry-branch-workflow";
@@ -1114,7 +1114,7 @@ in {
       ${fixtures.setupPreamble}
       ${setupNixPublishEnv}
 
-      echo "==> Test: real APR branch create, switch, publish, merge"
+      echo "==> Test: real APR branch create, switch, publish, merge, pull"
 
       FEATURE_STORE="${closureRootTool}"
       FEATURE_DEP_STORE="${closureLeafTool}"
@@ -1255,6 +1255,159 @@ in {
       }
       assert_file_contains /tmp/branch-list.out "feature-1" \
         "apr branch list shows feature branch"
+
+      $APR branch delete feature-1 --registry test-reg \
+        > /tmp/branch-delete.out 2>&1 || {
+        cat /tmp/branch-delete.out
+        fail "apr branch delete removes merged feature branch"
+      }
+      cat /tmp/branch-delete.out
+      assert_file_contains /tmp/branch-delete.out "Deleted branch 'feature-1'" \
+        "apr branch delete reports deleted feature branch"
+      $APR branch list --registry test-reg > /tmp/branch-list-after-delete.out 2>&1 || {
+        cat /tmp/branch-list-after-delete.out
+        fail "apr branch list succeeds after delete"
+      }
+      assert_file_not_contains /tmp/branch-list-after-delete.out "feature-1" \
+        "apr branch list hides deleted feature branch"
+
+      echo "==> Test: APR pull and pull --rebase between maintainer clones"
+
+      git init --bare --object-format=sha256 /tmp/branch-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/branch-origin.git
+      git --git-dir=/tmp/branch-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      $APR push --registry test-reg --branch "$DEFAULT_BRANCH" --set-upstream \
+        > /tmp/branch-initial-push.out 2>&1 || {
+        cat /tmp/branch-initial-push.out
+        fail "apr push publishes merged default branch"
+      }
+      cat /tmp/branch-initial-push.out
+      assert_file_contains /tmp/branch-initial-push.out "Pushed." \
+        "apr push reports initial default branch push"
+
+      COLLAB_DIR="$REG_STORAGE/collab-reg"
+      git clone /tmp/branch-origin.git "$COLLAB_DIR" \
+        > /tmp/branch-collab-clone.out 2>&1 || {
+        cat /tmp/branch-collab-clone.out
+        fail "second maintainer clone succeeds"
+      }
+      cat /tmp/branch-collab-clone.out
+      $APR show featurepkg --registry collab-reg \
+        > /tmp/branch-collab-show-feature.out 2>&1 || {
+        cat /tmp/branch-collab-show-feature.out
+        fail "second maintainer clone can query merged package"
+      }
+      assert_file_contains /tmp/branch-collab-show-feature.out \
+        "Real branch workflow fixture" \
+        "second maintainer clone sees merged package metadata"
+
+      $APR publish "$FEATURE_DEP_STORE" \
+        --name collab-local \
+        --version 1.0.0 \
+        --description "Local collaborator package before rebase" \
+        --license MIT \
+        --maintainer branch@example.invalid \
+        --registry collab-reg \
+        --no-commit > /tmp/branch-collab-local-publish.out 2>&1 || {
+        cat /tmp/branch-collab-local-publish.out
+        fail "second maintainer publishes local package before pull --rebase"
+      }
+      cat /tmp/branch-collab-local-publish.out
+      git -C "$COLLAB_DIR" add -A
+      git -C "$COLLAB_DIR" commit -m "publish collaborator local package" \
+        > /tmp/branch-collab-local-commit.out 2>&1 || {
+        cat /tmp/branch-collab-local-commit.out
+        fail "second maintainer commits local package before pull --rebase"
+      }
+      cat /tmp/branch-collab-local-commit.out
+
+      $APR publish "$FEATURE_STORE" \
+        --name remote-added \
+        --version 1.0.0 \
+        --description "Remote maintainer package for pull workflow" \
+        --license MIT \
+        --maintainer branch@example.invalid \
+        --registry test-reg \
+        --no-commit > /tmp/branch-remote-added-publish.out 2>&1 || {
+        cat /tmp/branch-remote-added-publish.out
+        fail "first maintainer publishes remote package"
+      }
+      cat /tmp/branch-remote-added-publish.out
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "publish remote added package" \
+        > /tmp/branch-remote-added-commit.out 2>&1 || {
+        cat /tmp/branch-remote-added-commit.out
+        fail "first maintainer commits remote package"
+      }
+      cat /tmp/branch-remote-added-commit.out
+      $APR push --registry test-reg --branch "$DEFAULT_BRANCH" \
+        > /tmp/branch-remote-added-push.out 2>&1 || {
+        cat /tmp/branch-remote-added-push.out
+        fail "first maintainer pushes remote package"
+      }
+      cat /tmp/branch-remote-added-push.out
+
+      $APR packages --registry collab-reg > /tmp/branch-collab-before-rebase.out 2>&1 || {
+        cat /tmp/branch-collab-before-rebase.out
+        fail "second maintainer lists packages before pull --rebase"
+      }
+      assert_file_contains /tmp/branch-collab-before-rebase.out "collab-local" \
+        "second maintainer sees local package before pull --rebase"
+      assert_file_not_contains /tmp/branch-collab-before-rebase.out "remote-added" \
+        "second maintainer does not see remote package before pull --rebase"
+
+      $APR pull --registry collab-reg --rebase > /tmp/branch-collab-rebase.out 2>&1 || {
+        cat /tmp/branch-collab-rebase.out
+        fail "apr pull --rebase updates second maintainer clone"
+      }
+      cat /tmp/branch-collab-rebase.out
+      $APR packages --registry collab-reg > /tmp/branch-collab-after-rebase.out 2>&1 || {
+        cat /tmp/branch-collab-after-rebase.out
+        fail "second maintainer lists packages after pull --rebase"
+      }
+      assert_file_contains /tmp/branch-collab-after-rebase.out "collab-local" \
+        "pull --rebase preserves local maintainer package"
+      assert_file_contains /tmp/branch-collab-after-rebase.out "remote-added" \
+        "pull --rebase imports remote maintainer package"
+      $APR verify --registry collab-reg > /tmp/branch-collab-verify.out 2>&1 || {
+        cat /tmp/branch-collab-verify.out
+        fail "rebased maintainer clone verifies"
+      }
+      assert_file_contains /tmp/branch-collab-verify.out "no errors" \
+        "rebased maintainer clone has valid registry metadata"
+      COLLAB_HEAD_PARENTS=$(git -C "$COLLAB_DIR" rev-list --parents -n 1 HEAD | wc -w)
+      if [ "$COLLAB_HEAD_PARENTS" = "2" ]; then
+        pass "apr pull --rebase keeps a linear local maintainer commit"
+      else
+        fail "apr pull --rebase should leave a linear head, got $COLLAB_HEAD_PARENTS fields"
+        git -C "$COLLAB_DIR" log --oneline --graph -5
+      fi
+
+      $APR push --registry collab-reg --branch "$DEFAULT_BRANCH" \
+        > /tmp/branch-collab-push.out 2>&1 || {
+        cat /tmp/branch-collab-push.out
+        fail "second maintainer pushes rebased package"
+      }
+      cat /tmp/branch-collab-push.out
+      $APR pull --registry test-reg > /tmp/branch-primary-pull.out 2>&1 || {
+        cat /tmp/branch-primary-pull.out
+        fail "first maintainer pulls collaborator package"
+      }
+      cat /tmp/branch-primary-pull.out
+      $APR show collab-local --registry test-reg \
+        > /tmp/branch-primary-show-collab.out 2>&1 || {
+        cat /tmp/branch-primary-show-collab.out
+        fail "first maintainer sees collaborator package after pull"
+      }
+      assert_file_contains /tmp/branch-primary-show-collab.out \
+        "Local collaborator package before rebase" \
+        "plain apr pull imports collaborator package metadata"
+      $APR verify --registry test-reg > /tmp/branch-primary-verify-pulled.out 2>&1 || {
+        cat /tmp/branch-primary-verify-pulled.out
+        fail "first maintainer registry verifies after pull"
+      }
+      assert_file_contains /tmp/branch-primary-verify-pulled.out "no errors" \
+        "first maintainer registry remains valid after pull"
 
       check_fail
     '';
