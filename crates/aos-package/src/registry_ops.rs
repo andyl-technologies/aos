@@ -1553,7 +1553,7 @@ pub async fn validate(
     config: &ApmConfig,
     package: Option<&str>,
     platform: Option<&str>,
-    _fix: bool,
+    fix: bool,
     jobs: u32,
     registry: Option<&str>,
     printer: &Printer,
@@ -1602,12 +1602,14 @@ pub async fn validate(
 
     let mut missing = 0u32;
     let mut ok = 0u32;
+    let mut missing_store_paths = HashSet::new();
     for handle in handles {
         let result = handle.await?;
         if result.found {
             ok += 1;
         } else {
             missing += 1;
+            missing_store_paths.insert(result.entry.store_path.clone());
             let detail = result
                 .details
                 .first()
@@ -1622,6 +1624,15 @@ pub async fn validate(
 
     if missing == 0 {
         printer.success(&format!("All {ok} entries found in caches."));
+    } else if fix {
+        let removed = remove_missing_cache_entries(&dir, &missing_store_paths)?;
+        if removed == 0 {
+            bail!("{ok} found, {missing} missing; no matching registry entries removed.");
+        }
+        let noun = if removed == 1 { "entry" } else { "entries" };
+        printer.success(&format!(
+            "Removed {removed} missing cache {noun} from registry metadata."
+        ));
     } else {
         bail!("{ok} found, {missing} missing.");
     }
@@ -1755,6 +1766,134 @@ fn collect_cache_validation_entries_from_package(
         }
     }
     Ok(())
+}
+
+fn remove_missing_cache_entries(
+    dir: &Path,
+    missing_store_paths: &HashSet<String>,
+) -> Result<usize> {
+    if missing_store_paths.is_empty() {
+        return Ok(0);
+    }
+
+    let packages_dir = dir.join("packages");
+    let mut removed = 0usize;
+
+    if !packages_dir.is_dir() {
+        return Ok(removed);
+    }
+
+    for letter_entry in fs::read_dir(&packages_dir)
+        .with_context(|| format!("reading {}", packages_dir.display()))?
+    {
+        let letter_entry = letter_entry?;
+        if !letter_entry.path().is_dir() {
+            continue;
+        }
+
+        for entry in fs::read_dir(letter_entry.path())
+            .with_context(|| format!("reading {}", letter_entry.path().display()))?
+        {
+            let path = entry?.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                continue;
+            }
+            removed += remove_missing_cache_entries_from_package(&path, missing_store_paths)?;
+        }
+    }
+
+    Ok(removed)
+}
+
+fn remove_missing_cache_entries_from_package(
+    path: &Path,
+    missing_store_paths: &HashSet<String>,
+) -> Result<usize> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading package metadata {}", path.display()))?;
+    let mut toml_val: toml::Value =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    let mut removed = 0usize;
+    let mut remove_package = false;
+
+    if let Some(versions) = toml_val
+        .get_mut("versions")
+        .and_then(|value| value.as_array_mut())
+    {
+        for version in versions.iter_mut() {
+            let Some(platforms) = version
+                .as_table_mut()
+                .and_then(|table| table.get_mut("platforms"))
+                .and_then(|value| value.as_table_mut())
+            else {
+                continue;
+            };
+
+            let platform_names: Vec<String> = platforms
+                .iter()
+                .filter_map(|(platform, entry)| {
+                    let store_path = entry.get("store_path").and_then(|value| value.as_str())?;
+                    if missing_store_paths.contains(store_path) {
+                        Some(platform.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for platform in platform_names {
+                if platforms.remove(&platform).is_some() {
+                    removed += 1;
+                }
+            }
+
+            for (_platform_name, platform) in platforms.iter_mut() {
+                let Some(platform_table) = platform.as_table_mut() else {
+                    continue;
+                };
+                let remove_images_key = if let Some(images) = platform_table
+                    .get_mut("images")
+                    .and_then(|value| value.as_array_mut())
+                {
+                    let before = images.len();
+                    images.retain(|image| {
+                        let remove = image
+                            .get("store_path")
+                            .and_then(|value| value.as_str())
+                            .map(|store_path| missing_store_paths.contains(store_path))
+                            .unwrap_or(false);
+                        !remove
+                    });
+                    removed += before - images.len();
+                    images.is_empty()
+                } else {
+                    false
+                };
+                if remove_images_key {
+                    platform_table.remove("images");
+                }
+            }
+        }
+
+        versions.retain(|version| {
+            version
+                .get("platforms")
+                .and_then(|platforms| platforms.as_table())
+                .map(|platforms| !platforms.is_empty())
+                .unwrap_or(false)
+        });
+        remove_package = versions.is_empty();
+    }
+
+    if removed > 0 {
+        if remove_package {
+            fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+        } else {
+            fs::write(path, toml::to_string_pretty(&toml_val)?)
+                .with_context(|| format!("writing {}", path.display()))?;
+        }
+    }
+
+    Ok(removed)
 }
 
 async fn validate_cache_entry(
@@ -4263,6 +4402,90 @@ nar_size = 1
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn remove_missing_cache_entries_prunes_platforms_and_images() {
+        let tmp = TempDir::new().unwrap();
+        let pkg_dir = tmp.path().join("packages/t");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        let toml_path = pkg_dir.join("tool.toml");
+        fs::write(
+            &toml_path,
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.0.0"
+nar_hash = "sha256:x86"
+nar_size = 1
+closure_size = 1
+references = []
+
+[versions.platforms.aarch64-linux]
+store_path = "/nix/store/bbb222-tool-1.0.0"
+nar_hash = "sha256:arm"
+nar_size = 1
+closure_size = 1
+references = []
+
+[[versions.platforms.aarch64-linux.images]]
+format = "raw"
+store_path = "/nix/store/ccc333-tool-image-1.0.0"
+nar_hash = "sha256:image"
+nar_size = 1
+"#,
+        )
+        .unwrap();
+
+        let mut missing = std::collections::HashSet::new();
+        missing.insert("/nix/store/ccc333-tool-image-1.0.0".to_string());
+        assert_eq!(
+            remove_missing_cache_entries(tmp.path(), &missing).unwrap(),
+            1
+        );
+        let toml_val: toml::Value =
+            toml::from_str(&fs::read_to_string(&toml_path).unwrap()).unwrap();
+        let aarch64 = toml_val
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("aarch64-linux"))
+            .unwrap();
+        assert!(aarch64.get("images").is_none());
+
+        missing.clear();
+        missing.insert("/nix/store/bbb222-tool-1.0.0".to_string());
+        assert_eq!(
+            remove_missing_cache_entries(tmp.path(), &missing).unwrap(),
+            1
+        );
+        let toml_val: toml::Value =
+            toml::from_str(&fs::read_to_string(&toml_path).unwrap()).unwrap();
+        let platforms = toml_val
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.as_table())
+            .unwrap();
+        assert!(platforms.contains_key("x86_64-linux"));
+        assert!(!platforms.contains_key("aarch64-linux"));
+
+        missing.clear();
+        missing.insert("/nix/store/aaa111-tool-1.0.0".to_string());
+        assert_eq!(
+            remove_missing_cache_entries(tmp.path(), &missing).unwrap(),
+            1
+        );
+        assert!(!toml_path.exists());
     }
 
     #[tokio::test]
