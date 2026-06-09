@@ -1,7 +1,7 @@
 # tests/vm/apm/multi_registry.nix -- Multi-registry priority, cross-containment, mirror
 #
 # Three headless VM tests exercising multi-registry scenarios:
-#   multi-registry-priority          -- higher priority registry wins
+#   multi-registry-priority          -- higher priority registry wins end-to-end
 #   multi-registry-cross-containment -- deps shared across registries
 #   multi-registry-mirror            -- registry mirroring
 {
@@ -9,6 +9,10 @@
   self,
   pkgs,
 }: let
+  fixtures = import ./fixtures.nix {
+    inherit pkgs;
+    aosPkg = self;
+  };
   iproute2Bin = "${pkgs.iproute2}/sbin/ip";
   sqliteBin = "${pkgs.sqlite}/bin/sqlite3";
   socatBin = "${pkgs.socat}/bin/socat";
@@ -16,6 +20,70 @@
   curlBin = "${pkgs.curl}/bin/curl";
   grepBin = "${pkgs.grep}/bin/grep";
   aosBin = "${self}/bin/aos";
+  nixRuntimeDeps = [
+    pkgs.nix
+    pkgs.brotli
+    pkgs.curl
+    pkgs.openssl
+    pkgs.sqlite
+    pkgs.boost
+    pkgs.editline
+    pkgs.libsodium
+    pkgs.libarchive
+    pkgs.gc
+    pkgs.lowdown
+    pkgs.bzip2
+    pkgs.zlib
+  ];
+  nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
+  setupNixEnv = ''
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR=/tmp/nix-conf
+    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    mkdir -p "$NIX_CONF_DIR" /nix/var/nix/db /nix/var/nix/gcroots
+    cat > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+    experimental-features = nix-command
+    sandbox = false
+    NIXCONF
+    nix-store --init || true
+    nix-store --load-db < /aos-registration
+  '';
+  mkPriorityTool = {
+    version,
+    origin,
+  }:
+    pkgs.mkDerivation {
+      pname = "priority-tool";
+      inherit version;
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin" "$out/share/priority-tool"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              "printf 'priority-tool ${version} from ${origin}\\n'" \
+              > "$out/bin/priority-tool"
+            chmod +x "$out/bin/priority-tool"
+            printf 'priority-tool ${version} from ${origin}\n' \
+              > "$out/share/priority-tool/origin.txt"
+          '';
+        }
+      ];
+    };
+  priorityLowTool = mkPriorityTool {
+    version = "9.0.0";
+    origin = "low-priority";
+  };
+  priorityHighTool = mkPriorityTool {
+    version = "2.0.0";
+    origin = "high-priority";
+  };
 
   mkStoreDb = dir: ''
         ${sqliteBin} ${dir}/var/nix/db/db.sqlite << 'SQL'
@@ -47,111 +115,267 @@
     pkgs.iproute2
     pkgs.grep
   ];
+  realPriorityDeps =
+    fixtures.commonDeps
+    ++ nixRuntimeDeps
+    ++ [
+      pkgs.findutils
+      pkgs.iproute2
+      pkgs.python3
+      pkgs.zstd
+      priorityLowTool
+      priorityHighTool
+    ];
 in {
   # ---------------------------------------------------------------------------
-  # Test 1: multi-registry-priority -- higher priority registry wins
+  # Test 1: multi-registry-priority -- higher priority registry wins end-to-end
   # ---------------------------------------------------------------------------
   multi-registry-priority = testing.mkVMTest {
     name = "multi-registry-priority";
-    rootfsDeps = serverDeps;
-    memory = 1024;
+    rootfsDeps = realPriorityDeps;
+    memory = 2048;
     testScript = ''
-            ${iproute2Bin} link set lo up || true
-            ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      ${fixtures.setupPreamble}
+      ${setupNixEnv}
 
-            FAIL=0
+      echo "==> Test: real multi-registry priority resolution and install"
 
-            # --- Registry A (port 15001) ---
-            mkdir -p /tmp/reg-a/var/nix/db /tmp/reg-a/store /tmp/reg-a/meta /tmp/run/reg-a
-            ${mkStoreDb "/tmp/reg-a"}
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        nix-store --delete --ignore-liveness "$path" > "/tmp/delete-$label.out" 2>&1 || {
+          cat "/tmp/delete-$label.out"
+          fail "deleted $label before apm download"
+          return
+        }
+        if nix-store --check-validity "$path" > "/tmp/valid-$label.out" 2>&1; then
+          cat "/tmp/valid-$label.out"
+          fail "$label should be missing before apm download"
+        else
+          pass "$label missing before apm download"
+        fi
+      }
 
-            TESTPKG_A="/tmp/reg-a/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-testpkg-1.0"
-            mkdir -p "$TESTPKG_A/bin"
-            echo '#!/bin/sh' > "$TESTPKG_A/bin/testpkg"
-            echo 'echo "testpkg v1.0"' >> "$TESTPKG_A/bin/testpkg"
-            chmod +x "$TESTPKG_A/bin/testpkg"
-            ${sqliteBin} /tmp/reg-a/var/nix/db/db.sqlite \
-              "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$TESTPKG_A', 'sha256:aaaa1', 1000000, 4096, 1, '''''');"
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/valid-after-$label.out" 2>&1; then
+          pass "$label valid after apm import"
+        else
+          cat "/tmp/valid-after-$label.out"
+          fail "$label should be valid after apm import"
+        fi
+      }
 
-            cat > /tmp/reg-a-config.toml << 'CFGEOF'
-            listen = "127.0.0.1:15001"
-            [[views]]
-            name = "default"
-            anonymous_read = true
-            [bootstrap]
-            socket = "/tmp/run/reg-a/bootstrap.sock"
-            socket_group = "root"
-      CFGEOF
+      publish_priority_registry() {
+        registry="$1"
+        store_path="$2"
+        version="$3"
+        cache_dir="$4"
+        cache_url="$5"
 
-            AOS_ROOT=/tmp/reg-a ${aosBin} serve --config /tmp/reg-a-config.toml &
-            REG_A_PID=$!
+        $APR create "$registry"
+        reg_dir="$REG_STORAGE/$registry"
+        $APR publish "$store_path" \
+          --name priority-tool \
+          --version "$version" \
+          --description "Priority-selected package from $registry" \
+          --license MIT \
+          --maintainer priority@example.invalid \
+          --registry "$registry" \
+          --no-commit
+        $APR cache generate \
+          --registry "$registry" \
+          --output "$cache_dir" \
+          --cache-url "$cache_url" \
+          --priority 45 \
+          --no-commit
+        git -C "$reg_dir" add -A
+        git -C "$reg_dir" commit -m "release: priority-tool $version"
+        git init --bare --object-format=sha256 "/tmp/$registry-origin.git"
+        git -C "$reg_dir" remote add origin "/tmp/$registry-origin.git"
+        branch=$(git -C "$reg_dir" symbolic-ref --short HEAD)
+        git -C "$reg_dir" push origin "$branch"
+      }
 
-            # --- Registry B (port 15002) ---
-            mkdir -p /tmp/reg-b/var/nix/db /tmp/reg-b/store /tmp/reg-b/meta /tmp/run/reg-b
-            ${mkStoreDb "/tmp/reg-b"}
+      LOW_STORE="${priorityLowTool}"
+      HIGH_STORE="${priorityHighTool}"
+      LOW_HASH=$(basename "$LOW_STORE" | cut -d- -f1)
+      HIGH_HASH=$(basename "$HIGH_STORE" | cut -d- -f1)
 
-            TESTPKG_B="/tmp/reg-b/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2-testpkg-2.0"
-            mkdir -p "$TESTPKG_B/bin"
-            echo '#!/bin/sh' > "$TESTPKG_B/bin/testpkg"
-            echo 'echo "testpkg v2.0"' >> "$TESTPKG_B/bin/testpkg"
-            chmod +x "$TESTPKG_B/bin/testpkg"
-            ${sqliteBin} /tmp/reg-b/var/nix/db/db.sqlite \
-              "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$TESTPKG_B', 'sha256:bbbb2', 1000000, 4096, 1, '''''');"
+      publish_priority_registry low-priority "$LOW_STORE" 9.0.0 \
+        /tmp/low-priority-cache http://127.0.0.1:18101
+      publish_priority_registry high-priority "$HIGH_STORE" 2.0.0 \
+        /tmp/high-priority-cache http://127.0.0.1:18102
+      LOW_BRANCH=$(git -C "$REG_STORAGE/low-priority" symbolic-ref --short HEAD)
+      HIGH_BRANCH=$(git -C "$REG_STORAGE/high-priority" symbolic-ref --short HEAD)
 
-            cat > /tmp/reg-b-config.toml << 'CFGEOF'
-            listen = "127.0.0.1:15002"
-            [[views]]
-            name = "default"
-            anonymous_read = true
-            [bootstrap]
-            socket = "/tmp/run/reg-b/bootstrap.sock"
-            socket_group = "root"
-      CFGEOF
+      assert_file_exists "/tmp/low-priority-cache/$LOW_HASH.narinfo" \
+        "low priority cache has package narinfo"
+      assert_file_exists "/tmp/high-priority-cache/$HIGH_HASH.narinfo" \
+        "high priority cache has package narinfo"
 
-            AOS_ROOT=/tmp/reg-b ${aosBin} serve --config /tmp/reg-b-config.toml &
-            REG_B_PID=$!
+      ${iproute2Bin} link set lo up || true
+      ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-            echo "==> Waiting for registries to start"
-            for _i in 1 2 3 4 5 6 7 8 9 10; do
-              HTTP_A=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15001/default/nix-cache-info 2>/dev/null) || true
-              HTTP_B=$(${curlBin} -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/default/nix-cache-info 2>/dev/null) || true
-              if [ "$HTTP_A" = "200" ] && [ "$HTTP_B" = "200" ]; then break; fi
-              sleep 1
-            done
+      python3 -m http.server 18101 --bind 127.0.0.1 \
+        --directory /tmp/low-priority-cache > /tmp/low-priority-cache-http.log 2>&1 &
+      LOW_CACHE_PID=$!
+      python3 -m http.server 18102 --bind 127.0.0.1 \
+        --directory /tmp/high-priority-cache > /tmp/high-priority-cache-http.log 2>&1 &
+      HIGH_CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if ${curlBin} -sf http://127.0.0.1:18101/nix-cache-info >/dev/null \
+          && ${curlBin} -sf http://127.0.0.1:18102/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if ${curlBin} -sf http://127.0.0.1:18101/nix-cache-info >/dev/null \
+        && ${curlBin} -sf http://127.0.0.1:18102/nix-cache-info >/dev/null; then
+        pass "priority static cache HTTP servers started"
+      else
+        cat /tmp/low-priority-cache-http.log || true
+        cat /tmp/high-priority-cache-http.log || true
+        fail "priority static cache HTTP servers started"
+      fi
 
-            echo "==> Verifying registry A"
-            test "$HTTP_A" = "200" || { echo "FAIL: registry A not responding"; FAIL=1; }
+      export HOME=/tmp/priority-consumer
+      export USER=priorityuser
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
 
-            echo "==> Verifying registry B"
-            test "$HTTP_B" = "200" || { echo "FAIL: registry B not responding"; FAIL=1; }
+      $APM registry add file:///tmp/low-priority-origin.git \
+        --name low-priority \
+        --branch "$LOW_BRANCH" \
+        --priority 100
+      $APM registry add file:///tmp/high-priority-origin.git \
+        --name high-priority \
+        --branch "$HIGH_BRANCH" \
+        --priority 900
 
-            echo "==> Reading cache-info from both"
-            INFO_A=$(${curlBin} -s http://127.0.0.1:15001/default/nix-cache-info)
-            echo "Registry A: $INFO_A"
-            INFO_B=$(${curlBin} -s http://127.0.0.1:15002/default/nix-cache-info)
-            echo "Registry B: $INFO_B"
+      $APR list > /tmp/priority-registry-list.out 2>&1
+      assert_file_contains /tmp/priority-registry-list.out \
+        "high-priority (priority 900)" "apr list shows high priority registry"
+      assert_file_contains /tmp/priority-registry-list.out \
+        "low-priority (priority 100)" "apr list shows low priority registry"
 
-            echo "==> Querying testpkg in both registries"
-            HASH_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
-            HTTP_NA=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
-              "http://127.0.0.1:15001/default/$HASH_A.narinfo")
-            echo "Registry A narinfo: HTTP $HTTP_NA"
+      $APM search priority-tool > /tmp/priority-search.out 2>&1 || {
+        cat /tmp/priority-search.out
+        fail "apm search resolves priority-selected package"
+      }
+      cat /tmp/priority-search.out
+      assert_file_contains /tmp/priority-search.out \
+        "priority-tool/high-priority 2.0.0" \
+        "search returns the high priority package"
+      if grep -q "priority-tool/low-priority" /tmp/priority-search.out; then
+        cat /tmp/priority-search.out
+        fail "search should deduplicate lower priority package"
+      else
+        pass "search hides lower priority duplicate"
+      fi
 
-            HASH_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2"
-            HTTP_NB=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
-              "http://127.0.0.1:15002/default/$HASH_B.narinfo")
-            echo "Registry B narinfo: HTTP $HTTP_NB"
+      $APM policy priority-tool > /tmp/priority-policy.out 2>&1 || {
+        cat /tmp/priority-policy.out
+        fail "apm policy reports all registry candidates"
+      }
+      cat /tmp/priority-policy.out
+      assert_file_contains /tmp/priority-policy.out "Candidate: 2.0.0" \
+        "policy candidate follows registry priority over higher version"
+      assert_file_contains /tmp/priority-policy.out "2.0.0  900  high-priority" \
+        "policy lists high priority candidate"
+      assert_file_contains /tmp/priority-policy.out "9.0.0  100  low-priority" \
+        "policy lists lower priority candidate"
 
-            echo "==> Both registries independently queryable"
+      $APM show priority-tool > /tmp/priority-show.out 2>&1 || {
+        cat /tmp/priority-show.out
+        fail "apm show uses priority-selected package"
+      }
+      assert_file_contains /tmp/priority-show.out "high-priority" \
+        "show reports the high priority registry"
+      assert_file_contains /tmp/priority-show.out "2.0.0" \
+        "show reports the high priority version"
 
-            kill $REG_A_PID $REG_B_PID 2>/dev/null || true
-            wait $REG_A_PID $REG_B_PID 2>/dev/null || true
+      mount -o remount,rw / || true
+      delete_store_path "$HIGH_STORE" "high-priority-tool"
+      delete_store_path "$LOW_STORE" "low-priority-tool"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
 
-            if [ "$FAIL" -ne 0 ]; then
-              echo "==> multi-registry-priority FAILED"
-              exit 1
-            fi
-            echo "==> multi-registry-priority passed"
+      $APM install priority-tool --yes > /tmp/priority-install-high.out 2>&1 || {
+        cat /tmp/priority-install-high.out
+        fail "apm install downloads high priority package"
+      }
+      cat /tmp/priority-install-high.out
+      assert_file_contains /tmp/priority-install-high.out "Downloading" \
+        "unfiltered install downloads the high priority NAR"
+      assert_file_contains /tmp/priority-install-high.out "Installed 1 package" \
+        "unfiltered install updates profile"
+      assert_store_valid "$HIGH_STORE" "high priority tool"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/priority-tool"
+      "$PROFILE_TOOL" > /tmp/priority-run-high.out
+      assert_file_contains /tmp/priority-run-high.out \
+        "priority-tool 2.0.0 from high-priority" \
+        "unfiltered install executes high priority package"
+      $APM list --installed > /tmp/priority-installed-high.out 2>&1
+      assert_file_contains /tmp/priority-installed-high.out \
+        "priority-tool/high-priority 2.0.0" \
+        "installed metadata records high priority registry"
+      if grep -q "priority-tool/low-priority" /tmp/priority-installed-high.out; then
+        cat /tmp/priority-installed-high.out
+        fail "unfiltered install should not install lower priority duplicate"
+      else
+        pass "unfiltered install excludes lower priority duplicate"
+      fi
+
+      export HOME=/tmp/priority-filter-consumer
+      export USER=priorityfilter
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
+
+      $APM registry add file:///tmp/low-priority-origin.git \
+        --name low-priority \
+        --branch "$LOW_BRANCH" \
+        --priority 100
+      $APM registry add file:///tmp/high-priority-origin.git \
+        --name high-priority \
+        --branch "$HIGH_BRANCH" \
+        --priority 900
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install priority-tool --registry low-priority --yes \
+        > /tmp/priority-install-low.out 2>&1 || {
+        cat /tmp/priority-install-low.out
+        fail "apm install --registry downloads selected lower priority package"
+      }
+      cat /tmp/priority-install-low.out
+      assert_file_contains /tmp/priority-install-low.out "Downloading" \
+        "registry-filtered install downloads the lower priority NAR"
+      assert_store_valid "$LOW_STORE" "low priority tool"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/priority-tool"
+      "$PROFILE_TOOL" > /tmp/priority-run-low.out
+      assert_file_contains /tmp/priority-run-low.out \
+        "priority-tool 9.0.0 from low-priority" \
+        "registry-filtered install executes lower priority package"
+      $APM list --installed > /tmp/priority-installed-low.out 2>&1
+      assert_file_contains /tmp/priority-installed-low.out \
+        "priority-tool/low-priority 9.0.0" \
+        "registry-filtered install records selected registry"
+      $APM list --upgradable > /tmp/priority-upgradable-low.out 2>&1 || {
+        cat /tmp/priority-upgradable-low.out
+        fail "apm list --upgradable handles same-name lower priority install"
+      }
+      if grep -q "priority-tool" /tmp/priority-upgradable-low.out; then
+        cat /tmp/priority-upgradable-low.out
+        fail "lower priority install should not upgrade across registries"
+      else
+        pass "lower priority install is not upgraded across registries"
+      fi
+
+      kill "$LOW_CACHE_PID" "$HIGH_CACHE_PID" 2>/dev/null || true
+      wait "$LOW_CACHE_PID" "$HIGH_CACHE_PID" 2>/dev/null || true
+      check_fail
     '';
   };
 
