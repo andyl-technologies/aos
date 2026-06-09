@@ -47,6 +47,68 @@
     nix-store --init || true
     nix-store --load-db < /aos-registration
   '';
+  mkRegistryTool = {
+    pname,
+    version,
+    program ? pname,
+  }:
+    pkgs.mkDerivation {
+      inherit pname version;
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              "printf '${pname} ${version}\\n'" \
+              > "$out/bin/${program}"
+            chmod +x "$out/bin/${program}"
+          '';
+        }
+      ];
+    };
+  closureLeafTool = mkRegistryTool {
+    pname = "closure-leaf";
+    version = "1.0.0";
+  };
+  closureRootTool = pkgs.mkDerivation {
+    pname = "closure-root";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      closureLeafTool
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'leaf_output="$(${closureLeafTool}/bin/closure-leaf)"' \
+            'printf "closure-root 1.0.0 via %s\n" "$leaf_output"' \
+            > "$out/bin/closure-root"
+          chmod +x "$out/bin/closure-root"
+        '';
+      }
+    ];
+  };
+  closureWorkflowDeps =
+    publishDeps
+    ++ [
+      closureLeafTool
+      closureRootTool
+    ];
 in {
   # -------------------------------------------------------------------------
   # 1. registry-create — Initialize a new empty registry
@@ -1098,37 +1160,54 @@ in {
   # -------------------------------------------------------------------------
   registry-validate = testing.mkVMTest {
     name = "apm-registry-validate";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = closureWorkflowDeps;
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
       echo "==> Test: apr verify (TOML schema validation)"
 
-      # Create registry with a valid package
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
-      write_package_toml "$REG_DIR" "validpkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish validpkg 1.0.0"
 
-      # Run verify — should pass with valid TOML
-      assert_cmd_success "$APR verify --registry test-reg" \
-        "apr verify passes with valid package"
+      $APR publish "${closureLeafTool}" \
+        --name validpkg \
+        --version 1.0.0 \
+        --description "Real verify schema fixture" \
+        --license MIT \
+        --maintainer verify@example.invalid \
+        --registry test-reg \
+        --no-commit > /tmp/validate-publish.out 2>&1 || {
+        cat /tmp/validate-publish.out
+        fail "apr publish creates valid package metadata"
+      }
+      cat /tmp/validate-publish.out
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "publish validpkg 1.0.0"
 
-      # Create an invalid TOML file (missing [package] section)
+      $APR verify --registry test-reg > /tmp/verify-valid.out 2>&1 || {
+        cat /tmp/verify-valid.out
+        fail "apr verify passes with real valid package"
+      }
+      cat /tmp/verify-valid.out
+      assert_file_contains /tmp/verify-valid.out "no errors" \
+        "apr verify reports real valid package has no errors"
+
       mkdir -p "$REG_DIR/packages/b"
       echo 'invalid = "no package section"' > "$REG_DIR/packages/b/badpkg.toml"
-      commit_registry "$REG_DIR" "add invalid package"
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "add invalid package"
 
-      # Run verify again — should report the error
-      $APR verify --registry test-reg > /tmp/verify-out 2>&1 || true
-      if grep -q "error\|missing" /tmp/verify-out 2>/dev/null; then
-        pass "apr verify detects invalid package TOML"
+      if $APR verify --registry test-reg > /tmp/verify-invalid.out 2>&1; then
+        cat /tmp/verify-invalid.out
+        fail "apr verify should fail with invalid package TOML"
       else
-        # Some implementations report via exit code only
-        pass "apr verify ran on invalid package (output checked)"
+        cat /tmp/verify-invalid.out
+        pass "apr verify fails with invalid package TOML"
       fi
+      assert_file_contains /tmp/verify-invalid.out "missing \\[package\\] section" \
+        "apr verify reports invalid package TOML"
 
       check_fail
     '';
@@ -1185,83 +1264,120 @@ in {
   # -------------------------------------------------------------------------
   closure-generate = testing.mkVMTest {
     name = "apm-closure-generate";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = closureWorkflowDeps;
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
-      echo "==> Test: closure file generation and structure"
+      echo "==> Test: real APR closure file generation and structure"
 
-      # Create registry
+      LEAF_STORE="${closureLeafTool}"
+      ROOT_STORE="${closureRootTool}"
+      LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
+      ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/closure-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/closure-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
+
+      publish_closure_package() {
+        store="$1"
+        name="$2"
+        version="$3"
+        $APR publish "$store" \
+          --name "$name" \
+          --version "$version" \
+          --description "Real closure fixture $name" \
+          --license MIT \
+          --maintainer closure@example.invalid \
+          --registry test-reg \
+          --no-commit > "/tmp/closure-publish-$name.out" 2>&1 || {
+          cat "/tmp/closure-publish-$name.out"
+          fail "apr publish $name succeeds"
+          return 1
+        }
+        cat "/tmp/closure-publish-$name.out"
+      }
+
+      mount -o remount,rw / || true
+      assert_store_valid "$LEAF_STORE" "closure-leaf"
+      assert_store_valid "$ROOT_STORE" "closure-root"
+      nix-store -q --references "$ROOT_STORE" > /tmp/closure-root-refs.out
+      assert_file_contains /tmp/closure-root-refs.out "$LEAF_STORE" \
+        "closure-root has a real Nix reference to closure-leaf"
+
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
 
-      # Publish two packages: libfoo (leaf) and app (depends on libfoo)
-      LIBFOO_HASH="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      APP_HASH="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      publish_closure_package "$LEAF_STORE" closure-leaf 1.0.0
+      publish_closure_package "$ROOT_STORE" closure-root 1.0.0
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "publish real closure packages"
 
-      write_package_toml_with_refs "$REG_DIR" "libfoo" "1.0.0" \
-        "$LIBFOO_HASH"
-      write_package_toml_with_refs "$REG_DIR" "app" "2.0.0" \
-        "$APP_HASH" "$LIBFOO_HASH"
+      assert_file_exists "$REG_DIR/packages/c/closure-leaf.toml" \
+        "published closure-leaf package metadata exists"
+      assert_file_exists "$REG_DIR/packages/c/closure-root.toml" \
+        "published closure-root package metadata exists"
+      assert_file_exists "$REG_DIR/closures/$LEAF_HASH" \
+        "closure-leaf closure file exists"
+      assert_file_exists "$REG_DIR/closures/$ROOT_HASH" \
+        "closure-root closure file exists"
 
-      # Write closure files
-      # libfoo: leaf (just itself)
-      write_closure_file "$REG_DIR" "$LIBFOO_HASH"
-
-      # app: depends on libfoo
-      write_closure_file "$REG_DIR" "$APP_HASH" "$LIBFOO_HASH"
-
-      # Write .gitattributes
-      ensure_gitattributes "$REG_DIR"
-
-      commit_registry "$REG_DIR" "publish libfoo and app with closures"
-
-      # Verify closure files exist
-      assert_file_exists "$REG_DIR/closures/$LIBFOO_HASH" \
-        "libfoo closure file exists"
-      assert_file_exists "$REG_DIR/closures/$APP_HASH" \
-        "app closure file exists"
-
-      # Verify libfoo closure is just itself (leaf)
-      LIBFOO_LINES=$(wc -l < "$REG_DIR/closures/$LIBFOO_HASH")
-      if [ "$LIBFOO_LINES" -eq 1 ]; then
-        pass "libfoo closure has 1 line (leaf)"
+      LEAF_FIRST_TOKEN=$(head -1 "$REG_DIR/closures/$LEAF_HASH" | cut -d' ' -f1)
+      if [ "$LEAF_FIRST_TOKEN" = "$LEAF_HASH" ]; then
+        pass "closure-leaf closure starts with leaf hash"
       else
-        fail "libfoo closure should have 1 line, got $LIBFOO_LINES"
-        cat "$REG_DIR/closures/$LIBFOO_HASH"
+        fail "closure-leaf closure should start with $LEAF_HASH, got $LEAF_FIRST_TOKEN"
+        cat "$REG_DIR/closures/$LEAF_HASH"
       fi
 
-      # Verify app closure has root first
-      FIRST_LINE=$(head -1 "$REG_DIR/closures/$APP_HASH")
+      FIRST_LINE=$(head -1 "$REG_DIR/closures/$ROOT_HASH")
       FIRST_TOKEN=$(echo "$FIRST_LINE" | cut -d' ' -f1)
-      if [ "$FIRST_TOKEN" = "$APP_HASH" ]; then
-        pass "app closure starts with root hash"
+      if [ "$FIRST_TOKEN" = "$ROOT_HASH" ]; then
+        pass "closure-root closure starts with root hash"
       else
-        fail "app closure should start with $APP_HASH, got $FIRST_TOKEN"
-        cat "$REG_DIR/closures/$APP_HASH"
+        fail "closure-root closure should start with $ROOT_HASH, got $FIRST_TOKEN"
+        cat "$REG_DIR/closures/$ROOT_HASH"
       fi
 
-      # Verify app closure contains libfoo as a dep on root line
-      if echo "$FIRST_LINE" | grep -q "$LIBFOO_HASH"; then
-        pass "app closure root line lists libfoo as dep"
+      if echo "$FIRST_LINE" | grep -q "$LEAF_HASH"; then
+        pass "closure-root root line lists closure-leaf as a direct dep"
       else
-        fail "app closure root line missing libfoo dep"
-        cat "$REG_DIR/closures/$APP_HASH"
+        fail "closure-root root line missing closure-leaf dep"
+        cat "$REG_DIR/closures/$ROOT_HASH"
       fi
 
-      # Verify app closure has libfoo as a member (leaf line)
-      if grep -q "^$LIBFOO_HASH" "$REG_DIR/closures/$APP_HASH"; then
-        pass "app closure has libfoo as member"
+      if grep -q "^$LEAF_HASH" "$REG_DIR/closures/$ROOT_HASH"; then
+        pass "closure-root closure has closure-leaf as a member"
       else
-        fail "app closure missing libfoo member line"
-        cat "$REG_DIR/closures/$APP_HASH"
+        fail "closure-root closure missing closure-leaf member line"
+        cat "$REG_DIR/closures/$ROOT_HASH"
       fi
 
-      # Verify .gitattributes has closures entry
+      for ref_path in $(nix-store -q --references "$ROOT_STORE"); do
+        ref_hash=$(basename "$ref_path" | cut -d- -f1)
+        assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$ref_hash" \
+          "closure-root closure includes direct reference $ref_hash"
+      done
+
       assert_file_contains "$REG_DIR/.gitattributes" \
         "closures/" ".gitattributes has closures entry"
+
+      $APR verify --registry test-reg > /tmp/closure-verify-ok.out 2>&1 || {
+        cat /tmp/closure-verify-ok.out
+        fail "apr verify accepts real generated closure files"
+      }
+      cat /tmp/closure-verify-ok.out
+      assert_file_contains /tmp/closure-verify-ok.out "no errors" \
+        "apr verify reports generated closures are valid"
 
       check_fail
     '';
@@ -1272,61 +1388,103 @@ in {
   # -------------------------------------------------------------------------
   closure-verify = testing.mkVMTest {
     name = "apm-closure-verify";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = closureWorkflowDeps;
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
-      echo "==> Test: apr verify with closure validation"
+      echo "==> Test: apr verify rejects broken real closure metadata"
 
-      # Create registry with packages and valid closures
+      LEAF_STORE="${closureLeafTool}"
+      ROOT_STORE="${closureRootTool}"
+      LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
+      ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
+
+      publish_closure_package() {
+        store="$1"
+        name="$2"
+        version="$3"
+        $APR publish "$store" \
+          --name "$name" \
+          --version "$version" \
+          --description "Real closure verify fixture $name" \
+          --license MIT \
+          --maintainer closure@example.invalid \
+          --registry test-reg \
+          --no-commit > "/tmp/verify-publish-$name.out" 2>&1 || {
+          cat "/tmp/verify-publish-$name.out"
+          fail "apr publish $name succeeds"
+          return 1
+        }
+        cat "/tmp/verify-publish-$name.out"
+      }
+
+      commit_registry_changes() {
+        message="$1"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "$message" > /tmp/verify-commit.out 2>&1 || {
+          cat /tmp/verify-commit.out
+          fail "registry commit succeeds: $message"
+          return 1
+        }
+        cat /tmp/verify-commit.out
+      }
+
+      expect_verify_success() {
+        label="$1"
+        if $APR verify --registry test-reg > "/tmp/verify-$label.out" 2>&1; then
+          cat "/tmp/verify-$label.out"
+          assert_file_contains "/tmp/verify-$label.out" "no errors" \
+            "apr verify reports $label has no errors"
+        else
+          cat "/tmp/verify-$label.out"
+          fail "apr verify should succeed for $label"
+        fi
+      }
+
+      expect_verify_failure() {
+        label="$1"
+        pattern="$2"
+        if $APR verify --registry test-reg > "/tmp/verify-$label.out" 2>&1; then
+          cat "/tmp/verify-$label.out"
+          fail "apr verify should fail for $label"
+        else
+          cat "/tmp/verify-$label.out"
+          pass "apr verify fails for $label"
+        fi
+        assert_file_contains "/tmp/verify-$label.out" "$pattern" \
+          "apr verify reports $label"
+      }
+
+      mount -o remount,rw / || true
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
+      publish_closure_package "$LEAF_STORE" closure-leaf 1.0.0
+      publish_closure_package "$ROOT_STORE" closure-root 1.0.0
+      commit_registry_changes "publish real closure verify packages"
 
-      LEAF_HASH="cccccccccccccccccccccccccccccccccc"
-      ROOT_HASH="dddddddddddddddddddddddddddddddd"
+      cp "$REG_DIR/closures/$ROOT_HASH" /tmp/root-closure-good
+      expect_verify_success valid-generated
 
-      write_package_toml_with_refs "$REG_DIR" "leaf" "1.0.0" \
-        "$LEAF_HASH"
-      write_package_toml_with_refs "$REG_DIR" "root" "1.0.0" \
-        "$ROOT_HASH" "$LEAF_HASH"
+      grep -v "^$LEAF_HASH" "$REG_DIR/closures/$ROOT_HASH" \
+        > /tmp/root-closure-broken
+      mv /tmp/root-closure-broken "$REG_DIR/closures/$ROOT_HASH"
+      commit_registry_changes "break root closure dependency"
+      expect_verify_failure broken-reference \
+        "reference $LEAF_HASH not found in closure $ROOT_HASH"
 
-      # Write correct closure files
-      write_closure_file "$REG_DIR" "$LEAF_HASH"
-      write_closure_file "$REG_DIR" "$ROOT_HASH" "$LEAF_HASH"
-      ensure_gitattributes "$REG_DIR"
-      commit_registry "$REG_DIR" "publish with valid closures"
+      cp /tmp/root-closure-good "$REG_DIR/closures/$ROOT_HASH"
+      commit_registry_changes "restore root closure"
+      expect_verify_success restored-generated
 
-      # Verify should pass with valid closures
-      assert_cmd_success "$APR verify --registry test-reg" \
-        "apr verify passes with valid closures"
-
-      # Now break a closure: remove leaf from root's closure
-      echo "$ROOT_HASH" > "$REG_DIR/closures/$ROOT_HASH"
-      commit_registry "$REG_DIR" "break closure"
-
-      # Verify should detect the inconsistency
-      $APR verify --registry test-reg > /tmp/verify-out 2>&1 || true
-      if grep -q "error\|not found\|missing" /tmp/verify-out 2>/dev/null; then
-        pass "apr verify detects broken closure (missing reference)"
-      else
-        fail "apr verify should detect broken closure"
-        cat /tmp/verify-out 2>/dev/null || true
-      fi
-
-      # Fix by removing the closure file entirely (missing closure)
       rm -f "$REG_DIR/closures/$ROOT_HASH"
-      commit_registry "$REG_DIR" "remove closure"
+      commit_registry_changes "remove root closure"
+      expect_verify_failure missing-closure \
+        "missing closure file for store hash $ROOT_HASH"
 
-      # Verify should report missing closure
-      $APR verify --registry test-reg > /tmp/verify-out2 2>&1 || true
-      if grep -q "error\|missing" /tmp/verify-out2 2>/dev/null; then
-        pass "apr verify detects missing closure file"
-      else
-        fail "apr verify should detect missing closure file"
-        cat /tmp/verify-out2 2>/dev/null || true
-      fi
+      assert_file_exists "$REG_DIR/closures/$LEAF_HASH" \
+        "removing root closure leaves dependency closure intact"
 
       check_fail
     '';
