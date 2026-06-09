@@ -149,11 +149,7 @@ pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Res
     // Check installed version.
     let profile = Profile::open(config.scope)?;
     let installed = meta::list_meta(&profile)?;
-    let installed_version = installed
-        .iter()
-        .filter_map(|m| m.apm.as_ref())
-        .find(|a| a.name == package)
-        .map(|a| a.version.clone());
+    let installed_version = policy_installed_versions(package, &installed);
 
     // Candidate = first entry (highest priority).
     let candidate_version = &versions[0].1.version;
@@ -167,7 +163,7 @@ pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Res
     printer.plain("  Version table:");
 
     for (reg, meta) in &versions {
-        let marker = if installed_version.as_deref() == Some(&meta.version) {
+        let marker = if policy_candidate_is_installed(package, &reg.config.name, meta, &installed) {
             " ***"
         } else {
             "    "
@@ -255,6 +251,43 @@ fn rdepends_target_hashes(
         .ok_or_else(|| anyhow::anyhow!("package not found in any registry: {package}"))?;
     hashes.insert(store_path_hash(&target_meta.store_path).to_string());
     Ok((hashes, target_meta.version.clone()))
+}
+
+fn policy_installed_versions(package: &str, installed: &[InstalledMeta]) -> Option<String> {
+    let mut versions = BTreeSet::new();
+
+    for inst in installed {
+        let Some(apm) = inst.apm.as_ref() else {
+            continue;
+        };
+        if apm.name == package {
+            versions.insert(apm.version.clone());
+        }
+    }
+
+    if versions.is_empty() {
+        None
+    } else {
+        Some(versions.into_iter().collect::<Vec<_>>().join(", "))
+    }
+}
+
+fn policy_candidate_is_installed(
+    package: &str,
+    registry_name: &str,
+    candidate: &PackageMeta,
+    installed: &[InstalledMeta],
+) -> bool {
+    let candidate_hash = store_path_hash(&candidate.store_path);
+
+    installed.iter().any(|inst| {
+        let Some(apm) = inst.apm.as_ref() else {
+            return false;
+        };
+        apm.name == package
+            && apm.registry == registry_name
+            && store_path_hash(&inst.store_path) == candidate_hash
+    })
 }
 
 /// Build a dependency tree recursively.
@@ -748,6 +781,85 @@ references = ["llllllllllllllllllllllllllllllll"]
             "low-priority",
             &set,
             &target_hashes
+        ));
+    }
+
+    #[test]
+    fn policy_marker_uses_installed_registry_and_hash_for_same_version_duplicates() {
+        let installed = vec![InstalledMeta {
+            store_path: "/nix/store/llllllllllllllllllllllllllllllll-same-version-tool-1.0.0"
+                .into(),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(crate::types::ApmMeta {
+                name: "same-version-tool".into(),
+                version: "1.0.0".into(),
+                explicit: true,
+                registry: "low-priority".into(),
+                installed_at: "2026-06-09T00:00:00Z".into(),
+                held: false,
+            }),
+        }];
+        let high_candidate = PackageMeta {
+            name: "same-version-tool".into(),
+            version: "1.0.0".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-same-version-tool-1.0.0"
+                .into(),
+            nar_hash: "sha256:high".into(),
+            nar_size: 1,
+            closure_size: 1,
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            references: Vec::new(),
+            description: "high priority duplicate".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "test".into(),
+            images: Vec::new(),
+            sysroot: false,
+            previous: None,
+        };
+        let low_candidate = PackageMeta {
+            name: "same-version-tool".into(),
+            version: "1.0.0".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/nix/store/llllllllllllllllllllllllllllllll-same-version-tool-1.0.0"
+                .into(),
+            nar_hash: "sha256:low".into(),
+            nar_size: 1,
+            closure_size: 1,
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            references: Vec::new(),
+            description: "low priority duplicate".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "test".into(),
+            images: Vec::new(),
+            sysroot: false,
+            previous: None,
+        };
+
+        assert_eq!(
+            policy_installed_versions("same-version-tool", &installed).as_deref(),
+            Some("1.0.0")
+        );
+        assert!(!policy_candidate_is_installed(
+            "same-version-tool",
+            "high-priority",
+            &high_candidate,
+            &installed,
+        ));
+        assert!(policy_candidate_is_installed(
+            "same-version-tool",
+            "low-priority",
+            &low_candidate,
+            &installed,
         ));
     }
 
