@@ -322,7 +322,7 @@ async fn query_missing_handler(
 
     let mut missing = Vec::new();
     for path in &body.paths {
-        match state.store.is_valid_path(path) {
+        match state.store.is_valid_path_or_hash(path) {
             Ok(true) => {}
             Ok(false) => missing.push(path.clone()),
             Err(e) => {
