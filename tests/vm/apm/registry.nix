@@ -1107,49 +1107,153 @@ in {
   # -------------------------------------------------------------------------
   registry-branch-workflow = testing.mkVMTest {
     name = "apm-registry-branch-workflow";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = closureWorkflowDeps;
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
-      echo "==> Test: branch create, switch, publish, merge"
+      echo "==> Test: real APR branch create, switch, publish, merge"
 
-      # Create registry
+      FEATURE_STORE="${closureRootTool}"
+      FEATURE_DEP_STORE="${closureLeafTool}"
+      FEATURE_HASH=$(basename "$FEATURE_STORE" | cut -d- -f1)
+      FEATURE_DEP_HASH=$(basename "$FEATURE_DEP_STORE" | cut -d- -f1)
+
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
+      publish_feature_package() {
+        $APR publish "$FEATURE_STORE" \
+          --name featurepkg \
+          --version 1.0.0 \
+          --description "Real branch workflow fixture" \
+          --license MIT \
+          --maintainer branch@example.invalid \
+          --registry test-reg \
+          --no-commit > /tmp/branch-publish.out 2>&1 || {
+          cat /tmp/branch-publish.out
+          fail "apr publish featurepkg on feature branch succeeds"
+          return 1
+        }
+        cat /tmp/branch-publish.out
+      }
+
+      commit_branch_changes() {
+        message="$1"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "$message" > /tmp/branch-commit.out 2>&1 || {
+          cat /tmp/branch-commit.out
+          fail "registry commit succeeds: $message"
+          return 1
+        }
+        cat /tmp/branch-commit.out
+      }
+
+      mount -o remount,rw / || true
+      nix-store -q --references "$FEATURE_STORE" > /tmp/branch-feature-refs.out
+      assert_file_contains /tmp/branch-feature-refs.out "$FEATURE_DEP_STORE" \
+        "feature package has a real Nix reference to its dependency"
+
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
-      # Create a feature branch
-      $APR branch create feature-1 --registry test-reg
+      $APR branch create feature-1 --registry test-reg > /tmp/branch-create.out 2>&1 || {
+        cat /tmp/branch-create.out
+        fail "apr branch create succeeds"
+      }
+      cat /tmp/branch-create.out
+      assert_file_contains /tmp/branch-create.out "Created branch 'feature-1'" \
+        "apr branch create reports feature branch"
 
-      # Switch to it
-      $APR branch switch feature-1 --registry test-reg
+      $APR branch switch feature-1 --registry test-reg > /tmp/branch-switch-feature.out 2>&1 || {
+        cat /tmp/branch-switch-feature.out
+        fail "apr branch switch feature-1 succeeds"
+      }
+      cat /tmp/branch-switch-feature.out
+      assert_file_contains /tmp/branch-switch-feature.out "Switched to branch 'feature-1'" \
+        "apr branch switch reports feature branch"
 
-      # Publish a package on the feature branch
-      write_package_toml "$REG_DIR" "featurepkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish featurepkg 1.0.0"
-
-      # Verify package exists on feature branch
+      publish_feature_package
+      commit_branch_changes "publish featurepkg 1.0.0 on feature branch"
       assert_file_exists "$REG_DIR/packages/f/featurepkg.toml" \
-        "package exists on feature branch"
+        "published package exists on feature branch"
+      assert_file_contains "$REG_DIR/packages/f/featurepkg.toml" "$FEATURE_HASH" \
+        "feature branch package metadata records real store hash"
+      assert_file_exists "$REG_DIR/closures/$FEATURE_HASH" \
+        "feature branch closure file exists"
+      assert_file_contains "$REG_DIR/closures/$FEATURE_HASH" "$FEATURE_DEP_HASH" \
+        "feature branch closure records dependency"
 
-      # Switch back to main
-      # Detect the default branch name (could be main or master)
-      cd "$REG_DIR"
-      DEFAULT_BRANCH=$(git branch | grep -v feature-1 | tr -d '* ' | head -1)
-      cd /tmp
-      $APR branch switch "$DEFAULT_BRANCH" --registry test-reg
+      $APR packages --registry test-reg > /tmp/branch-packages-feature.out 2>&1 || {
+        cat /tmp/branch-packages-feature.out
+        fail "apr packages lists feature branch package"
+      }
+      assert_file_contains /tmp/branch-packages-feature.out "featurepkg 1.0.0" \
+        "apr packages sees feature package on feature branch"
+      $APR verify --registry test-reg > /tmp/branch-verify-feature.out 2>&1 || {
+        cat /tmp/branch-verify-feature.out
+        fail "apr verify accepts feature branch package"
+      }
+      assert_file_contains /tmp/branch-verify-feature.out "no errors" \
+        "apr verify validates feature branch closure metadata"
 
-      # Verify package does NOT exist on main
+      $APR branch switch "$DEFAULT_BRANCH" --registry test-reg > /tmp/branch-switch-default.out 2>&1 || {
+        cat /tmp/branch-switch-default.out
+        fail "apr branch switch default succeeds"
+      }
+      cat /tmp/branch-switch-default.out
+      assert_file_contains /tmp/branch-switch-default.out "Switched to branch '$DEFAULT_BRANCH'" \
+        "apr branch switch reports default branch"
+
       assert_file_not_exists "$REG_DIR/packages/f/featurepkg.toml" \
-        "package not on main before merge"
+        "package not on default branch before merge"
+      assert_file_not_exists "$REG_DIR/closures/$FEATURE_HASH" \
+        "closure not on default branch before merge"
+      $APR packages --registry test-reg > /tmp/branch-packages-default.out 2>&1 || {
+        cat /tmp/branch-packages-default.out
+        fail "apr packages succeeds on default branch before merge"
+      }
+      assert_file_not_contains /tmp/branch-packages-default.out "featurepkg" \
+        "apr packages hides feature package before merge"
 
-      # Merge feature branch
-      $APR merge feature-1 --registry test-reg
+      $APR merge feature-1 --registry test-reg > /tmp/branch-merge.out 2>&1 || {
+        cat /tmp/branch-merge.out
+        fail "apr merge feature branch succeeds"
+      }
+      cat /tmp/branch-merge.out
+      assert_file_contains /tmp/branch-merge.out "Merged 'feature-1'" \
+        "apr merge reports merged branch"
 
-      # Verify package now exists on main
       assert_file_exists "$REG_DIR/packages/f/featurepkg.toml" \
-        "package exists on main after merge"
+        "package exists on default branch after merge"
+      assert_file_exists "$REG_DIR/closures/$FEATURE_HASH" \
+        "closure exists on default branch after merge"
+      $APR show featurepkg --registry test-reg > /tmp/branch-show-merged.out 2>&1 || {
+        cat /tmp/branch-show-merged.out
+        fail "apr show resolves merged package"
+      }
+      assert_file_contains /tmp/branch-show-merged.out "Real branch workflow fixture" \
+        "apr show displays merged package metadata"
+      $APR verify --registry test-reg > /tmp/branch-verify-merged.out 2>&1 || {
+        cat /tmp/branch-verify-merged.out
+        fail "apr verify accepts merged branch package"
+      }
+      assert_file_contains /tmp/branch-verify-merged.out "no errors" \
+        "apr verify validates merged closure metadata"
+      $APR branch list --registry test-reg > /tmp/branch-list.out 2>&1 || {
+        cat /tmp/branch-list.out
+        fail "apr branch list succeeds"
+      }
+      assert_file_contains /tmp/branch-list.out "feature-1" \
+        "apr branch list shows feature branch"
 
       check_fail
     '';
