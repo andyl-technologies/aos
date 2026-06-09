@@ -135,7 +135,7 @@ in rec {
           local path="$1"
           mkdir -p "$path"
           cd "$path"
-          git init --bare
+          git init --bare --object-format=sha256
           cd /tmp
 
           # Clone, add structure, push

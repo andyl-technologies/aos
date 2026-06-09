@@ -563,7 +563,106 @@ in {
   };
 
   # --------------------------------------------------------------------------
-  # Test 2: system-upgrade
+  # Test 2: system-registry-mirror-scope
+  # --------------------------------------------------------------------------
+  system-registry-mirror-scope = testing.mkVMTest {
+    name = "apm-system-registry-mirror-scope";
+    rootfsDeps = testDeps;
+    memory = 1024;
+    testScript = ''
+      export HOME=/tmp/home
+      export NIX_REMOTE=""
+      export NIX_CONF_DIR=/tmp/nix-conf
+      export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      mkdir -p "$NIX_CONF_DIR" /nix/var/nix/db /nix/var/nix/gcroots
+      cat > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+      experimental-features = nix-command
+      sandbox = false
+      NIXCONF
+      nix-store --init || true
+      nix-store --load-db < /aos-registration
+
+      echo "==> Test: apm install --system resolves mirrors from system scope"
+
+      mkdir -p /etc/apm/registries.d
+      mkdir -p /var/lib/apm/remote/system-mirror/packages/s
+      mkdir -p /var/lib/apm/registries/system-mirror
+      mkdir -p "$HOME/.local/share/apm/registries/system-mirror"
+
+      cat > /etc/apm/registries.d/system-mirror.toml << 'CFGEOF'
+      [registry]
+      name = "system-mirror"
+      url = "file:///var/lib/apm/remote/system-mirror"
+      priority = 500
+      enabled = true
+      CFGEOF
+
+      cat > /var/lib/apm/registries/system-mirror/registry.toml << 'REGEOF'
+      [registry]
+      name = "system-mirror"
+
+      [[caches]]
+      url = "http://127.0.0.1:9/system-cache"
+      priority = 1000
+      REGEOF
+
+      cat > "$HOME/.local/share/apm/registries/system-mirror/registry.toml" << 'REGEOF'
+      [registry]
+      name = "system-mirror"
+
+      [[caches]]
+      url = "http://127.0.0.1:9/user-cache"
+      priority = 1000
+      REGEOF
+
+      cat > /var/lib/apm/remote/system-mirror/packages/s/server.toml << 'PKGEOF'
+      [package]
+      name = "server"
+      description = "System mirror scope fixture"
+      sysroot = true
+      license = "MIT"
+      maintainer = "test"
+
+      [[versions]]
+      version = "1.0.0"
+
+      [versions.platforms.x86_64-linux]
+      store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-server-1.0.0"
+      nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
+      nar_size = 1024
+      closure_size = 1024
+      source_drv = ""
+      source_nar_hash = ""
+      references = []
+      PKGEOF
+
+      set +e
+      OUTPUT=$(${apm}/bin/apm install server --system --dry-run 2>&1)
+      STATUS=$?
+      set -e
+      echo "$OUTPUT"
+
+      if [ "$STATUS" -eq 0 ]; then
+        echo "FAIL: mirror scope test expected narinfo fetch to fail"
+        exit 1
+      fi
+
+      if ! echo "$OUTPUT" | grep -q "system-cache"; then
+        echo "FAIL: system-scope cache URL was not used"
+        exit 1
+      fi
+
+      if echo "$OUTPUT" | grep -q "user-cache"; then
+        echo "FAIL: user-scope cache URL leaked into system install"
+        exit 1
+      fi
+
+      echo "==> system-registry-mirror-scope PASSED"
+    '';
+  };
+
+  # --------------------------------------------------------------------------
+  # Test 3: system-upgrade
   # --------------------------------------------------------------------------
   system-upgrade = testing.mkVMTest {
     name = "apm-system-upgrade";
