@@ -1088,6 +1088,13 @@ in {
       REG_DIR="$REG_STORAGE/chan-reg"
       assert_file_contains "$REG_DIR/keys.toml" "chan-reg:Ed25519" \
         "registry records initial channel trust key"
+      {
+        printf '[registry]\n'
+        printf 'name = "chan-reg"\n'
+        printf 'url = "file://%s"\n\n' "$REG_DIR"
+        printf '[registry.signing_keys]\n'
+        printf 'initial = "/tmp/channel-release-key"\n'
+      } > "$APM_CONFIG/registries.d/chan-reg.toml"
 
       $APR release 1.0.0 \
         --registry chan-reg \
@@ -1117,6 +1124,27 @@ in {
       assert_file_exists "/tmp/channel-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has channel-tool v1 narinfo"
 
+      $APR channel init canary 1.0.0 \
+        --registry chan-reg \
+        --key-id initial \
+        > /tmp/channel-init-canary.out 2>&1 || {
+        cat /tmp/channel-init-canary.out
+        fail "apr channel init initializes canary channel with key id"
+      }
+      cat /tmp/channel-init-canary.out
+      assert_file_contains /tmp/channel-init-canary.out \
+        "Initialized channel 'canary' with 256/256 partitions on 1.0.0" \
+        "apr channel init reports direct channel initialization"
+      assert_file_exists "$REG_DIR/.git/channels/canary/00" \
+        "direct channel init writes static partition object"
+      assert_file_contains "$REG_DIR/.git/channels/canary/00" \
+        "BEGIN SSH SIGNATURE" "direct channel init signs partition object"
+      $APR channel status canary --registry chan-reg > /tmp/channel-status-canary.out 2>&1
+      assert_file_contains /tmp/channel-status-canary.out "1.0.0" \
+        "direct channel init status reports release frontier"
+      assert_file_contains /tmp/channel-status-canary.out "256/256" \
+        "direct channel init status reports full partition set"
+
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
@@ -1141,6 +1169,13 @@ in {
         cat /tmp/channel-cache-http.log || true
         fail "static origin and cache HTTP servers started"
       fi
+      curl -sf http://127.0.0.1:18090/channels/canary/00 \
+        >/tmp/channel-canary-00.tag || {
+        cat /tmp/channel-origin-http.log || true
+        fail "direct channel init is served by static origin"
+      }
+      assert_file_contains /tmp/channel-canary-00.tag \
+        "BEGIN SSH SIGNATURE" "static origin serves direct channel partition"
 
       export HOME=/tmp/channel-consumer
       export USER=channeluser
