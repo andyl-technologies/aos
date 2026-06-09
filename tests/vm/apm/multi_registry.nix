@@ -84,6 +84,31 @@
     version = "2.0.0";
     origin = "high-priority";
   };
+  priorityLowClient = pkgs.mkDerivation {
+    pname = "priority-client";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+      priorityLowTool
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin" "$out/share/priority-client"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            '"$(dirname "$0")/priority-tool"' \
+            > "$out/bin/priority-client"
+          chmod +x "$out/bin/priority-client"
+          printf '%s\n' "${priorityLowTool}" \
+            > "$out/share/priority-client/runtime-dep.txt"
+        '';
+      }
+    ];
+  };
 
   mkStoreDb = dir: ''
         ${sqliteBin} ${dir}/var/nix/db/db.sqlite << 'SQL'
@@ -125,6 +150,7 @@
       pkgs.zstd
       priorityLowTool
       priorityHighTool
+      priorityLowClient
     ];
 in {
   # ---------------------------------------------------------------------------
@@ -198,12 +224,43 @@ in {
         git -C "$reg_dir" push origin "$branch"
       }
 
+      publish_priority_client() {
+        registry="$1"
+        store_path="$2"
+        cache_dir="$3"
+        cache_url="$4"
+
+        reg_dir="$REG_STORAGE/$registry"
+        $APR publish "$store_path" \
+          --name priority-client \
+          --version 1.0.0 \
+          --description "Client package depending on $registry priority-tool" \
+          --license MIT \
+          --maintainer priority@example.invalid \
+          --registry "$registry" \
+          --no-commit
+        $APR cache generate \
+          --registry "$registry" \
+          --output "$cache_dir" \
+          --cache-url "$cache_url" \
+          --priority 45 \
+          --no-commit
+        git -C "$reg_dir" add -A
+        git -C "$reg_dir" commit -m "release: priority-client 1.0.0"
+        branch=$(git -C "$reg_dir" symbolic-ref --short HEAD)
+        git -C "$reg_dir" push origin "$branch"
+      }
+
       LOW_STORE="${priorityLowTool}"
       HIGH_STORE="${priorityHighTool}"
+      LOW_CLIENT_STORE="${priorityLowClient}"
       LOW_HASH=$(basename "$LOW_STORE" | cut -d- -f1)
       HIGH_HASH=$(basename "$HIGH_STORE" | cut -d- -f1)
+      LOW_CLIENT_HASH=$(basename "$LOW_CLIENT_STORE" | cut -d- -f1)
 
       publish_priority_registry low-priority "$LOW_STORE" 9.0.0 \
+        /tmp/low-priority-cache http://127.0.0.1:18101
+      publish_priority_client low-priority "$LOW_CLIENT_STORE" \
         /tmp/low-priority-cache http://127.0.0.1:18101
       publish_priority_registry high-priority "$HIGH_STORE" 2.0.0 \
         /tmp/high-priority-cache http://127.0.0.1:18102
@@ -212,6 +269,8 @@ in {
 
       assert_file_exists "/tmp/low-priority-cache/$LOW_HASH.narinfo" \
         "low priority cache has package narinfo"
+      assert_file_exists "/tmp/low-priority-cache/$LOW_CLIENT_HASH.narinfo" \
+        "low priority cache has client narinfo"
       assert_file_exists "/tmp/high-priority-cache/$HIGH_HASH.narinfo" \
         "high priority cache has package narinfo"
 
@@ -298,6 +357,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$HIGH_STORE" "high-priority-tool"
+      delete_store_path "$LOW_CLIENT_STORE" "low-priority-client"
       delete_store_path "$LOW_STORE" "low-priority-tool"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
@@ -362,6 +422,31 @@ in {
       assert_file_contains /tmp/priority-installed-low.out \
         "priority-tool/low-priority 9.0.0" \
         "registry-filtered install records selected registry"
+
+      $APM install priority-client --registry low-priority --yes \
+        > /tmp/priority-install-client.out 2>&1 || {
+        cat /tmp/priority-install-client.out
+        fail "apm install downloads lower priority client package"
+      }
+      cat /tmp/priority-install-client.out
+      assert_file_contains /tmp/priority-install-client.out "Downloading" \
+        "registry-filtered install downloads the lower priority client NAR"
+      assert_store_valid "$LOW_CLIENT_STORE" "low priority client"
+      PROFILE_CLIENT="/var/lib/profiles/per-user/$USER/current/bin/priority-client"
+      "$PROFILE_CLIENT" > /tmp/priority-run-client.out
+      assert_file_contains /tmp/priority-run-client.out \
+        "priority-tool 9.0.0 from low-priority" \
+        "lower priority client executes against its registry dependency"
+
+      $APM rdepends priority-tool > /tmp/priority-rdepends-low.out 2>&1 || {
+        cat /tmp/priority-rdepends-low.out
+        fail "apm rdepends handles installed lower priority dependency target"
+      }
+      cat /tmp/priority-rdepends-low.out
+      assert_file_contains /tmp/priority-rdepends-low.out \
+        "priority-client (1.0.0)" \
+        "rdepends follows installed dependency target instead of higher priority duplicate"
+
       $APM list --upgradable > /tmp/priority-upgradable-low.out 2>&1 || {
         cat /tmp/priority-upgradable-low.out
         fail "apm list --upgradable handles same-name lower priority install"
