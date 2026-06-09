@@ -1,4 +1,4 @@
-# tests/vm/apm/registry.nix — Registry management VM tests (13 tests)
+# tests/vm/apm/registry.nix — Registry management VM tests (14 tests)
 #
 # Tests for `apr` registry lifecycle commands: create, add, remove, publish,
 # unpublish, branch workflow, validate, signed tags, and clean-break behavior.
@@ -25,6 +25,14 @@
     pkgs.zlib
   ];
   publishDeps = fixtures.commonDeps ++ nixRuntimeDeps;
+  maintainerWorkflowDeps =
+    publishDeps
+    ++ [
+      pkgs.findutils
+      pkgs.iproute2
+      pkgs.python3
+      pkgs.zstd
+    ];
   nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
   setupNixPublishEnv = ''
     export NIX_REMOTE=""
@@ -401,7 +409,215 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 9. registry-branch-workflow — Branch create, switch, merge
+  # 9. registry-maintainer-workflow — Real release, cache, install, execute
+  # -------------------------------------------------------------------------
+  registry-maintainer-workflow = testing.mkVMTest {
+    name = "apm-registry-maintainer-workflow";
+    rootfsDeps = maintainerWorkflowDeps;
+    memory = 2048;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixPublishEnv}
+
+      echo "==> Test: full registry maintainer release and consumer install"
+
+      GIT_STORE="${pkgs.git}"
+      CURL_STORE="${pkgs.curl}"
+      GIT_HASH=$(basename "$GIT_STORE" | cut -d- -f1)
+      CURL_HASH=$(basename "$CURL_STORE" | cut -d- -f1)
+      RUNNER_SRC=/tmp/maint-runner-src
+      mkdir -p "$RUNNER_SRC/bin" "$RUNNER_SRC/share/maint-runner"
+      cat > "$RUNNER_SRC/bin/maint-runner" << 'RUNNEREOF'
+      #!/bin/sh
+      echo "maint-runner 1.0.0 executed"
+      RUNNEREOF
+      chmod +x "$RUNNER_SRC/bin/maint-runner"
+      dd if=/dev/zero of="$RUNNER_SRC/share/maint-runner/payload.bin" \
+        bs=1M count=12
+      RUNNER_STORE=$(nix-store --add "$RUNNER_SRC")
+      RUNNER_HASH=$(basename "$RUNNER_STORE" | cut -d- -f1)
+
+      # Maintainer creates a local registry and prepares a grouped release branch.
+      $APR create maint-reg
+      REG_DIR="$REG_STORAGE/maint-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      $APR branch create release-2026q2 --registry maint-reg
+      $APR branch switch release-2026q2 --registry maint-reg
+
+      $APR publish "$GIT_STORE" \
+        --name maint-git \
+        --version 1.0.0 \
+        --description "Git from the maintainer workflow" \
+        --homepage "https://git-scm.com" \
+        --license GPL-2.0-only \
+        --maintainer release@example.invalid \
+        --registry maint-reg \
+        --no-commit
+      $APR publish "$CURL_STORE" \
+        --name maint-curl \
+        --version 1.0.0 \
+        --description "Curl from the maintainer workflow" \
+        --homepage "https://curl.se" \
+        --license curl \
+        --maintainer release@example.invalid \
+        --registry maint-reg \
+        --no-commit
+      $APR publish "$RUNNER_STORE" \
+        --name maint-runner \
+        --version 1.0.0 \
+        --description "Executable payload from the maintainer workflow" \
+        --license MIT \
+        --maintainer release@example.invalid \
+        --registry maint-reg \
+        --no-commit
+
+      $APR cache generate \
+        --registry maint-reg \
+        --output /tmp/maint-cache \
+        --cache-url http://127.0.0.1:18082 \
+        --priority 41 \
+        --no-commit
+
+      git -C "$REG_DIR" status --short --untracked-files=all \
+        > /tmp/changeset.status
+      cat /tmp/changeset.status
+      assert_file_contains /tmp/changeset.status "packages/m/maint-git.toml" \
+        "changeset includes git package metadata"
+      assert_file_contains /tmp/changeset.status "packages/m/maint-curl.toml" \
+        "changeset includes curl package metadata"
+      assert_file_contains /tmp/changeset.status "packages/m/maint-runner.toml" \
+        "changeset includes runner package metadata"
+      assert_file_contains /tmp/changeset.status "registry.toml" \
+        "changeset includes cache pointer update"
+      assert_file_exists "$REG_DIR/closures/$GIT_HASH" \
+        "changeset includes git closure metadata"
+      assert_file_exists "$REG_DIR/closures/$CURL_HASH" \
+        "changeset includes curl closure metadata"
+      assert_file_exists "$REG_DIR/closures/$RUNNER_HASH" \
+        "changeset includes runner closure metadata"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "release: publish maintainer tools"
+      git -C "$REG_DIR" diff --name-only "$DEFAULT_BRANCH"..HEAD > /tmp/changeset.files
+      cat /tmp/changeset.files
+      assert_file_contains /tmp/changeset.files "packages/m/maint-git.toml" \
+        "release diff carries git package"
+      assert_file_contains /tmp/changeset.files "packages/m/maint-curl.toml" \
+        "release diff carries curl package"
+      assert_file_contains /tmp/changeset.files "packages/m/maint-runner.toml" \
+        "release diff carries runner package"
+      assert_file_contains /tmp/changeset.files "registry.toml" \
+        "release diff carries cache endpoint"
+
+      $APR packages --registry maint-reg > /tmp/maint-packages.out 2>&1
+      assert_file_contains /tmp/maint-packages.out "maint-git" \
+        "apr packages lists git"
+      assert_file_contains /tmp/maint-packages.out "maint-curl" \
+        "apr packages lists curl"
+      assert_file_contains /tmp/maint-packages.out "maint-runner" \
+        "apr packages lists runner"
+      $APR verify --registry maint-reg
+
+      $APR branch switch "$DEFAULT_BRANCH" --registry maint-reg
+      $APR merge release-2026q2 --registry maint-reg
+      git init --bare --object-format=sha256 /tmp/maint-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/maint-origin.git
+      git -C "$REG_DIR" tag 1.0.0
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin 1.0.0
+
+      assert_file_exists "/tmp/maint-cache/$GIT_HASH.narinfo" \
+        "static cache contains git narinfo"
+      assert_file_exists "/tmp/maint-cache/$CURL_HASH.narinfo" \
+        "static cache contains curl narinfo"
+      assert_file_exists "/tmp/maint-cache/$RUNNER_HASH.narinfo" \
+        "static cache contains runner narinfo"
+      assert_dir_exists /tmp/maint-cache/nar \
+        "static cache contains NAR directory"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      python3 -m http.server 18082 --bind 127.0.0.1 \
+        --directory /tmp/maint-cache > /tmp/maint-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18082/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if ! curl -sf http://127.0.0.1:18082/nix-cache-info >/dev/null; then
+        cat /tmp/maint-cache-http.log || true
+        fail "static cache HTTP server started"
+      else
+        pass "static cache HTTP server started"
+      fi
+      curl -sf "http://127.0.0.1:18082/$RUNNER_HASH.narinfo" > /tmp/runner.narinfo
+      assert_file_contains /tmp/runner.narinfo "URL: nar/" \
+        "consumer can fetch runner narinfo over HTTP"
+
+      # Consumer uses a fresh HOME and the published git origin.
+      export HOME=/tmp/consumer
+      export USER=maintconsumer
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/maint-origin.git --name maint-reg --tag 1.0.0
+      $APM search maint-runner --registry maint-reg > /tmp/consumer-search.out 2>&1
+      assert_file_contains /tmp/consumer-search.out "maint-runner" \
+        "consumer registry exposes runner package"
+      assert_file_contains "$HOME/.local/share/apm/registries/maint-reg/registry.toml" \
+        "http://127.0.0.1:18082" "consumer synced cache endpoint"
+
+      # Force a real download by removing the target package from the VM store.
+      mount -o remount,rw / || true
+      nix-store --delete --ignore-liveness "$RUNNER_STORE" > /tmp/delete-runner.out 2>&1 || {
+        cat /tmp/delete-runner.out
+        fail "deleted runner store path before install"
+      }
+      if nix-store --check-validity "$RUNNER_STORE" >/tmp/runner-valid.out 2>&1; then
+        cat /tmp/runner-valid.out
+        fail "runner store path should be missing before install"
+      else
+        pass "runner store path missing before install"
+      fi
+
+      $APM install maint-runner --registry maint-reg --yes > /tmp/install-runner.out 2>&1 || {
+        cat /tmp/install-runner.out
+        fail "apm install downloads and imports runner"
+      }
+      cat /tmp/install-runner.out
+      assert_file_contains /tmp/install-runner.out "Downloading" \
+        "apm install performed a download"
+      assert_file_contains /tmp/install-runner.out "Installed 1 package" \
+        "apm install completed profile update"
+      if find "$HOME/.cache/apm" -name '*.nar.zst' | grep -q .; then
+        pass "downloaded NAR retained in user cache"
+      else
+        fail "downloaded NAR retained in user cache"
+      fi
+      nix-store --check-validity "$RUNNER_STORE" >/tmp/runner-valid-after.out 2>&1
+
+      PROFILE_RUNNER="/var/lib/profiles/per-user/$USER/current/bin/maint-runner"
+      if [ -x "$PROFILE_RUNNER" ]; then
+        pass "installed profile exposes runner executable"
+      else
+        fail "installed profile exposes runner executable"
+      fi
+      "$PROFILE_RUNNER" > /tmp/profile-runner.out
+      assert_file_contains /tmp/profile-runner.out "maint-runner 1.0.0 executed" \
+        "installed runner executes from profile"
+      $APM list > /tmp/apm-list.out 2>&1
+      assert_file_contains /tmp/apm-list.out "maint-runner" \
+        "apm list shows installed maintainer package"
+
+      kill "$CACHE_PID" 2>/dev/null || true
+      wait "$CACHE_PID" 2>/dev/null || true
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 10. registry-branch-workflow — Branch create, switch, merge
   # -------------------------------------------------------------------------
   registry-branch-workflow = testing.mkVMTest {
     name = "apm-registry-branch-workflow";
@@ -454,7 +670,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 10. registry-validate — Validate registry TOML structure
+  # 11. registry-validate — Validate registry TOML structure
   # -------------------------------------------------------------------------
   registry-validate = testing.mkVMTest {
     name = "apm-registry-validate";
@@ -495,7 +711,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 11. registry-bundle — Legacy selector for signed tag / no-bundle clean break
+  # 12. registry-bundle — Legacy selector for signed tag / no-bundle clean break
   # -------------------------------------------------------------------------
   registry-bundle = testing.mkVMTest {
     name = "apm-registry-signed-tag-clean-break";
@@ -541,7 +757,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 12. closure-generate — Closure files created and well-formed
+  # 13. closure-generate — Closure files created and well-formed
   # -------------------------------------------------------------------------
   closure-generate = testing.mkVMTest {
     name = "apm-closure-generate";
@@ -628,7 +844,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 13. closure-verify — apr verify validates closure consistency
+  # 14. closure-verify — apr verify validates closure consistency
   # -------------------------------------------------------------------------
   closure-verify = testing.mkVMTest {
     name = "apm-closure-verify";
