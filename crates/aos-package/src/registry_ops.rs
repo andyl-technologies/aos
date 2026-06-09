@@ -12,6 +12,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use aos_cache::AuthOptions;
+use aos_core::nar::info as narinfo;
 use serde_json::Value;
 
 use aos_core::output::Printer;
@@ -1364,8 +1365,8 @@ pub async fn diff(
 #[allow(clippy::too_many_arguments)]
 pub async fn validate(
     config: &ApmConfig,
-    _package: Option<&str>,
-    _platform: Option<&str>,
+    package: Option<&str>,
+    platform: Option<&str>,
     _fix: bool,
     jobs: u32,
     registry: Option<&str>,
@@ -1373,58 +1374,25 @@ pub async fn validate(
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let mirrors = resolve_mirrors(&dir);
+    if jobs == 0 {
+        bail!("--jobs must be greater than zero");
+    }
 
     if mirrors.is_empty() {
         printer.warning("No caches configured in registry.toml. Cannot validate.");
         return Ok(());
     }
 
-    // Collect all store paths from packages and images.
-    let mut store_paths: Vec<(String, String)> = Vec::new(); // (name, nar_hash)
+    let entries = collect_cache_validation_entries(&dir, package, platform)?;
 
-    let packages_dir = dir.join("packages");
-    if packages_dir.is_dir() {
-        for letter_entry in std::fs::read_dir(&packages_dir)?.flatten() {
-            if !letter_entry.path().is_dir() {
-                continue;
-            }
-            for entry in std::fs::read_dir(letter_entry.path())?.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "toml").unwrap_or(false) {
-                    let content = std::fs::read_to_string(&path)?;
-                    let toml_val: toml::Value = toml::from_str(&content)?;
-                    if let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) {
-                        for ver in versions {
-                            if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table())
-                            {
-                                for (_plat, entry) in platforms {
-                                    if let Some(nar_hash) =
-                                        entry.get("nar_hash").and_then(|v| v.as_str())
-                                    {
-                                        let name = toml_val
-                                            .get("package")
-                                            .and_then(|p| p.get("name"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("unknown");
-                                        store_paths.push((name.to_string(), nar_hash.to_string()));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if store_paths.is_empty() {
+    if entries.is_empty() {
         printer.info("No entries to validate.");
         return Ok(());
     }
 
     printer.info(&format!(
         "Validating {} entries against {} cache(s) with {} parallel requests...",
-        store_paths.len(),
+        entries.len(),
         mirrors.len(),
         jobs,
     ));
@@ -1433,27 +1401,15 @@ pub async fn validate(
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(jobs as usize));
     let mut handles = Vec::new();
 
-    for (name, nar_hash) in &store_paths {
+    for entry in entries {
         let client = client.clone();
         let mirrors = mirrors.clone();
-        let name = name.clone();
-        let nar_hash = nar_hash.clone();
         let permit = semaphore.clone().acquire_owned().await?;
 
         let handle = tokio::spawn(async move {
-            let mut found = false;
-            for cache in &mirrors {
-                let url = format!("{}/{}.nar.zst", cache.url.trim_end_matches('/'), nar_hash);
-                let resp = client.head(&url).send().await;
-                if let Ok(resp) = resp {
-                    if resp.status().is_success() {
-                        found = true;
-                        break;
-                    }
-                }
-            }
+            let result = validate_cache_entry(&client, &mirrors, entry).await;
             drop(permit);
-            (name, nar_hash, found)
+            result
         });
         handles.push(handle);
     }
@@ -1461,22 +1417,233 @@ pub async fn validate(
     let mut missing = 0u32;
     let mut ok = 0u32;
     for handle in handles {
-        let (name, nar_hash, found) = handle.await?;
-        if found {
+        let result = handle.await?;
+        if result.found {
             ok += 1;
         } else {
             missing += 1;
-            printer.warning(&format!("{name}: {nar_hash} not found in any cache"));
+            let detail = result
+                .details
+                .first()
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default();
+            printer.warning(&format!(
+                "{}: {} not found in any cache{}",
+                result.entry.name, result.entry.store_path, detail
+            ));
         }
     }
 
     if missing == 0 {
         printer.success(&format!("All {ok} entries found in caches."));
     } else {
-        printer.error(&format!("{ok} found, {missing} missing."));
+        bail!("{ok} found, {missing} missing.");
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CacheValidationEntry {
+    name: String,
+    platform: String,
+    store_path: String,
+    store_hash: String,
+    nar_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CacheValidationResult {
+    entry: CacheValidationEntry,
+    found: bool,
+    details: Vec<String>,
+}
+
+fn collect_cache_validation_entries(
+    dir: &Path,
+    package_filter: Option<&str>,
+    platform_filter: Option<&str>,
+) -> Result<Vec<CacheValidationEntry>> {
+    let packages_dir = dir.join("packages");
+    let mut entries = Vec::new();
+
+    if !packages_dir.is_dir() {
+        return Ok(entries);
+    }
+
+    for letter_entry in std::fs::read_dir(&packages_dir)
+        .with_context(|| format!("reading {}", packages_dir.display()))?
+    {
+        let letter_entry = letter_entry?;
+        if !letter_entry.path().is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(letter_entry.path())
+            .with_context(|| format!("reading {}", letter_entry.path().display()))?
+        {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            collect_cache_validation_entries_from_package(
+                &path,
+                package_filter,
+                platform_filter,
+                &mut entries,
+            )?;
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.platform.cmp(&b.platform))
+            .then_with(|| a.store_path.cmp(&b.store_path))
+    });
+    entries.dedup();
+    Ok(entries)
+}
+
+fn collect_cache_validation_entries_from_package(
+    path: &Path,
+    package_filter: Option<&str>,
+    platform_filter: Option<&str>,
+    entries: &mut Vec<CacheValidationEntry>,
+) -> Result<()> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading package metadata {}", path.display()))?;
+    let toml_val: toml::Value =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    let name = toml_val
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    if package_filter.is_some_and(|filter| filter != name) {
+        return Ok(());
+    }
+
+    let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) else {
+        return Ok(());
+    };
+    for version in versions {
+        let Some(platforms) = version.get("platforms").and_then(|v| v.as_table()) else {
+            continue;
+        };
+        for (platform, entry) in platforms {
+            if platform_filter.is_some_and(|filter| filter != platform) {
+                continue;
+            }
+            let Some(store_path) = entry.get("store_path").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(nar_hash) = entry.get("nar_hash").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            entries.push(CacheValidationEntry {
+                name: name.to_string(),
+                platform: platform.to_string(),
+                store_path: store_path.to_string(),
+                store_hash: extract_hash(store_path).to_string(),
+                nar_hash: nar_hash.to_string(),
+            });
+            if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
+                for image in images {
+                    let Some(image_store_path) = image.get("store_path").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    let Some(image_nar_hash) = image.get("nar_hash").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    entries.push(CacheValidationEntry {
+                        name: name.to_string(),
+                        platform: platform.to_string(),
+                        store_path: image_store_path.to_string(),
+                        store_hash: extract_hash(image_store_path).to_string(),
+                        nar_hash: image_nar_hash.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn validate_cache_entry(
+    client: &reqwest::Client,
+    mirrors: &[CacheEntry],
+    entry: CacheValidationEntry,
+) -> CacheValidationResult {
+    let mut details = Vec::new();
+    for cache in mirrors {
+        let base = cache.url.trim_end_matches('/');
+        let narinfo_url =
+            crate::download::join_cache_url(base, &format!("{}.narinfo", entry.store_hash));
+
+        let narinfo = match client.get(&narinfo_url).send().await {
+            Ok(response) if response.status().is_success() => match response.text().await {
+                Ok(text) => match narinfo::parse(&text) {
+                    Ok(narinfo) => narinfo,
+                    Err(err) => {
+                        details.push(format!("{narinfo_url}: invalid narinfo: {err}"));
+                        continue;
+                    }
+                },
+                Err(err) => {
+                    details.push(format!("{narinfo_url}: failed reading narinfo body: {err}"));
+                    continue;
+                }
+            },
+            Ok(response) => {
+                details.push(format!("{narinfo_url}: HTTP {}", response.status()));
+                continue;
+            }
+            Err(err) => {
+                details.push(format!("{narinfo_url}: {err}"));
+                continue;
+            }
+        };
+
+        if narinfo.store_path != entry.store_path {
+            details.push(format!(
+                "{narinfo_url}: narinfo store path {} did not match registry path {}",
+                narinfo.store_path, entry.store_path
+            ));
+            continue;
+        }
+        if narinfo.nar_hash != entry.nar_hash {
+            details.push(format!(
+                "{narinfo_url}: narinfo NarHash {} did not match registry NarHash {}",
+                narinfo.nar_hash, entry.nar_hash
+            ));
+            continue;
+        }
+
+        let nar_url = crate::download::join_cache_url(base, &narinfo.url);
+        match client.head(&nar_url).send().await {
+            Ok(response) if response.status().is_success() => {
+                return CacheValidationResult {
+                    entry,
+                    found: true,
+                    details,
+                };
+            }
+            Ok(response) => {
+                details.push(format!("{nar_url}: HTTP {}", response.status()));
+            }
+            Err(err) => {
+                details.push(format!("{nar_url}: {err}"));
+            }
+        }
+    }
+
+    CacheValidationResult {
+        entry,
+        found: false,
+        details,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3685,6 +3852,129 @@ references = []
         assert!(content.contains("previous = \"2026.03\""));
         assert!(content.contains("format = \"raw\""));
         assert!(content.contains("sha256:ccdd"));
+    }
+
+    #[test]
+    fn cache_validation_entries_honor_package_and_platform_filters() {
+        let tmp = TempDir::new().unwrap();
+        let pkg_dir = tmp.path().join("packages").join("t");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(
+            pkg_dir.join("tool.toml"),
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.0.0"
+nar_hash = "sha256:x86"
+nar_size = 1
+closure_size = 1
+references = []
+
+[versions.platforms.aarch64-linux]
+store_path = "/nix/store/bbb222-tool-1.0.0"
+nar_hash = "sha256:arm"
+nar_size = 1
+closure_size = 1
+references = []
+
+[[versions.platforms.aarch64-linux.images]]
+format = "raw"
+store_path = "/nix/store/ccc333-tool-image-1.0.0"
+nar_hash = "sha256:image"
+nar_size = 1
+"#,
+        )
+        .unwrap();
+
+        let entries =
+            collect_cache_validation_entries(tmp.path(), Some("tool"), Some("aarch64-linux"))
+                .unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                CacheValidationEntry {
+                    name: "tool".into(),
+                    platform: "aarch64-linux".into(),
+                    store_path: "/nix/store/bbb222-tool-1.0.0".into(),
+                    store_hash: "bbb222".into(),
+                    nar_hash: "sha256:arm".into(),
+                },
+                CacheValidationEntry {
+                    name: "tool".into(),
+                    platform: "aarch64-linux".into(),
+                    store_path: "/nix/store/ccc333-tool-image-1.0.0".into(),
+                    store_hash: "ccc333".into(),
+                    nar_hash: "sha256:image".into(),
+                },
+            ]
+        );
+        assert!(
+            collect_cache_validation_entries(tmp.path(), Some("missing"), None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_validation_entry_follows_narinfo_url() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let narinfo = concat!(
+                    "StorePath: /nix/store/abc123-tool-1.0.0\n",
+                    "URL: nar/abc123-sha256-test.nar.zst\n",
+                    "Compression: zstd\n",
+                    "NarHash: sha256:test\n",
+                    "NarSize: 1\n",
+                );
+                let response = if req.starts_with("GET /abc123.narinfo ") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        narinfo.len(),
+                        narinfo,
+                    )
+                } else if req.starts_with("HEAD /nar/abc123-sha256-test.nar.zst ") {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_string()
+                };
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let result = validate_cache_entry(
+            &reqwest::Client::new(),
+            &[CacheEntry {
+                url: format!("http://{addr}"),
+                priority: 100,
+            }],
+            CacheValidationEntry {
+                name: "tool".into(),
+                platform: "x86_64-linux".into(),
+                store_path: "/nix/store/abc123-tool-1.0.0".into(),
+                store_hash: "abc123".into(),
+                nar_hash: "sha256:test".into(),
+            },
+        )
+        .await;
+
+        assert!(result.found, "{result:?}");
+        server.await.unwrap();
     }
 
     #[test]

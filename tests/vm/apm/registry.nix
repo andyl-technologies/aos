@@ -611,6 +611,33 @@ in {
       assert_file_contains /tmp/runner.narinfo "URL: nar/" \
         "consumer can fetch runner narinfo over HTTP"
 
+      $APR validate --registry maint-reg --jobs 4 \
+        > /tmp/maint-validate.out 2>&1 || {
+        cat /tmp/maint-validate.out
+        fail "apr validate confirms generated cache contents"
+      }
+      cat /tmp/maint-validate.out
+      assert_file_contains /tmp/maint-validate.out "All 3 entries found in caches" \
+        "apr validate checks every published cache entry"
+      $APR validate --registry maint-reg \
+        --package maint-runner \
+        --platform x86_64-linux \
+        --jobs 2 > /tmp/maint-validate-runner.out 2>&1 || {
+        cat /tmp/maint-validate-runner.out
+        fail "apr validate filtered to one package succeeds"
+      }
+      assert_file_contains /tmp/maint-validate-runner.out "All 1 entries found in caches" \
+        "apr validate honors package and platform filters"
+      if $APR validate --registry maint-reg --jobs 0 \
+        > /tmp/maint-validate-jobs-zero.out 2>&1; then
+        cat /tmp/maint-validate-jobs-zero.out
+        fail "apr validate should reject zero parallelism"
+      else
+        assert_file_contains /tmp/maint-validate-jobs-zero.out \
+          "jobs must be greater than zero" \
+          "apr validate rejects zero parallelism"
+      fi
+
       # Consumer uses a fresh HOME and the published git origin.
       export HOME=/tmp/consumer
       export USER=maintconsumer
