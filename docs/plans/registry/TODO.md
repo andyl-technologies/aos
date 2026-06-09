@@ -8,7 +8,7 @@ Keep this file current as work lands.
 > landed in the prior PR. This PR turns the external stock-Nix, backend-array,
 > stock-Git, CDN-layout, and pack/delta validation gates into Nix VM checks under
 > `tests/vm/apm/registry_validation.nix`. The focused registry VM checks passed
-> on the KVM builder `dylan@builder-hil1-c13958ef` on 2026-06-08;
+> on a remote KVM builder on 2026-06-08;
 > fleet-specific `max_staleness_seconds` tuning remains operator rollout policy
 > rather than a repository implementation item. Additional builder validation
 > on 2026-06-08 passed the full `checks.fleet` aggregate after the fleet
@@ -55,8 +55,7 @@ Keep this file current as work lands.
       `pkgs/tools/git-2_42.nix`, `pkgs/tools/git.nix`,
       `docs/registry/http-layout.md`, and
       `tests/vm/apm/registry_validation.nix`.
-- [x] Run all registry validation VM checks on
-      `dylan@builder-hil1-c13958ef`:
+- [x] Run all registry validation VM checks on a remote KVM builder:
       `nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array`,
       `nix-build -A checks.vm.apm.registry-validation-origin-cdn-layout`,
       `nix-build -A checks.vm.apm.registry-validation-stock-git-matrix`, and
@@ -84,8 +83,7 @@ Keep this file current as work lands.
 
 ## Cross-Cutting VM Integration
 
-- [x] Run the Go CGO GCC/LLVM integration VM check on
-      `dylan@builder-hil1-c13958ef`:
+- [x] Run the Go CGO GCC/LLVM integration VM check on a remote KVM builder:
       `nix-build -A checks.integration.go-cgo-gcc-and-clang`.
       Builder evidence from 2026-06-08:
       `cross-cutting-go-cgo-gcc-clang` passed at
@@ -94,7 +92,7 @@ Keep this file current as work lands.
       `Go CGO GCC/LLVM integration: PASS`. Context:
       `pkgs/toolchain/go/go.nix`, `lib/testing/vm.nix`, and
       `lib/testing/firecracker.nix`.
-- [x] Run the full fleet VM aggregate on `dylan@builder-hil1-c13958ef` after
+- [x] Run the full fleet VM aggregate on a remote KVM builder after
       adding the external registry validation checks. Builder evidence from
       2026-06-08: `checks.fleet` passed with outputs for
       `apm-e2e`, `apm-system-activation-fail`, `apm-system-upgrade`,
@@ -173,10 +171,10 @@ Keep this file current as work lands.
       `crates/aos-package/tests/registry_cache_e2e.rs`,
       `crates/aos-package/tests/registry_perf.rs`, and
       `crates/aos-cache/tests/backend_matrix.rs`.
-- [x] Run the full `checks.vm.apm` aggregate on `dylan@builder-hil1-c13958ef`
+- [x] Run the full `checks.vm.apm` aggregate on a remote KVM builder
       after adding `checks.vm.apm.command-surface`. Builder evidence from
       2026-06-08: the aggregate command
-      `nix-build --no-out-link --expr 'let aos = import /tmp/aos-vm-fleet-validation-20260606 { system = "x86_64-linux"; }; in builtins.attrValues aos.checks.vm.apm'`
+      `nix-build --no-out-link --expr 'let aos = import . { system = "x86_64-linux"; }; in builtins.attrValues aos.checks.vm.apm'`
       returned 0. The output set included the new command-surface test at
       `/nix/store/ngqcnmlcyz4k0j3v9mn7jlw35jkvc5yq-aos-vm-test-apm-command-surface-0`
       along with the registry, tracking, package, sysroot-lock, system, kernel,
@@ -187,8 +185,8 @@ Keep this file current as work lands.
 
 ## Non-Registry Integration Observation
 
-- [x] Attempt the full `checks.integration` aggregate on
-      `dylan@builder-hil1-c13958ef` for extra confidence. The aggregate did not
+- [x] Attempt the full `checks.integration` aggregate on a remote KVM builder
+      for extra confidence. The aggregate did not
       complete: `cross-cutting-archive-chain` failed with a fortified
       buffer-overflow abort while running the libarchive tar.gz extraction test,
       and Nix also reported unrelated package-build failures from the same broad

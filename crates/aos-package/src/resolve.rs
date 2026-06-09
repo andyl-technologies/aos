@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 
@@ -81,25 +81,20 @@ fn resolve_from_closure_file(
     let mut closure: Vec<PackageMeta> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    // Walk the closure members in file order (deps before dependents).
+    // Registry closure files are stored root-first for validation readability,
+    // but imports must process dependencies before dependents.
     for member_hash in &closure_meta.members {
-        if !seen.insert(member_hash.clone()) {
+        if *member_hash == root_hash || !seen.insert(member_hash.clone()) {
             continue;
         }
 
-        if *member_hash == root_hash {
-            // Root is always included — use the already-resolved meta.
-            closure.push(root.clone());
-        } else if let Some(dep) = registries.resolve_hash_in(registry_name, member_hash) {
+        if let Some(dep) = registries.resolve_hash_in(registry_name, member_hash) {
             closure.push(dep.clone());
         }
         // Skip unresolvable hashes (system libraries, etc.)
     }
 
-    // Ensure root is in the closure even if not in the file.
-    if !seen.contains(&root_hash) {
-        closure.push(root.clone());
-    }
+    closure.push(root.clone());
 
     let total_nar_size: u64 = closure.iter().map(|m| m.nar_size).sum();
 
@@ -118,43 +113,15 @@ fn resolve_via_bfs(
     root: PackageMeta,
 ) -> Result<ResolvedClosure> {
     let mut seen: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<PackageMeta> = VecDeque::new();
     let mut closure: Vec<PackageMeta> = Vec::new();
 
-    // Seed with the root.
-    let root_hash = store_path_hash(&root.store_path).to_string();
-    seen.insert(root_hash);
-    queue.push_back(root.clone());
-
-    while let Some(current) = queue.pop_front() {
-        for ref_hash in &current.references {
-            if seen.contains(ref_hash.as_str()) {
-                continue;
-            }
-
-            // Resolve within the same registry.  If a reference hash can't
-            // be resolved, skip it -- it may be a system library or a
-            // self-reference that doesn't correspond to a registry package.
-            if let Some(dep) = registries.resolve_hash_in(registry_name, ref_hash) {
-                // Guard against false matches: the hash_index may map an
-                // unknown reference hash back to the referencing package
-                // itself.  Deduplicate on the resolved package's actual
-                // store path hash (not the ref_hash, which might be a
-                // different hash that coincidentally resolved to an
-                // already-seen package).
-                let dep_hash = store_path_hash(&dep.store_path).to_string();
-                if seen.insert(dep_hash) {
-                    queue.push_back(dep.clone());
-                }
-            }
-
-            // Mark this ref_hash as processed regardless of whether it
-            // resolved to a new package, to avoid re-resolving it.
-            seen.insert(ref_hash.clone());
-        }
-
-        closure.push(current);
-    }
+    visit_dependencies_first(
+        registries,
+        registry_name,
+        root.clone(),
+        &mut seen,
+        &mut closure,
+    );
 
     let total_nar_size: u64 = closure.iter().map(|m| m.nar_size).sum();
 
@@ -164,6 +131,29 @@ fn resolve_via_bfs(
         closure,
         total_nar_size,
     })
+}
+
+fn visit_dependencies_first(
+    registries: &RegistrySet,
+    registry_name: &str,
+    current: PackageMeta,
+    seen: &mut HashSet<String>,
+    closure: &mut Vec<PackageMeta>,
+) {
+    let current_hash = store_path_hash(&current.store_path).to_string();
+    if !seen.insert(current_hash) {
+        return;
+    }
+
+    for ref_hash in &current.references {
+        if let Some(dep) = registries.resolve_hash_in(registry_name, ref_hash) {
+            visit_dependencies_first(registries, registry_name, dep.clone(), seen, closure);
+        } else {
+            seen.insert(ref_hash.clone());
+        }
+    }
+
+    closure.push(current);
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +237,10 @@ mod tests {
         let names: Vec<&str> = resolved.closure.iter().map(|m| m.name.as_str()).collect();
         assert!(names.contains(&"curl"));
         assert!(names.contains(&"zlib"));
+        assert!(
+            names.iter().position(|name| *name == "zlib")
+                < names.iter().position(|name| *name == "curl")
+        );
         assert!(resolved.total_nar_size > 0);
     }
 
@@ -423,6 +417,10 @@ mod tests {
         let names: Vec<&str> = resolved.closure.iter().map(|m| m.name.as_str()).collect();
         assert!(names.contains(&"curl"));
         assert!(names.contains(&"zlib"));
+        assert!(
+            names.iter().position(|name| *name == "zlib")
+                < names.iter().position(|name| *name == "curl")
+        );
         assert!(resolved.total_nar_size > 0);
     }
 

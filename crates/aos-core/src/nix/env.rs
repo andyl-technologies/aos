@@ -10,6 +10,10 @@
 //!   `<AOS_ROOT>/store/`         → `NIX_STORE_DIR`
 //!   `<AOS_ROOT>/var/nix/`       → `NIX_STATE_DIR`
 //!
+//! Tests and advanced tooling may override either derived value with
+//! `AOS_NIX_STORE_DIR` or `AOS_NIX_STATE_DIR`. This is useful when a client
+//! and server need separate ValidPaths databases for the same store directory.
+//!
 //! Mirrors `aos_server::aos_root()`'s reading of the same env var, but
 //! lives in `aos-core` so the CLI side (`aos-cache`, `aos`) doesn't
 //! pull in `aos-server` as a dependency.
@@ -23,10 +27,10 @@ pub fn aos_nix_env() -> Vec<(&'static str, String)> {
         return Vec::new();
     };
     let root = root.trim_end_matches('/');
-    vec![
-        ("NIX_STORE_DIR", format!("{root}/store")),
-        ("NIX_STATE_DIR", format!("{root}/var/nix")),
-    ]
+    let store_dir = std::env::var("AOS_NIX_STORE_DIR").unwrap_or_else(|_| format!("{root}/store"));
+    let state_dir =
+        std::env::var("AOS_NIX_STATE_DIR").unwrap_or_else(|_| format!("{root}/var/nix"));
+    vec![("NIX_STORE_DIR", store_dir), ("NIX_STATE_DIR", state_dir)]
 }
 
 #[cfg(test)]
@@ -50,12 +54,18 @@ mod tests {
     fn aos_nix_env_from_root() {
         // Snapshot whatever the ambient environment had; restore at the
         // end so this test leaves `AOS_ROOT` exactly as it found it.
-        let saved = std::env::var("AOS_ROOT").ok();
+        let saved_root = std::env::var("AOS_ROOT").ok();
+        let saved_store_dir = std::env::var("AOS_NIX_STORE_DIR").ok();
+        let saved_state_dir = std::env::var("AOS_NIX_STATE_DIR").ok();
 
         // Unset → empty, so callers can chain `.envs(aos_nix_env())`
         // unconditionally.
         // SAFETY: see module-level note on parallelism.
         unsafe { std::env::remove_var("AOS_ROOT") };
+        // SAFETY: see module-level note on parallelism.
+        unsafe { std::env::remove_var("AOS_NIX_STORE_DIR") };
+        // SAFETY: see module-level note on parallelism.
+        unsafe { std::env::remove_var("AOS_NIX_STATE_DIR") };
         assert!(aos_nix_env().is_empty());
 
         // Set → both store and state dirs derived from the root.
@@ -75,11 +85,31 @@ mod tests {
         assert_eq!(env[0].1, "/var/lib/aos-test/store");
         assert_eq!(env[1].1, "/var/lib/aos-test/var/nix");
 
+        // Explicit store/state overrides are respected while AOS_ROOT still
+        // provides the default root context for callers that need it.
+        // SAFETY: see module-level note on parallelism.
+        unsafe { std::env::set_var("AOS_NIX_STORE_DIR", "/shared/aos/store") };
+        // SAFETY: see module-level note on parallelism.
+        unsafe { std::env::set_var("AOS_NIX_STATE_DIR", "/client/aos/var/nix") };
+        let env = aos_nix_env();
+        assert_eq!(env[0].1, "/shared/aos/store");
+        assert_eq!(env[1].1, "/client/aos/var/nix");
+
         // Restore the ambient value.
-        match saved {
+        match saved_root {
             // SAFETY: see module-level note on parallelism.
             Some(v) => unsafe { std::env::set_var("AOS_ROOT", v) },
             None => unsafe { std::env::remove_var("AOS_ROOT") },
+        }
+        match saved_store_dir {
+            // SAFETY: see module-level note on parallelism.
+            Some(v) => unsafe { std::env::set_var("AOS_NIX_STORE_DIR", v) },
+            None => unsafe { std::env::remove_var("AOS_NIX_STORE_DIR") },
+        }
+        match saved_state_dir {
+            // SAFETY: see module-level note on parallelism.
+            Some(v) => unsafe { std::env::set_var("AOS_NIX_STATE_DIR", v) },
+            None => unsafe { std::env::remove_var("AOS_NIX_STATE_DIR") },
         }
     }
 }

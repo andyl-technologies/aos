@@ -1,7 +1,8 @@
-# tests/vm/apm/registry.nix — Registry management VM tests (13 tests)
+# tests/vm/apm/registry.nix — Registry management VM tests (16 tests)
 #
 # Tests for `apr` registry lifecycle commands: create, add, remove, publish,
-# unpublish, branch workflow, validate, signed tags, and clean-break behavior.
+# unpublish, branch workflow, validate, signed tags, trust/key workflows, and
+# clean-break behavior.
 # All tests run in headless Firecracker microVMs.
 {
   testing,
@@ -25,6 +26,15 @@
     pkgs.zlib
   ];
   publishDeps = fixtures.commonDeps ++ nixRuntimeDeps;
+  maintainerWorkflowDeps =
+    publishDeps
+    ++ [
+      pkgs.findutils
+      pkgs.iproute2
+      pkgs.openssh
+      pkgs.python3
+      pkgs.zstd
+    ];
   nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
   setupNixPublishEnv = ''
     export NIX_REMOTE=""
@@ -38,6 +48,68 @@
     nix-store --init || true
     nix-store --load-db < /aos-registration
   '';
+  mkRegistryTool = {
+    pname,
+    version,
+    program ? pname,
+  }:
+    pkgs.mkDerivation {
+      inherit pname version;
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              "printf '${pname} ${version}\\n'" \
+              > "$out/bin/${program}"
+            chmod +x "$out/bin/${program}"
+          '';
+        }
+      ];
+    };
+  closureLeafTool = mkRegistryTool {
+    pname = "closure-leaf";
+    version = "1.0.0";
+  };
+  closureRootTool = pkgs.mkDerivation {
+    pname = "closure-root";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      closureLeafTool
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'leaf_output="$(${closureLeafTool}/bin/closure-leaf)"' \
+            'printf "closure-root 1.0.0 via %s\n" "$leaf_output"' \
+            > "$out/bin/closure-root"
+          chmod +x "$out/bin/closure-root"
+        '';
+      }
+    ];
+  };
+  closureWorkflowDeps =
+    publishDeps
+    ++ [
+      closureLeafTool
+      closureRootTool
+    ];
 in {
   # -------------------------------------------------------------------------
   # 1. registry-create — Initialize a new empty registry
@@ -310,6 +382,77 @@ in {
         "git log shows publish commit"
       cd /tmp
 
+      $APR publish ${pkgs.curl} \
+        --name testpkg \
+        --version 2.0.0 \
+        --description "Published by the APR VM workflow" \
+        --license MIT \
+        --maintainer test \
+        --registry test-reg
+
+      CURL_HASH=$(basename ${pkgs.curl} | cut -d- -f1)
+      assert_file_exists "$REG_DIR/closures/$CURL_HASH" \
+        "apr publish writes v2 closure metadata"
+
+      $APR packages --registry test-reg > /tmp/packages.out 2>&1 || {
+        cat /tmp/packages.out
+        fail "apr packages lists published packages"
+      }
+      cat /tmp/packages.out
+      assert_file_contains /tmp/packages.out "testpkg 2.0.0" \
+        "apr packages reports latest published version"
+      if grep -q "testpkg 1.0.0" /tmp/packages.out; then
+        fail "apr packages should not report the older version as current"
+      else
+        pass "apr packages does not report the older version as current"
+      fi
+
+      $APR packages --registry test-reg --outdated \
+        > /tmp/packages-outdated.out 2>&1 || {
+        cat /tmp/packages-outdated.out
+        fail "apr packages --outdated lists multi-version packages"
+      }
+      assert_file_contains /tmp/packages-outdated.out "testpkg 2.0.0" \
+        "apr packages --outdated reports the latest available version"
+
+      $APR show testpkg --registry test-reg --version 1.0.0 \
+        > /tmp/show-v1.out 2>&1 || {
+        cat /tmp/show-v1.out
+        fail "apr show --version selects existing version"
+      }
+      assert_file_contains /tmp/show-v1.out "Version: 1.0.0" \
+        "apr show --version prints selected v1"
+      if grep -q "Version: 2.0.0" /tmp/show-v1.out; then
+        cat /tmp/show-v1.out
+        fail "apr show --version should not print v2"
+      else
+        pass "apr show --version hides non-selected versions"
+      fi
+
+      $APR show testpkg --registry test-reg --version 1.0.0 --raw \
+        > /tmp/show-v1-raw.out 2>&1 || {
+        cat /tmp/show-v1-raw.out
+        fail "apr show --version --raw selects existing version"
+      }
+      assert_file_contains /tmp/show-v1-raw.out "version = \"1.0.0\"" \
+        "apr show --version --raw prints selected v1"
+      if grep -q "version = \"2.0.0\"" /tmp/show-v1-raw.out; then
+        cat /tmp/show-v1-raw.out
+        fail "apr show --version --raw should not print v2"
+      else
+        pass "apr show --version --raw hides non-selected versions"
+      fi
+
+      if $APR show testpkg --registry test-reg --version 9.9.9 \
+        > /tmp/show-missing-version.out 2>&1; then
+        cat /tmp/show-missing-version.out
+        fail "apr show should reject missing versions"
+      else
+        assert_file_contains /tmp/show-missing-version.out \
+          "does not contain version '9.9.9'" \
+          "apr show reports missing requested version"
+      fi
+
       check_fail
     '';
   };
@@ -357,25 +500,57 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 8. registry-unpublish — Remove a package from the registry
+  # 8. registry-unpublish — Selectively remove versions and platforms
   # -------------------------------------------------------------------------
   registry-unpublish = testing.mkVMTest {
     name = "apm-registry-unpublish";
-    rootfsDeps = publishDeps;
-    memory = 512;
+    rootfsDeps = closureWorkflowDeps;
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixPublishEnv}
 
-      echo "==> Test: unpublish a package"
+      echo "==> Test: selectively unpublish package versions and platforms"
+
+      LEAF_STORE="${closureLeafTool}"
+      ROOT_STORE="${closureRootTool}"
+
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
 
       # Create registry and publish a package
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
-      $APR publish ${aosPkg} \
+
+      $APR publish "$LEAF_STORE" \
         --name removepkg \
         --version 1.0.0 \
-        --description "Published for unpublish workflow" \
+        --platform x86_64-linux \
+        --description "Published v1 for unpublish workflow" \
+        --license MIT \
+        --maintainer test \
+        --registry test-reg
+      $APR publish "$ROOT_STORE" \
+        --name removepkg \
+        --version 2.0.0 \
+        --platform x86_64-linux \
+        --previous 1.0.0 \
+        --description "Published v2 for unpublish workflow" \
+        --license MIT \
+        --maintainer test \
+        --registry test-reg
+      $APR publish "$ROOT_STORE" \
+        --name removepkg \
+        --version 2.0.0 \
+        --platform aarch64-linux \
+        --previous 1.0.0 \
+        --description "Published v2 for unpublish workflow" \
         --license MIT \
         --maintainer test \
         --registry test-reg
@@ -383,145 +558,1613 @@ in {
       # Verify package exists
       assert_file_exists "$REG_DIR/packages/r/removepkg.toml" \
         "package TOML exists before unpublish"
+      $APR show removepkg --registry test-reg --raw > /tmp/unpublish-before.toml 2>&1 || {
+        cat /tmp/unpublish-before.toml
+        fail "apr show --raw reports initial multi-version package"
+      }
+      assert_file_contains /tmp/unpublish-before.toml 'version = "1.0.0"' \
+        "initial package contains v1"
+      assert_file_contains /tmp/unpublish-before.toml 'version = "2.0.0"' \
+        "initial package contains v2"
+      assert_file_contains /tmp/unpublish-before.toml 'x86_64-linux' \
+        "initial package contains x86_64 platform"
+      assert_file_contains /tmp/unpublish-before.toml 'aarch64-linux' \
+        "initial package contains aarch64 platform"
+      $APR packages --registry test-reg --platform aarch64-linux \
+        > /tmp/unpublish-packages-aarch64-before.out 2>&1 || {
+        cat /tmp/unpublish-packages-aarch64-before.out
+        fail "apr packages --platform sees aarch64 package before unpublish"
+      }
+      assert_file_contains /tmp/unpublish-packages-aarch64-before.out \
+        "removepkg 2.0.0" \
+        "aarch64 platform filter sees v2 before unpublish"
 
-      $APR unpublish removepkg 1.0.0 --registry test-reg
+      if $APR unpublish removepkg 9.9.9 --registry test-reg --no-commit \
+        > /tmp/unpublish-missing-version.out 2>&1; then
+        cat /tmp/unpublish-missing-version.out
+        fail "apr unpublish should reject a missing version"
+      else
+        cat /tmp/unpublish-missing-version.out
+        pass "apr unpublish rejects a missing version"
+      fi
+      assert_file_contains /tmp/unpublish-missing-version.out \
+        "does not contain version '9.9.9'" \
+        "missing-version unpublish error names requested version"
+
+      if $APR unpublish removepkg 2.0.0 --platform riscv64-linux \
+        --registry test-reg --no-commit > /tmp/unpublish-missing-platform.out 2>&1; then
+        cat /tmp/unpublish-missing-platform.out
+        fail "apr unpublish should reject a missing platform"
+      else
+        cat /tmp/unpublish-missing-platform.out
+        pass "apr unpublish rejects a missing platform"
+      fi
+      assert_file_contains /tmp/unpublish-missing-platform.out \
+        "version '2.0.0' does not contain platform 'riscv64-linux'" \
+        "missing-platform unpublish error names requested platform"
+
+      HEAD_BEFORE_NO_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+      $APR unpublish removepkg 2.0.0 --platform aarch64-linux \
+        --registry test-reg --no-commit > /tmp/unpublish-aarch64.out 2>&1 || {
+        cat /tmp/unpublish-aarch64.out
+        fail "apr unpublish --platform --no-commit removes one platform"
+      }
+      cat /tmp/unpublish-aarch64.out
+      HEAD_AFTER_NO_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+      if [ "$HEAD_BEFORE_NO_COMMIT" = "$HEAD_AFTER_NO_COMMIT" ]; then
+        pass "apr unpublish --no-commit leaves HEAD unchanged"
+      else
+        fail "apr unpublish --no-commit should not create a commit"
+      fi
+      git -C "$REG_DIR" status --short --untracked-files=all \
+        > /tmp/unpublish-status-after-no-commit.out
+      assert_file_contains /tmp/unpublish-status-after-no-commit.out \
+        "packages/r/removepkg.toml" \
+        "apr unpublish --no-commit leaves package metadata dirty"
+
+      $APR show removepkg --registry test-reg --version 2.0.0 --raw \
+        > /tmp/unpublish-v2-after-aarch64.toml 2>&1 || {
+        cat /tmp/unpublish-v2-after-aarch64.toml
+        fail "apr show reports v2 after platform unpublish"
+      }
+      assert_file_contains /tmp/unpublish-v2-after-aarch64.toml 'x86_64-linux' \
+        "v2 keeps x86_64 platform after aarch64 unpublish"
+      assert_file_not_contains /tmp/unpublish-v2-after-aarch64.toml 'aarch64-linux' \
+        "v2 drops aarch64 platform after unpublish"
+      $APR packages --registry test-reg --platform aarch64-linux \
+        > /tmp/unpublish-packages-aarch64-after.out 2>&1 || {
+        cat /tmp/unpublish-packages-aarch64-after.out
+        fail "apr packages --platform succeeds after aarch64 unpublish"
+      }
+      assert_file_not_contains /tmp/unpublish-packages-aarch64-after.out \
+        "removepkg" \
+        "aarch64 platform filter hides package after unpublish"
+
+      $APR unpublish removepkg 1.0.0 \
+        --registry test-reg \
+        --message "registry: retire removepkg 1.0.0 and aarch64" \
+        > /tmp/unpublish-v1.out 2>&1 || {
+        cat /tmp/unpublish-v1.out
+        fail "apr unpublish with custom message commits pending removals"
+      }
+      cat /tmp/unpublish-v1.out
+      assert_file_contains /tmp/unpublish-v1.out \
+        "registry: retire removepkg 1.0.0 and aarch64" \
+        "apr unpublish reports custom commit message"
+      git -C "$REG_DIR" log --oneline -1 > /tmp/unpublish-custom-log.out
+      assert_file_contains /tmp/unpublish-custom-log.out \
+        "registry: retire removepkg 1.0.0 and aarch64" \
+        "git log records custom unpublish message"
+
+      if $APR show removepkg --registry test-reg --version 1.0.0 \
+        > /tmp/unpublish-show-v1.out 2>&1; then
+        cat /tmp/unpublish-show-v1.out
+        fail "apr show should not find unpublished v1"
+      else
+        cat /tmp/unpublish-show-v1.out
+        pass "apr show rejects unpublished v1"
+      fi
+      assert_file_contains /tmp/unpublish-show-v1.out \
+        "does not contain version '1.0.0'" \
+        "apr show reports v1 was removed"
+      $APR show removepkg --registry test-reg --version 2.0.0 \
+        > /tmp/unpublish-show-v2.out 2>&1 || {
+        cat /tmp/unpublish-show-v2.out
+        fail "apr show still finds remaining v2"
+      }
+      assert_file_contains /tmp/unpublish-show-v2.out "Version: 2.0.0" \
+        "apr show reports remaining v2"
+
+      $APR unpublish removepkg 2.0.0 --platform x86_64-linux \
+        --registry test-reg \
+        --message "registry: remove final removepkg platform" \
+        > /tmp/unpublish-final-platform.out 2>&1 || {
+        cat /tmp/unpublish-final-platform.out
+        fail "apr unpublish removes final platform and package file"
+      }
+      cat /tmp/unpublish-final-platform.out
 
       # Verify TOML file removed
       assert_file_not_exists "$REG_DIR/packages/r/removepkg.toml" \
-        "package TOML removed after unpublish"
+        "package TOML removed after final platform unpublish"
+      $APR packages --registry test-reg > /tmp/unpublish-packages-final.out 2>&1 || {
+        cat /tmp/unpublish-packages-final.out
+        fail "apr packages succeeds after final unpublish"
+      }
+      assert_file_not_contains /tmp/unpublish-packages-final.out "removepkg" \
+        "apr packages hides fully unpublished package"
 
       # Verify git log shows removal commit
       cd "$REG_DIR"
-      assert_cmd_output_contains "git log --oneline" "unpublish removepkg" \
-        "git log shows unpublish commit"
+      assert_cmd_output_contains "git log --oneline -2" \
+        "registry: remove final removepkg platform" \
+        "git log shows final custom unpublish commit"
       cd /tmp
+      $APR verify --registry test-reg > /tmp/unpublish-verify-final.out 2>&1 || {
+        cat /tmp/unpublish-verify-final.out
+        fail "apr verify accepts registry after unpublish workflow"
+      }
+      assert_file_contains /tmp/unpublish-verify-final.out "no errors" \
+        "apr verify reports no errors after unpublish workflow"
 
       check_fail
     '';
   };
 
   # -------------------------------------------------------------------------
-  # 9. registry-branch-workflow — Branch create, switch, merge
+  # 9. registry-maintainer-workflow — Real release, cache, install, execute
+  # -------------------------------------------------------------------------
+  registry-maintainer-workflow = testing.mkVMTest {
+    name = "apm-registry-maintainer-workflow";
+    rootfsDeps = maintainerWorkflowDeps;
+    memory = 2048;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixPublishEnv}
+
+      echo "==> Test: full registry maintainer release and consumer install"
+
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
+      GIT_STORE="${pkgs.git}"
+      CURL_STORE="${pkgs.curl}"
+      GIT_HASH=$(basename "$GIT_STORE" | cut -d- -f1)
+      CURL_HASH=$(basename "$CURL_STORE" | cut -d- -f1)
+      RUNNER_SRC=/tmp/maint-runner-src
+      mkdir -p "$RUNNER_SRC/bin" "$RUNNER_SRC/share/maint-runner"
+      cat > "$RUNNER_SRC/bin/maint-runner" << 'RUNNEREOF'
+      #!/bin/sh
+      echo "maint-runner 1.0.0 executed"
+      RUNNEREOF
+      chmod +x "$RUNNER_SRC/bin/maint-runner"
+      dd if=/dev/zero of="$RUNNER_SRC/share/maint-runner/payload.bin" \
+        bs=1M count=12
+      RUNNER_STORE=$(nix-store --add "$RUNNER_SRC")
+      RUNNER_HASH=$(basename "$RUNNER_STORE" | cut -d- -f1)
+
+      # Maintainer creates a local registry and prepares a grouped release branch.
+      $APR create maint-reg
+      REG_DIR="$REG_STORAGE/maint-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      $APR branch create release-2026q2 --registry maint-reg
+      $APR branch switch release-2026q2 --registry maint-reg
+
+      $APR publish "$GIT_STORE" \
+        --name maint-git \
+        --version 1.0.0 \
+        --description "Git from the maintainer workflow" \
+        --homepage "https://git-scm.com" \
+        --license GPL-2.0-only \
+        --maintainer release@example.invalid \
+        --registry maint-reg \
+        --no-commit
+      $APR publish "$CURL_STORE" \
+        --name maint-curl \
+        --version 1.0.0 \
+        --description "Curl from the maintainer workflow" \
+        --homepage "https://curl.se" \
+        --license curl \
+        --maintainer release@example.invalid \
+        --registry maint-reg \
+        --no-commit
+      $APR publish "$RUNNER_STORE" \
+        --name maint-runner \
+        --version 1.0.0 \
+        --description "Executable payload from the maintainer workflow" \
+        --license MIT \
+        --maintainer release@example.invalid \
+        --registry maint-reg \
+        --no-commit
+
+      $APR cache generate \
+        --registry maint-reg \
+        --output /tmp/maint-cache \
+        --cache-url http://127.0.0.1:18082 \
+        --priority 41 \
+        --no-commit
+
+      $APR status --registry maint-reg > /tmp/maint-status.out 2>&1 || {
+        cat /tmp/maint-status.out
+        fail "apr status reports pending maintainer changes"
+      }
+      cat /tmp/maint-status.out
+      assert_file_contains /tmp/maint-status.out "packages/m/maint-git.toml" \
+        "apr status shows git package metadata"
+      assert_file_contains /tmp/maint-status.out "packages/m/maint-curl.toml" \
+        "apr status shows curl package metadata"
+      assert_file_contains /tmp/maint-status.out "packages/m/maint-runner.toml" \
+        "apr status shows runner package metadata"
+      assert_file_contains /tmp/maint-status.out "registry.toml" \
+        "apr status shows cache pointer update"
+
+      $APR diff --registry maint-reg --stat > /tmp/maint-diff-stat.out 2>&1 || {
+        cat /tmp/maint-diff-stat.out
+        fail "apr diff --stat reports tracked maintainer changes"
+      }
+      cat /tmp/maint-diff-stat.out
+      assert_file_contains /tmp/maint-diff-stat.out "registry.toml" \
+        "apr diff --stat shows tracked cache pointer update"
+
+      git -C "$REG_DIR" status --short --untracked-files=all \
+        > /tmp/changeset.status
+      cat /tmp/changeset.status
+      assert_file_contains /tmp/changeset.status "packages/m/maint-git.toml" \
+        "changeset includes git package metadata"
+      assert_file_contains /tmp/changeset.status "packages/m/maint-curl.toml" \
+        "changeset includes curl package metadata"
+      assert_file_contains /tmp/changeset.status "packages/m/maint-runner.toml" \
+        "changeset includes runner package metadata"
+      assert_file_contains /tmp/changeset.status "registry.toml" \
+        "changeset includes cache pointer update"
+      assert_file_exists "$REG_DIR/closures/$GIT_HASH" \
+        "changeset includes git closure metadata"
+      assert_file_exists "$REG_DIR/closures/$CURL_HASH" \
+        "changeset includes curl closure metadata"
+      assert_file_exists "$REG_DIR/closures/$RUNNER_HASH" \
+        "changeset includes runner closure metadata"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "release: publish maintainer tools"
+      git -C "$REG_DIR" diff --name-only "$DEFAULT_BRANCH"..HEAD > /tmp/changeset.files
+      cat /tmp/changeset.files
+      assert_file_contains /tmp/changeset.files "packages/m/maint-git.toml" \
+        "release diff carries git package"
+      assert_file_contains /tmp/changeset.files "packages/m/maint-curl.toml" \
+        "release diff carries curl package"
+      assert_file_contains /tmp/changeset.files "packages/m/maint-runner.toml" \
+        "release diff carries runner package"
+      assert_file_contains /tmp/changeset.files "registry.toml" \
+        "release diff carries cache endpoint"
+      $APR log --registry maint-reg --package maint-runner -n 1 \
+        > /tmp/maint-log-runner.out 2>&1 || {
+        cat /tmp/maint-log-runner.out
+        fail "apr log --package reports package history"
+      }
+      cat /tmp/maint-log-runner.out
+      assert_file_contains /tmp/maint-log-runner.out \
+        "release: publish maintainer tools" \
+        "apr log --package shows maintainer package commit"
+
+      $APR packages --registry maint-reg > /tmp/maint-packages.out 2>&1
+      assert_file_contains /tmp/maint-packages.out "maint-git" \
+        "apr packages lists git"
+      assert_file_contains /tmp/maint-packages.out "maint-curl" \
+        "apr packages lists curl"
+      assert_file_contains /tmp/maint-packages.out "maint-runner" \
+        "apr packages lists runner"
+      $APR verify --registry maint-reg
+
+      $APR branch switch "$DEFAULT_BRANCH" --registry maint-reg
+      $APR merge release-2026q2 --registry maint-reg
+      ssh-keygen -q -t ed25519 -N "" -f /tmp/maint-release-key
+
+      echo "dirty maintainer scratch note" > "$REG_DIR/maintainer-notes.txt"
+      if $APR release 1.0.0 \
+        --registry maint-reg \
+        --key /tmp/maint-release-key \
+        --cache-url http://127.0.0.1:18083 \
+        > /tmp/dirty-release.out 2>&1; then
+        cat /tmp/dirty-release.out
+        fail "apr release should refuse dirty registry before cache pointer commit"
+      else
+        cat /tmp/dirty-release.out
+        assert_file_contains /tmp/dirty-release.out "uncommitted changes" \
+          "apr release refuses dirty registry"
+        if git -C "$REG_DIR" log --oneline -1 | grep -q "registry: update static cache pointer"; then
+          fail "dirty release should not commit cache pointer"
+        else
+          pass "dirty release does not commit cache pointer"
+        fi
+        if git -C "$REG_DIR" ls-tree -r --name-only HEAD | grep -q "maintainer-notes.txt"; then
+          fail "dirty release should not sweep unrelated files into HEAD"
+        else
+          pass "dirty release does not commit unrelated dirty file"
+        fi
+        if grep -q "http://127.0.0.1:18083" "$REG_DIR/registry.toml"; then
+          fail "dirty release should not mutate registry cache pointer"
+        else
+          pass "dirty release leaves registry cache pointer unchanged"
+        fi
+      fi
+      rm -f "$REG_DIR/maintainer-notes.txt"
+
+      $APR release 1.0.0 \
+        --registry maint-reg \
+        --key /tmp/maint-release-key \
+        --cache-url http://127.0.0.1:18082 \
+        > /tmp/release.out 2>&1 || {
+        cat /tmp/release.out
+        fail "apr release signs merged release"
+      }
+      cat /tmp/release.out
+      assert_file_contains /tmp/release.out "Created signed tag '1.0.0'" \
+        "apr release creates signed semver tag"
+      assert_file_contains /tmp/release.out "Released maint-reg 1.0.0" \
+        "apr release completes release pipeline"
+      if git -C "$REG_DIR" rev-parse "1.0.0^{tag}" >/tmp/release-tag.out 2>&1; then
+        pass "apr release creates annotated tag object"
+      else
+        cat /tmp/release-tag.out
+        fail "apr release should create annotated tag object"
+      fi
+      assert_file_contains "$REG_DIR/.git/releases/1/0/0/objects/info/packs" \
+        "pack-" "apr release records full pack artifact"
+
+      git init --bare --object-format=sha256 /tmp/maint-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/maint-origin.git
+      $APR push --registry maint-reg --branch "$DEFAULT_BRANCH" \
+        > /tmp/maint-push.out 2>&1 || {
+        cat /tmp/maint-push.out
+        fail "apr push publishes default branch"
+      }
+      cat /tmp/maint-push.out
+      assert_file_contains /tmp/maint-push.out "Pushed." \
+        "apr push reports successful branch push"
+      $APR diff --registry maint-reg --remote --stat \
+        > /tmp/maint-remote-diff.out 2>&1 || {
+        cat /tmp/maint-remote-diff.out
+        fail "apr diff --remote compares against pushed branch"
+      }
+      cat /tmp/maint-remote-diff.out
+      assert_file_contains /tmp/maint-remote-diff.out "No pending changes" \
+        "apr diff --remote is clean after pushing branch"
+      git -C "$REG_DIR" push origin 1.0.0
+
+      assert_file_exists "/tmp/maint-cache/$GIT_HASH.narinfo" \
+        "static cache contains git narinfo"
+      assert_file_exists "/tmp/maint-cache/$CURL_HASH.narinfo" \
+        "static cache contains curl narinfo"
+      assert_file_exists "/tmp/maint-cache/$RUNNER_HASH.narinfo" \
+        "static cache contains runner narinfo"
+      assert_dir_exists /tmp/maint-cache/nar \
+        "static cache contains NAR directory"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      python3 -m http.server 18082 --bind 127.0.0.1 \
+        --directory /tmp/maint-cache > /tmp/maint-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18082/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if ! curl -sf http://127.0.0.1:18082/nix-cache-info >/dev/null; then
+        cat /tmp/maint-cache-http.log || true
+        fail "static cache HTTP server started"
+      else
+        pass "static cache HTTP server started"
+      fi
+      curl -sf "http://127.0.0.1:18082/$RUNNER_HASH.narinfo" > /tmp/runner.narinfo
+      assert_file_contains /tmp/runner.narinfo "URL: nar/" \
+        "consumer can fetch runner narinfo over HTTP"
+
+      $APR validate --registry maint-reg --jobs 4 \
+        > /tmp/maint-validate.out 2>&1 || {
+        cat /tmp/maint-validate.out
+        fail "apr validate confirms generated cache contents"
+      }
+      cat /tmp/maint-validate.out
+      assert_file_contains /tmp/maint-validate.out "All 3 entries found in caches" \
+        "apr validate checks every published cache entry"
+      $APR validate --registry maint-reg \
+        --package maint-runner \
+        --platform x86_64-linux \
+        --jobs 2 > /tmp/maint-validate-runner.out 2>&1 || {
+        cat /tmp/maint-validate-runner.out
+        fail "apr validate filtered to one package succeeds"
+      }
+      assert_file_contains /tmp/maint-validate-runner.out "All 1 entries found in caches" \
+        "apr validate honors package and platform filters"
+      if $APR validate --registry maint-reg --jobs 0 \
+        > /tmp/maint-validate-jobs-zero.out 2>&1; then
+        cat /tmp/maint-validate-jobs-zero.out
+        fail "apr validate should reject zero parallelism"
+      else
+        assert_file_contains /tmp/maint-validate-jobs-zero.out \
+          "jobs must be greater than zero" \
+          "apr validate rejects zero parallelism"
+      fi
+
+      rm -f "/tmp/maint-cache/$CURL_HASH.narinfo"
+      if $APR validate --registry maint-reg --package maint-curl --jobs 1 \
+        > /tmp/maint-validate-missing-curl.out 2>&1; then
+        cat /tmp/maint-validate-missing-curl.out
+        fail "apr validate should fail when a cache entry is missing"
+      else
+        cat /tmp/maint-validate-missing-curl.out
+        assert_file_contains /tmp/maint-validate-missing-curl.out \
+          "not found in any cache" \
+          "apr validate reports the missing cache entry before fix"
+      fi
+      $APR validate --registry maint-reg --package maint-curl --jobs 1 --fix \
+        > /tmp/maint-validate-fix-curl.out 2>&1 || {
+        cat /tmp/maint-validate-fix-curl.out
+        fail "apr validate --fix prunes missing cache entry metadata"
+      }
+      cat /tmp/maint-validate-fix-curl.out
+      assert_file_contains /tmp/maint-validate-fix-curl.out \
+        "Removed 1 missing cache entry" \
+        "apr validate --fix reports pruned missing entry"
+      assert_file_not_exists "$REG_DIR/packages/m/maint-curl.toml" \
+        "apr validate --fix removes package with no cached versions"
+      $APR packages --registry maint-reg \
+        > /tmp/maint-packages-after-validate-fix.out 2>&1 || {
+        cat /tmp/maint-packages-after-validate-fix.out
+        fail "apr packages succeeds after validate --fix"
+      }
+      assert_file_not_contains /tmp/maint-packages-after-validate-fix.out \
+        "maint-curl" \
+        "apr packages hides cache-pruned package"
+      assert_file_contains /tmp/maint-packages-after-validate-fix.out \
+        "maint-runner" \
+        "apr packages keeps cache-backed package after validate --fix"
+      git -C "$REG_DIR" status --short > /tmp/maint-validate-fix-status.out
+      assert_file_contains /tmp/maint-validate-fix-status.out \
+        "packages/m/maint-curl.toml" \
+        "apr validate --fix leaves a maintainer changeset"
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "drop maint-curl missing from cache" \
+        > /tmp/maint-validate-fix-commit.out 2>&1 || {
+        cat /tmp/maint-validate-fix-commit.out
+        fail "maintainer commits validate --fix changeset"
+      }
+      cat /tmp/maint-validate-fix-commit.out
+      $APR verify --registry maint-reg \
+        > /tmp/maint-verify-after-validate-fix.out 2>&1 || {
+        cat /tmp/maint-verify-after-validate-fix.out
+        fail "apr verify accepts registry after validate --fix"
+      }
+      assert_file_contains /tmp/maint-verify-after-validate-fix.out \
+        "no errors" \
+        "apr verify validates registry after validate --fix"
+
+      # Consumer uses a fresh HOME and the published git origin.
+      export HOME=/tmp/consumer
+      export USER=maintconsumer
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/maint-origin.git --name maint-reg --tag 1.0.0
+      $APM search maint-runner --registry maint-reg > /tmp/consumer-search.out 2>&1
+      assert_file_contains /tmp/consumer-search.out "maint-runner" \
+        "consumer registry exposes runner package"
+      assert_file_contains "$HOME/.local/share/apm/registries/maint-reg/registry.toml" \
+        "http://127.0.0.1:18082" "consumer synced cache endpoint"
+
+      # Force a real download by removing the target package from the VM store.
+      mount -o remount,rw / || true
+      nix-store --delete --ignore-liveness "$RUNNER_STORE" > /tmp/delete-runner.out 2>&1 || {
+        cat /tmp/delete-runner.out
+        fail "deleted runner store path before install"
+      }
+      if nix-store --check-validity "$RUNNER_STORE" >/tmp/runner-valid.out 2>&1; then
+        cat /tmp/runner-valid.out
+        fail "runner store path should be missing before install"
+      else
+        pass "runner store path missing before install"
+      fi
+
+      $APM install maint-runner --registry maint-reg --yes > /tmp/install-runner.out 2>&1 || {
+        cat /tmp/install-runner.out
+        fail "apm install downloads and imports runner"
+      }
+      cat /tmp/install-runner.out
+      assert_file_contains /tmp/install-runner.out "Downloading" \
+        "apm install performed a download"
+      assert_file_contains /tmp/install-runner.out "Installed 1 package" \
+        "apm install completed profile update"
+      if find "$HOME/.cache/apm" -name '*.nar.zst' | grep -q .; then
+        pass "downloaded NAR retained in user cache"
+      else
+        fail "downloaded NAR retained in user cache"
+      fi
+      nix-store --check-validity "$RUNNER_STORE" >/tmp/runner-valid-after.out 2>&1
+
+      PROFILE_RUNNER="/var/lib/profiles/per-user/$USER/current/bin/maint-runner"
+      if [ -x "$PROFILE_RUNNER" ]; then
+        pass "installed profile exposes runner executable"
+      else
+        fail "installed profile exposes runner executable"
+      fi
+      "$PROFILE_RUNNER" > /tmp/profile-runner.out
+      assert_file_contains /tmp/profile-runner.out "maint-runner 1.0.0 executed" \
+        "installed runner executes from profile"
+      $APM list > /tmp/apm-list.out 2>&1
+      assert_file_contains /tmp/apm-list.out "maint-runner" \
+        "apm list shows installed maintainer package"
+
+      kill "$CACHE_PID" 2>/dev/null || true
+      wait "$CACHE_PID" 2>/dev/null || true
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 10. registry-channel-workflow — Signed channel rollout and consumer upgrade
+  # -------------------------------------------------------------------------
+  registry-channel-workflow = testing.mkVMTest {
+    name = "apm-registry-channel-workflow";
+    rootfsDeps = maintainerWorkflowDeps;
+    memory = 2048;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixPublishEnv}
+
+      echo "==> Test: signed channel rollout, sync, install, and upgrade"
+
+      make_channel_tool() {
+        version="$1"
+        src="/tmp/channel-tool-$version-src"
+        rm -rf "$src"
+        mkdir -p "$src/bin" "$src/share/channel-tool"
+        cat > "$src/bin/channel-tool" << EOF
+      #!/bin/sh
+      echo "channel-tool $version executed"
+      EOF
+        chmod +x "$src/bin/channel-tool"
+        printf "payload for channel-tool %s\n" "$version" \
+          > "$src/share/channel-tool/payload.txt"
+        nix-store --add "$src"
+      }
+
+      TOOL_V1_STORE=$(make_channel_tool 1.0.0)
+      TOOL_V2_STORE=$(make_channel_tool 2.0.0)
+      TOOL_V3_STORE=$(make_channel_tool 3.0.0)
+      TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V3_HASH=$(basename "$TOOL_V3_STORE" | cut -d- -f1)
+
+      ssh-keygen -q -t ed25519 -N "" -f /tmp/channel-release-key
+      CHANNEL_PUBLIC=$(cut -d ' ' -f2 < /tmp/channel-release-key.pub)
+      CHANNEL_TRUST_KEY="chan-reg:Ed25519:$CHANNEL_PUBLIC"
+
+      $APR create chan-reg --trust-key "$CHANNEL_TRUST_KEY"
+      REG_DIR="$REG_STORAGE/chan-reg"
+      assert_file_contains "$REG_DIR/keys.toml" "chan-reg:Ed25519" \
+        "registry records initial channel trust key"
+      {
+        printf '[registry]\n'
+        printf 'name = "chan-reg"\n'
+        printf 'url = "file://%s"\n\n' "$REG_DIR"
+        printf '[registry.signing_keys]\n'
+        printf 'initial = "/tmp/channel-release-key"\n'
+      } > "$APM_CONFIG/registries.d/chan-reg.toml"
+
+      $APR release 1.0.0 \
+        --registry chan-reg \
+        --store-path "$TOOL_V1_STORE" \
+        --name channel-tool \
+        --description "Channel workflow tool" \
+        --license MIT \
+        --maintainer channel@example.invalid \
+        --key /tmp/channel-release-key \
+        --cache-output /tmp/channel-cache \
+        --cache-url http://127.0.0.1:18091 \
+        --channel stable \
+        --init-channel \
+        > /tmp/channel-release-v1.out 2>&1 || {
+        cat /tmp/channel-release-v1.out
+        fail "apr release initializes signed channel"
+      }
+      cat /tmp/channel-release-v1.out
+      assert_file_contains /tmp/channel-release-v1.out \
+        "Initialized channel 'stable' with 256/256 partitions on 1.0.0" \
+        "apr release initializes every channel partition"
+      assert_file_exists "$REG_DIR/.git/channels/stable/00" \
+        "channel partition object is written to static origin"
+      assert_file_contains "$REG_DIR/.git/channels/stable/00" \
+        "BEGIN SSH SIGNATURE" "channel partition object is signed"
+
+      assert_file_exists "/tmp/channel-cache/$TOOL_V1_HASH.narinfo" \
+        "static cache has channel-tool v1 narinfo"
+
+      $APR channel init canary 1.0.0 \
+        --registry chan-reg \
+        --key-id initial \
+        > /tmp/channel-init-canary.out 2>&1 || {
+        cat /tmp/channel-init-canary.out
+        fail "apr channel init initializes canary channel with key id"
+      }
+      cat /tmp/channel-init-canary.out
+      assert_file_contains /tmp/channel-init-canary.out \
+        "Initialized channel 'canary' with 256/256 partitions on 1.0.0" \
+        "apr channel init reports direct channel initialization"
+      assert_file_exists "$REG_DIR/.git/channels/canary/00" \
+        "direct channel init writes static partition object"
+      assert_file_contains "$REG_DIR/.git/channels/canary/00" \
+        "BEGIN SSH SIGNATURE" "direct channel init signs partition object"
+      $APR channel status canary --registry chan-reg > /tmp/channel-status-canary.out 2>&1
+      assert_file_contains /tmp/channel-status-canary.out "1.0.0" \
+        "direct channel init status reports release frontier"
+      assert_file_contains /tmp/channel-status-canary.out "256/256" \
+        "direct channel init status reports full partition set"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      python3 -m http.server 18090 --bind 127.0.0.1 \
+        --directory "$REG_DIR/.git" > /tmp/channel-origin-http.log 2>&1 &
+      ORIGIN_PID=$!
+      python3 -m http.server 18091 --bind 127.0.0.1 \
+        --directory /tmp/channel-cache > /tmp/channel-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18090/info/refs >/dev/null \
+          && curl -sf http://127.0.0.1:18091/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if curl -sf http://127.0.0.1:18090/channels/stable/00 >/tmp/channel-00.tag \
+        && curl -sf http://127.0.0.1:18091/nix-cache-info >/dev/null; then
+        pass "static origin and cache HTTP servers started"
+      else
+        cat /tmp/channel-origin-http.log || true
+        cat /tmp/channel-cache-http.log || true
+        fail "static origin and cache HTTP servers started"
+      fi
+      curl -sf http://127.0.0.1:18090/channels/canary/00 \
+        >/tmp/channel-canary-00.tag || {
+        cat /tmp/channel-origin-http.log || true
+        fail "direct channel init is served by static origin"
+      }
+      assert_file_contains /tmp/channel-canary-00.tag \
+        "BEGIN SSH SIGNATURE" "static origin serves direct channel partition"
+
+      export HOME=/tmp/channel-consumer
+      export USER=channeluser
+      mkdir -p "$HOME"
+
+      $APM registry add http://127.0.0.1:18090 \
+        --name chan-reg \
+        --channel stable \
+        --trust-key "$CHANNEL_TRUST_KEY" \
+        > /tmp/channel-add.out 2>&1 || {
+        cat /tmp/channel-add.out
+        fail "apm registry add syncs signed channel"
+      }
+      cat /tmp/channel-add.out
+      CONSUMER_CONFIG="$HOME/.config/apm/registries.d/chan-reg.toml"
+      assert_file_contains "$CONSUMER_CONFIG" 'channel = "stable"' \
+        "consumer config records channel tracking"
+      assert_file_contains "$CONSUMER_CONFIG" 'public_key = "chan-reg:Ed25519:' \
+        "consumer config records trusted signing key"
+      assert_file_contains "$CONSUMER_CONFIG" 'floor = "1.0.0"' \
+        "initial channel sync records semver floor"
+      assert_file_contains "$CONSUMER_CONFIG" "bucket = " \
+        "initial channel sync records rollout bucket"
+      BUCKET=$(grep '^bucket = ' "$CONSUMER_CONFIG" | cut -d= -f2 | tr -d ' ')
+      if [ -n "$BUCKET" ]; then
+        pass "consumer rollout bucket is readable"
+      else
+        fail "consumer rollout bucket is readable"
+      fi
+
+      $APM search channel-tool --registry chan-reg > /tmp/channel-search-v1.out 2>&1
+      assert_file_contains /tmp/channel-search-v1.out "1.0.0" \
+        "consumer sees channel v1 package"
+      assert_file_contains "$HOME/.local/share/apm/registries/chan-reg/registry.toml" \
+        "http://127.0.0.1:18091" "consumer syncs channel cache endpoint"
+
+      mount -o remount,rw / || true
+      nix-store --delete --ignore-liveness "$TOOL_V1_STORE" \
+        > /tmp/channel-delete-v1.out 2>&1 || {
+        cat /tmp/channel-delete-v1.out
+        fail "deleted v1 store path before channel install"
+      }
+
+      $APM install channel-tool --registry chan-reg --yes \
+        > /tmp/channel-install-v1.out 2>&1 || {
+        cat /tmp/channel-install-v1.out
+        fail "apm install downloads channel v1"
+      }
+      cat /tmp/channel-install-v1.out
+      assert_file_contains /tmp/channel-install-v1.out "Downloading" \
+        "apm install downloads v1 NAR"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/channel-tool"
+      "$PROFILE_TOOL" > /tmp/channel-tool-v1.out
+      assert_file_contains /tmp/channel-tool-v1.out \
+        "channel-tool 1.0.0 executed" "installed v1 channel tool executes"
+
+      export HOME=/tmp
+      export USER=root
+      $APR release 2.0.0 \
+        --registry chan-reg \
+        --store-path "$TOOL_V2_STORE" \
+        --name channel-tool \
+        --description "Channel workflow tool" \
+        --license MIT \
+        --maintainer channel@example.invalid \
+        --previous 1.0.0 \
+        --key /tmp/channel-release-key \
+        --cache-output /tmp/channel-cache \
+        --cache-url http://127.0.0.1:18091 \
+        --channel stable \
+        --partitions "$BUCKET" \
+        > /tmp/channel-release-v2.out 2>&1 || {
+        cat /tmp/channel-release-v2.out
+        fail "apr release advances consumer channel partition"
+      }
+      cat /tmp/channel-release-v2.out
+      assert_file_contains /tmp/channel-release-v2.out \
+        "Advanced channel 'stable' 1 partition(s) to 2.0.0" \
+        "apr release advances selected channel partition"
+      assert_file_exists "/tmp/channel-cache/$TOOL_V2_HASH.narinfo" \
+        "static cache has channel-tool v2 narinfo"
+      $APR channel status stable --registry chan-reg > /tmp/channel-status-v2.out 2>&1
+      assert_file_contains /tmp/channel-status-v2.out "2.0.0" \
+        "channel status reports v2 frontier"
+      assert_file_contains /tmp/channel-status-v2.out "1/256" \
+        "channel status reports one v2 partition"
+
+      export HOME=/tmp/channel-consumer
+      export USER=channeluser
+      nix-store --delete --ignore-liveness "$TOOL_V2_STORE" \
+        > /tmp/channel-delete-v2.out 2>&1 || {
+        cat /tmp/channel-delete-v2.out
+        fail "deleted v2 store path before channel upgrade"
+      }
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM update --registry chan-reg > /tmp/channel-update-v2.out 2>&1 || {
+        cat /tmp/channel-update-v2.out
+        fail "apm update follows advanced channel partition"
+      }
+      cat /tmp/channel-update-v2.out
+      assert_file_contains "$CONSUMER_CONFIG" 'floor = "2.0.0"' \
+        "channel update raises consumer semver floor"
+      $APM list --upgradable > /tmp/channel-upgradable.out 2>&1 || {
+        cat /tmp/channel-upgradable.out
+        fail "apm list --upgradable sees channel upgrade"
+      }
+      assert_file_contains /tmp/channel-upgradable.out "channel-tool" \
+        "channel upgrade candidate names package"
+      assert_file_contains /tmp/channel-upgradable.out "2.0.0" \
+        "channel upgrade candidate shows v2"
+
+      $APM upgrade channel-tool --yes > /tmp/channel-upgrade.out 2>&1 || {
+        cat /tmp/channel-upgrade.out
+        fail "apm upgrade downloads and activates channel v2"
+      }
+      cat /tmp/channel-upgrade.out
+      assert_file_contains /tmp/channel-upgrade.out "Downloading" \
+        "apm upgrade downloads v2 NAR"
+      assert_file_contains /tmp/channel-upgrade.out "Upgraded 1 package" \
+        "apm upgrade activates channel v2"
+      "$PROFILE_TOOL" > /tmp/channel-tool-v2.out
+      assert_file_contains /tmp/channel-tool-v2.out \
+        "channel-tool 2.0.0 executed" "upgraded v2 channel tool executes"
+
+      export HOME=/tmp
+      export USER=root
+      $APR release 3.0.0 \
+        --registry chan-reg \
+        --store-path "$TOOL_V3_STORE" \
+        --name channel-tool \
+        --description "Channel workflow tool" \
+        --license MIT \
+        --maintainer channel@example.invalid \
+        --previous 2.0.0 \
+        --key /tmp/channel-release-key \
+        --cache-output /tmp/channel-cache \
+        --cache-url http://127.0.0.1:18091 \
+        > /tmp/channel-release-v3.out 2>&1 || {
+        cat /tmp/channel-release-v3.out
+        fail "apr release creates v3 before direct channel advance"
+      }
+      cat /tmp/channel-release-v3.out
+      assert_file_contains /tmp/channel-release-v3.out \
+        "Created signed tag '3.0.0'" \
+        "apr release creates signed v3 tag"
+      assert_file_exists "/tmp/channel-cache/$TOOL_V3_HASH.narinfo" \
+        "static cache has channel-tool v3 narinfo"
+
+      if $APR channel advance stable 3.0.0 \
+        --registry chan-reg \
+        --key /tmp/channel-release-key \
+        --count 1 \
+        --partitions "$BUCKET" \
+        > /tmp/channel-advance-conflict.out 2>&1; then
+        cat /tmp/channel-advance-conflict.out
+        fail "apr channel advance should reject conflicting partition selectors"
+      else
+        cat /tmp/channel-advance-conflict.out
+        pass "apr channel advance rejects conflicting partition selectors"
+      fi
+      assert_file_contains /tmp/channel-advance-conflict.out \
+        "use only one of --count or --partitions" \
+        "apr channel advance explains selector conflict"
+
+      $APR channel advance stable 3.0.0 \
+        --registry chan-reg \
+        --key /tmp/channel-release-key \
+        --partitions "$BUCKET" \
+        > /tmp/channel-advance-v3.out 2>&1 || {
+        cat /tmp/channel-advance-v3.out
+        fail "apr channel advance moves selected consumer partition"
+      }
+      cat /tmp/channel-advance-v3.out
+      assert_file_contains /tmp/channel-advance-v3.out \
+        "Advanced channel 'stable' 1 partition(s) to 3.0.0" \
+        "apr channel advance reports direct partition rollout"
+      $APR channel status stable --registry chan-reg > /tmp/channel-status-v3.out 2>&1
+      assert_file_contains /tmp/channel-status-v3.out "3.0.0" \
+        "channel status reports v3 frontier after direct advance"
+      assert_file_contains /tmp/channel-status-v3.out "1/256" \
+        "channel status keeps one v3 partition after direct advance"
+
+      export HOME=/tmp/channel-consumer
+      export USER=channeluser
+      nix-store --delete --ignore-liveness "$TOOL_V3_STORE" \
+        > /tmp/channel-delete-v3.out 2>&1 || {
+        cat /tmp/channel-delete-v3.out
+        fail "deleted v3 store path before direct channel upgrade"
+      }
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM update --registry chan-reg > /tmp/channel-update-v3.out 2>&1 || {
+        cat /tmp/channel-update-v3.out
+        fail "apm update follows direct channel advance"
+      }
+      cat /tmp/channel-update-v3.out
+      assert_file_contains "$CONSUMER_CONFIG" 'floor = "3.0.0"' \
+        "direct channel advance raises consumer semver floor"
+      $APM list --upgradable > /tmp/channel-upgradable-v3.out 2>&1 || {
+        cat /tmp/channel-upgradable-v3.out
+        fail "apm list --upgradable sees direct channel advance"
+      }
+      assert_file_contains /tmp/channel-upgradable-v3.out "channel-tool" \
+        "direct channel upgrade candidate names package"
+      assert_file_contains /tmp/channel-upgradable-v3.out "3.0.0" \
+        "direct channel upgrade candidate shows v3"
+
+      $APM upgrade channel-tool --yes > /tmp/channel-upgrade-v3.out 2>&1 || {
+        cat /tmp/channel-upgrade-v3.out
+        fail "apm upgrade downloads and activates directly advanced v3"
+      }
+      cat /tmp/channel-upgrade-v3.out
+      assert_file_contains /tmp/channel-upgrade-v3.out "Downloading" \
+        "apm upgrade downloads directly advanced v3 NAR"
+      assert_file_contains /tmp/channel-upgrade-v3.out "Upgraded 1 package" \
+        "apm upgrade activates directly advanced v3"
+      "$PROFILE_TOOL" > /tmp/channel-tool-v3.out
+      assert_file_contains /tmp/channel-tool-v3.out \
+        "channel-tool 3.0.0 executed" "upgraded v3 channel tool executes"
+
+      kill "$ORIGIN_PID" "$CACHE_PID" 2>/dev/null || true
+      wait "$ORIGIN_PID" "$CACHE_PID" 2>/dev/null || true
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 11. registry-branch-workflow — Branch create, switch, merge modes, pull
   # -------------------------------------------------------------------------
   registry-branch-workflow = testing.mkVMTest {
     name = "apm-registry-branch-workflow";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = closureWorkflowDeps;
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
-      echo "==> Test: branch create, switch, publish, merge"
+      echo "==> Test: real APR branch create, switch, publish, merge modes, pull"
+      export GIT_MERGE_AUTOEDIT=no
 
-      # Create registry
+      FEATURE_STORE="${closureRootTool}"
+      FEATURE_DEP_STORE="${closureLeafTool}"
+      FEATURE_HASH=$(basename "$FEATURE_STORE" | cut -d- -f1)
+      FEATURE_DEP_HASH=$(basename "$FEATURE_DEP_STORE" | cut -d- -f1)
+
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
+      publish_feature_package() {
+        $APR publish "$FEATURE_STORE" \
+          --name featurepkg \
+          --version 1.0.0 \
+          --description "Real branch workflow fixture" \
+          --license MIT \
+          --maintainer branch@example.invalid \
+          --registry test-reg \
+          --no-commit > /tmp/branch-publish.out 2>&1 || {
+          cat /tmp/branch-publish.out
+          fail "apr publish featurepkg on feature branch succeeds"
+          return 1
+        }
+        cat /tmp/branch-publish.out
+      }
+
+      commit_branch_changes() {
+        message="$1"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "$message" > /tmp/branch-commit.out 2>&1 || {
+          cat /tmp/branch-commit.out
+          fail "registry commit succeeds: $message"
+          return 1
+        }
+        cat /tmp/branch-commit.out
+      }
+
+      mount -o remount,rw / || true
+      nix-store -q --references "$FEATURE_STORE" > /tmp/branch-feature-refs.out
+      assert_file_contains /tmp/branch-feature-refs.out "$FEATURE_DEP_STORE" \
+        "feature package has a real Nix reference to its dependency"
+
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
-      # Create a feature branch
-      $APR branch create feature-1 --registry test-reg
+      $APR branch create feature-1 --registry test-reg > /tmp/branch-create.out 2>&1 || {
+        cat /tmp/branch-create.out
+        fail "apr branch create succeeds"
+      }
+      cat /tmp/branch-create.out
+      assert_file_contains /tmp/branch-create.out "Created branch 'feature-1'" \
+        "apr branch create reports feature branch"
 
-      # Switch to it
-      $APR branch switch feature-1 --registry test-reg
+      $APR branch switch feature-1 --registry test-reg > /tmp/branch-switch-feature.out 2>&1 || {
+        cat /tmp/branch-switch-feature.out
+        fail "apr branch switch feature-1 succeeds"
+      }
+      cat /tmp/branch-switch-feature.out
+      assert_file_contains /tmp/branch-switch-feature.out "Switched to branch 'feature-1'" \
+        "apr branch switch reports feature branch"
 
-      # Publish a package on the feature branch
-      write_package_toml "$REG_DIR" "featurepkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish featurepkg 1.0.0"
-
-      # Verify package exists on feature branch
+      publish_feature_package
+      commit_branch_changes "publish featurepkg 1.0.0 on feature branch"
       assert_file_exists "$REG_DIR/packages/f/featurepkg.toml" \
-        "package exists on feature branch"
+        "published package exists on feature branch"
+      assert_file_contains "$REG_DIR/packages/f/featurepkg.toml" "$FEATURE_HASH" \
+        "feature branch package metadata records real store hash"
+      assert_file_exists "$REG_DIR/closures/$FEATURE_HASH" \
+        "feature branch closure file exists"
+      assert_file_contains "$REG_DIR/closures/$FEATURE_HASH" "$FEATURE_DEP_HASH" \
+        "feature branch closure records dependency"
 
-      # Switch back to main
-      # Detect the default branch name (could be main or master)
-      cd "$REG_DIR"
-      DEFAULT_BRANCH=$(git branch | grep -v feature-1 | tr -d '* ' | head -1)
-      cd /tmp
-      $APR branch switch "$DEFAULT_BRANCH" --registry test-reg
+      $APR packages --registry test-reg > /tmp/branch-packages-feature.out 2>&1 || {
+        cat /tmp/branch-packages-feature.out
+        fail "apr packages lists feature branch package"
+      }
+      assert_file_contains /tmp/branch-packages-feature.out "featurepkg 1.0.0" \
+        "apr packages sees feature package on feature branch"
+      $APR verify --registry test-reg > /tmp/branch-verify-feature.out 2>&1 || {
+        cat /tmp/branch-verify-feature.out
+        fail "apr verify accepts feature branch package"
+      }
+      assert_file_contains /tmp/branch-verify-feature.out "no errors" \
+        "apr verify validates feature branch closure metadata"
 
-      # Verify package does NOT exist on main
+      $APR branch switch "$DEFAULT_BRANCH" --registry test-reg > /tmp/branch-switch-default.out 2>&1 || {
+        cat /tmp/branch-switch-default.out
+        fail "apr branch switch default succeeds"
+      }
+      cat /tmp/branch-switch-default.out
+      assert_file_contains /tmp/branch-switch-default.out "Switched to branch '$DEFAULT_BRANCH'" \
+        "apr branch switch reports default branch"
+
       assert_file_not_exists "$REG_DIR/packages/f/featurepkg.toml" \
-        "package not on main before merge"
+        "package not on default branch before merge"
+      assert_file_not_exists "$REG_DIR/closures/$FEATURE_HASH" \
+        "closure not on default branch before merge"
+      $APR packages --registry test-reg > /tmp/branch-packages-default.out 2>&1 || {
+        cat /tmp/branch-packages-default.out
+        fail "apr packages succeeds on default branch before merge"
+      }
+      assert_file_not_contains /tmp/branch-packages-default.out "featurepkg" \
+        "apr packages hides feature package before merge"
 
-      # Merge feature branch
-      $APR merge feature-1 --registry test-reg
+      $APR merge feature-1 --registry test-reg > /tmp/branch-merge.out 2>&1 || {
+        cat /tmp/branch-merge.out
+        fail "apr merge feature branch succeeds"
+      }
+      cat /tmp/branch-merge.out
+      assert_file_contains /tmp/branch-merge.out "Merged 'feature-1'" \
+        "apr merge reports merged branch"
 
-      # Verify package now exists on main
       assert_file_exists "$REG_DIR/packages/f/featurepkg.toml" \
-        "package exists on main after merge"
+        "package exists on default branch after merge"
+      assert_file_exists "$REG_DIR/closures/$FEATURE_HASH" \
+        "closure exists on default branch after merge"
+      $APR show featurepkg --registry test-reg > /tmp/branch-show-merged.out 2>&1 || {
+        cat /tmp/branch-show-merged.out
+        fail "apr show resolves merged package"
+      }
+      assert_file_contains /tmp/branch-show-merged.out "Real branch workflow fixture" \
+        "apr show displays merged package metadata"
+      $APR verify --registry test-reg > /tmp/branch-verify-merged.out 2>&1 || {
+        cat /tmp/branch-verify-merged.out
+        fail "apr verify accepts merged branch package"
+      }
+      assert_file_contains /tmp/branch-verify-merged.out "no errors" \
+        "apr verify validates merged closure metadata"
+      $APR branch list --registry test-reg > /tmp/branch-list.out 2>&1 || {
+        cat /tmp/branch-list.out
+        fail "apr branch list succeeds"
+      }
+      assert_file_contains /tmp/branch-list.out "feature-1" \
+        "apr branch list shows feature branch"
+
+      $APR branch delete feature-1 --registry test-reg \
+        > /tmp/branch-delete.out 2>&1 || {
+        cat /tmp/branch-delete.out
+        fail "apr branch delete removes merged feature branch"
+      }
+      cat /tmp/branch-delete.out
+      assert_file_contains /tmp/branch-delete.out "Deleted branch 'feature-1'" \
+        "apr branch delete reports deleted feature branch"
+      $APR branch list --registry test-reg > /tmp/branch-list-after-delete.out 2>&1 || {
+        cat /tmp/branch-list-after-delete.out
+        fail "apr branch list succeeds after delete"
+      }
+      assert_file_not_contains /tmp/branch-list-after-delete.out "feature-1" \
+        "apr branch list hides deleted feature branch"
+
+      echo "==> Test: APR merge --no-ff keeps an explicit maintainer merge commit"
+
+      $APR branch create noff-branch --registry test-reg \
+        > /tmp/branch-noff-create.out 2>&1 || {
+        cat /tmp/branch-noff-create.out
+        fail "apr branch create succeeds for no-ff branch"
+      }
+      cat /tmp/branch-noff-create.out
+      $APR branch switch noff-branch --registry test-reg \
+        > /tmp/branch-noff-switch.out 2>&1 || {
+        cat /tmp/branch-noff-switch.out
+        fail "apr branch switch succeeds for no-ff branch"
+      }
+      cat /tmp/branch-noff-switch.out
+
+      $APR publish "$FEATURE_DEP_STORE" \
+        --name noffpkg \
+        --version 1.0.0 \
+        --description "No-ff maintainer merge fixture" \
+        --license MIT \
+        --maintainer branch@example.invalid \
+        --registry test-reg \
+        --no-commit > /tmp/branch-noff-publish.out 2>&1 || {
+        cat /tmp/branch-noff-publish.out
+        fail "apr publish creates package on no-ff branch"
+      }
+      cat /tmp/branch-noff-publish.out
+      commit_branch_changes "publish noffpkg 1.0.0 on no-ff branch"
+
+      $APR branch switch "$DEFAULT_BRANCH" --registry test-reg \
+        > /tmp/branch-noff-switch-default.out 2>&1 || {
+        cat /tmp/branch-noff-switch-default.out
+        fail "apr branch switch returns to default before no-ff merge"
+      }
+      cat /tmp/branch-noff-switch-default.out
+
+      $APR merge noff-branch --no-ff --registry test-reg \
+        > /tmp/branch-noff-merge.out 2>&1 || {
+        cat /tmp/branch-noff-merge.out
+        fail "apr merge --no-ff succeeds"
+      }
+      cat /tmp/branch-noff-merge.out
+      assert_file_contains /tmp/branch-noff-merge.out "Merged 'noff-branch'" \
+        "apr merge --no-ff reports merged branch"
+      NOFF_HEAD_PARENTS=$(git -C "$REG_DIR" rev-list --parents -n 1 HEAD | wc -w)
+      if [ "$NOFF_HEAD_PARENTS" = "3" ]; then
+        pass "apr merge --no-ff creates a two-parent merge commit"
+      else
+        fail "apr merge --no-ff should leave three rev-list fields, got $NOFF_HEAD_PARENTS"
+        git -C "$REG_DIR" log --oneline --graph -5
+      fi
+      $APR show noffpkg --registry test-reg > /tmp/branch-noff-show.out 2>&1 || {
+        cat /tmp/branch-noff-show.out
+        fail "apr show resolves no-ff merged package"
+      }
+      assert_file_contains /tmp/branch-noff-show.out "No-ff maintainer merge fixture" \
+        "apr show displays no-ff merged package metadata"
+      $APR verify --registry test-reg > /tmp/branch-noff-verify.out 2>&1 || {
+        cat /tmp/branch-noff-verify.out
+        fail "apr verify accepts no-ff merged package"
+      }
+      assert_file_contains /tmp/branch-noff-verify.out "no errors" \
+        "apr verify validates no-ff merged registry metadata"
+      $APR branch delete noff-branch --registry test-reg \
+        > /tmp/branch-noff-delete.out 2>&1 || {
+        cat /tmp/branch-noff-delete.out
+        fail "apr branch delete removes no-ff merged branch"
+      }
+      cat /tmp/branch-noff-delete.out
+
+      echo "==> Test: APR merge --squash stages a maintainer changeset"
+
+      $APR branch create squash-branch --registry test-reg \
+        > /tmp/branch-squash-create.out 2>&1 || {
+        cat /tmp/branch-squash-create.out
+        fail "apr branch create succeeds for squash branch"
+      }
+      cat /tmp/branch-squash-create.out
+      $APR branch switch squash-branch --registry test-reg \
+        > /tmp/branch-squash-switch.out 2>&1 || {
+        cat /tmp/branch-squash-switch.out
+        fail "apr branch switch succeeds for squash branch"
+      }
+      cat /tmp/branch-squash-switch.out
+
+      $APR publish "$FEATURE_STORE" \
+        --name squashpkg \
+        --version 1.0.0 \
+        --description "Squash maintainer changeset fixture" \
+        --license MIT \
+        --maintainer branch@example.invalid \
+        --registry test-reg \
+        --no-commit > /tmp/branch-squash-publish.out 2>&1 || {
+        cat /tmp/branch-squash-publish.out
+        fail "apr publish creates package on squash branch"
+      }
+      cat /tmp/branch-squash-publish.out
+      commit_branch_changes "publish squashpkg 1.0.0 on squash branch"
+      SQUASH_BRANCH_HEAD=$(git -C "$REG_DIR" rev-parse HEAD)
+
+      $APR branch switch "$DEFAULT_BRANCH" --registry test-reg \
+        > /tmp/branch-squash-switch-default.out 2>&1 || {
+        cat /tmp/branch-squash-switch-default.out
+        fail "apr branch switch returns to default before squash merge"
+      }
+      cat /tmp/branch-squash-switch-default.out
+      DEFAULT_BEFORE_SQUASH=$(git -C "$REG_DIR" rev-parse HEAD)
+
+      $APR merge squash-branch --squash --registry test-reg \
+        > /tmp/branch-squash-merge.out 2>&1 || {
+        cat /tmp/branch-squash-merge.out
+        fail "apr merge --squash stages changes"
+      }
+      cat /tmp/branch-squash-merge.out
+      assert_file_contains /tmp/branch-squash-merge.out "Merged 'squash-branch'" \
+        "apr merge --squash reports merged branch"
+      CURRENT_AFTER_SQUASH=$(git -C "$REG_DIR" rev-parse HEAD)
+      if [ "$CURRENT_AFTER_SQUASH" = "$DEFAULT_BEFORE_SQUASH" ]; then
+        pass "apr merge --squash does not advance HEAD before maintainer commit"
+      else
+        fail "apr merge --squash advanced HEAD before the maintainer commit"
+        git -C "$REG_DIR" log --oneline --graph -5
+      fi
+      $APR status --registry test-reg > /tmp/branch-squash-status.out 2>&1 || {
+        cat /tmp/branch-squash-status.out
+        fail "apr status succeeds after squash merge"
+      }
+      assert_file_contains /tmp/branch-squash-status.out "packages/s/squashpkg.toml" \
+        "apr status shows staged squash package metadata"
+      $APR show squashpkg --registry test-reg > /tmp/branch-squash-show-staged.out 2>&1 || {
+        cat /tmp/branch-squash-show-staged.out
+        fail "apr show resolves staged squash package"
+      }
+      assert_file_contains /tmp/branch-squash-show-staged.out \
+        "Squash maintainer changeset fixture" \
+        "apr show displays staged squash package metadata"
+      $APR verify --registry test-reg > /tmp/branch-squash-verify-staged.out 2>&1 || {
+        cat /tmp/branch-squash-verify-staged.out
+        fail "apr verify accepts staged squash package"
+      }
+      assert_file_contains /tmp/branch-squash-verify-staged.out "no errors" \
+        "apr verify validates staged squash registry metadata"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "squash merge squashpkg 1.0.0" \
+        > /tmp/branch-squash-commit.out 2>&1 || {
+        cat /tmp/branch-squash-commit.out
+        fail "maintainer commits squash merge result"
+      }
+      cat /tmp/branch-squash-commit.out
+      SQUASH_HEAD_PARENTS=$(git -C "$REG_DIR" rev-list --parents -n 1 HEAD | wc -w)
+      if [ "$SQUASH_HEAD_PARENTS" = "2" ]; then
+        pass "apr merge --squash keeps a linear maintainer commit"
+      else
+        fail "apr merge --squash should leave two rev-list fields, got $SQUASH_HEAD_PARENTS"
+        git -C "$REG_DIR" log --oneline --graph -5
+      fi
+      if git -C "$REG_DIR" merge-base --is-ancestor "$SQUASH_BRANCH_HEAD" HEAD; then
+        fail "squash branch commit should not become an ancestor of default"
+        git -C "$REG_DIR" log --oneline --graph -8
+      else
+        pass "squash branch remains a non-ancestor after squash commit"
+      fi
+      $APR verify --registry test-reg > /tmp/branch-squash-verify.out 2>&1 || {
+        cat /tmp/branch-squash-verify.out
+        fail "apr verify accepts committed squash package"
+      }
+      assert_file_contains /tmp/branch-squash-verify.out "no errors" \
+        "apr verify validates committed squash registry metadata"
+      if $APR branch delete squash-branch --registry test-reg \
+        > /tmp/branch-squash-delete.out 2>&1; then
+        cat /tmp/branch-squash-delete.out
+        fail "apr branch delete should reject a squash-only branch"
+      else
+        cat /tmp/branch-squash-delete.out
+        pass "apr branch delete preserves unmerged squash branch"
+      fi
+      git -C "$REG_DIR" branch -D squash-branch \
+        > /tmp/branch-squash-force-delete.out 2>&1 || {
+        cat /tmp/branch-squash-force-delete.out
+        fail "test cleanup force-deletes squash branch"
+      }
+      cat /tmp/branch-squash-force-delete.out
+
+      echo "==> Test: APR pull and pull --rebase between maintainer clones"
+
+      git init --bare --object-format=sha256 /tmp/branch-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/branch-origin.git
+      git --git-dir=/tmp/branch-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      $APR push --registry test-reg --branch "$DEFAULT_BRANCH" --set-upstream \
+        > /tmp/branch-initial-push.out 2>&1 || {
+        cat /tmp/branch-initial-push.out
+        fail "apr push publishes merged default branch"
+      }
+      cat /tmp/branch-initial-push.out
+      assert_file_contains /tmp/branch-initial-push.out "Pushed." \
+        "apr push reports initial default branch push"
+
+      COLLAB_DIR="$REG_STORAGE/collab-reg"
+      git clone /tmp/branch-origin.git "$COLLAB_DIR" \
+        > /tmp/branch-collab-clone.out 2>&1 || {
+        cat /tmp/branch-collab-clone.out
+        fail "second maintainer clone succeeds"
+      }
+      cat /tmp/branch-collab-clone.out
+      $APR show featurepkg --registry collab-reg \
+        > /tmp/branch-collab-show-feature.out 2>&1 || {
+        cat /tmp/branch-collab-show-feature.out
+        fail "second maintainer clone can query merged package"
+      }
+      assert_file_contains /tmp/branch-collab-show-feature.out \
+        "Real branch workflow fixture" \
+        "second maintainer clone sees merged package metadata"
+
+      $APR publish "$FEATURE_DEP_STORE" \
+        --name collab-local \
+        --version 1.0.0 \
+        --description "Local collaborator package before rebase" \
+        --license MIT \
+        --maintainer branch@example.invalid \
+        --registry collab-reg \
+        --no-commit > /tmp/branch-collab-local-publish.out 2>&1 || {
+        cat /tmp/branch-collab-local-publish.out
+        fail "second maintainer publishes local package before pull --rebase"
+      }
+      cat /tmp/branch-collab-local-publish.out
+      git -C "$COLLAB_DIR" add -A
+      git -C "$COLLAB_DIR" commit -m "publish collaborator local package" \
+        > /tmp/branch-collab-local-commit.out 2>&1 || {
+        cat /tmp/branch-collab-local-commit.out
+        fail "second maintainer commits local package before pull --rebase"
+      }
+      cat /tmp/branch-collab-local-commit.out
+
+      $APR publish "$FEATURE_STORE" \
+        --name remote-added \
+        --version 1.0.0 \
+        --description "Remote maintainer package for pull workflow" \
+        --license MIT \
+        --maintainer branch@example.invalid \
+        --registry test-reg \
+        --no-commit > /tmp/branch-remote-added-publish.out 2>&1 || {
+        cat /tmp/branch-remote-added-publish.out
+        fail "first maintainer publishes remote package"
+      }
+      cat /tmp/branch-remote-added-publish.out
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "publish remote added package" \
+        > /tmp/branch-remote-added-commit.out 2>&1 || {
+        cat /tmp/branch-remote-added-commit.out
+        fail "first maintainer commits remote package"
+      }
+      cat /tmp/branch-remote-added-commit.out
+      $APR push --registry test-reg --branch "$DEFAULT_BRANCH" \
+        > /tmp/branch-remote-added-push.out 2>&1 || {
+        cat /tmp/branch-remote-added-push.out
+        fail "first maintainer pushes remote package"
+      }
+      cat /tmp/branch-remote-added-push.out
+
+      $APR packages --registry collab-reg > /tmp/branch-collab-before-rebase.out 2>&1 || {
+        cat /tmp/branch-collab-before-rebase.out
+        fail "second maintainer lists packages before pull --rebase"
+      }
+      assert_file_contains /tmp/branch-collab-before-rebase.out "collab-local" \
+        "second maintainer sees local package before pull --rebase"
+      assert_file_not_contains /tmp/branch-collab-before-rebase.out "remote-added" \
+        "second maintainer does not see remote package before pull --rebase"
+
+      $APR pull --registry collab-reg --rebase > /tmp/branch-collab-rebase.out 2>&1 || {
+        cat /tmp/branch-collab-rebase.out
+        fail "apr pull --rebase updates second maintainer clone"
+      }
+      cat /tmp/branch-collab-rebase.out
+      $APR packages --registry collab-reg > /tmp/branch-collab-after-rebase.out 2>&1 || {
+        cat /tmp/branch-collab-after-rebase.out
+        fail "second maintainer lists packages after pull --rebase"
+      }
+      assert_file_contains /tmp/branch-collab-after-rebase.out "collab-local" \
+        "pull --rebase preserves local maintainer package"
+      assert_file_contains /tmp/branch-collab-after-rebase.out "remote-added" \
+        "pull --rebase imports remote maintainer package"
+      $APR verify --registry collab-reg > /tmp/branch-collab-verify.out 2>&1 || {
+        cat /tmp/branch-collab-verify.out
+        fail "rebased maintainer clone verifies"
+      }
+      assert_file_contains /tmp/branch-collab-verify.out "no errors" \
+        "rebased maintainer clone has valid registry metadata"
+      COLLAB_HEAD_PARENTS=$(git -C "$COLLAB_DIR" rev-list --parents -n 1 HEAD | wc -w)
+      if [ "$COLLAB_HEAD_PARENTS" = "2" ]; then
+        pass "apr pull --rebase keeps a linear local maintainer commit"
+      else
+        fail "apr pull --rebase should leave a linear head, got $COLLAB_HEAD_PARENTS fields"
+        git -C "$COLLAB_DIR" log --oneline --graph -5
+      fi
+
+      $APR push --registry collab-reg --branch "$DEFAULT_BRANCH" \
+        > /tmp/branch-collab-push.out 2>&1 || {
+        cat /tmp/branch-collab-push.out
+        fail "second maintainer pushes rebased package"
+      }
+      cat /tmp/branch-collab-push.out
+      $APR pull --registry test-reg > /tmp/branch-primary-pull.out 2>&1 || {
+        cat /tmp/branch-primary-pull.out
+        fail "first maintainer pulls collaborator package"
+      }
+      cat /tmp/branch-primary-pull.out
+      $APR show collab-local --registry test-reg \
+        > /tmp/branch-primary-show-collab.out 2>&1 || {
+        cat /tmp/branch-primary-show-collab.out
+        fail "first maintainer sees collaborator package after pull"
+      }
+      assert_file_contains /tmp/branch-primary-show-collab.out \
+        "Local collaborator package before rebase" \
+        "plain apr pull imports collaborator package metadata"
+      $APR verify --registry test-reg > /tmp/branch-primary-verify-pulled.out 2>&1 || {
+        cat /tmp/branch-primary-verify-pulled.out
+        fail "first maintainer registry verifies after pull"
+      }
+      assert_file_contains /tmp/branch-primary-verify-pulled.out "no errors" \
+        "first maintainer registry remains valid after pull"
 
       check_fail
     '';
   };
 
   # -------------------------------------------------------------------------
-  # 10. registry-validate — Validate registry TOML structure
+  # 11. registry-validate — Validate registry TOML structure
   # -------------------------------------------------------------------------
   registry-validate = testing.mkVMTest {
     name = "apm-registry-validate";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = closureWorkflowDeps;
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
       echo "==> Test: apr verify (TOML schema validation)"
 
-      # Create registry with a valid package
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
-      write_package_toml "$REG_DIR" "validpkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish validpkg 1.0.0"
 
-      # Run verify — should pass with valid TOML
-      assert_cmd_success "$APR verify --registry test-reg" \
-        "apr verify passes with valid package"
+      $APR publish "${closureLeafTool}" \
+        --name validpkg \
+        --version 1.0.0 \
+        --description "Real verify schema fixture" \
+        --license MIT \
+        --maintainer verify@example.invalid \
+        --registry test-reg \
+        --no-commit > /tmp/validate-publish.out 2>&1 || {
+        cat /tmp/validate-publish.out
+        fail "apr publish creates valid package metadata"
+      }
+      cat /tmp/validate-publish.out
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "publish validpkg 1.0.0"
 
-      # Create an invalid TOML file (missing [package] section)
+      $APR verify --registry test-reg > /tmp/verify-valid.out 2>&1 || {
+        cat /tmp/verify-valid.out
+        fail "apr verify passes with real valid package"
+      }
+      cat /tmp/verify-valid.out
+      assert_file_contains /tmp/verify-valid.out "no errors" \
+        "apr verify reports real valid package has no errors"
+
       mkdir -p "$REG_DIR/packages/b"
       echo 'invalid = "no package section"' > "$REG_DIR/packages/b/badpkg.toml"
-      commit_registry "$REG_DIR" "add invalid package"
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "add invalid package"
 
-      # Run verify again — should report the error
-      $APR verify --registry test-reg > /tmp/verify-out 2>&1 || true
-      if grep -q "error\|missing" /tmp/verify-out 2>/dev/null; then
-        pass "apr verify detects invalid package TOML"
+      if $APR verify --registry test-reg > /tmp/verify-invalid.out 2>&1; then
+        cat /tmp/verify-invalid.out
+        fail "apr verify should fail with invalid package TOML"
       else
-        # Some implementations report via exit code only
-        pass "apr verify ran on invalid package (output checked)"
+        cat /tmp/verify-invalid.out
+        pass "apr verify fails with invalid package TOML"
       fi
+      assert_file_contains /tmp/verify-invalid.out "missing \\[package\\] section" \
+        "apr verify reports invalid package TOML"
 
       check_fail
     '';
   };
 
   # -------------------------------------------------------------------------
-  # 11. registry-bundle — Legacy selector for signed tag / no-bundle clean break
+  # 12. registry-bundle — Signed tag, re-sign, and no-bundle clean break
   # -------------------------------------------------------------------------
   registry-bundle = testing.mkVMTest {
     name = "apm-registry-signed-tag-clean-break";
-    rootfsDeps = fixtures.commonDeps ++ [pkgs.openssh];
-    memory = 512;
+    rootfsDeps = closureWorkflowDeps ++ [pkgs.openssh];
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
-      echo "==> Test: apr signed tag and bundle clean break"
+      echo "==> Test: real APR signed tag, re-sign, and bundle clean break"
 
-      # Create registry with packages
+      TAG_STORE="${closureRootTool}"
+      TAG_DEP_STORE="${closureLeafTool}"
+      TAG_HASH=$(basename "$TAG_STORE" | cut -d- -f1)
+      TAG_DEP_HASH=$(basename "$TAG_DEP_STORE" | cut -d- -f1)
+
+      mount -o remount,rw / || true
+      nix-store -q --references "$TAG_STORE" > /tmp/tagpkg-refs.out
+      assert_file_contains /tmp/tagpkg-refs.out "$TAG_DEP_STORE" \
+        "tagged package has a real Nix reference to its dependency"
+
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
-      write_package_toml "$REG_DIR" "tagpkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish tagpkg 1.0.0"
+
+      $APR publish "$TAG_STORE" \
+        --name tagpkg \
+        --version 1.0.0 \
+        --description "Real signed tag fixture" \
+        --license MIT \
+        --maintainer tag@example.invalid \
+        --registry test-reg \
+        --no-commit > /tmp/tag-publish.out 2>&1 || {
+        cat /tmp/tag-publish.out
+        fail "apr publish creates real tag package"
+      }
+      cat /tmp/tag-publish.out
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "publish tagpkg 1.0.0"
+
+      assert_file_contains "$REG_DIR/packages/t/tagpkg.toml" "$TAG_HASH" \
+        "package metadata records real tagged store hash"
+      assert_file_exists "$REG_DIR/closures/$TAG_HASH" \
+        "tagged package closure file exists"
+      assert_file_contains "$REG_DIR/closures/$TAG_HASH" "$TAG_DEP_HASH" \
+        "tagged package closure records dependency"
+      $APR verify --registry test-reg > /tmp/tag-verify-before.out 2>&1 || {
+        cat /tmp/tag-verify-before.out
+        fail "apr verify accepts real package before tag"
+      }
+      assert_file_contains /tmp/tag-verify-before.out "no errors" \
+        "apr verify validates real package before tag"
 
       ssh-keygen -q -t ed25519 -N "" -f /tmp/release-key
-      $APR tag 1.0.0 --registry test-reg --key /tmp/release-key
+      $APR tag 1.0.0 --registry test-reg --key /tmp/release-key \
+        > /tmp/tag-create.out 2>&1 || {
+        cat /tmp/tag-create.out
+        fail "apr tag creates signed release tag"
+      }
+      cat /tmp/tag-create.out
+      assert_file_contains /tmp/tag-create.out "Created signed tag '1.0.0'" \
+        "apr tag reports signed release tag creation"
 
       cd "$REG_DIR"
       assert_cmd_success "git rev-parse 1.0.0^{tag}" \
         "signed release tag object exists"
-      assert_cmd_output_contains "git cat-file -p 1.0.0" \
+      git cat-file -p 1.0.0 > /tmp/tag-object.out
+      assert_file_contains /tmp/tag-object.out \
         "BEGIN SSH SIGNATURE" "release tag object carries SSH signature"
+      assert_file_contains /tmp/tag-object.out "tag 1.0.0" \
+        "release tag object records release name"
+      git show 1.0.0:packages/t/tagpkg.toml > /tmp/tagpkg-at-tag.toml
+      git show "1.0.0:closures/$TAG_HASH" > /tmp/tag-closure-at-tag.out
       cd /tmp
+
+      assert_file_contains /tmp/tagpkg-at-tag.toml "$TAG_HASH" \
+        "signed tag captures real package metadata"
+      assert_file_contains /tmp/tagpkg-at-tag.toml "Real signed tag fixture" \
+        "signed tag captures maintainer package description"
+      assert_file_contains /tmp/tag-closure-at-tag.out "$TAG_DEP_HASH" \
+        "signed tag captures real package closure"
+
+      INITIAL_TAG_OBJECT=$(git -C "$REG_DIR" rev-parse '1.0.0^{tag}')
+      INITIAL_TAG_COMMIT=$(git -C "$REG_DIR" rev-parse '1.0.0^{commit}')
+
+      ssh-keygen -q -t ed25519 -N "" -f /tmp/release-key-next
+      NEXT_PUBLIC=$(cut -d ' ' -f2 < /tmp/release-key-next.pub)
+      NEXT_TRUST_KEY="test-reg:Ed25519:$NEXT_PUBLIC"
+      $APR keys add next "$NEXT_TRUST_KEY" --registry test-reg \
+        > /tmp/sign-key-add.out 2>&1 || {
+        cat /tmp/sign-key-add.out
+        fail "apr keys add records replacement signing key"
+      }
+      cat /tmp/sign-key-add.out
+      assert_file_contains "$REG_DIR/keys.toml" 'id = "next"' \
+        "keys.toml records replacement signing key id"
+      assert_file_contains "$REG_DIR/keys.toml" "$NEXT_TRUST_KEY" \
+        "keys.toml records replacement signing key value"
+
+      {
+        printf '[registry]\n'
+        printf 'name = "test-reg"\n'
+        printf 'url = "file://%s"\n\n' "$REG_DIR"
+        printf '[registry.signing_keys]\n'
+        printf 'next = "/tmp/release-key-next"\n'
+      } > "$APM_CONFIG/registries.d/test-reg.toml"
+
+      if $APR sign --registry test-reg --key-id next \
+        > /tmp/sign-missing-tag.out 2>&1; then
+        cat /tmp/sign-missing-tag.out
+        fail "apr sign should require an explicit tag name"
+      else
+        cat /tmp/sign-missing-tag.out
+        pass "apr sign rejects missing tag name"
+      fi
+      assert_file_contains /tmp/sign-missing-tag.out \
+        "pass the existing tag name to re-sign" \
+        "apr sign explains required tag argument"
+
+      $APR sign 1.0.0 --registry test-reg --key-id next \
+        > /tmp/tag-resign.out 2>&1 || {
+        cat /tmp/tag-resign.out
+        fail "apr sign re-signs existing tag with configured key id"
+      }
+      cat /tmp/tag-resign.out
+      assert_file_contains /tmp/tag-resign.out "Re-signed tag '1.0.0'" \
+        "apr sign reports re-signed tag"
+      RESIGNED_TAG_OBJECT=$(git -C "$REG_DIR" rev-parse '1.0.0^{tag}')
+      RESIGNED_TAG_COMMIT=$(git -C "$REG_DIR" rev-parse '1.0.0^{commit}')
+      if [ "$RESIGNED_TAG_COMMIT" = "$INITIAL_TAG_COMMIT" ]; then
+        pass "apr sign keeps the release tag target commit"
+      else
+        fail "apr sign should keep commit $INITIAL_TAG_COMMIT, got $RESIGNED_TAG_COMMIT"
+      fi
+      if [ "$RESIGNED_TAG_OBJECT" != "$INITIAL_TAG_OBJECT" ]; then
+        pass "apr sign replaces the annotated tag object"
+      else
+        fail "apr sign should replace annotated tag object"
+      fi
+      git -C "$REG_DIR" cat-file -p 1.0.0 > /tmp/tag-object-resigned.out
+      assert_file_contains /tmp/tag-object-resigned.out \
+        "BEGIN SSH SIGNATURE" "re-signed tag object carries SSH signature"
+      assert_file_contains /tmp/tag-object-resigned.out "$INITIAL_TAG_COMMIT" \
+        "re-signed tag object targets original release commit"
 
       assert_file_not_exists "$REG_DIR/bundle-list.toml" \
         "git-native registry does not emit bundle-list.toml"
@@ -541,152 +2184,469 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 12. closure-generate — Closure files created and well-formed
+  # 13. registry-trust-keys-workflow — Committed and local trust key commands
   # -------------------------------------------------------------------------
-  closure-generate = testing.mkVMTest {
-    name = "apm-closure-generate";
+  registry-trust-keys-workflow = testing.mkVMTest {
+    name = "apm-registry-trust-keys-workflow";
     rootfsDeps = fixtures.commonDeps;
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
 
-      echo "==> Test: closure file generation and structure"
+      echo "==> Test: APR committed key roster and local trust store workflow"
 
-      # Create registry
-      $APR create test-reg
-      REG_DIR="$REG_STORAGE/test-reg"
+      KEY_ROOT="trust-reg:Ed25519:YWJjZA=="
+      KEY_BACKUP="trust-reg:Ed25519:ZWZnaA=="
+      KEY_CANARY="trust-reg:Ed25519:aGlqaA=="
+      KEY_FOREIGN="other-reg:Ed25519:bWlzbWF0Y2g="
 
-      # Publish two packages: libfoo (leaf) and app (depends on libfoo)
-      LIBFOO_HASH="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      APP_HASH="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      $APR create trust-reg --trust-key "$KEY_ROOT" --trust-key-id root
+      REG_DIR="$REG_STORAGE/trust-reg"
+      TRUST_FILE="$HOME/.config/apm/trusted-keys.d/trust-reg.pub"
 
-      write_package_toml_with_refs "$REG_DIR" "libfoo" "1.0.0" \
-        "$LIBFOO_HASH"
-      write_package_toml_with_refs "$REG_DIR" "app" "2.0.0" \
-        "$APP_HASH" "$LIBFOO_HASH"
+      assert_file_exists "$REG_DIR/keys.toml" \
+        "apr create writes committed keys.toml"
+      assert_file_contains "$REG_DIR/keys.toml" 'id = "root"' \
+        "initial committed key id is recorded"
+      assert_file_contains "$REG_DIR/keys.toml" "$KEY_ROOT" \
+        "initial committed key value is recorded"
 
-      # Write closure files
-      # libfoo: leaf (just itself)
-      write_closure_file "$REG_DIR" "$LIBFOO_HASH"
+      $APR keys list --registry trust-reg > /tmp/keys-list-initial.out 2>&1 || {
+        cat /tmp/keys-list-initial.out
+        fail "apr keys list shows initial roster"
+      }
+      cat /tmp/keys-list-initial.out
+      assert_file_contains /tmp/keys-list-initial.out "root:" \
+        "apr keys list reports active root key"
+      assert_file_contains /tmp/keys-list-initial.out "revoked: none" \
+        "apr keys list reports empty revocation set"
 
-      # app: depends on libfoo
-      write_closure_file "$REG_DIR" "$APP_HASH" "$LIBFOO_HASH"
+      $APR keys add backup "$KEY_BACKUP" --registry trust-reg \
+        > /tmp/keys-add-backup.out 2>&1 || {
+        cat /tmp/keys-add-backup.out
+        fail "apr keys add commits backup key"
+      }
+      cat /tmp/keys-add-backup.out
+      assert_file_contains /tmp/keys-add-backup.out "Added active signing key 'backup'" \
+        "apr keys add reports backup key"
+      assert_file_contains "$REG_DIR/keys.toml" 'id = "backup"' \
+        "backup key is written to keys.toml"
+      assert_file_contains "$REG_DIR/keys.toml" "$KEY_BACKUP" \
+        "backup key value is written to keys.toml"
 
-      # Write .gitattributes
-      ensure_gitattributes "$REG_DIR"
+      $APR keys add canary "$KEY_CANARY" --registry trust-reg \
+        > /tmp/keys-add-canary.out 2>&1 || {
+        cat /tmp/keys-add-canary.out
+        fail "apr keys add commits canary key"
+      }
+      cat /tmp/keys-add-canary.out
+      assert_file_contains "$REG_DIR/keys.toml" 'id = "canary"' \
+        "canary key is written to keys.toml"
 
-      commit_registry "$REG_DIR" "publish libfoo and app with closures"
-
-      # Verify closure files exist
-      assert_file_exists "$REG_DIR/closures/$LIBFOO_HASH" \
-        "libfoo closure file exists"
-      assert_file_exists "$REG_DIR/closures/$APP_HASH" \
-        "app closure file exists"
-
-      # Verify libfoo closure is just itself (leaf)
-      LIBFOO_LINES=$(wc -l < "$REG_DIR/closures/$LIBFOO_HASH")
-      if [ "$LIBFOO_LINES" -eq 1 ]; then
-        pass "libfoo closure has 1 line (leaf)"
+      if $APR keys add foreign "$KEY_FOREIGN" --registry trust-reg \
+        > /tmp/keys-add-foreign.out 2>&1; then
+        cat /tmp/keys-add-foreign.out
+        fail "apr keys add should reject foreign registry key"
       else
-        fail "libfoo closure should have 1 line, got $LIBFOO_LINES"
-        cat "$REG_DIR/closures/$LIBFOO_HASH"
+        cat /tmp/keys-add-foreign.out
+        pass "apr keys add rejects foreign registry key"
+      fi
+      assert_file_contains /tmp/keys-add-foreign.out \
+        "belongs to registry 'other-reg', expected 'trust-reg'" \
+        "foreign committed key error names both registries"
+
+      if $APR keys retire root --registry trust-reg \
+        > /tmp/keys-retire-missing-vouch.out 2>&1; then
+        cat /tmp/keys-retire-missing-vouch.out
+        fail "apr keys retire should require --vouched-by with multiple survivors"
+      else
+        cat /tmp/keys-retire-missing-vouch.out
+        pass "apr keys retire requires explicit vouching key"
+      fi
+      assert_file_contains /tmp/keys-retire-missing-vouch.out \
+        "vouched-by is required" \
+        "retire error explains required vouching key"
+
+      $APR keys retire root --vouched-by backup --reason "key rotation" \
+        --registry trust-reg > /tmp/keys-retire-root.out 2>&1 || {
+        cat /tmp/keys-retire-root.out
+        fail "apr keys retire commits revoked root key"
+      }
+      cat /tmp/keys-retire-root.out
+      assert_file_contains /tmp/keys-retire-root.out \
+        "Retired signing key 'root'" \
+        "apr keys retire reports revoked root key"
+      $APR keys list --registry trust-reg > /tmp/keys-list-rotated.out 2>&1 || {
+        cat /tmp/keys-list-rotated.out
+        fail "apr keys list shows rotated roster"
+      }
+      cat /tmp/keys-list-rotated.out
+      assert_file_contains /tmp/keys-list-rotated.out "backup:" \
+        "rotated roster keeps backup active"
+      assert_file_contains /tmp/keys-list-rotated.out "canary:" \
+        "rotated roster keeps canary active"
+      assert_file_contains /tmp/keys-list-rotated.out "root: key rotation" \
+        "rotated roster records root revocation reason"
+      git -C "$REG_DIR" log --oneline > /tmp/keys-git-log.out
+      assert_file_contains /tmp/keys-git-log.out \
+        "registry: add signing key backup" \
+        "keys add creates a maintainer commit"
+      assert_file_contains /tmp/keys-git-log.out \
+        "registry: retire signing key root" \
+        "keys retire creates a maintainer commit"
+
+      $APR trust list trust-reg > /tmp/trust-list-empty.out 2>&1 || {
+        cat /tmp/trust-list-empty.out
+        fail "apr trust list handles empty store"
+      }
+      cat /tmp/trust-list-empty.out
+      assert_file_contains /tmp/trust-list-empty.out "trust-reg: no pinned keys" \
+        "apr trust list reports no pinned keys"
+
+      $APR trust pin trust-reg "$KEY_ROOT" > /tmp/trust-pin-root.out 2>&1 || {
+        cat /tmp/trust-pin-root.out
+        fail "apr trust pin stores root key"
+      }
+      cat /tmp/trust-pin-root.out
+      assert_file_exists "$TRUST_FILE" \
+        "apr trust pin writes trusted key file"
+      assert_file_contains "$TRUST_FILE" "$KEY_ROOT" \
+        "trusted key file contains pinned root key"
+
+      $APR trust pin trust-reg "$KEY_BACKUP" > /tmp/trust-pin-backup.out 2>&1 || {
+        cat /tmp/trust-pin-backup.out
+        fail "apr trust pin stores backup key"
+      }
+      cat /tmp/trust-pin-backup.out
+      TRUST_COUNT=$(wc -l < "$TRUST_FILE")
+      if [ "$TRUST_COUNT" = "2" ]; then
+        pass "trust store keeps both pinned keys during rotation overlap"
+      else
+        fail "trust store should contain two pinned keys, got $TRUST_COUNT"
+        cat "$TRUST_FILE"
       fi
 
-      # Verify app closure has root first
-      FIRST_LINE=$(head -1 "$REG_DIR/closures/$APP_HASH")
-      FIRST_TOKEN=$(echo "$FIRST_LINE" | cut -d' ' -f1)
-      if [ "$FIRST_TOKEN" = "$APP_HASH" ]; then
-        pass "app closure starts with root hash"
+      if $APR trust pin trust-reg "$KEY_FOREIGN" \
+        > /tmp/trust-pin-foreign.out 2>&1; then
+        cat /tmp/trust-pin-foreign.out
+        fail "apr trust pin should reject foreign registry key"
       else
-        fail "app closure should start with $APP_HASH, got $FIRST_TOKEN"
-        cat "$REG_DIR/closures/$APP_HASH"
+        cat /tmp/trust-pin-foreign.out
+        pass "apr trust pin rejects foreign registry key"
       fi
+      assert_file_contains /tmp/trust-pin-foreign.out \
+        "belongs to registry 'other-reg', expected 'trust-reg'" \
+        "foreign trust key error names both registries"
 
-      # Verify app closure contains libfoo as a dep on root line
-      if echo "$FIRST_LINE" | grep -q "$LIBFOO_HASH"; then
-        pass "app closure root line lists libfoo as dep"
+      $APR trust pin trust-reg "$KEY_CANARY" --replace \
+        > /tmp/trust-replace.out 2>&1 || {
+        cat /tmp/trust-replace.out
+        fail "apr trust pin --replace stores only canary key"
+      }
+      cat /tmp/trust-replace.out
+      TRUST_COUNT=$(wc -l < "$TRUST_FILE")
+      if [ "$TRUST_COUNT" = "1" ]; then
+        pass "trust replace leaves one pinned key"
       else
-        fail "app closure root line missing libfoo dep"
-        cat "$REG_DIR/closures/$APP_HASH"
+        fail "trust replace should leave one pinned key, got $TRUST_COUNT"
+        cat "$TRUST_FILE"
       fi
+      assert_file_contains "$TRUST_FILE" "$KEY_CANARY" \
+        "trust replace stores canary key"
 
-      # Verify app closure has libfoo as a member (leaf line)
-      if grep -q "^$LIBFOO_HASH" "$REG_DIR/closures/$APP_HASH"; then
-        pass "app closure has libfoo as member"
-      else
-        fail "app closure missing libfoo member line"
-        cat "$REG_DIR/closures/$APP_HASH"
-      fi
+      $APR trust list trust-reg > /tmp/trust-list-canary.out 2>&1 || {
+        cat /tmp/trust-list-canary.out
+        fail "apr trust list shows replacement key"
+      }
+      cat /tmp/trust-list-canary.out
+      assert_file_contains /tmp/trust-list-canary.out "trust-reg: Ed25519" \
+        "apr trust list reports pinned canary key"
 
-      # Verify .gitattributes has closures entry
-      assert_file_contains "$REG_DIR/.gitattributes" \
-        "closures/" ".gitattributes has closures entry"
+      $APR trust remove trust-reg > /tmp/trust-remove.out 2>&1 || {
+        cat /tmp/trust-remove.out
+        fail "apr trust remove deletes trust file"
+      }
+      cat /tmp/trust-remove.out
+      assert_file_not_exists "$TRUST_FILE" \
+        "apr trust remove deletes trusted key file"
+      $APR trust remove trust-reg > /tmp/trust-remove-repeat.out 2>&1 || {
+        cat /tmp/trust-remove-repeat.out
+        fail "apr trust remove is idempotent"
+      }
+      cat /tmp/trust-remove-repeat.out
+      assert_file_contains /tmp/trust-remove-repeat.out \
+        "No pinned trust keys found" \
+        "repeat trust remove reports no pinned keys"
 
       check_fail
     '';
   };
 
   # -------------------------------------------------------------------------
-  # 13. closure-verify — apr verify validates closure consistency
+  # 14. closure-generate — Closure files created and well-formed
   # -------------------------------------------------------------------------
-  closure-verify = testing.mkVMTest {
-    name = "apm-closure-verify";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+  closure-generate = testing.mkVMTest {
+    name = "apm-closure-generate";
+    rootfsDeps = closureWorkflowDeps;
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
-      echo "==> Test: apr verify with closure validation"
+      echo "==> Test: real APR closure file generation and structure"
 
-      # Create registry with packages and valid closures
+      LEAF_STORE="${closureLeafTool}"
+      ROOT_STORE="${closureRootTool}"
+      LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
+      ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/closure-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/closure-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
+
+      publish_closure_package() {
+        store="$1"
+        name="$2"
+        version="$3"
+        $APR publish "$store" \
+          --name "$name" \
+          --version "$version" \
+          --description "Real closure fixture $name" \
+          --license MIT \
+          --maintainer closure@example.invalid \
+          --registry test-reg \
+          --no-commit > "/tmp/closure-publish-$name.out" 2>&1 || {
+          cat "/tmp/closure-publish-$name.out"
+          fail "apr publish $name succeeds"
+          return 1
+        }
+        cat "/tmp/closure-publish-$name.out"
+      }
+
+      mount -o remount,rw / || true
+      assert_store_valid "$LEAF_STORE" "closure-leaf"
+      assert_store_valid "$ROOT_STORE" "closure-root"
+      nix-store -q --references "$ROOT_STORE" > /tmp/closure-root-refs.out
+      assert_file_contains /tmp/closure-root-refs.out "$LEAF_STORE" \
+        "closure-root has a real Nix reference to closure-leaf"
+
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
 
-      LEAF_HASH="cccccccccccccccccccccccccccccccccc"
-      ROOT_HASH="dddddddddddddddddddddddddddddddd"
+      publish_closure_package "$LEAF_STORE" closure-leaf 1.0.0
+      publish_closure_package "$ROOT_STORE" closure-root 1.0.0
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "publish real closure packages"
 
-      write_package_toml_with_refs "$REG_DIR" "leaf" "1.0.0" \
-        "$LEAF_HASH"
-      write_package_toml_with_refs "$REG_DIR" "root" "1.0.0" \
-        "$ROOT_HASH" "$LEAF_HASH"
+      assert_file_exists "$REG_DIR/packages/c/closure-leaf.toml" \
+        "published closure-leaf package metadata exists"
+      assert_file_exists "$REG_DIR/packages/c/closure-root.toml" \
+        "published closure-root package metadata exists"
+      assert_file_exists "$REG_DIR/closures/$LEAF_HASH" \
+        "closure-leaf closure file exists"
+      assert_file_exists "$REG_DIR/closures/$ROOT_HASH" \
+        "closure-root closure file exists"
 
-      # Write correct closure files
-      write_closure_file "$REG_DIR" "$LEAF_HASH"
-      write_closure_file "$REG_DIR" "$ROOT_HASH" "$LEAF_HASH"
-      ensure_gitattributes "$REG_DIR"
-      commit_registry "$REG_DIR" "publish with valid closures"
-
-      # Verify should pass with valid closures
-      assert_cmd_success "$APR verify --registry test-reg" \
-        "apr verify passes with valid closures"
-
-      # Now break a closure: remove leaf from root's closure
-      echo "$ROOT_HASH" > "$REG_DIR/closures/$ROOT_HASH"
-      commit_registry "$REG_DIR" "break closure"
-
-      # Verify should detect the inconsistency
-      $APR verify --registry test-reg > /tmp/verify-out 2>&1 || true
-      if grep -q "error\|not found\|missing" /tmp/verify-out 2>/dev/null; then
-        pass "apr verify detects broken closure (missing reference)"
+      LEAF_FIRST_TOKEN=$(head -1 "$REG_DIR/closures/$LEAF_HASH" | cut -d' ' -f1)
+      if [ "$LEAF_FIRST_TOKEN" = "$LEAF_HASH" ]; then
+        pass "closure-leaf closure starts with leaf hash"
       else
-        fail "apr verify should detect broken closure"
-        cat /tmp/verify-out 2>/dev/null || true
+        fail "closure-leaf closure should start with $LEAF_HASH, got $LEAF_FIRST_TOKEN"
+        cat "$REG_DIR/closures/$LEAF_HASH"
       fi
 
-      # Fix by removing the closure file entirely (missing closure)
+      FIRST_LINE=$(head -1 "$REG_DIR/closures/$ROOT_HASH")
+      FIRST_TOKEN=$(echo "$FIRST_LINE" | cut -d' ' -f1)
+      if [ "$FIRST_TOKEN" = "$ROOT_HASH" ]; then
+        pass "closure-root closure starts with root hash"
+      else
+        fail "closure-root closure should start with $ROOT_HASH, got $FIRST_TOKEN"
+        cat "$REG_DIR/closures/$ROOT_HASH"
+      fi
+
+      if echo "$FIRST_LINE" | grep -q "$LEAF_HASH"; then
+        pass "closure-root root line lists closure-leaf as a direct dep"
+      else
+        fail "closure-root root line missing closure-leaf dep"
+        cat "$REG_DIR/closures/$ROOT_HASH"
+      fi
+
+      if grep -q "^$LEAF_HASH" "$REG_DIR/closures/$ROOT_HASH"; then
+        pass "closure-root closure has closure-leaf as a member"
+      else
+        fail "closure-root closure missing closure-leaf member line"
+        cat "$REG_DIR/closures/$ROOT_HASH"
+      fi
+
+      for ref_path in $(nix-store -q --references "$ROOT_STORE"); do
+        ref_hash=$(basename "$ref_path" | cut -d- -f1)
+        assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$ref_hash" \
+          "closure-root closure includes direct reference $ref_hash"
+      done
+
+      assert_file_contains "$REG_DIR/.gitattributes" \
+        "closures/" ".gitattributes has closures entry"
+
+      $APR verify --registry test-reg > /tmp/closure-verify-ok.out 2>&1 || {
+        cat /tmp/closure-verify-ok.out
+        fail "apr verify accepts real generated closure files"
+      }
+      cat /tmp/closure-verify-ok.out
+      assert_file_contains /tmp/closure-verify-ok.out "no errors" \
+        "apr verify reports generated closures are valid"
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 15. closure-verify — apr verify validates closure consistency
+  # -------------------------------------------------------------------------
+  closure-verify = testing.mkVMTest {
+    name = "apm-closure-verify";
+    rootfsDeps = closureWorkflowDeps;
+    memory = 1024;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixPublishEnv}
+
+      echo "==> Test: apr verify rejects broken real closure metadata"
+
+      LEAF_STORE="${closureLeafTool}"
+      ROOT_STORE="${closureRootTool}"
+      LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
+      ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
+
+      publish_closure_package() {
+        store="$1"
+        name="$2"
+        version="$3"
+        $APR publish "$store" \
+          --name "$name" \
+          --version "$version" \
+          --description "Real closure verify fixture $name" \
+          --license MIT \
+          --maintainer closure@example.invalid \
+          --registry test-reg \
+          --no-commit > "/tmp/verify-publish-$name.out" 2>&1 || {
+          cat "/tmp/verify-publish-$name.out"
+          fail "apr publish $name succeeds"
+          return 1
+        }
+        cat "/tmp/verify-publish-$name.out"
+      }
+
+      commit_registry_changes() {
+        message="$1"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "$message" > /tmp/verify-commit.out 2>&1 || {
+          cat /tmp/verify-commit.out
+          fail "registry commit succeeds: $message"
+          return 1
+        }
+        cat /tmp/verify-commit.out
+      }
+
+      expect_verify_success() {
+        label="$1"
+        if $APR verify --registry test-reg > "/tmp/verify-$label.out" 2>&1; then
+          cat "/tmp/verify-$label.out"
+          assert_file_contains "/tmp/verify-$label.out" "no errors" \
+            "apr verify reports $label has no errors"
+        else
+          cat "/tmp/verify-$label.out"
+          fail "apr verify should succeed for $label"
+        fi
+      }
+
+      expect_verify_failure() {
+        label="$1"
+        pattern="$2"
+        if $APR verify --registry test-reg > "/tmp/verify-$label.out" 2>&1; then
+          cat "/tmp/verify-$label.out"
+          fail "apr verify should fail for $label"
+        else
+          cat "/tmp/verify-$label.out"
+          pass "apr verify fails for $label"
+        fi
+        assert_file_contains "/tmp/verify-$label.out" "$pattern" \
+          "apr verify reports $label"
+      }
+
+      mount -o remount,rw / || true
+      $APR create test-reg
+      REG_DIR="$REG_STORAGE/test-reg"
+      publish_closure_package "$LEAF_STORE" closure-leaf 1.0.0
+      publish_closure_package "$ROOT_STORE" closure-root 1.0.0
+      commit_registry_changes "publish real closure verify packages"
+
+      cp "$REG_DIR/closures/$ROOT_HASH" /tmp/root-closure-good
+      expect_verify_success valid-generated
+
+      grep -v "^$LEAF_HASH" "$REG_DIR/closures/$ROOT_HASH" \
+        > /tmp/root-closure-broken
+      mv /tmp/root-closure-broken "$REG_DIR/closures/$ROOT_HASH"
+      commit_registry_changes "break root closure dependency"
+      expect_verify_failure broken-reference \
+        "reference $LEAF_HASH not found in closure $ROOT_HASH"
+
+      $APR verify --registry test-reg --package closure-root --fix \
+        > /tmp/verify-fix-broken-reference.out 2>&1 || {
+        cat /tmp/verify-fix-broken-reference.out
+        fail "apr verify --fix repairs stale root closure metadata"
+      }
+      cat /tmp/verify-fix-broken-reference.out
+      assert_file_contains /tmp/verify-fix-broken-reference.out \
+        "Regenerated 1 closure file" \
+        "apr verify --fix reports stale closure repair"
+      assert_file_contains /tmp/verify-fix-broken-reference.out "no errors" \
+        "apr verify --fix validates repaired stale closure metadata"
+      assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$LEAF_HASH" \
+        "apr verify --fix restores missing root closure dependency"
+      commit_registry_changes "repair root closure dependency with verify fix"
+      expect_verify_success restored-generated
+
       rm -f "$REG_DIR/closures/$ROOT_HASH"
-      commit_registry "$REG_DIR" "remove closure"
+      commit_registry_changes "remove root closure"
+      expect_verify_failure missing-closure \
+        "missing closure file for store hash $ROOT_HASH"
 
-      # Verify should report missing closure
-      $APR verify --registry test-reg > /tmp/verify-out2 2>&1 || true
-      if grep -q "error\|missing" /tmp/verify-out2 2>/dev/null; then
-        pass "apr verify detects missing closure file"
-      else
-        fail "apr verify should detect missing closure file"
-        cat /tmp/verify-out2 2>/dev/null || true
-      fi
+      $APR verify --registry test-reg --package closure-leaf \
+        > /tmp/verify-filtered-leaf.out 2>&1 || {
+        cat /tmp/verify-filtered-leaf.out
+        fail "apr verify --package ignores unrelated broken closure metadata"
+      }
+      cat /tmp/verify-filtered-leaf.out
+      assert_file_contains /tmp/verify-filtered-leaf.out "no errors" \
+        "apr verify --package validates only the requested package"
+
+      $APR verify --registry test-reg --package closure-root --fix \
+        > /tmp/verify-fix-missing-closure.out 2>&1 || {
+        cat /tmp/verify-fix-missing-closure.out
+        fail "apr verify --fix repairs missing root closure metadata"
+      }
+      cat /tmp/verify-fix-missing-closure.out
+      assert_file_contains /tmp/verify-fix-missing-closure.out \
+        "Regenerated 1 closure file" \
+        "apr verify --fix reports missing closure repair"
+      assert_file_contains /tmp/verify-fix-missing-closure.out "no errors" \
+        "apr verify --fix validates repaired missing closure metadata"
+      assert_file_exists "$REG_DIR/closures/$ROOT_HASH" \
+        "apr verify --fix recreates missing root closure file"
+      assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$LEAF_HASH" \
+        "apr verify --fix recreates root closure dependency"
+      commit_registry_changes "repair missing root closure with verify fix"
+      expect_verify_success fixed-missing-closure
+
+      assert_file_exists "$REG_DIR/closures/$LEAF_HASH" \
+        "removing root closure leaves dependency closure intact"
 
       check_fail
     '';

@@ -4,9 +4,11 @@
 # rollback, activation, service diffing, /etc management, and sysroot
 # containment tracking.
 #
-# These tests run apm in a headless Firecracker microVM with mock toplevels
-# and registry metadata. The toplevels are real Nix derivations containing
-# activation scripts, etc/ directories, and systemd unit stubs.
+# These tests run apm in a headless Firecracker microVM with mock toplevels.
+# The toplevels are real Nix derivations containing activation scripts, etc/
+# directories, and systemd unit stubs. The install workflow publishes a real
+# sysroot registry entry through APR and downloads it through a generated cache;
+# the rollback/diff tests still seed focused generation state directly.
 #
 # NOTE on the systemd D-Bus migration: when a generation switch produces a
 # non-empty service diff (every upgrade/rollback here, but NOT a fresh
@@ -23,6 +25,11 @@
   apm,
   pkgs,
 }: let
+  fixtures = import ./fixtures.nix {
+    pkgs = pkgs;
+    aosPkg = apm;
+  };
+
   # nix runtime deps needed for LD_LIBRARY_PATH (RPATH doesn't cover all deps yet)
   nixRuntimeDeps = [
     pkgs.nix
@@ -50,6 +57,18 @@
     ]
     ++ nixRuntimeDeps;
 
+  systemInstallWorkflowDeps =
+    fixtures.commonDeps
+    ++ nixRuntimeDeps
+    ++ [
+      pkgs.findutils
+      pkgs.iproute2
+      pkgs.jq
+      pkgs.python3
+      pkgs.zstd
+      toplevelV1
+    ];
+
   # --------------------------------------------------------------------------
   # Mock toplevels — real Nix derivations that simulate system toplevels
   # --------------------------------------------------------------------------
@@ -66,7 +85,10 @@
       pname = "mock-toplevel-${pname}";
       inherit version;
       src = null;
-      buildDeps = [pkgs.coreutils];
+      buildDeps = [
+        pkgs.bash
+        pkgs.coreutils
+      ];
       phases = [
         {
           name = "build";
@@ -102,13 +124,14 @@
             )}
 
             # Activation script
-            cp ${builtins.toFile "activate" ''
-              #!/bin/sh
-              echo "Activating ${pname} ${version}"
-              mkdir -p /tmp
-              echo "${version}" > /tmp/activated-${version}
-              echo "${version}" > /tmp/activated-current
-            ''} $out/activate
+            cat > $out/activate << 'ACTIVATEEOF'
+            #!${pkgs.bash}/bin/bash
+            set -euo pipefail
+            echo "Activating ${pname} ${version}"
+            ${pkgs.coreutils}/bin/mkdir -p /tmp
+            echo "${version}" > /tmp/activated-${version}
+            echo "${version}" > /tmp/activated-current
+            ACTIVATEEOF
             chmod +x $out/activate
 
             ${
@@ -422,6 +445,148 @@
         ln -sfn /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
   '';
 
+  setupRealSystemInstallWorkflow = ''
+    ${fixtures.setupPreamble}
+
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR=/tmp/nix-conf
+    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    mkdir -p "$NIX_CONF_DIR" /nix/var/nix/db /nix/var/nix/gcroots
+    cat > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+    experimental-features = nix-command
+    sandbox = false
+    NIXCONF
+    nix-store --init || true
+    nix-store --load-db < /aos-registration
+    mkdir -p /nix/var/nix/gcroots
+    ln -sfn /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
+
+    mount -o remount,rw / || true
+
+    TOPLEVEL_STORE="${toplevelV1}"
+    TOPLEVEL_HASH=$(basename "$TOPLEVEL_STORE" | cut -d- -f1)
+
+    assert_store_valid() {
+      path="$1"
+      label="$2"
+      if nix-store --check-validity "$path" > "/tmp/system-valid-$label.out" 2>&1; then
+        pass "$label valid in store"
+      else
+        cat "/tmp/system-valid-$label.out"
+        fail "$label should be valid in store"
+      fi
+    }
+
+    assert_store_missing() {
+      path="$1"
+      label="$2"
+      if nix-store --check-validity "$path" > "/tmp/system-missing-$label.out" 2>&1; then
+        cat "/tmp/system-missing-$label.out"
+        fail "$label should be missing from store"
+      else
+        pass "$label missing from store"
+      fi
+    }
+
+    wait_for_system_cache() {
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18085/nix-cache-info >/dev/null; then
+          return 0
+        fi
+        sleep 1
+      done
+      return 1
+    }
+
+    echo "==> Maintainer: publish server sysroot and static cache"
+    $APR create system-reg
+    REG_DIR="$REG_STORAGE/system-reg"
+    DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+
+    $APR publish "$TOPLEVEL_STORE" \
+      --name server \
+      --version 2026.03 \
+      --description "System install workflow sysroot" \
+      --license MIT \
+      --maintainer system-workflow@example.invalid \
+      --sysroot \
+      --registry system-reg \
+      --no-commit > /tmp/system-publish.out 2>&1 || {
+      cat /tmp/system-publish.out
+      fail "apr publish creates system sysroot package"
+    }
+    cat /tmp/system-publish.out
+
+    assert_file_contains "$REG_DIR/packages/s/server.toml" \
+      "sysroot = true" "published server is marked sysroot"
+    assert_file_contains "$REG_DIR/packages/s/server.toml" \
+      "$TOPLEVEL_HASH" "published server metadata records store hash"
+    assert_file_exists "$REG_DIR/closures/$TOPLEVEL_HASH" \
+      "published server closure metadata exists"
+
+    $APR verify --registry system-reg > /tmp/system-verify.out 2>&1 || {
+      cat /tmp/system-verify.out
+      fail "apr verify accepts system install registry"
+    }
+    cat /tmp/system-verify.out
+    assert_file_contains /tmp/system-verify.out "no errors" \
+      "apr verify validates system sysroot metadata"
+
+    $APR cache generate \
+      --registry system-reg \
+      --output /tmp/system-cache \
+      --cache-url http://127.0.0.1:18085 \
+      --priority 43 \
+      --no-commit > /tmp/system-cache-generate.out 2>&1 || {
+      cat /tmp/system-cache-generate.out
+      fail "apr cache generate creates system static cache"
+    }
+    cat /tmp/system-cache-generate.out
+    assert_file_exists "/tmp/system-cache/$TOPLEVEL_HASH.narinfo" \
+      "static cache has system toplevel narinfo"
+    assert_file_contains "$REG_DIR/registry.toml" \
+      "http://127.0.0.1:18085" "registry records system cache URL"
+
+    git -C "$REG_DIR" add -A
+    git -C "$REG_DIR" commit -m "release: server 2026.03 sysroot"
+    git init --bare --object-format=sha256 /tmp/system-origin.git
+    git -C "$REG_DIR" remote add origin /tmp/system-origin.git
+    git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+    ${pkgs.iproute2}/sbin/ip link set lo up || true
+    ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+    python3 -m http.server 18085 --bind 127.0.0.1 \
+      --directory /tmp/system-cache > /tmp/system-cache-http.log 2>&1 &
+    CACHE_PID=$!
+    if wait_for_system_cache; then
+      pass "system static cache HTTP server started"
+    else
+      cat /tmp/system-cache-http.log || true
+      fail "system static cache HTTP server started"
+    fi
+
+    echo "==> Consumer: sync system registry"
+    mkdir -p /etc/apm/registries.d /var/lib/apm/registries /var/lib/apm/remote \
+      /var/lib/apm/cache /var/lib/profiles/system
+    cat > /etc/apm/registries.d/system-reg.toml << CFGEOF
+    [registry]
+    name = "system-reg"
+    url = "file:///tmp/system-origin.git"
+    priority = 500
+    enabled = true
+    branch = "$DEFAULT_BRANCH"
+    CFGEOF
+    git clone --branch "$DEFAULT_BRANCH" /tmp/system-origin.git /var/lib/apm/registries/system-reg
+    ln -sfn /var/lib/apm/registries/system-reg /var/lib/apm/remote/system-reg
+
+    assert_store_valid "$TOPLEVEL_STORE" "system toplevel before deletion"
+    nix-store --delete --ignore-liveness "$TOPLEVEL_STORE" > /tmp/system-delete.out 2>&1 || {
+      cat /tmp/system-delete.out
+      fail "system toplevel should be deletable before install"
+    }
+    assert_store_missing "$TOPLEVEL_STORE" "system toplevel before apm install"
+  '';
+
   # State with v1 installed
   stateV1 = builtins.toJSON {
     current = 1;
@@ -510,23 +675,26 @@ in {
   # --------------------------------------------------------------------------
   system-install = testing.mkVMTest {
     name = "apm-system-install";
-    rootfsDeps = testDeps ++ [registryV1 toplevelV1];
+    rootfsDeps = systemInstallWorkflowDeps;
     memory = 1024;
     testScript = ''
-      ${mkSystemPreamble {
-        registryPath = registryV1;
-      }}
+      ${setupRealSystemInstallWorkflow}
 
-      echo "==> Test: apm install server --system creates a generation"
+      echo "==> Test: apm install server --system downloads, imports, and activates"
 
-      # Install the system sysroot
-      OUTPUT=$(${apm}/bin/apm install server --system --yes 2>&1) || true
-      echo "Install output: $OUTPUT"
+      $APM install server --system --registry system-reg --yes \
+        > /tmp/system-install.out 2>&1 || {
+        cat /tmp/system-install.out
+        fail "apm install --system succeeds from downloaded sysroot cache"
+      }
+      cat /tmp/system-install.out
+      assert_file_contains /tmp/system-install.out "Downloading" \
+        "system install downloads the missing toplevel NAR"
+      assert_store_valid "$TOPLEVEL_STORE" "system toplevel after apm install"
 
       # Verify generation state was created
       if [ ! -f /var/lib/profiles/system/state.json ]; then
-        echo "FAIL: state.json not created"
-        exit 1
+        fail "state.json not created"
       fi
 
       STATE=$(cat /var/lib/profiles/system/state.json)
@@ -535,30 +703,36 @@ in {
       # Verify current generation is 1
       CURRENT=$(echo "$STATE" | ${pkgs.jq}/bin/jq '.current')
       if [ "$CURRENT" != "1" ]; then
-        echo "FAIL: expected current=1, got $CURRENT"
-        exit 1
+        fail "expected current=1, got $CURRENT"
       fi
 
       # Verify generation directory exists
       if [ ! -d /var/lib/profiles/system/gen-1 ]; then
-        echo "FAIL: gen-1 directory not created"
-        exit 1
+        fail "gen-1 directory not created"
+      fi
+      if [ "$(readlink /var/lib/profiles/system/gen-1/toplevel)" != "$TOPLEVEL_STORE" ]; then
+        fail "gen-1 toplevel does not point at downloaded sysroot"
       fi
 
       # Verify current symlink
       if [ ! -L /var/lib/profiles/system/current ]; then
-        echo "FAIL: current symlink not created"
-        exit 1
+        fail "current symlink not created"
+      elif [ "$(readlink /var/lib/profiles/system/current)" != "gen-1" ]; then
+        fail "current symlink should point at gen-1"
       fi
 
       # Verify activation ran
       if [ -f /tmp/activated-2026.03 ]; then
-        echo "==> Activation script executed for v1"
+        pass "activation script executed for v1"
       else
-        echo "INFO: activation marker not found (activation may have run in different context)"
+        fail "activation marker not found after system install"
       fi
 
-      echo "==> system-install PASSED"
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "system static cache HTTP server stopped"
+      fi
+
+      check_fail
     '';
   };
 

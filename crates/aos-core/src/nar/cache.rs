@@ -116,9 +116,20 @@ pub fn nar_url(store_path: &str, nar_hash: &str, compression: NarCompression) ->
     format!(
         "nar/{}-{}.{}",
         store_hash(store_path),
-        nar_hash.replace(':', "-"),
+        hash_path_fragment(nar_hash),
         compression.extension(),
     )
+}
+
+/// Convert a hash string into one filesystem- and URL-path-safe segment.
+pub fn hash_path_fragment(hash: &str) -> String {
+    hash.chars()
+        .map(|ch| match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '.' | '_' | '-' => ch,
+            ':' => '-',
+            _ => '_',
+        })
+        .collect()
 }
 
 /// Render one static narinfo body.
@@ -200,6 +211,18 @@ mod tests {
                 NarCompression::Zstd
             ),
             "nar/abc123-sha256-def456.nar.zst"
+        );
+    }
+
+    #[test]
+    fn nar_url_escapes_sri_hash_path_separators() {
+        assert_eq!(
+            nar_url(
+                "/nix/store/abc123-hello",
+                "sha256-/zAxVUL1gFIy9KJWVLMtN8dFXaIq11tx+2AucyOskko=",
+                NarCompression::Zstd,
+            ),
+            "nar/abc123-sha256-_zAxVUL1gFIy9KJWVLMtN8dFXaIq11tx_2AucyOskko_.nar.zst"
         );
     }
 

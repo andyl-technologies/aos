@@ -3,7 +3,8 @@ use std::io::{BufReader, Read};
 use std::path::Path;
 use std::process::Stdio;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use aos_core::error::AosError;
@@ -45,6 +46,38 @@ pub fn sha256_stream(mut reader: impl Read) -> Result<String> {
     Ok(format!("sha256:{hex}"))
 }
 
+/// Convert a SHA-256 hash into a lowercase hex digest.
+///
+/// Accepts the AOS internal `sha256:<hex>` form and the Nix SRI
+/// `sha256-<base64>` form emitted by `nix path-info --json`.
+pub fn sha256_digest_hex(hash: &str) -> Result<String> {
+    let hash = hash.trim();
+
+    if let Some(hex) = hash.strip_prefix("sha256:") {
+        return Ok(hex.to_ascii_lowercase());
+    }
+
+    if let Some(b64) = hash.strip_prefix("sha256-") {
+        let digest = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .with_context(|| format!("decoding SRI SHA-256 hash '{hash}'"))?;
+        if digest.len() != 32 {
+            bail!(
+                "SRI SHA-256 hash '{hash}' decoded to {} bytes, expected 32",
+                digest.len(),
+            );
+        }
+        return Ok(hex::encode(digest));
+    }
+
+    Ok(hash.to_ascii_lowercase())
+}
+
+/// Return whether two SHA-256 hashes identify the same digest.
+pub fn sha256_hashes_equal(left: &str, right: &str) -> Result<bool> {
+    Ok(sha256_digest_hex(left)? == sha256_digest_hex(right)?)
+}
+
 // ---------------------------------------------------------------------------
 // Layer 4a: download hash verification
 // ---------------------------------------------------------------------------
@@ -52,10 +85,10 @@ pub fn sha256_stream(mut reader: impl Read) -> Result<String> {
 /// Verify the compressed NAR download hash (Layer 4a).
 ///
 /// Computes SHA-256 of the file at `path` and compares against `expected`.
-/// Both the expected and actual hash must be in `"sha256:<hex>"` format.
+/// The expected hash may be `sha256:<hex>` or Nix SRI `sha256-<base64>`.
 pub fn verify_download_hash(path: &Path, expected: &str) -> Result<()> {
     let actual = sha256_file(path)?;
-    if actual != expected {
+    if !sha256_hashes_equal(&actual, expected)? {
         return Err(AosError::HashMismatch {
             expected: expected.to_string(),
             actual,
@@ -85,7 +118,7 @@ pub fn verify_nar_hash(path: &Path, expected: &str) -> Result<()> {
         .with_context(|| format!("creating zstd decoder for {}", path.display()))?;
 
     let actual = sha256_stream(decoder)?;
-    if actual != expected {
+    if !sha256_hashes_equal(&actual, expected)? {
         return Err(AosError::HashMismatch {
             expected: expected.to_string(),
             actual,
@@ -144,7 +177,7 @@ pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Resu
     }
 
     let actual = sha256_stream(output.stdout.as_slice())?;
-    if actual != expected_nar_hash {
+    if !sha256_hashes_equal(&actual, expected_nar_hash)? {
         return Err(AosError::HashMismatch {
             expected: expected_nar_hash.to_string(),
             actual,
@@ -269,6 +302,32 @@ mod tests {
         // Verify should succeed with the correct hash.
         let result = verify_nar_hash(tmp.path(), &expected_hash);
         assert!(result.is_ok(), "verify_nar_hash should succeed: {result:?}");
+    }
+
+    #[test]
+    fn verify_nar_hash_zstd_accepts_sri_hash() {
+        let content = b"this is test NAR content for SRI hashing";
+        let expected_hash = sha256_stream(content.as_slice()).unwrap();
+        let expected_hex = expected_hash.strip_prefix("sha256:").unwrap();
+        let expected_digest = hex::decode(expected_hex).unwrap();
+        let expected_sri = format!(
+            "sha256-{}",
+            base64::engine::general_purpose::STANDARD.encode(expected_digest)
+        );
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        {
+            let file = File::create(tmp.path()).unwrap();
+            let mut encoder = zstd::stream::write::Encoder::new(file, 3).unwrap();
+            encoder.write_all(content).unwrap();
+            encoder.finish().unwrap();
+        }
+
+        let result = verify_nar_hash(tmp.path(), &expected_sri);
+        assert!(
+            result.is_ok(),
+            "verify_nar_hash should accept SRI: {result:?}"
+        );
     }
 
     #[test]
