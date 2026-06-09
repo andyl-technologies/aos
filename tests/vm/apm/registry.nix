@@ -1,4 +1,4 @@
-# tests/vm/apm/registry.nix — Registry management VM tests (14 tests)
+# tests/vm/apm/registry.nix — Registry management VM tests (15 tests)
 #
 # Tests for `apr` registry lifecycle commands: create, add, remove, publish,
 # unpublish, branch workflow, validate, signed tags, and clean-break behavior.
@@ -671,7 +671,233 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 10. registry-branch-workflow — Branch create, switch, merge
+  # 10. registry-channel-workflow — Signed channel rollout and consumer upgrade
+  # -------------------------------------------------------------------------
+  registry-channel-workflow = testing.mkVMTest {
+    name = "apm-registry-channel-workflow";
+    rootfsDeps = maintainerWorkflowDeps;
+    memory = 2048;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixPublishEnv}
+
+      echo "==> Test: signed channel rollout, sync, install, and upgrade"
+
+      make_channel_tool() {
+        version="$1"
+        src="/tmp/channel-tool-$version-src"
+        rm -rf "$src"
+        mkdir -p "$src/bin" "$src/share/channel-tool"
+        cat > "$src/bin/channel-tool" << EOF
+      #!/bin/sh
+      echo "channel-tool $version executed"
+      EOF
+        chmod +x "$src/bin/channel-tool"
+        printf "payload for channel-tool %s\n" "$version" \
+          > "$src/share/channel-tool/payload.txt"
+        nix-store --add "$src"
+      }
+
+      TOOL_V1_STORE=$(make_channel_tool 1.0.0)
+      TOOL_V2_STORE=$(make_channel_tool 2.0.0)
+      TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+
+      ssh-keygen -q -t ed25519 -N "" -f /tmp/channel-release-key
+      CHANNEL_PUBLIC=$(cut -d ' ' -f2 < /tmp/channel-release-key.pub)
+      CHANNEL_TRUST_KEY="chan-reg:Ed25519:$CHANNEL_PUBLIC"
+
+      $APR create chan-reg --trust-key "$CHANNEL_TRUST_KEY"
+      REG_DIR="$REG_STORAGE/chan-reg"
+      assert_file_contains "$REG_DIR/keys.toml" "chan-reg:Ed25519" \
+        "registry records initial channel trust key"
+
+      $APR release 1.0.0 \
+        --registry chan-reg \
+        --store-path "$TOOL_V1_STORE" \
+        --name channel-tool \
+        --description "Channel workflow tool" \
+        --license MIT \
+        --maintainer channel@example.invalid \
+        --key /tmp/channel-release-key \
+        --cache-output /tmp/channel-cache \
+        --cache-url http://127.0.0.1:18091 \
+        --channel stable \
+        --init-channel \
+        > /tmp/channel-release-v1.out 2>&1 || {
+        cat /tmp/channel-release-v1.out
+        fail "apr release initializes signed channel"
+      }
+      cat /tmp/channel-release-v1.out
+      assert_file_contains /tmp/channel-release-v1.out \
+        "Initialized channel 'stable' with 256/256 partitions on 1.0.0" \
+        "apr release initializes every channel partition"
+      assert_file_exists "$REG_DIR/.git/channels/stable/00" \
+        "channel partition object is written to static origin"
+      assert_file_contains "$REG_DIR/.git/channels/stable/00" \
+        "BEGIN SSH SIGNATURE" "channel partition object is signed"
+
+      assert_file_exists "/tmp/channel-cache/$TOOL_V1_HASH.narinfo" \
+        "static cache has channel-tool v1 narinfo"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      python3 -m http.server 18090 --bind 127.0.0.1 \
+        --directory "$REG_DIR/.git" > /tmp/channel-origin-http.log 2>&1 &
+      ORIGIN_PID=$!
+      python3 -m http.server 18091 --bind 127.0.0.1 \
+        --directory /tmp/channel-cache > /tmp/channel-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18090/info/refs >/dev/null \
+          && curl -sf http://127.0.0.1:18091/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if curl -sf http://127.0.0.1:18090/channels/stable/00 >/tmp/channel-00.tag \
+        && curl -sf http://127.0.0.1:18091/nix-cache-info >/dev/null; then
+        pass "static origin and cache HTTP servers started"
+      else
+        cat /tmp/channel-origin-http.log || true
+        cat /tmp/channel-cache-http.log || true
+        fail "static origin and cache HTTP servers started"
+      fi
+
+      export HOME=/tmp/channel-consumer
+      export USER=channeluser
+      mkdir -p "$HOME"
+
+      $APM registry add http://127.0.0.1:18090 \
+        --name chan-reg \
+        --channel stable \
+        --trust-key "$CHANNEL_TRUST_KEY" \
+        > /tmp/channel-add.out 2>&1 || {
+        cat /tmp/channel-add.out
+        fail "apm registry add syncs signed channel"
+      }
+      cat /tmp/channel-add.out
+      CONSUMER_CONFIG="$HOME/.config/apm/registries.d/chan-reg.toml"
+      assert_file_contains "$CONSUMER_CONFIG" 'channel = "stable"' \
+        "consumer config records channel tracking"
+      assert_file_contains "$CONSUMER_CONFIG" 'public_key = "chan-reg:Ed25519:' \
+        "consumer config records trusted signing key"
+      assert_file_contains "$CONSUMER_CONFIG" 'floor = "1.0.0"' \
+        "initial channel sync records semver floor"
+      assert_file_contains "$CONSUMER_CONFIG" "bucket = " \
+        "initial channel sync records rollout bucket"
+      BUCKET=$(grep '^bucket = ' "$CONSUMER_CONFIG" | cut -d= -f2 | tr -d ' ')
+      if [ -n "$BUCKET" ]; then
+        pass "consumer rollout bucket is readable"
+      else
+        fail "consumer rollout bucket is readable"
+      fi
+
+      $APM search channel-tool --registry chan-reg > /tmp/channel-search-v1.out 2>&1
+      assert_file_contains /tmp/channel-search-v1.out "1.0.0" \
+        "consumer sees channel v1 package"
+      assert_file_contains "$HOME/.local/share/apm/registries/chan-reg/registry.toml" \
+        "http://127.0.0.1:18091" "consumer syncs channel cache endpoint"
+
+      mount -o remount,rw / || true
+      nix-store --delete --ignore-liveness "$TOOL_V1_STORE" \
+        > /tmp/channel-delete-v1.out 2>&1 || {
+        cat /tmp/channel-delete-v1.out
+        fail "deleted v1 store path before channel install"
+      }
+
+      $APM install channel-tool --registry chan-reg --yes \
+        > /tmp/channel-install-v1.out 2>&1 || {
+        cat /tmp/channel-install-v1.out
+        fail "apm install downloads channel v1"
+      }
+      cat /tmp/channel-install-v1.out
+      assert_file_contains /tmp/channel-install-v1.out "Downloading" \
+        "apm install downloads v1 NAR"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/channel-tool"
+      "$PROFILE_TOOL" > /tmp/channel-tool-v1.out
+      assert_file_contains /tmp/channel-tool-v1.out \
+        "channel-tool 1.0.0 executed" "installed v1 channel tool executes"
+
+      export HOME=/tmp
+      export USER=root
+      $APR release 2.0.0 \
+        --registry chan-reg \
+        --store-path "$TOOL_V2_STORE" \
+        --name channel-tool \
+        --description "Channel workflow tool" \
+        --license MIT \
+        --maintainer channel@example.invalid \
+        --previous 1.0.0 \
+        --key /tmp/channel-release-key \
+        --cache-output /tmp/channel-cache \
+        --cache-url http://127.0.0.1:18091 \
+        --channel stable \
+        --partitions "$BUCKET" \
+        > /tmp/channel-release-v2.out 2>&1 || {
+        cat /tmp/channel-release-v2.out
+        fail "apr release advances consumer channel partition"
+      }
+      cat /tmp/channel-release-v2.out
+      assert_file_contains /tmp/channel-release-v2.out \
+        "Advanced channel 'stable' 1 partition(s) to 2.0.0" \
+        "apr release advances selected channel partition"
+      assert_file_exists "/tmp/channel-cache/$TOOL_V2_HASH.narinfo" \
+        "static cache has channel-tool v2 narinfo"
+      $APR channel status stable --registry chan-reg > /tmp/channel-status-v2.out 2>&1
+      assert_file_contains /tmp/channel-status-v2.out "2.0.0" \
+        "channel status reports v2 frontier"
+      assert_file_contains /tmp/channel-status-v2.out "1/256" \
+        "channel status reports one v2 partition"
+
+      export HOME=/tmp/channel-consumer
+      export USER=channeluser
+      nix-store --delete --ignore-liveness "$TOOL_V2_STORE" \
+        > /tmp/channel-delete-v2.out 2>&1 || {
+        cat /tmp/channel-delete-v2.out
+        fail "deleted v2 store path before channel upgrade"
+      }
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM update --registry chan-reg > /tmp/channel-update-v2.out 2>&1 || {
+        cat /tmp/channel-update-v2.out
+        fail "apm update follows advanced channel partition"
+      }
+      cat /tmp/channel-update-v2.out
+      assert_file_contains "$CONSUMER_CONFIG" 'floor = "2.0.0"' \
+        "channel update raises consumer semver floor"
+      $APM list --upgradable > /tmp/channel-upgradable.out 2>&1 || {
+        cat /tmp/channel-upgradable.out
+        fail "apm list --upgradable sees channel upgrade"
+      }
+      assert_file_contains /tmp/channel-upgradable.out "channel-tool" \
+        "channel upgrade candidate names package"
+      assert_file_contains /tmp/channel-upgradable.out "2.0.0" \
+        "channel upgrade candidate shows v2"
+
+      $APM upgrade channel-tool --yes > /tmp/channel-upgrade.out 2>&1 || {
+        cat /tmp/channel-upgrade.out
+        fail "apm upgrade downloads and activates channel v2"
+      }
+      cat /tmp/channel-upgrade.out
+      assert_file_contains /tmp/channel-upgrade.out "Downloading" \
+        "apm upgrade downloads v2 NAR"
+      assert_file_contains /tmp/channel-upgrade.out "Upgraded 1 package" \
+        "apm upgrade activates channel v2"
+      "$PROFILE_TOOL" > /tmp/channel-tool-v2.out
+      assert_file_contains /tmp/channel-tool-v2.out \
+        "channel-tool 2.0.0 executed" "upgraded v2 channel tool executes"
+
+      kill "$ORIGIN_PID" "$CACHE_PID" 2>/dev/null || true
+      wait "$ORIGIN_PID" "$CACHE_PID" 2>/dev/null || true
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 11. registry-branch-workflow — Branch create, switch, merge
   # -------------------------------------------------------------------------
   registry-branch-workflow = testing.mkVMTest {
     name = "apm-registry-branch-workflow";
