@@ -598,6 +598,18 @@ in {
       run_ok gc-help "$APM" gc --help
       assert_file_contains /tmp/gc-help.out "garbage collection" "apm gc command surface is present without mutating the VM store"
 
+      run_ok orphans-none "$APM" orphans
+      assert_file_contains /tmp/orphans-none.out "No orphaned packages" \
+        "apm orphans reports clean state while registry is configured"
+      mv "$APM_CONFIG/registries.d/test-reg.toml" /tmp/test-reg.removed
+      run_ok orphans-removed "$APM" orphans
+      assert_file_contains /tmp/orphans-removed.out "surfacepkg" \
+        "apm orphans lists package from removed registry"
+      assert_file_contains /tmp/orphans-removed.out "upgradeface" \
+        "apm orphans lists additional package from removed registry"
+      assert_file_contains /tmp/orphans-removed.out "removed registry 'test-reg'" \
+        "apm orphans names the removed registry"
+
       check_fail
     '';
   };

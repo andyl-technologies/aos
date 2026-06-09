@@ -1,4 +1,4 @@
-# tests/vm/apm/registry.nix — Registry management VM tests (11 tests)
+# tests/vm/apm/registry.nix — Registry management VM tests (13 tests)
 #
 # Tests for `apr` registry lifecycle commands: create, add, remove, publish,
 # unpublish, branch workflow, validate, signed tags, and clean-break behavior.
@@ -9,6 +9,35 @@
   aosPkg,
 }: let
   fixtures = import ./fixtures.nix {inherit pkgs aosPkg;};
+  nixRuntimeDeps = [
+    pkgs.nix
+    pkgs.brotli
+    pkgs.curl
+    pkgs.openssl
+    pkgs.sqlite
+    pkgs.boost
+    pkgs.editline
+    pkgs.libsodium
+    pkgs.libarchive
+    pkgs.gc
+    pkgs.lowdown
+    pkgs.bzip2
+    pkgs.zlib
+  ];
+  publishDeps = fixtures.commonDeps ++ nixRuntimeDeps;
+  nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
+  setupNixPublishEnv = ''
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR=/tmp/nix-conf
+    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    mkdir -p "$NIX_CONF_DIR" /nix/var/nix/db /nix/var/nix/gcroots
+    cat > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+    experimental-features = nix-command
+    sandbox = false
+    NIXCONF
+    nix-store --init || true
+    nix-store --load-db < /aos-registration
+  '';
 in {
   # -------------------------------------------------------------------------
   # 1. registry-create — Initialize a new empty registry
@@ -66,6 +95,12 @@ in {
 
       # Create a bare remote registry
       create_remote_registry /tmp/remote-registry.git
+      git clone /tmp/remote-registry.git /tmp/remote-registry-tag
+      cd /tmp/remote-registry-tag
+      git tag 1.0.0
+      git push origin 1.0.0
+      cd /tmp
+      rm -rf /tmp/remote-registry-tag
 
       # Use apm registry add to add the remote
       $APM registry add file:///tmp/remote-registry.git --name test-remote
@@ -78,6 +113,14 @@ in {
       assert_file_contains "$APM_CONFIG/registries.d/test-remote.toml" \
         "file:///tmp/remote-registry.git" "config contains URL"
 
+      # apr add should sync the git repo and materialize authenticated metadata by default.
+      assert_dir_exists "$HOME/.local/share/apm/remote/test-remote/repo.git" \
+        "registry git cache created during add"
+      assert_file_exists "$REG_STORAGE/test-remote/registry.toml" \
+        "registry root metadata materialized during add"
+      assert_dir_exists "$HOME/.local/share/apm/remote/test-remote/packages" \
+        "registry package cache materialized during add"
+
       # Verify apr list shows the registry
       assert_cmd_output_contains "$APR list" "test-remote" "apr list shows registry"
 
@@ -86,7 +129,52 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 3. registry-remove — Remove a registry
+  # 3. registry-add-no-clone-publish-hint — Config-only add has publish hint
+  # -------------------------------------------------------------------------
+  registry-add-no-clone-publish-hint = testing.mkVMTest {
+    name = "apm-registry-add-no-clone-publish-hint";
+    rootfsDeps = fixtures.commonDeps;
+    memory = 512;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${fixtures.mkRemoteRegistry}
+
+      echo "==> Test: apr add --no-clone followed by apr publish"
+
+      create_remote_registry /tmp/no-clone-registry.git
+
+      $APM registry add file:///tmp/no-clone-registry.git \
+        --name no-clone-reg --no-clone
+
+      assert_file_exists "$APM_CONFIG/registries.d/no-clone-reg.toml" \
+        "registry config file created"
+
+      if [ -e "$REG_STORAGE/no-clone-reg" ]; then
+        fail "apr add --no-clone should not create a local clone"
+      else
+        pass "apr add --no-clone leaves local clone absent"
+      fi
+
+      if $APR publish /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dummy-1.0.0 \
+        --name dummy --version 1.0.0 --registry no-clone-reg --no-commit \
+        > /tmp/publish-no-clone.out 2>&1; then
+        fail "apr publish should fail without a local clone"
+      else
+        cat /tmp/publish-no-clone.out
+        assert_file_contains /tmp/publish-no-clone.out \
+          "has no local clone" "apr publish reports missing local clone"
+        assert_file_contains /tmp/publish-no-clone.out \
+          "apm update no-clone-reg" "apr publish points to apm update"
+        assert_file_contains /tmp/publish-no-clone.out \
+          "apr create no-clone-reg" "apr publish points to apr create"
+      fi
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 4. registry-remove — Remove a registry
   # -------------------------------------------------------------------------
   registry-remove = testing.mkVMTest {
     name = "apm-registry-remove";
@@ -124,15 +212,66 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 4. registry-publish — Publish a package entry to the registry
+  # 5. registry-remove-unprivileged — Remove without profile write access
   # -------------------------------------------------------------------------
-  registry-publish = testing.mkVMTest {
-    name = "apm-registry-publish";
+  registry-remove-unprivileged = testing.mkVMTest {
+    name = "apm-registry-remove-unprivileged";
     rootfsDeps = fixtures.commonDeps;
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+
+      echo "==> Test: unprivileged apr remove does not touch package profile"
+
+      USER_HOME=/tmp/apr-user
+      mkdir -p "$USER_HOME/.config/apm/registries.d"
+      mkdir -p "$USER_HOME/.local/share/apm/registries/unpriv-reg"
+      mkdir -p "$USER_HOME/.local/share/apm/remote/unpriv-reg"
+      mkdir -p /var/lib/profiles
+      chmod 755 /var/lib/profiles
+
+      cat > "$USER_HOME/.config/apm/registries.d/unpriv-reg.toml" << 'EOF'
+      [registry]
+      name = "unpriv-reg"
+      url = "file:///tmp/unpriv-reg"
+      priority = 500
+      enabled = true
+      EOF
+
+      chown -R 1000:1000 "$USER_HOME"
+
+      if env HOME="$USER_HOME" USER=aprtest chroot --userspec=1000:1000 / \
+        "$APR" remove unpriv-reg > /tmp/unpriv-remove.out 2>&1; then
+        cat /tmp/unpriv-remove.out
+        pass "unprivileged apr remove succeeds"
+      else
+        cat /tmp/unpriv-remove.out
+        fail "unprivileged apr remove should not require profile write access"
+      fi
+
+      assert_file_not_exists "$USER_HOME/.config/apm/registries.d/unpriv-reg.toml" \
+        "registry config removed by unprivileged apr"
+
+      if [ -e /var/lib/profiles/per-user/aprtest ]; then
+        fail "apr remove should not create the package profile"
+      else
+        pass "apr remove leaves package profile untouched"
+      fi
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 6. registry-publish — Publish a package entry to the registry
+  # -------------------------------------------------------------------------
+  registry-publish = testing.mkVMTest {
+    name = "apm-registry-publish";
+    rootfsDeps = publishDeps;
+    memory = 512;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixPublishEnv}
 
       echo "==> Test: publish a package to registry"
 
@@ -141,9 +280,13 @@ in {
 
       REG_DIR="$REG_STORAGE/test-reg"
 
-      # Write a package TOML directly (bypasses nix path-info)
-      write_package_toml "$REG_DIR" "testpkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish testpkg 1.0.0"
+      $APR publish ${aosPkg} \
+        --name testpkg \
+        --version 1.0.0 \
+        --description "Published by the APR VM workflow" \
+        --license MIT \
+        --maintainer test \
+        --registry test-reg
 
       # Verify packages/t/testpkg.toml exists
       assert_file_exists "$REG_DIR/packages/t/testpkg.toml" \
@@ -157,6 +300,10 @@ in {
       assert_file_contains "$REG_DIR/packages/t/testpkg.toml" \
         "references" "TOML has references"
 
+      STORE_HASH=$(basename ${aosPkg} | cut -d- -f1)
+      assert_file_exists "$REG_DIR/closures/$STORE_HASH" \
+        "apr publish writes closure metadata"
+
       # Verify git log shows the publish commit
       cd "$REG_DIR"
       assert_cmd_output_contains "git log --oneline" "publish testpkg" \
@@ -168,15 +315,15 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 5. registry-publish-sysroot — Publish a sysroot package with images
+  # 7. registry-publish-sysroot — Publish a sysroot package with images
   # -------------------------------------------------------------------------
   registry-publish-sysroot = testing.mkVMTest {
     name = "apm-registry-publish-sysroot";
-    rootfsDeps = fixtures.commonDeps;
+    rootfsDeps = publishDeps;
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
       echo "==> Test: publish sysroot package with images"
 
@@ -184,9 +331,16 @@ in {
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
 
-      # Write a sysroot package TOML with image entry
-      write_sysroot_package_toml "$REG_DIR" "server" "1.0.0"
-      commit_registry "$REG_DIR" "publish server 1.0.0 (sysroot)"
+      $APR publish ${aosPkg} \
+        --name server \
+        --version 1.0.0 \
+        --description "Published sysroot by the APR VM workflow" \
+        --license MIT \
+        --maintainer test \
+        --sysroot \
+        --image ${aosPkg} \
+        --image-format raw \
+        --registry test-reg
 
       # Verify sysroot flag
       assert_file_contains "$REG_DIR/packages/s/server.toml" \
@@ -203,35 +357,34 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 6. registry-unpublish — Remove a package from the registry
+  # 8. registry-unpublish — Remove a package from the registry
   # -------------------------------------------------------------------------
   registry-unpublish = testing.mkVMTest {
     name = "apm-registry-unpublish";
-    rootfsDeps = fixtures.commonDeps;
+    rootfsDeps = publishDeps;
     memory = 512;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
       echo "==> Test: unpublish a package"
 
       # Create registry and publish a package
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
-      write_package_toml "$REG_DIR" "removepkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish removepkg 1.0.0"
+      $APR publish ${aosPkg} \
+        --name removepkg \
+        --version 1.0.0 \
+        --description "Published for unpublish workflow" \
+        --license MIT \
+        --maintainer test \
+        --registry test-reg
 
       # Verify package exists
       assert_file_exists "$REG_DIR/packages/r/removepkg.toml" \
         "package TOML exists before unpublish"
 
-      # Unpublish via apr (removes TOML file and commits)
-      cd "$REG_DIR"
-      rm -f packages/r/removepkg.toml
-      rmdir packages/r 2>/dev/null || true
-      git add -A
-      git commit -m "unpublish removepkg"
-      cd /tmp
+      $APR unpublish removepkg 1.0.0 --registry test-reg
 
       # Verify TOML file removed
       assert_file_not_exists "$REG_DIR/packages/r/removepkg.toml" \
@@ -248,7 +401,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 7. registry-branch-workflow — Branch create, switch, merge
+  # 9. registry-branch-workflow — Branch create, switch, merge
   # -------------------------------------------------------------------------
   registry-branch-workflow = testing.mkVMTest {
     name = "apm-registry-branch-workflow";
@@ -301,7 +454,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 8. registry-validate — Validate registry TOML structure
+  # 10. registry-validate — Validate registry TOML structure
   # -------------------------------------------------------------------------
   registry-validate = testing.mkVMTest {
     name = "apm-registry-validate";
@@ -342,7 +495,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 9. registry-bundle — Legacy selector for signed tag / no-bundle clean break
+  # 11. registry-bundle — Legacy selector for signed tag / no-bundle clean break
   # -------------------------------------------------------------------------
   registry-bundle = testing.mkVMTest {
     name = "apm-registry-signed-tag-clean-break";
@@ -388,7 +541,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 10. closure-generate — Closure files created and well-formed
+  # 12. closure-generate — Closure files created and well-formed
   # -------------------------------------------------------------------------
   closure-generate = testing.mkVMTest {
     name = "apm-closure-generate";
@@ -475,7 +628,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 11. closure-verify — apr verify validates closure consistency
+  # 13. closure-verify — apr verify validates closure consistency
   # -------------------------------------------------------------------------
   closure-verify = testing.mkVMTest {
     name = "apm-closure-verify";
