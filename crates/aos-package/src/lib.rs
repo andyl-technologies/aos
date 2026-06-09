@@ -1113,6 +1113,7 @@ pub async fn run(
             system: install_system,
             image: image_fmt,
             output: image_output,
+            reinstall,
             ignore_sysroot_lock,
             kexec,
             reboot,
@@ -1141,6 +1142,7 @@ pub async fn run(
                     &config,
                     packages,
                     registry.as_deref(),
+                    *reinstall,
                     dry_run,
                     yes,
                     &ignore,
@@ -1159,7 +1161,10 @@ pub async fn run(
             ignore_sysroot_lock,
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
-            install::run(&config, packages, None, dry_run, yes, &ignore, printer).await
+            install::run(
+                &config, packages, None, true, dry_run, yes, &ignore, printer,
+            )
+            .await
         }
         PackageCommand::Update { registry } => {
             update::run(&config, registry.as_deref(), printer).await
