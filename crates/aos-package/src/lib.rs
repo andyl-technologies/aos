@@ -1609,7 +1609,10 @@ async fn run_registry(
 
 async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<()> {
     if config.registries.is_empty() {
-        printer.info("No registries configured. Add one with `apm registry add <url>`.");
+        printer.info(&format!(
+            "No registries configured. Add one with `{} add <url>`.",
+            aos_core::invocation::package_registry_command()
+        ));
         return Ok(());
     }
 
@@ -1651,7 +1654,13 @@ async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<
                 printer.kv("Last commit", short);
             }
         } else {
-            printer.kv("Last update", "never (run `apm update`)");
+            printer.kv(
+                "Last update",
+                &format!(
+                    "never (run `{} update`)",
+                    aos_core::invocation::package_manager_command()
+                ),
+            );
         }
 
         if let Some(ref signing) = reg_config.signing {
@@ -1681,8 +1690,9 @@ async fn registry_add(
 
     if config.find_registry(&name).is_some() {
         bail!(
-            "registry '{}' already exists. Remove it first with `apm registry remove {}`.",
+            "registry '{}' already exists. Remove it first with `{} remove {}`.",
             name,
+            aos_core::invocation::package_registry_command(),
             name
         );
     }
@@ -1731,7 +1741,8 @@ enabled = true
         .with_context(|| format!("writing {}", toml_path.display()))?;
 
     printer.success(&format!(
-        "Registry '{name}' added. Run `apm update {name}` to sync package metadata."
+        "Registry '{name}' added. Run `{} update {name}` to sync package metadata.",
+        aos_core::invocation::package_manager_command()
     ));
 
     Ok(())
@@ -1767,7 +1778,10 @@ async fn registry_remove(
         for pkg_name in &pkg_names {
             printer.plain(&format!("  - {pkg_name}"));
         }
-        printer.plain("Remove these packages first with `apm remove`.");
+        printer.plain(&format!(
+            "Remove these packages first with `{} remove`.",
+            aos_core::invocation::package_manager_command()
+        ));
 
         return Err(AosError::RegistryHasPackages {
             name: name.to_string(),
