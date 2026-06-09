@@ -84,6 +84,33 @@
     version = "2.0.0";
     origin = "high-priority";
   };
+  mkSameVersionTool = origin:
+    pkgs.mkDerivation {
+      pname = "same-version-tool";
+      version = "1.0.0";
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin" "$out/share/same-version-tool"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              "printf 'same-version-tool 1.0.0 from ${origin}\\n'" \
+              > "$out/bin/same-version-tool"
+            chmod +x "$out/bin/same-version-tool"
+            printf 'same-version-tool 1.0.0 from ${origin}\n' \
+              > "$out/share/same-version-tool/origin.txt"
+          '';
+        }
+      ];
+    };
+  sameVersionLowTool = mkSameVersionTool "low-priority";
+  sameVersionHighTool = mkSameVersionTool "high-priority";
   priorityLowClient = pkgs.mkDerivation {
     pname = "priority-client";
     version = "1.0.0";
@@ -151,6 +178,8 @@
       priorityLowTool
       priorityHighTool
       priorityLowClient
+      sameVersionLowTool
+      sameVersionHighTool
     ];
 in {
   # ---------------------------------------------------------------------------
@@ -251,18 +280,53 @@ in {
         git -C "$reg_dir" push origin "$branch"
       }
 
+      publish_same_version_tool() {
+        registry="$1"
+        store_path="$2"
+        cache_dir="$3"
+        cache_url="$4"
+
+        reg_dir="$REG_STORAGE/$registry"
+        $APR publish "$store_path" \
+          --name same-version-tool \
+          --version 1.0.0 \
+          --description "Same-version package from $registry" \
+          --license MIT \
+          --maintainer priority@example.invalid \
+          --registry "$registry" \
+          --no-commit
+        $APR cache generate \
+          --registry "$registry" \
+          --output "$cache_dir" \
+          --cache-url "$cache_url" \
+          --priority 45 \
+          --no-commit
+        git -C "$reg_dir" add -A
+        git -C "$reg_dir" commit -m "release: same-version-tool 1.0.0"
+        branch=$(git -C "$reg_dir" symbolic-ref --short HEAD)
+        git -C "$reg_dir" push origin "$branch"
+      }
+
       LOW_STORE="${priorityLowTool}"
       HIGH_STORE="${priorityHighTool}"
       LOW_CLIENT_STORE="${priorityLowClient}"
+      SAME_LOW_STORE="${sameVersionLowTool}"
+      SAME_HIGH_STORE="${sameVersionHighTool}"
       LOW_HASH=$(basename "$LOW_STORE" | cut -d- -f1)
       HIGH_HASH=$(basename "$HIGH_STORE" | cut -d- -f1)
       LOW_CLIENT_HASH=$(basename "$LOW_CLIENT_STORE" | cut -d- -f1)
+      SAME_LOW_HASH=$(basename "$SAME_LOW_STORE" | cut -d- -f1)
+      SAME_HIGH_HASH=$(basename "$SAME_HIGH_STORE" | cut -d- -f1)
 
       publish_priority_registry low-priority "$LOW_STORE" 9.0.0 \
         /tmp/low-priority-cache http://127.0.0.1:18101
       publish_priority_client low-priority "$LOW_CLIENT_STORE" \
         /tmp/low-priority-cache http://127.0.0.1:18101
+      publish_same_version_tool low-priority "$SAME_LOW_STORE" \
+        /tmp/low-priority-cache http://127.0.0.1:18101
       publish_priority_registry high-priority "$HIGH_STORE" 2.0.0 \
+        /tmp/high-priority-cache http://127.0.0.1:18102
+      publish_same_version_tool high-priority "$SAME_HIGH_STORE" \
         /tmp/high-priority-cache http://127.0.0.1:18102
       LOW_BRANCH=$(git -C "$REG_STORAGE/low-priority" symbolic-ref --short HEAD)
       HIGH_BRANCH=$(git -C "$REG_STORAGE/high-priority" symbolic-ref --short HEAD)
@@ -273,6 +337,10 @@ in {
         "low priority cache has client narinfo"
       assert_file_exists "/tmp/high-priority-cache/$HIGH_HASH.narinfo" \
         "high priority cache has package narinfo"
+      assert_file_exists "/tmp/low-priority-cache/$SAME_LOW_HASH.narinfo" \
+        "low priority cache has same-version narinfo"
+      assert_file_exists "/tmp/high-priority-cache/$SAME_HIGH_HASH.narinfo" \
+        "high priority cache has same-version narinfo"
 
       ${iproute2Bin} link set lo up || true
       ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
@@ -357,8 +425,10 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$HIGH_STORE" "high-priority-tool"
+      delete_store_path "$SAME_HIGH_STORE" "high-priority-same-version-tool"
       delete_store_path "$LOW_CLIENT_STORE" "low-priority-client"
       delete_store_path "$LOW_STORE" "low-priority-tool"
+      delete_store_path "$SAME_LOW_STORE" "low-priority-same-version-tool"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -446,6 +516,37 @@ in {
       assert_file_contains /tmp/priority-rdepends-low.out \
         "priority-client (1.0.0)" \
         "rdepends follows installed dependency target instead of higher priority duplicate"
+
+      $APM install same-version-tool --registry low-priority --yes \
+        > /tmp/same-version-install-low.out 2>&1 || {
+        cat /tmp/same-version-install-low.out
+        fail "apm install --registry downloads selected same-version package"
+      }
+      cat /tmp/same-version-install-low.out
+      assert_file_contains /tmp/same-version-install-low.out "Downloading" \
+        "registry-filtered install downloads the same-version low priority NAR"
+      assert_store_valid "$SAME_LOW_STORE" "low priority same-version tool"
+      PROFILE_SAME_TOOL="/var/lib/profiles/per-user/$USER/current/bin/same-version-tool"
+      "$PROFILE_SAME_TOOL" > /tmp/same-version-run-low.out
+      assert_file_contains /tmp/same-version-run-low.out \
+        "same-version-tool 1.0.0 from low-priority" \
+        "registry-filtered install executes selected same-version package"
+
+      $APM policy same-version-tool > /tmp/same-version-policy-low.out 2>&1 || {
+        cat /tmp/same-version-policy-low.out
+        fail "apm policy handles same-version duplicate registry package"
+      }
+      cat /tmp/same-version-policy-low.out
+      assert_file_contains /tmp/same-version-policy-low.out \
+        "\*\*\* 1.0.0  100  low-priority" \
+        "policy marks the installed low-priority same-version candidate"
+      if ${grepBin} -Eq '^ \*\*\* 1\.0\.0  900  high-priority$' \
+        /tmp/same-version-policy-low.out; then
+        cat /tmp/same-version-policy-low.out
+        fail "policy should not mark the high-priority duplicate as installed"
+      else
+        pass "policy does not mark the uninstalled same-version high-priority candidate"
+      fi
 
       $APM list --upgradable > /tmp/priority-upgradable-low.out 2>&1 || {
         cat /tmp/priority-upgradable-low.out
