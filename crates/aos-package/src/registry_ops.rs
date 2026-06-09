@@ -2436,6 +2436,7 @@ pub async fn release_registry_tree(
 
     let _lock = ReleaseLock::acquire(dir)?;
     objectstore::assert_sha256(dir)?;
+    ensure_release_worktree_clean(dir)?;
 
     if let Some(cache_url) = &options.cache_url {
         if nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)? {
@@ -2444,7 +2445,6 @@ pub async fn release_registry_tree(
         }
     }
 
-    ensure_release_worktree_clean(dir)?;
     let head = git(dir, &["rev-parse", "HEAD"])?;
     let published_before = semver_tag_versions(dir)?
         .into_iter()
