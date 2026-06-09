@@ -34,6 +34,7 @@ in
       openssl
       zlib
       nghttp2
+      ca-certificates
     ];
     propagatedDeps = [
       openssl
