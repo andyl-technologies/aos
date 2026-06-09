@@ -102,6 +102,9 @@
   idempotentWrapper = mkIdempotentWrapper {
     pname = "idemp-wrapper";
   };
+  downloadOnlyWrapper = mkIdempotentWrapper {
+    pname = "download-only-wrapper";
+  };
   removeLeftTool = mkIdempotentWrapper {
     pname = "remove-left";
   };
@@ -130,6 +133,17 @@
       pkgs.zstd
       idempotentTool
       idempotentWrapper
+    ];
+  realDownloadOnlyDeps =
+    fixtures.commonDeps
+    ++ nixRuntimeDeps
+    ++ [
+      pkgs.findutils
+      pkgs.iproute2
+      pkgs.python3
+      pkgs.zstd
+      idempotentTool
+      downloadOnlyWrapper
     ];
   realRemoveDeps =
     fixtures.commonDeps
@@ -565,7 +579,228 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 5. reinstall-package — Reinstall downloads and creates a new generation
+  # 5. download-only-package — Download without importing or activating
+  # -------------------------------------------------------------------------
+  download-only-package = testing.mkVMTest {
+    name = "apm-download-only-package";
+    rootfsDeps = realDownloadOnlyDeps;
+    memory = 1024;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixEnv}
+
+      echo "==> Test: real apm install --download-only downloads without activation"
+
+      DEP_STORE="${idempotentTool}"
+      WRAPPER_STORE="${downloadOnlyWrapper}"
+      DEP_HASH=$(basename "$DEP_STORE" | cut -d- -f1)
+      WRAPPER_HASH=$(basename "$WRAPPER_STORE" | cut -d- -f1)
+      PROFILE="/var/lib/profiles/per-user/downloaduser"
+
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/download-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/download-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/download-missing-$label.out" 2>&1; then
+          cat "/tmp/download-missing-$label.out"
+          fail "$label should be missing from store"
+        else
+          pass "$label missing from store"
+        fi
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if nix-store --delete --ignore-liveness "$path" > "/tmp/download-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/download-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
+
+      generation_count() {
+        if [ -d "$PROFILE" ]; then
+          find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        else
+          printf '0'
+        fi
+      }
+
+      cache_nar_count() {
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' 2>/dev/null | wc -l | tr -d ' '
+      }
+
+      wait_for_cache_server() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18089/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
+
+      mount -o remount,rw / || true
+      assert_store_valid "$DEP_STORE" "download-only dependency"
+      assert_store_valid "$WRAPPER_STORE" "download-only wrapper"
+      nix-store -q --references "$WRAPPER_STORE" > /tmp/download-wrapper-refs.out
+      assert_file_contains /tmp/download-wrapper-refs.out "$DEP_STORE" \
+        "download-only wrapper has a real Nix reference to dependency"
+
+      echo "==> Maintainer: publish download-only wrapper and static cache"
+      $APR create download-reg
+      REG_DIR="$REG_STORAGE/download-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      $APR publish "$DEP_STORE" \
+        --name idempkg \
+        --version 1.0.0 \
+        --description "Shared dependency for download-only workflow" \
+        --license MIT \
+        --maintainer download-workflow@example.invalid \
+        --registry download-reg \
+        --no-commit
+      $APR publish "$WRAPPER_STORE" \
+        --name download-only-wrapper \
+        --version 1.0.0 \
+        --description "Wrapper for download-only workflow" \
+        --license MIT \
+        --maintainer download-workflow@example.invalid \
+        --registry download-reg \
+        --no-commit
+      assert_file_contains "$REG_DIR/packages/d/download-only-wrapper.toml" \
+        "$DEP_HASH" "published wrapper metadata records dependency"
+      assert_file_contains "$REG_DIR/closures/$WRAPPER_HASH" \
+        "$DEP_HASH" "published wrapper closure records dependency"
+
+      $APR cache generate \
+        --registry download-reg \
+        --output /tmp/download-cache \
+        --cache-url http://127.0.0.1:18089 \
+        --priority 49 \
+        --no-commit
+      assert_file_exists "/tmp/download-cache/$DEP_HASH.narinfo" \
+        "static cache has dependency narinfo"
+      assert_file_exists "/tmp/download-cache/$WRAPPER_HASH.narinfo" \
+        "static cache has wrapper narinfo"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "release: download-only workflow package"
+      git init --bare --object-format=sha256 /tmp/download-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/download-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      python3 -m http.server 18089 --bind 127.0.0.1 \
+        --directory /tmp/download-cache > /tmp/download-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      if wait_for_cache_server; then
+        pass "static cache HTTP server started"
+      else
+        cat /tmp/download-cache-http.log || true
+        fail "static cache HTTP server started"
+      fi
+
+      echo "==> Consumer: download closure without importing or activating"
+      export HOME=/tmp/download-consumer
+      export USER=downloaduser
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/download-origin.git \
+        --name download-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/download-registry-add.out 2>&1 || {
+        cat /tmp/download-registry-add.out
+        fail "apm registry add syncs download registry"
+      }
+      cat /tmp/download-registry-add.out
+
+      delete_store_path "$WRAPPER_STORE" "download-only-wrapper"
+      delete_store_path "$DEP_STORE" "idempkg"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install download-only-wrapper \
+        --registry download-reg \
+        --download-only \
+        --yes > /tmp/download-only.out 2>&1 || {
+        cat /tmp/download-only.out
+        fail "apm install --download-only succeeds"
+      }
+      cat /tmp/download-only.out
+      assert_file_contains /tmp/download-only.out "packages will be downloaded" \
+        "download-only reports download plan"
+      assert_file_contains /tmp/download-only.out "Downloading 2 NAR" \
+        "download-only downloads wrapper closure"
+      assert_file_contains /tmp/download-only.out "no profile changes made" \
+        "download-only reports no profile mutation"
+      assert_file_not_contains /tmp/download-only.out "Importing packages" \
+        "download-only does not import packages"
+      assert_file_not_contains /tmp/download-only.out "Updating profile" \
+        "download-only does not update profile"
+      if [ "$(cache_nar_count)" = "2" ]; then
+        pass "download-only leaves two NARs in user cache"
+      else
+        fail "download-only should leave two NARs in user cache"
+      fi
+      assert_store_missing "$WRAPPER_STORE" "download-only-wrapper"
+      assert_store_missing "$DEP_STORE" "idempkg"
+      if [ "$(generation_count)" = "0" ] && [ ! -e "$PROFILE/current" ]; then
+        pass "download-only creates no profile generation"
+      else
+        fail "download-only should not create profile generation"
+      fi
+
+      echo "==> Consumer: normal install after download-only activates package"
+      $APM install download-only-wrapper --registry download-reg --yes > /tmp/download-install.out 2>&1 || {
+        cat /tmp/download-install.out
+        fail "normal apm install after download-only succeeds"
+      }
+      cat /tmp/download-install.out
+      assert_file_contains /tmp/download-install.out "Installed 1 package" \
+        "normal install creates profile generation after download-only"
+      assert_store_valid "$WRAPPER_STORE" "download-only-wrapper"
+      assert_store_valid "$DEP_STORE" "idempkg"
+      "$PROFILE/current/bin/download-only-wrapper" > /tmp/download-wrapper-run.out
+      assert_file_contains /tmp/download-wrapper-run.out "^idempkg 1.0.0$" \
+        "download-only wrapper executable runs after normal install"
+      if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
+        pass "normal install after download-only creates generation 1"
+      else
+        fail "normal install after download-only should create gen-1"
+      fi
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 6. reinstall-package — Reinstall downloads and creates a new generation
   # -------------------------------------------------------------------------
   reinstall-package = testing.mkVMTest {
     name = "apm-reinstall-package";
@@ -793,7 +1028,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 6. remove-basic — Remove installed package
+  # 7. remove-basic — Remove installed package
   # -------------------------------------------------------------------------
   remove-basic = testing.mkVMTest {
     name = "apm-remove-basic";
@@ -820,7 +1055,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 7. remove-autoremove — Remove with --autoremove flag
+  # 8. remove-autoremove — Remove with --autoremove flag
   # -------------------------------------------------------------------------
   remove-autoremove = testing.mkVMTest {
     name = "apm-remove-autoremove";
@@ -1109,7 +1344,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 8. upgrade-package — Upgrade package to newer version
+  # 9. upgrade-package — Upgrade package to newer version
   # -------------------------------------------------------------------------
   upgrade-package = testing.mkVMTest {
     name = "apm-upgrade-package";
@@ -1183,7 +1418,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 9. rollback-package — Roll back to previous generation
+  # 10. rollback-package — Roll back to previous generation
   # -------------------------------------------------------------------------
   rollback-package = testing.mkVMTest {
     name = "apm-rollback-package";
@@ -1214,7 +1449,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 10. package-real-closure-lifecycle — Install/upgrade/rollback real closure
+  # 11. package-real-closure-lifecycle — Install/upgrade/rollback real closure
   # -------------------------------------------------------------------------
   package-real-closure-lifecycle = testing.mkVMTest {
     name = "apm-package-real-closure-lifecycle";
@@ -1549,7 +1784,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 11. command-surface — Non-network APM command surface coverage
+  # 12. command-surface — Non-network APM command surface coverage
   # -------------------------------------------------------------------------
   command-surface = testing.mkVMTest {
     name = "apm-command-surface";
@@ -1812,7 +2047,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 12. hold-prevent-upgrade — Hold/unhold prevents/allows upgrades
+  # 13. hold-prevent-upgrade — Hold/unhold prevents/allows upgrades
   # -------------------------------------------------------------------------
   hold-prevent-upgrade = testing.mkVMTest {
     name = "apm-hold-prevent-upgrade";

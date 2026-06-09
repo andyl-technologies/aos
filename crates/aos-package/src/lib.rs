@@ -1110,6 +1110,7 @@ pub async fn run(
         PackageCommand::Install {
             packages,
             registry,
+            download_only,
             system: install_system,
             image: image_fmt,
             output: image_output,
@@ -1143,6 +1144,7 @@ pub async fn run(
                     packages,
                     registry.as_deref(),
                     *reinstall,
+                    *download_only,
                     dry_run,
                     yes,
                     &ignore,
@@ -1162,7 +1164,7 @@ pub async fn run(
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             install::run(
-                &config, packages, None, true, dry_run, yes, &ignore, printer,
+                &config, packages, None, true, false, dry_run, yes, &ignore, printer,
             )
             .await
         }
