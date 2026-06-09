@@ -875,7 +875,8 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
              descendant of previously verified commit {old_commit}.\n\n\
              This could indicate a downgrade attack or a force-pushed \
              registry. If you trust this change, delete the registry state \
-             and run `apm update` again.",
+             and run `{} update` again.",
+            aos_core::invocation::package_manager_command()
         );
     }
 
