@@ -79,6 +79,23 @@ lower-priority chain in another table is overridden. Mutating the base
 sets is the only correct *and* reversible option. `forwardPolicy=accept`
 is applied as a named rule the service adds on start and deletes on stop.
 
+**Reload coherence (required).** `nftables.service` reloads via
+`ExecReload=nft -f /etc/nftables.conf`, which begins with `flush ruleset`
+(`modules/security/firewall.nix`) — re-creating the base sets **empty**.
+Without a countermeasure, a live reload (`reloadIfChanged` firing on a
+generation upgrade) silently closes every active role's ports while the
+gated services sit `active (exited)` believing their elements are applied.
+Under the old model this could not happen: drop-ins were `include`d into
+the same `nft -f` transaction, so base rules and role elements were always
+re-created together. The gated services must restore that behavior: each
+`aos-<role>-firewall.service` declares
+`ReloadPropagatedFrom=nftables.service` and an `ExecReload=` identical to
+its `ExecStart` (re-adding an existing element to an nft set is
+idempotent), so a base-ruleset reload re-applies every *active* role's
+elements. The edge lives on the role side because only the role units know
+the role list; `nftables.service` stays role-agnostic. One component must
+own reload-time reconciliation — this puts it on the gated services.
+
 ### Teardown semantics (decision: gate + cheap revert)
 
 - **Disabled (image default):** none of the gated services run, so no
@@ -129,13 +146,20 @@ deliberately and narrowly: roles may carry **exactly one** ignition
 `enabled=true`. The old `ignitionExtras.systemd` free-for-all stays
 forbidden.
 
+> **Packages-direction note.** The packages doc set
+> (`../packages/boot-activation.md` §3.2) supersedes this enable mechanism:
+> there, enable is performed by `apm` after install (its Option B), not by an
+> Ignition `systemd.units[]` entry. The single-entry path above remains the
+> documented roles-era mechanism for this PR only. Where the two descriptions
+> disagree, `boot-activation.md` §3.2 is canonical for packages.
+
 ## What changes
 
 | Area | Change |
 |---|---|
 | `modules/roles/default.nix` | Synthesize `aos-<role>.target`; rewire members (`PartOf`, drop direct `multi-user` wants); replace `renderRoleLinks` drop-ins with gated services; bake members into EROFS under `bundle`; emit the target-enable ignition fragment; add the sandbox assertion. |
 | `lib/modules/systemd/render-role.nix` | Reduced role: produce the target's unit text for the fragment. Member `storage.links` prediction retired once members move to EROFS. |
-| `modules/security/firewall.nix` | Base `allowed_tcp`/`allowed_udp` sets stay; the `include "/etc/nftables.d/*.nft"` line is removed (no role drop-ins anymore). |
+| `modules/security/firewall.nix` | Base `allowed_tcp`/`allowed_udp` sets stay; the `include "/etc/nftables.d/*.nft"` line is removed (no role drop-ins anymore). Gated firewall services gain `ExecReload=` + `ReloadPropagatedFrom=nftables.service` for reload coherence (see above). |
 | `modules/roles/*.nix` | No per-role authoring change required — synthesis is automatic. `k3s-*`, `test-http-server`, `aos-registry-server` keep declaring `systemd.services`, `kernel.*`, `firewall.*` as before. |
 
 ## Tests

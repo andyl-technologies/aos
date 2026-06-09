@@ -115,6 +115,12 @@ declaration is now **visible** rather than hidden:
   a security boundary**, and the signed manifest says so plainly. The real
   isolation boundary for k3s workloads is the kubelet's pod sandboxes, not
   nspawn.
+- **Restart semantics regress under nspawn.** Today's `KillMode=process` lets
+  k3s restart/upgrade without killing pods; a private PID namespace cannot
+  preserve that — every container restart kills all pods. See
+  [`container-model.md`](container-model.md) §"The `KillMode=process`
+  regression" and the substrate decision (Decision 17) in
+  [`open-questions.md`](open-questions.md).
 
 Default (empty-manifest) packages — a database, a web service — *are* genuinely
 sandboxed (`--network-veth`, `--private-users` on). The difference is a
@@ -193,7 +199,9 @@ for clarity; needs verification against unit-name collision rules).
   model: every package is a container with a privilege gradient set by its
   manifest, how container roots are built hermetically from source (mirroring
   `lib/build/rootfs.nix` with `mkfs.ext4 -d`), networking modes, cgroup
-  delegation, and the honest k3s-as-high-privilege-container case.
+  delegation, and the honest k3s-as-high-privilege-container case. Also carries
+  the **open substrate decision** (Decision 17): whether the manifest
+  materializes as nspawn or as per-unit `RootImage=` sandboxing directives.
 - [`apm-integration.md`](apm-integration.md) — how a package declares its
   target/container in the registry: extend `PackageMeta`
   (`crates/aos-package/src/types.rs`) or ship an in-closure manifest; the

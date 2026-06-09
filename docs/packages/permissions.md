@@ -68,7 +68,7 @@ the package module emits.
 | `cgroup-delegate` | `--property=Delegate=yes` (+ controllers) | off | — (no analog) |
 | `privileged-users` | `--private-users=no` (UID 0 == host UID 0) | userns on | "runs unsandboxed" |
 | `kernel-modules` | host-fulfilled: `aos-pkg-<name>-modules.service` `modprobe`s allowlisted modules (see Limits) | none | system/OEM-level |
-| `syscalls` | `--system-call-filter=` / named profile | default seccomp | — |
+| `syscalls` | `--system-call-filter=` (or `SystemCallFilter=`) with **named profiles defined as pinned sets of systemd syscall groups** (`@system-service`, `@privileged`, …) — never free-form adjectives; cf. the versioned OCI/Docker default seccomp profile | default seccomp | — |
 | `security-label` | SELinux/AppArmor context (`--selinux-context=`) | inherit | — |
 
 `needs verification`: which of these the AOS systemd build's `systemd-nspawn`
@@ -83,8 +83,11 @@ check on the built `systemd-nspawn`.
 The baseline container, with an **empty** `[permissions]` block:
 
 - private network namespace (veth into a host zone; only the ports the package
-  declares are reachable, and they are container-local — firewall rules live in
-  the container's own netns and revert on teardown);
+  declares are reachable. Rules inside the container's netns revert on teardown
+  by construction; reachability from off-host is materialized **host-side** by
+  the gated `aos-pkg-<name>-firewall.service` — base-table set elements plus the
+  `--port=`/DNAT forward for the veth — and reverts via its `ExecStop`. See
+  [container-model.md](container-model.md) §Networking);
 - no added capabilities, default seccomp, user namespacing on;
 - no host devices, no host bind mounts beyond the package's own state dir;
 - ephemeral overlay root (filesystem writes revert on stop — see
@@ -120,7 +123,7 @@ host-paths       = [
   { path = "/var/lib/rancher", mode = "rw" },
 ]
 kernel-modules   = ["br_netfilter", "vxlan", "ip_set"]   # request; host loads iff allowlisted
-syscalls         = "relaxed"
+syscalls         = "privileged"  # a named profile (pinned set of systemd syscall groups), not an adjective
 ```
 
 `needs verification`: the exact capability/device/mount set k3s requires under
@@ -148,6 +151,14 @@ So `aos-pkg-<name>.target` `Wants=` both the nspawn instance and any host-side
 permission services. Enabling the target grants exactly the declared
 permission set; disabling it removes the container and the host-side grants
 (modulo the one-way limits below).
+
+> **Substrate-independent.** The manifest does not presuppose nspawn: under the
+> per-unit substrate (Decision 17 in [open-questions.md](open-questions.md);
+> "Substrate decision" in [container-model.md](container-model.md)) the same
+> manifest generates `CapabilityBoundingSet=` / `PrivateNetwork=` /
+> `DeviceAllow=` / `BindPaths=` / `PrivateUsers=` / `SystemCallFilter=`
+> directives on a host unit instead of nspawn flags. The manifest is the
+> architecture; the substrate is a materialization choice.
 
 ## The two host-fulfilled permissions (honest limits)
 
@@ -195,11 +206,28 @@ manifest*, from "full sandbox" (empty manifest) to "packaging wrapper only"
 - **Introspect before install/enable:** `apm info <pkg> --permissions` (and
   `aos describe <pkg>`) render the manifest — the permission prompt. This is
   the answer to "what does this package need to run?"
+- **Computed confinement label:** above the itemized list, `apm info` renders a
+  label **derived by fixed rules from the manifest** — `sandboxed` /
+  `sandboxed-with-holes (<grants>)` / `unconfined` — never authored by the
+  package. Root-equivalent grants force `unconfined`: `CAP_SYS_ADMIN` alone is
+  root-equivalent (Kerrisk, "CAP_SYS_ADMIN: the new root", LWN 2012), as are
+  `privileged-users` and rw `host-paths` into system locations. This is snap's
+  `classic` confinement ("runs unsandboxed") and Android's protection levels:
+  operators reason in tiers, and itemized lists alone over-communicate and
+  under-inform — both developers over-request and reviewers cannot evaluate raw
+  lists (Felt et al., "Android Permissions Demystified", CCS 2011). The label
+  guarantees a k3s-shaped manifest can never present as sandboxed.
 - **Policy gate:** a host/fleet policy can allow-list or cap permissions
   ("this fleet refuses `CAP_SYS_ADMIN`/`privileged-users` packages"). The
   enforcement model — who decides, when, and how it is mechanically guaranteed —
-  is the next section. (The exact policy *file format* and where the allowlist is
-  declared is still open; see [open-questions.md](open-questions.md).)
+  is the next section. The primary policy surface should be a small set of
+  **named tiers** (`restricted`/`baseline`/`privileged`), with per-permission
+  allowlists as the escape hatch: Kubernetes removed knob-level
+  PodSecurityPolicy in favor of exactly three named Pod Security Standards
+  because per-knob policy proved unwritable and unauditable, and systemd
+  portable services ship four named profiles for the same reason. (The exact
+  policy *file format* and where the allowlist is declared is still open; see
+  [open-questions.md](open-questions.md).)
 - **Signed & immutable:** the permission manifest is part of the package's
   signed registry metadata (see [apm-integration.md](apm-integration.md) and
   the registry signing docs), so a package cannot widen its own privileges
@@ -258,7 +286,14 @@ modules** (see [open-questions.md](open-questions.md) Decision 1).
 
 ## Open questions
 
-- The validated k3s permission set under AOS nspawn (the proving case).
+- The validated k3s permission set under AOS nspawn (the proving case) —
+  desk-check it first against the documented k8s-in-container requirement sets
+  (kind: private cgroupns, `/dev/fuse`, `/lib/modules` ro-bind; k3d:
+  `--privileged`; Incus "k8s in LXD": `/dev/kmsg`, pre-loaded `br_netfilter`).
+  The current strawman is likely missing `/lib/modules` (ro) and `/dev/fuse`.
+- The substrate (Decision 17 in [open-questions.md](open-questions.md)): the
+  manifest is substrate-independent, and several nspawn-specific rows above
+  become per-unit directives if the per-unit substrate wins.
 - nspawn feature coverage in the AOS systemd build (cgroup-v2 delegation,
   `--private-users` mapping, custom seccomp) — Decision 7 in
   [open-questions.md](open-questions.md).
