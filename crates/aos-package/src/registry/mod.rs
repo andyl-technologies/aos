@@ -25,7 +25,7 @@ use parse::parse_registry;
 pub struct Registry {
     pub config: RegistryConfig,
     pub packages: HashMap<String, PackageMeta>,
-    hash_index: HashMap<String, String>,
+    hash_index: HashMap<String, PackageMeta>,
     /// Precomputed closures keyed by store path hash.
     closures: HashMap<String, ClosureMeta>,
 }
@@ -64,9 +64,7 @@ impl Registry {
 
     /// Look up a package by store path hash.
     pub fn get_by_hash(&self, hash: &str) -> Option<&PackageMeta> {
-        self.hash_index
-            .get(hash)
-            .and_then(|name| self.packages.get(name))
+        self.hash_index.get(hash)
     }
 
     /// Get the precomputed closure for a store path hash, if available.
