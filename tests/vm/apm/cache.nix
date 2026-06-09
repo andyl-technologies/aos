@@ -438,6 +438,10 @@ in {
     memory = 1024;
     testScript = ''
       ${serverPreamble}
+      CLIENT_STATE_ROOT=/tmp/aos-dedup-client-state
+      SERVER_AOS_ROOT=/tmp/aos-dedup-server
+      init_mock_nix_db "$CLIENT_STATE_ROOT"
+      init_mock_nix_db "$SERVER_AOS_ROOT"
       ${serverConfig}
       ${startServer}
       ${getAuthToken}
@@ -445,59 +449,122 @@ in {
       FAIL=0
 
       # Create shared deps
-      LIBZ="/tmp/aos/store/dddddddddddddddddddddddddddddddd-libz-1.0"
+      LIBZ_HASH="dddddddddddddddddddddddddddddddd"
+      LIBSSL_HASH="gggggggggggggggggggggggggggggggg"
+      PKG_A_HASH="ffffffffffffffffffffffffffffffff"
+      PKG_B_HASH="11111111111111111111111111111111"
+
+      LIBZ="$SERVER_AOS_ROOT/store/$LIBZ_HASH-libz-1.0"
       mkdir -p "$LIBZ/lib"
       echo "libz stub" > "$LIBZ/lib/libz.so"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$LIBZ', 'sha256:dddd', 1000000, 4096, 1, '''''');"
+      register_ca_store_path "$LIBZ" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
 
-      LIBSSL="/tmp/aos/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libssl-1.0"
+      LIBSSL="$SERVER_AOS_ROOT/store/$LIBSSL_HASH-libssl-1.0"
       mkdir -p "$LIBSSL/lib"
       echo "libssl stub" > "$LIBSSL/lib/libssl.so"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$LIBSSL', 'sha256:eeee', 1000000, 4096, 1, '''''');"
+      register_ca_store_path "$LIBSSL" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
 
       # Create packages A and B (both depend on libz, libssl)
-      PKG_A="/tmp/aos/store/ffffffffffffffffffffffffffffffff-pkg-a-1.0"
+      PKG_A="$SERVER_AOS_ROOT/store/$PKG_A_HASH-pkg-a-1.0"
       mkdir -p "$PKG_A/bin"
       echo '#!/bin/sh' > "$PKG_A/bin/pkg-a"
+      echo 'echo "pkg-a executed"' >> "$PKG_A/bin/pkg-a"
       chmod +x "$PKG_A/bin/pkg-a"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$PKG_A', 'sha256:ffff', 1000000, 2048, 1, '''''');"
+      register_ca_store_path "$PKG_A" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
 
-      PKG_B="/tmp/aos/store/11111111111111111111111111111111-pkg-b-1.0"
+      PKG_B="$SERVER_AOS_ROOT/store/$PKG_B_HASH-pkg-b-1.0"
       mkdir -p "$PKG_B/bin"
       echo '#!/bin/sh' > "$PKG_B/bin/pkg-b"
+      echo 'echo "pkg-b executed"' >> "$PKG_B/bin/pkg-b"
       chmod +x "$PKG_B/bin/pkg-b"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$PKG_B', 'sha256:1111', 1000000, 2048, 1, '''''');"
+      register_ca_store_path "$PKG_B" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
 
       echo "==> Query-missing for A closure"
       QM_A=$(${curlBin} -s \
         -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "{\"paths\":[\"$PKG_A\",\"$LIBZ\",\"$LIBSSL\"]}" \
+        -d "{\"paths\":[\"$PKG_A_HASH\",\"$LIBZ_HASH\",\"$LIBSSL_HASH\"]}" \
         http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing A: $QM_A"
       MISSING_A=$(echo "$QM_A" | ${jqBin} '.missing | length')
       echo "Package A closure: $MISSING_A missing"
+      echo "$QM_A" | ${jqBin} -e \
+        --arg pkg "$PKG_A_HASH" \
+        --arg libz "$LIBZ_HASH" \
+        --arg libssl "$LIBSSL_HASH" \
+        '(.missing | sort) == ([$pkg, $libz, $libssl] | sort)' >/dev/null || \
+        { echo "FAIL: expected package A and shared deps missing before push"; FAIL=1; }
 
       echo "==> Push package A + deps"
-      ${aosBin} cache push "$PKG_A" "$LIBZ" "$LIBSSL" \
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$PKG_A" "$LIBZ" "$LIBSSL" \
         --to "http://127.0.0.1:15000/default" \
-        --token "$ACCESS_TOKEN" 2>&1 || echo "WARN: push non-zero"
+        --token "$PROV_TOKEN" > /tmp/cache-dedup-push-a.out 2>&1; then
+        cat /tmp/cache-dedup-push-a.out
+        echo "FAIL: package A cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-dedup-push-a.out
+      ${grepBin} -F -q "3/3 paths need uploading" /tmp/cache-dedup-push-a.out || \
+        { echo "FAIL: package A push did not upload all initial paths"; FAIL=1; }
 
       echo "==> Query-missing for B closure (shared deps should be present)"
       QM_B=$(${curlBin} -s \
         -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "{\"paths\":[\"$PKG_B\",\"$LIBZ\",\"$LIBSSL\"]}" \
+        -d "{\"paths\":[\"$PKG_B_HASH\",\"$LIBZ_HASH\",\"$LIBSSL_HASH\"]}" \
         http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing B: $QM_B"
       MISSING_B=$(echo "$QM_B" | ${jqBin} '.missing | length')
       echo "Package B closure: $MISSING_B missing"
+      echo "$QM_B" | ${jqBin} -e --arg pkg "$PKG_B_HASH" \
+        '.missing == [$pkg]' >/dev/null || \
+        { echo "FAIL: shared deps should be cached before package B push"; FAIL=1; }
 
-      echo "==> Dedup check: A had $MISSING_A missing, B has $MISSING_B missing"
-      test "$MISSING_B" -le "$MISSING_A" || \
-        { echo "FAIL: B missing ($MISSING_B) should be <= A missing ($MISSING_A)"; FAIL=1; }
+      echo "==> Push package B + shared deps"
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$PKG_B" "$LIBZ" "$LIBSSL" \
+        --to "http://127.0.0.1:15000/default" \
+        --token "$PROV_TOKEN" > /tmp/cache-dedup-push-b.out 2>&1; then
+        cat /tmp/cache-dedup-push-b.out
+        echo "FAIL: package B cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-dedup-push-b.out
+      ${grepBin} -F -q "1/3 paths need uploading" /tmp/cache-dedup-push-b.out || \
+        { echo "FAIL: package B push did not skip cached shared deps"; FAIL=1; }
+
+      echo "==> Verify all B closure paths are cached"
+      QM_B_AFTER=$(${curlBin} -s \
+        -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"paths\":[\"$PKG_B_HASH\",\"$LIBZ_HASH\",\"$LIBSSL_HASH\"]}" \
+        http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing B after: $QM_B_AFTER"
+      echo "$QM_B_AFTER" | ${jqBin} -e '.missing == []' >/dev/null || \
+        { echo "FAIL: package B closure still missing after push"; FAIL=1; }
+
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$PKG_A"
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$PKG_B"
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$LIBZ"
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$LIBSSL"
+      for hash in "$PKG_A_HASH" "$PKG_B_HASH" "$LIBZ_HASH" "$LIBSSL_HASH"; do
+        HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
+          "http://127.0.0.1:15000/default/$hash.narinfo")
+        echo "narinfo $hash: HTTP $HTTP_CODE"
+        test "$HTTP_CODE" = "200" || { echo "FAIL: expected narinfo HTTP 200 for $hash"; FAIL=1; }
+      done
+
+      OUTPUT_A=$("$PKG_A/bin/pkg-a")
+      echo "$OUTPUT_A" | ${grepBin} -q "pkg-a executed" || \
+        { echo "FAIL: unexpected package A output: $OUTPUT_A"; FAIL=1; }
+      OUTPUT_B=$("$PKG_B/bin/pkg-b")
+      echo "$OUTPUT_B" | ${grepBin} -q "pkg-b executed" || \
+        { echo "FAIL: unexpected package B output: $OUTPUT_B"; FAIL=1; }
 
       ${stopServer}
 
