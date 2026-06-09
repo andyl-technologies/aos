@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,52 @@ fn resolve_home() -> PathBuf {
     // better than silently scattering state into /tmp directly.
     eprintln!("warning: $HOME is not set; falling back to /tmp for user-scoped APM paths");
     PathBuf::from("/tmp")
+}
+
+/// Resolve an [XDG Base Directory] from a raw environment value.
+///
+/// Returns `value` if it is set to an *absolute* path (per the XDG
+/// specification, relative paths are invalid and must be ignored). Otherwise
+/// falls back to `home` joined with `default_rel` (e.g. `.config`).
+///
+/// This is the pure core of [`xdg_dir`], split out so it can be unit-tested
+/// without mutating process-global environment state.
+///
+/// [XDG Base Directory]: https://specifications.freedesktop.org/basedir-spec/latest/
+fn resolve_xdg(value: Option<&str>, home: &Path, default_rel: &str) -> PathBuf {
+    if let Some(value) = value {
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            return path;
+        }
+    }
+    home.join(default_rel)
+}
+
+/// Resolve an [XDG Base Directory] for the current user.
+///
+/// Reads the environment variable named by `env` and applies [`resolve_xdg`],
+/// falling back to the user's home directory joined with `default_rel`.
+///
+/// [XDG Base Directory]: https://specifications.freedesktop.org/basedir-spec/latest/
+fn xdg_dir(env: &str, default_rel: &str) -> PathBuf {
+    let value = std::env::var(env).ok();
+    resolve_xdg(value.as_deref(), &resolve_home(), default_rel)
+}
+
+/// `$XDG_CONFIG_HOME`, defaulting to `~/.config`.
+fn xdg_config_home() -> PathBuf {
+    xdg_dir("XDG_CONFIG_HOME", ".config")
+}
+
+/// `$XDG_DATA_HOME`, defaulting to `~/.local/share`.
+fn xdg_data_home() -> PathBuf {
+    xdg_dir("XDG_DATA_HOME", ".local/share")
+}
+
+/// `$XDG_CACHE_HOME`, defaulting to `~/.cache`.
+fn xdg_cache_home() -> PathBuf {
+    xdg_dir("XDG_CACHE_HOME", ".cache")
 }
 
 // ---------------------------------------------------------------------------
@@ -535,7 +581,7 @@ impl ProfileScope {
     /// Path for cached registry metadata.
     pub fn cache_path(&self) -> PathBuf {
         match self {
-            ProfileScope::User => resolve_home().join(".local/share/apm/remote"),
+            ProfileScope::User => xdg_data_home().join("apm/remote"),
             ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("remote"),
         }
     }
@@ -543,7 +589,7 @@ impl ProfileScope {
     /// Path for NAR download cache.
     pub fn nar_cache_path(&self) -> PathBuf {
         match self {
-            ProfileScope::User => resolve_home().join(".cache/apm"),
+            ProfileScope::User => xdg_cache_home().join("apm"),
             ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("cache"),
         }
     }
@@ -551,7 +597,7 @@ impl ProfileScope {
     /// Path for registry config files.
     pub fn config_dir(&self) -> PathBuf {
         match self {
-            ProfileScope::User => resolve_home().join(".config/apm"),
+            ProfileScope::User => xdg_config_home().join("apm"),
             ProfileScope::System => PathBuf::from(APM_SYSTEM_CONFIG_DIR),
         }
     }
@@ -559,7 +605,7 @@ impl ProfileScope {
     /// Path for local registry git clones (both read-only and read-write).
     pub fn registries_path(&self) -> PathBuf {
         match self {
-            ProfileScope::User => resolve_home().join(".local/share/apm/registries"),
+            ProfileScope::User => xdg_data_home().join("apm/registries"),
             ProfileScope::System => PathBuf::from(APM_STATE_DIR).join("registries"),
         }
     }
@@ -567,13 +613,10 @@ impl ProfileScope {
     /// Path for trusted key storage.
     pub fn trusted_keys_dirs(&self) -> Vec<PathBuf> {
         match self {
-            ProfileScope::User => {
-                let home = resolve_home();
-                vec![
-                    home.join(".config/apm/trusted-keys.d"),
-                    PathBuf::from(APM_SYSTEM_CONFIG_DIR).join("trusted-keys.d"),
-                ]
-            }
+            ProfileScope::User => vec![
+                xdg_config_home().join("apm/trusted-keys.d"),
+                PathBuf::from(APM_SYSTEM_CONFIG_DIR).join("trusted-keys.d"),
+            ],
             ProfileScope::System => vec![
                 PathBuf::from(APM_SYSTEM_CONFIG_DIR).join("trusted-keys.d"),
                 PathBuf::from(APM_STATE_DIR).join("trusted-keys.d"),
@@ -708,6 +751,44 @@ pub struct SystemGenerationState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xdg_honors_absolute_override() {
+        let home = Path::new("/home/alice");
+        assert_eq!(
+            resolve_xdg(Some("/custom/config"), home, ".config"),
+            PathBuf::from("/custom/config"),
+        );
+    }
+
+    #[test]
+    fn xdg_falls_back_when_unset() {
+        let home = Path::new("/home/alice");
+        assert_eq!(
+            resolve_xdg(None, home, ".local/share"),
+            PathBuf::from("/home/alice/.local/share"),
+        );
+    }
+
+    #[test]
+    fn xdg_ignores_relative_override() {
+        // Per the XDG spec, relative paths in the env var are invalid and must
+        // be ignored in favour of the home-relative default.
+        let home = Path::new("/home/alice");
+        assert_eq!(
+            resolve_xdg(Some("relative/cache"), home, ".cache"),
+            PathBuf::from("/home/alice/.cache"),
+        );
+    }
+
+    #[test]
+    fn xdg_ignores_empty_override() {
+        let home = Path::new("/home/alice");
+        assert_eq!(
+            resolve_xdg(Some(""), home, ".config"),
+            PathBuf::from("/home/alice/.config"),
+        );
+    }
 
     #[test]
     fn transport_detection_https() {
