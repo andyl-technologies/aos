@@ -10,7 +10,7 @@ use super::download::{
 };
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
-use super::profile::meta::write_meta;
+use super::profile::meta::{list_meta, write_meta};
 use super::registry::{RegistrySet, store_path_hash};
 use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{create_gc_roots, filter_missing, import_nar};
@@ -48,6 +48,13 @@ pub async fn run(
     // Step 2: Resolve closures for all requested packages.
     printer.step(2, 7, "Resolving dependencies...");
     let closures = resolve_multiple(&registries, packages, registry_filter)?;
+    let profile = Profile::open(config.scope)?;
+    let installed = list_meta(&profile)?;
+
+    if requested_closures_already_installed(&closures, &installed) {
+        printer.info("All requested packages are already installed. No changes made.");
+        return Ok(());
+    }
 
     // Check if any requested package is already provided by the sysroot.
     for closure in &closures {
@@ -171,7 +178,6 @@ pub async fn run(
 
     // Step 8: Create new profile generation.
     printer.step(6, 7, "Updating profile...");
-    let profile = Profile::open(config.scope)?;
     let prev_gen = profile.current_generation()?;
     let new_gen = profile.new_generation()?;
 
@@ -263,6 +269,37 @@ fn platform() -> String {
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, &platform())
+}
+
+fn requested_closures_already_installed(
+    closures: &[ResolvedClosure],
+    installed: &[InstalledMeta],
+) -> bool {
+    if closures.is_empty() {
+        return false;
+    }
+
+    closures.iter().all(|closure| {
+        let root_hash = store_path_hash(&closure.root.store_path);
+        let root_explicit = installed_apm_for_hash(installed, root_hash)
+            .map(|apm| apm.explicit)
+            .unwrap_or(false);
+
+        root_explicit
+            && closure.closure.iter().all(|meta| {
+                installed_apm_for_hash(installed, store_path_hash(&meta.store_path)).is_some()
+            })
+    })
+}
+
+fn installed_apm_for_hash<'a>(installed: &'a [InstalledMeta], hash: &str) -> Option<&'a ApmMeta> {
+    installed.iter().find_map(|meta| {
+        if store_path_hash(&meta.store_path) == hash {
+            meta.apm.as_ref()
+        } else {
+            None
+        }
+    })
 }
 
 /// Copy GC root symlinks from a previous generation to a new one.
@@ -616,6 +653,125 @@ mod tests {
     fn platform_returns_valid() {
         let p = platform();
         assert_eq!(p, "x86_64-linux");
+    }
+
+    fn sample_package(name: &str, version: &str, store_path: &str) -> PackageMeta {
+        PackageMeta {
+            name: name.to_string(),
+            version: version.to_string(),
+            description: String::new(),
+            homepage: None,
+            license: "MIT".to_string(),
+            maintainer: "test".to_string(),
+            platform: "x86_64-linux".to_string(),
+            store_path: store_path.to_string(),
+            nar_hash: "sha256:test".to_string(),
+            nar_size: 1,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+        }
+    }
+
+    fn sample_installed(name: &str, version: &str, store_path: &str) -> InstalledMeta {
+        sample_installed_with_explicit(name, version, store_path, true)
+    }
+
+    fn sample_installed_with_explicit(
+        name: &str,
+        version: &str,
+        store_path: &str,
+        explicit: bool,
+    ) -> InstalledMeta {
+        InstalledMeta {
+            store_path: store_path.to_string(),
+            pushed_at: 1,
+            pushed_by: "apm".to_string(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: name.to_string(),
+                version: version.to_string(),
+                explicit,
+                registry: "test-reg".to_string(),
+                installed_at: "2026-06-09T00:00:00Z".to_string(),
+                held: false,
+            }),
+        }
+    }
+
+    fn sample_closure(root: PackageMeta, closure: Vec<PackageMeta>) -> ResolvedClosure {
+        ResolvedClosure {
+            registry_name: "test-reg".to_string(),
+            root,
+            closure,
+            total_nar_size: 1,
+        }
+    }
+
+    #[test]
+    fn requested_closures_already_installed_matches_exact_closure() {
+        let root_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0";
+        let dep_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-libdep-1.0.0";
+        let root = sample_package("idempkg", "1.0.0", root_path);
+        let dep = sample_package("libdep", "1.0.0", dep_path);
+        let closure = sample_closure(root.clone(), vec![dep.clone(), root]);
+        let installed = vec![
+            sample_installed("idempkg", "1.0.0", root_path),
+            sample_installed("libdep", "1.0.0", dep_path),
+        ];
+
+        assert!(requested_closures_already_installed(&[closure], &installed));
+    }
+
+    #[test]
+    fn requested_closures_already_installed_requires_dependencies() {
+        let root_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0";
+        let dep_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-libdep-1.0.0";
+        let root = sample_package("idempkg", "1.0.0", root_path);
+        let dep = sample_package("libdep", "1.0.0", dep_path);
+        let closure = sample_closure(root.clone(), vec![dep, root]);
+        let installed = vec![sample_installed("idempkg", "1.0.0", root_path)];
+
+        assert!(!requested_closures_already_installed(
+            &[closure],
+            &installed
+        ));
+    }
+
+    #[test]
+    fn requested_closures_already_installed_requires_explicit_root() {
+        let root_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0";
+        let root = sample_package("idempkg", "1.0.0", root_path);
+        let closure = sample_closure(root.clone(), vec![root]);
+        let installed = vec![sample_installed_with_explicit(
+            "idempkg", "1.0.0", root_path, false,
+        )];
+
+        assert!(!requested_closures_already_installed(
+            &[closure],
+            &installed
+        ));
+    }
+
+    #[test]
+    fn requested_closures_already_installed_detects_changed_store_hash() {
+        let old_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0";
+        let new_path = "/nix/store/cccccccccccccccccccccccccccccccc-idempkg-1.0.0";
+        let root = sample_package("idempkg", "1.0.0", new_path);
+        let closure = sample_closure(root.clone(), vec![root]);
+        let installed = vec![sample_installed("idempkg", "1.0.0", old_path)];
+
+        assert!(!requested_closures_already_installed(
+            &[closure],
+            &installed
+        ));
     }
 
     #[test]
