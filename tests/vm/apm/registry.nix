@@ -550,6 +550,28 @@ in {
         --priority 41 \
         --no-commit
 
+      $APR status --registry maint-reg > /tmp/maint-status.out 2>&1 || {
+        cat /tmp/maint-status.out
+        fail "apr status reports pending maintainer changes"
+      }
+      cat /tmp/maint-status.out
+      assert_file_contains /tmp/maint-status.out "packages/m/maint-git.toml" \
+        "apr status shows git package metadata"
+      assert_file_contains /tmp/maint-status.out "packages/m/maint-curl.toml" \
+        "apr status shows curl package metadata"
+      assert_file_contains /tmp/maint-status.out "packages/m/maint-runner.toml" \
+        "apr status shows runner package metadata"
+      assert_file_contains /tmp/maint-status.out "registry.toml" \
+        "apr status shows cache pointer update"
+
+      $APR diff --registry maint-reg --stat > /tmp/maint-diff-stat.out 2>&1 || {
+        cat /tmp/maint-diff-stat.out
+        fail "apr diff --stat reports tracked maintainer changes"
+      }
+      cat /tmp/maint-diff-stat.out
+      assert_file_contains /tmp/maint-diff-stat.out "registry.toml" \
+        "apr diff --stat shows tracked cache pointer update"
+
       git -C "$REG_DIR" status --short --untracked-files=all \
         > /tmp/changeset.status
       cat /tmp/changeset.status
@@ -580,6 +602,15 @@ in {
         "release diff carries runner package"
       assert_file_contains /tmp/changeset.files "registry.toml" \
         "release diff carries cache endpoint"
+      $APR log --registry maint-reg --package maint-runner -n 1 \
+        > /tmp/maint-log-runner.out 2>&1 || {
+        cat /tmp/maint-log-runner.out
+        fail "apr log --package reports package history"
+      }
+      cat /tmp/maint-log-runner.out
+      assert_file_contains /tmp/maint-log-runner.out \
+        "release: publish maintainer tools" \
+        "apr log --package shows maintainer package commit"
 
       $APR packages --registry maint-reg > /tmp/maint-packages.out 2>&1
       assert_file_contains /tmp/maint-packages.out "maint-git" \
@@ -648,7 +679,22 @@ in {
 
       git init --bare --object-format=sha256 /tmp/maint-origin.git
       git -C "$REG_DIR" remote add origin /tmp/maint-origin.git
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      $APR push --registry maint-reg --branch "$DEFAULT_BRANCH" \
+        > /tmp/maint-push.out 2>&1 || {
+        cat /tmp/maint-push.out
+        fail "apr push publishes default branch"
+      }
+      cat /tmp/maint-push.out
+      assert_file_contains /tmp/maint-push.out "Pushed." \
+        "apr push reports successful branch push"
+      $APR diff --registry maint-reg --remote --stat \
+        > /tmp/maint-remote-diff.out 2>&1 || {
+        cat /tmp/maint-remote-diff.out
+        fail "apr diff --remote compares against pushed branch"
+      }
+      cat /tmp/maint-remote-diff.out
+      assert_file_contains /tmp/maint-remote-diff.out "No pending changes" \
+        "apr diff --remote is clean after pushing branch"
       git -C "$REG_DIR" push origin 1.0.0
 
       assert_file_exists "/tmp/maint-cache/$GIT_HASH.narinfo" \

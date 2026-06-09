@@ -1417,12 +1417,17 @@ pub async fn diff(
     let dir = registry_dir(config, registry)?;
 
     if remote {
-        let mut args = vec!["diff", "HEAD", "origin/HEAD"];
+        let base = remote_diff_base(&dir)?;
+        let mut args = vec!["diff", &base, "HEAD"];
         if stat {
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
-        printer.plain(&output);
+        if output.is_empty() {
+            printer.info("No pending changes.");
+        } else {
+            printer.plain(&output);
+        }
     } else {
         let mut args = vec!["diff"];
         if stat {
@@ -1437,6 +1442,42 @@ pub async fn diff(
     }
 
     Ok(())
+}
+
+fn remote_diff_base(dir: &Path) -> Result<String> {
+    let (has_upstream, upstream, _) = git_try(
+        dir,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )?;
+    if has_upstream && !upstream.is_empty() {
+        return Ok(upstream);
+    }
+
+    let current_branch = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if current_branch != "HEAD" {
+        let remote_branch = format!("origin/{current_branch}");
+        if git_ref_exists(dir, &remote_branch)? {
+            return Ok(remote_branch);
+        }
+    }
+
+    if git_ref_exists(dir, "origin/HEAD")? {
+        return Ok("origin/HEAD".to_string());
+    }
+
+    bail!(
+        "no remote tracking ref found for diff; push the current branch or set an upstream first"
+    );
+}
+
+fn git_ref_exists(dir: &Path, reference: &str) -> Result<bool> {
+    let (exists, _, _) = git_try(dir, &["rev-parse", "--verify", reference])?;
+    Ok(exists)
 }
 
 /// `apr validate`
@@ -1731,7 +1772,7 @@ async fn validate_cache_entry(
 /// `apr status`
 pub async fn status(config: &ApmConfig, registry: Option<&str>, printer: &Printer) -> Result<()> {
     let dir = registry_dir(config, registry)?;
-    let output = git(&dir, &["status"])?;
+    let output = git(&dir, &["status", "--short", "--untracked-files=all"])?;
     printer.plain(&output);
     Ok(())
 }
@@ -3614,6 +3655,52 @@ mod tests {
         .unwrap();
 
         assert!(verify_tag_signature(&repo, "1.0.0", &signing.trusted_key).unwrap());
+    }
+
+    #[test]
+    fn remote_diff_base_uses_pushed_current_branch_without_origin_head() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        let origin = tmp.path().join("origin.git");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=main",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--bare",
+                "--object-format=sha256",
+                origin.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        )
+        .unwrap();
+        git(&repo, &["push", "origin", "main"]).unwrap();
+
+        assert!(!git_ref_exists(&repo, "origin/HEAD").unwrap());
+        assert_eq!(remote_diff_base(&repo).unwrap(), "origin/main");
     }
 
     #[test]
