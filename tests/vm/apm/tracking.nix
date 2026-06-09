@@ -284,41 +284,248 @@ in {
   # -------------------------------------------------------------------------
   tracking-tag = testing.mkVMTest {
     name = "apm-tracking-tag";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = trackingWorkflowDeps;
+    memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkRemoteRegistry}
+      ${setupNixEnv}
 
-      echo "==> Test: tag tracking mode"
+      echo "==> Test: tag tracking stays pinned to selected tag"
 
-      # Create remote, add a tag
-      create_remote_registry /tmp/remote-tag.git
+      make_tag_tool() {
+        version="$1"
+        src="/tmp/tag-tool-$version-src"
+        rm -rf "$src"
+        mkdir -p "$src/bin" "$src/share/tag-tool"
+        cat > "$src/bin/tag-tool" << EOF
+      #!/bin/sh
+      echo "tag-tool $version executed"
+      EOF
+        chmod +x "$src/bin/tag-tool"
+        printf "tag-tool payload %s\n" "$version" \
+          > "$src/share/tag-tool/payload.txt"
+        nix-store --add "$src"
+      }
 
-      git clone /tmp/remote-tag.git /tmp/tag-setup
-      cd /tmp/tag-setup
-      git tag v1.0
-      git push origin v1.0
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
 
-      # Advance past v1.0
-      echo "# advanced" >> registry.toml
-      git add -A
-      git commit -m "advance past v1.0"
-      git push origin
-      cd /tmp
-      rm -rf /tmp/tag-setup
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        nix-store --delete --ignore-liveness "$path" > "/tmp/tag-delete-$label.out" 2>&1 || {
+          cat "/tmp/tag-delete-$label.out"
+          fail "delete $label before apm download"
+          return
+        }
+        if nix-store --check-validity "$path" > "/tmp/tag-valid-$label.out" 2>&1; then
+          cat "/tmp/tag-valid-$label.out"
+          fail "$label should be missing before apm download"
+        else
+          pass "$label missing before apm download"
+        fi
+      }
 
-      # Add registry pinned to tag
-      $APM registry add file:///tmp/remote-tag.git --name tag-reg --tag v1.0
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/tag-valid-after-$label.out" 2>&1; then
+          pass "$label valid after apm import"
+        else
+          cat "/tmp/tag-valid-after-$label.out"
+          fail "$label should be valid after apm import"
+        fi
+      }
 
-      # Verify config has tag field
-      assert_file_contains "$APM_CONFIG/registries.d/tag-reg.toml" \
-        'tag = "v1.0"' "config has tag = v1.0"
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/tag-missing-$label.out" 2>&1; then
+          cat "/tmp/tag-missing-$label.out"
+          fail "$label should remain missing"
+        else
+          pass "$label remains missing"
+        fi
+      }
 
-      # Verify tracking mode display
-      assert_cmd_output_contains "$APR list" "tag:v1.0" \
+      publish_tag_version() {
+        version="$1"
+        store_path="$2"
+        $APR publish "$store_path" \
+          --name tag-tool \
+          --version "$version" \
+          --description "Tag tracking workflow tool" \
+          --license MIT \
+          --maintainer tracking@example.invalid \
+          --registry tag-reg \
+          --no-commit > "/tmp/tag-publish-$version.out" 2>&1 || {
+          cat "/tmp/tag-publish-$version.out"
+          fail "apr publish tag-tool $version"
+          return
+        }
+        cat "/tmp/tag-publish-$version.out"
+        $APR cache generate \
+          --registry tag-reg \
+          --output /tmp/tag-cache \
+          --cache-url http://127.0.0.1:18105 \
+          --priority 46 \
+          --no-commit > "/tmp/tag-cache-generate-$version.out" 2>&1 || {
+          cat "/tmp/tag-cache-generate-$version.out"
+          fail "apr cache generate after tag-tool $version"
+          return
+        }
+        cat "/tmp/tag-cache-generate-$version.out"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "release: tag-tool $version" \
+          > "/tmp/tag-commit-$version.out" 2>&1 || {
+          cat "/tmp/tag-commit-$version.out"
+          fail "git commit tag-tool $version"
+          return
+        }
+        cat "/tmp/tag-commit-$version.out"
+      }
+
+      TOOL_V1_STORE=$(make_tag_tool 1.0.0)
+      TOOL_V2_STORE=$(make_tag_tool 2.0.0)
+      TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+
+      $APR create tag-reg
+      REG_DIR="$REG_STORAGE/tag-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      publish_tag_version 1.0.0 "$TOOL_V1_STORE"
+      git -C "$REG_DIR" tag v1.0.0
+      assert_file_exists "/tmp/tag-cache/$TOOL_V1_HASH.narinfo" \
+        "static cache has tag-tool v1 narinfo"
+
+      git init --bare --object-format=sha256 /tmp/tag-origin.git
+      git -C /tmp/tag-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/tag-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin v1.0.0
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      python3 -m http.server 18105 --bind 127.0.0.1 \
+        --directory /tmp/tag-cache > /tmp/tag-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18105/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if curl -sf http://127.0.0.1:18105/nix-cache-info >/dev/null; then
+        pass "tag static cache HTTP server started"
+      else
+        cat /tmp/tag-cache-http.log || true
+        fail "tag static cache HTTP server started"
+      fi
+
+      export HOME=/tmp/tag-consumer
+      export USER=taguser
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
+
+      $APM registry add file:///tmp/tag-origin.git \
+        --name tag-reg \
+        --tag v1.0.0 > /tmp/tag-add.out 2>&1 || {
+        cat /tmp/tag-add.out
+        fail "apm registry add syncs selected tag"
+      }
+      cat /tmp/tag-add.out
+      CONFIG_FILE="$APM_CONFIG/registries.d/tag-reg.toml"
+      assert_file_contains "$CONFIG_FILE" 'tag = "v1.0.0"' \
+        "config has tag = v1.0.0"
+      assert_cmd_output_contains "$APR list" "tag:v1.0.0" \
         "apr list shows tag tracking mode"
 
+      $APM search tag-tool --registry tag-reg > /tmp/tag-search-v1.out 2>&1 || {
+        cat /tmp/tag-search-v1.out
+        fail "apm search sees tagged package"
+      }
+      assert_file_contains /tmp/tag-search-v1.out "1.0.0" \
+        "tag tracking initial sync exposes tagged v1"
+      assert_file_not_contains /tmp/tag-search-v1.out "2.0.0" \
+        "tag tracking initial sync hides future v2"
+
+      mount -o remount,rw / || true
+      delete_store_path "$TOOL_V1_STORE" "tag-tool-v1"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install tag-tool --registry tag-reg --yes \
+        > /tmp/tag-install-v1.out 2>&1 || {
+        cat /tmp/tag-install-v1.out
+        fail "apm install downloads selected tag v1"
+      }
+      cat /tmp/tag-install-v1.out
+      assert_file_contains /tmp/tag-install-v1.out "Downloading" \
+        "apm install downloads tag v1 NAR"
+      assert_store_valid "$TOOL_V1_STORE" "tag-tool v1"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/tag-tool"
+      "$PROFILE_TOOL" > /tmp/tag-run-v1.out
+      assert_file_contains /tmp/tag-run-v1.out \
+        "tag-tool 1.0.0 executed" "installed tag v1 tool executes"
+
+      export HOME=/tmp
+      APM_CONFIG="$HOME/.config/apm"
+      publish_tag_version 2.0.0 "$TOOL_V2_STORE"
+      assert_file_exists "/tmp/tag-cache/$TOOL_V2_HASH.narinfo" \
+        "static cache has tag-tool v2 narinfo on default branch"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      export HOME=/tmp/tag-consumer
+      export USER=taguser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_V2_STORE" "tag-tool-v2"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM update --registry tag-reg > /tmp/tag-update-after-v2.out 2>&1 || {
+        cat /tmp/tag-update-after-v2.out
+        fail "apm update keeps selected tag after branch advances"
+      }
+      cat /tmp/tag-update-after-v2.out
+      $APM search tag-tool --registry tag-reg > /tmp/tag-search-after-v2.out 2>&1 || {
+        cat /tmp/tag-search-after-v2.out
+        fail "apm search still sees selected tag package"
+      }
+      assert_file_contains /tmp/tag-search-after-v2.out "1.0.0" \
+        "tag tracking still exposes v1 after default branch advances"
+      assert_file_not_contains /tmp/tag-search-after-v2.out "2.0.0" \
+        "tag tracking ignores untagged default branch v2"
+
+      $APM list --upgradable > /tmp/tag-upgradable.out 2>&1 || {
+        cat /tmp/tag-upgradable.out
+        fail "apm list --upgradable succeeds for tag-pinned registry"
+      }
+      assert_file_not_contains /tmp/tag-upgradable.out "tag-tool" \
+        "tag-pinned registry does not advertise default branch v2"
+
+      $APM upgrade tag-tool --yes > /tmp/tag-upgrade.out 2>&1 || {
+        cat /tmp/tag-upgrade.out
+        fail "tag-pinned apm upgrade is a no-op"
+      }
+      cat /tmp/tag-upgrade.out
+      assert_file_contains /tmp/tag-upgrade.out "All packages are up to date" \
+        "tag-pinned upgrade reports no candidate"
+      assert_file_not_contains /tmp/tag-upgrade.out "Downloading" \
+        "tag-pinned upgrade does not download default branch v2"
+      assert_store_missing "$TOOL_V2_STORE" "tag-tool v2"
+      "$PROFILE_TOOL" > /tmp/tag-run-still-v1.out
+      assert_file_contains /tmp/tag-run-still-v1.out \
+        "tag-tool 1.0.0 executed" "tag-pinned profile remains on v1"
+
+      kill "$CACHE_PID" 2>/dev/null || true
+      wait "$CACHE_PID" 2>/dev/null || true
       check_fail
     '';
   };
@@ -328,52 +535,278 @@ in {
   # -------------------------------------------------------------------------
   tracking-version-tilde = testing.mkVMTest {
     name = "apm-tracking-version-tilde";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = trackingWorkflowDeps;
+    memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkRemoteRegistry}
+      ${setupNixEnv}
 
-      echo "==> Test: version tilde tracking mode (~1.0)"
+      echo "==> Test: version tilde tracking follows best matching tag"
 
-      # Create remote with multiple version tags
-      create_remote_registry /tmp/remote-vtilde.git
+      make_vtilde_tool() {
+        version="$1"
+        src="/tmp/vtilde-tool-$version-src"
+        rm -rf "$src"
+        mkdir -p "$src/bin" "$src/share/vtilde-tool"
+        cat > "$src/bin/vtilde-tool" << EOF
+      #!/bin/sh
+      echo "vtilde-tool $version executed"
+      EOF
+        chmod +x "$src/bin/vtilde-tool"
+        printf "vtilde-tool payload %s\n" "$version" \
+          > "$src/share/vtilde-tool/payload.txt"
+        nix-store --add "$src"
+      }
 
-      git clone /tmp/remote-vtilde.git /tmp/vtilde-setup
-      cd /tmp/vtilde-setup
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
 
-      # Create versioned tags
-      git tag v1.0.0
-      echo "# v1.0.1" >> registry.toml
-      git add -A
-      git commit -m "v1.0.1"
-      git tag v1.0.1
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        nix-store --delete --ignore-liveness "$path" > "/tmp/vtilde-delete-$label.out" 2>&1 || {
+          cat "/tmp/vtilde-delete-$label.out"
+          fail "delete $label before apm download"
+          return
+        }
+        if nix-store --check-validity "$path" > "/tmp/vtilde-valid-$label.out" 2>&1; then
+          cat "/tmp/vtilde-valid-$label.out"
+          fail "$label should be missing before apm download"
+        else
+          pass "$label missing before apm download"
+        fi
+      }
 
-      echo "# v1.0.2" >> registry.toml
-      git add -A
-      git commit -m "v1.0.2"
-      git tag v1.0.2
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/vtilde-valid-after-$label.out" 2>&1; then
+          pass "$label valid after apm import"
+        else
+          cat "/tmp/vtilde-valid-after-$label.out"
+          fail "$label should be valid after apm import"
+        fi
+      }
 
-      echo "# v1.1.0" >> registry.toml
-      git add -A
-      git commit -m "v1.1.0"
-      git tag v1.1.0
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/vtilde-missing-$label.out" 2>&1; then
+          cat "/tmp/vtilde-missing-$label.out"
+          fail "$label should remain missing"
+        else
+          pass "$label remains missing"
+        fi
+      }
 
-      git push origin --tags
-      cd /tmp
-      rm -rf /tmp/vtilde-setup
+      publish_vtilde_version() {
+        version="$1"
+        store_path="$2"
+        $APR publish "$store_path" \
+          --name vtilde-tool \
+          --version "$version" \
+          --description "Tilde tracking workflow tool" \
+          --license MIT \
+          --maintainer tracking@example.invalid \
+          --registry vtilde-reg \
+          --no-commit > "/tmp/vtilde-publish-$version.out" 2>&1 || {
+          cat "/tmp/vtilde-publish-$version.out"
+          fail "apr publish vtilde-tool $version"
+          return
+        }
+        cat "/tmp/vtilde-publish-$version.out"
+        $APR cache generate \
+          --registry vtilde-reg \
+          --output /tmp/vtilde-cache \
+          --cache-url http://127.0.0.1:18106 \
+          --priority 47 \
+          --no-commit > "/tmp/vtilde-cache-generate-$version.out" 2>&1 || {
+          cat "/tmp/vtilde-cache-generate-$version.out"
+          fail "apr cache generate after vtilde-tool $version"
+          return
+        }
+        cat "/tmp/vtilde-cache-generate-$version.out"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "release: vtilde-tool $version" \
+          > "/tmp/vtilde-commit-$version.out" 2>&1 || {
+          cat "/tmp/vtilde-commit-$version.out"
+          fail "git commit vtilde-tool $version"
+          return
+        }
+        cat "/tmp/vtilde-commit-$version.out"
+        git -C "$REG_DIR" tag "v$version" \
+          > "/tmp/vtilde-tag-$version.out" 2>&1 || {
+          cat "/tmp/vtilde-tag-$version.out"
+          fail "git tag v$version"
+          return
+        }
+      }
 
-      # Add registry with tilde version constraint
-      $APM registry add file:///tmp/remote-vtilde.git --name vtilde-reg --version "~1.0"
+      TOOL_100_STORE=$(make_vtilde_tool 1.0.0)
+      TOOL_101_STORE=$(make_vtilde_tool 1.0.1)
+      TOOL_102_STORE=$(make_vtilde_tool 1.0.2)
+      TOOL_110_STORE=$(make_vtilde_tool 1.1.0)
+      TOOL_103_STORE=$(make_vtilde_tool 1.0.3)
+      TOOL_111_STORE=$(make_vtilde_tool 1.1.1)
+      TOOL_102_HASH=$(basename "$TOOL_102_STORE" | cut -d- -f1)
+      TOOL_103_HASH=$(basename "$TOOL_103_STORE" | cut -d- -f1)
+      TOOL_110_HASH=$(basename "$TOOL_110_STORE" | cut -d- -f1)
+      TOOL_111_HASH=$(basename "$TOOL_111_STORE" | cut -d- -f1)
 
-      # Verify config has version field
-      assert_file_contains "$APM_CONFIG/registries.d/vtilde-reg.toml" \
-        'version = "~1.0"' "config has version = ~1.0"
+      $APR create vtilde-reg
+      REG_DIR="$REG_STORAGE/vtilde-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      publish_vtilde_version 1.0.0 "$TOOL_100_STORE"
+      publish_vtilde_version 1.0.1 "$TOOL_101_STORE"
+      publish_vtilde_version 1.0.2 "$TOOL_102_STORE"
+      publish_vtilde_version 1.1.0 "$TOOL_110_STORE"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_102_HASH.narinfo" \
+        "static cache has vtilde-tool 1.0.2 narinfo"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_110_HASH.narinfo" \
+        "static cache has out-of-range 1.1.0 narinfo"
 
-      # Verify tracking mode display
-      assert_cmd_output_contains "$APR list" "version" \
+      git init --bare --object-format=sha256 /tmp/vtilde-origin.git
+      git -C /tmp/vtilde-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/vtilde-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin --tags
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      python3 -m http.server 18106 --bind 127.0.0.1 \
+        --directory /tmp/vtilde-cache > /tmp/vtilde-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18106/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if curl -sf http://127.0.0.1:18106/nix-cache-info >/dev/null; then
+        pass "vtilde static cache HTTP server started"
+      else
+        cat /tmp/vtilde-cache-http.log || true
+        fail "vtilde static cache HTTP server started"
+      fi
+
+      export HOME=/tmp/vtilde-consumer
+      export USER=vtildeuser
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
+
+      $APM registry add file:///tmp/vtilde-origin.git \
+        --name vtilde-reg \
+        --version "~1.0" > /tmp/vtilde-add.out 2>&1 || {
+        cat /tmp/vtilde-add.out
+        fail "apm registry add resolves best initial tilde tag"
+      }
+      cat /tmp/vtilde-add.out
+      CONFIG_FILE="$APM_CONFIG/registries.d/vtilde-reg.toml"
+      assert_file_contains "$CONFIG_FILE" 'version = "~1.0"' \
+        "config has version = ~1.0"
+      assert_cmd_output_contains "$APR list" "version:~1.0" \
         "apr list shows version tracking mode"
 
+      $APM search vtilde-tool --registry vtilde-reg > /tmp/vtilde-search-initial.out 2>&1 || {
+        cat /tmp/vtilde-search-initial.out
+        fail "apm search sees initial best tilde package"
+      }
+      assert_file_contains /tmp/vtilde-search-initial.out "1.0.2" \
+        "tilde tracking selects initial best 1.0.x tag"
+      assert_file_not_contains /tmp/vtilde-search-initial.out "1.1.0" \
+        "tilde tracking ignores initial out-of-range 1.1.0 tag"
+
+      mount -o remount,rw / || true
+      delete_store_path "$TOOL_102_STORE" "vtilde-tool-1.0.2"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install vtilde-tool --registry vtilde-reg --yes \
+        > /tmp/vtilde-install.out 2>&1 || {
+        cat /tmp/vtilde-install.out
+        fail "apm install downloads initial best tilde package"
+      }
+      cat /tmp/vtilde-install.out
+      assert_file_contains /tmp/vtilde-install.out "Downloading" \
+        "apm install downloads initial tilde NAR"
+      assert_store_valid "$TOOL_102_STORE" "vtilde-tool 1.0.2"
+      PROFILE="/var/lib/profiles/per-user/$USER"
+      assert_file_not_exists "$PROFILE/meta/$TOOL_110_HASH.json" \
+        "initial tilde install does not record out-of-range 1.1.0 metadata"
+      if [ -L "$PROFILE/current/usr/$TOOL_110_HASH" ]; then
+        fail "initial tilde install should not root out-of-range 1.1.0"
+      else
+        pass "initial tilde install does not root out-of-range 1.1.0"
+      fi
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/vtilde-tool"
+      "$PROFILE_TOOL" > /tmp/vtilde-run-initial.out
+      assert_file_contains /tmp/vtilde-run-initial.out \
+        "vtilde-tool 1.0.2 executed" "installed initial tilde tool executes"
+
+      export HOME=/tmp
+      APM_CONFIG="$HOME/.config/apm"
+      git -C "$REG_DIR" checkout -b maintenance-1.0 v1.0.2
+      publish_vtilde_version 1.0.3 "$TOOL_103_STORE"
+      git -C "$REG_DIR" checkout "$DEFAULT_BRANCH"
+      publish_vtilde_version 1.1.1 "$TOOL_111_STORE"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_103_HASH.narinfo" \
+        "static cache has in-range vtilde-tool 1.0.3 narinfo"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_111_HASH.narinfo" \
+        "static cache has out-of-range vtilde-tool 1.1.1 narinfo"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin maintenance-1.0
+      git -C "$REG_DIR" push origin --tags
+
+      export HOME=/tmp/vtilde-consumer
+      export USER=vtildeuser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_103_STORE" "vtilde-tool-1.0.3"
+      delete_store_path "$TOOL_111_STORE" "vtilde-tool-1.1.1"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM update --registry vtilde-reg > /tmp/vtilde-update.out 2>&1 || {
+        cat /tmp/vtilde-update.out
+        fail "apm update advances to best in-range tilde tag"
+      }
+      cat /tmp/vtilde-update.out
+      $APM list --upgradable > /tmp/vtilde-upgradable.out 2>&1 || {
+        cat /tmp/vtilde-upgradable.out
+        fail "apm list --upgradable sees in-range tilde update"
+      }
+      assert_file_contains /tmp/vtilde-upgradable.out "vtilde-tool" \
+        "tilde update names package"
+      assert_file_contains /tmp/vtilde-upgradable.out "1.0.3" \
+        "tilde update shows best in-range 1.0.3"
+      assert_file_not_contains /tmp/vtilde-upgradable.out "1.1.1" \
+        "tilde update ignores out-of-range 1.1.1"
+
+      $APM upgrade vtilde-tool --yes > /tmp/vtilde-upgrade.out 2>&1 || {
+        cat /tmp/vtilde-upgrade.out
+        fail "apm upgrade downloads in-range tilde update"
+      }
+      cat /tmp/vtilde-upgrade.out
+      assert_file_contains /tmp/vtilde-upgrade.out "vtilde-tool (1.0.2 -> 1.0.3)" \
+        "tilde upgrade plans in-range update"
+      assert_file_not_contains /tmp/vtilde-upgrade.out "1.1.1" \
+        "tilde upgrade does not plan out-of-range update"
+      assert_file_contains /tmp/vtilde-upgrade.out "Downloading" \
+        "tilde upgrade downloads in-range NAR"
+      assert_store_valid "$TOOL_103_STORE" "vtilde-tool 1.0.3"
+      assert_store_missing "$TOOL_111_STORE" "vtilde-tool 1.1.1"
+      "$PROFILE_TOOL" > /tmp/vtilde-run-upgraded.out
+      assert_file_contains /tmp/vtilde-run-upgraded.out \
+        "vtilde-tool 1.0.3 executed" "upgraded tilde tool executes"
+
+      kill "$CACHE_PID" 2>/dev/null || true
+      wait "$CACHE_PID" 2>/dev/null || true
       check_fail
     '';
   };
