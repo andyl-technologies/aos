@@ -20,6 +20,7 @@ in
     buildDeps = [gnumake];
     runtimeDeps = [];
     propagatedDeps = [];
+    hardeningDisable = ["format"];
 
     phases = [
       {
@@ -54,6 +55,15 @@ in
 
           # Large file support + no lchmod
           sed -i 's/^CF = /CF = -DLARGE_FILE_SUPPORT -D_FILE_OFFSET_BITS=64 -DNO_LCHMOD /' unix/Makefile 2>/dev/null || true
+
+          # Fix directory attribute bookkeeping allocation: defer_dir_attribs()
+          # stores strlen(filename) plus the trailing NUL in uxdirattr.fnbuf.
+          sed -i 's/malloc(sizeof(uxdirattr) + strlen(G.filename))/malloc(sizeof(uxdirattr) + strlen(G.filename) + 1)/' unix/unix.c
+
+          # GCC's Fortify treats the historical one-byte struct-hack buffer
+          # as a real one-byte object when defer_dir_attribs() copies the
+          # directory name. Use an explicit path-sized buffer instead.
+          sed -i 's/char fnbuf\[1\];/char fnbuf[FILNAMSIZ + 1];/' unix/unix.c
         '';
       }
       {
