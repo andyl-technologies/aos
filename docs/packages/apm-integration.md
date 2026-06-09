@@ -435,9 +435,16 @@ Honest consequences for the package/container model:
   `EnvironmentFile`. Whatever container it runs in must bind-mount that host path
   in. Config delivery itself is **explicitly open** — see
   [`config.md`](config.md); do not assume a credstore.
-- **Upgrades drain the node.** Because the root is immutable and upgrade is a
-  restart (§5), upgrading the k3s package restarts kubelet, evicting/rescheduling
-  workloads. That is an operational cost, not a bug, and must be documented.
+- **Upgrades kill pods under the nspawn materialization — a regression.**
+  Today's bare unit sets `KillMode=process` (upstream k3s packaging), so a k3s
+  restart/upgrade kills only the supervisor; containerd, the shims, and all pod
+  processes survive. An nspawn container always has a private PID namespace, so
+  the restart in §5 kills **everything** inside it — an ungraceful mass pod
+  kill, not a drain, unless cordon+drain is orchestrated first. This cost is
+  introduced by the wrapper, not inherent to upgrades; see
+  [`container-model.md`](container-model.md) §"The `KillMode=process`
+  regression" and Decisions 11/17 in
+  [`open-questions.md`](open-questions.md).
 
 The takeaway: there is no separate "class" to encode — the package's signed
 `[permissions]` manifest already tells `apm` (and an operator, via `apm info
@@ -487,6 +494,17 @@ story is split-brain (image-signed vs. tag-signed). Recommendation: pick one
 delivery model per package — **fetch-at-boot via apm as the default**; if
 baking, document the per-package choice explicitly. Tracked in Decision 5 of
 [`open-questions.md`](open-questions.md).
+
+**Audit against TUF.** The chain above (TOFU-pinned key, tag signatures,
+anti-rollback floor) is a homegrown subset of The Update Framework. Now that the
+`[permissions]` manifest's security rides on it, audit it against TUF's attack
+catalog — freeze (serving a stale-but-validly-signed view to one host),
+mix-and-match across packages, fast-forward recovery, key
+rotation/thresholds. Separately, consider binding the manifest to the artifact
+as a detached **attestation over the NAR hash** (in-toto/SLSA-style, cf.
+sigstore/cosign attestations in the OCI world) rather than only by co-residency
+in the signed tree, so the manifest is independently verifiable. Tracked in
+Decision 5 of [`open-questions.md`](open-questions.md).
 
 ---
 

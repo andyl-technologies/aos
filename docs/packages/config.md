@@ -31,7 +31,7 @@ handle (see [container-model.md](container-model.md)). Every such package
 needs configuration — non-secret settings (node IP, feature flags, a join
 URL) and secrets (a join token, a TLS key) — delivered to the workload, and
 for containerized packages that delivery must **cross the nspawn host→container
-PID1 boundary**. This doc surveys six delivery mechanisms against six criteria
+PID1 boundary**. This doc surveys seven delivery mechanisms against six criteria
 (boundary crossing, reloadability, secret-safety, per-instance override,
 introspection, maturity), grounds each in what AOS ships today, and is honest
 about where nothing fits well yet (hot-reload is uniformly weak; k3s wants
@@ -271,21 +271,47 @@ container bind-mounts `/etc/aos/<pkg>/`.
 - **Maturity:** classic mechanisms (bind mounts, symlinks, env files), just
   organized by package. No new systemd or apm infrastructure required.
 
+### Option 7 — systemd-confext: config as a signed `/etc` extension image
+
+`systemd-confext` (the `/etc` twin of `systemd-sysext`, in core systemd — *not*
+behind the disabled `portabled`) merges dm-verity-protectable extension images
+into `/etc` as an overlay; `systemd-confext refresh` atomically
+merges/unmerges. Config ships as a small **signed image** rather than loose
+files — the mechanism Flatcar and the UAPI-group ecosystem use for exactly
+this. The option the original survey missed.
+
+- **Boundary crossing:** host-side merge; the merged paths are bind-mounted
+  into the container like Options 2/6 (or a full-init container runs its own
+  confext against an image bound in).
+- **Reloadability:** `refresh` swaps the merged view atomically, but units
+  still read at start — restart-to-apply, same as the local options.
+- **Secret-safety:** the only local option with **signed, verity-protected
+  config at rest** — *integrity*, not secrecy (the image is signed, not
+  encrypted; the at-rest plaintext gap below still applies).
+- **Per-instance override:** an image per instance or fleet-ring; heavier to
+  mint than an Ignition-written file — needs hermetic image-mint tooling.
+- **Introspection:** `systemd-confext status`; merged files are plainly
+  visible in `/etc`.
+- **Maturity:** recent but in-core and actively used by the
+  sysext/confext ecosystem. **Needs verification:** that the AOS systemd build
+  ships `systemd-confext` and how a confext overlay composes with AOS's own
+  3-layer `/etc` overlay.
+
 ## Option matrix
 
 Scoring: ✓ good · △ partial / caveated · ✗ poor. These are *relative*
 positions to aid discussion, **not** a scorecard that names a winner.
 
-| Criterion | 1 Credentials | 2 EnvFile+Ignition | 3 apm schema | 4 cmdline/SMBIOS | 5 registry-hosted | 6 /etc overlay |
-|---|---|---|---|---|---|---|
-| Boundary crossing (host→nspawn) | △ (needs systemd PID1) | ✓ | ✓ | △ (RO/global) | △ (2-step) | ✓ |
-| Reloadability (no restart) | ✗ | ✗ | ✗ | ✗ | △ (push/poll) | ✗ |
-| Secret-safety | ✓ (tmpfs/iso) | △ | △ | ✗ | ✓ (transport) | △ |
-| Per-instance override | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| Schema enforcement | ✗ | ✗ | ✓ | ✗ | ✓ | △ |
-| Introspection | ✓ | ✓ | ✓ | ✓ | △ | ✓ |
-| Offline / air-gapped | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
-| Maturity / ecosystem | △ | ✓ | ✗ | ✓ | ✗ | ✓ |
+| Criterion | 1 Credentials | 2 EnvFile+Ignition | 3 apm schema | 4 cmdline/SMBIOS | 5 registry-hosted | 6 /etc overlay | 7 confext |
+|---|---|---|---|---|---|---|---|
+| Boundary crossing (host→nspawn) | △ (needs systemd PID1) | ✓ | ✓ | △ (RO/global) | △ (2-step) | ✓ | ✓ |
+| Reloadability (no restart) | ✗ | ✗ | ✗ | ✗ | △ (push/poll) | ✗ | ✗ |
+| Secret-safety | ✓ (tmpfs/iso) | △ | △ | ✗ | ✓ (transport) | △ | △ (signed/verity at rest; integrity, not secrecy) |
+| Per-instance override | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | △ (image mint) |
+| Schema enforcement | ✗ | ✗ | ✓ | ✗ | ✓ | △ | ✗ |
+| Introspection | ✓ | ✓ | ✓ | ✓ | △ | ✓ | ✓ |
+| Offline / air-gapped | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| Maturity / ecosystem | △ | ✓ | ✗ | ✓ | ✗ | ✓ | △ |
 
 Two honest patterns fall out of the matrix and are worth stating plainly:
 
@@ -300,6 +326,8 @@ Two honest patterns fall out of the matrix and are worth stating plainly:
   AOS has no sealed/TPM/LUKS credential backend today, so every option stores
   secrets as plaintext on `/var` and leans on file permissions and mount
   namespaces. That gap is independent of which delivery mechanism wins.
+  (Option 7 adds at-rest *integrity* — signed/verity config images — but not
+  secrecy.)
 
 ## Where this does not fit: k3s
 

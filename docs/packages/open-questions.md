@@ -91,7 +91,13 @@ re-derived from the granted set each generation, with the kernel/signature layer
 backstopping modules. A package that declared more than granted simply runs with
 less. **What is still open** is the policy **file format** and **where the host
 allowlist is declared** (TOML allow/deny lists, a signed fleet policy doc,
-Nix-evaluated) — that remains TBD. **DECIDE-EARLY** (the file format only; the
+Nix-evaluated) — that remains TBD. Prior-art constraint for that decision: the
+primary policy surface should be a small set of **named tiers**
+(`restricted`/`baseline`/`privileged`), with per-permission allowlists as the
+escape hatch — Kubernetes removed knob-level PodSecurityPolicy in favor of
+exactly three named Pod Security Standards because per-knob policy proved
+unwritable and unauditable, and systemd portable services ship four named
+profiles for the same reason. **DECIDE-EARLY** (the file format only; the
 enforcement model is settled). *packages-core* + *apm* + *boot*.
 
 **(b) The validated k3s permission set under AOS nspawn.** The manifest in
@@ -165,8 +171,10 @@ around a missing default route). `nss-mymachines` is **not** shipped, so
 
 **Options.**
 - Workload default `--network-veth` + a generated host `.network`; firewall
-  ports flow through the existing `aos-<pkg>-firewall.service` against the base
-  `allowed_tcp`/`allowed_udp` sets.
+  ports flow through the existing `aos-pkg-<pkg>-firewall.service` against the
+  base `allowed_tcp`/`allowed_udp` sets (plus the `--port=`/DNAT forward for
+  off-host reachability — see [container-model.md](container-model.md)
+  §Networking).
 - `--network-zone` for multi-container L2 (less documented; revisit if needed).
 - `--network=host` only for infrastructure packages.
 
@@ -251,7 +259,10 @@ approach so container roots inherit existing signing; spec it in
 [apm-integration.md](apm-integration.md). Decide ext4-image vs. bare store-path
 mount, and pin one delivery model per package (default fetch-at-boot) to avoid
 the trust split-brain. **DECIDE-EARLY** (schema-shaping). Image signing of any
-separate artifact is **DECIDE-BEFORE-MVP** if Option 2 is chosen.
+separate artifact is **DECIDE-BEFORE-MVP** if Option 2 is chosen. Audit the
+whole chain against TUF's attack catalog (freeze, mix-and-match, fast-forward,
+key rotation) and consider attestation-binding the `[permissions]` manifest to
+the NAR hash — see [apm-integration.md](apm-integration.md) §7.
 
 ---
 
@@ -369,6 +380,7 @@ credstore) would foreclose options we have not evaluated.
 | kernel cmdline / SMBIOS / fw_cfg | no | bad | yes | no | good | classic |
 | registry-hosted config + apm fetch | maybe | good | **no** | yes | fair | custom |
 | per-package `/etc/aos/<pkg>/` overlay + bind-mount | no | fair | yes | maybe | good | classic |
+| systemd-confext config image (signed/verity) | no | good (integrity, not secrecy) | yes | no | good | recent |
 
 **Decision criteria to apply:** reloadability, secret-at-rest isolation,
 air-gapped suitability, per-instance override ease, schema enforcement, clean
@@ -423,10 +435,13 @@ nspawn container and its `/var/lib/machines` rootfs and persistent state.
 
 **Why it matters.** Upgrading a workload means swapping the container root and
 restarting the unit; rollback means switching back a generation. Stateful
-packages (databases) complicate this (persistent volumes, snapshots). For k3s,
-restart **drains workloads** — upgrade is disruptive. Without a defined story,
-upgrades risk orphaned roots in `/var/lib/machines`, state loss, or wedged
-units.
+packages (databases) complicate this (persistent volumes, snapshots). For k3s
+under the nspawn materialization, restart **kills all pods** — private PID-ns
+teardown loses today's `KillMode=process` survival property (see
+[container-model.md](container-model.md) §"The `KillMode=process` regression"
+and Decision 17) — so upgrade is disruptive well beyond a drain. Without a
+defined story, upgrades risk orphaned roots in `/var/lib/machines`, state loss,
+or wedged units.
 
 **Options.**
 - Ephemeral container roots (read-only image + `--volatile=overlay`, state in
@@ -544,9 +559,13 @@ memory. Changing them later is a breaking change.
 - Shorter prefixes (`pkg-`, `sys-`) — risk collision / less clarity.
 
 **Proposed next step.** *packages-core*: fix the naming convention **once**,
-before Decision 14's rename, and assert it. **DECIDE-EARLY**. The doc set's
-examples now use `aos-pkg-<name>` consistently; this entry records that the
-naming is a decision, not a fait accompli.
+before Decision 14's rename, and assert it. **RESOLVED: `aos-pkg-<name>`** —
+the majority usage across the doc set; [migration.md](migration.md) §4 has been
+updated to match (its earlier claim that the set had standardized on the
+shorter `aos-<pkg>` was wrong). The nspawn template stays
+`aos-package@.service`; its internal references are `PartOf=aos-pkg-%i.target`
+(a `%i`-expansion mismatch here was a real bug in an earlier draft of
+[container-model.md](container-model.md)).
 
 ---
 
@@ -589,6 +608,42 @@ the package generation. Spec in [apm-integration.md](apm-integration.md) §4.1.
 
 ---
 
+## 17. Execution substrate: nspawn vs. per-unit sandboxing (`RootImage=` + directives)
+
+**Statement.** The doc set materializes the `[permissions]` manifest as
+systemd-nspawn flags. systemd offers a second substrate: **per-unit
+sandboxing** — `RootImage=`/`RootDirectory=` plus the unit isolation directives
+(`PrivateNetwork=`, `PrivateUsers=`, `CapabilityBoundingSet=`, `DeviceAllow=`,
+`BindPaths=`, `SystemCallFilter=`, `ProtectSystem=strict`) — the
+portable-services model, usable without `portabled` since the directives are
+core service-manager features and `apm` reimplements the attach logic anyway.
+See "Substrate decision" in [container-model.md](container-model.md).
+
+**Why it matters.** The manifest is substrate-independent — every field maps
+onto a directive as cleanly as onto an nspawn flag. The per-unit substrate
+dissolves the k3s `KillMode=process` regression (Decision 11), removes the
+second service manager for single-unit packages (no in-container PID1, no
+nesting risk — Decision 4; no container-root image for single-binary packages —
+Decision 5), and shrinks nspawn's honest use case to "package needs its own
+multi-unit init tree" — currently approximately none. Choosing the substrate
+late invalidates the container-root builder, image format, and template
+decisions, so it is upstream of Decisions 4, 5, 11, and 13.
+
+**Options.**
+- Per-unit sandboxing as the default materialization; nspawn opt-in for
+  packages that need an init tree. (Lean.)
+- nspawn everywhere (the current doc set), accepting the k3s regression and
+  the nesting/test costs.
+
+**Proposed next step.** *packages-core* + *pkgs*: a head-to-head spike —
+materialize `test-http-server`'s empty manifest both ways, and k3s's manifest
+as a per-unit host service; compare unit text, teardown semantics, and test
+harness cost. Record the outcome in
+[container-model.md](container-model.md) §"Substrate decision".
+**DECIDE-BEFORE-MVP** (upstream of 4, 5, 11, 13).
+
+---
+
 ## Decision summary
 
 | # | Decision | Disposition | Owner |
@@ -607,8 +662,9 @@ the package generation. Spec in [apm-integration.md](apm-integration.md) §4.1.
 | 12 | Package metadata schema (container/service) | DECIDE-EARLY | apm / packages-core |
 | 13 | Performance & init strategy | DEFER (measure) | pkgs / test-infra |
 | 14 | Rename blast radius & sequencing | DECIDE-BEFORE-MVP | packages-core |
-| 15 | Systemd unit naming convention | DECIDE-EARLY | packages-core |
+| 15 | Systemd unit naming convention — **RESOLVED: `aos-pkg-<name>`** | RESOLVED | packages-core |
 | 16 | Writable /etc overlay path for runtime-installed package units | DECIDE-BEFORE-MVP | boot / apm |
+| 17 | Execution substrate: per-unit sandboxing (`RootImage=` + directives) vs. nspawn | DECIDE-BEFORE-MVP | packages-core / pkgs |
 
 ---
 

@@ -142,6 +142,13 @@ separate `packages.d/desired.toml`, or fold both into one document.
 
 ### 3.2 The systemd.units[].enabled removal — how "enabled" is expressed now
 
+> **Canonical statement.** This section is the doc set's single source of truth
+> for how enable is expressed. `../roles/targets-and-sandbox.md` §"Activation"
+> and [container-model.md](container-model.md)'s invariant list describe the
+> roles-era single `systemd.units[]` entry; for packages that path is
+> superseded by the options below (lean **Option B**). Where the docs disagree,
+> this section wins.
+
 The original roles design enabled a role by emitting **one**
 `systemd.units[]` entry per role in the Ignition config with `enabled: true`,
 relying on Ignition to read the unit's `[Install]` section and synthesize the

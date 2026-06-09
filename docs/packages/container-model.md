@@ -64,6 +64,52 @@ specific `systemd-nspawn` / unit knob. The full surface, the manifest examples
 [permissions.md](permissions.md). The nspawn-flag mechanics below are the *how*;
 the manifest is the *what*.
 
+## Substrate decision (OPEN): nspawn vs. per-unit sandboxing
+
+This doc plans the nspawn substrate, but the substrate choice itself is **not
+settled** — it is Decision 17 in [open-questions.md](open-questions.md). systemd
+offers a second substrate purpose-built for this niche: **per-unit sandboxing**
+— `RootImage=`/`RootDirectory=` plus the unit-level isolation directives
+(`PrivateNetwork=`, `PrivateUsers=`, `CapabilityBoundingSet=`, `DeviceAllow=`,
+`BindPaths=`/`BindReadOnlyPaths=`, `SystemCallFilter=`, `ProtectSystem=strict`,
+`MountAPIVFS=`). This is the portable-services model — which systemd's own docs
+describe as "not a container, but lightweight application sandboxing using the
+same directives," with host-selected `strict`/`default`/`trusted` profiles, the
+same host-authoritative grant shape as [permissions.md](permissions.md).
+`portabled` being disabled is irrelevant: the directives are core
+service-manager features, and the attach logic is reimplemented by `apm`'s
+expose phase either way.
+
+Why this must be evaluated head-to-head before implementation:
+
+- **The `[permissions]` manifest is substrate-independent.** Every manifest
+  field maps onto a per-unit directive at least as cleanly as onto an nspawn
+  flag (`capabilities`→`CapabilityBoundingSet=`/`AmbientCapabilities=`,
+  `network`→`PrivateNetwork=`, `devices`→`DeviceAllow=`,
+  `host-paths`→`BindPaths=`, `privileged-users`→`PrivateUsers=`,
+  `syscalls`→`SystemCallFilter=`). The manifest is the architecture; nspawn is
+  one possible materialization.
+- **It dissolves the k3s `KillMode=process` regression** (see the k3s section
+  below): a high-privilege package becomes a host unit with few restrictions,
+  and non-disruptive restart keeps working.
+- **It removes the second service manager** for single-unit packages: no
+  in-container PID1, no `--notify=ready` proxying, no nspawn-in-VM nesting risk
+  (Decision 4), no container-root image for single-binary packages. The
+  "single-service root" strategy below is `RootImage=` with extra steps.
+- **nspawn's remaining honest use case** is a package that needs its own
+  multi-unit init tree — currently a set of approximately zero (k3s is one
+  binary plus a preflight, both expressible as host units under the target).
+
+Prior-art note: NixOS's declarative nspawn `containers.*` is the closest
+precedent for "module system generates nspawn units," and it is widely
+considered one of NixOS's weaker subsystems (machined coupling,
+restart-on-switch semantics, networking friction); much of that ecosystem moved
+to podman-systemd (quadlet) or per-unit hardening. The likely landing:
+**per-unit sandboxing as the default materialization, nspawn opt-in** for
+packages that genuinely need an init tree. Everything below specifies the nspawn
+materialization; the *boundary semantics* (what an empty manifest isolates, what
+a grant opens) stand either way.
+
 ## Feasibility baseline (from investigation)
 
 `systemd-nspawn` **is built and shipped**. It is built unconditionally by
@@ -154,7 +200,7 @@ exact flags per package, **needs verification** of each against systemd 259.1):
 [Unit]
 Description=AOS package container %i
 After=network-online.target
-PartOf=aos-%i.target
+PartOf=aos-pkg-%i.target
 
 [Service]
 Type=notify
@@ -172,7 +218,7 @@ ExecStart=/usr/lib/systemd/systemd-nspawn \
 Restart=on-failure
 
 [Install]
-WantedBy=aos-%i.target
+WantedBy=aos-pkg-%i.target
 ```
 
 Per-package divergence (network mode, binds, capabilities, user-ns policy) is
@@ -216,7 +262,10 @@ Three modes, selected by the manifest's `network` permission:
   runs DHCP or static. nftables on the host gates container↔host and
   container↔world traffic — and this is exactly the `aos-pkg-<name>-firewall.service`
   gated oneshot from the target-sandbox design, now opening the container's
-  ports on the host base table.
+  ports on the host base table. Reachability from off-host additionally needs
+  host-side forwarding — nspawn `--port=` (DNAT) or an equivalent nftables DNAT
+  rule installed by the same gated service; both revert on stop. *Needs
+  verification:* `--port=` behavior with networkd-managed veths.
 - **`--network-zone=<zone>` (multi-container L2).** nspawn maintains a virtual
   zone hub so several containers share an isolated L2 without an external
   bridge. Available, less-documented; veth+managed-network is the more
@@ -403,6 +452,33 @@ The isolation benefit is near zero. The honest recommendation:
 > sandbox. It must be labelled as cosmetic isolation, not a security boundary —
 > and now that labelling lives in the signed manifest, not in tribal knowledge.
 
+### The `KillMode=process` regression (restart kills every pod)
+
+The single biggest cost of wrapping k3s in nspawn, and it must not be glossed:
+today's bare unit (`modules/roles/kubernetes/k3s-worker.nix`) sets
+`KillMode=process` — deliberately, inherited from upstream k3s packaging — so
+stopping or upgrading `k3s.service` kills only the k3s supervisor process.
+containerd, the shims, and **all pod processes survive the restart**. That is
+the property that makes in-place k3s upgrades routine in production.
+
+A systemd-nspawn container **always has a private PID namespace** (there is no
+nspawn option to share the host's), and PID-namespace teardown kills everything
+in it. Under the nspawn materialization, every
+`systemctl restart aos-pkg-k3s-worker.target` — including every package upgrade
+per [apm-integration.md](apm-integration.md) §5 — kills containerd, every shim,
+and every pod outright. "Upgrades drain the node" understates it: it is an
+ungraceful mass pod kill unless an explicit cordon+drain step is orchestrated
+first.
+
+For calibration: k3d and kind accept restart-kills-everything because they are
+dev tools; the one production system running kubelet containerized (Talos, under
+containerd with host namespaces) treats kubelet restart semantics as a
+first-class engineering problem. The options are (a) accept it and loudly
+document "k3s upgrade = pod kill; mitigate with drain orchestration," or (b)
+materialize k3s as a host unit under its target (the per-unit substrate above),
+which keeps `KillMode=process` intact. There is no nspawn flag that recovers
+it. Tracked in [open-questions.md](open-questions.md) Decisions 11 and 17.
+
 This is the **privilege gradient**, not a shape split: the same one-shape
 container model spans "full sandbox" (empty manifest) to "packaging wrapper"
 (k3s), and the manifest is what places a package on it. See
@@ -421,13 +497,24 @@ Nothing here weakens [../roles/targets-and-sandbox.md](../roles/targets-and-sand
   Invariant 2 holds.
 - **Containment edges** — the nspawn instance carries `PartOf=aos-pkg-<name>.target`
   like every other member. Invariant 3 holds.
-- **One Ignition `systemd.units[]` entry** — still exactly the target enable.
-  The container template and its drop-in ship inert in EROFS; Ignition flips
-  the one switch.
+- **One enable switch** — still exactly the target. How that switch is flipped
+  is owned by [boot-activation.md](boot-activation.md) §3.2 (canonical; lean
+  Option B, `apm` performs enable) — the roles-era single Ignition
+  `systemd.units[]` entry described in the precursor doc is superseded for
+  packages. The container template and its drop-in ship inert in EROFS either
+  way.
 
 ## Open items (carried to [open-questions.md](open-questions.md))
 
+- **Decision 17: the substrate itself** — per-unit `RootImage=` sandboxing as
+  the default materialization vs. nspawn everywhere (see "Substrate decision"
+  above). Upstream of most items below.
 - Template-with-drop-ins vs. fully-rendered per-package container unit.
+  Prior art: quadlet (podman's systemd generator, the canonical
+  container-under-systemd path) chose fully-rendered per-container units over
+  template+drop-ins after per-instance divergence overwhelmed the template; our
+  per-package divergence is the entire manifest, so the evidence points to
+  fully-rendered.
 - `PackageMeta`/registry schema extension for image + nspawn metadata (today:
   none; `crates/aos-package/src/types.rs`).
 - Where the image is materialized and how `apm` links it into `/var/lib/machines`

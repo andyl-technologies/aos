@@ -40,7 +40,7 @@ Explicitly **out of scope here** (each has its own doc + later increment):
 - Install-at-boot via Ignition + apm — [`boot-activation.md`](boot-activation.md).
 - Config/credential delivery — [`config.md`](config.md) (decision **TBD**).
 
-The naming we adopt here (`aos.packages.<name>`, `aos-<pkg>.target`,
+The naming we adopt here (`aos.packages.<name>`, `aos-pkg-<name>.target`,
 `/etc/aos/packages/<name>`) is the surface those later docs already assume, so
 doing the rename first removes churn from them.
 
@@ -143,22 +143,26 @@ prefix because targets share a flat namespace with `multi-user.target`:
 
 | PR #28 (role) | Packages |
 |---|---|
-| `aos-<role>.target` | `aos-<pkg>.target` |
-| `aos-<role>-modules.service` | `aos-<pkg>-modules.service` |
-| `aos-<role>-sysctl.service` | `aos-<pkg>-sysctl.service` |
-| `aos-<role>-firewall.service` | `aos-<pkg>-firewall.service` |
+| `aos-<role>.target` | `aos-pkg-<name>.target` |
+| `aos-<role>-modules.service` | `aos-pkg-<name>-modules.service` |
+| `aos-<role>-sysctl.service` | `aos-pkg-<name>-sysctl.service` |
+| `aos-<role>-firewall.service` | `aos-pkg-<name>-firewall.service` |
 
-**Naming decision (resolve before increment 4).** The investigation notes
-floated a longer `aos-pkg-<name>-…` prefix to avoid collision in the global
-systemd namespace. The rest of this doc set has already standardized on
-`aos-<pkg>.target` and `aos-package@.service` (see
-[`README.md`](README.md), [`container-model.md`](container-model.md)). We keep
-`aos-<pkg>` here for consistency with those docs. This is the *minimal* mechanical
-substitution of `<role>`→`<pkg>` in PR #28's synthesis and reads cleanly when
-`<pkg>` is e.g. `k3s-worker` (`aos-k3s-worker.target`). If a future package name
-ever collides with a stock systemd unit, the `aos-` prefix already disambiguates;
-the longer `aos-pkg-` is held in reserve and **needs verification** only if a
-real collision appears.
+**Naming decision (RESOLVED: `aos-pkg-<name>`).** An earlier draft of this
+section claimed the doc set had standardized on the shorter `aos-<pkg>.target`;
+that was wrong — [`README.md`](README.md), [`permissions.md`](permissions.md),
+[`container-model.md`](container-model.md),
+[`boot-activation.md`](boot-activation.md), and
+[`open-questions.md`](open-questions.md) all use `aos-pkg-<name>`. We
+standardize on **`aos-pkg-<name>`** (Decision 15 in
+[`open-questions.md`](open-questions.md), now resolved): it is the majority
+usage, it makes "this unit belongs to a package" explicit in the flat global
+unit namespace, and it keeps roles-era `aos-<role>` names (PR #28) visually
+distinct from packages-era units during the transition. The nspawn template
+stays `aos-package@.service` with instance `%i` = package name, so its internal
+references are `PartOf=aos-pkg-%i.target` / `WantedBy=aos-pkg-%i.target` (a
+`%i`-expansion mismatch here was a real bug in an earlier draft of
+[`container-model.md`](container-model.md), since fixed).
 
 Note the container path adds a second unit family — the `aos-package@.service`
 nspawn template from [`container-model.md`](container-model.md) — which is
@@ -214,8 +218,8 @@ and they are **host-global** by nature:
   to schedule pods, so k3s declares `network = "host"` and `cgroup-delegate`.
 
 So after the rename, k3s is **still a container** with PR #28's target +
-gated-service shape (`aos-k3s-worker.target` gating
-`aos-k3s-worker-modules.service` etc.), but its manifest declares away most of
+gated-service shape (`aos-pkg-k3s-worker.target` gating
+`aos-pkg-k3s-worker-modules.service` etc.), but its manifest declares away most of
 the boundary: the nspawn instance is a packaging/lifecycle wrapper, not a
 security boundary. It must be labeled a *nominal* boundary, not a sandbox
 ([`container-model.md`](container-model.md) discusses the `--network=host` +
@@ -306,7 +310,8 @@ detailed in the sibling docs.
 ### Increment 4 — synthesized target naming reconciliation
 
 - Land the `<role>`→`<pkg>` substitution in PR #28's synthesis so emitted units
-  are `aos-<pkg>.target` / `aos-<pkg>-{modules,sysctl,firewall}.service`.
+  are `aos-pkg-<name>.target` /
+  `aos-pkg-<name>-{modules,sysctl,firewall}.service` (Decision 15, resolved).
 - If PR #28 has not yet merged, this folds into the rebase of #28 onto the
   `packages` names rather than being a separate PR. **Needs verification** of
   #28's merge state at the time this increment is scheduled.
