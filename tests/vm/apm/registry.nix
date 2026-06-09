@@ -1075,8 +1075,10 @@ in {
 
       TOOL_V1_STORE=$(make_channel_tool 1.0.0)
       TOOL_V2_STORE=$(make_channel_tool 2.0.0)
+      TOOL_V3_STORE=$(make_channel_tool 3.0.0)
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V3_HASH=$(basename "$TOOL_V3_STORE" | cut -d- -f1)
 
       ssh-keygen -q -t ed25519 -N "" -f /tmp/channel-release-key
       CHANNEL_PUBLIC=$(cut -d ' ' -f2 < /tmp/channel-release-key.pub)
@@ -1264,6 +1266,103 @@ in {
       "$PROFILE_TOOL" > /tmp/channel-tool-v2.out
       assert_file_contains /tmp/channel-tool-v2.out \
         "channel-tool 2.0.0 executed" "upgraded v2 channel tool executes"
+
+      export HOME=/tmp
+      export USER=root
+      $APR release 3.0.0 \
+        --registry chan-reg \
+        --store-path "$TOOL_V3_STORE" \
+        --name channel-tool \
+        --description "Channel workflow tool" \
+        --license MIT \
+        --maintainer channel@example.invalid \
+        --previous 2.0.0 \
+        --key /tmp/channel-release-key \
+        --cache-output /tmp/channel-cache \
+        --cache-url http://127.0.0.1:18091 \
+        > /tmp/channel-release-v3.out 2>&1 || {
+        cat /tmp/channel-release-v3.out
+        fail "apr release creates v3 before direct channel advance"
+      }
+      cat /tmp/channel-release-v3.out
+      assert_file_contains /tmp/channel-release-v3.out \
+        "Created signed tag '3.0.0'" \
+        "apr release creates signed v3 tag"
+      assert_file_exists "/tmp/channel-cache/$TOOL_V3_HASH.narinfo" \
+        "static cache has channel-tool v3 narinfo"
+
+      if $APR channel advance stable 3.0.0 \
+        --registry chan-reg \
+        --key /tmp/channel-release-key \
+        --count 1 \
+        --partitions "$BUCKET" \
+        > /tmp/channel-advance-conflict.out 2>&1; then
+        cat /tmp/channel-advance-conflict.out
+        fail "apr channel advance should reject conflicting partition selectors"
+      else
+        cat /tmp/channel-advance-conflict.out
+        pass "apr channel advance rejects conflicting partition selectors"
+      fi
+      assert_file_contains /tmp/channel-advance-conflict.out \
+        "use only one of --count or --partitions" \
+        "apr channel advance explains selector conflict"
+
+      $APR channel advance stable 3.0.0 \
+        --registry chan-reg \
+        --key /tmp/channel-release-key \
+        --partitions "$BUCKET" \
+        > /tmp/channel-advance-v3.out 2>&1 || {
+        cat /tmp/channel-advance-v3.out
+        fail "apr channel advance moves selected consumer partition"
+      }
+      cat /tmp/channel-advance-v3.out
+      assert_file_contains /tmp/channel-advance-v3.out \
+        "Advanced channel 'stable' 1 partition(s) to 3.0.0" \
+        "apr channel advance reports direct partition rollout"
+      $APR channel status stable --registry chan-reg > /tmp/channel-status-v3.out 2>&1
+      assert_file_contains /tmp/channel-status-v3.out "3.0.0" \
+        "channel status reports v3 frontier after direct advance"
+      assert_file_contains /tmp/channel-status-v3.out "1/256" \
+        "channel status keeps one v3 partition after direct advance"
+
+      export HOME=/tmp/channel-consumer
+      export USER=channeluser
+      nix-store --delete --ignore-liveness "$TOOL_V3_STORE" \
+        > /tmp/channel-delete-v3.out 2>&1 || {
+        cat /tmp/channel-delete-v3.out
+        fail "deleted v3 store path before direct channel upgrade"
+      }
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM update --registry chan-reg > /tmp/channel-update-v3.out 2>&1 || {
+        cat /tmp/channel-update-v3.out
+        fail "apm update follows direct channel advance"
+      }
+      cat /tmp/channel-update-v3.out
+      assert_file_contains "$CONSUMER_CONFIG" 'floor = "3.0.0"' \
+        "direct channel advance raises consumer semver floor"
+      $APM list --upgradable > /tmp/channel-upgradable-v3.out 2>&1 || {
+        cat /tmp/channel-upgradable-v3.out
+        fail "apm list --upgradable sees direct channel advance"
+      }
+      assert_file_contains /tmp/channel-upgradable-v3.out "channel-tool" \
+        "direct channel upgrade candidate names package"
+      assert_file_contains /tmp/channel-upgradable-v3.out "3.0.0" \
+        "direct channel upgrade candidate shows v3"
+
+      $APM upgrade channel-tool --yes > /tmp/channel-upgrade-v3.out 2>&1 || {
+        cat /tmp/channel-upgrade-v3.out
+        fail "apm upgrade downloads and activates directly advanced v3"
+      }
+      cat /tmp/channel-upgrade-v3.out
+      assert_file_contains /tmp/channel-upgrade-v3.out "Downloading" \
+        "apm upgrade downloads directly advanced v3 NAR"
+      assert_file_contains /tmp/channel-upgrade-v3.out "Upgraded 1 package" \
+        "apm upgrade activates directly advanced v3"
+      "$PROFILE_TOOL" > /tmp/channel-tool-v3.out
+      assert_file_contains /tmp/channel-tool-v3.out \
+        "channel-tool 3.0.0 executed" "upgraded v3 channel tool executes"
 
       kill "$ORIGIN_PID" "$CACHE_PID" 2>/dev/null || true
       wait "$ORIGIN_PID" "$CACHE_PID" 2>/dev/null || true
