@@ -2012,6 +2012,7 @@ in {
       export HOME=/tmp/lifecycle-consumer
       export USER=lifecycleuser
       APM_CONFIG="$HOME/.config/apm"
+      PROFILE="/var/lib/profiles/per-user/$USER"
       mkdir -p "$HOME"
       $APM registry add file:///tmp/lifecycle-origin.git \
         --name lifecycle-reg \
@@ -2099,8 +2100,14 @@ in {
         "apm list --upgradable reports lifecycle tool"
       assert_file_contains /tmp/lifecycle-upgradable.out "2.0.0" \
         "apm list --upgradable reports v2 candidate"
+      if grep -q "lifecycle-runtime" /tmp/lifecycle-upgradable.out; then
+        cat /tmp/lifecycle-upgradable.out
+        fail "apm list --upgradable should not advertise auto dependencies as independent upgrades"
+      else
+        pass "apm list --upgradable omits auto dependency roots"
+      fi
 
-      $APM upgrade lifecycle-tool --yes > /tmp/lifecycle-upgrade.out 2>&1 || {
+      $APM upgrade --yes > /tmp/lifecycle-upgrade.out 2>&1 || {
         cat /tmp/lifecycle-upgrade.out
         fail "apm upgrade downloads and imports v2 closure"
       }
@@ -2133,6 +2140,22 @@ in {
       $APM list --installed > /tmp/lifecycle-installed-v2.out 2>&1
       assert_file_contains /tmp/lifecycle-installed-v2.out "lifecycle-tool" \
         "apm list --installed reports lifecycle tool after upgrade"
+      assert_file_contains "$PROFILE/meta/$TOOL_V2_HASH.json" '"explicit": true' \
+        "upgraded tool remains explicit"
+      assert_file_contains "$PROFILE/meta/$RUNTIME_V2_HASH.json" '"explicit": false' \
+        "upgraded runtime remains auto-installed"
+      assert_file_not_exists "$PROFILE/meta/$RUNTIME_V1_HASH.json" \
+        "upgrade drops obsolete auto dependency metadata"
+      if [ -L "$PROFILE/current/usr/$RUNTIME_V1_HASH" ]; then
+        fail "upgrade should drop obsolete auto dependency profile root"
+      else
+        pass "upgrade drops obsolete auto dependency profile root"
+      fi
+      if [ -L "$PROFILE/current/usr/$RUNTIME_V2_HASH" ]; then
+        pass "upgrade records new auto dependency profile root"
+      else
+        fail "upgrade should root the new auto dependency"
+      fi
       if grep -q "lifecycle-tool/lifecycle-reg 1.0.0" /tmp/lifecycle-installed-v2.out; then
         cat /tmp/lifecycle-installed-v2.out
         fail "apm list --installed should not retain old explicit package metadata after upgrade"

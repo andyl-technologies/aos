@@ -373,7 +373,7 @@ fn installed_store_hashes_for_names(
         .collect()
 }
 
-fn copy_roots_except_hashes(
+pub(crate) fn copy_roots_except_hashes(
     from: &super::profile::Generation,
     to: &super::profile::Generation,
     skip_hashes: &HashSet<String>,

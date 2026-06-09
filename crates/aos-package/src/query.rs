@@ -268,9 +268,7 @@ pub async fn list(
 
             // Determine upgradable: installed but registry has different store path hash.
             let is_upgradable = if let Some(inst) = installed {
-                let installed_hash = store_path_hash(&inst.store_path);
-                let registry_hash = store_path_hash(&meta.store_path);
-                installed_hash != registry_hash
+                is_upgradable_installed_root(inst, meta)
             } else {
                 false
             };
@@ -494,6 +492,17 @@ fn installed_by_source(meta_list: &[InstalledMeta]) -> HashMap<(String, String),
         .collect()
 }
 
+fn is_upgradable_installed_root(installed: &InstalledMeta, registry_meta: &PackageMeta) -> bool {
+    let Some(apm) = installed.apm.as_ref() else {
+        return false;
+    };
+    if !apm.explicit {
+        return false;
+    }
+
+    store_path_hash(&installed.store_path) != store_path_hash(&registry_meta.store_path)
+}
+
 /// Detect the current platform string (e.g. "x86_64-linux").
 fn current_platform() -> String {
     let arch = std::env::consts::ARCH;
@@ -641,6 +650,17 @@ mod tests {
         store_path: &str,
         held: bool,
     ) -> InstalledMeta {
+        sample_installed_meta_with_explicit(name, version, registry, store_path, true, held)
+    }
+
+    fn sample_installed_meta_with_explicit(
+        name: &str,
+        version: &str,
+        registry: &str,
+        store_path: &str,
+        explicit: bool,
+        held: bool,
+    ) -> InstalledMeta {
         InstalledMeta {
             store_path: store_path.into(),
             pushed_at: 1707800000,
@@ -652,7 +672,7 @@ mod tests {
             apm: Some(ApmMeta {
                 name: name.into(),
                 version: version.into(),
-                explicit: true,
+                explicit,
                 registry: registry.into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held,
@@ -839,12 +859,14 @@ mod tests {
             "/var/lib/store/oldhash12345-curl-8.4.0",
             false,
         );
-        // zlib installed with the same hash (no upgrade)
-        let zlib_installed = sample_installed_meta(
+        // zlib installed with a different hash, but as an auto-installed
+        // dependency it should not be advertised as an independent upgrade.
+        let zlib_installed = sample_installed_meta_with_explicit(
             "zlib",
-            "1.3.1",
+            "1.3.0",
             "aos-core",
-            "/var/lib/store/r4q1m2kp8v3x-zlib-1.3.1",
+            "/var/lib/store/oldzlibhash1-zlib-1.3.0",
+            false,
             false,
         );
 
@@ -859,9 +881,7 @@ mod tests {
                     .get(&(name.to_string(), reg.config.name.clone()))
                     .copied()
                 {
-                    let installed_hash = store_path_hash(&inst.store_path);
-                    let registry_hash = store_path_hash(&meta.store_path);
-                    if installed_hash != registry_hash {
+                    if is_upgradable_installed_root(inst, meta) {
                         upgradable.push(name.to_string());
                     }
                 }
