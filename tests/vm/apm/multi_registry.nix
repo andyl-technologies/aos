@@ -111,6 +111,33 @@
     };
   sameVersionLowTool = mkSameVersionTool "low-priority";
   sameVersionHighTool = mkSameVersionTool "high-priority";
+  mkSwitchTool = origin:
+    pkgs.mkDerivation {
+      pname = "switch-tool";
+      version = "1.0.0";
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin" "$out/share/switch-tool"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              "printf 'switch-tool 1.0.0 from ${origin}\\n'" \
+              > "$out/bin/switch-tool"
+            chmod +x "$out/bin/switch-tool"
+            printf 'switch-tool 1.0.0 from ${origin}\n' \
+              > "$out/share/switch-tool/origin.txt"
+          '';
+        }
+      ];
+    };
+  switchLowTool = mkSwitchTool "low-priority";
+  switchHighTool = mkSwitchTool "high-priority";
   priorityLowClient = pkgs.mkDerivation {
     pname = "priority-client";
     version = "1.0.0";
@@ -180,6 +207,8 @@
       priorityLowClient
       sameVersionLowTool
       sameVersionHighTool
+      switchLowTool
+      switchHighTool
     ];
 in {
   # ---------------------------------------------------------------------------
@@ -307,16 +336,47 @@ in {
         git -C "$reg_dir" push origin "$branch"
       }
 
+      publish_switch_tool() {
+        registry="$1"
+        store_path="$2"
+        cache_dir="$3"
+        cache_url="$4"
+
+        reg_dir="$REG_STORAGE/$registry"
+        $APR publish "$store_path" \
+          --name switch-tool \
+          --version 1.0.0 \
+          --description "Source-switch package from $registry" \
+          --license MIT \
+          --maintainer priority@example.invalid \
+          --registry "$registry" \
+          --no-commit
+        $APR cache generate \
+          --registry "$registry" \
+          --output "$cache_dir" \
+          --cache-url "$cache_url" \
+          --priority 45 \
+          --no-commit
+        git -C "$reg_dir" add -A
+        git -C "$reg_dir" commit -m "release: switch-tool 1.0.0"
+        branch=$(git -C "$reg_dir" symbolic-ref --short HEAD)
+        git -C "$reg_dir" push origin "$branch"
+      }
+
       LOW_STORE="${priorityLowTool}"
       HIGH_STORE="${priorityHighTool}"
       LOW_CLIENT_STORE="${priorityLowClient}"
       SAME_LOW_STORE="${sameVersionLowTool}"
       SAME_HIGH_STORE="${sameVersionHighTool}"
+      SWITCH_LOW_STORE="${switchLowTool}"
+      SWITCH_HIGH_STORE="${switchHighTool}"
       LOW_HASH=$(basename "$LOW_STORE" | cut -d- -f1)
       HIGH_HASH=$(basename "$HIGH_STORE" | cut -d- -f1)
       LOW_CLIENT_HASH=$(basename "$LOW_CLIENT_STORE" | cut -d- -f1)
       SAME_LOW_HASH=$(basename "$SAME_LOW_STORE" | cut -d- -f1)
       SAME_HIGH_HASH=$(basename "$SAME_HIGH_STORE" | cut -d- -f1)
+      SWITCH_LOW_HASH=$(basename "$SWITCH_LOW_STORE" | cut -d- -f1)
+      SWITCH_HIGH_HASH=$(basename "$SWITCH_HIGH_STORE" | cut -d- -f1)
 
       publish_priority_registry low-priority "$LOW_STORE" 9.0.0 \
         /tmp/low-priority-cache http://127.0.0.1:18101
@@ -324,9 +384,13 @@ in {
         /tmp/low-priority-cache http://127.0.0.1:18101
       publish_same_version_tool low-priority "$SAME_LOW_STORE" \
         /tmp/low-priority-cache http://127.0.0.1:18101
+      publish_switch_tool low-priority "$SWITCH_LOW_STORE" \
+        /tmp/low-priority-cache http://127.0.0.1:18101
       publish_priority_registry high-priority "$HIGH_STORE" 2.0.0 \
         /tmp/high-priority-cache http://127.0.0.1:18102
       publish_same_version_tool high-priority "$SAME_HIGH_STORE" \
+        /tmp/high-priority-cache http://127.0.0.1:18102
+      publish_switch_tool high-priority "$SWITCH_HIGH_STORE" \
         /tmp/high-priority-cache http://127.0.0.1:18102
       LOW_BRANCH=$(git -C "$REG_STORAGE/low-priority" symbolic-ref --short HEAD)
       HIGH_BRANCH=$(git -C "$REG_STORAGE/high-priority" symbolic-ref --short HEAD)
@@ -341,6 +405,10 @@ in {
         "low priority cache has same-version narinfo"
       assert_file_exists "/tmp/high-priority-cache/$SAME_HIGH_HASH.narinfo" \
         "high priority cache has same-version narinfo"
+      assert_file_exists "/tmp/low-priority-cache/$SWITCH_LOW_HASH.narinfo" \
+        "low priority cache has switch-tool narinfo"
+      assert_file_exists "/tmp/high-priority-cache/$SWITCH_HIGH_HASH.narinfo" \
+        "high priority cache has switch-tool narinfo"
 
       ${iproute2Bin} link set lo up || true
       ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
@@ -426,9 +494,11 @@ in {
       mount -o remount,rw / || true
       delete_store_path "$HIGH_STORE" "high-priority-tool"
       delete_store_path "$SAME_HIGH_STORE" "high-priority-same-version-tool"
+      delete_store_path "$SWITCH_HIGH_STORE" "high-priority-switch-tool"
       delete_store_path "$LOW_CLIENT_STORE" "low-priority-client"
       delete_store_path "$LOW_STORE" "low-priority-tool"
       delete_store_path "$SAME_LOW_STORE" "low-priority-same-version-tool"
+      delete_store_path "$SWITCH_LOW_STORE" "low-priority-switch-tool"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -456,6 +526,60 @@ in {
         fail "unfiltered install should not install lower priority duplicate"
       else
         pass "unfiltered install excludes lower priority duplicate"
+      fi
+
+      $APM install switch-tool --yes > /tmp/switch-install-high.out 2>&1 || {
+        cat /tmp/switch-install-high.out
+        fail "apm install downloads high priority switch-tool"
+      }
+      cat /tmp/switch-install-high.out
+      assert_file_contains /tmp/switch-install-high.out "Downloading" \
+        "unfiltered switch-tool install downloads high priority NAR"
+      assert_store_valid "$SWITCH_HIGH_STORE" "high priority switch-tool"
+      CURRENT_PROFILE="/var/lib/profiles/per-user/$USER/current"
+      if [ -L "$CURRENT_PROFILE/usr/$SWITCH_HIGH_HASH" ]; then
+        pass "unfiltered switch-tool install records high priority profile root"
+      else
+        fail "unfiltered switch-tool install should root the high priority package"
+      fi
+      PROFILE_SWITCH_TOOL="/var/lib/profiles/per-user/$USER/current/bin/switch-tool"
+      "$PROFILE_SWITCH_TOOL" > /tmp/switch-run-high.out
+      assert_file_contains /tmp/switch-run-high.out \
+        "switch-tool 1.0.0 from high-priority" \
+        "unfiltered switch-tool install executes high priority package"
+
+      $APM install switch-tool --registry low-priority --yes \
+        > /tmp/switch-install-low.out 2>&1 || {
+        cat /tmp/switch-install-low.out
+        fail "apm install --registry switches installed package source"
+      }
+      cat /tmp/switch-install-low.out
+      assert_file_contains /tmp/switch-install-low.out "Downloading" \
+        "source switch downloads lower priority NAR"
+      assert_store_valid "$SWITCH_LOW_STORE" "low priority switch-tool"
+      "$PROFILE_SWITCH_TOOL" > /tmp/switch-run-low.out
+      assert_file_contains /tmp/switch-run-low.out \
+        "switch-tool 1.0.0 from low-priority" \
+        "source switch profile executable comes from selected registry"
+      if [ -L "$CURRENT_PROFILE/usr/$SWITCH_LOW_HASH" ]; then
+        pass "source switch records selected registry profile root"
+      else
+        fail "source switch should root the selected registry package"
+      fi
+      if [ -L "$CURRENT_PROFILE/usr/$SWITCH_HIGH_HASH" ]; then
+        fail "source switch should drop previous registry profile root"
+      else
+        pass "source switch drops previous registry profile root"
+      fi
+      $APM list --installed > /tmp/switch-installed-low.out 2>&1
+      assert_file_contains /tmp/switch-installed-low.out \
+        "switch-tool/low-priority 1.0.0" \
+        "source switch records selected registry metadata"
+      if ${grepBin} -q "switch-tool/high-priority" /tmp/switch-installed-low.out; then
+        cat /tmp/switch-installed-low.out
+        fail "source switch should drop previous registry metadata"
+      else
+        pass "source switch drops previous registry metadata"
       fi
 
       export HOME=/tmp/priority-filter-consumer
