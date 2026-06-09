@@ -10,7 +10,8 @@ use anyhow::{Context, Result, bail};
 use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;
-use super::registry::RegistrySet;
+use super::registry::{RegistrySet, store_path_hash};
+use super::types::{InstalledMeta, PackageMeta};
 use super::verify as hash_verify;
 use aos_core::error::AosError;
 use aos_core::output::Printer;
@@ -56,15 +57,11 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
 
     let store_path = &installed.store_path;
 
-    // 2. Load registries and resolve package for its nar_hash.
+    // 2. Load registries and resolve the exact installed package entry for
+    // its NAR hash. The latest registry candidate may differ after rollback.
     let enabled = config.enabled_registries();
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
-
-    let (_, pkg_meta) = reg_set
-        .resolve(package)
-        .ok_or_else(|| AosError::PackageNotFound {
-            name: package.to_string(),
-        })?;
+    let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
 
     let expected_hash = &pkg_meta.nar_hash;
 
@@ -90,6 +87,31 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
             Err(e)
         }
     }
+}
+
+fn resolve_installed_package_meta<'a>(
+    reg_set: &'a RegistrySet,
+    package: &str,
+    installed: &InstalledMeta,
+) -> Result<&'a PackageMeta> {
+    let installed_apm = installed
+        .apm
+        .as_ref()
+        .ok_or_else(|| AosError::PackageNotFound {
+            name: package.to_string(),
+        })?;
+    let installed_hash = store_path_hash(&installed.store_path);
+
+    reg_set
+        .resolve_hash_in(&installed_apm.registry, installed_hash)
+        .filter(|meta| meta.name == package)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "installed package '{package}' ({}) is not present in registry '{}' by store hash {installed_hash}",
+                installed_apm.version,
+                installed_apm.registry,
+            )
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +431,70 @@ references = []
         let hash1 = hash_verify::sha256_stream(b"content A".as_slice()).unwrap();
         let hash2 = hash_verify::sha256_stream(b"content B".as_slice()).unwrap();
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn verify_resolves_installed_store_hash_not_latest_candidate() {
+        let tmp = TempDir::new().unwrap();
+        let verify_tool_toml = r#"
+[package]
+name = "verifytool"
+description = "verify test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-verifytool-1.0.0"
+nar_hash = "sha256:v1"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-verifytool-2.0.0"
+nar_hash = "sha256:v2"
+nar_size = 2
+closure_size = 2
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+        let config = make_config_with_registry(&tmp, &[("verifytool", verify_tool_toml)]);
+        let enabled = config.enabled_registries();
+        let reg_set =
+            RegistrySet::load(&tmp.path().join("remote"), &enabled, "x86_64-linux").unwrap();
+        let (_, latest) = reg_set.resolve("verifytool").unwrap();
+        assert_eq!(latest.version, "2.0.0");
+
+        let installed = InstalledMeta {
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-verifytool-1.0.0".into(),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: "verifytool".into(),
+                version: "1.0.0".into(),
+                explicit: true,
+                registry: "test-reg".into(),
+                installed_at: "2026-02-16T00:00:00Z".into(),
+                held: false,
+            }),
+        };
+
+        let selected = resolve_installed_package_meta(&reg_set, "verifytool", &installed).unwrap();
+        assert_eq!(selected.version, "1.0.0");
+        assert_eq!(selected.nar_hash, "sha256:v1");
     }
 
     // -- verify: installed meta lookup (unit test) ---------------------------
