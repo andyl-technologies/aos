@@ -167,7 +167,10 @@ pub async fn run(
             }
             .into());
         }
-        printer.warning("No enabled registries found. Add one with `apm registry add`.");
+        printer.warning(&format!(
+            "No enabled registries found. Add one with `{} add`.",
+            aos_core::invocation::package_registry_command()
+        ));
     }
 
     Ok(())
