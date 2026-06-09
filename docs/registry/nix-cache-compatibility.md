@@ -159,8 +159,8 @@ nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array
 That VM creates a tiny fixed-output store path, generates signed static cache
 files with `apr cache generate`, serves them to stock Nix with
 `require-sigs = true`, and uploads the same cache to a mixed `file://`, `s3://`,
-and `sftp://` destination array. It passed on
-`dylan@builder-hil1-c13958ef` on 2026-06-08 with output
+and `sftp://` destination array. It passed on a remote KVM builder on
+2026-06-08 with output
 `/nix/store/bwp2ayp8r199n32s2csndcv43qmi38xr-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`;
 the output `serial.log` records the expected one-destination failure for the
 invalid `not-a-url` probe and
