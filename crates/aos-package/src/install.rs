@@ -31,6 +31,7 @@ pub async fn run(
     config: &ApmConfig,
     packages: &[String],
     registry_filter: Option<&str>,
+    reinstall: bool,
     dry_run: bool,
     yes: bool,
     ignore_lock: &IgnoreSysrootLock,
@@ -51,7 +52,7 @@ pub async fn run(
     let profile = Profile::open(config.scope)?;
     let installed = list_meta(&profile)?;
 
-    if requested_closures_already_installed(&closures, &installed) {
+    if !reinstall && requested_closures_already_installed(&closures, &installed) {
         printer.info("All requested packages are already installed. No changes made.");
         return Ok(());
     }
@@ -99,14 +100,18 @@ pub async fn run(
     let all_metas = collect_unique_metas(&closures);
 
     // Step 4: Filter missing store paths.
-    let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
-    let missing = filter_missing(&store_paths).await?;
-    let missing_set: HashSet<&str> = missing.iter().map(|s| s.as_str()).collect();
-    let to_download: Vec<&PackageMeta> = all_metas
-        .iter()
-        .filter(|m| missing_set.contains(m.store_path.as_str()))
-        .copied()
-        .collect();
+    let to_download: Vec<&PackageMeta> = if reinstall {
+        all_metas.clone()
+    } else {
+        let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
+        let missing = filter_missing(&store_paths).await?;
+        let missing_set: HashSet<&str> = missing.iter().map(|s| s.as_str()).collect();
+        all_metas
+            .iter()
+            .filter(|m| missing_set.contains(m.store_path.as_str()))
+            .copied()
+            .collect()
+    };
 
     // Step 5: Fetch narinfo for each missing path so the summary can show
     // real compressed sizes and the download can use the cache's URL/hash.
@@ -125,7 +130,9 @@ pub async fn run(
     };
 
     // Step 6: Print install summary.
-    print_summary(&closures, packages, &resolved, &all_metas, printer);
+    print_summary(
+        &closures, packages, &resolved, &all_metas, reinstall, printer,
+    );
 
     if dry_run {
         printer.info("Dry run -- no changes made.");
@@ -244,8 +251,13 @@ pub async fn run(
     profile.switch_to(&new_gen)?;
 
     printer.step(7, 7, "Done!");
+    let verb = if reinstall {
+        "Reinstalled"
+    } else {
+        "Installed"
+    };
     printer.success(&format!(
-        "Installed {} package(s) in generation {}.",
+        "{verb} {} package(s) in generation {}.",
         packages.len(),
         new_gen.number,
     ));
@@ -460,6 +472,7 @@ fn print_summary(
     explicit_names: &[String],
     resolved: &[ResolvedDownload],
     all_metas: &[&PackageMeta],
+    reinstall: bool,
     printer: &Printer,
 ) {
     let explicit_set: HashSet<&str> = explicit_names.iter().map(|s| s.as_str()).collect();
@@ -484,7 +497,11 @@ fn print_summary(
         }
     }
 
-    printer.header("The following NEW packages will be installed:");
+    if reinstall {
+        printer.header("The following packages will be reinstalled:");
+    } else {
+        printer.header("The following NEW packages will be installed:");
+    }
     for pkg in &new_packages {
         printer.plain(&format!("  {pkg}"));
     }
