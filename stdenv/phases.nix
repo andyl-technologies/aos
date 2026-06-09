@@ -709,6 +709,17 @@ in rec {
                   # Set up environment
                   INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
                   BT_LIB=$(dirname "$INTERP")
+                  mkdir -p "$TMPDIR/rust-link-libs"
+                  for compat_lib in util:1 rt:1 dl:2 pthread:0; do
+                    compat_name="''${compat_lib%%:*}"
+                    compat_soname="''${compat_lib##*:}"
+                    if [ -e "$BT_LIB/lib$compat_name.so.$compat_soname" ]; then
+                      ln -sf "$BT_LIB/lib$compat_name.so.$compat_soname" "$TMPDIR/rust-link-libs/lib$compat_name.so"
+                    fi
+                  done
+                  export CARGO_BUILD_RUSTFLAGS="-Lnative=$TMPDIR/rust-link-libs -Lnative=$BT_LIB -C link-arg=-Wl,-dynamic-linker,$INTERP -C link-arg=-Wl,-rpath,$BT_LIB"
+                  echo "build --linkopt=-L$TMPDIR/rust-link-libs" >> .bazelrc
+                  echo "build --host_linkopt=-L$TMPDIR/rust-link-libs" >> .bazelrc
 
                   # Create bash wrapper with PATH for genrules
                   mkdir -p $TMPDIR/bazel-tools

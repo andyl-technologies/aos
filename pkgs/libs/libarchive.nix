@@ -39,6 +39,12 @@ in
     ];
     propagatedDeps = [];
 
+    # libarchive still uses legacy trailing-array layouts internally. GCC's
+    # strict level 3 narrows those arrays enough for Fortify to abort while
+    # walking archives at runtime, so use the repo's compatibility level.
+    hardeningDisable = ["strictflexarrays3"];
+    hardeningEnable = ["strictflexarrays1"];
+
     phases = [
       {
         name = "unpack";

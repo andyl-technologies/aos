@@ -201,6 +201,7 @@
       rootfsDeps = [
         pkgs.elfutils
         pkgs.grep
+        pkgs.sed
         pkg
       ];
       testScript = ''
@@ -215,7 +216,7 @@
             return
           fi
 
-          SONAME_LINE=$(readelf -d "$LIB_PATH" 2>/dev/null | grep SONAME || true)
+          SONAME_LINE=$(readelf -d "$LIB_PATH" 2>/dev/null | ${pkgs.grep}/bin/grep SONAME || true)
           if [ -z "$SONAME_LINE" ]; then
             echo "FAIL: $LIB_NAME has no SONAME"
             FAIL=1
@@ -267,6 +268,8 @@
       name = "${pkg.pname or "pkg"}-rpath";
       rootfsDeps = [
         pkgs.elfutils
+        pkgs.grep
+        pkgs.sed
         pkg
       ];
       testScript = ''
@@ -278,7 +281,7 @@
 
           echo "==> Checking RPATH for $LABEL ($BINARY)"
 
-          RPATH_LINE=$(readelf -d "$BINARY" 2>/dev/null | grep -E 'RPATH|RUNPATH' || true)
+          RPATH_LINE=$(readelf -d "$BINARY" 2>/dev/null | ${pkgs.grep}/bin/grep -E 'RPATH|RUNPATH' || true)
 
           if [ -z "$RPATH_LINE" ]; then
             echo "  WARN: $LABEL has no RPATH/RUNPATH"
@@ -287,7 +290,7 @@
 
           echo "  $RPATH_LINE"
 
-          RPATH_VAL=$(echo "$RPATH_LINE" | sed 's/.*\[//' | sed 's/\]//')
+          RPATH_VAL=$(echo "$RPATH_LINE" | ${pkgs.sed}/bin/sed 's/.*\[//' | ${pkgs.sed}/bin/sed 's/\]//')
 
           OLD_IFS="$IFS"
           IFS=":"
@@ -340,6 +343,7 @@
       name = "${pkg.pname or "pkg"}-symbols";
       rootfsDeps = [
         pkgs.binutils
+        pkgs.grep
         pkg
       ];
       testScript = ''
@@ -355,7 +359,7 @@
             return
           fi
 
-          if nm -D "$LIB_PATH" 2>/dev/null | grep -q " T $SYMBOL"; then
+          if nm -D "$LIB_PATH" 2>/dev/null | ${pkgs.grep}/bin/grep -q " T $SYMBOL"; then
             echo "PASS: $LIB_NAME exports $SYMBOL"
           else
             echo "FAIL: $LIB_NAME missing symbol $SYMBOL"
@@ -452,6 +456,8 @@
       name = "${pkg.pname or "pkg"}-dynamic-linker";
       rootfsDeps = [
         pkgs.elfutils
+        pkgs.grep
+        pkgs.sed
         pkg
       ];
       testScript = ''
@@ -463,7 +469,7 @@
 
           echo "==> Checking dynamic linker for $LABEL ($BINARY)"
 
-          INTERP_LINE=$(readelf -l "$BINARY" 2>/dev/null | grep "interpreter" || true)
+          INTERP_LINE=$(readelf -l "$BINARY" 2>/dev/null | ${pkgs.grep}/bin/grep "interpreter" || true)
 
           if [ -z "$INTERP_LINE" ]; then
             echo "  INFO: $LABEL has no interpreter (possibly static)"
@@ -472,7 +478,7 @@
 
           echo "  $INTERP_LINE"
 
-          INTERP=$(echo "$INTERP_LINE" | sed 's/.*interpreter: //' | sed 's/\].*//')
+          INTERP=$(echo "$INTERP_LINE" | ${pkgs.sed}/bin/sed 's/.*interpreter: //' | ${pkgs.sed}/bin/sed 's/\].*//')
 
           if [ -z "$INTERP" ]; then
             echo "  FAIL: could not parse interpreter path for $LABEL"
