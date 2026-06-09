@@ -398,6 +398,10 @@ in {
         find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
       }
 
+      cache_nar_count() {
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' 2>/dev/null | wc -l | tr -d ' '
+      }
+
       wait_for_cache_server() {
         for _i in 1 2 3 4 5 6 7 8 9 10; do
           if curl -sf http://127.0.0.1:18086/nix-cache-info >/dev/null; then
@@ -473,7 +477,7 @@ in {
         fail "static cache HTTP server started"
       fi
 
-      echo "==> Consumer: first install downloads and activates idemp-wrapper"
+      echo "==> Consumer: add registry and install idemp-wrapper without automatic deps"
       export HOME=/tmp/idemp-consumer
       export USER=idempuser
       mkdir -p "$HOME"
@@ -486,37 +490,84 @@ in {
       cat /tmp/idemp-registry-add.out
 
       delete_store_path "$WRAPPER_STORE" "idemp-wrapper"
-      delete_store_path "$IDEMP_STORE" "idempkg"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install idemp-wrapper \
+        --registry idemp-reg \
+        --no-deps \
+        --yes > /tmp/idemp-no-deps.out 2>&1 || {
+        cat /tmp/idemp-no-deps.out
+        fail "apm install --no-deps idemp-wrapper succeeds"
+      }
+      cat /tmp/idemp-no-deps.out
+      assert_file_contains /tmp/idemp-no-deps.out "Downloading 1 NAR" \
+        "no-deps downloads only requested wrapper"
+      assert_file_not_contains /tmp/idemp-no-deps.out "Additional dependencies" \
+        "no-deps does not plan automatic dependencies"
+      assert_file_contains /tmp/idemp-no-deps.out "Installed 1 package" \
+        "no-deps creates profile generation"
+      if [ "$(cache_nar_count)" = "1" ]; then
+        pass "no-deps leaves one requested NAR in cache"
+      else
+        fail "no-deps should cache exactly one requested NAR"
+      fi
+      assert_store_valid "$IDEMP_STORE" "idempkg"
+      assert_store_valid "$WRAPPER_STORE" "idemp-wrapper"
+      "$PROFILE_WRAPPER_BIN" > /tmp/idemp-wrapper-nodeps-run.out
+      assert_file_contains /tmp/idemp-wrapper-nodeps-run.out "^idempkg 1.0.0$" \
+        "no-deps wrapper executable runs through its existing store reference"
+      assert_file_contains "$PROFILE/meta/$WRAPPER_HASH.json" '"explicit": true' \
+        "wrapper metadata is explicit after no-deps install"
+      if [ ! -e "$PROFILE/meta/$IDEMP_HASH.json" ]; then
+        pass "no-deps does not write dependency metadata"
+      else
+        fail "no-deps should not write dependency metadata"
+      fi
+      if [ ! -e "$PROFILE_IDEMP_BIN" ]; then
+        pass "no-deps does not merge dependency executable into profile"
+      else
+        fail "no-deps should not expose dependency executable in profile"
+      fi
+
+      NODEPS_CURRENT=$(readlink "$PROFILE/current")
+      NODEPS_COUNT=$(generation_count)
+      if [ "$NODEPS_CURRENT" = "gen-1" ] && [ "$NODEPS_COUNT" = "1" ]; then
+        pass "no-deps install creates exactly generation 1"
+      else
+        fail "no-deps install should create only gen-1 (current=$NODEPS_CURRENT count=$NODEPS_COUNT)"
+      fi
+
+      echo "==> Consumer: normal install after no-deps records automatic dependency"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
       $APM install idemp-wrapper --registry idemp-reg --yes > /tmp/idemp-install-1.out 2>&1 || {
         cat /tmp/idemp-install-1.out
-        fail "first apm install idemp-wrapper succeeds"
+        fail "normal apm install idemp-wrapper after no-deps succeeds"
       }
       cat /tmp/idemp-install-1.out
-      assert_file_contains /tmp/idemp-install-1.out "Downloading" \
-        "first install downloads idemp-wrapper closure"
+      assert_file_contains /tmp/idemp-install-1.out "Additional dependencies" \
+        "normal install after no-deps plans dependency closure"
+      assert_file_not_contains /tmp/idemp-install-1.out "Downloading" \
+        "normal install after no-deps reuses valid store paths"
       assert_file_contains /tmp/idemp-install-1.out "Installed 1 package" \
-        "first install creates profile generation"
-      assert_store_valid "$IDEMP_STORE" "idempkg"
-      assert_store_valid "$WRAPPER_STORE" "idemp-wrapper"
+        "normal install after no-deps creates profile generation"
       "$PROFILE_WRAPPER_BIN" > /tmp/idemp-wrapper-run-1.out
       assert_file_contains /tmp/idemp-wrapper-run-1.out "^idempkg 1.0.0$" \
-        "wrapper executable runs after first install"
+        "wrapper executable runs after normal install"
       "$PROFILE_IDEMP_BIN" > /tmp/idemp-run-1.out
       assert_file_contains /tmp/idemp-run-1.out "^idempkg 1.0.0$" \
-        "dependency executable is active after first install"
+        "dependency executable is active after normal install"
       assert_file_contains "$PROFILE/meta/$WRAPPER_HASH.json" '"explicit": true' \
-        "wrapper metadata is explicit after wrapper install"
+        "wrapper metadata stays explicit after normal install"
       assert_file_contains "$PROFILE/meta/$IDEMP_HASH.json" '"explicit": false' \
         "idempkg metadata starts as auto-installed dependency"
 
       FIRST_CURRENT=$(readlink "$PROFILE/current")
       FIRST_COUNT=$(generation_count)
-      if [ "$FIRST_CURRENT" = "gen-1" ] && [ "$FIRST_COUNT" = "1" ]; then
-        pass "first install creates exactly generation 1"
+      if [ "$FIRST_CURRENT" = "gen-2" ] && [ "$FIRST_COUNT" = "2" ]; then
+        pass "normal install after no-deps creates generation 2"
       else
-        fail "first install should create only gen-1 (current=$FIRST_CURRENT count=$FIRST_COUNT)"
+        fail "normal install after no-deps should create gen-2 (current=$FIRST_CURRENT count=$FIRST_COUNT)"
       fi
 
       echo "==> Consumer: explicit install promotes dependency without download"
@@ -539,10 +590,10 @@ in {
 
       PROMOTED_CURRENT=$(readlink "$PROFILE/current")
       PROMOTED_COUNT=$(generation_count)
-      if [ "$PROMOTED_CURRENT" = "gen-2" ] && [ "$PROMOTED_COUNT" = "2" ]; then
-        pass "explicit dependency install creates generation 2"
+      if [ "$PROMOTED_CURRENT" = "gen-3" ] && [ "$PROMOTED_COUNT" = "3" ]; then
+        pass "explicit dependency install creates generation 3"
       else
-        fail "explicit dependency install should create gen-2 (current=$PROMOTED_CURRENT count=$PROMOTED_COUNT)"
+        fail "explicit dependency install should create gen-3 (current=$PROMOTED_CURRENT count=$PROMOTED_COUNT)"
       fi
 
       echo "==> Consumer: repeat explicit install is a no-op"
