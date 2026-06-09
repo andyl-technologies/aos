@@ -32,6 +32,7 @@ pub async fn run(
     packages: &[String],
     registry_filter: Option<&str>,
     reinstall: bool,
+    download_only: bool,
     dry_run: bool,
     yes: bool,
     ignore_lock: &IgnoreSysrootLock,
@@ -131,7 +132,13 @@ pub async fn run(
 
     // Step 6: Print install summary.
     print_summary(
-        &closures, packages, &resolved, &all_metas, reinstall, printer,
+        &closures,
+        packages,
+        &resolved,
+        &all_metas,
+        reinstall,
+        download_only,
+        printer,
     );
 
     if dry_run {
@@ -167,6 +174,14 @@ pub async fn run(
                 .with_context(|| format!("verifying NAR hash for {}", result.store_path))?;
         }
 
+        if download_only {
+            printer.success(&format!(
+                "Downloaded {} NAR(s); no profile changes made.",
+                results.len(),
+            ));
+            return Ok(());
+        }
+
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
         for result in &results {
@@ -181,6 +196,10 @@ pub async fn run(
         }
     } else {
         printer.info("All packages already in store, skipping download.");
+        if download_only {
+            printer.info("Download only -- no profile changes made.");
+            return Ok(());
+        }
     }
 
     // Step 8: Create new profile generation.
@@ -473,6 +492,7 @@ fn print_summary(
     resolved: &[ResolvedDownload],
     all_metas: &[&PackageMeta],
     reinstall: bool,
+    download_only: bool,
     printer: &Printer,
 ) {
     let explicit_set: HashSet<&str> = explicit_names.iter().map(|s| s.as_str()).collect();
@@ -497,7 +517,9 @@ fn print_summary(
         }
     }
 
-    if reinstall {
+    if download_only {
+        printer.header("The following packages will be downloaded:");
+    } else if reinstall {
         printer.header("The following packages will be reinstalled:");
     } else {
         printer.header("The following NEW packages will be installed:");
