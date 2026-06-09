@@ -4,6 +4,7 @@
   mkCargoPackage,
   fetchCargoDeps,
   git,
+  gnupg,
   nix,
   openssh,
   perl,
@@ -20,6 +21,9 @@
   # binaries are hermetic — their behavior never depends on the caller's
   # environment:
   #   git           registry, pack, and object-store operations
+  #   gnupg         gpg: git shells out to it to create and verify OpenPGP
+  #                 signatures on commits and tags; with the hermetic PATH set
+  #                 here it must be present for those git operations to work
   #   nix           nix / nix-store: cache and store operations
   #   openssh       ssh-keygen, for `git -c gpg.format=ssh tag -s` release signing
   #   zstd          pack-delta compression and store decompression
@@ -29,7 +33,7 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [git nix openssh zstd tar which];
+  runtimeTools = [git gnupg nix openssh zstd tar which];
   runtimeBinPath = lib.makeBinPath runtimeTools;
   src = builtins.path {
     path = ../../../crates;
