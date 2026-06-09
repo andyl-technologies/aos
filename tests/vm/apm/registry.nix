@@ -1,7 +1,8 @@
-# tests/vm/apm/registry.nix — Registry management VM tests (15 tests)
+# tests/vm/apm/registry.nix — Registry management VM tests (16 tests)
 #
 # Tests for `apr` registry lifecycle commands: create, add, remove, publish,
-# unpublish, branch workflow, validate, signed tags, and clean-break behavior.
+# unpublish, branch workflow, validate, signed tags, trust/key workflows, and
+# clean-break behavior.
 # All tests run in headless Firecracker microVMs.
 {
   testing,
@@ -1417,7 +1418,206 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 13. closure-generate — Closure files created and well-formed
+  # 13. registry-trust-keys-workflow — Committed and local trust key commands
+  # -------------------------------------------------------------------------
+  registry-trust-keys-workflow = testing.mkVMTest {
+    name = "apm-registry-trust-keys-workflow";
+    rootfsDeps = fixtures.commonDeps;
+    memory = 512;
+    testScript = ''
+      ${fixtures.setupPreamble}
+
+      echo "==> Test: APR committed key roster and local trust store workflow"
+
+      KEY_ROOT="trust-reg:Ed25519:YWJjZA=="
+      KEY_BACKUP="trust-reg:Ed25519:ZWZnaA=="
+      KEY_CANARY="trust-reg:Ed25519:aGlqaA=="
+      KEY_FOREIGN="other-reg:Ed25519:bWlzbWF0Y2g="
+
+      $APR create trust-reg --trust-key "$KEY_ROOT" --trust-key-id root
+      REG_DIR="$REG_STORAGE/trust-reg"
+      TRUST_FILE="$HOME/.config/apm/trusted-keys.d/trust-reg.pub"
+
+      assert_file_exists "$REG_DIR/keys.toml" \
+        "apr create writes committed keys.toml"
+      assert_file_contains "$REG_DIR/keys.toml" 'id = "root"' \
+        "initial committed key id is recorded"
+      assert_file_contains "$REG_DIR/keys.toml" "$KEY_ROOT" \
+        "initial committed key value is recorded"
+
+      $APR keys list --registry trust-reg > /tmp/keys-list-initial.out 2>&1 || {
+        cat /tmp/keys-list-initial.out
+        fail "apr keys list shows initial roster"
+      }
+      cat /tmp/keys-list-initial.out
+      assert_file_contains /tmp/keys-list-initial.out "root:" \
+        "apr keys list reports active root key"
+      assert_file_contains /tmp/keys-list-initial.out "revoked: none" \
+        "apr keys list reports empty revocation set"
+
+      $APR keys add backup "$KEY_BACKUP" --registry trust-reg \
+        > /tmp/keys-add-backup.out 2>&1 || {
+        cat /tmp/keys-add-backup.out
+        fail "apr keys add commits backup key"
+      }
+      cat /tmp/keys-add-backup.out
+      assert_file_contains /tmp/keys-add-backup.out "Added active signing key 'backup'" \
+        "apr keys add reports backup key"
+      assert_file_contains "$REG_DIR/keys.toml" 'id = "backup"' \
+        "backup key is written to keys.toml"
+      assert_file_contains "$REG_DIR/keys.toml" "$KEY_BACKUP" \
+        "backup key value is written to keys.toml"
+
+      $APR keys add canary "$KEY_CANARY" --registry trust-reg \
+        > /tmp/keys-add-canary.out 2>&1 || {
+        cat /tmp/keys-add-canary.out
+        fail "apr keys add commits canary key"
+      }
+      cat /tmp/keys-add-canary.out
+      assert_file_contains "$REG_DIR/keys.toml" 'id = "canary"' \
+        "canary key is written to keys.toml"
+
+      if $APR keys add foreign "$KEY_FOREIGN" --registry trust-reg \
+        > /tmp/keys-add-foreign.out 2>&1; then
+        cat /tmp/keys-add-foreign.out
+        fail "apr keys add should reject foreign registry key"
+      else
+        cat /tmp/keys-add-foreign.out
+        pass "apr keys add rejects foreign registry key"
+      fi
+      assert_file_contains /tmp/keys-add-foreign.out \
+        "belongs to registry 'other-reg', expected 'trust-reg'" \
+        "foreign committed key error names both registries"
+
+      if $APR keys retire root --registry trust-reg \
+        > /tmp/keys-retire-missing-vouch.out 2>&1; then
+        cat /tmp/keys-retire-missing-vouch.out
+        fail "apr keys retire should require --vouched-by with multiple survivors"
+      else
+        cat /tmp/keys-retire-missing-vouch.out
+        pass "apr keys retire requires explicit vouching key"
+      fi
+      assert_file_contains /tmp/keys-retire-missing-vouch.out \
+        "vouched-by is required" \
+        "retire error explains required vouching key"
+
+      $APR keys retire root --vouched-by backup --reason "key rotation" \
+        --registry trust-reg > /tmp/keys-retire-root.out 2>&1 || {
+        cat /tmp/keys-retire-root.out
+        fail "apr keys retire commits revoked root key"
+      }
+      cat /tmp/keys-retire-root.out
+      assert_file_contains /tmp/keys-retire-root.out \
+        "Retired signing key 'root'" \
+        "apr keys retire reports revoked root key"
+      $APR keys list --registry trust-reg > /tmp/keys-list-rotated.out 2>&1 || {
+        cat /tmp/keys-list-rotated.out
+        fail "apr keys list shows rotated roster"
+      }
+      cat /tmp/keys-list-rotated.out
+      assert_file_contains /tmp/keys-list-rotated.out "backup:" \
+        "rotated roster keeps backup active"
+      assert_file_contains /tmp/keys-list-rotated.out "canary:" \
+        "rotated roster keeps canary active"
+      assert_file_contains /tmp/keys-list-rotated.out "root: key rotation" \
+        "rotated roster records root revocation reason"
+      git -C "$REG_DIR" log --oneline > /tmp/keys-git-log.out
+      assert_file_contains /tmp/keys-git-log.out \
+        "registry: add signing key backup" \
+        "keys add creates a maintainer commit"
+      assert_file_contains /tmp/keys-git-log.out \
+        "registry: retire signing key root" \
+        "keys retire creates a maintainer commit"
+
+      $APR trust list trust-reg > /tmp/trust-list-empty.out 2>&1 || {
+        cat /tmp/trust-list-empty.out
+        fail "apr trust list handles empty store"
+      }
+      cat /tmp/trust-list-empty.out
+      assert_file_contains /tmp/trust-list-empty.out "trust-reg: no pinned keys" \
+        "apr trust list reports no pinned keys"
+
+      $APR trust pin trust-reg "$KEY_ROOT" > /tmp/trust-pin-root.out 2>&1 || {
+        cat /tmp/trust-pin-root.out
+        fail "apr trust pin stores root key"
+      }
+      cat /tmp/trust-pin-root.out
+      assert_file_exists "$TRUST_FILE" \
+        "apr trust pin writes trusted key file"
+      assert_file_contains "$TRUST_FILE" "$KEY_ROOT" \
+        "trusted key file contains pinned root key"
+
+      $APR trust pin trust-reg "$KEY_BACKUP" > /tmp/trust-pin-backup.out 2>&1 || {
+        cat /tmp/trust-pin-backup.out
+        fail "apr trust pin stores backup key"
+      }
+      cat /tmp/trust-pin-backup.out
+      TRUST_COUNT=$(wc -l < "$TRUST_FILE")
+      if [ "$TRUST_COUNT" = "2" ]; then
+        pass "trust store keeps both pinned keys during rotation overlap"
+      else
+        fail "trust store should contain two pinned keys, got $TRUST_COUNT"
+        cat "$TRUST_FILE"
+      fi
+
+      if $APR trust pin trust-reg "$KEY_FOREIGN" \
+        > /tmp/trust-pin-foreign.out 2>&1; then
+        cat /tmp/trust-pin-foreign.out
+        fail "apr trust pin should reject foreign registry key"
+      else
+        cat /tmp/trust-pin-foreign.out
+        pass "apr trust pin rejects foreign registry key"
+      fi
+      assert_file_contains /tmp/trust-pin-foreign.out \
+        "belongs to registry 'other-reg', expected 'trust-reg'" \
+        "foreign trust key error names both registries"
+
+      $APR trust pin trust-reg "$KEY_CANARY" --replace \
+        > /tmp/trust-replace.out 2>&1 || {
+        cat /tmp/trust-replace.out
+        fail "apr trust pin --replace stores only canary key"
+      }
+      cat /tmp/trust-replace.out
+      TRUST_COUNT=$(wc -l < "$TRUST_FILE")
+      if [ "$TRUST_COUNT" = "1" ]; then
+        pass "trust replace leaves one pinned key"
+      else
+        fail "trust replace should leave one pinned key, got $TRUST_COUNT"
+        cat "$TRUST_FILE"
+      fi
+      assert_file_contains "$TRUST_FILE" "$KEY_CANARY" \
+        "trust replace stores canary key"
+
+      $APR trust list trust-reg > /tmp/trust-list-canary.out 2>&1 || {
+        cat /tmp/trust-list-canary.out
+        fail "apr trust list shows replacement key"
+      }
+      cat /tmp/trust-list-canary.out
+      assert_file_contains /tmp/trust-list-canary.out "trust-reg: Ed25519" \
+        "apr trust list reports pinned canary key"
+
+      $APR trust remove trust-reg > /tmp/trust-remove.out 2>&1 || {
+        cat /tmp/trust-remove.out
+        fail "apr trust remove deletes trust file"
+      }
+      cat /tmp/trust-remove.out
+      assert_file_not_exists "$TRUST_FILE" \
+        "apr trust remove deletes trusted key file"
+      $APR trust remove trust-reg > /tmp/trust-remove-repeat.out 2>&1 || {
+        cat /tmp/trust-remove-repeat.out
+        fail "apr trust remove is idempotent"
+      }
+      cat /tmp/trust-remove-repeat.out
+      assert_file_contains /tmp/trust-remove-repeat.out \
+        "No pinned trust keys found" \
+        "repeat trust remove reports no pinned keys"
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 14. closure-generate — Closure files created and well-formed
   # -------------------------------------------------------------------------
   closure-generate = testing.mkVMTest {
     name = "apm-closure-generate";
@@ -1541,7 +1741,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 14. closure-verify — apr verify validates closure consistency
+  # 15. closure-verify — apr verify validates closure consistency
   # -------------------------------------------------------------------------
   closure-verify = testing.mkVMTest {
     name = "apm-closure-verify";
