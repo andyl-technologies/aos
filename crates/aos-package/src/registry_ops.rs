@@ -614,9 +614,17 @@ pub async fn publish(
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
-    let dir = registry_dir(config, registry)?;
+    let name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&name);
     if !dir.exists() {
-        bail!("registry directory does not exist: {}", dir.display());
+        bail!(
+            "registry '{name}' has no local clone at {path}.\n\
+             If you added it with `{reg} add <url>`, sync it first with `{pkg} update {name}`.\n\
+             To author a new local registry instead, run `{reg} create {name}`.",
+            path = dir.display(),
+            reg = aos_core::invocation::package_registry_command(),
+            pkg = aos_core::invocation::package_manager_command(),
+        );
     }
 
     // Validate image pairs.
