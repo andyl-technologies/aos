@@ -367,9 +367,6 @@ pub enum RegistryCommand {
         /// Identifier for --trust-key inside keys.toml
         #[arg(long = "trust-key-id")]
         trust_key_id: Option<String>,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
     },
     /// List configured registries and priorities
     List,
@@ -1348,7 +1345,6 @@ async fn run_registry(
             remote,
             trust_key,
             trust_key_id,
-            ..
         } => {
             registry_ops::create(
                 config,
