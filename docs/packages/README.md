@@ -4,11 +4,15 @@ Status: planning
 
 This doc set plans a new direction: **fold the "roles" concept into AOS's
 existing apm/registry package system**. A "package" becomes the single
-registry-installable unit (`apm install <pkg>`). Most packages are just store
-paths with deps; **some packages additionally expose a systemd-nspawn
-container plus an `aos-pkg-<name>.target` handle**. Packages are listed in a host's
-Ignition config, **installed at first boot by apm**, then **enabled** (the
-package target — and, for container packages, its nspawn instance). This
+registry-installable unit (`apm install <pkg>`). Under the unified model
+**every package is a systemd-nspawn container** plus an `aos-pkg-<name>.target`
+handle; what differs between packages is *privilege*, declared in a **signed
+`[permissions]` manifest** (Android/iOS app-permission analogy — see
+[`permissions.md`](permissions.md)). The default (empty manifest) is a tightly
+sandboxed container; a package gets only what it declares. k3s is not special —
+it is a **high-privilege container** that declares a long permission list.
+Packages are listed in a host's Ignition config, **installed at first boot by
+apm**, then **enabled** (the package target and its nspawn instance). This
 generalizes the precursor design in
 [`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md) (PR #28),
 which made each role a single `aos-<role>.target` with side-effects sandboxed
@@ -40,9 +44,9 @@ model) and is shipped on every image by `modules/base/apm.nix`.
 
 These are two unrelated notions of "a deployable thing." The rename makes them
 one: **a package is the unit you install, and roles are simply packages that
-also happen to carry units/targets and (optionally) a container.** This is a
-prerequisite for installing role-like bundles *at runtime* from a registry,
-rather than only baking them into the image as Ignition fragments.
+also carry units/targets and an nspawn container.** This is a prerequisite for
+installing role-like bundles *at runtime* from a registry, rather than only
+baking them into the image as Ignition fragments.
 
 > Honesty note: today there is **no mechanism to install additional apm
 > packages at first boot** — `aos-seed-profiles` in
@@ -54,14 +58,14 @@ rather than only baking them into the image as Ignition fragments.
 
 | Term | Meaning |
 |---|---|
-| **package** | The registry-installable unit. Resolvable by `apm install <name>`; described by `PackageMeta` in `crates/aos-package/src/types.rs`. Supersedes "role." |
-| **package target** | `aos-pkg-<name>.target` — the single systemd handle for the package's effects (the "sandbox" of [`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md)). Present whether or not the package ships a container. |
-| **container package** | A package that *also* exposes a systemd-nspawn container (own PID1, namespaces). The container is gated by the package target. |
-| **plain package** | A package with no container — just a store path / closure (the existing apm case). |
-| **workload package** | A container package whose container is a real isolation boundary (own netns, user-ns optional). |
-| **infrastructure package** | A package like k3s that needs host privilege (host net/cgroups, global kernel modules). Gets at most a *nominal* container; see the honesty note below. |
+| **package** | The registry-installable unit. Resolvable by `apm install <name>`; described by `PackageMeta` in `crates/aos-package/src/types.rs`. Supersedes "role." Every package is an nspawn container. |
+| **package target** | `aos-pkg-<name>.target` — the single systemd handle for the package's effects (the "sandbox" of [`../roles/targets-and-sandbox.md`](../roles/targets-and-sandbox.md)). |
+| **`[permissions]` manifest** | The declared, signed privilege list on a package (see [`permissions.md`](permissions.md)). Empty = a tightly-sandboxed container; entries grant host network, capabilities, devices, host-paths, cgroup-delegate, kernel-modules, etc. The single source of truth for a container's privilege. |
+| **default (sandboxed) package** | A package with an empty `[permissions]` manifest — a real isolation boundary (own PID1, netns, user-ns on, ephemeral overlay root). |
+| **high-privilege package** | A package like k3s whose manifest declares host privilege (host net/cgroups, global kernel modules, broad caps). Its container is *nominal* — a packaging/lifecycle wrapper, not a security boundary; see the honesty note below. |
+| **privilege gradient** | Boundary strength runs from "full sandbox" (empty manifest) to "packaging wrapper" (k3s), set entirely by the manifest — not a categorical shape split. |
 | **install-at-boot** | Ignition lists desired packages; an apm first-boot service installs them before enable. |
-| **enable** | Start the package target (and, for container packages, its nspawn instance). |
+| **enable** | Start the package target and its nspawn instance. |
 
 ## The model in one paragraph
 
@@ -70,10 +74,12 @@ from). At first boot, an apm-driven oneshot installs each package into the
 store and a profile generation, then **the package target is the handle** that
 gets enabled: enabling `aos-pkg-<name>.target` pulls in the package's gated
 side-effect services (modules/sysctl/firewall, exactly as in the precursor
-design) and — for container packages — an `aos-pkg-<name>` systemd-nspawn service.
-**The target is the uniform handle whether or not a container exists.** Plain
-packages have a target with no container; container packages have a target that
-additionally `Wants=` the nspawn service.
+design) and an `aos-pkg-<name>` systemd-nspawn service. **Every package is a
+container; the target is the uniform handle.** What differs is the container's
+*privilege*, generated from the package's signed `[permissions]` manifest (see
+[`permissions.md`](permissions.md)): an empty manifest yields a tightly
+sandboxed container, while a manifest with grants (host network, capabilities,
+host-paths, kernel-modules, …) trades the boundary away point by point.
 
 ```
 Ignition (lists packages + registries)
@@ -82,35 +88,40 @@ Ignition (lists packages + registries)
 apm install-at-boot  ──►  /nix/store + /var/lib/profiles/<scope>/gen-N
         │
         ▼
-enable aos-pkg-<name>.target ──┬─► aos-pkg-<name>-modules.service   (modprobe)
+enable aos-pkg-<name>.target ──┬─► aos-pkg-<name>-modules.service   (modprobe — the host-level kernel-modules permission)
                           ├─► aos-pkg-<name>-sysctl.service    (sysctl -w)
                           ├─► aos-pkg-<name>-firewall.service  (nft add/del element)
-                          └─► aos-pkg-<name>.service           (systemd-nspawn)   ← only if container package
+                          └─► aos-pkg-<name>.service           (systemd-nspawn — privilege per the [permissions] manifest)
 ```
 
-## Honesty: where the model does NOT fit (k3s)
+## Honesty: the high-privilege end of the gradient (k3s)
 
-k3s is the motivating *infrastructure* package, and it is the clearest place
-the container story breaks down:
+k3s is the motivating high-privilege package, and it is the clearest place the
+*sandbox* benefit disappears. It is still a container like every package — but
+its `[permissions]` manifest declares away most of the boundary, and that
+declaration is now **visible** rather than hidden:
 
-- **Kernel modules are global.** `br_netfilter`, `vxlan`, `ip_set` load into
-  the host kernel; there is no per-container module namespace. The
-  `aos-pkg-<name>-modules.service` runs on the host regardless of any container.
-- **k3s wants host network and cgroups.** CNI configures host routes/bridges;
+- **Kernel modules are global.** k3s declares `kernel-modules = ["br_netfilter",
+  "vxlan", "ip_set"]`; these load into the host kernel via
+  `aos-pkg-<name>-modules.service` regardless of any container — the one
+  irreducibly host-level permission (see [`permissions.md`](permissions.md)).
+- **k3s declares host network and cgroups.** CNI configures host routes/bridges;
   kubelet manages host cgroups. A real netns/cgroup boundary breaks pod
-  networking. So k3s gets `--network=host`, host cgroup delegation
+  networking. So k3s's manifest declares `network = "host"` and `cgroup-delegate`
   (`Delegate=yes`, already set in `modules/roles/kubernetes/k3s-worker.nix`),
-  and effectively a **nominal** container (mount/UTS isolation only).
-- Conclusion: for k3s the nspawn wrapper is **transparent, not a security
-  boundary**, and this must be stated plainly in the package's own docs. The
-  real isolation boundary for k3s workloads is the kubelet's pod sandboxes,
-  not nspawn.
+  yielding effectively a **nominal** container (mount/UTS isolation only).
+- Conclusion: for k3s the nspawn wrapper is a **packaging/lifecycle wrapper, not
+  a security boundary**, and the signed manifest says so plainly. The real
+  isolation boundary for k3s workloads is the kubelet's pod sandboxes, not
+  nspawn.
 
-Workload packages (a database, a web service) *can* be genuinely sandboxed
-(`--network-veth`, optional `--private-users`). See
-[`container-model.md`](container-model.md) for the split and the feasibility
-findings (systemd-nspawn is shipped; `machined`/`portabled`/`importd` are
-disabled in `pkgs/system/systemd.nix`).
+Default (empty-manifest) packages — a database, a web service — *are* genuinely
+sandboxed (`--network-veth`, `--private-users` on). The difference is a
+**privilege gradient set by the manifest**, not a separate package shape. See
+[`permissions.md`](permissions.md) for the full permission surface and
+[`container-model.md`](container-model.md) for the nspawn mechanics and
+feasibility findings (systemd-nspawn is shipped; `machined`/`portabled`/`importd`
+are disabled in `pkgs/system/systemd.nix`).
 
 ## Scope
 
@@ -120,9 +131,11 @@ In scope for this plan:
   (module dir, fleet-spec option, ignition bundle path). Pure naming/path
   change with no logic impact — see [`migration.md`](migration.md).
 - A per-package systemd target as the uniform handle (generalizing PR #28).
-- An optional systemd-nspawn container per package, built hermetically from
-  source as a minimal rootfs (`lib/build/container-root.nix`, modeled on
+- A systemd-nspawn container per package, built hermetically from source as a
+  minimal rootfs (`lib/build/container-root.nix`, modeled on
   `lib/build/rootfs.nix`) — [`container-model.md`](container-model.md).
+- A declared, signed `[permissions]` privilege manifest per package, generating
+  the container's nspawn flags — [`permissions.md`](permissions.md).
 - Install-at-boot: Ignition lists packages; apm installs them; the target is
   enabled — [`boot-activation.md`](boot-activation.md) and
   [`apm-integration.md`](apm-integration.md).
@@ -155,27 +168,37 @@ direct precursor. It establishes:
 3. **Containment edges** — every member is `PartOf=` the target.
 
 This plan **generalizes** that target into the uniform package handle and adds
-two things PR #28 does not: (a) the package is now a *registry-installable*
-unit, installable at runtime, not only an image-baked Ignition fragment; and
-(b) a package may attach a *real* systemd-nspawn container under its target,
-turning the "sandbox" from a gated set of host services into an actual
-namespace boundary for workload packages. PR #28's naming (`aos-<role>-*`)
-shifts to `aos-pkg-<name>-*` (prefix TBD — `aos-pkg-` was floated for clarity;
-needs verification against unit-name collision rules).
+three things PR #28 does not: (a) the package is now a *registry-installable*
+unit, installable at runtime, not only an image-baked Ignition fragment; (b)
+every package attaches a systemd-nspawn container under its target, turning the
+"sandbox" from a gated set of host services into an actual namespace boundary by
+default; and (c) the container's privilege is a declared, signed `[permissions]`
+manifest ([`permissions.md`](permissions.md)), so a default package is a real
+boundary and k3s is an honestly-labelled high-privilege wrapper. PR #28's naming
+(`aos-<role>-*`) shifts to `aos-pkg-<name>-*` (prefix TBD — `aos-pkg-` was floated
+for clarity; needs verification against unit-name collision rules).
 
 ## Document index
 
 - [`README.md`](README.md) — **this doc.** Vision, terminology, scope, index.
+- [`permissions.md`](permissions.md) — **the privilege manifest** (canonical
+  model). Every package is a container; what differs is privilege, declared in a
+  signed, auditable `[permissions]` manifest (Android/iOS app-permission
+  analogy). Defines the permission surface and its mapping to nspawn flags,
+  default-deny least privilege, manifest examples (including k3s), introspection
+  (`apm info --permissions`)/policy/signing, and the honest host-level limits
+  (`kernel-modules`, `network: host`).
 - [`container-model.md`](container-model.md) — the systemd-nspawn container
-  model: which packages get a container, workload vs. infrastructure
-  (nominal) containers, how container roots are built hermetically from source
-  (mirroring `lib/build/rootfs.nix` with `mkfs.ext4 -d`), networking modes,
-  cgroup delegation, and the honest k3s carve-out.
+  model: every package is a container with a privilege gradient set by its
+  manifest, how container roots are built hermetically from source (mirroring
+  `lib/build/rootfs.nix` with `mkfs.ext4 -d`), networking modes, cgroup
+  delegation, and the honest k3s-as-high-privilege-container case.
 - [`apm-integration.md`](apm-integration.md) — how a package declares its
   target/container in the registry: extend `PackageMeta`
-  (`crates/aos-package/src/types.rs`) or ship an in-closure manifest; how
-  `apm install` resolves the container rootfs and registers/enables the
-  package target; trust and NAR-delivery implications.
+  (`crates/aos-package/src/types.rs`) or ship an in-closure manifest; the
+  signed `[permissions]` block (no `expose.kind`); how `apm install` resolves
+  the container rootfs and registers/enables the package target; trust and
+  NAR-delivery implications.
 - [`boot-activation.md`](boot-activation.md) — install-at-boot: Ignition lists
   packages + registries, a new apm first-boot oneshot installs them (the gap
   beyond today's system-profile-only `aos-seed-profiles`), then enables the
@@ -191,10 +214,11 @@ needs verification against unit-name collision rules).
   `ignitionRolesBundle` → `packagesBundle`, `/etc/aos/ignition-roles/` →
   `/etc/aos/packages/`, fleet-spec `roles` → `packages`, and the validation
   gates (`aos fmt --check`, `checks.eval`, `checks.vm.boot`, fleet tests).
-- [`open-questions.md`](open-questions.md) — unresolved decisions: unit-name
-  prefix, where container roots live (`/var/lib/machines`), image
-  provisioning/signing, whether to enable `machined`, the config decision, and
-  the k3s "nominal container" labeling — with what each blocks.
+- [`open-questions.md`](open-questions.md) — unresolved decisions: the policy
+  enforcement point/format and the validated k3s permission set (Decision 1, now
+  resolved into the unified `[permissions]` model), unit-name prefix, where
+  container roots live (`/var/lib/machines`), image provisioning/signing, whether
+  to enable `machined`, and the config decision — with what each blocks.
 
 ## Status of evidence
 

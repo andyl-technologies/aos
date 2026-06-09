@@ -16,7 +16,8 @@ that precursor doc stays where it is as history, and its content is superseded
 by this doc set.
 
 This is one of the package docs. Siblings:
-[README.md](README.md), [container-model.md](container-model.md),
+[README.md](README.md), [permissions.md](permissions.md),
+[container-model.md](container-model.md),
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
 [config.md](config.md), [open-questions.md](open-questions.md).
 
@@ -33,7 +34,9 @@ mechanical so it can be the first merged increment, de-risking everything after.
 Explicitly **out of scope here** (each has its own doc + later increment):
 
 - Registry installability of packages (`apm install`) — [`apm-integration.md`](apm-integration.md).
-- Real `systemd-nspawn` containers for workload packages — [`container-model.md`](container-model.md).
+- `systemd-nspawn` containers for every package, with privilege declared in a
+  signed `[permissions]` manifest — [`container-model.md`](container-model.md),
+  [`permissions.md`](permissions.md).
 - Install-at-boot via Ignition + apm — [`boot-activation.md`](boot-activation.md).
 - Config/credential delivery — [`config.md`](config.md) (decision **TBD**).
 
@@ -177,43 +180,52 @@ nspawn template from [`container-model.md`](container-model.md) — which is
   firewall, sticky modules/sysctls) are unchanged.
 - **`render-role.nix` logic.** Renamed at most; not rewritten.
 
-## Which roles become container-packages vs stay host-gated
+## Which roles get which privilege manifest
 
 This is a *classification*, not part of the rename increment — but it drives the
-later container increment, so it is recorded here.
+later container increment, so it is recorded here. Under the unified model
+**every** package is an nspawn container; what differs is *privilege*, declared
+in a signed `[permissions]` manifest (see [`permissions.md`](permissions.md)).
+There is no "container vs host-gated" split — only an empty manifest (full
+sandbox) vs. a long one (k3s).
 
-| Current role | Kind | Disposition |
+| Current role | Likely manifest | Disposition |
 |---|---|---|
-| `test-http-server` | workload | **Container candidate.** Single Python `http.server` unit, no host privilege, no kernel modules — the canonical first nspawn workload package. |
-| `aos-registry-server` | workload | **Container candidate.** git-daemon + `aos serve` cache; host net exposure but no kernel/sysctl needs. Good second container target. |
-| `apm-systemd-client-test` | test harness | Stays a plain host-gated package; it exists to exercise apm/systemd D-Bus, not to be sandboxed. |
-| `kubernetes/k3s-worker` | infrastructure | **Stays host-gated** (see split below). |
-| `kubernetes/k3s-control-plane` | infrastructure | **Stays host-gated.** |
-| `kubernetes/k3s-combined` | infrastructure | **Stays host-gated.** |
+| `test-http-server` | empty (`network = "private"`) | **Tightly-sandboxed container.** Single Python `http.server` unit, no host privilege, no kernel modules — the canonical first nspawn package. |
+| `aos-registry-server` | minimal (host port exposure only) | **Tightly-sandboxed container.** git-daemon + `aos serve` cache; host net exposure but no kernel/sysctl needs. Good second target. |
+| `apm-systemd-client-test` | empty | Sandboxed container; it exists to exercise apm/systemd D-Bus, not to need privilege. |
+| `kubernetes/k3s-worker` | high-privilege (host net + caps + cgroup-delegate + host-paths + kernel-modules) | **High-privilege container** (see below). |
+| `kubernetes/k3s-control-plane` | high-privilege | **High-privilege container.** |
+| `kubernetes/k3s-combined` | high-privilege | **High-privilege container.** |
 
-### The k3s split (honest about the limit)
+### The k3s case (honest about the limit)
 
-k3s is the package the container model does **not** fit, and the rename must not
-pretend otherwise. `modules/roles/kubernetes/k3s-worker.nix` already declares
+k3s is the package where the *sandbox* benefit disappears, and the rename must
+not pretend otherwise. `modules/roles/kubernetes/k3s-worker.nix` already declares
 `kernel.modules = [ "br_netfilter" "vxlan" "ip_set" ]`, `net.ipv4.ip_forward`
 and bridge sysctls, ports 10250/8472, and a service with `Delegate = "yes"` /
-`TasksMax = "infinity"`. Those are **host-global** by nature:
+`TasksMax = "infinity"`. Those become entries in k3s's `[permissions]` manifest,
+and they are **host-global** by nature:
 
 - kernel modules load into the **host** kernel — there is no per-container
-  module namespace, so "containing" them is a fiction;
+  module namespace, so the `kernel-modules` permission is honored host-side and
+  is the one irreducibly host-level grant;
 - k3s/kubelet must drive host nftables, host routes, and the host cgroup tree
-  to schedule pods.
+  to schedule pods, so k3s declares `network = "host"` and `cgroup-delegate`.
 
-So after the rename, k3s packages keep PR #28's target + gated-service shape
-(`aos-k3s-worker.target` gating `aos-k3s-worker-modules.service` etc.) but stay
-**host-gated**: the target is the on/off switch, the side-effects run on the
-host, and there is **no** real nspawn boundary. If a nominal container is ever
-wrapped around k3s ([`container-model.md`](container-model.md) discusses
-`--network=host` + `--keep-unit`), it must be labeled a *nominal* boundary, not
-a security boundary. The rename does not change this; it only renames the units.
+So after the rename, k3s is **still a container** with PR #28's target +
+gated-service shape (`aos-k3s-worker.target` gating
+`aos-k3s-worker-modules.service` etc.), but its manifest declares away most of
+the boundary: the nspawn instance is a packaging/lifecycle wrapper, not a
+security boundary. It must be labeled a *nominal* boundary, not a sandbox
+([`container-model.md`](container-model.md) discusses the `--network=host` +
+`--keep-unit` flags its manifest generates). The rename does not change this; it
+only renames the units.
 
-This is the practical meaning of "some packages additionally expose a container":
-**most don't**, and at least one (k3s) structurally **can't**.
+This is the practical meaning of the unified model: **every** package is a
+container, but at least one (k3s) declares enough privilege that its container
+is honestly nominal — and that is now recorded in the manifest, not in a
+separate package class.
 
 ## Backward compatibility
 
@@ -304,8 +316,10 @@ detailed in the sibling docs.
 ### Increment 5+ — the actual feature (separate docs)
 
 - Registry installability → [`apm-integration.md`](apm-integration.md).
-- nspawn containers for `test-http-server` then `aos-registry-server` →
-  [`container-model.md`](container-model.md).
+- The `[permissions]` manifest and its nspawn-flag generation →
+  [`permissions.md`](permissions.md).
+- nspawn containers, starting with the empty-manifest `test-http-server` then
+  `aos-registry-server` → [`container-model.md`](container-model.md).
 - Install-at-boot via Ignition + apm → [`boot-activation.md`](boot-activation.md).
 - Config delivery (**TBD**) → [`config.md`](config.md).
 
@@ -341,8 +355,10 @@ documented it at `docs/roles/targets-and-sandbox.md`. The packages direction
 - **It is a rename, full stop.** It delivers no installability, no container, no
   boot install. Reviewers should expect a large but boring diff. The value is
   de-risking the later increments, not user-visible change.
-- **k3s does not become a container** (see the split above) and the rename
-  must not be read as implying it will.
+- **k3s is a high-privilege container, not a sandbox** (see the k3s case above):
+  its manifest declares host network, broad caps, and global kernel modules, so
+  its container is nominal. The rename must not be read as implying it is
+  isolated.
 - **Config is untouched and still open.** k3s continues to read
   `/etc/rancher/k3s/k3s.env` via `EnvironmentFile=` exactly as today; this doc
   picks **no** new config mechanism — that is [`config.md`](config.md)'s open

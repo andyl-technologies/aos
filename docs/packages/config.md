@@ -10,9 +10,18 @@ Status: planning
 > gaps (no credential backend exists in AOS today).
 
 This is one of the package docs. Siblings:
-[README.md](README.md), [container-model.md](container-model.md),
+[README.md](README.md), [permissions.md](permissions.md),
+[container-model.md](container-model.md),
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
 [migration.md](migration.md), [open-questions.md](open-questions.md).
+
+> **Unified model.** Every package is a systemd-nspawn container; what differs is
+> *privilege*, declared in a signed `[permissions]` manifest (see
+> [permissions.md](permissions.md)). So config delivery **always** crosses the
+> nspawn host→container boundary — there is no "host-gated, not a container"
+> shape. k3s is a high-privilege container (host network, host paths), which is
+> why its config naturally arrives as host paths bound into a nominal container
+> rather than injected across an isolation boundary.
 
 ## Summary
 

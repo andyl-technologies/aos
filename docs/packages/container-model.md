@@ -5,15 +5,20 @@ Audience: anyone working on `modules/packages/` (the renamed `modules/roles/`),
 `lib/build/`, `pkgs/system/systemd.nix`, `modules/services/ignition.nix`, and the
 `apm`/registry surface in `crates/aos-package/`.
 
-This doc plans how a **package** that elects to expose a workload runs inside a
-real `systemd-nspawn(1)` container instead of as a bare host-systemd unit. It
-covers the per-package root image, the `aos-package@.service` template, the
-namespace/networking/cgroup choices, the ephemeral overlay that gives us a
-cheap fs-revert, teardown semantics, and the host→container PID1 credential
-boundary. It is deliberately honest that **k3s does not fit** this model: it
-needs near-host privilege and gets only a *nominal* container, so it likely
-stays host-gated. Config delivery across the boundary is **left open** — see
+This doc plans how a **package** runs inside a real `systemd-nspawn(1)`
+container. Under the unified model **every** package is an nspawn container; what
+differs is *privilege*, declared in a signed `[permissions]` manifest — see
+[permissions.md](permissions.md) for that manifest and the full permission
+surface. This doc covers the per-package root image, the `aos-package@.service`
+template, the namespace/networking/cgroup choices, the ephemeral overlay that
+gives us a cheap fs-revert, teardown semantics, and the host→container PID1
+credential boundary. It is deliberately honest that **k3s is a high-privilege
+container** whose isolation is *nominal* — it declares host network, broad
+capabilities, cgroup delegation, and host paths, and that privilege is now
+visible in its manifest rather than hidden behind a "not really a container"
+carve-out. Config delivery across the boundary is **left open** — see
 [config.md](config.md). Sibling docs: [README.md](README.md),
+[permissions.md](permissions.md),
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
 [migration.md](migration.md), [open-questions.md](open-questions.md). The
 target-sandbox invariants this builds on are in
@@ -23,21 +28,41 @@ target-sandbox invariants this builds on are in
 
 The new direction (see [README.md](README.md)) folds "roles" into AOS's
 existing registry/`apm` package system. A **package** is the registry-installable
-unit (`apm install`). *Some* packages additionally expose a `systemd-nspawn`
-container plus an `aos-pkg-<name>.target` handle. This doc is about that "some" —
-the container half. Three package shapes result:
+unit (`apm install`). Under the unified model **every** package exposes a
+`systemd-nspawn` container plus an `aos-pkg-<name>.target` handle. This doc is
+about that container. There is **one shape** — a container — with a *privilege
+gradient* set by the package's declared `[permissions]` manifest
+(see [permissions.md](permissions.md)):
 
-| Shape | Runs as | Boundary | Example |
+| Privilege | Manifest | Boundary | Example |
 |---|---|---|---|
-| Plain | host systemd units gated by `aos-pkg-<name>.target` | none | `test-http-server` today |
-| Workload-in-container | `systemd-nspawn` instance gated by the target | real (PID/mount/net/IPC/user ns) | a web app, a database |
-| Infra (nominal container) | `systemd-nspawn --network=host` etc., or stays host-gated | nominal — mount/UTS only | `k3s-*` |
+| Default (sandboxed) | empty `[permissions]` | real (PID/mount/net/IPC/user ns) | `test-http-server` |
+| Some grants | a few declared permissions | real, but with declared holes | a web app needing a host path |
+| High-privilege | host network + caps + cgroup-delegate + host-paths + kernel-modules | nominal — packaging/lifecycle wrapper, not a security boundary | `k3s-*` |
+
+The boundary strength is a *gradient set by the manifest*, from "full sandbox"
+(empty manifest) to "packaging wrapper only" (k3s) — not a categorical
+workload/infra split. See [permissions.md](permissions.md) for the full
+permission surface and how each grant maps onto an nspawn flag.
 
 The target sandbox from [../roles/targets-and-sandbox.md](../roles/targets-and-sandbox.md)
 is unchanged as the *activation* mechanism: `aos-pkg-<name>.target` is still the one
 switch, gated `*-modules`/`*-sysctl`/`*-firewall` oneshots are still members,
 and the disabled case is still the strict guarantee. What this doc adds is one
-more kind of member unit — the nspawn instance — for packages that opt in.
+more kind of member unit — the nspawn instance — that every package now carries.
+
+## Permissions
+
+The privilege a container holds is **not** baked into the unit by hand — it is
+**generated from a declared, signed `[permissions]` manifest** on the package,
+exactly like an Android/iOS app permission list. The default (empty manifest) is
+a tightly-sandboxed container; a package gets only what it declares. Each grant
+(`capabilities`, `network`, `devices`, `host-paths`, `cgroup-delegate`,
+`privileged-users`, `kernel-modules`, `syscalls`, `security-label`) maps onto a
+specific `systemd-nspawn` / unit knob. The full surface, the manifest examples
+(including k3s's long list), and the honest host-level limits live in
+[permissions.md](permissions.md). The nspawn-flag mechanics below are the *how*;
+the manifest is the *what*.
 
 ## Feasibility baseline (from investigation)
 
@@ -97,7 +122,7 @@ Two PID1 strategies, chosen per package:
 - **systemd PID1 root** — `/init -> ${systemd}/lib/systemd/systemd`, with a
   minimal `/etc/systemd/system` carrying only the package's units and the
   targets to auto-start. Needed when the workload is several interdependent
-  units. This is what an infra package like k3s would use *inside* the
+  units. This is what a high-privilege package like k3s would use *inside* the
   container.
 
 Image **format is ext4, not EROFS**, for container roots. ext4 mounts
@@ -160,30 +185,31 @@ package is an open call — see [open-questions.md](open-questions.md).
 
 ## Namespaces
 
-`systemd-nspawn` gives a workload-in-container package its own:
+`systemd-nspawn` gives a default (empty-manifest) package its own:
 
-| Namespace | Default for workload | Notes |
+| Namespace | Default (empty manifest) | Notes |
 |---|---|---|
 | PID | private | container has its own PID1 (`systemd` or the binary) |
 | Mount | private | own `/`, `/etc`, `/tmp`; host store bind-mounted RO |
 | Net | private (`--network-veth`) | veth pair to host; see networking below |
 | IPC | private | no host SysV/POSIX IPC leakage |
 | UTS | private | own hostname (`--machine=%i`) |
-| User | `--private-users=pick` (workloads) | maps container root → unprivileged host uid range |
+| User | `--private-users=pick` | maps container root → unprivileged host uid range |
 | cgroup | delegated subtree | `Delegate=yes`, container manages its own children |
 
-`--private-users` is the contentious one. For **workloads** it is the right
-default: container-root maps to `nobody`-class host uids, so a container escape
-lands as an unprivileged host user. The cost is the usual user-ns friction —
-file ownership in the image must be shifted (`-U`/`--private-users=pick` handle
-this via UID shifting), and some `/dev` access patterns break. For **infra
-packages** user-ns is effectively off (see k3s below).
+`--private-users` is the contentious one. For the **default** (no
+`privileged-users` permission) it is the right choice: container-root maps to
+`nobody`-class host uids, so a container escape lands as an unprivileged host
+user. The cost is the usual user-ns friction — file ownership in the image must
+be shifted (`-U`/`--private-users=pick` handle this via UID shifting), and some
+`/dev` access patterns break. A package that declares `privileged-users` in its
+manifest turns user-ns off (`--private-users=no`); k3s does (see below).
 
 ## Networking
 
-Three modes, per package:
+Three modes, selected by the manifest's `network` permission:
 
-- **`--network-veth` (workloads, default).** nspawn creates a veth pair; the
+- **`--network-veth` (default, `network = "private"`).** nspawn creates a veth pair; the
   host side (`ve-<pkg>*`) is managed by a `systemd-networkd` `.network` file
   the package ships into the host `/etc/systemd/network/`. `systemd-networkd`
   and `systemd-resolved` are already enabled on the host. The container side
@@ -195,8 +221,9 @@ Three modes, per package:
   zone hub so several containers share an isolated L2 without an external
   bridge. Available, less-documented; veth+managed-network is the more
   portable default.
-- **`--network=host` (infra only).** No net isolation. This is what k3s needs
-  and is a deliberate downgrade — see below.
+- **`--network=host` (`network = "host"`).** No net isolation. This is what k3s
+  declares and is a deliberate, manifest-visible downgrade — see below and
+  [permissions.md](permissions.md).
 
 ## cgroup delegation
 
@@ -213,11 +240,12 @@ serviceConfig = {
 };
 ```
 
-For a containerized package the same keys go on `aos-package@<pkg>.service`, and
-the container's PID1 manages workload cgroups beneath the delegated root.
-`--keep-unit` is an alternative for infra: the container process lands in the
-nspawn service's own cgroup rather than a child scope — simpler, flatter, same
-net effect for a single-purpose privileged container.
+For a package that declares `cgroup-delegate` the same keys go on
+`aos-package@<pkg>.service`, and the container's PID1 manages workload cgroups
+beneath the delegated root. `--keep-unit` is an alternative for high-privilege
+packages: the container process lands in the nspawn service's own cgroup rather
+than a child scope — simpler, flatter, same net effect for a single-purpose
+privileged container.
 
 ## Ephemeral overlay root (fs-revert)
 
@@ -271,21 +299,30 @@ This refines the target-sandbox teardown table for the container case.
 
 So the container boundary *improves* revert for the workload's own fs and
 processes (vs. a bare host service) but **does not change** the two
-fundamentally-global caveats: **kernel modules and sysctls stay**. The strict
-guarantee remains the *disabled* (never-enabled) case, identical to
+fundamentally-global caveats: **kernel modules and sysctls stay**. `kernel-modules`
+is the one irreducibly host-level permission — the host loads them and a
+container cannot, so they persist one-way after stop (see
+[permissions.md](permissions.md) for why). The strict guarantee remains the
+*disabled* (never-enabled) case, identical to
 [../roles/targets-and-sandbox.md](../roles/targets-and-sandbox.md).
 
 ## Security / isolation
 
-For a workload package the boundary is real: separate PID/mount/net/IPC/UTS
-namespaces, user-ns mapping container-root to an unprivileged host range, a RO
-root with an ephemeral upper, a delegated (capped) cgroup, and `nftables`-gated
-ports. Further hardening available but not yet specified: `--system-call-filter`
-(seccomp), capability dropping (`--drop-capability=`), `--read-only`,
-`ProtectKernelModules=` on the service. These are honest TODOs, not claims.
+For a default (empty-manifest) package the boundary is real: separate
+PID/mount/net/IPC/UTS namespaces, user-ns mapping container-root to an
+unprivileged host range, a RO root with an ephemeral upper, a delegated (capped)
+cgroup, and `nftables`-gated ports. Further hardening available but not yet
+specified: `--system-call-filter` (seccomp), capability dropping
+(`--drop-capability=`), `--read-only`, `ProtectKernelModules=` on the service.
+These are honest TODOs, not claims.
 
-It is **not** a security boundary for infra packages (k3s), and we must not
-pretend otherwise.
+Boundary strength is a *gradient set by the manifest* (see
+[permissions.md](permissions.md)). It is **not** a security boundary for a
+high-privilege package like k3s — once a package declares host network, broad
+caps, and host paths, its container is a packaging/lifecycle wrapper, not a
+sandbox — and we must not pretend otherwise. The value is that the privilege is
+least-by-default, declared, signed, and visible in the manifest, not that
+everything is isolated.
 
 ## The host→container PID1 credential boundary
 
@@ -304,27 +341,32 @@ writes an env file, the unit reads it via `EnvironmentFile=`, and for a
 container we bind that path RO into the instance. **Do not settle this here** —
 the decision, the option matrix, and the criteria live in [config.md](config.md).
 
-## Honest caveat: k3s does not fit
+## Honest caveat: k3s is a high-privilege container
 
-k3s is an **infrastructure** package, not a workload, and the container model
-mostly does not apply. k3s must manage *host* state:
+k3s is still an nspawn container — but a **high-privilege** one whose manifest
+declares away most of the boundary. Its container is *nominal*: a
+packaging/lifecycle wrapper, not a security boundary. k3s must manage *host*
+state, and every one of these grants is an explicit entry in its
+`[permissions]` manifest (see [permissions.md](permissions.md)):
 
-- **Kernel modules are global.** k3s needs `br_netfilter`, `vxlan`, `ip_set`
-  (declared in `modules/roles/kubernetes/k3s-worker.nix`). There is no
-  per-container module namespace — these load into the host kernel at boot via
-  `aos-k3s-worker-modules.service` regardless of any container. The container
-  cannot own them.
+- **Kernel modules are global.** k3s declares `kernel-modules = ["br_netfilter",
+  "vxlan", "ip_set"]` (in `modules/roles/kubernetes/k3s-worker.nix`). There is no
+  per-container module namespace — these load into the host kernel via
+  `aos-pkg-k3s-worker-modules.service` regardless of any container. The container
+  cannot own them; this is the one irreducibly host-level permission.
 - **Host network.** CNI/flannel program host routes, the host bridge, and
   host iptables/nftables. `--network-veth` would cut k3s off from the L2 it is
-  supposed to manage. It needs `--network=host`.
-- **Host cgroups.** kubelet manages host cgroups; it wants `Delegate=yes` plus,
-  realistically, a near-flat `--keep-unit` placement.
-- **Broad capabilities** and host `/sys`, `/proc`, `/var/lib/kubelet`,
-  `/var/lib/rancher`.
+  supposed to manage, so it declares `network = "host"`.
+- **Host cgroups.** kubelet manages host cgroups; it declares `cgroup-delegate`
+  (`Delegate=yes`) plus, realistically, a near-flat `--keep-unit` placement.
+- **Broad capabilities** (declared `capabilities`) and host `/sys`, `/proc`,
+  `/var/lib/kubelet`, `/var/lib/rancher` (declared `host-paths`).
 
-If we still wrap it in nspawn, it is a **nominal** container — mount + UTS
-isolation only — around a process with effectively full host privilege. The
-unit it would require makes the privilege explicit and ugly (illustrative,
+Wrapped in nspawn it is a **nominal** container — mount + UTS isolation only —
+around a process with effectively full host privilege. The difference from the
+old "k3s isn't really a container" framing is that the privilege is now
+**visible in the manifest** rather than buried in the implementation. The unit
+its manifest generates makes the privilege explicit and ugly (illustrative,
 **needs verification** of the exact flag set):
 
 ```ini
@@ -351,15 +393,18 @@ shrinks to the parts of k3s's tree that are *not* host-bound (most of its real
 state is bound out to `/var/lib/rancher` and `/var/lib/kubelet`, which persist).
 The isolation benefit is near zero. The honest recommendation:
 
-> **k3s likely stays host-gated** — a plain package whose `aos-k3s-*.target`
-> gates host systemd units + the modules/sysctl/firewall oneshots, with **no**
-> nspawn instance. The nominal-container form is available if we want a uniform
-> "everything is a container" story, but it should be labelled as cosmetic
-> isolation, not a sandbox.
+> **k3s is a high-privilege container** — like every package it gets an
+> `aos-pkg-k3s-*.target` and an nspawn instance, but its `[permissions]`
+> manifest declares host network, broad caps, cgroup-delegate, host-paths, and
+> kernel-modules, so the container is a packaging/lifecycle wrapper, not a
+> sandbox. It must be labelled as cosmetic isolation, not a security boundary —
+> and now that labelling lives in the signed manifest, not in tribal knowledge.
 
-This split — "workload packages get a real container, infra packages stay
-host-gated (or get a nominal one)" — is the load-bearing distinction the whole
-container model rests on.
+This is the **privilege gradient**, not a shape split: the same one-shape
+container model spans "full sandbox" (empty manifest) to "packaging wrapper"
+(k3s), and the manifest is what places a package on it. See
+[permissions.md](permissions.md) for the gradient and k3s's full (still
+`needs verification`) permission set.
 
 ## Relation to the target-sandbox invariants
 
@@ -384,7 +429,8 @@ Nothing here weakens [../roles/targets-and-sandbox.md](../roles/targets-and-sand
   none; `crates/aos-package/src/types.rs`).
 - Where the image is materialized and how `apm` links it into `/var/lib/machines`
   (post-install hook does not exist yet).
-- `--private-users` policy per package class; UID-shift cost on first start.
+- `--private-users` policy (the `privileged-users` permission); UID-shift cost
+  on first start.
 - Production-kernel namespace/cgroup config verification.
 - Stateful (`--directory=`) snapshot/rollback story.
 - Whether to enable `machined` for `machinectl` introspection (current lean:
