@@ -3488,7 +3488,21 @@ in {
       run_ok orphans-none "$APM" orphans
       assert_file_contains /tmp/surface-orphans-none.out "No orphaned packages" \
         "apm orphans reports clean state while registry is configured"
-      mv "$APM_CONFIG/registries.d/surface-reg.toml" /tmp/surface-reg.removed
+      assert_dir_exists "$HOME/.local/share/apm/registries/surface-reg" \
+        "local registry clone exists before registry remove"
+      $APM registry remove surface-reg --keep-local > /tmp/surface-registry-remove.out 2>&1 || {
+        cat /tmp/surface-registry-remove.out
+        fail "apm registry remove --keep-local succeeds after real installs"
+      }
+      cat /tmp/surface-registry-remove.out
+      assert_file_contains /tmp/surface-registry-remove.out "Registry 'surface-reg' removed" \
+        "apm registry remove reports removed registry"
+      assert_file_contains /tmp/surface-registry-remove.out "now orphaned" \
+        "apm registry remove reports installed packages become orphans"
+      assert_file_not_exists "$APM_CONFIG/registries.d/surface-reg.toml" \
+        "apm registry remove deletes registry config"
+      assert_dir_exists "$HOME/.local/share/apm/registries/surface-reg" \
+        "apm registry remove --keep-local keeps local clone"
       run_ok orphans-removed "$APM" orphans
       assert_file_contains /tmp/surface-orphans-removed.out "surfacepkg" \
         "apm orphans lists package from removed registry"
