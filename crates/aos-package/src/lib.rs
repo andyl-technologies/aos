@@ -236,7 +236,7 @@ pub enum PackageCommand {
         /// Roll back the system sysroot
         #[arg(long)]
         system: bool,
-        /// List all system generations
+        /// List profile generations (system generations with --system)
         #[arg(long)]
         list: bool,
         /// Use kexec to hot-load old kernel (with --system)
@@ -1262,7 +1262,7 @@ pub async fn run(
             live,
             drain,
         } => {
-            if *rollback_system || *rollback_list {
+            if *rollback_system {
                 let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::rollback_system(
                     &config,
@@ -1274,6 +1274,8 @@ pub async fn run(
                     printer,
                 )
                 .await
+            } else if *rollback_list {
+                rollback::list(&config, printer).await
             } else {
                 rollback::run(&config, *generation, dry_run, printer).await
             }
