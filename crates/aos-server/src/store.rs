@@ -47,8 +47,10 @@ impl NixStore {
         )
         .with_context(|| format!("opening Nix DB at {}", db_path.display()))?;
 
-        // Enable WAL mode for concurrent reads.
-        conn.pragma_update(None, "journal_mode", "wal")?;
+        // The writer side creates the DB in WAL mode. This handle is read-only,
+        // so do not try to mutate `journal_mode` here.
+        let _journal_mode: String =
+            conn.pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -119,5 +121,97 @@ impl NixStore {
             .optional()?
             .is_some();
         Ok(exists)
+    }
+
+    /// Check if a store path or store-path hash is valid locally.
+    ///
+    /// Cache clients identify paths by the hash prefix in narinfo and mass-query
+    /// requests. A client and server may use different store roots, so accepting
+    /// only an exact full path would make already-imported paths look missing
+    /// whenever the root differs.
+    pub fn is_valid_path_or_hash(&self, path_or_hash: &str) -> Result<bool> {
+        if self.is_valid_path(path_or_hash)? {
+            return Ok(true);
+        }
+
+        let Some(store_hash) = store_hash_from_path_or_hash(path_or_hash) else {
+            return Ok(false);
+        };
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let pattern = format!("%/{store_hash}-%");
+        let mut stmt =
+            conn.prepare_cached("SELECT 1 FROM ValidPaths WHERE path LIKE ?1 LIMIT 1")?;
+        let exists = stmt
+            .query_row(params![pattern], |_| Ok(()))
+            .optional()?
+            .is_some();
+        Ok(exists)
+    }
+}
+
+fn store_hash_from_path_or_hash(path_or_hash: &str) -> Option<&str> {
+    let basename = path_or_hash.rsplit('/').next()?;
+    let hash = basename.split('-').next().unwrap_or(basename);
+    if hash.is_empty() { None } else { Some(hash) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_path_or_hash_accepts_exact_paths_and_hash_identities() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db_path = temp.path().join("db.sqlite");
+        let conn = Connection::open(&db_path)?;
+        conn.execute_batch(
+            "
+            CREATE TABLE ValidPaths (
+              id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+              path TEXT UNIQUE NOT NULL,
+              hash TEXT NOT NULL,
+              registrationTime INTEGER NOT NULL,
+              deriver TEXT,
+              narSize INTEGER,
+              ultimate INTEGER,
+              sigs TEXT,
+              ca TEXT
+            );
+            CREATE TABLE Refs (
+              referrer INTEGER NOT NULL,
+              reference INTEGER NOT NULL,
+              PRIMARY KEY (referrer, reference)
+            );
+            INSERT INTO ValidPaths
+              (path, hash, registrationTime, narSize, ultimate, sigs)
+            VALUES
+              (
+                '/var/lib/aos/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo-1.0',
+                'sha256:abc',
+                1000000,
+                123,
+                1,
+                ''
+              );
+            ",
+        )?;
+        drop(conn);
+
+        let store = NixStore::open(&db_path)?;
+
+        assert!(store.is_valid_path_or_hash(
+            "/var/lib/aos/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo-1.0"
+        )?);
+        assert!(store.is_valid_path_or_hash(
+            "/tmp/client-root/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo-1.0"
+        )?);
+        assert!(store.is_valid_path_or_hash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?);
+        assert!(!store.is_valid_path_or_hash("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")?);
+
+        Ok(())
     }
 }

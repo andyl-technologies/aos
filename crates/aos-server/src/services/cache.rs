@@ -113,7 +113,7 @@ impl CacheService for CacheServiceImpl {
         let mut missing = Vec::new();
 
         for path in &store_paths {
-            match self.state.store.is_valid_path(path) {
+            match self.state.store.is_valid_path_or_hash(path) {
                 Ok(true) => {}
                 Ok(false) => missing.push(path.clone()),
                 Err(e) => {
