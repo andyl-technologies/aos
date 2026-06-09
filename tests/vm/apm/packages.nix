@@ -1,7 +1,7 @@
 # tests/vm/apm/packages.nix — Package install/remove VM tests
 #
 # Tests for `apm install`, `apm remove`, `apm upgrade`, `apm rollback`,
-# hold/unhold, and the non-network APM command surface.
+# hold/unhold, and the APM command surface.
 #
 # Most tests verify command line behavior, idempotency, profile management,
 # and user-facing messages.  The real closure lifecycle test also exercises
@@ -188,6 +188,44 @@
     pname = "upgrade-beta";
     version = "2.0.0";
   };
+  surfaceLeafTool = mkProfileTool {
+    pname = "surface-leaf";
+    version = "1.0.0";
+  };
+  surfaceTool = pkgs.mkDerivation {
+    pname = "surfacepkg";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      surfaceLeafTool
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'leaf_output="$(${surfaceLeafTool}/bin/surface-leaf)"' \
+            'printf "surfacepkg 1.0.0 via %s\n" "$leaf_output"' \
+            > "$out/bin/surfacepkg"
+          chmod +x "$out/bin/surfacepkg"
+        '';
+      }
+    ];
+  };
+  surfaceUpgradeV1 = mkProfileTool {
+    pname = "upgradeface";
+    version = "1.0.0";
+  };
+  surfaceUpgradeV2 = mkProfileTool {
+    pname = "upgradeface";
+    version = "2.0.0";
+  };
   realIdempotentDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -268,6 +306,19 @@
       upgradeAlphaV2
       upgradeBetaV1
       upgradeBetaV2
+    ];
+  realCommandSurfaceDeps =
+    fixtures.commonDeps
+    ++ nixRuntimeDeps
+    ++ [
+      pkgs.findutils
+      pkgs.iproute2
+      pkgs.python3
+      pkgs.zstd
+      surfaceLeafTool
+      surfaceTool
+      surfaceUpgradeV1
+      surfaceUpgradeV2
     ];
   realInstallDeps =
     fixtures.commonDeps
@@ -3011,181 +3062,174 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 12. command-surface — Non-network APM command surface coverage
+  # 12. command-surface — Real APM command surface workflow
   # -------------------------------------------------------------------------
   command-surface = testing.mkVMTest {
     name = "apm-command-surface";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = realCommandSurfaceDeps;
+    memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
+      ${setupNixEnv}
 
-      echo "==> Test: exhaustive non-network APM command surface"
+      echo "==> Test: real APM command surface workflow"
 
-      export USER="$(id -un)"
-      REMOTE="$HOME/.local/share/apm/remote/test-reg"
-      PROFILE="/var/lib/profiles/per-user/$USER"
-      DEP_HASH=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-      LEAF_HASH=cccccccccccccccccccccccccccccccc
-      UPGRADE_OLD_HASH=dddddddddddddddddddddddddddddddd
-      UPGRADE_NEW_HASH=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-      ROOT_STORE="${aosPkg}"
-      ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
-      DEP_STORE="/nix/store/$DEP_HASH-libdep-1.0.0"
-      LEAF_STORE="/nix/store/$LEAF_HASH-leaf-1.0.0"
-      UPGRADE_OLD_STORE="/nix/store/$UPGRADE_OLD_HASH-upgradeface-1.0.0"
-      UPGRADE_NEW_STORE="/nix/store/$UPGRADE_NEW_HASH-upgradeface-2.0.0"
+      SURFACE_STORE="${surfaceTool}"
+      LEAF_STORE="${surfaceLeafTool}"
+      UPGRADE_V1_STORE="${surfaceUpgradeV1}"
+      UPGRADE_V2_STORE="${surfaceUpgradeV2}"
+      SURFACE_HASH=$(basename "$SURFACE_STORE" | cut -d- -f1)
+      LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
+      UPGRADE_V1_HASH=$(basename "$UPGRADE_V1_STORE" | cut -d- -f1)
+      UPGRADE_V2_HASH=$(basename "$UPGRADE_V2_STORE" | cut -d- -f1)
+      PROFILE="/var/lib/profiles/per-user/surfaceuser"
+      SURFACE_BIN="$PROFILE/current/bin/surfacepkg"
+      LEAF_BIN="$PROFILE/current/bin/surface-leaf"
+      UPGRADE_BIN="$PROFILE/current/bin/upgradeface"
 
-      mkdir -p "$REMOTE/packages/s" "$REMOTE/packages/l" "$REMOTE/packages/u" "$REMOTE/closures"
-      mkdir -p "$PROFILE/meta" "$PROFILE/gen-1/usr/bin" "$HOME/.cache/apm"
-      printf 'cached nar bytes' > "$HOME/.cache/apm/root.nar.zst"
-
-      cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
-      [registry]
-      name = "test-reg"
-      url = "file://$REMOTE"
-      priority = 500
-      enabled = true
-      EOF
-
-      cat > "$REMOTE/packages/s/surfacepkg.toml" << EOF
-      [package]
-      name = "surfacepkg"
-      description = "Surface command fixture"
-      homepage = "https://example.invalid/surfacepkg"
-      license = "MIT"
-      maintainer = "test"
-
-      [[versions]]
-      version = "2.0.0"
-
-      [versions.platforms.x86_64-linux]
-      store_path = "$ROOT_STORE"
-      nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-      nar_size = 4096
-      closure_size = 8192
-      source_drv = "/nix/store/dddddddddddddddddddddddddddddddd-surfacepkg.drv"
-      source_nar_hash = "sha256:1111111111111111111111111111111111111111111111111111"
-      references = ["$DEP_HASH"]
-      EOF
-
-      cat > "$REMOTE/packages/l/libdep.toml" << EOF
-      [package]
-      name = "libdep"
-      description = "Dependency fixture"
-      license = "MIT"
-      maintainer = "test"
-
-      [[versions]]
-      version = "1.0.0"
-
-      [versions.platforms.x86_64-linux]
-      store_path = "$DEP_STORE"
-      nar_hash = "sha256:2222222222222222222222222222222222222222222222222222"
-      nar_size = 1024
-      closure_size = 2048
-      source_drv = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libdep.drv"
-      source_nar_hash = "sha256:3333333333333333333333333333333333333333333333333333"
-      references = ["$LEAF_HASH"]
-      EOF
-
-      cat > "$REMOTE/packages/l/leaf.toml" << EOF
-      [package]
-      name = "leaf"
-      description = "Leaf dependency fixture"
-      license = "MIT"
-      maintainer = "test"
-
-      [[versions]]
-      version = "1.0.0"
-
-      [versions.platforms.x86_64-linux]
-      store_path = "$LEAF_STORE"
-      nar_hash = "sha256:4444444444444444444444444444444444444444444444444444"
-      nar_size = 512
-      closure_size = 512
-      source_drv = ""
-      source_nar_hash = ""
-      references = []
-      EOF
-
-      cat > "$REMOTE/packages/u/upgradeface.toml" << EOF
-      [package]
-      name = "upgradeface"
-      description = "Upgradable command fixture"
-      license = "MIT"
-      maintainer = "test"
-
-      [[versions]]
-      version = "2.0.0"
-
-      [versions.platforms.x86_64-linux]
-      store_path = "$UPGRADE_NEW_STORE"
-      nar_hash = "sha256:5555555555555555555555555555555555555555555555555555"
-      nar_size = 1024
-      closure_size = 1024
-      source_drv = ""
-      source_nar_hash = ""
-      references = []
-      EOF
-
-      cat > "$REMOTE/closures/$ROOT_HASH" << EOF
-      $ROOT_HASH $DEP_HASH
-      $DEP_HASH $LEAF_HASH
-      $LEAF_HASH
-      EOF
-
-      cat > "$PROFILE/state.json" << 'EOF'
-      {"current_generation":1,"next_generation":2}
-      EOF
-      ln -sfn gen-1 "$PROFILE/current"
-      ln -sfn "$ROOT_STORE" "$PROFILE/gen-1/usr/bin/$ROOT_HASH"
-      cat > "$PROFILE/meta/$ROOT_HASH.json" << EOF
-      {
-        "store_path": "$ROOT_STORE",
-        "pushed_at": 1,
-        "pushed_by": "apm-test",
-        "expires_at": null,
-        "is_root": true,
-        "last_accessed": 1,
-        "access_count": 0,
-        "apm": {
-          "name": "surfacepkg",
-          "version": "1.0.0",
-          "explicit": true,
-          "registry": "test-reg",
-          "installed_at": "2026-06-08T00:00:00Z",
-          "held": true
-        }
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
       }
-      EOF
-      cat > "$PROFILE/meta/$UPGRADE_OLD_HASH.json" << EOF
-      {
-        "store_path": "$UPGRADE_OLD_STORE",
-        "pushed_at": 1,
-        "pushed_by": "apm-test",
-        "expires_at": null,
-        "is_root": true,
-        "last_accessed": 1,
-        "access_count": 0,
-        "apm": {
-          "name": "upgradeface",
-          "version": "1.0.0",
-          "explicit": true,
-          "registry": "test-reg",
-          "installed_at": "2026-06-08T00:00:00Z",
-          "held": false
-        }
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/surface-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/surface-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
       }
-      EOF
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/surface-missing-$label.out" 2>&1; then
+          cat "/tmp/surface-missing-$label.out"
+          fail "$label should be missing from store"
+        else
+          pass "$label missing from store"
+        fi
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if nix-store --delete --ignore-liveness "$path" > "/tmp/surface-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/surface-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
+
+      generation_count() {
+        find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+      }
+
+      wait_for_cache_server() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18105/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
+
+      publish_surface_package() {
+        $APR publish "$SURFACE_STORE" \
+          --name surfacepkg \
+          --version 1.0.0 \
+          --description "Surface command fixture" \
+          --homepage https://example.invalid/surfacepkg \
+          --license MIT \
+          --maintainer surface@example.invalid \
+          --registry surface-reg \
+          --no-commit > /tmp/surface-publish-surfacepkg.out 2>&1 || {
+          cat /tmp/surface-publish-surfacepkg.out
+          fail "apr publish surfacepkg succeeds"
+          return 1
+        }
+        cat /tmp/surface-publish-surfacepkg.out
+      }
+
+      publish_leaf_package() {
+        $APR publish "$LEAF_STORE" \
+          --name surface-leaf \
+          --version 1.0.0 \
+          --description "Surface dependency fixture" \
+          --license MIT \
+          --maintainer surface@example.invalid \
+          --registry surface-reg \
+          --no-commit > /tmp/surface-publish-leaf.out 2>&1 || {
+          cat /tmp/surface-publish-leaf.out
+          fail "apr publish surface-leaf succeeds"
+          return 1
+        }
+        cat /tmp/surface-publish-leaf.out
+      }
+
+      publish_upgradeface() {
+        version="$1"
+        store="$2"
+        label="$3"
+        $APR publish "$store" \
+          --name upgradeface \
+          --version "$version" \
+          --description "Upgradable command fixture" \
+          --license MIT \
+          --maintainer surface@example.invalid \
+          --registry surface-reg \
+          --no-commit > "/tmp/surface-publish-upgradeface-$label.out" 2>&1 || {
+          cat "/tmp/surface-publish-upgradeface-$label.out"
+          fail "apr publish upgradeface $version succeeds"
+          return 1
+        }
+        cat "/tmp/surface-publish-upgradeface-$label.out"
+      }
+
+      generate_surface_cache() {
+        label="$1"
+        $APR cache generate \
+          --registry surface-reg \
+          --output /tmp/surface-cache \
+          --cache-url http://127.0.0.1:18105 \
+          --priority 65 \
+          --no-commit > "/tmp/surface-cache-generate-$label.out" 2>&1 || {
+          cat "/tmp/surface-cache-generate-$label.out"
+          fail "apr cache generate $label succeeds"
+          return 1
+        }
+        cat "/tmp/surface-cache-generate-$label.out"
+      }
+
+      commit_surface_registry() {
+        message="$1"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "$message" > /tmp/surface-git-commit.out 2>&1 || {
+          cat /tmp/surface-git-commit.out
+          fail "registry commit succeeds: $message"
+          return 1
+        }
+        cat /tmp/surface-git-commit.out
+      }
 
       run_ok() {
         label="$1"
         shift
-        if "$@" > "/tmp/$label.out" 2>&1; then
+        if "$@" > "/tmp/surface-$label.out" 2>&1; then
           pass "$label exits 0"
         else
-          cat "/tmp/$label.out"
+          cat "/tmp/surface-$label.out"
           fail "$label should exit 0"
         fi
       }
@@ -3193,82 +3237,272 @@ in {
       run_fail() {
         label="$1"
         shift
-        if "$@" > "/tmp/$label.out" 2>&1; then
-          cat "/tmp/$label.out"
+        if "$@" > "/tmp/surface-$label.out" 2>&1; then
+          cat "/tmp/surface-$label.out"
           fail "$label should fail"
         else
           pass "$label fails as expected"
         fi
       }
 
+      mount -o remount,rw / || true
+      assert_store_valid "$SURFACE_STORE" "surfacepkg"
+      assert_store_valid "$LEAF_STORE" "surface-leaf"
+      assert_store_valid "$UPGRADE_V1_STORE" "upgradeface-v1"
+      assert_store_valid "$UPGRADE_V2_STORE" "upgradeface-v2"
+      nix-store -q --references "$SURFACE_STORE" > /tmp/surface-refs.out
+      assert_file_contains /tmp/surface-refs.out "$LEAF_STORE" \
+        "surfacepkg has a real Nix reference to surface-leaf"
+
+      echo "==> Maintainer: publish initial command-surface packages"
+      $APR create surface-reg
+      REG_DIR="$REG_STORAGE/surface-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      publish_leaf_package
+      publish_surface_package
+      publish_upgradeface 1.0.0 "$UPGRADE_V1_STORE" v1
+      assert_file_contains "$REG_DIR/packages/s/surfacepkg.toml" \
+        "$SURFACE_HASH" "published surfacepkg metadata records store hash"
+      assert_file_contains "$REG_DIR/packages/s/surface-leaf.toml" \
+        "$LEAF_HASH" "published surface-leaf metadata records store hash"
+      assert_file_contains "$REG_DIR/closures/$SURFACE_HASH" \
+        "$LEAF_HASH" "published surfacepkg closure records dependency"
+
+      generate_surface_cache initial
+      assert_file_exists "/tmp/surface-cache/$SURFACE_HASH.narinfo" \
+        "static cache has surfacepkg narinfo"
+      assert_file_exists "/tmp/surface-cache/$LEAF_HASH.narinfo" \
+        "static cache has surface-leaf narinfo"
+      assert_file_exists "/tmp/surface-cache/$UPGRADE_V1_HASH.narinfo" \
+        "static cache has upgradeface v1 narinfo"
+      assert_file_contains "$REG_DIR/registry.toml" \
+        "http://127.0.0.1:18105" "registry records command-surface cache URL"
+
+      commit_surface_registry "release: command surface initial packages"
+      git init --bare --object-format=sha256 /tmp/surface-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/surface-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      python3 -m http.server 18105 --bind 127.0.0.1 \
+        --directory /tmp/surface-cache > /tmp/surface-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      if wait_for_cache_server; then
+        pass "static cache HTTP server started"
+      else
+        cat /tmp/surface-cache-http.log || true
+        fail "static cache HTTP server started"
+      fi
+
+      echo "==> Consumer: install command-surface packages through apm"
+      export HOME=/tmp/surface-consumer
+      export USER=surfaceuser
+      APM_CONFIG="$HOME/.config/apm"
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/surface-origin.git \
+        --name surface-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/surface-registry-add.out 2>&1 || {
+        cat /tmp/surface-registry-add.out
+        fail "apm registry add syncs command-surface registry"
+      }
+      cat /tmp/surface-registry-add.out
+
+      delete_store_path "$SURFACE_STORE" "surfacepkg"
+      delete_store_path "$LEAF_STORE" "surface-leaf"
+      delete_store_path "$UPGRADE_V1_STORE" "upgradeface-v1"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install surfacepkg --registry surface-reg --yes > /tmp/surface-install.out 2>&1 || {
+        cat /tmp/surface-install.out
+        fail "apm install downloads surfacepkg closure"
+      }
+      cat /tmp/surface-install.out
+      assert_file_contains /tmp/surface-install.out "Downloading" \
+        "surfacepkg install downloads closure NARs"
+      assert_file_contains /tmp/surface-install.out "Installed 1 package" \
+        "surfacepkg install creates profile generation"
+      assert_store_valid "$SURFACE_STORE" "surfacepkg"
+      assert_store_valid "$LEAF_STORE" "surface-leaf"
+      "$SURFACE_BIN" > /tmp/surface-run.out
+      assert_file_contains /tmp/surface-run.out "^surfacepkg 1.0.0 via surface-leaf 1.0.0$" \
+        "installed surfacepkg executable runs from profile"
+      "$LEAF_BIN" > /tmp/surface-leaf-run.out
+      assert_file_contains /tmp/surface-leaf-run.out "^surface-leaf 1.0.0$" \
+        "installed dependency executable runs from profile"
+      assert_file_contains "$PROFILE/meta/$SURFACE_HASH.json" '"explicit": true' \
+        "surfacepkg metadata is explicit"
+      assert_file_contains "$PROFILE/meta/$LEAF_HASH.json" '"explicit": false' \
+        "surface-leaf metadata is automatic"
+
+      $APM install upgradeface --registry surface-reg --yes > /tmp/surface-install-upgradeface.out 2>&1 || {
+        cat /tmp/surface-install-upgradeface.out
+        fail "apm install downloads upgradeface v1"
+      }
+      cat /tmp/surface-install-upgradeface.out
+      assert_store_valid "$UPGRADE_V1_STORE" "upgradeface-v1"
+      "$UPGRADE_BIN" > /tmp/surface-upgradeface-v1-run.out
+      assert_file_contains /tmp/surface-upgradeface-v1-run.out "^upgradeface 1.0.0$" \
+        "installed upgradeface v1 executable runs from profile"
+
       run_ok search-desc "$APM" search Surface
-      assert_file_contains /tmp/search-desc.out "surfacepkg" "apm search finds descriptions"
+      assert_file_contains /tmp/surface-search-desc.out "surfacepkg" "apm search finds descriptions"
       run_ok search-names "$APM" search surface --names-only
-      assert_file_contains /tmp/search-names.out "surfacepkg" "apm search --names-only finds package names"
+      assert_file_contains /tmp/surface-search-names.out "surfacepkg" "apm search --names-only finds package names"
       run_ok search-installed "$APM" search surface --installed
-      assert_file_contains /tmp/search-installed.out "surfacepkg" "apm search --installed filters through profile metadata"
+      assert_file_contains /tmp/surface-search-installed.out "surfacepkg" "apm search --installed filters through profile metadata"
 
       run_ok show "$APM" show surfacepkg
-      assert_file_contains /tmp/show.out "Surface command fixture" "apm show prints package details"
+      assert_file_contains /tmp/surface-show.out "Surface command fixture" "apm show prints package details"
+      assert_file_contains /tmp/surface-show.out "Installed.*yes" "apm show sees installed profile metadata"
+      assert_file_contains /tmp/surface-show.out "surface-leaf" "apm show resolves real dependency names"
       run_ok list "$APM" list
-      assert_file_contains /tmp/list.out "surfacepkg/test-reg" "apm list includes registry package"
+      assert_file_contains /tmp/surface-list.out "surfacepkg/surface-reg" "apm list includes registry package"
       run_ok list-installed "$APM" list --installed
-      assert_file_contains /tmp/list-installed.out "installed" "apm list --installed reports installed status"
-      run_ok list-upgradable "$APM" list --upgradable
-      assert_file_contains /tmp/list-upgradable.out "upgradeface/test-reg" "apm list --upgradable includes upgradable package"
-      assert_file_contains /tmp/list-upgradable.out "upgradable: 2.0.0" "apm list --upgradable reports candidate"
+      assert_file_contains /tmp/surface-list-installed.out "surfacepkg/surface-reg" \
+        "apm list --installed reports surfacepkg"
+      assert_file_contains /tmp/surface-list-installed.out "upgradeface/surface-reg" \
+        "apm list --installed reports upgradeface"
+
+      $APM hold surfacepkg > /tmp/surface-hold.out 2>&1 || {
+        cat /tmp/surface-hold.out
+        fail "apm hold succeeds for real installed package"
+      }
+      cat /tmp/surface-hold.out
+      assert_file_contains /tmp/surface-hold.out "set on hold" \
+        "apm hold marks real installed package held"
       run_ok list-held "$APM" list --held
-      assert_file_contains /tmp/list-held.out "held" "apm list --held reports held package"
+      assert_file_contains /tmp/surface-list-held.out "surfacepkg/surface-reg" \
+        "apm list --held reports held package"
 
       run_ok depends "$APM" depends surfacepkg
-      assert_file_contains /tmp/depends.out "libdep" "apm depends resolves direct dependency"
-      assert_file_contains /tmp/depends.out "leaf" "apm depends resolves transitive closure dependency"
-      run_ok rdepends-empty "$APM" rdepends surfacepkg
-      assert_file_contains /tmp/rdepends-empty.out "not required" "apm rdepends handles no installed reverse dependents"
-      run_ok policy "$APM" policy surfacepkg
-      assert_file_contains /tmp/policy.out "Candidate: 2.0.0" "apm policy reports candidate"
-      assert_file_contains /tmp/policy.out "Installed: 1.0.0" "apm policy reports installed version"
+      assert_file_contains /tmp/surface-depends.out "surface-leaf" \
+        "apm depends resolves real published dependency"
+      run_ok rdepends "$APM" rdepends surface-leaf
+      assert_file_contains /tmp/surface-rdepends.out "surfacepkg" \
+        "apm rdepends finds real installed reverse dependency"
+      run_ok policy-surface "$APM" policy surfacepkg
+      assert_file_contains /tmp/surface-policy-surface.out "Candidate: 1.0.0" \
+        "apm policy reports current surfacepkg candidate"
+      assert_file_contains /tmp/surface-policy-surface.out "Installed: 1.0.0" \
+        "apm policy reports installed surfacepkg version"
 
       run_ok files "$APM" files surfacepkg
-      assert_file_contains /tmp/files.out "bin/aos" "apm files walks installed store path"
-      run_ok source-default "$APM" source surfacepkg
-      assert_file_contains /tmp/source-default.out "surfacepkg.drv" "apm source prints source drv by default"
-      run_ok source-show-drv "$APM" source surfacepkg --show-drv
-      assert_file_contains /tmp/source-show-drv.out "surfacepkg.drv" "apm source --show-drv prints source drv"
+      assert_file_contains /tmp/surface-files.out "bin/surfacepkg" \
+        "apm files walks installed store path"
+      run_fail source-default "$APM" source surfacepkg
+      assert_file_contains /tmp/surface-source-default.out "no source derivation recorded" \
+        "apm source reports APR-published packages without source drv"
       run_fail source-fetch "$APM" source surfacepkg --fetch
-      assert_file_contains /tmp/source-fetch.out "nix-store" "apm source --fetch surfaces nix-store failure"
-      run_fail verify "$APM" verify surfacepkg
-      assert_file_contains /tmp/verify.out "nix-store\\|failed integrity verification\\|Hash" "apm verify compares installed NAR hash"
+      assert_file_contains /tmp/surface-source-fetch.out "no source derivation recorded" \
+        "apm source --fetch reports missing source drv"
+      run_ok verify "$APM" verify surfacepkg
+      assert_file_contains /tmp/surface-verify.out "integrity verified" \
+        "apm verify validates real installed NAR hash"
+
+      echo "==> Maintainer: publish command-surface upgrade candidate"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      publish_upgradeface 2.0.0 "$UPGRADE_V2_STORE" v2
+      assert_file_contains "$REG_DIR/packages/u/upgradeface.toml" \
+        "$UPGRADE_V2_HASH" "published upgradeface v2 metadata records store hash"
+      generate_surface_cache upgrade
+      assert_file_exists "/tmp/surface-cache/$UPGRADE_V2_HASH.narinfo" \
+        "static cache has upgradeface v2 narinfo"
+      commit_surface_registry "release: command surface upgradeface 2.0.0"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      echo "==> Consumer: query and apply real command-surface upgrade"
+      export HOME=/tmp/surface-consumer
+      export USER=surfaceuser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$UPGRADE_V2_STORE" "upgradeface-v2"
+
+      $APM update --registry surface-reg > /tmp/surface-update.out 2>&1 || {
+        cat /tmp/surface-update.out
+        fail "apm update fetches command-surface upgrade"
+      }
+      cat /tmp/surface-update.out
+      run_ok list-upgradable "$APM" list --upgradable
+      assert_file_contains /tmp/surface-list-upgradable.out "upgradeface/surface-reg" \
+        "apm list --upgradable includes upgradable package"
+      assert_file_contains /tmp/surface-list-upgradable.out "upgradable: 2.0.0" \
+        "apm list --upgradable reports candidate"
+      assert_file_not_contains /tmp/surface-list-upgradable.out "surface-leaf" \
+        "apm list --upgradable does not advertise automatic dependency"
+      run_ok policy-upgrade "$APM" policy upgradeface
+      assert_file_contains /tmp/surface-policy-upgrade.out "Candidate: 2.0.0" \
+        "apm policy reports upgrade candidate"
+      assert_file_contains /tmp/surface-policy-upgrade.out "Installed: 1.0.0" \
+        "apm policy reports installed upgradeface version"
+
+      run_ok reinstall-dry-run "$APM" reinstall surfacepkg --dry-run
+      assert_file_contains /tmp/surface-reinstall-dry-run.out "packages will be reinstalled" \
+        "apm reinstall dry-run resolves installed real package"
+      assert_file_contains /tmp/surface-reinstall-dry-run.out "Dry run -- no changes made" \
+        "apm reinstall dry-run avoids profile mutation"
+      run_ok full-upgrade-dry-run "$APM" full-upgrade --dry-run
+      assert_file_contains /tmp/surface-full-upgrade-dry-run.out "Dry run -- no changes made" \
+        "apm full-upgrade dry-run dispatches upgrade path"
+      "$UPGRADE_BIN" > /tmp/surface-upgradeface-before-full-upgrade.out
+      assert_file_contains /tmp/surface-upgradeface-before-full-upgrade.out "^upgradeface 1.0.0$" \
+        "dry-run leaves upgradeface v1 active"
+
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM full-upgrade --yes > /tmp/surface-full-upgrade.out 2>&1 || {
+        cat /tmp/surface-full-upgrade.out
+        fail "apm full-upgrade downloads and activates upgradeface v2"
+      }
+      cat /tmp/surface-full-upgrade.out
+      assert_file_contains /tmp/surface-full-upgrade.out "Downloading" \
+        "apm full-upgrade downloads upgradeface v2"
+      assert_file_contains /tmp/surface-full-upgrade.out "Upgraded 1 package" \
+        "apm full-upgrade activates upgradeface v2"
+      assert_store_valid "$UPGRADE_V2_STORE" "upgradeface-v2"
+      "$UPGRADE_BIN" > /tmp/surface-upgradeface-v2-run.out
+      assert_file_contains /tmp/surface-upgradeface-v2-run.out "^upgradeface 2.0.0$" \
+        "full-upgraded executable runs from profile"
 
       run_ok clean "$APM" clean
-      assert_file_contains /tmp/clean.out "Cleared NAR cache" "apm clean clears NAR cache"
-      if [ -e "$HOME/.cache/apm/root.nar.zst" ]; then
-        fail "apm clean should remove cached NAR file"
+      assert_file_contains /tmp/surface-clean.out "Cleared NAR cache" "apm clean clears NAR cache"
+      if find "$HOME/.cache/apm" -name '*.nar.zst' | grep -q .; then
+        fail "apm clean should remove cached NAR files"
       else
-        pass "apm clean removed cached NAR file"
+        pass "apm clean removed cached NAR files"
       fi
       run_ok clean-generations "$APM" clean --generations --keep 1
-      assert_file_contains /tmp/clean-generations.out "No old generations\\|Removed" "apm clean --generations handles profile generations"
-
-      run_fail reinstall-dry-run "$APM" reinstall surfacepkg --dry-run
-      assert_file_contains /tmp/reinstall-dry-run.out "Fetching\\|narinfo" "apm reinstall dispatches through install path"
-      run_ok full-upgrade-dry-run "$APM" full-upgrade --dry-run
-      assert_file_contains /tmp/full-upgrade-dry-run.out "Dry run -- no changes made" "apm full-upgrade dispatches upgrade path"
+      assert_file_contains /tmp/surface-clean-generations.out "No old generations\\|Removed" \
+        "apm clean --generations handles real profile generations"
+      if [ "$(generation_count)" -le 1 ]; then
+        pass "apm clean --generations keeps at most one old generation"
+      else
+        fail "apm clean --generations should prune old generations"
+      fi
       run_ok gc-help "$APM" gc --help
-      assert_file_contains /tmp/gc-help.out "garbage collection" "apm gc command surface is present without mutating the VM store"
+      assert_file_contains /tmp/surface-gc-help.out "garbage collection" \
+        "apm gc command surface is present without mutating the VM store"
 
       run_ok orphans-none "$APM" orphans
-      assert_file_contains /tmp/orphans-none.out "No orphaned packages" \
+      assert_file_contains /tmp/surface-orphans-none.out "No orphaned packages" \
         "apm orphans reports clean state while registry is configured"
-      mv "$APM_CONFIG/registries.d/test-reg.toml" /tmp/test-reg.removed
+      mv "$APM_CONFIG/registries.d/surface-reg.toml" /tmp/surface-reg.removed
       run_ok orphans-removed "$APM" orphans
-      assert_file_contains /tmp/orphans-removed.out "surfacepkg" \
+      assert_file_contains /tmp/surface-orphans-removed.out "surfacepkg" \
         "apm orphans lists package from removed registry"
-      assert_file_contains /tmp/orphans-removed.out "upgradeface" \
+      assert_file_contains /tmp/surface-orphans-removed.out "surface-leaf" \
+        "apm orphans lists automatic dependency from removed registry"
+      assert_file_contains /tmp/surface-orphans-removed.out "upgradeface" \
         "apm orphans lists additional package from removed registry"
-      assert_file_contains /tmp/orphans-removed.out "removed registry 'test-reg'" \
+      assert_file_contains /tmp/surface-orphans-removed.out "removed registry 'surface-reg'" \
         "apm orphans names the removed registry"
 
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
       check_fail
     '';
   };
