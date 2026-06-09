@@ -481,15 +481,15 @@ mod tests {
         assert!(zlib_child.is_some());
         assert_eq!(zlib_child.unwrap().version, "1.3.1");
 
-        // The other 3 reference hashes resolve back to curl via the hash
-        // index (since no separate package has those hashes). The cycle
-        // detector prevents infinite recursion, emitting them as leaf nodes.
-        let curl_cycle_count = root
+        // The other 3 reference hashes are not published as registry packages,
+        // so they remain explicit unknown leaf nodes instead of resolving back
+        // to the referring package.
+        let unknown_count = root
             .children
             .iter()
-            .filter(|c| c.name == "curl" && c.children.is_empty())
+            .filter(|c| c.name == "unknown" && c.children.is_empty())
             .count();
-        assert_eq!(curl_cycle_count, 3);
+        assert_eq!(unknown_count, 3);
     }
 
     // 3. Visited set tracks unique paths correctly.
@@ -509,11 +509,9 @@ mod tests {
         let mut ancestors = HashSet::new();
         let _root = build_dep_tree(meta, "aos-core", &set, None, &mut visited, &mut ancestors);
 
-        // curl's hash + zlib's hash = 2 unique package hashes.
-        // The 3 unknown reference hashes also resolve to curl's PackageMeta
-        // (whose store_path_hash is already in visited), so visited contains:
-        // h7j3k8l2m9n4 (curl) + r4q1m2kp8v3x (zlib) = 2 unique store hashes.
-        assert_eq!(visited.len(), 2);
+        // curl's hash, zlib's hash, and the 3 unknown reference hashes are
+        // tracked explicitly.
+        assert_eq!(visited.len(), 5);
 
         // zlib's hash should be in visited.
         assert!(visited.contains("r4q1m2kp8v3x"));

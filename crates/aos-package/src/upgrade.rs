@@ -10,7 +10,7 @@ use super::download::{
 };
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
-use super::profile::meta::{list_meta, write_meta};
+use super::profile::meta::{delete_meta, list_meta, write_meta};
 use super::registry::{RegistrySet, store_path_hash};
 use super::resolve::resolve_closure;
 use super::store::{create_gc_roots, filter_missing, import_nar};
@@ -218,6 +218,9 @@ pub async fn run(
 
     // Carry forward metadata for non-upgraded packages.
     let upgraded_names: HashSet<&str> = to_upgrade.iter().map(|c| c.name.as_str()).collect();
+    for candidate in &to_upgrade {
+        delete_meta(&profile, &candidate.old_store_hash)?;
+    }
     for meta in &installed {
         if let Some(ref apm) = meta.apm {
             if upgraded_names.contains(apm.name.as_str()) {

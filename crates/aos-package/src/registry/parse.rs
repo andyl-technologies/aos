@@ -73,14 +73,17 @@ struct ImageEntry {
 ///
 /// Registry layout: `{cache_dir}/packages/{first_letter}/{name}.toml`
 ///
-/// Returns `(packages, hash_index)` where `hash_index` maps store path
-/// hashes to package names for reverse lookup during closure resolution.
+/// Returns `(packages, hash_index)` where `packages` maps package names to
+/// the newest version for normal package resolution and `hash_index` maps
+/// every version's store path hash to its exact package metadata for reverse
+/// lookup during closure resolution and rollback metadata rebuilds.
 pub fn parse_registry(
     dir: &Path,
     platform: &str,
-) -> Result<(HashMap<String, PackageMeta>, HashMap<String, String>)> {
+) -> Result<(HashMap<String, PackageMeta>, HashMap<String, PackageMeta>)> {
     let packages_dir = dir.join("packages");
     let mut packages = HashMap::new();
+    let mut all_versions = Vec::new();
 
     if !packages_dir.is_dir() {
         return Ok((packages, HashMap::new()));
@@ -102,12 +105,15 @@ pub fn parse_registry(
             if toml_path.extension().map(|e| e == "toml").unwrap_or(false) {
                 let content = std::fs::read_to_string(&toml_path)
                     .with_context(|| format!("reading {}", toml_path.display()))?;
-                match parse_package_toml(&content, platform) {
-                    Ok(Some(meta)) => {
-                        packages.insert(meta.name.clone(), meta);
+                match parse_package_toml_versions(&content, platform) {
+                    Ok(metas) if !metas.is_empty() => {
+                        if let Some(meta) = newest_version(&metas) {
+                            packages.insert(meta.name.clone(), meta);
+                        }
+                        all_versions.extend(metas);
                     }
-                    Ok(None) => {
-                        // No entry for this platform — skip
+                    Ok(_) => {
+                        // No entry for this platform -- skip
                     }
                     Err(e) => {
                         return Err(e.context(format!("parsing {}", toml_path.display())));
@@ -117,16 +123,21 @@ pub fn parse_registry(
         }
     }
 
-    let hash_index = build_hash_index(&packages);
+    let hash_index = build_hash_index(&all_versions);
     Ok((packages, hash_index))
 }
 
-/// Parse a single package TOML file and extract the latest version for the
+/// Parse a single package TOML file and extract the newest version for the
 /// given platform. Returns `None` if the platform is not available.
 pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<PackageMeta>> {
-    let toml: PackageToml = toml::from_str(content).context("invalid package TOML")?;
+    let metas = parse_package_toml_versions(content, platform)?;
+    Ok(newest_version(&metas))
+}
 
-    // Take the first (latest) version that has our platform
+fn parse_package_toml_versions(content: &str, platform: &str) -> Result<Vec<PackageMeta>> {
+    let toml: PackageToml = toml::from_str(content).context("invalid package TOML")?;
+    let mut metas = Vec::new();
+
     for ver in &toml.versions {
         if let Some(plat) = ver.platforms.get(platform) {
             let images: Vec<SysrootImageEntry> = plat
@@ -140,7 +151,7 @@ pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<Packag
                 })
                 .collect();
 
-            return Ok(Some(PackageMeta {
+            metas.push(PackageMeta {
                 name: toml.package.name.clone(),
                 version: ver.version.clone(),
                 description: toml.package.description.clone(),
@@ -158,35 +169,36 @@ pub fn parse_package_toml(content: &str, platform: &str) -> Result<Option<Packag
                 sysroot: toml.package.sysroot,
                 previous: ver.previous.clone(),
                 images,
-            }));
+            });
         }
     }
 
-    Ok(None)
+    Ok(metas)
 }
 
-/// Build a hash-to-package-name reverse index from a set of packages.
-///
-/// Each package's store path hash AND all its reference hashes are indexed,
-/// enabling O(1) lookup during closure resolution.
-pub fn build_hash_index(packages: &HashMap<String, PackageMeta>) -> HashMap<String, String> {
-    let mut index = HashMap::new();
-    for (name, meta) in packages {
-        let hash = store_path_hash(&meta.store_path);
-        index.insert(hash.to_string(), name.clone());
-        // Also index all references (they should map back to packages in the
-        // same registry for registry-scoped resolution)
-        for ref_hash in &meta.references {
-            // Don't overwrite if already set — the package's own hash takes priority
-            index
-                .entry(ref_hash.clone())
-                .or_insert_with(|| name.clone());
+fn newest_version(metas: &[PackageMeta]) -> Option<PackageMeta> {
+    let mut newest = None;
+
+    for meta in metas {
+        if let Ok(parsed) = semver::Version::parse(&meta.version) {
+            match &newest {
+                Some((current, _)) if current >= &parsed => {}
+                _ => newest = Some((parsed, meta.clone())),
+            }
         }
     }
-    // Fix: re-insert package's own hashes to ensure they win over reference entries
-    for (name, meta) in packages {
+
+    newest
+        .map(|(_, meta)| meta)
+        .or_else(|| metas.first().cloned())
+}
+
+/// Build a hash-to-package-metadata reverse index from all package versions.
+pub fn build_hash_index(packages: &[PackageMeta]) -> HashMap<String, PackageMeta> {
+    let mut index = HashMap::new();
+    for meta in packages {
         let hash = store_path_hash(&meta.store_path);
-        index.insert(hash.to_string(), name.clone());
+        index.insert(hash.to_string(), meta.clone());
     }
     index
 }
@@ -255,6 +267,39 @@ references = []
 "#;
 
 #[cfg(test)]
+const MULTI_VERSION_TOML: &str = r#"
+[package]
+name = "tool"
+description = "Multi-version package"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/oldhash111111-tool-1.0.0"
+nar_hash = "sha256:abc123"
+nar_size = 128
+closure_size = 128
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/newhash222222-tool-2.0.0"
+nar_hash = "sha256:def456"
+nar_size = 256
+closure_size = 256
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -302,6 +347,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_package_toml_selects_newest_semver_version() {
+        let meta = parse_package_toml(MULTI_VERSION_TOML, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.version, "2.0.0");
+        assert_eq!(store_path_hash(&meta.store_path), "newhash222222");
+    }
+
+    #[test]
     fn store_path_hash_extraction() {
         assert_eq!(
             store_path_hash("/var/lib/store/h7j3k8l2m9n4-curl-8.5.0"),
@@ -314,42 +368,31 @@ mod tests {
     }
 
     #[test]
-    fn hash_index_maps_package_hash_to_name() {
-        let mut packages = HashMap::new();
+    fn hash_index_maps_package_hash_to_exact_metadata() {
         let curl = parse_package_toml(CURL_TOML, "x86_64-linux")
             .unwrap()
             .unwrap();
         let zlib = parse_package_toml(ZLIB_TOML, "x86_64-linux")
             .unwrap()
             .unwrap();
-        packages.insert("curl".into(), curl);
-        packages.insert("zlib".into(), zlib);
 
-        let index = build_hash_index(&packages);
+        let index = build_hash_index(&[curl, zlib]);
 
-        // curl's own hash maps to "curl"
-        assert_eq!(index.get("h7j3k8l2m9n4"), Some(&"curl".to_string()));
-        // zlib's own hash maps to "zlib"
-        assert_eq!(index.get("r4q1m2kp8v3x"), Some(&"zlib".to_string()));
-        // curl's reference to zlib also resolves to "zlib" (package's own hash wins)
-        assert_eq!(index.get("r4q1m2kp8v3x"), Some(&"zlib".to_string()));
+        assert_eq!(index.get("h7j3k8l2m9n4").unwrap().name, "curl");
+        assert_eq!(index.get("r4q1m2kp8v3x").unwrap().name, "zlib");
     }
 
     #[test]
-    fn hash_index_includes_references() {
-        let mut packages = HashMap::new();
-        let curl = parse_package_toml(CURL_TOML, "x86_64-linux")
+    fn hash_index_keeps_multiple_versions_distinct() {
+        let versions = parse_package_toml_versions(MULTI_VERSION_TOML, "x86_64-linux")
             .unwrap()
-            .unwrap();
-        packages.insert("curl".into(), curl);
+            .into_iter()
+            .collect::<Vec<_>>();
 
-        let index = build_hash_index(&packages);
+        let index = build_hash_index(&versions);
 
-        // All of curl's references should be in the index
-        assert!(index.contains_key("xr5is7by89v3q"));
-        assert!(index.contains_key("r4q1m2kp8v3x"));
-        assert!(index.contains_key("q8mn2pv73w0x"));
-        assert!(index.contains_key("kl9m3n0o5p6q"));
+        assert_eq!(index.get("oldhash111111").unwrap().version, "1.0.0");
+        assert_eq!(index.get("newhash222222").unwrap().version, "2.0.0");
     }
 
     #[test]

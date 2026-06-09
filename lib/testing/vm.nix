@@ -556,6 +556,7 @@
     headlessBuildDeps = [
       pkgs.coreutils
       pkgs.grep
+      pkgs.sed
       firecracker
     ];
 
@@ -563,6 +564,7 @@
       set -eu
 
       SERIAL_LOG="$TMPDIR/serial.log"
+      SERIAL_PIPE="$TMPDIR/serial.pipe"
       FC_LOG="$TMPDIR/fc.log"
       CONFIG="$TMPDIR/vm_config.json"
 
@@ -610,8 +612,17 @@
 
       echo "==> Launching Firecracker for test: ${name}"
 
+      rm -f "$SERIAL_PIPE"
+      mkfifo "$SERIAL_PIPE"
+      tee "$SERIAL_LOG" < "$SERIAL_PIPE" \
+        | sed -u \
+            -e 's/\r$//' \
+            -e '/^[0-9][0-9][0-9][0-9]-[0-9].*\[anonymous-instance:/d' &
+      SERIAL_MIRROR_PID=$!
+
       FC_EXIT=0
-      firecracker --no-api --config-file "$CONFIG" > "$SERIAL_LOG" 2>"$FC_LOG" || FC_EXIT=$?
+      firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
+      wait "$SERIAL_MIRROR_PID" 2>/dev/null || true
 
       echo "Firecracker exited with code: $FC_EXIT"
 
