@@ -15,9 +15,14 @@ declare an exposed service/container; how the container root is *delivered*
 (baked into the closure vs. fetched as a registry artifact / NAR); how
 generations and upgrades work for a containerized package; how `apm` "exposes"
 the container at install time (drops the template instance + target); and how
-container roots are signed/trusted. Sibling docs cover the rest:
-[`README.md`](README.md) (overview), [`container-model.md`](container-model.md)
-(nspawn shape, k3s honesty), [`boot-activation.md`](boot-activation.md)
+container roots are signed/trusted. Under the unified model **every** package is
+an nspawn container; what differs is *privilege*, declared in a signed
+`[permissions]` manifest — so the manifest carries no "container vs host" kind,
+just the package's permission grants (see [`permissions.md`](permissions.md)).
+Sibling docs cover the rest:
+[`README.md`](README.md) (overview), [`permissions.md`](permissions.md)
+(the permission manifest), [`container-model.md`](container-model.md)
+(nspawn shape, k3s as a high-privilege container), [`boot-activation.md`](boot-activation.md)
 (Ignition + first-boot install), [`config.md`](config.md) (config delivery,
 explicitly open), [`migration.md`](migration.md) (roles→packages rename), and
 [`open-questions.md`](open-questions.md).
@@ -152,12 +157,13 @@ store_path  = "/nix/store/...-myapp-1.0"
 nar_hash    = "sha256:..."
 # ... existing fields ...
 
-# NEW: this package exposes a systemd handle + (optionally) a container.
+# NEW: this package exposes a systemd handle + a container (every package does).
 [versions.platforms.x86_64-linux.expose]
 target       = "aos-pkg-myapp.target"   # the activation handle apm registers
 units        = ["myapp.service"]     # member units pulled by the target
-# strawman, pending Decision 1 (package class) in open-questions.md:
-kind         = "container"           # "container" | "host"  (k3s is "host"; see §6)
+# No "kind" field: under the unified model every exposing package IS a
+# container. Privilege is declared separately in the [permissions] manifest
+# (see permissions.md); k3s is just a container with a long permission list.
 
 # NEW: container root delivered as a separate artifact (like images:).
 [[versions.platforms.x86_64-linux.expose.images]]
@@ -165,6 +171,13 @@ format       = "ext4"                # "ext4" | "erofs" | "dir" | "oci" (TBD)
 store_path   = "/nix/store/...-myapp-container-root"
 nar_hash     = "sha256:..."
 nar_size     = 0
+
+# NEW: the declared, signed privilege manifest — defined in permissions.md.
+# Empty here = a tightly-sandboxed container. k3s would list host network,
+# capabilities, cgroup-delegate, host-paths, kernel-modules, etc.
+[versions.platforms.x86_64-linux.permissions]
+# network = "private"  (default; "host" trades the network boundary away)
+# capabilities = [...]; host-paths = [...]; kernel-modules = [...]; ...
 ```
 
 Mapping to Rust (proposed):
@@ -173,18 +186,22 @@ Mapping to Rust (proposed):
 pub struct ExposeMeta {
     pub target: String,
     pub units: Vec<String>,
-    pub kind: ExposeKind,             // Container | Host — STRAWMAN
     pub images: Vec<SysrootImageEntry>, // reuse the existing struct
+    // no `kind` — every exposing package is a container; see PermissionsMeta
 }
-// added to PackageMeta as:  pub expose: Option<ExposeMeta>,
+// added to PackageMeta as:
+//   pub expose: Option<ExposeMeta>,
+//   pub permissions: PermissionsMeta,   // the signed manifest, see permissions.md
 ```
 
-> **Strawman, pending Decision 1.** The `expose.kind = "container" | "host"`
-> field above conflicts with the separate package **class** distinction
-> (`workload` vs. `infrastructure`) recommended in Decision 1 of
-> [`open-questions.md`](open-questions.md). Whether the manifest carries a
-> two-valued `kind` here or defers to a first-class package class is **not
-> resolved** — treat `kind` as a placeholder until Decision 1 lands.
+> **Resolved (was: strawman pending Decision 1).** The earlier `expose.kind =
+> "container" | "host"` field is **dropped**. Under the unified model every
+> exposing package is a container, so there is no two-shape distinction to
+> encode; what differs is *privilege*, carried in the separate, signed
+> `[permissions]` manifest defined in [`permissions.md`](permissions.md). The
+> permission manifest is **part of the package's signed registry metadata**, so
+> a package cannot widen its own privileges after publish. See Decision 1 in
+> [`open-questions.md`](open-questions.md), now resolved by this model.
 
 Reusing `SysrootImageEntry` for `expose.images` is deliberate: the container
 root is "just another pre-compiled image artifact," and the verify/download
@@ -209,9 +226,12 @@ bind_rw   = []
 env_files = ["/etc/aos/myapp/config.env"]   # config delivery: see config.md (OPEN)
 ```
 
-See [`container-model.md`](container-model.md) for the full nspawn semantics and
-why workload packages get real isolation while k3s gets only a nominal
-container.
+These fine-grained nspawn parameters are **generated from the package's
+`[permissions]` manifest** (see [`permissions.md`](permissions.md)), not authored
+by hand — `network`, the bind sets, capabilities, and so on each map onto a
+manifest field. See [`container-model.md`](container-model.md) for the full
+nspawn semantics and why a default package gets real isolation while k3s, having
+declared a long permission list, gets only a nominal container.
 
 ---
 
@@ -281,10 +301,14 @@ enable. After steps 1–6 succeed for a package whose `expose` is present, the
 expose phase runs:
 
 1. **Resolve the handle.** Read `expose.target`, `expose.units`,
-   `expose.kind`, and (if `kind = "container"`) `expose.images`.
+   `expose.images`, and the package's `[permissions]` manifest (every exposing
+   package is a container, so the launch unit is always generated; the manifest
+   decides its privilege — see [`permissions.md`](permissions.md)).
 2. **Drop the template instance + launch unit.** Generate the nspawn launch
-   service that mounts the resolved container-root image and points at the
-   resolved closure, e.g. `aos-pkg-myapp@.service` (a template) plus the
+   service — with the `--capability=`/`--bind=`/`--network-*`/`--private-users=`
+   flags derived from the `[permissions]` manifest — that mounts the resolved
+   container-root image and points at the resolved closure, e.g.
+   `aos-pkg-myapp@.service` (a template) plus the
    `aos-pkg-myapp@default.service` instance, or a non-templated
    `aos-pkg-myapp.service`. *Needs verification:* whether AOS prefers
    `systemd-nspawn@.service` templating or one explicit unit per package — note
@@ -376,11 +400,15 @@ generation.
 
 ---
 
-## 6. Where the model does NOT fit: k3s
+## 6. The high-privilege case: k3s
 
-k3s is an **infrastructure** package (`expose.kind = "host"`), not a workload.
-It needs host privilege that a real sandbox would deny. The current k3s-worker
-module (`modules/roles/kubernetes/k3s-worker.nix`) already shows why:
+k3s is a **high-privilege container** — see [`permissions.md`](permissions.md)
+for its manifest. It is still a container like every other package, but its
+`[permissions]` manifest declares host network, broad capabilities,
+cgroup-delegate, host-paths, and kernel-modules, so its container is a
+packaging/lifecycle wrapper, not a security boundary. It needs host privilege
+that a default sandbox would deny. The current k3s-worker module
+(`modules/roles/kubernetes/k3s-worker.nix`) already shows why:
 
 ```nix
 kernel.modules = common.kernelModules;          # br_netfilter, vxlan, ip_set — GLOBAL
@@ -411,12 +439,14 @@ Honest consequences for the package/container model:
   restart (§5), upgrading the k3s package restarts kubelet, evicting/rescheduling
   workloads. That is an operational cost, not a bug, and must be documented.
 
-The takeaway: the manifest must carry *some* class signal so `apm` knows *not*
-to promise isolation for `host`/infrastructure packages — whether that is the
-strawman `expose.kind` here or the first-class package **class** from Decision 1
-in [`open-questions.md`](open-questions.md) is unresolved (§2.2). The
+The takeaway: there is no separate "class" to encode — the package's signed
+`[permissions]` manifest already tells `apm` (and an operator, via `apm info
+<pkg> --permissions`) exactly how privileged the container is, so it knows *not*
+to promise isolation for a package like k3s that has declared host network and
+broad caps. The manifest replaces the dropped `expose.kind` strawman (§2.2). The
 container-model details and the exact nspawn flags for the nominal k3s container
-are in [`container-model.md`](container-model.md).
+are in [`container-model.md`](container-model.md); the permission surface is in
+[`permissions.md`](permissions.md).
 
 ---
 
@@ -467,7 +497,7 @@ works:
 
 | Stage | Today | Change for containerized packages |
 |---|---|---|
-| Registry metadata | `PackageMeta` | + `expose` (target/units/kind/images), all `#[serde(default)]` |
+| Registry metadata | `PackageMeta` | + `expose` (target/units/images) + `[permissions]` manifest (permissions.md), all `#[serde(default)]` |
 | Resolve | `resolve_multiple()` | also enqueue `expose.images[].store_path` |
 | Download / verify / import | NAR path | **unchanged** — container root is just another NAR |
 | Profile generation | gc-root + meta + FHS | also gc-root the container-root image |

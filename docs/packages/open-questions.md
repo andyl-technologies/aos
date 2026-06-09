@@ -9,22 +9,25 @@ container model, apm/registry integration, or the boot-time activation path
 This is the "what we must decide" doc for the packages direction: fold the
 existing "roles" concept (`modules/roles/`) into AOS's apm/registry **package**
 system, where a package is the registry-installable unit (`apm install`) and
-**some** packages additionally expose a systemd-nspawn container plus an
-`aos-<pkg>.target` handle. It consolidates the open risks, unknowns, and
-pending decisions surfaced across the investigation. Each entry has a
-statement, why it matters, the options, and a proposed owner / next step. It
+**every** package exposes a systemd-nspawn container plus an `aos-pkg-<pkg>.target`
+handle, with its privilege declared in a signed `[permissions]` manifest
+(see [permissions.md](permissions.md)). It consolidates the open risks,
+unknowns, and pending decisions surfaced across the investigation. Each entry has
+a statement, why it matters, the options, and a proposed owner / next step. It
 deliberately leaves the **config delivery** decision open. Sibling docs:
-[README.md](README.md), [container-model.md](container-model.md),
+[README.md](README.md), [permissions.md](permissions.md),
+[container-model.md](container-model.md),
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
 [config.md](config.md), [migration.md](migration.md). The prior design this
 builds on is `docs/roles/targets-and-sandbox.md`.
 
 A quick note on honesty up front: two things in this plan do **not** fit the
-clean model and are called out throughout. (1) **k3s is not a real container** —
-it needs host network, host cgroups, and globally-loaded kernel modules, so its
-"container" is a nominal mount/UTS wrapper, not a security boundary. (2)
-**config delivery is genuinely undecided** — no option is a clear winner, and we
-must not let "settle on credstore" sneak in by default.
+clean model and are called out throughout. (1) **k3s is a high-privilege
+container** — it declares host network, host cgroups, and globally-loaded kernel
+modules in its manifest, so its container is a nominal mount/UTS wrapper, not a
+security boundary; the privilege is now *visible in the manifest*. (2) **config
+delivery is genuinely undecided** — no option is a clear winner, and we must not
+let "settle on credstore" sneak in by default.
 
 ---
 
@@ -43,37 +46,50 @@ container-root builders).
 
 ---
 
-## 1. Is k3s ever a real container? (the honesty question)
+## 1. Package privilege model — RESOLVED (unified container + `[permissions]` manifest)
 
-**Statement.** k3s (`modules/roles/kubernetes/k3s-worker.nix`,
-`k3s-control-plane.nix`, `k3s-combined.nix`) is being folded into the package
-model, but it cannot be a sandboxed workload. It needs the host network
-namespace (CNI configures host routes/bridge, flannel VXLAN on port 8472),
-the host cgroup hierarchy (kubelet manages host cgroups — it already declares
-`Delegate=yes` and `TasksMax=infinity`), full iptables/nftables control, and
-globally-loaded kernel modules (`br_netfilter`, `vxlan`, `ip_set`).
+> **Resolved.** The earlier proposal here — introduce a package **class**
+> distinction (`workload` vs. `infrastructure`) — is **superseded** by the
+> unified model in [permissions.md](permissions.md): **every** package is an
+> nspawn container, and privilege is a declared, signed `[permissions]` manifest
+> (Android/iOS app-permission analogy), not a two-valued class. The default
+> (empty manifest) is a tightly-sandboxed container; a package gets only what it
+> declares. k3s is not a special case — it is a high-privilege **container** that
+> declares a long permission list (host network, privileged-users,
+> cgroup-delegate, broad capabilities, devices, host-paths, kernel-modules). Its
+> container is honestly "a packaging/lifecycle wrapper, not a security boundary,"
+> but that privilege is now *visible in the manifest*. This also retires the
+> `expose.kind = "container" | "host"` strawman in
+> [apm-integration.md](apm-integration.md).
 
-**Why it matters.** If we describe k3s as "containerized" we mislead operators
-about the security boundary. A `systemd-nspawn --network=host --ipc=host` wrapper
-isolates only the mount and UTS namespaces — a crash or compromise inside it
-still affects the host. Full isolation (`--network=private`) is a hard NO: it
-breaks pod networking.
+The honesty question that motivated the old framing still stands and is answered
+the same way — k3s needs the host network namespace (CNI configures host
+routes/bridge, flannel VXLAN on port 8472), the host cgroup hierarchy (kubelet
+already declares `Delegate=yes`/`TasksMax=infinity`), full iptables/nftables
+control, and globally-loaded kernel modules (`br_netfilter`, `vxlan`, `ip_set`).
+Describing that as "isolated" would mislead operators. The difference is that the
+manifest *records* the trade rather than burying it in a class label.
 
-**Options.**
+Two things remain **genuinely open** under the resolved model:
 
-| Option | What it is | Verdict |
-|---|---|---|
-| A. Nominal nspawn (`--network=host`, `--keep-unit`) | Mount/UTS isolation only; host net/cgroups inherited | Works; must be labeled "not a security boundary" |
-| B. No container at all — k3s is a "host-privileged" / "infrastructure" package class | k3s runs as plain target-gated units (the `targets-and-sandbox.md` model) | Most honest; simplest |
-| C. Full isolation | `--network=private` etc. | Not viable — breaks k3s |
+**(a) Policy enforcement point and format.** Where does the allow-list / cap on
+permissions live, and who enforces it? A fleet policy ("refuse any package that
+declares `CAP_SYS_ADMIN` / `privileged-users`") could be applied at **`apm`
+install/enable time** (the installer rejects a package whose manifest exceeds the
+host policy) or at a **boot-time admission check** (the activation path refuses to
+start a container whose manifest violates policy), or both. The policy *format*
+(TOML allow/deny lists, a signed fleet policy doc, Nix-evaluated) is also
+unsettled. **DECIDE-EARLY** (shapes the manifest consumer and the install API).
+*packages-core* + *apm* + *boot*.
 
-**Proposed next step.** *packages-core* + *pkgs*: introduce an explicit package
-**class** distinction — `workload` (real nspawn sandbox) vs. `infrastructure`
-(host-privileged, container is nominal or absent). Default k3s to
-*infrastructure*. Document the boundary honestly in
-[container-model.md](container-model.md). Decide whether infrastructure packages
-get a nominal nspawn (Option A) or stay as bare target-gated units (Option B) —
-**DECIDE-EARLY**, leaning B for k3s unless a concrete isolation win appears.
+**(b) The validated k3s permission set under AOS nspawn.** The manifest in
+[permissions.md](permissions.md) is a *strawman* derived from known
+k3s-in-privileged-container patterns (k3d, k3s-in-docker), **not yet validated**
+against a running AOS nspawn k3s. k3s is the **proving case**: if it runs under
+the generated unit, the permission schema is complete enough. The exact
+capability / device / mount / module set is `needs verification`.
+**DECIDE-BEFORE-MVP** (gates the first high-privilege container). *pkgs* +
+*test-infra*.
 
 ---
 
@@ -93,14 +109,15 @@ sandbox.
 **Options.**
 - Keep module loading host-side, gated by the package target (current design).
   Honest, simple, one-way on stop.
-- Forbid `kernel.modules` on *workload* (real-container) packages entirely;
-  allow it only on *infrastructure* packages. Pushes the leak to the class that
-  already admits host privilege.
+- Treat `kernel-modules` as a declared permission (see [permissions.md](permissions.md)):
+  any package may request it, but it is the one irreducibly host-level grant
+  (the host loads them via `aos-pkg-<pkg>-modules.service`), and a fleet policy
+  (Decision 1(a)) can refuse packages that request it.
 
-**Proposed next step.** *packages-core*: tie `kernel.modules` to the package
-**class** from Decision 1 — permitted (and host-global) for *infrastructure*,
-disallowed-by-assertion for *workload*. Document the non-reversibility.
-**DECIDE-EARLY**.
+**Proposed next step.** *packages-core*: model `kernel.modules` as the
+`kernel-modules` permission in the `[permissions]` manifest — honored host-side,
+gated by the policy enforcement point of Decision 1(a). Document the
+non-reversibility (loaded modules persist after stop). **DECIDE-EARLY**.
 
 ---
 
@@ -345,25 +362,28 @@ responsibility, k3s `/etc/rancher/k3s/k3s.env` backward-compat).
 
 ## 10. Security boundary strength & honest labeling
 
-**Statement.** Workload packages get a real nspawn sandbox (own PID1,
-namespaces); infrastructure packages (k3s) get host privilege. `--private-users`
-is available but has file-ownership/`/dev` trade-offs; the investigation
-recommends `--private-users=no` for workloads with seccomp/mount restrictions
-instead.
+**Statement.** A default (empty-manifest) package gets a real nspawn sandbox
+(own PID1, namespaces); a high-privilege package (k3s) declares away the
+boundary. `--private-users` is available but has file-ownership/`/dev`
+trade-offs; the investigation recommends `--private-users=no` (the
+`privileged-users` permission) with seccomp/mount restrictions instead for the
+packages that need it.
 
 **Why it matters.** Operators must know exactly which packages are isolated and
-which are not. Misrepresenting an infrastructure package as sandboxed is a
+which are not. Misrepresenting a high-privilege package as sandboxed is a
 security-communication failure, not just a doc nit.
 
 **Options.**
-- Encode the boundary in the package **class** (Decision 1) and surface it in
-  `apm show` / the package metadata, so isolation level is queryable.
-- Default workloads to `--private-users=no` + seccomp; revisit user-namespacing
-  later.
+- Surface the boundary directly from the signed `[permissions]` manifest
+  (Decision 1, [permissions.md](permissions.md)) in `apm info <pkg>
+  --permissions` / `apm show`, so isolation level is queryable before
+  install/enable.
+- Default to `--private-users=no` + seccomp only where the manifest declares it;
+  revisit user-namespacing later.
 
-**Proposed next step.** *packages-core*: make isolation level a first-class,
-introspectable property of every package; document seccomp/mount defaults in
-[container-model.md](container-model.md). **DECIDE-EARLY**.
+**Proposed next step.** *packages-core*: make the permission manifest the
+first-class, introspectable source of truth for isolation level; document
+seccomp/mount defaults in [container-model.md](container-model.md). **DECIDE-EARLY**.
 
 ---
 
@@ -405,9 +425,10 @@ ship a `.aos-manifest` in the closure, or add a per-registry manifest section.
 
 **Why it matters.** This is the schema that everything else keys off (install
 hook, activation, container launch, config). Getting it wrong is expensive to
-migrate (the registry is content-addressed and signed). It must also express the
-package **class** (Decision 1), network mode (Decision 3), isolation level
-(Decision 10), and container-root reference (Decision 5).
+migrate (the registry is content-addressed and signed). It must also carry the
+signed `[permissions]` manifest (Decision 1, [permissions.md](permissions.md))
+— which subsumes network mode (Decision 3) and isolation level (Decision 10) —
+and the container-root reference (Decision 5).
 
 **Options.**
 - Extend registry `packages/<letter>/<name>.toml` with optional
@@ -419,9 +440,9 @@ package **class** (Decision 1), network mode (Decision 3), isolation level
   spec in the closure manifest.
 
 **Proposed next step.** *apm* + *packages-core*: pick the manifest location and
-draft the schema (must carry class, target name, container ref, network mode,
-isolation level, config hooks). Spec in [apm-integration.md](apm-integration.md).
-**DECIDE-EARLY**.
+draft the schema (must carry the signed `[permissions]` manifest, target name,
+container ref, config hooks). Spec in [apm-integration.md](apm-integration.md)
+and [permissions.md](permissions.md). **DECIDE-EARLY**.
 
 ---
 
@@ -545,8 +566,8 @@ the package generation. Spec in [apm-integration.md](apm-integration.md) §4.1.
 
 | # | Decision | Disposition | Owner |
 |---|---|---|---|
-| 1 | k3s container class (real vs. nominal vs. none) | DECIDE-EARLY | packages-core / pkgs |
-| 2 | Kernel modules tied to package class | DECIDE-EARLY | packages-core |
+| 1 | Package privilege model — **RESOLVED** (unified container + `[permissions]` manifest); open: (a) policy enforcement point/format, (b) validated k3s permission set | (a) DECIDE-EARLY · (b) DECIDE-BEFORE-MVP | packages-core / apm / boot / pkgs |
+| 2 | Kernel modules as the host-level `kernel-modules` permission | DECIDE-EARLY | packages-core |
 | 3 | Container networking model (veth/host/zone) | DECIDE-EARLY | packages-core / pkgs |
 | 4 | nspawn-in-VM test feasibility prototype | DECIDE-BEFORE-MVP | test-infra |
 | 5 | Container root build + delivery + signing | DECIDE-EARLY / -BEFORE-MVP | pkgs / apm |
