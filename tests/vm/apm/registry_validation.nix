@@ -507,6 +507,17 @@ in {
         python3 /tmp/assert-origin-cdn.py \
           /tmp/s3-origin-events.jsonl /tmp/s3-origin-root/aos-origin/origin
 
+        ssh-keygen -q -t ed25519 -N "" -f /tmp/cdn-release-key
+        $APR release 1.0.0 --registry cdn-reg \
+          --key /tmp/cdn-release-key \
+          --upload-url s3://aos-origin/release \
+          > /tmp/release-upload.log 2>&1
+        cat /tmp/release-upload.log
+        grep -q "Released cdn-reg 1.0.0" /tmp/release-upload.log
+        test -f /tmp/s3-origin-root/aos-origin/release/HEAD
+        test -f /tmp/s3-origin-root/aos-origin/release/info/refs
+        test -f /tmp/s3-origin-root/aos-origin/release/releases/1/0/0/objects/info/packs
+
         echo "registry origin CDN layout validation passed"
     '';
   };
