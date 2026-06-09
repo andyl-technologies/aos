@@ -104,6 +104,8 @@ in
           export GOPATH="/tmp/go"
           export GOCACHE="/tmp/go-cache"
           export CGO_ENABLED=1
+          # /usr/local/bin/gcc is a VM-local wrapper created in the
+          # Firecracker rootfs by lib/testing/firecracker.nix.
           export CC="/usr/local/bin/gcc"
           mkdir -p "$GOPATH" "$GOCACHE"
 
@@ -231,6 +233,8 @@ in
           export GOPATH="/tmp/go"
           export GOCACHE="/tmp/go-cache"
           export CGO_ENABLED=1
+          # /usr/local/bin/gcc is a VM-local wrapper created in the
+          # Firecracker rootfs by lib/testing/firecracker.nix.
           export CC="/usr/local/bin/gcc"
           mkdir -p "$GOPATH" "$GOCACHE"
 
@@ -273,6 +277,8 @@ in
           export GOPATH="/tmp/go"
           export GOCACHE="/tmp/go-cache"
           export CGO_ENABLED=1
+          # /usr/local/bin/gcc is a VM-local wrapper created in the
+          # Firecracker rootfs by lib/testing/firecracker.nix.
           export CC="/usr/local/bin/gcc"
           mkdir -p "$GOPATH" "$GOCACHE"
 
@@ -457,6 +463,8 @@ in
           export HOME="/tmp"
           export PATH="${self}/bin:$PATH"
           export CGO_ENABLED=1
+          # /usr/local/bin/gcc is a VM-local wrapper created in the
+          # Firecracker rootfs by lib/testing/firecracker.nix.
           export CC="/usr/local/bin/gcc"
           export CGO_CFLAGS="-I${pkgs.zlib}/include"
           export CGO_LDFLAGS="-L${pkgs.zlib}/lib -lz"
@@ -562,6 +570,8 @@ in
           DL=$(ls "$BT"/lib/ld-linux-*.so.* | head -1)
           GCC_VER=$(ls "$BT"/lib/gcc/x86_64-unknown-linux-gnu)
 
+          # --sysroot=/ points at the Firecracker guest rootfs assembled for
+          # this VM test, not at the host filesystem or Nix build sandbox root.
           cat > /tmp/clang-cgo << EOF
           #!/bin/sh
           exec ${pkgs.llvm}/bin/clang \\
@@ -633,6 +643,8 @@ in
 
           cd /tmp/cgo-integration
 
+          # Both compilers are inside the guest: /usr/local/bin/gcc is staged
+          # by the VM rootfs builder and /tmp/clang-cgo is generated above.
           for cc in /usr/local/bin/gcc /tmp/clang-cgo; do
             export CC="$cc"
             rm -f /tmp/cgo-integration/cgo-test

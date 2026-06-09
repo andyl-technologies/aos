@@ -85,8 +85,10 @@
       # /init — PID 1 for headless Firecracker microVM test
       # Mounts essential filesystems, runs the test, reports result via serial.
 
-      # PATH must be set BEFORE mount calls — kernel runs init with empty env
-      # /usr/local/bin first: contains gcc/g++ wrappers that must shadow raw bootstrap tools
+      # PATH must be set BEFORE mount calls — kernel runs init with empty env.
+      # /usr/local/bin here is inside the generated Firecracker rootfs, not the
+      # host filesystem. It contains gcc/g++ wrappers that must shadow raw
+      # bootstrap tools.
       export PATH="/usr/local/bin:${depPaths}:/bin:/usr/bin:/sbin:/usr/sbin"
       export HOME=/tmp
 
@@ -162,6 +164,8 @@
           name = "build-rootfs";
           script = ''
                         mkdir -p rootfs/nix/store
+                        # FHS-looking paths in this builder are staged under
+                        # ./rootfs and become the guest VM filesystem only.
                         mkdir -p rootfs/bin rootfs/sbin rootfs/usr/bin rootfs/usr/sbin rootfs/usr/local/bin
                         mkdir -p rootfs/dev rootfs/proc rootfs/sys rootfs/tmp rootfs/run
                         mkdir -p rootfs/etc rootfs/var/log rootfs/var/tmp
@@ -234,7 +238,8 @@
                           fi
                         done
 
-                        # Create gcc/g++/ld/cpp wrapper scripts in /usr/local/bin/
+                        # Create gcc/g++/ld/cpp wrapper scripts in the VM-local
+                        # /usr/local/bin. These do not reference the host rootfs.
                         # (must shadow raw bootstrap gcc in PATH — see init PATH ordering)
                         # Raw bootstrap gcc doesn't know about our glibc or dynamic linker paths
 

@@ -206,6 +206,8 @@ in
           REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
           DL=$(cat "$BT/nix-support/dynamic-linker")
           GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
+          # --sysroot=/ points at the Firecracker guest rootfs assembled for
+          # this VM test, not at the host filesystem or Nix build sandbox root.
           clang \
             --sysroot=/ \
             -B$REAL_LIBC/lib \
@@ -245,6 +247,8 @@ in
           DL=$(cat "$BT/nix-support/dynamic-linker")
           CXX_VER=$(ls "$REAL_CC/include/c++")
           GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
+          # --sysroot=/ points at the Firecracker guest rootfs assembled for
+          # this VM test, not at the host filesystem or Nix build sandbox root.
           clang++ \
             --sysroot=/ \
             -isystem "$REAL_CC/include/c++/$CXX_VER" \
@@ -353,6 +357,8 @@ in
           DL=$(cat "$BT/nix-support/dynamic-linker")
           GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
 
+          # --sysroot=/ points at the Firecracker guest rootfs assembled for
+          # this VM test, not at the host filesystem or Nix build sandbox root.
           clang \
             --sysroot=/ \
             -isystem $OPENSSL/include \
