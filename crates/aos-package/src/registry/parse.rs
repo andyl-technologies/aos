@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -177,20 +178,19 @@ fn parse_package_toml_versions(content: &str, platform: &str) -> Result<Vec<Pack
 }
 
 fn newest_version(metas: &[PackageMeta]) -> Option<PackageMeta> {
-    let mut newest = None;
+    metas
+        .iter()
+        .max_by(|left, right| compare_registry_versions(&left.version, &right.version))
+        .cloned()
+}
 
-    for meta in metas {
-        if let Ok(parsed) = semver::Version::parse(&meta.version) {
-            match &newest {
-                Some((current, _)) if current >= &parsed => {}
-                _ => newest = Some((parsed, meta.clone())),
-            }
-        }
+fn compare_registry_versions(left: &str, right: &str) -> Ordering {
+    match (semver::Version::parse(left), semver::Version::parse(right)) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        (Ok(_), Err(_)) => Ordering::Greater,
+        (Err(_), Ok(_)) => Ordering::Less,
+        (Err(_), Err(_)) => left.cmp(right),
     }
-
-    newest
-        .map(|(_, meta)| meta)
-        .or_else(|| metas.first().cloned())
 }
 
 /// Build a hash-to-package-metadata reverse index from all package versions.
@@ -300,6 +300,41 @@ references = []
 "#;
 
 #[cfg(test)]
+const MULTI_VERSION_CALVER_TOML: &str = r#"
+[package]
+name = "server"
+description = "Multi-version system package"
+license = "MIT"
+maintainer = "aos-team"
+sysroot = true
+
+[[versions]]
+version = "2026.03"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/calverold111-server-2026.03"
+nar_hash = "sha256:abc123"
+nar_size = 128
+closure_size = 128
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "2026.04"
+previous = "2026.03"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/calvernew222-server-2026.04"
+nar_hash = "sha256:def456"
+nar_size = 256
+closure_size = 256
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -353,6 +388,16 @@ mod tests {
             .unwrap();
         assert_eq!(meta.version, "2.0.0");
         assert_eq!(store_path_hash(&meta.store_path), "newhash222222");
+    }
+
+    #[test]
+    fn parse_package_toml_selects_newest_non_semver_version() {
+        let meta = parse_package_toml(MULTI_VERSION_CALVER_TOML, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.version, "2026.04");
+        assert_eq!(meta.previous.as_deref(), Some("2026.03"));
+        assert_eq!(store_path_hash(&meta.store_path), "calvernew222");
     }
 
     #[test]
