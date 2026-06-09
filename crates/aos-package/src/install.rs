@@ -56,8 +56,18 @@ pub async fn run(
     }
     let profile = Profile::open(config.scope)?;
     let installed = list_meta(&profile)?;
+    let all_metas = collect_unique_metas(&closures);
+    let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
+    let missing = if reinstall {
+        Vec::new()
+    } else {
+        filter_missing(&store_paths).await?
+    };
 
-    if !reinstall && requested_closures_already_installed(&closures, &installed) {
+    if !reinstall
+        && missing.is_empty()
+        && requested_closures_already_installed(&closures, &installed)
+    {
         printer.info("All requested packages are already installed. No changes made.");
         return Ok(());
     }
@@ -101,15 +111,10 @@ pub async fn run(
         }
     }
 
-    // Step 3: Collect unique metas (dedup across closures).
-    let all_metas = collect_unique_metas(&closures);
-
     // Step 4: Filter missing store paths.
     let to_download: Vec<&PackageMeta> = if reinstall {
         all_metas.clone()
     } else {
-        let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
-        let missing = filter_missing(&store_paths).await?;
         let missing_set: HashSet<&str> = missing.iter().map(|s| s.as_str()).collect();
         all_metas
             .iter()

@@ -644,6 +644,33 @@ in {
         fail "repeat install should keep current=$PROMOTED_CURRENT count=$PROMOTED_COUNT (got current=$SECOND_CURRENT count=$SECOND_COUNT)"
       fi
 
+      echo "==> Consumer: normal install repairs invalid installed store path"
+      find "$PROFILE" -path "*/usr/$WRAPPER_HASH" -type l -exec rm -f {} \;
+      delete_store_path "$WRAPPER_STORE" "idemp-wrapper-invalid-installed"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install idemp-wrapper --registry idemp-reg --yes > /tmp/idemp-repair.out 2>&1 || {
+        cat /tmp/idemp-repair.out
+        fail "normal apm install repairs invalid installed store path"
+      }
+      cat /tmp/idemp-repair.out
+      assert_file_contains /tmp/idemp-repair.out "Downloading 1 NAR" \
+        "repair install downloads missing installed store path"
+      assert_file_contains /tmp/idemp-repair.out "Importing packages" \
+        "repair install imports missing installed store path"
+      assert_store_valid "$WRAPPER_STORE" "idemp-wrapper repaired"
+      "$PROFILE_WRAPPER_BIN" > /tmp/idemp-run-repaired.out
+      assert_file_contains /tmp/idemp-run-repaired.out "^idempkg 1.0.0$" \
+        "profile executable runs after repair install"
+
+      REPAIR_CURRENT=$(readlink "$PROFILE/current")
+      REPAIR_COUNT=$(generation_count)
+      if [ "$REPAIR_CURRENT" = "gen-4" ] && [ "$REPAIR_COUNT" = "4" ]; then
+        pass "repair install creates generation 4"
+      else
+        fail "repair install should create gen-4 (current=$REPAIR_CURRENT count=$REPAIR_COUNT)"
+      fi
+
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"
       fi
