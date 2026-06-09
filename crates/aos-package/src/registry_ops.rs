@@ -1007,11 +1007,85 @@ pub async fn unpublish(
 // Registry Query
 // ---------------------------------------------------------------------------
 
+fn selected_package_versions(
+    toml_val: &toml::Value,
+    version: Option<&str>,
+) -> Result<Vec<toml::Value>> {
+    let versions = matching_package_versions(toml_val, None);
+    let Some(version) = version else {
+        return Ok(versions);
+    };
+
+    let selected = versions
+        .into_iter()
+        .filter(|entry| entry.get("version").and_then(|v| v.as_str()) == Some(version))
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        bail!("package does not contain version '{version}'");
+    }
+    Ok(selected)
+}
+
+fn matching_package_versions(toml_val: &toml::Value, platform: Option<&str>) -> Vec<toml::Value> {
+    let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    versions
+        .iter()
+        .filter(|entry| version_has_platform(entry, platform))
+        .cloned()
+        .collect()
+}
+
+fn version_has_platform(entry: &toml::Value, platform: Option<&str>) -> bool {
+    let Some(platform) = platform else {
+        return true;
+    };
+    entry
+        .get("platforms")
+        .and_then(|platforms| platforms.as_table())
+        .map(|platforms| platforms.contains_key(platform))
+        .unwrap_or(false)
+}
+
+fn latest_version_string(versions: &[toml::Value]) -> Option<String> {
+    versions
+        .iter()
+        .filter_map(|entry| entry.get("version").and_then(|version| version.as_str()))
+        .max_by(|left, right| compare_registry_versions(left, right))
+        .map(ToString::to_string)
+}
+
+fn compare_registry_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    match (semver::Version::parse(left), semver::Version::parse(right)) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Less,
+        (Err(_), Err(_)) => left.cmp(right),
+    }
+}
+
+fn package_toml_with_versions(
+    toml_val: &toml::Value,
+    versions: &[toml::Value],
+) -> Result<toml::Value> {
+    let mut filtered = toml_val.clone();
+    let Some(root) = filtered.as_table_mut() else {
+        bail!("package TOML root is not a table");
+    };
+    root.insert(
+        "versions".to_string(),
+        toml::Value::Array(versions.to_vec()),
+    );
+    Ok(filtered)
+}
+
 /// `apr show <PACKAGE>`
 pub async fn show(
     config: &ApmConfig,
     package: &str,
-    _version: Option<&str>,
+    version: Option<&str>,
     raw: bool,
     registry: Option<&str>,
     printer: &Printer,
@@ -1028,11 +1102,17 @@ pub async fn show(
     }
 
     let content = std::fs::read_to_string(&toml_path)?;
+    let toml_val: toml::Value = toml::from_str(&content)?;
+    let selected_versions = selected_package_versions(&toml_val, version)?;
 
     if raw {
-        printer.plain(&content);
+        if version.is_some() {
+            let filtered = package_toml_with_versions(&toml_val, &selected_versions)?;
+            printer.plain(&toml::to_string_pretty(&filtered)?);
+        } else {
+            printer.plain(&content);
+        }
     } else {
-        let toml_val: toml::Value = toml::from_str(&content)?;
         if let Some(pkg) = toml_val.get("package") {
             if let Some(name) = pkg.get("name").and_then(|v| v.as_str()) {
                 printer.header(&format!("Package: {name}"));
@@ -1057,39 +1137,37 @@ pub async fn show(
                 printer.kv("Maintainer", maint);
             }
         }
-        if let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) {
-            for ver in versions {
-                if let Some(v) = ver.get("version").and_then(|v| v.as_str()) {
-                    printer.kv("Version", v);
-                }
-                if let Some(prev) = ver.get("previous").and_then(|v| v.as_str()) {
-                    printer.kv("Previous", prev);
-                }
-                if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table()) {
-                    for (plat, entry) in platforms {
-                        printer.kv(&format!("  {plat}"), "");
-                        if let Some(sp) = entry.get("store_path").and_then(|v| v.as_str()) {
-                            printer.kv("    Store path", sp);
-                        }
-                        if let Some(ns) = entry.get("nar_size").and_then(|v| v.as_integer()) {
-                            printer.kv("    NAR size", &format_size(ns as u64));
-                        }
-                        if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
-                            for img in images {
-                                if let Some(fmt) = img.get("format").and_then(|v| v.as_str()) {
-                                    let img_path = img
-                                        .get("store_path")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("?");
-                                    let img_size = img
-                                        .get("nar_size")
-                                        .and_then(|v| v.as_integer())
-                                        .unwrap_or(0);
-                                    printer.kv(
-                                        &format!("    Image ({fmt})"),
-                                        &format!("{img_path} ({})", format_size(img_size as u64)),
-                                    );
-                                }
+        for ver in &selected_versions {
+            if let Some(v) = ver.get("version").and_then(|v| v.as_str()) {
+                printer.kv("Version", v);
+            }
+            if let Some(prev) = ver.get("previous").and_then(|v| v.as_str()) {
+                printer.kv("Previous", prev);
+            }
+            if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table()) {
+                for (plat, entry) in platforms {
+                    printer.kv(&format!("  {plat}"), "");
+                    if let Some(sp) = entry.get("store_path").and_then(|v| v.as_str()) {
+                        printer.kv("    Store path", sp);
+                    }
+                    if let Some(ns) = entry.get("nar_size").and_then(|v| v.as_integer()) {
+                        printer.kv("    NAR size", &format_size(ns as u64));
+                    }
+                    if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
+                        for img in images {
+                            if let Some(fmt) = img.get("format").and_then(|v| v.as_str()) {
+                                let img_path = img
+                                    .get("store_path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                let img_size = img
+                                    .get("nar_size")
+                                    .and_then(|v| v.as_integer())
+                                    .unwrap_or(0);
+                                printer.kv(
+                                    &format!("    Image ({fmt})"),
+                                    &format!("{img_path} ({})", format_size(img_size as u64)),
+                                );
                             }
                         }
                     }
@@ -1104,8 +1182,8 @@ pub async fn show(
 /// `apr packages`
 pub async fn packages(
     config: &ApmConfig,
-    _platform: Option<&str>,
-    _outdated: bool,
+    platform: Option<&str>,
+    outdated: bool,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
@@ -1132,14 +1210,14 @@ pub async fn packages(
                     .and_then(|p| p.get("name"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let version = toml_val
-                    .get("versions")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.get("version"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                pkgs.push((name.to_string(), version.to_string()));
+                let versions = matching_package_versions(&toml_val, platform);
+                if outdated && versions.len() < 2 {
+                    continue;
+                }
+                let Some(version) = latest_version_string(&versions) else {
+                    continue;
+                };
+                pkgs.push((name.to_string(), version));
             }
         }
     }
@@ -3852,6 +3930,117 @@ references = []
         assert!(content.contains("previous = \"2026.03\""));
         assert!(content.contains("format = \"raw\""));
         assert!(content.contains("sha256:ccdd"));
+    }
+
+    #[test]
+    fn selected_package_versions_filters_exact_version() {
+        let toml_val: toml::Value = toml::from_str(
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.0.0"
+nar_hash = "sha256:v1"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/bbb222-tool-2.0.0"
+nar_hash = "sha256:v2"
+nar_size = 2
+closure_size = 2
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#,
+        )
+        .unwrap();
+
+        let selected = selected_package_versions(&toml_val, Some("1.0.0")).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0]
+                .get("version")
+                .and_then(|version| version.as_str()),
+            Some("1.0.0")
+        );
+        assert!(selected_package_versions(&toml_val, Some("9.9.9")).is_err());
+
+        let raw = package_toml_with_versions(&toml_val, &selected).unwrap();
+        let rendered = toml::to_string_pretty(&raw).unwrap();
+        assert!(rendered.contains("1.0.0"));
+        assert!(!rendered.contains("2.0.0"));
+    }
+
+    #[test]
+    fn latest_version_string_uses_semver_and_platform_filter() {
+        let toml_val: toml::Value = toml::from_str(
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.9.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.9.0"
+nar_hash = "sha256:v1"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "1.10.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/bbb222-tool-1.10.0"
+nar_hash = "sha256:v2"
+nar_size = 2
+closure_size = 2
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "3.0.0"
+
+[versions.platforms.aarch64-linux]
+store_path = "/nix/store/ccc333-tool-3.0.0"
+nar_hash = "sha256:v3"
+nar_size = 3
+closure_size = 3
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            latest_version_string(&matching_package_versions(&toml_val, Some("x86_64-linux"))),
+            Some("1.10.0".to_string())
+        );
+        assert_eq!(
+            latest_version_string(&matching_package_versions(&toml_val, Some("aarch64-linux"))),
+            Some("3.0.0".to_string())
+        );
+        assert!(matching_package_versions(&toml_val, Some("riscv64-linux")).is_empty());
     }
 
     #[test]

@@ -319,6 +319,77 @@ in {
         "git log shows publish commit"
       cd /tmp
 
+      $APR publish ${pkgs.curl} \
+        --name testpkg \
+        --version 2.0.0 \
+        --description "Published by the APR VM workflow" \
+        --license MIT \
+        --maintainer test \
+        --registry test-reg
+
+      CURL_HASH=$(basename ${pkgs.curl} | cut -d- -f1)
+      assert_file_exists "$REG_DIR/closures/$CURL_HASH" \
+        "apr publish writes v2 closure metadata"
+
+      $APR packages --registry test-reg > /tmp/packages.out 2>&1 || {
+        cat /tmp/packages.out
+        fail "apr packages lists published packages"
+      }
+      cat /tmp/packages.out
+      assert_file_contains /tmp/packages.out "testpkg 2.0.0" \
+        "apr packages reports latest published version"
+      if grep -q "testpkg 1.0.0" /tmp/packages.out; then
+        fail "apr packages should not report the older version as current"
+      else
+        pass "apr packages does not report the older version as current"
+      fi
+
+      $APR packages --registry test-reg --outdated \
+        > /tmp/packages-outdated.out 2>&1 || {
+        cat /tmp/packages-outdated.out
+        fail "apr packages --outdated lists multi-version packages"
+      }
+      assert_file_contains /tmp/packages-outdated.out "testpkg 2.0.0" \
+        "apr packages --outdated reports the latest available version"
+
+      $APR show testpkg --registry test-reg --version 1.0.0 \
+        > /tmp/show-v1.out 2>&1 || {
+        cat /tmp/show-v1.out
+        fail "apr show --version selects existing version"
+      }
+      assert_file_contains /tmp/show-v1.out "Version: 1.0.0" \
+        "apr show --version prints selected v1"
+      if grep -q "Version: 2.0.0" /tmp/show-v1.out; then
+        cat /tmp/show-v1.out
+        fail "apr show --version should not print v2"
+      else
+        pass "apr show --version hides non-selected versions"
+      fi
+
+      $APR show testpkg --registry test-reg --version 1.0.0 --raw \
+        > /tmp/show-v1-raw.out 2>&1 || {
+        cat /tmp/show-v1-raw.out
+        fail "apr show --version --raw selects existing version"
+      }
+      assert_file_contains /tmp/show-v1-raw.out "version = \"1.0.0\"" \
+        "apr show --version --raw prints selected v1"
+      if grep -q "version = \"2.0.0\"" /tmp/show-v1-raw.out; then
+        cat /tmp/show-v1-raw.out
+        fail "apr show --version --raw should not print v2"
+      else
+        pass "apr show --version --raw hides non-selected versions"
+      fi
+
+      if $APR show testpkg --registry test-reg --version 9.9.9 \
+        > /tmp/show-missing-version.out 2>&1; then
+        cat /tmp/show-missing-version.out
+        fail "apr show should reject missing versions"
+      else
+        assert_file_contains /tmp/show-missing-version.out \
+          "does not contain version '9.9.9'" \
+          "apr show reports missing requested version"
+      fi
+
       check_fail
     '';
   };
