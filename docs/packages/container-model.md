@@ -300,9 +300,10 @@ This refines the target-sandbox teardown table for the container case.
 So the container boundary *improves* revert for the workload's own fs and
 processes (vs. a bare host service) but **does not change** the two
 fundamentally-global caveats: **kernel modules and sysctls stay**. `kernel-modules`
-is the one irreducibly host-level permission — the host loads them and a
+is a host-fulfilled (allowlisted) permission — the host loads them and a
 container cannot, so they persist one-way after stop (see
-[permissions.md](permissions.md) for why). The strict guarantee remains the
+[permissions.md](permissions.md) for the allowlist + signing model). The strict
+guarantee remains the
 *disabled* (never-enabled) case, identical to
 [../roles/targets-and-sandbox.md](../roles/targets-and-sandbox.md).
 
@@ -353,7 +354,9 @@ state, and every one of these grants is an explicit entry in its
   "vxlan", "ip_set"]` (in `modules/roles/kubernetes/k3s-worker.nix`). There is no
   per-container module namespace — these load into the host kernel via
   `aos-pkg-k3s-worker-modules.service` regardless of any container. The container
-  cannot own them; this is the one irreducibly host-level permission.
+  cannot own them; this is a host-fulfilled, allowlisted permission (the host
+  grants it only if the requested modules are allowlisted — see
+  [permissions.md](permissions.md)).
 - **Host network.** CNI/flannel program host routes, the host bridge, and
   host iptables/nftables. `--network-veth` would cut k3s off from the L2 it is
   supposed to manage, so it declares `network = "host"`.

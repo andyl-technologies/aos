@@ -103,8 +103,9 @@ declaration is now **visible** rather than hidden:
 
 - **Kernel modules are global.** k3s declares `kernel-modules = ["br_netfilter",
   "vxlan", "ip_set"]`; these load into the host kernel via
-  `aos-pkg-<name>-modules.service` regardless of any container — the one
-  irreducibly host-level permission (see [`permissions.md`](permissions.md)).
+  `aos-pkg-<name>-modules.service` regardless of any container — a host-fulfilled,
+  allowlisted permission (granted only if the modules are allowlisted; see
+  [`permissions.md`](permissions.md)).
 - **k3s declares host network and cgroups.** CNI configures host routes/bridges;
   kubelet manages host cgroups. A real netns/cgroup boundary breaks pod
   networking. So k3s's manifest declares `network = "host"` and `cgroup-delegate`

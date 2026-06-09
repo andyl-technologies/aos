@@ -208,8 +208,8 @@ and bridge sysctls, ports 10250/8472, and a service with `Delegate = "yes"` /
 and they are **host-global** by nature:
 
 - kernel modules load into the **host** kernel — there is no per-container
-  module namespace, so the `kernel-modules` permission is honored host-side and
-  is the one irreducibly host-level grant;
+  module namespace, so the `kernel-modules` permission is host-fulfilled and
+  allowlisted (granted only if the requested modules are in the host allowlist);
 - k3s/kubelet must drive host nftables, host routes, and the host cgroup tree
   to schedule pods, so k3s declares `network = "host"` and `cgroup-delegate`.
 
