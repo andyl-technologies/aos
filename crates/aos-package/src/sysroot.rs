@@ -1464,7 +1464,7 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
 fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> String {
     // Use the first configured registry's mirror URL.
     if let Some((cfg, _)) = config.registries.first() {
-        return resolve_mirror(cfg);
+        return resolve_mirror(&config.scope.registries_path(), cfg);
     }
     "https://cache.aos.dev".to_string()
 }
@@ -1474,6 +1474,7 @@ fn build_download_requests(
     to_download: &[&PackageMeta],
     config: &ApmConfig,
 ) -> Result<Vec<DownloadRequest>> {
+    let registries_base = config.scope.registries_path();
     let mirror_map: std::collections::HashMap<String, String> = closures
         .iter()
         .map(|c| {
@@ -1483,7 +1484,7 @@ fn build_download_requests(
                 .find(|(cfg, _)| cfg.name == c.registry_name)
                 .map(|(cfg, _)| cfg);
             let mirror_url = if let Some(cfg) = reg_config {
-                resolve_mirror(cfg)
+                resolve_mirror(&registries_base, cfg)
             } else {
                 format!("https://registry.aos.dev/{}", c.registry_name)
             };

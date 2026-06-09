@@ -76,15 +76,19 @@ pub fn narinfo_url(mirror_url: &str, store_path: &str) -> String {
 
 /// Determine the cache base URL for a registry.
 ///
-/// First checks the local registry clone for a `registry.toml` with
-/// `[[caches]]` entries (sorted by priority). Falls back to the registry
-/// URL itself. The returned value is a base — apm appends
+/// First checks the local registry clone under `registries_base` for a
+/// `registry.toml` with `[[caches]]` entries (sorted by priority). Falls back
+/// to the registry URL itself. The returned value is a base — apm appends
 /// `<storeHash>.narinfo` and the narinfo-supplied `URL:` field to it.
-pub fn resolve_mirror(registry: &RegistryConfig) -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
-    let registries_dir = std::path::PathBuf::from(&home)
-        .join(".local/share/apm/registries")
-        .join(&registry.name);
+///
+/// `registries_base` is the active scope's registry-storage directory (see
+/// [`ProfileScope::registries_path`]); the registry's own name is joined onto
+/// it to locate the clone. Passing the scope path rather than deriving one
+/// from `$HOME` keeps user- and system-scope lookups consistent.
+///
+/// [`ProfileScope::registries_path`]: crate::types::ProfileScope::registries_path
+pub fn resolve_mirror(registries_base: &Path, registry: &RegistryConfig) -> String {
+    let registries_dir = registries_base.join(&registry.name);
 
     let mirrors = crate::registry_ops::resolve_mirrors_for_registry(&registries_dir, registry);
     if let Some(cache) = mirrors.first() {
@@ -411,7 +415,11 @@ mod tests {
             signing_keys: Default::default(),
             signing: None,
         };
-        assert_eq!(resolve_mirror(&reg), "https://registry.aos.dev/core");
+        // No local clone exists at this base, so it falls back to the URL.
+        assert_eq!(
+            resolve_mirror(Path::new("/nonexistent/registries"), &reg),
+            "https://registry.aos.dev/core"
+        );
     }
 
     #[test]
