@@ -34,6 +34,7 @@ in
       openssl
       zlib
       nghttp2
+      ca-certificates
     ];
     propagatedDeps = [
       openssl
@@ -173,7 +174,6 @@ in
         rootfsDeps = [
           pkgs.openssl
           self
-          pkgs.ca-certificates
         ];
         testScript = ''
           export C_INCLUDE_PATH="${pkgs.openssl}/include:${self}/include:$C_INCLUDE_PATH"
@@ -194,13 +194,26 @@ in
                   return 1;
               }
 
-              const char *capath = "${pkgs.ca-certificates}/etc/ssl/certs/ca-bundle.crt";
-              curl_easy_setopt(handle, CURLOPT_CAINFO, capath);
+              /* curl is built with a compiled-in default CA bundle; confirm it
+                 resolves to a readable file without any caller-supplied
+                 override. */
+              char *cainfo = NULL;
+              curl_easy_getinfo(handle, CURLINFO_CAINFO, &cainfo);
+              if (!cainfo) {
+                  fprintf(stderr, "curl has no default CA bundle\n");
+                  return 1;
+              }
+              FILE *ca = fopen(cainfo, "r");
+              if (!ca) {
+                  fprintf(stderr, "default CA bundle is not readable: %s\n", cainfo);
+                  return 1;
+              }
+              fclose(ca);
 
               printf("curl version: %s\n", curl_version());
               printf("openssl header: %s\n", OPENSSL_VERSION_TEXT);
               printf("openssl runtime: %s\n", OpenSSL_version(OPENSSL_VERSION));
-              printf("CA bundle: %s\n", capath);
+              printf("CA bundle: %s\n", cainfo);
 
               curl_easy_cleanup(handle);
               curl_global_cleanup();

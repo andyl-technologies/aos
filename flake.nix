@@ -72,6 +72,16 @@
           aos.pkgs.pkg-config
           aos.pkgs.openssl
           aos.pkgs.protobuf
+          # Runtime tools the aos/apm/apr binaries shell out to by bare name
+          # (see runtimeTools in pkgs/tools/aos/aos.nix), so impure cargo runs
+          # in the dev shell resolve the same AOS-built tools the hermetic build
+          # uses instead of falling back to whatever is installed on the host.
+          aos.pkgs.git
+          aos.pkgs.gnupg
+          aos.pkgs.openssh
+          aos.pkgs.tar
+          aos.pkgs.zstd
+          aos.pkgs.which
         ];
         binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
       in {
@@ -95,11 +105,7 @@
             + ''
               export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
               export OPENSSL_DIR="${aos.pkgs.openssl}"
-              export OPENSSL_LIB_DIR="${aos.pkgs.openssl}/lib"
-              export OPENSSL_INCLUDE_DIR="${aos.pkgs.openssl}/include"
               export OPENSSL_NO_VENDOR=1
-              export OPENSSL_STATIC=0
-              export PROTOC="${aos.pkgs.protobuf}/bin/protoc"
             '';
         };
       }
