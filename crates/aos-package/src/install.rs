@@ -33,6 +33,7 @@ pub async fn run(
     registry_filter: Option<&str>,
     reinstall: bool,
     download_only: bool,
+    no_deps: bool,
     dry_run: bool,
     yes: bool,
     ignore_lock: &IgnoreSysrootLock,
@@ -49,7 +50,10 @@ pub async fn run(
 
     // Step 2: Resolve closures for all requested packages.
     printer.step(2, 7, "Resolving dependencies...");
-    let closures = resolve_multiple(&registries, packages, registry_filter)?;
+    let mut closures = resolve_multiple(&registries, packages, registry_filter)?;
+    if no_deps {
+        prune_dependency_members(&mut closures);
+    }
     let profile = Profile::open(config.scope)?;
     let installed = list_meta(&profile)?;
 
@@ -331,6 +335,21 @@ fn installed_apm_for_hash<'a>(installed: &'a [InstalledMeta], hash: &str) -> Opt
             None
         }
     })
+}
+
+fn prune_dependency_members(closures: &mut [ResolvedClosure]) {
+    for closure in closures {
+        let root_hash = store_path_hash(&closure.root.store_path).to_string();
+        closure
+            .closure
+            .retain(|meta| store_path_hash(&meta.store_path) == root_hash);
+
+        if closure.closure.is_empty() {
+            closure.closure.push(closure.root.clone());
+        }
+
+        closure.total_nar_size = closure.closure.iter().map(|m| m.nar_size).sum();
+    }
 }
 
 /// Copy GC root symlinks from a previous generation to a new one.
@@ -811,6 +830,21 @@ mod tests {
             &[closure],
             &installed
         ));
+    }
+
+    #[test]
+    fn prune_dependency_members_keeps_only_requested_roots() {
+        let root_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrapper-1.0.0";
+        let dep_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-libdep-1.0.0";
+        let root = sample_package("wrapper", "1.0.0", root_path);
+        let dep = sample_package("libdep", "1.0.0", dep_path);
+        let mut closures = vec![sample_closure(root.clone(), vec![dep, root])];
+
+        prune_dependency_members(&mut closures);
+
+        assert_eq!(closures[0].closure.len(), 1);
+        assert_eq!(closures[0].closure[0].name, "wrapper");
+        assert_eq!(closures[0].total_nar_size, 1);
     }
 
     #[test]
