@@ -328,6 +328,7 @@ fn atomic_symlink(target: &str, link_path: &Path) -> Result<()> {
 /// Returns one store path per line.
 pub async fn closure_paths(store_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix-store")
+        .envs(aos_nix_env())
         .args(["-qR", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -348,6 +349,7 @@ pub async fn closure_paths(store_path: &str) -> Result<Vec<String>> {
 /// Runs `nix-store -q --references <path>`.
 pub async fn direct_references(store_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix-store")
+        .envs(aos_nix_env())
         .args(["-q", "--references", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
