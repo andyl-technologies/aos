@@ -33,6 +33,7 @@
     ++ nixRuntimeLibs
     ++ [
       pkgs.curl
+      pkgs.diffutils
       pkgs.findutils
       pkgs.iproute2
       pkgs.openssh
@@ -68,45 +69,47 @@
     nix-store --load-db < /aos-registration
   '';
 
-  writeTinyRegistry = ''
+  realTinyRegistry = ''
     make_tiny_store_path() {
       printf 'aos registry validation fixture\n' > /tmp/aos-registry-fixture
       nix-store --add-fixed sha256 /tmp/aos-registry-fixture
     }
 
-    write_registry_for_store_path() {
+    create_registry_for_store_path() {
       reg_name="$1"
       store_path="$2"
+      store_hash=$(basename "$store_path" | cut -d- -f1)
+
+      $APR create "$reg_name" > "/tmp/$reg_name-create.log" 2>&1 || {
+        cat "/tmp/$reg_name-create.log"
+        return 1
+      }
+      cat "/tmp/$reg_name-create.log"
+
+      $APR publish "$store_path" \
+        --name fixture \
+        --version 1.0.0 \
+        --description "VM validation fixture" \
+        --license MIT \
+        --maintainer registry@example.com \
+        --registry "$reg_name" \
+        --no-commit > "/tmp/$reg_name-publish.log" 2>&1 || {
+        cat "/tmp/$reg_name-publish.log"
+        return 1
+      }
+      cat "/tmp/$reg_name-publish.log"
+
       reg_dir="$REG_STORAGE/$reg_name"
-      mkdir -p "$reg_dir/packages/f" "$APM_CONFIG/registries.d"
-      cat > "$APM_CONFIG/registries.d/$reg_name.toml" << EOF
-    [registry]
-    name = "$reg_name"
-    url = "file://$reg_dir"
-    EOF
-      cat > "$reg_dir/registry.toml" << EOF
-    [registry]
-    name = "$reg_name"
-    EOF
-      cat > "$reg_dir/packages/f/fixture.toml" << EOF
-    [package]
-    name = "fixture"
-    description = "VM validation fixture"
-    license = "MIT"
-    maintainer = "registry@example.com"
+      test -f "$reg_dir/packages/f/fixture.toml"
+      test -f "$reg_dir/closures/$store_hash"
+      grep -q "$store_path" "$reg_dir/packages/f/fixture.toml"
+      grep -q "$store_hash" "$reg_dir/closures/$store_hash"
 
-    [[versions]]
-    version = "1.0.0"
-
-    [versions.platforms.x86_64-linux]
-    store_path = "$store_path"
-    nar_hash = "sha256:placeholder"
-    nar_size = 1
-    closure_size = 1
-    source_drv = "$store_path.drv"
-    source_nar_hash = "sha256:placeholder"
-    references = []
-    EOF
+      $APR verify --registry "$reg_name" > "/tmp/$reg_name-verify.log" 2>&1 || {
+        cat "/tmp/$reg_name-verify.log"
+        return 1
+      }
+      cat "/tmp/$reg_name-verify.log"
     }
   '';
 
@@ -261,10 +264,11 @@ in {
     testScript = ''
       ${setupNixStore}
       ${fixtures.setupPreamble}
-      ${writeTinyRegistry}
+      ${realTinyRegistry}
       ${s3Server}
       ${sftpServer}
 
+      set -e
       ip link set lo up || true
       ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
       export AWS_ACCESS_KEY_ID=aos-test
@@ -273,7 +277,7 @@ in {
 
       STORE_PATH=$(make_tiny_store_path)
       STORE_HASH=$(basename "$STORE_PATH" | cut -d- -f1)
-      write_registry_for_store_path vm-cache "$STORE_PATH"
+      create_registry_for_store_path vm-cache "$STORE_PATH"
 
       nix --extra-experimental-features nix-command key generate-secret \
         --key-name aos-cache > /tmp/nix-cache.sec
@@ -345,120 +349,121 @@ in {
     rootfsDeps = validationDeps;
     memory = 2048;
     testScript = ''
-      ${setupNixStore}
-      ${fixtures.setupPreamble}
-      ${writeTinyRegistry}
-      ${s3Server}
+        ${setupNixStore}
+        ${fixtures.setupPreamble}
+        ${realTinyRegistry}
+        ${s3Server}
 
-      ip link set lo up || true
-      ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      export AWS_ACCESS_KEY_ID=aos-test
-      export AWS_SECRET_ACCESS_KEY=aos-test-secret
-      export AWS_EC2_METADATA_DISABLED=true
+        set -e
+        ip link set lo up || true
+        ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+        export AWS_ACCESS_KEY_ID=aos-test
+        export AWS_SECRET_ACCESS_KEY=aos-test-secret
+        export AWS_EC2_METADATA_DISABLED=true
 
-      STORE_PATH=$(make_tiny_store_path)
-      write_registry_for_store_path cdn-cache "$STORE_PATH"
-      nix --extra-experimental-features nix-command key generate-secret \
-        --key-name aos-cache > /tmp/nix-cache.sec
-      $APR cache generate --registry cdn-cache \
-        --output /tmp/generated-cache \
-        --key /tmp/nix-cache.sec \
-        --priority 37 \
-        --no-commit
+        STORE_PATH=$(make_tiny_store_path)
+        create_registry_for_store_path cdn-cache "$STORE_PATH"
+        nix --extra-experimental-features nix-command key generate-secret \
+          --key-name aos-cache > /tmp/nix-cache.sec
+        $APR cache generate --registry cdn-cache \
+          --output /tmp/generated-cache \
+          --key /tmp/nix-cache.sec \
+          --priority 37 \
+          --no-commit
 
-      $APR create cdn-reg
-      REG_DIR="$REG_STORAGE/cdn-reg"
-      mkdir -p "$REG_DIR/channels/stable" "$REG_DIR/.git/channels/stable"
-      printf 'channel-pointer\n' > "$REG_DIR/.git/channels/stable/00"
+        $APR create cdn-reg
+        REG_DIR="$REG_STORAGE/cdn-reg"
+        mkdir -p "$REG_DIR/channels/stable" "$REG_DIR/.git/channels/stable"
+        printf 'channel-pointer\n' > "$REG_DIR/.git/channels/stable/00"
 
-      start_s3_server 19001 /tmp/s3-origin-root /tmp/s3-origin-events.jsonl
-      $APR origin upload --registry cdn-reg \
-        --cache-dir /tmp/generated-cache \
-        --upload-url s3://aos-origin/origin \
-        --s3-region us-east-1 \
-        --s3-endpoint http://127.0.0.1:19001 \
-        > /tmp/origin-upload.log 2>&1
-      cat /tmp/origin-upload.log
+        start_s3_server 19001 /tmp/s3-origin-root /tmp/s3-origin-events.jsonl
+        $APR origin upload --registry cdn-reg \
+          --cache-dir /tmp/generated-cache \
+          --upload-url s3://aos-origin/origin \
+          --s3-region us-east-1 \
+          --s3-endpoint http://127.0.0.1:19001 \
+          > /tmp/origin-upload.log 2>&1
+        cat /tmp/origin-upload.log
 
-      cat > /tmp/assert-origin-cdn.py << 'PY'
-    import json
-    import os
-    import sys
+        cat > /tmp/assert-origin-cdn.py << 'PY'
+      import json
+      import os
+      import sys
 
-    events_path, root = sys.argv[1], sys.argv[2]
-    with open(events_path, encoding="utf-8") as f:
-        events = [json.loads(line) for line in f if line.strip()]
+      events_path, root = sys.argv[1], sys.argv[2]
+      with open(events_path, encoding="utf-8") as f:
+          events = [json.loads(line) for line in f if line.strip()]
 
-    def rel(path):
-        prefix = "aos-origin/origin/"
-        if not path.startswith(prefix):
-            raise AssertionError(f"unexpected upload path {path}")
-        return path[len(prefix):]
+      def rel(path):
+          prefix = "aos-origin/origin/"
+          if not path.startswith(prefix):
+              raise AssertionError(f"unexpected upload path {path}")
+          return path[len(prefix):]
 
-    def is_mutable(path):
-        return (
-            path in {"HEAD", "info/refs", "nix-cache-info"}
-            or path.startswith("objects/info/")
-            or path.startswith("channels/")
-        )
+      def is_mutable(path):
+          return (
+              path in {"HEAD", "info/refs", "nix-cache-info"}
+              or path.startswith("objects/info/")
+              or path.startswith("channels/")
+          )
 
-    put_events = [e for e in events if e["method"] == "PUT"]
-    rel_events = [(rel(e["path"]), e) for e in put_events]
-    first_mutable = next((i for i, (path, _) in enumerate(rel_events) if is_mutable(path)), None)
-    if first_mutable is None:
-        raise AssertionError("no mutable uploads recorded")
-    if any(is_mutable(path) for path, _ in rel_events[:first_mutable]):
-        raise AssertionError("mutable upload appeared before immutable group")
-    if any(not is_mutable(path) for path, _ in rel_events[first_mutable:]):
-        raise AssertionError("immutable upload appeared after mutable group")
+      put_events = [e for e in events if e["method"] == "PUT"]
+      rel_events = [(rel(e["path"]), e) for e in put_events]
+      first_mutable = next((i for i, (path, _) in enumerate(rel_events) if is_mutable(path)), None)
+      if first_mutable is None:
+          raise AssertionError("no mutable uploads recorded")
+      if any(is_mutable(path) for path, _ in rel_events[:first_mutable]):
+          raise AssertionError("mutable upload appeared before immutable group")
+      if any(not is_mutable(path) for path, _ in rel_events[first_mutable:]):
+          raise AssertionError("immutable upload appeared after mutable group")
 
-    by_path = {path: event for path, event in rel_events}
-    expected_mutable = [
-        "HEAD",
-        "info/refs",
-        "nix-cache-info",
-    ]
-    for path in expected_mutable:
-        event = by_path[path]
-        assert event["cache_control"] == "public, max-age=60, must-revalidate", event
-        assert event["content_type"] == "text/plain", event
+      by_path = {path: event for path, event in rel_events}
+      expected_mutable = [
+          "HEAD",
+          "info/refs",
+          "nix-cache-info",
+      ]
+      for path in expected_mutable:
+          event = by_path[path]
+          assert event["cache_control"] == "public, max-age=60, must-revalidate", event
+          assert event["content_type"] == "text/plain", event
 
-    object_events = [
-        (path, event)
-        for path, event in rel_events
-        if path.startswith("objects/") and not path.startswith("objects/info/")
-    ]
-    if not object_events:
-        raise AssertionError("no immutable git object uploads found")
-    for _, event in object_events:
-        assert event["cache_control"] == "public, max-age=31536000, immutable", event
+      object_events = [
+          (path, event)
+          for path, event in rel_events
+          if path.startswith("objects/") and not path.startswith("objects/info/")
+      ]
+      if not object_events:
+          raise AssertionError("no immutable git object uploads found")
+      for _, event in object_events:
+          assert event["cache_control"] == "public, max-age=31536000, immutable", event
 
-    narinfo_events = [(p, e) for p, e in rel_events if p.endswith(".narinfo")]
-    if len(narinfo_events) != 1:
-        raise AssertionError(f"expected one narinfo upload, got {narinfo_events}")
-    assert narinfo_events[0][1]["cache_control"] == "public, max-age=31536000, immutable"
-    assert narinfo_events[0][1]["content_type"] == "text/x-nix-narinfo"
+      narinfo_events = [(p, e) for p, e in rel_events if p.endswith(".narinfo")]
+      if len(narinfo_events) != 1:
+          raise AssertionError(f"expected one narinfo upload, got {narinfo_events}")
+      assert narinfo_events[0][1]["cache_control"] == "public, max-age=31536000, immutable"
+      assert narinfo_events[0][1]["content_type"] == "text/x-nix-narinfo"
 
-    nar_events = [(p, e) for p, e in rel_events if p.startswith("nar/")]
-    if len(nar_events) != 1:
-        raise AssertionError(f"expected one NAR upload, got {nar_events}")
-    assert nar_events[0][1]["cache_control"] == "public, max-age=31536000, immutable"
-    assert nar_events[0][1]["content_type"] == "application/zstd"
+      nar_events = [(p, e) for p, e in rel_events if p.startswith("nar/")]
+      if len(nar_events) != 1:
+          raise AssertionError(f"expected one NAR upload, got {nar_events}")
+      assert nar_events[0][1]["cache_control"] == "public, max-age=31536000, immutable"
+      assert nar_events[0][1]["content_type"] == "application/zstd"
 
-    alternates = os.path.join(root, "objects/info/alternates")
-    if os.path.exists(alternates):
-        with open(alternates, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("/") or "://" in line:
-                    raise AssertionError(f"non-relative alternate: {line}")
-    PY
-      python3 /tmp/assert-origin-cdn.py \
-        /tmp/s3-origin-events.jsonl /tmp/s3-origin-root/aos-origin/origin
+      alternates = os.path.join(root, "objects/info/alternates")
+      if os.path.exists(alternates):
+          with open(alternates, encoding="utf-8") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  if line.startswith("/") or "://" in line:
+                      raise AssertionError(f"non-relative alternate: {line}")
+      PY
+        python3 /tmp/assert-origin-cdn.py \
+          /tmp/s3-origin-events.jsonl /tmp/s3-origin-root/aos-origin/origin
 
-      echo "registry origin CDN layout validation passed"
+        echo "registry origin CDN layout validation passed"
     '';
   };
 
@@ -474,60 +479,61 @@ in {
       ];
     memory = 1024;
     testScript = ''
-      ${gitEnv}
+        ${gitEnv}
 
-      ip link set lo up || true
-      ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+        set -e
+        ip link set lo up || true
+        ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      mkdir -p /tmp/git-matrix-src
-      cd /tmp/git-matrix-src
-      git init --object-format=sha256
-      git config user.name "VM Test"
-      git config user.email "vm@example.com"
-      mkdir -p packages/f
-      cat > registry.toml << 'EOF'
-    [registry]
-    name = "git-matrix"
-    EOF
-      cat > packages/f/fixture.toml << 'EOF'
-    [package]
-    name = "fixture"
-    description = "Git matrix fixture"
-    license = "MIT"
-    maintainer = "registry@example.com"
-    EOF
-      git add -A
-      git commit -m "initial sha256 registry"
-      git update-server-info
-      cd /tmp
+        mkdir -p /tmp/git-matrix-src
+        cd /tmp/git-matrix-src
+        git init --object-format=sha256
+        git config user.name "VM Test"
+        git config user.email "vm@example.com"
+        mkdir -p packages/f
+        cat > registry.toml << 'EOF'
+      [registry]
+      name = "git-matrix"
+      EOF
+        cat > packages/f/fixture.toml << 'EOF'
+      [package]
+      name = "fixture"
+      description = "Git matrix fixture"
+      license = "MIT"
+      maintainer = "registry@example.com"
+      EOF
+        git add -A
+        git commit -m "initial sha256 registry"
+        git update-server-info
+        cd /tmp
 
-      git clone --bare /tmp/git-matrix-src /tmp/git-matrix-origin.git
-      git --git-dir=/tmp/git-matrix-origin.git update-server-info
+        git clone --bare /tmp/git-matrix-src /tmp/git-matrix-origin.git
+        git --git-dir=/tmp/git-matrix-origin.git update-server-info
 
-      python3 -m http.server 18081 --bind 127.0.0.1 \
-        --directory /tmp/git-matrix-origin.git > /tmp/git-matrix-http.log 2>&1 &
-      for _i in 1 2 3 4 5 6 7 8 9 10; do
-        if curl -sf http://127.0.0.1:18081/HEAD >/dev/null; then
-          break
-        fi
-        sleep 1
-      done
+        python3 -m http.server 18081 --bind 127.0.0.1 \
+          --directory /tmp/git-matrix-origin.git > /tmp/git-matrix-http.log 2>&1 &
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18081/HEAD >/dev/null; then
+            break
+          fi
+          sleep 1
+        done
 
-      for git_bin in ${gitFloor}/bin/git ${pkgs.git}/bin/git; do
-        version=$($git_bin --version)
-        version=''${version##* }
-        echo "==> validating stock Git $version"
-        case "$version" in
-          2.42.*|2.4[3-9].*|2.[5-9][0-9].*) ;;
-          *) echo "Git $version is below the registry floor"; exit 1 ;;
-        esac
-        clone_dir="/tmp/clone-$version"
-        GIT_SMART_HTTP=0 "$git_bin" clone http://127.0.0.1:18081 "$clone_dir"
-        test "$($git_bin -C "$clone_dir" rev-parse --show-object-format)" = "sha256"
-        test -f "$clone_dir/registry.toml"
-      done
+        for git_bin in ${gitFloor}/bin/git ${pkgs.git}/bin/git; do
+          version=$($git_bin --version)
+          version=''${version##* }
+          echo "==> validating stock Git $version"
+          case "$version" in
+            2.42.*|2.4[3-9].*|2.[5-9][0-9].*) ;;
+            *) echo "Git $version is below the registry floor"; exit 1 ;;
+          esac
+          clone_dir="/tmp/clone-$version"
+          GIT_SMART_HTTP=0 "$git_bin" clone http://127.0.0.1:18081 "$clone_dir"
+          test "$($git_bin -C "$clone_dir" rev-parse --show-object-format)" = "sha256"
+          test -f "$clone_dir/registry.toml"
+        done
 
-      echo "registry stock Git matrix validation passed"
+        echo "registry stock Git matrix validation passed"
     '';
   };
 
@@ -541,73 +547,74 @@ in {
       ];
     memory = 1024;
     testScript = ''
-      ${gitEnv}
+        ${gitEnv}
 
-      now_ns() {
-        date +%s%N
-      }
+        set -e
+        now_ns() {
+          date +%s%N
+        }
 
-      metric() {
-        name="$1"
-        value="$2"
-        echo "REGISTRY_PERF_METRIC $name=$value"
-      }
+        metric() {
+          name="$1"
+          value="$2"
+          echo "REGISTRY_PERF_METRIC $name=$value"
+        }
 
-      mkdir -p /tmp/perf-src/packages
-      cd /tmp/perf-src
-      git init --object-format=sha256
-      git config user.name "VM Test"
-      git config user.email "vm@example.com"
-      for i in $(seq 1 80); do
-        dir=$(printf "packages/%02d" "$i")
-        mkdir -p "$dir"
-        printf 'name = "pkg-%02d"\nversion = "1.0.0"\n' "$i" > "$dir/pkg.toml"
-      done
-      git add -A
-      git commit -m "release 1"
-      V1=$(git rev-parse HEAD)
+        mkdir -p /tmp/perf-src/packages
+        cd /tmp/perf-src
+        git init --object-format=sha256
+        git config user.name "VM Test"
+        git config user.email "vm@example.com"
+        for i in $(seq 1 80); do
+          dir=$(printf "packages/%02d" "$i")
+          mkdir -p "$dir"
+          printf 'name = "pkg-%02d"\nversion = "1.0.0"\n' "$i" > "$dir/pkg.toml"
+        done
+        git add -A
+        git commit -m "release 1"
+        V1=$(git rev-parse HEAD)
 
-      start=$(now_ns)
-      git pack-objects --revs /tmp/full-pack << EOF
-    $V1
-    EOF
-      end=$(now_ns)
-      FULL_NAME=$(ls /tmp/full-pack-*.pack | head -1)
-      metric full_pack_bytes "$(wc -c < "$FULL_NAME")"
-      metric full_pack_ns "$((end - start))"
+        start=$(now_ns)
+        git pack-objects --revs /tmp/full-pack << EOF
+      $V1
+      EOF
+        end=$(now_ns)
+        FULL_NAME=$(ls /tmp/full-pack-*.pack | head -1)
+        metric full_pack_bytes "$(wc -c < "$FULL_NAME")"
+        metric full_pack_ns "$((end - start))"
 
-      git clone --bare /tmp/perf-src /tmp/perf-consumer.git
+        git clone --bare /tmp/perf-src /tmp/perf-consumer.git
 
-      for i in $(seq 1 80); do
-        printf 'name = "pkg-%02d"\nversion = "1.0.1"\n' "$i" > "packages/$(printf "%02d" "$i")/pkg.toml"
-      done
-      git add -A
-      git commit -m "release 2"
-      V2=$(git rev-parse HEAD)
+        for i in $(seq 1 80); do
+          printf 'name = "pkg-%02d"\nversion = "1.0.1"\n' "$i" > "packages/$(printf "%02d" "$i")/pkg.toml"
+        done
+        git add -A
+        git commit -m "release 2"
+        V2=$(git rev-parse HEAD)
 
-      start=$(now_ns)
-      {
-        echo "$V2"
-        echo "^$V1"
-      } | git pack-objects --thin --stdout > /tmp/delta.pack
-      end=$(now_ns)
-      metric thin_delta_bytes "$(wc -c < /tmp/delta.pack)"
-      metric thin_delta_ns "$((end - start))"
+        start=$(now_ns)
+        {
+          echo "$V2"
+          echo "^$V1"
+        } | git pack-objects --thin --stdout > /tmp/delta.pack
+        end=$(now_ns)
+        metric thin_delta_bytes "$(wc -c < /tmp/delta.pack)"
+        metric thin_delta_ns "$((end - start))"
 
-      start=$(now_ns)
-      zstd -q -f /tmp/delta.pack -o /tmp/delta.pack.zst
-      end=$(now_ns)
-      metric zstd_delta_bytes "$(wc -c < /tmp/delta.pack.zst)"
-      metric zstd_ns "$((end - start))"
+        start=$(now_ns)
+        zstd -q -f /tmp/delta.pack -o /tmp/delta.pack.zst
+        end=$(now_ns)
+        metric zstd_delta_bytes "$(wc -c < /tmp/delta.pack.zst)"
+        metric zstd_ns "$((end - start))"
 
-      start=$(now_ns)
-      zstd -q -d -f /tmp/delta.pack.zst -o /tmp/delta.unpack
-      git -C /tmp/perf-consumer.git index-pack --fix-thin --stdin < /tmp/delta.unpack
-      end=$(now_ns)
-      metric reconstruct_ns "$((end - start))"
-      git -C /tmp/perf-consumer.git cat-file -e "$V2^{commit}"
+        start=$(now_ns)
+        zstd -q -d -f /tmp/delta.pack.zst -o /tmp/delta.unpack
+        git -C /tmp/perf-consumer.git index-pack --fix-thin --stdin < /tmp/delta.unpack
+        end=$(now_ns)
+        metric reconstruct_ns "$((end - start))"
+        git -C /tmp/perf-consumer.git cat-file -e "$V2^{commit}"
 
-      echo "registry pack/delta perf validation passed"
+        echo "registry pack/delta perf validation passed"
     '';
   };
 }
