@@ -1406,7 +1406,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 11. registry-branch-workflow — Branch create, switch, merge, pull
+  # 11. registry-branch-workflow — Branch create, switch, merge modes, pull
   # -------------------------------------------------------------------------
   registry-branch-workflow = testing.mkVMTest {
     name = "apm-registry-branch-workflow";
@@ -1416,7 +1416,8 @@ in {
       ${fixtures.setupPreamble}
       ${setupNixPublishEnv}
 
-      echo "==> Test: real APR branch create, switch, publish, merge, pull"
+      echo "==> Test: real APR branch create, switch, publish, merge modes, pull"
+      export GIT_MERGE_AUTOEDIT=no
 
       FEATURE_STORE="${closureRootTool}"
       FEATURE_DEP_STORE="${closureLeafTool}"
@@ -1572,6 +1573,190 @@ in {
       }
       assert_file_not_contains /tmp/branch-list-after-delete.out "feature-1" \
         "apr branch list hides deleted feature branch"
+
+      echo "==> Test: APR merge --no-ff keeps an explicit maintainer merge commit"
+
+      $APR branch create noff-branch --registry test-reg \
+        > /tmp/branch-noff-create.out 2>&1 || {
+        cat /tmp/branch-noff-create.out
+        fail "apr branch create succeeds for no-ff branch"
+      }
+      cat /tmp/branch-noff-create.out
+      $APR branch switch noff-branch --registry test-reg \
+        > /tmp/branch-noff-switch.out 2>&1 || {
+        cat /tmp/branch-noff-switch.out
+        fail "apr branch switch succeeds for no-ff branch"
+      }
+      cat /tmp/branch-noff-switch.out
+
+      $APR publish "$FEATURE_DEP_STORE" \
+        --name noffpkg \
+        --version 1.0.0 \
+        --description "No-ff maintainer merge fixture" \
+        --license MIT \
+        --maintainer branch@example.invalid \
+        --registry test-reg \
+        --no-commit > /tmp/branch-noff-publish.out 2>&1 || {
+        cat /tmp/branch-noff-publish.out
+        fail "apr publish creates package on no-ff branch"
+      }
+      cat /tmp/branch-noff-publish.out
+      commit_branch_changes "publish noffpkg 1.0.0 on no-ff branch"
+
+      $APR branch switch "$DEFAULT_BRANCH" --registry test-reg \
+        > /tmp/branch-noff-switch-default.out 2>&1 || {
+        cat /tmp/branch-noff-switch-default.out
+        fail "apr branch switch returns to default before no-ff merge"
+      }
+      cat /tmp/branch-noff-switch-default.out
+
+      $APR merge noff-branch --no-ff --registry test-reg \
+        > /tmp/branch-noff-merge.out 2>&1 || {
+        cat /tmp/branch-noff-merge.out
+        fail "apr merge --no-ff succeeds"
+      }
+      cat /tmp/branch-noff-merge.out
+      assert_file_contains /tmp/branch-noff-merge.out "Merged 'noff-branch'" \
+        "apr merge --no-ff reports merged branch"
+      NOFF_HEAD_PARENTS=$(git -C "$REG_DIR" rev-list --parents -n 1 HEAD | wc -w)
+      if [ "$NOFF_HEAD_PARENTS" = "3" ]; then
+        pass "apr merge --no-ff creates a two-parent merge commit"
+      else
+        fail "apr merge --no-ff should leave three rev-list fields, got $NOFF_HEAD_PARENTS"
+        git -C "$REG_DIR" log --oneline --graph -5
+      fi
+      $APR show noffpkg --registry test-reg > /tmp/branch-noff-show.out 2>&1 || {
+        cat /tmp/branch-noff-show.out
+        fail "apr show resolves no-ff merged package"
+      }
+      assert_file_contains /tmp/branch-noff-show.out "No-ff maintainer merge fixture" \
+        "apr show displays no-ff merged package metadata"
+      $APR verify --registry test-reg > /tmp/branch-noff-verify.out 2>&1 || {
+        cat /tmp/branch-noff-verify.out
+        fail "apr verify accepts no-ff merged package"
+      }
+      assert_file_contains /tmp/branch-noff-verify.out "no errors" \
+        "apr verify validates no-ff merged registry metadata"
+      $APR branch delete noff-branch --registry test-reg \
+        > /tmp/branch-noff-delete.out 2>&1 || {
+        cat /tmp/branch-noff-delete.out
+        fail "apr branch delete removes no-ff merged branch"
+      }
+      cat /tmp/branch-noff-delete.out
+
+      echo "==> Test: APR merge --squash stages a maintainer changeset"
+
+      $APR branch create squash-branch --registry test-reg \
+        > /tmp/branch-squash-create.out 2>&1 || {
+        cat /tmp/branch-squash-create.out
+        fail "apr branch create succeeds for squash branch"
+      }
+      cat /tmp/branch-squash-create.out
+      $APR branch switch squash-branch --registry test-reg \
+        > /tmp/branch-squash-switch.out 2>&1 || {
+        cat /tmp/branch-squash-switch.out
+        fail "apr branch switch succeeds for squash branch"
+      }
+      cat /tmp/branch-squash-switch.out
+
+      $APR publish "$FEATURE_STORE" \
+        --name squashpkg \
+        --version 1.0.0 \
+        --description "Squash maintainer changeset fixture" \
+        --license MIT \
+        --maintainer branch@example.invalid \
+        --registry test-reg \
+        --no-commit > /tmp/branch-squash-publish.out 2>&1 || {
+        cat /tmp/branch-squash-publish.out
+        fail "apr publish creates package on squash branch"
+      }
+      cat /tmp/branch-squash-publish.out
+      commit_branch_changes "publish squashpkg 1.0.0 on squash branch"
+      SQUASH_BRANCH_HEAD=$(git -C "$REG_DIR" rev-parse HEAD)
+
+      $APR branch switch "$DEFAULT_BRANCH" --registry test-reg \
+        > /tmp/branch-squash-switch-default.out 2>&1 || {
+        cat /tmp/branch-squash-switch-default.out
+        fail "apr branch switch returns to default before squash merge"
+      }
+      cat /tmp/branch-squash-switch-default.out
+      DEFAULT_BEFORE_SQUASH=$(git -C "$REG_DIR" rev-parse HEAD)
+
+      $APR merge squash-branch --squash --registry test-reg \
+        > /tmp/branch-squash-merge.out 2>&1 || {
+        cat /tmp/branch-squash-merge.out
+        fail "apr merge --squash stages changes"
+      }
+      cat /tmp/branch-squash-merge.out
+      assert_file_contains /tmp/branch-squash-merge.out "Merged 'squash-branch'" \
+        "apr merge --squash reports merged branch"
+      CURRENT_AFTER_SQUASH=$(git -C "$REG_DIR" rev-parse HEAD)
+      if [ "$CURRENT_AFTER_SQUASH" = "$DEFAULT_BEFORE_SQUASH" ]; then
+        pass "apr merge --squash does not advance HEAD before maintainer commit"
+      else
+        fail "apr merge --squash advanced HEAD before the maintainer commit"
+        git -C "$REG_DIR" log --oneline --graph -5
+      fi
+      $APR status --registry test-reg > /tmp/branch-squash-status.out 2>&1 || {
+        cat /tmp/branch-squash-status.out
+        fail "apr status succeeds after squash merge"
+      }
+      assert_file_contains /tmp/branch-squash-status.out "packages/s/squashpkg.toml" \
+        "apr status shows staged squash package metadata"
+      $APR show squashpkg --registry test-reg > /tmp/branch-squash-show-staged.out 2>&1 || {
+        cat /tmp/branch-squash-show-staged.out
+        fail "apr show resolves staged squash package"
+      }
+      assert_file_contains /tmp/branch-squash-show-staged.out \
+        "Squash maintainer changeset fixture" \
+        "apr show displays staged squash package metadata"
+      $APR verify --registry test-reg > /tmp/branch-squash-verify-staged.out 2>&1 || {
+        cat /tmp/branch-squash-verify-staged.out
+        fail "apr verify accepts staged squash package"
+      }
+      assert_file_contains /tmp/branch-squash-verify-staged.out "no errors" \
+        "apr verify validates staged squash registry metadata"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "squash merge squashpkg 1.0.0" \
+        > /tmp/branch-squash-commit.out 2>&1 || {
+        cat /tmp/branch-squash-commit.out
+        fail "maintainer commits squash merge result"
+      }
+      cat /tmp/branch-squash-commit.out
+      SQUASH_HEAD_PARENTS=$(git -C "$REG_DIR" rev-list --parents -n 1 HEAD | wc -w)
+      if [ "$SQUASH_HEAD_PARENTS" = "2" ]; then
+        pass "apr merge --squash keeps a linear maintainer commit"
+      else
+        fail "apr merge --squash should leave two rev-list fields, got $SQUASH_HEAD_PARENTS"
+        git -C "$REG_DIR" log --oneline --graph -5
+      fi
+      if git -C "$REG_DIR" merge-base --is-ancestor "$SQUASH_BRANCH_HEAD" HEAD; then
+        fail "squash branch commit should not become an ancestor of default"
+        git -C "$REG_DIR" log --oneline --graph -8
+      else
+        pass "squash branch remains a non-ancestor after squash commit"
+      fi
+      $APR verify --registry test-reg > /tmp/branch-squash-verify.out 2>&1 || {
+        cat /tmp/branch-squash-verify.out
+        fail "apr verify accepts committed squash package"
+      }
+      assert_file_contains /tmp/branch-squash-verify.out "no errors" \
+        "apr verify validates committed squash registry metadata"
+      if $APR branch delete squash-branch --registry test-reg \
+        > /tmp/branch-squash-delete.out 2>&1; then
+        cat /tmp/branch-squash-delete.out
+        fail "apr branch delete should reject a squash-only branch"
+      else
+        cat /tmp/branch-squash-delete.out
+        pass "apr branch delete preserves unmerged squash branch"
+      fi
+      git -C "$REG_DIR" branch -D squash-branch \
+        > /tmp/branch-squash-force-delete.out 2>&1 || {
+        cat /tmp/branch-squash-force-delete.out
+        fail "test cleanup force-deletes squash branch"
+      }
+      cat /tmp/branch-squash-force-delete.out
 
       echo "==> Test: APR pull and pull --rebase between maintainer clones"
 
