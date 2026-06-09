@@ -40,7 +40,7 @@
     nix-store --init || true
     nix-store --load-db < /aos-registration
   '';
-  defaultWorkflowDeps =
+  trackingWorkflowDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
     ++ [
@@ -55,60 +55,227 @@ in {
   # -------------------------------------------------------------------------
   tracking-branch = testing.mkVMTest {
     name = "apm-tracking-branch";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = trackingWorkflowDeps;
+    memory = 2048;
     testScript = ''
-            ${fixtures.setupPreamble}
-            ${fixtures.mkFakePackageToml}
-            ${fixtures.mkRemoteRegistry}
+      ${fixtures.setupPreamble}
+      ${setupNixEnv}
 
-            echo "==> Test: branch tracking mode"
+      echo "==> Test: branch tracking follows selected branch"
 
-            # Create a remote with a 'stable' branch
-            create_remote_registry /tmp/remote-branch.git
-
-            # Clone, create stable branch with a package, push
-            git clone /tmp/remote-branch.git /tmp/branch-setup
-            cd /tmp/branch-setup
-            git checkout -b stable
-            mkdir -p packages/h
-            cat > packages/h/hello.toml << 'EOF'
-      [package]
-      name = "hello"
-      description = "Hello package on stable"
-      license = "MIT"
-      maintainer = "test"
-
-      [[versions]]
-      version = "1.0.0"
-
-      [versions.platforms.x86_64-linux]
-      store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hello-1.0.0"
-      nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
-      nar_size = 1024
-      closure_size = 2048
-      source_drv = ""
-      source_nar_hash = ""
-      references = []
+      make_branch_tool() {
+        version="$1"
+        src="/tmp/branch-tool-$version-src"
+        rm -rf "$src"
+        mkdir -p "$src/bin" "$src/share/branch-tool"
+        cat > "$src/bin/branch-tool" << EOF
+      #!/bin/sh
+      echo "branch-tool $version executed"
       EOF
-            git add -A
-            git commit -m "add hello 1.0.0 on stable"
-            git push origin stable
-            cd /tmp
-            rm -rf /tmp/branch-setup
+        chmod +x "$src/bin/branch-tool"
+        printf "branch-tool payload %s\n" "$version" \
+          > "$src/share/branch-tool/payload.txt"
+        nix-store --add "$src"
+      }
 
-            # Add registry with branch tracking
-            $APM registry add file:///tmp/remote-branch.git --name branch-reg --branch stable
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
 
-            # Verify config has branch field
-            assert_file_contains "$APM_CONFIG/registries.d/branch-reg.toml" \
-              'branch = "stable"' "config has branch = stable"
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        nix-store --delete --ignore-liveness "$path" > "/tmp/branch-delete-$label.out" 2>&1 || {
+          cat "/tmp/branch-delete-$label.out"
+          fail "delete $label before apm download"
+          return
+        }
+        if nix-store --check-validity "$path" > "/tmp/branch-valid-$label.out" 2>&1; then
+          cat "/tmp/branch-valid-$label.out"
+          fail "$label should be missing before apm download"
+        else
+          pass "$label missing before apm download"
+        fi
+      }
 
-            # Verify apr list shows branch tracking
-            assert_cmd_output_contains "$APR list" "branch:stable" \
-              "apr list shows branch tracking mode"
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/branch-valid-after-$label.out" 2>&1; then
+          pass "$label valid after apm import"
+        else
+          cat "/tmp/branch-valid-after-$label.out"
+          fail "$label should be valid after apm import"
+        fi
+      }
 
-            check_fail
+      publish_branch_version() {
+        version="$1"
+        store_path="$2"
+        $APR publish "$store_path" \
+          --name branch-tool \
+          --version "$version" \
+          --description "Branch tracking workflow tool" \
+          --license MIT \
+          --maintainer tracking@example.invalid \
+          --registry branch-reg \
+          --no-commit
+        $APR cache generate \
+          --registry branch-reg \
+          --output /tmp/branch-cache \
+          --cache-url http://127.0.0.1:18104 \
+          --priority 44 \
+          --no-commit
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "release: branch-tool $version"
+      }
+
+      TOOL_V1_STORE=$(make_branch_tool 1.0.0)
+      TOOL_V2_STORE=$(make_branch_tool 2.0.0)
+      TOOL_V9_STORE=$(make_branch_tool 9.0.0)
+      TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V9_HASH=$(basename "$TOOL_V9_STORE" | cut -d- -f1)
+
+      $APR create branch-reg
+      REG_DIR="$REG_STORAGE/branch-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      git init --bare --object-format=sha256 /tmp/branch-origin.git
+      git -C /tmp/branch-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/branch-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      $APR branch create release --registry branch-reg
+      $APR branch switch release --registry branch-reg
+      publish_branch_version 1.0.0 "$TOOL_V1_STORE"
+      assert_file_exists "/tmp/branch-cache/$TOOL_V1_HASH.narinfo" \
+        "static cache has branch-tool release v1 narinfo"
+      git -C "$REG_DIR" push origin release
+
+      $APR branch switch "$DEFAULT_BRANCH" --registry branch-reg
+      publish_branch_version 9.0.0 "$TOOL_V9_STORE"
+      assert_file_exists "/tmp/branch-cache/$TOOL_V9_HASH.narinfo" \
+        "static cache has default branch distraction narinfo"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      python3 -m http.server 18104 --bind 127.0.0.1 \
+        --directory /tmp/branch-cache > /tmp/branch-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18104/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if curl -sf http://127.0.0.1:18104/nix-cache-info >/dev/null; then
+        pass "branch static cache HTTP server started"
+      else
+        cat /tmp/branch-cache-http.log || true
+        fail "branch static cache HTTP server started"
+      fi
+
+      export HOME=/tmp/branch-consumer
+      export USER=branchuser
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
+
+      $APM registry add file:///tmp/branch-origin.git \
+        --name branch-reg \
+        --branch release > /tmp/branch-add.out 2>&1 || {
+        cat /tmp/branch-add.out
+        fail "apm registry add syncs selected branch"
+      }
+      cat /tmp/branch-add.out
+      CONFIG_FILE="$APM_CONFIG/registries.d/branch-reg.toml"
+      assert_file_contains "$CONFIG_FILE" 'branch = "release"' \
+        "config has branch = release"
+      assert_cmd_output_contains "$APR list" "branch:release" \
+        "apr list shows branch tracking mode"
+
+      $APM search branch-tool --registry branch-reg > /tmp/branch-search-v1.out 2>&1 || {
+        cat /tmp/branch-search-v1.out
+        fail "apm search sees selected branch package"
+      }
+      assert_file_contains /tmp/branch-search-v1.out "1.0.0" \
+        "branch tracking initial sync exposes release v1"
+      assert_file_not_contains /tmp/branch-search-v1.out "9.0.0" \
+        "branch tracking does not expose default branch package"
+
+      mount -o remount,rw / || true
+      delete_store_path "$TOOL_V1_STORE" "branch-tool-v1"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install branch-tool --registry branch-reg --yes \
+        > /tmp/branch-install-v1.out 2>&1 || {
+        cat /tmp/branch-install-v1.out
+        fail "apm install downloads selected branch v1"
+      }
+      cat /tmp/branch-install-v1.out
+      assert_file_contains /tmp/branch-install-v1.out "Downloading" \
+        "apm install downloads branch v1 NAR"
+      assert_store_valid "$TOOL_V1_STORE" "branch-tool v1"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/branch-tool"
+      "$PROFILE_TOOL" > /tmp/branch-run-v1.out
+      assert_file_contains /tmp/branch-run-v1.out \
+        "branch-tool 1.0.0 executed" "installed branch v1 tool executes"
+
+      export HOME=/tmp
+      APM_CONFIG="$HOME/.config/apm"
+      $APR branch switch release --registry branch-reg
+      publish_branch_version 2.0.0 "$TOOL_V2_STORE"
+      assert_file_exists "/tmp/branch-cache/$TOOL_V2_HASH.narinfo" \
+        "static cache has branch-tool release v2 narinfo"
+      git -C "$REG_DIR" push origin release
+
+      export HOME=/tmp/branch-consumer
+      export USER=branchuser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_V2_STORE" "branch-tool-v2"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM update --registry branch-reg > /tmp/branch-update-v2.out 2>&1 || {
+        cat /tmp/branch-update-v2.out
+        fail "apm update follows selected branch v2"
+      }
+      cat /tmp/branch-update-v2.out
+      $APM list --upgradable > /tmp/branch-upgradable.out 2>&1 || {
+        cat /tmp/branch-upgradable.out
+        fail "apm list --upgradable sees selected branch update"
+      }
+      assert_file_contains /tmp/branch-upgradable.out "branch-tool" \
+        "branch update names package"
+      assert_file_contains /tmp/branch-upgradable.out "2.0.0" \
+        "branch update shows release v2"
+      assert_file_not_contains /tmp/branch-upgradable.out "9.0.0" \
+        "branch update ignores default branch v9"
+
+      $APM upgrade branch-tool --yes > /tmp/branch-upgrade.out 2>&1 || {
+        cat /tmp/branch-upgrade.out
+        fail "apm upgrade downloads selected branch v2"
+      }
+      cat /tmp/branch-upgrade.out
+      assert_file_contains /tmp/branch-upgrade.out "Downloading" \
+        "apm upgrade downloads branch v2 NAR"
+      assert_file_contains /tmp/branch-upgrade.out "Upgraded 1 package" \
+        "apm upgrade activates branch v2"
+      assert_store_valid "$TOOL_V2_STORE" "branch-tool v2"
+      "$PROFILE_TOOL" > /tmp/branch-run-v2.out
+      assert_file_contains /tmp/branch-run-v2.out \
+        "branch-tool 2.0.0 executed" "upgraded branch v2 tool executes"
+
+      kill "$CACHE_PID" 2>/dev/null || true
+      wait "$CACHE_PID" 2>/dev/null || true
+      check_fail
     '';
   };
 
@@ -310,7 +477,7 @@ in {
   # -------------------------------------------------------------------------
   tracking-default = testing.mkVMTest {
     name = "apm-tracking-default";
-    rootfsDeps = defaultWorkflowDeps;
+    rootfsDeps = trackingWorkflowDeps;
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
