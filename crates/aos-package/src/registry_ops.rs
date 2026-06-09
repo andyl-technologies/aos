@@ -1401,6 +1401,7 @@ pub async fn verify(
         printer.error(&format!(
             "Verified {checked} package(s), {closure_checked} closure(s), {errors} error(s) found."
         ));
+        bail!("registry verification failed with {errors} error(s)");
     }
 
     Ok(())
