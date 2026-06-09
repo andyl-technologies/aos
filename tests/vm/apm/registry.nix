@@ -1322,30 +1322,83 @@ in {
   # -------------------------------------------------------------------------
   registry-bundle = testing.mkVMTest {
     name = "apm-registry-signed-tag-clean-break";
-    rootfsDeps = fixtures.commonDeps ++ [pkgs.openssh];
-    memory = 512;
+    rootfsDeps = closureWorkflowDeps ++ [pkgs.openssh];
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
+      ${setupNixPublishEnv}
 
-      echo "==> Test: apr signed tag and bundle clean break"
+      echo "==> Test: real APR signed tag and bundle clean break"
 
-      # Create registry with packages
+      TAG_STORE="${closureRootTool}"
+      TAG_DEP_STORE="${closureLeafTool}"
+      TAG_HASH=$(basename "$TAG_STORE" | cut -d- -f1)
+      TAG_DEP_HASH=$(basename "$TAG_DEP_STORE" | cut -d- -f1)
+
+      mount -o remount,rw / || true
+      nix-store -q --references "$TAG_STORE" > /tmp/tagpkg-refs.out
+      assert_file_contains /tmp/tagpkg-refs.out "$TAG_DEP_STORE" \
+        "tagged package has a real Nix reference to its dependency"
+
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
-      write_package_toml "$REG_DIR" "tagpkg" "1.0.0"
-      commit_registry "$REG_DIR" "publish tagpkg 1.0.0"
+
+      $APR publish "$TAG_STORE" \
+        --name tagpkg \
+        --version 1.0.0 \
+        --description "Real signed tag fixture" \
+        --license MIT \
+        --maintainer tag@example.invalid \
+        --registry test-reg \
+        --no-commit > /tmp/tag-publish.out 2>&1 || {
+        cat /tmp/tag-publish.out
+        fail "apr publish creates real tag package"
+      }
+      cat /tmp/tag-publish.out
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "publish tagpkg 1.0.0"
+
+      assert_file_contains "$REG_DIR/packages/t/tagpkg.toml" "$TAG_HASH" \
+        "package metadata records real tagged store hash"
+      assert_file_exists "$REG_DIR/closures/$TAG_HASH" \
+        "tagged package closure file exists"
+      assert_file_contains "$REG_DIR/closures/$TAG_HASH" "$TAG_DEP_HASH" \
+        "tagged package closure records dependency"
+      $APR verify --registry test-reg > /tmp/tag-verify-before.out 2>&1 || {
+        cat /tmp/tag-verify-before.out
+        fail "apr verify accepts real package before tag"
+      }
+      assert_file_contains /tmp/tag-verify-before.out "no errors" \
+        "apr verify validates real package before tag"
 
       ssh-keygen -q -t ed25519 -N "" -f /tmp/release-key
-      $APR tag 1.0.0 --registry test-reg --key /tmp/release-key
+      $APR tag 1.0.0 --registry test-reg --key /tmp/release-key \
+        > /tmp/tag-create.out 2>&1 || {
+        cat /tmp/tag-create.out
+        fail "apr tag creates signed release tag"
+      }
+      cat /tmp/tag-create.out
+      assert_file_contains /tmp/tag-create.out "Created signed tag '1.0.0'" \
+        "apr tag reports signed release tag creation"
 
       cd "$REG_DIR"
       assert_cmd_success "git rev-parse 1.0.0^{tag}" \
         "signed release tag object exists"
-      assert_cmd_output_contains "git cat-file -p 1.0.0" \
+      git cat-file -p 1.0.0 > /tmp/tag-object.out
+      assert_file_contains /tmp/tag-object.out \
         "BEGIN SSH SIGNATURE" "release tag object carries SSH signature"
+      assert_file_contains /tmp/tag-object.out "tag 1.0.0" \
+        "release tag object records release name"
+      git show 1.0.0:packages/t/tagpkg.toml > /tmp/tagpkg-at-tag.toml
+      git show "1.0.0:closures/$TAG_HASH" > /tmp/tag-closure-at-tag.out
       cd /tmp
 
+      assert_file_contains /tmp/tagpkg-at-tag.toml "$TAG_HASH" \
+        "signed tag captures real package metadata"
+      assert_file_contains /tmp/tagpkg-at-tag.toml "Real signed tag fixture" \
+        "signed tag captures maintainer package description"
+      assert_file_contains /tmp/tag-closure-at-tag.out "$TAG_DEP_HASH" \
+        "signed tag captures real package closure"
       assert_file_not_exists "$REG_DIR/bundle-list.toml" \
         "git-native registry does not emit bundle-list.toml"
 
