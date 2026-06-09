@@ -2170,6 +2170,13 @@ in {
       else
         pass "rollback metadata matches v1 root"
       fi
+      $APM verify lifecycle-tool > /tmp/lifecycle-verify-rollback.out 2>&1 || {
+        cat /tmp/lifecycle-verify-rollback.out
+        fail "apm verify succeeds for rolled-back v1 while registry advertises v2"
+      }
+      assert_file_contains /tmp/lifecycle-verify-rollback.out \
+        "integrity verified" \
+        "apm verify uses rolled-back installed package metadata"
 
       $APM remove lifecycle-tool --yes > /tmp/lifecycle-remove.out 2>&1 || {
         cat /tmp/lifecycle-remove.out
