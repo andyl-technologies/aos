@@ -724,6 +724,15 @@ in {
 
       echo "==> Test: full registry maintainer release and consumer install"
 
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
       GIT_STORE="${pkgs.git}"
       CURL_STORE="${pkgs.curl}"
       GIT_HASH=$(basename "$GIT_STORE" | cut -d- -f1)
@@ -985,6 +994,59 @@ in {
           "jobs must be greater than zero" \
           "apr validate rejects zero parallelism"
       fi
+
+      rm -f "/tmp/maint-cache/$CURL_HASH.narinfo"
+      if $APR validate --registry maint-reg --package maint-curl --jobs 1 \
+        > /tmp/maint-validate-missing-curl.out 2>&1; then
+        cat /tmp/maint-validate-missing-curl.out
+        fail "apr validate should fail when a cache entry is missing"
+      else
+        cat /tmp/maint-validate-missing-curl.out
+        assert_file_contains /tmp/maint-validate-missing-curl.out \
+          "not found in any cache" \
+          "apr validate reports the missing cache entry before fix"
+      fi
+      $APR validate --registry maint-reg --package maint-curl --jobs 1 --fix \
+        > /tmp/maint-validate-fix-curl.out 2>&1 || {
+        cat /tmp/maint-validate-fix-curl.out
+        fail "apr validate --fix prunes missing cache entry metadata"
+      }
+      cat /tmp/maint-validate-fix-curl.out
+      assert_file_contains /tmp/maint-validate-fix-curl.out \
+        "Removed 1 missing cache entry" \
+        "apr validate --fix reports pruned missing entry"
+      assert_file_not_exists "$REG_DIR/packages/m/maint-curl.toml" \
+        "apr validate --fix removes package with no cached versions"
+      $APR packages --registry maint-reg \
+        > /tmp/maint-packages-after-validate-fix.out 2>&1 || {
+        cat /tmp/maint-packages-after-validate-fix.out
+        fail "apr packages succeeds after validate --fix"
+      }
+      assert_file_not_contains /tmp/maint-packages-after-validate-fix.out \
+        "maint-curl" \
+        "apr packages hides cache-pruned package"
+      assert_file_contains /tmp/maint-packages-after-validate-fix.out \
+        "maint-runner" \
+        "apr packages keeps cache-backed package after validate --fix"
+      git -C "$REG_DIR" status --short > /tmp/maint-validate-fix-status.out
+      assert_file_contains /tmp/maint-validate-fix-status.out \
+        "packages/m/maint-curl.toml" \
+        "apr validate --fix leaves a maintainer changeset"
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "drop maint-curl missing from cache" \
+        > /tmp/maint-validate-fix-commit.out 2>&1 || {
+        cat /tmp/maint-validate-fix-commit.out
+        fail "maintainer commits validate --fix changeset"
+      }
+      cat /tmp/maint-validate-fix-commit.out
+      $APR verify --registry maint-reg \
+        > /tmp/maint-verify-after-validate-fix.out 2>&1 || {
+        cat /tmp/maint-verify-after-validate-fix.out
+        fail "apr verify accepts registry after validate --fix"
+      }
+      assert_file_contains /tmp/maint-verify-after-validate-fix.out \
+        "no errors" \
+        "apr verify validates registry after validate --fix"
 
       # Consumer uses a fresh HOME and the published git origin.
       export HOME=/tmp/consumer
