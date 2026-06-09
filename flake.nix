@@ -93,7 +93,6 @@
               else ""
             )
             + ''
-              export AOS_ROOT="$(pwd)"
               export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
               export OPENSSL_DIR="${aos.pkgs.openssl}"
               export OPENSSL_LIB_DIR="${aos.pkgs.openssl}/lib"
