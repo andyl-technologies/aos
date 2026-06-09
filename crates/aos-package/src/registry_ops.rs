@@ -287,6 +287,34 @@ fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
     })
 }
 
+/// Return metadata for the derivation that produced `store_path`, if known.
+fn introspect_deriver(store_path: &str) -> Result<Option<StorePathInfo>> {
+    let output = Command::new("nix-store")
+        .args(["-q", "--deriver", store_path])
+        .output()
+        .with_context(|| format!("querying deriver for {store_path}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "nix-store --query --deriver failed for {store_path}: {}",
+            stderr.trim()
+        );
+    }
+
+    let deriver = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if deriver.is_empty() || deriver == "unknown-deriver" || !deriver.starts_with("/nix/store/") {
+        return Ok(None);
+    }
+    if !Path::new(&deriver).exists() {
+        return Ok(None);
+    }
+
+    introspect_store_path(&deriver)
+        .with_context(|| format!("introspecting source derivation {deriver}"))
+        .map(Some)
+}
+
 struct StorePathInfo {
     path: String,
     nar_hash: String,
@@ -637,8 +665,9 @@ pub async fn publish(
         );
     }
 
-    printer.step(1, 3, "Introspecting store path...");
+    printer.step(1, 4, "Introspecting store path...");
     let info = introspect_store_path(store_path)?;
+    let source_info = introspect_deriver(&info.path)?;
 
     // Introspect image store paths if provided.
     let mut image_infos: Vec<(String, StorePathInfo)> = Vec::new();
@@ -681,6 +710,7 @@ pub async fn publish(
         sysroot,
         previous,
         &image_infos,
+        source_info.as_ref(),
     )?;
 
     std::fs::write(&toml_path, &new_content)?;
@@ -697,6 +727,9 @@ pub async fn publish(
     printer.kv("NAR hash", &info.nar_hash);
     printer.kv("NAR size", &format_size(info.nar_size));
     printer.kv("Closure size", &format_size(info.closure_size));
+    if let Some(source_info) = &source_info {
+        printer.kv("Source drv", &source_info.path);
+    }
     if sysroot {
         printer.kv("Sysroot", "true");
     }
@@ -736,10 +769,17 @@ fn build_package_toml(
     sysroot: bool,
     previous: Option<&str>,
     image_infos: &[(String, StorePathInfo)],
+    source_info: Option<&StorePathInfo>,
 ) -> Result<String> {
     let desc = description.unwrap_or("No description");
     let lic = license.unwrap_or("unknown");
     let maint = maintainer.unwrap_or("unknown");
+    let source_drv = source_info
+        .map(|source| source.path.as_str())
+        .unwrap_or_default();
+    let source_nar_hash = source_info
+        .map(|source| source.nar_hash.as_str())
+        .unwrap_or_default();
 
     if existing.is_empty() {
         // Create new TOML.
@@ -763,13 +803,15 @@ fn build_package_toml(
              nar_hash = \"{}\"\n\
              nar_size = {}\n\
              closure_size = {}\n\
-             source_drv = \"\"\n\
-             source_nar_hash = \"\"\n\
+             source_drv = \"{}\"\n\
+             source_nar_hash = \"{}\"\n\
              references = [{}]\n",
             info.path,
             info.nar_hash,
             info.nar_size,
             info.closure_size,
+            source_drv,
+            source_nar_hash,
             info.references
                 .iter()
                 .map(|r| format!("\"{r}\""))
@@ -818,8 +860,14 @@ fn build_package_toml(
                 "closure_size".into(),
                 toml::Value::Integer(info.closure_size as i64),
             );
-            t.insert("source_drv".into(), toml::Value::String(String::new()));
-            t.insert("source_nar_hash".into(), toml::Value::String(String::new()));
+            t.insert(
+                "source_drv".into(),
+                toml::Value::String(source_drv.to_string()),
+            );
+            t.insert(
+                "source_nar_hash".into(),
+                toml::Value::String(source_nar_hash.to_string()),
+            );
             let refs: Vec<toml::Value> = info
                 .references
                 .iter()
@@ -4132,12 +4180,51 @@ mod tests {
             false,
             None,
             &[],
+            None,
         )
         .unwrap();
         assert!(content.contains("name = \"curl\""));
         assert!(content.contains("version = \"8.5.0\""));
         assert!(content.contains("x86_64-linux"));
         assert!(content.contains("sha256:deadbeef"));
+        assert!(content.contains("source_drv = \"\""));
+        assert!(content.contains("source_nar_hash = \"\""));
+    }
+
+    #[test]
+    fn build_package_toml_records_source_deriver() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-curl-8.5.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let source_info = StorePathInfo {
+            path: "/nix/store/drv123-curl-8.5.0.drv".into(),
+            nar_hash: "sha256:source".into(),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let content = build_package_toml(
+            "",
+            "curl",
+            "8.5.0",
+            "x86_64-linux",
+            &info,
+            Some("URL transfer tool"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            Some(&source_info),
+        )
+        .unwrap();
+        assert!(content.contains("source_drv = \"/nix/store/drv123-curl-8.5.0.drv\""));
+        assert!(content.contains("source_nar_hash = \"sha256:source\""));
     }
 
     #[test]
@@ -4180,6 +4267,7 @@ references = []
             false,
             None,
             &[],
+            None,
         )
         .unwrap();
         // Should contain both platforms.
@@ -4217,6 +4305,7 @@ references = []
             true,
             Some("2026.03"),
             &[("raw".to_string(), img_info)],
+            None,
         )
         .unwrap();
         assert!(content.contains("sysroot = true"));
