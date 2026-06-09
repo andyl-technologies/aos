@@ -323,6 +323,42 @@ in {
       cmp "/tmp/generated-cache/$STORE_HASH.narinfo" \
         "/tmp/s3-cache-root/aos-registry-test/cache/$STORE_HASH.narinfo"
 
+      cat > "$APM_CONFIG/registries.d/vm-cache.toml" << 'EOF'
+      [registry]
+      name = "vm-cache"
+      url = "file:///tmp/vm-cache-origin"
+      priority = 500
+
+      [registry.upload_auth]
+      s3_region = "us-east-1"
+      s3_endpoint = "http://127.0.0.1:19000"
+      ssh_key = "/tmp/sftp-client-key"
+      EOF
+
+      mkdir -p /tmp/sftp-cache-config/nar
+      $APR cache generate --registry vm-cache \
+        --output /tmp/generated-cache-config-auth \
+        --key /tmp/nix-cache.sec \
+        --priority 38 \
+        --no-commit \
+        --upload-url file:///tmp/local-cache-config \
+        --upload-url s3://aos-registry-test/config-cache \
+        --upload-url sftp://root@127.0.0.1:2222/tmp/sftp-cache-config \
+        > /tmp/cache-generate-config-auth.log 2>&1
+      cat /tmp/cache-generate-config-auth.log
+
+      test -f /tmp/local-cache-config/nix-cache-info
+      test -f "/tmp/local-cache-config/$STORE_HASH.narinfo"
+      test -f "/tmp/sftp-cache-config/$STORE_HASH.narinfo"
+      test -f "/tmp/s3-cache-root/aos-registry-test/config-cache/$STORE_HASH.narinfo"
+      cmp "/tmp/generated-cache-config-auth/$STORE_HASH.narinfo" \
+        "/tmp/local-cache-config/$STORE_HASH.narinfo"
+      cmp "/tmp/generated-cache-config-auth/$STORE_HASH.narinfo" \
+        "/tmp/sftp-cache-config/$STORE_HASH.narinfo"
+      cmp "/tmp/generated-cache-config-auth/$STORE_HASH.narinfo" \
+        "/tmp/s3-cache-root/aos-registry-test/config-cache/$STORE_HASH.narinfo"
+      grep -q "Priority: 38" /tmp/generated-cache-config-auth/nix-cache-info
+
       python3 -m http.server 18080 --bind 127.0.0.1 \
         --directory /tmp/generated-cache > /tmp/static-cache-http.log 2>&1 &
       HTTP_PID=$!
@@ -375,13 +411,21 @@ in {
         REG_DIR="$REG_STORAGE/cdn-reg"
         mkdir -p "$REG_DIR/channels/stable" "$REG_DIR/.git/channels/stable"
         printf 'channel-pointer\n' > "$REG_DIR/.git/channels/stable/00"
+        cat > "$APM_CONFIG/registries.d/cdn-reg.toml" << 'EOF'
+      [registry]
+      name = "cdn-reg"
+      url = "file:///tmp/cdn-reg-origin"
+      priority = 500
+
+      [registry.upload_auth]
+      s3_region = "us-east-1"
+      s3_endpoint = "http://127.0.0.1:19001"
+      EOF
 
         start_s3_server 19001 /tmp/s3-origin-root /tmp/s3-origin-events.jsonl
         $APR origin upload --registry cdn-reg \
           --cache-dir /tmp/generated-cache \
           --upload-url s3://aos-origin/origin \
-          --s3-region us-east-1 \
-          --s3-endpoint http://127.0.0.1:19001 \
           > /tmp/origin-upload.log 2>&1
         cat /tmp/origin-upload.log
 
