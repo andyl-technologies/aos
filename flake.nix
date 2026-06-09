@@ -72,6 +72,16 @@
           aos.pkgs.pkg-config
           aos.pkgs.openssl
           aos.pkgs.protobuf
+          # Runtime tools the aos/apm/apr binaries shell out to by bare name
+          # (see runtimeTools in pkgs/tools/aos/aos.nix), so impure cargo runs
+          # in the dev shell resolve the same AOS-built tools the hermetic build
+          # uses instead of falling back to whatever is installed on the host.
+          aos.pkgs.git
+          aos.pkgs.gnupg
+          aos.pkgs.openssh
+          aos.pkgs.tar
+          aos.pkgs.zstd
+          aos.pkgs.which
         ];
         binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
       in {
