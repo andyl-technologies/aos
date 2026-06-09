@@ -12,6 +12,43 @@
   aosPkg,
 }: let
   fixtures = import ./fixtures.nix {inherit pkgs aosPkg;};
+  nixRuntimeDeps = [
+    pkgs.nix
+    pkgs.brotli
+    pkgs.curl
+    pkgs.openssl
+    pkgs.sqlite
+    pkgs.boost
+    pkgs.editline
+    pkgs.libsodium
+    pkgs.libarchive
+    pkgs.gc
+    pkgs.lowdown
+    pkgs.bzip2
+    pkgs.zlib
+  ];
+  nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
+  setupNixEnv = ''
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR=/tmp/nix-conf
+    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    mkdir -p "$NIX_CONF_DIR" /nix/var/nix/db /nix/var/nix/gcroots
+    cat > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+    experimental-features = nix-command
+    sandbox = false
+    NIXCONF
+    nix-store --init || true
+    nix-store --load-db < /aos-registration
+  '';
+  defaultWorkflowDeps =
+    fixtures.commonDeps
+    ++ nixRuntimeDeps
+    ++ [
+      pkgs.findutils
+      pkgs.iproute2
+      pkgs.python3
+      pkgs.zstd
+    ];
 in {
   # -------------------------------------------------------------------------
   # 1. tracking-branch — Track a named branch HEAD
@@ -273,18 +310,131 @@ in {
   # -------------------------------------------------------------------------
   tracking-default = testing.mkVMTest {
     name = "apm-tracking-default";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = defaultWorkflowDeps;
+    memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkRemoteRegistry}
+      ${setupNixEnv}
 
-      echo "==> Test: default tracking mode"
+      echo "==> Test: default tracking follows default branch HEAD"
 
-      create_remote_registry /tmp/remote-default.git
+      make_default_tool() {
+        version="$1"
+        src="/tmp/default-tool-$version-src"
+        rm -rf "$src"
+        mkdir -p "$src/bin" "$src/share/default-tool"
+        cat > "$src/bin/default-tool" << EOF
+      #!/bin/sh
+      echo "default-tool $version executed"
+      EOF
+        chmod +x "$src/bin/default-tool"
+        printf "default-tool payload %s\n" "$version" \
+          > "$src/share/default-tool/payload.txt"
+        nix-store --add "$src"
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        nix-store --delete --ignore-liveness "$path" > "/tmp/delete-$label.out" 2>&1 || {
+          cat "/tmp/delete-$label.out"
+          fail "delete $label before apm download"
+          return
+        }
+        if nix-store --check-validity "$path" > "/tmp/valid-$label.out" 2>&1; then
+          cat "/tmp/valid-$label.out"
+          fail "$label should be missing before apm download"
+        else
+          pass "$label missing before apm download"
+        fi
+      }
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/valid-after-$label.out" 2>&1; then
+          pass "$label valid after apm import"
+        else
+          cat "/tmp/valid-after-$label.out"
+          fail "$label should be valid after apm import"
+        fi
+      }
+
+      publish_default_version() {
+        version="$1"
+        store_path="$2"
+        $APR publish "$store_path" \
+          --name default-tool \
+          --version "$version" \
+          --description "Default tracking workflow tool" \
+          --license MIT \
+          --maintainer tracking@example.invalid \
+          --registry default-reg \
+          --no-commit
+        $APR cache generate \
+          --registry default-reg \
+          --output /tmp/default-cache \
+          --cache-url http://127.0.0.1:18103 \
+          --priority 45 \
+          --no-commit
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "release: default-tool $version"
+      }
+
+      TOOL_V1_STORE=$(make_default_tool 1.0.0)
+      TOOL_V2_STORE=$(make_default_tool 2.0.0)
+      TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+
+      $APR create default-reg
+      REG_DIR="$REG_STORAGE/default-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      publish_default_version 1.0.0 "$TOOL_V1_STORE"
+      if git -C "$REG_DIR" tag -l | grep -q .; then
+        git -C "$REG_DIR" tag -l
+        fail "default tracking workflow should not create release tags"
+      else
+        pass "default tracking registry has no release tags"
+      fi
+      assert_file_exists "/tmp/default-cache/$TOOL_V1_HASH.narinfo" \
+        "static cache has default-tool v1 narinfo"
+
+      git init --bare --object-format=sha256 /tmp/default-origin.git
+      git -C /tmp/default-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/default-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      python3 -m http.server 18103 --bind 127.0.0.1 \
+        --directory /tmp/default-cache > /tmp/default-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18103/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if curl -sf http://127.0.0.1:18103/nix-cache-info >/dev/null; then
+        pass "default static cache HTTP server started"
+      else
+        cat /tmp/default-cache-http.log || true
+        fail "default static cache HTTP server started"
+      fi
+
+      export HOME=/tmp/default-consumer
+      export USER=defaultuser
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
 
       # Add registry with NO tracking flags
-      $APM registry add file:///tmp/remote-default.git --name default-reg
+      $APM registry add file:///tmp/default-origin.git --name default-reg \
+        > /tmp/default-add.out 2>&1 || {
+        cat /tmp/default-add.out
+        fail "apm registry add syncs default branch"
+      }
+      cat /tmp/default-add.out
 
       # Verify config has NO commit/branch/tag/version fields
       CONFIG_FILE="$APM_CONFIG/registries.d/default-reg.toml"
@@ -319,6 +469,76 @@ in {
       assert_cmd_output_contains "$APR list" "default" \
         "apr list shows default tracking mode"
 
+      $APM search default-tool --registry default-reg > /tmp/default-search-v1.out 2>&1 || {
+        cat /tmp/default-search-v1.out
+        fail "apm search sees package from default branch"
+      }
+      assert_file_contains /tmp/default-search-v1.out "1.0.0" \
+        "default tracking initial sync exposes v1 package"
+
+      mount -o remount,rw / || true
+      delete_store_path "$TOOL_V1_STORE" "default-tool-v1"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install default-tool --registry default-reg --yes \
+        > /tmp/default-install-v1.out 2>&1 || {
+        cat /tmp/default-install-v1.out
+        fail "apm install downloads default branch v1"
+      }
+      cat /tmp/default-install-v1.out
+      assert_file_contains /tmp/default-install-v1.out "Downloading" \
+        "apm install downloads default v1 NAR"
+      assert_store_valid "$TOOL_V1_STORE" "default-tool v1"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/default-tool"
+      "$PROFILE_TOOL" > /tmp/default-run-v1.out
+      assert_file_contains /tmp/default-run-v1.out \
+        "default-tool 1.0.0 executed" "installed default v1 tool executes"
+
+      export HOME=/tmp
+      APM_CONFIG="$HOME/.config/apm"
+      publish_default_version 2.0.0 "$TOOL_V2_STORE"
+      assert_file_exists "/tmp/default-cache/$TOOL_V2_HASH.narinfo" \
+        "static cache has default-tool v2 narinfo"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      export HOME=/tmp/default-consumer
+      export USER=defaultuser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_V2_STORE" "default-tool-v2"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM update --registry default-reg > /tmp/default-update-v2.out 2>&1 || {
+        cat /tmp/default-update-v2.out
+        fail "apm update follows default branch v2"
+      }
+      cat /tmp/default-update-v2.out
+      $APM list --upgradable > /tmp/default-upgradable.out 2>&1 || {
+        cat /tmp/default-upgradable.out
+        fail "apm list --upgradable sees default branch update"
+      }
+      assert_file_contains /tmp/default-upgradable.out "default-tool" \
+        "default branch update names package"
+      assert_file_contains /tmp/default-upgradable.out "2.0.0" \
+        "default branch update shows v2"
+
+      $APM upgrade default-tool --yes > /tmp/default-upgrade.out 2>&1 || {
+        cat /tmp/default-upgrade.out
+        fail "apm upgrade downloads default branch v2"
+      }
+      cat /tmp/default-upgrade.out
+      assert_file_contains /tmp/default-upgrade.out "Downloading" \
+        "apm upgrade downloads default v2 NAR"
+      assert_file_contains /tmp/default-upgrade.out "Upgraded 1 package" \
+        "apm upgrade activates default v2"
+      assert_store_valid "$TOOL_V2_STORE" "default-tool v2"
+      "$PROFILE_TOOL" > /tmp/default-run-v2.out
+      assert_file_contains /tmp/default-run-v2.out \
+        "default-tool 2.0.0 executed" "upgraded default v2 tool executes"
+
+      kill "$CACHE_PID" 2>/dev/null || true
+      wait "$CACHE_PID" 2>/dev/null || true
       check_fail
     '';
   };
