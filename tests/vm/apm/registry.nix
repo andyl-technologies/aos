@@ -500,25 +500,57 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 8. registry-unpublish — Remove a package from the registry
+  # 8. registry-unpublish — Selectively remove versions and platforms
   # -------------------------------------------------------------------------
   registry-unpublish = testing.mkVMTest {
     name = "apm-registry-unpublish";
-    rootfsDeps = publishDeps;
-    memory = 512;
+    rootfsDeps = closureWorkflowDeps;
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixPublishEnv}
 
-      echo "==> Test: unpublish a package"
+      echo "==> Test: selectively unpublish package versions and platforms"
+
+      LEAF_STORE="${closureLeafTool}"
+      ROOT_STORE="${closureRootTool}"
+
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
 
       # Create registry and publish a package
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
-      $APR publish ${aosPkg} \
+
+      $APR publish "$LEAF_STORE" \
         --name removepkg \
         --version 1.0.0 \
-        --description "Published for unpublish workflow" \
+        --platform x86_64-linux \
+        --description "Published v1 for unpublish workflow" \
+        --license MIT \
+        --maintainer test \
+        --registry test-reg
+      $APR publish "$ROOT_STORE" \
+        --name removepkg \
+        --version 2.0.0 \
+        --platform x86_64-linux \
+        --previous 1.0.0 \
+        --description "Published v2 for unpublish workflow" \
+        --license MIT \
+        --maintainer test \
+        --registry test-reg
+      $APR publish "$ROOT_STORE" \
+        --name removepkg \
+        --version 2.0.0 \
+        --platform aarch64-linux \
+        --previous 1.0.0 \
+        --description "Published v2 for unpublish workflow" \
         --license MIT \
         --maintainer test \
         --registry test-reg
@@ -526,18 +558,154 @@ in {
       # Verify package exists
       assert_file_exists "$REG_DIR/packages/r/removepkg.toml" \
         "package TOML exists before unpublish"
+      $APR show removepkg --registry test-reg --raw > /tmp/unpublish-before.toml 2>&1 || {
+        cat /tmp/unpublish-before.toml
+        fail "apr show --raw reports initial multi-version package"
+      }
+      assert_file_contains /tmp/unpublish-before.toml 'version = "1.0.0"' \
+        "initial package contains v1"
+      assert_file_contains /tmp/unpublish-before.toml 'version = "2.0.0"' \
+        "initial package contains v2"
+      assert_file_contains /tmp/unpublish-before.toml 'x86_64-linux' \
+        "initial package contains x86_64 platform"
+      assert_file_contains /tmp/unpublish-before.toml 'aarch64-linux' \
+        "initial package contains aarch64 platform"
+      $APR packages --registry test-reg --platform aarch64-linux \
+        > /tmp/unpublish-packages-aarch64-before.out 2>&1 || {
+        cat /tmp/unpublish-packages-aarch64-before.out
+        fail "apr packages --platform sees aarch64 package before unpublish"
+      }
+      assert_file_contains /tmp/unpublish-packages-aarch64-before.out \
+        "removepkg 2.0.0" \
+        "aarch64 platform filter sees v2 before unpublish"
 
-      $APR unpublish removepkg 1.0.0 --registry test-reg
+      if $APR unpublish removepkg 9.9.9 --registry test-reg --no-commit \
+        > /tmp/unpublish-missing-version.out 2>&1; then
+        cat /tmp/unpublish-missing-version.out
+        fail "apr unpublish should reject a missing version"
+      else
+        cat /tmp/unpublish-missing-version.out
+        pass "apr unpublish rejects a missing version"
+      fi
+      assert_file_contains /tmp/unpublish-missing-version.out \
+        "does not contain version '9.9.9'" \
+        "missing-version unpublish error names requested version"
+
+      if $APR unpublish removepkg 2.0.0 --platform riscv64-linux \
+        --registry test-reg --no-commit > /tmp/unpublish-missing-platform.out 2>&1; then
+        cat /tmp/unpublish-missing-platform.out
+        fail "apr unpublish should reject a missing platform"
+      else
+        cat /tmp/unpublish-missing-platform.out
+        pass "apr unpublish rejects a missing platform"
+      fi
+      assert_file_contains /tmp/unpublish-missing-platform.out \
+        "version '2.0.0' does not contain platform 'riscv64-linux'" \
+        "missing-platform unpublish error names requested platform"
+
+      HEAD_BEFORE_NO_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+      $APR unpublish removepkg 2.0.0 --platform aarch64-linux \
+        --registry test-reg --no-commit > /tmp/unpublish-aarch64.out 2>&1 || {
+        cat /tmp/unpublish-aarch64.out
+        fail "apr unpublish --platform --no-commit removes one platform"
+      }
+      cat /tmp/unpublish-aarch64.out
+      HEAD_AFTER_NO_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+      if [ "$HEAD_BEFORE_NO_COMMIT" = "$HEAD_AFTER_NO_COMMIT" ]; then
+        pass "apr unpublish --no-commit leaves HEAD unchanged"
+      else
+        fail "apr unpublish --no-commit should not create a commit"
+      fi
+      git -C "$REG_DIR" status --short --untracked-files=all \
+        > /tmp/unpublish-status-after-no-commit.out
+      assert_file_contains /tmp/unpublish-status-after-no-commit.out \
+        "packages/r/removepkg.toml" \
+        "apr unpublish --no-commit leaves package metadata dirty"
+
+      $APR show removepkg --registry test-reg --version 2.0.0 --raw \
+        > /tmp/unpublish-v2-after-aarch64.toml 2>&1 || {
+        cat /tmp/unpublish-v2-after-aarch64.toml
+        fail "apr show reports v2 after platform unpublish"
+      }
+      assert_file_contains /tmp/unpublish-v2-after-aarch64.toml 'x86_64-linux' \
+        "v2 keeps x86_64 platform after aarch64 unpublish"
+      assert_file_not_contains /tmp/unpublish-v2-after-aarch64.toml 'aarch64-linux' \
+        "v2 drops aarch64 platform after unpublish"
+      $APR packages --registry test-reg --platform aarch64-linux \
+        > /tmp/unpublish-packages-aarch64-after.out 2>&1 || {
+        cat /tmp/unpublish-packages-aarch64-after.out
+        fail "apr packages --platform succeeds after aarch64 unpublish"
+      }
+      assert_file_not_contains /tmp/unpublish-packages-aarch64-after.out \
+        "removepkg" \
+        "aarch64 platform filter hides package after unpublish"
+
+      $APR unpublish removepkg 1.0.0 \
+        --registry test-reg \
+        --message "registry: retire removepkg 1.0.0 and aarch64" \
+        > /tmp/unpublish-v1.out 2>&1 || {
+        cat /tmp/unpublish-v1.out
+        fail "apr unpublish with custom message commits pending removals"
+      }
+      cat /tmp/unpublish-v1.out
+      assert_file_contains /tmp/unpublish-v1.out \
+        "registry: retire removepkg 1.0.0 and aarch64" \
+        "apr unpublish reports custom commit message"
+      git -C "$REG_DIR" log --oneline -1 > /tmp/unpublish-custom-log.out
+      assert_file_contains /tmp/unpublish-custom-log.out \
+        "registry: retire removepkg 1.0.0 and aarch64" \
+        "git log records custom unpublish message"
+
+      if $APR show removepkg --registry test-reg --version 1.0.0 \
+        > /tmp/unpublish-show-v1.out 2>&1; then
+        cat /tmp/unpublish-show-v1.out
+        fail "apr show should not find unpublished v1"
+      else
+        cat /tmp/unpublish-show-v1.out
+        pass "apr show rejects unpublished v1"
+      fi
+      assert_file_contains /tmp/unpublish-show-v1.out \
+        "does not contain version '1.0.0'" \
+        "apr show reports v1 was removed"
+      $APR show removepkg --registry test-reg --version 2.0.0 \
+        > /tmp/unpublish-show-v2.out 2>&1 || {
+        cat /tmp/unpublish-show-v2.out
+        fail "apr show still finds remaining v2"
+      }
+      assert_file_contains /tmp/unpublish-show-v2.out "Version: 2.0.0" \
+        "apr show reports remaining v2"
+
+      $APR unpublish removepkg 2.0.0 --platform x86_64-linux \
+        --registry test-reg \
+        --message "registry: remove final removepkg platform" \
+        > /tmp/unpublish-final-platform.out 2>&1 || {
+        cat /tmp/unpublish-final-platform.out
+        fail "apr unpublish removes final platform and package file"
+      }
+      cat /tmp/unpublish-final-platform.out
 
       # Verify TOML file removed
       assert_file_not_exists "$REG_DIR/packages/r/removepkg.toml" \
-        "package TOML removed after unpublish"
+        "package TOML removed after final platform unpublish"
+      $APR packages --registry test-reg > /tmp/unpublish-packages-final.out 2>&1 || {
+        cat /tmp/unpublish-packages-final.out
+        fail "apr packages succeeds after final unpublish"
+      }
+      assert_file_not_contains /tmp/unpublish-packages-final.out "removepkg" \
+        "apr packages hides fully unpublished package"
 
       # Verify git log shows removal commit
       cd "$REG_DIR"
-      assert_cmd_output_contains "git log --oneline" "unpublish removepkg" \
-        "git log shows unpublish commit"
+      assert_cmd_output_contains "git log --oneline -2" \
+        "registry: remove final removepkg platform" \
+        "git log shows final custom unpublish commit"
       cd /tmp
+      $APR verify --registry test-reg > /tmp/unpublish-verify-final.out 2>&1 || {
+        cat /tmp/unpublish-verify-final.out
+        fail "apr verify accepts registry after unpublish workflow"
+      }
+      assert_file_contains /tmp/unpublish-verify-final.out "no errors" \
+        "apr verify reports no errors after unpublish workflow"
 
       check_fail
     '';

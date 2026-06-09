@@ -938,37 +938,53 @@ pub async fn unpublish(
 
         if let Some(versions) = toml_val.get_mut("versions").and_then(|v| v.as_array_mut()) {
             if let Some(ver) = version {
+                let idx = versions
+                    .iter()
+                    .position(|v| v.get("version").and_then(|s| s.as_str()) == Some(ver))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("package '{package}' does not contain version '{ver}'")
+                    })?;
                 if let Some(plat) = platform {
                     // Remove specific platform from specific version.
-                    if let Some(idx) = versions
-                        .iter()
-                        .position(|v| v.get("version").and_then(|s| s.as_str()) == Some(ver))
-                    {
-                        if let Some(platforms) = versions[idx]
+                    let remove_version = {
+                        let platforms = versions[idx]
                             .as_table_mut()
                             .and_then(|t| t.get_mut("platforms"))
                             .and_then(|p| p.as_table_mut())
-                        {
-                            platforms.remove(plat);
-                            if platforms.is_empty() {
-                                versions.remove(idx);
-                            }
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "package '{package}' version '{ver}' has no platform entries"
+                                )
+                            })?;
+                        if !platforms.contains_key(plat) {
+                            bail!(
+                                "package '{package}' version '{ver}' does not contain platform '{plat}'"
+                            );
                         }
+                        platforms.remove(plat);
+                        platforms.is_empty()
+                    };
+                    if remove_version {
+                        versions.remove(idx);
                     }
                 } else {
                     // Remove entire version.
-                    versions.retain(|v| v.get("version").and_then(|s| s.as_str()) != Some(ver));
+                    versions.remove(idx);
                 }
             } else if let Some(plat) = platform {
                 // Remove platform from all versions.
+                let mut removed = false;
                 for ver in versions.iter_mut() {
                     if let Some(platforms) = ver
                         .as_table_mut()
                         .and_then(|t| t.get_mut("platforms"))
                         .and_then(|p| p.as_table_mut())
                     {
-                        platforms.remove(plat);
+                        removed |= platforms.remove(plat).is_some();
                     }
+                }
+                if !removed {
+                    bail!("package '{package}' does not contain platform '{plat}'");
                 }
                 // Remove empty versions.
                 versions.retain(|v| {
