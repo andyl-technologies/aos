@@ -30,6 +30,7 @@
     ++ [
       pkgs.findutils
       pkgs.iproute2
+      pkgs.openssh
       pkgs.python3
       pkgs.zstd
     ];
@@ -520,9 +521,62 @@ in {
 
       $APR branch switch "$DEFAULT_BRANCH" --registry maint-reg
       $APR merge release-2026q2 --registry maint-reg
+      ssh-keygen -q -t ed25519 -N "" -f /tmp/maint-release-key
+
+      echo "dirty maintainer scratch note" > "$REG_DIR/maintainer-notes.txt"
+      if $APR release 1.0.0 \
+        --registry maint-reg \
+        --key /tmp/maint-release-key \
+        --cache-url http://127.0.0.1:18083 \
+        > /tmp/dirty-release.out 2>&1; then
+        cat /tmp/dirty-release.out
+        fail "apr release should refuse dirty registry before cache pointer commit"
+      else
+        cat /tmp/dirty-release.out
+        assert_file_contains /tmp/dirty-release.out "uncommitted changes" \
+          "apr release refuses dirty registry"
+        if git -C "$REG_DIR" log --oneline -1 | grep -q "registry: update static cache pointer"; then
+          fail "dirty release should not commit cache pointer"
+        else
+          pass "dirty release does not commit cache pointer"
+        fi
+        if git -C "$REG_DIR" ls-tree -r --name-only HEAD | grep -q "maintainer-notes.txt"; then
+          fail "dirty release should not sweep unrelated files into HEAD"
+        else
+          pass "dirty release does not commit unrelated dirty file"
+        fi
+        if grep -q "http://127.0.0.1:18083" "$REG_DIR/registry.toml"; then
+          fail "dirty release should not mutate registry cache pointer"
+        else
+          pass "dirty release leaves registry cache pointer unchanged"
+        fi
+      fi
+      rm -f "$REG_DIR/maintainer-notes.txt"
+
+      $APR release 1.0.0 \
+        --registry maint-reg \
+        --key /tmp/maint-release-key \
+        --cache-url http://127.0.0.1:18082 \
+        > /tmp/release.out 2>&1 || {
+        cat /tmp/release.out
+        fail "apr release signs merged release"
+      }
+      cat /tmp/release.out
+      assert_file_contains /tmp/release.out "Created signed tag '1.0.0'" \
+        "apr release creates signed semver tag"
+      assert_file_contains /tmp/release.out "Released maint-reg 1.0.0" \
+        "apr release completes release pipeline"
+      if git -C "$REG_DIR" rev-parse "1.0.0^{tag}" >/tmp/release-tag.out 2>&1; then
+        pass "apr release creates annotated tag object"
+      else
+        cat /tmp/release-tag.out
+        fail "apr release should create annotated tag object"
+      fi
+      assert_file_contains "$REG_DIR/.git/releases/1/0/0/objects/info/packs" \
+        "pack-" "apr release records full pack artifact"
+
       git init --bare --object-format=sha256 /tmp/maint-origin.git
       git -C "$REG_DIR" remote add origin /tmp/maint-origin.git
-      git -C "$REG_DIR" tag 1.0.0
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
       git -C "$REG_DIR" push origin 1.0.0
 
