@@ -518,6 +518,20 @@ in {
         test -f /tmp/s3-origin-root/aos-origin/release/info/refs
         test -f /tmp/s3-origin-root/aos-origin/release/releases/1/0/0/objects/info/packs
 
+        $APR release 1.0.0 --registry cdn-reg \
+          --key /tmp/cdn-release-key \
+          --upload-url s3://aos-origin/release-resume \
+          --resume \
+          > /tmp/release-resume-upload.log 2>&1
+        cat /tmp/release-resume-upload.log
+        grep -q "Release tag 1.0.0 already exists at HEAD; resuming." \
+          /tmp/release-resume-upload.log
+        grep -q "Full pack .* already exists; resuming." /tmp/release-resume-upload.log
+        grep -q "Released cdn-reg 1.0.0" /tmp/release-resume-upload.log
+        test -f /tmp/s3-origin-root/aos-origin/release-resume/HEAD
+        test -f /tmp/s3-origin-root/aos-origin/release-resume/info/refs
+        test -f /tmp/s3-origin-root/aos-origin/release-resume/releases/1/0/0/objects/info/packs
+
         echo "registry origin CDN layout validation passed"
     '';
   };
