@@ -380,18 +380,24 @@ pub enum RegistryCommand {
         /// Priority (higher = preferred)
         #[arg(long, default_value = "500")]
         priority: u32,
-        /// Pin to exact commit hash (mutually exclusive with --branch/--tag/--version)
+        /// Pin to exact commit hash (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         commit: Option<String>,
-        /// Track a branch HEAD (mutually exclusive with --commit/--tag/--version)
+        /// Track a branch HEAD (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         branch: Option<String>,
-        /// Pin to exact tag name (mutually exclusive with --commit/--branch/--version)
+        /// Track a signed rollout channel (mutually exclusive with other tracking flags)
+        #[arg(long, group = "tracking")]
+        channel: Option<String>,
+        /// Pin to exact tag name (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         tag: Option<String>,
-        /// Semver version constraint on tags (mutually exclusive with --commit/--branch/--tag)
+        /// Semver version constraint on tags (mutually exclusive with other tracking flags)
         #[arg(long, group = "tracking")]
         version: Option<String>,
+        /// Trusted registry signing key in `registry:Ed25519:<base64>` form
+        #[arg(long = "trust-key")]
+        trust_key: Option<String>,
         /// Register the config only; skip cloning the registry into local storage
         #[arg(long = "no-clone")]
         no_clone: bool,
@@ -1303,8 +1309,10 @@ async fn run_registry(
             priority,
             commit,
             branch,
+            channel,
             tag,
             version,
+            trust_key,
             no_clone,
         } => {
             registry_add(
@@ -1314,8 +1322,10 @@ async fn run_registry(
                 *priority,
                 commit.as_deref(),
                 branch.as_deref(),
+                channel.as_deref(),
                 tag.as_deref(),
                 version.as_deref(),
+                trust_key.as_deref(),
                 !no_clone,
                 printer,
             )
@@ -1698,8 +1708,10 @@ async fn registry_add(
     priority: u32,
     commit: Option<&str>,
     branch: Option<&str>,
+    channel: Option<&str>,
     tag: Option<&str>,
     version: Option<&str>,
+    trust_key: Option<&str>,
     clone: bool,
     printer: &Printer,
 ) -> Result<()> {
@@ -1721,6 +1733,25 @@ async fn registry_add(
         semver::VersionReq::parse(v)
             .map_err(|e| anyhow::anyhow!("invalid version constraint '{}': {}", v, e))?;
     }
+    let trusted_key = trust_key
+        .map(|key| {
+            let (registry, algorithm, public_key) = security::parse_signing_key(key)?;
+            if registry != name {
+                bail!(
+                    "--trust-key belongs to registry '{}', expected '{}'",
+                    registry,
+                    name,
+                );
+            }
+            Ok(security::TrustedKey {
+                registry,
+                algorithm,
+                fingerprint: security::key_fingerprint(&public_key),
+                public_key,
+                source: security::KeySource::Tofu,
+            })
+        })
+        .transpose()?;
 
     printer.header(&format!("Adding registry '{name}'..."));
     printer.kv("URL", url);
@@ -1748,6 +1779,9 @@ enabled = true
     } else if let Some(b) = branch {
         toml_content.push_str(&format!("branch = \"{b}\"\n"));
         printer.kv("Tracking", &format!("branch:{b}"));
+    } else if let Some(c) = channel {
+        toml_content.push_str(&format!("channel = \"{c}\"\n"));
+        printer.kv("Tracking", &format!("channel:{c}"));
     } else if let Some(t) = tag {
         toml_content.push_str(&format!("tag = \"{t}\"\n"));
         printer.kv("Tracking", &format!("tag:{t}"));
@@ -1755,9 +1789,19 @@ enabled = true
         toml_content.push_str(&format!("version = \"{v}\"\n"));
         printer.kv("Tracking", &format!("version:{v}"));
     }
+    if let Some(key) = &trusted_key {
+        toml_content.push_str(&format!(
+            "\n[registry.signing]\nrequired = true\npublic_key = \"{}:{}:{}\"\n",
+            key.registry, key.algorithm, key.public_key,
+        ));
+    }
 
     fs::write(&toml_path, &toml_content)
         .with_context(|| format!("writing {}", toml_path.display()))?;
+    if let Some(key) = &trusted_key {
+        security::KeyStore::new(config.scope.trusted_keys_dirs()).store(key)?;
+        printer.kv("Signing", "trusted key pinned");
+    }
 
     let pkg_cmd = aos_core::invocation::package_manager_command();
 
@@ -2030,6 +2074,8 @@ mod tests {
             "https://registry.aos.dev/core",
             None,
             500,
+            None,
+            None,
             None,
             None,
             None,
