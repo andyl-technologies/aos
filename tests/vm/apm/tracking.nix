@@ -816,46 +816,276 @@ in {
   # -------------------------------------------------------------------------
   tracking-version-caret = testing.mkVMTest {
     name = "apm-tracking-version-caret";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = trackingWorkflowDeps;
+    memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkRemoteRegistry}
+      ${setupNixEnv}
 
-      echo "==> Test: version caret tracking mode (^1)"
+      echo "==> Test: version caret tracking follows best matching tag"
 
-      # Create remote with version tags
-      create_remote_registry /tmp/remote-vcaret.git
+      make_vcaret_tool() {
+        version="$1"
+        src="/tmp/vcaret-tool-$version-src"
+        rm -rf "$src"
+        mkdir -p "$src/bin" "$src/share/vcaret-tool"
+        cat > "$src/bin/vcaret-tool" << EOF
+      #!/bin/sh
+      echo "vcaret-tool $version executed"
+      EOF
+        chmod +x "$src/bin/vcaret-tool"
+        printf "vcaret-tool payload %s\n" "$version" \
+          > "$src/share/vcaret-tool/payload.txt"
+        nix-store --add "$src"
+      }
 
-      git clone /tmp/remote-vcaret.git /tmp/vcaret-setup
-      cd /tmp/vcaret-setup
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
 
-      git tag v1.0.0
-      echo "# v1.1.0" >> registry.toml
-      git add -A
-      git commit -m "v1.1.0"
-      git tag v1.1.0
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        nix-store --delete --ignore-liveness "$path" > "/tmp/vcaret-delete-$label.out" 2>&1 || {
+          cat "/tmp/vcaret-delete-$label.out"
+          fail "delete $label before apm download"
+          return
+        }
+        if nix-store --check-validity "$path" > "/tmp/vcaret-valid-$label.out" 2>&1; then
+          cat "/tmp/vcaret-valid-$label.out"
+          fail "$label should be missing before apm download"
+        else
+          pass "$label missing before apm download"
+        fi
+      }
 
-      echo "# v2.0.0" >> registry.toml
-      git add -A
-      git commit -m "v2.0.0"
-      git tag v2.0.0
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/vcaret-valid-after-$label.out" 2>&1; then
+          pass "$label valid after apm import"
+        else
+          cat "/tmp/vcaret-valid-after-$label.out"
+          fail "$label should be valid after apm import"
+        fi
+      }
 
-      git push origin --tags
-      cd /tmp
-      rm -rf /tmp/vcaret-setup
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/vcaret-missing-$label.out" 2>&1; then
+          cat "/tmp/vcaret-missing-$label.out"
+          fail "$label should remain missing"
+        else
+          pass "$label remains missing"
+        fi
+      }
 
-      # Add registry with caret version constraint
-      $APM registry add file:///tmp/remote-vcaret.git --name vcaret-reg --version "^1"
+      publish_vcaret_version() {
+        version="$1"
+        store_path="$2"
+        $APR publish "$store_path" \
+          --name vcaret-tool \
+          --version "$version" \
+          --description "Caret tracking workflow tool" \
+          --license MIT \
+          --maintainer tracking@example.invalid \
+          --registry vcaret-reg \
+          --no-commit > "/tmp/vcaret-publish-$version.out" 2>&1 || {
+          cat "/tmp/vcaret-publish-$version.out"
+          fail "apr publish vcaret-tool $version"
+          return
+        }
+        cat "/tmp/vcaret-publish-$version.out"
+        $APR cache generate \
+          --registry vcaret-reg \
+          --output /tmp/vcaret-cache \
+          --cache-url http://127.0.0.1:18107 \
+          --priority 48 \
+          --no-commit > "/tmp/vcaret-cache-generate-$version.out" 2>&1 || {
+          cat "/tmp/vcaret-cache-generate-$version.out"
+          fail "apr cache generate after vcaret-tool $version"
+          return
+        }
+        cat "/tmp/vcaret-cache-generate-$version.out"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "release: vcaret-tool $version" \
+          > "/tmp/vcaret-commit-$version.out" 2>&1 || {
+          cat "/tmp/vcaret-commit-$version.out"
+          fail "git commit vcaret-tool $version"
+          return
+        }
+        cat "/tmp/vcaret-commit-$version.out"
+        git -C "$REG_DIR" tag "v$version" \
+          > "/tmp/vcaret-tag-$version.out" 2>&1 || {
+          cat "/tmp/vcaret-tag-$version.out"
+          fail "git tag v$version"
+          return
+        }
+      }
 
-      # Verify config
-      assert_file_contains "$APM_CONFIG/registries.d/vcaret-reg.toml" \
-        'version = "^1"' "config has version = ^1"
+      TOOL_100_STORE=$(make_vcaret_tool 1.0.0)
+      TOOL_120_STORE=$(make_vcaret_tool 1.2.0)
+      TOOL_200_STORE=$(make_vcaret_tool 2.0.0)
+      TOOL_130_STORE=$(make_vcaret_tool 1.3.0)
+      TOOL_210_STORE=$(make_vcaret_tool 2.1.0)
+      TOOL_120_HASH=$(basename "$TOOL_120_STORE" | cut -d- -f1)
+      TOOL_130_HASH=$(basename "$TOOL_130_STORE" | cut -d- -f1)
+      TOOL_200_HASH=$(basename "$TOOL_200_STORE" | cut -d- -f1)
+      TOOL_210_HASH=$(basename "$TOOL_210_STORE" | cut -d- -f1)
 
-      # Verify tracking mode display
-      assert_cmd_output_contains "$APR list" "version" \
+      $APR create vcaret-reg
+      REG_DIR="$REG_STORAGE/vcaret-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      publish_vcaret_version 1.0.0 "$TOOL_100_STORE"
+      publish_vcaret_version 1.2.0 "$TOOL_120_STORE"
+      publish_vcaret_version 2.0.0 "$TOOL_200_STORE"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_120_HASH.narinfo" \
+        "static cache has vcaret-tool 1.2.0 narinfo"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_200_HASH.narinfo" \
+        "static cache has out-of-range 2.0.0 narinfo"
+
+      git init --bare --object-format=sha256 /tmp/vcaret-origin.git
+      git -C /tmp/vcaret-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/vcaret-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin --tags
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      python3 -m http.server 18107 --bind 127.0.0.1 \
+        --directory /tmp/vcaret-cache > /tmp/vcaret-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18107/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if curl -sf http://127.0.0.1:18107/nix-cache-info >/dev/null; then
+        pass "vcaret static cache HTTP server started"
+      else
+        cat /tmp/vcaret-cache-http.log || true
+        fail "vcaret static cache HTTP server started"
+      fi
+
+      export HOME=/tmp/vcaret-consumer
+      export USER=vcaretuser
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
+
+      $APM registry add file:///tmp/vcaret-origin.git \
+        --name vcaret-reg \
+        --version "^1" > /tmp/vcaret-add.out 2>&1 || {
+        cat /tmp/vcaret-add.out
+        fail "apm registry add resolves best initial caret tag"
+      }
+      cat /tmp/vcaret-add.out
+      CONFIG_FILE="$APM_CONFIG/registries.d/vcaret-reg.toml"
+      assert_file_contains "$CONFIG_FILE" 'version = "^1"' \
+        "config has version = ^1"
+      assert_cmd_output_contains "$APR list" "version:^1" \
         "apr list shows version tracking mode"
 
+      $APM search vcaret-tool --registry vcaret-reg > /tmp/vcaret-search-initial.out 2>&1 || {
+        cat /tmp/vcaret-search-initial.out
+        fail "apm search sees initial best caret package"
+      }
+      assert_file_contains /tmp/vcaret-search-initial.out "1.2.0" \
+        "caret tracking selects initial best 1.x tag"
+      assert_file_not_contains /tmp/vcaret-search-initial.out "2.0.0" \
+        "caret tracking ignores initial out-of-range 2.0.0 tag"
+
+      mount -o remount,rw / || true
+      delete_store_path "$TOOL_120_STORE" "vcaret-tool-1.2.0"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install vcaret-tool --registry vcaret-reg --yes \
+        > /tmp/vcaret-install.out 2>&1 || {
+        cat /tmp/vcaret-install.out
+        fail "apm install downloads initial best caret package"
+      }
+      cat /tmp/vcaret-install.out
+      assert_file_contains /tmp/vcaret-install.out "Downloading" \
+        "apm install downloads initial caret NAR"
+      assert_store_valid "$TOOL_120_STORE" "vcaret-tool 1.2.0"
+      PROFILE="/var/lib/profiles/per-user/$USER"
+      assert_file_not_exists "$PROFILE/meta/$TOOL_200_HASH.json" \
+        "initial caret install does not record out-of-range 2.0.0 metadata"
+      if [ -L "$PROFILE/current/usr/$TOOL_200_HASH" ]; then
+        fail "initial caret install should not root out-of-range 2.0.0"
+      else
+        pass "initial caret install does not root out-of-range 2.0.0"
+      fi
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/vcaret-tool"
+      "$PROFILE_TOOL" > /tmp/vcaret-run-initial.out
+      assert_file_contains /tmp/vcaret-run-initial.out \
+        "vcaret-tool 1.2.0 executed" "installed initial caret tool executes"
+
+      export HOME=/tmp
+      APM_CONFIG="$HOME/.config/apm"
+      git -C "$REG_DIR" checkout -b maintenance-1 v1.2.0
+      publish_vcaret_version 1.3.0 "$TOOL_130_STORE"
+      git -C "$REG_DIR" checkout "$DEFAULT_BRANCH"
+      publish_vcaret_version 2.1.0 "$TOOL_210_STORE"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_130_HASH.narinfo" \
+        "static cache has in-range vcaret-tool 1.3.0 narinfo"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_210_HASH.narinfo" \
+        "static cache has out-of-range vcaret-tool 2.1.0 narinfo"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin maintenance-1
+      git -C "$REG_DIR" push origin --tags
+
+      export HOME=/tmp/vcaret-consumer
+      export USER=vcaretuser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_130_STORE" "vcaret-tool-1.3.0"
+      delete_store_path "$TOOL_210_STORE" "vcaret-tool-2.1.0"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM update --registry vcaret-reg > /tmp/vcaret-update.out 2>&1 || {
+        cat /tmp/vcaret-update.out
+        fail "apm update advances to best in-range caret tag"
+      }
+      cat /tmp/vcaret-update.out
+      $APM list --upgradable > /tmp/vcaret-upgradable.out 2>&1 || {
+        cat /tmp/vcaret-upgradable.out
+        fail "apm list --upgradable sees in-range caret update"
+      }
+      assert_file_contains /tmp/vcaret-upgradable.out "vcaret-tool" \
+        "caret update names package"
+      assert_file_contains /tmp/vcaret-upgradable.out "1.3.0" \
+        "caret update shows best in-range 1.3.0"
+      assert_file_not_contains /tmp/vcaret-upgradable.out "2.1.0" \
+        "caret update ignores out-of-range 2.1.0"
+
+      $APM upgrade vcaret-tool --yes > /tmp/vcaret-upgrade.out 2>&1 || {
+        cat /tmp/vcaret-upgrade.out
+        fail "apm upgrade downloads in-range caret update"
+      }
+      cat /tmp/vcaret-upgrade.out
+      assert_file_contains /tmp/vcaret-upgrade.out "vcaret-tool (1.2.0 -> 1.3.0)" \
+        "caret upgrade plans in-range update"
+      assert_file_not_contains /tmp/vcaret-upgrade.out "2.1.0" \
+        "caret upgrade does not plan out-of-range update"
+      assert_file_contains /tmp/vcaret-upgrade.out "Downloading" \
+        "caret upgrade downloads in-range NAR"
+      assert_store_valid "$TOOL_130_STORE" "vcaret-tool 1.3.0"
+      assert_store_missing "$TOOL_210_STORE" "vcaret-tool 2.1.0"
+      "$PROFILE_TOOL" > /tmp/vcaret-run-upgraded.out
+      assert_file_contains /tmp/vcaret-run-upgraded.out \
+        "vcaret-tool 1.3.0 executed" "upgraded caret tool executes"
+
+      kill "$CACHE_PID" 2>/dev/null || true
+      wait "$CACHE_PID" 2>/dev/null || true
       check_fail
     '';
   };
@@ -865,42 +1095,250 @@ in {
   # -------------------------------------------------------------------------
   tracking-commit = testing.mkVMTest {
     name = "apm-tracking-commit";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = trackingWorkflowDeps;
+    memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkRemoteRegistry}
+      ${setupNixEnv}
 
-      echo "==> Test: commit tracking mode"
+      echo "==> Test: commit tracking stays pinned to selected commit"
 
-      # Create remote and get a commit hash
-      create_remote_registry /tmp/remote-commit.git
+      make_commit_tool() {
+        version="$1"
+        src="/tmp/commit-tool-$version-src"
+        rm -rf "$src"
+        mkdir -p "$src/bin" "$src/share/commit-tool"
+        cat > "$src/bin/commit-tool" << EOF
+      #!/bin/sh
+      echo "commit-tool $version executed"
+      EOF
+        chmod +x "$src/bin/commit-tool"
+        printf "commit-tool payload %s\n" "$version" \
+          > "$src/share/commit-tool/payload.txt"
+        nix-store --add "$src"
+      }
 
-      git clone /tmp/remote-commit.git /tmp/commit-setup
-      cd /tmp/commit-setup
-      PINNED_COMMIT=$(git rev-parse HEAD)
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        nix-store --delete --ignore-liveness "$path" > "/tmp/commit-delete-$label.out" 2>&1 || {
+          cat "/tmp/commit-delete-$label.out"
+          fail "delete $label before apm download"
+          return
+        }
+        if nix-store --check-validity "$path" > "/tmp/commit-valid-$label.out" 2>&1; then
+          cat "/tmp/commit-valid-$label.out"
+          fail "$label should be missing before apm download"
+        else
+          pass "$label missing before apm download"
+        fi
+      }
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/commit-valid-after-$label.out" 2>&1; then
+          pass "$label valid after apm import"
+        else
+          cat "/tmp/commit-valid-after-$label.out"
+          fail "$label should be valid after apm import"
+        fi
+      }
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/commit-missing-$label.out" 2>&1; then
+          cat "/tmp/commit-missing-$label.out"
+          fail "$label should remain missing"
+        else
+          pass "$label remains missing"
+        fi
+      }
+
+      publish_commit_version() {
+        version="$1"
+        store_path="$2"
+        $APR publish "$store_path" \
+          --name commit-tool \
+          --version "$version" \
+          --description "Commit tracking workflow tool" \
+          --license MIT \
+          --maintainer tracking@example.invalid \
+          --registry commit-reg \
+          --no-commit > "/tmp/commit-publish-$version.out" 2>&1 || {
+          cat "/tmp/commit-publish-$version.out"
+          fail "apr publish commit-tool $version"
+          return
+        }
+        cat "/tmp/commit-publish-$version.out"
+        $APR cache generate \
+          --registry commit-reg \
+          --output /tmp/commit-cache \
+          --cache-url http://127.0.0.1:18108 \
+          --priority 49 \
+          --no-commit > "/tmp/commit-cache-generate-$version.out" 2>&1 || {
+          cat "/tmp/commit-cache-generate-$version.out"
+          fail "apr cache generate after commit-tool $version"
+          return
+        }
+        cat "/tmp/commit-cache-generate-$version.out"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "release: commit-tool $version" \
+          > "/tmp/commit-commit-$version.out" 2>&1 || {
+          cat "/tmp/commit-commit-$version.out"
+          fail "git commit commit-tool $version"
+          return
+        }
+        cat "/tmp/commit-commit-$version.out"
+      }
+
+      TOOL_V1_STORE=$(make_commit_tool 1.0.0)
+      TOOL_V2_STORE=$(make_commit_tool 2.0.0)
+      TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+
+      $APR create commit-reg
+      REG_DIR="$REG_STORAGE/commit-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      publish_commit_version 1.0.0 "$TOOL_V1_STORE"
+      PINNED_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+      SHORT_COMMIT=$(printf "%s" "$PINNED_COMMIT" | cut -c1-12)
       echo "Pinned commit: $PINNED_COMMIT"
+      assert_file_exists "/tmp/commit-cache/$TOOL_V1_HASH.narinfo" \
+        "static cache has commit-tool v1 narinfo"
 
-      # Advance past the pinned commit
-      echo "# advanced" >> registry.toml
-      git add -A
-      git commit -m "advance past pinned"
-      git push origin
-      cd /tmp
-      rm -rf /tmp/commit-setup
+      publish_commit_version 2.0.0 "$TOOL_V2_STORE"
+      ADVANCED_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
+      assert_file_exists "/tmp/commit-cache/$TOOL_V2_HASH.narinfo" \
+        "static cache has commit-tool v2 narinfo"
+      if [ "$PINNED_COMMIT" = "$ADVANCED_COMMIT" ]; then
+        fail "advanced commit should differ from pinned commit"
+      else
+        pass "registry advanced past pinned commit"
+      fi
 
-      # Add registry with commit pin
-      $APM registry add file:///tmp/remote-commit.git --name commit-reg --commit "$PINNED_COMMIT"
+      git init --bare --object-format=sha256 /tmp/commit-origin.git
+      git -C /tmp/commit-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/commit-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
-      # Verify config has commit field
-      SHORT_COMMIT=$(echo "$PINNED_COMMIT" | cut -c1-12)
-      assert_file_contains "$APM_CONFIG/registries.d/commit-reg.toml" \
-        "commit = " "config has commit field"
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      # Verify tracking mode display
-      assert_cmd_output_contains "$APR list" "commit:" \
+      python3 -m http.server 18108 --bind 127.0.0.1 \
+        --directory /tmp/commit-cache > /tmp/commit-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18108/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if curl -sf http://127.0.0.1:18108/nix-cache-info >/dev/null; then
+        pass "commit static cache HTTP server started"
+      else
+        cat /tmp/commit-cache-http.log || true
+        fail "commit static cache HTTP server started"
+      fi
+
+      export HOME=/tmp/commit-consumer
+      export USER=commituser
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
+
+      $APM registry add file:///tmp/commit-origin.git \
+        --name commit-reg \
+        --commit "$PINNED_COMMIT" > /tmp/commit-add.out 2>&1 || {
+        cat /tmp/commit-add.out
+        fail "apm registry add syncs selected commit"
+      }
+      cat /tmp/commit-add.out
+      CONFIG_FILE="$APM_CONFIG/registries.d/commit-reg.toml"
+      assert_file_contains "$CONFIG_FILE" "commit = \"$PINNED_COMMIT\"" \
+        "config has exact commit pin"
+      assert_cmd_output_contains "$APR list" "commit:$SHORT_COMMIT" \
         "apr list shows commit tracking mode"
 
+      $APM search commit-tool --registry commit-reg > /tmp/commit-search-initial.out 2>&1 || {
+        cat /tmp/commit-search-initial.out
+        fail "apm search sees pinned commit package"
+      }
+      assert_file_contains /tmp/commit-search-initial.out "1.0.0" \
+        "commit tracking exposes pinned v1"
+      assert_file_not_contains /tmp/commit-search-initial.out "2.0.0" \
+        "commit tracking hides later v2"
+
+      mount -o remount,rw / || true
+      delete_store_path "$TOOL_V1_STORE" "commit-tool-v1"
+      delete_store_path "$TOOL_V2_STORE" "commit-tool-v2"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install commit-tool --registry commit-reg --yes \
+        > /tmp/commit-install.out 2>&1 || {
+        cat /tmp/commit-install.out
+        fail "apm install downloads pinned commit v1"
+      }
+      cat /tmp/commit-install.out
+      assert_file_contains /tmp/commit-install.out "Downloading" \
+        "apm install downloads pinned commit NAR"
+      assert_store_valid "$TOOL_V1_STORE" "commit-tool v1"
+      assert_store_missing "$TOOL_V2_STORE" "commit-tool v2"
+      PROFILE="/var/lib/profiles/per-user/$USER"
+      assert_file_not_exists "$PROFILE/meta/$TOOL_V2_HASH.json" \
+        "commit-pinned install does not record later v2 metadata"
+      PROFILE_TOOL="$PROFILE/current/bin/commit-tool"
+      "$PROFILE_TOOL" > /tmp/commit-run-v1.out
+      assert_file_contains /tmp/commit-run-v1.out \
+        "commit-tool 1.0.0 executed" "installed commit-pinned v1 tool executes"
+
+      $APM update --registry commit-reg > /tmp/commit-update.out 2>&1 || {
+        cat /tmp/commit-update.out
+        fail "apm update keeps selected commit"
+      }
+      cat /tmp/commit-update.out
+      $APM search commit-tool --registry commit-reg > /tmp/commit-search-after-update.out 2>&1 || {
+        cat /tmp/commit-search-after-update.out
+        fail "apm search still sees pinned commit package"
+      }
+      assert_file_contains /tmp/commit-search-after-update.out "1.0.0" \
+        "commit tracking still exposes pinned v1 after update"
+      assert_file_not_contains /tmp/commit-search-after-update.out "2.0.0" \
+        "commit tracking still hides later v2 after update"
+
+      $APM list --upgradable > /tmp/commit-upgradable.out 2>&1 || {
+        cat /tmp/commit-upgradable.out
+        fail "apm list --upgradable succeeds for commit-pinned registry"
+      }
+      assert_file_not_contains /tmp/commit-upgradable.out "commit-tool" \
+        "commit-pinned registry does not advertise later v2"
+
+      $APM upgrade commit-tool --yes > /tmp/commit-upgrade.out 2>&1 || {
+        cat /tmp/commit-upgrade.out
+        fail "commit-pinned apm upgrade is a no-op"
+      }
+      cat /tmp/commit-upgrade.out
+      assert_file_contains /tmp/commit-upgrade.out "All packages are up to date" \
+        "commit-pinned upgrade reports no candidate"
+      assert_file_not_contains /tmp/commit-upgrade.out "Downloading" \
+        "commit-pinned upgrade does not download later v2"
+      assert_store_missing "$TOOL_V2_STORE" "commit-tool v2"
+      "$PROFILE_TOOL" > /tmp/commit-run-still-v1.out
+      assert_file_contains /tmp/commit-run-still-v1.out \
+        "commit-tool 1.0.0 executed" "commit-pinned profile remains on v1"
+
+      kill "$CACHE_PID" 2>/dev/null || true
+      wait "$CACHE_PID" 2>/dev/null || true
       check_fail
     '';
   };
