@@ -6,8 +6,9 @@ use anyhow::{Context, Result};
 use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
-use super::profile::meta::{self, delete_meta, list_meta};
+use super::profile::meta::{delete_meta, list_meta};
 use super::registry::store_path_hash;
+use super::store::closure_paths;
 use super::types::InstalledMeta;
 use aos_core::error::AosError;
 use aos_core::output::Printer;
@@ -53,7 +54,7 @@ pub async fn run(
 
     // Step 4: If --autoremove, also find orphaned auto-installed deps.
     let orphans = if auto_remove {
-        find_orphans(&profile, &remove_hashes)?
+        find_orphans(&profile, &remove_hashes).await?
     } else {
         Vec::new()
     };
@@ -124,7 +125,7 @@ pub async fn run_autoremove(
 
     // Step 2: Find orphaned packages.
     let empty_exclude: HashSet<String> = HashSet::new();
-    let orphans = find_orphans(&profile, &empty_exclude)?;
+    let orphans = find_orphans(&profile, &empty_exclude).await?;
 
     if orphans.is_empty() {
         printer.info("No orphaned packages to remove.");
@@ -214,28 +215,65 @@ fn find_installed(profile: &Profile, names: &[String]) -> Result<Vec<InstalledMe
 ///
 /// An orphan is a package with `explicit=false` that would not be needed
 /// after removing the packages in `pending_remove_hashes`.
-///
-/// For the initial implementation, all auto-installed packages (explicit=false)
-/// are considered orphans. A future refinement can walk the reference graph
-/// to determine which auto-installed packages are still transitively needed
-/// by remaining explicit packages.
-fn find_orphans(
+async fn find_orphans(
     profile: &Profile,
     pending_remove_hashes: &HashSet<String>,
 ) -> Result<Vec<InstalledMeta>> {
-    let auto = meta::auto_installed(profile)?;
+    let all = list_meta(profile)?;
+    let needed_hashes = needed_hashes_for_remaining_explicit(&all, pending_remove_hashes).await?;
 
-    // Filter out any auto-installed packages that are already in the
-    // pending removal set (they're being explicitly removed, not orphaned).
-    let orphans: Vec<InstalledMeta> = auto
-        .into_iter()
+    Ok(find_orphans_from_meta(
+        &all,
+        pending_remove_hashes,
+        &needed_hashes,
+    ))
+}
+
+async fn needed_hashes_for_remaining_explicit(
+    installed: &[InstalledMeta],
+    pending_remove_hashes: &HashSet<String>,
+) -> Result<HashSet<String>> {
+    let mut needed = HashSet::new();
+
+    for meta in installed {
+        let hash = store_path_hash(&meta.store_path);
+        if pending_remove_hashes.contains(hash) {
+            continue;
+        }
+
+        let Some(apm) = &meta.apm else {
+            continue;
+        };
+        if !apm.explicit {
+            continue;
+        }
+
+        for path in closure_paths(&meta.store_path)
+            .await
+            .with_context(|| format!("querying closure for installed package {}", apm.name))?
+        {
+            needed.insert(store_path_hash(&path).to_string());
+        }
+    }
+
+    Ok(needed)
+}
+
+fn find_orphans_from_meta(
+    installed: &[InstalledMeta],
+    pending_remove_hashes: &HashSet<String>,
+    needed_hashes: &HashSet<String>,
+) -> Vec<InstalledMeta> {
+    installed
+        .iter()
         .filter(|m| {
             let hash = store_path_hash(&m.store_path).to_string();
-            !pending_remove_hashes.contains(&hash)
+            m.apm.as_ref().map(|apm| !apm.explicit).unwrap_or(false)
+                && !pending_remove_hashes.contains(&hash)
+                && !needed_hashes.contains(&hash)
         })
-        .collect();
-
-    Ok(orphans)
+        .cloned()
+        .collect()
 }
 
 /// Copy roots from one generation to another, EXCLUDING specific hashes.
@@ -461,7 +499,9 @@ mod tests {
         .unwrap();
 
         let empty: HashSet<String> = HashSet::new();
-        let orphans = find_orphans(&profile, &empty).unwrap();
+        let needed: HashSet<String> = HashSet::new();
+        let installed = list_meta(&profile).unwrap();
+        let orphans = find_orphans_from_meta(&installed, &empty, &needed);
         assert_eq!(orphans.len(), 2);
 
         let names: HashSet<String> = orphans
@@ -487,7 +527,9 @@ mod tests {
         write_meta(&profile, "def456", &sample_installed("jq", "def456", true)).unwrap();
 
         let empty: HashSet<String> = HashSet::new();
-        let orphans = find_orphans(&profile, &empty).unwrap();
+        let needed: HashSet<String> = HashSet::new();
+        let installed = list_meta(&profile).unwrap();
+        let orphans = find_orphans_from_meta(&installed, &empty, &needed);
         assert!(orphans.is_empty());
     }
 
@@ -608,9 +650,43 @@ mod tests {
         let mut pending: HashSet<String> = HashSet::new();
         pending.insert("def456".to_string());
 
-        let orphans = find_orphans(&profile, &pending).unwrap();
+        let needed: HashSet<String> = HashSet::new();
+        let installed = list_meta(&profile).unwrap();
+        let orphans = find_orphans_from_meta(&installed, &pending, &needed);
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].apm.as_ref().unwrap().name, "openssl");
+    }
+
+    #[test]
+    fn find_orphans_keeps_auto_dep_needed_by_remaining_explicit() {
+        let installed = vec![
+            sample_installed("left", "aaa111", true),
+            sample_installed("right", "bbb222", true),
+            sample_installed("shared", "ccc333", false),
+        ];
+        let pending: HashSet<String> = ["aaa111".to_string()].into_iter().collect();
+        let needed: HashSet<String> = ["bbb222".to_string(), "ccc333".to_string()]
+            .into_iter()
+            .collect();
+
+        let orphans = find_orphans_from_meta(&installed, &pending, &needed);
+
+        assert!(orphans.is_empty());
+    }
+
+    #[test]
+    fn find_orphans_removes_auto_dep_when_no_remaining_explicit_needs_it() {
+        let installed = vec![
+            sample_installed("left", "aaa111", true),
+            sample_installed("shared", "ccc333", false),
+        ];
+        let pending: HashSet<String> = ["aaa111".to_string()].into_iter().collect();
+        let needed: HashSet<String> = HashSet::new();
+
+        let orphans = find_orphans_from_meta(&installed, &pending, &needed);
+
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].apm.as_ref().unwrap().name, "shared");
     }
 
     // 10. copy_roots_except also handles src/ roots

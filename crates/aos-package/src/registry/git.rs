@@ -421,8 +421,9 @@ async fn fetch_refs(repo_dir: &Path, url: &str, tracking_mode: &TrackingMode) ->
             args.push("refs/tags/*:refs/tags/*".to_string());
         }
         TrackingMode::Default => {
-            // Fetch all tags.
-            args.push("refs/tags/*:refs/tags/*".to_string());
+            // Follow the remote's default branch HEAD when no explicit
+            // tracking selector is configured.
+            args.push("HEAD:refs/remotes/origin/HEAD".to_string());
         }
     }
 
@@ -461,11 +462,7 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
             // List all tags, parse as semver, pick the best match.
             return resolve_best_version_tag(repo_dir, req).await;
         }
-        TrackingMode::Default => {
-            // Find the latest tag by listing all tags and picking the last one
-            // (lexicographically, which works for our YYYY.MM.patch format).
-            return resolve_latest_tag(repo_dir).await;
-        }
+        TrackingMode::Default => "refs/remotes/origin/HEAD".to_string(),
     };
 
     let output = Command::new("git")
@@ -699,39 +696,6 @@ async fn prune_unretained_release_dirs(repo_dir: &Path, retained: &[String]) -> 
         }
     }
     Ok(())
-}
-
-/// Find the latest tag in the repo (by version sort).
-async fn resolve_latest_tag(repo_dir: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["tag", "--sort=-version:refname"])
-        .current_dir(repo_dir)
-        .output()
-        .await
-        .context("listing tags")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git tag failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let latest = stdout
-        .lines()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("no tags found in registry"))?;
-
-    let output = Command::new("git")
-        .args(["rev-parse", &format!("refs/tags/{latest}")])
-        .current_dir(repo_dir)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        bail!("git rev-parse refs/tags/{latest} failed");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Find the best tag matching a semver constraint.
@@ -1588,6 +1552,105 @@ mod tests {
         // Calling again should be a no-op.
         ensure_repo(&repo_dir, "https://example.com").await.unwrap();
         assert!(repo_dir.join("HEAD").exists());
+    }
+
+    #[tokio::test]
+    async fn default_tracking_resolves_remote_head_without_tags() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        let origin_dir = tmp.path().join("origin.git");
+        let repo_dir = tmp.path().join("cache.git");
+        tokio::fs::create_dir_all(&work_dir).await.unwrap();
+
+        let output = git(&work_dir)
+            .args(["init", "--object-format=sha256"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let _ = git(&work_dir)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .await;
+        let _ = git(&work_dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .await;
+        let output = git(&work_dir)
+            .args(["checkout", "-b", "stable"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+
+        tokio::fs::write(
+            work_dir.join("registry.toml"),
+            "[registry]\nname = \"test\"\n",
+        )
+        .await
+        .unwrap();
+        let _ = git(&work_dir).args(["add", "."]).output().await;
+        let output = git(&work_dir)
+            .args(["commit", "-m", "initial"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let output = git(&work_dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .await
+            .unwrap();
+        let expected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        let output = git(tmp.path())
+            .args([
+                "init",
+                "--bare",
+                "--object-format=sha256",
+                &origin_dir.to_string_lossy(),
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let output = git(&origin_dir)
+            .args(["symbolic-ref", "HEAD", "refs/heads/stable"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let output = git(&work_dir)
+            .args(["remote", "add", "origin", &origin_dir.to_string_lossy()])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let output = git(&work_dir)
+            .args(["push", "origin", "stable"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+
+        ensure_repo(&repo_dir, &origin_dir.to_string_lossy())
+            .await
+            .unwrap();
+        fetch_refs(
+            &repo_dir,
+            &origin_dir.to_string_lossy(),
+            &TrackingMode::Default,
+        )
+        .await
+        .unwrap();
+        let resolved = resolve_fetch_head(&repo_dir, &TrackingMode::Default)
+            .await
+            .unwrap();
+
+        assert_eq!(resolved, expected);
+        let output = git(&repo_dir).args(["tag", "-l"]).output().await.unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
     }
 
     #[tokio::test]

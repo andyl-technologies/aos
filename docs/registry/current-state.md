@@ -220,9 +220,8 @@ store-path collection and committed-cache-pointer tests. The VM check
 `checks.vm.apm.registry-validation-stock-nix-backend-array` validates the
 stock-Nix substituter path and mixed cache upload destinations by creating a
 tiny fixed-output path inside the VM, generating signed static cache files,
-serving them to stock Nix with `require-sigs = true`, and uploading the same
-cache to `file://`, S3-compatible, and SFTP destinations. This passed on
-`dylan@builder-hil1-c13958ef` on 2026-06-08 with output
+cache to `file://`, S3-compatible, and SFTP destinations. This passed on a
+remote KVM builder on 2026-06-08 with output
 `/nix/store/bwp2ayp8r199n32s2csndcv43qmi38xr-aos-vm-test-apm-registry-validation-stock-nix-backend-array-0`.
 The lower-level Rust real-Nix e2e remains opt-in behind
 `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1` for local debugging because it mutates the

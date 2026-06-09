@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{Notify, Semaphore, broadcast};
 
@@ -161,6 +161,31 @@ mod tests {
             "drain",
         );
     }
+
+    #[test]
+    fn log_record_drain_splits_newlines_and_carriage_returns() {
+        let mut pending = Vec::new();
+
+        let first = drain_log_records(&mut pending, b"copying path\rbuilding");
+        assert_eq!(first, vec!["copying path"]);
+        assert_eq!(pending, b"building");
+
+        let second = drain_log_records(&mut pending, b" package\nfinished\r\n");
+        assert_eq!(second, vec!["building package", "finished"]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn log_record_drain_flushes_large_records_without_delimiters() {
+        let mut pending = Vec::new();
+        let chunk = vec![b'x'; MAX_PENDING_LOG_BYTES];
+
+        let records = drain_log_records(&mut pending, &chunk);
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].len(), MAX_PENDING_LOG_BYTES);
+        assert!(pending.is_empty());
+    }
 }
 
 /// Ring buffer for replay of build events to late joiners.
@@ -172,6 +197,7 @@ pub struct LogBuffer {
 /// Maximum number of events retained in the log replay buffer.
 /// Oldest events are dropped when this limit is reached.
 const MAX_LOG_EVENTS: usize = 100_000;
+const MAX_PENDING_LOG_BYTES: usize = 16 * 1024;
 
 impl LogBuffer {
     fn new() -> Self {
@@ -255,6 +281,77 @@ impl BuildHandle {
         self.log_buffer.append(event.clone());
         let _ = self.tx.send(event);
     }
+}
+
+fn record_log_line(handle: &BuildHandle, log_lines: &mut Vec<String>, line: String) {
+    log_lines.push(line.clone());
+    handle.emit(BuildEventKind::Log { line });
+}
+
+fn drain_log_records(pending: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
+    pending.extend_from_slice(chunk);
+
+    let mut records = Vec::new();
+    let mut start = 0;
+    let mut idx = 0;
+
+    while idx < pending.len() {
+        let byte = pending[idx];
+        if byte == b'\n' || byte == b'\r' {
+            records.push(String::from_utf8_lossy(&pending[start..idx]).into_owned());
+            idx += 1;
+            if byte == b'\r' && idx < pending.len() && pending[idx] == b'\n' {
+                idx += 1;
+            }
+            start = idx;
+        } else {
+            idx += 1;
+        }
+    }
+
+    if start > 0 {
+        pending.drain(..start);
+    }
+
+    if pending.len() >= MAX_PENDING_LOG_BYTES {
+        records.push(String::from_utf8_lossy(pending).into_owned());
+        pending.clear();
+    }
+
+    records
+}
+
+async fn stream_build_stderr<R>(
+    mut stderr: R,
+    handle: &BuildHandle,
+    log_lines: &mut Vec<String>,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut pending = Vec::new();
+    let mut buf = [0_u8; 8192];
+
+    loop {
+        let read = stderr.read(&mut buf).await?;
+        if read == 0 {
+            break;
+        }
+
+        for line in drain_log_records(&mut pending, &buf[..read]) {
+            record_log_line(handle, log_lines, line);
+        }
+    }
+
+    if !pending.is_empty() {
+        record_log_line(
+            handle,
+            log_lines,
+            String::from_utf8_lossy(&pending).into_owned(),
+        );
+    }
+
+    Ok(())
 }
 
 /// Manages active builds with deduplication and per-view concurrency limits.
@@ -475,7 +572,9 @@ async fn run_build(
                 }
             };
 
-            // Stream stderr lines as log events.
+            // Stream stderr as log events. Nix progress output often uses
+            // carriage returns, so newline-only readers can hide progress
+            // until the build exits.
             let Some(stderr) = child.stderr.take() else {
                 tracing::error!(view = %view, drv = %drv_path, "failed to capture stderr from nix-store");
                 handle.emit(BuildEventKind::Error {
@@ -488,12 +587,19 @@ async fn run_build(
                 schedule_cleanup(mgr, drv_path);
                 return;
             };
-            let mut lines = BufReader::new(stderr).lines();
             log_lines.clear();
 
-            while let Ok(Some(line)) = lines.next_line().await {
-                log_lines.push(line.clone());
-                handle.emit(BuildEventKind::Log { line });
+            if let Err(e) = stream_build_stderr(stderr, handle, &mut log_lines).await {
+                tracing::error!(view = %view, drv = %drv_path, error = %e, "failed reading nix-store stderr");
+                handle.emit(BuildEventKind::Error {
+                    drv: drv_path.to_string(),
+                    exit_code: None,
+                    log_tail: format!("reading nix-store stderr: {e}"),
+                });
+                build_cleanup!(build_state, &root, mgr, state, "failed");
+                handle.done.notify_waiters();
+                schedule_cleanup(mgr, drv_path);
+                return;
             }
 
             let exit = match child.wait().await {

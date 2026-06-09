@@ -4,7 +4,7 @@
 //! registries. It operates on local git clones stored at
 //! `~/.local/share/apm/registries/<name>/`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use aos_cache::AuthOptions;
+use aos_core::nar::info as narinfo;
 use serde_json::Value;
 
 use aos_core::output::Printer;
@@ -284,6 +285,34 @@ fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
         references,
         closure_size,
     })
+}
+
+/// Return metadata for the derivation that produced `store_path`, if known.
+fn introspect_deriver(store_path: &str) -> Result<Option<StorePathInfo>> {
+    let output = Command::new("nix-store")
+        .args(["-q", "--deriver", store_path])
+        .output()
+        .with_context(|| format!("querying deriver for {store_path}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "nix-store --query --deriver failed for {store_path}: {}",
+            stderr.trim()
+        );
+    }
+
+    let deriver = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if deriver.is_empty() || deriver == "unknown-deriver" || !deriver.starts_with("/nix/store/") {
+        return Ok(None);
+    }
+    if !Path::new(&deriver).exists() {
+        return Ok(None);
+    }
+
+    introspect_store_path(&deriver)
+        .with_context(|| format!("introspecting source derivation {deriver}"))
+        .map(Some)
 }
 
 struct StorePathInfo {
@@ -636,8 +665,9 @@ pub async fn publish(
         );
     }
 
-    printer.step(1, 3, "Introspecting store path...");
+    printer.step(1, 4, "Introspecting store path...");
     let info = introspect_store_path(store_path)?;
+    let source_info = introspect_deriver(&info.path)?;
 
     // Introspect image store paths if provided.
     let mut image_infos: Vec<(String, StorePathInfo)> = Vec::new();
@@ -680,6 +710,7 @@ pub async fn publish(
         sysroot,
         previous,
         &image_infos,
+        source_info.as_ref(),
     )?;
 
     std::fs::write(&toml_path, &new_content)?;
@@ -696,6 +727,9 @@ pub async fn publish(
     printer.kv("NAR hash", &info.nar_hash);
     printer.kv("NAR size", &format_size(info.nar_size));
     printer.kv("Closure size", &format_size(info.closure_size));
+    if let Some(source_info) = &source_info {
+        printer.kv("Source drv", &source_info.path);
+    }
     if sysroot {
         printer.kv("Sysroot", "true");
     }
@@ -735,10 +769,17 @@ fn build_package_toml(
     sysroot: bool,
     previous: Option<&str>,
     image_infos: &[(String, StorePathInfo)],
+    source_info: Option<&StorePathInfo>,
 ) -> Result<String> {
     let desc = description.unwrap_or("No description");
     let lic = license.unwrap_or("unknown");
     let maint = maintainer.unwrap_or("unknown");
+    let source_drv = source_info
+        .map(|source| source.path.as_str())
+        .unwrap_or_default();
+    let source_nar_hash = source_info
+        .map(|source| source.nar_hash.as_str())
+        .unwrap_or_default();
 
     if existing.is_empty() {
         // Create new TOML.
@@ -762,13 +803,15 @@ fn build_package_toml(
              nar_hash = \"{}\"\n\
              nar_size = {}\n\
              closure_size = {}\n\
-             source_drv = \"\"\n\
-             source_nar_hash = \"\"\n\
+             source_drv = \"{}\"\n\
+             source_nar_hash = \"{}\"\n\
              references = [{}]\n",
             info.path,
             info.nar_hash,
             info.nar_size,
             info.closure_size,
+            source_drv,
+            source_nar_hash,
             info.references
                 .iter()
                 .map(|r| format!("\"{r}\""))
@@ -817,8 +860,14 @@ fn build_package_toml(
                 "closure_size".into(),
                 toml::Value::Integer(info.closure_size as i64),
             );
-            t.insert("source_drv".into(), toml::Value::String(String::new()));
-            t.insert("source_nar_hash".into(), toml::Value::String(String::new()));
+            t.insert(
+                "source_drv".into(),
+                toml::Value::String(source_drv.to_string()),
+            );
+            t.insert(
+                "source_nar_hash".into(),
+                toml::Value::String(source_nar_hash.to_string()),
+            );
             let refs: Vec<toml::Value> = info
                 .references
                 .iter()
@@ -937,37 +986,53 @@ pub async fn unpublish(
 
         if let Some(versions) = toml_val.get_mut("versions").and_then(|v| v.as_array_mut()) {
             if let Some(ver) = version {
+                let idx = versions
+                    .iter()
+                    .position(|v| v.get("version").and_then(|s| s.as_str()) == Some(ver))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("package '{package}' does not contain version '{ver}'")
+                    })?;
                 if let Some(plat) = platform {
                     // Remove specific platform from specific version.
-                    if let Some(idx) = versions
-                        .iter()
-                        .position(|v| v.get("version").and_then(|s| s.as_str()) == Some(ver))
-                    {
-                        if let Some(platforms) = versions[idx]
+                    let remove_version = {
+                        let platforms = versions[idx]
                             .as_table_mut()
                             .and_then(|t| t.get_mut("platforms"))
                             .and_then(|p| p.as_table_mut())
-                        {
-                            platforms.remove(plat);
-                            if platforms.is_empty() {
-                                versions.remove(idx);
-                            }
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "package '{package}' version '{ver}' has no platform entries"
+                                )
+                            })?;
+                        if !platforms.contains_key(plat) {
+                            bail!(
+                                "package '{package}' version '{ver}' does not contain platform '{plat}'"
+                            );
                         }
+                        platforms.remove(plat);
+                        platforms.is_empty()
+                    };
+                    if remove_version {
+                        versions.remove(idx);
                     }
                 } else {
                     // Remove entire version.
-                    versions.retain(|v| v.get("version").and_then(|s| s.as_str()) != Some(ver));
+                    versions.remove(idx);
                 }
             } else if let Some(plat) = platform {
                 // Remove platform from all versions.
+                let mut removed = false;
                 for ver in versions.iter_mut() {
                     if let Some(platforms) = ver
                         .as_table_mut()
                         .and_then(|t| t.get_mut("platforms"))
                         .and_then(|p| p.as_table_mut())
                     {
-                        platforms.remove(plat);
+                        removed |= platforms.remove(plat).is_some();
                     }
+                }
+                if !removed {
+                    bail!("package '{package}' does not contain platform '{plat}'");
                 }
                 // Remove empty versions.
                 versions.retain(|v| {
@@ -1006,11 +1071,85 @@ pub async fn unpublish(
 // Registry Query
 // ---------------------------------------------------------------------------
 
+fn selected_package_versions(
+    toml_val: &toml::Value,
+    version: Option<&str>,
+) -> Result<Vec<toml::Value>> {
+    let versions = matching_package_versions(toml_val, None);
+    let Some(version) = version else {
+        return Ok(versions);
+    };
+
+    let selected = versions
+        .into_iter()
+        .filter(|entry| entry.get("version").and_then(|v| v.as_str()) == Some(version))
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        bail!("package does not contain version '{version}'");
+    }
+    Ok(selected)
+}
+
+fn matching_package_versions(toml_val: &toml::Value, platform: Option<&str>) -> Vec<toml::Value> {
+    let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    versions
+        .iter()
+        .filter(|entry| version_has_platform(entry, platform))
+        .cloned()
+        .collect()
+}
+
+fn version_has_platform(entry: &toml::Value, platform: Option<&str>) -> bool {
+    let Some(platform) = platform else {
+        return true;
+    };
+    entry
+        .get("platforms")
+        .and_then(|platforms| platforms.as_table())
+        .map(|platforms| platforms.contains_key(platform))
+        .unwrap_or(false)
+}
+
+fn latest_version_string(versions: &[toml::Value]) -> Option<String> {
+    versions
+        .iter()
+        .filter_map(|entry| entry.get("version").and_then(|version| version.as_str()))
+        .max_by(|left, right| compare_registry_versions(left, right))
+        .map(ToString::to_string)
+}
+
+fn compare_registry_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    match (semver::Version::parse(left), semver::Version::parse(right)) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Less,
+        (Err(_), Err(_)) => left.cmp(right),
+    }
+}
+
+fn package_toml_with_versions(
+    toml_val: &toml::Value,
+    versions: &[toml::Value],
+) -> Result<toml::Value> {
+    let mut filtered = toml_val.clone();
+    let Some(root) = filtered.as_table_mut() else {
+        bail!("package TOML root is not a table");
+    };
+    root.insert(
+        "versions".to_string(),
+        toml::Value::Array(versions.to_vec()),
+    );
+    Ok(filtered)
+}
+
 /// `apr show <PACKAGE>`
 pub async fn show(
     config: &ApmConfig,
     package: &str,
-    _version: Option<&str>,
+    version: Option<&str>,
     raw: bool,
     registry: Option<&str>,
     printer: &Printer,
@@ -1027,11 +1166,17 @@ pub async fn show(
     }
 
     let content = std::fs::read_to_string(&toml_path)?;
+    let toml_val: toml::Value = toml::from_str(&content)?;
+    let selected_versions = selected_package_versions(&toml_val, version)?;
 
     if raw {
-        printer.plain(&content);
+        if version.is_some() {
+            let filtered = package_toml_with_versions(&toml_val, &selected_versions)?;
+            printer.plain(&toml::to_string_pretty(&filtered)?);
+        } else {
+            printer.plain(&content);
+        }
     } else {
-        let toml_val: toml::Value = toml::from_str(&content)?;
         if let Some(pkg) = toml_val.get("package") {
             if let Some(name) = pkg.get("name").and_then(|v| v.as_str()) {
                 printer.header(&format!("Package: {name}"));
@@ -1056,39 +1201,37 @@ pub async fn show(
                 printer.kv("Maintainer", maint);
             }
         }
-        if let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) {
-            for ver in versions {
-                if let Some(v) = ver.get("version").and_then(|v| v.as_str()) {
-                    printer.kv("Version", v);
-                }
-                if let Some(prev) = ver.get("previous").and_then(|v| v.as_str()) {
-                    printer.kv("Previous", prev);
-                }
-                if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table()) {
-                    for (plat, entry) in platforms {
-                        printer.kv(&format!("  {plat}"), "");
-                        if let Some(sp) = entry.get("store_path").and_then(|v| v.as_str()) {
-                            printer.kv("    Store path", sp);
-                        }
-                        if let Some(ns) = entry.get("nar_size").and_then(|v| v.as_integer()) {
-                            printer.kv("    NAR size", &format_size(ns as u64));
-                        }
-                        if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
-                            for img in images {
-                                if let Some(fmt) = img.get("format").and_then(|v| v.as_str()) {
-                                    let img_path = img
-                                        .get("store_path")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("?");
-                                    let img_size = img
-                                        .get("nar_size")
-                                        .and_then(|v| v.as_integer())
-                                        .unwrap_or(0);
-                                    printer.kv(
-                                        &format!("    Image ({fmt})"),
-                                        &format!("{img_path} ({})", format_size(img_size as u64)),
-                                    );
-                                }
+        for ver in &selected_versions {
+            if let Some(v) = ver.get("version").and_then(|v| v.as_str()) {
+                printer.kv("Version", v);
+            }
+            if let Some(prev) = ver.get("previous").and_then(|v| v.as_str()) {
+                printer.kv("Previous", prev);
+            }
+            if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table()) {
+                for (plat, entry) in platforms {
+                    printer.kv(&format!("  {plat}"), "");
+                    if let Some(sp) = entry.get("store_path").and_then(|v| v.as_str()) {
+                        printer.kv("    Store path", sp);
+                    }
+                    if let Some(ns) = entry.get("nar_size").and_then(|v| v.as_integer()) {
+                        printer.kv("    NAR size", &format_size(ns as u64));
+                    }
+                    if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
+                        for img in images {
+                            if let Some(fmt) = img.get("format").and_then(|v| v.as_str()) {
+                                let img_path = img
+                                    .get("store_path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                let img_size = img
+                                    .get("nar_size")
+                                    .and_then(|v| v.as_integer())
+                                    .unwrap_or(0);
+                                printer.kv(
+                                    &format!("    Image ({fmt})"),
+                                    &format!("{img_path} ({})", format_size(img_size as u64)),
+                                );
                             }
                         }
                     }
@@ -1103,8 +1246,8 @@ pub async fn show(
 /// `apr packages`
 pub async fn packages(
     config: &ApmConfig,
-    _platform: Option<&str>,
-    _outdated: bool,
+    platform: Option<&str>,
+    outdated: bool,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
@@ -1131,14 +1274,14 @@ pub async fn packages(
                     .and_then(|p| p.get("name"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let version = toml_val
-                    .get("versions")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.get("version"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                pkgs.push((name.to_string(), version.to_string()));
+                let versions = matching_package_versions(&toml_val, platform);
+                if outdated && versions.len() < 2 {
+                    continue;
+                }
+                let Some(version) = latest_version_string(&versions) else {
+                    continue;
+                };
+                pkgs.push((name.to_string(), version));
             }
         }
     }
@@ -1157,11 +1300,18 @@ pub async fn packages(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct RegistryVerifyStoreEntry {
+    store_hash: String,
+    store_path: String,
+    package_name: String,
+}
+
 /// `apr verify`
 pub async fn verify(
     config: &ApmConfig,
-    _package: Option<&str>,
-    _fix: bool,
+    package: Option<&str>,
+    fix: bool,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
@@ -1173,9 +1323,10 @@ pub async fn verify(
     let mut checked = 0u32;
 
     // Collect all store path hashes from package TOMLs.
-    let mut all_store_hashes: Vec<(String, String)> = Vec::new(); // (hash, pkg_name)
+    let mut all_store_entries: Vec<RegistryVerifyStoreEntry> = Vec::new();
     let mut all_ref_hashes: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new(); // hash -> references
+    let mut matched_package_filter = package.is_none();
 
     // Verify package TOML files.
     if packages_dir.is_dir() {
@@ -1186,6 +1337,16 @@ pub async fn verify(
             for entry in std::fs::read_dir(letter_entry.path())?.flatten() {
                 let path = entry.path();
                 if path.extension().map(|e| e == "toml").unwrap_or(false) {
+                    let path_matches_filter = match package {
+                        Some(filter) => {
+                            path.file_stem().and_then(|stem| stem.to_str()) == Some(filter)
+                        }
+                        None => true,
+                    };
+                    if !path_matches_filter {
+                        continue;
+                    }
+                    matched_package_filter = true;
                     checked += 1;
                     let content = std::fs::read_to_string(&path)?;
                     match toml::from_str::<toml::Value>(&content) {
@@ -1214,8 +1375,11 @@ pub async fn verify(
                                                 plat_val.get("store_path").and_then(|s| s.as_str())
                                             {
                                                 let hash = extract_hash(sp).to_string();
-                                                all_store_hashes
-                                                    .push((hash.clone(), pkg_name.to_string()));
+                                                all_store_entries.push(RegistryVerifyStoreEntry {
+                                                    store_hash: hash.clone(),
+                                                    store_path: sp.to_string(),
+                                                    package_name: pkg_name.to_string(),
+                                                });
                                                 let refs: Vec<String> = plat_val
                                                     .get("references")
                                                     .and_then(|r| r.as_array())
@@ -1244,10 +1408,37 @@ pub async fn verify(
         }
     }
 
+    if let Some(filter) = package {
+        if !matched_package_filter {
+            bail!("package '{filter}' not found in registry");
+        }
+    }
+
+    if fix {
+        let mut repaired = 0u32;
+        let mut seen = HashSet::new();
+        for entry in &all_store_entries {
+            if seen.insert(entry.store_hash.clone()) {
+                write_closure_files(&dir, &entry.store_path).with_context(|| {
+                    format!(
+                        "regenerating closure metadata for {} ({})",
+                        entry.package_name, entry.store_path
+                    )
+                })?;
+                repaired += 1;
+            }
+        }
+        if repaired > 0 {
+            printer.success(&format!("Regenerated {repaired} closure file(s)."));
+        }
+    }
+
     // Verify closure files.
     let mut closure_checked = 0u32;
 
-    for (store_hash, pkg_name) in &all_store_hashes {
+    for entry in &all_store_entries {
+        let store_hash = &entry.store_hash;
+        let pkg_name = &entry.package_name;
         let closure_path = closures_dir.join(store_hash);
 
         // Check closure file exists.
@@ -1301,8 +1492,10 @@ pub async fn verify(
 
     // Check for orphan closure files (closure files with no matching package).
     if closures_dir.is_dir() {
-        let known_hashes: std::collections::HashSet<&str> =
-            all_store_hashes.iter().map(|(h, _)| h.as_str()).collect();
+        let known_hashes: std::collections::HashSet<&str> = all_store_entries
+            .iter()
+            .map(|entry| entry.store_hash.as_str())
+            .collect();
         for entry in std::fs::read_dir(&closures_dir)?.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
@@ -1322,6 +1515,7 @@ pub async fn verify(
         printer.error(&format!(
             "Verified {checked} package(s), {closure_checked} closure(s), {errors} error(s) found."
         ));
+        bail!("registry verification failed with {errors} error(s)");
     }
 
     Ok(())
@@ -1338,12 +1532,17 @@ pub async fn diff(
     let dir = registry_dir(config, registry)?;
 
     if remote {
-        let mut args = vec!["diff", "HEAD", "origin/HEAD"];
+        let base = remote_diff_base(&dir)?;
+        let mut args = vec!["diff", &base, "HEAD"];
         if stat {
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
-        printer.plain(&output);
+        if output.is_empty() {
+            printer.info("No pending changes.");
+        } else {
+            printer.plain(&output);
+        }
     } else {
         let mut args = vec!["diff"];
         if stat {
@@ -1360,71 +1559,74 @@ pub async fn diff(
     Ok(())
 }
 
+fn remote_diff_base(dir: &Path) -> Result<String> {
+    let (has_upstream, upstream, _) = git_try(
+        dir,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )?;
+    if has_upstream && !upstream.is_empty() {
+        return Ok(upstream);
+    }
+
+    let current_branch = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if current_branch != "HEAD" {
+        let remote_branch = format!("origin/{current_branch}");
+        if git_ref_exists(dir, &remote_branch)? {
+            return Ok(remote_branch);
+        }
+    }
+
+    if git_ref_exists(dir, "origin/HEAD")? {
+        return Ok("origin/HEAD".to_string());
+    }
+
+    bail!(
+        "no remote tracking ref found for diff; push the current branch or set an upstream first"
+    );
+}
+
+fn git_ref_exists(dir: &Path, reference: &str) -> Result<bool> {
+    let (exists, _, _) = git_try(dir, &["rev-parse", "--verify", reference])?;
+    Ok(exists)
+}
+
 /// `apr validate`
 #[allow(clippy::too_many_arguments)]
 pub async fn validate(
     config: &ApmConfig,
-    _package: Option<&str>,
-    _platform: Option<&str>,
-    _fix: bool,
+    package: Option<&str>,
+    platform: Option<&str>,
+    fix: bool,
     jobs: u32,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let mirrors = resolve_mirrors(&dir);
+    if jobs == 0 {
+        bail!("--jobs must be greater than zero");
+    }
 
     if mirrors.is_empty() {
         printer.warning("No caches configured in registry.toml. Cannot validate.");
         return Ok(());
     }
 
-    // Collect all store paths from packages and images.
-    let mut store_paths: Vec<(String, String)> = Vec::new(); // (name, nar_hash)
+    let entries = collect_cache_validation_entries(&dir, package, platform)?;
 
-    let packages_dir = dir.join("packages");
-    if packages_dir.is_dir() {
-        for letter_entry in std::fs::read_dir(&packages_dir)?.flatten() {
-            if !letter_entry.path().is_dir() {
-                continue;
-            }
-            for entry in std::fs::read_dir(letter_entry.path())?.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "toml").unwrap_or(false) {
-                    let content = std::fs::read_to_string(&path)?;
-                    let toml_val: toml::Value = toml::from_str(&content)?;
-                    if let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) {
-                        for ver in versions {
-                            if let Some(platforms) = ver.get("platforms").and_then(|v| v.as_table())
-                            {
-                                for (_plat, entry) in platforms {
-                                    if let Some(nar_hash) =
-                                        entry.get("nar_hash").and_then(|v| v.as_str())
-                                    {
-                                        let name = toml_val
-                                            .get("package")
-                                            .and_then(|p| p.get("name"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("unknown");
-                                        store_paths.push((name.to_string(), nar_hash.to_string()));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if store_paths.is_empty() {
+    if entries.is_empty() {
         printer.info("No entries to validate.");
         return Ok(());
     }
 
     printer.info(&format!(
         "Validating {} entries against {} cache(s) with {} parallel requests...",
-        store_paths.len(),
+        entries.len(),
         mirrors.len(),
         jobs,
     ));
@@ -1433,50 +1635,388 @@ pub async fn validate(
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(jobs as usize));
     let mut handles = Vec::new();
 
-    for (name, nar_hash) in &store_paths {
+    for entry in entries {
         let client = client.clone();
         let mirrors = mirrors.clone();
-        let name = name.clone();
-        let nar_hash = nar_hash.clone();
         let permit = semaphore.clone().acquire_owned().await?;
 
         let handle = tokio::spawn(async move {
-            let mut found = false;
-            for cache in &mirrors {
-                let url = format!("{}/{}.nar.zst", cache.url.trim_end_matches('/'), nar_hash);
-                let resp = client.head(&url).send().await;
-                if let Ok(resp) = resp {
-                    if resp.status().is_success() {
-                        found = true;
-                        break;
-                    }
-                }
-            }
+            let result = validate_cache_entry(&client, &mirrors, entry).await;
             drop(permit);
-            (name, nar_hash, found)
+            result
         });
         handles.push(handle);
     }
 
     let mut missing = 0u32;
     let mut ok = 0u32;
+    let mut missing_store_paths = HashSet::new();
     for handle in handles {
-        let (name, nar_hash, found) = handle.await?;
-        if found {
+        let result = handle.await?;
+        if result.found {
             ok += 1;
         } else {
             missing += 1;
-            printer.warning(&format!("{name}: {nar_hash} not found in any cache"));
+            missing_store_paths.insert(result.entry.store_path.clone());
+            let detail = result
+                .details
+                .first()
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default();
+            printer.warning(&format!(
+                "{}: {} not found in any cache{}",
+                result.entry.name, result.entry.store_path, detail
+            ));
         }
     }
 
     if missing == 0 {
         printer.success(&format!("All {ok} entries found in caches."));
+    } else if fix {
+        let removed = remove_missing_cache_entries(&dir, &missing_store_paths)?;
+        if removed == 0 {
+            bail!("{ok} found, {missing} missing; no matching registry entries removed.");
+        }
+        let noun = if removed == 1 { "entry" } else { "entries" };
+        printer.success(&format!(
+            "Removed {removed} missing cache {noun} from registry metadata."
+        ));
     } else {
-        printer.error(&format!("{ok} found, {missing} missing."));
+        bail!("{ok} found, {missing} missing.");
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CacheValidationEntry {
+    name: String,
+    platform: String,
+    store_path: String,
+    store_hash: String,
+    nar_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CacheValidationResult {
+    entry: CacheValidationEntry,
+    found: bool,
+    details: Vec<String>,
+}
+
+fn collect_cache_validation_entries(
+    dir: &Path,
+    package_filter: Option<&str>,
+    platform_filter: Option<&str>,
+) -> Result<Vec<CacheValidationEntry>> {
+    let packages_dir = dir.join("packages");
+    let mut entries = Vec::new();
+
+    if !packages_dir.is_dir() {
+        return Ok(entries);
+    }
+
+    for letter_entry in std::fs::read_dir(&packages_dir)
+        .with_context(|| format!("reading {}", packages_dir.display()))?
+    {
+        let letter_entry = letter_entry?;
+        if !letter_entry.path().is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(letter_entry.path())
+            .with_context(|| format!("reading {}", letter_entry.path().display()))?
+        {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            collect_cache_validation_entries_from_package(
+                &path,
+                package_filter,
+                platform_filter,
+                &mut entries,
+            )?;
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.platform.cmp(&b.platform))
+            .then_with(|| a.store_path.cmp(&b.store_path))
+    });
+    entries.dedup();
+    Ok(entries)
+}
+
+fn collect_cache_validation_entries_from_package(
+    path: &Path,
+    package_filter: Option<&str>,
+    platform_filter: Option<&str>,
+    entries: &mut Vec<CacheValidationEntry>,
+) -> Result<()> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading package metadata {}", path.display()))?;
+    let toml_val: toml::Value =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    let name = toml_val
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    if package_filter.is_some_and(|filter| filter != name) {
+        return Ok(());
+    }
+
+    let Some(versions) = toml_val.get("versions").and_then(|v| v.as_array()) else {
+        return Ok(());
+    };
+    for version in versions {
+        let Some(platforms) = version.get("platforms").and_then(|v| v.as_table()) else {
+            continue;
+        };
+        for (platform, entry) in platforms {
+            if platform_filter.is_some_and(|filter| filter != platform) {
+                continue;
+            }
+            let Some(store_path) = entry.get("store_path").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(nar_hash) = entry.get("nar_hash").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            entries.push(CacheValidationEntry {
+                name: name.to_string(),
+                platform: platform.to_string(),
+                store_path: store_path.to_string(),
+                store_hash: extract_hash(store_path).to_string(),
+                nar_hash: nar_hash.to_string(),
+            });
+            if let Some(images) = entry.get("images").and_then(|v| v.as_array()) {
+                for image in images {
+                    let Some(image_store_path) = image.get("store_path").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    let Some(image_nar_hash) = image.get("nar_hash").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    entries.push(CacheValidationEntry {
+                        name: name.to_string(),
+                        platform: platform.to_string(),
+                        store_path: image_store_path.to_string(),
+                        store_hash: extract_hash(image_store_path).to_string(),
+                        nar_hash: image_nar_hash.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remove_missing_cache_entries(
+    dir: &Path,
+    missing_store_paths: &HashSet<String>,
+) -> Result<usize> {
+    if missing_store_paths.is_empty() {
+        return Ok(0);
+    }
+
+    let packages_dir = dir.join("packages");
+    let mut removed = 0usize;
+
+    if !packages_dir.is_dir() {
+        return Ok(removed);
+    }
+
+    for letter_entry in fs::read_dir(&packages_dir)
+        .with_context(|| format!("reading {}", packages_dir.display()))?
+    {
+        let letter_entry = letter_entry?;
+        if !letter_entry.path().is_dir() {
+            continue;
+        }
+
+        for entry in fs::read_dir(letter_entry.path())
+            .with_context(|| format!("reading {}", letter_entry.path().display()))?
+        {
+            let path = entry?.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                continue;
+            }
+            removed += remove_missing_cache_entries_from_package(&path, missing_store_paths)?;
+        }
+    }
+
+    Ok(removed)
+}
+
+fn remove_missing_cache_entries_from_package(
+    path: &Path,
+    missing_store_paths: &HashSet<String>,
+) -> Result<usize> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading package metadata {}", path.display()))?;
+    let mut toml_val: toml::Value =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    let mut removed = 0usize;
+    let mut remove_package = false;
+
+    if let Some(versions) = toml_val
+        .get_mut("versions")
+        .and_then(|value| value.as_array_mut())
+    {
+        for version in versions.iter_mut() {
+            let Some(platforms) = version
+                .as_table_mut()
+                .and_then(|table| table.get_mut("platforms"))
+                .and_then(|value| value.as_table_mut())
+            else {
+                continue;
+            };
+
+            let platform_names: Vec<String> = platforms
+                .iter()
+                .filter_map(|(platform, entry)| {
+                    let store_path = entry.get("store_path").and_then(|value| value.as_str())?;
+                    if missing_store_paths.contains(store_path) {
+                        Some(platform.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for platform in platform_names {
+                if platforms.remove(&platform).is_some() {
+                    removed += 1;
+                }
+            }
+
+            for (_platform_name, platform) in platforms.iter_mut() {
+                let Some(platform_table) = platform.as_table_mut() else {
+                    continue;
+                };
+                let remove_images_key = if let Some(images) = platform_table
+                    .get_mut("images")
+                    .and_then(|value| value.as_array_mut())
+                {
+                    let before = images.len();
+                    images.retain(|image| {
+                        let remove = image
+                            .get("store_path")
+                            .and_then(|value| value.as_str())
+                            .map(|store_path| missing_store_paths.contains(store_path))
+                            .unwrap_or(false);
+                        !remove
+                    });
+                    removed += before - images.len();
+                    images.is_empty()
+                } else {
+                    false
+                };
+                if remove_images_key {
+                    platform_table.remove("images");
+                }
+            }
+        }
+
+        versions.retain(|version| {
+            version
+                .get("platforms")
+                .and_then(|platforms| platforms.as_table())
+                .map(|platforms| !platforms.is_empty())
+                .unwrap_or(false)
+        });
+        remove_package = versions.is_empty();
+    }
+
+    if removed > 0 {
+        if remove_package {
+            fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+        } else {
+            fs::write(path, toml::to_string_pretty(&toml_val)?)
+                .with_context(|| format!("writing {}", path.display()))?;
+        }
+    }
+
+    Ok(removed)
+}
+
+async fn validate_cache_entry(
+    client: &reqwest::Client,
+    mirrors: &[CacheEntry],
+    entry: CacheValidationEntry,
+) -> CacheValidationResult {
+    let mut details = Vec::new();
+    for cache in mirrors {
+        let base = cache.url.trim_end_matches('/');
+        let narinfo_url =
+            crate::download::join_cache_url(base, &format!("{}.narinfo", entry.store_hash));
+
+        let narinfo = match client.get(&narinfo_url).send().await {
+            Ok(response) if response.status().is_success() => match response.text().await {
+                Ok(text) => match narinfo::parse(&text) {
+                    Ok(narinfo) => narinfo,
+                    Err(err) => {
+                        details.push(format!("{narinfo_url}: invalid narinfo: {err}"));
+                        continue;
+                    }
+                },
+                Err(err) => {
+                    details.push(format!("{narinfo_url}: failed reading narinfo body: {err}"));
+                    continue;
+                }
+            },
+            Ok(response) => {
+                details.push(format!("{narinfo_url}: HTTP {}", response.status()));
+                continue;
+            }
+            Err(err) => {
+                details.push(format!("{narinfo_url}: {err}"));
+                continue;
+            }
+        };
+
+        if narinfo.store_path != entry.store_path {
+            details.push(format!(
+                "{narinfo_url}: narinfo store path {} did not match registry path {}",
+                narinfo.store_path, entry.store_path
+            ));
+            continue;
+        }
+        if narinfo.nar_hash != entry.nar_hash {
+            details.push(format!(
+                "{narinfo_url}: narinfo NarHash {} did not match registry NarHash {}",
+                narinfo.nar_hash, entry.nar_hash
+            ));
+            continue;
+        }
+
+        let nar_url = crate::download::join_cache_url(base, &narinfo.url);
+        match client.head(&nar_url).send().await {
+            Ok(response) if response.status().is_success() => {
+                return CacheValidationResult {
+                    entry,
+                    found: true,
+                    details,
+                };
+            }
+            Ok(response) => {
+                details.push(format!("{nar_url}: HTTP {}", response.status()));
+            }
+            Err(err) => {
+                details.push(format!("{nar_url}: {err}"));
+            }
+        }
+    }
+
+    CacheValidationResult {
+        entry,
+        found: false,
+        details,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1486,7 +2026,7 @@ pub async fn validate(
 /// `apr status`
 pub async fn status(config: &ApmConfig, registry: Option<&str>, printer: &Printer) -> Result<()> {
     let dir = registry_dir(config, registry)?;
-    let output = git(&dir, &["status"])?;
+    let output = git(&dir, &["status", "--short", "--untracked-files=all"])?;
     printer.plain(&output);
     Ok(())
 }
@@ -2436,6 +2976,7 @@ pub async fn release_registry_tree(
 
     let _lock = ReleaseLock::acquire(dir)?;
     objectstore::assert_sha256(dir)?;
+    ensure_release_worktree_clean(dir)?;
 
     if let Some(cache_url) = &options.cache_url {
         if nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)? {
@@ -2444,7 +2985,6 @@ pub async fn release_registry_tree(
         }
     }
 
-    ensure_release_worktree_clean(dir)?;
     let head = git(dir, &["rev-parse", "HEAD"])?;
     let published_before = semver_tag_versions(dir)?
         .into_iter()
@@ -3372,6 +3912,52 @@ mod tests {
     }
 
     #[test]
+    fn remote_diff_base_uses_pushed_current_branch_without_origin_head() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        let origin = tmp.path().join("origin.git");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=main",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--bare",
+                "--object-format=sha256",
+                origin.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        )
+        .unwrap();
+        git(&repo, &["push", "origin", "main"]).unwrap();
+
+        assert!(!git_ref_exists(&repo, "origin/HEAD").unwrap());
+        assert_eq!(remote_diff_base(&repo).unwrap(), "origin/main");
+    }
+
+    #[test]
     fn registry_upload_auth_config_selects_requested_registry() {
         let config_auth = RegistryUploadAuthConfig {
             token: Some("core-token".into()),
@@ -3594,12 +4180,51 @@ mod tests {
             false,
             None,
             &[],
+            None,
         )
         .unwrap();
         assert!(content.contains("name = \"curl\""));
         assert!(content.contains("version = \"8.5.0\""));
         assert!(content.contains("x86_64-linux"));
         assert!(content.contains("sha256:deadbeef"));
+        assert!(content.contains("source_drv = \"\""));
+        assert!(content.contains("source_nar_hash = \"\""));
+    }
+
+    #[test]
+    fn build_package_toml_records_source_deriver() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-curl-8.5.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let source_info = StorePathInfo {
+            path: "/nix/store/drv123-curl-8.5.0.drv".into(),
+            nar_hash: "sha256:source".into(),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let content = build_package_toml(
+            "",
+            "curl",
+            "8.5.0",
+            "x86_64-linux",
+            &info,
+            Some("URL transfer tool"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            Some(&source_info),
+        )
+        .unwrap();
+        assert!(content.contains("source_drv = \"/nix/store/drv123-curl-8.5.0.drv\""));
+        assert!(content.contains("source_nar_hash = \"sha256:source\""));
     }
 
     #[test]
@@ -3642,6 +4267,7 @@ references = []
             false,
             None,
             &[],
+            None,
         )
         .unwrap();
         // Should contain both platforms.
@@ -3679,12 +4305,331 @@ references = []
             true,
             Some("2026.03"),
             &[("raw".to_string(), img_info)],
+            None,
         )
         .unwrap();
         assert!(content.contains("sysroot = true"));
         assert!(content.contains("previous = \"2026.03\""));
         assert!(content.contains("format = \"raw\""));
         assert!(content.contains("sha256:ccdd"));
+    }
+
+    #[test]
+    fn selected_package_versions_filters_exact_version() {
+        let toml_val: toml::Value = toml::from_str(
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.0.0"
+nar_hash = "sha256:v1"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/bbb222-tool-2.0.0"
+nar_hash = "sha256:v2"
+nar_size = 2
+closure_size = 2
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#,
+        )
+        .unwrap();
+
+        let selected = selected_package_versions(&toml_val, Some("1.0.0")).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0]
+                .get("version")
+                .and_then(|version| version.as_str()),
+            Some("1.0.0")
+        );
+        assert!(selected_package_versions(&toml_val, Some("9.9.9")).is_err());
+
+        let raw = package_toml_with_versions(&toml_val, &selected).unwrap();
+        let rendered = toml::to_string_pretty(&raw).unwrap();
+        assert!(rendered.contains("1.0.0"));
+        assert!(!rendered.contains("2.0.0"));
+    }
+
+    #[test]
+    fn latest_version_string_uses_semver_and_platform_filter() {
+        let toml_val: toml::Value = toml::from_str(
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.9.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.9.0"
+nar_hash = "sha256:v1"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "1.10.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/bbb222-tool-1.10.0"
+nar_hash = "sha256:v2"
+nar_size = 2
+closure_size = 2
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "3.0.0"
+
+[versions.platforms.aarch64-linux]
+store_path = "/nix/store/ccc333-tool-3.0.0"
+nar_hash = "sha256:v3"
+nar_size = 3
+closure_size = 3
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            latest_version_string(&matching_package_versions(&toml_val, Some("x86_64-linux"))),
+            Some("1.10.0".to_string())
+        );
+        assert_eq!(
+            latest_version_string(&matching_package_versions(&toml_val, Some("aarch64-linux"))),
+            Some("3.0.0".to_string())
+        );
+        assert!(matching_package_versions(&toml_val, Some("riscv64-linux")).is_empty());
+    }
+
+    #[test]
+    fn cache_validation_entries_honor_package_and_platform_filters() {
+        let tmp = TempDir::new().unwrap();
+        let pkg_dir = tmp.path().join("packages").join("t");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(
+            pkg_dir.join("tool.toml"),
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.0.0"
+nar_hash = "sha256:x86"
+nar_size = 1
+closure_size = 1
+references = []
+
+[versions.platforms.aarch64-linux]
+store_path = "/nix/store/bbb222-tool-1.0.0"
+nar_hash = "sha256:arm"
+nar_size = 1
+closure_size = 1
+references = []
+
+[[versions.platforms.aarch64-linux.images]]
+format = "raw"
+store_path = "/nix/store/ccc333-tool-image-1.0.0"
+nar_hash = "sha256:image"
+nar_size = 1
+"#,
+        )
+        .unwrap();
+
+        let entries =
+            collect_cache_validation_entries(tmp.path(), Some("tool"), Some("aarch64-linux"))
+                .unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                CacheValidationEntry {
+                    name: "tool".into(),
+                    platform: "aarch64-linux".into(),
+                    store_path: "/nix/store/bbb222-tool-1.0.0".into(),
+                    store_hash: "bbb222".into(),
+                    nar_hash: "sha256:arm".into(),
+                },
+                CacheValidationEntry {
+                    name: "tool".into(),
+                    platform: "aarch64-linux".into(),
+                    store_path: "/nix/store/ccc333-tool-image-1.0.0".into(),
+                    store_hash: "ccc333".into(),
+                    nar_hash: "sha256:image".into(),
+                },
+            ]
+        );
+        assert!(
+            collect_cache_validation_entries(tmp.path(), Some("missing"), None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn remove_missing_cache_entries_prunes_platforms_and_images() {
+        let tmp = TempDir::new().unwrap();
+        let pkg_dir = tmp.path().join("packages/t");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        let toml_path = pkg_dir.join("tool.toml");
+        fs::write(
+            &toml_path,
+            r#"[package]
+name = "tool"
+description = "test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaa111-tool-1.0.0"
+nar_hash = "sha256:x86"
+nar_size = 1
+closure_size = 1
+references = []
+
+[versions.platforms.aarch64-linux]
+store_path = "/nix/store/bbb222-tool-1.0.0"
+nar_hash = "sha256:arm"
+nar_size = 1
+closure_size = 1
+references = []
+
+[[versions.platforms.aarch64-linux.images]]
+format = "raw"
+store_path = "/nix/store/ccc333-tool-image-1.0.0"
+nar_hash = "sha256:image"
+nar_size = 1
+"#,
+        )
+        .unwrap();
+
+        let mut missing = std::collections::HashSet::new();
+        missing.insert("/nix/store/ccc333-tool-image-1.0.0".to_string());
+        assert_eq!(
+            remove_missing_cache_entries(tmp.path(), &missing).unwrap(),
+            1
+        );
+        let toml_val: toml::Value =
+            toml::from_str(&fs::read_to_string(&toml_path).unwrap()).unwrap();
+        let aarch64 = toml_val
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("aarch64-linux"))
+            .unwrap();
+        assert!(aarch64.get("images").is_none());
+
+        missing.clear();
+        missing.insert("/nix/store/bbb222-tool-1.0.0".to_string());
+        assert_eq!(
+            remove_missing_cache_entries(tmp.path(), &missing).unwrap(),
+            1
+        );
+        let toml_val: toml::Value =
+            toml::from_str(&fs::read_to_string(&toml_path).unwrap()).unwrap();
+        let platforms = toml_val
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.as_table())
+            .unwrap();
+        assert!(platforms.contains_key("x86_64-linux"));
+        assert!(!platforms.contains_key("aarch64-linux"));
+
+        missing.clear();
+        missing.insert("/nix/store/aaa111-tool-1.0.0".to_string());
+        assert_eq!(
+            remove_missing_cache_entries(tmp.path(), &missing).unwrap(),
+            1
+        );
+        assert!(!toml_path.exists());
+    }
+
+    #[tokio::test]
+    async fn cache_validation_entry_follows_narinfo_url() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let narinfo = concat!(
+                    "StorePath: /nix/store/abc123-tool-1.0.0\n",
+                    "URL: nar/abc123-sha256-test.nar.zst\n",
+                    "Compression: zstd\n",
+                    "NarHash: sha256:test\n",
+                    "NarSize: 1\n",
+                );
+                let response = if req.starts_with("GET /abc123.narinfo ") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        narinfo.len(),
+                        narinfo,
+                    )
+                } else if req.starts_with("HEAD /nar/abc123-sha256-test.nar.zst ") {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_string()
+                };
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let result = validate_cache_entry(
+            &reqwest::Client::new(),
+            &[CacheEntry {
+                url: format!("http://{addr}"),
+                priority: 100,
+            }],
+            CacheValidationEntry {
+                name: "tool".into(),
+                platform: "x86_64-linux".into(),
+                store_path: "/nix/store/abc123-tool-1.0.0".into(),
+                store_hash: "abc123".into(),
+                nar_hash: "sha256:test".into(),
+            },
+        )
+        .await;
+
+        assert!(result.found, "{result:?}");
+        server.await.unwrap();
     }
 
     #[test]

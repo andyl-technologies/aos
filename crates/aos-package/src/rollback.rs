@@ -4,7 +4,89 @@ use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::RegistrySet;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
+
+/// List user package profile generations.
+///
+/// The listing resolves generation roots through the enabled registry caches
+/// when possible so operators can choose rollback targets by package version
+/// rather than only by generation number.
+pub async fn list(config: &ApmConfig, printer: &Printer) -> Result<()> {
+    let profile = Profile::open(config.scope)?;
+    let generations = profile.list_generations()?;
+    let current = profile.current_generation()?.map(|g| g.number);
+    let reg_configs = config.enabled_registries();
+    let registries = RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")?;
+
+    if printer.mode() == OutputMode::Json {
+        let mut json_generations = Vec::new();
+        for generation in &generations {
+            let roots = generation.roots()?;
+            let mut json_roots = Vec::new();
+            for (hash, target) in &roots {
+                let mut package = None;
+                let mut registry_name = None;
+                for registry in registries.registries() {
+                    if let Some(meta) = registry.get_by_hash(hash) {
+                        package = Some(serde_json::json!({
+                            "name": meta.name,
+                            "version": meta.version,
+                        }));
+                        registry_name = Some(registry.config.name.clone());
+                        break;
+                    }
+                }
+
+                json_roots.push(serde_json::json!({
+                    "hash": hash,
+                    "store_path": target.to_string_lossy(),
+                    "registry": registry_name,
+                    "package": package,
+                }));
+            }
+
+            json_generations.push(serde_json::json!({
+                    "generation": generation.number,
+                    "current": Some(generation.number) == current,
+                    "roots": json_roots,
+            }));
+        }
+        printer.json(&serde_json::json!(json_generations));
+        return Ok(());
+    }
+
+    if generations.is_empty() {
+        printer.info("No profile generations.");
+        return Ok(());
+    }
+
+    printer.header("Profile generations:");
+    for generation in &generations {
+        let marker = if Some(generation.number) == current {
+            " (current)"
+        } else {
+            ""
+        };
+        let roots = generation.roots()?;
+        if roots.is_empty() {
+            printer.plain(&format!("  gen-{}: (empty){marker}", generation.number));
+            continue;
+        }
+
+        let descriptions: Vec<String> = roots
+            .iter()
+            .map(|(hash, target)| describe_root(&registries, hash, target))
+            .collect();
+        printer.plain(&format!(
+            "  gen-{}: {}{}",
+            generation.number,
+            descriptions.join(", "),
+            marker,
+        ));
+    }
+
+    Ok(())
+}
 
 /// Run `apm rollback [--generation=N]`.
 ///
@@ -87,9 +169,18 @@ pub async fn run(
     Ok(())
 }
 
+fn describe_root(registries: &RegistrySet, hash: &str, target: &std::path::Path) -> String {
+    for registry in registries.registries() {
+        if let Some(pkg) = registry.get_by_hash(hash) {
+            return format!("{} {} [{}]", pkg.name, pkg.version, registry.config.name);
+        }
+    }
+
+    target.display().to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::profile::Profile;
     use crate::types::ProfileScope;
     use tempfile::TempDir;

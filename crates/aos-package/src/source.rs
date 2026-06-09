@@ -10,7 +10,8 @@ use anyhow::{Context, Result, bail};
 use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;
-use super::registry::RegistrySet;
+use super::registry::{RegistrySet, store_path_hash};
+use super::types::{InstalledMeta, PackageMeta};
 use super::verify as hash_verify;
 use aos_core::error::AosError;
 use aos_core::output::Printer;
@@ -56,15 +57,11 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
 
     let store_path = &installed.store_path;
 
-    // 2. Load registries and resolve package for its nar_hash.
+    // 2. Load registries and resolve the exact installed package entry for
+    // its NAR hash. The latest registry candidate may differ after rollback.
     let enabled = config.enabled_registries();
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
-
-    let (_, pkg_meta) = reg_set
-        .resolve(package)
-        .ok_or_else(|| AosError::PackageNotFound {
-            name: package.to_string(),
-        })?;
+    let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
 
     let expected_hash = &pkg_meta.nar_hash;
 
@@ -92,6 +89,31 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
     }
 }
 
+fn resolve_installed_package_meta<'a>(
+    reg_set: &'a RegistrySet,
+    package: &str,
+    installed: &InstalledMeta,
+) -> Result<&'a PackageMeta> {
+    let installed_apm = installed
+        .apm
+        .as_ref()
+        .ok_or_else(|| AosError::PackageNotFound {
+            name: package.to_string(),
+        })?;
+    let installed_hash = store_path_hash(&installed.store_path);
+
+    reg_set
+        .resolve_hash_in(&installed_apm.registry, installed_hash)
+        .filter(|meta| meta.name == package)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "installed package '{package}' ({}) is not present in registry '{}' by store hash {installed_hash}",
+                installed_apm.version,
+                installed_apm.registry,
+            )
+        })
+}
+
 // ---------------------------------------------------------------------------
 // apm source <package>
 // ---------------------------------------------------------------------------
@@ -111,41 +133,73 @@ pub async fn run_source(
     verify_source: bool,
     printer: &Printer,
 ) -> Result<()> {
-    // Load registries and resolve package.
     let enabled = config.enabled_registries();
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
 
-    let (reg, pkg_meta) = reg_set
-        .resolve(package)
-        .ok_or_else(|| AosError::PackageNotFound {
-            name: package.to_string(),
-        })?;
+    let (registry_name, source_drv, source_nar_hash, expected_hash) = if verify_source {
+        let profile = Profile::open(config.scope)?;
+        let all_meta = meta::list_meta(&profile)?;
+        let installed = all_meta
+            .iter()
+            .find(|m| m.apm.as_ref().map(|a| a.name == package).unwrap_or(false))
+            .ok_or_else(|| AosError::PackageNotFound {
+                name: package.to_string(),
+            })?;
+        let installed_apm = installed
+            .apm
+            .as_ref()
+            .ok_or_else(|| AosError::PackageNotFound {
+                name: package.to_string(),
+            })?;
+        let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
 
-    let source_drv = &pkg_meta.source_drv;
+        (
+            installed_apm.registry.clone(),
+            pkg_meta.source_drv.clone(),
+            pkg_meta.source_nar_hash.clone(),
+            pkg_meta.nar_hash.clone(),
+        )
+    } else {
+        let (reg, pkg_meta) =
+            reg_set
+                .resolve(package)
+                .ok_or_else(|| AosError::PackageNotFound {
+                    name: package.to_string(),
+                })?;
+
+        (
+            reg.config.name.clone(),
+            pkg_meta.source_drv.clone(),
+            pkg_meta.source_nar_hash.clone(),
+            pkg_meta.nar_hash.clone(),
+        )
+    };
 
     if source_drv.is_empty() {
         bail!(
             "package '{package}' has no source derivation recorded in registry '{}'",
-            reg.config.name
+            registry_name
         );
     }
 
     // Default or --show-drv: just print the source derivation path.
     if show_drv || (!fetch && !verify_source) {
         printer.header(&format!("Source derivation for '{package}':"));
-        printer.kv("Source drv", source_drv);
-        printer.kv("Source NAR hash", &pkg_meta.source_nar_hash);
-        printer.kv("Registry", &reg.config.name);
+        printer.kv("Source drv", &source_drv);
+        printer.kv("Source NAR hash", &source_nar_hash);
+        printer.kv("Registry", &registry_name);
         return Ok(());
     }
+
+    let mut realised_path = None;
 
     // --fetch: realise the source derivation via nix-store.
     if fetch {
         printer.header(&format!("Fetching source derivation for '{package}'..."));
-        printer.kv("Source drv", source_drv);
+        printer.kv("Source drv", &source_drv);
 
         let output = tokio::process::Command::new("nix-store")
-            .args(["--realise", source_drv])
+            .args(["--realise", &source_drv])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -161,32 +215,37 @@ pub async fn run_source(
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        printer.success(&format!("Source realised: {}", stdout.trim()));
-        return Ok(());
+        let path = stdout.trim().to_string();
+        printer.success(&format!("Source realised: {path}"));
+        realised_path = Some(path);
     }
 
     // --verify: rebuild from source and compare hash.
     if verify_source {
         printer.header(&format!("Rebuilding '{package}' from source..."));
-        printer.kv("Source drv", source_drv);
+        printer.kv("Source drv", &source_drv);
 
-        let output = tokio::process::Command::new("nix-store")
-            .args(["--realise", source_drv])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("running nix-store --realise for source verification")?;
+        let built_path = if let Some(path) = realised_path {
+            path
+        } else {
+            let output = tokio::process::Command::new("nix-store")
+                .args(["--realise", &source_drv])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .context("running nix-store --realise for source verification")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "nix-store --realise failed for {source_drv}: {}",
-                stderr.trim()
-            );
-        }
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!(
+                    "nix-store --realise failed for {source_drv}: {}",
+                    stderr.trim()
+                );
+            }
 
-        let built_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
 
         // Now dump and hash the built output.
         printer.info("Hashing rebuilt output...");
@@ -208,12 +267,11 @@ pub async fn run_source(
         }
 
         let actual_hash = hash_verify::sha256_stream(dump_output.stdout.as_slice())?;
-        let expected_hash = &pkg_meta.nar_hash;
 
-        printer.kv("Expected NAR hash", expected_hash);
+        printer.kv("Expected NAR hash", &expected_hash);
         printer.kv("Rebuilt NAR hash", &actual_hash);
 
-        if actual_hash == *expected_hash {
+        if hash_verify::sha256_hashes_equal(&actual_hash, &expected_hash)? {
             printer.success(&format!(
                 "OK: source rebuild of '{package}' matches installed binary"
             ));
@@ -409,6 +467,70 @@ references = []
         let hash1 = hash_verify::sha256_stream(b"content A".as_slice()).unwrap();
         let hash2 = hash_verify::sha256_stream(b"content B".as_slice()).unwrap();
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn verify_resolves_installed_store_hash_not_latest_candidate() {
+        let tmp = TempDir::new().unwrap();
+        let verify_tool_toml = r#"
+[package]
+name = "verifytool"
+description = "verify test"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-verifytool-1.0.0"
+nar_hash = "sha256:v1"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-verifytool-2.0.0"
+nar_hash = "sha256:v2"
+nar_size = 2
+closure_size = 2
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+        let config = make_config_with_registry(&tmp, &[("verifytool", verify_tool_toml)]);
+        let enabled = config.enabled_registries();
+        let reg_set =
+            RegistrySet::load(&tmp.path().join("remote"), &enabled, "x86_64-linux").unwrap();
+        let (_, latest) = reg_set.resolve("verifytool").unwrap();
+        assert_eq!(latest.version, "2.0.0");
+
+        let installed = InstalledMeta {
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-verifytool-1.0.0".into(),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: "verifytool".into(),
+                version: "1.0.0".into(),
+                explicit: true,
+                registry: "test-reg".into(),
+                installed_at: "2026-02-16T00:00:00Z".into(),
+                held: false,
+            }),
+        };
+
+        let selected = resolve_installed_package_meta(&reg_set, "verifytool", &installed).unwrap();
+        assert_eq!(selected.version, "1.0.0");
+        assert_eq!(selected.nar_hash, "sha256:v1");
     }
 
     // -- verify: installed meta lookup (unit test) ---------------------------

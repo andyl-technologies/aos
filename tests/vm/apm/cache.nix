@@ -17,6 +17,11 @@
   jqBin = "${pkgs.jq}/bin/jq";
   curlBin = "${pkgs.curl}/bin/curl";
   grepBin = "${pkgs.grep}/bin/grep";
+  findBin = "${pkgs.findutils}/bin/find";
+  nixStoreBin = "${pkgs.nix}/bin/nix-store";
+  sha256sumBin = "${pkgs.coreutils}/bin/sha256sum";
+  statBin = "${pkgs.coreutils}/bin/stat";
+  cutBin = "${pkgs.coreutils}/bin/cut";
   aosBin = "${self}/bin/aos";
 
   # Shared preamble: loopback interface, mock Nix DB, server config.
@@ -26,13 +31,15 @@
 
         echo "==> Setting up test environment"
         export AOS_ROOT=/tmp/aos
-        mkdir -p $AOS_ROOT/var/nix/db
-        mkdir -p $AOS_ROOT/store
-        mkdir -p $AOS_ROOT/meta
         mkdir -p /tmp/run/aos
 
-        echo "==> Creating mock Nix store DB"
-        ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite << 'SQL'
+        init_mock_nix_db() {
+          root="$1"
+          mkdir -p "$root/var/nix/db"
+          mkdir -p "$root/store"
+          mkdir -p "$root/meta"
+
+          ${sqliteBin} "$root/var/nix/db/db.sqlite" << 'SQL'
         CREATE TABLE IF NOT EXISTS ValidPaths (
           id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
           path TEXT UNIQUE NOT NULL,
@@ -53,8 +60,37 @@
         );
         PRAGMA journal_mode=WAL;
     SQL
-        chmod 666 $AOS_ROOT/var/nix/db/db.sqlite
-        chmod 777 $AOS_ROOT/var/nix/db
+          chmod 666 "$root/var/nix/db/db.sqlite"
+          chmod 777 "$root/var/nix/db"
+        }
+
+        register_ca_store_path() {
+          store_path="$1"
+          root="$2"
+          store_dir="''${3:-$root/store}"
+          nar_tmp=$(mktemp)
+          NIX_STORE_DIR="$store_dir" NIX_STATE_DIR="$root/var/nix" \
+            ${nixStoreBin} --dump "$store_path" > "$nar_tmp"
+          nar_hash=$(${sha256sumBin} "$nar_tmp" | ${cutBin} -d' ' -f1)
+          nar_size=$(${statBin} -c%s "$nar_tmp")
+          rm -f "$nar_tmp"
+          ${sqliteBin} "$root/var/nix/db/db.sqlite" \
+            "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs, ca) VALUES ('$store_path', 'sha256:$nar_hash', 1000000, $nar_size, 1, NULL, 'fixed:r:sha256:$nar_hash');"
+        }
+
+        promote_view_path() {
+          root="$1"
+          view="$2"
+          namespace="$3"
+          store_path="$4"
+          store_basename="''${store_path##*/}"
+          store_hash="''${store_basename%%-*}"
+          mkdir -p "$root/gcroots/$view/$namespace"
+          ln -sfn "$store_path" "$root/gcroots/$view/$namespace/$store_hash"
+        }
+
+        echo "==> Creating mock Nix store DB"
+        init_mock_nix_db "$AOS_ROOT"
         echo "==> Test environment ready"
   '';
 
@@ -73,7 +109,7 @@
   '';
 
   startServer = ''
-    ${aosBin} serve --config /tmp/aos-config.toml &
+    AOS_ROOT="''${SERVER_AOS_ROOT:-$AOS_ROOT}" ${aosBin} serve --config /tmp/aos-config.toml &
     SERVER_PID=$!
     for _i in 1 2 3 4 5 6 7 8 9 10; do
       HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
@@ -118,6 +154,8 @@
     pkgs.sqlite
     pkgs.iproute2
     pkgs.grep
+    pkgs.findutils
+    pkgs.nix
   ];
 in {
   # ---------------------------------------------------------------------------
@@ -136,7 +174,9 @@ in {
       mkdir -p /tmp/test-cache/nar
 
       # Create a small test store path fixture
-      TEST_STORE_PATH="/tmp/aos/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-test-pkg-1.0"
+      TEST_STORE_HASH="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      TEST_STORE_BASENAME="$TEST_STORE_HASH-test-pkg-1.0"
+      TEST_STORE_PATH="$AOS_ROOT/store/$TEST_STORE_BASENAME"
       mkdir -p "$TEST_STORE_PATH/bin"
       echo '#!/bin/sh' > "$TEST_STORE_PATH/bin/hello"
       echo 'echo "Hello from test-pkg"' >> "$TEST_STORE_PATH/bin/hello"
@@ -148,20 +188,57 @@ in {
         "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$TEST_STORE_PATH', '$NAR_HASH', 1000000, 4096, 1, '''''');"
 
       echo "==> Test: cache push to file:// backend"
-      ${aosBin} cache push "$TEST_STORE_PATH" --to "file:///tmp/test-cache" \
-        --compression none 2>&1 || echo "WARN: push returned non-zero (may be expected for mock)"
+      if ! ${aosBin} cache push "$TEST_STORE_PATH" --to "file:///tmp/test-cache" \
+        --compression none > /tmp/cache-push-pull-push.out 2>&1; then
+        cat /tmp/cache-push-pull-push.out
+        echo "FAIL: cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-push-pull-push.out
 
-      # Verify narinfo file exists
-      NARINFO_COUNT=$(find /tmp/test-cache -name '*.narinfo' 2>/dev/null | wc -l)
+      # Verify narinfo and NAR files exist and describe the uploaded path.
+      NARINFO_COUNT=$(${findBin} /tmp/test-cache -maxdepth 1 -name '*.narinfo' 2>/dev/null | wc -l | tr -d ' ')
       echo "==> Found $NARINFO_COUNT narinfo files"
+      test "$NARINFO_COUNT" -eq 1 || { echo "FAIL: expected exactly one narinfo"; FAIL=1; }
 
-      # Verify NAR file exists
-      NAR_COUNT=$(find /tmp/test-cache/nar -name '*.nar*' 2>/dev/null | wc -l)
+      NAR_COUNT=$(${findBin} /tmp/test-cache/nar -type f -name '*.nar*' 2>/dev/null | wc -l | tr -d ' ')
       echo "==> Found $NAR_COUNT NAR files"
+      test "$NAR_COUNT" -eq 1 || { echo "FAIL: expected exactly one NAR"; FAIL=1; }
+
+      NARINFO_PATH="/tmp/test-cache/$TEST_STORE_HASH.narinfo"
+      test -f "$NARINFO_PATH" || { echo "FAIL: missing expected narinfo"; FAIL=1; }
+      ${grepBin} -F -q "StorePath: $TEST_STORE_PATH" "$NARINFO_PATH" || \
+        { echo "FAIL: narinfo missing store path"; cat "$NARINFO_PATH" 2>/dev/null || true; FAIL=1; }
+      ${grepBin} -F -q "Compression: none" "$NARINFO_PATH" || \
+        { echo "FAIL: narinfo missing compression"; cat "$NARINFO_PATH" 2>/dev/null || true; FAIL=1; }
+      ${grepBin} -F -q "URL: nar/" "$NARINFO_PATH" || \
+        { echo "FAIL: narinfo missing NAR URL"; cat "$NARINFO_PATH" 2>/dev/null || true; FAIL=1; }
+      ${grepBin} -F -q "NarHash: sha256:" "$NARINFO_PATH" || \
+        { echo "FAIL: narinfo missing NAR hash"; cat "$NARINFO_PATH" 2>/dev/null || true; FAIL=1; }
+
+      echo "==> Test: cache list sees local and cached path"
+      if ! ${aosBin} cache list "$TEST_STORE_PATH" --from "file:///tmp/test-cache" \
+        > /tmp/cache-push-pull-list.out 2>&1; then
+        cat /tmp/cache-push-pull-list.out
+        echo "FAIL: cache list failed"
+        exit 1
+      fi
+      cat /tmp/cache-push-pull-list.out
+      ${grepBin} -F -q "$TEST_STORE_HASH" /tmp/cache-push-pull-list.out || \
+        { echo "FAIL: cache list missing store path"; FAIL=1; }
+      ${grepBin} -F -q "synced" /tmp/cache-push-pull-list.out || \
+        { echo "FAIL: cache list did not report synced"; FAIL=1; }
 
       echo "==> Test: cache pull from file:// backend"
-      ${aosBin} cache pull "$TEST_STORE_PATH" --from "file:///tmp/test-cache" \
-        --dry-run 2>&1 || echo "WARN: pull returned non-zero (may be expected for mock)"
+      if ! ${aosBin} cache pull "$TEST_STORE_PATH" --from "file:///tmp/test-cache" \
+        --dry-run > /tmp/cache-push-pull-pull.out 2>&1; then
+        cat /tmp/cache-push-pull-pull.out
+        echo "FAIL: cache pull dry-run failed"
+        exit 1
+      fi
+      cat /tmp/cache-push-pull-pull.out
+      ${grepBin} -F -q "All paths already in local store." /tmp/cache-push-pull-pull.out || \
+        { echo "FAIL: cache pull did not report local store hit"; FAIL=1; }
 
       # Verify the store path is still valid
       test -d "$TEST_STORE_PATH" || { echo "FAIL: store path missing after round-trip"; FAIL=1; }
@@ -184,6 +261,10 @@ in {
     memory = 1024;
     testScript = ''
       ${serverPreamble}
+      CLIENT_STATE_ROOT=/tmp/aos-http-client-state
+      SERVER_AOS_ROOT=/tmp/aos-http-server
+      init_mock_nix_db "$CLIENT_STATE_ROOT"
+      init_mock_nix_db "$SERVER_AOS_ROOT"
       ${serverConfig}
       ${startServer}
       ${getAuthToken}
@@ -191,35 +272,96 @@ in {
       FAIL=0
 
       # Register a test path in the store
-      TEST_STORE_PATH="/tmp/aos/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-http-test-1.0"
+      TEST_STORE_HASH="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      TEST_STORE_BASENAME="$TEST_STORE_HASH-http-test-1.0"
+      TEST_STORE_PATH="$SERVER_AOS_ROOT/store/$TEST_STORE_BASENAME"
+      SERVER_STORE_PATH="$SERVER_AOS_ROOT/store/$TEST_STORE_BASENAME"
       mkdir -p "$TEST_STORE_PATH/bin"
-      echo 'test data' > "$TEST_STORE_PATH/bin/data.txt"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$TEST_STORE_PATH', 'sha256:0002', 1000000, 2048, 1, '''''');"
+      echo '#!/bin/sh' > "$TEST_STORE_PATH/bin/http-test"
+      echo 'echo "http cache test executed"' >> "$TEST_STORE_PATH/bin/http-test"
+      chmod +x "$TEST_STORE_PATH/bin/http-test"
+      register_ca_store_path "$TEST_STORE_PATH" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
 
-      echo "==> Test: push to HTTP cache server"
-      ${aosBin} cache push "$TEST_STORE_PATH" \
-        --to "http://127.0.0.1:15000/default" \
-        --compression zstd \
-        --token "$ACCESS_TOKEN" 2>&1 || echo "WARN: push returned non-zero"
-
-      echo "==> Test: verify narinfo queryable via HTTP GET"
-      HASH="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
-        "http://127.0.0.1:15000/default/$HASH.narinfo")
-      echo "==> narinfo HTTP code: $HTTP_CODE"
-
-      # Should respond without crashing
-      test "$HTTP_CODE" = "200" -o "$HTTP_CODE" = "404" || \
-        { echo "FAIL: unexpected HTTP code $HTTP_CODE"; FAIL=1; }
-
-      echo "==> Test: query-missing confirms path status"
-      QM_RESPONSE=$(${curlBin} -s \
+      echo "==> Test: server reports hash missing before upload"
+      QM_BEFORE=$(${curlBin} -s \
         -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "{\"paths\":[\"$TEST_STORE_PATH\"]}" \
+        -d "{\"paths\":[\"$TEST_STORE_HASH\"]}" \
         http://127.0.0.1:15000/default/query-missing)
-      echo "query-missing: $QM_RESPONSE"
+      echo "query-missing before: $QM_BEFORE"
+      echo "$QM_BEFORE" | ${jqBin} -e --arg hash "$TEST_STORE_HASH" \
+        '.missing == [$hash]' >/dev/null || \
+        { echo "FAIL: server did not report hash missing before upload"; FAIL=1; }
+
+      echo "==> Test: push to HTTP cache server"
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$TEST_STORE_PATH" \
+        --to "http://127.0.0.1:15000/default" \
+        --compression zstd \
+        --token "$PROV_TOKEN" > /tmp/cache-push-http-first.out 2>&1; then
+        cat /tmp/cache-push-http-first.out
+        echo "FAIL: HTTP cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-push-http-first.out
+      ${grepBin} -F -q "1/1 paths need uploading" /tmp/cache-push-http-first.out || \
+        { echo "FAIL: first push did not upload missing path"; FAIL=1; }
+      test -d "$SERVER_STORE_PATH" || { echo "FAIL: server store path missing after upload"; FAIL=1; }
+      test -x "$SERVER_STORE_PATH/bin/http-test" || \
+        { echo "FAIL: server imported executable missing"; FAIL=1; }
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$SERVER_STORE_PATH"
+
+      echo "==> Test: server reports hash present after upload"
+      QM_AFTER=$(${curlBin} -s \
+        -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"paths\":[\"$TEST_STORE_HASH\"]}" \
+        http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing after: $QM_AFTER"
+      echo "$QM_AFTER" | ${jqBin} -e '.missing == []' >/dev/null || \
+        { echo "FAIL: server still reported hash missing after upload"; FAIL=1; }
+
+      echo "==> Test: repeat push is a no-op"
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$TEST_STORE_PATH" \
+        --to "http://127.0.0.1:15000/default" \
+        --compression zstd \
+        --token "$PROV_TOKEN" > /tmp/cache-push-http-second.out 2>&1; then
+        cat /tmp/cache-push-http-second.out
+        echo "FAIL: repeat HTTP cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-push-http-second.out
+      ${grepBin} -F -q "All paths already cached." /tmp/cache-push-http-second.out || \
+        { echo "FAIL: repeat push did not detect cached path"; FAIL=1; }
+
+      echo "==> Test: verify narinfo queryable via HTTP GET"
+      HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
+        "http://127.0.0.1:15000/default/$TEST_STORE_HASH.narinfo")
+      echo "==> narinfo HTTP code: $HTTP_CODE"
+      test "$HTTP_CODE" = "200" || { echo "FAIL: expected narinfo HTTP 200"; FAIL=1; }
+
+      NARINFO=$(${curlBin} -sf "http://127.0.0.1:15000/default/$TEST_STORE_HASH.narinfo")
+      echo "$NARINFO" > /tmp/cache-push-http.narinfo
+      echo "$NARINFO"
+      echo "$NARINFO" | ${grepBin} -F -q "StorePath: $SERVER_STORE_PATH" || \
+        { echo "FAIL: narinfo missing server store path"; FAIL=1; }
+      echo "$NARINFO" | ${grepBin} -F -q "URL: nar/" || \
+        { echo "FAIL: narinfo missing NAR URL"; FAIL=1; }
+      NAR_URL=$(echo "$NARINFO" | ${grepBin} "^URL:" | ${cutBin} -d' ' -f2)
+      test -n "$NAR_URL" || { echo "FAIL: empty NAR URL"; FAIL=1; }
+      ${curlBin} -sf "http://127.0.0.1:15000/default/$NAR_URL" \
+        -o /tmp/cache-push-http.nar
+      NAR_SIZE=$(${statBin} -c%s /tmp/cache-push-http.nar)
+      test "$NAR_SIZE" -gt 0 || { echo "FAIL: downloaded NAR is empty"; FAIL=1; }
+
+      OUTPUT=$("$SERVER_STORE_PATH/bin/http-test")
+      echo "$OUTPUT" | ${grepBin} -q "http cache test executed" || \
+        { echo "FAIL: unexpected imported executable output: $OUTPUT"; FAIL=1; }
 
       ${stopServer}
 
@@ -296,6 +438,10 @@ in {
     memory = 1024;
     testScript = ''
       ${serverPreamble}
+      CLIENT_STATE_ROOT=/tmp/aos-dedup-client-state
+      SERVER_AOS_ROOT=/tmp/aos-dedup-server
+      init_mock_nix_db "$CLIENT_STATE_ROOT"
+      init_mock_nix_db "$SERVER_AOS_ROOT"
       ${serverConfig}
       ${startServer}
       ${getAuthToken}
@@ -303,59 +449,122 @@ in {
       FAIL=0
 
       # Create shared deps
-      LIBZ="/tmp/aos/store/dddddddddddddddddddddddddddddddd-libz-1.0"
+      LIBZ_HASH="dddddddddddddddddddddddddddddddd"
+      LIBSSL_HASH="gggggggggggggggggggggggggggggggg"
+      PKG_A_HASH="ffffffffffffffffffffffffffffffff"
+      PKG_B_HASH="11111111111111111111111111111111"
+
+      LIBZ="$SERVER_AOS_ROOT/store/$LIBZ_HASH-libz-1.0"
       mkdir -p "$LIBZ/lib"
       echo "libz stub" > "$LIBZ/lib/libz.so"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$LIBZ', 'sha256:dddd', 1000000, 4096, 1, '''''');"
+      register_ca_store_path "$LIBZ" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
 
-      LIBSSL="/tmp/aos/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libssl-1.0"
+      LIBSSL="$SERVER_AOS_ROOT/store/$LIBSSL_HASH-libssl-1.0"
       mkdir -p "$LIBSSL/lib"
       echo "libssl stub" > "$LIBSSL/lib/libssl.so"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$LIBSSL', 'sha256:eeee', 1000000, 4096, 1, '''''');"
+      register_ca_store_path "$LIBSSL" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
 
       # Create packages A and B (both depend on libz, libssl)
-      PKG_A="/tmp/aos/store/ffffffffffffffffffffffffffffffff-pkg-a-1.0"
+      PKG_A="$SERVER_AOS_ROOT/store/$PKG_A_HASH-pkg-a-1.0"
       mkdir -p "$PKG_A/bin"
       echo '#!/bin/sh' > "$PKG_A/bin/pkg-a"
+      echo 'echo "pkg-a executed"' >> "$PKG_A/bin/pkg-a"
       chmod +x "$PKG_A/bin/pkg-a"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$PKG_A', 'sha256:ffff', 1000000, 2048, 1, '''''');"
+      register_ca_store_path "$PKG_A" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
 
-      PKG_B="/tmp/aos/store/11111111111111111111111111111111-pkg-b-1.0"
+      PKG_B="$SERVER_AOS_ROOT/store/$PKG_B_HASH-pkg-b-1.0"
       mkdir -p "$PKG_B/bin"
       echo '#!/bin/sh' > "$PKG_B/bin/pkg-b"
+      echo 'echo "pkg-b executed"' >> "$PKG_B/bin/pkg-b"
       chmod +x "$PKG_B/bin/pkg-b"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$PKG_B', 'sha256:1111', 1000000, 2048, 1, '''''');"
+      register_ca_store_path "$PKG_B" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
 
       echo "==> Query-missing for A closure"
       QM_A=$(${curlBin} -s \
         -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "{\"paths\":[\"$PKG_A\",\"$LIBZ\",\"$LIBSSL\"]}" \
+        -d "{\"paths\":[\"$PKG_A_HASH\",\"$LIBZ_HASH\",\"$LIBSSL_HASH\"]}" \
         http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing A: $QM_A"
       MISSING_A=$(echo "$QM_A" | ${jqBin} '.missing | length')
       echo "Package A closure: $MISSING_A missing"
+      echo "$QM_A" | ${jqBin} -e \
+        --arg pkg "$PKG_A_HASH" \
+        --arg libz "$LIBZ_HASH" \
+        --arg libssl "$LIBSSL_HASH" \
+        '(.missing | sort) == ([$pkg, $libz, $libssl] | sort)' >/dev/null || \
+        { echo "FAIL: expected package A and shared deps missing before push"; FAIL=1; }
 
       echo "==> Push package A + deps"
-      ${aosBin} cache push "$PKG_A" "$LIBZ" "$LIBSSL" \
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$PKG_A" "$LIBZ" "$LIBSSL" \
         --to "http://127.0.0.1:15000/default" \
-        --token "$ACCESS_TOKEN" 2>&1 || echo "WARN: push non-zero"
+        --token "$PROV_TOKEN" > /tmp/cache-dedup-push-a.out 2>&1; then
+        cat /tmp/cache-dedup-push-a.out
+        echo "FAIL: package A cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-dedup-push-a.out
+      ${grepBin} -F -q "3/3 paths need uploading" /tmp/cache-dedup-push-a.out || \
+        { echo "FAIL: package A push did not upload all initial paths"; FAIL=1; }
 
       echo "==> Query-missing for B closure (shared deps should be present)"
       QM_B=$(${curlBin} -s \
         -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "{\"paths\":[\"$PKG_B\",\"$LIBZ\",\"$LIBSSL\"]}" \
+        -d "{\"paths\":[\"$PKG_B_HASH\",\"$LIBZ_HASH\",\"$LIBSSL_HASH\"]}" \
         http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing B: $QM_B"
       MISSING_B=$(echo "$QM_B" | ${jqBin} '.missing | length')
       echo "Package B closure: $MISSING_B missing"
+      echo "$QM_B" | ${jqBin} -e --arg pkg "$PKG_B_HASH" \
+        '.missing == [$pkg]' >/dev/null || \
+        { echo "FAIL: shared deps should be cached before package B push"; FAIL=1; }
 
-      echo "==> Dedup check: A had $MISSING_A missing, B has $MISSING_B missing"
-      test "$MISSING_B" -le "$MISSING_A" || \
-        { echo "FAIL: B missing ($MISSING_B) should be <= A missing ($MISSING_A)"; FAIL=1; }
+      echo "==> Push package B + shared deps"
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$PKG_B" "$LIBZ" "$LIBSSL" \
+        --to "http://127.0.0.1:15000/default" \
+        --token "$PROV_TOKEN" > /tmp/cache-dedup-push-b.out 2>&1; then
+        cat /tmp/cache-dedup-push-b.out
+        echo "FAIL: package B cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-dedup-push-b.out
+      ${grepBin} -F -q "1/3 paths need uploading" /tmp/cache-dedup-push-b.out || \
+        { echo "FAIL: package B push did not skip cached shared deps"; FAIL=1; }
+
+      echo "==> Verify all B closure paths are cached"
+      QM_B_AFTER=$(${curlBin} -s \
+        -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"paths\":[\"$PKG_B_HASH\",\"$LIBZ_HASH\",\"$LIBSSL_HASH\"]}" \
+        http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing B after: $QM_B_AFTER"
+      echo "$QM_B_AFTER" | ${jqBin} -e '.missing == []' >/dev/null || \
+        { echo "FAIL: package B closure still missing after push"; FAIL=1; }
+
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$PKG_A"
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$PKG_B"
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$LIBZ"
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$LIBSSL"
+      for hash in "$PKG_A_HASH" "$PKG_B_HASH" "$LIBZ_HASH" "$LIBSSL_HASH"; do
+        HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
+          "http://127.0.0.1:15000/default/$hash.narinfo")
+        echo "narinfo $hash: HTTP $HTTP_CODE"
+        test "$HTTP_CODE" = "200" || { echo "FAIL: expected narinfo HTTP 200 for $hash"; FAIL=1; }
+      done
+
+      OUTPUT_A=$("$PKG_A/bin/pkg-a")
+      echo "$OUTPUT_A" | ${grepBin} -q "pkg-a executed" || \
+        { echo "FAIL: unexpected package A output: $OUTPUT_A"; FAIL=1; }
+      OUTPUT_B=$("$PKG_B/bin/pkg-b")
+      echo "$OUTPUT_B" | ${grepBin} -q "pkg-b executed" || \
+        { echo "FAIL: unexpected package B output: $OUTPUT_B"; FAIL=1; }
 
       ${stopServer}
 
