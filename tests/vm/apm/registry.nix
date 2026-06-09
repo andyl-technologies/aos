@@ -2535,14 +2535,53 @@ in {
       expect_verify_failure broken-reference \
         "reference $LEAF_HASH not found in closure $ROOT_HASH"
 
-      cp /tmp/root-closure-good "$REG_DIR/closures/$ROOT_HASH"
-      commit_registry_changes "restore root closure"
+      $APR verify --registry test-reg --package closure-root --fix \
+        > /tmp/verify-fix-broken-reference.out 2>&1 || {
+        cat /tmp/verify-fix-broken-reference.out
+        fail "apr verify --fix repairs stale root closure metadata"
+      }
+      cat /tmp/verify-fix-broken-reference.out
+      assert_file_contains /tmp/verify-fix-broken-reference.out \
+        "Regenerated 1 closure file" \
+        "apr verify --fix reports stale closure repair"
+      assert_file_contains /tmp/verify-fix-broken-reference.out "no errors" \
+        "apr verify --fix validates repaired stale closure metadata"
+      assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$LEAF_HASH" \
+        "apr verify --fix restores missing root closure dependency"
+      commit_registry_changes "repair root closure dependency with verify fix"
       expect_verify_success restored-generated
 
       rm -f "$REG_DIR/closures/$ROOT_HASH"
       commit_registry_changes "remove root closure"
       expect_verify_failure missing-closure \
         "missing closure file for store hash $ROOT_HASH"
+
+      $APR verify --registry test-reg --package closure-leaf \
+        > /tmp/verify-filtered-leaf.out 2>&1 || {
+        cat /tmp/verify-filtered-leaf.out
+        fail "apr verify --package ignores unrelated broken closure metadata"
+      }
+      cat /tmp/verify-filtered-leaf.out
+      assert_file_contains /tmp/verify-filtered-leaf.out "no errors" \
+        "apr verify --package validates only the requested package"
+
+      $APR verify --registry test-reg --package closure-root --fix \
+        > /tmp/verify-fix-missing-closure.out 2>&1 || {
+        cat /tmp/verify-fix-missing-closure.out
+        fail "apr verify --fix repairs missing root closure metadata"
+      }
+      cat /tmp/verify-fix-missing-closure.out
+      assert_file_contains /tmp/verify-fix-missing-closure.out \
+        "Regenerated 1 closure file" \
+        "apr verify --fix reports missing closure repair"
+      assert_file_contains /tmp/verify-fix-missing-closure.out "no errors" \
+        "apr verify --fix validates repaired missing closure metadata"
+      assert_file_exists "$REG_DIR/closures/$ROOT_HASH" \
+        "apr verify --fix recreates missing root closure file"
+      assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$LEAF_HASH" \
+        "apr verify --fix recreates root closure dependency"
+      commit_registry_changes "repair missing root closure with verify fix"
+      expect_verify_success fixed-missing-closure
 
       assert_file_exists "$REG_DIR/closures/$LEAF_HASH" \
         "removing root closure leaves dependency closure intact"

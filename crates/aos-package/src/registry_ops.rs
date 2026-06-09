@@ -4,7 +4,7 @@
 //! registries. It operates on local git clones stored at
 //! `~/.local/share/apm/registries/<name>/`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -1252,11 +1252,18 @@ pub async fn packages(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct RegistryVerifyStoreEntry {
+    store_hash: String,
+    store_path: String,
+    package_name: String,
+}
+
 /// `apr verify`
 pub async fn verify(
     config: &ApmConfig,
-    _package: Option<&str>,
-    _fix: bool,
+    package: Option<&str>,
+    fix: bool,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
@@ -1268,9 +1275,10 @@ pub async fn verify(
     let mut checked = 0u32;
 
     // Collect all store path hashes from package TOMLs.
-    let mut all_store_hashes: Vec<(String, String)> = Vec::new(); // (hash, pkg_name)
+    let mut all_store_entries: Vec<RegistryVerifyStoreEntry> = Vec::new();
     let mut all_ref_hashes: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new(); // hash -> references
+    let mut matched_package_filter = package.is_none();
 
     // Verify package TOML files.
     if packages_dir.is_dir() {
@@ -1281,6 +1289,16 @@ pub async fn verify(
             for entry in std::fs::read_dir(letter_entry.path())?.flatten() {
                 let path = entry.path();
                 if path.extension().map(|e| e == "toml").unwrap_or(false) {
+                    let path_matches_filter = match package {
+                        Some(filter) => {
+                            path.file_stem().and_then(|stem| stem.to_str()) == Some(filter)
+                        }
+                        None => true,
+                    };
+                    if !path_matches_filter {
+                        continue;
+                    }
+                    matched_package_filter = true;
                     checked += 1;
                     let content = std::fs::read_to_string(&path)?;
                     match toml::from_str::<toml::Value>(&content) {
@@ -1309,8 +1327,11 @@ pub async fn verify(
                                                 plat_val.get("store_path").and_then(|s| s.as_str())
                                             {
                                                 let hash = extract_hash(sp).to_string();
-                                                all_store_hashes
-                                                    .push((hash.clone(), pkg_name.to_string()));
+                                                all_store_entries.push(RegistryVerifyStoreEntry {
+                                                    store_hash: hash.clone(),
+                                                    store_path: sp.to_string(),
+                                                    package_name: pkg_name.to_string(),
+                                                });
                                                 let refs: Vec<String> = plat_val
                                                     .get("references")
                                                     .and_then(|r| r.as_array())
@@ -1339,10 +1360,37 @@ pub async fn verify(
         }
     }
 
+    if let Some(filter) = package {
+        if !matched_package_filter {
+            bail!("package '{filter}' not found in registry");
+        }
+    }
+
+    if fix {
+        let mut repaired = 0u32;
+        let mut seen = HashSet::new();
+        for entry in &all_store_entries {
+            if seen.insert(entry.store_hash.clone()) {
+                write_closure_files(&dir, &entry.store_path).with_context(|| {
+                    format!(
+                        "regenerating closure metadata for {} ({})",
+                        entry.package_name, entry.store_path
+                    )
+                })?;
+                repaired += 1;
+            }
+        }
+        if repaired > 0 {
+            printer.success(&format!("Regenerated {repaired} closure file(s)."));
+        }
+    }
+
     // Verify closure files.
     let mut closure_checked = 0u32;
 
-    for (store_hash, pkg_name) in &all_store_hashes {
+    for entry in &all_store_entries {
+        let store_hash = &entry.store_hash;
+        let pkg_name = &entry.package_name;
         let closure_path = closures_dir.join(store_hash);
 
         // Check closure file exists.
@@ -1396,8 +1444,10 @@ pub async fn verify(
 
     // Check for orphan closure files (closure files with no matching package).
     if closures_dir.is_dir() {
-        let known_hashes: std::collections::HashSet<&str> =
-            all_store_hashes.iter().map(|(h, _)| h.as_str()).collect();
+        let known_hashes: std::collections::HashSet<&str> = all_store_entries
+            .iter()
+            .map(|entry| entry.store_hash.as_str())
+            .collect();
         for entry in std::fs::read_dir(&closures_dir)?.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
