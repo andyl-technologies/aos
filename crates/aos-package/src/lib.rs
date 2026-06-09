@@ -148,6 +148,9 @@ pub enum PackageCommand {
     Show {
         /// Package name
         package: String,
+        /// Show package from this registry
+        #[arg(long)]
+        registry: Option<String>,
     },
     /// List packages
     List {
@@ -1217,7 +1220,9 @@ pub async fn run(
             )
             .await
         }
-        PackageCommand::Show { package } => query::show(&config, package, printer).await,
+        PackageCommand::Show { package, registry } => {
+            query::show(&config, package, registry.as_deref(), printer).await
+        }
         PackageCommand::List {
             installed,
             upgradable,

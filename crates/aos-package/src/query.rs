@@ -106,12 +106,27 @@ pub async fn search(
 // ---------------------------------------------------------------------------
 
 /// Display detailed information about a package.
-pub async fn show(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
+pub async fn show(
+    config: &ApmConfig,
+    package: &str,
+    registry_filter: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
     let registries = load_registries(config)?;
 
-    let (reg, meta) = registries
-        .resolve(package)
-        .with_context(|| format!("package '{package}' not found in any registry"))?;
+    let (reg, meta) = if let Some(filter) = registry_filter {
+        let reg = registries
+            .get_registry(filter)
+            .with_context(|| format!("registry '{filter}' not found"))?;
+        let meta = reg
+            .get(package)
+            .with_context(|| format!("package '{package}' not found in registry '{filter}'"))?;
+        (reg, meta)
+    } else {
+        registries
+            .resolve(package)
+            .with_context(|| format!("package '{package}' not found in any registry"))?
+    };
 
     let registry_name = reg.config.name.clone();
 

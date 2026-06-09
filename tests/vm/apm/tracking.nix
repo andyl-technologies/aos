@@ -1586,37 +1586,214 @@ in {
   # -------------------------------------------------------------------------
   tracking-bundle-sync = testing.mkVMTest {
     name = "apm-tracking-git-native-clean-break";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = trackingWorkflowDeps;
+    memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
-      ${fixtures.mkFakePackageToml}
-      ${fixtures.mkRemoteRegistry}
+      ${setupNixEnv}
 
-      echo "==> Test: git-native version tracking after bundle cutover"
+      echo "==> Test: real git-native version tracking after bundle cutover"
 
-      create_remote_registry /tmp/remote-git-native.git
+      make_git_native_tool() {
+        version="$1"
+        src="/tmp/git-native-tool-$version-src"
+        rm -rf "$src"
+        mkdir -p "$src/bin" "$src/share/git-native-tool"
+        cat > "$src/bin/git-native-tool" << EOF
+      #!/bin/sh
+      echo "git-native-tool $version executed"
+      EOF
+        chmod +x "$src/bin/git-native-tool"
+        printf "git-native-tool payload %s\n" "$version" \
+          > "$src/share/git-native-tool/payload.txt"
+        nix-store --add "$src"
+      }
 
-      git clone /tmp/remote-git-native.git /tmp/git-native-setup
-      cd /tmp/git-native-setup
-      git tag v1.0.0
-      echo "# v1.1.0" >> registry.toml
-      git add -A
-      git commit -m "v1.1.0"
-      git tag v1.1.0
-      git update-server-info
-      git push origin --tags
-      git push origin "$(git branch --show-current)"
-      cd /tmp
-      rm -rf /tmp/git-native-setup
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
 
-      $APM registry add file:///tmp/remote-git-native.git \
-        --name git-native-reg --version "~1"
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        nix-store --delete --ignore-liveness "$path" > "/tmp/git-native-delete-$label.out" 2>&1 || {
+          cat "/tmp/git-native-delete-$label.out"
+          fail "delete $label before apm download"
+          return
+        }
+        if nix-store --check-validity "$path" > "/tmp/git-native-valid-$label.out" 2>&1; then
+          cat "/tmp/git-native-valid-$label.out"
+          fail "$label should be missing before apm download"
+        else
+          pass "$label missing before apm download"
+        fi
+      }
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/git-native-valid-after-$label.out" 2>&1; then
+          pass "$label valid after apm import"
+        else
+          cat "/tmp/git-native-valid-after-$label.out"
+          fail "$label should be valid after apm import"
+        fi
+      }
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/git-native-missing-$label.out" 2>&1; then
+          cat "/tmp/git-native-missing-$label.out"
+          fail "$label should remain missing"
+        else
+          pass "$label remains missing"
+        fi
+      }
+
+      publish_git_native_version() {
+        version="$1"
+        store_path="$2"
+        $APR publish "$store_path" \
+          --name git-native-tool \
+          --version "$version" \
+          --description "Git-native tracking workflow tool" \
+          --license MIT \
+          --maintainer tracking@example.invalid \
+          --registry git-native-reg \
+          --no-commit > "/tmp/git-native-publish-$version.out" 2>&1 || {
+          cat "/tmp/git-native-publish-$version.out"
+          fail "apr publish git-native-tool $version"
+          return
+        }
+        cat "/tmp/git-native-publish-$version.out"
+        $APR cache generate \
+          --registry git-native-reg \
+          --output /tmp/git-native-cache \
+          --cache-url http://127.0.0.1:18109 \
+          --priority 49 \
+          --no-commit > "/tmp/git-native-cache-generate-$version.out" 2>&1 || {
+          cat "/tmp/git-native-cache-generate-$version.out"
+          fail "apr cache generate after git-native-tool $version"
+          return
+        }
+        cat "/tmp/git-native-cache-generate-$version.out"
+        git -C "$REG_DIR" add -A
+        git -C "$REG_DIR" commit -m "release: git-native-tool $version" \
+          > "/tmp/git-native-commit-$version.out" 2>&1 || {
+          cat "/tmp/git-native-commit-$version.out"
+          fail "git commit git-native-tool $version"
+          return
+        }
+        cat "/tmp/git-native-commit-$version.out"
+        git -C "$REG_DIR" tag "v$version" \
+          > "/tmp/git-native-tag-$version.out" 2>&1 || {
+          cat "/tmp/git-native-tag-$version.out"
+          fail "git tag v$version"
+          return
+        }
+      }
+
+      TOOL_100_STORE=$(make_git_native_tool 1.0.0)
+      TOOL_110_STORE=$(make_git_native_tool 1.1.0)
+      TOOL_200_STORE=$(make_git_native_tool 2.0.0)
+      TOOL_110_HASH=$(basename "$TOOL_110_STORE" | cut -d- -f1)
+      TOOL_200_HASH=$(basename "$TOOL_200_STORE" | cut -d- -f1)
+
+      $APR create git-native-reg
+      REG_DIR="$REG_STORAGE/git-native-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      publish_git_native_version 1.0.0 "$TOOL_100_STORE"
+      publish_git_native_version 1.1.0 "$TOOL_110_STORE"
+      publish_git_native_version 2.0.0 "$TOOL_200_STORE"
+      assert_file_exists "/tmp/git-native-cache/$TOOL_110_HASH.narinfo" \
+        "static cache has git-native-tool 1.1.0 narinfo"
+      assert_file_exists "/tmp/git-native-cache/$TOOL_200_HASH.narinfo" \
+        "static cache has out-of-range git-native-tool 2.0.0 narinfo"
+
+      git init --bare --object-format=sha256 /tmp/git-native-origin.git
+      git -C /tmp/git-native-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/git-native-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin --tags
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      python3 -m http.server 18109 --bind 127.0.0.1 \
+        --directory /tmp/git-native-cache > /tmp/git-native-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf http://127.0.0.1:18109/nix-cache-info >/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      if curl -sf http://127.0.0.1:18109/nix-cache-info >/dev/null; then
+        pass "git-native static cache HTTP server started"
+      else
+        cat /tmp/git-native-cache-http.log || true
+        fail "git-native static cache HTTP server started"
+      fi
+
+      export HOME=/tmp/git-native-consumer
+      export USER=gitnativeuser
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
+
+      $APM registry add file:///tmp/git-native-origin.git \
+        --name git-native-reg --version "~1" > /tmp/git-native-add.out 2>&1 || {
+        cat /tmp/git-native-add.out
+        fail "apm registry add resolves best git-native version tag"
+      }
+      cat /tmp/git-native-add.out
 
       assert_file_contains "$APM_CONFIG/registries.d/git-native-reg.toml" \
         'version = "~1"' "config keeps git-native version tracking"
-      assert_cmd_output_contains "$APR list" "version" \
+      assert_cmd_output_contains "$APR list" "version:~1" \
         "apr list shows version tracking mode"
+
+      $APM search git-native-tool --registry git-native-reg > /tmp/git-native-search.out 2>&1 || {
+        cat /tmp/git-native-search.out
+        fail "apm search sees best git-native package"
+      }
+      assert_file_contains /tmp/git-native-search.out "1.1.0" \
+        "git-native version tracking exposes best in-range package"
+      assert_file_not_contains /tmp/git-native-search.out "2.0.0" \
+        "git-native version tracking ignores out-of-range package"
+
+      $APM show git-native-tool --registry git-native-reg > /tmp/git-native-show.out 2>&1 || {
+        cat /tmp/git-native-show.out
+        fail "apm show resolves best git-native package"
+      }
+      assert_file_contains /tmp/git-native-show.out "Git-native tracking workflow tool" \
+        "apm show displays real package metadata"
+
+      mount -o remount,rw / || true
+      delete_store_path "$TOOL_110_STORE" "git-native-tool-1.1.0"
+      delete_store_path "$TOOL_200_STORE" "git-native-tool-2.0.0"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install git-native-tool --registry git-native-reg --yes \
+        > /tmp/git-native-install.out 2>&1 || {
+        cat /tmp/git-native-install.out
+        fail "apm install downloads best git-native package"
+      }
+      cat /tmp/git-native-install.out
+      assert_file_contains /tmp/git-native-install.out "Downloading" \
+        "apm install downloads git-native NAR"
+      assert_store_valid "$TOOL_110_STORE" "git-native-tool 1.1.0"
+      assert_store_missing "$TOOL_200_STORE" "git-native-tool 2.0.0"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/git-native-tool"
+      "$PROFILE_TOOL" > /tmp/git-native-run.out
+      assert_file_contains /tmp/git-native-run.out \
+        "git-native-tool 1.1.0 executed" "installed git-native tool executes"
 
       if $APR bundle --tag v1.1.0 --output /tmp/bundles --registry git-native-reg \
         > /tmp/bundle-out 2>&1; then
@@ -1628,6 +1805,8 @@ in {
         cat /tmp/bundle-out
       fi
 
+      kill "$CACHE_PID" 2>/dev/null || true
+      wait "$CACHE_PID" 2>/dev/null || true
       check_fail
     '';
   };
