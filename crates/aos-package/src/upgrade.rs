@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::{Context, Result};
@@ -13,7 +13,7 @@ use super::profile::merge::build_fhs_tree;
 use super::profile::meta::{delete_meta, list_meta, write_meta};
 use super::registry::{RegistrySet, store_path_hash};
 use super::resolve::resolve_closure;
-use super::store::{create_gc_roots, filter_missing, import_nar};
+use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
@@ -106,6 +106,10 @@ pub async fn run(
         }
         upgrade_closures.push((closure.registry_name, closure.closure));
     }
+    let needed_hashes = needed_hashes_after_upgrade(&installed, &to_upgrade, &all_new_metas)
+        .await
+        .context("computing post-upgrade profile roots")?;
+    let obsolete_hashes = obsolete_installed_hashes(&installed, &needed_hashes);
 
     // Sysroot-lock check for upgraded packages.
     if !matches!(ignore_lock, IgnoreSysrootLock::All) {
@@ -196,7 +200,7 @@ pub async fn run(
 
     // Copy existing roots from the previous generation.
     if let Some(ref prev) = prev_gen {
-        super::install::copy_roots_for_upgrade(prev, &new_gen, &to_upgrade)?;
+        super::install::copy_roots_except_hashes(prev, &new_gen, &obsolete_hashes)?;
     }
 
     // Create GC roots for all new closure members.
@@ -215,19 +219,17 @@ pub async fn run(
         .unwrap_or_default()
         .as_secs() as i64;
     let now_iso = format_iso8601(now);
+    let installed_flags = installed_flags_by_name(&installed);
 
     // Carry forward metadata for non-upgraded packages.
-    let upgraded_names: HashSet<&str> = to_upgrade.iter().map(|c| c.name.as_str()).collect();
-    for candidate in &to_upgrade {
-        delete_meta(&profile, &candidate.old_store_hash)?;
+    for hash in &obsolete_hashes {
+        delete_meta(&profile, hash)?;
     }
     for meta in &installed {
-        if let Some(ref apm) = meta.apm {
-            if upgraded_names.contains(apm.name.as_str()) {
-                continue; // Will be replaced with new metadata below.
-            }
-        }
         let hash = store_path_hash(&meta.store_path).to_string();
+        if obsolete_hashes.contains(&hash) {
+            continue;
+        }
         write_meta(&profile, &hash, meta)?;
     }
 
@@ -235,7 +237,10 @@ pub async fn run(
     for (registry_name, closure) in &upgrade_closures {
         for meta in closure {
             let hash = store_path_hash(&meta.store_path).to_string();
-            let is_explicit = upgraded_names.contains(meta.name.as_str());
+            let flags = installed_flags
+                .get(meta.name.as_str())
+                .copied()
+                .unwrap_or_default();
 
             let installed_meta = InstalledMeta {
                 store_path: meta.store_path.clone(),
@@ -248,10 +253,10 @@ pub async fn run(
                 apm: Some(ApmMeta {
                     name: meta.name.clone(),
                     version: meta.version.clone(),
-                    explicit: is_explicit,
+                    explicit: flags.explicit,
                     registry: registry_name.clone(),
                     installed_at: now_iso.clone(),
-                    held: false,
+                    held: flags.held,
                 }),
             };
 
@@ -296,6 +301,9 @@ pub fn find_upgradable(
     let mut candidates = Vec::new();
     for meta in installed {
         let Some(apm) = &meta.apm else { continue };
+        if !apm.explicit {
+            continue;
+        }
 
         // If filter is non-empty, skip packages not in filter.
         if !filter.is_empty() && !filter.iter().any(|f| f == &apm.name) {
@@ -326,6 +334,72 @@ pub fn find_upgradable(
         }
     }
     candidates
+}
+
+#[derive(Clone, Copy, Default)]
+struct InstalledFlags {
+    explicit: bool,
+    held: bool,
+}
+
+fn installed_flags_by_name(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
+    installed
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            Some((
+                apm.name.as_str(),
+                InstalledFlags {
+                    explicit: apm.explicit,
+                    held: apm.held,
+                },
+            ))
+        })
+        .collect()
+}
+
+async fn needed_hashes_after_upgrade(
+    installed: &[InstalledMeta],
+    to_upgrade: &[UpgradeCandidate],
+    new_metas: &[PackageMeta],
+) -> Result<HashSet<String>> {
+    let mut needed: HashSet<String> = new_metas
+        .iter()
+        .map(|meta| store_path_hash(&meta.store_path).to_string())
+        .collect();
+    let upgraded_names: HashSet<&str> = to_upgrade.iter().map(|c| c.name.as_str()).collect();
+
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        if !apm.explicit || upgraded_names.contains(apm.name.as_str()) {
+            continue;
+        }
+
+        for path in closure_paths(&meta.store_path)
+            .await
+            .with_context(|| format!("querying closure for installed package {}", apm.name))?
+        {
+            needed.insert(store_path_hash(&path).to_string());
+        }
+    }
+
+    Ok(needed)
+}
+
+fn obsolete_installed_hashes(
+    installed: &[InstalledMeta],
+    needed_hashes: &HashSet<String>,
+) -> HashSet<String> {
+    installed
+        .iter()
+        .filter_map(|meta| {
+            meta.apm.as_ref()?;
+            let hash = store_path_hash(&meta.store_path).to_string();
+            (!needed_hashes.contains(&hash)).then_some(hash)
+        })
+        .collect()
 }
 
 /// Filter out held and excluded packages from upgrade candidates.
@@ -596,6 +670,17 @@ mod tests {
         registry: &str,
         held: bool,
     ) -> InstalledMeta {
+        sample_installed_with_flags(name, version, hash, registry, true, held)
+    }
+
+    fn sample_installed_with_flags(
+        name: &str,
+        version: &str,
+        hash: &str,
+        registry: &str,
+        explicit: bool,
+        held: bool,
+    ) -> InstalledMeta {
         InstalledMeta {
             store_path: format!("/var/lib/store/{hash}-{name}-{version}"),
             pushed_at: 1707800000,
@@ -607,7 +692,7 @@ mod tests {
             apm: Some(ApmMeta {
                 name: name.into(),
                 version: version.into(),
-                explicit: true,
+                explicit,
                 registry: registry.into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held,
@@ -706,6 +791,26 @@ references = []
         assert_eq!(candidates[0].name, "curl");
     }
 
+    #[test]
+    fn find_upgradable_skips_auto_installed_dependencies() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(&tmp, "aos-core", 500, &[("curl", CURL_TOML_NEWER)]);
+        let set = RegistrySet::new(vec![core]);
+
+        let installed = vec![sample_installed_with_flags(
+            "curl",
+            "8.5.0",
+            "h7j3k8l2m9n4",
+            "aos-core",
+            false,
+            false,
+        )];
+
+        let candidates = find_upgradable(&installed, &set, &[]);
+
+        assert!(candidates.is_empty());
+    }
+
     // 4. find_upgradable skips packages without apm metadata.
     #[test]
     fn find_upgradable_skips_non_apm() {
@@ -726,6 +831,55 @@ references = []
 
         let candidates = find_upgradable(&installed, &set, &[]);
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn installed_flags_by_name_preserves_explicit_and_held_state() {
+        let installed = vec![
+            sample_installed_with_flags("tool", "1.0.0", "hash1", "aos-core", true, true),
+            sample_installed_with_flags("runtime", "1.0.0", "hash2", "aos-core", false, false),
+        ];
+
+        let flags = installed_flags_by_name(&installed);
+
+        assert!(flags["tool"].explicit);
+        assert!(flags["tool"].held);
+        assert!(!flags["runtime"].explicit);
+        assert!(!flags["runtime"].held);
+    }
+
+    #[test]
+    fn obsolete_installed_hashes_skips_only_unneeded_apm_roots() {
+        let installed = vec![
+            sample_installed_with_flags("tool", "1.0.0", "oldtoolhash", "aos-core", true, false),
+            sample_installed_with_flags(
+                "runtime",
+                "1.0.0",
+                "oldruntimehash",
+                "aos-core",
+                false,
+                false,
+            ),
+            sample_installed_with_flags("kept", "1.0.0", "keptroot", "aos-core", true, false),
+            InstalledMeta {
+                store_path: "/var/lib/store/nonapmroot-foreign-1.0.0".into(),
+                pushed_at: 1707800000,
+                pushed_by: "cache".into(),
+                expires_at: None,
+                is_root: true,
+                last_accessed: 1707800000,
+                access_count: 0,
+                apm: None,
+            },
+        ];
+        let needed = HashSet::from(["keptroot".to_string(), "newruntimehash".to_string()]);
+
+        let obsolete = obsolete_installed_hashes(&installed, &needed);
+
+        assert!(obsolete.contains("oldtoolhash"));
+        assert!(obsolete.contains("oldruntimehash"));
+        assert!(!obsolete.contains("keptroot"));
+        assert!(!obsolete.contains("nonapmroot"));
     }
 
     // 5. filter_held_and_excluded separates held packages.
