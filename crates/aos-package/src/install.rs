@@ -482,6 +482,7 @@ fn build_download_requests(
     config: &ApmConfig,
 ) -> Result<Vec<DownloadRequest>> {
     // Build a map of registry_name -> mirror_url for quick lookup.
+    let registries_base = config.scope.registries_path();
     let mirror_map: std::collections::HashMap<String, String> = closures
         .iter()
         .map(|c| {
@@ -491,7 +492,7 @@ fn build_download_requests(
                 .find(|(cfg, _)| cfg.name == c.registry_name)
                 .map(|(cfg, _)| cfg);
             let mirror_url = if let Some(cfg) = reg_config {
-                resolve_mirror(cfg)
+                resolve_mirror(&registries_base, cfg)
             } else {
                 // Fallback: construct from the default pattern.
                 format!("https://registry.aos.dev/{}", c.registry_name)

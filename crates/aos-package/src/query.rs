@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
-use super::profile::meta::list_meta;
+use super::profile::meta::{list_meta, orphaned_by_registry};
 use super::registry::{Registry, RegistrySet, store_path_hash};
 use super::sysroot_lock;
 use super::types::{InstalledMeta, PackageMeta};
@@ -386,6 +386,82 @@ pub async fn list(
             }
         }
     }
+
+    Ok(())
+}
+
+/// List installed packages whose source registry is no longer configured.
+///
+/// Implements `apm orphans`. A package is *orphaned* when the registry it was
+/// installed from has been removed from the configuration (for example by
+/// `apr remove`): it stays installed but can no longer be upgraded, verified,
+/// or re-resolved against its source. The profile is opened read-only, so this
+/// never creates or mutates profile state and works for unprivileged callers
+/// even when the profile lives under a root-owned path.
+///
+/// # Errors
+///
+/// Returns an error only if the profile's metadata directory exists but cannot
+/// be read; a missing profile yields an empty list.
+pub async fn orphans(config: &ApmConfig, printer: &Printer) -> Result<()> {
+    // Read-only: never create or require write access to the profile root.
+    let profile = Profile::open_readonly(config.scope);
+
+    // A registry counts as "configured" whether enabled or disabled — only an
+    // outright-removed registry orphans its packages.
+    let configured: HashSet<&str> = config
+        .registries
+        .iter()
+        .map(|(cfg, _)| cfg.name.as_str())
+        .collect();
+
+    let mut orphans = orphaned_by_registry(&profile, &configured)?;
+    orphans.sort_by(|a, b| {
+        let an = a.apm.as_ref().map(|m| m.name.as_str()).unwrap_or("");
+        let bn = b.apm.as_ref().map(|m| m.name.as_str()).unwrap_or("");
+        an.cmp(bn)
+    });
+
+    if printer.mode() == OutputMode::Json {
+        let json: Vec<serde_json::Value> = orphans
+            .iter()
+            .filter_map(|m| m.apm.as_ref())
+            .map(|a| {
+                serde_json::json!({
+                    "name": a.name,
+                    "version": a.version,
+                    "registry": a.registry,
+                    "explicit": a.explicit,
+                })
+            })
+            .collect();
+        printer.json(&serde_json::json!(json));
+        return Ok(());
+    }
+
+    if orphans.is_empty() {
+        printer
+            .info("No orphaned packages: every installed package's registry is still configured.");
+        return Ok(());
+    }
+
+    printer.header(&format!("Orphaned packages ({}):", orphans.len()));
+    for m in &orphans {
+        if let Some(apm) = m.apm.as_ref() {
+            printer.plain(&format!(
+                "  {} {} (from removed registry '{}')",
+                apm.name, apm.version, apm.registry
+            ));
+        }
+    }
+    printer.plain("");
+    printer.info(&format!(
+        "These packages remain installed but can't be upgraded or verified. Re-add the \
+         registry with `{reg} add <url>`, reinstall from another registry, or remove them \
+         with `{pkg} remove <pkg>`.",
+        reg = aos_core::invocation::package_registry_command(),
+        pkg = aos_core::invocation::package_manager_command(),
+    ));
 
     Ok(())
 }

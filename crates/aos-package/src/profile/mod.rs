@@ -69,6 +69,38 @@ impl Profile {
         Self::open_at(scope.profile_path(), scope)
     }
 
+    /// Reference an existing profile for read-only inspection without touching
+    /// the filesystem.
+    ///
+    /// Unlike [`Profile::open`], this never creates the profile directory or
+    /// writes `state.json`. It is meant for callers that only read
+    /// installed-package metadata and must not require write access to the
+    /// profile root — for example an unprivileged `apr` registry operation
+    /// checking whether any packages came from a registry, which must not fail
+    /// trying to create a system profile under `/var/lib/profiles`. The
+    /// metadata and generation listing helpers already treat a missing profile
+    /// as empty, so reads against a non-existent profile simply yield no
+    /// results.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use aos_package::profile::Profile;
+    /// use aos_package::types::ProfileScope;
+    ///
+    /// let profile = Profile::open_readonly(ProfileScope::User);
+    /// // Listing metadata is safe even if the profile was never initialized.
+    /// let installed = aos_package::profile::meta::list_meta(&profile)?;
+    /// assert!(installed.is_empty() || !installed.is_empty());
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn open_readonly(scope: ProfileScope) -> Self {
+        Self {
+            path: scope.profile_path(),
+            scope,
+        }
+    }
+
     /// Open a profile at a specific path (useful for testing).
     pub fn open_at(path: PathBuf, scope: ProfileScope) -> Result<Self> {
         // Create profile directory and meta/ subdirectory.
