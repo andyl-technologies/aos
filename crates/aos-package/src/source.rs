@@ -133,41 +133,73 @@ pub async fn run_source(
     verify_source: bool,
     printer: &Printer,
 ) -> Result<()> {
-    // Load registries and resolve package.
     let enabled = config.enabled_registries();
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
 
-    let (reg, pkg_meta) = reg_set
-        .resolve(package)
-        .ok_or_else(|| AosError::PackageNotFound {
-            name: package.to_string(),
-        })?;
+    let (registry_name, source_drv, source_nar_hash, expected_hash) = if verify_source {
+        let profile = Profile::open(config.scope)?;
+        let all_meta = meta::list_meta(&profile)?;
+        let installed = all_meta
+            .iter()
+            .find(|m| m.apm.as_ref().map(|a| a.name == package).unwrap_or(false))
+            .ok_or_else(|| AosError::PackageNotFound {
+                name: package.to_string(),
+            })?;
+        let installed_apm = installed
+            .apm
+            .as_ref()
+            .ok_or_else(|| AosError::PackageNotFound {
+                name: package.to_string(),
+            })?;
+        let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
 
-    let source_drv = &pkg_meta.source_drv;
+        (
+            installed_apm.registry.clone(),
+            pkg_meta.source_drv.clone(),
+            pkg_meta.source_nar_hash.clone(),
+            pkg_meta.nar_hash.clone(),
+        )
+    } else {
+        let (reg, pkg_meta) =
+            reg_set
+                .resolve(package)
+                .ok_or_else(|| AosError::PackageNotFound {
+                    name: package.to_string(),
+                })?;
+
+        (
+            reg.config.name.clone(),
+            pkg_meta.source_drv.clone(),
+            pkg_meta.source_nar_hash.clone(),
+            pkg_meta.nar_hash.clone(),
+        )
+    };
 
     if source_drv.is_empty() {
         bail!(
             "package '{package}' has no source derivation recorded in registry '{}'",
-            reg.config.name
+            registry_name
         );
     }
 
     // Default or --show-drv: just print the source derivation path.
     if show_drv || (!fetch && !verify_source) {
         printer.header(&format!("Source derivation for '{package}':"));
-        printer.kv("Source drv", source_drv);
-        printer.kv("Source NAR hash", &pkg_meta.source_nar_hash);
-        printer.kv("Registry", &reg.config.name);
+        printer.kv("Source drv", &source_drv);
+        printer.kv("Source NAR hash", &source_nar_hash);
+        printer.kv("Registry", &registry_name);
         return Ok(());
     }
+
+    let mut realised_path = None;
 
     // --fetch: realise the source derivation via nix-store.
     if fetch {
         printer.header(&format!("Fetching source derivation for '{package}'..."));
-        printer.kv("Source drv", source_drv);
+        printer.kv("Source drv", &source_drv);
 
         let output = tokio::process::Command::new("nix-store")
-            .args(["--realise", source_drv])
+            .args(["--realise", &source_drv])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -183,32 +215,37 @@ pub async fn run_source(
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        printer.success(&format!("Source realised: {}", stdout.trim()));
-        return Ok(());
+        let path = stdout.trim().to_string();
+        printer.success(&format!("Source realised: {path}"));
+        realised_path = Some(path);
     }
 
     // --verify: rebuild from source and compare hash.
     if verify_source {
         printer.header(&format!("Rebuilding '{package}' from source..."));
-        printer.kv("Source drv", source_drv);
+        printer.kv("Source drv", &source_drv);
 
-        let output = tokio::process::Command::new("nix-store")
-            .args(["--realise", source_drv])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("running nix-store --realise for source verification")?;
+        let built_path = if let Some(path) = realised_path {
+            path
+        } else {
+            let output = tokio::process::Command::new("nix-store")
+                .args(["--realise", &source_drv])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .context("running nix-store --realise for source verification")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "nix-store --realise failed for {source_drv}: {}",
-                stderr.trim()
-            );
-        }
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!(
+                    "nix-store --realise failed for {source_drv}: {}",
+                    stderr.trim()
+                );
+            }
 
-        let built_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
 
         // Now dump and hash the built output.
         printer.info("Hashing rebuilt output...");
@@ -230,12 +267,11 @@ pub async fn run_source(
         }
 
         let actual_hash = hash_verify::sha256_stream(dump_output.stdout.as_slice())?;
-        let expected_hash = &pkg_meta.nar_hash;
 
-        printer.kv("Expected NAR hash", expected_hash);
+        printer.kv("Expected NAR hash", &expected_hash);
         printer.kv("Rebuilt NAR hash", &actual_hash);
 
-        if hash_verify::sha256_hashes_equal(&actual_hash, expected_hash)? {
+        if hash_verify::sha256_hashes_equal(&actual_hash, &expected_hash)? {
             printer.success(&format!(
                 "OK: source rebuild of '{package}' matches installed binary"
             ));

@@ -226,6 +226,14 @@
     pname = "upgradeface";
     version = "2.0.0";
   };
+  sourcefulV1 = mkProfileTool {
+    pname = "sourceful";
+    version = "1.0.0";
+  };
+  sourcefulV2 = mkProfileTool {
+    pname = "sourceful";
+    version = "2.0.0";
+  };
   realIdempotentDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -319,6 +327,8 @@
       surfaceTool
       surfaceUpgradeV1
       surfaceUpgradeV2
+      sourcefulV1
+      sourcefulV2
     ];
   realInstallDeps =
     fixtures.commonDeps
@@ -3078,14 +3088,19 @@ in {
       LEAF_STORE="${surfaceLeafTool}"
       UPGRADE_V1_STORE="${surfaceUpgradeV1}"
       UPGRADE_V2_STORE="${surfaceUpgradeV2}"
+      SOURCE_V1_STORE="${sourcefulV1}"
+      SOURCE_V2_STORE="${sourcefulV2}"
       SURFACE_HASH=$(basename "$SURFACE_STORE" | cut -d- -f1)
       LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
       UPGRADE_V1_HASH=$(basename "$UPGRADE_V1_STORE" | cut -d- -f1)
       UPGRADE_V2_HASH=$(basename "$UPGRADE_V2_STORE" | cut -d- -f1)
+      SOURCE_V1_HASH=$(basename "$SOURCE_V1_STORE" | cut -d- -f1)
+      SOURCE_V2_HASH=$(basename "$SOURCE_V2_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/surfaceuser"
       SURFACE_BIN="$PROFILE/current/bin/surfacepkg"
       LEAF_BIN="$PROFILE/current/bin/surface-leaf"
       UPGRADE_BIN="$PROFILE/current/bin/upgradeface"
+      SOURCE_BIN="$PROFILE/current/bin/sourceful"
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -3197,6 +3212,37 @@ in {
         cat "/tmp/surface-publish-upgradeface-$label.out"
       }
 
+      record_source_metadata() {
+        store="$1"
+        label="$2"
+        toml="$REG_DIR/packages/s/sourceful.toml"
+        python3 -c 'from pathlib import Path; import sys; p = Path(sys.argv[1]); store = sys.argv[2]; text = p.read_text(); marker = "nar_hash = \""; pos = text.rfind(marker); assert pos >= 0, "nar_hash not found"; start = pos + len(marker); end = text.find("\"", start); nar_hash = text[start:end]; text = text.replace("source_drv = \"\"", f"source_drv = \"{store}\"", 1); text = text.replace("source_nar_hash = \"\"", f"source_nar_hash = \"{nar_hash}\"", 1); p.write_text(text)' "$toml" "$store" > "/tmp/surface-record-source-$label.out" 2>&1 || {
+          cat "/tmp/surface-record-source-$label.out"
+          fail "record source metadata for sourceful $label"
+          return 1
+        }
+      }
+
+      publish_sourceful() {
+        version="$1"
+        store="$2"
+        label="$3"
+        $APR publish "$store" \
+          --name sourceful \
+          --version "$version" \
+          --description "Source derivation command fixture" \
+          --license MIT \
+          --maintainer surface@example.invalid \
+          --registry surface-reg \
+          --no-commit > "/tmp/surface-publish-sourceful-$label.out" 2>&1 || {
+          cat "/tmp/surface-publish-sourceful-$label.out"
+          fail "apr publish sourceful $version succeeds"
+          return 1
+        }
+        cat "/tmp/surface-publish-sourceful-$label.out"
+        record_source_metadata "$store" "$label"
+      }
+
       generate_surface_cache() {
         label="$1"
         $APR cache generate \
@@ -3250,6 +3296,8 @@ in {
       assert_store_valid "$LEAF_STORE" "surface-leaf"
       assert_store_valid "$UPGRADE_V1_STORE" "upgradeface-v1"
       assert_store_valid "$UPGRADE_V2_STORE" "upgradeface-v2"
+      assert_store_valid "$SOURCE_V1_STORE" "sourceful-v1"
+      assert_store_valid "$SOURCE_V2_STORE" "sourceful-v2"
       nix-store -q --references "$SURFACE_STORE" > /tmp/surface-refs.out
       assert_file_contains /tmp/surface-refs.out "$LEAF_STORE" \
         "surfacepkg has a real Nix reference to surface-leaf"
@@ -3261,10 +3309,15 @@ in {
       publish_leaf_package
       publish_surface_package
       publish_upgradeface 1.0.0 "$UPGRADE_V1_STORE" v1
+      publish_sourceful 1.0.0 "$SOURCE_V1_STORE" v1
       assert_file_contains "$REG_DIR/packages/s/surfacepkg.toml" \
         "$SURFACE_HASH" "published surfacepkg metadata records store hash"
       assert_file_contains "$REG_DIR/packages/s/surface-leaf.toml" \
         "$LEAF_HASH" "published surface-leaf metadata records store hash"
+      assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
+        "$SOURCE_V1_HASH" "published sourceful metadata records store hash"
+      assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
+        "$SOURCE_V1_STORE" "published sourceful metadata records source path"
       assert_file_contains "$REG_DIR/closures/$SURFACE_HASH" \
         "$LEAF_HASH" "published surfacepkg closure records dependency"
 
@@ -3275,6 +3328,8 @@ in {
         "static cache has surface-leaf narinfo"
       assert_file_exists "/tmp/surface-cache/$UPGRADE_V1_HASH.narinfo" \
         "static cache has upgradeface v1 narinfo"
+      assert_file_exists "/tmp/surface-cache/$SOURCE_V1_HASH.narinfo" \
+        "static cache has sourceful v1 narinfo"
       assert_file_contains "$REG_DIR/registry.toml" \
         "http://127.0.0.1:18105" "registry records command-surface cache URL"
 
@@ -3311,6 +3366,7 @@ in {
       delete_store_path "$SURFACE_STORE" "surfacepkg"
       delete_store_path "$LEAF_STORE" "surface-leaf"
       delete_store_path "$UPGRADE_V1_STORE" "upgradeface-v1"
+      delete_store_path "$SOURCE_V1_STORE" "sourceful-v1"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -3346,6 +3402,22 @@ in {
       assert_file_contains /tmp/surface-upgradeface-v1-run.out "^upgradeface 1.0.0$" \
         "installed upgradeface v1 executable runs from profile"
 
+      $APM install sourceful --registry surface-reg --yes > /tmp/surface-install-sourceful.out 2>&1 || {
+        cat /tmp/surface-install-sourceful.out
+        fail "apm install downloads sourceful v1"
+      }
+      cat /tmp/surface-install-sourceful.out
+      assert_file_contains /tmp/surface-install-sourceful.out "Downloading 1 NAR" \
+        "sourceful install downloads v1 NAR"
+      assert_file_contains /tmp/surface-install-sourceful.out "Installed 1 package" \
+        "sourceful install creates profile generation"
+      assert_store_valid "$SOURCE_V1_STORE" "sourceful-v1"
+      "$SOURCE_BIN" > /tmp/surface-sourceful-v1-run.out
+      assert_file_contains /tmp/surface-sourceful-v1-run.out "^sourceful 1.0.0$" \
+        "installed sourceful v1 executable runs from profile"
+      assert_file_contains "$PROFILE/meta/$SOURCE_V1_HASH.json" '"explicit": true' \
+        "sourceful metadata is explicit"
+
       run_ok search-desc "$APM" search Surface
       assert_file_contains /tmp/surface-search-desc.out "surfacepkg" "apm search finds descriptions"
       run_ok search-names "$APM" search surface --names-only
@@ -3364,6 +3436,8 @@ in {
         "apm list --installed reports surfacepkg"
       assert_file_contains /tmp/surface-list-installed.out "upgradeface/surface-reg" \
         "apm list --installed reports upgradeface"
+      assert_file_contains /tmp/surface-list-installed.out "sourceful/surface-reg" \
+        "apm list --installed reports sourceful"
 
       $APM hold surfacepkg > /tmp/surface-hold.out 2>&1 || {
         cat /tmp/surface-hold.out
@@ -3397,6 +3471,22 @@ in {
       run_fail source-fetch "$APM" source surfacepkg --fetch
       assert_file_contains /tmp/surface-source-fetch.out "no source derivation recorded" \
         "apm source --fetch reports missing source drv"
+      run_ok source-sourceful "$APM" source sourceful
+      assert_file_contains /tmp/surface-source-sourceful.out "$SOURCE_V1_STORE" \
+        "apm source reports sourceful v1 source path"
+      assert_file_contains /tmp/surface-source-sourceful.out "Source NAR hash" \
+        "apm source reports sourceful source NAR hash"
+      run_ok source-sourceful-show-drv "$APM" source sourceful --show-drv
+      assert_file_contains /tmp/surface-source-sourceful-show-drv.out "$SOURCE_V1_STORE" \
+        "apm source --show-drv reports sourceful v1 source path"
+      run_ok source-sourceful-fetch "$APM" source sourceful --fetch
+      assert_file_contains /tmp/surface-source-sourceful-fetch.out "Source realised: $SOURCE_V1_STORE" \
+        "apm source --fetch realises sourceful v1 derivation"
+      run_ok source-sourceful-verify "$APM" source sourceful --verify
+      assert_file_contains /tmp/surface-source-sourceful-verify.out "$SOURCE_V1_STORE" \
+        "apm source --verify uses sourceful v1 source path"
+      assert_file_contains /tmp/surface-source-sourceful-verify.out "matches installed binary" \
+        "apm source --verify compares sourceful rebuild with installed binary"
       run_ok verify "$APM" verify surfacepkg
       assert_file_contains /tmp/surface-verify.out "integrity verified" \
         "apm verify validates real installed NAR hash"
@@ -3466,6 +3556,47 @@ in {
       assert_file_contains /tmp/surface-upgradeface-v2-run.out "^upgradeface 2.0.0$" \
         "full-upgraded executable runs from profile"
 
+      echo "==> Maintainer: publish newer sourceful candidate"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      publish_sourceful 2.0.0 "$SOURCE_V2_STORE" v2
+      assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
+        "$SOURCE_V2_HASH" "published sourceful v2 metadata records store hash"
+      assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
+        "$SOURCE_V2_STORE" "published sourceful v2 metadata records source path"
+      generate_surface_cache source-v2
+      assert_file_exists "/tmp/surface-cache/$SOURCE_V2_HASH.narinfo" \
+        "static cache has sourceful v2 narinfo"
+      commit_surface_registry "release: command surface sourceful 2.0.0"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      echo "==> Consumer: source verification follows installed sourceful metadata"
+      export HOME=/tmp/surface-consumer
+      export USER=surfaceuser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$SOURCE_V2_STORE" "sourceful-v2"
+      $APM update --registry surface-reg > /tmp/surface-update-sourceful.out 2>&1 || {
+        cat /tmp/surface-update-sourceful.out
+        fail "apm update fetches sourceful v2 metadata"
+      }
+      cat /tmp/surface-update-sourceful.out
+      run_ok list-upgradable-sourceful "$APM" list --upgradable
+      assert_file_contains /tmp/surface-list-upgradable-sourceful.out "sourceful/surface-reg" \
+        "apm list --upgradable includes sourceful v2 candidate"
+      assert_file_contains /tmp/surface-list-upgradable-sourceful.out "upgradable: 2.0.0" \
+        "apm list --upgradable reports sourceful candidate version"
+      run_ok source-sourceful-verify-installed "$APM" source sourceful --verify
+      assert_file_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V1_STORE" \
+        "apm source --verify uses installed sourceful v1 source path after v2 appears"
+      assert_file_not_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V2_STORE" \
+        "apm source --verify does not use latest uninstalled sourceful v2 source path"
+      assert_file_contains /tmp/surface-source-sourceful-verify-installed.out "matches installed binary" \
+        "apm source --verify still validates installed sourceful v1"
+      "$SOURCE_BIN" > /tmp/surface-sourceful-still-v1-run.out
+      assert_file_contains /tmp/surface-sourceful-still-v1-run.out "^sourceful 1.0.0$" \
+        "sourceful remains v1 until explicitly upgraded"
+
       run_ok clean "$APM" clean
       assert_file_contains /tmp/surface-clean.out "Cleared NAR cache" "apm clean clears NAR cache"
       if find "$HOME/.cache/apm" -name '*.nar.zst' | grep -q .; then
@@ -3510,6 +3641,8 @@ in {
         "apm orphans lists automatic dependency from removed registry"
       assert_file_contains /tmp/surface-orphans-removed.out "upgradeface" \
         "apm orphans lists additional package from removed registry"
+      assert_file_contains /tmp/surface-orphans-removed.out "sourceful" \
+        "apm orphans lists sourceful package from removed registry"
       assert_file_contains /tmp/surface-orphans-removed.out "removed registry 'surface-reg'" \
         "apm orphans names the removed registry"
 
