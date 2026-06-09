@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -7,7 +7,7 @@ use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::{RegistrySet, store_path_hash};
-use super::types::PackageMeta;
+use super::types::{InstalledMeta, PackageMeta};
 use aos_core::output::Printer;
 
 // ---------------------------------------------------------------------------
@@ -87,13 +87,10 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
 pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
 
-    let (_, target_meta) = registries
-        .resolve(package)
-        .ok_or_else(|| anyhow::anyhow!("package not found in any registry: {package}"))?;
-    let target_hash = store_path_hash(&target_meta.store_path).to_string();
-
     let profile = Profile::open(config.scope)?;
     let installed = meta::list_meta(&profile)?;
+    let (target_hashes, target_versions) =
+        rdepends_target_hashes(package, &registries, &installed)?;
 
     let mut dependents: Vec<(String, String)> = Vec::new();
 
@@ -112,7 +109,7 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
 
         // Try closure file first for O(1) membership check.
         if let Some(closure) = registries.get_closure_in(&apm.registry, inst_hash) {
-            if closure.contains(&target_hash) {
+            if target_hashes.iter().any(|hash| closure.contains(hash)) {
                 dependents.push((apm.name.clone(), apm.version.clone()));
             }
             continue;
@@ -120,7 +117,7 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
 
         // Fall back to recursive references traversal.
         if let Some(pkg_meta) = registries.resolve_hash_in(&apm.registry, inst_hash) {
-            if closure_contains(pkg_meta, &apm.registry, &registries, &target_hash) {
+            if closure_contains_any(pkg_meta, &apm.registry, &registries, &target_hashes) {
                 dependents.push((apm.name.clone(), apm.version.clone()));
             }
         }
@@ -128,14 +125,10 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
 
     if dependents.is_empty() {
         printer.info(&format!(
-            "{package} ({}) is not required by any installed package.",
-            target_meta.version,
+            "{package} ({target_versions}) is not required by any installed package.",
         ));
     } else {
-        printer.plain(&format!(
-            "{package} ({}) is required by:",
-            target_meta.version,
-        ));
+        printer.plain(&format!("{package} ({target_versions}) is required by:"));
         for (name, version) in &dependents {
             printer.plain(&format!("  {name} ({version})"));
         }
@@ -231,6 +224,37 @@ pub async fn files(config: &ApmConfig, package: &str, printer: &Printer) -> Resu
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
+}
+
+fn rdepends_target_hashes(
+    package: &str,
+    registries: &RegistrySet,
+    installed: &[InstalledMeta],
+) -> Result<(HashSet<String>, String)> {
+    let mut hashes = HashSet::new();
+    let mut versions = BTreeSet::new();
+
+    for inst in installed {
+        let Some(apm) = inst.apm.as_ref() else {
+            continue;
+        };
+        if apm.name != package {
+            continue;
+        }
+
+        hashes.insert(store_path_hash(&inst.store_path).to_string());
+        versions.insert(apm.version.clone());
+    }
+
+    if !hashes.is_empty() {
+        return Ok((hashes, versions.into_iter().collect::<Vec<_>>().join(", ")));
+    }
+
+    let (_, target_meta) = registries
+        .resolve(package)
+        .ok_or_else(|| anyhow::anyhow!("package not found in any registry: {package}"))?;
+    hashes.insert(store_path_hash(&target_meta.store_path).to_string());
+    Ok((hashes, target_meta.version.clone()))
 }
 
 /// Build a dependency tree recursively.
@@ -347,25 +371,25 @@ fn format_registry_or_ref(registry_name: &str, _hash: &str) -> String {
 }
 
 /// Check whether a package's transitive closure contains a target hash.
-fn closure_contains(
+fn closure_contains_any(
     meta: &PackageMeta,
     registry_name: &str,
     registries: &RegistrySet,
-    target_hash: &str,
+    target_hashes: &HashSet<String>,
 ) -> bool {
     let mut visited = HashSet::new();
-    closure_contains_inner(meta, registry_name, registries, target_hash, &mut visited)
+    closure_contains_any_inner(meta, registry_name, registries, target_hashes, &mut visited)
 }
 
-fn closure_contains_inner(
+fn closure_contains_any_inner(
     meta: &PackageMeta,
     registry_name: &str,
     registries: &RegistrySet,
-    target_hash: &str,
+    target_hashes: &HashSet<String>,
     visited: &mut HashSet<String>,
 ) -> bool {
     for ref_hash in &meta.references {
-        if ref_hash == target_hash {
+        if target_hashes.contains(ref_hash) {
             return true;
         }
         if visited.contains(ref_hash) {
@@ -374,7 +398,13 @@ fn closure_contains_inner(
         visited.insert(ref_hash.clone());
 
         if let Some(ref_meta) = registries.resolve_hash_in(registry_name, ref_hash) {
-            if closure_contains_inner(ref_meta, registry_name, registries, target_hash, visited) {
+            if closure_contains_any_inner(
+                ref_meta,
+                registry_name,
+                registries,
+                target_hashes,
+                visited,
+            ) {
                 return true;
             }
         }
@@ -580,7 +610,8 @@ mod tests {
 
         // Check if curl's closure contains zlib.
         let (_, curl_meta) = set.resolve("curl").unwrap();
-        let contains = closure_contains(curl_meta, "aos-core", &set, &target_hash);
+        let target_hashes = HashSet::from([target_hash]);
+        let contains = closure_contains_any(curl_meta, "aos-core", &set, &target_hashes);
         assert!(contains);
     }
 
@@ -601,8 +632,123 @@ mod tests {
         let target_hash = store_path_hash(&curl_meta.store_path).to_string();
 
         let (_, zlib_meta) = set.resolve("zlib").unwrap();
-        let contains = closure_contains(zlib_meta, "aos-core", &set, &target_hash);
+        let target_hashes = HashSet::from([target_hash]);
+        let contains = closure_contains_any(zlib_meta, "aos-core", &set, &target_hashes);
         assert!(!contains);
+    }
+
+    #[test]
+    fn rdepends_target_prefers_installed_lower_priority_duplicate() {
+        let tmp = TempDir::new().unwrap();
+        let high_tool_toml = r#"
+[package]
+name = "priority-tool"
+description = "high priority tool"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-priority-tool-2.0.0"
+nar_hash = "sha256:high"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+        let low_tool_toml = r#"
+[package]
+name = "priority-tool"
+description = "low priority tool"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "9.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/llllllllllllllllllllllllllllllll-priority-tool-9.0.0"
+nar_hash = "sha256:low"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+        let low_client_toml = r#"
+[package]
+name = "priority-client"
+description = "low priority client"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/cccccccccccccccccccccccccccccccc-priority-client-1.0.0"
+nar_hash = "sha256:client"
+nar_size = 1
+closure_size = 2
+source_drv = ""
+source_nar_hash = ""
+references = ["llllllllllllllllllllllllllllllll"]
+"#;
+        let high = make_registry(
+            &tmp,
+            "high-priority",
+            900,
+            &[("priority-tool", high_tool_toml)],
+        );
+        let low = make_registry(
+            &tmp,
+            "low-priority",
+            100,
+            &[
+                ("priority-tool", low_tool_toml),
+                ("priority-client", low_client_toml),
+            ],
+        );
+        let set = RegistrySet::new(vec![high, low]);
+        let (_, latest) = set.resolve("priority-tool").unwrap();
+        assert_eq!(latest.version, "2.0.0");
+
+        let installed = vec![InstalledMeta {
+            store_path: "/nix/store/llllllllllllllllllllllllllllllll-priority-tool-9.0.0".into(),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(crate::types::ApmMeta {
+                name: "priority-tool".into(),
+                version: "9.0.0".into(),
+                explicit: true,
+                registry: "low-priority".into(),
+                installed_at: "2026-06-09T00:00:00Z".into(),
+                held: false,
+            }),
+        }];
+
+        let (target_hashes, target_versions) =
+            rdepends_target_hashes("priority-tool", &set, &installed).unwrap();
+        assert_eq!(target_versions, "9.0.0");
+        assert!(target_hashes.contains("llllllllllllllllllllllllllllllll"));
+        assert!(!target_hashes.contains("hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"));
+
+        let low_client = set
+            .resolve_hash_in("low-priority", "cccccccccccccccccccccccccccccccc")
+            .unwrap();
+        assert!(closure_contains_any(
+            low_client,
+            "low-priority",
+            &set,
+            &target_hashes
+        ));
     }
 
     // 8. Highest priority first in policy output.
