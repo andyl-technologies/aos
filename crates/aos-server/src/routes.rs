@@ -222,6 +222,7 @@ async fn narinfo_handler(
 async fn nar_handler(
     Path((view, filename)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     auth: AuthResult,
 ) -> Response {
     if let Err(resp) = validate_view_name(&view) {
@@ -272,12 +273,67 @@ async fn nar_handler(
         }
     };
 
+    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    if let Some(range) = range {
+        let bytes = match compress::nar_bytes(&store_path, compression) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::error!(view = %view, hash = %store_hash, error = %e, "NAR range materialisation failed");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("streaming NAR: {e}"),
+                )
+                    .into_response();
+            }
+        };
+        let total = bytes.len() as u64;
+        let Some((start, end)) = parse_range_header(range, total) else {
+            return (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [
+                    (header::ACCEPT_RANGES, "bytes".to_string()),
+                    (header::CONTENT_RANGE, format!("bytes */{total}")),
+                ],
+                "range not satisfiable",
+            )
+                .into_response();
+        };
+
+        let chunk = bytes[start as usize..=end as usize].to_vec();
+        tracing::info!(
+            view = %view,
+            hash = %store_hash,
+            start,
+            end,
+            total,
+            compression = %compression.narinfo_name(),
+            "NAR range streamed"
+        );
+        return (
+            StatusCode::PARTIAL_CONTENT,
+            [
+                (header::CONTENT_TYPE, compression.content_type().to_string()),
+                (header::ACCEPT_RANGES, "bytes".to_string()),
+                (
+                    header::CONTENT_RANGE,
+                    format!("bytes {start}-{end}/{total}"),
+                ),
+                (header::CONTENT_LENGTH, chunk.len().to_string()),
+            ],
+            chunk,
+        )
+            .into_response();
+    }
+
     match compress::nar_stream(&store_path, compression).await {
         Ok(body) => {
             tracing::info!(view = %view, hash = %store_hash, compression = %compression.narinfo_name(), "NAR streamed");
             (
                 StatusCode::OK,
-                [(header::CONTENT_TYPE, compression.content_type())],
+                [
+                    (header::CONTENT_TYPE, compression.content_type()),
+                    (header::ACCEPT_RANGES, "bytes"),
+                ],
                 body,
             )
                 .into_response()
@@ -291,6 +347,42 @@ async fn nar_handler(
                 .into_response()
         }
     }
+}
+
+fn parse_range_header(value: &str, total: u64) -> Option<(u64, u64)> {
+    if total == 0 {
+        return None;
+    }
+    let spec = value.trim().strip_prefix("bytes=")?;
+    if spec.contains(',') {
+        return None;
+    }
+    let (start, end) = spec.split_once('-')?;
+
+    if start.is_empty() {
+        let suffix_len = end.parse::<u64>().ok()?;
+        if suffix_len == 0 {
+            return None;
+        }
+        let start = total.saturating_sub(suffix_len);
+        return Some((start, total - 1));
+    }
+
+    let start = start.parse::<u64>().ok()?;
+    if start >= total {
+        return None;
+    }
+
+    let end = if end.is_empty() {
+        total - 1
+    } else {
+        end.parse::<u64>().ok()?.min(total - 1)
+    };
+    if start > end {
+        return None;
+    }
+
+    Some((start, end))
 }
 
 // ---------------------------------------------------------------------------
@@ -1103,7 +1195,7 @@ async fn gc_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::format_build_closure_sse_event;
+    use super::{format_build_closure_sse_event, parse_range_header};
     use crate::build::{BuildEvent, BuildEventKind};
 
     #[test]
@@ -1122,5 +1214,26 @@ mod tests {
         assert!(frame.contains("\"drv\":\"/nix/store/member.drv\""));
         assert!(frame.contains("event: log"));
         assert!(frame.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn range_header_parser_accepts_single_byte_ranges() {
+        assert_eq!(parse_range_header("bytes=0-1023", 4096), Some((0, 1023)));
+        assert_eq!(parse_range_header("bytes=1024-", 4096), Some((1024, 4095)));
+        assert_eq!(parse_range_header("bytes=-512", 4096), Some((3584, 4095)));
+        assert_eq!(
+            parse_range_header("bytes=3000-9999", 4096),
+            Some((3000, 4095))
+        );
+    }
+
+    #[test]
+    fn range_header_parser_rejects_invalid_or_unsatisfied_ranges() {
+        assert_eq!(parse_range_header("items=0-1", 4096), None);
+        assert_eq!(parse_range_header("bytes=4096-", 4096), None);
+        assert_eq!(parse_range_header("bytes=10-9", 4096), None);
+        assert_eq!(parse_range_header("bytes=0-1,3-4", 4096), None);
+        assert_eq!(parse_range_header("bytes=-0", 4096), None);
+        assert_eq!(parse_range_header("bytes=0-0", 0), None);
     }
 }
