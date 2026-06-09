@@ -196,6 +196,8 @@ pub enum PackageCommand {
     },
     /// List held packages
     Held,
+    /// List installed packages whose source registry is no longer configured
+    Orphans,
     /// Remove cached NAR downloads
     Clean {
         /// Also remove old profile generations
@@ -390,6 +392,9 @@ pub enum RegistryCommand {
         /// Semver version constraint on tags (mutually exclusive with --commit/--branch/--tag)
         #[arg(long, group = "tracking")]
         version: Option<String>,
+        /// Register the config only; skip cloning the registry into local storage
+        #[arg(long = "no-clone")]
+        no_clone: bool,
     },
     /// Remove a registry
     Remove {
@@ -1221,6 +1226,7 @@ pub async fn run(
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held => hold::run_held(&config, printer).await,
+        PackageCommand::Orphans => query::orphans(&config, printer).await,
         PackageCommand::Clean { generations, keep } => {
             clean::run(&config, *generations, *keep, printer).await
         }
@@ -1290,6 +1296,7 @@ async fn run_registry(
             branch,
             tag,
             version,
+            no_clone,
         } => {
             registry_add(
                 config,
@@ -1300,6 +1307,7 @@ async fn run_registry(
                 branch.as_deref(),
                 tag.as_deref(),
                 version.as_deref(),
+                !no_clone,
                 printer,
             )
             .await
@@ -1673,6 +1681,7 @@ async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn registry_add(
     config: &config::ApmConfig,
     url: &str,
@@ -1682,6 +1691,7 @@ async fn registry_add(
     branch: Option<&str>,
     tag: Option<&str>,
     version: Option<&str>,
+    clone: bool,
     printer: &Printer,
 ) -> Result<()> {
     let name = name_override
@@ -1740,10 +1750,29 @@ enabled = true
     fs::write(&toml_path, &toml_content)
         .with_context(|| format!("writing {}", toml_path.display()))?;
 
-    printer.success(&format!(
-        "Registry '{name}' added. Run `{} update {name}` to sync package metadata.",
-        aos_core::invocation::package_manager_command()
-    ));
+    let pkg_cmd = aos_core::invocation::package_manager_command();
+
+    if !clone {
+        printer.success(&format!(
+            "Registry '{name}' added. Run `{pkg_cmd} update {name}` to sync package metadata."
+        ));
+        return Ok(());
+    }
+
+    printer.success(&format!("Registry '{name}' added."));
+
+    // Materialise the local clone under the scope's registry-storage directory
+    // by syncing now. The config was just written to disk, so reload the scope
+    // to pick it up and reuse the regular update path (clone/fetch + state
+    // save-back). A sync failure is non-fatal: the registry is registered and
+    // can be retried with `<pkg> update`.
+    let synced = config::ApmConfig::load(config.scope)?;
+    if let Err(e) = update::run(&synced, Some(&name), printer).await {
+        printer.warning(&format!(
+            "Registry '{name}' was added, but the initial sync failed: {e}\n\
+             Retry with `{pkg_cmd} update {name}`."
+        ));
+    }
 
     Ok(())
 }
@@ -1761,35 +1790,13 @@ async fn registry_remove(
         .into());
     }
 
-    let prof = profile::Profile::open(config.scope)?;
-    let installed = profile::meta::meta_by_registry(&prof, name)?;
-
-    if !installed.is_empty() {
-        let pkg_names: Vec<String> = installed
-            .iter()
-            .filter_map(|m| m.apm.as_ref().map(|a| a.name.clone()))
-            .collect();
-
-        printer.error(&format!(
-            "Cannot remove registry '{}': {} installed package(s):",
-            name,
-            installed.len()
-        ));
-        for pkg_name in &pkg_names {
-            printer.plain(&format!("  - {pkg_name}"));
-        }
-        printer.plain(&format!(
-            "Remove these packages first with `{} remove`.",
-            aos_core::invocation::package_manager_command()
-        ));
-
-        return Err(AosError::RegistryHasPackages {
-            name: name.to_string(),
-            count: installed.len(),
-        }
-        .into());
-    }
-
+    // Removing a registry is a config operation over user-owned paths
+    // (`registries.d/`, the local clone, the metadata cache, trusted keys). It
+    // deliberately does NOT touch the package profile under
+    // `/var/lib/profiles`: that is `apm`'s domain, requires privileges an
+    // unprivileged `apr` invocation may not have, and gating a config delete on
+    // installed-package state conflates the two tools. Any packages still
+    // installed from this registry become orphans; `apm orphans` surfaces them.
     let config_dir = config.scope.config_dir();
     let toml_path = config_dir.join("registries.d").join(format!("{name}.toml"));
 
@@ -1813,6 +1820,10 @@ async fn registry_remove(
     let _ = key_store.remove(name);
 
     printer.success(&format!("Registry '{name}' removed."));
+    printer.info(&format!(
+        "Any packages installed from '{name}' are now orphaned; review them with `{} orphans`.",
+        aos_core::invocation::package_manager_command()
+    ));
 
     Ok(())
 }
@@ -2014,6 +2025,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             &printer,
         )
         .await;

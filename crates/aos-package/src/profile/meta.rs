@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -103,6 +104,40 @@ pub fn meta_by_registry(profile: &Profile, registry_name: &str) -> Result<Vec<In
             m.apm
                 .as_ref()
                 .map(|a| a.registry == registry_name)
+                .unwrap_or(false)
+        })
+        .collect())
+}
+
+/// Find installed packages whose source registry is no longer configured.
+///
+/// A package becomes *orphaned* when the registry it was installed from is
+/// removed (for example via `apr remove`): the package stays installed, but it
+/// can no longer be upgraded, re-verified, or re-resolved against its source.
+/// This returns every installed entry whose [`ApmMeta::registry`] is absent
+/// from `configured_registries` — the set of registry names still present in
+/// the configuration (enabled *or* disabled; a disabled registry is not gone,
+/// so its packages are not orphaned).
+///
+/// Entries without an `apm` section (e.g. raw cache paths) are never orphans.
+///
+/// [`ApmMeta::registry`]: crate::types::ApmMeta::registry
+///
+/// # Errors
+///
+/// Returns an error if the profile's `meta/` directory exists but cannot be
+/// read. A missing profile yields an empty list rather than an error.
+pub fn orphaned_by_registry(
+    profile: &Profile,
+    configured_registries: &HashSet<&str>,
+) -> Result<Vec<InstalledMeta>> {
+    let all = list_meta(profile)?;
+    Ok(all
+        .into_iter()
+        .filter(|m| {
+            m.apm
+                .as_ref()
+                .map(|a| !configured_registries.contains(a.registry.as_str()))
                 .unwrap_or(false)
         })
         .collect())
@@ -388,6 +423,46 @@ mod tests {
 
         let none_pkgs = meta_by_registry(&profile, "nonexistent").unwrap();
         assert!(none_pkgs.is_empty());
+    }
+
+    // 6b. orphaned_by_registry returns packages from unconfigured registries
+    #[test]
+    fn orphaned_by_registry_filters() {
+        let tmp = TempDir::new().unwrap();
+        let profile = test_profile(&tmp);
+
+        write_meta(&profile, "aaa111", &sample_meta("curl", "core", true, false)).unwrap();
+        write_meta(&profile, "bbb222", &sample_meta("zlib", "core", false, false)).unwrap();
+        write_meta(&profile, "ccc333", &sample_meta("jq", "extra", true, true)).unwrap();
+
+        // Only "core" is still configured; "extra" was removed.
+        let configured: HashSet<&str> = ["core"].into_iter().collect();
+        let orphans = orphaned_by_registry(&profile, &configured).unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].apm.as_ref().unwrap().name, "jq");
+        assert_eq!(orphans[0].apm.as_ref().unwrap().registry, "extra");
+
+        // With every registry configured, nothing is orphaned.
+        let all_configured: HashSet<&str> = ["core", "extra"].into_iter().collect();
+        assert!(orphaned_by_registry(&profile, &all_configured).unwrap().is_empty());
+
+        // With no registries configured, every apm package is orphaned.
+        let none: HashSet<&str> = HashSet::new();
+        assert_eq!(orphaned_by_registry(&profile, &none).unwrap().len(), 3);
+    }
+
+    // 6c. orphaned_by_registry treats a missing profile as empty (no error)
+    #[test]
+    fn orphaned_by_registry_missing_profile_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        // Reference a profile path that was never initialized — no meta/ dir.
+        let profile = Profile {
+            path: tmp.path().join("never-created"),
+            scope: ProfileScope::User,
+        };
+
+        let configured: HashSet<&str> = ["core"].into_iter().collect();
+        assert!(orphaned_by_registry(&profile, &configured).unwrap().is_empty());
     }
 
     // 7. auto_installed returns only explicit=false entries
