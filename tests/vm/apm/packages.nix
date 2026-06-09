@@ -70,6 +70,39 @@
     pname = "idempkg";
     version = "1.0.0";
   };
+  installBasicTool = mkProfileTool {
+    pname = "install-basic-tool";
+    version = "1.0.0";
+  };
+  installDepTool = mkProfileTool {
+    pname = "install-libfoo";
+    version = "1.0.0";
+  };
+  installWithDepsTool = pkgs.mkDerivation {
+    pname = "install-with-deps";
+    version = "2.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      installDepTool
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            '${installDepTool}/bin/install-libfoo' \
+            > "$out/bin/install-with-deps"
+          chmod +x "$out/bin/install-with-deps"
+        '';
+      }
+    ];
+  };
   mkIdempotentWrapper = {
     pname,
     program ? pname,
@@ -110,6 +143,10 @@
   };
   removeRightTool = mkIdempotentWrapper {
     pname = "remove-right";
+  };
+  removeBasicTool = mkProfileTool {
+    pname = "remove-basic-tool";
+    version = "1.0.0";
   };
   holdToolV1 = mkProfileTool {
     pname = "hold-tool";
@@ -182,6 +219,7 @@
       pkgs.python3
       pkgs.zstd
       idempotentTool
+      removeBasicTool
       removeLeftTool
       removeRightTool
     ];
@@ -231,6 +269,18 @@
       upgradeBetaV1
       upgradeBetaV2
     ];
+  realInstallDeps =
+    fixtures.commonDeps
+    ++ nixRuntimeDeps
+    ++ [
+      pkgs.findutils
+      pkgs.iproute2
+      pkgs.python3
+      pkgs.zstd
+      installBasicTool
+      installDepTool
+      installWithDepsTool
+    ];
   nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
   setupNixEnv = ''
     export NIX_REMOTE=""
@@ -246,111 +296,352 @@
   '';
 in {
   # -------------------------------------------------------------------------
-  # 1. install-basic — Basic install command exercised
+  # 1. install-basic — Install a real package from a generated cache
   # -------------------------------------------------------------------------
   install-basic = testing.mkVMTest {
     name = "apm-install-basic";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = realInstallDeps;
+    memory = 1024;
     testScript = ''
-            ${fixtures.setupPreamble}
-            ${fixtures.mkFakePackageToml}
+      ${fixtures.setupPreamble}
+      ${setupNixEnv}
 
-            echo "==> Test: apm install basic flow"
+      echo "==> Test: real apm install basic workflow"
 
-            # Set up a local registry with a package
-            $APR create test-reg
-            REG_DIR="$REG_STORAGE/test-reg"
-            write_package_toml "$REG_DIR" "testpkg" "1.0.0"
-            commit_registry "$REG_DIR" "publish testpkg 1.0.0"
+      BASIC_STORE="${installBasicTool}"
+      BASIC_HASH=$(basename "$BASIC_STORE" | cut -d- -f1)
+      PROFILE="/var/lib/profiles/per-user/basicuser"
+      BASIC_BIN="$PROFILE/current/bin/install-basic-tool"
 
-            # Configure apm to know about this registry
-            cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
-      [registry]
-      name = "test-reg"
-      url = "file://$REG_DIR"
-      priority = 500
-      enabled = true
-      EOF
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/basic-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/basic-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
 
-            # Attempt install — will fail at download phase (no real cache),
-            # but should get past parsing and resolution stages.
-            $APM install testpkg --registry test-reg > /tmp/install-out 2>&1 || true
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/basic-missing-$label.out" 2>&1; then
+          cat "/tmp/basic-missing-$label.out"
+          fail "$label should be missing from store"
+        else
+          pass "$label missing from store"
+        fi
+      }
 
-            # Verify the command attempted to load registries and resolve
-            cat /tmp/install-out
-            # The command should mention loading registries or resolving
-            if grep -q -i "registr\|resolv\|loading\|no packages\|not found" /tmp/install-out 2>/dev/null; then
-              pass "apm install processes registry and attempts resolution"
-            else
-              # Even if it errors differently, the command ran
-              pass "apm install command executed"
-            fi
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if nix-store --delete --ignore-liveness "$path" > "/tmp/basic-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/basic-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
 
-            check_fail
+      generation_count() {
+        find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+      }
+
+      wait_for_cache_server() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18093/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
+
+      mount -o remount,rw / || true
+      assert_store_valid "$BASIC_STORE" "install-basic-tool"
+
+      echo "==> Maintainer: publish install-basic-tool and static cache"
+      $APR create install-basic-reg
+      REG_DIR="$REG_STORAGE/install-basic-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      $APR publish "$BASIC_STORE" \
+        --name install-basic-tool \
+        --version 1.0.0 \
+        --description "Executable basic install fixture" \
+        --license MIT \
+        --maintainer install-basic@example.invalid \
+        --registry install-basic-reg \
+        --no-commit
+      assert_file_contains "$REG_DIR/packages/i/install-basic-tool.toml" \
+        "$BASIC_HASH" "published basic package metadata records store hash"
+
+      $APR cache generate \
+        --registry install-basic-reg \
+        --output /tmp/install-basic-cache \
+        --cache-url http://127.0.0.1:18093 \
+        --priority 53 \
+        --no-commit
+      assert_file_exists "/tmp/install-basic-cache/$BASIC_HASH.narinfo" \
+        "static cache has install-basic-tool narinfo"
+      assert_file_contains "$REG_DIR/registry.toml" \
+        "http://127.0.0.1:18093" "registry records basic cache URL"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "release: install-basic-tool 1.0.0"
+      git init --bare --object-format=sha256 /tmp/install-basic-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/install-basic-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      python3 -m http.server 18093 --bind 127.0.0.1 \
+        --directory /tmp/install-basic-cache > /tmp/install-basic-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      if wait_for_cache_server; then
+        pass "static cache HTTP server started"
+      else
+        cat /tmp/install-basic-cache-http.log || true
+        fail "static cache HTTP server started"
+      fi
+
+      echo "==> Consumer: install install-basic-tool from cache"
+      export HOME=/tmp/install-basic-consumer
+      export USER=basicuser
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/install-basic-origin.git \
+        --name install-basic-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/install-basic-registry-add.out 2>&1 || {
+        cat /tmp/install-basic-registry-add.out
+        fail "apm registry add syncs install-basic registry"
+      }
+      cat /tmp/install-basic-registry-add.out
+
+      delete_store_path "$BASIC_STORE" "install-basic-tool"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install install-basic-tool --registry install-basic-reg --yes > /tmp/install-basic.out 2>&1 || {
+        cat /tmp/install-basic.out
+        fail "apm install install-basic-tool succeeds"
+      }
+      cat /tmp/install-basic.out
+      assert_file_contains /tmp/install-basic.out "Downloading 1 NAR" \
+        "basic install downloads the package NAR"
+      assert_file_contains /tmp/install-basic.out "Installed 1 package" \
+        "basic install creates profile generation"
+      assert_store_valid "$BASIC_STORE" "install-basic-tool"
+      "$BASIC_BIN" > /tmp/install-basic-run.out
+      assert_file_contains /tmp/install-basic-run.out "^install-basic-tool 1.0.0$" \
+        "installed basic executable runs from profile"
+      assert_file_contains "$PROFILE/meta/$BASIC_HASH.json" '"explicit": true' \
+        "basic install writes explicit metadata"
+      if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
+        pass "basic install creates generation 1"
+      else
+        fail "basic install should create gen-1"
+      fi
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
+
+      check_fail
     '';
   };
 
   # -------------------------------------------------------------------------
-  # 2. install-with-deps — Install with dependencies
+  # 2. install-with-deps — Install a real package closure with dependencies
   # -------------------------------------------------------------------------
   install-with-deps = testing.mkVMTest {
     name = "apm-install-with-deps";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = realInstallDeps;
+    memory = 1024;
     testScript = ''
-            ${fixtures.setupPreamble}
-            ${fixtures.mkFakePackageToml}
+      ${fixtures.setupPreamble}
+      ${setupNixEnv}
 
-            echo "==> Test: apm install with dependencies"
+      echo "==> Test: real apm install with dependency workflow"
 
-            # Create registry with a package that has a dependency reference
-            $APR create test-reg
-            REG_DIR="$REG_STORAGE/test-reg"
+      DEP_STORE="${installDepTool}"
+      WRAPPER_STORE="${installWithDepsTool}"
+      DEP_HASH=$(basename "$DEP_STORE" | cut -d- -f1)
+      WRAPPER_HASH=$(basename "$WRAPPER_STORE" | cut -d- -f1)
+      PROFILE="/var/lib/profiles/per-user/depsuser"
+      DEP_BIN="$PROFILE/current/bin/install-libfoo"
+      WRAPPER_BIN="$PROFILE/current/bin/install-with-deps"
 
-            # Create the dependency package first
-            write_package_toml "$REG_DIR" "libfoo" "1.0.0"
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/deps-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/deps-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
 
-            # Create the main package with a reference to libfoo
-            mkdir -p "$REG_DIR/packages/m"
-            cat > "$REG_DIR/packages/m/mypkg.toml" << 'EOF'
-      [package]
-      name = "mypkg"
-      description = "Package with dependency"
-      license = "MIT"
-      maintainer = "test"
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/deps-missing-$label.out" 2>&1; then
+          cat "/tmp/deps-missing-$label.out"
+          fail "$label should be missing from store"
+        else
+          pass "$label missing from store"
+        fi
+      }
 
-      [[versions]]
-      version = "2.0.0"
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if nix-store --delete --ignore-liveness "$path" > "/tmp/deps-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/deps-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
 
-      [versions.platforms.x86_64-linux]
-      store_path = "/nix/store/cccccccccccccccccccccccccccccccc-mypkg-2.0.0"
-      nar_hash = "sha256:2222222222222222222222222222222222222222222222222222"
-      nar_size = 2048
-      closure_size = 4096
-      source_drv = ""
-      source_nar_hash = ""
-      references = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
-      EOF
-            commit_registry "$REG_DIR" "publish mypkg with deps"
+      generation_count() {
+        find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+      }
 
-            # Configure apm
-            cat > "$APM_CONFIG/registries.d/test-reg.toml" << EOF
-      [registry]
-      name = "test-reg"
-      url = "file://$REG_DIR"
-      priority = 500
-      enabled = true
-      EOF
+      wait_for_cache_server() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18094/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
 
-            # Attempt install — exercises dependency resolution path
-            $APM install mypkg --registry test-reg > /tmp/install-out 2>&1 || true
-            cat /tmp/install-out
+      mount -o remount,rw / || true
+      assert_store_valid "$DEP_STORE" "install-libfoo"
+      assert_store_valid "$WRAPPER_STORE" "install-with-deps"
+      nix-store -q --references "$WRAPPER_STORE" > /tmp/install-with-deps-refs.out
+      assert_file_contains /tmp/install-with-deps-refs.out "$DEP_STORE" \
+        "install-with-deps has a real Nix reference to install-libfoo"
 
-            # Verify the command was processed
-            pass "apm install with deps command executed"
+      echo "==> Maintainer: publish dependency, wrapper, and static cache"
+      $APR create install-deps-reg
+      REG_DIR="$REG_STORAGE/install-deps-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      $APR publish "$DEP_STORE" \
+        --name install-libfoo \
+        --version 1.0.0 \
+        --description "Runtime dependency install fixture" \
+        --license MIT \
+        --maintainer install-deps@example.invalid \
+        --registry install-deps-reg \
+        --no-commit
+      assert_file_contains "$REG_DIR/packages/i/install-libfoo.toml" \
+        "$DEP_HASH" "published dependency metadata records store hash"
+      $APR publish "$WRAPPER_STORE" \
+        --name install-with-deps \
+        --version 2.0.0 \
+        --description "Executable install dependency fixture" \
+        --license MIT \
+        --maintainer install-deps@example.invalid \
+        --registry install-deps-reg \
+        --no-commit
+      assert_file_contains "$REG_DIR/packages/i/install-with-deps.toml" \
+        "$WRAPPER_HASH" "published wrapper metadata records store hash"
+      assert_file_contains "$REG_DIR/packages/i/install-with-deps.toml" \
+        "$DEP_HASH" "published wrapper metadata records dependency reference"
+      assert_file_contains "$REG_DIR/closures/$WRAPPER_HASH" \
+        "$DEP_HASH" "published wrapper closure records dependency"
 
-            check_fail
+      $APR cache generate \
+        --registry install-deps-reg \
+        --output /tmp/install-deps-cache \
+        --cache-url http://127.0.0.1:18094 \
+        --priority 54 \
+        --no-commit
+      assert_file_exists "/tmp/install-deps-cache/$DEP_HASH.narinfo" \
+        "static cache has dependency narinfo"
+      assert_file_exists "/tmp/install-deps-cache/$WRAPPER_HASH.narinfo" \
+        "static cache has wrapper narinfo"
+      assert_file_contains "$REG_DIR/registry.toml" \
+        "http://127.0.0.1:18094" "registry records deps cache URL"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "release: install-with-deps 2.0.0"
+      git init --bare --object-format=sha256 /tmp/install-deps-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/install-deps-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      python3 -m http.server 18094 --bind 127.0.0.1 \
+        --directory /tmp/install-deps-cache > /tmp/install-deps-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      if wait_for_cache_server; then
+        pass "static cache HTTP server started"
+      else
+        cat /tmp/install-deps-cache-http.log || true
+        fail "static cache HTTP server started"
+      fi
+
+      echo "==> Consumer: install wrapper and dependency closure from cache"
+      export HOME=/tmp/install-deps-consumer
+      export USER=depsuser
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/install-deps-origin.git \
+        --name install-deps-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/install-deps-registry-add.out 2>&1 || {
+        cat /tmp/install-deps-registry-add.out
+        fail "apm registry add syncs install-deps registry"
+      }
+      cat /tmp/install-deps-registry-add.out
+
+      delete_store_path "$WRAPPER_STORE" "install-with-deps"
+      delete_store_path "$DEP_STORE" "install-libfoo"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install install-with-deps --registry install-deps-reg --yes > /tmp/install-deps.out 2>&1 || {
+        cat /tmp/install-deps.out
+        fail "apm install install-with-deps succeeds"
+      }
+      cat /tmp/install-deps.out
+      assert_file_contains /tmp/install-deps.out "Additional dependencies" \
+        "install with deps plans automatic dependency"
+      assert_file_contains /tmp/install-deps.out "Downloading 2 NAR" \
+        "install with deps downloads wrapper and dependency"
+      assert_file_contains /tmp/install-deps.out "Installed 1 package" \
+        "install with deps creates profile generation"
+      assert_store_valid "$DEP_STORE" "install-libfoo"
+      assert_store_valid "$WRAPPER_STORE" "install-with-deps"
+      "$WRAPPER_BIN" > /tmp/install-with-deps-run.out
+      assert_file_contains /tmp/install-with-deps-run.out "^install-libfoo 1.0.0$" \
+        "installed wrapper executes dependency from profile"
+      "$DEP_BIN" > /tmp/install-dep-run.out
+      assert_file_contains /tmp/install-dep-run.out "^install-libfoo 1.0.0$" \
+        "dependency executable is active in profile"
+      assert_file_contains "$PROFILE/meta/$WRAPPER_HASH.json" '"explicit": true' \
+        "wrapper metadata is explicit"
+      assert_file_contains "$PROFILE/meta/$DEP_HASH.json" '"explicit": false' \
+        "dependency metadata is automatic"
+      if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
+        pass "install with deps creates generation 1"
+      else
+        fail "install with deps should create gen-1"
+      fi
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
+
+      check_fail
     '';
   };
 
@@ -1159,27 +1450,210 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 7. remove-basic — Remove installed package
+  # 7. remove-basic — Remove a real installed package
   # -------------------------------------------------------------------------
   remove-basic = testing.mkVMTest {
     name = "apm-remove-basic";
-    rootfsDeps = fixtures.commonDeps;
-    memory = 512;
+    rootfsDeps = realRemoveDeps;
+    memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
+      ${setupNixEnv}
 
-      echo "==> Test: apm remove basic flow"
+      echo "==> Test: real apm remove basic workflow"
 
-      # Test remove of a package that isn't installed
-      $APM remove nonexistent-pkg > /tmp/remove-out 2>&1 || true
-      cat /tmp/remove-out
+      REMOVE_STORE="${removeBasicTool}"
+      REMOVE_HASH=$(basename "$REMOVE_STORE" | cut -d- -f1)
+      PROFILE="/var/lib/profiles/per-user/removebasicuser"
+      REMOVE_BIN="$PROFILE/current/bin/remove-basic-tool"
 
-      # Should handle gracefully (not crash)
-      if grep -q -i "not installed\|not found\|error\|no.*package" /tmp/remove-out 2>/dev/null; then
-        pass "apm remove gives clear error for non-installed package"
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/remove-basic-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/remove-basic-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/remove-basic-missing-$label.out" 2>&1; then
+          cat "/tmp/remove-basic-missing-$label.out"
+          fail "$label should be missing from store"
+        else
+          pass "$label missing from store"
+        fi
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if nix-store --delete --ignore-liveness "$path" > "/tmp/remove-basic-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/remove-basic-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
+
+      generation_count() {
+        find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+      }
+
+      wait_for_cache_server() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18095/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
+
+      mount -o remount,rw / || true
+      assert_store_valid "$REMOVE_STORE" "remove-basic-tool"
+
+      echo "==> Maintainer: publish remove-basic-tool and static cache"
+      $APR create remove-basic-reg
+      REG_DIR="$REG_STORAGE/remove-basic-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      $APR publish "$REMOVE_STORE" \
+        --name remove-basic-tool \
+        --version 1.0.0 \
+        --description "Executable remove basic fixture" \
+        --license MIT \
+        --maintainer remove-basic@example.invalid \
+        --registry remove-basic-reg \
+        --no-commit
+      assert_file_contains "$REG_DIR/packages/r/remove-basic-tool.toml" \
+        "$REMOVE_HASH" "published remove-basic metadata records store hash"
+
+      $APR cache generate \
+        --registry remove-basic-reg \
+        --output /tmp/remove-basic-cache \
+        --cache-url http://127.0.0.1:18095 \
+        --priority 55 \
+        --no-commit
+      assert_file_exists "/tmp/remove-basic-cache/$REMOVE_HASH.narinfo" \
+        "static cache has remove-basic-tool narinfo"
+      assert_file_contains "$REG_DIR/registry.toml" \
+        "http://127.0.0.1:18095" "registry records remove-basic cache URL"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "release: remove-basic-tool 1.0.0"
+      git init --bare --object-format=sha256 /tmp/remove-basic-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/remove-basic-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      python3 -m http.server 18095 --bind 127.0.0.1 \
+        --directory /tmp/remove-basic-cache > /tmp/remove-basic-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      if wait_for_cache_server; then
+        pass "static cache HTTP server started"
       else
-        pass "apm remove command executed for non-existent package"
+        cat /tmp/remove-basic-cache-http.log || true
+        fail "static cache HTTP server started"
       fi
+
+      echo "==> Consumer: install and remove remove-basic-tool"
+      export HOME=/tmp/remove-basic-consumer
+      export USER=removebasicuser
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/remove-basic-origin.git \
+        --name remove-basic-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/remove-basic-registry-add.out 2>&1 || {
+        cat /tmp/remove-basic-registry-add.out
+        fail "apm registry add syncs remove-basic registry"
+      }
+      cat /tmp/remove-basic-registry-add.out
+
+      delete_store_path "$REMOVE_STORE" "remove-basic-tool"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install remove-basic-tool --registry remove-basic-reg --yes > /tmp/remove-basic-install.out 2>&1 || {
+        cat /tmp/remove-basic-install.out
+        fail "apm install remove-basic-tool succeeds"
+      }
+      cat /tmp/remove-basic-install.out
+      assert_file_contains /tmp/remove-basic-install.out "Downloading 1 NAR" \
+        "remove-basic install downloads package NAR"
+      assert_file_contains /tmp/remove-basic-install.out "Installed 1 package" \
+        "remove-basic install creates profile generation"
+      "$REMOVE_BIN" > /tmp/remove-basic-run.out
+      assert_file_contains /tmp/remove-basic-run.out "^remove-basic-tool 1.0.0$" \
+        "remove-basic executable runs before removal"
+      assert_file_contains "$PROFILE/meta/$REMOVE_HASH.json" '"explicit": true' \
+        "remove-basic install writes explicit metadata"
+      if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
+        pass "remove-basic install creates generation 1"
+      else
+        fail "remove-basic install should create gen-1"
+      fi
+
+      $APM remove remove-basic-tool --yes > /tmp/remove-basic-remove.out 2>&1 || {
+        cat /tmp/remove-basic-remove.out
+        fail "apm remove remove-basic-tool succeeds"
+      }
+      cat /tmp/remove-basic-remove.out
+      assert_file_contains /tmp/remove-basic-remove.out "will be REMOVED" \
+        "remove prints removal plan"
+      assert_file_contains /tmp/remove-basic-remove.out "Removed 1 package" \
+        "remove reports package removal"
+      assert_store_valid "$REMOVE_STORE" "remove-basic-tool remains in store"
+      assert_file_not_exists "$PROFILE/meta/$REMOVE_HASH.json" \
+        "remove deletes installed metadata"
+      if [ ! -e "$REMOVE_BIN" ]; then
+        pass "remove drops executable from active profile"
+      else
+        fail "remove should drop executable from active profile"
+      fi
+      if [ "$(readlink "$PROFILE/current")" = "gen-2" ] && [ "$(generation_count)" = "2" ]; then
+        pass "remove creates generation 2"
+      else
+        fail "remove should create gen-2"
+      fi
+
+      $APM list --installed > /tmp/remove-basic-installed.out 2>&1 || {
+        cat /tmp/remove-basic-installed.out
+        fail "apm list --installed succeeds after remove"
+      }
+      assert_file_not_contains /tmp/remove-basic-installed.out "remove-basic-tool" \
+        "removed package is absent from installed list"
+
+      $APM remove remove-basic-tool --yes > /tmp/remove-basic-repeat.out 2>&1 && {
+        cat /tmp/remove-basic-repeat.out
+        fail "repeat remove should fail once package is absent"
+      } || true
+      cat /tmp/remove-basic-repeat.out
+      assert_file_contains /tmp/remove-basic-repeat.out "not found" \
+        "repeat remove reports package is absent"
+      if [ "$(readlink "$PROFILE/current")" = "gen-2" ] && [ "$(generation_count)" = "2" ]; then
+        pass "repeat failed remove does not create a generation"
+      else
+        fail "repeat failed remove should keep generation 2"
+      fi
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
 
       check_fail
     '';
