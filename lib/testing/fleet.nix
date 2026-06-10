@@ -73,9 +73,11 @@
       m = machines.${mname};
     in {
       inherit (m) system roles instanceMetadata;
-      # `extraClosures` defaults to [] on the fleet machine type, so this
-      # `or []` only matters for callers bypassing fleet-spec validation.
+      # `extraClosures` / `varSizeMiB` default on the fleet machine type,
+      # so the `or` fallbacks only matter for callers bypassing
+      # fleet-spec validation.
       extraClosures = m.extraClosures or [];
+      varSizeMiB = m.varSizeMiB or 256;
       name = mname;
       ip = "192.168.50.${toString (i + 10)}";
       mac = mkMac 0 (i + 1);
@@ -260,10 +262,9 @@
       };
 
   # ── Per-machine builds ─────────────────────────────────────────────
-  # `disk` is a function of `{system, extraClosures}` — Nix dedups
-  # identical derivations, so two machines with the same system and the
-  # same extraClosures reference one disk (machines differing only by
-  # extraClosures get distinct disks).
+  # `disk` is a function of `{system, extraClosures, varSizeMiB}`.
+  # Nix dedups identical derivations, so two machines with matching
+  # image inputs reference one disk.
   # `metadataISO` is the only per-machine derivation; in interactive
   # mode the SSH-key+DHCP fragment changes the ignition input, so
   # interactive ISOs hash differently from sandboxed-test ISOs.
@@ -279,7 +280,7 @@
       initrd = m.system.config.system.build.initrd;
       disk = vmLib.mkTestDisk {
         system = m.system;
-        inherit (m) extraClosures;
+        inherit (m) extraClosures varSizeMiB;
       };
       metadataISO = metadataLib.mkMetadataIso {
         name = "${name}-${m.name}";
@@ -421,8 +422,12 @@
       inherit name machinesWithIndex identity debug;
     };
 
-    # SSH host port = 2222 + machine index. Listening on 127.0.0.1 only.
-    sshPort = mb: 2222 + mb.index;
+    # SSH host port = $AOS_FLEET_SSH_BASE + machine index, resolved at
+    # launcher runtime (default 2222). Listening on 127.0.0.1 only. An
+    # eval-time constant collided with whatever already holds :2222 on a
+    # shared host; the env override keeps the launcher usable anywhere
+    # without a rebuild.
+    sshPort = mb: ''$(( AOS_FLEET_SSH_BASE + ${toString mb.index} ))'';
 
     # Per-machine launch fragment, spliced into the launcher.
     # Mirrors mkFleetTest's per-machine block, with two changes:
@@ -538,6 +543,10 @@
       # AOS build libs can conflict with QEMU's runtime linker.
       unset LD_LIBRARY_PATH || true
 
+      # Host port for the per-machine SSH forward: base + machine index.
+      # Override when :2222 is taken on the host.
+      AOS_FLEET_SSH_BASE="''${AOS_FLEET_SSH_BASE:-2222}"
+
       export PATH="${pkgs.coreutils}/bin:${pkgs.socat}/bin:${pkgs.qemu}/bin:''${PATH:-}"
 
       FLEET_DIR="''${TMPDIR:-/tmp}/aos-fleet-${name}-$$"
@@ -613,6 +622,13 @@
       src = null;
 
       buildDeps = [pkgs.coreutils];
+
+      # The output is the launcher script, executed outside the sandbox
+      # after the build; its embedded store paths (qemu, disks, kernels,
+      # metadata ISOs) are the product. The default nuke-references scrub
+      # would rewrite them to dummy hashes and the launcher would try to
+      # copy from a non-existent dummy /nix/store path at runtime.
+      dontNukeRefs = true;
 
       LAUNCHER_SCRIPT = launcherScript;
 
