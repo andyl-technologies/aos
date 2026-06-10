@@ -4175,7 +4175,8 @@ in {
       assert_store_valid "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
 
       echo "==> Maintainer: publish signed-tool 1.0.0 with trusted commit key"
-      $APR create signed-reg --trust-key "$TRUST_KEY" --trust-key-id initial
+      $APR create signed-reg --trust-key "$TRUST_KEY" --trust-key-id initial \
+        --key "$GOOD_KEY"
       REG_DIR="$REG_STORAGE/signed-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       assert_file_contains "$REG_DIR/keys.toml" 'id = "initial"' \
@@ -4425,6 +4426,7 @@ in {
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
       $APR keys retire initial --vouched-by next --reason "rotation complete" \
+        --key "$NEXT_KEY" \
         --registry signed-reg --no-commit > /tmp/signed-keys-retire-initial.out 2>&1 || {
         cat /tmp/signed-keys-retire-initial.out
         fail "apr keys retire initial succeeds"

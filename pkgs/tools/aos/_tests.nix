@@ -259,15 +259,29 @@ in {
             "$work/apr-create.json" >/dev/null
           test -f "$reg/registry.toml"
           test -d "$reg/.git"
+          git -C "$reg" config user.name "Host Command Test"
+          git -C "$reg" config user.email "host-command@example.invalid"
 
           git -C "$reg" log -1 --format=%an > "$work/author-name.out"
           git -C "$reg" log -1 --format=%ae > "$work/author-email.out"
           grep -qx "Host Command Test" "$work/author-name.out"
           grep -qx "host-command@example.invalid" "$work/author-email.out"
 
-          host_key_root="host-reg:Ed25519:YWJjZA=="
-          host_key_backup="host-reg:Ed25519:ZWZnaA=="
-          host_key_canary="host-reg:Ed25519:aGlqaA=="
+          run_clean ${self}/bin/apr keys generate root --registry host-reg \
+            > "$work/apr-keys-generate-root.out" 2>&1
+          host_key_root=$(grep -o 'host-reg:Ed25519:[A-Za-z0-9+/=]*' "$work/apr-keys-generate-root.out" | head -1)
+          host_key_root_path="$config/apm/keys/host-reg-root.key"
+          test -f "$host_key_root_path"
+
+          run_clean ${self}/bin/apr keys generate backup --registry host-reg \
+            > "$work/apr-keys-generate-backup.out" 2>&1
+          host_key_backup=$(grep -o 'host-reg:Ed25519:[A-Za-z0-9+/=]*' "$work/apr-keys-generate-backup.out" | head -1)
+          host_key_backup_path="$config/apm/keys/host-reg-backup.key"
+          test -f "$host_key_backup_path"
+
+          run_clean ${self}/bin/apr keys generate canary --registry host-reg \
+            > "$work/apr-keys-generate-canary.out" 2>&1
+          host_key_canary=$(grep -o 'host-reg:Ed25519:[A-Za-z0-9+/=]*' "$work/apr-keys-generate-canary.out" | head -1)
           host_key_foreign="other-reg:Ed25519:bWlzbWF0Y2g="
           trust_file="$config/apm/trusted-keys.d/host-reg.pub"
 
@@ -308,6 +322,7 @@ in {
             > "$work/git-commit-host-root-key.out" 2>&1
 
           if run_clean ${self}/bin/apr keys add duplicate "$host_key_root" \
+            --key "$host_key_root_path" \
             --registry host-reg > "$work/apr-keys-add-duplicate.out" 2>&1; then
             cat "$work/apr-keys-add-duplicate.out"
             exit 1
@@ -315,6 +330,7 @@ in {
           grep -q "signing key already exists" "$work/apr-keys-add-duplicate.out"
 
           if run_clean ${self}/bin/apr keys add foreign "$host_key_foreign" \
+            --key "$host_key_root_path" \
             --registry host-reg > "$work/apr-keys-add-foreign.out" 2>&1; then
             cat "$work/apr-keys-add-foreign.out"
             exit 1
@@ -323,10 +339,12 @@ in {
             "$work/apr-keys-add-foreign.out"
 
           run_clean ${self}/bin/apr keys add backup "$host_key_backup" \
+            --key "$host_key_root_path" \
             --registry host-reg > "$work/apr-keys-add-backup.out" 2>&1
           grep -q "Added active signing key 'backup'" \
             "$work/apr-keys-add-backup.out"
           run_clean ${self}/bin/apr keys retire root \
+            --key "$host_key_backup_path" \
             --registry host-reg \
             --reason "host rotation" > "$work/apr-keys-retire-root.out" 2>&1
           grep -q "Retired signing key 'root'.*vouched by 'backup'" \
@@ -629,7 +647,7 @@ in {
               and (.base | length > 0)' \
             "$work/apr-diff-remote.json" >/dev/null
 
-          run_clean ${self}/bin/apm registry add "file://$reg" --name host-reg-client > "$work/apm-registry-add.out" 2>&1
+          run_clean ${self}/bin/apm registry add --no-verify "file://$reg" --name host-reg-client > "$work/apm-registry-add.out" 2>&1
           grep -q "Registry 'host-reg-client' added" "$work/apm-registry-add.out"
           run_clean ${self}/bin/apm registry list > "$work/apm-registry-list.out" 2>&1
           grep -q "host-reg-client" "$work/apm-registry-list.out"
@@ -1209,20 +1227,29 @@ in {
           install_store=$(nix_build "$work/host-install-fixtures.nix" -A appV1 --no-out-link)
           install_hash=$(basename "$install_store" | cut -d- -f1)
 
-          run_clean ${self}/bin/apr create host-install-reg > "$work/apr-create-host-install.out" 2>&1
-          install_reg="$data/apm/registries/host-install-reg"
+          ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
+          install_release_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
+          install_channel_trust_key="host-install-channel:Ed25519:$install_release_public_key"
+          run_clean ${self}/bin/apr create host-install-channel \
+            --trust-key "$install_channel_trust_key" \
+            --trust-key-id channel \
+            --key "$work/host-install-release-key" \
+            > "$work/apr-create-host-install.out" 2>&1
+          install_reg="$data/apm/registries/host-install-channel"
+          git -C "$install_reg" config user.name "Host Command Test"
+          git -C "$install_reg" config user.email "host-command@example.invalid"
           run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
             --name hostleaf \
             --version 1.0.0 \
             --description "Host APM dependency fixture" \
             --license MIT \
             --maintainer host@example.invalid \
-            --registry host-install-reg \
+            --registry host-install-channel \
             --no-commit > "$work/apr-publish-host-leaf.json"
           ${pkgs.jq}/bin/jq -e \
             --arg store "$install_leaf_store" \
             '.action == "publish"
-              and .registry == "host-install-reg"
+              and .registry == "host-install-channel"
               and .package == "hostleaf"
               and .version == "1.0.0"
               and .platform == "x86_64-linux"
@@ -1237,12 +1264,12 @@ in {
             --description "Host APM install fixture" \
             --license MIT \
             --maintainer host@example.invalid \
-            --registry host-install-reg \
+            --registry host-install-channel \
             --no-commit > "$work/apr-publish-host-install.json"
           ${pkgs.jq}/bin/jq -e \
             --arg store "$install_store" \
             '.action == "publish"
-              and .registry == "host-install-reg"
+              and .registry == "host-install-channel"
               and .package == "hostinstall"
               and .version == "1.0.0"
               and .platform == "x86_64-linux"
@@ -1263,7 +1290,7 @@ in {
             "$work/apr-publish-host-install.json" >/dev/null
           grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
           run_clean ${self}/bin/apr --json cache generate \
-            --registry host-install-reg \
+            --registry host-install-channel \
             --output "$work/install-static-cache-output/cache" \
             --cache-url "http://127.0.0.1:$install_cache_port/cache" \
             --upload-url "file://$work/install-static-cache-upload/cache" \
@@ -1274,7 +1301,7 @@ in {
             --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
             --arg upload_url "file://$work/install-static-cache-upload/cache" \
             '.action == "cache_generate"
-              and .registry == "host-install-reg"
+              and .registry == "host-install-channel"
               and .output_dir == $output
               and .paths >= 2
               and .narinfos >= 2
@@ -1293,13 +1320,14 @@ in {
           test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
           find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
           git -C "$install_reg" add -A
-          git -C "$install_reg" commit -m "release: hostinstall 1.0.0" \
+          git -C "$install_reg" \
+            -c gpg.format=ssh \
+            -c gpg.ssh.program=${pkgs.openssh}/bin/ssh-keygen \
+            -c user.signingkey="$work/host-install-release-key" \
+            commit -S -m "release: hostinstall 1.0.0" \
             > "$work/git-commit-host-install.out" 2>&1
-          ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
-          install_release_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
-          install_channel_trust_key="host-install-channel:Ed25519:$install_release_public_key"
           run_clean ${self}/bin/apr --json release 1.0.0 \
-            --registry host-install-reg \
+            --registry host-install-channel \
             --key "$work/host-install-release-key" \
             --cache-output "$work/install-release-cache/cache" \
             --cache-url "http://127.0.0.1:$install_cache_port/cache" \
@@ -1313,7 +1341,7 @@ in {
             --arg upload_url "file://$work/install-static-cache-upload/cache" \
             '.action == "release"
               and .status == "released"
-              and .registry == "host-install-reg"
+              and .registry == "host-install-channel"
               and .version == "1.0.0"
               and .dry_run == false
               and .cache_output == $cache
@@ -1357,7 +1385,7 @@ in {
           git -C "$install_reg" remote add origin "$install_origin"
           install_remote_v1_commit=$(git -C "$install_reg" rev-parse HEAD)
           run_clean ${self}/bin/apr --json push \
-            --registry host-install-reg \
+            --registry host-install-channel \
             --branch stable \
             --set-upstream > "$work/apr-push-host-install-v1.json"
           ${pkgs.jq}/bin/jq -e \
@@ -1470,7 +1498,7 @@ in {
           profile_root="$main_profile_root"
           profile="$main_profile"
 
-          run_clean ${self}/bin/apm registry add "file://$install_origin" \
+          run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
             --name host-install-client \
             --branch stable > "$work/apm-add-host-install.out" 2>&1
           grep -q "Registry 'host-install-client' added" "$work/apm-add-host-install.out"
@@ -1587,7 +1615,7 @@ in {
             --description "Host APM dependency fixture v2" \
             --license MIT \
             --maintainer host@example.invalid \
-            --registry host-install-reg \
+            --registry host-install-channel \
             --no-commit > "$work/apr-publish-host-leaf-v2.out" 2>&1
           run_clean ${self}/bin/apr publish "$install_store_v2" \
             --name hostinstall \
@@ -1595,10 +1623,10 @@ in {
             --description "Host APM install fixture v2" \
             --license MIT \
             --maintainer host@example.invalid \
-            --registry host-install-reg \
+            --registry host-install-channel \
             --no-commit > "$work/apr-publish-host-install-v2.out" 2>&1
           run_clean ${self}/bin/apr --json cache generate \
-            --registry host-install-reg \
+            --registry host-install-channel \
             --output "$work/install-static-cache-output/cache" \
             --cache-url "http://127.0.0.1:$install_cache_port/cache" \
             --upload-url "file://$work/install-static-cache-upload/cache" \
@@ -1609,7 +1637,7 @@ in {
             --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
             --arg upload_url "file://$work/install-static-cache-upload/cache" \
             '.action == "cache_generate"
-              and .registry == "host-install-reg"
+              and .registry == "host-install-channel"
               and .output_dir == $output
               and .paths >= 4
               and .narinfos >= 4
@@ -1630,10 +1658,14 @@ in {
           test -f "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
           find "$work/install-static-cache-upload/cache/nar" -type f | grep -q .
           git -C "$install_reg" add -A
-          git -C "$install_reg" commit -m "release: hostinstall 2.0.0" \
+          git -C "$install_reg" \
+            -c gpg.format=ssh \
+            -c gpg.ssh.program=${pkgs.openssh}/bin/ssh-keygen \
+            -c user.signingkey="$work/host-install-release-key" \
+            commit -S -m "release: hostinstall 2.0.0" \
             > "$work/git-commit-host-install-v2.out" 2>&1
           run_clean ${self}/bin/apr --json release 2.0.0 \
-            --registry host-install-reg \
+            --registry host-install-channel \
             --key "$work/host-install-release-key" \
             --cache-output "$work/install-release-cache-v2/cache" \
             --cache-url "http://127.0.0.1:$install_cache_port/cache" \
@@ -1647,7 +1679,7 @@ in {
             --arg upload_url "file://$work/install-static-cache-upload/cache" \
             '.action == "release"
               and .status == "released"
-              and .registry == "host-install-reg"
+              and .registry == "host-install-channel"
               and .version == "2.0.0"
               and .dry_run == false
               and .cache_output == $cache
@@ -1888,7 +1920,7 @@ in {
           fi
           install_remote_v2_commit=$(git -C "$install_reg" rev-parse HEAD)
           run_clean ${self}/bin/apr --json push \
-            --registry host-install-reg \
+            --registry host-install-channel \
             --branch stable > "$work/apr-push-host-install-v2.json"
           ${pkgs.jq}/bin/jq -e \
             --arg head "$install_remote_v2_commit" \
