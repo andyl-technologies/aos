@@ -28,6 +28,56 @@
   ];
   nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeLibs);
 
+  backendLeafTool = pkgs.mkDerivation {
+    pname = "registry-backend-leaf";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'printf "registry-backend-leaf 1.0.0\n"' \
+            > "$out/bin/registry-backend-leaf"
+          chmod +x "$out/bin/registry-backend-leaf"
+        '';
+      }
+    ];
+  };
+
+  backendRootTool = pkgs.mkDerivation {
+    pname = "registry-backend-root";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      backendLeafTool
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'leaf_output="$(${backendLeafTool}/bin/registry-backend-leaf)"' \
+            'printf "registry-backend-root via %s\n" "$leaf_output"' \
+            > "$out/bin/registry-backend-root"
+          chmod +x "$out/bin/registry-backend-root"
+        '';
+      }
+    ];
+  };
+
   validationDeps =
     fixtures.commonDeps
     ++ nixRuntimeLibs
@@ -39,6 +89,8 @@
       pkgs.openssh
       pkgs.python3
       pkgs.zstd
+      backendLeafTool
+      backendRootTool
     ];
 
   gitOnlyDeps = [
@@ -413,9 +465,14 @@ in {
         export AWS_SECRET_ACCESS_KEY=aos-test-secret
         export AWS_EC2_METADATA_DISABLED=true
 
-        STORE_PATH=$(make_tiny_store_path)
+        STORE_PATH="${backendRootTool}"
+        LEAF_PATH="${backendLeafTool}"
         STORE_HASH=$(basename "$STORE_PATH" | cut -d- -f1)
+        LEAF_HASH=$(basename "$LEAF_PATH" | cut -d- -f1)
         create_registry_for_store_path vm-cache "$STORE_PATH"
+        nix-store -q --references "$STORE_PATH" > /tmp/backend-root-refs.out
+        grep -q "$LEAF_PATH" /tmp/backend-root-refs.out
+        grep -q "$LEAF_HASH" "$REG_STORAGE/vm-cache/closures/$STORE_HASH"
 
         nix --extra-experimental-features nix-command key generate-secret \
           --key-name aos-cache > /tmp/nix-cache.sec
@@ -450,13 +507,19 @@ in {
 
         test -f /tmp/generated-cache/nix-cache-info
         test -f "/tmp/generated-cache/$STORE_HASH.narinfo"
+        test -f "/tmp/generated-cache/$LEAF_HASH.narinfo"
+        NARINFO_COUNT=$(find /tmp/generated-cache -maxdepth 1 -name '*.narinfo' | wc -l | tr -d ' ')
+        test "$NARINFO_COUNT" -gt 1
         grep -q "Sig: aos-cache:" "/tmp/generated-cache/$STORE_HASH.narinfo"
         grep -q "Priority: 37" /tmp/generated-cache/nix-cache-info
 
         test -f /tmp/local-cache/nix-cache-info
         test -f "/tmp/local-cache/$STORE_HASH.narinfo"
+        test -f "/tmp/local-cache/$LEAF_HASH.narinfo"
         test -f "/tmp/sftp-cache/$STORE_HASH.narinfo"
+        test -f "/tmp/sftp-cache/$LEAF_HASH.narinfo"
         test -f "/tmp/s3-cache-root/aos-registry-test/cache/$STORE_HASH.narinfo"
+        test -f "/tmp/s3-cache-root/aos-registry-test/cache/$LEAF_HASH.narinfo"
         cmp "/tmp/generated-cache/$STORE_HASH.narinfo" "/tmp/local-cache/$STORE_HASH.narinfo"
         cmp "/tmp/generated-cache/$STORE_HASH.narinfo" "/tmp/sftp-cache/$STORE_HASH.narinfo"
         cmp "/tmp/generated-cache/$STORE_HASH.narinfo" \
@@ -490,15 +553,16 @@ in {
         cat /tmp/cache-generate-http-auth.log
         test -f /tmp/http-cache-root/protected-cache/nix-cache-info
         test -f "/tmp/http-cache-root/protected-cache/$STORE_HASH.narinfo"
+        test -f "/tmp/http-cache-root/protected-cache/$LEAF_HASH.narinfo"
         find /tmp/http-cache-root/protected-cache/nar -type f | grep -q .
         cmp "/tmp/generated-cache-http-auth/$STORE_HASH.narinfo" \
           "/tmp/http-cache-root/protected-cache/$STORE_HASH.narinfo"
         grep -q "Priority: 39" /tmp/http-cache-root/protected-cache/nix-cache-info
-        python3 - /tmp/http-cache-events.jsonl "$STORE_HASH" << 'PY'
+        python3 - /tmp/http-cache-events.jsonl "$STORE_HASH" "$LEAF_HASH" << 'PY'
       import json
       import sys
 
-      events_path, store_hash = sys.argv[1], sys.argv[2]
+      events_path, store_hash, leaf_hash = sys.argv[1], sys.argv[2], sys.argv[3]
       with open(events_path, encoding="utf-8") as f:
           events = [json.loads(line) for line in f if line.strip()]
 
@@ -512,6 +576,8 @@ in {
           raise AssertionError(f"authenticated event lost custom header: {ok_events}")
       if not any(event["path"] == f"protected-cache/{store_hash}.narinfo" for event in ok_events):
           raise AssertionError("authenticated upload did not write narinfo")
+      if not any(event["path"] == f"protected-cache/{leaf_hash}.narinfo" for event in ok_events):
+          raise AssertionError("authenticated upload did not write dependency narinfo")
       if not any(event["path"] == "protected-cache/nix-cache-info" for event in ok_events):
           raise AssertionError("authenticated upload did not write nix-cache-info")
       if not any(event["path"].startswith("protected-cache/nar/") for event in ok_events):
@@ -544,8 +610,11 @@ in {
 
         test -f /tmp/local-cache-config/nix-cache-info
         test -f "/tmp/local-cache-config/$STORE_HASH.narinfo"
+        test -f "/tmp/local-cache-config/$LEAF_HASH.narinfo"
         test -f "/tmp/sftp-cache-config/$STORE_HASH.narinfo"
+        test -f "/tmp/sftp-cache-config/$LEAF_HASH.narinfo"
         test -f "/tmp/s3-cache-root/aos-registry-test/config-cache/$STORE_HASH.narinfo"
+        test -f "/tmp/s3-cache-root/aos-registry-test/config-cache/$LEAF_HASH.narinfo"
         cmp "/tmp/generated-cache-config-auth/$STORE_HASH.narinfo" \
           "/tmp/local-cache-config/$STORE_HASH.narinfo"
         cmp "/tmp/generated-cache-config-auth/$STORE_HASH.narinfo" \
@@ -570,6 +639,54 @@ in {
           path-info --store http://127.0.0.1:18080 "$STORE_PATH" \
           > /tmp/stock-nix-path-info.out
         grep -q "$STORE_PATH" /tmp/stock-nix-path-info.out
+
+        nix-store --delete --ignore-liveness "$STORE_PATH" > /tmp/delete-backend-root.out 2>&1 || {
+          cat /tmp/delete-backend-root.out
+          exit 1
+        }
+        nix-store --delete --ignore-liveness "$LEAF_PATH" > /tmp/delete-backend-leaf.out 2>&1 || {
+          cat /tmp/delete-backend-leaf.out
+          exit 1
+        }
+        if nix-store --check-validity "$STORE_PATH" > /tmp/backend-root-missing.out 2>&1; then
+          cat /tmp/backend-root-missing.out
+          exit 1
+        fi
+        if nix-store --check-validity "$LEAF_PATH" > /tmp/backend-leaf-missing.out 2>&1; then
+          cat /tmp/backend-leaf-missing.out
+          exit 1
+        fi
+
+        nix --extra-experimental-features nix-command \
+          --option require-sigs true \
+          --option trusted-public-keys "$TRUSTED_PUBLIC_KEY" \
+          copy --from http://127.0.0.1:18080 "$STORE_PATH" \
+          > /tmp/stock-nix-copy.out 2>&1 || {
+          cat /tmp/stock-nix-copy.out
+          exit 1
+        }
+        cat /tmp/stock-nix-copy.out
+        nix-store --check-validity "$STORE_PATH" > /tmp/backend-root-valid.out 2>&1 || {
+          cat /tmp/backend-root-valid.out
+          exit 1
+        }
+        nix-store --check-validity "$LEAF_PATH" > /tmp/backend-leaf-valid.out 2>&1 || {
+          cat /tmp/backend-leaf-valid.out
+          exit 1
+        }
+        "$STORE_PATH/bin/registry-backend-root" > /tmp/stock-nix-run.out || {
+          cat /tmp/stock-nix-run.out
+          exit 1
+        }
+        grep -q "^registry-backend-root via registry-backend-leaf 1.0.0$" /tmp/stock-nix-run.out || {
+          cat /tmp/stock-nix-run.out
+          exit 1
+        }
+        NAR_GETS=$(grep -E 'GET /nar/.*\.nar\.zst HTTP/' /tmp/static-cache-http.log 2>/dev/null | wc -l | tr -d ' ')
+        test "$NAR_GETS" -ge 2 || {
+          cat /tmp/static-cache-http.log || true
+          exit 1
+        }
 
         echo "registry stock Nix + backend array validation passed"
     '';
