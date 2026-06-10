@@ -6,7 +6,12 @@ The agent RPC speaks one verb (run a bash blob) plus PING / SHUTDOWN.
 """
 
 import logging
+import os
+import sys
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import ClassVar
 
 from .agent import DEFAULT_TIMEOUT, AgentClient, Driver
@@ -50,7 +55,51 @@ class Machine:
     ) -> tuple[int, bytes, bytes]:
         """Run cmd on the guest; return (exit_code, stdout, stderr) (bytes)."""
         log.debug("[%s] execute: %s", self.name, _summary(cmd))
-        return self.agent.request(cmd.encode("utf-8"), timeout=timeout)
+        with self._mirror_serial_until_complete():
+            return self.agent.request(cmd.encode("utf-8"), timeout=timeout)
+
+    @contextmanager
+    def _mirror_serial_until_complete(self) -> Iterator[None]:
+        """Mirror serial bytes produced while one guest command is running."""
+        try:
+            offset = os.path.getsize(self.serial_log_path)
+        except OSError:
+            yield
+            return
+
+        stop = threading.Event()
+
+        def pump() -> None:
+            try:
+                with open(self.serial_log_path, "rb") as serial:
+                    serial.seek(offset)
+                    while not stop.is_set():
+                        chunk = serial.read(8192)
+                        if chunk:
+                            sys.stderr.buffer.write(chunk)
+                            sys.stderr.buffer.flush()
+                        else:
+                            stop.wait(0.1)
+                    while True:
+                        chunk = serial.read(8192)
+                        if not chunk:
+                            break
+                        sys.stderr.buffer.write(chunk)
+                        sys.stderr.buffer.flush()
+            except OSError:
+                return
+
+        thread = threading.Thread(
+            target=pump,
+            name=f"{self.name}-serial-mirror",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=2)
 
     def succeed(self, *cmds: str, timeout: float = DEFAULT_TIMEOUT) -> str:
         """Each cmd must exit 0; returns the last cmd's decoded stdout."""
