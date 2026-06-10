@@ -244,6 +244,18 @@ in {
           grep -q "Usage:" "$work/apr-help.out"
           run_clean ${self}/bin/apm --help > "$work/apm-help.out"
           grep -q "Usage:" "$work/apm-help.out"
+          run_clean ${self}/bin/apm --json gc > "$work/apm-gc-alt-store.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg store "$store_dir" \
+            --arg state "$state_dir" \
+            '.action == "gc"
+              and .status == "completed"
+              and .success == true
+              and .nix_store_dir == $store
+              and .nix_state_dir == $state
+              and (.stdout | type == "string")
+              and (.stderr | type == "string")' \
+            "$work/apm-gc-alt-store.json" >/dev/null
 
           reg="$data/apm/registries/host-reg"
           run_clean ${self}/bin/apr --json create host-reg > "$work/apr-create.json"
