@@ -3960,6 +3960,10 @@ pub async fn push(
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
+    let current = current_git_branch(&dir)?;
+    let pushed_branch = branch
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| current.clone());
 
     let mut args = vec!["push"];
     if set_upstream {
@@ -3977,6 +3981,19 @@ pub async fn push(
     }
 
     let output = git_transport(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "push",
+            "branch": pushed_branch,
+            "set_upstream": set_upstream,
+            "force": force,
+            "current": current,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "output": output,
+        }));
+        return Ok(());
+    }
     if !output.is_empty() {
         printer.plain(&output);
     }
@@ -4000,6 +4017,17 @@ pub async fn pull(
     }
 
     let output = git_transport(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "pull",
+            "rebase": rebase,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "output": output,
+        }));
+        return Ok(());
+    }
     printer.plain(&output);
 
     Ok(())
@@ -4026,10 +4054,27 @@ pub async fn merge(
     args.push(branch);
 
     let output = git(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "merge",
+            "branch": branch,
+            "no_ff": no_ff,
+            "squash": squash,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "output": output,
+        }));
+        return Ok(());
+    }
     printer.plain(&output);
     printer.success(&format!("Merged '{branch}'."));
 
     Ok(())
+}
+
+fn current_git_head(dir: &Path) -> Result<String> {
+    git(dir, &["rev-parse", "HEAD"])
 }
 
 // ---------------------------------------------------------------------------

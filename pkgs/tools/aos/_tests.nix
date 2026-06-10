@@ -500,8 +500,18 @@ in {
               | (any(.name == "stable" and .current == true)
                 and any(.name == "host-feature" and .current == false))' \
             "$work/apr-branch-list-stable-current.json" >/dev/null
-          run_clean ${self}/bin/apr merge host-feature --registry host-reg > "$work/apr-merge-feature.out" 2>&1
-          grep -q "Merged 'host-feature'" "$work/apr-merge-feature.out"
+          run_clean ${self}/bin/apr --json merge host-feature --registry host-reg \
+            > "$work/apr-merge-feature.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "merge"
+              and .branch == "host-feature"
+              and .no_ff == false
+              and .squash == false
+              and .current == "stable"
+              and (.head | length == 64)
+              and (.output | contains("Fast-forward"))
+              and (.branches | any(.name == "stable" and .current == true))' \
+            "$work/apr-merge-feature.json" >/dev/null
           run_clean ${self}/bin/apr branch delete host-feature --registry host-reg > "$work/apr-branch-delete-feature.out" 2>&1
           grep -q "Deleted branch 'host-feature'" "$work/apr-branch-delete-feature.out"
           run_clean ${self}/bin/apr branch list --registry host-reg > "$work/apr-branch-list-after-delete.out" 2>&1
@@ -553,6 +563,28 @@ in {
           git -C "$reg" remote add origin "$work/host-origin.git"
           run_clean ${self}/bin/apr push --registry host-reg --branch stable --set-upstream > "$work/apr-push.out" 2>&1
           grep -q "Pushed." "$work/apr-push.out"
+          run_clean ${self}/bin/apr --json push --registry host-reg --branch stable \
+            > "$work/apr-push-json.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "push"
+              and .branch == "stable"
+              and .set_upstream == false
+              and .force == false
+              and .current == "stable"
+              and (.head | length == 64)
+              and (.branches | any(.name == "origin/stable" and .remote == true))' \
+            "$work/apr-push-json.json" >/dev/null
+          run_clean ${self}/bin/apr --json pull --registry host-reg \
+            > "$work/apr-pull-json.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "pull"
+              and .rebase == false
+              and .current == "stable"
+              and (.head | length == 64)
+              and (.output as $out
+                | (($out | contains("Already up to date"))
+                  or ($out | contains("Already up-to-date"))))' \
+            "$work/apr-pull-json.json" >/dev/null
           run_clean ${self}/bin/apr diff --registry host-reg --remote --stat > "$work/apr-diff-remote.out" 2>&1
           grep -q "No pending changes" "$work/apr-diff-remote.out"
           run_clean ${self}/bin/apr --json diff --registry host-reg --remote --stat \
