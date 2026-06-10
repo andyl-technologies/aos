@@ -3485,12 +3485,12 @@ fn plan_retirement_resign(dir: &Path, survivors: &[String]) -> Result<ResignPlan
         }
     }
 
-    let referenced: HashSet<semver::Version> = partitions
-        .iter()
-        .map(|(_, _, version, _)| version.clone())
-        .collect();
+    let mut release_versions: Vec<semver::Version> = release_tags.values().cloned().collect();
+    release_versions.sort();
+    release_versions.dedup();
+
     let mut affected_releases: Vec<semver::Version> = Vec::new();
-    for version in referenced {
+    for version in release_versions {
         if !verify_tag_signature(dir, &version.to_string(), survivors)? {
             affected_releases.push(version);
         }
@@ -6100,6 +6100,52 @@ mod tests {
         // Re-planning against the survivor finds nothing left to re-sign.
         let plan = plan_retirement_resign(&repo, &survivors).unwrap();
         assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn retirement_resign_includes_release_tags_without_channels() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=stable",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+
+        let key_a = write_seeded_signing_key(tmp.path(), "aos-core", [11u8; 32], "key_a");
+        let key_b = write_seeded_signing_key(tmp.path(), "aos-core", [12u8; 32], "key_b");
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+
+        let version = semver::Version::new(1, 0, 0);
+        sign_tag(
+            &repo,
+            "1.0.0",
+            "HEAD",
+            Some("release 1.0.0"),
+            key_a.private_key.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
+
+        let survivors = vec![key_b.trusted_key.clone()];
+        let plan = plan_retirement_resign(&repo, &survivors).unwrap();
+
+        assert_eq!(plan.affected_releases, vec![version]);
+        assert!(plan.affected_partitions.is_empty());
     }
 
     #[cfg(unix)]
