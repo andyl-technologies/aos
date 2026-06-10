@@ -685,6 +685,21 @@ in {
         "priority-tool/low-priority 9.0.0" \
         "registry-filtered install records selected registry"
 
+      $APM depends priority-tool > /tmp/priority-depends-low.out 2>&1 || {
+        cat /tmp/priority-depends-low.out
+        fail "apm depends uses installed lower priority duplicate"
+      }
+      cat /tmp/priority-depends-low.out
+      assert_file_contains /tmp/priority-depends-low.out \
+        "priority-tool (9.0.0).*\\[low-priority, installed\\]" \
+        "depends reports installed lower priority duplicate root"
+      if ${grepBin} -q "priority-tool (2.0.0)" /tmp/priority-depends-low.out; then
+        cat /tmp/priority-depends-low.out
+        fail "depends should not report higher priority duplicate for installed package"
+      else
+        pass "depends does not report higher priority duplicate for installed package"
+      fi
+
       $APM install priority-client --registry low-priority --yes \
         > /tmp/priority-install-client.out 2>&1 || {
         cat /tmp/priority-install-client.out
