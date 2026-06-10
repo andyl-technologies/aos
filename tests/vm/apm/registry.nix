@@ -246,6 +246,40 @@
     version = "5.0.0";
     leaf = signedLeafToolV5;
   };
+  maintRunnerDepTool = mkRegistryTool {
+    pname = "maint-runner-dep";
+    version = "1.0.0";
+  };
+  maintRunnerTool = pkgs.mkDerivation {
+    pname = "maint-runner";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      maintRunnerDepTool
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin" "$out/share/maint-runner"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'dep_output="$(${maintRunnerDepTool}/bin/maint-runner-dep)"' \
+            'printf "maint-runner 1.0.0 via %s\n" "$dep_output"' \
+            > "$out/bin/maint-runner"
+          chmod +x "$out/bin/maint-runner"
+          ln -s maint-runner "$out/bin/maint-runner-link"
+          dd if=/dev/zero of="$out/share/maint-runner/payload.bin" \
+            bs=1M count=12
+          ln -s . "$out/share/maint-runner/current"
+        '';
+      }
+    ];
+  };
   retireDepTool = mkRegistryTool {
     pname = "retire-dep";
     version = "1.0.0";
@@ -1499,7 +1533,13 @@ in {
   # -------------------------------------------------------------------------
   registry-maintainer-workflow = testing.mkVMTest {
     name = "apm-registry-maintainer-workflow";
-    rootfsDeps = maintainerWorkflowDeps ++ [pkgs.jq];
+    rootfsDeps =
+      maintainerWorkflowDeps
+      ++ [
+        pkgs.jq
+        maintRunnerDepTool
+        maintRunnerTool
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -1520,19 +1560,13 @@ in {
       CURL_STORE="${pkgs.curl}"
       GIT_HASH=$(basename "$GIT_STORE" | cut -d- -f1)
       CURL_HASH=$(basename "$CURL_STORE" | cut -d- -f1)
-      RUNNER_SRC=/tmp/maint-runner-src
-      mkdir -p "$RUNNER_SRC/bin" "$RUNNER_SRC/share/maint-runner"
-      cat > "$RUNNER_SRC/bin/maint-runner" << 'RUNNEREOF'
-      #!/bin/sh
-      echo "maint-runner 1.0.0 executed"
-      RUNNEREOF
-      chmod +x "$RUNNER_SRC/bin/maint-runner"
-      ln -s maint-runner "$RUNNER_SRC/bin/maint-runner-link"
-      dd if=/dev/zero of="$RUNNER_SRC/share/maint-runner/payload.bin" \
-        bs=1M count=12
-      ln -s . "$RUNNER_SRC/share/maint-runner/current"
-      RUNNER_STORE=$(nix-store --add "$RUNNER_SRC")
+      RUNNER_STORE="${maintRunnerTool}"
+      RUNNER_DEP_STORE="${maintRunnerDepTool}"
       RUNNER_HASH=$(basename "$RUNNER_STORE" | cut -d- -f1)
+      RUNNER_DEP_HASH=$(basename "$RUNNER_DEP_STORE" | cut -d- -f1)
+      nix-store -q --references "$RUNNER_STORE" > /tmp/maint-runner-refs.out
+      assert_file_contains /tmp/maint-runner-refs.out "$RUNNER_DEP_STORE" \
+        "maint-runner root has a real dependency closure"
 
       # Maintainer creates a local registry and prepares a grouped release branch.
       $APR create maint-reg
@@ -1876,6 +1910,8 @@ in {
         "static cache contains curl narinfo"
       assert_file_exists "/tmp/maint-cache/$RUNNER_HASH.narinfo" \
         "static cache contains runner narinfo"
+      assert_file_exists "/tmp/maint-cache/$RUNNER_DEP_HASH.narinfo" \
+        "static cache contains runner dependency narinfo"
       assert_dir_exists /tmp/maint-cache/nar \
         "static cache contains NAR directory"
 
@@ -2066,11 +2102,21 @@ in {
         cat /tmp/delete-runner.out
         fail "deleted runner store path before install"
       }
+      nix-store --delete --ignore-liveness "$RUNNER_DEP_STORE" > /tmp/delete-runner-dep.out 2>&1 || {
+        cat /tmp/delete-runner-dep.out
+        fail "deleted runner dependency store path before install"
+      }
       if nix-store --check-validity "$RUNNER_STORE" >/tmp/runner-valid.out 2>&1; then
         cat /tmp/runner-valid.out
         fail "runner store path should be missing before install"
       else
         pass "runner store path missing before install"
+      fi
+      if nix-store --check-validity "$RUNNER_DEP_STORE" >/tmp/runner-dep-valid.out 2>&1; then
+        cat /tmp/runner-dep-valid.out
+        fail "runner dependency store path should be missing before install"
+      else
+        pass "runner dependency store path missing before install"
       fi
 
       $APM install maint-runner --registry maint-reg --yes > /tmp/install-runner.out 2>&1 || {
@@ -2078,8 +2124,8 @@ in {
         fail "apm install downloads and imports runner"
       }
       cat /tmp/install-runner.out
-      assert_file_contains /tmp/install-runner.out "Downloading" \
-        "apm install performed a download"
+      assert_file_contains /tmp/install-runner.out "Downloading 2 NAR" \
+        "apm install downloaded runner closure"
       assert_file_contains /tmp/install-runner.out "Installed 1 package" \
         "apm install completed profile update"
       if find "$HOME/.cache/apm" -name '*.nar.zst' | grep -q .; then
@@ -2088,6 +2134,7 @@ in {
         fail "downloaded NAR retained in user cache"
       fi
       nix-store --check-validity "$RUNNER_STORE" >/tmp/runner-valid-after.out 2>&1
+      nix-store --check-validity "$RUNNER_DEP_STORE" >/tmp/runner-dep-valid-after.out 2>&1
 
       PROFILE_RUNNER="/var/lib/profiles/per-user/$USER/current/bin/maint-runner"
       if [ -x "$PROFILE_RUNNER" ]; then
@@ -2096,8 +2143,9 @@ in {
         fail "installed profile exposes runner executable"
       fi
       "$PROFILE_RUNNER" > /tmp/profile-runner.out
-      assert_file_contains /tmp/profile-runner.out "maint-runner 1.0.0 executed" \
-        "installed runner executes from profile"
+      assert_file_contains /tmp/profile-runner.out \
+        "^maint-runner 1.0.0 via maint-runner-dep 1.0.0$" \
+        "installed runner executes from profile through dependency"
       $APM files maint-runner > /tmp/maint-runner-files.out 2>&1 || {
         cat /tmp/maint-runner-files.out
         fail "apm files lists installed maintainer package"
