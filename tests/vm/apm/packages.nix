@@ -4222,7 +4222,10 @@ in {
       else
         pass "upgraded profile removes v1 jq executable"
       fi
-      $APM list --installed > /tmp/lifecycle-installed-v2.out 2>&1
+      $APM list --installed > /tmp/lifecycle-installed-v2.out 2>&1 || {
+        cat /tmp/lifecycle-installed-v2.out
+        fail "apm list --installed succeeds after upgrading lifecycle tool"
+      }
       assert_file_contains /tmp/lifecycle-installed-v2.out "lifecycle-tool" \
         "apm list --installed reports lifecycle tool after upgrade"
       assert_file_contains "$PROFILE/meta/$TOOL_V2_HASH.json" '"explicit": true' \
@@ -4267,7 +4270,10 @@ in {
       else
         pass "rolled-back profile removes v2 git executable"
       fi
-      $APM list --installed > /tmp/lifecycle-installed-rollback.out 2>&1
+      $APM list --installed > /tmp/lifecycle-installed-rollback.out 2>&1 || {
+        cat /tmp/lifecycle-installed-rollback.out
+        fail "apm list --installed succeeds after rolling back lifecycle tool"
+      }
       assert_file_contains /tmp/lifecycle-installed-rollback.out "lifecycle-tool" \
         "apm list --installed reports lifecycle tool after rollback"
       assert_file_contains /tmp/lifecycle-installed-rollback.out "1.0.0" \
@@ -4298,7 +4304,10 @@ in {
       else
         pass "removed lifecycle executable is absent from current profile"
       fi
-      $APM list --installed > /tmp/lifecycle-installed-removed.out 2>&1 || true
+      $APM list --installed > /tmp/lifecycle-installed-removed.out 2>&1 || {
+        cat /tmp/lifecycle-installed-removed.out
+        fail "apm list --installed succeeds after removing lifecycle tool"
+      }
       if grep -q "lifecycle-tool" /tmp/lifecycle-installed-removed.out; then
         cat /tmp/lifecycle-installed-removed.out
         fail "apm list --installed should not show removed lifecycle tool"
