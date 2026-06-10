@@ -920,16 +920,7 @@ pub async fn publish(
 ) -> Result<()> {
     let name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&name);
-    if !dir.exists() {
-        bail!(
-            "registry '{name}' has no local clone at {path}.\n\
-             If you added it with `{reg} add <url>`, sync it first with `{pkg} update --registry {name}`.\n\
-             To author a new local registry instead, run `{reg} create {name}`.",
-            path = dir.display(),
-            reg = aos_core::invocation::package_registry_command(),
-            pkg = aos_core::invocation::package_manager_command(),
-        );
-    }
+    ensure_writable_registry_clone(&name, &dir)?;
     let signing_key = if key.is_some() || key_id.is_some() {
         Some(resolve_producer_signing_key(
             config, &dir, &name, key, key_id,
@@ -1034,6 +1025,23 @@ pub async fn publish(
     }
 
     Ok(())
+}
+
+fn ensure_writable_registry_clone(name: &str, dir: &Path) -> Result<()> {
+    if dir.join(".git").is_dir() {
+        return Ok(());
+    }
+
+    bail!(
+        "registry '{name}' has no writable local clone at {path}.\n\
+         `{pkg} update --registry {name}` only syncs consumer metadata; it cannot create an \
+         APR publishing worktree.\n\
+         To publish, remove and re-add the registry without `--no-clone`, or author a new \
+         local registry with `{reg} create {name}`.",
+        path = dir.display(),
+        reg = aos_core::invocation::package_registry_command(),
+        pkg = aos_core::invocation::package_manager_command(),
+    );
 }
 
 /// Build package TOML content, merging with existing content if present.
