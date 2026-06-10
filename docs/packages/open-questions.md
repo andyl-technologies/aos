@@ -97,7 +97,15 @@ primary policy surface should be a small set of **named tiers**
 escape hatch — Kubernetes removed knob-level PodSecurityPolicy in favor of
 exactly three named Pod Security Standards because per-knob policy proved
 unwritable and unauditable, and systemd portable services ship four named
-profiles for the same reason. **DECIDE-EARLY** (the file format only; the
+profiles for the same reason. **Proposed format:** a TOML policy file at
+`/etc/aos/policy.toml` — a named tier (`tier = "baseline"`) plus optional
+per-permission overrides and the `kernel-modules` allowlist; shipped in the
+image EROFS as the fleet default and overridable per host by an
+Ignition-written copy in a higher overlay layer (the same precedence model as
+presets); evaluated by `apm` at install/enable. Nix-evaluated policy is
+rejected (not available at runtime install — the [authoring.md](authoring.md)
+forcing function); a signed fleet-policy document can layer on later without
+changing the format. **DECIDE-EARLY** (confirm the proposed format; the
 enforcement model is settled). *packages-core* + *apm* + *boot*.
 
 **(b) The validated k3s permission set under AOS nspawn.** The manifest in
@@ -105,9 +113,14 @@ enforcement model is settled). *packages-core* + *apm* + *boot*.
 k3s-in-privileged-container patterns (k3d, k3s-in-docker), **not yet validated**
 against a running AOS nspawn k3s. k3s is the **proving case**: if it runs under
 the generated unit, the permission schema is complete enough. The exact
-capability / device / mount / module set is `needs verification`.
-**DECIDE-BEFORE-MVP** (gates the first high-privilege container). *pkgs* +
-*test-infra*.
+capability / device / mount / module set is `needs verification`. Under
+Decision 17's per-unit direction the proving case **shrinks dramatically**:
+k3s materializes as a host unit — today's working unit shape,
+`KillMode=process` preserved — whose manifest *documents* its privilege
+rather than constructing a wrapper. Validation reduces to "does the generated
+unit match today's working unit," plus the gated modules/sysctl/firewall
+services. **DECIDE-BEFORE-MVP** (gates the first high-privilege package).
+*pkgs* + *test-infra*.
 
 ---
 
@@ -154,7 +167,19 @@ the allowlist is declared rides on the still-open policy file format of 1(a)).
 
 ---
 
-## 3. Container networking model
+## 3. Container networking model — RESOLVED (direction, under Decision 17)
+
+> **Resolved (direction).** The `network` permission materializes as:
+> **inbound-only private** (default) — host-owned socket units pass named fds
+> into the sandboxed unit (`PrivateNetwork=` on both + socket-unit
+> `JoinsNamespaceOf=`), zero address-space exposure; **private with
+> outbound** — a gated `aos-pkg-<n>-netns.service` oneshot creates a named
+> netns + veth pair (host side managed by systemd-networkd; `CONFIG_VETH=y`
+> confirmed in the kernel config) and the workload unit joins via
+> `NetworkNamespacePath=/run/netns/aos-pkg-<n>` — the one place per-unit is
+> more plumbing than nspawn's `--network-veth`, to be validated in the
+> Decision 17 spike; **host** — k3s and peers, per their manifest. Zone-style
+> multi-container L2 is deferred until a real need appears.
 
 **Statement.** systemd-nspawn offers `--network-veth` (paired veth, host side
 managed by systemd-networkd), `--network-zone`, `--network-namespace-path`, and
@@ -186,7 +211,14 @@ its network mode), **DEFER** zone support.
 
 ---
 
-## 4. nspawn inside test VMs — feasibility
+## 4. nspawn inside test VMs — feasibility (mostly mooted by Decision 17)
+
+> **Mostly mooted.** With nspawn deferred (Decision 17), no nesting runs in
+> MVP test VMs. What remains for *test-infra*: a per-unit-sandbox lifecycle
+> test (`RootDirectory=` + `PrivateUsers=` + `PrivateNetwork=` inside the VM
+> harness) — strictly simpler, no nested service manager. Loop devices are
+> available in guests if `RootImage=` is ever exercised
+> (`CONFIG_BLK_DEV_LOOP=y`, udevd shipped and running).
 
 **Statement.** Tests must run containerized packages inside the existing
 harnesses (`lib/testing/vm.nix`, `firecracker.nix`, `fleet.nix`). The guest
@@ -219,7 +251,19 @@ plan in [boot-activation.md](boot-activation.md) /
 
 ---
 
-## 5. Container root images — build, registry delivery, and signing
+## 5. Container root images — RESOLVED (store path via `RootDirectory=`)
+
+> **Resolved.** Store-path-in-closure, consumed via `RootDirectory=` (per
+> Decision 17): the package's root tree is an ordinary store path inside the
+> package closure — it inherits NAR hashing, the registry tag-signature
+> chain, and gc-rooting with zero new machinery, and needs no image build, no
+> loop device, no udev ordering. The `expose.images` registry field is
+> therefore **not needed for MVP**; it returns if/when a verity-signed
+> `RootImage=` variant lands (blocked on adding `CONFIG_DM_VERITY` to the
+> kernel config — verified absent today). The baked-vs-fetched trust
+> split-brain dissolves with it: a store path rides whichever closure
+> delivers it (system toplevel or apm fetch), covered by that channel's
+> existing trust.
 
 **Statement.** systemd-nspawn needs a real root filesystem; AOS today builds
 store closures + a host rootfs (`lib/build/rootfs.nix` via `mkfs.ext4 -d` +
@@ -271,7 +315,13 @@ the NAR hash — see [apm-integration.md](apm-integration.md) §7.
 
 ---
 
-## 6. Image size & closure growth
+## 6. Image size & closure growth — RESOLVED by Decision 5
+
+> **Resolved.** With package roots as ordinary closure members, bake-vs-fetch
+> is just "is the package in the system closure or apm-fetched" — the
+> standing default holds: fetch-at-boot for workloads, bake k3s and other
+> infrastructure. No separate sizing model; quantify the closure delta once a
+> real workload package exists.
 
 **Statement.** Per the investigation, the host rootfs closure is ~800 MiB–1.2 GiB
 uncompressed (~400–600 MiB shrunk). A k3s container root is ~200–300 MiB
@@ -297,7 +347,12 @@ once a real workload package exists. **DECIDE-EARLY**.
 
 ---
 
-## 7. machined / portabled / importd are disabled by design
+## 7. machined / portabled / importd are disabled by design — RESOLVED (stay disabled)
+
+> **Resolved.** Keep all three disabled. The per-unit substrate (Decision 17)
+> needs none of them; the deferred nspawn path, if it ever materializes, uses
+> explicit units with `--keep-unit --register=no` (Decision 4 note,
+> [container-model.md](container-model.md) template).
 
 **Statement.** `pkgs/system/systemd.nix` sets `-Dmachined=false`,
 `-Dportabled=false`, `-Dimportd=disabled`. systemd-nspawn itself **is** shipped.
@@ -345,21 +400,26 @@ installed unit closures must be validated so a bad fetch doesn't wedge boot.
 - Extend the ignition module to synthesize the unit + file list from a
   `aos.packages.<name>` declaration directly.
 
-**Who runs expose vs. enable — RESOLVED (systemd presets).** The **expose
-phase** (materialize unit files + drop the `aos-pkg-<package>.target`) is
-performed by `apm install`; **enablement is systemd presets**
-([boot-activation.md](boot-activation.md) §3.2, canonical): the image ships
-`99-aos-default.preset` (`disable *`), Ignition writes one per-host preset
-file via `storage.files`, **PID 1 itself applies presets on first boot**
-(verified against v259 source: keyed on `/etc/machine-id` absent or
-`uninitialized`; enable-only unless systemd is built with
-`-Dfirst-boot-full-preset=true`), and runtime installs run
+**Who runs expose vs. enable — RESOLVED (systemd presets, verified).** The
+**expose phase** (materialize unit files + drop the
+`aos-pkg-<package>.target`) is performed by `apm install`; **enablement is
+systemd presets** ([boot-activation.md](boot-activation.md) §3.2, canonical):
+the image ships `99-aos-default.preset` (`disable *`), Ignition writes one
+per-host preset file via `storage.files` into the per-gen `/etc` lower, and an
+**every-boot `aos-preset.service`** runs
+`systemctl preset-all --preset-mode=enable-only` (+ `start --no-block` for
+newly-enabled targets). Runtime installs run
 `systemctl preset aos-pkg-<name>.target` — the Fedora `systemd-update-helper`
-pattern. The old Option A (`storage.links` symlinks) / Option B
-(`systemctl enable`) strawmen are superseded. **Remaining needs-verification:**
-AOS machine-id provisioning must leave `/etc/machine-id` absent or
-`uninitialized` until first real boot, and the `/etc` overlay upper must be
-writable when PID 1 runs the pass.
+pattern — and record the enable line in `/var/etc/systemd/system-preset/`
+(Decision 16). Repo verification closed the open items: systemd's *native*
+first-boot pass can never fire on AOS (the machine-id is deliberately
+committed in stage-1 — `aos-machine-id.service` — so PID 1 always sees "not
+first boot"); the `/etc` overlay **upper is tmpfs**, so enablement must be
+derived state recomputed each boot (which the every-boot pass provides); and
+`apm install` is already generation-stable when nothing changed
+(`install.rs:67-73`). Enable-only mode is mandatory — full mode would
+whiteout the EROFS-baked `.wants` symlinks of base services. The old Option A
+(`storage.links`) / Option B (`systemctl enable`) strawmen are superseded.
 
 **Proposed next step.** *boot* + *apm*: design the desired-packages handoff and
 the oneshot ordering in [boot-activation.md](boot-activation.md); fix the
@@ -409,7 +469,14 @@ responsibility, k3s `/etc/rancher/k3s/k3s.env` backward-compat).
 
 ---
 
-## 10. Security boundary strength & honest labeling
+## 10. Security boundary strength & honest labeling — RESOLVED
+
+> **Resolved.** The signed `[permissions]` manifest is the introspectable
+> source of truth, rendered with the **computed confinement label**
+> (`sandboxed` / `sandboxed-with-holes` / `unconfined`, derived by fixed
+> rules — [permissions.md](permissions.md) §Introspection). The
+> `--private-users` question folds into the manifest's `privileged-users`
+> permission (`PrivateUsers=` under the per-unit substrate).
 
 **Statement.** A default (empty-manifest) package gets a real nspawn sandbox
 (own PID1, namespaces); a high-privilege package (k3s) declares away the
@@ -436,7 +503,17 @@ seccomp/mount defaults in [container-model.md](container-model.md). **DECIDE-EAR
 
 ---
 
-## 11. Upgrade & rollback of containerized packages
+## 11. Upgrade & rollback — RESOLVED (direction, under Decision 17)
+
+> **Resolved (direction).** Per-unit materialization: an upgrade is a
+> generation switch + unit restart **with the unit's own declared
+> semantics** — k3s keeps `KillMode=process`, so no pod kill (the regression
+> this decision flagged disappears with the nspawn deferral). Filesystem
+> revert for sandboxed packages comes from a read-only root +
+> `TemporaryFileSystem=` for scratch paths; persistent state lives in
+> explicit `StateDirectory=`/`BindPaths=`. Rollback = generation switch back
+> (both store paths gc-rooted) + `daemon-reload` + restart. The orphaned
+> `/var/lib/machines` concern disappears with the image format.
 
 **Statement.** apm already has a generation/profile model
 (`/var/lib/profiles/{scope}/gen-N/`, atomic `current` symlink switch, anti-
@@ -468,7 +545,15 @@ host-mounted state; document k3s upgrade as disruptive (drains). Spec in
 
 ---
 
-## 12. Package metadata: how a package declares a container/service
+## 12. Package metadata: how a package declares a container/service — RESOLVED (hybrid)
+
+> **Resolved (hybrid).** The registry TOML (tag-signed, visible pre-fetch)
+> carries what introspection and policy need **before download**:
+> `expose.target`, `expose.requires`, and the full `[permissions]` manifest —
+> so `apm info --permissions` and the host policy check work without fetching
+> the closure. The rendered unit files (+ a manifest copy) ride the closure
+> as the `pkg.expose` store path ([authoring.md](authoring.md)), covered by
+> the NAR hash. Gated on Decision 19's capability-gate field landing first.
 
 **Statement.** `PackageMeta` (`crates/aos-package/src/types.rs`) and the registry
 TOML have **no** field for systemd units, a container rootfs, env/config refs, or
@@ -498,7 +583,11 @@ and [permissions.md](permissions.md). **DECIDE-EARLY**.
 
 ---
 
-## 13. Performance & footprint
+## 13. Performance & footprint (largely mooted for MVP by Decision 17)
+
+> Note: with no per-package PID 1 under the per-unit substrate, the
+> overhead concern shrinks to ordinary unit sandboxing cost (negligible).
+> Measure only if/when the deferred nspawn path materializes.
 
 **Statement.** nspawn nesting adds marginal startup overhead (~2 s per
 container per the investigation); cgroup-v2 delegation and per-container systemd
@@ -521,7 +610,14 @@ workload package exists rather than guessing. **DEFER** (measure first).
 
 ---
 
-## 14. The rename itself — blast radius & sequencing
+## 14. The rename itself — RESOLVED (superseded by the dissolve)
+
+> **Resolved.** Superseded by the revised direction in
+> [migration.md](migration.md): the module tree is **dissolved** into `pkgs/`
+> `expose` blocks + a thin policy module, not renamed. The rename tables
+> survive as the touchpoint inventory; sequencing is the revised increment
+> plan (mkDerivation `expose` → test-http-server end-to-end → dissolve
+> per-package → policy module + preset wiring).
 
 **Statement.** Renaming `roles` → `packages` touches the option tree
 (`aos.roles.*` → `aos.packages.*`), the module dir (`modules/roles/` →
@@ -579,7 +675,31 @@ shorter `aos-<pkg>` was wrong). The nspawn template stays
 
 ---
 
-## 16. Writable /etc overlay path for runtime-installed package units
+## 16. Writable /etc overlay path for runtime-installed package units — RESOLVED
+
+> **Resolved (forced by repo verification).** The `/etc` overlay's **upperdir
+> is tmpfs** (`etc-overlay-setup.service`,
+> `upperdir=/run/etc/upper-<gen>/upper`), so anything written into
+> `/etc/systemd/system/` at runtime is **gone on reboot** — rendered-text-in-
+> upper was never viable. The persistent, overlay-surfaced location that
+> already exists is **`/var/etc`** — the highest-priority *lower* of the
+> 3-layer overlay (today carrying machine-id and ssh host keys). Resolution,
+> following the `portablectl attach` shape:
+>
+> - `apm` materializes runtime-installed package units as **gc-rooted
+>   store-path symlinks** under `/var/etc/systemd/system.attached/` (an
+>   apm-owned attach dir, kept out of admin space), plus the package's
+>   enable line in `/var/etc/systemd/system-preset/30-aos-apm.preset`.
+> - Both surface through the overlay on every subsequent boot; the every-boot
+>   `aos-preset.service` re-derives enablement
+>   ([boot-activation.md](boot-activation.md) §3.2).
+> - **Rollback** = the generation switch rewrites the symlinks + preset
+>   lines (old and new store paths both stay gc-rooted in their
+>   generations), then `systemctl daemon-reload` + restart.
+> - *Small needs-verification:* whether the AOS systemd build includes
+>   `/etc/systemd/system.attached/` in the unit search path with portabled
+>   disabled; if not, use `/var/etc/systemd/system/` directly — same
+>   mechanism, less tidy separation.
 
 **Statement.** [apm-integration.md](apm-integration.md) §4.1 calls this **the
 single biggest unresolved mechanism**. Role/package units are baked into the
@@ -618,7 +738,25 @@ the package generation. Spec in [apm-integration.md](apm-integration.md) §4.1.
 
 ---
 
-## 17. Execution substrate: nspawn vs. per-unit sandboxing (`RootImage=` + directives)
+## 17. Execution substrate — RESOLVED (direction: per-unit default, nspawn deferred)
+
+> **Resolved (direction).** **Per-unit sandboxing is the default
+> materialization; nspawn is deferred entirely** (not built for MVP, reserved
+> for a future package that genuinely needs its own init tree). Every line of
+> gathered evidence pointed one way: it dissolves the k3s `KillMode=process`
+> regression (Decision 11), eliminates the nesting/test risk (Decision 4) and
+> the per-package image format (Decision 5 — the MVP "root" is a store path
+> via `RootDirectory=`: no loop device, no udev ordering, no image build),
+> gives named-fd socket activation and the `JoinsNamespaceOf=` pod primitive,
+> and is upstream's flagship-supported composition (the portable-services
+> default profile). Kernel note: `CONFIG_DM_VERITY` is absent today, so the
+> verity-signed `RootImage=` upgrade path is future work behind a
+> kernel-config change. The planned spike downgrades from decision input to
+> **validation**: materialize `test-http-server`'s empty manifest and k3s's
+> manifest as per-unit services; confirm teardown semantics and harness cost.
+> The honest cost to validate: `network = "private"` *with outbound* needs a
+> gated netns+veth oneshot + `NetworkNamespacePath=` (Decision 3) — more
+> plumbing than nspawn's `--network-veth`.
 
 **Statement.** The doc set materializes the `[permissions]` manifest as
 systemd-nspawn flags. systemd offers a second substrate: **per-unit
@@ -716,23 +854,23 @@ the next schema change, before any `expose` work ships.
 
 | # | Decision | Disposition | Owner |
 |---|---|---|---|
-| 1 | Package privilege model — **RESOLVED** (unified container + `[permissions]` manifest); (a) enforcement model **ANSWERED** (three-layer, system/host authoritative, mechanical materialization, registry-signed trust anchor, checked at install/enable) — only the policy *file format* / allowlist location stays open; (b) validated k3s permission set still open | (a) DECIDE-EARLY (file format) · (b) DECIDE-BEFORE-MVP | packages-core / apm / boot / pkgs |
-| 2 | Kernel modules as the **allowlisted, signature-backed** host-fulfilled `kernel-modules` permission | DECIDE-EARLY | packages-core |
-| 3 | Container networking model (veth/host/zone) | DECIDE-EARLY | packages-core / pkgs |
-| 4 | nspawn-in-VM test feasibility prototype | DECIDE-BEFORE-MVP | test-infra |
-| 5 | Container root build + delivery + signing | DECIDE-EARLY / -BEFORE-MVP | pkgs / apm |
-| 6 | Image size: bake vs. fetch-at-boot | DECIDE-EARLY | pkgs / boot |
-| 7 | machined/portabled/importd stay disabled | DECIDE-EARLY | pkgs |
-| 8 | Install-at-boot via Ignition + apm — enable mechanism **RESOLVED: systemd presets** (machine-id precondition needs verification) | DECIDE-BEFORE-MVP | boot / apm |
-| 9 | Config & credential delivery | DEFER (open) | packages-core / apm |
-| 10 | Security boundary strength & labeling | DECIDE-EARLY | packages-core |
-| 11 | Upgrade/rollback of containers | DECIDE-EARLY | apm / packages-core |
-| 12 | Package metadata schema (container/service) | DECIDE-EARLY | apm / packages-core |
-| 13 | Performance & init strategy | DEFER (measure) | pkgs / test-infra |
-| 14 | Rename blast radius & sequencing | DECIDE-BEFORE-MVP | packages-core |
-| 15 | Systemd unit naming convention — **RESOLVED: `aos-pkg-<name>`** | RESOLVED | packages-core |
-| 16 | Writable /etc overlay path for runtime-installed package units | DECIDE-BEFORE-MVP | boot / apm |
-| 17 | Execution substrate: per-unit sandboxing (`RootImage=` + directives) vs. nspawn | DECIDE-BEFORE-MVP | packages-core / pkgs |
+| 1 | Privilege model **RESOLVED**; (a) enforcement model **ANSWERED**, policy file format **PROPOSED** (`/etc/aos/policy.toml` tiers); (b) k3s set — shrunk under D17 to "generated unit matches today's unit" | (a) confirm proposal · (b) BEFORE-MVP validation | packages-core / apm / boot / pkgs |
+| 2 | Kernel modules as the allowlisted, signature-backed host-fulfilled permission (allowlist location rides 1(a)) | DECIDE-EARLY | packages-core |
+| 3 | Networking — **RESOLVED (direction)**: socket-activation default, netns+veth oneshot for outbound, host for k3s | validate in D17 spike | packages-core / pkgs |
+| 4 | nspawn-in-VM feasibility — **mooted for MVP** by D17; per-unit lifecycle test remains | test plan | test-infra |
+| 5 | Container roots — **RESOLVED**: store path via `RootDirectory=`; verity/`RootImage=` future (kernel lacks DM_VERITY) | RESOLVED | pkgs / apm |
+| 6 | Bake vs. fetch — **RESOLVED by 5**: ordinary closure delivery; bake k3s, fetch workloads | RESOLVED | pkgs / boot |
+| 7 | machined/portabled/importd — **RESOLVED: stay disabled** | RESOLVED | pkgs |
+| 8 | Install-at-boot — enable **RESOLVED: presets via every-boot `aos-preset.service`** (machine-id + tmpfs-upper + apm idempotency all verified) | install unit remains BEFORE-MVP | boot / apm |
+| 9 | Config & credential delivery | DEFER (open — deliberately) | packages-core / apm |
+| 10 | Boundary labeling — **RESOLVED**: computed confinement label | RESOLVED | packages-core |
+| 11 | Upgrade/rollback — **RESOLVED (direction)** under D17: unit-semantics restarts, `KillMode=process` preserved for k3s | RESOLVED (direction) | apm / packages-core |
+| 12 | Package metadata — **RESOLVED (hybrid)**: TOML carries target/requires/permissions; units ride the closure | RESOLVED | apm / packages-core |
+| 13 | Performance & init strategy — largely mooted for MVP by D17 | DEFER | pkgs / test-infra |
+| 14 | Rename sequencing — **RESOLVED**: superseded by the dissolve ([migration.md](migration.md)) | RESOLVED | packages-core |
+| 15 | Unit naming — **RESOLVED: `aos-pkg-<name>`** | RESOLVED | packages-core |
+| 16 | Runtime unit placement — **RESOLVED**: `/var/etc` attach dir + preset lines (tmpfs upper forced it) | RESOLVED | boot / apm |
+| 17 | Execution substrate — **RESOLVED (direction)**: per-unit default, nspawn deferred; spike = validation | validate | packages-core / pkgs |
 | 18 | Package-name service dependencies (`requires`) — new resolver surface | DECIDE-EARLY | apm |
 | 19 | Registry schema capability gate (fail-open on old clients) | DECIDE-BEFORE-MVP | apm |
 

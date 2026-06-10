@@ -64,11 +64,13 @@ specific `systemd-nspawn` / unit knob. The full surface, the manifest examples
 [permissions.md](permissions.md). The nspawn-flag mechanics below are the *how*;
 the manifest is the *what*.
 
-## Substrate decision (OPEN): nspawn vs. per-unit sandboxing
+## Substrate decision (RESOLVED — direction): per-unit default, nspawn deferred
 
-This doc plans the nspawn substrate, but the substrate choice itself is **not
-settled** — it is Decision 17 in [open-questions.md](open-questions.md). systemd
-offers a second substrate purpose-built for this niche: **per-unit sandboxing**
+The substrate decision is **resolved in direction** (Decision 17 in
+[open-questions.md](open-questions.md)): **per-unit sandboxing is the default
+materialization, and nspawn is deferred** — not built for MVP, reserved for a
+future package that genuinely needs its own init tree. systemd offers this
+substrate purpose-built for the niche: **per-unit sandboxing**
 — `RootImage=`/`RootDirectory=` plus the unit-level isolation directives
 (`PrivateNetwork=`, `PrivateUsers=`, `CapabilityBoundingSet=`, `DeviceAllow=`,
 `BindPaths=`/`BindReadOnlyPaths=`, `SystemCallFilter=`, `ProtectSystem=strict`,
@@ -116,11 +118,19 @@ Prior-art note: NixOS's declarative nspawn `containers.*` is the closest
 precedent for "module system generates nspawn units," and it is widely
 considered one of NixOS's weaker subsystems (machined coupling,
 restart-on-switch semantics, networking friction); much of that ecosystem moved
-to podman-systemd (quadlet) or per-unit hardening. The likely landing:
-**per-unit sandboxing as the default materialization, nspawn opt-in** for
-packages that genuinely need an init tree. Everything below specifies the nspawn
-materialization; the *boundary semantics* (what an empty manifest isolates, what
-a grant opens) stand either way.
+to podman-systemd (quadlet) or per-unit hardening. The landing (Decision 17):
+**per-unit sandboxing as the default materialization, nspawn deferred** until
+a package genuinely needs an init tree. The MVP "container root" is simply a
+**store path consumed via `RootDirectory=`** — no image build, no loop
+device, no udev ordering (`CONFIG_DM_VERITY` is also absent from the AOS
+kernel config today, so the verity-signed `RootImage=` upgrade is future work
+behind a kernel-config change). The remaining spike is **validation, not
+decision input**: materialize `test-http-server`'s empty manifest and k3s's
+manifest as per-unit services and confirm teardown semantics and harness
+cost. Everything below specifies the **deferred nspawn materialization** —
+retained as the spec for if/when a package needs an init tree; the *boundary
+semantics* (what an empty manifest isolates, what a grant opens) stand either
+way.
 
 ## Feasibility baseline (from investigation)
 
@@ -439,9 +449,9 @@ Install and enable are split (see [boot-activation.md](boot-activation.md) and
    `crates/aos-package/src/types.rs` has no container/image field today; see
    [apm-integration.md](apm-integration.md).)
 2. **Enable** — `systemctl preset aos-pkg-<name>.target` against the merged
-   preset policy; at first boot PID 1's native preset pass does this for every
-   unit (see [boot-activation.md](boot-activation.md) §3.2). The target
-   `Wants=` the `aos-package@<pkg>` instance.
+   preset policy; at boot the every-boot `aos-preset.service` pass re-derives
+   enablement for every unit (see [boot-activation.md](boot-activation.md)
+   §3.2). The target `Wants=` the `aos-package@<pkg>` instance.
 3. **Run** — `aos-package@<pkg>.service` `ExecStart`s nspawn; `Type=notify` +
    `--notify=ready` lets the container PID1 signal readiness.
 4. **Stop** — `systemctl stop aos-pkg-<name>.target` → `PartOf` propagates to the
@@ -616,11 +626,11 @@ Nothing here weakens [../roles/targets-and-sandbox.md](../roles/targets-and-sand
   like every other member. Invariant 3 holds.
 - **One enable switch** — still exactly the target. How that switch is flipped
   is owned by [boot-activation.md](boot-activation.md) §3.2 (canonical:
-  systemd presets — image `disable *`, Ignition-written host preset file,
-  PID 1 first-boot preset pass, `systemctl preset` for runtime installs) — the
-  roles-era single Ignition `systemd.units[]` entry described in the precursor
-  doc is superseded for packages. The container template and its drop-in ship
-  inert in EROFS either way.
+  systemd presets — image `disable *`, Ignition-written host preset file, an
+  every-boot `aos-preset.service` pass, `systemctl preset` for runtime
+  installs) — the roles-era single Ignition `systemd.units[]` entry described
+  in the precursor doc is superseded for packages. The container template and
+  its drop-in ship inert in EROFS either way.
 
 ## Open items (carried to [open-questions.md](open-questions.md))
 

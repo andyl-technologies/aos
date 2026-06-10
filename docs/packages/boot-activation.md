@@ -159,28 +159,39 @@ available to us for roles/packages. So "enable" can no longer be a single
 `enabled: true` toggle in the fetched/merged Ignition fragment.
 
 **Enable is expressed through systemd presets** — the mechanism every major
-distro converged on, and one systemd applies *itself* on first boot:
+distro converged on. Repo verification (below) ruled out relying on systemd's
+*native* first-boot preset pass on AOS, so the same policy is applied by one
+tiny every-boot oneshot instead:
 
 1. **The image ships default-deny policy:**
    `/usr/lib/systemd/system-preset/99-aos-default.preset` containing
    `disable *` (Arch ships exactly this file). Every `aos-pkg-*.target` is
-   inert unless something more specific enables it.
+   inert unless something more specific enables it. (Verified: the image
+   ships **zero** preset files today — `-Dinstall-sysconfdir=false`
+   suppresses even upstream defaults — so this layer starts clean.)
 2. **Ignition writes one per-host preset file** via plain `storage.files`:
    `/etc/systemd/system-preset/20-aos-host.preset`, one
    `enable aos-pkg-<name>.target` line per desired package. No
    `systemd.units[]` surface, no `[Install]`-symlink reimplementation. Preset
    files sort lexicographically with first-match-wins, so `20-…` beats `99-…`.
-3. **First boot: PID 1 applies presets natively.** Verified against systemd
-   v259 source (`src/core/main.c` first-boot detection, `src/core/manager.c`
-   `manager_preset_all()`; behavior since v215): when `/etc/machine-id` is
-   missing or contains `uninitialized`, systemd runs the equivalent of
-   `systemctl preset-all` after generators and before unit enumeration. No AOS
-   code runs at all for first-boot enablement.
+3. **An every-boot oneshot applies the policy:** `aos-preset.service` runs
+   `systemctl preset-all --preset-mode=enable-only`, ordered
+   `Before=multi-user.target`. Enablement is **derived state, recomputed from
+   the preset files on every boot** — which is also what makes the tmpfs
+   `/etc` upper a non-issue (see verification below). Two sharp edges, both
+   handled: `--preset-mode=enable-only` is **mandatory** (full mode would try
+   to *disable* base services whose `.wants` symlinks are baked into the
+   EROFS lower — sshd, nftables — by writing overlay whiteouts over them);
+   and because the boot transaction was computed before the symlinks existed,
+   the oneshot must follow up with `systemctl start --no-block` for the
+   targets it newly enabled, or they would only come up on the *next* boot.
 4. **Runtime installs: `apm` runs `systemctl preset aos-pkg-<name>.target`**
    after the expose phase — the exact pattern Fedora's `%systemd_post` /
-   `systemd-update-helper` uses. `preset` is idempotent and policy-respecting:
-   it enables only what the merged preset files allow, so a fleet that ships a
-   stricter preset automatically refuses enablement.
+   `systemd-update-helper` uses — and records the `enable` line in the
+   persistent host layer (`/var/etc/systemd/system-preset/`, Decision 16) so
+   the next boot's `aos-preset.service` re-derives it. `preset` is idempotent
+   and policy-respecting: it enables only what the merged preset files allow,
+   so a fleet that ships a stricter preset automatically refuses enablement.
 
 Distro precedent (verified): Debian's auto-enable is itself implemented as
 `systemctl preset --preset-mode=enable-only` (deb-systemd-helper, after Debian
@@ -189,31 +200,45 @@ replaced scriptlets with `systemd-update-helper` + RPM file triggers; Arch
 ships `disable *` and never auto-enables. AOS composes the Arch default with a
 Fedora-style per-host allowlist written by Ignition.
 
-**Needs verification (the new load-bearing items):**
+**Verified against the tree (was "needs verification" — now resolved):**
 
-- **machine-id provisioning.** The first-boot preset pass fires only if
-  `/etc/machine-id` is absent or `uninitialized` at first real boot. If the
-  image pre-commits a machine-id, or anything writes one before stage 2, the
-  pass silently never runs. Audit AOS's machine-id handling.
-- **Preset mode.** The first-boot pass is **enable-only** unless systemd is
-  built with `-Dfirst-boot-full-preset=true` (the meson default is still false
-  in 259). Enable-only suffices for our model — nothing is enabled in the
-  image to begin with; the flag is optional hardening. Decide in
-  `pkgs/system/systemd.nix`.
-- **/etc overlay timing.** Enablement symlinks land in
-  `/etc/systemd/system/`; the writable `/etc` overlay must be assembled before
-  PID 1's preset pass in stage 2 (it is mounted in the initrd before
-  switch-root, so this should hold — confirm). The Ignition files stage writes
-  the preset file into the per-gen `/etc` lower in the initrd, so the policy
-  is in place before PID 1 starts.
+- **systemd's native first-boot preset pass will never fire on AOS — by
+  design, and that is correct.** PID 1 keys "first boot" on
+  `/etc/machine-id` being absent or `uninitialized`, but AOS deliberately
+  creates the machine-id in the stage-1 initrd (`aos-machine-id.service`,
+  `modules/services/ignition.nix:721` — generated from
+  `/proc/sys/kernel/random/uuid` into `/sysroot/var/etc/machine-id`) and
+  surfaces it through the persistent `/var/etc` overlay layer *before*
+  stage-2 PID 1 starts — precisely so the ID persists per host instead of
+  being committed by systemd into the throwaway tmpfs upper. Keeping that
+  property means PID 1 always sees "not first boot"; hence the explicit
+  `aos-preset.service` in step 3, which is equivalent and runs every boot.
+- **The `/etc` overlay upper is tmpfs** (`etc-overlay-setup.service`,
+  `upperdir=/run/etc/upper-<gen>/upper`): runtime
+  `systemctl preset`/`enable` symlinks do **not** survive a reboot. The
+  every-boot preset pass makes that irrelevant — the durable truth is the
+  preset *files* (EROFS default + per-gen Ignition lower + persistent
+  `/var/etc` host layer), not the symlinks.
+- **The preset file is in place before PID 1.** The Ignition files stage
+  writes into `/run/etc/ignition-<gen>/etc/…` in the initrd, and
+  `etc-overlay-setup.service` mounts the 3-layer overlay **before
+  switch-root** — stage-2 systemd boots with the merged `/etc` (including
+  the preset file) already assembled.
+- **Baked enablement is safe.** Base services are enabled by `.wants`
+  symlinks generated at build time into the EROFS lower
+  (`lib/modules/systemd/lib.nix` `generateUnits`,
+  `modules/base/build.nix:291`); enable-only preset application never
+  touches them.
+- **`-Dfirst-boot-full-preset` is irrelevant** under the explicit-oneshot
+  mechanism; the AOS systemd build sets no preset-related flags and need not.
 
 The earlier strawmen — **Option A** (re-implement `[Install]`→symlink via
 `storage.links`) and **Option B** (`apm` runs `systemctl enable`) — are
-**superseded**: presets subsume both with less custom code and an
-upstream-native first-boot path. Option A remains a theoretical fallback if
-the machine-id precondition cannot be met. Either way the enable *decision*
-still originates in the Ignition-declared set — the host that lists
-`k3s-worker` in `desired.toml` is the host whose preset file enables it.
+**superseded**: presets subsume both with one oneshot plus one
+Ignition-written file, and the policy lives in declarative files rather than
+in symlink state. Either way the enable *decision* still originates in the
+Ignition-declared set — the host that lists `k3s-worker` in `desired.toml` is
+the host whose preset file enables it.
 
 ---
 
@@ -259,11 +284,13 @@ Two viable placements:
 
 Recommendation: **stage 2**, ordered `Before=multi-user.target` and after the
 overlay/seed/network preconditions. This is also what the
-[testing](#7-testing) and fleet harnesses are set up to observe. **Needs
-verification:** that `nix-overlay-setup`/`aos-seed-profiles` state is visible
-from stage 2 (they run in the initrd and the overlays persist across
-switch-root, so it should be — confirm the profile dir is on the persistent
-`/var`).
+[testing](#7-testing) and fleet harnesses are set up to observe. **Verified:**
+`aos-seed-profiles` writes `/sysroot/var/lib/profiles/system` — the
+persistent `/var` partition — so the state is visible from stage 2, and a
+root/boot-time `apm install` uses the same `ProfileScope::System`
+(`/var/lib/profiles/system/`; the only scopes are `User` and `System`,
+`crates/aos-package/src/types.rs:560-626`), sharing the profile the seed step
+initializes.
 
 ### 4.2 Enable follows install
 
@@ -298,13 +325,10 @@ generations.
   `apm`'s profile model already supports this — installs create a new generation
   by copying the previous gen's roots (`copy_roots`) and adding deltas
   (`crates/aos-package/src/install.rs`), and importing an already-present NAR is
-  idempotent. The boot step should detect "no change" and **not** churn a new
-  generation every boot. **Needs verification:** that `apm install` is
-  generation-stable when the input set is unchanged (i.e., it does not always
-  mint a new generation). If it does, the boot step must guard with a marker
-  (e.g. a hash of `desired.toml` recorded in `/var/lib/aos/packages.installed`)
-  and skip when unchanged — analogous to Ignition's own `resultFilePath`
-  first-boot marker.
+  idempotent. **Verified:** `apm install` is generation-stable —
+  `install.rs:67-73` exits early ("All requested packages are already
+  installed. No changes made.") **without** minting a generation when nothing
+  changed and `--reinstall` is not set. No extra marker file is needed.
   > **Profile vs. scope (needs verification).** Two distinct things are at play
   > and must not be conflated: the **system profile** holds the toplevel plus
   > the packages **baked** into the image (seeded `registry: "seed"`), while
@@ -373,8 +397,8 @@ initrd:
 
 stage 2:
   (network-online.target reached on demand if any package is "fetched")
-  (first boot: PID 1 preset pass already enabled baked packages per the
-   Ignition-written host preset file — §3.2)
+  aos-preset.service                    # systemctl preset-all --preset-mode=enable-only
+                                        # + start --no-block newly-enabled targets (§3.2)
   aos-install-packages.service          # apm install --from desired.toml  [INSTALLED]
     └─ apm runs: systemctl preset aos-pkg-<name>.target    (per §3.2 policy)
   systemd reaches aos-pkg-<name>.target                        [ENABLED]
