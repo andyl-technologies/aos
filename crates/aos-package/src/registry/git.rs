@@ -947,11 +947,6 @@ fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
     semver::Version::parse(&semver_str).ok()
 }
 
-/// Verify the commit signature using `git verify-commit`.
-///
-/// This checks that the commit was signed and that the signature is valid.
-/// The actual key verification depends on the user's git configuration
-/// (gpg.ssh.allowedSignersFile or gpg keyring).
 /// Enforce that `new_commit` is a descendant of `old_commit` (fast-forward).
 ///
 /// Uses `git merge-base --is-ancestor` to check the relationship.
