@@ -2763,4 +2763,162 @@ in {
       echo "==> All drain tests passed"
     '';
   };
+
+  # ---------------------------------------------------------------------------
+  # apr origin upload → s3:// against a real SigV4 endpoint (garage)
+  # ---------------------------------------------------------------------------
+  # The s3:// scheme of the cache/upload backend (crates/aos-cache/src/
+  # backend/s3.rs over crates/aos-net/src/protocol/s3.rs, aws-sdk-s3 with
+  # a custom endpoint + forced path style) had no end-to-end coverage —
+  # every other test uploads via file:// and reads via http://. This test
+  # stands up a single-node garage, uploads a registry's static origin
+  # surface plus a cache dir via `apr origin upload s3://...`, and reads
+  # the objects back through garage's web endpoint to verify bytes.
+  origin-upload-s3 = testing.mkVMTest {
+    name = "aos-origin-upload-s3";
+    rootfsDeps = [
+      self
+      pkgs.garage
+      pkgs.git
+      pkgs.curl
+      pkgs.coreutils
+      pkgs.diffutils # cmp — NOT part of coreutils
+      pkgs.gawk
+      pkgs.grep
+      pkgs.iproute2
+    ];
+    memory = 2048;
+    testScript = ''
+      set -eu
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      export HOME=/tmp
+      export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
+      export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
+
+      GARAGE=${pkgs.garage}/bin/garage
+      CFG=/tmp/garage.toml
+
+      echo "==> Starting single-node garage"
+      mkdir -p /tmp/garage/meta /tmp/garage/data
+      cat > "$CFG" << 'EOF'
+      metadata_dir = "/tmp/garage/meta"
+      data_dir = "/tmp/garage/data"
+      db_engine = "sqlite"
+      replication_factor = 1
+
+      rpc_bind_addr = "127.0.0.1:3901"
+      rpc_public_addr = "127.0.0.1:3901"
+      rpc_secret = "1799bccfd7411eddcf9ebd316bc1f5287ad12a68094e1c6ac6abde7e6feae1ec"
+
+      [s3_api]
+      s3_region = "garage"
+      api_bind_addr = "127.0.0.1:3900"
+      root_domain = ".s3.garage.localhost"
+
+      [s3_web]
+      bind_addr = "127.0.0.1:3902"
+      root_domain = ".web.garage.localhost"
+      index = "index.html"
+      EOF
+
+      "$GARAGE" -c "$CFG" server > /tmp/garage.log 2>&1 &
+      GARAGE_PID=$!
+
+      ready=0
+      for _i in $(seq 1 60); do
+        if "$GARAGE" -c "$CFG" status > /tmp/garage-status.out 2>&1; then
+          ready=1
+          break
+        fi
+        sleep 1
+      done
+      if [ "$ready" -ne 1 ]; then
+        echo "FAIL: garage did not come up"
+        cat /tmp/garage.log
+        exit 1
+      fi
+
+      echo "==> Single-node layout"
+      NODE_ID=$("$GARAGE" -c "$CFG" node id -q 2>/dev/null | cut -d@ -f1)
+      test -n "$NODE_ID" || { echo "FAIL: no garage node id"; exit 1; }
+      "$GARAGE" -c "$CFG" layout assign -z dc1 -c 1G "$NODE_ID"
+      "$GARAGE" -c "$CFG" layout apply --version 1
+
+      echo "==> Bucket + key"
+      "$GARAGE" -c "$CFG" key create test-key > /tmp/garage-key.out
+      cat /tmp/garage-key.out
+      AWS_ACCESS_KEY_ID=$(awk -F': *' '/Key ID/ {print $2}' /tmp/garage-key.out | tr -d ' ')
+      AWS_SECRET_ACCESS_KEY=$(awk -F': *' '/Secret key/ {print $2}' /tmp/garage-key.out | tr -d ' ')
+      test -n "$AWS_ACCESS_KEY_ID" || { echo "FAIL: no access key id"; exit 1; }
+      test -n "$AWS_SECRET_ACCESS_KEY" || { echo "FAIL: no secret key"; exit 1; }
+      export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+
+      "$GARAGE" -c "$CFG" bucket create test-bucket
+      "$GARAGE" -c "$CFG" bucket allow --read --write --owner test-bucket --key test-key
+      # Website access gives us an unauthenticated HTTP read path on :3902
+      # for byte-level verification of what the SigV4 upload stored.
+      "$GARAGE" -c "$CFG" bucket website --allow test-bucket
+
+      echo "==> Registry + handmade static cache dir"
+      ${self}/bin/apr create s3reg
+
+      mkdir -p /tmp/fake-cache/nar
+      printf 'StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n' \
+        > /tmp/fake-cache/nix-cache-info
+      {
+        printf 'StorePath: /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-fixture-1.0\n'
+        printf 'URL: nar/fixture.nar\n'
+        printf 'Compression: none\n'
+        printf 'NarHash: sha256:0000000000000000000000000000000000000000000000000000000000000000\n'
+        printf 'NarSize: 128\n'
+      } > /tmp/fake-cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.narinfo
+      head -c 128 /dev/zero > /tmp/fake-cache/nar/fixture.nar
+
+      echo "==> apr origin upload over s3://"
+      ${self}/bin/apr origin upload \
+        --registry s3reg \
+        --cache-dir /tmp/fake-cache \
+        --upload-url s3://test-bucket/origin \
+        --s3-region garage \
+        --s3-endpoint http://127.0.0.1:3900 \
+        2>&1 | tee /tmp/upload.out
+      grep -q "Uploaded" /tmp/upload.out || { echo "FAIL: upload not confirmed"; exit 1; }
+
+      echo "==> Read objects back through the web endpoint"
+      webget() {
+        curl -sf -H "Host: test-bucket.web.garage.localhost" \
+          "http://127.0.0.1:3902/$1"
+      }
+
+      webget origin/HEAD > /tmp/back-HEAD
+      grep -q . /tmp/back-HEAD || { echo "FAIL: HEAD empty"; exit 1; }
+
+      webget origin/info/refs > /tmp/back-refs
+      grep -q refs/heads /tmp/back-refs || { echo "FAIL: info/refs missing heads"; exit 1; }
+
+      assert_same_bytes() {
+        if ! cmp "$1" "$2"; then
+          echo "FAIL: $3 bytes differ"
+          echo "--- got:"; od -c "$1" | head -10
+          echo "--- want:"; od -c "$2" | head -10
+          exit 1
+        fi
+      }
+
+      webget origin/nix-cache-info > /tmp/back-cache-info
+      assert_same_bytes /tmp/back-cache-info /tmp/fake-cache/nix-cache-info nix-cache-info
+
+      webget origin/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.narinfo > /tmp/back-narinfo
+      assert_same_bytes /tmp/back-narinfo \
+        /tmp/fake-cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.narinfo narinfo
+
+      webget origin/nar/fixture.nar > /tmp/back-nar
+      assert_same_bytes /tmp/back-nar /tmp/fake-cache/nar/fixture.nar NAR
+
+      kill "$GARAGE_PID" 2>/dev/null || true
+      echo "==> All s3 origin upload tests passed"
+    '';
+  };
 }
