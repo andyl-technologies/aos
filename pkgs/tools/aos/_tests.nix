@@ -1412,6 +1412,52 @@ in {
           grep -q "http://127.0.0.1:$install_cache_port/cache" \
             "$data/apm/registries/host-install-channel/registry.toml"
           assert_no_profile
+          nix_store --delete --ignore-liveness "$install_store" \
+            > "$work/nix-delete-host-install-channel.out" 2>&1
+          nix_store --delete --ignore-liveness "$install_leaf_store" \
+            > "$work/nix-delete-host-leaf-channel.out" 2>&1
+          if nix_store --check-validity "$install_store" \
+            > "$work/nix-valid-host-install-channel-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-install-channel-deleted.out"
+            exit 1
+          fi
+          if nix_store --check-validity "$install_leaf_store" \
+            > "$work/nix-valid-host-leaf-channel-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-leaf-channel-deleted.out"
+            exit 1
+          fi
+          run_clean ${self}/bin/apm --json install hostinstall \
+            --registry host-install-channel \
+            --yes > "$work/apm-install-host-install-channel.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+            '.action == "install"
+              and .status == "installed"
+              and .requested == ["hostinstall"]
+              and .generation == 1
+              and (.roots | length == 1)
+              and .roots[0].name == "hostinstall"
+              and .roots[0].registry == "host-install-channel"
+              and .roots[0].version == "1.0.0"
+              and .roots[0].store_path == $store
+              and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+              and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
+            "$work/apm-install-host-install-channel.json" >/dev/null
+          nix_store --check-validity "$install_store" \
+            > "$work/nix-valid-host-install-channel-imported.out" 2>&1
+          nix_store --check-validity "$install_leaf_store" \
+            > "$work/nix-valid-host-leaf-channel-imported.out" 2>&1
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-install-channel-run.out"
+          grep -q "host leaf package executed" "$work/host-install-channel-run.out"
+          grep -q "host install package executed" "$work/host-install-channel-run.out"
+          "$profile/current/bin/host-leaf-tool" \
+            > "$work/host-leaf-channel-run.out"
+          grep -q "host leaf package executed" "$work/host-leaf-channel-run.out"
+          assert_default_profile_absent
+          rm -rf "$profile_root"
           home="$main_home"
           config="$main_config"
           data="$main_data"
