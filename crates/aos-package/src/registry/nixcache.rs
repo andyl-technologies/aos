@@ -11,7 +11,7 @@ use aos_core::nar::cache::{
     NarCompression, NarInfoSigner, StaticNarInfoInput, nar_url, nix_cache_info,
     render_static_narinfo,
 };
-use aos_core::nar::info::store_hash;
+use aos_core::nar::info::{basename, store_hash};
 use aos_core::nix::aos_nix_env;
 use aos_core::output::Printer;
 use serde_json::Value as JsonValue;
@@ -46,6 +46,7 @@ pub async fn generate_static_cache(
     if paths.is_empty() {
         bail!("registry contains no store paths to cache");
     }
+    let store_dir = common_store_dir(&paths)?;
 
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("creating {}", output_dir.display()))?;
@@ -53,7 +54,7 @@ pub async fn generate_static_cache(
         .with_context(|| format!("creating {}", output_dir.join("nar").display()))?;
     std::fs::write(
         output_dir.join("nix-cache-info"),
-        nix_cache_info("/nix/store", priority),
+        nix_cache_info(&store_dir, priority),
     )
     .with_context(|| format!("writing {}", output_dir.join("nix-cache-info").display()))?;
 
@@ -94,7 +95,7 @@ pub async fn generate_static_cache(
                 file_size,
                 compression: NarCompression::Zstd,
             },
-            "/nix/store",
+            &store_dir,
             signer.as_ref(),
         );
         let hash = store_hash(&info.path);
@@ -237,12 +238,73 @@ pub fn upsert_registry_cache(registry_dir: &Path, cache_url: &str, priority: u32
 
 fn collect_store_paths(registry_dir: &Path) -> Result<Vec<String>> {
     let packages = registry_dir.join("packages");
-    let mut paths = BTreeSet::new();
     if !packages.exists() {
         return Ok(Vec::new());
     }
-    collect_store_paths_from_dir(&packages, &mut paths)?;
+    let mut roots = BTreeSet::new();
+    collect_store_paths_from_dir(&packages, &mut roots)?;
+
+    let mut paths = BTreeSet::new();
+    for root in roots {
+        collect_store_path_closure(&root, &mut paths)?;
+    }
     Ok(paths.into_iter().collect())
+}
+
+fn common_store_dir(paths: &[String]) -> Result<String> {
+    let first = paths
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("registry contains no store paths to cache"))?;
+    let store_dir = store_dir_of(first)?;
+
+    for path in &paths[1..] {
+        let candidate = store_dir_of(path)?;
+        if candidate != store_dir {
+            bail!(
+                "cannot generate one static cache for mixed store directories: {store_dir} and {candidate}"
+            );
+        }
+    }
+
+    Ok(store_dir)
+}
+
+fn store_dir_of(store_path: &str) -> Result<String> {
+    Path::new(store_path)
+        .parent()
+        .map(|path| path.display().to_string())
+        .ok_or_else(|| anyhow::anyhow!("store path has no parent directory: {store_path}"))
+}
+
+fn collect_store_path_closure(store_path: &str, paths: &mut BTreeSet<String>) -> Result<()> {
+    let store_dir = store_dir_of(store_path)?;
+    let output = Command::new("nix-store")
+        .envs(aos_nix_env())
+        .args(["-qR", store_path])
+        .output()
+        .with_context(|| format!("running nix-store -qR {store_path}"))?;
+    if !output.status.success() {
+        bail!(
+            "nix-store -qR failed for {store_path}: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    let mut found = false;
+    for path in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        paths.insert(re_root_store_path(path, &store_dir)?);
+        found = true;
+    }
+
+    if !found {
+        paths.insert(store_path.to_string());
+    }
+
+    Ok(())
 }
 
 fn collect_store_paths_from_dir(dir: &Path, paths: &mut BTreeSet<String>) -> Result<()> {
@@ -315,39 +377,51 @@ fn query_path_info(path: &str) -> Result<CachePathInfo> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: JsonValue = serde_json::from_str(&stdout)
         .with_context(|| format!("parsing nix path-info JSON for {path}"))?;
-    let info = select_path_info(&json);
+    path_info_from_json(path, &json)
+}
+
+fn path_info_from_json(requested_path: &str, json: &JsonValue) -> Result<CachePathInfo> {
+    let info = select_path_info(json);
+    let store_dir = store_dir_of(requested_path)?;
+    let requested_hash = store_hash(requested_path);
+    let reported_path = info
+        .get("path")
+        .and_then(JsonValue::as_str)
+        .unwrap_or(requested_path);
+
+    if store_hash(reported_path) != requested_hash {
+        bail!("nix path-info returned {reported_path} for requested {requested_path}");
+    }
 
     let nar_hash = info
         .get("narHash")
         .and_then(JsonValue::as_str)
-        .ok_or_else(|| anyhow::anyhow!("nix path-info missing narHash for {path}"))?
+        .ok_or_else(|| anyhow::anyhow!("nix path-info missing narHash for {requested_path}"))?
         .to_string();
     let nar_size = info
         .get("narSize")
         .and_then(JsonValue::as_u64)
-        .ok_or_else(|| anyhow::anyhow!("nix path-info missing narSize for {path}"))?;
-    let path = info
-        .get("path")
-        .and_then(JsonValue::as_str)
-        .unwrap_or(path)
-        .to_string();
+        .ok_or_else(|| anyhow::anyhow!("nix path-info missing narSize for {requested_path}"))?;
+    let path = re_root_store_path(reported_path, &store_dir)?;
     let references = info
         .get("references")
         .and_then(JsonValue::as_array)
         .map(|refs| {
             refs.iter()
                 .filter_map(JsonValue::as_str)
-                .filter(|reference| *reference != path.as_str())
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
+                .filter(|reference| store_hash(reference) != requested_hash)
+                .map(|reference| re_root_store_path(reference, &store_dir))
+                .collect::<Result<Vec<_>>>()
         })
+        .transpose()?
         .unwrap_or_default();
     let deriver = info
         .get("deriver")
         .or_else(|| info.get("deriverPath"))
         .and_then(JsonValue::as_str)
         .filter(|deriver| !deriver.is_empty())
-        .map(ToString::to_string);
+        .map(|deriver| re_root_store_path(deriver, &store_dir))
+        .transpose()?;
 
     Ok(CachePathInfo {
         path,
@@ -358,11 +432,25 @@ fn query_path_info(path: &str) -> Result<CachePathInfo> {
     })
 }
 
+fn re_root_store_path(store_path: &str, store_dir: &str) -> Result<String> {
+    let name = basename(store_path);
+    if name.is_empty() {
+        bail!("store path has no basename: {store_path}");
+    }
+    Ok(format!("{store_dir}/{name}"))
+}
+
 fn select_path_info(json: &JsonValue) -> JsonValue {
     if let Some(array) = json.as_array() {
         return array.first().cloned().unwrap_or_else(|| json.clone());
     }
     if let Some(object) = json.as_object() {
+        if object.contains_key("path")
+            || object.contains_key("narHash")
+            || object.contains_key("narSize")
+        {
+            return json.clone();
+        }
         return object
             .values()
             .next()
@@ -427,6 +515,75 @@ nar_size = 2
                 "/nix/store/root111-kernel".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn common_store_dir_accepts_alternate_store_paths() {
+        let paths = vec![
+            "/tmp/aos-root/store/aaa111-package-a".to_string(),
+            "/tmp/aos-root/store/bbb222-package-b".to_string(),
+        ];
+
+        assert_eq!(common_store_dir(&paths).unwrap(), "/tmp/aos-root/store");
+    }
+
+    #[test]
+    fn common_store_dir_rejects_mixed_store_paths() {
+        let paths = vec![
+            "/tmp/aos-root/store/aaa111-package-a".to_string(),
+            "/nix/store/bbb222-package-b".to_string(),
+        ];
+
+        let err = common_store_dir(&paths).unwrap_err().to_string();
+        assert!(err.contains("mixed store directories"));
+    }
+
+    #[test]
+    fn re_root_store_path_uses_requested_store_dir() {
+        assert_eq!(
+            re_root_store_path("/nix/store/aaa111-package-a", "/tmp/aos-root/store").unwrap(),
+            "/tmp/aos-root/store/aaa111-package-a",
+        );
+    }
+
+    #[test]
+    fn path_info_from_json_preserves_requested_alternate_store_path() {
+        let json = serde_json::json!({
+            "path": "/nix/store/aaa111-package-a",
+            "narHash": "sha256-test",
+            "narSize": 123,
+            "references": [
+                "/nix/store/aaa111-package-a",
+                "/nix/store/bbb222-library-b"
+            ],
+            "deriver": "/nix/store/ccc333-package-a.drv"
+        });
+
+        let info = path_info_from_json("/tmp/aos-root/store/aaa111-package-a", &json).unwrap();
+
+        assert_eq!(info.path, "/tmp/aos-root/store/aaa111-package-a");
+        assert_eq!(info.nar_hash, "sha256-test");
+        assert_eq!(info.nar_size, 123);
+        assert_eq!(
+            info.references,
+            vec!["/tmp/aos-root/store/bbb222-library-b"],
+        );
+        assert_eq!(
+            info.deriver.as_deref(),
+            Some("/tmp/aos-root/store/ccc333-package-a.drv"),
+        );
+    }
+
+    #[test]
+    fn path_info_from_json_rejects_mismatched_reported_path() {
+        let json = serde_json::json!({
+            "path": "/nix/store/zzz999-package-a",
+            "narHash": "sha256-test",
+            "narSize": 123,
+        });
+
+        let err = path_info_from_json("/tmp/aos-root/store/aaa111-package-a", &json).unwrap_err();
+        assert!(err.to_string().contains("nix path-info returned"));
     }
 
     #[test]
