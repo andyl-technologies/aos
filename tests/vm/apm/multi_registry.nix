@@ -474,6 +474,26 @@ in {
         cat /tmp/priority-registry-list.json
         fail "apr --json list preserves priority and tracking metadata"
       fi
+      ${aosBin} --json package registry list \
+        > /tmp/priority-aos-registry-list.json 2>&1 || {
+        cat /tmp/priority-aos-registry-list.json
+        fail "aos package registry list reports configured priority registries"
+      }
+      if ${jqBin} -e '
+        (map(select(.name == "high-priority"
+          and .priority == 900
+          and .status == "enabled"
+          and .tracking == "branch:'"$HIGH_BRANCH"'")) | length == 1)
+        and (map(select(.name == "low-priority"
+          and .priority == 100
+          and .status == "enabled"
+          and .tracking == "branch:'"$LOW_BRANCH"'")) | length == 1)
+      ' /tmp/priority-aos-registry-list.json >/dev/null; then
+        pass "aos package registry list preserves priority and tracking metadata"
+      else
+        cat /tmp/priority-aos-registry-list.json
+        fail "aos package registry list preserves priority and tracking metadata"
+      fi
 
       $APM search priority-tool > /tmp/priority-search.out 2>&1 || {
         cat /tmp/priority-search.out
@@ -504,6 +524,23 @@ in {
       else
         cat /tmp/priority-search.json
         fail "apm --json search deduplicates priority-tool to high priority package"
+      fi
+      ${aosBin} --json package search priority-tool \
+        > /tmp/priority-aos-package-search.json 2>&1 || {
+        cat /tmp/priority-aos-package-search.json
+        fail "aos package search resolves priority-selected package"
+      }
+      if ${jqBin} -e '
+        (map(select(.name == "priority-tool"
+          and .registry == "high-priority"
+          and .version == "2.0.0")) | length == 1)
+        and (map(select(.name == "priority-tool"
+          and .registry == "low-priority")) | length == 0)
+      ' /tmp/priority-aos-package-search.json >/dev/null; then
+        pass "aos package search deduplicates priority-tool to high priority package"
+      else
+        cat /tmp/priority-aos-package-search.json
+        fail "aos package search deduplicates priority-tool to high priority package"
       fi
       $APM --json search priority-tool --registry low-priority \
         > /tmp/priority-search-low.json 2>&1 || {
