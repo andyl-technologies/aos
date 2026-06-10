@@ -5,7 +5,86 @@
 //! Each service delegates to the existing server business logic (store,
 //! views, build manager, etc.) rather than duplicating it.
 
+use axum::http::header;
+use connectrpc::{ConnectError, Context, ErrorCode};
+
+use crate::auth::{Claims, claims_from_bearer_header};
+use crate::routes::AppState;
+
 pub mod auth;
 pub mod build;
 pub mod cache;
 pub mod gc;
+
+/// Decode required JWT claims from a ConnectRPC request context.
+pub(crate) fn require_rpc_claims(ctx: &Context, state: &AppState) -> Result<Claims, ConnectError> {
+    let auth_header = ctx
+        .header(&header::AUTHORIZATION)
+        .ok_or_else(|| {
+            ConnectError::new(ErrorCode::Unauthenticated, "missing Authorization header")
+        })?
+        .to_str()
+        .map_err(|_| {
+            ConnectError::new(
+                ErrorCode::Unauthenticated,
+                "invalid Authorization header encoding",
+            )
+        })?;
+
+    claims_from_bearer_header(auth_header, &state.jwt_secret)
+        .map_err(|e| ConnectError::new(ErrorCode::Unauthenticated, e.to_string()))
+}
+
+/// Require a valid JWT that grants access to `view`.
+pub(crate) fn require_rpc_view(
+    ctx: &Context,
+    state: &AppState,
+    view: &str,
+) -> Result<Claims, ConnectError> {
+    let claims = require_rpc_claims(ctx, state)?;
+    if !claims.has_view(view) {
+        return Err(ConnectError::new(
+            ErrorCode::PermissionDenied,
+            "view not authorized",
+        ));
+    }
+    Ok(claims)
+}
+
+/// Require a valid JWT that grants access to `view` and `permission`.
+pub(crate) fn require_rpc_permission(
+    ctx: &Context,
+    state: &AppState,
+    view: &str,
+    permission: &str,
+) -> Result<(), ConnectError> {
+    let claims = require_rpc_view(ctx, state, view)?;
+    if !claims.has_permission(permission) {
+        return Err(ConnectError::new(
+            ErrorCode::PermissionDenied,
+            format!("{permission} permission required"),
+        ));
+    }
+    Ok(())
+}
+
+/// Require read access unless the view is configured for anonymous reads.
+pub(crate) fn require_rpc_read_access(
+    ctx: &Context,
+    state: &AppState,
+    view: &str,
+    anonymous_read: bool,
+) -> Result<(), ConnectError> {
+    if anonymous_read {
+        return Ok(());
+    }
+
+    let claims = require_rpc_view(ctx, state, view)?;
+    if !claims.has_permission("read") {
+        return Err(ConnectError::new(
+            ErrorCode::PermissionDenied,
+            "read permission required",
+        ));
+    }
+    Ok(())
+}

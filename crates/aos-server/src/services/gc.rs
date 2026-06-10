@@ -10,6 +10,7 @@ use aos_proto::aos::gc::v1::*;
 
 use crate::evict;
 use crate::routes::AppState;
+use crate::services;
 
 /// ConnectRPC GC service backed by the shared `AppState`.
 pub struct GcServiceImpl {
@@ -30,6 +31,7 @@ impl GcService for GcServiceImpl {
         if self.state.views.get_view(view).is_none() {
             return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
         }
+        services::require_rpc_permission(&ctx, &self.state, view, "build")?;
 
         // Step 1: Expire TTL roots.
         let expired = evict::expire_ttl_roots(&self.state.views, view)

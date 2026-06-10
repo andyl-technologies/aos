@@ -11,6 +11,7 @@ use aos_proto::aos::build::v1::*;
 
 use crate::build::{BuildEvent as InternalBuildEvent, BuildEventKind};
 use crate::routes::AppState;
+use crate::services;
 
 type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
 
@@ -31,6 +32,7 @@ impl BuildService for BuildServiceImpl {
         if self.state.views.get_view(view).is_none() {
             return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
         }
+        services::require_rpc_permission(&ctx, &self.state, view, "build")?;
 
         // Reject builds during drain.
         if self.state.drain.is_draining() {
@@ -105,6 +107,7 @@ impl BuildService for BuildServiceImpl {
         if self.state.views.get_view(view).is_none() {
             return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
         }
+        services::require_rpc_permission(&ctx, &self.state, view, "build")?;
 
         if self.state.drain.is_draining() {
             return Err(ConnectError::new(

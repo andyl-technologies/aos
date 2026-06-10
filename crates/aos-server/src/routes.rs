@@ -74,10 +74,15 @@ pub struct AppState {
 pub fn router(state: Arc<AppState>) -> Router {
     // Build ConnectRPC service router.
     let connect_router = build_connectrpc_router(Arc::clone(&state));
+    let connect_paths: Vec<String> = connect_router
+        .methods()
+        .map(|method| format!("/{method}"))
+        .collect();
+    let connect_service = connect_router.into_axum_service();
 
-    // Existing REST routes remain — ConnectRPC is served via fallback so
-    // both coexist on the same port.
-    Router::new()
+    // Existing REST routes remain; exact ConnectRPC paths are registered
+    // separately so broad REST routes cannot shadow them.
+    let mut router = Router::new()
         .route("/{view}/nix-cache-info", get(cache_info_handler))
         .route("/{view}/{hash_narinfo}", get(narinfo_handler))
         .route("/{view}/nar/{filename}", get(nar_handler))
@@ -88,9 +93,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/{view}/build-closure", post(build_closure_handler))
         .route("/{view}/upload-pack", post(upload_pack_handler))
         .route("/{view}/gc", post(gc_handler))
-        .route("/oauth2/token", post(auth::oauth2_token_handler))
-        .fallback_service(connect_router.into_axum_service())
-        .with_state(state)
+        .route("/oauth2/token", post(auth::oauth2_token_handler));
+
+    for path in connect_paths {
+        router = router.route_service(&path, connect_service.clone());
+    }
+
+    router.fallback_service(connect_service).with_state(state)
 }
 
 /// Build the ConnectRPC service router with all RPC services registered.

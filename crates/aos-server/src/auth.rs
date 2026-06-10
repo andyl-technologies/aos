@@ -70,6 +70,21 @@ pub fn create_access_token(
     Ok(token)
 }
 
+/// Decode JWT claims from an `Authorization: Bearer ...` header value.
+pub fn claims_from_bearer_header(auth_header: &str, secret: &[u8]) -> Result<Claims> {
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .context("Authorization header must start with Bearer")?;
+
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+
+    let token_data = decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation)
+        .context("invalid token")?;
+
+    Ok(token_data.claims)
+}
+
 /// Axum extractor that validates a JWT from the `Authorization: Bearer` header.
 ///
 /// On success the decoded [`Claims`] are available to the handler.
@@ -91,28 +106,12 @@ impl FromRequestParts<Arc<AppState>> for AuthClaims {
                 (StatusCode::UNAUTHORIZED, "missing Authorization header").into_response()
             })?;
 
-        let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Authorization header must start with Bearer",
-            )
-                .into_response()
-        })?;
-
-        let mut validation = Validation::new(Algorithm::HS256);
-        validation.validate_exp = true;
-
-        let token_data = decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(&state.jwt_secret),
-            &validation,
-        )
-        .map_err(|e| {
+        let claims = claims_from_bearer_header(auth_header, &state.jwt_secret).map_err(|e| {
             tracing::warn!(error = %e, "JWT validation failed");
             (StatusCode::UNAUTHORIZED, format!("invalid token: {e}")).into_response()
         })?;
 
-        Ok(AuthClaims(token_data.claims))
+        Ok(AuthClaims(claims))
     }
 }
 
@@ -146,28 +145,12 @@ impl FromRequestParts<Arc<AppState>> for AuthResult {
                 .into_response()
         })?;
 
-        let token = auth_str.strip_prefix("Bearer ").ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Authorization header must start with Bearer",
-            )
-                .into_response()
-        })?;
-
-        let mut validation = Validation::new(Algorithm::HS256);
-        validation.validate_exp = true;
-
-        let token_data = decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(&state.jwt_secret),
-            &validation,
-        )
-        .map_err(|e| {
+        let claims = claims_from_bearer_header(auth_str, &state.jwt_secret).map_err(|e| {
             tracing::warn!(error = %e, "JWT validation failed (anonymous-capable endpoint)");
             (StatusCode::UNAUTHORIZED, format!("invalid token: {e}")).into_response()
         })?;
 
-        Ok(AuthResult::Authenticated(token_data.claims))
+        Ok(AuthResult::Authenticated(claims))
     }
 }
 
