@@ -6,9 +6,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
+
+use crate::gitcmd;
 
 /// Initialize `dir` as a bare sha256 git repository and point `HEAD` at the
 /// default channel branch.
@@ -22,7 +24,7 @@ pub fn init_bare_sha256(dir: &Path, default_channel: &str) -> Result<()> {
         bail!("default channel must be a single non-empty ref segment");
     }
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .args(["init", "--bare", "--object-format=sha256"])
         .arg(dir)
         .output()
@@ -204,7 +206,7 @@ pub fn repo_git_dir(repo: &Path) -> Result<PathBuf> {
         return Ok(repo.to_path_buf());
     }
 
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .arg("-C")
         .arg(repo)
         .args(["rev-parse", "--absolute-git-dir"])
@@ -226,7 +228,7 @@ pub fn repo_git_dir(repo: &Path) -> Result<PathBuf> {
 }
 
 fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .arg("--git-dir")
         .arg(repo)
         .args(args)
@@ -246,7 +248,7 @@ fn run_git_dir(repo: &Path, args: &[&str]) -> Result<String> {
 
 fn unpack_pack(repo: &Path, pack: &Path) -> Result<()> {
     let pack_file = fs::File::open(pack).with_context(|| format!("opening {}", pack.display()))?;
-    let output = Command::new("git")
+    let output = gitcmd::hermetic()
         .arg("--git-dir")
         .arg(repo)
         .arg("unpack-objects")
@@ -361,7 +363,7 @@ mod tests {
         let sha256 = tmp.path().join("sha256.git");
         let sha256_worktree = tmp.path().join("sha256-worktree");
 
-        let sha1_status = Command::new("git")
+        let sha1_status = crate::testutil::git_command(tmp.path())
             .args(["init", "--bare"])
             .arg(&sha1)
             .status()
@@ -377,7 +379,7 @@ mod tests {
             "ref: refs/heads/stable\n"
         );
 
-        let worktree_status = Command::new("git")
+        let worktree_status = crate::testutil::git_command(tmp.path())
             .args(["init", "--object-format=sha256"])
             .arg(&sha256_worktree)
             .status()
@@ -409,7 +411,7 @@ mod tests {
         fs::create_dir_all(&work).unwrap();
         fs::write(work.join("registry.toml"), "[registry]\nname = \"test\"\n").unwrap();
 
-        let add = Command::new("git")
+        let add = crate::testutil::git_command(tmp.path())
             .arg("--git-dir")
             .arg(&repo)
             .arg("--work-tree")
@@ -418,22 +420,12 @@ mod tests {
             .status()
             .unwrap();
         assert!(add.success());
-        let commit = Command::new("git")
+        let commit = crate::testutil::git_command(tmp.path())
             .arg("--git-dir")
             .arg(&repo)
             .arg("--work-tree")
             .arg(&work)
-            .args([
-                "-c",
-                "user.name=AOS Test",
-                "-c",
-                "user.email=aos@example.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-m",
-                "init",
-            ])
+            .args(["commit", "-m", "init"])
             .status()
             .unwrap();
         assert!(commit.success());
@@ -446,7 +438,7 @@ mod tests {
             eprintln!("skipping dumb-HTTP clone test: local TCP bind is unavailable");
             return;
         };
-        let output = Command::new("git")
+        let output = crate::testutil::git_command(tmp.path())
             .env("GIT_SMART_HTTP", "0")
             .arg("clone")
             .arg(&server.url)

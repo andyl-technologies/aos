@@ -461,7 +461,7 @@ pub fn verify_commit_signature(
     let signers_path = signers_file.path();
 
     // Configure git to use SSH signing verification with our signers file.
-    let output = std::process::Command::new("git")
+    let output = crate::gitcmd::hermetic()
         .args([
             "-c",
             &format!("gpg.ssh.allowedSignersFile={}", signers_path.display()),
@@ -491,7 +491,7 @@ pub fn verify_tag_signature(repo_path: &Path, tag: &str, trusted_keys: &[String]
     let signers_file = write_allowed_signers(trusted_keys)?;
     let signers_path = signers_file.path();
 
-    let output = std::process::Command::new("git")
+    let output = crate::gitcmd::hermetic()
         .args([
             "-c",
             &format!("gpg.ssh.allowedSignersFile={}", signers_path.display()),
@@ -536,7 +536,7 @@ pub fn check_downgrade(
     }
 
     // Is current an ancestor of new? (fast-forward)
-    let ff = std::process::Command::new("git")
+    let ff = crate::gitcmd::hermetic()
         .args(["merge-base", "--is-ancestor", current_commit, new_commit])
         .current_dir(repo_path)
         .output()
@@ -549,7 +549,7 @@ pub fn check_downgrade(
     }
 
     // Is new an ancestor of current? (downgrade)
-    let dg = std::process::Command::new("git")
+    let dg = crate::gitcmd::hermetic()
         .args(["merge-base", "--is-ancestor", new_commit, current_commit])
         .current_dir(repo_path)
         .output()
@@ -622,7 +622,6 @@ mod tests {
         NarCompression, NarInfoSigner, StaticNarInfoInput, render_static_narinfo,
     };
     use aos_core::nar::info;
-    use std::process::Command;
     use tempfile::TempDir;
 
     // -- parse_signing_key --------------------------------------------------
@@ -1121,16 +1120,6 @@ mod tests {
     }
 
     fn git(repo: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .output()
-            .unwrap_or_else(|err| panic!("running git {args:?}: {err}"));
-        assert!(
-            output.status.success(),
-            "git {args:?} failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
+        crate::testutil::git(repo, args);
     }
 }
