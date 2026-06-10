@@ -40,6 +40,91 @@
     nix-store --init || true
     nix-store --load-db < /aos-registration
   '';
+  mkTrackingLeafTool = {
+    rootName,
+    version,
+  }:
+    pkgs.mkDerivation {
+      pname = "${rootName}-leaf";
+      inherit version;
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              "printf '${rootName}-leaf ${version}\\n'" \
+              > "$out/bin/${rootName}-leaf"
+            chmod +x "$out/bin/${rootName}-leaf"
+          '';
+        }
+      ];
+    };
+  mkTrackingRootTool = {
+    pname,
+    version,
+    leaf,
+  }:
+    pkgs.mkDerivation {
+      inherit pname version;
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      runtimeDeps = [
+        leaf
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin" "$out/share/${pname}"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              'leaf_output="$(${leaf}/bin/${pname}-leaf)"' \
+              'printf "${pname} ${version} via %s\n" "$leaf_output"' \
+              > "$out/bin/${pname}"
+            chmod +x "$out/bin/${pname}"
+            printf '%s\n' "${pname} payload ${version}" \
+              > "$out/share/${pname}/payload.txt"
+          '';
+        }
+      ];
+    };
+  branchLeafToolV1 = mkTrackingLeafTool {
+    rootName = "branch-tool";
+    version = "1.0.0";
+  };
+  branchToolV1 = mkTrackingRootTool {
+    pname = "branch-tool";
+    version = "1.0.0";
+    leaf = branchLeafToolV1;
+  };
+  branchLeafToolV2 = mkTrackingLeafTool {
+    rootName = "branch-tool";
+    version = "2.0.0";
+  };
+  branchToolV2 = mkTrackingRootTool {
+    pname = "branch-tool";
+    version = "2.0.0";
+    leaf = branchLeafToolV2;
+  };
+  branchLeafToolV9 = mkTrackingLeafTool {
+    rootName = "branch-tool";
+    version = "9.0.0";
+  };
+  branchToolV9 = mkTrackingRootTool {
+    pname = "branch-tool";
+    version = "9.0.0";
+    leaf = branchLeafToolV9;
+  };
   trackingWorkflowDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -55,28 +140,22 @@ in {
   # -------------------------------------------------------------------------
   tracking-branch = testing.mkVMTest {
     name = "apm-tracking-branch";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        branchLeafToolV1
+        branchToolV1
+        branchLeafToolV2
+        branchToolV2
+        branchLeafToolV9
+        branchToolV9
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: branch tracking follows selected branch"
-
-      make_branch_tool() {
-        version="$1"
-        src="/tmp/branch-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/branch-tool"
-        cat > "$src/bin/branch-tool" << EOF
-      #!/bin/sh
-      echo "branch-tool $version executed"
-      EOF
-        chmod +x "$src/bin/branch-tool"
-        printf "branch-tool payload %s\n" "$version" \
-          > "$src/share/branch-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -135,12 +214,28 @@ in {
         git -C "$REG_DIR" commit -m "release: branch-tool $version"
       }
 
-      TOOL_V1_STORE=$(make_branch_tool 1.0.0)
-      TOOL_V2_STORE=$(make_branch_tool 2.0.0)
-      TOOL_V9_STORE=$(make_branch_tool 9.0.0)
+      TOOL_V1_STORE="${branchToolV1}"
+      TOOL_V1_DEP_STORE="${branchLeafToolV1}"
+      TOOL_V2_STORE="${branchToolV2}"
+      TOOL_V2_DEP_STORE="${branchLeafToolV2}"
+      TOOL_V9_STORE="${branchToolV9}"
+      TOOL_V9_DEP_STORE="${branchLeafToolV9}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
       TOOL_V9_HASH=$(basename "$TOOL_V9_STORE" | cut -d- -f1)
+      TOOL_V9_DEP_HASH=$(basename "$TOOL_V9_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_V1_STORE" > /tmp/branch-v1-refs.out
+      assert_file_contains /tmp/branch-v1-refs.out "$TOOL_V1_DEP_STORE" \
+        "branch-tool v1 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V2_STORE" > /tmp/branch-v2-refs.out
+      assert_file_contains /tmp/branch-v2-refs.out "$TOOL_V2_DEP_STORE" \
+        "branch-tool v2 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V9_STORE" > /tmp/branch-v9-refs.out
+      assert_file_contains /tmp/branch-v9-refs.out "$TOOL_V9_DEP_STORE" \
+        "branch-tool default-branch root has a real dependency closure"
 
       $APR create branch-reg
       REG_DIR="$REG_STORAGE/branch-reg"
@@ -155,12 +250,16 @@ in {
       publish_branch_version 1.0.0 "$TOOL_V1_STORE"
       assert_file_exists "/tmp/branch-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has branch-tool release v1 narinfo"
+      assert_file_exists "/tmp/branch-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has branch-tool release v1 dependency narinfo"
       git -C "$REG_DIR" push origin release
 
       $APR branch switch "$DEFAULT_BRANCH" --registry branch-reg
       publish_branch_version 9.0.0 "$TOOL_V9_STORE"
       assert_file_exists "/tmp/branch-cache/$TOOL_V9_HASH.narinfo" \
         "static cache has default branch distraction narinfo"
+      assert_file_exists "/tmp/branch-cache/$TOOL_V9_DEP_HASH.narinfo" \
+        "static cache has default branch distraction dependency narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
@@ -211,6 +310,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_V1_STORE" "branch-tool-v1"
+      delete_store_path "$TOOL_V1_DEP_STORE" "branch-tool-v1-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -220,13 +320,15 @@ in {
         fail "apm install downloads selected branch v1"
       }
       cat /tmp/branch-install-v1.out
-      assert_file_contains /tmp/branch-install-v1.out "Downloading" \
-        "apm install downloads branch v1 NAR"
+      assert_file_contains /tmp/branch-install-v1.out "Downloading 2 NAR" \
+        "apm install downloads branch v1 closure"
       assert_store_valid "$TOOL_V1_STORE" "branch-tool v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "branch-tool v1 dependency"
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/branch-tool"
       "$PROFILE_TOOL" > /tmp/branch-run-v1.out
       assert_file_contains /tmp/branch-run-v1.out \
-        "branch-tool 1.0.0 executed" "installed branch v1 tool executes"
+        "^branch-tool 1.0.0 via branch-tool-leaf 1.0.0$" \
+        "installed branch v1 tool executes through dependency"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
@@ -234,12 +336,15 @@ in {
       publish_branch_version 2.0.0 "$TOOL_V2_STORE"
       assert_file_exists "/tmp/branch-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has branch-tool release v2 narinfo"
+      assert_file_exists "/tmp/branch-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has branch-tool release v2 dependency narinfo"
       git -C "$REG_DIR" push origin release
 
       export HOME=/tmp/branch-consumer
       export USER=branchuser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_V2_STORE" "branch-tool-v2"
+      delete_store_path "$TOOL_V2_DEP_STORE" "branch-tool-v2-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -264,14 +369,16 @@ in {
         fail "apm upgrade downloads selected branch v2"
       }
       cat /tmp/branch-upgrade.out
-      assert_file_contains /tmp/branch-upgrade.out "Downloading" \
-        "apm upgrade downloads branch v2 NAR"
+      assert_file_contains /tmp/branch-upgrade.out "Downloading 2 NAR" \
+        "apm upgrade downloads branch v2 closure"
       assert_file_contains /tmp/branch-upgrade.out "Upgraded 1 package" \
         "apm upgrade activates branch v2"
       assert_store_valid "$TOOL_V2_STORE" "branch-tool v2"
+      assert_store_valid "$TOOL_V2_DEP_STORE" "branch-tool v2 dependency"
       "$PROFILE_TOOL" > /tmp/branch-run-v2.out
       assert_file_contains /tmp/branch-run-v2.out \
-        "branch-tool 2.0.0 executed" "upgraded branch v2 tool executes"
+        "^branch-tool 2.0.0 via branch-tool-leaf 2.0.0$" \
+        "upgraded branch v2 tool executes through dependency"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
