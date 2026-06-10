@@ -4,15 +4,21 @@ use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::store_path_hash;
+use super::types::InstalledMeta;
 use aos_core::output::{OutputMode, Printer};
 
 /// Run `apm hold <package>` -- prevent a package from being upgraded.
 pub async fn run_hold(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
-    let hash = find_hash_by_name(&profile, package)?;
+    let (hash, installed) = find_installed_by_name(&profile, package)?;
 
     let profile = Profile::open(config.scope)?;
     meta::set_held(&profile, &hash, true)?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&hold_result_json("hold", "held", &installed, true));
+        return Ok(());
+    }
 
     printer.success(&format!("{package} set on hold."));
     Ok(())
@@ -21,10 +27,15 @@ pub async fn run_hold(config: &ApmConfig, package: &str, printer: &Printer) -> R
 /// Run `apm unhold <package>` -- release the upgrade hold.
 pub async fn run_unhold(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
-    let hash = find_hash_by_name(&profile, package)?;
+    let (hash, installed) = find_installed_by_name(&profile, package)?;
 
     let profile = Profile::open(config.scope)?;
     meta::set_held(&profile, &hash, false)?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&hold_result_json("unhold", "unheld", &installed, false));
+        return Ok(());
+    }
 
     printer.success(&format!("{package} released from hold."));
     Ok(())
@@ -71,20 +82,47 @@ pub async fn run_held(config: &ApmConfig, printer: &Printer) -> Result<()> {
     Ok(())
 }
 
-/// Find the store-path hash for a package by its APM name.
+/// Find installed metadata for a package by its APM name.
 ///
 /// Iterates all metadata entries in the profile and returns the hash
 /// component of the matching package's store path.
-fn find_hash_by_name(profile: &Profile, name: &str) -> Result<String> {
+fn find_installed_by_name(profile: &Profile, name: &str) -> Result<(String, InstalledMeta)> {
     let all = meta::list_meta(profile)?;
-    for m in &all {
+    for m in all {
         if let Some(ref apm) = m.apm {
             if apm.name == name {
-                return Ok(store_path_hash(&m.store_path).to_string());
+                let hash = store_path_hash(&m.store_path).to_string();
+                return Ok((hash, m));
             }
         }
     }
     bail!("package not found: {name}");
+}
+
+fn hold_result_json(
+    action: &str,
+    status: &str,
+    installed: &InstalledMeta,
+    held: bool,
+) -> serde_json::Value {
+    match installed.apm.as_ref() {
+        Some(apm) => serde_json::json!({
+            "action": action,
+            "status": status,
+            "package": apm.name,
+            "name": apm.name,
+            "version": apm.version,
+            "registry": apm.registry,
+            "store_path": installed.store_path,
+            "held": held,
+        }),
+        None => serde_json::json!({
+            "action": action,
+            "status": status,
+            "store_path": installed.store_path,
+            "held": held,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -132,8 +170,8 @@ mod tests {
         let loaded = meta::read_meta(&profile, "abc123").unwrap().unwrap();
         assert!(!loaded.apm.as_ref().unwrap().held);
 
-        // Use find_hash_by_name + set_held (same logic as run_hold).
-        let hash = find_hash_by_name(&profile, "curl").unwrap();
+        // Use find_installed_by_name + set_held (same logic as run_hold).
+        let (hash, _) = find_installed_by_name(&profile, "curl").unwrap();
         meta::set_held(&profile, &hash, true).unwrap();
 
         let loaded = meta::read_meta(&profile, "abc123").unwrap().unwrap();
@@ -153,7 +191,7 @@ mod tests {
         assert!(loaded.apm.as_ref().unwrap().held);
 
         // Unhold.
-        let hash = find_hash_by_name(&profile, "curl").unwrap();
+        let (hash, _) = find_installed_by_name(&profile, "curl").unwrap();
         meta::set_held(&profile, &hash, false).unwrap();
 
         let loaded = meta::read_meta(&profile, "abc123").unwrap().unwrap();
@@ -165,7 +203,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        let result = find_hash_by_name(&profile, "nonexistent");
+        let result = find_installed_by_name(&profile, "nonexistent");
         assert!(result.is_err());
         assert!(
             result

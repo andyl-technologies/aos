@@ -870,17 +870,33 @@ in {
           fi
 
           ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/release-key"
-          run_clean ${self}/bin/apr release 1.0.0 \
+          run_clean ${self}/bin/apr --json release 1.0.0 \
             --registry host-reg \
             --key "$work/release-key" \
             --dry-run \
             --cache-output "$work/dry-cache" \
             --cache-url "http://127.0.0.1:$cache_port/cache" \
             --upload-url "file://$work/dry-upload" \
-            > "$work/apr-release-dry-run.out" 2>&1
-          grep -q "Release plan" "$work/apr-release-dry-run.out"
-          grep -q "generate static Nix cache files" "$work/apr-release-dry-run.out"
-          grep -q "upload immutable files first" "$work/apr-release-dry-run.out"
+            > "$work/apr-release-dry-run.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg cache "$work/dry-cache" \
+            --arg cache_url "http://127.0.0.1:$cache_port/cache" \
+            --arg upload_url "file://$work/dry-upload" \
+            '.action == "release"
+              and .status == "planned"
+              and .registry == "host-reg"
+              and .version == "1.0.0"
+              and .dry_run == true
+              and .resume == false
+              and .cache_output == $cache
+              and .cache_url == $cache_url
+              and .upload_urls == [$upload_url]
+              and .cache == null
+              and .full_pack == null
+              and .deltas == []
+              and (.planned_steps | index("generate_static_cache") != null)
+              and (.planned_steps | index("upload_static_origin") != null)' \
+            "$work/apr-release-dry-run.json" >/dev/null
           test ! -e "$work/dry-cache"
           test ! -e "$work/dry-upload"
           if git -C "$reg" rev-parse --verify '1.0.0^{tag}' > "$work/release-dry-run-tag.out" 2>&1; then
@@ -894,27 +910,43 @@ in {
           fi
           assert_no_profile
 
-          run_clean ${self}/bin/apr release 1.0.0 \
+          run_clean ${self}/bin/apr --json release 1.0.0 \
             --registry host-reg \
             --key "$work/release-key" \
-            > "$work/apr-release.out" 2>&1
-          grep -q "Created signed tag '1.0.0'" "$work/apr-release.out"
-          grep -q "Generated full pack" "$work/apr-release.out"
-          grep -q "Released host-reg 1.0.0" "$work/apr-release.out"
+            > "$work/apr-release.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-reg"
+              and .version == "1.0.0"
+              and .dry_run == false
+              and .resume == false
+              and (.full_pack | startswith("pack-") and endswith(".pack"))
+              and .deltas == []
+              and .cache == null
+              and .cache_pointer_updated == false
+              and .uploaded_files == null' \
+            "$work/apr-release.json" >/dev/null
           git -C "$reg" rev-parse --verify '1.0.0^{tag}' > "$work/release-tag-object.out"
           git -C "$reg" cat-file -p 1.0.0 > "$work/release-tag.out"
           grep -q "BEGIN SSH SIGNATURE" "$work/release-tag.out"
           grep -q "tag 1.0.0" "$work/release-tag.out"
           find "$reg/.git/releases/1/0/0/objects/pack" -name 'pack-*.pack' | grep -q .
 
-          run_clean ${self}/bin/apr release 1.0.0 \
+          run_clean ${self}/bin/apr --json release 1.0.0 \
             --registry host-reg \
             --key "$work/release-key" \
             --resume \
-            > "$work/apr-release-resume.out" 2>&1
-          grep -q "Release tag 1.0.0 already exists at HEAD; resuming" "$work/apr-release-resume.out"
-          grep -q "already exists; resuming" "$work/apr-release-resume.out"
-          grep -q "Released host-reg 1.0.0" "$work/apr-release-resume.out"
+            > "$work/apr-release-resume.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-reg"
+              and .version == "1.0.0"
+              and .resume == true
+              and (.full_pack | startswith("pack-") and endswith(".pack"))
+              and .deltas == []' \
+            "$work/apr-release-resume.json" >/dev/null
           assert_no_profile
 
           if run_clean ${self}/bin/apr sign --registry host-reg --key "$work/release-key" \
@@ -959,25 +991,36 @@ in {
           git -C "$reg" add -A
           git -C "$reg" commit -m "release: hostpkg 2.0.0" > "$work/git-commit-v2-package.out" 2>&1
 
-          run_clean ${self}/bin/apr release 2.0.0 \
+          run_clean ${self}/bin/apr --json release 2.0.0 \
             --registry host-reg \
             --key "$work/release-key-next" \
-            > "$work/apr-release-v2.out" 2>&1
-          grep -q "Created signed tag '2.0.0'" "$work/apr-release-v2.out"
-          grep -q "Generated full pack" "$work/apr-release-v2.out"
-          grep -q "Generated delta pack delta-1.0.0.pack.zst" "$work/apr-release-v2.out"
-          grep -q "Released host-reg 2.0.0" "$work/apr-release-v2.out"
+            > "$work/apr-release-v2.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-reg"
+              and .version == "2.0.0"
+              and (.full_pack | startswith("pack-") and endswith(".pack"))
+              and (.deltas | index("delta-1.0.0.pack.zst") != null)' \
+            "$work/apr-release-v2.json" >/dev/null
           find "$reg/.git/releases/2/0/0/objects/pack" -name 'pack-*.pack' | grep -q .
           test -f "$reg/.git/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
           git -C "$reg" rev-parse --verify '2.0.0^{tag}' > "$work/release-v2-tag-object.out"
           git -C "$reg" cat-file -p 2.0.0 > "$work/release-v2-tag.out"
           grep -q "BEGIN SSH SIGNATURE" "$work/release-v2-tag.out"
 
-          run_clean ${self}/bin/apr channel init canary 1.0.0 \
+          run_clean ${self}/bin/apr --json channel init canary 1.0.0 \
             --registry host-reg \
             --key "$work/release-key-next" \
-            > "$work/apr-channel-init.out" 2>&1
-          grep -q "Initialized channel 'canary' with 256/256 partitions on 1.0.0" "$work/apr-channel-init.out"
+            > "$work/apr-channel-init.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "channel_init"
+              and .registry == "host-reg"
+              and .channel == "canary"
+              and .version == "1.0.0"
+              and .partitions == 256
+              and .frontier == "1.0.0"' \
+            "$work/apr-channel-init.json" >/dev/null
           test -f "$reg/.git/channels/canary/00"
           grep -q "BEGIN SSH SIGNATURE" "$reg/.git/channels/canary/00"
           run_clean ${self}/bin/apr channel status canary --registry host-reg > "$work/apr-channel-status-v1.out" 2>&1
@@ -994,12 +1037,22 @@ in {
               and .versions[0].partitions == 256' \
             "$work/apr-channel-status-v1.json" >/dev/null
 
-          run_clean ${self}/bin/apr channel advance canary 2.0.0 \
+          run_clean ${self}/bin/apr --json channel advance canary 2.0.0 \
             --registry host-reg \
             --key "$work/release-key-next" \
             --partitions 0x00,0x2a \
-            > "$work/apr-channel-advance.out" 2>&1
-          grep -q "Advanced channel 'canary' 2 partition(s) to 2.0.0" "$work/apr-channel-advance.out"
+            > "$work/apr-channel-advance.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "channel_advance"
+              and .registry == "host-reg"
+              and .channel == "canary"
+              and .version == "2.0.0"
+              and .status == "advanced"
+              and .partition_count == 2
+              and (.partitions | index(0) != null)
+              and (.partitions | index(42) != null)
+              and .frontier == "2.0.0"' \
+            "$work/apr-channel-advance.json" >/dev/null
           run_clean ${self}/bin/apr channel status canary --registry host-reg > "$work/apr-channel-status-v2.out" 2>&1
           grep -q "Frontier: 2.0.0" "$work/apr-channel-status-v2.out"
           grep -q "2.0.0: 2/256" "$work/apr-channel-status-v2.out"
@@ -1015,13 +1068,22 @@ in {
             "$work/apr-channel-status-v2.json" >/dev/null
 
           upload_root="$work/uploaded-origin"
-          run_clean ${self}/bin/apr origin upload \
+          run_clean ${self}/bin/apr --json origin upload \
             --registry host-reg \
             --cache-dir "$cache_root/cache" \
             --upload-url "file://$upload_root" \
-            > "$work/apr-origin-upload.out" 2>&1
-          grep -q "Uploaded static registry origin files to file://$upload_root" "$work/apr-origin-upload.out"
-          grep -q "Uploaded .* static origin file" "$work/apr-origin-upload.out"
+            > "$work/apr-origin-upload.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg upload_url "file://$upload_root" \
+            --arg cache_dir "$cache_root/cache" \
+            '.action == "origin_upload"
+              and .registry == "host-reg"
+              and .upload_urls == [$upload_url]
+              and .cache_dir == $cache_dir
+              and .files > 0
+              and .bytes > 0
+              and (.bytes_human | length > 0)' \
+            "$work/apr-origin-upload.json" >/dev/null
           test -f "$upload_root/HEAD"
           test -f "$upload_root/info/refs"
           test -f "$upload_root/releases/1/0/0/objects/info/packs"
@@ -1076,15 +1138,30 @@ in {
               and .current == "stable"
               and (.head | length == 64)' \
             "$work/apr-publish-host-install.json" >/dev/null
-          run_clean ${self}/bin/apr cache generate \
+          run_clean ${self}/bin/apr --json cache generate \
             --registry host-install-reg \
             --output "$work/install-static-cache-output/cache" \
             --cache-url "http://127.0.0.1:$install_cache_port/cache" \
             --upload-url "file://$work/install-static-cache-upload/cache" \
             --priority 77 \
-            --no-commit > "$work/apr-cache-host-install.out" 2>&1
-          grep -q "Uploaded static cache files to file://$work/install-static-cache-upload/cache" \
-            "$work/apr-cache-host-install.out"
+            --no-commit > "$work/apr-cache-host-install.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg output "$work/install-static-cache-output/cache" \
+            --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
+            --arg upload_url "file://$work/install-static-cache-upload/cache" \
+            '.action == "cache_generate"
+              and .registry == "host-install-reg"
+              and .output_dir == $output
+              and .paths >= 1
+              and .narinfos >= 1
+              and .nars >= 1
+              and .cache_url == $cache_url
+              and .priority == 77
+              and .upload_urls == [$upload_url]
+              and .uploaded == true
+              and .cache_pointer_updated == true
+              and .committed == false' \
+            "$work/apr-cache-host-install.json" >/dev/null
           test -f "$work/install-static-cache-output/cache/$install_hash.narinfo"
           test -f "$work/install-static-cache-upload/cache/nix-cache-info"
           test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
@@ -1179,15 +1256,30 @@ in {
             --maintainer host@example.invalid \
             --registry host-install-reg \
             --no-commit > "$work/apr-publish-host-install-v2.out" 2>&1
-          run_clean ${self}/bin/apr cache generate \
+          run_clean ${self}/bin/apr --json cache generate \
             --registry host-install-reg \
             --output "$work/install-static-cache-output/cache" \
             --cache-url "http://127.0.0.1:$install_cache_port/cache" \
             --upload-url "file://$work/install-static-cache-upload/cache" \
             --priority 77 \
-            --no-commit > "$work/apr-cache-host-install-v2.out" 2>&1
-          grep -q "Uploaded static cache files to file://$work/install-static-cache-upload/cache" \
-            "$work/apr-cache-host-install-v2.out"
+            --no-commit > "$work/apr-cache-host-install-v2.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg output "$work/install-static-cache-output/cache" \
+            --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
+            --arg upload_url "file://$work/install-static-cache-upload/cache" \
+            '.action == "cache_generate"
+              and .registry == "host-install-reg"
+              and .output_dir == $output
+              and .paths >= 2
+              and .narinfos >= 2
+              and .nars >= 2
+              and .cache_url == $cache_url
+              and .priority == 77
+              and .upload_urls == [$upload_url]
+              and .uploaded == true
+              and .cache_pointer_updated == false
+              and .committed == false' \
+            "$work/apr-cache-host-install-v2.json" >/dev/null
           test -f "$work/install-static-cache-output/cache/$install_hash_v2.narinfo"
           test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
           test -f "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
@@ -1372,8 +1464,17 @@ in {
           grep -q "host install package v2 executed" "$work/host-install-v2-after-rollback-upgrade.out"
           assert_default_profile_absent
 
-          run_clean ${self}/bin/apm hold hostinstall > "$work/apm-hold-host-install.out" 2>&1
-          grep -q "hostinstall set on hold" "$work/apm-hold-host-install.out"
+          run_clean ${self}/bin/apm --json hold hostinstall > "$work/apm-hold-host-install.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+            '.action == "hold"
+              and .status == "held"
+              and .package == "hostinstall"
+              and .name == "hostinstall"
+              and .version == "2.0.0"
+              and .registry == "host-install-client"
+              and .store_path == $store
+              and .held == true' \
+            "$work/apm-hold-host-install.json" >/dev/null
           run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install.json"
           ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
             'length == 1
@@ -1435,8 +1536,17 @@ in {
           fi
           assert_default_profile_absent
 
-          run_clean ${self}/bin/apm unhold hostinstall > "$work/apm-unhold-host-install.out" 2>&1
-          grep -q "hostinstall released from hold" "$work/apm-unhold-host-install.out"
+          run_clean ${self}/bin/apm --json unhold hostinstall > "$work/apm-unhold-host-install.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+            '.action == "unhold"
+              and .status == "unheld"
+              and .package == "hostinstall"
+              and .name == "hostinstall"
+              and .version == "2.0.0"
+              and .registry == "host-install-client"
+              and .store_path == $store
+              and .held == false' \
+            "$work/apm-unhold-host-install.json" >/dev/null
           run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install-after-unhold.json"
           ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apm-held-host-install-after-unhold.json" >/dev/null
           assert_default_profile_absent

@@ -18,7 +18,7 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use toml::Value as TomlValue;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticCacheReport {
     pub paths: usize,
     pub narinfos: usize,

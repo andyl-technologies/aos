@@ -4964,13 +4964,23 @@ in {
           and (map(select(.name == "surfacepkg" and .status == "installed")) | length == 1)' \
         /tmp/surface-list-installed-json.out >/dev/null
 
-      $APM hold surfacepkg > /tmp/surface-hold.out 2>&1 || {
-        cat /tmp/surface-hold.out
+      $APM --json hold surfacepkg > /tmp/surface-hold.json 2>&1 || {
+        cat /tmp/surface-hold.json
         fail "apm hold succeeds for real installed package"
       }
-      cat /tmp/surface-hold.out
-      assert_file_contains /tmp/surface-hold.out "set on hold" \
-        "apm hold marks real installed package held"
+      "$JQ" -e --arg store "$SURFACE_STORE" \
+        '.action == "hold"
+          and .status == "held"
+          and .package == "surfacepkg"
+          and .name == "surfacepkg"
+          and .version == "1.0.0"
+          and .registry == "surface-reg"
+          and .store_path == $store
+          and .held == true' \
+        /tmp/surface-hold.json >/dev/null || {
+        cat /tmp/surface-hold.json
+        fail "apm --json hold reports real installed package"
+      }
       run_ok list-held "$APM" list --held
       assert_file_contains /tmp/surface-list-held.out "surfacepkg/surface-reg" \
         "apm list --held reports held package"
@@ -5637,13 +5647,23 @@ in {
       assert_file_contains /tmp/hold-tool-v1.out "^hold-tool 1.0.0$" \
         "profile executable runs hold-tool v1"
 
-      $APM hold hold-tool > /tmp/hold.out 2>&1 || {
-        cat /tmp/hold.out
+      $APM --json hold hold-tool > /tmp/hold.json 2>&1 || {
+        cat /tmp/hold.json
         fail "apm hold succeeds for installed hold-tool"
       }
-      cat /tmp/hold.out
-      assert_file_contains /tmp/hold.out "set on hold" \
-        "apm hold marks installed package held"
+      "$JQ" -e --arg store "$HOLD_V1_STORE" \
+        '.action == "hold"
+          and .status == "held"
+          and .package == "hold-tool"
+          and .name == "hold-tool"
+          and .version == "1.0.0"
+          and .registry == "hold-reg"
+          and .store_path == $store
+          and .held == true' \
+        /tmp/hold.json >/dev/null || {
+        cat /tmp/hold.json
+        fail "apm --json hold reports installed hold-tool"
+      }
 
       $APM held > /tmp/held.out 2>&1 || {
         cat /tmp/held.out
@@ -5743,13 +5763,23 @@ in {
       assert_file_contains /tmp/hold-tool-after-held-upgrade.out "^hold-tool 1.0.0$" \
         "profile executable remains hold-tool v1 while held"
 
-      $APM unhold hold-tool > /tmp/unhold.out 2>&1 || {
-        cat /tmp/unhold.out
+      $APM --json unhold hold-tool > /tmp/unhold.json 2>&1 || {
+        cat /tmp/unhold.json
         fail "apm unhold succeeds for installed hold-tool"
       }
-      cat /tmp/unhold.out
-      assert_file_contains /tmp/unhold.out "released from hold" \
-        "apm unhold clears hold flag"
+      "$JQ" -e --arg store "$HOLD_V1_STORE" \
+        '.action == "unhold"
+          and .status == "unheld"
+          and .package == "hold-tool"
+          and .name == "hold-tool"
+          and .version == "1.0.0"
+          and .registry == "hold-reg"
+          and .store_path == $store
+          and .held == false' \
+        /tmp/unhold.json >/dev/null || {
+        cat /tmp/unhold.json
+        fail "apm --json unhold reports installed hold-tool"
+      }
 
       $APM held > /tmp/held-after-unhold.out 2>&1 || {
         cat /tmp/held-after-unhold.out

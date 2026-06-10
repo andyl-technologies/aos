@@ -3026,15 +3026,36 @@ pub async fn run_cache(
                 nixcache::upload_static_cache_to_all(output, upload_urls, &auth, printer).await?;
             }
 
+            let mut cache_pointer_updated = false;
+            let mut committed = false;
             if let Some(cache_url) = cache_url {
                 if nixcache::upsert_registry_cache(&dir, cache_url, *priority)? {
+                    cache_pointer_updated = true;
                     printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
                     if !*no_commit {
                         commit_registry(&dir, "registry: update static cache pointer", None)?;
                         refresh_registry_object_store(&dir)
                             .context("refreshing dumb-HTTP object store after cache update")?;
+                        committed = true;
                     }
                 }
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "cache_generate",
+                    "registry": registry_name,
+                    "output_dir": report.output_dir.to_string_lossy().to_string(),
+                    "paths": report.paths,
+                    "narinfos": report.narinfos,
+                    "nars": report.nars,
+                    "cache_url": cache_url.as_deref(),
+                    "priority": priority,
+                    "upload_urls": upload_urls,
+                    "uploaded": !upload_urls.is_empty(),
+                    "cache_pointer_updated": cache_pointer_updated,
+                    "committed": committed,
+                }));
             }
 
             Ok(())
@@ -3078,6 +3099,17 @@ pub async fn run_origin(
                 report.files,
                 format_size(report.bytes),
             ));
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "origin_upload",
+                    "registry": registry_name,
+                    "upload_urls": upload_urls,
+                    "cache_dir": cache_dir.as_ref().map(|path| path.to_string_lossy().to_string()),
+                    "files": report.files,
+                    "bytes": report.bytes,
+                    "bytes_human": format_size(report.bytes),
+                }));
+            }
             Ok(())
         }
     }
@@ -3959,6 +3991,18 @@ async fn channel_init(
     }
     update_channel_frontier(&dir, channel_name, &map)?;
 
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "channel_init",
+            "registry": registry_name,
+            "channel": channel_name,
+            "version": version.to_string(),
+            "partitions": 256,
+            "frontier": version.to_string(),
+        }));
+        return Ok(());
+    }
+
     printer.success(&format!(
         "Initialized channel '{channel_name}' with 256/256 partitions on {version}."
     ));
@@ -3986,6 +4030,20 @@ async fn channel_advance(
     channel::assert_full_partition_set(&map)?;
     let selected = select_partitions_for_advance(count, partitions, &map, version)?;
     if selected.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            let frontier = channel::compute_frontier(&map);
+            printer.json(&serde_json::json!({
+                "action": "channel_advance",
+                "registry": registry_name,
+                "channel": channel_name,
+                "version": version.to_string(),
+                "partitions": [],
+                "partition_count": 0,
+                "frontier": frontier.as_ref().map(ToString::to_string),
+                "status": "current",
+            }));
+            return Ok(());
+        }
         printer.info("No partitions selected for advancement.");
         return Ok(());
     }
@@ -3995,6 +4053,22 @@ async fn channel_advance(
         map.set(*bucket as usize, version.clone())?;
     }
     update_channel_frontier(&dir, channel_name, &map)?;
+
+    if printer.mode() == OutputMode::Json {
+        let frontier = channel::compute_frontier(&map);
+        let partition_count = selected.len();
+        printer.json(&serde_json::json!({
+            "action": "channel_advance",
+            "registry": registry_name,
+            "channel": channel_name,
+            "version": version.to_string(),
+            "partitions": &selected,
+            "partition_count": partition_count,
+            "frontier": frontier.as_ref().map(ToString::to_string),
+            "status": "advanced",
+        }));
+        return Ok(());
+    }
 
     printer.success(&format!(
         "Advanced channel '{channel_name}' {} partition(s) to {version}.",
@@ -4207,7 +4281,11 @@ pub struct ReleaseTreeOptions {
 pub struct ReleaseReport {
     pub full_pack: Option<String>,
     pub deltas: Vec<String>,
+    pub cache: Option<nixcache::StaticCacheReport>,
+    pub cache_pointer_updated: bool,
+    pub channel_partitions: Option<usize>,
     pub uploaded_files: Option<usize>,
+    pub uploaded_bytes: Option<u64>,
 }
 
 struct ReleaseLock {
@@ -4347,7 +4425,17 @@ pub async fn release_registry_tree(
 ) -> Result<ReleaseReport> {
     validate_release_options(options)?;
     if options.dry_run {
-        print_release_plan(dir, registry_name, options, printer);
+        if printer.mode() == OutputMode::Json {
+            printer.json(&release_result_json(
+                "planned",
+                registry_name,
+                dir,
+                options,
+                &ReleaseReport::default(),
+            ));
+        } else {
+            print_release_plan(dir, registry_name, options, printer);
+        }
         return Ok(ReleaseReport::default());
     }
 
@@ -4355,8 +4443,10 @@ pub async fn release_registry_tree(
     objectstore::assert_sha256(dir)?;
     ensure_release_worktree_clean(dir)?;
 
+    let mut cache_pointer_updated = false;
     if let Some(cache_url) = &options.cache_url {
         if nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)? {
+            cache_pointer_updated = true;
             printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
             commit_registry(
                 dir,
@@ -4379,8 +4469,9 @@ pub async fn release_registry_tree(
     refresh_registry_object_store(dir)
         .context("refreshing dumb-HTTP object store after release artifacts")?;
 
+    let mut cache_report = None;
     if let Some(output) = &options.cache_output {
-        let report = nixcache::generate_static_cache(
+        let generated = nixcache::generate_static_cache(
             dir,
             output,
             options.cache_key.as_deref(),
@@ -4390,23 +4481,29 @@ pub async fn release_registry_tree(
         .await?;
         printer.success(&format!(
             "Generated static cache: {} narinfos, {} NARs in {}",
-            report.narinfos,
-            report.nars,
-            report.output_dir.display(),
+            generated.narinfos,
+            generated.nars,
+            generated.output_dir.display(),
         ));
+        cache_report = Some(generated);
     }
+
+    let mut report = artifacts;
+    report.cache_pointer_updated = cache_pointer_updated;
+    report.cache = cache_report;
 
     if let Some(channel) = &options.channel {
         if options.init_channel {
-            channel_init_dir(
+            let partitions = channel_init_dir(
                 dir,
                 channel,
                 &options.version,
                 &options.signing_key,
                 printer,
             )?;
+            report.channel_partitions = Some(partitions);
         } else {
-            channel_advance_dir(
+            let partitions = channel_advance_dir(
                 dir,
                 channel,
                 &options.version,
@@ -4415,10 +4512,10 @@ pub async fn release_registry_tree(
                 &options.signing_key,
                 printer,
             )?;
+            report.channel_partitions = Some(partitions);
         }
     }
 
-    let mut report = artifacts;
     if !options.upload_urls.is_empty() {
         let upload = static_upload::upload_static_origin_to_all(
             dir,
@@ -4429,6 +4526,7 @@ pub async fn release_registry_tree(
         )
         .await?;
         report.uploaded_files = Some(upload.files);
+        report.uploaded_bytes = Some(upload.bytes);
         printer.success(&format!(
             "Uploaded {} static origin file(s) ({}).",
             upload.files,
@@ -4437,6 +4535,15 @@ pub async fn release_registry_tree(
     }
 
     printer.success(&format!("Released {registry_name} {}.", options.version));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&release_result_json(
+            "released",
+            registry_name,
+            dir,
+            options,
+            &report,
+        ));
+    }
     Ok(report)
 }
 
@@ -4468,6 +4575,83 @@ fn validate_release_options(options: &ReleaseTreeOptions) -> Result<()> {
         bail!("--cache-key requires --cache-output");
     }
     Ok(())
+}
+
+fn release_result_json(
+    status: &str,
+    registry_name: &str,
+    dir: &Path,
+    options: &ReleaseTreeOptions,
+    report: &ReleaseReport,
+) -> serde_json::Value {
+    let channel = options.channel.as_ref().map(|channel| {
+        serde_json::json!({
+            "name": channel,
+            "action": if options.init_channel { "init" } else { "advance" },
+            "count": options.count,
+            "partitions": options.partitions.as_deref(),
+            "touched_partitions": report.channel_partitions,
+        })
+    });
+    serde_json::json!({
+        "action": "release",
+        "status": status,
+        "registry": registry_name,
+        "directory": dir.to_string_lossy().to_string(),
+        "version": options.version.to_string(),
+        "dry_run": options.dry_run,
+        "resume": options.resume,
+        "cache_output": options
+            .cache_output
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        "cache_url": options.cache_url.as_deref(),
+        "cache_priority": options.cache_priority,
+        "cache": report.cache.as_ref().map(static_cache_report_json),
+        "cache_pointer_updated": report.cache_pointer_updated,
+        "upload_urls": &options.upload_urls,
+        "uploaded_files": report.uploaded_files,
+        "uploaded_bytes": report.uploaded_bytes,
+        "uploaded_bytes_human": report.uploaded_bytes.map(format_size),
+        "channel": channel,
+        "full_pack": report.full_pack.as_deref(),
+        "deltas": &report.deltas,
+        "planned_steps": release_plan_steps_json(options),
+    })
+}
+
+fn static_cache_report_json(report: &nixcache::StaticCacheReport) -> serde_json::Value {
+    serde_json::json!({
+        "paths": report.paths,
+        "narinfos": report.narinfos,
+        "nars": report.nars,
+        "output_dir": report.output_dir.to_string_lossy().to_string(),
+    })
+}
+
+fn release_plan_steps_json(options: &ReleaseTreeOptions) -> Vec<&'static str> {
+    let mut steps = vec![
+        "ensure_clean_worktree",
+        "create_signed_release_tag",
+        "generate_release_packs",
+    ];
+    if options.cache_url.is_some() {
+        steps.insert(1, "commit_cache_pointer");
+    }
+    if options.cache_output.is_some() {
+        steps.push("generate_static_cache");
+    }
+    if options.channel.is_some() {
+        steps.push(if options.init_channel {
+            "initialize_channel"
+        } else {
+            "advance_channel"
+        });
+    }
+    if !options.upload_urls.is_empty() {
+        steps.push("upload_static_origin");
+    }
+    steps
 }
 
 fn print_release_plan(
@@ -4620,7 +4804,7 @@ async fn write_release_artifacts(
     Ok(ReleaseReport {
         full_pack,
         deltas,
-        uploaded_files: None,
+        ..ReleaseReport::default()
     })
 }
 
@@ -4730,7 +4914,7 @@ fn channel_init_dir(
     version: &semver::Version,
     signing_key: &str,
     printer: &Printer,
-) -> Result<()> {
+) -> Result<usize> {
     validate_channel_name(channel_name)?;
     assert_release_tag_exists(dir, version)?;
     let mut map = PartitionMap::new();
@@ -4742,7 +4926,7 @@ fn channel_init_dir(
     printer.success(&format!(
         "Initialized channel '{channel_name}' with 256/256 partitions on {version}."
     ));
-    Ok(())
+    Ok(256)
 }
 
 fn channel_advance_dir(
@@ -4753,7 +4937,7 @@ fn channel_advance_dir(
     partitions: Option<&str>,
     signing_key: &str,
     printer: &Printer,
-) -> Result<()> {
+) -> Result<usize> {
     validate_channel_name(channel_name)?;
     assert_release_tag_exists(dir, version)?;
     let mut map = read_channel_partition_map(dir, channel_name)?;
@@ -4761,7 +4945,7 @@ fn channel_advance_dir(
     let selected = select_partitions_for_advance(count, partitions, &map, version)?;
     if selected.is_empty() {
         printer.info("No partitions selected for advancement.");
-        return Ok(());
+        return Ok(0);
     }
     for bucket in &selected {
         write_channel_partition_tag(dir, channel_name, *bucket, version, signing_key)?;
@@ -4772,7 +4956,7 @@ fn channel_advance_dir(
         "Advanced channel '{channel_name}' {} partition(s) to {version}.",
         selected.len()
     ));
-    Ok(())
+    Ok(selected.len())
 }
 
 /// `apr tag <NAME>`
