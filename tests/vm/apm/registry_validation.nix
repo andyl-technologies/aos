@@ -411,6 +411,18 @@ in {
         REG_DIR="$REG_STORAGE/cdn-reg"
         mkdir -p "$REG_DIR/channels/stable" "$REG_DIR/.git/channels/stable"
         printf 'channel-pointer\n' > "$REG_DIR/.git/channels/stable/00"
+        mkdir -p \
+          "$REG_DIR/target/debug" \
+          "$REG_DIR/.git/target/debug" \
+          /tmp/generated-cache/target/debug \
+          /tmp/generated-cache/tmp
+        dd if=/dev/zero of="$REG_DIR/target/debug/worktree-build.bin" \
+          bs=1M count=2 status=none
+        dd if=/dev/zero of="$REG_DIR/.git/target/debug/git-build.bin" \
+          bs=1M count=2 status=none
+        dd if=/dev/zero of=/tmp/generated-cache/target/debug/cache-build.bin \
+          bs=1M count=2 status=none
+        printf 'scratch\n' > /tmp/generated-cache/tmp/scratch.txt
         cat > "$APM_CONFIG/registries.d/cdn-reg.toml" << 'EOF'
       [registry]
       name = "cdn-reg"
@@ -453,6 +465,20 @@ in {
 
       put_events = [e for e in events if e["method"] == "PUT"]
       rel_events = [(rel(e["path"]), e) for e in put_events]
+      forbidden = [
+          "target/",
+          "/target/",
+          "tmp/",
+          "/tmp/",
+          "worktree-build.bin",
+          "git-build.bin",
+          "cache-build.bin",
+          "scratch.txt",
+      ]
+      for path, _ in rel_events:
+          for marker in forbidden:
+              if marker in path:
+                  raise AssertionError(f"unexpected scratch/build output upload: {path}")
       first_mutable = next((i for i, (path, _) in enumerate(rel_events) if is_mutable(path)), None)
       if first_mutable is None:
           raise AssertionError("no mutable uploads recorded")
@@ -506,6 +532,9 @@ in {
       PY
         python3 /tmp/assert-origin-cdn.py \
           /tmp/s3-origin-events.jsonl /tmp/s3-origin-root/aos-origin/origin
+        test ! -e /tmp/s3-origin-root/aos-origin/origin/target
+        test ! -e /tmp/s3-origin-root/aos-origin/origin/tmp
+        rm -rf "$REG_DIR/target" /tmp/generated-cache/target /tmp/generated-cache/tmp
 
         ssh-keygen -q -t ed25519 -N "" -f /tmp/cdn-release-key
         $APR release 1.0.0 --registry cdn-reg \
@@ -517,6 +546,7 @@ in {
         test -f /tmp/s3-origin-root/aos-origin/release/HEAD
         test -f /tmp/s3-origin-root/aos-origin/release/info/refs
         test -f /tmp/s3-origin-root/aos-origin/release/releases/1/0/0/objects/info/packs
+        test ! -e /tmp/s3-origin-root/aos-origin/release/target
 
         $APR release 1.0.0 --registry cdn-reg \
           --key /tmp/cdn-release-key \
@@ -531,6 +561,7 @@ in {
         test -f /tmp/s3-origin-root/aos-origin/release-resume/HEAD
         test -f /tmp/s3-origin-root/aos-origin/release-resume/info/refs
         test -f /tmp/s3-origin-root/aos-origin/release-resume/releases/1/0/0/objects/info/packs
+        test ! -e /tmp/s3-origin-root/aos-origin/release-resume/target
 
         echo "registry origin CDN layout validation passed"
     '';
