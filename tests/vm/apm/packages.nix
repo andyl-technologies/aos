@@ -2348,42 +2348,94 @@ in {
         fail "remove-left should create gen-2"
       fi
 
-      echo "==> Consumer: remove final explicit package with configured autoremove and GC"
+      echo "==> Consumer: remove final explicit package without automatic autoremove"
       export AOS_ROOT=/tmp/remove-auto-gc-root
       export AOS_NIX_STORE_DIR=/tmp/remove-auto-gc-store
       export AOS_NIX_STATE_DIR=/tmp/remove-auto-gc-root/var/nix
       mkdir -p "$AOS_NIX_STORE_DIR" "$AOS_NIX_STATE_DIR/db" "$AOS_NIX_STATE_DIR/gcroots"
       NIX_STORE_DIR="$AOS_NIX_STORE_DIR" NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
         nix-store --init || true
+      cat > "$HOME/.config/apm/apm.conf" << 'APMCONF'
+      [settings]
+      assume_yes = true
+      auto_autoremove = false
+      auto_gc = true
+      APMCONF
       $APM remove remove-right > /tmp/remove-right.out 2>&1 || {
         cat /tmp/remove-right.out
-        fail "apm remove remove-right succeeds with configured autoremove"
+        fail "apm remove remove-right succeeds without configured autoremove"
       }
       cat /tmp/remove-right.out
       assert_file_not_contains /tmp/remove-right.out "Do you want to continue" \
         "configured assume_yes suppresses final remove prompt"
-      assert_file_contains /tmp/remove-right.out "Removed 2 package" \
-        "configured autoremove removes final package and orphaned dependency"
-      assert_file_contains /tmp/remove-right.out "idempkg" \
-        "configured autoremove lists orphaned shared dependency"
-      assert_file_contains /tmp/remove-right.out "Running garbage collection" \
-        "configured auto_gc runs after autoremove removes an orphan"
-      assert_file_contains /tmp/remove-right.out "Garbage collection complete" \
-        "configured auto_gc completes through contained Nix state"
+      assert_file_contains /tmp/remove-right.out "Removed 1 package" \
+        "plain remove deletes only requested explicit package"
+      assert_file_not_contains /tmp/remove-right.out "idempkg" \
+        "plain remove leaves orphaned shared dependency for standalone autoremove"
+      assert_file_not_contains /tmp/remove-right.out "Running garbage collection" \
+        "configured auto_gc does not run when autoremove is disabled"
       assert_file_not_exists "$PROFILE/meta/$RIGHT_HASH.json" \
         "remove-right metadata removed"
-      assert_file_not_exists "$PROFILE/meta/$DEP_HASH.json" \
-        "shared dependency metadata removed by configured autoremove"
-      if [ -e "$PROFILE/current/bin/idempkg" ]; then
-        fail "shared dependency executable should be absent after configured autoremove"
+      assert_file_exists "$PROFILE/meta/$DEP_HASH.json" \
+        "shared dependency metadata remains until standalone autoremove"
+      if [ -x "$PROFILE/current/bin/remove-right" ]; then
+        fail "remove-right executable should be absent after removal"
       else
-        pass "shared dependency executable absent after configured autoremove"
+        pass "remove-right executable absent after removal"
       fi
+      "$PROFILE/current/bin/idempkg" > /tmp/remove-dep-run-orphan.out
+      assert_file_contains /tmp/remove-dep-run-orphan.out "^idempkg 1.0.0$" \
+        "orphaned shared dependency remains active before standalone autoremove"
 
       if [ "$(readlink "$PROFILE/current")" = "gen-3" ] && [ "$(generation_count)" = "3" ]; then
-        pass "configured remove and autoremove workflow creates three generations"
+        pass "plain remove creates generation 3 with orphaned dependency"
       else
-        fail "configured remove and autoremove workflow should end at gen-3"
+        fail "plain remove should end at gen-3"
+      fi
+
+      echo "==> Consumer: dry-run then execute standalone autoremove with configured GC"
+      $APM autoremove --dry-run > /tmp/remove-autoremove-dry-run.out 2>&1 || {
+        cat /tmp/remove-autoremove-dry-run.out
+        fail "apm autoremove --dry-run reports orphaned dependency"
+      }
+      cat /tmp/remove-autoremove-dry-run.out
+      assert_file_contains /tmp/remove-autoremove-dry-run.out "idempkg" \
+        "standalone autoremove dry-run lists orphaned dependency"
+      assert_file_contains /tmp/remove-autoremove-dry-run.out "Dry run -- no changes made" \
+        "standalone autoremove dry-run reports no mutation"
+      assert_file_exists "$PROFILE/meta/$DEP_HASH.json" \
+        "standalone autoremove dry-run preserves dependency metadata"
+      "$PROFILE/current/bin/idempkg" > /tmp/remove-dep-run-after-dry-run.out
+      assert_file_contains /tmp/remove-dep-run-after-dry-run.out "^idempkg 1.0.0$" \
+        "standalone autoremove dry-run preserves executable"
+
+      $APM autoremove > /tmp/remove-autoremove.out 2>&1 || {
+        cat /tmp/remove-autoremove.out
+        fail "apm autoremove removes orphaned dependency"
+      }
+      cat /tmp/remove-autoremove.out
+      assert_file_not_contains /tmp/remove-autoremove.out "Do you want to continue" \
+        "configured assume_yes suppresses standalone autoremove prompt"
+      assert_file_contains /tmp/remove-autoremove.out "Removed 1 orphaned package" \
+        "standalone autoremove removes orphaned shared dependency"
+      assert_file_contains /tmp/remove-autoremove.out "idempkg" \
+        "standalone autoremove lists orphaned shared dependency"
+      assert_file_contains /tmp/remove-autoremove.out "Running garbage collection" \
+        "configured auto_gc runs after standalone autoremove removes an orphan"
+      assert_file_contains /tmp/remove-autoremove.out "Garbage collection complete" \
+        "configured auto_gc completes after standalone autoremove"
+      assert_file_not_exists "$PROFILE/meta/$DEP_HASH.json" \
+        "shared dependency metadata removed by standalone autoremove"
+      if [ -e "$PROFILE/current/bin/idempkg" ]; then
+        fail "shared dependency executable should be absent after standalone autoremove"
+      else
+        pass "shared dependency executable absent after standalone autoremove"
+      fi
+
+      if [ "$(readlink "$PROFILE/current")" = "gen-4" ] && [ "$(generation_count)" = "4" ]; then
+        pass "standalone autoremove creates generation 4"
+      else
+        fail "standalone autoremove should end at gen-4"
       fi
 
       if kill "$CACHE_PID" 2>/dev/null; then
