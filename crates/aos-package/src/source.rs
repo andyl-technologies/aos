@@ -46,7 +46,7 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
     printer.header(&format!("Verifying package '{package}'..."));
 
     // 1. Open profile and find installed metadata.
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let all_meta = meta::list_meta(&profile)?;
 
     let installed = all_meta
@@ -138,7 +138,7 @@ pub async fn run_source(
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
 
     let (registry_name, source_drv, source_nar_hash, expected_hash) = if verify_source {
-        let profile = Profile::open(config.scope)?;
+        let profile = Profile::open_readonly(config.scope);
         let all_meta = meta::list_meta(&profile)?;
         let installed = all_meta
             .iter()

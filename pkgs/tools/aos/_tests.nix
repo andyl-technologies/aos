@@ -176,10 +176,92 @@ in {
           run_clean ${self}/bin/apr branch switch stable --registry host-reg > "$work/apr-branch-switch-stable.out" 2>&1
           grep -q "Switched to branch 'stable'" "$work/apr-branch-switch-stable.out"
 
+          pkg_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          mkdir -p "$reg/packages/h" "$reg/closures"
+          printf '%s\n' \
+            '[package]' \
+            'name = "hostpkg"' \
+            'description = "Host-authored package metadata"' \
+            'homepage = "https://example.invalid/hostpkg"' \
+            'license = "MIT"' \
+            'maintainer = "host@example.invalid"' \
+            "" \
+            '[[versions]]' \
+            'version = "1.0.0"' \
+            "" \
+            '[versions.platforms.x86_64-linux]' \
+            "store_path = \"/nix/store/$pkg_hash-hostpkg-1.0.0\"" \
+            'nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="' \
+            'nar_size = 1234' \
+            'closure_size = 1234' \
+            'source_drv = ""' \
+            'source_nar_hash = ""' \
+            'references = []' \
+            > "$reg/packages/h/hostpkg.toml"
+          printf '%s\n' "$pkg_hash" > "$reg/closures/$pkg_hash"
+          printf '%s\n' \
+            "" \
+            '[[caches]]' \
+            'url = "https://cache.example.invalid/host"' \
+            'priority = 42' \
+            >> "$reg/registry.toml"
+
+          run_clean ${self}/bin/apr status --registry host-reg > "$work/apr-status-dirty.out" 2>&1
+          grep -q "registry.toml" "$work/apr-status-dirty.out"
+          grep -q "packages/h/hostpkg.toml" "$work/apr-status-dirty.out"
+          grep -q "closures/$pkg_hash" "$work/apr-status-dirty.out"
+
+          run_clean ${self}/bin/apr diff --registry host-reg --stat > "$work/apr-diff-stat.out" 2>&1
+          grep -q "registry.toml" "$work/apr-diff-stat.out"
+
+          git -C "$reg" add -A
+          git -C "$reg" commit -m "release: hostpkg 1.0.0" > "$work/git-commit-package.out" 2>&1
+
+          run_clean ${self}/bin/apr packages --registry host-reg > "$work/apr-packages.out" 2>&1
+          grep -q "hostpkg 1.0.0" "$work/apr-packages.out"
+          run_clean ${self}/bin/apr show hostpkg --registry host-reg > "$work/apr-show.out" 2>&1
+          grep -q "Host-authored package metadata" "$work/apr-show.out"
+          run_clean ${self}/bin/apr show hostpkg --registry host-reg --raw > "$work/apr-show-raw.out" 2>&1
+          grep -q "store_path = \"/nix/store/$pkg_hash-hostpkg-1.0.0\"" "$work/apr-show-raw.out"
+          run_clean ${self}/bin/apr verify --registry host-reg > "$work/apr-verify.out" 2>&1
+          grep -q "Verified 1 package(s), 1 closure(s), no errors" "$work/apr-verify.out"
+          run_clean ${self}/bin/apr log --registry host-reg --package hostpkg -n 1 > "$work/apr-log-package.out" 2>&1
+          grep -q "release: hostpkg 1.0.0" "$work/apr-log-package.out"
+
+          git init --bare --object-format=sha256 "$work/host-origin.git" > "$work/git-init-origin.out" 2>&1
+          git -C "$reg" remote add origin "$work/host-origin.git"
+          run_clean ${self}/bin/apr push --registry host-reg --branch stable --set-upstream > "$work/apr-push.out" 2>&1
+          grep -q "Pushed." "$work/apr-push.out"
+          run_clean ${self}/bin/apr diff --registry host-reg --remote --stat > "$work/apr-diff-remote.out" 2>&1
+          grep -q "No pending changes" "$work/apr-diff-remote.out"
+
           run_clean ${self}/bin/apm registry add "file://$reg" --name host-reg-client > "$work/apm-registry-add.out" 2>&1
           grep -q "Registry 'host-reg-client' added" "$work/apm-registry-add.out"
           run_clean ${self}/bin/apm registry list > "$work/apm-registry-list.out" 2>&1
           grep -q "host-reg-client" "$work/apm-registry-list.out"
+          run_clean ${self}/bin/apm search hostpkg --registry host-reg-client > "$work/apm-search.out" 2>&1
+          grep -q "hostpkg/host-reg-client 1.0.0" "$work/apm-search.out"
+          run_clean ${self}/bin/apm search hostpkg --installed > "$work/apm-search-installed.out" 2>&1
+          if grep -q "hostpkg" "$work/apm-search-installed.out"; then
+            cat "$work/apm-search-installed.out"
+            exit 1
+          fi
+          run_clean ${self}/bin/apm show hostpkg --registry host-reg-client > "$work/apm-show.out" 2>&1
+          grep -q "Host-authored package metadata" "$work/apm-show.out"
+          run_clean ${self}/bin/apm list --registry host-reg-client > "$work/apm-list.out" 2>&1
+          grep -q "hostpkg/host-reg-client 1.0.0" "$work/apm-list.out"
+          run_clean ${self}/bin/apm policy hostpkg > "$work/apm-policy.out" 2>&1
+          grep -q "Candidate: 1.0.0" "$work/apm-policy.out"
+          if run_clean ${self}/bin/apm files hostpkg > "$work/apm-files.out" 2>&1; then
+            cat "$work/apm-files.out"
+            exit 1
+          fi
+          grep -q "package not installed: hostpkg" "$work/apm-files.out"
+          run_clean ${self}/bin/apm orphans > "$work/apm-orphans.out" 2>&1
+          grep -q "No orphaned packages" "$work/apm-orphans.out"
+          run_clean ${self}/bin/apm registry remove host-reg-client --keep-local > "$work/apm-registry-remove.out" 2>&1
+          grep -q "Registry 'host-reg-client' removed" "$work/apm-registry-remove.out"
+          test -d "$data/apm/registries/host-reg-client"
 
           mkdir -p "$out"
           echo "PASS" > "$out/result"
