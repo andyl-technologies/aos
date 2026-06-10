@@ -3005,15 +3005,6 @@ in {
             > "$work/apr-sign-next.out" 2>&1
           next_tag=$(git -C "$reg" rev-parse '1.0.0^{tag}')
           test "$next_tag" != "$initial_tag"
-          run_clean ${self}/bin/apr keys retire next \
-            --registry host-keyresign \
-            --vouched-by initial \
-            --reason "rotation complete" \
-            --key "$work/initial-release-key" \
-            > "$work/apr-keys-retire-next.out" 2>&1
-          grep -q "Retired signing key 'next'" "$work/apr-keys-retire-next.out"
-          resigned_tag=$(git -C "$reg" rev-parse '1.0.0^{tag}')
-          test "$resigned_tag" != "$next_tag"
 
           PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$port" \
             --bind 127.0.0.1 --directory "$data/apm/registries" \
@@ -3024,6 +3015,67 @@ in {
             cat "$work/http-server.log"
             exit 1
           fi
+
+          producer_home="$home"
+          producer_config="$config"
+          producer_data="$data"
+          producer_cache="$cache"
+          producer_profile_root="$profile_root"
+
+          home="$work/new-key-tag-client-home"
+          config="$work/new-key-tag-client-config"
+          data="$work/new-key-tag-client-share"
+          cache="$work/new-key-tag-client-cache"
+          profile_root="$work/new-key-tag-client-profiles"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add "http://127.0.0.1:$port/host-keyresign/.git" \
+            --name host-keyresign \
+            --tag 1.0.0 \
+            --trust-key "$trust_key" \
+            > "$work/apm-add-host-keyresign-new-key-tag.out" 2>&1
+          grep -q "Registry 'host-keyresign' added" \
+            "$work/apm-add-host-keyresign-new-key-tag.out"
+          run_clean ${self}/bin/apm search hostkeyresign \
+            --registry host-keyresign \
+            > "$work/apm-search-host-keyresign-new-key-tag.out" 2>&1
+          grep -q "hostkeyresign/host-keyresign 1.0.0" \
+            "$work/apm-search-host-keyresign-new-key-tag.out"
+
+          home="$work/new-key-version-client-home"
+          config="$work/new-key-version-client-config"
+          data="$work/new-key-version-client-share"
+          cache="$work/new-key-version-client-cache"
+          profile_root="$work/new-key-version-client-profiles"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add "http://127.0.0.1:$port/host-keyresign/.git" \
+            --name host-keyresign \
+            --version '^1.0' \
+            --trust-key "$trust_key" \
+            > "$work/apm-add-host-keyresign-new-key-version.out" 2>&1
+          grep -q "Registry 'host-keyresign' added" \
+            "$work/apm-add-host-keyresign-new-key-version.out"
+          run_clean ${self}/bin/apm search hostkeyresign \
+            --registry host-keyresign \
+            > "$work/apm-search-host-keyresign-new-key-version.out" 2>&1
+          grep -q "hostkeyresign/host-keyresign 1.0.0" \
+            "$work/apm-search-host-keyresign-new-key-version.out"
+
+          home="$producer_home"
+          config="$producer_config"
+          data="$producer_data"
+          cache="$producer_cache"
+          profile_root="$producer_profile_root"
+
+          run_clean ${self}/bin/apr keys retire next \
+            --registry host-keyresign \
+            --vouched-by initial \
+            --reason "rotation complete" \
+            --key "$work/initial-release-key" \
+            > "$work/apr-keys-retire-next.out" 2>&1
+          grep -q "Retired signing key 'next'" "$work/apr-keys-retire-next.out"
+          resigned_tag=$(git -C "$reg" rev-parse '1.0.0^{tag}')
+          test "$resigned_tag" != "$next_tag"
+
           git ls-remote "http://127.0.0.1:$port/host-keyresign/.git" \
             "refs/tags/1.0.0" > "$work/git-ls-remote-host-keyresign.out" 2>&1 || {
             cat "$work/git-ls-remote-host-keyresign.out"

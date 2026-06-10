@@ -185,7 +185,10 @@ pub async fn sync_git(
     } else {
         resolve_fetch_head(&repo_dir, tracking_mode).await?
     };
-    let new_commit = resolved_head.commit;
+    let ResolvedHead {
+        commit: new_commit,
+        release_tag,
+    } = resolved_head;
 
     if matches!(tracking_mode, TrackingMode::Channel(_)) {
         let target = state
@@ -199,9 +202,6 @@ pub async fn sync_git(
 
     // Step 4: Verify the head commit signature against the trusted set.
     if enforcing {
-        if let Some(release_tag) = resolved_head.release_tag.as_deref() {
-            verify_release_tag(&repo_dir, release_tag, &trusted_keys)?;
-        }
         verify_head_commit(&repo_dir, &new_commit, &trusted_keys)?;
     }
 
@@ -213,6 +213,7 @@ pub async fn sync_git(
     // Step 6: Pin the verified head's trust roster. This runs only after
     // both the signature and fast-forward checks pass, so the writable
     // store never changes on a failed sync.
+    let mut post_pin_trusted_keys = trusted_keys.clone();
     if enforcing && let Some(report) = apply_roster(&key_store, config, &repo_dir, &new_commit)? {
         if !report.is_noop() {
             printer.info(&format!(
@@ -220,24 +221,27 @@ pub async fn sync_git(
                 config.name, report.pinned, report.unpinned, report.masked,
             ));
         }
+        post_pin_trusted_keys = assemble_trusted_set(&key_store, config);
         // The roster may have rotated keys; the resolved channel chain
         // must verify against the post-pin set, not only the bootstrap
         // set.
         if let (TrackingMode::Channel(channel_name), Some((semver, channel_oid))) =
             (tracking_mode, &channel_resolution)
         {
-            let post_pin = assemble_trusted_set(&key_store, config);
             verify::verify_tag_chain(
                 &repo_dir,
                 channel_oid,
                 channel_name,
                 &semver.to_string(),
-                &post_pin,
+                &post_pin_trusted_keys,
             )
             .with_context(|| {
                 format!("re-verifying channel '{channel_name}' against the updated trust roster")
             })?;
         }
+    }
+    if enforcing && let Some(release_tag) = release_tag.as_deref() {
+        verify_release_tag(&repo_dir, release_tag, &post_pin_trusted_keys)?;
     }
 
     // Step 7: Extract authenticated tree files used by consumers.
