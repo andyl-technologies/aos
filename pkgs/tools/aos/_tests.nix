@@ -1457,7 +1457,12 @@ in {
             > "$work/host-leaf-channel-run.out"
           grep -q "host leaf package executed" "$work/host-leaf-channel-run.out"
           assert_default_profile_absent
-          rm -rf "$profile_root"
+          static_channel_home="$home"
+          static_channel_config="$config"
+          static_channel_data="$data"
+          static_channel_cache="$cache"
+          static_channel_profile_root="$profile_root"
+          static_channel_profile="$profile"
           home="$main_home"
           config="$main_config"
           data="$main_data"
@@ -1671,6 +1676,107 @@ in {
           test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
           grep -q "BEGIN SSH SIGNATURE" \
             "$work/install-static-cache-upload/cache/channels/stable/00"
+
+          home="$static_channel_home"
+          config="$static_channel_config"
+          data="$static_channel_data"
+          cache="$static_channel_cache"
+          profile_root="$static_channel_profile_root"
+          profile="$static_channel_profile"
+          channel_config="$config/apm/registries.d/host-install-channel.toml"
+          run_clean ${self}/bin/apm --json update --registry host-install-channel \
+            > "$work/apm-update-host-install-channel-v2.json" 2>&1 || {
+            cat "$work/apm-update-host-install-channel-v2.json"
+            exit 1
+          }
+          ${pkgs.jq}/bin/jq -e \
+            '.registry == "host-install-channel"
+              and .updated == 1
+              and (.registries | length == 1)
+              and .registries[0].registry == "host-install-channel"
+              and .registries[0].status == "updated"
+              and .registries[0].packages == 2
+              and .registries[0].updated == 2
+              and .registries[0].added == 0
+              and .registries[0].removed == 0
+              and (.registries[0].commit | length == 64)' \
+            "$work/apm-update-host-install-channel-v2.json" >/dev/null || {
+            cat "$work/apm-update-host-install-channel-v2.json"
+            exit 1
+          }
+          grep -q 'floor = "2.0.0"' "$channel_config"
+          run_clean ${self}/bin/apm list --upgradable \
+            > "$work/apm-upgradable-host-install-channel.out" 2>&1 || {
+            cat "$work/apm-upgradable-host-install-channel.out"
+            exit 1
+          }
+          grep -q "hostinstall/host-install-channel" \
+            "$work/apm-upgradable-host-install-channel.out" || {
+            cat "$work/apm-upgradable-host-install-channel.out"
+            exit 1
+          }
+          grep -q "upgradable: 2.0.0" \
+            "$work/apm-upgradable-host-install-channel.out" || {
+            cat "$work/apm-upgradable-host-install-channel.out"
+            exit 1
+          }
+          nix_store --delete --ignore-liveness "$install_store_v2" \
+            > "$work/nix-delete-host-install-channel-upgrade-v2.out" 2>&1
+          nix_store --delete --ignore-liveness "$install_leaf_store_v2" \
+            > "$work/nix-delete-host-leaf-channel-upgrade-v2.out" 2>&1
+          if nix_store --check-validity "$install_store_v2" \
+            > "$work/nix-valid-host-install-channel-upgrade-v2-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-install-channel-upgrade-v2-deleted.out"
+            exit 1
+          fi
+          if nix_store --check-validity "$install_leaf_store_v2" \
+            > "$work/nix-valid-host-leaf-channel-upgrade-v2-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-leaf-channel-upgrade-v2-deleted.out"
+            exit 1
+          fi
+          run_clean ${self}/bin/apm --json upgrade hostinstall --yes \
+            > "$work/apm-upgrade-host-install-channel-v2.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+            '.action == "upgrade"
+              and .status == "upgraded"
+              and .requested == ["hostinstall"]
+              and .exclude == []
+              and .dry_run == false
+              and .generation == 2
+              and .upgraded == 1
+              and .held_back == []
+              and (.upgrades | length == 1)
+              and .upgrades[0].name == "hostinstall"
+              and .upgrades[0].registry == "host-install-channel"
+              and .upgrades[0].old_version == "1.0.0"
+              and .upgrades[0].new_version == "2.0.0"
+              and .upgrades[0].new_store_path == $store
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
+            "$work/apm-upgrade-host-install-channel-v2.json" >/dev/null
+          nix_store --check-validity "$install_store_v2" \
+            > "$work/nix-valid-host-install-channel-upgrade-v2-imported.out" 2>&1
+          nix_store --check-validity "$install_leaf_store_v2" \
+            > "$work/nix-valid-host-leaf-channel-upgrade-v2-imported.out" 2>&1
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-install-channel-upgrade-v2-run.out"
+          grep -q "host leaf package v2 executed" \
+            "$work/host-install-channel-upgrade-v2-run.out"
+          grep -q "host install package v2 executed" \
+            "$work/host-install-channel-upgrade-v2-run.out"
+          "$profile/current/bin/host-leaf-tool" \
+            > "$work/host-leaf-channel-upgrade-v2-run.out"
+          grep -q "host leaf package v2 executed" \
+            "$work/host-leaf-channel-upgrade-v2-run.out"
+          assert_default_profile_absent
+          rm -rf "$profile_root"
+          home="$main_home"
+          config="$main_config"
+          data="$main_data"
+          cache="$main_cache"
+          profile_root="$main_profile_root"
+          profile="$main_profile"
 
           main_home="$home"
           main_config="$config"
