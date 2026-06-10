@@ -341,6 +341,7 @@
     ++ [
       pkgs.findutils
       pkgs.iproute2
+      pkgs.jq
       pkgs.python3
       pkgs.zstd
       rollbackToolV1
@@ -3404,6 +3405,7 @@ in {
       ROLLBACK_V2_HASH=$(basename "$ROLLBACK_V2_STORE" | cut -d- -f1)
       ROLLBACK_V3_HASH=$(basename "$ROLLBACK_V3_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/rollbackuser"
+      JQ="${pkgs.jq}/bin/jq"
       PROFILE_BIN="$PROFILE/current/bin/rollback-tool"
 
       assert_file_not_contains() {
@@ -3740,16 +3742,40 @@ in {
       assert_list_marks_current 3 /tmp/rollback-list-v3.out
 
       echo "==> Consumer: rollback explicitly to generation 1"
-      $APM rollback --generation 1 > /tmp/rollback-to-gen1.out 2>&1 || {
-        cat /tmp/rollback-to-gen1.out
+      $APM --json rollback --generation 1 > /tmp/rollback-to-gen1.json 2>&1 || {
+        cat /tmp/rollback-to-gen1.json
         fail "apm rollback --generation 1 succeeds"
       }
-      cat /tmp/rollback-to-gen1.out
-      assert_file_contains /tmp/rollback-to-gen1.out \
-        "Rolling back from generation 3 to generation 1" \
-        "rollback reports explicit generation target"
-      assert_file_contains /tmp/rollback-to-gen1.out "Rolled back to generation 1" \
-        "rollback switches to generation 1"
+      "$JQ" -e \
+        --arg restored "$ROLLBACK_V1_STORE" \
+        --arg removed "$ROLLBACK_V3_STORE" \
+        '.action == "rollback"
+          and .status == "rolled_back"
+          and .requested_generation == 1
+          and .from_generation == 3
+          and .to_generation == 1
+          and .dry_run == false
+          and .generation == 1
+          and (.restored | length == 1)
+          and .restored[0].store_path == $restored
+          and .restored[0].registry == "rollback-reg"
+          and .restored[0].package.name == "rollback-tool"
+          and .restored[0].package.version == "1.0.0"
+          and (.removed | length == 1)
+          and .removed[0].store_path == $removed
+          and .removed[0].registry == "rollback-reg"
+          and .removed[0].package.name == "rollback-tool"
+          and .removed[0].package.version == "3.0.0"
+          and (.current_roots | any(.store_path == $removed
+            and .package.name == "rollback-tool"
+            and .package.version == "3.0.0"))
+          and (.target_roots | any(.store_path == $restored
+            and .package.name == "rollback-tool"
+            and .package.version == "1.0.0"))' \
+        /tmp/rollback-to-gen1.json >/dev/null || {
+        cat /tmp/rollback-to-gen1.json
+        fail "apm --json rollback reports explicit generation transition"
+      }
       assert_current_generation 1 "rollback profile current is generation 1 after explicit rollback"
       assert_current_tool_version 1.0.0
       $APM list --installed > /tmp/rollback-installed-gen1.out 2>&1 || {
@@ -3779,27 +3805,78 @@ in {
       assert_current_tool_version 3.0.0
 
       echo "==> Consumer: dry-run rollback does not switch generation"
-      $APM rollback --dry-run > /tmp/rollback-dry-run.out 2>&1 || {
-        cat /tmp/rollback-dry-run.out
+      $APM --json rollback --dry-run > /tmp/rollback-dry-run.json 2>&1 || {
+        cat /tmp/rollback-dry-run.json
         fail "apm rollback --dry-run succeeds"
       }
-      cat /tmp/rollback-dry-run.out
-      assert_file_contains /tmp/rollback-dry-run.out "Dry run" \
-        "rollback dry-run reports no changes"
+      "$JQ" -e \
+        --arg restored "$ROLLBACK_V2_STORE" \
+        --arg removed "$ROLLBACK_V3_STORE" \
+        '.action == "rollback"
+          and .status == "planned"
+          and .requested_generation == null
+          and .from_generation == 3
+          and .to_generation == 2
+          and .dry_run == true
+          and .generation == null
+          and (.restored | length == 1)
+          and .restored[0].store_path == $restored
+          and .restored[0].registry == "rollback-reg"
+          and .restored[0].package.name == "rollback-tool"
+          and .restored[0].package.version == "2.0.0"
+          and (.removed | length == 1)
+          and .removed[0].store_path == $removed
+          and .removed[0].registry == "rollback-reg"
+          and .removed[0].package.name == "rollback-tool"
+          and .removed[0].package.version == "3.0.0"
+          and (.current_roots | any(.store_path == $removed
+            and .package.name == "rollback-tool"
+            and .package.version == "3.0.0"))
+          and (.target_roots | any(.store_path == $restored
+            and .package.name == "rollback-tool"
+            and .package.version == "2.0.0"))' \
+        /tmp/rollback-dry-run.json >/dev/null || {
+        cat /tmp/rollback-dry-run.json
+        fail "apm --json rollback --dry-run reports planned previous-generation transition"
+      }
       assert_current_generation 3 "rollback dry-run keeps generation 3 active"
       assert_current_tool_version 3.0.0
 
       echo "==> Consumer: plain rollback selects previous generation"
-      $APM rollback > /tmp/rollback-plain.out 2>&1 || {
-        cat /tmp/rollback-plain.out
+      $APM --json rollback > /tmp/rollback-plain.json 2>&1 || {
+        cat /tmp/rollback-plain.json
         fail "plain apm rollback succeeds"
       }
-      cat /tmp/rollback-plain.out
-      assert_file_contains /tmp/rollback-plain.out \
-        "Rolling back from generation 3 to generation 2" \
-        "plain rollback targets previous generation"
-      assert_file_contains /tmp/rollback-plain.out "Rolled back to generation 2" \
-        "plain rollback switches to generation 2"
+      "$JQ" -e \
+        --arg restored "$ROLLBACK_V2_STORE" \
+        --arg removed "$ROLLBACK_V3_STORE" \
+        '.action == "rollback"
+          and .status == "rolled_back"
+          and .requested_generation == null
+          and .from_generation == 3
+          and .to_generation == 2
+          and .dry_run == false
+          and .generation == 2
+          and (.restored | length == 1)
+          and .restored[0].store_path == $restored
+          and .restored[0].registry == "rollback-reg"
+          and .restored[0].package.name == "rollback-tool"
+          and .restored[0].package.version == "2.0.0"
+          and (.removed | length == 1)
+          and .removed[0].store_path == $removed
+          and .removed[0].registry == "rollback-reg"
+          and .removed[0].package.name == "rollback-tool"
+          and .removed[0].package.version == "3.0.0"
+          and (.current_roots | any(.store_path == $removed
+            and .package.name == "rollback-tool"
+            and .package.version == "3.0.0"))
+          and (.target_roots | any(.store_path == $restored
+            and .package.name == "rollback-tool"
+            and .package.version == "2.0.0"))' \
+        /tmp/rollback-plain.json >/dev/null || {
+        cat /tmp/rollback-plain.json
+        fail "apm --json rollback reports previous-generation transition"
+      }
       assert_current_generation 2 "rollback profile current is generation 2 after plain rollback"
       assert_current_tool_version 2.0.0
 

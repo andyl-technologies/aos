@@ -1270,15 +1270,66 @@ in {
                   and .package.version == "2.0.0")))' \
             "$work/apm-rollback-list-host-install-v2.json" >/dev/null
 
-          run_clean ${self}/bin/apm rollback --dry-run > "$work/apm-rollback-host-install-dry-run.out" 2>&1
-          grep -q "Dry run" "$work/apm-rollback-host-install-dry-run.out"
+          run_clean ${self}/bin/apm --json rollback --dry-run > "$work/apm-rollback-host-install-dry-run.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg old "$install_store" \
+            --arg new "$install_store_v2" \
+            '.action == "rollback"
+              and .status == "planned"
+              and .requested_generation == null
+              and .from_generation == 2
+              and .to_generation == 1
+              and .dry_run == true
+              and .generation == null
+              and (.restored | length == 1)
+              and .restored[0].store_path == $old
+              and .restored[0].registry == "host-install-client"
+              and .restored[0].package.name == "hostinstall"
+              and .restored[0].package.version == "1.0.0"
+              and (.removed | length == 1)
+              and .removed[0].store_path == $new
+              and .removed[0].registry == "host-install-client"
+              and .removed[0].package.name == "hostinstall"
+              and .removed[0].package.version == "2.0.0"
+              and (.current_roots | any(.store_path == $new
+                and .package.name == "hostinstall"
+                and .package.version == "2.0.0"))
+              and (.target_roots | any(.store_path == $old
+                and .package.name == "hostinstall"
+                and .package.version == "1.0.0"))' \
+            "$work/apm-rollback-host-install-dry-run.json" >/dev/null
           "$profile/current/bin/host-install-tool" > "$work/host-install-v2-after-rollback-dry-run.out"
           grep -q "host install package v2 executed" "$work/host-install-v2-after-rollback-dry-run.out"
           assert_default_profile_absent
 
-          run_clean ${self}/bin/apm rollback > "$work/apm-rollback-host-install.out" 2>&1
-          grep -q "Rolling back from generation 2 to generation 1" "$work/apm-rollback-host-install.out"
-          grep -q "Rolled back to generation 1" "$work/apm-rollback-host-install.out"
+          run_clean ${self}/bin/apm --json rollback > "$work/apm-rollback-host-install.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg old "$install_store" \
+            --arg new "$install_store_v2" \
+            '.action == "rollback"
+              and .status == "rolled_back"
+              and .requested_generation == null
+              and .from_generation == 2
+              and .to_generation == 1
+              and .dry_run == false
+              and .generation == 1
+              and (.restored | length == 1)
+              and .restored[0].store_path == $old
+              and .restored[0].registry == "host-install-client"
+              and .restored[0].package.name == "hostinstall"
+              and .restored[0].package.version == "1.0.0"
+              and (.removed | length == 1)
+              and .removed[0].store_path == $new
+              and .removed[0].registry == "host-install-client"
+              and .removed[0].package.name == "hostinstall"
+              and .removed[0].package.version == "2.0.0"
+              and (.current_roots | any(.store_path == $new
+                and .package.name == "hostinstall"
+                and .package.version == "2.0.0"))
+              and (.target_roots | any(.store_path == $old
+                and .package.name == "hostinstall"
+                and .package.version == "1.0.0"))' \
+            "$work/apm-rollback-host-install.json" >/dev/null
           "$profile/current/bin/host-install-tool" > "$work/host-install-v1-after-rollback.out"
           grep -q "host install package executed" "$work/host-install-v1-after-rollback.out"
           run_clean ${self}/bin/apm list --installed > "$work/apm-installed-host-install-rollback.out" 2>&1
