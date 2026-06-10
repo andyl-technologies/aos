@@ -3394,26 +3394,40 @@ in {
 
       GOOD_KEY=/tmp/signed-commit-good
       BAD_KEY=/tmp/signed-commit-bad
+      NEXT_KEY=/tmp/signed-commit-next
       ssh-keygen -q -t ed25519 -N "" -f "$GOOD_KEY"
       ssh-keygen -q -t ed25519 -N "" -f "$BAD_KEY"
+      ssh-keygen -q -t ed25519 -N "" -f "$NEXT_KEY"
       GOOD_PUBLIC=$(cut -d ' ' -f2 < "$GOOD_KEY.pub")
+      NEXT_PUBLIC=$(cut -d ' ' -f2 < "$NEXT_KEY.pub")
       TRUST_KEY="signed-reg:Ed25519:$GOOD_PUBLIC"
+      NEXT_TRUST_KEY="signed-reg:Ed25519:$NEXT_PUBLIC"
 
       TOOL_V1_STORE=$(make_signed_tool 1.0.0)
       TOOL_V2_STORE=$(make_signed_tool 2.0.0)
       TOOL_V3_STORE=$(make_signed_tool 3.0.0)
+      TOOL_V4_STORE=$(make_signed_tool 4.0.0)
+      TOOL_V5_STORE=$(make_signed_tool 5.0.0)
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
       TOOL_V3_HASH=$(basename "$TOOL_V3_STORE" | cut -d- -f1)
+      TOOL_V4_HASH=$(basename "$TOOL_V4_STORE" | cut -d- -f1)
+      TOOL_V5_HASH=$(basename "$TOOL_V5_STORE" | cut -d- -f1)
 
       mount -o remount,rw / || true
       assert_store_valid "$TOOL_V1_STORE" "signed-tool-v1"
       assert_store_valid "$TOOL_V2_STORE" "signed-tool-v2"
       assert_store_valid "$TOOL_V3_STORE" "signed-tool-v3"
+      assert_store_valid "$TOOL_V4_STORE" "signed-tool-v4"
+      assert_store_valid "$TOOL_V5_STORE" "signed-tool-v5"
 
       echo "==> Maintainer: publish signed-tool 1.0.0 with trusted commit key"
-      $APR create signed-reg
+      $APR create signed-reg --trust-key "$TRUST_KEY" --trust-key-id initial
       REG_DIR="$REG_STORAGE/signed-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      assert_file_contains "$REG_DIR/keys.toml" 'id = "initial"' \
+        "registry records initial commit signing key id"
+      assert_file_contains "$REG_DIR/keys.toml" "$TRUST_KEY" \
+        "registry records initial commit signing key value"
       publish_signed_tool 1.0.0 "$TOOL_V1_STORE" v1
       assert_file_exists "/tmp/signed-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has signed-tool v1 narinfo"
@@ -3461,6 +3475,10 @@ in {
         "consumer config stores trusted signing key"
       assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/registry.toml" \
         "http://127.0.0.1:18106" "signed registry sync materializes cache endpoint"
+      assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/keys.toml" \
+        'id = "initial"' "signed registry sync materializes initial trust roster"
+      assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/keys.toml" \
+        "$TRUST_KEY" "signed registry sync materializes initial trust key"
 
       $APM search signed-tool --registry signed-reg > /tmp/signed-search-v1.out 2>&1 || {
         cat /tmp/signed-search-v1.out
@@ -3562,6 +3580,138 @@ in {
       "$PROFILE_TOOL" > /tmp/signed-run-v3.out
       assert_file_contains /tmp/signed-run-v3.out \
         "signed-tool 3.0.0 executed" "trusted signed v3 executable runs"
+
+      echo "==> Maintainer: rotate trust roster to a new signing key"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      $APR keys add next "$NEXT_TRUST_KEY" --registry signed-reg --no-commit \
+        > /tmp/signed-keys-add-next.out 2>&1 || {
+        cat /tmp/signed-keys-add-next.out
+        fail "apr keys add next succeeds"
+      }
+      cat /tmp/signed-keys-add-next.out
+      assert_file_contains "$REG_DIR/keys.toml" 'id = "next"' \
+        "registry records next commit signing key id"
+      assert_file_contains "$REG_DIR/keys.toml" "$NEXT_TRUST_KEY" \
+        "registry records next commit signing key value"
+      commit_signed "$GOOD_KEY" rotate-next "trust: add next signing key"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      echo "==> Consumer: accept roster rotation signed by existing key"
+      export HOME=/tmp/signed-consumer
+      export USER=signeduser
+      APM_CONFIG="$HOME/.config/apm"
+      $APM update --registry signed-reg > /tmp/signed-update-rotate.out 2>&1 || {
+        cat /tmp/signed-update-rotate.out
+        fail "apm update accepts roster rotation signed by existing key"
+      }
+      cat /tmp/signed-update-rotate.out
+      assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/keys.toml" \
+        'id = "next"' "consumer materializes rotated trust key id"
+      assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/keys.toml" \
+        "$NEXT_TRUST_KEY" "consumer materializes rotated trust key value"
+
+      echo "==> Maintainer: publish v4 signed by the rotated key"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      publish_signed_tool 4.0.0 "$TOOL_V4_STORE" v4-next
+      assert_file_exists "/tmp/signed-cache/$TOOL_V4_HASH.narinfo" \
+        "static cache has signed-tool v4 narinfo"
+      commit_signed "$NEXT_KEY" v4-next "release: signed-tool 4.0.0"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      echo "==> Consumer: accept update signed by rotated key and upgrade"
+      export HOME=/tmp/signed-consumer
+      export USER=signeduser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_V4_STORE" "signed-tool-v4"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM update --registry signed-reg > /tmp/signed-update-v4.out 2>&1 || {
+        cat /tmp/signed-update-v4.out
+        fail "apm update accepts signed v4 from rotated key"
+      }
+      cat /tmp/signed-update-v4.out
+      $APM upgrade signed-tool --yes > /tmp/signed-upgrade-v4.out 2>&1 || {
+        cat /tmp/signed-upgrade-v4.out
+        fail "apm upgrade downloads rotated-key signed v4"
+      }
+      cat /tmp/signed-upgrade-v4.out
+      assert_file_contains /tmp/signed-upgrade-v4.out "Downloading" \
+        "apm upgrade downloads signed v4 NAR"
+      assert_store_valid "$TOOL_V4_STORE" "signed-tool-v4"
+      "$PROFILE_TOOL" > /tmp/signed-run-v4.out
+      assert_file_contains /tmp/signed-run-v4.out \
+        "signed-tool 4.0.0 executed" "rotated-key signed v4 executable runs"
+
+      echo "==> Maintainer: retire the original signing key"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      $APR keys retire initial --vouched-by next --reason "rotation complete" \
+        --registry signed-reg --no-commit > /tmp/signed-keys-retire-initial.out 2>&1 || {
+        cat /tmp/signed-keys-retire-initial.out
+        fail "apr keys retire initial succeeds"
+      }
+      cat /tmp/signed-keys-retire-initial.out
+      assert_file_contains "$REG_DIR/keys.toml" 'revoked' \
+        "registry records retired signing key section"
+      assert_file_contains "$REG_DIR/keys.toml" 'id = "initial"' \
+        "registry records retired initial signing key id"
+      commit_signed "$NEXT_KEY" retire-initial "trust: retire initial signing key"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      echo "==> Consumer: accept retirement signed by rotated key"
+      export HOME=/tmp/signed-consumer
+      export USER=signeduser
+      APM_CONFIG="$HOME/.config/apm"
+      $APM update --registry signed-reg > /tmp/signed-update-retire.out 2>&1 || {
+        cat /tmp/signed-update-retire.out
+        fail "apm update accepts original key retirement"
+      }
+      cat /tmp/signed-update-retire.out
+      assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/keys.toml" \
+        'revoked' "consumer materializes retired signing key section"
+      assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/keys.toml" \
+        'id = "initial"' "consumer materializes retired initial signing key id"
+
+      echo "==> Maintainer: publish v5 signed by the retired original key"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      publish_signed_tool 5.0.0 "$TOOL_V5_STORE" v5-retired
+      assert_file_exists "/tmp/signed-cache/$TOOL_V5_HASH.narinfo" \
+        "static cache has signed-tool v5 narinfo"
+      commit_signed "$GOOD_KEY" v5-retired "release: signed-tool 5.0.0"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      echo "==> Consumer: reject update signed by retired original key"
+      export HOME=/tmp/signed-consumer
+      export USER=signeduser
+      APM_CONFIG="$HOME/.config/apm"
+      if $APM update --registry signed-reg > /tmp/signed-update-retired.out 2>&1; then
+        cat /tmp/signed-update-retired.out
+        fail "apm update should reject commit signed by retired key"
+      else
+        cat /tmp/signed-update-retired.out
+        pass "apm update rejects retired-key signed commit"
+      fi
+      assert_file_contains /tmp/signed-update-retired.out \
+        "commit signature verification failed" \
+        "retired-key update reports signature verification failure"
+      $APM search signed-tool --registry signed-reg > /tmp/signed-search-after-retired.out 2>&1 || {
+        cat /tmp/signed-search-after-retired.out
+        fail "apm search still works after rejected retired-key update"
+      }
+      assert_file_contains /tmp/signed-search-after-retired.out "4.0.0" \
+        "rejected retired-key update leaves v4 metadata active"
+      assert_file_not_contains /tmp/signed-search-after-retired.out "5.0.0" \
+        "rejected retired-key update does not expose v5"
+      "$PROFILE_TOOL" > /tmp/signed-run-after-retired.out
+      assert_file_contains /tmp/signed-run-after-retired.out \
+        "signed-tool 4.0.0 executed" "retired-key update leaves installed v4 active"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "signed static cache HTTP server stopped"

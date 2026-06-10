@@ -48,6 +48,7 @@ pub async fn run(
 
     let cache_dir = config.cache_path();
     let registries_dir = config.scope.registries_path();
+    let trusted_key_dirs = config.scope.trusted_keys_dirs();
     let config_dir = config.scope.config_dir();
     let mut any_synced = false;
 
@@ -115,7 +116,7 @@ pub async fn run(
                 &tracking_mode,
                 &cache_dir,
                 &registries_dir,
-                &config.scope.trusted_keys_dirs(),
+                &trusted_key_dirs,
                 &mut current_state,
                 printer,
             )
