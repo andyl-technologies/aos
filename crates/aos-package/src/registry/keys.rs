@@ -66,6 +66,37 @@ pub fn load_keys_toml(root: &Path) -> Result<Option<KeysToml>> {
     Ok(Some(roster))
 }
 
+/// Load and validate `keys.toml` from a specific commit's tree.
+///
+/// Reads the file with `git show <commit>:keys.toml` so the roster comes
+/// from the *verified* commit, not from any working-tree extraction.
+/// Returns `Ok(None)` when the commit has no `keys.toml`.
+///
+/// # Errors
+///
+/// Returns an error if the git invocation fails for any reason other than
+/// the file being absent, or if the roster fails validation.
+pub fn load_keys_toml_at_commit(repo_dir: &Path, commit: &str) -> Result<Option<KeysToml>> {
+    let spec = format!("{commit}:keys.toml");
+    let output = std::process::Command::new("git")
+        .args(["show", &spec])
+        .current_dir(repo_dir)
+        .output()
+        .with_context(|| format!("running git show {spec}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("does not exist") || stderr.contains("exists on disk, but not in") {
+            return Ok(None);
+        }
+        bail!("git show {spec} failed: {}", stderr.trim());
+    }
+    let content = String::from_utf8_lossy(&output.stdout);
+    let roster: KeysToml =
+        toml::from_str(&content).with_context(|| format!("parsing keys.toml at {commit}"))?;
+    validate_roster(&roster)?;
+    Ok(Some(roster))
+}
+
 /// Write `keys.toml` after validating every key entry.
 pub fn write_keys_toml(root: &Path, roster: &KeysToml) -> Result<()> {
     validate_roster(roster)?;
