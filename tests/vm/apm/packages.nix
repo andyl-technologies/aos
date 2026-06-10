@@ -329,6 +329,7 @@
     ++ [
       pkgs.findutils
       pkgs.iproute2
+      pkgs.jq
       pkgs.python3
       pkgs.zstd
       holdToolV1
@@ -5101,24 +5102,61 @@ in {
         "apm reinstall dry-run resolves installed real package"
       assert_file_contains /tmp/surface-reinstall-dry-run.out "Dry run -- no changes made" \
         "apm reinstall dry-run avoids profile mutation"
-      run_ok full-upgrade-dry-run "$APM" full-upgrade --dry-run
-      assert_file_contains /tmp/surface-full-upgrade-dry-run.out "Dry run -- no changes made" \
-        "apm full-upgrade dry-run dispatches upgrade path"
+      run_ok full-upgrade-dry-run "$APM" --json full-upgrade --dry-run
+      "$JQ" -e --arg store "$UPGRADE_V2_STORE" \
+        '.action == "upgrade"
+          and .status == "planned"
+          and .requested == []
+          and .exclude == []
+          and .dry_run == true
+          and .generation == null
+          and .upgraded == 1
+          and .held_back == []
+          and (.upgrades | length == 1)
+          and .upgrades[0].name == "upgradeface"
+          and .upgrades[0].registry == "surface-reg"
+          and .upgrades[0].old_version == "1.0.0"
+          and .upgrades[0].new_version == "2.0.0"
+          and .upgrades[0].new_store_path == $store
+          and .downloads.planned == 0
+          and .downloads.downloaded == 0
+          and .downloads.imported == 0' \
+        /tmp/surface-full-upgrade-dry-run.out >/dev/null || {
+        cat /tmp/surface-full-upgrade-dry-run.out
+        fail "apm --json full-upgrade dry-run reports planned upgrade"
+      }
       "$UPGRADE_BIN" > /tmp/surface-upgradeface-before-full-upgrade.out
       assert_file_contains /tmp/surface-upgradeface-before-full-upgrade.out "^upgradeface 1.0.0$" \
         "dry-run leaves upgradeface v1 active"
 
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM full-upgrade --yes > /tmp/surface-full-upgrade.out 2>&1 || {
+      $APM --json full-upgrade --yes > /tmp/surface-full-upgrade.out 2>&1 || {
         cat /tmp/surface-full-upgrade.out
         fail "apm full-upgrade downloads and activates upgradeface v2"
       }
-      cat /tmp/surface-full-upgrade.out
-      assert_file_contains /tmp/surface-full-upgrade.out "Downloading" \
-        "apm full-upgrade downloads upgradeface v2"
-      assert_file_contains /tmp/surface-full-upgrade.out "Upgraded 1 package" \
-        "apm full-upgrade activates upgradeface v2"
+      "$JQ" -e --arg store "$UPGRADE_V2_STORE" \
+        '.action == "upgrade"
+          and .status == "upgraded"
+          and .requested == []
+          and .exclude == []
+          and .dry_run == false
+          and .generation == 5
+          and .upgraded == 1
+          and .held_back == []
+          and (.upgrades | length == 1)
+          and .upgrades[0].name == "upgradeface"
+          and .upgrades[0].registry == "surface-reg"
+          and .upgrades[0].old_version == "1.0.0"
+          and .upgrades[0].new_version == "2.0.0"
+          and .upgrades[0].new_store_path == $store
+          and (.downloads.planned >= 1)
+          and (.downloads.downloaded >= 1)
+          and (.downloads.imported >= 1)' \
+        /tmp/surface-full-upgrade.out >/dev/null || {
+        cat /tmp/surface-full-upgrade.out
+        fail "apm --json full-upgrade reports activated upgrade"
+      }
       assert_store_valid "$UPGRADE_V2_STORE" "upgradeface-v2"
       "$UPGRADE_BIN" > /tmp/surface-upgradeface-v2-run.out
       assert_file_contains /tmp/surface-upgradeface-v2-run.out "^upgradeface 2.0.0$" \
@@ -5321,6 +5359,7 @@ in {
       HOLD_V2_HASH=$(basename "$HOLD_V2_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/holduser"
       PROFILE_BIN="$PROFILE/current/bin/hold-tool"
+      JQ="${pkgs.jq}/bin/jq"
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -5565,17 +5604,32 @@ in {
       assert_file_contains /tmp/hold-update.out "done" \
         "apm update completes for hold registry"
 
-      $APM upgrade hold-tool --yes > /tmp/hold-upgrade-held.out 2>&1 || {
+      $APM --json upgrade hold-tool --yes > /tmp/hold-upgrade-held.out 2>&1 || {
         cat /tmp/hold-upgrade-held.out
         fail "held apm upgrade exits successfully"
       }
-      cat /tmp/hold-upgrade-held.out
-      assert_file_contains /tmp/hold-upgrade-held.out "held back" \
-        "apm upgrade reports held-back package"
-      assert_file_contains /tmp/hold-upgrade-held.out "All packages are up to date" \
-        "apm upgrade performs no held upgrade"
-      assert_file_not_contains /tmp/hold-upgrade-held.out "Downloading" \
-        "held upgrade does not download v2"
+      "$JQ" -e --arg store "$HOLD_V2_STORE" \
+        '.action == "upgrade"
+          and .status == "held_back"
+          and .requested == ["hold-tool"]
+          and .exclude == []
+          and .dry_run == false
+          and .generation == null
+          and .upgraded == 0
+          and .upgrades == []
+          and (.held_back | length == 1)
+          and .held_back[0].name == "hold-tool"
+          and .held_back[0].registry == "hold-reg"
+          and .held_back[0].old_version == "1.0.0"
+          and .held_back[0].new_version == "2.0.0"
+          and .held_back[0].new_store_path == $store
+          and .downloads.planned == 0
+          and .downloads.downloaded == 0
+          and .downloads.imported == 0' \
+        /tmp/hold-upgrade-held.out >/dev/null || {
+        cat /tmp/hold-upgrade-held.out
+        fail "apm --json upgrade reports held-back package"
+      }
       assert_store_missing "$HOLD_V2_STORE" "hold-tool-v2"
       "$PROFILE_BIN" > /tmp/hold-tool-after-held-upgrade.out
       assert_file_contains /tmp/hold-tool-after-held-upgrade.out "^hold-tool 1.0.0$" \
@@ -5598,15 +5652,32 @@ in {
         "apm held is empty after unhold"
 
       echo "==> Consumer: unheld upgrade downloads and activates v2"
-      $APM upgrade hold-tool --yes > /tmp/hold-upgrade-unheld.out 2>&1 || {
+      $APM --json upgrade hold-tool --yes > /tmp/hold-upgrade-unheld.out 2>&1 || {
         cat /tmp/hold-upgrade-unheld.out
         fail "unheld apm upgrade installs v2"
       }
-      cat /tmp/hold-upgrade-unheld.out
-      assert_file_contains /tmp/hold-upgrade-unheld.out "Downloading" \
-        "unheld upgrade downloads v2"
-      assert_file_contains /tmp/hold-upgrade-unheld.out "Upgraded 1 package" \
-        "unheld upgrade switches profile generation"
+      "$JQ" -e --arg store "$HOLD_V2_STORE" \
+        '.action == "upgrade"
+          and .status == "upgraded"
+          and .requested == ["hold-tool"]
+          and .exclude == []
+          and .dry_run == false
+          and .generation == 3
+          and .upgraded == 1
+          and .held_back == []
+          and (.upgrades | length == 1)
+          and .upgrades[0].name == "hold-tool"
+          and .upgrades[0].registry == "hold-reg"
+          and .upgrades[0].old_version == "1.0.0"
+          and .upgrades[0].new_version == "2.0.0"
+          and .upgrades[0].new_store_path == $store
+          and (.downloads.planned >= 1)
+          and (.downloads.downloaded >= 1)
+          and (.downloads.imported >= 1)' \
+        /tmp/hold-upgrade-unheld.out >/dev/null || {
+        cat /tmp/hold-upgrade-unheld.out
+        fail "apm --json upgrade reports unheld package upgrade"
+      }
       assert_store_valid "$HOLD_V2_STORE" "hold-tool-v2"
       "$PROFILE_BIN" > /tmp/hold-tool-v2.out
       assert_file_contains /tmp/hold-tool-v2.out "^hold-tool 2.0.0$" \
