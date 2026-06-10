@@ -28,6 +28,8 @@ use aos_core::output::Printer;
 pub struct SyncResult {
     /// The new HEAD commit SHA after sync.
     pub new_commit: String,
+    /// Total number of packages in the registry after sync.
+    pub packages_count: usize,
     /// Number of new packages added.
     pub packages_added: usize,
     /// Number of packages with updated metadata.
@@ -281,6 +283,7 @@ pub async fn sync_git(
 
     Ok(SyncResult {
         new_commit,
+        packages_count: new_packages,
         packages_added: added,
         packages_updated: updated,
         packages_removed: removed,

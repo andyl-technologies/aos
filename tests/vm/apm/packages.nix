@@ -5033,11 +5033,26 @@ in {
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$UPGRADE_V2_STORE" "upgradeface-v2"
 
-      $APM update --registry surface-reg > /tmp/surface-update.out 2>&1 || {
-        cat /tmp/surface-update.out
+      $APM --json update --registry surface-reg > /tmp/surface-update.json 2>&1 || {
+        cat /tmp/surface-update.json
         fail "apm update fetches command-surface upgrade"
       }
-      cat /tmp/surface-update.out
+      "$JQ" -e \
+        '.registry == "surface-reg"
+          and .updated == 1
+          and (.registries | length == 1)
+          and .registries[0].registry == "surface-reg"
+          and .registries[0].status == "updated"
+          and .registries[0].packages >= 1
+          and .registries[0].updated >= 1
+          and .registries[0].added == 0
+          and .registries[0].removed == 0
+          and (.registries[0].commit | length == 64)' \
+        /tmp/surface-update.json >/dev/null || {
+        cat /tmp/surface-update.json
+        fail "apm --json update reports command-surface upgrade sync"
+      }
+      pass "apm --json update reports command-surface upgrade sync"
       run_ok list-upgradable "$APM" list --upgradable
       assert_file_contains /tmp/surface-list-upgradable.out "upgradeface/surface-reg" \
         "apm list --upgradable includes upgradable package"

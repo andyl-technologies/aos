@@ -10,7 +10,8 @@ use crate::config::ApmConfig;
 use crate::registry::{git, state};
 use crate::types::{TrackingMode, Transport};
 use aos_core::error::AosError;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
+use serde_json::json;
 
 // ---------------------------------------------------------------------------
 // Sync result
@@ -22,8 +23,12 @@ pub struct SyncResult {
     pub new_commit: String,
     /// Total number of packages in the registry after sync.
     pub packages_count: usize,
-    /// Number of packages that were added or updated.
+    /// Number of packages added.
+    pub packages_added: usize,
+    /// Number of packages updated.
     pub packages_updated: usize,
+    /// Number of packages removed.
+    pub packages_removed: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +56,8 @@ pub async fn run(
     let trusted_key_dirs = config.scope.trusted_keys_dirs();
     let config_dir = config.scope.config_dir();
     let mut any_synced = false;
+    let json_mode = printer.mode() == OutputMode::Json;
+    let mut json_registries = Vec::new();
 
     for (reg_config, existing_state) in &config.registries {
         // Skip disabled registries.
@@ -72,26 +79,44 @@ pub async fn run(
         let tracking_mode = match reg_config.tracking_mode() {
             Ok(m) => m,
             Err(e) => {
-                printer.error(&format!(
-                    "Registry '{}': invalid tracking config: {}",
-                    reg_config.name, e
-                ));
+                if json_mode {
+                    json_registries.push(json!({
+                        "registry": &reg_config.name,
+                        "status": "error",
+                        "error": format!("invalid tracking config: {e}"),
+                    }));
+                } else {
+                    printer.error(&format!(
+                        "Registry '{}': invalid tracking config: {}",
+                        reg_config.name, e
+                    ));
+                }
                 if registry_filter.is_some() {
                     return Err(e);
                 }
                 continue;
             }
         };
+        let tracking = tracking_mode.to_string();
 
         // For commit and tag modes, check if already at target.
         match &tracking_mode {
             TrackingMode::Commit(hash) => {
                 if current_state.last_commit.as_deref() == Some(hash.as_str()) {
-                    printer.info(&format!(
-                        "Registry '{}': already at commit {}",
-                        reg_config.name,
-                        &hash[..hash.len().min(12)],
-                    ));
+                    if json_mode {
+                        json_registries.push(json!({
+                            "registry": &reg_config.name,
+                            "status": "current",
+                            "tracking": tracking,
+                            "commit": hash,
+                        }));
+                    } else {
+                        printer.info(&format!(
+                            "Registry '{}': already at commit {}",
+                            reg_config.name,
+                            &hash[..hash.len().min(12)],
+                        ));
+                    }
                     continue;
                 }
             }
@@ -105,10 +130,12 @@ pub async fn run(
             _ => {}
         }
 
-        printer.header(&format!(
-            "Fetching registry '{}' ({})...",
-            reg_config.name, tracking_mode,
-        ));
+        if !json_mode {
+            printer.header(&format!(
+                "Fetching registry '{}' ({})...",
+                reg_config.name, tracking_mode,
+            ));
+        }
 
         let result = match reg_config.transport() {
             Transport::Http | Transport::Git => git::sync_git(
@@ -123,8 +150,10 @@ pub async fn run(
             .await
             .map(|r| SyncResult {
                 new_commit: r.new_commit,
-                packages_count: r.packages_added + r.packages_updated,
+                packages_count: r.packages_count,
+                packages_added: r.packages_added,
                 packages_updated: r.packages_updated,
+                packages_removed: r.packages_removed,
             }),
         };
 
@@ -140,19 +169,41 @@ pub async fn run(
                     })?;
                 }
 
-                printer.success(&format!(
-                    "Registry '{}': done ({} packages, {} updated, commit {})",
-                    reg_config.name,
-                    sync_result.packages_count,
-                    sync_result.packages_updated,
-                    &sync_result.new_commit[..sync_result.new_commit.len().min(12)],
-                ));
+                if json_mode {
+                    json_registries.push(json!({
+                        "registry": &reg_config.name,
+                        "status": "updated",
+                        "tracking": tracking,
+                        "commit": &sync_result.new_commit,
+                        "packages": sync_result.packages_count,
+                        "added": sync_result.packages_added,
+                        "updated": sync_result.packages_updated,
+                        "removed": sync_result.packages_removed,
+                    }));
+                } else {
+                    printer.success(&format!(
+                        "Registry '{}': done ({} packages, {} updated, commit {})",
+                        reg_config.name,
+                        sync_result.packages_count,
+                        sync_result.packages_updated,
+                        &sync_result.new_commit[..sync_result.new_commit.len().min(12)],
+                    ));
+                }
             }
             Err(e) => {
-                printer.error(&format!(
-                    "Failed to sync registry '{}': {}",
-                    reg_config.name, e
-                ));
+                if json_mode {
+                    json_registries.push(json!({
+                        "registry": &reg_config.name,
+                        "status": "error",
+                        "tracking": tracking,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    printer.error(&format!(
+                        "Failed to sync registry '{}': {}",
+                        reg_config.name, e
+                    ));
+                }
                 // Continue with other registries rather than aborting.
                 if registry_filter.is_some() {
                     // If the user asked for a specific registry, propagate the error.
@@ -173,6 +224,20 @@ pub async fn run(
             "No enabled registries found. Add one with `{} add`.",
             aos_core::invocation::package_registry_command()
         ));
+    }
+
+    if json_mode {
+        let updated = json_registries
+            .iter()
+            .filter(|entry| {
+                entry.get("status").and_then(|status| status.as_str()) == Some("updated")
+            })
+            .count();
+        printer.json(&json!({
+            "registry": registry_filter,
+            "updated": updated,
+            "registries": json_registries,
+        }));
     }
 
     Ok(())

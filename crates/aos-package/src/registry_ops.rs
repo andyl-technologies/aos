@@ -939,6 +939,20 @@ description = ""
         printer.kv("Remote", url);
     }
 
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "create",
+            "registry": name,
+            "path": dir.display().to_string(),
+            "remote": remote,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "trust_key_id": trust_key.map(|_| trust_key_id.unwrap_or("initial")),
+        }));
+        return Ok(());
+    }
+
     printer.success(&format!("Registry '{name}' created at {}", dir.display()));
 
     Ok(())
@@ -1044,6 +1058,8 @@ pub async fn publish(
     printer.step(3, 4, "Computing closure...");
     write_closure_files(&dir, &info.path)
         .with_context(|| format!("writing closure files for {}", info.path))?;
+    let closure_hash = extract_hash(&info.path).to_string();
+    let closure_path = dir.join("closures").join(&closure_hash);
 
     printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
@@ -1066,20 +1082,76 @@ pub async fn publish(
         printer.kv(&format!("Image ({fmt})"), &img_info.path);
     }
 
+    let mut committed = false;
+    let mut commit_message = None;
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
         let staged_paths = [
-            toml_path,
-            dir.join("closures").join(extract_hash(&info.path)),
+            toml_path.clone(),
+            closure_path.clone(),
             dir.join(".gitattributes"),
         ];
         commit_registry_paths(&dir, msg, &staged_paths, signing_key.as_deref())?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after publish")?;
+        committed = true;
+        commit_message = Some(msg.to_string());
         printer.success(&format!("Committed: {msg}"));
     } else {
         printer.info("Skipped commit (--no-commit).");
+    }
+
+    if printer.mode() == OutputMode::Json {
+        let source = source_info.as_ref().map(|source| {
+            serde_json::json!({
+                "store_path": source.path.as_str(),
+                "nar_hash": source.nar_hash.as_str(),
+                "nar_size": source.nar_size,
+            })
+        });
+        let images = image_infos
+            .iter()
+            .map(|(format, image)| {
+                serde_json::json!({
+                    "format": format.as_str(),
+                    "store_path": image.path.as_str(),
+                    "nar_hash": image.nar_hash.as_str(),
+                    "nar_size": image.nar_size,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!({
+            "action": "publish",
+            "registry": name,
+            "package": pkg_name,
+            "version": pkg_version,
+            "platform": platform,
+            "store_path": info.path,
+            "nar_hash": info.nar_hash,
+            "nar_size": info.nar_size,
+            "closure_size": info.closure_size,
+            "references": info.references,
+            "source": source,
+            "sysroot": sysroot,
+            "previous": previous,
+            "images": images,
+            "package_file": toml_path
+                .strip_prefix(&dir)
+                .unwrap_or(&toml_path)
+                .display()
+                .to_string(),
+            "closure_file": closure_path
+                .strip_prefix(&dir)
+                .unwrap_or(&closure_path)
+                .display()
+                .to_string(),
+            "committed": committed,
+            "commit_message": commit_message,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+        }));
     }
 
     Ok(())
@@ -1337,9 +1409,13 @@ pub async fn unpublish(
         bail!("package '{package}' not found in registry");
     }
 
+    let mut package_file_removed = false;
+    let mut status = "updated";
     if version.is_none() && platform.is_none() {
         // Remove the entire file.
         std::fs::remove_file(&toml_path)?;
+        package_file_removed = true;
+        status = "removed";
         printer.info(&format!("Removed package '{package}' entirely."));
     } else {
         // Parse and selectively remove.
@@ -1407,6 +1483,8 @@ pub async fn unpublish(
 
             if versions.is_empty() {
                 std::fs::remove_file(&toml_path)?;
+                package_file_removed = true;
+                status = "removed";
                 printer.info(&format!(
                     "Removed package '{package}' (no versions remaining)."
                 ));
@@ -1417,13 +1495,39 @@ pub async fn unpublish(
         }
     }
 
+    let mut committed = false;
+    let mut commit_message = None;
     if !no_commit {
         let default_msg = format!("unpublish {package}");
         let msg = message.unwrap_or(&default_msg);
         commit_registry(&dir, msg, signing_key.as_deref())?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after unpublish")?;
+        committed = true;
+        commit_message = Some(msg.to_string());
         printer.success(&format!("Committed: {msg}"));
+    }
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "unpublish",
+            "registry": registry_name,
+            "package": package,
+            "version": version,
+            "platform": platform,
+            "status": status,
+            "package_file": toml_path
+                .strip_prefix(&dir)
+                .unwrap_or(&toml_path)
+                .display()
+                .to_string(),
+            "package_file_removed": package_file_removed,
+            "committed": committed,
+            "commit_message": commit_message,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+        }));
     }
 
     Ok(())
