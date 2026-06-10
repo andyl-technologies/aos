@@ -14,8 +14,48 @@ const PROFILES_BASE: &str = "/var/lib/profiles";
 /// Base directory for system-wide APM state.
 const APM_STATE_DIR: &str = "/var/lib/apm";
 
-/// System-wide APM configuration directory.
-const APM_SYSTEM_CONFIG_DIR: &str = "/etc/apm";
+/// Default system-wide APM configuration directory.
+const DEFAULT_APM_SYSTEM_CONFIG_DIR: &str = "/etc/apm";
+
+/// Resolve the system-wide APM configuration directory from a raw
+/// environment value.
+///
+/// Returns `value` when it is set to a non-empty *absolute* path, and
+/// [`DEFAULT_APM_SYSTEM_CONFIG_DIR`] (`/etc/apm`) otherwise. Relative or
+/// empty values are ignored rather than rejected so that a stray
+/// `APM_SYSTEM_CONFIG_DIR=` in the environment cannot redirect system
+/// configuration to an unexpected location.
+///
+/// This is the pure core of [`apm_system_config_dir`], split out so it can
+/// be unit-tested without mutating process-global environment state.
+fn resolve_system_config_dir(value: Option<&str>) -> PathBuf {
+    if let Some(value) = value {
+        let path = PathBuf::from(value);
+        if !value.is_empty() && path.is_absolute() {
+            return path;
+        }
+    }
+    PathBuf::from(DEFAULT_APM_SYSTEM_CONFIG_DIR)
+}
+
+/// The system-wide APM configuration directory, honoring
+/// `$APM_SYSTEM_CONFIG_DIR`.
+///
+/// Defaults to `/etc/apm`. When the `APM_SYSTEM_CONFIG_DIR` environment
+/// variable is set to a non-empty absolute path, every derived system path
+/// (`registries.d`, `trusted-keys.d`, …) is rooted there instead. This is
+/// the supported way to point `apm`/`apr` at a writable fixture tree when
+/// developing on non-AOS hosts.
+///
+/// The value is resolved once per process and cached; later environment
+/// changes have no effect.
+fn apm_system_config_dir() -> &'static Path {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let value = std::env::var("APM_SYSTEM_CONFIG_DIR").ok();
+        resolve_system_config_dir(value.as_deref())
+    })
+}
 
 /// Resolve the current user's home directory.
 ///
@@ -598,7 +638,7 @@ impl ProfileScope {
     pub fn config_dir(&self) -> PathBuf {
         match self {
             ProfileScope::User => xdg_config_home().join("apm"),
-            ProfileScope::System => PathBuf::from(APM_SYSTEM_CONFIG_DIR),
+            ProfileScope::System => apm_system_config_dir().to_path_buf(),
         }
     }
 
@@ -615,10 +655,10 @@ impl ProfileScope {
         match self {
             ProfileScope::User => vec![
                 xdg_config_home().join("apm/trusted-keys.d"),
-                PathBuf::from(APM_SYSTEM_CONFIG_DIR).join("trusted-keys.d"),
+                apm_system_config_dir().join("trusted-keys.d"),
             ],
             ProfileScope::System => vec![
-                PathBuf::from(APM_SYSTEM_CONFIG_DIR).join("trusted-keys.d"),
+                apm_system_config_dir().join("trusted-keys.d"),
                 PathBuf::from(APM_STATE_DIR).join("trusted-keys.d"),
             ],
         }
@@ -787,6 +827,35 @@ mod tests {
         assert_eq!(
             resolve_xdg(Some(""), home, ".config"),
             PathBuf::from("/home/alice/.config"),
+        );
+    }
+
+    #[test]
+    fn system_config_dir_honors_absolute_override() {
+        assert_eq!(
+            resolve_system_config_dir(Some("/tmp/apm-fixture")),
+            PathBuf::from("/tmp/apm-fixture"),
+        );
+    }
+
+    #[test]
+    fn system_config_dir_falls_back_when_unset() {
+        assert_eq!(resolve_system_config_dir(None), PathBuf::from("/etc/apm"));
+    }
+
+    #[test]
+    fn system_config_dir_ignores_relative_override() {
+        assert_eq!(
+            resolve_system_config_dir(Some("relative/apm")),
+            PathBuf::from("/etc/apm"),
+        );
+    }
+
+    #[test]
+    fn system_config_dir_ignores_empty_override() {
+        assert_eq!(
+            resolve_system_config_dir(Some("")),
+            PathBuf::from("/etc/apm")
         );
     }
 
