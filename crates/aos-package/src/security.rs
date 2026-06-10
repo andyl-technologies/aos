@@ -246,10 +246,10 @@ impl KeyStore {
                 if parse_revoked_line(line).is_some() {
                     continue;
                 }
-                if let Ok((reg, algo, pubkey)) = parse_signing_key(line) {
-                    if reg == registry {
-                        previously_pinned.push(format!("{reg}:{algo}:{pubkey}"));
-                    }
+                if let Ok((reg, algo, pubkey)) = parse_signing_key(line)
+                    && reg == registry
+                {
+                    previously_pinned.push(format!("{reg}:{algo}:{pubkey}"));
                 }
             }
         }
