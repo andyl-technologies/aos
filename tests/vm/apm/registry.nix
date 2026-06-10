@@ -1606,7 +1606,7 @@ in {
       $APR merge release-2026q2 --registry maint-reg
       ssh-keygen -q -t ed25519 -N "" -f /tmp/maint-release-key
 
-      $APR release 1.0.0 \
+      $APR --json release 1.0.0 \
         --registry maint-reg \
         --key /tmp/maint-release-key \
         --cache-url http://127.0.0.1:18084 \
@@ -1615,23 +1615,34 @@ in {
         --init-channel \
         --upload-url file:///tmp/maint-origin-dry-run \
         --dry-run \
-        > /tmp/release-dry-run.out 2>&1 || {
-        cat /tmp/release-dry-run.out
+        > /tmp/release-dry-run.json 2>&1 || {
+        cat /tmp/release-dry-run.json
         fail "apr release --dry-run plans full maintainer release"
       }
-      cat /tmp/release-dry-run.out
-      assert_file_contains /tmp/release-dry-run.out "Release plan" \
-        "apr release --dry-run reports release plan"
-      assert_file_contains /tmp/release-dry-run.out \
-        "commit registry.toml cache pointer http://127.0.0.1:18084 if needed" \
-        "release dry-run plans cache pointer"
-      assert_file_contains /tmp/release-dry-run.out "generate static Nix cache files" \
-        "release dry-run plans static cache output"
-      assert_file_contains /tmp/release-dry-run.out "initialize channel stable" \
-        "release dry-run plans channel initialization"
-      assert_file_contains /tmp/release-dry-run.out \
-        "upload immutable files first and mutable refs/channels last" \
-        "release dry-run plans static origin upload"
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "release"
+          and .status == "planned"
+          and .registry == "maint-reg"
+          and .version == "1.0.0"
+          and .dry_run == true
+          and .cache_url == "http://127.0.0.1:18084"
+          and .cache_output == "/tmp/maint-release-cache-dry-run"
+          and .upload_urls == ["file:///tmp/maint-origin-dry-run"]
+          and .channel.name == "stable"
+          and .channel.action == "init"
+          and .channel.touched_partitions == null
+          and .cache == null
+          and .full_pack == null
+          and .deltas == []
+          and (.planned_steps | index("commit_cache_pointer") != null)
+          and (.planned_steps | index("generate_static_cache") != null)
+          and (.planned_steps | index("initialize_channel") != null)
+          and (.planned_steps | index("upload_static_origin") != null)' \
+        /tmp/release-dry-run.json >/dev/null || {
+        cat /tmp/release-dry-run.json
+        fail "apr --json release --dry-run reports full release plan"
+      }
+      pass "apr --json release --dry-run reports full release plan"
       if git -C "$REG_DIR" rev-parse "1.0.0^{tag}" >/tmp/release-dry-run-tag.out 2>&1; then
         cat /tmp/release-dry-run-tag.out
         fail "release dry-run should not create release tag"
@@ -1695,19 +1706,31 @@ in {
       fi
       rm -f "$REG_DIR/maintainer-notes.txt"
 
-      $APR release 1.0.0 \
+      $APR --json release 1.0.0 \
         --registry maint-reg \
         --key /tmp/maint-release-key \
         --cache-url http://127.0.0.1:18082 \
-        > /tmp/release.out 2>&1 || {
-        cat /tmp/release.out
+        > /tmp/release.json 2>&1 || {
+        cat /tmp/release.json
         fail "apr release signs merged release"
       }
-      cat /tmp/release.out
-      assert_file_contains /tmp/release.out "Created signed tag '1.0.0'" \
-        "apr release creates signed semver tag"
-      assert_file_contains /tmp/release.out "Released maint-reg 1.0.0" \
-        "apr release completes release pipeline"
+      ${pkgs.jq}/bin/jq -e \
+        '.action == "release"
+          and .status == "released"
+          and .registry == "maint-reg"
+          and .version == "1.0.0"
+          and .dry_run == false
+          and .cache_url == "http://127.0.0.1:18082"
+          and .cache_pointer_updated == true
+          and (.full_pack | startswith("pack-") and endswith(".pack"))
+          and .deltas == []
+          and .cache == null
+          and .uploaded_files == null' \
+        /tmp/release.json >/dev/null || {
+        cat /tmp/release.json
+        fail "apr --json release reports signed maintainer release"
+      }
+      pass "apr --json release reports signed maintainer release"
       if git -C "$REG_DIR" rev-parse "1.0.0^{tag}" >/tmp/release-tag.out 2>&1; then
         pass "apr release creates annotated tag object"
       else
