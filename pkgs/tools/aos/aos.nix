@@ -3,6 +3,7 @@
   lib,
   mkCargoPackage,
   fetchCargoDeps,
+  bash,
   git,
   gnupg,
   nix,
@@ -29,11 +30,12 @@
   #   zstd          pack-delta compression and store decompression
   #   tar           extracting tree subpaths from `git archive` output
   #   which         check_command_exists() preflight in the drain/sysroot path
+  #   bash          wrapper interpreter; avoids relying on /bin/sh on the host
   # These are declared as runtimeDeps below (not just buildDeps) so the
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [git gnupg nix openssh zstd tar which];
+  runtimeTools = [bash git gnupg nix openssh zstd tar which];
   runtimeBinPath = lib.makeBinPath runtimeTools;
   src = builtins.path {
     path = ../../../crates;
@@ -84,7 +86,7 @@ in
 
           for name in aos apm apr; do
             cat > $out/bin/$name << 'WRAPPER'
-      #!/bin/sh
+      #!${bash}/bin/bash
       export PATH="@PATH@"
       exec "@SELF@" "$@"
       WRAPPER

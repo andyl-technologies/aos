@@ -596,13 +596,6 @@ fn extract_hash(store_path: &str) -> &str {
     basename.split('-').next().unwrap_or(basename)
 }
 
-/// Create a git commit in the registry directory.
-///
-/// When `signing_key` is the path to an OpenSSH Ed25519 private key, the
-/// commit is SSH-signed (`gpg.format=ssh`), matching the tag-signing setup
-/// in [`sign_tag`]. Clients verify head-commit signatures during sync, so
-/// commits on registries with a non-empty trust roster should always be
-/// signed.
 /// Whether the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` environment variables fully
 /// specify a commit identity. They take precedence over any git config and
 /// are how hermetic environments (VM tests, build sandboxes) provide one.
@@ -668,6 +661,13 @@ fn ensure_commit_identity(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create a git commit in the registry directory.
+///
+/// When `signing_key` is the path to an OpenSSH Ed25519 private key, the
+/// commit is SSH-signed (`gpg.format=ssh`), matching the tag-signing setup
+/// in [`sign_tag`]. Clients verify head-commit signatures during sync, so
+/// commits on registries with a non-empty trust roster should always be
+/// signed.
 fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
     ensure_commit_identity(dir)?;
     git(dir, &["add", "-A"])?;

@@ -109,6 +109,85 @@ in {
     '';
   };
 
+  host-apr-apm-command-surface = pkgs.mkDerivation {
+    pname = "aos-host-apr-apm-command-surface";
+    version = "0";
+    src = null;
+
+    buildDeps = [
+      self
+      pkgs.coreutils
+      pkgs.git
+      pkgs.grep
+    ];
+
+    phases = [
+      {
+        name = "check";
+        script = ''
+          set -eu
+
+          work="$TMPDIR/aos-host-command-surface"
+          home="$work/home"
+          config="$work/config"
+          data="$work/share"
+          cache="$work/cache"
+          mkdir -p "$home" "$config" "$data" "$cache"
+
+          run_clean() {
+            env -i \
+              HOME="$home" \
+              XDG_CONFIG_HOME="$config" \
+              XDG_DATA_HOME="$data" \
+              XDG_CACHE_HOME="$cache" \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_AUTHOR_NAME="Host Command Test" \
+              GIT_AUTHOR_EMAIL="host-command@example.invalid" \
+              GIT_COMMITTER_NAME="Host Command Test" \
+              GIT_COMMITTER_EMAIL="host-command@example.invalid" \
+              PATH="${pkgs.coreutils}/bin:${pkgs.git}/bin" \
+              "$@"
+          }
+
+          run_clean ${self}/bin/apr --help > "$work/apr-help.out"
+          grep -q "Usage:" "$work/apr-help.out"
+          run_clean ${self}/bin/apm --help > "$work/apm-help.out"
+          grep -q "Usage:" "$work/apm-help.out"
+
+          run_clean ${self}/bin/apr create host-reg > "$work/apr-create.out" 2>&1
+          reg="$data/apm/registries/host-reg"
+          test -f "$reg/registry.toml"
+          test -d "$reg/.git"
+
+          git -C "$reg" log -1 --format=%an > "$work/author-name.out"
+          git -C "$reg" log -1 --format=%ae > "$work/author-email.out"
+          grep -qx "Host Command Test" "$work/author-name.out"
+          grep -qx "host-command@example.invalid" "$work/author-email.out"
+
+          run_clean ${self}/bin/apr status --registry host-reg > "$work/apr-status.out" 2>&1
+          if grep -q '[^[:space:]]' "$work/apr-status.out"; then
+            cat "$work/apr-status.out"
+            exit 1
+          fi
+          run_clean ${self}/bin/apr branch create host-feature --registry host-reg > "$work/apr-branch-create.out" 2>&1
+          grep -q "Created branch 'host-feature'" "$work/apr-branch-create.out"
+          run_clean ${self}/bin/apr branch switch host-feature --registry host-reg > "$work/apr-branch-switch.out" 2>&1
+          grep -q "Switched to branch 'host-feature'" "$work/apr-branch-switch.out"
+          run_clean ${self}/bin/apr branch switch stable --registry host-reg > "$work/apr-branch-switch-stable.out" 2>&1
+          grep -q "Switched to branch 'stable'" "$work/apr-branch-switch-stable.out"
+
+          run_clean ${self}/bin/apm registry add "file://$reg" --name host-reg-client > "$work/apm-registry-add.out" 2>&1
+          grep -q "Registry 'host-reg-client' added" "$work/apm-registry-add.out"
+          run_clean ${self}/bin/apm registry list > "$work/apm-registry-list.out" 2>&1
+          grep -q "host-reg-client" "$work/apm-registry-list.out"
+
+          mkdir -p "$out"
+          echo "PASS" > "$out/result"
+        '';
+      }
+    ];
+  };
+
   # ---------------------------------------------------------------------------
   # Cache server — startup, HTTP endpoints, token management
   # ---------------------------------------------------------------------------
