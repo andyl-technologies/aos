@@ -99,7 +99,11 @@ pub async fn run(
     dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
-    let profile = Profile::open(config.scope)?;
+    let profile = if dry_run {
+        Profile::open_readonly(config.scope)
+    } else {
+        Profile::open(config.scope)?
+    };
 
     // Must have a current generation to roll back from.
     let current = match profile.current_generation()? {

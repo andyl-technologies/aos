@@ -3464,6 +3464,22 @@ in {
       }
       cat /tmp/rollback-registry-add.out
 
+      if $APM rollback --dry-run > /tmp/rollback-empty-dry-run.out 2>&1; then
+        cat /tmp/rollback-empty-dry-run.out
+        fail "rollback dry-run should fail when no profile generation is active"
+      else
+        cat /tmp/rollback-empty-dry-run.out
+        pass "rollback dry-run fails before any package is installed"
+      fi
+      assert_file_contains /tmp/rollback-empty-dry-run.out "no active generation" \
+        "empty rollback dry-run reports missing active generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty rollback dry-run leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty rollback dry-run should not initialize profile state"
+      fi
+
       delete_store_path "$ROLLBACK_V1_STORE" "rollback-tool-v1"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
