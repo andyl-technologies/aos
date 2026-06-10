@@ -705,6 +705,19 @@ in {
         return 1
       }
 
+      start_cache_server() {
+        label="$1"
+        PYTHONUNBUFFERED=1 python3 -m http.server 18094 --bind 127.0.0.1 \
+          --directory /tmp/install-deps-cache > /tmp/install-deps-cache-http.log 2>&1 &
+        CACHE_PID=$!
+        if wait_for_cache_server; then
+          pass "$label"
+        else
+          cat /tmp/install-deps-cache-http.log || true
+          fail "$label"
+        fi
+      }
+
       mount -o remount,rw / || true
       assert_store_valid "$BASIC_STORE" "install-basic-tool"
       assert_store_valid "$DEP_STORE" "install-libfoo"
@@ -775,15 +788,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      PYTHONUNBUFFERED=1 python3 -m http.server 18094 --bind 127.0.0.1 \
-        --directory /tmp/install-deps-cache > /tmp/install-deps-cache-http.log 2>&1 &
-      CACHE_PID=$!
-      if wait_for_cache_server; then
-        pass "static cache HTTP server started"
-      else
-        cat /tmp/install-deps-cache-http.log || true
-        fail "static cache HTTP server started"
-      fi
+      start_cache_server "static cache HTTP server started"
 
       echo "==> Consumer: install wrapper and dependency closure from cache"
       export HOME=/tmp/install-deps-consumer
@@ -839,6 +844,40 @@ in {
         find "$PROFILE" -maxdepth 2 -print
         fail "install dry-run should not initialize profile state"
       fi
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped before failed install"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
+      if $APM install install-with-deps install-basic-tool \
+        --registry install-deps-reg \
+        --yes > /tmp/install-deps-cache-down.out 2>&1; then
+        cat /tmp/install-deps-cache-down.out
+        fail "apm install should fail while static cache is unavailable"
+      else
+        cat /tmp/install-deps-cache-down.out
+        pass "apm install fails while static cache is unavailable"
+      fi
+      assert_file_contains /tmp/install-deps-cache-down.out "narinfo" \
+        "failed install reports narinfo fetch failure"
+      assert_file_not_contains /tmp/install-deps-cache-down.out "Updating profile" \
+        "failed install does not update profile"
+      if [ ! -e "$PROFILE" ]; then
+        pass "failed install leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "failed install should not initialize profile state"
+      fi
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "failed install leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "failed install should not cache package bodies"
+      fi
+      assert_store_missing "$BASIC_STORE" "install-basic-tool"
+      assert_store_missing "$WRAPPER_STORE" "install-with-deps"
+      assert_store_missing "$DEP_STORE" "install-libfoo"
+      start_cache_server "static cache HTTP server restarted after failed install"
 
       $APM install install-with-deps install-basic-tool \
         --registry install-deps-reg \
