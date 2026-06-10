@@ -1540,6 +1540,73 @@ in {
           find "$work/install-static-cache-upload/direct-release/releases/1/0/0/objects/pack" \
             -name 'pack-*.pack' | grep -q .
 
+          keyadd_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/host-install-release-key.pub")
+          keyadd_initial_trust_key="host-keyadd:Ed25519:$keyadd_public_key"
+          run_clean ${self}/bin/apr create host-keyadd \
+            --trust-key "$keyadd_initial_trust_key" \
+            --trust-key-id initial \
+            --key "$work/host-install-release-key" \
+            > "$work/apr-create-host-keyadd.out" 2>&1
+          keyadd_reg="$data/apm/registries/host-keyadd"
+          run_clean ${self}/bin/apm registry add --no-verify "file://$keyadd_reg" \
+            --name host-keyadd \
+            --no-clone > "$work/apm-add-host-keyadd-config.out" 2>&1
+          grep -q "apm update --registry host-keyadd" \
+            "$work/apm-add-host-keyadd-config.out"
+          run_clean ${self}/bin/apr keys generate next \
+            --registry host-keyadd \
+            --add \
+            --key "$work/host-install-release-key" \
+            > "$work/apr-keys-generate-add-next.out" 2>&1
+          host_keyadd_next=$(grep -o 'host-keyadd:Ed25519:[A-Za-z0-9+/=]*' \
+            "$work/apr-keys-generate-add-next.out" | head -1)
+          host_keyadd_next_path="$config/apm/keys/host-keyadd-next.key"
+          test -f "$host_keyadd_next_path"
+          grep -q "$host_keyadd_next" "$keyadd_reg/keys.toml"
+          grep -q 'id = "next"' "$keyadd_reg/keys.toml"
+          grep -q '"next" = "' "$config/apm/registries.d/host-keyadd.toml"
+          git -C "$keyadd_reg" log --oneline -1 \
+            > "$work/git-log-host-keyadd-next.out"
+          grep -q "registry: add signing key next" \
+            "$work/git-log-host-keyadd-next.out"
+          run_clean ${self}/bin/apr --json keys list --registry host-keyadd \
+            > "$work/apr-keys-list-host-keyadd.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg initial "$keyadd_initial_trust_key" \
+            --arg next "$host_keyadd_next" \
+            '.registry == "host-keyadd"
+              and (.active | any(.id == "initial" and .key == $initial))
+              and (.active | any(.id == "next" and .key == $next))
+              and .revoked == []' \
+            "$work/apr-keys-list-host-keyadd.json" >/dev/null
+          run_clean ${self}/bin/apr --json release 1.0.0 \
+            --registry host-keyadd \
+            --store-path "$install_leaf_store" \
+            --name hostkeyed \
+            --description "Host generated key-id release fixture" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --key-id next \
+            > "$work/apr-release-host-keyadd.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-keyadd"
+              and .version == "1.0.0"
+              and .dry_run == false
+              and .cache == null
+              and .cache_pointer_updated == false
+              and .uploaded_files == null
+              and (.full_pack | startswith("pack-") and endswith(".pack"))' \
+            "$work/apr-release-host-keyadd.json" >/dev/null
+          test -f "$keyadd_reg/packages/h/hostkeyed.toml"
+          git -C "$keyadd_reg" rev-parse --verify '1.0.0^{tag}' \
+            > "$work/apr-release-host-keyadd-tag.out"
+          git -C "$keyadd_reg" cat-file -p 1.0.0 \
+            > "$work/apr-release-host-keyadd-tag-object.out"
+          grep -q "BEGIN SSH SIGNATURE" \
+            "$work/apr-release-host-keyadd-tag-object.out"
+
           PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$install_cache_port" \
             --bind 127.0.0.1 --directory "$work/install-static-cache-upload" \
             > "$work/install-cache-server.log" 2>&1 &
