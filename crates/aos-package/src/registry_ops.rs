@@ -1928,6 +1928,17 @@ pub async fn diff(
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "remote": true,
+                "base": base,
+                "stat": stat,
+                "clean": output.is_empty(),
+                "changed_files": diff_name_status_entries(&dir, Some((&base, "HEAD")))?,
+                "output": output,
+            }));
+            return Ok(());
+        }
         if output.is_empty() {
             printer.info("No pending changes.");
         } else {
@@ -1939,6 +1950,17 @@ pub async fn diff(
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "remote": false,
+                "base": serde_json::Value::Null,
+                "stat": stat,
+                "clean": output.is_empty(),
+                "changed_files": diff_name_status_entries(&dir, None)?,
+                "output": output,
+            }));
+            return Ok(());
+        }
         if output.is_empty() {
             printer.info("No pending changes.");
         } else {
@@ -2416,8 +2438,17 @@ async fn validate_cache_entry(
 /// `apr status`
 pub async fn status(config: &ApmConfig, registry: Option<&str>, printer: &Printer) -> Result<()> {
     let dir = registry_dir(config, registry)?;
-    let output = git(&dir, &["status", "--short", "--untracked-files=all"])?;
-    printer.plain(&output);
+    let raw_output = git_raw(&dir, &["status", "--short", "--untracked-files=all"])?;
+    let output = String::from_utf8_lossy(&raw_output);
+    if printer.mode() == OutputMode::Json {
+        let entries = parse_status_short(&output);
+        printer.json(&serde_json::json!({
+            "clean": entries.is_empty(),
+            "entries": entries,
+        }));
+        return Ok(());
+    }
+    printer.plain(output.trim());
     Ok(())
 }
 
@@ -2443,6 +2474,14 @@ pub async fn log(
     }
 
     let output = git(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "package": package,
+            "limit": n,
+            "commits": git_log_entries(&dir, package, n)?,
+        }));
+        return Ok(());
+    }
     if output.is_empty() {
         printer.info("No commits found.");
     } else {
@@ -2450,6 +2489,95 @@ pub async fn log(
     }
 
     Ok(())
+}
+
+fn parse_status_short(output: &str) -> Vec<serde_json::Value> {
+    output
+        .lines()
+        .filter_map(|line| {
+            if line.len() < 3 {
+                return None;
+            }
+            let bytes = line.as_bytes();
+            let index = bytes[0] as char;
+            let worktree = bytes[1] as char;
+            let path = line[3..].to_string();
+            Some(serde_json::json!({
+                "index": index.to_string(),
+                "worktree": worktree.to_string(),
+                "status": line[..2].to_string(),
+                "path": path,
+            }))
+        })
+        .collect()
+}
+
+fn diff_name_status_entries(
+    dir: &Path,
+    range: Option<(&str, &str)>,
+) -> Result<Vec<serde_json::Value>> {
+    let output = match range {
+        Some((base, head)) => git(dir, &["diff", "--name-status", base, head])?,
+        None => git(dir, &["diff", "--name-status"])?,
+    };
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let status = fields.next()?;
+            let path = fields.next()?;
+            let new_path = fields.next();
+            let mut entry = serde_json::json!({
+                "status": status,
+                "path": path,
+            });
+            if let Some(new_path) = new_path {
+                entry["new_path"] = serde_json::json!(new_path);
+            }
+            Some(entry)
+        })
+        .collect())
+}
+
+fn git_log_entries(dir: &Path, package: Option<&str>, n: u32) -> Result<Vec<serde_json::Value>> {
+    let n_str = format!("-{n}");
+    let pretty = "%H%x1f%h%x1f%s%x1f%ct%x1e";
+    let pretty_arg = format!("--pretty=format:{pretty}");
+    let mut args = vec!["log", &n_str, &pretty_arg];
+
+    let path_filter;
+    if let Some(pkg) = package {
+        let letter = first_letter(pkg);
+        path_filter = format!("packages/{letter}/{pkg}.toml");
+        args.push("--");
+        args.push(&path_filter);
+    }
+
+    let output = git_raw(dir, &args)?;
+    let text = String::from_utf8_lossy(&output);
+    Ok(text
+        .split('\x1e')
+        .filter_map(|record| {
+            let record = record.trim_matches('\n');
+            if record.is_empty() {
+                return None;
+            }
+            let mut fields = record.split('\x1f');
+            let hash = fields.next()?;
+            let short_hash = fields.next()?;
+            let subject = fields.next()?;
+            let timestamp = fields
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_default();
+            Some(serde_json::json!({
+                "hash": hash,
+                "short_hash": short_hash,
+                "subject": subject,
+                "timestamp": timestamp,
+            }))
+        })
+        .collect())
 }
 
 /// Branch subcommands.
