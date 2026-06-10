@@ -34,6 +34,7 @@ pub async fn run(
     packages: &[String],
     registry_filter: Option<&str>,
     reinstall: bool,
+    require_installed: bool,
     download_only: bool,
     no_deps: bool,
     dry_run: bool,
@@ -59,6 +60,9 @@ pub async fn run(
     }
     let inspect_profile = Profile::open_readonly(config.scope);
     let installed = list_meta(&inspect_profile)?;
+    if require_installed {
+        ensure_reinstall_targets_installed(packages, &installed)?;
+    }
     let all_metas = collect_unique_metas(&closures);
     let store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
     let missing = if reinstall {
@@ -347,6 +351,27 @@ fn requested_closures_already_installed(
                 installed_apm_for_hash(installed, store_path_hash(&meta.store_path)).is_some()
             })
     })
+}
+
+fn ensure_reinstall_targets_installed(
+    packages: &[String],
+    installed: &[InstalledMeta],
+) -> Result<()> {
+    let installed_names: HashSet<&str> = installed
+        .iter()
+        .filter_map(|meta| meta.apm.as_ref().map(|apm| apm.name.as_str()))
+        .collect();
+    let missing: Vec<&str> = packages
+        .iter()
+        .map(String::as_str)
+        .filter(|package| !installed_names.contains(package))
+        .collect();
+
+    match missing.as_slice() {
+        [] => Ok(()),
+        [package] => anyhow::bail!("package not installed: {package}"),
+        packages => anyhow::bail!("packages not installed: {}", packages.join(", ")),
+    }
 }
 
 fn installed_apm_for_hash<'a>(installed: &'a [InstalledMeta], hash: &str) -> Option<&'a ApmMeta> {
