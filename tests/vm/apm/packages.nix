@@ -2029,7 +2029,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 9. remove-autoremove — Remove with --autoremove flag
+  # 9. remove-autoremove — Remove with configured autoremove/gc
   # -------------------------------------------------------------------------
   remove-autoremove = testing.mkVMTest {
     name = "apm-remove-autoremove";
@@ -2039,7 +2039,7 @@ in {
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
-      echo "==> Test: real apm remove --autoremove keeps shared deps"
+      echo "==> Test: real apm remove honors apm.conf autoremove settings"
 
       DEP_STORE="${idempotentTool}"
       LEFT_STORE="${removeLeftTool}"
@@ -2189,7 +2189,13 @@ in {
       echo "==> Consumer: install two explicit packages with one shared auto dep"
       export HOME=/tmp/remove-consumer
       export USER=removeuser
-      mkdir -p "$HOME"
+      mkdir -p "$HOME/.config/apm"
+      cat > "$HOME/.config/apm/apm.conf" << 'APMCONF'
+      [settings]
+      assume_yes = true
+      auto_autoremove = true
+      auto_gc = true
+      APMCONF
       $APM registry add --no-verify file:///tmp/remove-origin.git \
         --name remove-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/remove-registry-add.out 2>&1 || {
@@ -2203,11 +2209,13 @@ in {
       delete_store_path "$DEP_STORE" "idempkg"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM install remove-left remove-right --registry remove-reg --yes > /tmp/remove-install.out 2>&1 || {
+      $APM install remove-left remove-right --registry remove-reg > /tmp/remove-install.out 2>&1 || {
         cat /tmp/remove-install.out
-        fail "apm install shared remove workflow succeeds"
+        fail "apm install shared remove workflow succeeds with configured assume_yes"
       }
       cat /tmp/remove-install.out
+      assert_file_not_contains /tmp/remove-install.out "Do you want to continue" \
+        "configured assume_yes suppresses install prompt"
       assert_file_contains /tmp/remove-install.out "Downloading" \
         "install downloads shared remove workflow closure"
       assert_file_contains /tmp/remove-install.out "Installed 2 package" \
@@ -2237,16 +2245,20 @@ in {
         fail "initial install should create only gen-1"
       fi
 
-      echo "==> Consumer: remove one explicit package with autoremove"
-      $APM remove remove-left --autoremove --yes > /tmp/remove-left.out 2>&1 || {
+      echo "==> Consumer: remove one explicit package with configured autoremove"
+      $APM remove remove-left > /tmp/remove-left.out 2>&1 || {
         cat /tmp/remove-left.out
-        fail "apm remove --autoremove remove-left succeeds"
+        fail "apm remove remove-left succeeds with configured autoremove"
       }
       cat /tmp/remove-left.out
+      assert_file_not_contains /tmp/remove-left.out "Do you want to continue" \
+        "configured assume_yes suppresses remove prompt"
       assert_file_contains /tmp/remove-left.out "Removed 1 package" \
-        "remove-left autoremove removes only requested explicit package"
+        "configured autoremove removes only requested explicit package"
       assert_file_not_contains /tmp/remove-left.out "idempkg" \
         "shared dependency is not listed as orphan while remove-right remains"
+      assert_file_not_contains /tmp/remove-left.out "Running garbage collection" \
+        "configured auto_gc does not run when autoremove finds no orphan"
       assert_file_not_exists "$PROFILE/meta/$LEFT_HASH.json" \
         "remove-left metadata removed"
       assert_file_exists "$PROFILE/meta/$RIGHT_HASH.json" \
@@ -2271,41 +2283,42 @@ in {
         fail "remove-left should create gen-2"
       fi
 
-      echo "==> Consumer: remove final explicit package and standalone autoremove"
-      $APM remove remove-right --yes > /tmp/remove-right.out 2>&1 || {
+      echo "==> Consumer: remove final explicit package with configured autoremove and GC"
+      export AOS_ROOT=/tmp/remove-auto-gc-root
+      export AOS_NIX_STORE_DIR=/tmp/remove-auto-gc-store
+      export AOS_NIX_STATE_DIR=/tmp/remove-auto-gc-root/var/nix
+      mkdir -p "$AOS_NIX_STORE_DIR" "$AOS_NIX_STATE_DIR/db" "$AOS_NIX_STATE_DIR/gcroots"
+      NIX_STORE_DIR="$AOS_NIX_STORE_DIR" NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
+        nix-store --init || true
+      $APM remove remove-right > /tmp/remove-right.out 2>&1 || {
         cat /tmp/remove-right.out
-        fail "apm remove remove-right succeeds"
+        fail "apm remove remove-right succeeds with configured autoremove"
       }
       cat /tmp/remove-right.out
-      assert_file_contains /tmp/remove-right.out "Removed 1 package" \
-        "remove-right removal succeeds"
+      assert_file_not_contains /tmp/remove-right.out "Do you want to continue" \
+        "configured assume_yes suppresses final remove prompt"
+      assert_file_contains /tmp/remove-right.out "Removed 2 package" \
+        "configured autoremove removes final package and orphaned dependency"
+      assert_file_contains /tmp/remove-right.out "idempkg" \
+        "configured autoremove lists orphaned shared dependency"
+      assert_file_contains /tmp/remove-right.out "Running garbage collection" \
+        "configured auto_gc runs after autoremove removes an orphan"
+      assert_file_contains /tmp/remove-right.out "Garbage collection complete" \
+        "configured auto_gc completes through contained Nix state"
       assert_file_not_exists "$PROFILE/meta/$RIGHT_HASH.json" \
         "remove-right metadata removed"
-      assert_file_exists "$PROFILE/meta/$DEP_HASH.json" \
-        "shared dependency remains orphaned without --autoremove"
-      "$PROFILE/current/bin/idempkg" > /tmp/remove-dep-run-3.out
-      assert_file_contains /tmp/remove-dep-run-3.out "^idempkg 1.0.0$" \
-        "orphaned dependency executable remains before standalone autoremove"
-
-      $APM autoremove --yes > /tmp/remove-autoremove.out 2>&1 || {
-        cat /tmp/remove-autoremove.out
-        fail "apm autoremove succeeds"
-      }
-      cat /tmp/remove-autoremove.out
-      assert_file_contains /tmp/remove-autoremove.out "Removed 1 orphaned package" \
-        "standalone autoremove removes orphaned shared dependency"
       assert_file_not_exists "$PROFILE/meta/$DEP_HASH.json" \
-        "shared dependency metadata removed by standalone autoremove"
+        "shared dependency metadata removed by configured autoremove"
       if [ -e "$PROFILE/current/bin/idempkg" ]; then
-        fail "shared dependency executable should be absent after standalone autoremove"
+        fail "shared dependency executable should be absent after configured autoremove"
       else
-        pass "shared dependency executable absent after standalone autoremove"
+        pass "shared dependency executable absent after configured autoremove"
       fi
 
-      if [ "$(readlink "$PROFILE/current")" = "gen-4" ] && [ "$(generation_count)" = "4" ]; then
-        pass "remove and autoremove workflow creates four generations"
+      if [ "$(readlink "$PROFILE/current")" = "gen-3" ] && [ "$(generation_count)" = "3" ]; then
+        pass "configured remove and autoremove workflow creates three generations"
       else
-        fail "remove and autoremove workflow should end at gen-4"
+        fail "configured remove and autoremove workflow should end at gen-3"
       fi
 
       if kill "$CACHE_PID" 2>/dev/null; then

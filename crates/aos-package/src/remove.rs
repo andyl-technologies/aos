@@ -17,6 +17,13 @@ use aos_core::output::Printer;
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Summary of what a remove-style operation selected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RemoveOutcome {
+    /// Number of orphaned auto-installed packages selected for removal.
+    pub orphan_count: usize,
+}
+
 /// Run `apm remove <packages>`.
 ///
 /// Removes the named packages from the current profile, creates a new
@@ -30,10 +37,10 @@ pub async fn run(
     dry_run: bool,
     yes: bool,
     printer: &Printer,
-) -> Result<()> {
+) -> Result<RemoveOutcome> {
     if packages.is_empty() {
         printer.info("No packages specified.");
-        return Ok(());
+        return Ok(RemoveOutcome::default());
     }
 
     // Step 1: Open profile and get current generation.
@@ -69,7 +76,9 @@ pub async fn run(
 
     if dry_run {
         printer.info("Dry run -- no changes made.");
-        return Ok(());
+        return Ok(RemoveOutcome {
+            orphan_count: orphans.len(),
+        });
     }
 
     // Step 6: Confirm unless --yes.
@@ -104,7 +113,9 @@ pub async fn run(
         new_gen.number,
     ));
 
-    Ok(())
+    Ok(RemoveOutcome {
+        orphan_count: orphans.len(),
+    })
 }
 
 /// Run `apm autoremove`.
@@ -116,7 +127,7 @@ pub async fn run_autoremove(
     dry_run: bool,
     yes: bool,
     printer: &Printer,
-) -> Result<()> {
+) -> Result<RemoveOutcome> {
     // Step 1: Open profile.
     let profile = Profile::open(config.scope)?;
     let current_gen = profile
@@ -129,7 +140,7 @@ pub async fn run_autoremove(
 
     if orphans.is_empty() {
         printer.info("No orphaned packages to remove.");
-        return Ok(());
+        return Ok(RemoveOutcome::default());
     }
 
     // Step 3: Collect hashes.
@@ -143,7 +154,9 @@ pub async fn run_autoremove(
 
     if dry_run {
         printer.info("Dry run -- no changes made.");
-        return Ok(());
+        return Ok(RemoveOutcome {
+            orphan_count: orphans.len(),
+        });
     }
 
     // Step 5: Confirm.
@@ -177,7 +190,9 @@ pub async fn run_autoremove(
         new_gen.number,
     ));
 
-    Ok(())
+    Ok(RemoveOutcome {
+        orphan_count: orphans.len(),
+    })
 }
 
 // ---------------------------------------------------------------------------
