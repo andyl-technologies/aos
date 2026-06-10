@@ -10,7 +10,9 @@ use super::download::{
 };
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
-use super::profile::meta::{delete_meta, list_meta, write_meta};
+use super::profile::meta::{
+    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
+};
 use super::registry::{RegistrySet, store_path_hash};
 use super::resolve::resolve_closure;
 use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
@@ -263,6 +265,7 @@ pub async fn run(
             write_meta(&profile, &hash, &installed_meta)?;
         }
     }
+    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
 
     // Build FHS tree for the new generation.
     let roots = new_gen.roots()?;

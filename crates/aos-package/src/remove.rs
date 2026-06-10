@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
-use super::profile::meta::{delete_meta, list_meta};
+use super::profile::meta::{delete_meta, list_meta, snapshot_profile_meta_to_generation};
 use super::registry::store_path_hash;
 use super::store::closure_paths;
 use super::types::InstalledMeta;
@@ -96,6 +96,7 @@ pub async fn run(
         let hash = store_path_hash(&meta.store_path).to_string();
         delete_meta(&profile, &hash)?;
     }
+    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
 
     // Step 9: Rebuild FHS tree on the new generation.
     printer.step(2, 3, "Rebuilding file tree...");
@@ -174,6 +175,7 @@ pub async fn run_autoremove(
         let hash = store_path_hash(&meta.store_path).to_string();
         delete_meta(&profile, &hash)?;
     }
+    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
 
     // Step 7: Rebuild FHS tree.
     printer.step(2, 3, "Rebuilding file tree...");

@@ -4,7 +4,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use super::{Generation, Profile, atomic_write};
-use crate::registry::RegistrySet;
+use crate::registry::{RegistrySet, store_path_hash};
 use crate::types::{ApmMeta, InstalledMeta};
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,68 @@ pub fn delete_meta(profile: &Profile, hash: &str) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e).with_context(|| format!("deleting metadata file {}", path.display())),
     }
+}
+
+/// Snapshot the current profile metadata into a generation-local `meta/` dir.
+///
+/// Rollback normally rebuilds profile metadata from registry metadata, but a
+/// package can remain installed after its registry entry is retired. Keeping a
+/// per-generation copy lets rollback restore the exact installed package state
+/// even when the registry no longer advertises that store path.
+pub fn snapshot_profile_meta_to_generation(
+    profile: &Profile,
+    generation: &Generation,
+) -> Result<()> {
+    let roots: HashSet<String> = generation
+        .roots()?
+        .into_iter()
+        .map(|(hash, _)| hash)
+        .collect();
+    let meta_dir = generation.path.join("meta");
+    std::fs::create_dir_all(&meta_dir)
+        .with_context(|| format!("creating generation meta directory {}", meta_dir.display()))?;
+
+    if meta_dir.is_dir() {
+        for entry in std::fs::read_dir(&meta_dir)? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().ends_with(".json") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    for meta in list_meta(profile)? {
+        let hash = store_path_hash(&meta.store_path);
+        if roots.contains(hash) {
+            write_generation_meta(generation, hash, &meta)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_generation_meta(generation: &Generation, hash: &str, meta: &InstalledMeta) -> Result<()> {
+    let meta_dir = generation.path.join("meta");
+    std::fs::create_dir_all(&meta_dir)
+        .with_context(|| format!("creating generation meta directory {}", meta_dir.display()))?;
+    let json = serde_json::to_string_pretty(meta)
+        .with_context(|| format!("serializing generation metadata for {hash}"))?;
+    let dest = meta_dir.join(format!("{hash}.json"));
+    atomic_write(&dest, json.as_bytes())
+        .with_context(|| format!("writing generation metadata for {hash}"))
+}
+
+fn read_generation_meta(generation: &Generation, hash: &str) -> Result<Option<InstalledMeta>> {
+    let path = generation.path.join("meta").join(format!("{hash}.json"));
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let data = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading generation metadata file {}", path.display()))?;
+    let meta: InstalledMeta = serde_json::from_str(&data)
+        .with_context(|| format!("parsing generation metadata file {}", path.display()))?;
+    Ok(Some(meta))
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +292,9 @@ pub fn rebuild_meta(
             }
         }
 
-        let meta = if let Some((reg, pkg)) = found {
+        let meta = if let Some(meta) = read_generation_meta(generation, hash)? {
+            meta
+        } else if let Some((reg, pkg)) = found {
             InstalledMeta {
                 store_path: pkg.store_path.clone(),
                 pushed_at: now,
@@ -316,6 +380,14 @@ mod tests {
         }
     }
 
+    fn add_usr_root(generation: &Generation, hash: &str, target: &str) {
+        use std::os::unix::fs::symlink;
+
+        let usr = generation.path.join("usr");
+        std::fs::create_dir_all(&usr).unwrap();
+        symlink(target, usr.join(hash)).unwrap();
+    }
+
     // 1. write_meta + read_meta round-trip
     #[test]
     fn write_read_round_trip() {
@@ -368,6 +440,30 @@ mod tests {
         // Deleting a non-existent hash should not error.
         delete_meta(&profile, "nonexistent").unwrap();
         delete_meta(&profile, "nonexistent").unwrap();
+    }
+
+    #[test]
+    fn rebuild_meta_restores_generation_snapshot_without_registry() {
+        let tmp = TempDir::new().unwrap();
+        let profile = test_profile(&tmp);
+        let generation = profile.new_generation().unwrap();
+        let meta = sample_meta("retired-tool", "retired-reg", true, true);
+        add_usr_root(&generation, "abc123", &meta.store_path);
+
+        write_meta(&profile, "abc123", &meta).unwrap();
+        snapshot_profile_meta_to_generation(&profile, &generation).unwrap();
+        delete_meta(&profile, "abc123").unwrap();
+
+        let registries = RegistrySet::new(vec![]);
+        rebuild_meta(&profile, &generation, &registries).unwrap();
+
+        let restored = read_meta(&profile, "abc123").unwrap().unwrap();
+        assert_eq!(restored.store_path, meta.store_path);
+        let restored_apm = restored.apm.unwrap();
+        assert_eq!(restored_apm.name, "retired-tool");
+        assert_eq!(restored_apm.registry, "retired-reg");
+        assert!(restored_apm.explicit);
+        assert!(restored_apm.held);
     }
 
     // 5. list_meta returns all entries
