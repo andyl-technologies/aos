@@ -1405,6 +1405,74 @@ in {
         fail "normal install after download-only should create gen-1"
       fi
 
+      echo "==> Consumer: corrupt one prefetched NAR and repair during install"
+      rm -rf "$PROFILE"
+      delete_store_path "$WRAPPER_STORE" "download-only-wrapper-reset"
+      delete_store_path "$DEP_STORE" "idempkg-reset"
+      export HOME=/tmp/download-corrupt-consumer
+      export USER=downloadcorrupt
+      PROFILE="/var/lib/profiles/per-user/downloadcorrupt"
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/download-origin.git \
+        --name download-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/download-corrupt-registry-add.out 2>&1 || {
+        cat /tmp/download-corrupt-registry-add.out
+        fail "apm registry add syncs download registry for corrupt-cache consumer"
+      }
+      cat /tmp/download-corrupt-registry-add.out
+
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install download-only-wrapper \
+        --registry download-reg \
+        --download-only \
+        --yes > /tmp/download-corrupt-prefetch.out 2>&1 || {
+        cat /tmp/download-corrupt-prefetch.out
+        fail "apm install --download-only succeeds before corrupting cache"
+      }
+      cat /tmp/download-corrupt-prefetch.out
+      if [ "$(cache_nar_count)" = "2" ]; then
+        pass "corrupt-cache consumer prefetches two NARs"
+      else
+        fail "corrupt-cache consumer should prefetch two NARs"
+      fi
+      CORRUPT_NAR=$(find "$HOME/.cache/apm" -type f -name '*.nar.zst' | sort | head -n 1)
+      if [ -n "$CORRUPT_NAR" ]; then
+        printf '%s\n' "corrupted cached NAR" > "$CORRUPT_NAR"
+        pass "test corrupted one cached NAR"
+      else
+        fail "test should find a cached NAR to corrupt"
+      fi
+      assert_store_missing "$WRAPPER_STORE" "download-only-wrapper"
+      assert_store_missing "$DEP_STORE" "idempkg"
+
+      NAR_GETS_BEFORE_CORRUPT_INSTALL=$(cache_nar_http_get_count)
+      EXPECTED_NAR_GETS_AFTER_CORRUPT_INSTALL=$((NAR_GETS_BEFORE_CORRUPT_INSTALL + 1))
+      $APM install download-only-wrapper --registry download-reg --yes \
+        > /tmp/download-corrupt-install.out 2>&1 || {
+        cat /tmp/download-corrupt-install.out
+        fail "normal install repairs one corrupted cached NAR"
+      }
+      cat /tmp/download-corrupt-install.out
+      assert_file_contains /tmp/download-corrupt-install.out "Installed 1 package" \
+        "corrupt-cache install creates profile generation"
+      assert_store_valid "$WRAPPER_STORE" "download-only-wrapper"
+      assert_store_valid "$DEP_STORE" "idempkg"
+      "$PROFILE/current/bin/download-only-wrapper" > /tmp/download-corrupt-run.out
+      assert_file_contains /tmp/download-corrupt-run.out "^idempkg 1.0.0$" \
+        "corrupt-cache repaired install executes wrapper"
+      if [ "$(cache_nar_http_get_count)" = "$EXPECTED_NAR_GETS_AFTER_CORRUPT_INSTALL" ]; then
+        pass "corrupt-cache install redownloads only the stale NAR body"
+      else
+        cat /tmp/download-cache-http.log || true
+        fail "corrupt-cache install should redownload exactly one stale NAR body"
+      fi
+      if [ "$(cache_nar_count)" = "2" ]; then
+        pass "corrupt-cache install leaves repaired NAR cache complete"
+      else
+        fail "corrupt-cache install should leave two cached NAR files"
+      fi
+
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"
       fi

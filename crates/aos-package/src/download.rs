@@ -589,6 +589,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn download_nars_replaces_stale_cached_file() {
+        let printer = Printer::new(0, true, false);
+        let source = tempfile::TempDir::new().unwrap();
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let nar_bytes = b"fresh-nar-bytes";
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
+        let nar_hash = "sha256:freshnarhash";
+        let nar_url = "nar/fresh.nar.zst";
+        let local_path = cache_dir.path().join(nar_cache_filename(nar_hash));
+
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(source.path().join(nar_url), nar_bytes).unwrap();
+        std::fs::write(&local_path, b"stale-cache").unwrap();
+
+        let resolved = ResolvedDownload {
+            req: DownloadRequest {
+                store_path: "/nix/store/abc123-package".to_string(),
+                mirror_url: format!("file://{}", source.path().display()),
+            },
+            narinfo: NarInfo {
+                store_path: "/nix/store/abc123-package".to_string(),
+                url: nar_url.to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some(file_hash.clone()),
+                file_size: Some(nar_bytes.len() as u64),
+                nar_hash: nar_hash.to_string(),
+                nar_size: 5,
+                references: Vec::new(),
+                deriver: None,
+                signatures: Vec::new(),
+            },
+        };
+
+        let results = download_nars(&[resolved], cache_dir.path(), 1, &printer)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].download_hash, file_hash);
+        assert_eq!(results[0].local_path, local_path);
+        assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
+    }
+
+    #[tokio::test]
     async fn fetch_narinfos_empty() {
         let printer = Printer::new(0, true, false);
         let engine = Arc::new(default_engine());
