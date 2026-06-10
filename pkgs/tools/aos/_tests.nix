@@ -267,6 +267,77 @@ in {
           grep -qx "Host Command Test" "$work/author-name.out"
           grep -qx "host-command@example.invalid" "$work/author-email.out"
 
+          remove_keep="$data/apm/registries/remove-keep-local"
+          run_clean ${self}/bin/apr create remove-keep-local \
+            > "$work/apr-create-remove-keep-local.out" 2>&1
+          if run_clean ${self}/bin/apm registry remove remove-keep-local \
+            > "$work/apm-registry-remove-keep-local-unsafe.out" 2>&1; then
+            cat "$work/apm-registry-remove-keep-local-unsafe.out"
+            exit 1
+          fi
+          grep -q "local authoring clone" \
+            "$work/apm-registry-remove-keep-local-unsafe.out"
+          grep -q "no remote is configured" \
+            "$work/apm-registry-remove-keep-local-unsafe.out"
+          test -d "$remove_keep"
+          run_clean ${self}/bin/apr remove remove-keep-local --keep-local \
+            > "$work/apr-remove-keep-local.out" 2>&1
+          grep -q "Registry 'remove-keep-local' removed" \
+            "$work/apr-remove-keep-local.out"
+          test -d "$remove_keep"
+          run_clean ${self}/bin/apr remove remove-keep-local --force \
+            > "$work/apr-remove-keep-local-force.out" 2>&1
+          grep -q "Registry 'remove-keep-local' removed" \
+            "$work/apr-remove-keep-local-force.out"
+          test ! -e "$remove_keep"
+
+          remove_dirty="$data/apm/registries/remove-dirty"
+          run_clean ${self}/bin/apr create remove-dirty \
+            > "$work/apr-create-remove-dirty.out" 2>&1
+          printf '%s\n' "local maintainer notes" \
+            > "$remove_dirty/maintainer-notes.txt"
+          if run_clean ${self}/bin/apm registry remove remove-dirty \
+            > "$work/apm-registry-remove-dirty.out" 2>&1; then
+            cat "$work/apm-registry-remove-dirty.out"
+            exit 1
+          fi
+          grep -q "local authoring clone" "$work/apm-registry-remove-dirty.out"
+          grep -q "uncommitted changes" "$work/apm-registry-remove-dirty.out"
+          test -f "$remove_dirty/maintainer-notes.txt"
+          run_clean ${self}/bin/apr remove remove-dirty --force \
+            > "$work/apr-remove-dirty-force.out" 2>&1
+          grep -q "Registry 'remove-dirty' removed" \
+            "$work/apr-remove-dirty-force.out"
+          test ! -e "$remove_dirty"
+
+          remove_unpushed_origin="$work/remove-unpushed-origin.git"
+          git init --bare --object-format=sha256 "$remove_unpushed_origin" \
+            > "$work/git-init-remove-unpushed-origin.out" 2>&1
+          remove_unpushed="$data/apm/registries/remove-unpushed"
+          run_clean ${self}/bin/apr create remove-unpushed \
+            --remote "$remove_unpushed_origin" \
+            > "$work/apr-create-remove-unpushed.out" 2>&1
+          git -C "$remove_unpushed" remote get-url origin \
+            > "$work/git-remove-unpushed-origin.out"
+          grep -qx "$remove_unpushed_origin" \
+            "$work/git-remove-unpushed-origin.out"
+          if run_clean ${self}/bin/apm registry remove remove-unpushed \
+            > "$work/apm-registry-remove-unpushed.out" 2>&1; then
+            cat "$work/apm-registry-remove-unpushed.out"
+            exit 1
+          fi
+          grep -q "local authoring clone" "$work/apm-registry-remove-unpushed.out"
+          grep -q "not pushed to any remote" \
+            "$work/apm-registry-remove-unpushed.out"
+          test -d "$remove_unpushed"
+          git -C "$remove_unpushed" push origin stable \
+            > "$work/git-push-remove-unpushed.out" 2>&1
+          run_clean ${self}/bin/apr remove remove-unpushed \
+            > "$work/apr-remove-unpushed-after-push.out" 2>&1
+          grep -q "Registry 'remove-unpushed' removed" \
+            "$work/apr-remove-unpushed-after-push.out"
+          test ! -e "$remove_unpushed"
+
           run_clean ${self}/bin/apr keys generate root --registry host-reg \
             > "$work/apr-keys-generate-root.out" 2>&1
           host_key_root=$(grep -o 'host-reg:Ed25519:[A-Za-z0-9+/=]*' "$work/apr-keys-generate-root.out" | head -1)
