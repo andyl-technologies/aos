@@ -868,6 +868,11 @@ in {
           fi
           assert_default_profile_absent
 
+          run_clean ${self}/bin/apm gc > "$work/apm-gc-host-install.out" 2>&1
+          grep -q "Running garbage collection" "$work/apm-gc-host-install.out"
+          grep -q "Garbage collection complete" "$work/apm-gc-host-install.out"
+          assert_default_profile_absent
+
           mkdir -p "$out"
           echo "PASS" > "$out/result"
         '';
