@@ -1116,6 +1116,30 @@ in {
         "policy reports no candidate after registry unpublish"
       assert_file_contains /tmp/unpublish-policy-after.out "test-reg (installed, unavailable)" \
         "policy marks unpublished installed version unavailable"
+      $APM show retire-tool > /tmp/unpublish-show-installed-after.out 2>&1 || {
+        cat /tmp/unpublish-show-installed-after.out
+        fail "apm show succeeds from installed metadata after registry unpublish"
+      }
+      cat /tmp/unpublish-show-installed-after.out
+      assert_file_contains /tmp/unpublish-show-installed-after.out "Package: retire-tool" \
+        "show reports unpublished installed package name"
+      assert_file_contains /tmp/unpublish-show-installed-after.out "Version: 1.0.0" \
+        "show reports unpublished installed package version"
+      assert_file_contains /tmp/unpublish-show-installed-after.out \
+        "Status: installed, unavailable in registry" \
+        "show marks unpublished installed package unavailable"
+      assert_file_contains /tmp/unpublish-show-installed-after.out "Dependencies:.*retire-dep" \
+        "show resolves installed dependency after registry unpublish"
+      $APM --json show retire-tool > /tmp/unpublish-show-installed-after.json || {
+        cat /tmp/unpublish-show-installed-after.json
+        fail "apm --json show succeeds from installed metadata after registry unpublish"
+      }
+      assert_file_contains /tmp/unpublish-show-installed-after.json '"name":"retire-tool"' \
+        "show JSON reports unpublished installed package name"
+      assert_file_contains /tmp/unpublish-show-installed-after.json '"unavailable":true' \
+        "show JSON marks unpublished installed package unavailable"
+      assert_file_contains /tmp/unpublish-show-installed-after.json '"retire-dep"' \
+        "show JSON resolves installed dependency after registry unpublish"
       $APM depends retire-tool > /tmp/unpublish-depends-after.out 2>&1 || {
         cat /tmp/unpublish-depends-after.out
         fail "apm depends succeeds from installed closure after registry unpublish"
