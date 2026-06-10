@@ -2411,9 +2411,104 @@ in {
         fail "static cache HTTP server started"
       fi
 
+      echo "==> Consumer: remove two explicit packages and their shared auto dep in one transaction"
+      export HOME=/tmp/remove-multi-consumer
+      export USER=removemultiuser
+      PROFILE="/var/lib/profiles/per-user/removemultiuser"
+      mkdir -p "$HOME/.config/apm"
+      cat > "$HOME/.config/apm/apm.conf" << 'APMCONF'
+      [settings]
+      assume_yes = true
+      auto_autoremove = true
+      auto_gc = false
+      APMCONF
+      $APM registry add file:///tmp/remove-origin.git \
+        --name remove-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/remove-multi-registry-add.out 2>&1 || {
+        cat /tmp/remove-multi-registry-add.out
+        fail "apm registry add syncs remove registry for multi-remove"
+      }
+      cat /tmp/remove-multi-registry-add.out
+
+      delete_store_path "$LEFT_STORE" "remove-left"
+      delete_store_path "$RIGHT_STORE" "remove-right"
+      delete_store_path "$DEP_STORE" "idempkg"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install remove-left remove-right --registry remove-reg > /tmp/remove-multi-install.out 2>&1 || {
+        cat /tmp/remove-multi-install.out
+        fail "apm install shared remove workflow succeeds for multi-remove"
+      }
+      cat /tmp/remove-multi-install.out
+      assert_file_not_contains /tmp/remove-multi-install.out "Do you want to continue" \
+        "configured assume_yes suppresses multi-remove install prompt"
+      assert_file_contains /tmp/remove-multi-install.out "Downloading 3 NAR" \
+        "multi-remove install downloads both roots and shared dependency"
+      assert_file_contains /tmp/remove-multi-install.out "Installed 2 package" \
+        "multi-remove install creates profile generation for both roots"
+      "$PROFILE/current/bin/remove-left" > /tmp/remove-multi-left-run.out
+      "$PROFILE/current/bin/remove-right" > /tmp/remove-multi-right-run.out
+      "$PROFILE/current/bin/idempkg" > /tmp/remove-multi-dep-run.out
+      assert_file_contains /tmp/remove-multi-left-run.out "^idempkg 1.0.0$" \
+        "multi-remove left executable runs before removal"
+      assert_file_contains /tmp/remove-multi-right-run.out "^idempkg 1.0.0$" \
+        "multi-remove right executable runs before removal"
+      assert_file_contains /tmp/remove-multi-dep-run.out "^idempkg 1.0.0$" \
+        "multi-remove shared dependency executable is active"
+      assert_file_contains "$PROFILE/meta/$LEFT_HASH.json" '"explicit": true' \
+        "multi-remove left metadata is explicit"
+      assert_file_contains "$PROFILE/meta/$RIGHT_HASH.json" '"explicit": true' \
+        "multi-remove right metadata is explicit"
+      assert_file_contains "$PROFILE/meta/$DEP_HASH.json" '"explicit": false' \
+        "multi-remove shared dependency metadata is automatic"
+      if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
+        pass "multi-remove install creates exactly generation 1"
+      else
+        fail "multi-remove install should create only gen-1"
+      fi
+
+      $APM remove remove-left remove-right > /tmp/remove-multi.out 2>&1 || {
+        cat /tmp/remove-multi.out
+        fail "apm remove removes both explicit packages in one transaction"
+      }
+      cat /tmp/remove-multi.out
+      assert_file_not_contains /tmp/remove-multi.out "Do you want to continue" \
+        "configured assume_yes suppresses multi-remove prompt"
+      assert_file_contains /tmp/remove-multi.out "remove-left" \
+        "multi-remove plan lists first explicit package"
+      assert_file_contains /tmp/remove-multi.out "remove-right" \
+        "multi-remove plan lists second explicit package"
+      assert_file_contains /tmp/remove-multi.out "idempkg" \
+        "multi-remove plan lists shared dependency as orphan"
+      assert_file_contains /tmp/remove-multi.out "Removed 3 package" \
+        "multi-remove removes both roots and their shared dependency"
+      assert_file_not_contains /tmp/remove-multi.out "Running garbage collection" \
+        "multi-remove honors configured auto_gc false"
+      assert_file_not_exists "$PROFILE/meta/$LEFT_HASH.json" \
+        "multi-remove deletes first explicit package metadata"
+      assert_file_not_exists "$PROFILE/meta/$RIGHT_HASH.json" \
+        "multi-remove deletes second explicit package metadata"
+      assert_file_not_exists "$PROFILE/meta/$DEP_HASH.json" \
+        "multi-remove deletes shared dependency metadata"
+      if [ -e "$PROFILE/current/bin/remove-left" ] || [ -e "$PROFILE/current/bin/remove-right" ] || [ -e "$PROFILE/current/bin/idempkg" ]; then
+        fail "multi-remove should drop all removed executables from active profile"
+      else
+        pass "multi-remove drops all removed executables from active profile"
+      fi
+      if [ "$(readlink "$PROFILE/current")" = "gen-2" ] && [ "$(generation_count)" = "2" ]; then
+        pass "multi-remove creates generation 2"
+      else
+        fail "multi-remove should create gen-2"
+      fi
+      assert_store_valid "$DEP_STORE" "idempkg remains in store after multi-remove without GC"
+      assert_store_valid "$LEFT_STORE" "remove-left remains in store after multi-remove without GC"
+      assert_store_valid "$RIGHT_STORE" "remove-right remains in store after multi-remove without GC"
+      rm -rf "$PROFILE"
+
       echo "==> Consumer: install two explicit packages with one shared auto dep"
       export HOME=/tmp/remove-consumer
       export USER=removeuser
+      PROFILE="/var/lib/profiles/per-user/removeuser"
       mkdir -p "$HOME/.config/apm"
       cat > "$HOME/.config/apm/apm.conf" << 'APMCONF'
       [settings]
