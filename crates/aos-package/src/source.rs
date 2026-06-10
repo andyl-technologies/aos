@@ -375,6 +375,8 @@ priority = 500
                 registry: "test-reg".into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         };
 
@@ -529,6 +531,8 @@ references = []
                 registry: "test-reg".into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         };
 

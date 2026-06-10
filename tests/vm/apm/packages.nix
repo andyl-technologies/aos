@@ -234,6 +234,45 @@
     pname = "sourceful";
     version = "2.0.0";
   };
+  mkSourceFixture = {
+    pname,
+    version,
+    program,
+    outputName,
+  }:
+    pkgs.mkDerivation {
+      inherit pname version;
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              "printf '${outputName} ${version}\\n'" \
+              > "$out/bin/${program}"
+            chmod +x "$out/bin/${program}"
+          '';
+        }
+      ];
+    };
+  sourcefulSourceV1 = mkSourceFixture {
+    pname = "sourceful-source";
+    version = "1.0.0";
+    program = "sourceful";
+    outputName = "sourceful";
+  };
+  sourcefulSourceV2 = mkSourceFixture {
+    pname = "sourceful-source";
+    version = "2.0.0";
+    program = "sourceful";
+    outputName = "sourceful";
+  };
   realIdempotentDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -330,6 +369,8 @@
       surfaceUpgradeV2
       sourcefulV1
       sourcefulV2
+      sourcefulSourceV1
+      sourcefulSourceV2
     ];
   sourceVerifyAltDeps =
     fixtures.commonDeps
@@ -3707,12 +3748,16 @@ in {
       UPGRADE_V2_STORE="${surfaceUpgradeV2}"
       SOURCE_V1_STORE="${sourcefulV1}"
       SOURCE_V2_STORE="${sourcefulV2}"
+      SOURCE_V1_SRC_STORE="${sourcefulSourceV1}"
+      SOURCE_V2_SRC_STORE="${sourcefulSourceV2}"
       SURFACE_HASH=$(basename "$SURFACE_STORE" | cut -d- -f1)
       LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
       UPGRADE_V1_HASH=$(basename "$UPGRADE_V1_STORE" | cut -d- -f1)
       UPGRADE_V2_HASH=$(basename "$UPGRADE_V2_STORE" | cut -d- -f1)
       SOURCE_V1_HASH=$(basename "$SOURCE_V1_STORE" | cut -d- -f1)
       SOURCE_V2_HASH=$(basename "$SOURCE_V2_STORE" | cut -d- -f1)
+      SOURCE_V1_SRC_HASH=$(basename "$SOURCE_V1_SRC_STORE" | cut -d- -f1)
+      SOURCE_V2_SRC_HASH=$(basename "$SOURCE_V2_SRC_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/surfaceuser"
       SURFACE_BIN="$PROFILE/current/bin/surfacepkg"
       LEAF_BIN="$PROFILE/current/bin/surface-leaf"
@@ -3726,6 +3771,22 @@ in {
           cat "$1" 2>/dev/null || true
         else
           pass "$3"
+        fi
+      }
+
+      assert_symlink_exists() {
+        if [ -L "$1" ]; then
+          pass "$2"
+        else
+          fail "$2 (symlink not found: $1)"
+        fi
+      }
+
+      assert_symlink_not_exists() {
+        if [ -L "$1" ]; then
+          fail "$2 (symlink should not exist: $1)"
+        else
+          pass "$2"
         fi
       }
 
@@ -3844,7 +3905,8 @@ in {
       publish_sourceful() {
         version="$1"
         store="$2"
-        label="$3"
+        source_store="$3"
+        label="$4"
         $APR publish "$store" \
           --name sourceful \
           --version "$version" \
@@ -3858,7 +3920,7 @@ in {
           return 1
         }
         cat "/tmp/surface-publish-sourceful-$label.out"
-        record_source_metadata "$store" "$label"
+        record_source_metadata "$source_store" "$label"
       }
 
       generate_surface_cache() {
@@ -3916,6 +3978,8 @@ in {
       assert_store_valid "$UPGRADE_V2_STORE" "upgradeface-v2"
       assert_store_valid "$SOURCE_V1_STORE" "sourceful-v1"
       assert_store_valid "$SOURCE_V2_STORE" "sourceful-v2"
+      assert_store_valid "$SOURCE_V1_SRC_STORE" "sourceful-source-v1"
+      assert_store_valid "$SOURCE_V2_SRC_STORE" "sourceful-source-v2"
       nix-store -q --references "$SURFACE_STORE" > /tmp/surface-refs.out
       assert_file_contains /tmp/surface-refs.out "$LEAF_STORE" \
         "surfacepkg has a real Nix reference to surface-leaf"
@@ -3927,7 +3991,7 @@ in {
       publish_leaf_package
       publish_surface_package
       publish_upgradeface 1.0.0 "$UPGRADE_V1_STORE" v1
-      publish_sourceful 1.0.0 "$SOURCE_V1_STORE" v1
+      publish_sourceful 1.0.0 "$SOURCE_V1_STORE" "$SOURCE_V1_SRC_STORE" v1
       assert_file_contains "$REG_DIR/packages/s/surfacepkg.toml" \
         "$SURFACE_HASH" "published surfacepkg metadata records store hash"
       assert_file_contains "$REG_DIR/packages/s/surface-leaf.toml" \
@@ -3935,7 +3999,7 @@ in {
       assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
         "$SOURCE_V1_HASH" "published sourceful metadata records store hash"
       assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
-        "$SOURCE_V1_STORE" "published sourceful metadata records source path"
+        "$SOURCE_V1_SRC_STORE" "published sourceful metadata records distinct source path"
       assert_file_contains "$REG_DIR/closures/$SURFACE_HASH" \
         "$LEAF_HASH" "published surfacepkg closure records dependency"
 
@@ -4033,6 +4097,10 @@ in {
       "$SOURCE_BIN" > /tmp/surface-sourceful-v1-run.out
       assert_file_contains /tmp/surface-sourceful-v1-run.out "^sourceful 1.0.0$" \
         "installed sourceful v1 executable runs from profile"
+      assert_file_contains "$PROFILE/meta/$SOURCE_V1_HASH.json" \
+        "$SOURCE_V1_SRC_STORE" "sourceful metadata records v1 source root"
+      assert_symlink_exists "$PROFILE/current/src/$SOURCE_V1_SRC_HASH" \
+        "sourceful v1 source root is active after install"
       assert_file_contains "$PROFILE/meta/$SOURCE_V1_HASH.json" '"explicit": true' \
         "sourceful metadata is explicit"
 
@@ -4120,18 +4188,18 @@ in {
       assert_file_contains /tmp/surface-source-fetch.out "no source derivation recorded" \
         "apm source --fetch reports missing source drv"
       run_ok source-sourceful "$APM" source sourceful
-      assert_file_contains /tmp/surface-source-sourceful.out "$SOURCE_V1_STORE" \
+      assert_file_contains /tmp/surface-source-sourceful.out "$SOURCE_V1_SRC_STORE" \
         "apm source reports sourceful v1 source path"
       assert_file_contains /tmp/surface-source-sourceful.out "Source NAR hash" \
         "apm source reports sourceful source NAR hash"
       run_ok source-sourceful-show-drv "$APM" source sourceful --show-drv
-      assert_file_contains /tmp/surface-source-sourceful-show-drv.out "$SOURCE_V1_STORE" \
+      assert_file_contains /tmp/surface-source-sourceful-show-drv.out "$SOURCE_V1_SRC_STORE" \
         "apm source --show-drv reports sourceful v1 source path"
       run_ok source-sourceful-fetch "$APM" source sourceful --fetch
-      assert_file_contains /tmp/surface-source-sourceful-fetch.out "Source realised: $SOURCE_V1_STORE" \
+      assert_file_contains /tmp/surface-source-sourceful-fetch.out "Source realised: $SOURCE_V1_SRC_STORE" \
         "apm source --fetch realises sourceful v1 derivation"
       run_ok source-sourceful-verify "$APM" source sourceful --verify
-      assert_file_contains /tmp/surface-source-sourceful-verify.out "$SOURCE_V1_STORE" \
+      assert_file_contains /tmp/surface-source-sourceful-verify.out "$SOURCE_V1_SRC_STORE" \
         "apm source --verify uses sourceful v1 source path"
       assert_file_contains /tmp/surface-source-sourceful-verify.out "matches installed binary" \
         "apm source --verify compares sourceful rebuild with installed binary"
@@ -4225,11 +4293,11 @@ in {
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      publish_sourceful 2.0.0 "$SOURCE_V2_STORE" v2
+      publish_sourceful 2.0.0 "$SOURCE_V2_STORE" "$SOURCE_V2_SRC_STORE" v2
       assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
         "$SOURCE_V2_HASH" "published sourceful v2 metadata records store hash"
       assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
-        "$SOURCE_V2_STORE" "published sourceful v2 metadata records source path"
+        "$SOURCE_V2_SRC_STORE" "published sourceful v2 metadata records distinct source path"
       generate_surface_cache source-v2
       assert_file_exists "/tmp/surface-cache/$SOURCE_V2_HASH.narinfo" \
         "static cache has sourceful v2 narinfo"
@@ -4252,15 +4320,36 @@ in {
       assert_file_contains /tmp/surface-list-upgradable-sourceful.out "upgradable: 2.0.0" \
         "apm list --upgradable reports sourceful candidate version"
       run_ok source-sourceful-verify-installed "$APM" source sourceful --verify
-      assert_file_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V1_STORE" \
+      assert_file_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V1_SRC_STORE" \
         "apm source --verify uses installed sourceful v1 source path after v2 appears"
-      assert_file_not_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V2_STORE" \
+      assert_file_not_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V2_SRC_STORE" \
         "apm source --verify does not use latest uninstalled sourceful v2 source path"
       assert_file_contains /tmp/surface-source-sourceful-verify-installed.out "matches installed binary" \
         "apm source --verify still validates installed sourceful v1"
       "$SOURCE_BIN" > /tmp/surface-sourceful-still-v1-run.out
       assert_file_contains /tmp/surface-sourceful-still-v1-run.out "^sourceful 1.0.0$" \
         "sourceful remains v1 until explicitly upgraded"
+
+      echo "==> Consumer: upgrade sourceful and replace source roots"
+      $APM upgrade sourceful --yes > /tmp/surface-upgrade-sourceful.out 2>&1 || {
+        cat /tmp/surface-upgrade-sourceful.out
+        fail "apm upgrade downloads and activates sourceful v2"
+      }
+      cat /tmp/surface-upgrade-sourceful.out
+      assert_file_contains /tmp/surface-upgrade-sourceful.out "Downloading" \
+        "sourceful upgrade downloads v2 NAR"
+      assert_file_contains /tmp/surface-upgrade-sourceful.out "Upgraded 1 package" \
+        "sourceful upgrade creates profile generation"
+      assert_store_valid "$SOURCE_V2_STORE" "sourceful-v2"
+      "$SOURCE_BIN" > /tmp/surface-sourceful-v2-run.out
+      assert_file_contains /tmp/surface-sourceful-v2-run.out "^sourceful 2.0.0$" \
+        "sourceful v2 executable runs after upgrade"
+      assert_symlink_not_exists "$PROFILE/current/src/$SOURCE_V1_SRC_HASH" \
+        "sourceful upgrade removes old v1 source root from current generation"
+      assert_symlink_exists "$PROFILE/current/src/$SOURCE_V2_SRC_HASH" \
+        "sourceful upgrade activates v2 source root"
+      assert_file_contains "$PROFILE/meta/$SOURCE_V2_HASH.json" \
+        "$SOURCE_V2_SRC_STORE" "sourceful metadata records v2 source root"
 
       run_ok clean "$APM" clean
       assert_file_contains /tmp/surface-clean.out "Cleared NAR cache" "apm clean clears NAR cache"
@@ -4320,6 +4409,24 @@ in {
           and (map(select(.name == "surface-leaf" and .explicit == false)) | length == 1)
           and (map(select(.registry == "surface-reg")) | length == 4)' \
         /tmp/surface-orphans-removed-json.out >/dev/null
+
+      echo "==> Consumer: remove orphaned sourceful package and source root"
+      $APM remove sourceful --yes > /tmp/surface-remove-sourceful.out 2>&1 || {
+        cat /tmp/surface-remove-sourceful.out
+        fail "apm remove sourceful succeeds after registry removal"
+      }
+      cat /tmp/surface-remove-sourceful.out
+      assert_file_contains /tmp/surface-remove-sourceful.out "Removed 1 package" \
+        "apm remove reports sourceful removal"
+      if [ -e "$SOURCE_BIN" ]; then
+        fail "sourceful executable should be absent after removal"
+      else
+        pass "sourceful executable absent after removal"
+      fi
+      assert_symlink_not_exists "$PROFILE/current/src/$SOURCE_V2_SRC_HASH" \
+        "sourceful remove drops v2 source root from current generation"
+      assert_file_not_exists "$PROFILE/meta/$SOURCE_V2_HASH.json" \
+        "sourceful metadata removed after sourceful removal"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"

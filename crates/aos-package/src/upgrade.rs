@@ -259,6 +259,8 @@ pub async fn run(
                     registry: registry_name.clone(),
                     installed_at: now_iso.clone(),
                     held: flags.held,
+                    source_drv: meta.source_drv.clone(),
+                    source_nar_hash: meta.source_nar_hash.clone(),
                 }),
             };
 
@@ -395,14 +397,23 @@ fn obsolete_installed_hashes(
     installed: &[InstalledMeta],
     needed_hashes: &HashSet<String>,
 ) -> HashSet<String> {
-    installed
-        .iter()
-        .filter_map(|meta| {
-            meta.apm.as_ref()?;
-            let hash = store_path_hash(&meta.store_path).to_string();
-            (!needed_hashes.contains(&hash)).then_some(hash)
-        })
-        .collect()
+    let mut hashes = HashSet::new();
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+
+        let hash = store_path_hash(&meta.store_path).to_string();
+        if needed_hashes.contains(&hash) {
+            continue;
+        }
+
+        hashes.insert(hash);
+        if !apm.source_drv.is_empty() {
+            hashes.insert(store_path_hash(&apm.source_drv).to_string());
+        }
+    }
+    hashes
 }
 
 /// Filter out held and excluded packages from upgrade candidates.
@@ -699,6 +710,8 @@ mod tests {
                 registry: registry.into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }
     }
@@ -853,8 +866,13 @@ references = []
 
     #[test]
     fn obsolete_installed_hashes_skips_only_unneeded_apm_roots() {
+        let mut old_tool =
+            sample_installed_with_flags("tool", "1.0.0", "oldtoolhash", "aos-core", true, false);
+        old_tool.apm.as_mut().unwrap().source_drv =
+            "/var/lib/store/oldsourcehash-tool-src.drv".to_string();
+
         let installed = vec![
-            sample_installed_with_flags("tool", "1.0.0", "oldtoolhash", "aos-core", true, false),
+            old_tool,
             sample_installed_with_flags(
                 "runtime",
                 "1.0.0",
@@ -880,6 +898,7 @@ references = []
         let obsolete = obsolete_installed_hashes(&installed, &needed);
 
         assert!(obsolete.contains("oldtoolhash"));
+        assert!(obsolete.contains("oldsourcehash"));
         assert!(obsolete.contains("oldruntimehash"));
         assert!(!obsolete.contains("keptroot"));
         assert!(!obsolete.contains("nonapmroot"));

@@ -276,6 +276,8 @@ pub async fn run(
                     registry: closure.registry_name.clone(),
                     installed_at: now_iso.clone(),
                     held: existing_flags.held,
+                    source_drv: meta.source_drv.clone(),
+                    source_nar_hash: meta.source_nar_hash.clone(),
                 }),
             };
 
@@ -396,17 +398,21 @@ fn installed_store_hashes_for_names(
     installed: &[InstalledMeta],
     package_names: &HashSet<&str>,
 ) -> HashSet<String> {
-    installed
-        .iter()
-        .filter_map(|meta| {
-            let apm = meta.apm.as_ref()?;
-            if package_names.contains(apm.name.as_str()) {
-                Some(store_path_hash(&meta.store_path).to_string())
-            } else {
-                None
-            }
-        })
-        .collect()
+    let mut hashes = HashSet::new();
+    for meta in installed {
+        let Some(apm) = meta.apm.as_ref() else {
+            continue;
+        };
+        if !package_names.contains(apm.name.as_str()) {
+            continue;
+        }
+
+        hashes.insert(store_path_hash(&meta.store_path).to_string());
+        if !apm.source_drv.is_empty() {
+            hashes.insert(store_path_hash(&apm.source_drv).to_string());
+        }
+    }
+    hashes
 }
 
 pub(crate) fn copy_roots_except_hashes(
@@ -827,6 +833,8 @@ mod tests {
                 registry: "test-reg".to_string(),
                 installed_at: "2026-06-09T00:00:00Z".to_string(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }
     }
@@ -943,13 +951,17 @@ mod tests {
     }
 
     #[test]
-    fn installed_store_hashes_for_names_selects_replaced_runtime_roots() {
+    fn installed_store_hashes_for_names_selects_replaced_runtime_and_source_roots() {
+        let mut switch_tool = sample_installed(
+            "switch-tool",
+            "1.0.0",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
+        );
+        switch_tool.apm.as_mut().unwrap().source_drv =
+            "/nix/store/cccccccccccccccccccccccccccccccc-switch-tool-src.drv".to_string();
+
         let installed = vec![
-            sample_installed(
-                "switch-tool",
-                "1.0.0",
-                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
-            ),
+            switch_tool,
             sample_installed(
                 "kept-tool",
                 "1.0.0",
@@ -960,6 +972,7 @@ mod tests {
         let hashes = installed_store_hashes_for_names(&installed, &names);
 
         assert!(hashes.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(hashes.contains("cccccccccccccccccccccccccccccccc"));
         assert!(!hashes.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
     }
 

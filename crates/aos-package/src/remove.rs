@@ -53,11 +53,7 @@ pub async fn run(
     let to_remove = find_installed(&profile, packages)?;
 
     // Step 3: Collect hashes to remove.
-    let mut remove_hashes: HashSet<String> = HashSet::new();
-    for meta in &to_remove {
-        let hash = store_path_hash(&meta.store_path).to_string();
-        remove_hashes.insert(hash);
-    }
+    let mut remove_hashes = root_hashes_for_installed(&to_remove);
 
     // Step 4: If --autoremove, also find orphaned auto-installed deps.
     let orphans = if auto_remove {
@@ -66,10 +62,7 @@ pub async fn run(
         Vec::new()
     };
 
-    for meta in &orphans {
-        let hash = store_path_hash(&meta.store_path).to_string();
-        remove_hashes.insert(hash);
-    }
+    remove_hashes.extend(root_hashes_for_installed(&orphans));
 
     // Step 5: Print removal summary.
     print_removal_summary(&to_remove, &orphans, printer);
@@ -145,10 +138,7 @@ pub async fn run_autoremove(
     }
 
     // Step 3: Collect hashes.
-    let remove_hashes: HashSet<String> = orphans
-        .iter()
-        .map(|m| store_path_hash(&m.store_path).to_string())
-        .collect();
+    let remove_hashes = root_hashes_for_installed(&orphans);
 
     // Step 4: Print summary.
     print_removal_summary(&[], &orphans, printer);
@@ -291,6 +281,19 @@ fn find_orphans_from_meta(
         })
         .cloned()
         .collect()
+}
+
+fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
+    let mut hashes = HashSet::new();
+    for meta in installed {
+        hashes.insert(store_path_hash(&meta.store_path).to_string());
+        if let Some(apm) = &meta.apm {
+            if !apm.source_drv.is_empty() {
+                hashes.insert(store_path_hash(&apm.source_drv).to_string());
+            }
+        }
+    }
+    hashes
 }
 
 /// Copy roots from one generation to another, EXCLUDING specific hashes.
@@ -436,6 +439,8 @@ mod tests {
                 registry: "aos-core".into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }
     }
@@ -704,6 +709,18 @@ mod tests {
 
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].apm.as_ref().unwrap().name, "shared");
+    }
+
+    #[test]
+    fn root_hashes_for_installed_includes_source_roots() {
+        let mut installed = sample_installed("sourceful", "aaa111", true);
+        installed.apm.as_mut().unwrap().source_drv =
+            "/var/lib/store/src222-sourceful-src.drv".to_string();
+
+        let hashes = root_hashes_for_installed(&[installed]);
+
+        assert!(hashes.contains("aaa111"));
+        assert!(hashes.contains("src222"));
     }
 
     // 10. copy_roots_except also handles src/ roots
