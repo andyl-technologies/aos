@@ -151,8 +151,14 @@ impl Profile {
     pub fn list_generations(&self) -> Result<Vec<Generation>> {
         let mut gens = Vec::new();
 
-        let entries = std::fs::read_dir(&self.path)
-            .with_context(|| format!("reading profile directory {}", self.path.display()))?;
+        let entries = match std::fs::read_dir(&self.path) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("reading profile directory {}", self.path.display()));
+            }
+        };
 
         for entry in entries {
             let entry = entry?;

@@ -252,6 +252,10 @@ in {
           grep -q "hostpkg/host-reg-client 1.0.0" "$work/apm-list.out"
           run_clean ${self}/bin/apm policy hostpkg > "$work/apm-policy.out" 2>&1
           grep -q "Candidate: 1.0.0" "$work/apm-policy.out"
+          run_clean ${self}/bin/apm held > "$work/apm-held.out" 2>&1
+          grep -q "No packages are held" "$work/apm-held.out"
+          run_clean ${self}/bin/apm rollback --list > "$work/apm-rollback-list.out" 2>&1
+          grep -q "No profile generations" "$work/apm-rollback-list.out"
           if run_clean ${self}/bin/apm files hostpkg > "$work/apm-files.out" 2>&1; then
             cat "$work/apm-files.out"
             exit 1
