@@ -553,7 +553,9 @@ in {
         cmp "/tmp/generated-cache-http-auth/$STORE_HASH.narinfo" \
           "/tmp/http-cache-root/protected-cache/$STORE_HASH.narinfo"
         grep -q "Priority: 39" /tmp/http-cache-root/protected-cache/nix-cache-info
-        python3 - /tmp/http-cache-events.jsonl "$STORE_HASH" "$LEAF_HASH" << 'PY'
+        set +e
+        python3 - /tmp/http-cache-events.jsonl "$STORE_HASH" "$LEAF_HASH" \
+          > /tmp/assert-http-auth-cache.log 2>&1 << 'PY'
       import json
       import sys
 
@@ -578,6 +580,12 @@ in {
       if not any(event["path"].startswith("protected-cache/nar/") for event in ok_events):
           raise AssertionError("authenticated upload did not write NAR body")
       PY
+        HTTP_AUTH_ASSERT_STATUS=$?
+        set -e
+        cat /tmp/assert-http-auth-cache.log
+        if [ "$HTTP_AUTH_ASSERT_STATUS" -ne 0 ]; then
+          exit 1
+        fi
 
         {
           printf "%s\n" "[registry]"
