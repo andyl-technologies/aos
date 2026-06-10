@@ -153,6 +153,36 @@
       }
     ];
   };
+  closureLeafToolV3 = mkRegistryTool {
+    pname = "closure-leaf";
+    version = "3.0.0";
+  };
+  closureRootToolV3 = pkgs.mkDerivation {
+    pname = "closure-root";
+    version = "3.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      closureLeafToolV3
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'leaf_output="$(${closureLeafToolV3}/bin/closure-leaf)"' \
+            'printf "closure-root 3.0.0 via %s\n" "$leaf_output"' \
+            > "$out/bin/closure-root"
+          chmod +x "$out/bin/closure-root"
+        '';
+      }
+    ];
+  };
   retireDepTool = mkRegistryTool {
     pname = "retire-dep";
     version = "1.0.0";
@@ -2445,7 +2475,17 @@ in {
   # -------------------------------------------------------------------------
   registry-channel-workflow = testing.mkVMTest {
     name = "apm-registry-channel-workflow";
-    rootfsDeps = maintainerWorkflowDeps ++ [pkgs.jq];
+    rootfsDeps =
+      maintainerWorkflowDeps
+      ++ [
+        pkgs.jq
+        closureLeafTool
+        closureRootTool
+        closureLeafToolV2
+        closureRootToolV2
+        closureLeafToolV3
+        closureRootToolV3
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -2453,27 +2493,27 @@ in {
 
       echo "==> Test: signed channel rollout, sync, install, and upgrade"
 
-      make_channel_tool() {
-        version="$1"
-        src="/tmp/channel-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/channel-tool"
-        cat > "$src/bin/channel-tool" << EOF
-      #!/bin/sh
-      echo "channel-tool $version executed"
-      EOF
-        chmod +x "$src/bin/channel-tool"
-        printf "payload for channel-tool %s\n" "$version" \
-          > "$src/share/channel-tool/payload.txt"
-        nix-store --add "$src"
-      }
-
-      TOOL_V1_STORE=$(make_channel_tool 1.0.0)
-      TOOL_V2_STORE=$(make_channel_tool 2.0.0)
-      TOOL_V3_STORE=$(make_channel_tool 3.0.0)
+      TOOL_V1_STORE="${closureRootTool}"
+      TOOL_V1_DEP_STORE="${closureLeafTool}"
+      TOOL_V2_STORE="${closureRootToolV2}"
+      TOOL_V2_DEP_STORE="${closureLeafToolV2}"
+      TOOL_V3_STORE="${closureRootToolV3}"
+      TOOL_V3_DEP_STORE="${closureLeafToolV3}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
       TOOL_V3_HASH=$(basename "$TOOL_V3_STORE" | cut -d- -f1)
+      TOOL_V3_DEP_HASH=$(basename "$TOOL_V3_DEP_STORE" | cut -d- -f1)
+      nix-store -q --references "$TOOL_V1_STORE" > /tmp/channel-v1-refs.out
+      assert_file_contains /tmp/channel-v1-refs.out "$TOOL_V1_DEP_STORE" \
+        "channel v1 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V2_STORE" > /tmp/channel-v2-refs.out
+      assert_file_contains /tmp/channel-v2-refs.out "$TOOL_V2_DEP_STORE" \
+        "channel v2 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V3_STORE" > /tmp/channel-v3-refs.out
+      assert_file_contains /tmp/channel-v3-refs.out "$TOOL_V3_DEP_STORE" \
+        "channel v3 root has a real dependency closure"
 
       ssh-keygen -q -t ed25519 -N "" -f /tmp/channel-release-key
       CHANNEL_PUBLIC=$(cut -d ' ' -f2 < /tmp/channel-release-key.pub)
@@ -2556,6 +2596,8 @@ in {
 
       assert_file_exists "/tmp/channel-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has channel-tool v1 narinfo"
+      assert_file_exists "/tmp/channel-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has channel-tool v1 dependency narinfo"
 
       $APR channel init canary 1.0.0 \
         --registry chan-reg \
@@ -2651,6 +2693,11 @@ in {
         cat /tmp/channel-delete-v1.out
         fail "deleted v1 store path before channel install"
       }
+      nix-store --delete --ignore-liveness "$TOOL_V1_DEP_STORE" \
+        > /tmp/channel-delete-v1-dep.out 2>&1 || {
+        cat /tmp/channel-delete-v1-dep.out
+        fail "deleted v1 dependency store path before channel install"
+      }
 
       $APM install channel-tool --registry chan-reg --yes \
         > /tmp/channel-install-v1.out 2>&1 || {
@@ -2658,12 +2705,13 @@ in {
         fail "apm install downloads channel v1"
       }
       cat /tmp/channel-install-v1.out
-      assert_file_contains /tmp/channel-install-v1.out "Downloading" \
-        "apm install downloads v1 NAR"
-      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/channel-tool"
+      assert_file_contains /tmp/channel-install-v1.out "Downloading 2 NAR" \
+        "apm install downloads v1 root and dependency NARs"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/closure-root"
       "$PROFILE_TOOL" > /tmp/channel-tool-v1.out
       assert_file_contains /tmp/channel-tool-v1.out \
-        "channel-tool 1.0.0 executed" "installed v1 channel tool executes"
+        "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
+        "installed v1 channel closure executes with its dependency"
 
       export HOME=/tmp
       export USER=root
@@ -2690,6 +2738,8 @@ in {
         "apr release advances selected channel partition"
       assert_file_exists "/tmp/channel-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has channel-tool v2 narinfo"
+      assert_file_exists "/tmp/channel-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has channel-tool v2 dependency narinfo"
       $APR channel status stable --registry chan-reg > /tmp/channel-status-v2.out 2>&1
       assert_file_contains /tmp/channel-status-v2.out "2.0.0" \
         "channel status reports v2 frontier"
@@ -2719,6 +2769,11 @@ in {
         cat /tmp/channel-delete-v2.out
         fail "deleted v2 store path before channel upgrade"
       }
+      nix-store --delete --ignore-liveness "$TOOL_V2_DEP_STORE" \
+        > /tmp/channel-delete-v2-dep.out 2>&1 || {
+        cat /tmp/channel-delete-v2-dep.out
+        fail "deleted v2 dependency store path before channel upgrade"
+      }
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -2743,13 +2798,14 @@ in {
         fail "apm upgrade downloads and activates channel v2"
       }
       cat /tmp/channel-upgrade.out
-      assert_file_contains /tmp/channel-upgrade.out "Downloading" \
-        "apm upgrade downloads v2 NAR"
+      assert_file_contains /tmp/channel-upgrade.out "Downloading 2 NAR" \
+        "apm upgrade downloads v2 root and dependency NARs"
       assert_file_contains /tmp/channel-upgrade.out "Upgraded 1 package" \
         "apm upgrade activates channel v2"
       "$PROFILE_TOOL" > /tmp/channel-tool-v2.out
       assert_file_contains /tmp/channel-tool-v2.out \
-        "channel-tool 2.0.0 executed" "upgraded v2 channel tool executes"
+        "^closure-root 2.0.0 via closure-leaf 2.0.0$" \
+        "upgraded v2 channel closure executes with its dependency"
 
       export HOME=/tmp
       export USER=root
@@ -2774,6 +2830,8 @@ in {
         "apr release creates signed v3 tag"
       assert_file_exists "/tmp/channel-cache/$TOOL_V3_HASH.narinfo" \
         "static cache has channel-tool v3 narinfo"
+      assert_file_exists "/tmp/channel-cache/$TOOL_V3_DEP_HASH.narinfo" \
+        "static cache has channel-tool v3 dependency narinfo"
 
       if $APR channel advance stable 3.0.0 \
         --registry chan-reg \
@@ -2816,6 +2874,11 @@ in {
         cat /tmp/channel-delete-v3.out
         fail "deleted v3 store path before direct channel upgrade"
       }
+      nix-store --delete --ignore-liveness "$TOOL_V3_DEP_STORE" \
+        > /tmp/channel-delete-v3-dep.out 2>&1 || {
+        cat /tmp/channel-delete-v3-dep.out
+        fail "deleted v3 dependency store path before direct channel upgrade"
+      }
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -2840,13 +2903,14 @@ in {
         fail "apm upgrade downloads and activates directly advanced v3"
       }
       cat /tmp/channel-upgrade-v3.out
-      assert_file_contains /tmp/channel-upgrade-v3.out "Downloading" \
-        "apm upgrade downloads directly advanced v3 NAR"
+      assert_file_contains /tmp/channel-upgrade-v3.out "Downloading 2 NAR" \
+        "apm upgrade downloads directly advanced v3 root and dependency NARs"
       assert_file_contains /tmp/channel-upgrade-v3.out "Upgraded 1 package" \
         "apm upgrade activates directly advanced v3"
       "$PROFILE_TOOL" > /tmp/channel-tool-v3.out
       assert_file_contains /tmp/channel-tool-v3.out \
-        "channel-tool 3.0.0 executed" "upgraded v3 channel tool executes"
+        "^closure-root 3.0.0 via closure-leaf 3.0.0$" \
+        "upgraded v3 channel closure executes with its dependency"
 
       kill "$ORIGIN_PID" "$CACHE_PID" 2>/dev/null || true
       wait "$ORIGIN_PID" "$CACHE_PID" 2>/dev/null || true
