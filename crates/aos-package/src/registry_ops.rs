@@ -3547,6 +3547,8 @@ fn execute_retirement_resign(
         printer.info(&format!("Re-signed channel '{channel_name}' partitions."));
     }
 
+    refresh_registry_object_store(dir)
+        .context("refreshing dumb-HTTP object store after key-retirement re-sign")?;
     Ok(())
 }
 

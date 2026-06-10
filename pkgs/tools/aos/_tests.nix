@@ -2833,6 +2833,214 @@ in {
     ];
   };
 
+  host-apr-key-retirement-http = pkgs.mkDerivation {
+    pname = "aos-host-apr-key-retirement-http";
+    version = "0";
+    src = null;
+
+    buildDeps = [
+      self
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.findutils
+      pkgs.git
+      pkgs.grep
+      pkgs.jq
+      pkgs.nix
+      pkgs.openssh
+      pkgs.python3
+      pkgs.zstd
+    ];
+
+    phases = [
+      {
+        name = "check";
+        script = ''
+          set -eu
+
+          work="$TMPDIR/aos-host-key-retirement-http"
+          home="$work/home"
+          config="$work/config"
+          data="$work/share"
+          cache="$work/cache"
+          profile_root="$work/profiles"
+          aos_root="$work/aos-root"
+          store_dir="$aos_root/store"
+          state_dir="$aos_root/var/nix"
+          nix_conf="$work/nix-conf"
+          port="18139"
+          server_pid=""
+          mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf"
+          cat > "$nix_conf/nix.conf" << NIXCONF
+          experimental-features = nix-command
+          sandbox = false
+          substituters =
+          NIXCONF
+
+          dump_recent_work_files() {
+            if ! test -d "$work"; then
+              return
+            fi
+            printf '\nRecent host APR key-retirement logs:\n' >&2
+            for path in $(${pkgs.findutils}/bin/find "$work" -maxdepth 1 -type f -printf '%T@ %p\n' | ${pkgs.coreutils}/bin/sort -nr | ${pkgs.coreutils}/bin/head -20 | ${pkgs.coreutils}/bin/cut -d ' ' -f2-); do
+              printf '\n--- %s ---\n' "$path" >&2
+              ${pkgs.coreutils}/bin/tail -n 80 "$path" >&2 || true
+            done
+          }
+
+          cleanup() {
+            status=$?
+            if test "$status" -ne 0; then
+              printf '\nhost APR key-retirement HTTP workflow failed with exit %s\n' "$status" >&2
+              dump_recent_work_files
+            fi
+            if test -n "$server_pid"; then
+              kill "$server_pid" 2>/dev/null || true
+              wait "$server_pid" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          run_clean() {
+            env -i \
+              HOME="$home" \
+              XDG_CONFIG_HOME="$config" \
+              XDG_DATA_HOME="$data" \
+              XDG_CACHE_HOME="$cache" \
+              AOS_PROFILE_ROOT="$profile_root" \
+              AOS_ROOT="$aos_root" \
+              AOS_NIX_STORE_DIR="$store_dir" \
+              AOS_NIX_STATE_DIR="$state_dir" \
+              NIX_REMOTE="" \
+              NIX_CONF_DIR="$nix_conf" \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_AUTHOR_NAME="Host Key Retirement Test" \
+              GIT_AUTHOR_EMAIL="host-key-retirement@example.invalid" \
+              GIT_COMMITTER_NAME="Host Key Retirement Test" \
+              GIT_COMMITTER_EMAIL="host-key-retirement@example.invalid" \
+              PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+              "$@"
+          }
+
+          nix_store() {
+            env \
+              NIX_REMOTE="" \
+              NIX_CONF_DIR="$nix_conf" \
+              NIX_STORE_DIR="$store_dir" \
+              NIX_STATE_DIR="$state_dir" \
+              PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+              nix-store "$@"
+          }
+
+          nix_build() {
+            env \
+              HOME="$home" \
+              XDG_CACHE_HOME="$cache" \
+              NIX_REMOTE="" \
+              NIX_CONF_DIR="$nix_conf" \
+              NIX_STORE_DIR="$store_dir" \
+              NIX_STATE_DIR="$state_dir" \
+              NIX_LOG_DIR="$state_dir/log/nix" \
+              PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+              nix-build "$@"
+          }
+
+          nix_store --init > "$work/nix-store-init.out" 2>&1
+
+          cat > "$work/build-package.sh" << SCRIPT
+          set -eu
+          ${pkgs.coreutils}/bin/mkdir -p "\$out/bin"
+          {
+            printf '%s\n' '#!${pkgs.bash}/bin/bash'
+            printf '%s\n' 'printf "host key retirement package executed\n"'
+          } > "\$out/bin/host-key-retirement-tool"
+          ${pkgs.coreutils}/bin/chmod +x "\$out/bin/host-key-retirement-tool"
+          SCRIPT
+          cat > "$work/package.nix" << NIX
+          derivation {
+            name = "hostkeyresign-1.0.0";
+            system = "x86_64-linux";
+            builder = "${pkgs.bash}/bin/bash";
+            args = [ ./build-package.sh ];
+          }
+          NIX
+          store_path=$(nix_build "$work/package.nix" --no-out-link)
+
+          ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/initial-release-key"
+          public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/initial-release-key.pub")
+          trust_key="host-keyresign:Ed25519:$public_key"
+          run_clean ${self}/bin/apr create host-keyresign \
+            --trust-key "$trust_key" \
+            --trust-key-id initial \
+            --key "$work/initial-release-key" \
+            > "$work/apr-create-host-keyresign.out" 2>&1
+          reg="$data/apm/registries/host-keyresign"
+          run_clean ${self}/bin/apm registry add --no-verify "file://$reg" \
+            --name host-keyresign \
+            --no-clone > "$work/apm-add-host-keyresign-config.out" 2>&1
+          run_clean ${self}/bin/apr keys generate next \
+            --registry host-keyresign \
+            --add \
+            --key "$work/initial-release-key" \
+            > "$work/apr-keys-generate-next.out" 2>&1
+          run_clean ${self}/bin/apr --json release 1.0.0 \
+            --registry host-keyresign \
+            --store-path "$store_path" \
+            --name hostkeyresign \
+            --description "Host key retirement re-sign fixture" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --key "$work/initial-release-key" \
+            > "$work/apr-release-host-keyresign.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-keyresign"
+              and .version == "1.0.0"' \
+            "$work/apr-release-host-keyresign.json" >/dev/null
+          initial_tag=$(git -C "$reg" rev-parse '1.0.0^{tag}')
+          run_clean ${self}/bin/apr sign 1.0.0 \
+            --registry host-keyresign \
+            --key-id next \
+            > "$work/apr-sign-next.out" 2>&1
+          next_tag=$(git -C "$reg" rev-parse '1.0.0^{tag}')
+          test "$next_tag" != "$initial_tag"
+          run_clean ${self}/bin/apr keys retire next \
+            --registry host-keyresign \
+            --vouched-by initial \
+            --reason "rotation complete" \
+            --key "$work/initial-release-key" \
+            > "$work/apr-keys-retire-next.out" 2>&1
+          grep -q "Retired signing key 'next'" "$work/apr-keys-retire-next.out"
+          resigned_tag=$(git -C "$reg" rev-parse '1.0.0^{tag}')
+          test "$resigned_tag" != "$next_tag"
+
+          PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$port" \
+            --bind 127.0.0.1 --directory "$data/apm/registries" \
+            > "$work/http-server.log" 2>&1 &
+          server_pid=$!
+          ${pkgs.coreutils}/bin/sleep 1
+          if ! kill -0 "$server_pid" 2>/dev/null; then
+            cat "$work/http-server.log"
+            exit 1
+          fi
+          git ls-remote "http://127.0.0.1:$port/host-keyresign/.git" \
+            "refs/tags/1.0.0" > "$work/git-ls-remote-host-keyresign.out" 2>&1 || {
+            cat "$work/git-ls-remote-host-keyresign.out"
+            exit 1
+          }
+          grep -q "$resigned_tag" "$work/git-ls-remote-host-keyresign.out" || {
+            cat "$work/git-ls-remote-host-keyresign.out"
+            exit 1
+          }
+
+          mkdir -p "$out"
+          echo "PASS" > "$out/result"
+        '';
+      }
+    ];
+  };
+
   # ---------------------------------------------------------------------------
   # Cache server — startup, HTTP endpoints, token management
   # ---------------------------------------------------------------------------
