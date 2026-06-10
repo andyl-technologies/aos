@@ -199,6 +199,49 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
 }
 
 #[test]
+fn apr_keys_retire_fails_before_mutation_without_vouching_key() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let initial = TestKey::write(&home, "core", [14_u8; 32], "initial")?;
+    let Some(registry_dir) = init_registry(&home, "core", Some(&initial))? else {
+        eprintln!("skipping apr keys CLI e2e: git cannot initialize a sha256 repository");
+        return Ok(());
+    };
+    let second = TestKey::write(&home, "core", [15_u8; 32], "second")?;
+    run_apr(
+        &home,
+        &[
+            "keys",
+            "add",
+            "second",
+            &second.trust_key,
+            "--key",
+            initial.path_str(),
+            "--registry",
+            "core",
+        ],
+    )?;
+    let roster_before = fs::read_to_string(registry_dir.join("keys.toml"))?;
+
+    // Without --key and without a [registry.signing_keys] entry for the
+    // vouching survivor, retirement fails before modifying anything.
+    let err = run_apr_err(&home, &["keys", "retire", "initial", "--registry", "core"])?;
+    let text = output_text(&err);
+    assert!(
+        text.contains("registries.d") || text.contains("signing_keys"),
+        "{text}"
+    );
+    assert_eq!(
+        fs::read_to_string(registry_dir.join("keys.toml"))?,
+        roster_before,
+        "keys.toml must be unchanged after a failed retirement"
+    );
+    assert_eq!(git(&registry_dir, &["rev-list", "--count", "HEAD"])?, "2");
+
+    Ok(())
+}
+
+#[test]
 fn apr_keys_add_on_empty_roster_may_commit_unsigned() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");

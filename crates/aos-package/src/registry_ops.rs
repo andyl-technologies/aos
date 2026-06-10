@@ -26,7 +26,9 @@ use crate::registry::pack;
 use crate::registry::state;
 use crate::registry::static_upload;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
-use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
+use crate::security::{
+    KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key, verify_tag_signature,
+};
 use crate::sshkey;
 use crate::types::{CacheEntry, RegistryConfig, RegistryRootConfig};
 use crate::{
@@ -2485,6 +2487,7 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             no_commit,
             signing_key,
             signing_key_id,
+            no_resign,
             registry,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
@@ -2494,8 +2497,9 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             let vouching_id = retire_roster_key(&mut roster, id, reason.as_deref(), vouched_by)?;
             // The vouching survivor signs the retirement by default; the
             // key resolution runs against the pre-retire roster, where the
-            // voucher is still active.
-            let commit_key = if *no_commit {
+            // voucher is still active. Re-signing also needs this key, so
+            // resolution failures abort before anything is modified.
+            let signer = if *no_commit && *no_resign {
                 None
             } else if signing_key.is_none() && signing_key_id.is_none() {
                 Some(resolve_producer_signing_key(
@@ -2515,19 +2519,222 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
                     signing_key_id.as_deref(),
                 )?
             };
+            // Signatures by the retired key become invalid on clients, so
+            // every tag a client still resolves must be re-signed by a
+            // survivor. Plan against the post-retirement active set before
+            // mutating anything.
+            let survivors: Vec<String> = roster
+                .active
+                .iter()
+                .map(|entry| entry.key.clone())
+                .collect();
+            let plan = plan_retirement_resign(&dir, &survivors)?;
             persist_committed_roster(
                 &dir,
                 &roster,
                 *no_commit,
                 &format!("registry: retire signing key {id}"),
-                commit_key.as_deref(),
+                if *no_commit { None } else { signer.as_deref() },
             )?;
+            if *no_resign {
+                print_resign_plan(&plan, printer);
+            } else if let Some(vouch_key) = signer.as_deref() {
+                execute_retirement_resign(&dir, &plan, vouch_key, printer)?;
+            }
             printer.success(&format!(
                 "Retired signing key '{id}' from registry '{registry_name}' (vouched by '{vouching_id}')."
             ));
             Ok(())
         }
     }
+}
+
+/// Tags whose signatures must be refreshed after a key retirement.
+///
+/// `affected_partitions` carries the release each partition payload must
+/// be rewritten against, captured *before* release tags are force-retagged
+/// (re-signing changes the tag-object id, which would otherwise orphan the
+/// payload's reference).
+struct ResignPlan {
+    affected_releases: Vec<semver::Version>,
+    affected_partitions: Vec<(String, u8, semver::Version)>,
+}
+
+impl ResignPlan {
+    fn is_empty(&self) -> bool {
+        self.affected_releases.is_empty() && self.affected_partitions.is_empty()
+    }
+}
+
+/// Enumerate the tags clients resolve and check which no longer verify
+/// against the surviving active keys.
+///
+/// Covers every channel partition payload under `.git/channels/` and each
+/// release tag those partitions reference. A partition is also marked
+/// affected when its release tag must be re-signed: the new release tag
+/// object gets a different id, so the payload has to be regenerated even
+/// when its own signature is fine.
+fn plan_retirement_resign(dir: &Path, survivors: &[String]) -> Result<ResignPlan> {
+    let release_tags = semver_tag_object_map(dir)?;
+    let git_dir = objectstore::repo_git_dir(dir)?;
+    let channels_dir = git_dir.join("channels");
+
+    // (channel, bucket, version, payload signature fails against survivors)
+    let mut partitions: Vec<(String, u8, semver::Version, bool)> = Vec::new();
+    if channels_dir.exists() {
+        let mut channel_names: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&channels_dir)
+            .with_context(|| format!("reading {}", channels_dir.display()))?
+        {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                channel_names.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        channel_names.sort();
+        for channel_name in channel_names {
+            let channel_dir = channels_dir.join(&channel_name);
+            for bucket in 0..=u8::MAX {
+                let path = channel_dir.join(channel::bucket_hex(bucket));
+                if !path.exists() {
+                    continue;
+                }
+                let payload =
+                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+                let tag = parse_tag_object(&String::from_utf8_lossy(&payload))
+                    .with_context(|| format!("parsing channel partition {}", path.display()))?;
+                let version = release_tags.get(&tag.object).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "channel partition {} points at unknown release tag object {}",
+                        path.display(),
+                        tag.object,
+                    )
+                })?;
+                let oid = hash_tag_object(dir, &payload)?;
+                let verified = verify_tag_signature(dir, &oid, survivors)?;
+                partitions.push((channel_name.clone(), bucket, version.clone(), !verified));
+            }
+        }
+    }
+
+    let referenced: HashSet<semver::Version> = partitions
+        .iter()
+        .map(|(_, _, version, _)| version.clone())
+        .collect();
+    let mut affected_releases: Vec<semver::Version> = Vec::new();
+    for version in referenced {
+        if !verify_tag_signature(dir, &version.to_string(), survivors)? {
+            affected_releases.push(version);
+        }
+    }
+    affected_releases.sort();
+
+    let affected_partitions = partitions
+        .into_iter()
+        .filter(|(_, _, version, failing)| *failing || affected_releases.contains(version))
+        .map(|(channel, bucket, version, _)| (channel, bucket, version))
+        .collect();
+
+    Ok(ResignPlan {
+        affected_releases,
+        affected_partitions,
+    })
+}
+
+/// Re-sign every affected tag with the vouching survivor's private key.
+///
+/// Release tags are force-retagged against their original commit and
+/// message; affected channel partitions are regenerated against the new
+/// tag objects, and each touched channel's branch head and object store
+/// are refreshed.
+fn execute_retirement_resign(
+    dir: &Path,
+    plan: &ResignPlan,
+    vouch_key: &str,
+    printer: &Printer,
+) -> Result<()> {
+    if plan.is_empty() {
+        return Ok(());
+    }
+
+    for version in &plan.affected_releases {
+        let tag = version.to_string();
+        let commit = release_commit(dir, version)?;
+        let payload = git(dir, &["cat-file", "-p", &format!("{tag}^{{tag}}")])?;
+        let message = tag_message_without_signature(&payload);
+        sign_tag(dir, &tag, &commit, message.as_deref(), vouch_key, true)?;
+        printer.info(&format!("Re-signed release tag {tag}."));
+    }
+
+    let mut touched_channels: Vec<&str> = Vec::new();
+    for (channel_name, bucket, version) in &plan.affected_partitions {
+        write_channel_partition_tag(dir, channel_name, *bucket, version, vouch_key)?;
+        if !touched_channels.contains(&channel_name.as_str()) {
+            touched_channels.push(channel_name);
+        }
+    }
+    for channel_name in touched_channels {
+        let map = read_channel_partition_map(dir, channel_name)?;
+        update_channel_frontier(dir, channel_name, &map)?;
+        printer.info(&format!("Re-signed channel '{channel_name}' partitions."));
+    }
+
+    Ok(())
+}
+
+/// Print the re-sign plan for manual handling (`--no-resign`).
+fn print_resign_plan(plan: &ResignPlan, printer: &Printer) {
+    if plan.is_empty() {
+        printer.info("No tags need re-signing.");
+        return;
+    }
+    printer.warning("Skipped re-signing (--no-resign). Affected tags:");
+    for version in &plan.affected_releases {
+        printer.plain(&format!("  release tag {version}"));
+    }
+    for (channel, bucket, version) in &plan.affected_partitions {
+        printer.plain(&format!(
+            "  channel {channel} partition {} -> {version}",
+            channel::bucket_hex(*bucket),
+        ));
+    }
+}
+
+/// Extract a signed tag's original message, dropping the SSH signature
+/// block git appends to the payload.
+fn tag_message_without_signature(payload: &str) -> Option<String> {
+    let (_, body) = payload.split_once("\n\n")?;
+    let message = match body.find("-----BEGIN SSH SIGNATURE-----") {
+        Some(position) => &body[..position],
+        None => body,
+    };
+    Some(message.trim_end().to_string())
+}
+
+/// Write a tag object payload into the object database, returning its id.
+fn hash_tag_object(dir: &Path, payload: &[u8]) -> Result<String> {
+    use std::process::Stdio;
+    let mut child = Command::new("git")
+        .args(["hash-object", "-w", "-t", "tag", "--stdin"])
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawning git hash-object")?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        std::io::Write::write_all(stdin, payload).context("writing tag payload to hash-object")?;
+    }
+    let output = child
+        .wait_with_output()
+        .context("running git hash-object")?;
+    if !output.status.success() {
+        bail!(
+            "git hash-object failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn load_committed_roster(dir: &Path) -> Result<KeysToml> {
@@ -4334,12 +4541,20 @@ mod tests {
     }
 
     fn write_test_signing_key(root: &Path, registry: &str) -> TestSigningFixture {
+        write_seeded_signing_key(root, registry, [9u8; 32], "registry_ed25519")
+    }
+
+    fn write_seeded_signing_key(
+        root: &Path,
+        registry: &str,
+        seed: [u8; 32],
+        name: &str,
+    ) -> TestSigningFixture {
         let signing_dir = root.join("signing");
         fs::create_dir_all(&signing_dir).unwrap();
 
-        let seed = [9u8; 32];
         let keypair = crate::sshkey::Ed25519Keypair::from_seed(seed);
-        let private_key = signing_dir.join("registry_ed25519");
+        let private_key = signing_dir.join(name);
 
         fs::write(&private_key, keypair.to_openssh_private_key(registry)).unwrap();
         restrict_private_key_permissions(&private_key).unwrap();
@@ -4348,6 +4563,87 @@ mod tests {
             trusted_key: keypair.trust_key_line(registry),
             private_key,
         }
+    }
+
+    #[test]
+    fn retirement_resign_rotates_release_and_partition_signatures() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=stable",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+
+        // Maintainer A signs everything and then retires; B survives.
+        let key_a = write_seeded_signing_key(tmp.path(), "aos-core", [9u8; 32], "key_a");
+        let key_b = write_seeded_signing_key(tmp.path(), "aos-core", [10u8; 32], "key_b");
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+
+        let version = semver::Version::new(1, 0, 0);
+        let key_a_path = key_a.private_key.to_str().unwrap();
+        sign_tag(
+            &repo,
+            "1.0.0",
+            "HEAD",
+            Some("release 1.0.0"),
+            key_a_path,
+            false,
+        )
+        .unwrap();
+        let printer = Printer::new(0, true, false);
+        channel_init_dir(&repo, "prod", &version, key_a_path, &printer).unwrap();
+
+        // Nothing is affected while A is still a survivor.
+        let survivors_both = vec![key_a.trusted_key.clone(), key_b.trusted_key.clone()];
+        let plan = plan_retirement_resign(&repo, &survivors_both).unwrap();
+        assert!(plan.is_empty());
+
+        // Retiring A: the release tag and every partition need re-signing.
+        let survivors = vec![key_b.trusted_key.clone()];
+        let plan = plan_retirement_resign(&repo, &survivors).unwrap();
+        assert_eq!(plan.affected_releases, vec![version.clone()]);
+        assert_eq!(plan.affected_partitions.len(), 256);
+
+        execute_retirement_resign(&repo, &plan, key_b.private_key.to_str().unwrap(), &printer)
+            .unwrap();
+
+        // The release tag now verifies only against the survivor.
+        assert!(
+            verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&key_b.trusted_key)).unwrap()
+        );
+        assert!(
+            !verify_tag_signature(&repo, "1.0.0", std::slice::from_ref(&key_a.trusted_key))
+                .unwrap()
+        );
+
+        // Partition payloads were regenerated against the new tag object
+        // and verify against the survivor.
+        let payload = fs::read(repo.join(".git/channels/prod/00")).unwrap();
+        let oid = hash_tag_object(&repo, &payload).unwrap();
+        assert!(
+            verify_tag_signature(&repo, &oid, std::slice::from_ref(&key_b.trusted_key)).unwrap()
+        );
+        let map = read_channel_partition_map(&repo, "prod").unwrap();
+        assert_eq!(channel::compute_frontier(&map), Some(version));
+
+        // Re-planning against the survivor finds nothing left to re-sign.
+        let plan = plan_retirement_resign(&repo, &survivors).unwrap();
+        assert!(plan.is_empty());
     }
 
     #[cfg(unix)]

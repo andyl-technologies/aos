@@ -882,6 +882,10 @@ pub enum KeysCommand {
         /// Active key id whose configured private key signs the roster commit
         #[arg(long = "key-id")]
         signing_key_id: Option<String>,
+        /// Skip re-signing affected channel and release tags; print them
+        /// for manual handling instead
+        #[arg(long = "no-resign")]
+        no_resign: bool,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
