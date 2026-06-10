@@ -43,25 +43,21 @@ pub async fn run(
         return Ok(RemoveOutcome::default());
     }
 
-    // Step 1: Open profile and get current generation.
-    let profile = if dry_run {
-        Profile::open_readonly(config.scope)
-    } else {
-        Profile::open(config.scope)?
-    };
-    let current_gen = profile
+    // Step 1: Inspect profile and get current generation.
+    let inspect_profile = Profile::open_readonly(config.scope);
+    let current_gen = inspect_profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
 
     // Step 2: Find installed packages matching the requested names.
-    let to_remove = find_installed(&profile, packages)?;
+    let to_remove = find_installed(&inspect_profile, packages)?;
 
     // Step 3: Collect hashes to remove.
     let mut remove_hashes = root_hashes_for_installed(&to_remove);
 
     // Step 4: If --autoremove, also find orphaned auto-installed deps.
     let orphans = if auto_remove {
-        find_orphans(&profile, &remove_hashes).await?
+        find_orphans(&inspect_profile, &remove_hashes).await?
     } else {
         Vec::new()
     };
@@ -82,6 +78,8 @@ pub async fn run(
     if !yes && !config.settings.assume_yes {
         confirm(printer)?;
     }
+
+    let profile = Profile::open(config.scope)?;
 
     // Step 7: Create new generation, copying roots except removed ones.
     printer.step(1, 3, "Creating new generation...");
@@ -126,19 +124,15 @@ pub async fn run_autoremove(
     yes: bool,
     printer: &Printer,
 ) -> Result<RemoveOutcome> {
-    // Step 1: Open profile.
-    let profile = if dry_run {
-        Profile::open_readonly(config.scope)
-    } else {
-        Profile::open(config.scope)?
-    };
-    let current_gen = profile
+    // Step 1: Inspect profile.
+    let inspect_profile = Profile::open_readonly(config.scope);
+    let current_gen = inspect_profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
 
     // Step 2: Find orphaned packages.
     let empty_exclude: HashSet<String> = HashSet::new();
-    let orphans = find_orphans(&profile, &empty_exclude).await?;
+    let orphans = find_orphans(&inspect_profile, &empty_exclude).await?;
 
     if orphans.is_empty() {
         printer.info("No orphaned packages to remove.");
@@ -162,6 +156,8 @@ pub async fn run_autoremove(
     if !yes && !config.settings.assume_yes {
         confirm(printer)?;
     }
+
+    let profile = Profile::open(config.scope)?;
 
     // Step 6: Create new generation without orphans.
     printer.step(1, 3, "Creating new generation...");

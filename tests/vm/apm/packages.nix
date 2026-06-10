@@ -2027,6 +2027,38 @@ in {
       }
       cat /tmp/remove-basic-registry-add.out
 
+      if $APM remove remove-basic-tool --yes > /tmp/remove-basic-empty-remove.out 2>&1; then
+        cat /tmp/remove-basic-empty-remove.out
+        fail "remove should fail when no profile is installed"
+      else
+        cat /tmp/remove-basic-empty-remove.out
+        pass "remove fails before any package is installed"
+      fi
+      assert_file_contains /tmp/remove-basic-empty-remove.out "nothing installed" \
+        "empty remove reports no current generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty remove leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty remove should not initialize profile state"
+      fi
+
+      if $APM autoremove --yes > /tmp/remove-basic-empty-autoremove.out 2>&1; then
+        cat /tmp/remove-basic-empty-autoremove.out
+        fail "autoremove should fail when no profile is installed"
+      else
+        cat /tmp/remove-basic-empty-autoremove.out
+        pass "autoremove fails before any package is installed"
+      fi
+      assert_file_contains /tmp/remove-basic-empty-autoremove.out "nothing installed" \
+        "empty autoremove reports no current generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty autoremove leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty autoremove should not initialize profile state"
+      fi
+
       if $APM remove remove-basic-tool --dry-run > /tmp/remove-basic-empty-dry-run.out 2>&1; then
         cat /tmp/remove-basic-empty-dry-run.out
         fail "remove dry-run should fail when no profile is installed"
