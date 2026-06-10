@@ -1813,6 +1813,32 @@ in {
       }
       cat /tmp/reinstall-registry-add.out
 
+      if $APM reinstall reinstall-tool --yes > /tmp/reinstall-empty.out 2>&1; then
+        cat /tmp/reinstall-empty.out
+        fail "apm reinstall should fail before reinstall-tool is installed"
+      else
+        cat /tmp/reinstall-empty.out
+        pass "apm reinstall fails before reinstall-tool is installed"
+      fi
+      assert_file_contains /tmp/reinstall-empty.out "package not installed" \
+        "empty reinstall reports missing installed package"
+      assert_file_not_contains /tmp/reinstall-empty.out "Downloading" \
+        "empty reinstall does not download package bodies"
+      assert_file_not_contains /tmp/reinstall-empty.out "Updating profile" \
+        "empty reinstall does not update profile"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty reinstall leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty reinstall should not initialize profile state"
+      fi
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "empty reinstall leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "empty reinstall should not cache package bodies"
+      fi
+
       delete_store_path "$TOOL_STORE" "reinstall-tool"
       delete_store_path "$PEER_STORE" "reinstall-peer"
       rm -rf "$HOME/.cache/apm"
