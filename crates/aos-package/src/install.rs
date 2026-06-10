@@ -54,6 +54,7 @@ pub async fn run(
     printer.step(2, 7, "Resolving dependencies...");
     let mut closures = resolve_multiple(&registries, packages, registry_filter)?;
     if no_deps {
+        ensure_skipped_dependencies_present(&closures).await?;
         prune_dependency_members(&mut closures);
     }
     let profile = Profile::open(config.scope)?;
@@ -392,6 +393,47 @@ fn prune_dependency_members(closures: &mut [ResolvedClosure]) {
 
         closure.total_nar_size = closure.closure.iter().map(|m| m.nar_size).sum();
     }
+}
+
+async fn ensure_skipped_dependencies_present(closures: &[ResolvedClosure]) -> Result<()> {
+    let requested_hashes: HashSet<String> = closures
+        .iter()
+        .map(|closure| store_path_hash(&closure.root.store_path).to_string())
+        .collect();
+    let mut seen = HashSet::new();
+    let mut skipped = Vec::new();
+
+    for closure in closures {
+        for meta in &closure.closure {
+            let hash = store_path_hash(&meta.store_path).to_string();
+            if requested_hashes.contains(&hash) || !seen.insert(hash) {
+                continue;
+            }
+            skipped.push(meta);
+        }
+    }
+
+    if skipped.is_empty() {
+        return Ok(());
+    }
+
+    let store_paths: Vec<String> = skipped.iter().map(|meta| meta.store_path.clone()).collect();
+    let missing = filter_missing(&store_paths).await?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let missing_set: HashSet<&str> = missing.iter().map(|path| path.as_str()).collect();
+    let labels: Vec<String> = skipped
+        .iter()
+        .filter(|meta| missing_set.contains(meta.store_path.as_str()))
+        .map(|meta| format!("{} ({})", meta.name, meta.store_path))
+        .collect();
+
+    anyhow::bail!(
+        "--no-deps requested but dependency store path(s) are missing: {}",
+        labels.join(", ")
+    );
 }
 
 fn installed_store_hashes_for_names(
