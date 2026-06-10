@@ -399,6 +399,13 @@ in {
       run_logged /tmp/e2e-verify-installed-v1.out "$APM" verify e2e-tool || {
         fail "apm verify succeeds for installed e2e-tool v1"
       }
+      run_logged /tmp/e2e-installed-v1.out "$APM" list --installed || {
+        fail "apm list --installed succeeds after installing e2e-tool v1"
+      }
+      assert_file_contains /tmp/e2e-installed-v1.out "e2e-tool/e2e-reg" \
+        "apm list --installed reports e2e-tool v1"
+      assert_file_contains /tmp/e2e-installed-v1.out "1.0.0" \
+        "apm list --installed reports e2e-tool v1 version"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
@@ -436,6 +443,15 @@ in {
       "$PROFILE/current/bin/e2e-tool" > /tmp/e2e-run-v2.out
       assert_file_contains /tmp/e2e-run-v2.out "e2e-tool 2.0.0 executed" \
         "upgraded e2e-tool v2 executes from profile"
+      run_logged /tmp/e2e-installed-v2.out "$APM" list --installed || {
+        fail "apm list --installed succeeds after upgrading e2e-tool v2"
+      }
+      assert_file_contains /tmp/e2e-installed-v2.out "e2e-tool/e2e-reg" \
+        "apm list --installed reports e2e-tool v2"
+      assert_file_contains /tmp/e2e-installed-v2.out "2.0.0" \
+        "apm list --installed reports e2e-tool v2 version"
+      assert_file_not_contains /tmp/e2e-installed-v2.out "1.0.0" \
+        "apm list --installed drops e2e-tool v1 after upgrade"
 
       run_logged /tmp/e2e-rollback.out "$APM" rollback || {
         fail "apm rollback returns e2e-tool to v1"
@@ -448,6 +464,13 @@ in {
       run_logged /tmp/e2e-verify-rollback.out "$APM" verify e2e-tool || {
         fail "apm verify succeeds after e2e rollback"
       }
+      run_logged /tmp/e2e-installed-rollback.out "$APM" list --installed || {
+        fail "apm list --installed succeeds after rolling back e2e-tool"
+      }
+      assert_file_contains /tmp/e2e-installed-rollback.out "e2e-tool/e2e-reg" \
+        "apm list --installed reports rolled-back e2e-tool"
+      assert_file_contains /tmp/e2e-installed-rollback.out "1.0.0" \
+        "apm list --installed reports rolled-back e2e-tool v1"
 
       run_logged /tmp/e2e-remove.out "$APM" remove e2e-tool --yes || {
         fail "apm remove deletes e2e-tool"
@@ -459,7 +482,9 @@ in {
       else
         pass "removed e2e-tool executable is absent from current profile"
       fi
-      run_logged /tmp/e2e-installed-after-remove.out "$APM" list --installed || true
+      run_logged /tmp/e2e-installed-after-remove.out "$APM" list --installed || {
+        fail "apm list --installed succeeds after removing e2e-tool"
+      }
       assert_file_not_contains /tmp/e2e-installed-after-remove.out "e2e-tool" \
         "apm list --installed omits removed e2e-tool"
 
