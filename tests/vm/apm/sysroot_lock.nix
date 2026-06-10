@@ -221,6 +221,9 @@
     url = "file:///var/lib/apm/registries/sysroot-reg"
     priority = 600
     enabled = true
+
+    [registry.signing]
+    required = false
     CFGEOF
 
         cat > /etc/apm/registries.d/user-reg.toml << 'CFGEOF'
@@ -229,6 +232,9 @@
     url = "file:///var/lib/apm/registries/user-reg"
     priority = 500
     enabled = true
+
+    [registry.signing]
+    required = false
     CFGEOF
 
         # Symlink registries into the remote cache (apm reads from here)

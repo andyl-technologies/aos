@@ -440,11 +440,11 @@ in {
       mkdir -p "$HOME"
       APM_CONFIG="$HOME/.config/apm"
 
-      $APM registry add file:///tmp/low-priority-origin.git \
+      $APM registry add --no-verify file:///tmp/low-priority-origin.git \
         --name low-priority \
         --branch "$LOW_BRANCH" \
         --priority 100
-      $APM registry add file:///tmp/high-priority-origin.git \
+      $APM registry add --no-verify file:///tmp/high-priority-origin.git \
         --name high-priority \
         --branch "$HIGH_BRANCH" \
         --priority 900
@@ -587,11 +587,11 @@ in {
       mkdir -p "$HOME"
       APM_CONFIG="$HOME/.config/apm"
 
-      $APM registry add file:///tmp/low-priority-origin.git \
+      $APM registry add --no-verify file:///tmp/low-priority-origin.git \
         --name low-priority \
         --branch "$LOW_BRANCH" \
         --priority 100
-      $APM registry add file:///tmp/high-priority-origin.git \
+      $APM registry add --no-verify file:///tmp/high-priority-origin.git \
         --name high-priority \
         --branch "$HIGH_BRANCH" \
         --priority 900
