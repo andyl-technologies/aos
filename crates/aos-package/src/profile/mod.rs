@@ -22,7 +22,8 @@ use super::types::ProfileScope;
 /// ├── current -> gen-N  # symlink to the active generation
 /// ├── gen-1/
 /// │   ├── usr/{hash} -> /var/lib/store/{hash}-{name}-{version}
-/// │   └── src/{hash} -> /var/lib/store/{hash}-{name}-{version}.drv
+/// │   ├── src/{hash} -> /var/lib/store/{hash}-{name}-{version}.drv
+/// │   └── meta/{hash}.json
 /// ├── gen-2/
 /// │   └── ...
 /// └── ...

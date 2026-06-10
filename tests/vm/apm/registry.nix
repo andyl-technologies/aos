@@ -1184,6 +1184,69 @@ in {
         "All packages are up to date" \
         "upgrade does not invent a candidate for unpublished installed package"
 
+      $APM remove retire-tool --autoremove --yes > /tmp/unpublish-remove-retired.out 2>&1 || {
+        cat /tmp/unpublish-remove-retired.out
+        fail "apm remove --autoremove removes unpublished installed package"
+      }
+      cat /tmp/unpublish-remove-retired.out
+      assert_file_contains /tmp/unpublish-remove-retired.out "retire-tool" \
+        "remove lists retired explicit package"
+      assert_file_contains /tmp/unpublish-remove-retired.out "retire-dep" \
+        "autoremove lists retired package dependency"
+      assert_file_contains /tmp/unpublish-remove-retired.out "Removed 2 package" \
+        "remove reports retired package and orphan removal"
+      assert_file_not_exists "$PROFILE/meta/$RETIRE_HASH.json" \
+        "remove deletes retired package metadata"
+      assert_file_not_exists "$PROFILE/meta/$RETIRE_DEP_HASH.json" \
+        "autoremove deletes retired dependency metadata"
+      if [ -e "$PROFILE/current/bin/retire-tool" ]; then
+        fail "retired package executable should be absent after remove"
+      else
+        pass "retired package executable absent after remove"
+      fi
+      $APM list --installed > /tmp/unpublish-installed-after-remove.out 2>&1 || {
+        cat /tmp/unpublish-installed-after-remove.out
+        fail "apm list --installed succeeds after retired package removal"
+      }
+      assert_file_not_contains /tmp/unpublish-installed-after-remove.out "retire-tool" \
+        "installed list omits retired package after remove"
+      assert_file_not_contains /tmp/unpublish-installed-after-remove.out "retire-dep" \
+        "installed list omits retired dependency after autoremove"
+
+      $APM rollback > /tmp/unpublish-rollback-after-remove.out 2>&1 || {
+        cat /tmp/unpublish-rollback-after-remove.out
+        fail "apm rollback restores retired package generation"
+      }
+      cat /tmp/unpublish-rollback-after-remove.out
+      assert_file_contains /tmp/unpublish-rollback-after-remove.out "Rolled back to generation 1" \
+        "rollback returns to retired package generation"
+      "$PROFILE/current/bin/retire-tool" > /tmp/unpublish-retire-tool-run-rollback.out
+      assert_file_contains /tmp/unpublish-retire-tool-run-rollback.out \
+        "^retire-tool 1.0.0 via retire-dep 1.0.0$" \
+        "rolled-back retired package executable runs"
+      assert_file_exists "$PROFILE/meta/$RETIRE_HASH.json" \
+        "rollback restores retired package metadata snapshot"
+      assert_file_exists "$PROFILE/meta/$RETIRE_DEP_HASH.json" \
+        "rollback restores retired dependency metadata snapshot"
+      $APM list --installed > /tmp/unpublish-installed-after-rollback.out 2>&1 || {
+        cat /tmp/unpublish-installed-after-rollback.out
+        fail "apm list --installed succeeds after retired package rollback"
+      }
+      cat /tmp/unpublish-installed-after-rollback.out
+      assert_file_contains /tmp/unpublish-installed-after-rollback.out "retire-tool/test-reg 1.0.0" \
+        "installed list sees retired package after rollback"
+      assert_file_contains /tmp/unpublish-installed-after-rollback.out "retire-dep/test-reg 1.0.0" \
+        "installed list sees retired dependency after rollback"
+      assert_file_contains /tmp/unpublish-installed-after-rollback.out "unavailable" \
+        "installed list keeps retired package unavailable after rollback"
+      $APM show retire-tool > /tmp/unpublish-show-after-rollback.out 2>&1 || {
+        cat /tmp/unpublish-show-after-rollback.out
+        fail "apm show works after rolling back retired package"
+      }
+      assert_file_contains /tmp/unpublish-show-after-rollback.out \
+        "Status: installed, unavailable in registry" \
+        "show uses restored retired metadata after rollback"
+
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"
       fi
