@@ -1295,6 +1295,59 @@ in {
           git -C "$install_reg" add -A
           git -C "$install_reg" commit -m "release: hostinstall 1.0.0" \
             > "$work/git-commit-host-install.out" 2>&1
+          ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/host-install-release-key"
+          run_clean ${self}/bin/apr --json release 1.0.0 \
+            --registry host-install-reg \
+            --key "$work/host-install-release-key" \
+            --cache-output "$work/install-release-cache/cache" \
+            --cache-url "http://127.0.0.1:$install_cache_port/cache" \
+            --cache-priority 77 \
+            --upload-url "file://$work/install-static-cache-upload/cache" \
+            --channel stable \
+            --init-channel > "$work/apr-release-host-install-v1.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg cache "$work/install-release-cache/cache" \
+            --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
+            --arg upload_url "file://$work/install-static-cache-upload/cache" \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-install-reg"
+              and .version == "1.0.0"
+              and .dry_run == false
+              and .cache_output == $cache
+              and .cache_url == $cache_url
+              and .cache_priority == 77
+              and .cache_pointer_updated == false
+              and .upload_urls == [$upload_url]
+              and .channel.name == "stable"
+              and .channel.action == "init"
+              and .channel.touched_partitions == 256
+              and (.cache.paths >= 2)
+              and (.cache.narinfos >= 2)
+              and (.cache.nars >= 2)
+              and .cache.output_dir == $cache
+              and (.full_pack | startswith("pack-") and endswith(".pack"))
+              and .deltas == []
+              and (.uploaded_files > 0)
+              and (.uploaded_bytes > 0)' \
+            "$work/apr-release-host-install-v1.json" >/dev/null
+          git -C "$install_reg" rev-parse --verify '1.0.0^{tag}' \
+            > "$work/apr-release-host-install-v1-tag.out"
+          git -C "$install_reg" cat-file -p 1.0.0 \
+            > "$work/apr-release-host-install-v1-tag-object.out"
+          grep -q "BEGIN SSH SIGNATURE" \
+            "$work/apr-release-host-install-v1-tag-object.out"
+          test -f "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
+          test -f "$work/install-release-cache/cache/$install_hash.narinfo"
+          test -f "$work/install-static-cache-upload/cache/HEAD"
+          test -f "$work/install-static-cache-upload/cache/releases/1/0/0/objects/info/packs"
+          test -f "$work/install-static-cache-upload/cache/channels/stable/00"
+          grep -q "BEGIN SSH SIGNATURE" \
+            "$work/install-static-cache-upload/cache/channels/stable/00"
+          test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
+          test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+          find "$work/install-static-cache-upload/cache/releases/1/0/0/objects/pack" \
+            -name 'pack-*.pack' | grep -q .
           install_origin="$work/host-install-origin.git"
           git init --bare --object-format=sha256 "$install_origin" \
             > "$work/git-init-host-install-origin.out" 2>&1
