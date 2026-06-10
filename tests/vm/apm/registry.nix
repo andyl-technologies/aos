@@ -232,10 +232,29 @@ in {
 
       echo "==> Test: apr add --no-clone followed by apr publish"
 
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
+
       create_remote_registry /tmp/no-clone-registry.git
 
       $APM registry add --no-verify file:///tmp/no-clone-registry.git \
-        --name no-clone-reg --no-clone
+        --name no-clone-reg --no-clone > /tmp/add-no-clone.out 2>&1 || {
+        cat /tmp/add-no-clone.out
+        fail "apm registry add --no-clone succeeds"
+      }
+      cat /tmp/add-no-clone.out
+      assert_file_contains /tmp/add-no-clone.out \
+        "apm update --registry no-clone-reg" \
+        "apm registry add --no-clone points to the valid update syntax"
+      assert_file_not_contains /tmp/add-no-clone.out \
+        "apm update no-clone-reg" \
+        "apm registry add --no-clone does not suggest invalid positional update syntax"
 
       assert_file_exists "$APM_CONFIG/registries.d/no-clone-reg.toml" \
         "registry config file created"
@@ -255,7 +274,11 @@ in {
         assert_file_contains /tmp/publish-no-clone.out \
           "has no local clone" "apr publish reports missing local clone"
         assert_file_contains /tmp/publish-no-clone.out \
-          "apm update no-clone-reg" "apr publish points to apm update"
+          "apm update --registry no-clone-reg" \
+          "apr publish points to the valid apm update syntax"
+        assert_file_not_contains /tmp/publish-no-clone.out \
+          "apm update no-clone-reg" \
+          "apr publish does not suggest invalid positional update syntax"
         assert_file_contains /tmp/publish-no-clone.out \
           "apr create no-clone-reg" "apr publish points to apr create"
       fi
