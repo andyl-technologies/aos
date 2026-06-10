@@ -795,6 +795,16 @@ in {
           run_clean ${self}/bin/apr channel status canary --registry host-reg > "$work/apr-channel-status-v1.out" 2>&1
           grep -q "Frontier: 1.0.0" "$work/apr-channel-status-v1.out"
           grep -q "1.0.0: 256/256" "$work/apr-channel-status-v1.out"
+          run_clean ${self}/bin/apr --json channel status canary --registry host-reg \
+            > "$work/apr-channel-status-v1.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.channel == "canary"
+              and .frontier == "1.0.0"
+              and .missing_partitions == 0
+              and (.versions | length == 1)
+              and .versions[0].version == "1.0.0"
+              and .versions[0].partitions == 256' \
+            "$work/apr-channel-status-v1.json" >/dev/null
 
           run_clean ${self}/bin/apr channel advance canary 2.0.0 \
             --registry host-reg \
@@ -806,6 +816,15 @@ in {
           grep -q "Frontier: 2.0.0" "$work/apr-channel-status-v2.out"
           grep -q "2.0.0: 2/256" "$work/apr-channel-status-v2.out"
           grep -q "1.0.0: 254/256" "$work/apr-channel-status-v2.out"
+          run_clean ${self}/bin/apr --json channel status canary --registry host-reg \
+            > "$work/apr-channel-status-v2.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.channel == "canary"
+              and .frontier == "2.0.0"
+              and .missing_partitions == 0
+              and (.versions | any(.version == "2.0.0" and .partitions == 2))
+              and (.versions | any(.version == "1.0.0" and .partitions == 254))' \
+            "$work/apr-channel-status-v2.json" >/dev/null
 
           upload_root="$work/uploaded-origin"
           run_clean ${self}/bin/apr origin upload \

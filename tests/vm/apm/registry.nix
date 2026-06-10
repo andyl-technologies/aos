@@ -2174,7 +2174,7 @@ in {
   # -------------------------------------------------------------------------
   registry-channel-workflow = testing.mkVMTest {
     name = "apm-registry-channel-workflow";
-    rootfsDeps = maintainerWorkflowDeps;
+    rootfsDeps = maintainerWorkflowDeps ++ [pkgs.jq];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -2424,6 +2424,22 @@ in {
         "channel status reports v2 frontier"
       assert_file_contains /tmp/channel-status-v2.out "1/256" \
         "channel status reports one v2 partition"
+      $APR --json channel status stable --registry chan-reg \
+        > /tmp/channel-status-v2.json 2>&1 || {
+        cat /tmp/channel-status-v2.json
+        fail "apr --json channel status reports advanced channel"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        '.channel == "stable"
+          and .frontier == "2.0.0"
+          and .missing_partitions == 0
+          and (.versions | any(.version == "2.0.0" and .partitions == 1))
+          and (.versions | any(.version == "1.0.0" and .partitions == 255))' \
+        /tmp/channel-status-v2.json >/dev/null || {
+        cat /tmp/channel-status-v2.json
+        fail "apr --json channel status reports advanced partition counts"
+      }
+      pass "apr --json channel status reports advanced partition counts"
 
       export HOME=/tmp/channel-consumer
       export USER=channeluser
