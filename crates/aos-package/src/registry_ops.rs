@@ -451,9 +451,35 @@ fn extract_hash(store_path: &str) -> &str {
 }
 
 /// Create a git commit in the registry directory.
-fn commit_registry(dir: &Path, message: &str) -> Result<()> {
+///
+/// When `signing_key` is the path to an OpenSSH Ed25519 private key, the
+/// commit is SSH-signed (`gpg.format=ssh`), matching the tag-signing setup
+/// in [`sign_tag`]. Clients verify head-commit signatures during sync, so
+/// commits on registries with a non-empty trust roster should always be
+/// signed.
+fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
     git(dir, &["add", "-A"])?;
-    git(dir, &["commit", "-m", message])?;
+    match signing_key {
+        Some(key) => {
+            let signing_key_config = format!("user.signingkey={key}");
+            git(
+                dir,
+                &[
+                    "-c",
+                    "gpg.format=ssh",
+                    "-c",
+                    &signing_key_config,
+                    "commit",
+                    "-S",
+                    "-m",
+                    message,
+                ],
+            )?;
+        }
+        None => {
+            git(dir, &["commit", "-m", message])?;
+        }
+    }
     Ok(())
 }
 
@@ -562,18 +588,32 @@ fn initial_keys_roster(
 // ---------------------------------------------------------------------------
 
 /// `apr create <NAME>`
+#[allow(clippy::too_many_arguments)]
 pub async fn create(
     config: &ApmConfig,
     name: &str,
     remote: Option<&str>,
     trust_key: Option<&str>,
     trust_key_id: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let dir = config.scope.registries_path().join(name);
 
     if dir.exists() {
         bail!("registry '{name}' already exists at {}", dir.display());
+    }
+
+    // A registry seeded with a trust roster must start with a signed
+    // commit: clients verify head-commit signatures from first contact,
+    // and an unsigned root commit would never validate. Refuse before
+    // creating anything on disk.
+    if trust_key.is_some() && key.is_none() && key_id.is_none() {
+        bail!(
+            "--trust-key seeds a trust roster, so the initial commit must be signed: \
+             pass --key <path> (or --key-id <id>) with the maintainer's private key"
+        );
     }
 
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -598,11 +638,19 @@ description = ""
     let roster = initial_keys_roster(name, trust_key, trust_key_id)?;
     keys::write_keys_toml(&dir, &roster)?;
 
+    let signing_key = if key.is_some() || key_id.is_some() {
+        Some(resolve_producer_signing_key(
+            config, &dir, name, key, key_id,
+        )?)
+    } else {
+        None
+    };
+
     // Initial commit.
-    git(&dir, &["add", "-A"])?;
-    git(
+    commit_registry(
         &dir,
-        &["commit", "-m", &format!("Initialize registry '{name}'")],
+        &format!("Initialize registry '{name}'"),
+        signing_key.as_deref(),
     )?;
     refresh_registry_object_store(&dir)
         .context("refreshing dumb-HTTP object store after registry creation")?;
@@ -640,6 +688,8 @@ pub async fn publish(
     image_formats: &[String],
     no_commit: bool,
     message: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
@@ -655,6 +705,13 @@ pub async fn publish(
             pkg = aos_core::invocation::package_manager_command(),
         );
     }
+    let signing_key = if key.is_some() || key_id.is_some() {
+        Some(resolve_producer_signing_key(
+            config, &dir, &name, key, key_id,
+        )?)
+    } else {
+        None
+    };
 
     // Validate image pairs.
     if image_paths.len() != image_formats.len() {
@@ -743,7 +800,7 @@ pub async fn publish(
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg)?;
+        commit_registry(&dir, msg, signing_key.as_deref())?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after publish")?;
         printer.success(&format!("Committed: {msg}"));
@@ -954,6 +1011,7 @@ fn build_package_toml(
 
 /// `apr unpublish <PACKAGE> [VERSION]`
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub async fn unpublish(
     config: &ApmConfig,
     package: &str,
@@ -961,10 +1019,24 @@ pub async fn unpublish(
     platform: Option<&str>,
     no_commit: bool,
     message: Option<&str>,
+    key: Option<&str>,
+    key_id: Option<&str>,
     registry: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+    let signing_key = if key.is_some() || key_id.is_some() {
+        Some(resolve_producer_signing_key(
+            config,
+            &dir,
+            &registry_name,
+            key,
+            key_id,
+        )?)
+    } else {
+        None
+    };
     let letter = first_letter(package);
     let toml_path = dir
         .join("packages")
@@ -1058,7 +1130,7 @@ pub async fn unpublish(
     if !no_commit {
         let default_msg = format!("unpublish {package}");
         let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg)?;
+        commit_registry(&dir, msg, signing_key.as_deref())?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after unpublish")?;
         printer.success(&format!("Committed: {msg}"));
@@ -2193,7 +2265,7 @@ pub async fn run_cache(
                 if nixcache::upsert_registry_cache(&dir, cache_url, *priority)? {
                     printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
                     if !*no_commit {
-                        commit_registry(&dir, "registry: update static cache pointer")?;
+                        commit_registry(&dir, "registry: update static cache pointer", None)?;
                         refresh_registry_object_store(&dir)
                             .context("refreshing dumb-HTTP object store after cache update")?;
                     }
@@ -2355,17 +2427,32 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             id,
             key,
             no_commit,
+            signing_key,
+            signing_key_id,
             registry,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let mut roster = load_committed_roster(&dir)?;
+            let commit_key = if *no_commit {
+                None
+            } else {
+                resolve_roster_commit_key(
+                    config,
+                    &dir,
+                    &registry_name,
+                    &roster,
+                    signing_key.as_deref(),
+                    signing_key_id.as_deref(),
+                )?
+            };
             add_roster_key(&mut roster, &registry_name, id, key)?;
             persist_committed_roster(
                 &dir,
                 &roster,
                 *no_commit,
                 &format!("registry: add signing key {id}"),
+                commit_key.as_deref(),
             )?;
             printer.success(&format!(
                 "Added active signing key '{id}' to registry '{registry_name}'."
@@ -2377,17 +2464,44 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             reason,
             vouched_by,
             no_commit,
+            signing_key,
+            signing_key_id,
             registry,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let mut roster = load_committed_roster(&dir)?;
+            let roster_before = roster.clone();
             let vouching_id = retire_roster_key(&mut roster, id, reason.as_deref(), vouched_by)?;
+            // The vouching survivor signs the retirement by default; the
+            // key resolution runs against the pre-retire roster, where the
+            // voucher is still active.
+            let commit_key = if *no_commit {
+                None
+            } else if signing_key.is_none() && signing_key_id.is_none() {
+                Some(resolve_producer_signing_key(
+                    config,
+                    &dir,
+                    &registry_name,
+                    None,
+                    Some(&vouching_id),
+                )?)
+            } else {
+                resolve_roster_commit_key(
+                    config,
+                    &dir,
+                    &registry_name,
+                    &roster_before,
+                    signing_key.as_deref(),
+                    signing_key_id.as_deref(),
+                )?
+            };
             persist_committed_roster(
                 &dir,
                 &roster,
                 *no_commit,
                 &format!("registry: retire signing key {id}"),
+                commit_key.as_deref(),
             )?;
             printer.success(&format!(
                 "Retired signing key '{id}' from registry '{registry_name}' (vouched by '{vouching_id}')."
@@ -2409,14 +2523,42 @@ fn persist_committed_roster(
     roster: &KeysToml,
     no_commit: bool,
     message: &str,
+    signing_key: Option<&str>,
 ) -> Result<()> {
     keys::write_keys_toml(dir, roster)?;
     if !no_commit {
-        commit_registry(dir, message)?;
+        commit_registry(dir, message, signing_key)?;
         refresh_registry_object_store(dir)
             .context("refreshing dumb-HTTP object store after keys.toml update")?;
     }
     Ok(())
+}
+
+/// Resolve the signing key for a roster-changing commit.
+///
+/// Roster commits must be signed whenever the pre-change roster is
+/// non-empty: clients verify head-commit signatures against the keys they
+/// already trust, so an unsigned roster change would be rejected on sync.
+/// Only the bootstrap case (adding the first key to an empty roster, which
+/// no client can verify yet) may proceed unsigned without an explicit key.
+fn resolve_roster_commit_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    roster_before: &KeysToml,
+    key: Option<&str>,
+    key_id: Option<&str>,
+) -> Result<Option<String>> {
+    if key.is_some() || key_id.is_some() {
+        return resolve_producer_signing_key(config, dir, registry_name, key, key_id).map(Some);
+    }
+    if roster_before.active.is_empty() {
+        return Ok(None);
+    }
+    bail!(
+        "registry '{registry_name}' has a non-empty trust roster, so roster changes must be \
+         signed commits: pass --key <path> or --key-id <id> with an active maintainer key"
+    )
 }
 
 fn add_roster_key(roster: &mut KeysToml, registry_name: &str, id: &str, key: &str) -> Result<()> {
@@ -2932,6 +3074,8 @@ pub async fn release(
                 image_formats,
                 false,
                 message,
+                Some(&signing_key),
+                None,
                 Some(&registry_name),
                 printer,
             )
@@ -2981,7 +3125,11 @@ pub async fn release_registry_tree(
     if let Some(cache_url) = &options.cache_url {
         if nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)? {
             printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
-            commit_registry(dir, "registry: update static cache pointer")?;
+            commit_registry(
+                dir,
+                "registry: update static cache pointer",
+                Some(&options.signing_key),
+            )?;
         }
     }
 

@@ -13,6 +13,7 @@ pub mod resolve;
 pub mod rollback;
 pub mod security;
 pub mod source;
+pub mod sshkey;
 pub mod store;
 pub mod sysroot;
 pub mod sysroot_lock;
@@ -377,6 +378,13 @@ pub enum RegistryCommand {
         /// Identifier for --trust-key inside keys.toml
         #[arg(long = "trust-key-id")]
         trust_key_id: Option<String>,
+        /// Private key path used to sign the initial commit
+        /// (required with --trust-key)
+        #[arg(long)]
+        key: Option<String>,
+        /// Key id whose configured private key signs the initial commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
     },
     /// List configured registries and priorities
     List,
@@ -475,6 +483,12 @@ pub enum RegistryCommand {
         /// Custom commit message
         #[arg(long)]
         message: Option<String>,
+        /// Private key path used to sign the publish commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the publish commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -494,6 +508,12 @@ pub enum RegistryCommand {
         /// Custom commit message
         #[arg(long)]
         message: Option<String>,
+        /// Private key path used to sign the unpublish commit
+        #[arg(long)]
+        key: Option<String>,
+        /// Active key id whose configured private key signs the unpublish commit
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -811,6 +831,12 @@ pub enum KeysCommand {
         /// Skip creating a git commit
         #[arg(long)]
         no_commit: bool,
+        /// Private key path used to sign the roster commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the roster commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -828,6 +854,13 @@ pub enum KeysCommand {
         /// Skip creating a git commit
         #[arg(long)]
         no_commit: bool,
+        /// Private key path used to sign the roster commit
+        /// (defaults to the vouching key's configured private key)
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the roster commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1355,6 +1388,8 @@ async fn run_registry(
             remote,
             trust_key,
             trust_key_id,
+            key,
+            key_id,
         } => {
             registry_ops::create(
                 config,
@@ -1362,6 +1397,8 @@ async fn run_registry(
                 remote.as_deref(),
                 trust_key.as_deref(),
                 trust_key_id.as_deref(),
+                key.as_deref(),
+                key_id.as_deref(),
                 printer,
             )
             .await
@@ -1381,6 +1418,8 @@ async fn run_registry(
             image_formats,
             no_commit,
             message,
+            key,
+            key_id,
             registry,
         } => {
             registry_ops::publish(
@@ -1399,6 +1438,8 @@ async fn run_registry(
                 image_formats,
                 *no_commit,
                 message.as_deref(),
+                key.as_deref(),
+                key_id.as_deref(),
                 registry.as_deref(),
                 printer,
             )
@@ -1410,6 +1451,8 @@ async fn run_registry(
             platform,
             no_commit,
             message,
+            key,
+            key_id,
             registry,
         } => {
             registry_ops::unpublish(
@@ -1419,6 +1462,8 @@ async fn run_registry(
                 platform.as_deref(),
                 *no_commit,
                 message.as_deref(),
+                key.as_deref(),
+                key_id.as_deref(),
                 registry.as_deref(),
                 printer,
             )
