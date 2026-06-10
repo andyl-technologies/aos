@@ -1245,8 +1245,22 @@ pub async fn run(
         PackageCommand::Remove {
             packages,
             autoremove,
-        } => remove::run(&config, packages, *autoremove, dry_run, yes, printer).await,
-        PackageCommand::Autoremove => remove::run_autoremove(&config, dry_run, yes, printer).await,
+        } => {
+            let auto_remove = *autoremove || config.settings.auto_autoremove;
+            let outcome =
+                remove::run(&config, packages, auto_remove, dry_run, yes, printer).await?;
+            if config.settings.auto_gc && auto_remove && !dry_run && outcome.orphan_count > 0 {
+                clean::run_gc(printer).await?;
+            }
+            Ok(())
+        }
+        PackageCommand::Autoremove => {
+            let outcome = remove::run_autoremove(&config, dry_run, yes, printer).await?;
+            if config.settings.auto_gc && !dry_run && outcome.orphan_count > 0 {
+                clean::run_gc(printer).await?;
+            }
+            Ok(())
+        }
         PackageCommand::Reinstall {
             packages,
             ignore_sysroot_lock,
