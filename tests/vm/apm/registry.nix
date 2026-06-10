@@ -123,11 +123,43 @@
       }
     ];
   };
+  retireDepTool = mkRegistryTool {
+    pname = "retire-dep";
+    version = "1.0.0";
+  };
+  retireTool = pkgs.mkDerivation {
+    pname = "retire-tool";
+    version = "1.0.0";
+    src = null;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.bash
+    ];
+    runtimeDeps = [
+      retireDepTool
+    ];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'dep_output="$(${retireDepTool}/bin/retire-dep)"' \
+            'printf "retire-tool 1.0.0 via %s\n" "$dep_output"' \
+            > "$out/bin/retire-tool"
+          chmod +x "$out/bin/retire-tool"
+        '';
+      }
+    ];
+  };
   closureWorkflowDeps =
     publishDeps
     ++ [
       closureLeafTool
       closureRootTool
+      retireDepTool
+      retireTool
     ];
 in {
   # -------------------------------------------------------------------------
@@ -637,7 +669,13 @@ in {
   # -------------------------------------------------------------------------
   registry-unpublish = testing.mkVMTest {
     name = "apm-registry-unpublish";
-    rootfsDeps = closureWorkflowDeps;
+    rootfsDeps =
+      closureWorkflowDeps
+      ++ [
+        pkgs.iproute2
+        pkgs.python3
+        pkgs.zstd
+      ];
     memory = 1024;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -647,6 +685,24 @@ in {
 
       LEAF_STORE="${closureLeafTool}"
       ROOT_STORE="${closureRootTool}"
+      RETIRE_DEP_STORE="${retireDepTool}"
+      RETIRE_STORE="${retireTool}"
+      RETIRE_DEP_HASH=$(basename "$RETIRE_DEP_STORE" | cut -d- -f1)
+      RETIRE_HASH=$(basename "$RETIRE_STORE" | cut -d- -f1)
+      MAINTAINER_HOME=/tmp
+      CONSUMER_HOME=/tmp/unpublish-consumer
+      PROFILE="/var/lib/profiles/per-user/unpublishuser"
+
+      as_maintainer() {
+        export HOME="$MAINTAINER_HOME"
+        export USER=root
+      }
+
+      as_consumer() {
+        export HOME="$CONSUMER_HOME"
+        export USER=unpublishuser
+        mkdir -p "$HOME"
+      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -657,9 +713,56 @@ in {
         fi
       }
 
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/unpublish-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/unpublish-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/unpublish-missing-$label.out" 2>&1; then
+          cat "/tmp/unpublish-missing-$label.out"
+          fail "$label should be missing from store"
+        else
+          pass "$label missing from store"
+        fi
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if nix-store --delete --ignore-liveness "$path" > "/tmp/unpublish-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/unpublish-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
+
+      wait_for_cache_server() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18109/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
+
       # Create registry and publish a package
+      as_maintainer
       $APR create test-reg
       REG_DIR="$REG_STORAGE/test-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
       $APR publish "$LEAF_STORE" \
         --name removepkg \
@@ -687,10 +790,32 @@ in {
         --license MIT \
         --maintainer test \
         --registry test-reg
+      $APR publish "$RETIRE_DEP_STORE" \
+        --name retire-dep \
+        --version 1.0.0 \
+        --platform x86_64-linux \
+        --description "Dependency that remains after retire-tool is unpublished" \
+        --license MIT \
+        --maintainer test \
+        --registry test-reg
+      $APR publish "$RETIRE_STORE" \
+        --name retire-tool \
+        --version 1.0.0 \
+        --platform x86_64-linux \
+        --description "Installed package retired by unpublish workflow" \
+        --license MIT \
+        --maintainer test \
+        --registry test-reg
 
       # Verify package exists
       assert_file_exists "$REG_DIR/packages/r/removepkg.toml" \
         "package TOML exists before unpublish"
+      assert_file_exists "$REG_DIR/packages/r/retire-tool.toml" \
+        "consumer package TOML exists before unpublish"
+      assert_file_contains "$REG_DIR/packages/r/retire-tool.toml" "$RETIRE_DEP_HASH" \
+        "consumer package metadata records dependency"
+      assert_file_contains "$REG_DIR/closures/$RETIRE_HASH" "$RETIRE_DEP_HASH" \
+        "consumer package closure records dependency"
       $APR show removepkg --registry test-reg --raw > /tmp/unpublish-before.toml 2>&1 || {
         cat /tmp/unpublish-before.toml
         fail "apr show --raw reports initial multi-version package"
@@ -711,6 +836,74 @@ in {
       assert_file_contains /tmp/unpublish-packages-aarch64-before.out \
         "removepkg 2.0.0" \
         "aarch64 platform filter sees v2 before unpublish"
+
+      $APR cache generate \
+        --registry test-reg \
+        --output /tmp/unpublish-cache \
+        --cache-url http://127.0.0.1:18109 \
+        --priority 53 \
+        --no-commit > /tmp/unpublish-cache-generate.out 2>&1 || {
+        cat /tmp/unpublish-cache-generate.out
+        fail "apr cache generate writes consumer unpublish cache"
+      }
+      cat /tmp/unpublish-cache-generate.out
+      assert_file_exists "/tmp/unpublish-cache/$RETIRE_HASH.narinfo" \
+        "static cache has retire-tool narinfo"
+      assert_file_exists "/tmp/unpublish-cache/$RETIRE_DEP_HASH.narinfo" \
+        "static cache has retire-dep narinfo"
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "registry: publish unpublish consumer cache"
+      git init --bare --object-format=sha256 /tmp/unpublish-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/unpublish-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      python3 -m http.server 18109 --bind 127.0.0.1 \
+        --directory /tmp/unpublish-cache > /tmp/unpublish-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      if wait_for_cache_server; then
+        pass "static cache HTTP server started"
+      else
+        cat /tmp/unpublish-cache-http.log || true
+        fail "static cache HTTP server started"
+      fi
+
+      echo "==> Consumer: install package before maintainer unpublishes it"
+      as_consumer
+      $APM registry add file:///tmp/unpublish-origin.git \
+        --name test-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/unpublish-registry-add.out 2>&1 || {
+        cat /tmp/unpublish-registry-add.out
+        fail "apm registry add syncs unpublish registry"
+      }
+      cat /tmp/unpublish-registry-add.out
+      delete_store_path "$RETIRE_STORE" "retire-tool"
+      delete_store_path "$RETIRE_DEP_STORE" "retire-dep"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install retire-tool --registry test-reg --yes \
+        > /tmp/unpublish-install-retire-tool.out 2>&1 || {
+        cat /tmp/unpublish-install-retire-tool.out
+        fail "apm install downloads retire-tool before unpublish"
+      }
+      cat /tmp/unpublish-install-retire-tool.out
+      assert_file_contains /tmp/unpublish-install-retire-tool.out "Downloading" \
+        "apm install downloads retire-tool closure"
+      assert_store_valid "$RETIRE_STORE" "retire-tool"
+      assert_store_valid "$RETIRE_DEP_STORE" "retire-dep"
+      "$PROFILE/current/bin/retire-tool" > /tmp/unpublish-retire-tool-run-before.out
+      assert_file_contains /tmp/unpublish-retire-tool-run-before.out \
+        "^retire-tool 1.0.0 via retire-dep 1.0.0$" \
+        "installed retire-tool executable runs before unpublish"
+      $APM list --installed > /tmp/unpublish-installed-before.out 2>&1 || {
+        cat /tmp/unpublish-installed-before.out
+        fail "apm list --installed sees retire-tool before unpublish"
+      }
+      assert_file_contains /tmp/unpublish-installed-before.out "retire-tool/test-reg 1.0.0" \
+        "installed list reports retire-tool before unpublish"
+
+      as_maintainer
 
       if $APR unpublish removepkg 9.9.9 --registry test-reg --no-commit \
         > /tmp/unpublish-missing-version.out 2>&1; then
@@ -820,18 +1013,32 @@ in {
       # Verify TOML file removed
       assert_file_not_exists "$REG_DIR/packages/r/removepkg.toml" \
         "package TOML removed after final platform unpublish"
+      $APR unpublish retire-tool \
+        --registry test-reg \
+        --message "registry: retire installed consumer package" \
+        > /tmp/unpublish-retire-tool.out 2>&1 || {
+        cat /tmp/unpublish-retire-tool.out
+        fail "apr unpublish removes installed consumer package from registry"
+      }
+      cat /tmp/unpublish-retire-tool.out
+      assert_file_not_exists "$REG_DIR/packages/r/retire-tool.toml" \
+        "consumer package TOML removed by unpublish"
       $APR packages --registry test-reg > /tmp/unpublish-packages-final.out 2>&1 || {
         cat /tmp/unpublish-packages-final.out
         fail "apr packages succeeds after final unpublish"
       }
       assert_file_not_contains /tmp/unpublish-packages-final.out "removepkg" \
         "apr packages hides fully unpublished package"
+      assert_file_not_contains /tmp/unpublish-packages-final.out "retire-tool" \
+        "apr packages hides retired consumer package"
+      assert_file_contains /tmp/unpublish-packages-final.out "retire-dep" \
+        "apr packages keeps dependency that remains published"
 
       # Verify git log shows removal commit
       cd "$REG_DIR"
       assert_cmd_output_contains "git log --oneline -2" \
-        "registry: remove final removepkg platform" \
-        "git log shows final custom unpublish commit"
+        "registry: retire installed consumer package" \
+        "git log shows consumer package retirement commit"
       cd /tmp
       $APR verify --registry test-reg > /tmp/unpublish-verify-final.out 2>&1 || {
         cat /tmp/unpublish-verify-final.out
@@ -839,6 +1046,53 @@ in {
       }
       assert_file_contains /tmp/unpublish-verify-final.out "no errors" \
         "apr verify reports no errors after unpublish workflow"
+
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      echo "==> Consumer: update after maintainer unpublishes installed package"
+      as_consumer
+      $APM update --registry test-reg > /tmp/unpublish-consumer-update.out 2>&1 || {
+        cat /tmp/unpublish-consumer-update.out
+        fail "apm update syncs unpublish changeset"
+      }
+      cat /tmp/unpublish-consumer-update.out
+      assert_file_contains /tmp/unpublish-consumer-update.out "removed" \
+        "apm update reports package metadata removal"
+      $APM list --installed > /tmp/unpublish-installed-after.out 2>&1 || {
+        cat /tmp/unpublish-installed-after.out
+        fail "apm list --installed succeeds after installed package is unpublished"
+      }
+      cat /tmp/unpublish-installed-after.out
+      assert_file_contains /tmp/unpublish-installed-after.out "retire-tool/test-reg 1.0.0" \
+        "installed list keeps installed package after registry unpublish"
+      assert_file_contains /tmp/unpublish-installed-after.out "unavailable" \
+        "installed list marks unpublished installed package unavailable"
+      "$PROFILE/current/bin/retire-tool" > /tmp/unpublish-retire-tool-run-after.out
+      assert_file_contains /tmp/unpublish-retire-tool-run-after.out \
+        "^retire-tool 1.0.0 via retire-dep 1.0.0$" \
+        "installed retire-tool executable still runs after registry unpublish"
+      if $APM verify retire-tool > /tmp/unpublish-retire-tool-verify.out 2>&1; then
+        cat /tmp/unpublish-retire-tool-verify.out
+        fail "apm verify should fail once installed package is unpublished"
+      else
+        cat /tmp/unpublish-retire-tool-verify.out
+        pass "apm verify fails for unpublished installed package"
+      fi
+      assert_file_contains /tmp/unpublish-retire-tool-verify.out \
+        "not present in registry 'test-reg'" \
+        "verify error explains installed package is absent from registry"
+      $APM upgrade retire-tool --yes > /tmp/unpublish-retire-tool-upgrade.out 2>&1 || {
+        cat /tmp/unpublish-retire-tool-upgrade.out
+        fail "apm upgrade handles unpublished installed package"
+      }
+      assert_file_contains /tmp/unpublish-retire-tool-upgrade.out \
+        "All packages are up to date" \
+        "upgrade does not invent a candidate for unpublished installed package"
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
 
       check_fail
     '';
