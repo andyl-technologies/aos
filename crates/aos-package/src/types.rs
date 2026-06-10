@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 /// Base directory for per-user and system profiles.
 const PROFILES_BASE: &str = "/var/lib/profiles";
 
+/// Environment override for the profile root.
+const PROFILES_BASE_ENV: &str = "AOS_PROFILE_ROOT";
+
 /// Base directory for system-wide APM state.
 const APM_STATE_DIR: &str = "/var/lib/apm";
 
@@ -118,6 +121,27 @@ fn xdg_data_home() -> PathBuf {
 /// `$XDG_CACHE_HOME`, defaulting to `~/.cache`.
 fn xdg_cache_home() -> PathBuf {
     xdg_dir("XDG_CACHE_HOME", ".cache")
+}
+
+/// Resolve the profile root from an optional environment value.
+///
+/// Relative and empty overrides are ignored so profile state never lands under
+/// a surprising process-relative path.
+fn resolve_profiles_base(value: Option<&str>) -> PathBuf {
+    if let Some(value) = value {
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            return path;
+        }
+    }
+
+    PathBuf::from(PROFILES_BASE)
+}
+
+/// Base directory for per-user and system profiles.
+fn profiles_base() -> PathBuf {
+    let value = std::env::var(PROFILES_BASE_ENV).ok();
+    resolve_profiles_base(value.as_deref())
 }
 
 // ---------------------------------------------------------------------------
@@ -629,9 +653,9 @@ impl ProfileScope {
         match self {
             ProfileScope::User => {
                 let user = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
-                PathBuf::from(PROFILES_BASE).join("per-user").join(user)
+                profiles_base().join("per-user").join(user)
             }
-            ProfileScope::System => PathBuf::from(PROFILES_BASE).join("system"),
+            ProfileScope::System => profiles_base().join("system"),
         }
     }
 
@@ -856,6 +880,14 @@ mod tests {
     }
 
     #[test]
+    fn profile_base_honors_absolute_override() {
+        assert_eq!(
+            resolve_profiles_base(Some("/tmp/aos-profiles")),
+            PathBuf::from("/tmp/aos-profiles"),
+        );
+    }
+
+    #[test]
     fn system_config_dir_falls_back_when_unset() {
         assert_eq!(resolve_system_config_dir(None), PathBuf::from("/etc/apm"));
     }
@@ -869,10 +901,26 @@ mod tests {
     }
 
     #[test]
+    fn profile_base_ignores_relative_override() {
+        assert_eq!(
+            resolve_profiles_base(Some("relative/profiles")),
+            PathBuf::from("/var/lib/profiles"),
+        );
+    }
+
+    #[test]
     fn system_config_dir_ignores_empty_override() {
         assert_eq!(
             resolve_system_config_dir(Some("")),
             PathBuf::from("/etc/apm")
+        );
+    }
+
+    #[test]
+    fn profile_base_ignores_empty_override() {
+        assert_eq!(
+            resolve_profiles_base(Some("")),
+            PathBuf::from("/var/lib/profiles"),
         );
     }
 
