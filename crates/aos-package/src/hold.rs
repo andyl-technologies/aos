@@ -1,3 +1,11 @@
+//! `apm hold`, `apm unhold`, and `apm held` — upgrade holds.
+//!
+//! A *hold* pins an installed package at its current version: `apm upgrade`
+//! skips held packages until they are released with `apm unhold`. The hold
+//! flag lives in the package's profile metadata (the `held` field of
+//! [`crate::types::ApmMeta`]), so it survives generation switches and is
+//! visible to `apm list`/`apm held`.
+
 use anyhow::{Result, bail};
 
 use super::config::ApmConfig;
@@ -8,6 +16,12 @@ use super::types::InstalledMeta;
 use aos_core::output::{OutputMode, Printer};
 
 /// Run `apm hold <package>` -- prevent a package from being upgraded.
+///
+/// # Errors
+///
+/// Returns an error if `package` is not installed in the profile, or if the
+/// profile cannot be opened for writing (e.g. another apm process holds the
+/// lock) or its metadata cannot be updated.
 pub async fn run_hold(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
     let (hash, installed) = find_installed_by_name(&profile, package)?;
@@ -25,6 +39,11 @@ pub async fn run_hold(config: &ApmConfig, package: &str, printer: &Printer) -> R
 }
 
 /// Run `apm unhold <package>` -- release the upgrade hold.
+///
+/// # Errors
+///
+/// Returns an error if `package` is not installed in the profile, or if the
+/// profile cannot be opened for writing or its metadata cannot be updated.
 pub async fn run_unhold(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
     let (hash, installed) = find_installed_by_name(&profile, package)?;
@@ -42,6 +61,10 @@ pub async fn run_unhold(config: &ApmConfig, package: &str, printer: &Printer) ->
 }
 
 /// Run `apm held` -- list all held packages.
+///
+/// # Errors
+///
+/// Returns an error if the profile's metadata entries cannot be read.
 pub async fn run_held(config: &ApmConfig, printer: &Printer) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
 
@@ -99,6 +122,8 @@ fn find_installed_by_name(profile: &Profile, name: &str) -> Result<(String, Inst
     bail!("package not found: {name}");
 }
 
+/// Build the JSON document for a hold/unhold result, degrading gracefully
+/// when the entry carries no APM metadata.
 fn hold_result_json(
     action: &str,
     status: &str,

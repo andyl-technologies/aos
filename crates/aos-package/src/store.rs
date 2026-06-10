@@ -1,3 +1,19 @@
+//! Nix store interactions: NAR import, validity checks, and GC roots.
+//!
+//! This module is apm's boundary with the Nix store, shelling out to
+//! `nix-store` (with [`aos_nix_env`] so `AOS_ROOT`-relative stores work):
+//!
+//! - [`import_nar`] turns a downloaded `.nar.zst` plus its narinfo metadata
+//!   into a valid store path via `nix-store --import`, synthesizing the
+//!   export-format trailer (path, references, deriver) the import expects.
+//! - [`filter_missing`] checks which closure members still need downloading
+//!   (`nix-store --check-validity`).
+//! - [`create_gc_roots`] / [`remove_gc_roots`] maintain the per-generation
+//!   symlink farms (`gen-N/usr/<hash>` for package outputs, `gen-N/src/<hash>`
+//!   for source derivations) that keep installed paths alive across GC.
+//! - [`closure_paths`] / [`direct_references`] query the on-disk reference
+//!   graph for removal and dependency commands.
+
 use std::path::Path;
 use std::process::Stdio;
 
@@ -35,6 +51,13 @@ use super::verify::verify_store_path;
 /// the active store directory.
 ///
 /// Returns the imported store path on success.
+///
+/// # Errors
+///
+/// Returns an error if zstd decompression fails, the decompressed NAR
+/// cannot be read, `nix-store --import` fails or produces unparseable
+/// output, or the imported path differs from `expected_store_path`
+/// ([`AosError::HashMismatch`](aos_core::error::AosError::HashMismatch)).
 pub async fn import_nar(
     nar_path: &Path,
     expected_store_path: &str,
@@ -181,6 +204,11 @@ fn parse_import_output(stdout: &str) -> Result<String> {
 ///
 /// This does NOT use `server::store::NixStore` since that is a different
 /// abstraction for the cache server. Instead it runs `nix-store` directly.
+///
+/// # Errors
+///
+/// Returns an error if `nix-store` cannot be spawned. A non-zero exit for a
+/// path is not an error -- it marks the path as missing.
 pub async fn filter_missing(store_paths: &[String]) -> Result<Vec<String>> {
     let mut missing = Vec::new();
 
@@ -215,6 +243,11 @@ pub async fn filter_missing(store_paths: &[String]) -> Result<Vec<String>> {
 ///   `gen_dir/src/{drv_hash}` -> `{source_drv}`
 ///
 /// Uses `std::os::unix::fs::symlink` for atomic symlink creation.
+///
+/// # Errors
+///
+/// Returns an error if the `usr/`/`src/` directories cannot be created or a
+/// symlink cannot be created or renamed into place.
 pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
     let usr_dir = gen_dir.join("usr");
     let src_dir = gen_dir.join("src");
@@ -255,6 +288,10 @@ pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
 ///
 /// Removes `gen_dir/usr/{hash}` and `gen_dir/src/{hash}` symlinks.  Silently
 /// ignores hashes for which the symlinks do not exist (idempotent).
+///
+/// # Errors
+///
+/// Returns an error if an existing symlink cannot be removed.
 pub fn remove_gc_roots(gen_dir: &Path, hashes: &[String]) -> Result<()> {
     let usr_dir = gen_dir.join("usr");
     let src_dir = gen_dir.join("src");
@@ -326,6 +363,11 @@ fn atomic_symlink(target: &str, link_path: &Path) -> Result<()> {
 ///
 /// Runs `nix-store -qR <path>` to get the full transitive closure.
 /// Returns one store path per line.
+///
+/// # Errors
+///
+/// Returns an error if `nix-store` cannot be spawned or exits non-zero
+/// (e.g. the path is not valid in the store).
 pub async fn closure_paths(store_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix-store")
         .envs(aos_nix_env())
@@ -347,6 +389,11 @@ pub async fn closure_paths(store_path: &str) -> Result<Vec<String>> {
 /// Query direct references of a single store path.
 ///
 /// Runs `nix-store -q --references <path>`.
+///
+/// # Errors
+///
+/// Returns an error if `nix-store` cannot be spawned or exits non-zero
+/// (e.g. the path is not valid in the store).
 pub async fn direct_references(store_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix-store")
         .envs(aos_nix_env())

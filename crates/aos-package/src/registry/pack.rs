@@ -1,4 +1,16 @@
 //! Pack and thin-delta helpers for the git-native registry.
+//!
+//! Producer-side wrappers around `git pack-objects`, `git index-pack`, and
+//! the `zstd` CLI that build the per-release transfer artifacts served from
+//! the static origin: self-contained full packs at `X.Y.0` anchors
+//! ([`full_pack`]) and thin delta packs between nearby releases
+//! ([`thin_delta`], with bases chosen by [`scheme_deltas`]). The matching
+//! consumer-side selection logic lives in
+//! [`fetch`](crate::registry::fetch).
+//!
+//! Packs are generated with `--compression=0` so the zstd transport wrapper
+//! ([`zstd_compress`]) does all the compression with a long-distance window,
+//! optionally aided by a trained dictionary ([`train_dictionary`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -139,7 +151,14 @@ pub async fn full_pack(repo: &Path, release_commit: &str, out_dir: &Path) -> Res
 
 /// Generate a thin delta pack from `from_commit` to `to_commit`.
 ///
-/// The output filename is `delta-<from_semver>.pack`.
+/// The output filename is `delta-<from_semver>.pack`. The pack may reference
+/// base objects it does not contain; consumers complete it with
+/// [`index_pack_fix_thin`].
+///
+/// # Errors
+///
+/// Returns an error if the output directory or file cannot be created, or if
+/// `git pack-objects --thin` fails.
 pub async fn thin_delta(
     repo: &Path,
     from_commit: &str,
@@ -183,6 +202,13 @@ pub async fn thin_delta(
 }
 
 /// Compress `path` with zstd, producing `<path>.zst`.
+///
+/// Uses the module's fixed ultra level ([`ZSTD_LEVEL`]) and long-distance
+/// window ([`ZSTD_LONG`]), optionally with a trained dictionary.
+///
+/// # Errors
+///
+/// Returns an error if the `zstd` command cannot be run or exits non-zero.
 pub async fn zstd_compress(path: &Path, dict: Option<&Path>) -> Result<PathBuf> {
     let mut out = path.as_os_str().to_os_string();
     out.push(".zst");
@@ -202,6 +228,11 @@ pub async fn zstd_compress(path: &Path, dict: Option<&Path>) -> Result<PathBuf> 
 }
 
 /// Decompress a `.zst` file, stripping the `.zst` suffix.
+///
+/// # Errors
+///
+/// Returns an error if `path` has no filename, does not end in `.zst`, or
+/// the `zstd` command fails.
 pub async fn zstd_decompress(path: &Path, dict: Option<&Path>) -> Result<PathBuf> {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         bail!("zstd path has no filename: {}", path.display());
@@ -223,6 +254,14 @@ pub async fn zstd_decompress(path: &Path, dict: Option<&Path>) -> Result<PathBuf
 }
 
 /// Complete a thin pack with bases from `repo`.
+///
+/// Runs `git index-pack --fix-thin --stdin`, which appends the missing base
+/// objects and writes the pack plus index into the repository.
+///
+/// # Errors
+///
+/// Returns an error if the pack file cannot be opened or `git index-pack`
+/// fails (e.g. a base object is missing from `repo`).
 pub async fn index_pack_fix_thin(repo: &Path, pack: &Path) -> Result<()> {
     let file = std::fs::File::open(pack).with_context(|| format!("opening {}", pack.display()))?;
     let mut cmd = gitcmd::hermetic_async();
@@ -236,6 +275,11 @@ pub async fn index_pack_fix_thin(repo: &Path, pack: &Path) -> Result<()> {
 }
 
 /// Index a self-contained full pack.
+///
+/// # Errors
+///
+/// Returns an error if `git index-pack` fails, e.g. the pack is truncated
+/// or corrupt.
 pub async fn index_pack(repo: &Path, pack: &Path) -> Result<()> {
     let mut cmd = gitcmd::hermetic_async();
     cmd.arg("-C").arg(repo).arg("index-pack").arg(pack);
@@ -243,6 +287,11 @@ pub async fn index_pack(repo: &Path, pack: &Path) -> Result<()> {
 }
 
 /// Verify that an indexed pack is readable and matches its index.
+///
+/// # Errors
+///
+/// Returns an error if `git verify-pack` reports a mismatch or cannot read
+/// the pack.
 pub async fn verify_pack_index(repo: &Path, idx: &Path) -> Result<()> {
     let mut cmd = gitcmd::hermetic_async();
     cmd.arg("-C")
@@ -254,6 +303,10 @@ pub async fn verify_pack_index(repo: &Path, idx: &Path) -> Result<()> {
 }
 
 /// Train a zstd dictionary over a release line's delta packs.
+///
+/// # Errors
+///
+/// Returns an error if `packs` is empty or `zstd --train` fails.
 pub async fn train_dictionary(packs: &[PathBuf], out: &Path) -> Result<PathBuf> {
     if packs.is_empty() {
         bail!("cannot train a zstd dictionary without input packs");
@@ -269,6 +322,7 @@ pub async fn train_dictionary(packs: &[PathBuf], out: &Path) -> Result<PathBuf> 
     Ok(out.to_path_buf())
 }
 
+/// Append `candidate` to `bases` if it is published and not already present.
 fn push_if_published(
     bases: &mut Vec<semver::Version>,
     published: &[semver::Version],
@@ -279,6 +333,8 @@ fn push_if_published(
     }
 }
 
+/// Shared `git pack-objects` flags: deep delta windows, no object reuse,
+/// and `--compression=0` so zstd does the transport compression.
 fn pack_objects_args(thin: bool) -> Vec<&'static str> {
     let mut args = vec![
         "pack-objects",
@@ -297,6 +353,7 @@ fn pack_objects_args(thin: bool) -> Vec<&'static str> {
     args
 }
 
+/// Run a git command in `repo` and return trimmed stdout.
 async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
     let output = gitcmd::hermetic_async()
         .arg("-C")
@@ -315,6 +372,7 @@ async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Run a command and fail with its stderr if it exits non-zero.
 async fn run_status(mut cmd: Command, label: &str) -> Result<()> {
     let output = cmd
         .output()

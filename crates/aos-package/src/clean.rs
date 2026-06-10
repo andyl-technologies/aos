@@ -1,3 +1,17 @@
+//! `apm clean` and `apm gc` — reclaim disk space.
+//!
+//! Two complementary mechanisms:
+//!
+//! - **NAR cache cleaning** (`apm clean`): deletes downloaded NAR archives
+//!   from the cache directory. These are pure download artifacts — removing
+//!   them never affects installed packages, only future re-download cost.
+//! - **Generation pruning** (`apm clean --generations --keep=N`): removes
+//!   old profile generations beyond the latest `N`, always preserving the
+//!   current generation. Pruned generations can no longer be rolled back to.
+//! - **Garbage collection** (`apm gc`): delegates to `nix-store --gc` to
+//!   delete store paths unreachable from any GC root (profile generations
+//!   are roots, so pruning generations first frees more).
+
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -7,6 +21,7 @@ use super::profile::Profile;
 use aos_core::nix::aos_nix_env;
 use aos_core::output::{OutputMode, Printer};
 
+/// Outcome of clearing the NAR download cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NarCacheCleanResult {
     freed_bytes: u64,
@@ -18,6 +33,12 @@ struct NarCacheCleanResult {
 /// Without `--generations`: clears the NAR download cache.
 /// With `--generations`: prunes old profile generations, keeping the
 /// latest `keep` (and always keeping the current generation).
+///
+/// # Errors
+///
+/// Returns an error if the profile cannot be opened or its generations
+/// listed/pruned (e.g. the profile lock is held by another process), or if
+/// the NAR cache directory or one of its files cannot be read or removed.
 pub async fn run(
     config: &ApmConfig,
     generations: bool,
@@ -130,6 +151,11 @@ pub async fn run(
 ///
 /// Delegates to the system's `nix-store --gc` to reclaim unreachable
 /// store paths.
+///
+/// # Errors
+///
+/// Returns an error if `nix-store` cannot be spawned or exits with a
+/// non-zero status.
 pub async fn run_gc(printer: &Printer) -> Result<()> {
     run_gc_impl(printer, true).await
 }
@@ -138,6 +164,11 @@ pub async fn run_gc(printer: &Printer) -> Result<()> {
 ///
 /// Text output is preserved for normal mode, but JSON mode stays silent so the
 /// parent command remains a single JSON document.
+///
+/// # Errors
+///
+/// Returns an error if `nix-store` cannot be spawned or exits with a
+/// non-zero status.
 pub async fn run_gc_after_mutation(printer: &Printer) -> Result<()> {
     run_gc_impl(printer, false).await
 }
@@ -181,6 +212,7 @@ async fn run_gc_impl(printer: &Printer, emit_json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Look up a single variable in the AOS nix environment slice.
 fn nix_env_value(env: &[(&'static str, String)], key: &str) -> Option<String> {
     env.iter()
         .find_map(|(name, value)| (*name == key).then(|| value.clone()))
@@ -242,6 +274,7 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+/// Build the JSON document emitted for `apm clean --generations`.
 fn clean_generations_json(
     status: &str,
     keep: u32,

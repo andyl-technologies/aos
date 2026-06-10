@@ -1,4 +1,22 @@
 //! Static Nix binary-cache generation for registry store paths.
+//!
+//! Producer-side tooling that turns the store paths referenced by a
+//! registry's package TOML files into a standard static Nix binary cache: a
+//! `nix-cache-info` file, one `<hash>.narinfo` per path, and
+//! zstd-compressed NARs under `nar/`. The local Nix store supplies the
+//! bytes (`nix-store --dump`) and metadata (`nix path-info`); narinfos are
+//! optionally Ed25519-signed.
+//!
+//! The cache is laid out on disk first ([`generate_static_cache`]) and then
+//! mirrored to one or more upload destinations via `aos-cache` backends
+//! ([`upload_static_cache`], [`upload_static_cache_to_all`]).
+//! [`upsert_registry_cache`] records the published cache URL in the
+//! registry's `registry.toml` so consumers discover it after sync.
+//!
+//! Store paths from the package metadata may live in an alternate store
+//! directory (e.g. `/var/lib/store`); metadata reported by the local
+//! `/nix/store` is re-rooted onto the requested store dir so the published
+//! narinfos describe the paths consumers will actually install.
 
 use std::collections::BTreeSet;
 use std::io::Cursor;
@@ -18,14 +36,21 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use toml::Value as TomlValue;
 
+/// Summary of a generated static cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticCacheReport {
+    /// Number of store paths covered (registry roots plus their closures).
     pub paths: usize,
+    /// Number of `.narinfo` files written.
     pub narinfos: usize,
+    /// Number of compressed NAR files written.
     pub nars: usize,
+    /// The directory the cache was generated into.
     pub output_dir: PathBuf,
 }
 
+/// Per-path metadata extracted from `nix path-info`, re-rooted onto the
+/// registry's store directory.
 #[derive(Debug, Clone)]
 struct CachePathInfo {
     path: String,
@@ -35,6 +60,20 @@ struct CachePathInfo {
     deriver: Option<String>,
 }
 
+/// Generate a complete static Nix binary cache for a registry's store paths.
+///
+/// Collects every `store_path` (and sysroot image path) from the registry's
+/// package TOML files, expands each to its full runtime closure with
+/// `nix-store -qR`, and writes `nix-cache-info`, a zstd NAR, and a narinfo
+/// for every member into `output_dir`. When `key_path` (or the signer's
+/// default configuration) yields a signing key, narinfos are signed.
+///
+/// # Errors
+///
+/// Returns an error when the registry references no store paths, the paths
+/// span mixed store directories, a path is missing from the local Nix
+/// store, a `nix`/`nix-store` invocation fails, or an output file cannot be
+/// written.
 pub async fn generate_static_cache(
     registry_dir: &Path,
     output_dir: &Path,
@@ -112,6 +151,16 @@ pub async fn generate_static_cache(
     })
 }
 
+/// Upload a generated static cache directory to one destination.
+///
+/// Pushes `nix-cache-info`, every top-level `*.narinfo`, and every file
+/// under `nar/` through the cache backend selected by `upload_url`'s scheme
+/// (e.g. `file://`, S3-style object stores).
+///
+/// # Errors
+///
+/// Returns an error if the backend cannot be constructed for `upload_url`,
+/// a local file cannot be read, or any upload request fails.
 pub async fn upload_static_cache(
     output_dir: &Path,
     upload_url: &str,
@@ -163,6 +212,15 @@ pub async fn upload_static_cache(
     Ok(())
 }
 
+/// Upload a generated static cache to every destination URL.
+///
+/// Destinations are attempted independently; a failure on one does not stop
+/// uploads to the others.
+///
+/// # Errors
+///
+/// Returns an error aggregating all per-destination failures when any
+/// upload fails.
 pub async fn upload_static_cache_to_all(
     output_dir: &Path,
     upload_urls: &[String],
@@ -189,6 +247,16 @@ pub async fn upload_static_cache_to_all(
     Ok(())
 }
 
+/// Insert or update a `[[caches]]` entry in the registry's `registry.toml`.
+///
+/// Adds a `{ url, priority }` entry for `cache_url`, or updates the priority
+/// of an existing entry with the same URL. Returns `true` when the file was
+/// modified and `false` when it already matched.
+///
+/// # Errors
+///
+/// Returns an error when `registry.toml` cannot be read, parsed, or
+/// rewritten, or when its `caches` value is not an array of tables.
 pub fn upsert_registry_cache(registry_dir: &Path, cache_url: &str, priority: u32) -> Result<bool> {
     let path = registry_dir.join("registry.toml");
     let content =
@@ -236,6 +304,7 @@ pub fn upsert_registry_cache(registry_dir: &Path, cache_url: &str, priority: u32
     Ok(changed)
 }
 
+/// Collect the sorted closure of every store path the registry references.
 fn collect_store_paths(registry_dir: &Path) -> Result<Vec<String>> {
     let packages = registry_dir.join("packages");
     if !packages.exists() {
@@ -251,6 +320,10 @@ fn collect_store_paths(registry_dir: &Path) -> Result<Vec<String>> {
     Ok(paths.into_iter().collect())
 }
 
+/// Determine the single store directory shared by all paths.
+///
+/// A static cache advertises one `StoreDir`, so mixed store roots cannot be
+/// served from the same cache and are rejected.
 fn common_store_dir(paths: &[String]) -> Result<String> {
     let first = paths
         .first()
@@ -269,6 +342,7 @@ fn common_store_dir(paths: &[String]) -> Result<String> {
     Ok(store_dir)
 }
 
+/// Return the parent (store) directory of a store path.
 fn store_dir_of(store_path: &str) -> Result<String> {
     Path::new(store_path)
         .parent()
@@ -276,6 +350,9 @@ fn store_dir_of(store_path: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("store path has no parent directory: {store_path}"))
 }
 
+/// Expand a root path to its runtime closure via `nix-store -qR`, re-rooting
+/// every member onto the root's store directory. Falls back to the root
+/// alone if the query returns nothing.
 fn collect_store_path_closure(store_path: &str, paths: &mut BTreeSet<String>) -> Result<()> {
     let store_dir = store_dir_of(store_path)?;
     let output = Command::new("nix-store")
@@ -307,6 +384,8 @@ fn collect_store_path_closure(store_path: &str, paths: &mut BTreeSet<String>) ->
     Ok(())
 }
 
+/// Recursively scan a packages directory for TOML files and harvest their
+/// store paths.
 fn collect_store_paths_from_dir(dir: &Path, paths: &mut BTreeSet<String>) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
@@ -327,6 +406,8 @@ fn collect_store_paths_from_dir(dir: &Path, paths: &mut BTreeSet<String>) -> Res
     Ok(())
 }
 
+/// Harvest `store_path` values from every version/platform entry (including
+/// sysroot image entries) of one parsed package TOML document.
 fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<String>) {
     let Some(versions) = value.get("versions").and_then(TomlValue::as_array) else {
         return;
@@ -350,6 +431,7 @@ fn collect_store_paths_from_package(value: &TomlValue, paths: &mut BTreeSet<Stri
     }
 }
 
+/// Assert that a store path is valid in the local Nix store.
 fn check_store_path_valid(path: &str) -> Result<()> {
     let output = Command::new("nix-store")
         .envs(aos_nix_env())
@@ -362,6 +444,7 @@ fn check_store_path_valid(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Query NAR metadata for one path via `nix path-info --json`.
 fn query_path_info(path: &str) -> Result<CachePathInfo> {
     let output = Command::new("nix")
         .envs(aos_nix_env())
@@ -380,6 +463,11 @@ fn query_path_info(path: &str) -> Result<CachePathInfo> {
     path_info_from_json(path, &json)
 }
 
+/// Convert `nix path-info` JSON into [`CachePathInfo`] for `requested_path`.
+///
+/// Validates that the reported path's hash matches the request, re-roots the
+/// path, references, and deriver onto the requested store directory, and
+/// drops self-references.
 fn path_info_from_json(requested_path: &str, json: &JsonValue) -> Result<CachePathInfo> {
     let info = select_path_info(json);
     let store_dir = store_dir_of(requested_path)?;
@@ -432,6 +520,7 @@ fn path_info_from_json(requested_path: &str, json: &JsonValue) -> Result<CachePa
     })
 }
 
+/// Rewrite a store path's directory prefix, keeping its basename.
 fn re_root_store_path(store_path: &str, store_dir: &str) -> Result<String> {
     let name = basename(store_path);
     if name.is_empty() {
@@ -440,6 +529,9 @@ fn re_root_store_path(store_path: &str, store_dir: &str) -> Result<String> {
     Ok(format!("{store_dir}/{name}"))
 }
 
+/// Normalize the `nix path-info --json` output shape, which varies across
+/// Nix versions: an array of entries, a direct info object, or an object
+/// keyed by store path.
 fn select_path_info(json: &JsonValue) -> JsonValue {
     if let Some(array) = json.as_array() {
         return array.first().cloned().unwrap_or_else(|| json.clone());
@@ -460,6 +552,7 @@ fn select_path_info(json: &JsonValue) -> JsonValue {
     json.clone()
 }
 
+/// Dump a store path as a NAR (`nix-store --dump`) and zstd-compress it.
 fn dump_zstd_nar(path: &str) -> Result<Vec<u8>> {
     let output = Command::new("nix-store")
         .envs(aos_nix_env())

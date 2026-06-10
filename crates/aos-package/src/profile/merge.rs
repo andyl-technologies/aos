@@ -1,3 +1,21 @@
+//! The merged FHS symlink tree of a generation.
+//!
+//! Installed packages live as isolated store paths; this module gives a
+//! generation a conventional Unix layout by merging each package's `bin/`,
+//! `lib/`, `share/`, `etc/`, ... contents into `gen-N/<dir>/` as symlinks
+//! pointing back into the store. The profile's `current` symlink then makes
+//! e.g. `current/bin` a stable PATH entry across generation switches.
+//!
+//! Merging is shallow per `MERGE_DIRS` entry: each immediate child of a
+//! merge directory becomes one symlink (a file or a whole subdirectory).
+//! Man section directories are merged at `share/man/manN` granularity so
+//! pages from different packages coexist; the `share/man` child itself is
+//! skipped during the `share` scan to avoid double handling.
+//!
+//! When two packages provide the same relative path, the later entry in the
+//! ordered store-path slice wins; every collision is reported as a
+//! [`FileConflict`] and a printed warning.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -39,14 +57,19 @@ const PRESERVED_DIRS: &[&str] = &["usr", "src"];
 
 /// Result of building the FHS merge tree.
 pub struct MergeResult {
+    /// Number of symlinks created in the generation.
     pub symlinks_created: usize,
+    /// Every relative path provided by more than one package.
     pub conflicts: Vec<FileConflict>,
 }
 
 /// A file conflict where two packages provide the same path.
 pub struct FileConflict {
+    /// The contested relative path (e.g. `bin/python3`).
     pub path: String,
+    /// Package whose file was linked (later in the install order).
     pub winner: String,
+    /// Package whose file was shadowed.
     pub loser: String,
 }
 
@@ -64,6 +87,11 @@ pub struct FileConflict {
 /// wins.  A warning is printed for every conflict.
 ///
 /// `store_paths` is an ordered slice -- later entries take priority.
+///
+/// # Errors
+///
+/// Returns an error if a store path cannot be scanned or a symlink (or its
+/// parent directory) cannot be created.
 pub fn build_fhs_tree(
     generation: &Generation,
     store_paths: &[(String, PathBuf)],
@@ -117,6 +145,11 @@ pub fn build_fhs_tree(
 /// Remove the FHS tree (all merged symlink directories) from a generation.
 ///
 /// Preserves `usr/` and `src/` directories (GC roots and source roots).
+///
+/// # Errors
+///
+/// Returns an error if the generation directory cannot be read or an entry
+/// cannot be removed.
 pub fn clear_fhs_tree(generation: &Generation) -> Result<()> {
     let entries = std::fs::read_dir(&generation.path)
         .with_context(|| format!("reading generation directory {}", generation.path.display()))?;

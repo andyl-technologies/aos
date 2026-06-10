@@ -1,4 +1,21 @@
 //! Signed tag-object parsing and name-binding helpers.
+//!
+//! Channel-tracked registries select releases through a two-hop chain of
+//! signed annotated tags: a *channel tag* (served as a static partition
+//! object) points at a *release tag*, which points at the release commit.
+//! [`verify_tag_chain`] checks the whole chain: both signatures against the
+//! trusted key set, the embedded tag names against the names the objects
+//! were served under (*name binding*, so a valid tag for one channel or
+//! release cannot be replayed as another), and the hop target types.
+//!
+//! The raw tag-object format parsed here is git's standard header layout:
+//!
+//! ```text
+//! object <oid>
+//! type commit
+//! tag 1.2.3
+//! tagger Name <email> 1770000000 +0000
+//! ```
 
 use std::path::Path;
 
@@ -10,23 +27,31 @@ use crate::security::verify_tag_signature;
 /// The target type recorded in a git tag object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagTarget {
+    /// The tag points at another tag (a channel tag's hop to a release tag).
     Tag,
+    /// The tag points directly at a commit (a release tag).
     Commit,
 }
 
 /// Parsed fields from a git tag object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagObject {
+    /// The tag name embedded in the object (`tag` header).
     pub name: String,
+    /// Object id the tag points at (`object` header).
     pub object: String,
+    /// Type of the pointed-at object (`type` header).
     pub target_type: TagTarget,
+    /// Tagger timestamp in Unix seconds, when parseable.
     pub tagger_when: Option<i64>,
 }
 
 /// Verified release selected by a channel partition tag chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedRelease {
+    /// The release version named by the verified release tag.
     pub semver: semver::Version,
+    /// The release commit the verified tag chain resolves to.
     pub commit: String,
 }
 
@@ -51,6 +76,13 @@ pub fn read_tag_object(repo: &Path, oid: &str) -> Result<TagObject> {
 }
 
 /// Verify that the embedded git tag-name equals the expected serving-path name.
+///
+/// This binds a tag object to the channel or release name it was served
+/// under, preventing a valid tag from being replayed at a different path.
+///
+/// # Errors
+///
+/// Returns an error when the embedded name differs from `expected_name`.
 pub fn verify_name_binding(tag: &TagObject, expected_name: &str) -> Result<()> {
     if tag.name != expected_name {
         bail!(
@@ -68,6 +100,13 @@ pub fn verify_name_binding(tag: &TagObject, expected_name: &str) -> Result<()> {
 /// is the expected semver tag name, without `refs/tags/`. Each tag signature
 /// must match *any* key in `trusted_keys` (each in
 /// `registry:Ed25519:<base64>` form); an empty key set is an error.
+///
+/// # Errors
+///
+/// Returns an error when either tag is not signed by a trusted key, a name
+/// binding fails, the channel tag does not target the release tag object,
+/// either hop has the wrong target type, the release tag name is not valid
+/// semver, or a git invocation fails.
 pub fn verify_tag_chain(
     repo: &Path,
     channel_tag: &str,
@@ -120,6 +159,15 @@ pub fn verify_tag_chain(
     })
 }
 
+/// Parse the header section of a raw git tag object.
+///
+/// Only the headers before the first blank line are read; the tag message
+/// and signature block are ignored.
+///
+/// # Errors
+///
+/// Returns an error when the `tag`, `object`, or `type` header is missing,
+/// or when the target type is neither `tag` nor `commit`.
 pub fn parse_tag_object(content: &str) -> Result<TagObject> {
     let mut object = None;
     let mut target_type = None;
@@ -154,6 +202,7 @@ pub fn parse_tag_object(content: &str) -> Result<TagObject> {
     })
 }
 
+/// Resolve a tag ref to its tag *object* id (not the peeled commit).
 fn resolve_tag_object(repo: &Path, tag: &str) -> Result<String> {
     let output = gitcmd::hermetic()
         .args(["rev-parse", &format!("{tag}^{{tag}}")])
@@ -169,6 +218,7 @@ fn resolve_tag_object(repo: &Path, tag: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Extract the Unix timestamp from a `tagger Name <email> <secs> <tz>` line.
 fn parse_tagger_when(tagger: &str) -> Option<i64> {
     // Git tagger header is: "Name <email> <unix-seconds> <tz>".
     tagger

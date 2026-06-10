@@ -23,9 +23,26 @@ use crate::types::{TransferRequest, TransferResult};
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>;
 
 /// Trait for protocol-specific transfer implementations.
+///
+/// Implementations exist for HTTP(S) ([`http::HttpProtocol`]), S3
+/// ([`s3::S3Protocol`]), SFTP/SSH ([`sftp::SftpProtocol`]), and the
+/// local filesystem ([`fs::FsProtocol`]). Most callers should go
+/// through [`TransferEngine`](crate::transfer::TransferEngine) rather
+/// than using a protocol directly -- the engine adds pooling, retry,
+/// hashing, bandwidth limiting, and progress reporting on top.
 #[async_trait]
 pub trait Protocol: Send + Sync {
     /// Execute a transfer request (legacy non-streaming path).
+    ///
+    /// The implementation handles the request's output destination
+    /// itself (memory buffer, file, or callback).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the URL is invalid for this protocol, the
+    /// remote operation fails (network/auth/HTTP error status), the
+    /// method or body type is unsupported by this protocol, or local
+    /// I/O on the output destination fails.
     async fn execute(
         &self,
         request: &TransferRequest,
@@ -39,6 +56,12 @@ pub trait Protocol: Send + Sync {
     ///
     /// The default implementation falls back to `execute()` and yields
     /// the body as a single chunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same conditions as
+    /// [`execute`](Protocol::execute). Errors that occur mid-body are
+    /// yielded as `Err` items from the returned stream instead.
     async fn stream(
         &self,
         request: &TransferRequest,
@@ -58,7 +81,8 @@ pub trait Protocol: Send + Sync {
     /// Whether this protocol supports multi-part upload.
     fn supports_multipart(&self) -> bool;
 
-    /// Maximum part size for multi-part upload (if supported).
+    /// Size threshold above which uploads switch to multi-part
+    /// (if supported). The default implementation returns `None`.
     fn multipart_threshold(&self) -> Option<u64> {
         None
     }
@@ -71,6 +95,11 @@ pub trait Protocol: Send + Sync {
 /// - `s3://` -> S3 protocol
 /// - `sftp://`, `ssh://` -> SFTP protocol
 /// - `file://` -> Local filesystem protocol
+///
+/// # Errors
+///
+/// Returns an error if the URL has no `://` scheme separator or the
+/// scheme is not one of the supported values above.
 pub fn for_url(url: &str) -> Result<Box<dyn Protocol>> {
     let scheme = url
         .split("://")

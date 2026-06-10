@@ -22,7 +22,14 @@ const MULTIPART_THRESHOLD: u64 = 5 * 1024 * 1024;
 const MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
 
 /// S3 protocol handler.
+///
+/// URLs use the `s3://bucket/key` form. SigV4 signing is delegated to
+/// the AWS SDK; supply a [`Credential::AwsSigV4`] to control region,
+/// profile, and endpoint, otherwise the SDK's default credential chain
+/// (environment, profile, IMDS) is used. File uploads larger than
+/// 5 MB automatically use multi-part upload.
 pub struct S3Protocol {
+    /// Part size for multi-part uploads, in bytes.
     part_size: u64,
 }
 
@@ -34,12 +41,18 @@ impl S3Protocol {
         }
     }
 
-    /// Create a new S3 protocol handler with a custom part size.
+    /// Create a new S3 protocol handler with a custom part size
+    /// (in bytes) for multi-part uploads.
     pub fn with_part_size(part_size: u64) -> Self {
         Self { part_size }
     }
 
     /// Build an S3 client from credentials.
+    ///
+    /// With a [`Credential::AwsSigV4`], the region (and optionally a
+    /// named profile) configure the SDK loader, and a custom endpoint
+    /// switches the client to path-style addressing for S3-compatible
+    /// services. Without credentials, the SDK default chain is used.
     async fn build_client(&self, auth: Option<&Credential>) -> Result<aws_sdk_s3::Client> {
         let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
 
@@ -67,7 +80,8 @@ impl S3Protocol {
 
     /// Parse an S3 URL into (bucket, key).
     ///
-    /// Format: `s3://bucket/key/path`
+    /// Format: `s3://bucket/key/path`. Fails if the URL is malformed,
+    /// has no bucket, or has an empty key.
     fn parse_url(url: &str) -> Result<(String, String)> {
         let parsed = url::Url::parse(url).with_context(|| format!("invalid S3 URL: {url}"))?;
 
@@ -84,6 +98,9 @@ impl S3Protocol {
         Ok((bucket, key))
     }
 
+    /// Buffering GetObject: reads the body in 64KB chunks into the
+    /// request's output (memory, file with optional ranged resume, or
+    /// callback).
     async fn do_get(
         &self,
         request: &TransferRequest,
@@ -275,6 +292,9 @@ impl S3Protocol {
         Ok((result, stream))
     }
 
+    /// PutObject upload. File bodies above the 5 MB threshold use
+    /// multi-part upload; smaller files and byte bodies upload in one
+    /// shot. Stream bodies are rejected on this path.
     async fn do_put(
         &self,
         request: &TransferRequest,
@@ -375,6 +395,8 @@ impl S3Protocol {
         }
     }
 
+    /// HeadObject: returns a 200 result with the object size, or a
+    /// 404 result (not an error) when the object does not exist.
     async fn do_head(
         &self,
         request: &TransferRequest,
@@ -417,6 +439,7 @@ impl S3Protocol {
         }
     }
 
+    /// DeleteObject: returns a 204 result on success.
     async fn do_delete(
         &self,
         request: &TransferRequest,
@@ -445,6 +468,11 @@ impl S3Protocol {
     }
 
     /// Multi-part upload reading from a file in chunks (no full-buffer).
+    ///
+    /// Runs CreateMultipartUpload, uploads `part_size`-byte parts
+    /// sequentially while collecting their ETags, then
+    /// CompleteMultipartUpload. An aborted upload is not cleaned up
+    /// here; orphaned parts are left for a bucket lifecycle rule.
     async fn do_multipart_upload_from_file(
         &self,
         client: &aws_sdk_s3::Client,
@@ -523,6 +551,9 @@ impl S3Protocol {
     }
 }
 
+/// Map recognized HTTP-style request headers (`Content-Type`,
+/// `Cache-Control`) onto PutObject builder fields; other headers are
+/// ignored because S3 models them as typed parameters, not headers.
 fn apply_put_object_headers(
     mut builder: aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder,
     headers: &[(String, String)],
@@ -541,6 +572,8 @@ fn apply_put_object_headers(
     builder
 }
 
+/// Same header mapping as [`apply_put_object_headers`], for the
+/// CreateMultipartUpload builder.
 fn apply_create_multipart_headers(
     mut builder: aws_sdk_s3::operation::create_multipart_upload::builders::CreateMultipartUploadFluentBuilder,
     headers: &[(String, String)],

@@ -1,22 +1,54 @@
+//! Minimal `.drv` file (ATerm format) parsing for fixed-output
+//! derivation discovery.
+//!
+//! A `.drv` file is an ATerm term of the shape
+//! `Derive([outputs], [input-drvs], [input-srcs], system, builder,
+//! [args], [env])`. This module implements just enough of a parser to
+//! pull out the pieces needed to recognise fixed-output derivations
+//! (FODs, i.e. fetches with a pinned `outputHash`): the outputs list,
+//! the builder, and the env section. The entry point is
+//! [`parse_drv_for_fod`].
+//!
+//! The parser is hand-rolled and position-based rather than a full
+//! ATerm grammar; it relies on the rigid structure Nix itself writes
+//! (lists in a fixed order, double-quoted strings with backslash
+//! escapes).
+
 use anyhow::{Context, Result};
 
 /// A fixed-output derivation discovered from a .drv file.
 #[derive(Debug, Clone)]
 pub struct FixedOutputDrv {
+    /// Path of the `.drv` file this record was parsed from.
     pub drv_path: String,
+    /// Store path of the derivation's first output.
     pub output_path: String,
+    /// The derivation's `name` env var (empty if absent).
     pub name: String,
+    /// The pinned `outputHash` value.
     pub output_hash: String,
+    /// The `outputHashAlgo` env var, e.g. `sha256` (empty if absent).
     pub output_hash_algo: String,
+    /// The `outputHashMode` env var: `flat` (default) or `recursive`.
     pub output_hash_mode: String,
+    /// The `url` env var, when the FOD is a fetch with a single URL.
     pub url: Option<String>,
+    /// The derivation's builder executable (e.g. `builtin:fetchurl` or
+    /// a store path to bash).
     pub builder: String,
 }
 
-/// Parse a .drv file (ATerm format) and extract FOD info if present.
+/// Parses a .drv file (ATerm format) and extracts FOD info if present.
 ///
-/// Returns `Some(FixedOutputDrv)` if the derivation has an `outputHash` env var,
-/// `None` otherwise.
+/// Returns `Some(FixedOutputDrv)` if the derivation has a non-empty
+/// `outputHash` env var, `None` otherwise (a quick substring check
+/// short-circuits non-FOD derivations before any real parsing).
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or its ATerm structure
+/// cannot be parsed (missing env section, no outputs, or malformed
+/// strings).
 pub fn parse_drv_for_fod(drv_path: &str) -> Result<Option<FixedOutputDrv>> {
     let content =
         std::fs::read_to_string(drv_path).with_context(|| format!("reading {drv_path}"))?;
@@ -51,7 +83,13 @@ pub fn parse_drv_for_fod(drv_path: &str) -> Result<Option<FixedOutputDrv>> {
     }))
 }
 
-/// Parse the env section of a .drv file into a key-value map.
+/// Parses the env section of a .drv file into a key-value map.
+///
+/// The env section is the last top-level `[...]` list inside
+/// `Derive(...)`, so a first scan records every depth-0 list start
+/// (skipping over quoted strings, which may contain brackets) and the
+/// final one is taken as the env. Each `("key","value")` pair within it
+/// is then decoded with [`parse_aterm_string`].
 fn parse_drv_env(content: &str) -> Result<std::collections::HashMap<String, String>> {
     let mut env = std::collections::HashMap::new();
 
@@ -129,7 +167,12 @@ fn parse_drv_env(content: &str) -> Result<std::collections::HashMap<String, Stri
     Ok(env)
 }
 
-/// Parse the outputs section: `[("out","/nix/store/xxx","sha256","abc123..."),...]`
+/// Parses the outputs section (the first list in `Derive(...)`):
+/// `[("out","/nix/store/xxx","sha256","abc123..."),...]`.
+///
+/// Returns `(path, name)` pairs in declaration order. A running
+/// bracket-depth check stops the scan once the outputs list closes so
+/// tuples from later sections are not picked up.
 fn parse_drv_outputs(content: &str) -> Result<Vec<(String, String)>> {
     let mut outputs = Vec::new();
     let bytes = content.as_bytes();
@@ -179,7 +222,9 @@ fn parse_drv_outputs(content: &str) -> Result<Vec<(String, String)>> {
     Ok(outputs)
 }
 
-/// Extract the builder string from a .drv (4th string field).
+/// Extracts the builder string from a .drv: the second bare string
+/// after the first three lists (outputs, input drvs, input srcs), the
+/// first being the system.
 fn parse_drv_builder(content: &str) -> Result<String> {
     let bytes = content.as_bytes();
     let len = bytes.len();
@@ -238,7 +283,11 @@ fn parse_drv_builder(content: &str) -> Result<String> {
     Ok(builder)
 }
 
-/// Parse a double-quoted ATerm string starting at `pos`.
+/// Parses a double-quoted ATerm string starting at `pos`, advancing
+/// `pos` past the closing quote.
+///
+/// Handles the `\n`, `\t`, `\\`, and `\"` escapes Nix emits; any other
+/// backslash sequence is preserved literally.
 fn parse_aterm_string(content: &str, pos: &mut usize) -> Result<String> {
     let bytes = content.as_bytes();
     let len = bytes.len();

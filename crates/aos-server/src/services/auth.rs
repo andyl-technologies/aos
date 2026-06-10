@@ -1,4 +1,8 @@
 //! ConnectRPC implementation of `AuthService`.
+//!
+//! Exposes a single `GetToken` RPC — the ConnectRPC twin of the REST
+//! `POST /oauth2/token` endpoint — that exchanges a long-lived
+//! provisioning secret for a short-lived JWT access token.
 
 use std::sync::Arc;
 
@@ -9,12 +13,20 @@ use aos_proto::aos::auth::v1::*;
 use crate::auth;
 use crate::routes::AppState;
 
-/// ConnectRPC auth service backed by the shared `AppState`.
+/// ConnectRPC auth service backed by the shared [`AppState`].
 pub struct AuthServiceImpl {
+    /// Shared server state (token store, JWT secret, config).
     pub state: Arc<AppState>,
 }
 
 impl AuthService for AuthServiceImpl {
+    /// `GetToken` — exchanges a provisioning secret for a JWT.
+    ///
+    /// The secret travels in the request body (unlike the REST endpoint,
+    /// which uses the `Authorization` header). Fails `unauthenticated` for
+    /// an unknown/revoked/expired secret and `internal` on token-store or
+    /// JWT-encoding errors. The response mirrors the OAuth2 token shape:
+    /// access token, `Bearer` type, TTL, and space-joined scope.
     async fn get_token(
         &self,
         ctx: Context,

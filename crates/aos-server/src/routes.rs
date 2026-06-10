@@ -1,3 +1,39 @@
+//! HTTP surface of the server: the axum router, shared state, and all REST
+//! handlers.
+//!
+//! [`router`] mounts every endpoint. REST routes are registered explicitly;
+//! ConnectRPC method paths (from [`crate::services`]) are mounted alongside
+//! them and also serve as the fallback, so the two APIs share one listener.
+//!
+//! # HTTP endpoints
+//!
+//! Read endpoints (anonymous when the view has `anonymous_read = true`,
+//! otherwise JWT required):
+//!
+//! | Method | Path                        | Purpose                            |
+//! |--------|-----------------------------|------------------------------------|
+//! | GET    | `/{view}/nix-cache-info`    | Cache metadata + capabilities      |
+//! | GET    | `/{view}/{hash}.narinfo`    | Path metadata (narinfo)            |
+//! | GET    | `/{view}/nar/{filename}`    | NAR download (zstd/xz/none, ranges)|
+//!
+//! Authenticated endpoints (JWT via `Authorization: Bearer`; mutations
+//! additionally need the `build` permission):
+//!
+//! | Method | Path                       | Purpose                              |
+//! |--------|----------------------------|--------------------------------------|
+//! | POST   | `/{view}/query-missing`    | Which paths the server lacks         |
+//! | PUT    | `/{view}/store/{hash}`     | Upload a NAR (chunked via ranges)    |
+//! | HEAD   | `/{view}/store/{hash}`     | Progress of a partial upload         |
+//! | POST   | `/{view}/build?drv=...`    | Build one derivation (SSE stream)    |
+//! | POST   | `/{view}/build-closure`    | Build many derivations (tagged SSE)  |
+//! | POST   | `/{view}/upload-pack`      | Batched NAR upload (AOSP pack)       |
+//! | POST   | `/{view}/gc`               | TTL expiry / eviction / store GC     |
+//! | POST   | `/oauth2/token`            | Provisioning secret -> JWT exchange  |
+//!
+//! Every `/{view}/...` handler validates the view name against path
+//! traversal, resolves it to a configured view (404 otherwise), and checks
+//! the JWT's view list and permissions before doing any work.
+
 use std::convert::Infallible;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -34,8 +70,11 @@ use crate::views::ViewManager;
 
 use tracing;
 
-/// Validate that a view name extracted from a URL path is safe.
-/// Rejects names containing path traversal sequences, directory separators, or null bytes.
+/// Validates that a view name extracted from a URL path is safe.
+///
+/// View names become filesystem path components under `gcroots/` and
+/// `meta/`, so names containing path traversal sequences (`..`), directory
+/// separators, or null bytes are rejected with `400 Bad Request`.
 fn validate_view_name(name: &str) -> Result<(), Response> {
     if name.is_empty()
         || name.contains("..")
@@ -57,20 +96,36 @@ use aos_proto::aos::gc::v1::GcServiceExt;
 
 use crate::services;
 
-/// Shared server state.
+/// Shared server state, constructed once at startup and passed to every
+/// handler behind an `Arc`.
 pub struct AppState {
+    /// Read-only handle to the Nix store SQLite database.
     pub store: NixStore,
+    /// View configuration and GC root / metadata management.
     pub views: ViewManager,
+    /// Parsed server configuration.
     pub config: ServerConfig,
+    /// Absolute store directory advertised in `nix-cache-info` and narinfo
+    /// (e.g. `/var/lib/aos/store`).
     pub store_dir: String,
+    /// HMAC-SHA256 secret used to sign and verify JWT access tokens.
     pub jwt_secret: Vec<u8>,
+    /// Provisioning token store backing the OAuth2 exchange and the
+    /// bootstrap socket.
     pub tokens: TokenStore,
+    /// Build deduplication and event streaming.
     pub build_mgr: Arc<BuildManager>,
+    /// Graceful-shutdown coordination.
     pub drain: Arc<DrainState>,
+    /// Signer used to add a fresh `Sig:` line to served narinfo.
     pub signer: NarInfoSigner,
 }
 
-/// Build the axum router with both REST and ConnectRPC endpoints.
+/// Builds the axum router with both REST and ConnectRPC endpoints.
+///
+/// Exact ConnectRPC method paths are registered individually (so the broad
+/// `/{view}/{...}` REST patterns cannot shadow them), and the ConnectRPC
+/// service also acts as the fallback for unmatched paths.
 pub fn router(state: Arc<AppState>) -> Router {
     // Build ConnectRPC service router.
     let connect_router = build_connectrpc_router(Arc::clone(&state));
@@ -102,7 +157,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     router.fallback_service(connect_service).with_state(state)
 }
 
-/// Build the ConnectRPC service router with all RPC services registered.
+/// Builds the ConnectRPC service router with all four RPC services
+/// (cache, build, gc, auth) registered against the shared state.
 fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
     let cache_svc = Arc::new(services::cache::CacheServiceImpl {
         state: Arc::clone(&state),
@@ -130,6 +186,12 @@ fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
 // Read-only endpoints (respect anonymous_read)
 // ---------------------------------------------------------------------------
 
+/// `GET /{view}/nix-cache-info` — Nix binary cache metadata.
+///
+/// Anonymous when the view has `anonymous_read = true`, otherwise requires
+/// a valid JWT. Returns the standard `StoreDir`/`WantMassQuery`/`Priority`
+/// fields plus a `Capabilities:` line advertising AOS extensions
+/// (`pack-upload query-missing sse-logs zstd xz content-range`).
 async fn cache_info_handler(
     Path(view): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -157,6 +219,13 @@ async fn cache_info_handler(
     (StatusCode::OK, [(header::CONTENT_TYPE, "text/plain")], body).into_response()
 }
 
+/// `GET /{view}/{hash}.narinfo` — metadata for one store path.
+///
+/// Anonymous when the view allows it, otherwise requires a valid JWT. The
+/// hash must be visible in the view (have a GC root); a path that exists
+/// in the store but not in the view yields `404`, so views never leak each
+/// other's contents. Serving the narinfo also bumps the path's access
+/// metadata (best-effort) for eviction scoring.
 async fn narinfo_handler(
     Path((view, hash_narinfo)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
@@ -228,6 +297,14 @@ async fn narinfo_handler(
         .into_response()
 }
 
+/// `GET /{view}/nar/{filename}` — download a NAR archive.
+///
+/// Anonymous when the view allows it, otherwise requires a valid JWT. The
+/// filename's extension selects the compression (`.nar`, `.nar.zst`,
+/// `.nar.xz`) and its leading hash segment must be visible in the view.
+/// Full downloads are streamed without buffering; requests with a `Range:`
+/// header materialise the compressed NAR in memory and answer with
+/// `206 Partial Content` (or `416` for unsatisfiable ranges).
 async fn nar_handler(
     Path((view, filename)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
@@ -358,6 +435,13 @@ async fn nar_handler(
     }
 }
 
+/// Parses a request `Range: bytes=...` header against a body of `total`
+/// bytes, returning the inclusive `(start, end)` byte range.
+///
+/// Supports `start-end`, open-ended `start-`, and suffix `-len` forms.
+/// Multi-range requests, malformed specs, and out-of-bounds starts yield
+/// `None` (the caller answers `416 Range Not Satisfiable`); an `end` past
+/// the body is clamped.
 fn parse_range_header(value: &str, total: u64) -> Option<(u64, u64)> {
     if total == 0 {
         return None;
@@ -398,11 +482,20 @@ fn parse_range_header(value: &str, total: u64) -> Option<(u64, u64)> {
 // Build endpoints (require auth)
 // ---------------------------------------------------------------------------
 
+/// JSON body of `POST /{view}/query-missing`.
 #[derive(Deserialize)]
 struct QueryMissingRequest {
+    /// Store paths (or bare store hashes) to check.
     paths: Vec<String>,
 }
 
+/// `POST /{view}/query-missing` — reports which of the given paths the
+/// server does not have.
+///
+/// Requires a JWT authorized for the view (no specific permission).
+/// Accepts full store paths or bare hashes — paths are matched by store
+/// hash so client and server store roots may differ. Responds with
+/// `{"missing": [...]}` listing the inputs not present locally.
 async fn query_missing_handler(
     Path(view): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -441,8 +534,11 @@ async fn query_missing_handler(
     Json(serde_json::json!({ "missing": missing })).into_response()
 }
 
-/// Parse a `Content-Range: bytes start-end/total` header value.
-/// Returns `(start, end, total)` on success.
+/// Parses a `Content-Range: bytes start-end/total` header value (as sent
+/// by chunked uploads), returning `(start, end, total)` on success.
+///
+/// Returns `None` for malformed values or inconsistent ranges
+/// (`start > end` or `end >= total`).
 fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
     let rest = value.strip_prefix("bytes ")?;
     let (range, total_str) = rest.split_once('/')?;
@@ -456,13 +552,31 @@ fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
     Some((start, end, total))
 }
 
-/// Return the path to the partial upload file for a given hash.
+/// Returns the path to the partial upload file for a given hash
+/// (`{aos_root}/uploads/{hash}.partial`).
 fn partial_upload_path(hash: &str) -> std::path::PathBuf {
     crate::aos_root()
         .join("uploads")
         .join(format!("{hash}.partial"))
 }
 
+/// `PUT /{view}/store/{hash}` — upload a NAR-exported store path.
+///
+/// Requires a JWT authorized for the view with the `build` permission, and
+/// is subject to the view's `max_paths` quota (`507` when exceeded).
+///
+/// Two upload modes:
+///
+/// - **Single-shot** (no `Content-Range` header): the body is the complete
+///   `nix-store --export` output; it is imported immediately and the
+///   imported path returned as `{"path": ...}`.
+/// - **Chunked/resumable** (`Content-Range: bytes start-end/total`): each
+///   chunk is written at its offset into a partial file; intermediate
+///   chunks get `202 Accepted` with progress JSON, and the final chunk
+///   triggers assembly and import.
+///
+/// Imported paths must pass the `.drv`-or-content-addressed safety check
+/// and receive a temporary `tmp/` GC root until a build promotes them.
 async fn upload_path_handler(
     Path((view, hash)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
@@ -602,7 +716,11 @@ async fn upload_path_handler(
     import_nar_with_tmp_root(&body, &state.views, &view).await
 }
 
-/// Import NAR data via `nix-store --import` and return the imported store path.
+/// Imports NAR data via `nix-store --import` and returns the imported
+/// store path, after vetting it with
+/// [`pack::validate_imported_path`]. Failures are returned as ready-made
+/// error responses (`500` for process errors, `400` for import or
+/// validation rejections).
 async fn import_nar(data: &[u8]) -> Result<String, Response> {
     let mut child = Command::new("nix-store")
         .envs(aos_nix_env())
@@ -662,7 +780,9 @@ async fn import_nar(data: &[u8]) -> Result<String, Response> {
     Ok(imported)
 }
 
-/// Import NAR data and create a temporary GC root in the given view.
+/// Imports NAR data and creates a temporary GC root in the given view,
+/// returning the `{"path": ...}` JSON response (or the import's error
+/// response). A failure to create the tmp root is logged but not fatal.
 async fn import_nar_with_tmp_root(data: &[u8], views: &ViewManager, view: &str) -> Response {
     let imported = match import_nar(data).await {
         Ok(path) => path,
@@ -679,10 +799,12 @@ async fn import_nar_with_tmp_root(data: &[u8], views: &ViewManager, view: &str) 
     Json(serde_json::json!({ "path": imported })).into_response()
 }
 
-/// `HEAD /:view/store/:hash` — query the progress of a partial upload.
+/// `HEAD /{view}/store/{hash}` — queries the progress of a partial upload.
 ///
-/// Returns the current size of the partial upload file in `Content-Length`.
-/// Returns 404 if no partial upload exists for the given hash.
+/// Requires a valid JWT (any views/permissions). Returns the current size
+/// of the partial upload file in `Content-Length` so a client can resume a
+/// chunked upload from the right offset, or `404` if no partial upload
+/// exists for the given hash.
 async fn upload_progress_handler(
     Path((view, hash)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
@@ -706,14 +828,25 @@ async fn upload_progress_handler(
     }
 }
 
+/// Query parameters of `POST /{view}/build`.
 #[derive(Deserialize)]
 struct BuildQuery {
+    /// Full store path of the `.drv` to realise.
     drv: String,
 }
 
-/// `POST /:view/build?drv=...` — trigger a build, return SSE event stream.
+/// `POST /{view}/build?drv=...` — triggers a build and returns a
+/// Server-Sent Events stream of its progress.
 ///
-/// Supports `Last-Event-ID` header for reconnection replay.
+/// Requires a JWT authorized for the view with the `build` permission; the
+/// `.drv` must already be in the store (`400` otherwise) and builds are
+/// rejected with `503` while the server is draining.
+///
+/// Builds are deduplicated per derivation: concurrent requests for the
+/// same `.drv` attach to the same underlying build. The response replays
+/// buffered events first (honouring a `Last-Event-ID` header on
+/// reconnection) and then streams live events until the terminal
+/// `complete` or `error` event.
 async fn build_handler(
     Path(view): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -823,13 +956,22 @@ async fn build_handler(
         .into_response()
 }
 
+/// JSON body of `POST /{view}/build-closure`.
 #[derive(Deserialize)]
 struct BuildClosureRequest {
+    /// Store paths of the `.drv`s to realise.
     drvs: Vec<String>,
 }
 
-/// `POST /:view/build-closure` — build multiple derivations and return a
-/// multiplexed SSE stream with events tagged by derivation.
+/// `POST /{view}/build-closure` — builds multiple derivations and returns
+/// a multiplexed SSE stream with events tagged by derivation.
+///
+/// Same auth and drain rules as the single-build endpoint; all listed
+/// `.drv`s must exist up front and the list must be non-empty. Each event
+/// frame uses event type `build-closure` whose JSON data carries the
+/// originating `drv` plus the inner event. Per-derivation streams end at
+/// their terminal event; the response stream ends once every build has
+/// finished.
 async fn build_closure_handler(
     Path(view): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -960,6 +1102,9 @@ async fn build_closure_handler(
         .into_response()
 }
 
+/// Wraps a build event in the `build-closure` SSE envelope, tagging it
+/// with the derivation it belongs to (the inner event's own SSE frame is
+/// embedded under `"inner"`).
 fn format_build_closure_sse_event(drv: &str, event: &crate::build::BuildEvent) -> String {
     format!(
         "id: {}\nevent: {}\ndata: {}\n\n",
@@ -969,6 +1114,15 @@ fn format_build_closure_sse_event(drv: &str, event: &crate::build::BuildEvent) -
     )
 }
 
+/// `POST /{view}/upload-pack` — batched store path upload in the AOSP
+/// pack format.
+///
+/// Requires a JWT authorized for the view with the `build` permission, and
+/// is subject to the view's `max_paths` quota (`507` when exceeded). The
+/// body is parsed with [`pack::parse_pack`] (checksummed; `400` on any
+/// corruption) and imported entry by entry; every imported path gets a
+/// temporary GC root. Responds with
+/// `{"accepted": N, "rejected": 0, "paths": [...]}` on success.
 async fn upload_pack_handler(
     Path(view): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1051,17 +1205,28 @@ async fn upload_pack_handler(
 // GC endpoint
 // ---------------------------------------------------------------------------
 
+/// JSON body of `POST /{view}/gc`.
 #[derive(Deserialize)]
 struct GcRequest {
+    /// Report what would be evicted without removing anything.
     #[serde(default)]
     dry_run: bool,
+    /// Also run `nix-store --gc` to reclaim unrooted paths.
     #[serde(default)]
     collect: bool,
     /// Maximum budget in bytes; evict until under this size.
     max_size: Option<u64>,
 }
 
-/// `POST /:view/gc` — trigger garbage collection for a view.
+/// `POST /{view}/gc` — triggers garbage collection for a view.
+///
+/// Requires a JWT authorized for the view with the `build` permission.
+/// Runs up to three steps: TTL expiry of roots whose `expires_at` has
+/// passed (always, even under `dry_run`), budget-based eviction when
+/// `max_size` is given, and a store-wide `nix-store --gc` when `collect`
+/// is set and `dry_run` is not. Responds with a JSON summary: counts of
+/// expired and evicted roots, the scored eviction candidates, and (when
+/// the store GC ran) the freed byte count.
 async fn gc_handler(
     Path(view): Path<String>,
     State(state): State<Arc<AppState>>,

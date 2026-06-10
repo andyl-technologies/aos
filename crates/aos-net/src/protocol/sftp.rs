@@ -35,6 +35,12 @@ struct CachedSession {
 }
 
 /// SFTP protocol handler.
+///
+/// SSH sessions are cached per `host:port` and reused across
+/// transfers; sessions idle longer than the configured timeout are
+/// evicted on the next access. Because the underlying `ssh2` library
+/// is synchronous, all remote I/O runs on the Tokio blocking thread
+/// pool.
 pub struct SftpProtocol {
     /// Cached sessions keyed by "host:port".
     sessions: Mutex<std::collections::HashMap<String, CachedSession>>,
@@ -60,6 +66,10 @@ impl SftpProtocol {
     }
 
     /// Parse an SFTP URL into (host, port, username, path).
+    ///
+    /// The port defaults to 22 and the username to `None` when absent.
+    /// Fails if the URL is malformed, has no host, or has an empty
+    /// (`""` or `"/"`) path.
     fn parse_url(url: &str) -> Result<(String, u16, Option<String>, String)> {
         let parsed = url::Url::parse(url).with_context(|| format!("invalid SFTP URL: {url}"))?;
 
@@ -123,6 +133,19 @@ impl SftpProtocol {
         Ok(session)
     }
 
+    /// Connect, handshake, and authenticate a new SSH session.
+    ///
+    /// The username falls back to `$USER`, then `"root"`. The
+    /// authentication chain depends on the credential:
+    ///
+    /// - [`Credential::SshKey`]: agent (if `use_agent`), then the
+    ///   explicit key file.
+    /// - [`Credential::SshPassword`]: password auth only.
+    /// - No/other credential: agent auth.
+    ///
+    /// If none of the above succeeds, the default key files
+    /// `~/.ssh/id_ed25519` and `~/.ssh/id_rsa` are tried as a last
+    /// resort before failing.
     fn create_session(
         host: &str,
         port: u16,
@@ -328,6 +351,8 @@ impl SftpProtocol {
         Ok(())
     }
 
+    /// Stat a remote path, returning its size, or `None` if it does
+    /// not exist (any stat error is treated as not-found).
     fn sftp_stat(session: &Mutex<Session>, path: &str) -> Result<Option<u64>> {
         let session = session.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
         let sftp = session.sftp().context("opening SFTP channel")?;
@@ -337,6 +362,7 @@ impl SftpProtocol {
         }
     }
 
+    /// Unlink a remote file.
     fn sftp_delete(session: &Mutex<Session>, path: &str) -> Result<()> {
         let session = session.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
         let sftp = session.sftp().context("opening SFTP channel")?;
@@ -346,6 +372,9 @@ impl SftpProtocol {
     }
 
     /// Read chunks from SFTP and send them through a channel (for streaming).
+    ///
+    /// Runs on a blocking thread; stops early (without error) if the
+    /// receiving end of the channel is dropped.
     fn sftp_read_to_channel(
         session: &Mutex<Session>,
         path: &str,
@@ -383,6 +412,8 @@ impl Default for SftpProtocol {
     }
 }
 
+/// Attempt SSH agent authentication, trying every identity the agent
+/// offers. Returns `false` immediately if `SSH_AUTH_SOCK` is unset.
 fn try_agent_auth(session: &Session, username: &str) -> bool {
     if std::env::var("SSH_AUTH_SOCK").is_err() {
         return false;

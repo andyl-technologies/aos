@@ -1,3 +1,9 @@
+//! The `aos cache list` operation: compare local store and cache contents.
+//!
+//! For every path in the closure of the requested installables, this
+//! reports whether the path is present in the local Nix store, present in
+//! the remote cache, both ("synced"), or neither ("missing").
+
 use anyhow::Result;
 
 use aos_core::nar::info as narinfo;
@@ -7,6 +13,22 @@ use aos_core::output::Printer;
 use crate::backend::CacheBackend;
 use crate::resolve::resolve_installables;
 
+/// Lists closure paths with their local-store and cache status.
+///
+/// Resolves the installables (see [`resolve_installables`]), enumerates
+/// the combined closure, and prints one row per store path showing local
+/// validity, cache presence, and a combined status (`synced`,
+/// `local only`, `cache only`, or `missing`), followed by summary counts.
+///
+/// Per-path check failures (local validity or cache lookup) are reported
+/// as warnings and treated as "not present" rather than aborting the
+/// listing.
+///
+/// # Errors
+///
+/// Returns an error if installable resolution or closure enumeration
+/// fails. A missing installable argument is not an error: a warning is
+/// printed and the function returns successfully.
 pub async fn run_list(
     printer: &Printer,
     backend: &dyn CacheBackend,

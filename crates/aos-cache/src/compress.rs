@@ -1,3 +1,20 @@
+//! NAR (de)compression and Nix store import/export pipelines.
+//!
+//! These helpers shell out to `nix-store` (`--dump`, `--export`,
+//! `--import`) and to external compressors (`zstd`, `xz`), wiring them
+//! together with pipes so the uncompressed NAR never has to be fully
+//! buffered in memory on the compression side.
+//!
+//! Two wire formats are involved:
+//!
+//! - **Bare NAR** (possibly compressed) — what binary caches store and
+//!   serve under `nar/...` URLs.
+//! - **Export format** — raw NAR followed by a Nix export trailer
+//!   (path, references, deriver); the only format `nix-store --import`
+//!   accepts. [`streaming_export`] produces it directly via
+//!   `nix-store --export`; [`streaming_import`] reconstructs it from a
+//!   downloaded NAR plus narinfo metadata.
+
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
@@ -6,15 +23,20 @@ use anyhow::{Context, Result};
 use aos_core::nar::export::ExportTrailer;
 use aos_core::nix::{NixCli, aos_nix_env};
 
-/// Run `nix-store --export <path>` and collect the resulting export-format
-/// stream (raw NAR + Nix export trailer, uncompressed).
+/// Runs `nix-store --export <path>` and collects the resulting
+/// export-format stream (raw NAR + Nix export trailer, uncompressed).
 ///
 /// The server's pack-import path pipes each `PackEntry.nar_data` directly
 /// into `nix-store --import`, which only accepts this format — not bare
 /// NAR and not compressed NAR. The pull side has the inverse glue in
-/// `streaming_import` below (decompress, then append `ExportTrailer`);
+/// [`streaming_import`] below (decompress, then append `ExportTrailer`);
 /// this is the simpler forward equivalent that delegates the trailer
 /// construction to Nix itself.
+///
+/// # Errors
+///
+/// Returns an error if `nix-store` cannot be spawned or exits with a
+/// non-zero status (e.g. the path is not valid in the local store).
 pub fn streaming_export(store_path: &str) -> Result<Vec<u8>> {
     let output = Command::new("nix-store")
         .envs(aos_nix_env())
@@ -32,10 +54,21 @@ pub fn streaming_export(store_path: &str) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-/// Streaming compression pipeline: `nix-store --dump <path> | compressor`
+/// Dumps a store path as a NAR and compresses it in a streaming pipeline:
+/// `nix-store --dump <path> | <compressor>`.
 ///
 /// The uncompressed NAR is never fully buffered in RAM — it streams through
 /// the compressor subprocess. Only the compressed output is collected.
+///
+/// `algorithm` must be `"zstd"`, `"xz"`, or `"none"`; `level` is passed
+/// to the compressor as `-<level>` (ignored for `"none"`). The `zstd`
+/// and `xz` binaries must be on `PATH`.
+///
+/// # Errors
+///
+/// Returns an error if `algorithm` is unrecognised, if a subprocess
+/// cannot be spawned, or if the dump or compressor exits with a non-zero
+/// status.
 pub fn streaming_compress(store_path: &str, algorithm: &str, level: i32) -> Result<Vec<u8>> {
     match algorithm {
         "zstd" => {
@@ -115,10 +148,23 @@ pub fn streaming_compress(store_path: &str, algorithm: &str, level: i32) -> Resu
     }
 }
 
-/// Streaming import pipeline: decompress -> build export -> pipe to nix-store --import.
+/// Imports a downloaded NAR into the local store:
+/// decompress -> append export trailer -> pipe to `nix-store --import`.
 ///
 /// The decompressed NAR streams through the export trailer builder into the
 /// import process. Only the compressed data (already downloaded) is in RAM.
+///
+/// `references` and `deriver` come from the narinfo and may be either
+/// basenames or full store paths; bare basenames are prefixed with
+/// `/nix/store/` before being written into the export trailer. Returns
+/// the store paths reported by `nix-store --import` on stdout (normally
+/// the single imported path).
+///
+/// # Errors
+///
+/// Returns an error if decompression fails, if `nix-store --import`
+/// cannot be spawned, exits with a non-zero status, or produces
+/// non-UTF-8 output.
 pub fn streaming_import(
     _nix: &NixCli,
     compressed_nar: &[u8],
@@ -191,7 +237,17 @@ pub fn streaming_import(
         .collect())
 }
 
-/// Decompress NAR data.
+/// Decompresses NAR data according to the narinfo `Compression` field.
+///
+/// `compression` may be `"zstd"` (decoded in-process), `"xz"` (piped
+/// through the external `xz -d` binary), or `"none"` / `""` (returned
+/// as-is, copied).
+///
+/// # Errors
+///
+/// Returns an error if `compression` is unrecognised, if the data is not
+/// valid for the named codec, or if the `xz` subprocess cannot be
+/// spawned or exits with a non-zero status.
 pub fn decompress_nar(data: &[u8], compression: &str) -> Result<Vec<u8>> {
     match compression {
         "zstd" => {
@@ -227,7 +283,8 @@ pub fn decompress_nar(data: &[u8], compression: &str) -> Result<Vec<u8>> {
     }
 }
 
-/// Get the compression name for narinfo.
+/// Returns the value to write into the narinfo `Compression` field for a
+/// compression algorithm. Unknown algorithms map to `"none"`.
 pub fn compression_name(algorithm: &str) -> &str {
     match algorithm {
         "zstd" => "zstd",
@@ -237,7 +294,8 @@ pub fn compression_name(algorithm: &str) -> &str {
     }
 }
 
-/// Get the file extension for compressed NARs.
+/// Returns the file extension for a compressed NAR (e.g. `nar.zst` for
+/// zstd). Unknown algorithms map to the bare `nar` extension.
 pub fn compression_ext(algorithm: &str) -> &str {
     match algorithm {
         "zstd" => "nar.zst",

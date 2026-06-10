@@ -1,3 +1,19 @@
+//! Local-admin bootstrap socket for provisioning-token management.
+//!
+//! The server cannot mint its first credential over HTTP (there would be
+//! nothing to authenticate with), so token administration happens over a
+//! Unix domain socket instead — by default `/run/aos/bootstrap.sock`, set
+//! via [`crate::config::BootstrapConfig`].
+//!
+//! The protocol is newline-delimited JSON: one request object per line,
+//! one response object per line. Requests are tagged by an `action` field
+//! (`create`, `list`, `revoke`, `rotate`) and map directly onto
+//! [`crate::tokens::TokenStore`] operations.
+//!
+//! Authorization is based on `SO_PEERCRED`: a connecting peer must be root
+//! (uid 0) or have a primary GID matching the configured `socket_group`.
+//! Unauthorized connections are dropped without a response.
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,6 +28,7 @@ use crate::routes::AppState;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action")]
 enum BootstrapRequest {
+    /// Create a new provisioning token for the given views/permissions.
     #[serde(rename = "create")]
     Create {
         views: Vec<String>,
@@ -21,10 +38,14 @@ enum BootstrapRequest {
         #[serde(default)]
         comment: Option<String>,
     },
+    /// List all non-revoked tokens (hashes are never returned).
     #[serde(rename = "list")]
     List,
+    /// Permanently revoke a token by ID.
     #[serde(rename = "revoke")]
     Revoke { token_id: String },
+    /// Replace a token with a fresh secret, keeping views/permissions; the
+    /// old token stays valid for a one-hour grace period.
     #[serde(rename = "rotate")]
     Rotate { token_id: String },
 }
@@ -57,10 +78,21 @@ impl BootstrapResponse {
     }
 }
 
-/// Start the bootstrap Unix socket listener.
+/// Starts the bootstrap Unix socket listener and serves it forever.
 ///
 /// This socket allows local administrators (root or members of the configured
-/// socket group) to create, list, revoke, and rotate provisioning tokens.
+/// socket group) to create, list, revoke, and rotate provisioning tokens. A
+/// stale socket file at `socket_path` is removed before binding, and each
+/// accepted connection is served on its own task. Peers that fail the
+/// uid/gid check are silently dropped.
+///
+/// This function only returns on error; run it as a background task
+/// alongside the HTTP listener.
+///
+/// # Errors
+///
+/// Returns an error if the socket's parent directory cannot be created, the
+/// socket cannot be bound, or `accept` fails.
 pub async fn run_bootstrap_listener(state: Arc<AppState>, socket_path: &Path) -> Result<()> {
     // Remove stale socket file if it exists.
     let _ = std::fs::remove_file(socket_path);
@@ -123,6 +155,9 @@ pub async fn run_bootstrap_listener(state: Arc<AppState>, socket_path: &Path) ->
     }
 }
 
+/// Serves one accepted connection: reads JSON-line requests until EOF and
+/// writes one JSON-line response per request. Malformed request lines get
+/// an error response rather than closing the connection.
 async fn handle_bootstrap_connection(
     stream: tokio::net::UnixStream,
     state: &AppState,
@@ -145,6 +180,8 @@ async fn handle_bootstrap_connection(
     Ok(())
 }
 
+/// Dispatches a single bootstrap request to the token store and converts
+/// the outcome (including failures) into a [`BootstrapResponse`].
 async fn handle_request(
     req: BootstrapRequest,
     state: &AppState,
@@ -245,7 +282,9 @@ async fn handle_request(
     }
 }
 
-/// Resolve a Unix group name to its GID by reading `/etc/group`.
+/// Resolves a Unix group name to its GID by reading `/etc/group`.
+///
+/// Returns `None` if the file cannot be read or the group is not listed.
 fn resolve_group_gid(group_name: &str) -> Option<u32> {
     let contents = std::fs::read_to_string("/etc/group").ok()?;
     for line in contents.lines() {

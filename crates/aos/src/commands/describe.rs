@@ -1,3 +1,11 @@
+//! `aos describe` — show repository information.
+//!
+//! Prints a summary of the working tree: the repo version (from the Nix
+//! `version` attribute), root path, git commit/branch/dirty state, and
+//! the number of packages in the `pkgs` set. Every probe is best-effort;
+//! values that cannot be determined are reported as `unknown` rather
+//! than failing the command.
+
 use std::process::Command;
 
 use anyhow::Result;
@@ -6,6 +14,12 @@ use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 
 /// `aos describe` — show repository information.
+///
+/// # Errors
+///
+/// Currently infallible in practice — all probes (git, Nix evaluation)
+/// degrade to `unknown` on failure; the `Result` only propagates output
+/// plumbing errors.
 pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
     let git_commit = git_rev().unwrap_or_else(|| "unknown".to_string());
     let git_branch = git_branch().unwrap_or_else(|| "unknown".to_string());
@@ -49,6 +63,7 @@ pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
     Ok(())
 }
 
+/// Short commit hash of `HEAD`, or `None` if git is unavailable.
 fn git_rev() -> Option<String> {
     let output = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -62,6 +77,7 @@ fn git_rev() -> Option<String> {
     }
 }
 
+/// Current branch name, or `None` if git is unavailable.
 fn git_branch() -> Option<String> {
     let output = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -75,6 +91,7 @@ fn git_branch() -> Option<String> {
     }
 }
 
+/// Whether the working tree has uncommitted changes (false on any error).
 fn git_dirty() -> bool {
     Command::new("git")
         .args(["diff", "--quiet", "HEAD"])
