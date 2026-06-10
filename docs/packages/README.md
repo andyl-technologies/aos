@@ -65,7 +65,8 @@ baking them into the image as Ignition fragments.
 | **high-privilege package** | A package like k3s whose manifest declares host privilege (host net/cgroups, global kernel modules, broad caps). Its container is *nominal* — a packaging/lifecycle wrapper, not a security boundary; see the honesty note below. |
 | **privilege gradient** | Boundary strength runs from "full sandbox" (empty manifest) to "packaging wrapper" (k3s), set entirely by the manifest — not a categorical shape split. |
 | **install-at-boot** | Ignition lists desired packages; an apm first-boot service installs them before enable. |
-| **enable** | Start the package target and its nspawn instance. |
+| **enable** | The package target becomes wanted via **systemd preset policy** (image default `disable *`; per-host Ignition-written preset file; PID 1's native first-boot preset pass; `systemctl preset` at runtime installs — see [`boot-activation.md`](boot-activation.md) §3.2) and is started. |
+| **`expose` attribute** | The optional attrset on a package derivation carrying its units, `[permissions]` manifest, and service `requires` — rendered at build time to eval-free artifacts. See [`authoring.md`](authoring.md). |
 
 ## The model in one paragraph
 
@@ -195,13 +196,21 @@ for clarity; needs verification against unit-name collision rules).
   default-deny least privilege, manifest examples (including k3s), introspection
   (`apm info --permissions`)/policy/signing, and the honest host-level limits
   (`kernel-modules`, `network: host`).
+- [`authoring.md`](authoring.md) — **where package definitions live**: service
+  integration as an optional `expose` attribute on package derivations in
+  `pkgs/` (rendered at build time to eval-free, signable artifacts; nixpkgs
+  Modular Services is the merged prior art), with `modules/` reduced to host
+  policy (bake list, presets, permission policy). Supersedes the central
+  `modules/packages/` tree as the destination of the rename.
 - [`container-model.md`](container-model.md) — the systemd-nspawn container
   model: every package is a container with a privilege gradient set by its
   manifest, how container roots are built hermetically from source (mirroring
   `lib/build/rootfs.nix` with `mkfs.ext4 -d`), networking modes, cgroup
-  delegation, and the honest k3s-as-high-privilege-container case. Also carries
-  the **open substrate decision** (Decision 17): whether the manifest
-  materializes as nspawn or as per-unit `RootImage=` sandboxing directives.
+  delegation, cross-package **composition rules** (flat siblings, no permission
+  inheritance, no nesting, `aos.slice` hierarchy), and the honest
+  k3s-as-high-privilege-container case. Also carries the **open substrate
+  decision** (Decision 17): whether the manifest materializes as nspawn or as
+  per-unit `RootImage=` sandboxing directives.
 - [`apm-integration.md`](apm-integration.md) — how a package declares its
   target/container in the registry: extend `PackageMeta`
   (`crates/aos-package/src/types.rs`) or ship an in-closure manifest; the

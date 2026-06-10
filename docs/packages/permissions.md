@@ -201,6 +201,20 @@ and reverts on teardown — so the boundary strength is a *gradient set by the
 manifest*, from "full sandbox" (empty manifest) to "packaging wrapper only"
 (k3s).
 
+## Permissions and composition
+
+Permissions **never flow along dependency edges**. A package's closure
+dependencies (libraries, tools, even another service package's payload) run
+inside *its* runtime context under *its* manifest — the unit/container that
+executes code declares for all code it executes. There is no inheritance and
+no transitive union: Android deprecated `sharedUserId` (API 29) precisely
+because merged security identities made grants non-deterministic and
+impossible to unwind. Cross-package coupling is instead an explicit,
+two-sided channel — B exposes a socket/port, A declares the matching
+`host-paths`/network grant — visible in both manifests (snapd's content
+interface is the precedent). Full composition rules:
+[container-model.md](container-model.md) §Composition.
+
 ## Introspection, policy, and signing (the app-store story)
 
 - **Introspect before install/enable:** `apm info <pkg> --permissions` (and
