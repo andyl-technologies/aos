@@ -9,7 +9,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::types::{RegistryFile, RegistryState};
+use crate::types::{RegistryFile, RegistryState, SigningKeySource};
 
 // ---------------------------------------------------------------------------
 // Load / save
@@ -90,31 +90,32 @@ pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
     Ok(())
 }
 
-/// Record a private-key path in the `[registry.signing_keys]` section.
+/// Record a signing-key source in the `[registry.signing_keys]` section.
 ///
 /// Reads the existing map, inserts or replaces the entry for `id`, and
 /// rewrites only that section, preserving every other user-edited field
-/// (mirroring [`save_state`]).
+/// (mirroring [`save_state`]). Path sources render as a bare string; command
+/// sources render as an inline `{ command = "..." }` table.
 ///
 /// # Errors
 ///
 /// Returns an error when the config file does not exist, cannot be
 /// parsed, or cannot be rewritten.
-pub fn upsert_signing_key(path: &Path, id: &str, key_path: &str) -> Result<()> {
+pub fn upsert_signing_key(path: &Path, id: &str, source: &SigningKeySource) -> Result<()> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let rf: RegistryFile =
         toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
 
     let mut signing_keys = rf.registry.signing_keys;
-    signing_keys.insert(id.to_string(), key_path.to_string());
+    signing_keys.insert(id.to_string(), source.clone());
 
     let mut section = String::from("\n[registry.signing_keys]\n");
-    for (entry_id, entry_path) in &signing_keys {
+    for (entry_id, entry_source) in &signing_keys {
         section.push_str(&format!(
-            "\"{}\" = \"{}\"\n",
+            "\"{}\" = {}\n",
             escape_toml_string(entry_id),
-            escape_toml_string(entry_path),
+            render_signing_key_source(entry_source),
         ));
     }
 
@@ -134,6 +135,26 @@ pub fn upsert_signing_key(path: &Path, id: &str, key_path: &str) -> Result<()> {
 
     std::fs::write(path, &new_content).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
+}
+
+/// Render a [`SigningKeySource`] as the right-hand side of a TOML key entry.
+///
+/// A path source becomes a quoted string; a command source becomes an inline
+/// `{ command = "..." }` table. A degenerate entry that somehow carries both
+/// (or neither) is rendered losslessly so a hand-edited file round-trips.
+fn render_signing_key_source(source: &SigningKeySource) -> String {
+    match (source.path(), source.command()) {
+        (Some(path), None) => format!("\"{}\"", escape_toml_string(path)),
+        (None, Some(command)) => {
+            format!("{{ command = \"{}\" }}", escape_toml_string(command))
+        }
+        (Some(path), Some(command)) => format!(
+            "{{ path = \"{}\", command = \"{}\" }}",
+            escape_toml_string(path),
+            escape_toml_string(command),
+        ),
+        (None, None) => "\"\"".to_string(),
+    }
 }
 
 fn escape_toml_string(input: &str) -> String {
@@ -317,6 +338,53 @@ last_update = "2026-01-01T00:00:00Z"
         assert_eq!(loaded.floor.unwrap(), "1.4.2");
         assert_eq!(loaded.bucket.unwrap(), 183);
         assert_eq!(loaded.retained, vec!["1.4.2"]);
+    }
+
+    #[test]
+    fn upsert_signing_key_round_trips_path_and_command_sources() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("aos-core.toml");
+        fs::write(
+            &path,
+            r#"[registry]
+name = "aos-core"
+url = "https://registry.aos.dev/core"
+
+[registry.signing_keys]
+alice = "/run/secrets/alice"
+"#,
+        )
+        .unwrap();
+
+        // Add a command source alongside the existing path source.
+        upsert_signing_key(
+            &path,
+            "bob",
+            &SigningKeySource::Spec(crate::types::SigningKeySpec {
+                path: None,
+                command: Some("pass show apm/bob".to_string()),
+            }),
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\"bob\" = { command = \"pass show apm/bob\" }"));
+        // The user-edited [registry] header is preserved.
+        assert!(content.contains("name = \"aos-core\""));
+
+        // Both forms parse back through the untagged enum.
+        let rf: crate::types::RegistryFile = toml::from_str(&content).unwrap();
+        let keys = &rf.registry.signing_keys;
+        assert_eq!(
+            keys.get("alice").and_then(|s| s.path()),
+            Some("/run/secrets/alice")
+        );
+        assert_eq!(keys.get("alice").and_then(|s| s.command()), None);
+        assert_eq!(
+            keys.get("bob").and_then(|s| s.command()),
+            Some("pass show apm/bob")
+        );
+        assert_eq!(keys.get("bob").and_then(|s| s.path()), None);
     }
 
     #[test]

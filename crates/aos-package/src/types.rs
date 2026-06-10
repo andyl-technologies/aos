@@ -352,11 +352,72 @@ pub struct RegistryConfig {
     /// Producer-side defaults for `apr cache generate --upload-url` backend auth.
     #[serde(default)]
     pub upload_auth: Option<RegistryUploadAuthConfig>,
-    /// Producer-side local private-key path map keyed by committed keys.toml id.
+    /// Producer-side local signing-key sources keyed by committed keys.toml id.
     #[serde(default)]
-    pub signing_keys: BTreeMap<String, String>,
+    pub signing_keys: BTreeMap<String, SigningKeySource>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
+}
+
+/// How to obtain a producer-side private signing key for a `keys.toml` id.
+///
+/// Configured as the value of an entry in `[registry.signing_keys]`. Three
+/// forms are accepted:
+///
+/// ```toml
+/// [registry.signing_keys]
+/// alice = "/run/secrets/alice"                 # bare string: a key file path
+/// bob   = { path = "/run/secrets/bob" }        # explicit path
+/// carol = { command = "pass show apm/carol" }  # run a command for the key
+/// ```
+///
+/// A command source is run via `sh -c` and must print the unencrypted
+/// OpenSSH private key to stdout. The key is materialized just-in-time into
+/// a private temporary file for the duration of a single signature and is
+/// never persisted by the tool, so the key can live exclusively in a secrets
+/// manager.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SigningKeySource {
+    /// A bare path string to an on-disk private key file.
+    Path(String),
+    /// A table selecting either a `path` or a `command`.
+    Spec(SigningKeySpec),
+}
+
+/// The table form of a [`SigningKeySource`].
+///
+/// Exactly one of `path` or `command` must be set; the resolver rejects an
+/// entry that sets both or neither.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SigningKeySpec {
+    /// Path to an on-disk private key file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Command, run via `sh -c`, whose stdout is the private key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+impl SigningKeySource {
+    /// The configured key file path, if this is a path source.
+    ///
+    /// Returns the inner string for the bare-string form and the `path`
+    /// field for the table form (`None` for a command source).
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::Path(path) => Some(path.as_str()),
+            Self::Spec(spec) => spec.path.as_deref(),
+        }
+    }
+
+    /// The configured key command, if this is a command source.
+    pub fn command(&self) -> Option<&str> {
+        match self {
+            Self::Path(_) => None,
+            Self::Spec(spec) => spec.command.as_deref(),
+        }
+    }
 }
 
 fn default_priority() -> u32 {
@@ -744,7 +805,7 @@ pub struct RegistryFileInner {
     #[serde(default)]
     pub upload_auth: Option<RegistryUploadAuthConfig>,
     #[serde(default)]
-    pub signing_keys: BTreeMap<String, String>,
+    pub signing_keys: BTreeMap<String, SigningKeySource>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
     #[serde(default)]

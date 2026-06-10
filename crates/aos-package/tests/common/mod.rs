@@ -708,8 +708,13 @@ enabled = {}
     }
     if !config.signing_keys.is_empty() {
         out.push_str("\n[registry.signing_keys]\n");
-        for (id, path) in &config.signing_keys {
-            out.push_str(&format!("\"{id}\" = \"{path}\"\n"));
+        for (id, source) in &config.signing_keys {
+            let value = match (source.path(), source.command()) {
+                (Some(path), _) => format!("\"{path}\""),
+                (_, Some(command)) => format!("{{ command = \"{command}\" }}"),
+                _ => "\"\"".to_string(),
+            };
+            out.push_str(&format!("\"{id}\" = {value}\n"));
         }
     }
     if let Some(signing) = &config.signing {
