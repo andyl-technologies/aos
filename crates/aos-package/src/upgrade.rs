@@ -55,7 +55,11 @@ pub async fn run(
 ) -> Result<()> {
     // Step 1: Open profile and load installed metadata.
     printer.step(1, 7, "Loading installed packages...");
-    let profile = Profile::open(config.scope)?;
+    let profile = if dry_run {
+        Profile::open_readonly(config.scope)
+    } else {
+        Profile::open(config.scope)?
+    };
     let installed = list_meta(&profile)?;
 
     // Step 2: Load registries from cache.

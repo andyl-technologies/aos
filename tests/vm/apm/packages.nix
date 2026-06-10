@@ -2892,7 +2892,15 @@ in {
       }
 
       generation_count() {
-        find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        if [ -d "$PROFILE" ]; then
+          find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        else
+          printf '0'
+        fi
+      }
+
+      cache_nar_count() {
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' 2>/dev/null | wc -l | tr -d ' '
       }
 
       wait_for_cache_server() {
@@ -2987,6 +2995,30 @@ in {
       }
       cat /tmp/upgrade-registry-add.out
 
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM upgrade --dry-run > /tmp/upgrade-empty-dry-run.out 2>&1 || {
+        cat /tmp/upgrade-empty-dry-run.out
+        fail "apm upgrade --dry-run succeeds before any package is installed"
+      }
+      cat /tmp/upgrade-empty-dry-run.out
+      assert_file_contains /tmp/upgrade-empty-dry-run.out "All packages are up to date" \
+        "empty upgrade dry-run reports no candidates"
+      assert_file_not_contains /tmp/upgrade-empty-dry-run.out "Updating profile" \
+        "empty upgrade dry-run does not update profile"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty upgrade dry-run leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty upgrade dry-run should not initialize profile state"
+      fi
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "empty upgrade dry-run leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "empty upgrade dry-run should not download NAR bodies"
+      fi
+
       delete_store_path "$ALPHA_V1_STORE" "upgrade-alpha-v1"
       delete_store_path "$BETA_V1_STORE" "upgrade-beta-v1"
       rm -rf "$HOME/.cache/apm"
@@ -3039,6 +3071,48 @@ in {
         "upgradable list includes upgrade-alpha"
       assert_file_contains /tmp/upgrade-list.out "upgrade-beta" \
         "upgradable list includes upgrade-beta"
+
+      echo "==> Consumer: targeted upgrade dry-run leaves profile and store untouched"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM upgrade upgrade-alpha --dry-run > /tmp/upgrade-alpha-dry-run.out 2>&1 || {
+        cat /tmp/upgrade-alpha-dry-run.out
+        fail "targeted apm upgrade --dry-run upgrade-alpha succeeds"
+      }
+      cat /tmp/upgrade-alpha-dry-run.out
+      assert_file_contains /tmp/upgrade-alpha-dry-run.out "upgrade-alpha (1.0.0 -> 2.0.0)" \
+        "targeted upgrade dry-run plans upgrade-alpha"
+      assert_file_not_contains /tmp/upgrade-alpha-dry-run.out "upgrade-beta (1.0.0 -> 2.0.0)" \
+        "targeted upgrade dry-run does not plan upgrade-beta"
+      assert_file_contains /tmp/upgrade-alpha-dry-run.out "Dry run -- no changes made" \
+        "targeted upgrade dry-run reports no mutation"
+      assert_file_not_contains /tmp/upgrade-alpha-dry-run.out "Downloading" \
+        "targeted upgrade dry-run does not download package bodies"
+      assert_file_not_contains /tmp/upgrade-alpha-dry-run.out "Updating profile" \
+        "targeted upgrade dry-run does not update profile"
+      assert_store_missing "$ALPHA_V2_STORE" "upgrade-alpha-v2"
+      assert_store_missing "$BETA_V2_STORE" "upgrade-beta-v2"
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "targeted upgrade dry-run leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "targeted upgrade dry-run should not download NAR bodies"
+      fi
+      "$ALPHA_BIN" > /tmp/upgrade-alpha-v1-run-after-dry-run.out
+      assert_file_contains /tmp/upgrade-alpha-v1-run-after-dry-run.out "^upgrade-alpha 1.0.0$" \
+        "targeted upgrade dry-run leaves upgrade-alpha at v1"
+      "$BETA_BIN" > /tmp/upgrade-beta-v1-run-after-dry-run.out
+      assert_file_contains /tmp/upgrade-beta-v1-run-after-dry-run.out "^upgrade-beta 1.0.0$" \
+        "targeted upgrade dry-run leaves upgrade-beta at v1"
+      assert_file_contains "$PROFILE/meta/$ALPHA_V1_HASH.json" '"explicit": true' \
+        "targeted upgrade dry-run preserves alpha v1 metadata"
+      assert_file_not_exists "$PROFILE/meta/$ALPHA_V2_HASH.json" \
+        "targeted upgrade dry-run does not write alpha v2 metadata"
+      if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
+        pass "targeted upgrade dry-run keeps generation 1 active"
+      else
+        fail "targeted upgrade dry-run should keep gen-1"
+      fi
 
       echo "==> Consumer: targeted upgrade changes only upgrade-alpha"
       rm -rf "$HOME/.cache/apm"
