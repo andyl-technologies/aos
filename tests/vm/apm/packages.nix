@@ -4759,15 +4759,36 @@ in {
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
-      $APM install surfacepkg --registry surface-reg --yes > /tmp/surface-install.out 2>&1 || {
-        cat /tmp/surface-install.out
+      $APM --json install surfacepkg --registry surface-reg --yes > /tmp/surface-install.json 2>&1 || {
+        cat /tmp/surface-install.json
         fail "apm install downloads surfacepkg closure"
       }
-      cat /tmp/surface-install.out
-      assert_file_contains /tmp/surface-install.out "Downloading" \
-        "surfacepkg install downloads closure NARs"
-      assert_file_contains /tmp/surface-install.out "Installed 1 package" \
-        "surfacepkg install creates profile generation"
+      "$JQ" -e \
+        --arg surface "$SURFACE_STORE" \
+        --arg leaf "$LEAF_STORE" \
+        '.action == "install"
+          and .status == "installed"
+          and .requested == ["surfacepkg"]
+          and .reinstall == false
+          and .download_only == false
+          and .no_deps == false
+          and .dry_run == false
+          and .generation == 1
+          and (.roots | length == 1)
+          and .roots[0].name == "surfacepkg"
+          and .roots[0].registry == "surface-reg"
+          and .roots[0].store_path == $surface
+          and .roots[0].explicit == true
+          and (.closure | any(.name == "surfacepkg" and .store_path == $surface and .explicit == true))
+          and (.closure | any(.name == "surface-leaf" and .store_path == $leaf and .explicit == false))
+          and (.downloads.planned >= 2)
+          and (.downloads.downloaded >= 2)
+          and (.downloads.imported >= 2)' \
+        /tmp/surface-install.json >/dev/null || {
+        cat /tmp/surface-install.json
+        fail "apm --json install reports real dependency install"
+      }
+      pass "apm --json install reports real dependency install"
       assert_store_valid "$SURFACE_STORE" "surfacepkg"
       assert_store_valid "$LEAF_STORE" "surface-leaf"
       "$SURFACE_BIN" > /tmp/surface-run.out
