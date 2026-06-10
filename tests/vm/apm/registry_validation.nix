@@ -121,12 +121,7 @@
     nix-store --load-db < /aos-registration
   '';
 
-  realTinyRegistry = ''
-    make_tiny_store_path() {
-      printf 'aos registry validation fixture\n' > /tmp/aos-registry-fixture
-      nix-store --add-fixed sha256 /tmp/aos-registry-fixture
-    }
-
+  registryFixtureHelpers = ''
     create_registry_for_store_path() {
       reg_name="$1"
       store_path="$2"
@@ -453,7 +448,7 @@ in {
     testScript = ''
         ${setupNixStore}
         ${fixtures.setupPreamble}
-        ${realTinyRegistry}
+        ${registryFixtureHelpers}
         ${s3Server}
         ${httpAuthServer}
         ${sftpServer}
@@ -699,7 +694,7 @@ in {
     testScript = ''
         ${setupNixStore}
         ${fixtures.setupPreamble}
-        ${realTinyRegistry}
+        ${registryFixtureHelpers}
         ${s3Server}
 
         set -e
@@ -709,8 +704,14 @@ in {
         export AWS_SECRET_ACCESS_KEY=aos-test-secret
         export AWS_EC2_METADATA_DISABLED=true
 
-        STORE_PATH=$(make_tiny_store_path)
+        STORE_PATH="${backendRootTool}"
+        LEAF_PATH="${backendLeafTool}"
+        STORE_HASH=$(basename "$STORE_PATH" | cut -d- -f1)
+        LEAF_HASH=$(basename "$LEAF_PATH" | cut -d- -f1)
         create_registry_for_store_path cdn-cache "$STORE_PATH"
+        nix-store -q --references "$STORE_PATH" > /tmp/cdn-root-refs.out
+        grep -q "$LEAF_PATH" /tmp/cdn-root-refs.out
+        grep -q "$LEAF_HASH" "$REG_STORAGE/cdn-cache/closures/$STORE_HASH"
         nix --extra-experimental-features nix-command key generate-secret \
           --key-name aos-cache > /tmp/nix-cache.sec
         $APR cache generate --registry cdn-cache \
@@ -758,7 +759,7 @@ in {
       import os
       import sys
 
-      events_path, root = sys.argv[1], sys.argv[2]
+      events_path, root, store_hash, leaf_hash = sys.argv[1:5]
       with open(events_path, encoding="utf-8") as f:
           events = [json.loads(line) for line in f if line.strip()]
 
@@ -821,16 +822,20 @@ in {
           assert event["cache_control"] == "public, max-age=31536000, immutable", event
 
       narinfo_events = [(p, e) for p, e in rel_events if p.endswith(".narinfo")]
-      if len(narinfo_events) != 1:
-          raise AssertionError(f"expected one narinfo upload, got {narinfo_events}")
-      assert narinfo_events[0][1]["cache_control"] == "public, max-age=31536000, immutable"
-      assert narinfo_events[0][1]["content_type"] == "text/x-nix-narinfo"
+      narinfo_paths = {path for path, _ in narinfo_events}
+      expected_narinfos = {f"{store_hash}.narinfo", f"{leaf_hash}.narinfo"}
+      if not expected_narinfos.issubset(narinfo_paths):
+          raise AssertionError(f"missing root/leaf narinfo uploads {expected_narinfos}, got {narinfo_events}")
+      for _, event in narinfo_events:
+          assert event["cache_control"] == "public, max-age=31536000, immutable", event
+          assert event["content_type"] == "text/x-nix-narinfo", event
 
       nar_events = [(p, e) for p, e in rel_events if p.startswith("nar/")]
-      if len(nar_events) != 1:
-          raise AssertionError(f"expected one NAR upload, got {nar_events}")
-      assert nar_events[0][1]["cache_control"] == "public, max-age=31536000, immutable"
-      assert nar_events[0][1]["content_type"] == "application/zstd"
+      if len(nar_events) != len(narinfo_events):
+          raise AssertionError(f"expected one NAR per narinfo, got narinfos={narinfo_events}, nars={nar_events}")
+      for _, event in nar_events:
+          assert event["cache_control"] == "public, max-age=31536000, immutable", event
+          assert event["content_type"] == "application/zstd", event
 
       alternates = os.path.join(root, "objects/info/alternates")
       if os.path.exists(alternates):
@@ -843,7 +848,12 @@ in {
                       raise AssertionError(f"non-relative alternate: {line}")
       PY
         python3 /tmp/assert-origin-cdn.py \
-          /tmp/s3-origin-events.jsonl /tmp/s3-origin-root/aos-origin/origin
+          /tmp/s3-origin-events.jsonl /tmp/s3-origin-root/aos-origin/origin \
+          "$STORE_HASH" "$LEAF_HASH" > /tmp/assert-origin-cdn.log 2>&1 || {
+          cat /tmp/assert-origin-cdn.log
+          exit 1
+        }
+        cat /tmp/assert-origin-cdn.log
         test ! -e /tmp/s3-origin-root/aos-origin/origin/target
         test ! -e /tmp/s3-origin-root/aos-origin/origin/tmp
         rm -rf "$REG_DIR/target" /tmp/generated-cache/target /tmp/generated-cache/tmp
