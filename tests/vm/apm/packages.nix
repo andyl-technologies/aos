@@ -1251,6 +1251,10 @@ in {
         find "$HOME/.cache/apm" -type f -name '*.nar.zst' 2>/dev/null | wc -l | tr -d ' '
       }
 
+      cache_nar_http_get_count() {
+        grep -E 'GET /nar/.*\.nar\.zst HTTP/' /tmp/download-cache-http.log 2>/dev/null | wc -l | tr -d ' '
+      }
+
       wait_for_cache_server() {
         for _i in 1 2 3 4 5 6 7 8 9 10; do
           if curl -sf http://127.0.0.1:18089/nix-cache-info >/dev/null; then
@@ -1312,7 +1316,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18089 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18089 --bind 127.0.0.1 \
         --directory /tmp/download-cache > /tmp/download-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -1361,6 +1365,12 @@ in {
       else
         fail "download-only should leave two NARs in user cache"
       fi
+      if [ "$(cache_nar_http_get_count)" = "2" ]; then
+        pass "download-only fetches exactly two NAR bodies"
+      else
+        cat /tmp/download-cache-http.log || true
+        fail "download-only should fetch exactly two NAR bodies"
+      fi
       assert_store_missing "$WRAPPER_STORE" "download-only-wrapper"
       assert_store_missing "$DEP_STORE" "idempkg"
       if [ "$(generation_count)" = "0" ] && [ ! -e "$PROFILE/current" ]; then
@@ -1370,6 +1380,7 @@ in {
       fi
 
       echo "==> Consumer: normal install after download-only activates package"
+      NAR_GETS_BEFORE_INSTALL=$(cache_nar_http_get_count)
       $APM install download-only-wrapper --registry download-reg --yes > /tmp/download-install.out 2>&1 || {
         cat /tmp/download-install.out
         fail "normal apm install after download-only succeeds"
@@ -1382,6 +1393,12 @@ in {
       "$PROFILE/current/bin/download-only-wrapper" > /tmp/download-wrapper-run.out
       assert_file_contains /tmp/download-wrapper-run.out "^idempkg 1.0.0$" \
         "download-only wrapper executable runs after normal install"
+      if [ "$(cache_nar_http_get_count)" = "$NAR_GETS_BEFORE_INSTALL" ]; then
+        pass "normal install after download-only reuses cached NAR bodies"
+      else
+        cat /tmp/download-cache-http.log || true
+        fail "normal install after download-only should not refetch NAR bodies"
+      fi
       if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
         pass "normal install after download-only creates generation 1"
       else

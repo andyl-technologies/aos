@@ -7,7 +7,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::Semaphore;
 
 use super::types::RegistryConfig;
-use super::verify::sha256_digest_hex;
+use super::verify::{sha256_digest_hex, verify_download_hash};
 use aos_core::error::AosError;
 use aos_core::nar::cache::hash_path_fragment;
 use aos_core::nar::info::{self as narinfo, NarInfo};
@@ -211,6 +211,10 @@ async fn download_one(
     };
     let expected_hex = sha256_digest_hex(&file_hash)?;
 
+    if let Some(result) = cached_download_result(resolved, dest, &file_hash).await? {
+        return Ok(result);
+    }
+
     let transfer_req = TransferRequest::get(&url).with_hash(HashAlgorithm::Sha256, &expected_hex);
 
     let pb_size = resolved.narinfo.file_size.unwrap_or(0);
@@ -241,6 +245,48 @@ async fn download_one(
         references: resolved.narinfo.references.clone(),
         deriver: resolved.narinfo.deriver.clone(),
     })
+}
+
+async fn cached_download_result(
+    resolved: &ResolvedDownload,
+    dest: &Path,
+    file_hash: &str,
+) -> Result<Option<DownloadResult>> {
+    match tokio::fs::metadata(dest).await {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => bail!(
+            "cached NAR path exists but is not a regular file: {}",
+            dest.display(),
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| format!("checking cached NAR {}", dest.display()));
+        }
+    }
+
+    let dest_for_verify = dest.to_path_buf();
+    let expected_hash = file_hash.to_string();
+    let valid =
+        tokio::task::spawn_blocking(move || verify_download_hash(&dest_for_verify, &expected_hash))
+            .await
+            .context("cached NAR hash verification task panicked")?
+            .is_ok();
+
+    if !valid {
+        tokio::fs::remove_file(dest)
+            .await
+            .with_context(|| format!("removing stale cached NAR {}", dest.display()))?;
+        return Ok(None);
+    }
+
+    Ok(Some(DownloadResult {
+        store_path: resolved.req.store_path.clone(),
+        local_path: dest.to_path_buf(),
+        download_hash: file_hash.to_string(),
+        nar_hash: resolved.narinfo.nar_hash.clone(),
+        references: resolved.narinfo.references.clone(),
+        deriver: resolved.narinfo.deriver.clone(),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +546,45 @@ mod tests {
             results[0].local_path,
             cache_dir.path().join("sha256-def456.nar.zst"),
         );
+        assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
+    }
+
+    #[tokio::test]
+    async fn download_nars_reuses_valid_cached_file_without_network() {
+        let printer = Printer::new(0, true, false);
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let nar_bytes = b"cached-nar-bytes";
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
+        let nar_hash = "sha256:abcdef0123456789";
+        let local_path = cache_dir.path().join(nar_cache_filename(nar_hash));
+        std::fs::write(&local_path, nar_bytes).unwrap();
+
+        let resolved = ResolvedDownload {
+            req: DownloadRequest {
+                store_path: "/nix/store/abc123-package".to_string(),
+                mirror_url: "http://127.0.0.1:9".to_string(),
+            },
+            narinfo: NarInfo {
+                store_path: "/nix/store/abc123-package".to_string(),
+                url: "nar/unreachable.nar.zst".to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some(file_hash.clone()),
+                file_size: Some(nar_bytes.len() as u64),
+                nar_hash: nar_hash.to_string(),
+                nar_size: 5,
+                references: Vec::new(),
+                deriver: None,
+                signatures: Vec::new(),
+            },
+        };
+
+        let results = download_nars(&[resolved], cache_dir.path(), 1, &printer)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].download_hash, file_hash);
+        assert_eq!(results[0].local_path, local_path);
         assert_eq!(std::fs::read(&results[0].local_path).unwrap(), nar_bytes);
     }
 
