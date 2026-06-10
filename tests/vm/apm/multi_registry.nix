@@ -147,6 +147,9 @@
       pkgs.bash
       priorityLowTool
     ];
+    runtimeDeps = [
+      priorityLowTool
+    ];
     phases = [
       {
         name = "build";
@@ -200,6 +203,7 @@
     ++ [
       pkgs.findutils
       pkgs.iproute2
+      pkgs.jq
       pkgs.python3
       pkgs.zstd
       priorityLowTool
@@ -413,10 +417,10 @@ in {
       ${iproute2Bin} link set lo up || true
       ${iproute2Bin} addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18101 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18101 --bind 127.0.0.1 \
         --directory /tmp/low-priority-cache > /tmp/low-priority-cache-http.log 2>&1 &
       LOW_CACHE_PID=$!
-      python3 -m http.server 18102 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18102 --bind 127.0.0.1 \
         --directory /tmp/high-priority-cache > /tmp/high-priority-cache-http.log 2>&1 &
       HIGH_CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -454,6 +458,45 @@ in {
         "high-priority (priority 900)" "apr list shows high priority registry"
       assert_file_contains /tmp/priority-registry-list.out \
         "low-priority (priority 100)" "apr list shows low priority registry"
+      $APR --json list > /tmp/priority-registry-list.json 2>&1 || {
+        cat /tmp/priority-registry-list.json
+        fail "apr --json list reports configured priority registries"
+      }
+      if ${jqBin} -e '
+        (map(select(.name == "high-priority"
+          and .priority == 900
+          and .status == "enabled"
+          and .tracking == "branch:'"$HIGH_BRANCH"'")) | length == 1)
+        and (map(select(.name == "low-priority"
+          and .priority == 100
+          and .status == "enabled"
+          and .tracking == "branch:'"$LOW_BRANCH"'")) | length == 1)
+      ' /tmp/priority-registry-list.json >/dev/null; then
+        pass "apr --json list preserves priority and tracking metadata"
+      else
+        cat /tmp/priority-registry-list.json
+        fail "apr --json list preserves priority and tracking metadata"
+      fi
+      ${aosBin} --json package registry list \
+        > /tmp/priority-aos-registry-list.json 2>&1 || {
+        cat /tmp/priority-aos-registry-list.json
+        fail "aos package registry list reports configured priority registries"
+      }
+      if ${jqBin} -e '
+        (map(select(.name == "high-priority"
+          and .priority == 900
+          and .status == "enabled"
+          and .tracking == "branch:'"$HIGH_BRANCH"'")) | length == 1)
+        and (map(select(.name == "low-priority"
+          and .priority == 100
+          and .status == "enabled"
+          and .tracking == "branch:'"$LOW_BRANCH"'")) | length == 1)
+      ' /tmp/priority-aos-registry-list.json >/dev/null; then
+        pass "aos package registry list preserves priority and tracking metadata"
+      else
+        cat /tmp/priority-aos-registry-list.json
+        fail "aos package registry list preserves priority and tracking metadata"
+      fi
 
       $APM search priority-tool > /tmp/priority-search.out 2>&1 || {
         cat /tmp/priority-search.out
@@ -469,6 +512,56 @@ in {
       else
         pass "search hides lower priority duplicate"
       fi
+      $APM --json search priority-tool > /tmp/priority-search.json 2>&1 || {
+        cat /tmp/priority-search.json
+        fail "apm --json search resolves priority-selected package"
+      }
+      if ${jqBin} -e '
+        (map(select(.name == "priority-tool"
+          and .registry == "high-priority"
+          and .version == "2.0.0")) | length == 1)
+        and (map(select(.name == "priority-tool"
+          and .registry == "low-priority")) | length == 0)
+      ' /tmp/priority-search.json >/dev/null; then
+        pass "apm --json search deduplicates priority-tool to high priority package"
+      else
+        cat /tmp/priority-search.json
+        fail "apm --json search deduplicates priority-tool to high priority package"
+      fi
+      ${aosBin} --json package search priority-tool \
+        > /tmp/priority-aos-package-search.json 2>&1 || {
+        cat /tmp/priority-aos-package-search.json
+        fail "aos package search resolves priority-selected package"
+      }
+      if ${jqBin} -e '
+        (map(select(.name == "priority-tool"
+          and .registry == "high-priority"
+          and .version == "2.0.0")) | length == 1)
+        and (map(select(.name == "priority-tool"
+          and .registry == "low-priority")) | length == 0)
+      ' /tmp/priority-aos-package-search.json >/dev/null; then
+        pass "aos package search deduplicates priority-tool to high priority package"
+      else
+        cat /tmp/priority-aos-package-search.json
+        fail "aos package search deduplicates priority-tool to high priority package"
+      fi
+      $APM --json search priority-tool --registry low-priority \
+        > /tmp/priority-search-low.json 2>&1 || {
+        cat /tmp/priority-search-low.json
+        fail "apm --json search --registry resolves lower priority package"
+      }
+      if ${jqBin} -e '
+        (map(select(.name == "priority-tool"
+          and .registry == "low-priority"
+          and .version == "9.0.0")) | length == 1)
+        and (map(select(.name == "priority-tool"
+          and .registry == "high-priority")) | length == 0)
+      ' /tmp/priority-search-low.json >/dev/null; then
+        pass "apm --json search --registry reports selected lower priority package"
+      else
+        cat /tmp/priority-search-low.json
+        fail "apm --json search --registry reports selected lower priority package"
+      fi
 
       $APM policy priority-tool > /tmp/priority-policy.out 2>&1 || {
         cat /tmp/priority-policy.out
@@ -481,6 +574,29 @@ in {
         "policy lists high priority candidate"
       assert_file_contains /tmp/priority-policy.out "9.0.0  100  low-priority" \
         "policy lists lower priority candidate"
+      $APM --json policy priority-tool > /tmp/priority-policy.json 2>&1 || {
+        cat /tmp/priority-policy.json
+        fail "apm --json policy reports all registry candidates"
+      }
+      if ${jqBin} -e '
+        .package == "priority-tool"
+        and .installed == null
+        and .candidate == "2.0.0"
+        and (.versions | length == 2)
+        and (.versions[0].version == "2.0.0")
+        and (.versions[0].priority == 900)
+        and (.versions[0].registry == "high-priority")
+        and (.versions[0].installed == false)
+        and (.versions[1].version == "9.0.0")
+        and (.versions[1].priority == 100)
+        and (.versions[1].registry == "low-priority")
+        and (.versions[1].installed == false)
+      ' /tmp/priority-policy.json >/dev/null; then
+        pass "apm --json policy orders duplicate candidates by priority"
+      else
+        cat /tmp/priority-policy.json
+        fail "apm --json policy orders duplicate candidates by priority"
+      fi
 
       $APM show priority-tool > /tmp/priority-show.out 2>&1 || {
         cat /tmp/priority-show.out
@@ -490,6 +606,74 @@ in {
         "show reports the high priority registry"
       assert_file_contains /tmp/priority-show.out "2.0.0" \
         "show reports the high priority version"
+
+      export HOME=/tmp/priority-client-consumer
+      export USER=priorityclient
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
+
+      $APM registry add --no-verify file:///tmp/low-priority-origin.git \
+        --name low-priority \
+        --branch "$LOW_BRANCH" \
+        --priority 100
+      $APM registry add --no-verify file:///tmp/high-priority-origin.git \
+        --name high-priority \
+        --branch "$HIGH_BRANCH" \
+        --priority 900
+
+      mount -o remount,rw / || true
+      delete_store_path "$LOW_CLIENT_STORE" "low-priority-client-fresh"
+      delete_store_path "$LOW_STORE" "low-priority-tool-client-dep"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install priority-client --registry low-priority --yes \
+        > /tmp/priority-install-client-fresh.out 2>&1 || {
+        cat /tmp/priority-install-client-fresh.out
+        fail "apm install priority-client downloads selected-registry dependency"
+      }
+      cat /tmp/priority-install-client-fresh.out
+      assert_file_contains /tmp/priority-install-client-fresh.out \
+        "Additional dependencies" \
+        "client install plans selected-registry priority-tool dependency"
+      assert_file_contains /tmp/priority-install-client-fresh.out \
+        "Downloading 2 NAR" \
+        "client install downloads root and selected-registry dependency"
+      assert_store_valid "$LOW_CLIENT_STORE" "fresh low priority client"
+      assert_store_valid "$LOW_STORE" "fresh low priority client dependency"
+      PROFILE_CLIENT="/var/lib/profiles/per-user/$USER/current/bin/priority-client"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/priority-tool"
+      "$PROFILE_CLIENT" > /tmp/priority-run-client-fresh.out
+      assert_file_contains /tmp/priority-run-client-fresh.out \
+        "priority-tool 9.0.0 from low-priority" \
+        "fresh client executes low-priority dependency"
+      "$PROFILE_TOOL" > /tmp/priority-run-client-dep-fresh.out
+      assert_file_contains /tmp/priority-run-client-dep-fresh.out \
+        "priority-tool 9.0.0 from low-priority" \
+        "fresh client exposes low-priority dependency executable"
+      CURRENT_PROFILE="/var/lib/profiles/per-user/$USER/current"
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_CLIENT_HASH.json" \
+        '"explicit": true' "client metadata is explicit"
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"explicit": false' "selected-registry dependency metadata is automatic"
+      $APM list --installed > /tmp/priority-installed-client-fresh.out 2>&1
+      assert_file_contains /tmp/priority-installed-client-fresh.out \
+        "priority-client/low-priority 1.0.0" \
+        "fresh client install records low-priority client"
+      assert_file_contains /tmp/priority-installed-client-fresh.out \
+        "priority-tool/low-priority 9.0.0" \
+        "fresh client install records low-priority dependency"
+      if ${grepBin} -q "priority-tool/high-priority" \
+        /tmp/priority-installed-client-fresh.out; then
+        cat /tmp/priority-installed-client-fresh.out
+        fail "fresh client install should not pull high-priority duplicate dependency"
+      else
+        pass "fresh client install excludes high-priority duplicate dependency"
+      fi
+
+      export HOME=/tmp/priority-consumer
+      export USER=priorityuser
+      APM_CONFIG="$HOME/.config/apm"
 
       mount -o remount,rw / || true
       delete_store_path "$HIGH_STORE" "high-priority-tool"
@@ -527,6 +711,22 @@ in {
       else
         pass "unfiltered install excludes lower priority duplicate"
       fi
+      $APM --json list --installed > /tmp/priority-installed-high.json 2>&1 || {
+        cat /tmp/priority-installed-high.json
+        fail "apm --json list --installed reports high priority install"
+      }
+      if ${jqBin} -e '
+        map(select(.name == "priority-tool")) as $matches
+        | ($matches | length == 1)
+          and $matches[0].registry == "high-priority"
+          and $matches[0].version == "2.0.0"
+          and ($matches[0].status | contains("installed"))
+      ' /tmp/priority-installed-high.json >/dev/null; then
+        pass "apm --json list --installed records high priority source"
+      else
+        cat /tmp/priority-installed-high.json
+        fail "apm --json list --installed records high priority source"
+      fi
 
       $APM install switch-tool --yes > /tmp/switch-install-high.out 2>&1 || {
         cat /tmp/switch-install-high.out
@@ -547,6 +747,20 @@ in {
       assert_file_contains /tmp/switch-run-high.out \
         "switch-tool 1.0.0 from high-priority" \
         "unfiltered switch-tool install executes high priority package"
+      $APM hold switch-tool > /tmp/switch-hold-high.out 2>&1 || {
+        cat /tmp/switch-hold-high.out
+        fail "apm hold marks high priority switch-tool held"
+      }
+      cat /tmp/switch-hold-high.out
+      assert_file_contains /tmp/switch-hold-high.out "set on hold" \
+        "apm hold reports high priority switch-tool hold"
+      $APM held > /tmp/switch-held-high.out 2>&1 || {
+        cat /tmp/switch-held-high.out
+        fail "apm held lists high priority switch-tool"
+      }
+      assert_file_contains /tmp/switch-held-high.out \
+        "switch-tool 1.0.0 (high-priority)" \
+        "held list reports high priority switch-tool before source switch"
 
       $APM install switch-tool --registry low-priority --yes \
         > /tmp/switch-install-low.out 2>&1 || {
@@ -561,6 +775,15 @@ in {
       assert_file_contains /tmp/switch-run-low.out \
         "switch-tool 1.0.0 from low-priority" \
         "source switch profile executable comes from selected registry"
+      assert_file_contains "$CURRENT_PROFILE/meta/$SWITCH_LOW_HASH.json" \
+        '"held": true' "source switch preserves held metadata"
+      $APM held > /tmp/switch-held-low.out 2>&1 || {
+        cat /tmp/switch-held-low.out
+        fail "apm held lists selected registry switch-tool after source switch"
+      }
+      assert_file_contains /tmp/switch-held-low.out \
+        "switch-tool 1.0.0 (low-priority)" \
+        "held list follows selected registry after source switch"
       if [ -L "$CURRENT_PROFILE/usr/$SWITCH_LOW_HASH" ]; then
         pass "source switch records selected registry profile root"
       else
@@ -580,6 +803,68 @@ in {
         fail "source switch should drop previous registry metadata"
       else
         pass "source switch drops previous registry metadata"
+      fi
+      $APM --json list --installed > /tmp/switch-installed-low.json 2>&1 || {
+        cat /tmp/switch-installed-low.json
+        fail "apm --json list --installed reports selected source switch"
+      }
+      if ${jqBin} -e '
+        map(select(.name == "switch-tool")) as $matches
+        | ($matches | length == 1)
+          and $matches[0].registry == "low-priority"
+          and $matches[0].version == "1.0.0"
+          and ($matches[0].status | contains("installed"))
+          and ($matches[0].status | contains("held"))
+      ' /tmp/switch-installed-low.json >/dev/null; then
+        pass "apm --json list --installed follows selected registry after source switch"
+      else
+        cat /tmp/switch-installed-low.json
+        fail "apm --json list --installed follows selected registry after source switch"
+      fi
+
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM reinstall switch-tool --yes > /tmp/switch-reinstall-low-source.out 2>&1 || {
+        cat /tmp/switch-reinstall-low-source.out
+        fail "apm reinstall preserves selected registry source"
+      }
+      cat /tmp/switch-reinstall-low-source.out
+      assert_file_contains /tmp/switch-reinstall-low-source.out "Downloading" \
+        "source-preserving reinstall downloads selected lower priority NAR"
+      assert_file_contains /tmp/switch-reinstall-low-source.out "Reinstalled 1 package" \
+        "source-preserving reinstall creates repair generation"
+      "$PROFILE_SWITCH_TOOL" > /tmp/switch-run-low-after-reinstall.out
+      assert_file_contains /tmp/switch-run-low-after-reinstall.out \
+        "switch-tool 1.0.0 from low-priority" \
+        "plain reinstall keeps selected registry executable"
+      assert_file_contains "$CURRENT_PROFILE/meta/$SWITCH_LOW_HASH.json" \
+        '"held": true' "plain reinstall preserves held metadata"
+      $APM held > /tmp/switch-held-low-after-reinstall.out 2>&1 || {
+        cat /tmp/switch-held-low-after-reinstall.out
+        fail "apm held lists selected registry switch-tool after reinstall"
+      }
+      assert_file_contains /tmp/switch-held-low-after-reinstall.out \
+        "switch-tool 1.0.0 (low-priority)" \
+        "held list follows selected registry after reinstall"
+      if [ -L "$CURRENT_PROFILE/usr/$SWITCH_LOW_HASH" ]; then
+        pass "plain reinstall keeps selected registry profile root"
+      else
+        fail "plain reinstall should keep selected registry profile root"
+      fi
+      if [ -L "$CURRENT_PROFILE/usr/$SWITCH_HIGH_HASH" ]; then
+        fail "plain reinstall should not restore higher priority duplicate"
+      else
+        pass "plain reinstall does not restore higher priority duplicate"
+      fi
+      $APM list --installed > /tmp/switch-installed-after-reinstall.out 2>&1
+      assert_file_contains /tmp/switch-installed-after-reinstall.out \
+        "switch-tool/low-priority 1.0.0" \
+        "plain reinstall keeps selected registry metadata"
+      if ${grepBin} -q "switch-tool/high-priority" /tmp/switch-installed-after-reinstall.out; then
+        cat /tmp/switch-installed-after-reinstall.out
+        fail "plain reinstall should not restore high priority metadata"
+      else
+        pass "plain reinstall keeps high priority metadata absent"
       fi
 
       export HOME=/tmp/priority-filter-consumer
@@ -616,6 +901,38 @@ in {
       assert_file_contains /tmp/priority-installed-low.out \
         "priority-tool/low-priority 9.0.0" \
         "registry-filtered install records selected registry"
+      $APM --json list --installed --registry low-priority \
+        > /tmp/priority-installed-low.json 2>&1 || {
+        cat /tmp/priority-installed-low.json
+        fail "apm --json list --installed --registry reports selected lower priority install"
+      }
+      if ${jqBin} -e '
+        length == 1
+        and .[0].name == "priority-tool"
+        and .[0].registry == "low-priority"
+        and .[0].version == "9.0.0"
+        and (.[0].status | contains("installed"))
+      ' /tmp/priority-installed-low.json >/dev/null; then
+        pass "apm --json list --installed --registry filters to selected lower priority install"
+      else
+        cat /tmp/priority-installed-low.json
+        fail "apm --json list --installed --registry filters to selected lower priority install"
+      fi
+
+      $APM depends priority-tool > /tmp/priority-depends-low.out 2>&1 || {
+        cat /tmp/priority-depends-low.out
+        fail "apm depends uses installed lower priority duplicate"
+      }
+      cat /tmp/priority-depends-low.out
+      assert_file_contains /tmp/priority-depends-low.out \
+        "priority-tool (9.0.0).*\\[low-priority, installed\\]" \
+        "depends reports installed lower priority duplicate root"
+      if ${grepBin} -q "priority-tool (2.0.0)" /tmp/priority-depends-low.out; then
+        cat /tmp/priority-depends-low.out
+        fail "depends should not report higher priority duplicate for installed package"
+      else
+        pass "depends does not report higher priority duplicate for installed package"
+      fi
 
       $APM install priority-client --registry low-priority --yes \
         > /tmp/priority-install-client.out 2>&1 || {
@@ -671,6 +988,27 @@ in {
       else
         pass "policy does not mark the uninstalled same-version high-priority candidate"
       fi
+      $APM --json policy same-version-tool > /tmp/same-version-policy-low.json 2>&1 || {
+        cat /tmp/same-version-policy-low.json
+        fail "apm --json policy handles same-version duplicate registry package"
+      }
+      if ${jqBin} -e '
+        .package == "same-version-tool"
+        and .installed == "1.0.0"
+        and .candidate == "1.0.0"
+        and (.versions | length == 2)
+        and (.versions[0].registry == "high-priority")
+        and (.versions[0].priority == 900)
+        and (.versions[0].installed == false)
+        and (.versions[1].registry == "low-priority")
+        and (.versions[1].priority == 100)
+        and (.versions[1].installed == true)
+      ' /tmp/same-version-policy-low.json >/dev/null; then
+        pass "apm --json policy marks only the installed same-version source"
+      else
+        cat /tmp/same-version-policy-low.json
+        fail "apm --json policy marks only the installed same-version source"
+      fi
 
       $APM list --upgradable > /tmp/priority-upgradable-low.out 2>&1 || {
         cat /tmp/priority-upgradable-low.out
@@ -711,6 +1049,9 @@ in {
             echo "libz.so.1 stub" > "$LIBZ/lib/libz.so.1"
             ${sqliteBin} /tmp/reg-a/var/nix/db/db.sqlite \
               "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$LIBZ', 'sha256:zzzz', 1000000, 4096, 1, '''''');"
+            LIBZ_HASH=$(basename "$LIBZ" | cut -d- -f1)
+            mkdir -p /tmp/reg-a/gcroots/default/bin
+            ln -sfn "$LIBZ" "/tmp/reg-a/gcroots/default/bin/$LIBZ_HASH"
 
             cat > /tmp/reg-a-config.toml << 'CFGEOF'
             listen = "127.0.0.1:15001"
@@ -734,6 +1075,9 @@ in {
             echo "libz.so.1 stub" > "$LIBZ_B/lib/libz.so.1"
             ${sqliteBin} /tmp/reg-b/var/nix/db/db.sqlite \
               "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$LIBZ_B', 'sha256:zzzz', 1000000, 4096, 1, '''''');"
+            LIBZ_B_HASH=$(basename "$LIBZ_B" | cut -d- -f1)
+            mkdir -p /tmp/reg-b/gcroots/default/bin
+            ln -sfn "$LIBZ_B" "/tmp/reg-b/gcroots/default/bin/$LIBZ_B_HASH"
 
             PKG="/tmp/reg-b/store/pppppppppppppppppppppppppppppppppp-mypkg-1.0"
             mkdir -p "$PKG/bin"
@@ -742,6 +1086,8 @@ in {
             chmod +x "$PKG/bin/mypkg"
             ${sqliteBin} /tmp/reg-b/var/nix/db/db.sqlite \
               "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$PKG', 'sha256:pppp', 1000000, 2048, 1, '''''');"
+            PKG_HASH=$(basename "$PKG" | cut -d- -f1)
+            ln -sfn "$PKG" "/tmp/reg-b/gcroots/default/bin/$PKG_HASH"
 
             cat > /tmp/reg-b-config.toml << 'CFGEOF'
             listen = "127.0.0.1:15002"
@@ -772,13 +1118,25 @@ in {
               "http://127.0.0.1:15002/default/$HASH_Z.narinfo")
             echo "Registry A libz: HTTP $HTTP_Z_A"
             echo "Registry B libz: HTTP $HTTP_Z_B"
+            test "$HTTP_Z_A" = "200" || {
+              echo "FAIL: registry A should serve shared libz narinfo"
+              FAIL=1
+            }
+            test "$HTTP_Z_B" = "200" || {
+              echo "FAIL: registry B should serve shared libz narinfo"
+              FAIL=1
+            }
 
             HASH_P="pppppppppppppppppppppppppppppppppp"
             HTTP_P=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
               "http://127.0.0.1:15002/default/$HASH_P.narinfo")
             echo "Registry B mypkg: HTTP $HTTP_P"
+            test "$HTTP_P" = "200" || {
+              echo "FAIL: registry B should serve package narinfo"
+              FAIL=1
+            }
 
-            kill $REG_A_PID $REG_B_PID 2>/dev/null || true
+            kill -9 $REG_A_PID $REG_B_PID 2>/dev/null || true
             wait $REG_A_PID $REG_B_PID 2>/dev/null || true
 
             if [ "$FAIL" -ne 0 ]; then
@@ -886,8 +1244,16 @@ in {
             echo "Mirror missing: $MR_MISSING"
 
             echo "==> Mirror comparison: upstream=$UP_MISSING, mirror=$MR_MISSING"
+            test "$UP_MISSING" = "0" || {
+              echo "FAIL: upstream should contain mirror package"
+              FAIL=1
+            }
+            test "$MR_MISSING" = "1" || {
+              echo "FAIL: empty mirror should miss mirror package"
+              FAIL=1
+            }
 
-            kill $UPSTREAM_PID $MIRROR_PID 2>/dev/null || true
+            kill -9 $UPSTREAM_PID $MIRROR_PID 2>/dev/null || true
             wait $UPSTREAM_PID $MIRROR_PID 2>/dev/null || true
 
             if [ "$FAIL" -ne 0 ]; then

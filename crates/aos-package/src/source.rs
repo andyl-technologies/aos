@@ -14,7 +14,8 @@ use super::registry::{RegistrySet, store_path_hash};
 use super::types::{InstalledMeta, PackageMeta};
 use super::verify as hash_verify;
 use aos_core::error::AosError;
-use aos_core::output::Printer;
+use aos_core::nix::aos_nix_env;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Platform detection (shared helper)
@@ -45,7 +46,7 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
     printer.header(&format!("Verifying package '{package}'..."));
 
     // 1. Open profile and find installed metadata.
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let all_meta = meta::list_meta(&profile)?;
 
     let installed = all_meta
@@ -56,6 +57,12 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
         })?;
 
     let store_path = &installed.store_path;
+    let installed_apm = installed
+        .apm
+        .as_ref()
+        .ok_or_else(|| AosError::PackageNotFound {
+            name: package.to_string(),
+        })?;
 
     // 2. Load registries and resolve the exact installed package entry for
     // its NAR hash. The latest registry candidate may differ after rollback.
@@ -70,8 +77,20 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
 
     // 3-4. Run nix-store --dump and hash the output.
     match hash_verify::verify_installed(store_path, expected_hash).await {
-        Ok(()) => {
-            printer.success(&format!("OK: '{package}' integrity verified"));
+        Ok(actual_hash) => {
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "package": package,
+                    "registry": &installed_apm.registry,
+                    "version": &installed_apm.version,
+                    "store_path": store_path,
+                    "expected_nar_hash": expected_hash,
+                    "actual_nar_hash": &actual_hash,
+                    "verified": true,
+                }));
+            } else {
+                printer.success(&format!("OK: '{package}' integrity verified"));
+            }
             Ok(())
         }
         Err(e) => {
@@ -114,6 +133,41 @@ fn resolve_installed_package_meta<'a>(
         })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceMetadata {
+    registry_name: String,
+    source_drv: String,
+    source_nar_hash: String,
+}
+
+fn resolve_installed_source_metadata(
+    reg_set: &RegistrySet,
+    package: &str,
+    installed: &InstalledMeta,
+) -> Result<SourceMetadata> {
+    let installed_apm = installed
+        .apm
+        .as_ref()
+        .ok_or_else(|| AosError::PackageNotFound {
+            name: package.to_string(),
+        })?;
+
+    if !installed_apm.source_drv.is_empty() {
+        return Ok(SourceMetadata {
+            registry_name: installed_apm.registry.clone(),
+            source_drv: installed_apm.source_drv.clone(),
+            source_nar_hash: installed_apm.source_nar_hash.clone(),
+        });
+    }
+
+    let pkg_meta = resolve_installed_package_meta(reg_set, package, installed)?;
+    Ok(SourceMetadata {
+        registry_name: installed_apm.registry.clone(),
+        source_drv: pkg_meta.source_drv.clone(),
+        source_nar_hash: pkg_meta.source_nar_hash.clone(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // apm source <package>
 // ---------------------------------------------------------------------------
@@ -136,8 +190,9 @@ pub async fn run_source(
     let enabled = config.enabled_registries();
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
 
+    let mut installed_store_path = None;
     let (registry_name, source_drv, source_nar_hash, expected_hash) = if verify_source {
-        let profile = Profile::open(config.scope)?;
+        let profile = Profile::open_readonly(config.scope);
         let all_meta = meta::list_meta(&profile)?;
         let installed = all_meta
             .iter()
@@ -145,34 +200,43 @@ pub async fn run_source(
             .ok_or_else(|| AosError::PackageNotFound {
                 name: package.to_string(),
             })?;
-        let installed_apm = installed
-            .apm
-            .as_ref()
-            .ok_or_else(|| AosError::PackageNotFound {
-                name: package.to_string(),
-            })?;
-        let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
+        let source_meta = resolve_installed_source_metadata(&reg_set, package, installed)?;
+        installed_store_path = Some(installed.store_path.clone());
 
         (
-            installed_apm.registry.clone(),
-            pkg_meta.source_drv.clone(),
-            pkg_meta.source_nar_hash.clone(),
-            pkg_meta.nar_hash.clone(),
+            source_meta.registry_name,
+            source_meta.source_drv,
+            source_meta.source_nar_hash,
+            String::new(),
         )
     } else {
-        let (reg, pkg_meta) =
-            reg_set
-                .resolve(package)
-                .ok_or_else(|| AosError::PackageNotFound {
-                    name: package.to_string(),
-                })?;
+        let profile = Profile::open_readonly(config.scope);
+        let all_meta = meta::list_meta(&profile)?;
 
-        (
-            reg.config.name.clone(),
-            pkg_meta.source_drv.clone(),
-            pkg_meta.source_nar_hash.clone(),
-            pkg_meta.nar_hash.clone(),
-        )
+        if let Some(installed) = find_installed_package(&all_meta, package) {
+            let source_meta = resolve_installed_source_metadata(&reg_set, package, installed)?;
+            installed_store_path = Some(installed.store_path.clone());
+            (
+                source_meta.registry_name,
+                source_meta.source_drv,
+                source_meta.source_nar_hash,
+                String::new(),
+            )
+        } else {
+            let (reg, pkg_meta) =
+                reg_set
+                    .resolve(package)
+                    .ok_or_else(|| AosError::PackageNotFound {
+                        name: package.to_string(),
+                    })?;
+
+            (
+                reg.config.name.clone(),
+                pkg_meta.source_drv.clone(),
+                pkg_meta.source_nar_hash.clone(),
+                pkg_meta.nar_hash.clone(),
+            )
+        }
     };
 
     if source_drv.is_empty() {
@@ -181,13 +245,34 @@ pub async fn run_source(
             registry_name
         );
     }
+    let expected_hash = if verify_source {
+        let store_path = installed_store_path.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("missing installed store path for source verification")
+        })?;
+        hash_verify::store_path_nar_hash(store_path)
+            .await
+            .with_context(|| format!("hashing installed package {store_path}"))?
+    } else {
+        expected_hash
+    };
 
     // Default or --show-drv: just print the source derivation path.
     if show_drv || (!fetch && !verify_source) {
-        printer.header(&format!("Source derivation for '{package}':"));
-        printer.kv("Source drv", &source_drv);
-        printer.kv("Source NAR hash", &source_nar_hash);
-        printer.kv("Registry", &registry_name);
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "package": package,
+                "registry": &registry_name,
+                "source_drv": &source_drv,
+                "source_nar_hash": &source_nar_hash,
+                "installed": installed_store_path.is_some(),
+                "installed_store_path": installed_store_path.as_deref(),
+            }));
+        } else {
+            printer.header(&format!("Source derivation for '{package}':"));
+            printer.kv("Source drv", &source_drv);
+            printer.kv("Source NAR hash", &source_nar_hash);
+            printer.kv("Registry", &registry_name);
+        }
         return Ok(());
     }
 
@@ -199,6 +284,7 @@ pub async fn run_source(
         printer.kv("Source drv", &source_drv);
 
         let output = tokio::process::Command::new("nix-store")
+            .envs(aos_nix_env())
             .args(["--realise", &source_drv])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -216,7 +302,19 @@ pub async fn run_source(
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let path = stdout.trim().to_string();
-        printer.success(&format!("Source realised: {path}"));
+        if printer.mode() == OutputMode::Json && !verify_source {
+            printer.json(&serde_json::json!({
+                "package": package,
+                "registry": &registry_name,
+                "source_drv": &source_drv,
+                "source_nar_hash": &source_nar_hash,
+                "installed": installed_store_path.is_some(),
+                "installed_store_path": installed_store_path.as_deref(),
+                "realised_path": &path,
+            }));
+        } else {
+            printer.success(&format!("Source realised: {path}"));
+        }
         realised_path = Some(path);
     }
 
@@ -229,6 +327,7 @@ pub async fn run_source(
             path
         } else {
             let output = tokio::process::Command::new("nix-store")
+                .envs(aos_nix_env())
                 .args(["--realise", &source_drv])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -251,6 +350,7 @@ pub async fn run_source(
         printer.info("Hashing rebuilt output...");
 
         let dump_output = tokio::process::Command::new("nix-store")
+            .envs(aos_nix_env())
             .args(["--dump", &built_path])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -272,9 +372,24 @@ pub async fn run_source(
         printer.kv("Rebuilt NAR hash", &actual_hash);
 
         if hash_verify::sha256_hashes_equal(&actual_hash, &expected_hash)? {
-            printer.success(&format!(
-                "OK: source rebuild of '{package}' matches installed binary"
-            ));
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "package": package,
+                    "registry": &registry_name,
+                    "source_drv": &source_drv,
+                    "source_nar_hash": &source_nar_hash,
+                    "installed": installed_store_path.is_some(),
+                    "installed_store_path": installed_store_path.as_deref(),
+                    "built_path": &built_path,
+                    "expected_nar_hash": &expected_hash,
+                    "actual_nar_hash": &actual_hash,
+                    "verified": true,
+                }));
+            } else {
+                printer.success(&format!(
+                    "OK: source rebuild of '{package}' matches installed binary"
+                ));
+            }
         } else {
             printer.error(&format!(
                 "MISMATCH: source rebuild of '{package}' differs from installed binary"
@@ -284,6 +399,18 @@ pub async fn run_source(
     }
 
     Ok(())
+}
+
+fn find_installed_package<'a>(
+    installed: &'a [InstalledMeta],
+    package: &str,
+) -> Option<&'a InstalledMeta> {
+    installed.iter().find(|meta| {
+        meta.apm
+            .as_ref()
+            .map(|apm| apm.name == package)
+            .unwrap_or(false)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +498,8 @@ priority = 500
                 registry: "test-reg".into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         };
 
@@ -525,12 +654,78 @@ references = []
                 registry: "test-reg".into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         };
 
         let selected = resolve_installed_package_meta(&reg_set, "verifytool", &installed).unwrap();
         assert_eq!(selected.version, "1.0.0");
         assert_eq!(selected.nar_hash, "sha256:v1");
+    }
+
+    #[test]
+    fn source_verify_uses_installed_source_metadata_without_registry_entry() {
+        let reg_set = RegistrySet::new(Vec::new());
+        let installed = InstalledMeta {
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-verifytool-1.0.0".into(),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: "verifytool".into(),
+                version: "1.0.0".into(),
+                explicit: true,
+                registry: "test-reg".into(),
+                installed_at: "2026-02-16T00:00:00Z".into(),
+                held: false,
+                source_drv: "/nix/store/srcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrc-src.drv".into(),
+                source_nar_hash: "sha256:source".into(),
+            }),
+        };
+
+        let selected =
+            resolve_installed_source_metadata(&reg_set, "verifytool", &installed).unwrap();
+
+        assert_eq!(selected.registry_name, "test-reg");
+        assert_eq!(
+            selected.source_drv,
+            "/nix/store/srcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrc-src.drv"
+        );
+        assert_eq!(selected.source_nar_hash, "sha256:source");
+    }
+
+    #[test]
+    fn source_lookup_prefers_installed_package_name() {
+        let installed = vec![InstalledMeta {
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-sourceful-1.0.0".into(),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: "sourceful".into(),
+                version: "1.0.0".into(),
+                explicit: true,
+                registry: "test-reg".into(),
+                installed_at: "2026-02-16T00:00:00Z".into(),
+                held: false,
+                source_drv: "/nix/store/srcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrcsrc-sourceful-src".into(),
+                source_nar_hash: "sha256:source".into(),
+            }),
+        }];
+
+        let selected = find_installed_package(&installed, "sourceful")
+            .and_then(|meta| meta.apm.as_ref())
+            .unwrap();
+        assert_eq!(selected.registry, "test-reg");
+        assert_eq!(selected.version, "1.0.0");
+        assert!(find_installed_package(&installed, "other").is_none());
     }
 
     // -- verify: installed meta lookup (unit test) ---------------------------

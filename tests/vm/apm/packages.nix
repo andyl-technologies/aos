@@ -160,6 +160,10 @@
     pname = "reinstall-tool";
     version = "1.0.0";
   };
+  reinstallPeerTool = mkProfileTool {
+    pname = "reinstall-peer";
+    version = "1.0.0";
+  };
   rollbackToolV1 = mkProfileTool {
     pname = "rollback-tool";
     version = "1.0.0";
@@ -234,6 +238,45 @@
     pname = "sourceful";
     version = "2.0.0";
   };
+  mkSourceFixture = {
+    pname,
+    version,
+    program,
+    outputName,
+  }:
+    pkgs.mkDerivation {
+      inherit pname version;
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              "printf '${outputName} ${version}\\n'" \
+              > "$out/bin/${program}"
+            chmod +x "$out/bin/${program}"
+          '';
+        }
+      ];
+    };
+  sourcefulSourceV1 = mkSourceFixture {
+    pname = "sourceful-source";
+    version = "1.0.0";
+    program = "sourceful";
+    outputName = "sourceful";
+  };
+  sourcefulSourceV2 = mkSourceFixture {
+    pname = "sourceful-source";
+    version = "2.0.0";
+    program = "sourceful";
+    outputName = "sourceful";
+  };
   realIdempotentDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -278,6 +321,7 @@
       pkgs.python3
       pkgs.zstd
       reinstallTool
+      reinstallPeerTool
     ];
   realHoldDeps =
     fixtures.commonDeps
@@ -285,6 +329,7 @@
     ++ [
       pkgs.findutils
       pkgs.iproute2
+      pkgs.jq
       pkgs.python3
       pkgs.zstd
       holdToolV1
@@ -296,6 +341,7 @@
     ++ [
       pkgs.findutils
       pkgs.iproute2
+      pkgs.jq
       pkgs.python3
       pkgs.zstd
       rollbackToolV1
@@ -321,6 +367,7 @@
     ++ [
       pkgs.findutils
       pkgs.iproute2
+      pkgs.jq
       pkgs.python3
       pkgs.zstd
       surfaceLeafTool
@@ -329,6 +376,23 @@
       surfaceUpgradeV2
       sourcefulV1
       sourcefulV2
+      sourcefulSourceV1
+      sourcefulSourceV2
+    ];
+  sourceVerifyAltDeps =
+    fixtures.commonDeps
+    ++ nixRuntimeDeps
+    ++ [
+      pkgs.iproute2
+      pkgs.python3
+      pkgs.zstd
+      sourcefulV1
+    ];
+  gcAltDeps =
+    fixtures.commonDeps
+    ++ nixRuntimeDeps
+    ++ [
+      pkgs.jq
     ];
   realInstallDeps =
     fixtures.commonDeps
@@ -354,6 +418,45 @@
     NIXCONF
     nix-store --init || true
     nix-store --load-db < /aos-registration
+  '';
+  setupAltNixEnv = ''
+    export AOS_ROOT=/tmp/aos-alt-root
+    export AOS_NIX_STORE_DIR=/nix/store
+    export AOS_NIX_STATE_DIR=/tmp/apm-alt-nix-state/var/nix
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR=/tmp/nix-conf
+    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    rm -rf /nix/var/nix
+    mkdir -p "$NIX_CONF_DIR" "$AOS_NIX_STATE_DIR/db" "$AOS_NIX_STATE_DIR/gcroots"
+    cat > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+    experimental-features = nix-command
+    sandbox = false
+    substituters =
+    NIXCONF
+    NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
+      nix-store --init || true
+    NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
+      nix-store --load-db < /aos-registration
+    alt_nix_store() {
+      NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_NIX_STATE_DIR" nix-store "$@"
+    }
+  '';
+  setupEmptyAltNixGcEnv = ''
+    export AOS_ROOT=/tmp/aos-gc-alt-root
+    export AOS_NIX_STORE_DIR=/tmp/apm-gc-alt-store
+    export AOS_NIX_STATE_DIR=/tmp/apm-gc-alt-nix-state/var/nix
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR=/tmp/nix-conf
+    export LD_LIBRARY_PATH="${nixLibPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    rm -rf /nix/var/nix
+    mkdir -p "$NIX_CONF_DIR" "$AOS_NIX_STORE_DIR" "$AOS_NIX_STATE_DIR/db" "$AOS_NIX_STATE_DIR/gcroots"
+    cat > "$NIX_CONF_DIR/nix.conf" << 'NIXCONF'
+    experimental-features = nix-command
+    sandbox = false
+    substituters =
+    NIXCONF
+    NIX_STORE_DIR="$AOS_NIX_STORE_DIR" NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
+      nix-store --init || true
   '';
 in {
   # -------------------------------------------------------------------------
@@ -410,7 +513,11 @@ in {
       }
 
       generation_count() {
-        find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        if [ -d "$PROFILE" ]; then
+          find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        else
+          printf '0'
+        fi
       }
 
       wait_for_cache_server() {
@@ -460,7 +567,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18093 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18093 --bind 127.0.0.1 \
         --directory /tmp/install-basic-cache > /tmp/install-basic-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -516,7 +623,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 2. install-with-deps — Install a real package closure with dependencies
+  # 2. install-with-deps — Install multiple real package roots with dependencies
   # -------------------------------------------------------------------------
   install-with-deps = testing.mkVMTest {
     name = "apm-install-with-deps";
@@ -526,15 +633,27 @@ in {
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
-      echo "==> Test: real apm install with dependency workflow"
+      echo "==> Test: real apm install with dependency and multi-root workflow"
 
+      BASIC_STORE="${installBasicTool}"
       DEP_STORE="${installDepTool}"
       WRAPPER_STORE="${installWithDepsTool}"
+      BASIC_HASH=$(basename "$BASIC_STORE" | cut -d- -f1)
       DEP_HASH=$(basename "$DEP_STORE" | cut -d- -f1)
       WRAPPER_HASH=$(basename "$WRAPPER_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/depsuser"
+      BASIC_BIN="$PROFILE/current/bin/install-basic-tool"
       DEP_BIN="$PROFILE/current/bin/install-libfoo"
       WRAPPER_BIN="$PROFILE/current/bin/install-with-deps"
+
+      assert_file_not_contains() {
+        if grep -q "$2" "$1" 2>/dev/null; then
+          fail "$3 (pattern '$2' unexpectedly found in $1)"
+          cat "$1" 2>/dev/null || true
+        else
+          pass "$3"
+        fi
+      }
 
       assert_store_valid() {
         path="$1"
@@ -572,7 +691,15 @@ in {
       }
 
       generation_count() {
-        find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        if [ -d "$PROFILE" ]; then
+          find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        else
+          printf '0'
+        fi
+      }
+
+      cache_nar_count() {
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' 2>/dev/null | wc -l | tr -d ' '
       }
 
       wait_for_cache_server() {
@@ -585,17 +712,41 @@ in {
         return 1
       }
 
+      start_cache_server() {
+        label="$1"
+        PYTHONUNBUFFERED=1 python3 -m http.server 18094 --bind 127.0.0.1 \
+          --directory /tmp/install-deps-cache > /tmp/install-deps-cache-http.log 2>&1 &
+        CACHE_PID=$!
+        if wait_for_cache_server; then
+          pass "$label"
+        else
+          cat /tmp/install-deps-cache-http.log || true
+          fail "$label"
+        fi
+      }
+
       mount -o remount,rw / || true
+      assert_store_valid "$BASIC_STORE" "install-basic-tool"
       assert_store_valid "$DEP_STORE" "install-libfoo"
       assert_store_valid "$WRAPPER_STORE" "install-with-deps"
       nix-store -q --references "$WRAPPER_STORE" > /tmp/install-with-deps-refs.out
       assert_file_contains /tmp/install-with-deps-refs.out "$DEP_STORE" \
         "install-with-deps has a real Nix reference to install-libfoo"
 
-      echo "==> Maintainer: publish dependency, wrapper, and static cache"
+      echo "==> Maintainer: publish dependency, wrapper, second root, and static cache"
       $APR create install-deps-reg
       REG_DIR="$REG_STORAGE/install-deps-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      $APR publish "$BASIC_STORE" \
+        --name install-basic-tool \
+        --version 1.0.0 \
+        --description "Second explicit install root fixture" \
+        --license MIT \
+        --maintainer install-deps@example.invalid \
+        --registry install-deps-reg \
+        --no-commit
+      assert_file_contains "$REG_DIR/packages/i/install-basic-tool.toml" \
+        "$BASIC_HASH" "published second-root metadata records store hash"
       $APR publish "$DEP_STORE" \
         --name install-libfoo \
         --version 1.0.0 \
@@ -627,6 +778,8 @@ in {
         --cache-url http://127.0.0.1:18094 \
         --priority 54 \
         --no-commit
+      assert_file_exists "/tmp/install-deps-cache/$BASIC_HASH.narinfo" \
+        "static cache has second-root narinfo"
       assert_file_exists "/tmp/install-deps-cache/$DEP_HASH.narinfo" \
         "static cache has dependency narinfo"
       assert_file_exists "/tmp/install-deps-cache/$WRAPPER_HASH.narinfo" \
@@ -642,15 +795,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18094 --bind 127.0.0.1 \
-        --directory /tmp/install-deps-cache > /tmp/install-deps-cache-http.log 2>&1 &
-      CACHE_PID=$!
-      if wait_for_cache_server; then
-        pass "static cache HTTP server started"
-      else
-        cat /tmp/install-deps-cache-http.log || true
-        fail "static cache HTTP server started"
-      fi
+      start_cache_server "static cache HTTP server started"
 
       echo "==> Consumer: install wrapper and dependency closure from cache"
       export HOME=/tmp/install-deps-consumer
@@ -664,37 +809,124 @@ in {
       }
       cat /tmp/install-deps-registry-add.out
 
+      delete_store_path "$BASIC_STORE" "install-basic-tool"
       delete_store_path "$WRAPPER_STORE" "install-with-deps"
       delete_store_path "$DEP_STORE" "install-libfoo"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM install install-with-deps --registry install-deps-reg --yes > /tmp/install-deps.out 2>&1 || {
+
+      $APM install install-with-deps install-basic-tool \
+        --registry install-deps-reg \
+        --dry-run > /tmp/install-deps-dry-run.out 2>&1 || {
+        cat /tmp/install-deps-dry-run.out
+        fail "apm install --dry-run resolves multi-root package plan"
+      }
+      cat /tmp/install-deps-dry-run.out
+      assert_file_contains /tmp/install-deps-dry-run.out "install-with-deps (2.0.0, install-deps-reg)" \
+        "install dry-run plans wrapper root"
+      assert_file_contains /tmp/install-deps-dry-run.out "install-basic-tool (1.0.0, install-deps-reg)" \
+        "install dry-run plans second explicit root"
+      assert_file_contains /tmp/install-deps-dry-run.out "Additional dependencies" \
+        "install dry-run plans dependency section"
+      assert_file_contains /tmp/install-deps-dry-run.out "install-libfoo (1.0.0, install-deps-reg)" \
+        "install dry-run lists automatic dependency"
+      assert_file_contains /tmp/install-deps-dry-run.out "Dry run -- no changes made" \
+        "install dry-run reports no mutation"
+      assert_file_not_contains /tmp/install-deps-dry-run.out "Downloading 3 NAR" \
+        "install dry-run does not download package bodies"
+      assert_file_not_contains /tmp/install-deps-dry-run.out "Updating profile" \
+        "install dry-run does not update profile"
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "install dry-run leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "install dry-run should not download NAR bodies"
+      fi
+      assert_store_missing "$BASIC_STORE" "install-basic-tool"
+      assert_store_missing "$WRAPPER_STORE" "install-with-deps"
+      assert_store_missing "$DEP_STORE" "install-libfoo"
+      if [ ! -e "$PROFILE" ]; then
+        pass "install dry-run leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "install dry-run should not initialize profile state"
+      fi
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped before failed install"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
+      if $APM install install-with-deps install-basic-tool \
+        --registry install-deps-reg \
+        --yes > /tmp/install-deps-cache-down.out 2>&1; then
+        cat /tmp/install-deps-cache-down.out
+        fail "apm install should fail while static cache is unavailable"
+      else
+        cat /tmp/install-deps-cache-down.out
+        pass "apm install fails while static cache is unavailable"
+      fi
+      assert_file_contains /tmp/install-deps-cache-down.out "narinfo" \
+        "failed install reports narinfo fetch failure"
+      assert_file_not_contains /tmp/install-deps-cache-down.out "Updating profile" \
+        "failed install does not update profile"
+      if [ ! -e "$PROFILE" ]; then
+        pass "failed install leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "failed install should not initialize profile state"
+      fi
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "failed install leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "failed install should not cache package bodies"
+      fi
+      assert_store_missing "$BASIC_STORE" "install-basic-tool"
+      assert_store_missing "$WRAPPER_STORE" "install-with-deps"
+      assert_store_missing "$DEP_STORE" "install-libfoo"
+      start_cache_server "static cache HTTP server restarted after failed install"
+
+      $APM install install-with-deps install-basic-tool \
+        --registry install-deps-reg \
+        --yes > /tmp/install-deps.out 2>&1 || {
         cat /tmp/install-deps.out
-        fail "apm install install-with-deps succeeds"
+        fail "apm install multiple package roots succeeds"
       }
       cat /tmp/install-deps.out
+      assert_file_contains /tmp/install-deps.out "install-with-deps (2.0.0, install-deps-reg)" \
+        "multi-root install plans wrapper root"
+      assert_file_contains /tmp/install-deps.out "install-basic-tool (1.0.0, install-deps-reg)" \
+        "multi-root install plans second explicit root"
       assert_file_contains /tmp/install-deps.out "Additional dependencies" \
-        "install with deps plans automatic dependency"
-      assert_file_contains /tmp/install-deps.out "Downloading 2 NAR" \
-        "install with deps downloads wrapper and dependency"
-      assert_file_contains /tmp/install-deps.out "Installed 1 package" \
-        "install with deps creates profile generation"
+        "multi-root install plans automatic dependency once"
+      assert_file_contains /tmp/install-deps.out "install-libfoo (1.0.0, install-deps-reg)" \
+        "multi-root install lists shared dependency"
+      assert_file_contains /tmp/install-deps.out "Downloading 3 NAR" \
+        "multi-root install downloads both roots and dependency"
+      assert_file_contains /tmp/install-deps.out "Installed 2 package" \
+        "multi-root install reports both requested roots"
+      assert_store_valid "$BASIC_STORE" "install-basic-tool"
       assert_store_valid "$DEP_STORE" "install-libfoo"
       assert_store_valid "$WRAPPER_STORE" "install-with-deps"
       "$WRAPPER_BIN" > /tmp/install-with-deps-run.out
       assert_file_contains /tmp/install-with-deps-run.out "^install-libfoo 1.0.0$" \
         "installed wrapper executes dependency from profile"
+      "$BASIC_BIN" > /tmp/install-basic-root-run.out
+      assert_file_contains /tmp/install-basic-root-run.out "^install-basic-tool 1.0.0$" \
+        "second explicit root executable runs from profile"
       "$DEP_BIN" > /tmp/install-dep-run.out
       assert_file_contains /tmp/install-dep-run.out "^install-libfoo 1.0.0$" \
         "dependency executable is active in profile"
       assert_file_contains "$PROFILE/meta/$WRAPPER_HASH.json" '"explicit": true' \
         "wrapper metadata is explicit"
+      assert_file_contains "$PROFILE/meta/$BASIC_HASH.json" '"explicit": true' \
+        "second root metadata is explicit"
       assert_file_contains "$PROFILE/meta/$DEP_HASH.json" '"explicit": false' \
         "dependency metadata is automatic"
       if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
-        pass "install with deps creates generation 1"
+        pass "multi-root install with deps creates generation 1"
       else
-        fail "install with deps should create gen-1"
+        fail "multi-root install with deps should create gen-1"
       fi
 
       if kill "$CACHE_PID" 2>/dev/null; then
@@ -872,7 +1104,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18086 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18086 --bind 127.0.0.1 \
         --directory /tmp/idemp-cache > /tmp/idemp-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -1043,6 +1275,8 @@ in {
       "$PROFILE_WRAPPER_BIN" > /tmp/idemp-run-repaired.out
       assert_file_contains /tmp/idemp-run-repaired.out "^idempkg 1.0.0$" \
         "profile executable runs after repair install"
+      assert_file_contains "$PROFILE/meta/$IDEMP_HASH.json" '"explicit": true' \
+        "repair install preserves explicit dependency metadata"
 
       REPAIR_CURRENT=$(readlink "$PROFILE/current")
       REPAIR_COUNT=$(generation_count)
@@ -1051,6 +1285,68 @@ in {
       else
         fail "repair install should create gen-4 (current=$REPAIR_CURRENT count=$REPAIR_COUNT)"
       fi
+
+      echo "==> Consumer: autoremove wrapper after repair keeps explicitly installed dependency"
+      $APM remove idemp-wrapper --autoremove --yes \
+        > /tmp/idemp-remove-wrapper-after-promotion.out 2>&1 || {
+        cat /tmp/idemp-remove-wrapper-after-promotion.out
+        fail "apm remove --autoremove idemp-wrapper succeeds after dependency promotion"
+      }
+      cat /tmp/idemp-remove-wrapper-after-promotion.out
+      assert_file_contains /tmp/idemp-remove-wrapper-after-promotion.out "idemp-wrapper" \
+        "remove names repaired wrapper"
+      assert_file_not_contains /tmp/idemp-remove-wrapper-after-promotion.out "idempkg" \
+        "autoremove does not remove explicitly installed dependency"
+      if [ -e "$PROFILE_WRAPPER_BIN" ]; then
+        fail "removed wrapper executable should not remain active"
+      else
+        pass "removed wrapper executable is absent"
+      fi
+      "$PROFILE_IDEMP_BIN" > /tmp/idemp-run-after-wrapper-remove.out
+      assert_file_contains /tmp/idemp-run-after-wrapper-remove.out "^idempkg 1.0.0$" \
+        "explicit dependency remains active after wrapper autoremove"
+      assert_file_contains "$PROFILE/meta/$IDEMP_HASH.json" '"explicit": true' \
+        "explicit dependency metadata remains after wrapper autoremove"
+
+      echo "==> Consumer: no-deps fails without existing dependency store path"
+      rm -rf "$PROFILE"
+      delete_store_path "$WRAPPER_STORE" "idemp-wrapper-missing-nodeps"
+      delete_store_path "$IDEMP_STORE" "idempkg-missing-nodeps"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      if $APM install idemp-wrapper --registry idemp-reg --no-deps --yes \
+        > /tmp/idemp-no-deps-missing.out 2>&1; then
+        cat /tmp/idemp-no-deps-missing.out
+        fail "apm install --no-deps should fail when dependency store path is absent"
+      else
+        cat /tmp/idemp-no-deps-missing.out
+        pass "apm install --no-deps fails when dependency store path is absent"
+      fi
+      assert_file_contains /tmp/idemp-no-deps-missing.out \
+        "no-deps requested but dependency store path" \
+        "failed no-deps install reports missing skipped dependency"
+      assert_file_not_contains /tmp/idemp-no-deps-missing.out "Downloading" \
+        "failed no-deps install does not download before dependency preflight"
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "failed no-deps install leaves NAR cache empty"
+      else
+        fail "failed no-deps install should not cache requested wrapper"
+      fi
+      assert_store_missing "$WRAPPER_STORE" "idemp-wrapper"
+      assert_store_missing "$IDEMP_STORE" "idempkg"
+      if [ "$(generation_count)" = "0" ] && [ ! -e "$PROFILE/current" ]; then
+        pass "failed no-deps install creates no profile generation"
+      else
+        fail "failed no-deps install should not create a profile generation"
+      fi
+      $APM list --installed > /tmp/idemp-installed-after-nodeps-fail.out 2>&1 || {
+        cat /tmp/idemp-installed-after-nodeps-fail.out
+        fail "apm list --installed succeeds after failed no-deps install"
+      }
+      assert_file_not_contains /tmp/idemp-installed-after-nodeps-fail.out "idemp-wrapper" \
+        "failed no-deps install does not record wrapper metadata"
+      assert_file_not_contains /tmp/idemp-installed-after-nodeps-fail.out "idempkg" \
+        "failed no-deps install does not record dependency metadata"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"
@@ -1136,6 +1432,10 @@ in {
         find "$HOME/.cache/apm" -type f -name '*.nar.zst' 2>/dev/null | wc -l | tr -d ' '
       }
 
+      cache_nar_http_get_count() {
+        grep -E 'GET /nar/.*\.nar\.zst HTTP/' /tmp/download-cache-http.log 2>/dev/null | wc -l | tr -d ' '
+      }
+
       wait_for_cache_server() {
         for _i in 1 2 3 4 5 6 7 8 9 10; do
           if curl -sf http://127.0.0.1:18089/nix-cache-info >/dev/null; then
@@ -1197,7 +1497,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18089 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18089 --bind 127.0.0.1 \
         --directory /tmp/download-cache > /tmp/download-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -1246,6 +1546,12 @@ in {
       else
         fail "download-only should leave two NARs in user cache"
       fi
+      if [ "$(cache_nar_http_get_count)" = "2" ]; then
+        pass "download-only fetches exactly two NAR bodies"
+      else
+        cat /tmp/download-cache-http.log || true
+        fail "download-only should fetch exactly two NAR bodies"
+      fi
       assert_store_missing "$WRAPPER_STORE" "download-only-wrapper"
       assert_store_missing "$DEP_STORE" "idempkg"
       if [ "$(generation_count)" = "0" ] && [ ! -e "$PROFILE/current" ]; then
@@ -1253,8 +1559,15 @@ in {
       else
         fail "download-only should not create profile generation"
       fi
+      if [ ! -e "$PROFILE" ]; then
+        pass "download-only leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "download-only should not initialize profile state"
+      fi
 
       echo "==> Consumer: normal install after download-only activates package"
+      NAR_GETS_BEFORE_INSTALL=$(cache_nar_http_get_count)
       $APM install download-only-wrapper --registry download-reg --yes > /tmp/download-install.out 2>&1 || {
         cat /tmp/download-install.out
         fail "normal apm install after download-only succeeds"
@@ -1267,10 +1580,84 @@ in {
       "$PROFILE/current/bin/download-only-wrapper" > /tmp/download-wrapper-run.out
       assert_file_contains /tmp/download-wrapper-run.out "^idempkg 1.0.0$" \
         "download-only wrapper executable runs after normal install"
+      if [ "$(cache_nar_http_get_count)" = "$NAR_GETS_BEFORE_INSTALL" ]; then
+        pass "normal install after download-only reuses cached NAR bodies"
+      else
+        cat /tmp/download-cache-http.log || true
+        fail "normal install after download-only should not refetch NAR bodies"
+      fi
       if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
         pass "normal install after download-only creates generation 1"
       else
         fail "normal install after download-only should create gen-1"
+      fi
+
+      echo "==> Consumer: corrupt one prefetched NAR and repair during install"
+      rm -rf "$PROFILE"
+      delete_store_path "$WRAPPER_STORE" "download-only-wrapper-reset"
+      delete_store_path "$DEP_STORE" "idempkg-reset"
+      export HOME=/tmp/download-corrupt-consumer
+      export USER=downloadcorrupt
+      PROFILE="/var/lib/profiles/per-user/downloadcorrupt"
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/download-origin.git \
+        --name download-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/download-corrupt-registry-add.out 2>&1 || {
+        cat /tmp/download-corrupt-registry-add.out
+        fail "apm registry add syncs download registry for corrupt-cache consumer"
+      }
+      cat /tmp/download-corrupt-registry-add.out
+
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install download-only-wrapper \
+        --registry download-reg \
+        --download-only \
+        --yes > /tmp/download-corrupt-prefetch.out 2>&1 || {
+        cat /tmp/download-corrupt-prefetch.out
+        fail "apm install --download-only succeeds before corrupting cache"
+      }
+      cat /tmp/download-corrupt-prefetch.out
+      if [ "$(cache_nar_count)" = "2" ]; then
+        pass "corrupt-cache consumer prefetches two NARs"
+      else
+        fail "corrupt-cache consumer should prefetch two NARs"
+      fi
+      CORRUPT_NAR=$(find "$HOME/.cache/apm" -type f -name '*.nar.zst' | sort | head -n 1)
+      if [ -n "$CORRUPT_NAR" ]; then
+        printf '%s\n' "corrupted cached NAR" > "$CORRUPT_NAR"
+        pass "test corrupted one cached NAR"
+      else
+        fail "test should find a cached NAR to corrupt"
+      fi
+      assert_store_missing "$WRAPPER_STORE" "download-only-wrapper"
+      assert_store_missing "$DEP_STORE" "idempkg"
+
+      NAR_GETS_BEFORE_CORRUPT_INSTALL=$(cache_nar_http_get_count)
+      EXPECTED_NAR_GETS_AFTER_CORRUPT_INSTALL=$((NAR_GETS_BEFORE_CORRUPT_INSTALL + 1))
+      $APM install download-only-wrapper --registry download-reg --yes \
+        > /tmp/download-corrupt-install.out 2>&1 || {
+        cat /tmp/download-corrupt-install.out
+        fail "normal install repairs one corrupted cached NAR"
+      }
+      cat /tmp/download-corrupt-install.out
+      assert_file_contains /tmp/download-corrupt-install.out "Installed 1 package" \
+        "corrupt-cache install creates profile generation"
+      assert_store_valid "$WRAPPER_STORE" "download-only-wrapper"
+      assert_store_valid "$DEP_STORE" "idempkg"
+      "$PROFILE/current/bin/download-only-wrapper" > /tmp/download-corrupt-run.out
+      assert_file_contains /tmp/download-corrupt-run.out "^idempkg 1.0.0$" \
+        "corrupt-cache repaired install executes wrapper"
+      if [ "$(cache_nar_http_get_count)" = "$EXPECTED_NAR_GETS_AFTER_CORRUPT_INSTALL" ]; then
+        pass "corrupt-cache install redownloads only the stale NAR body"
+      else
+        cat /tmp/download-cache-http.log || true
+        fail "corrupt-cache install should redownload exactly one stale NAR body"
+      fi
+      if [ "$(cache_nar_count)" = "2" ]; then
+        pass "corrupt-cache install leaves repaired NAR cache complete"
+      else
+        fail "corrupt-cache install should leave two cached NAR files"
       fi
 
       if kill "$CACHE_PID" 2>/dev/null; then
@@ -1293,10 +1680,12 @@ in {
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
-      echo "==> Test: real apm reinstall refreshes an installed package"
+      echo "==> Test: real apm reinstall refreshes installed packages"
 
       TOOL_STORE="${reinstallTool}"
+      PEER_STORE="${reinstallPeerTool}"
       TOOL_HASH=$(basename "$TOOL_STORE" | cut -d- -f1)
+      PEER_HASH=$(basename "$PEER_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/reinstalluser"
 
       assert_file_not_contains() {
@@ -1363,8 +1752,9 @@ in {
 
       mount -o remount,rw / || true
       assert_store_valid "$TOOL_STORE" "reinstall-tool"
+      assert_store_valid "$PEER_STORE" "reinstall-peer"
 
-      echo "==> Maintainer: publish reinstall-tool and static cache"
+      echo "==> Maintainer: publish reinstall packages and static cache"
       $APR create reinstall-reg
       REG_DIR="$REG_STORAGE/reinstall-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
@@ -1376,8 +1766,18 @@ in {
         --maintainer reinstall-workflow@example.invalid \
         --registry reinstall-reg \
         --no-commit
+      $APR publish "$PEER_STORE" \
+        --name reinstall-peer \
+        --version 1.0.0 \
+        --description "Peer tool for reinstall workflow" \
+        --license MIT \
+        --maintainer reinstall-workflow@example.invalid \
+        --registry reinstall-reg \
+        --no-commit
       assert_file_contains "$REG_DIR/packages/r/reinstall-tool.toml" \
         "$TOOL_HASH" "published metadata records reinstall-tool store hash"
+      assert_file_contains "$REG_DIR/packages/r/reinstall-peer.toml" \
+        "$PEER_HASH" "published metadata records reinstall-peer store hash"
 
       $APR cache generate \
         --registry reinstall-reg \
@@ -1387,16 +1787,18 @@ in {
         --no-commit
       assert_file_exists "/tmp/reinstall-cache/$TOOL_HASH.narinfo" \
         "static cache has reinstall-tool narinfo"
+      assert_file_exists "/tmp/reinstall-cache/$PEER_HASH.narinfo" \
+        "static cache has reinstall-peer narinfo"
 
       git -C "$REG_DIR" add -A
-      git -C "$REG_DIR" commit -m "release: reinstall workflow package"
+      git -C "$REG_DIR" commit -m "release: reinstall workflow packages"
       git init --bare --object-format=sha256 /tmp/reinstall-origin.git
       git -C "$REG_DIR" remote add origin /tmp/reinstall-origin.git
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18088 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18088 --bind 127.0.0.1 \
         --directory /tmp/reinstall-cache > /tmp/reinstall-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -1406,7 +1808,7 @@ in {
         fail "static cache HTTP server started"
       fi
 
-      echo "==> Consumer: install then force reinstall while store path is still valid"
+      echo "==> Consumer: install then force reinstall packages while store paths are still valid"
       export HOME=/tmp/reinstall-consumer
       export USER=reinstalluser
       mkdir -p "$HOME"
@@ -1418,88 +1820,140 @@ in {
       }
       cat /tmp/reinstall-registry-add.out
 
+      if $APM reinstall reinstall-tool --yes > /tmp/reinstall-empty.out 2>&1; then
+        cat /tmp/reinstall-empty.out
+        fail "apm reinstall should fail before reinstall-tool is installed"
+      else
+        cat /tmp/reinstall-empty.out
+        pass "apm reinstall fails before reinstall-tool is installed"
+      fi
+      assert_file_contains /tmp/reinstall-empty.out "package not installed" \
+        "empty reinstall reports missing installed package"
+      assert_file_not_contains /tmp/reinstall-empty.out "Downloading" \
+        "empty reinstall does not download package bodies"
+      assert_file_not_contains /tmp/reinstall-empty.out "Updating profile" \
+        "empty reinstall does not update profile"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty reinstall leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty reinstall should not initialize profile state"
+      fi
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "empty reinstall leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "empty reinstall should not cache package bodies"
+      fi
+
       delete_store_path "$TOOL_STORE" "reinstall-tool"
+      delete_store_path "$PEER_STORE" "reinstall-peer"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM install reinstall-tool --registry reinstall-reg --yes > /tmp/reinstall-install.out 2>&1 || {
+      $APM install reinstall-tool reinstall-peer --registry reinstall-reg --yes > /tmp/reinstall-install.out 2>&1 || {
         cat /tmp/reinstall-install.out
-        fail "initial apm install reinstall-tool succeeds"
+        fail "initial apm install reinstall packages succeeds"
       }
       cat /tmp/reinstall-install.out
-      assert_file_contains /tmp/reinstall-install.out "Downloading 1 NAR" \
-        "initial install downloads reinstall-tool"
-      assert_file_contains /tmp/reinstall-install.out "Installed 1 package" \
-        "initial install creates profile generation"
+      assert_file_contains /tmp/reinstall-install.out "Downloading 2 NAR" \
+        "initial install downloads both reinstall packages"
+      assert_file_contains /tmp/reinstall-install.out "Installed 2 package" \
+        "initial install creates profile generation for both packages"
       assert_store_valid "$TOOL_STORE" "reinstall-tool"
+      assert_store_valid "$PEER_STORE" "reinstall-peer"
       "$PROFILE/current/bin/reinstall-tool" > /tmp/reinstall-run-1.out
+      "$PROFILE/current/bin/reinstall-peer" > /tmp/reinstall-peer-run-1.out
       assert_file_contains /tmp/reinstall-run-1.out "^reinstall-tool 1.0.0$" \
         "installed executable runs before reinstall"
+      assert_file_contains /tmp/reinstall-peer-run-1.out "^reinstall-peer 1.0.0$" \
+        "installed peer executable runs before reinstall"
+      assert_file_contains "$PROFILE/meta/$TOOL_HASH.json" '"explicit": true' \
+        "reinstall-tool metadata is explicit"
+      assert_file_contains "$PROFILE/meta/$PEER_HASH.json" '"explicit": true' \
+        "reinstall-peer metadata is explicit"
 
       if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
         pass "initial install creates exactly generation 1"
       else
         fail "initial install should create only gen-1"
       fi
-      if [ "$(cache_nar_count)" = "1" ]; then
-        pass "initial install retains one downloaded NAR"
+      if [ "$(cache_nar_count)" = "2" ]; then
+        pass "initial install retains two downloaded NARs"
       else
-        fail "initial install should retain one downloaded NAR"
+        fail "initial install should retain two downloaded NARs"
       fi
 
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM reinstall reinstall-tool --yes > /tmp/reinstall-command.out 2>&1 || {
+      $APM reinstall reinstall-tool reinstall-peer --yes > /tmp/reinstall-command.out 2>&1 || {
         cat /tmp/reinstall-command.out
-        fail "apm reinstall succeeds for installed package"
+        fail "apm reinstall succeeds for installed packages"
       }
       cat /tmp/reinstall-command.out
       assert_file_not_contains /tmp/reinstall-command.out "already installed" \
-        "apm reinstall does not no-op on installed package"
-      assert_file_contains /tmp/reinstall-command.out "Downloading 1 NAR" \
-        "apm reinstall downloads reinstall-tool again"
+        "apm reinstall does not no-op on installed packages"
+      assert_file_contains /tmp/reinstall-command.out "Downloading 2 NAR" \
+        "apm reinstall downloads both packages again"
       assert_file_contains /tmp/reinstall-command.out "packages will be reinstalled" \
         "apm reinstall reports reinstall plan"
-      assert_file_contains /tmp/reinstall-command.out "Reinstalled 1 package" \
-        "apm reinstall creates profile generation"
+      assert_file_contains /tmp/reinstall-command.out "Reinstalled 2 package" \
+        "apm reinstall creates profile generation for both packages"
       if [ "$(readlink "$PROFILE/current")" = "gen-2" ] && [ "$(generation_count)" = "2" ]; then
         pass "apm reinstall creates generation 2"
       else
         fail "apm reinstall should create gen-2"
       fi
-      if [ "$(cache_nar_count)" = "1" ]; then
+      if [ "$(cache_nar_count)" = "2" ]; then
         pass "apm reinstall repopulates NAR cache"
       else
-        fail "apm reinstall should repopulate one downloaded NAR"
+        fail "apm reinstall should repopulate two downloaded NARs"
       fi
       "$PROFILE/current/bin/reinstall-tool" > /tmp/reinstall-run-2.out
+      "$PROFILE/current/bin/reinstall-peer" > /tmp/reinstall-peer-run-2.out
       assert_file_contains /tmp/reinstall-run-2.out "^reinstall-tool 1.0.0$" \
         "reinstalled executable runs from generation 2"
+      assert_file_contains /tmp/reinstall-peer-run-2.out "^reinstall-peer 1.0.0$" \
+        "reinstalled peer executable runs from generation 2"
+      assert_file_contains "$PROFILE/meta/$TOOL_HASH.json" '"explicit": true' \
+        "apm reinstall preserves reinstall-tool explicit metadata"
+      assert_file_contains "$PROFILE/meta/$PEER_HASH.json" '"explicit": true' \
+        "apm reinstall preserves reinstall-peer explicit metadata"
 
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM install reinstall-tool --registry reinstall-reg --reinstall --yes > /tmp/install-reinstall-flag.out 2>&1 || {
+      $APM install reinstall-tool reinstall-peer --registry reinstall-reg --reinstall --yes > /tmp/install-reinstall-flag.out 2>&1 || {
         cat /tmp/install-reinstall-flag.out
-        fail "apm install --reinstall succeeds for installed package"
+        fail "apm install --reinstall succeeds for installed packages"
       }
       cat /tmp/install-reinstall-flag.out
       assert_file_not_contains /tmp/install-reinstall-flag.out "already installed" \
-        "apm install --reinstall does not no-op on installed package"
-      assert_file_contains /tmp/install-reinstall-flag.out "Downloading 1 NAR" \
-        "apm install --reinstall downloads reinstall-tool again"
+        "apm install --reinstall does not no-op on installed packages"
+      assert_file_contains /tmp/install-reinstall-flag.out "Downloading 2 NAR" \
+        "apm install --reinstall downloads both packages again"
       assert_file_contains /tmp/install-reinstall-flag.out "packages will be reinstalled" \
         "apm install --reinstall reports reinstall plan"
-      assert_file_contains /tmp/install-reinstall-flag.out "Reinstalled 1 package" \
-        "apm install --reinstall creates profile generation"
+      assert_file_contains /tmp/install-reinstall-flag.out "Reinstalled 2 package" \
+        "apm install --reinstall creates profile generation for both packages"
       if [ "$(readlink "$PROFILE/current")" = "gen-3" ] && [ "$(generation_count)" = "3" ]; then
         pass "apm install --reinstall creates generation 3"
       else
         fail "apm install --reinstall should create gen-3"
       fi
-      if [ "$(cache_nar_count)" = "1" ]; then
+      if [ "$(cache_nar_count)" = "2" ]; then
         pass "apm install --reinstall repopulates NAR cache"
       else
-        fail "apm install --reinstall should repopulate one downloaded NAR"
+        fail "apm install --reinstall should repopulate two downloaded NARs"
       fi
+      "$PROFILE/current/bin/reinstall-tool" > /tmp/reinstall-run-3.out
+      "$PROFILE/current/bin/reinstall-peer" > /tmp/reinstall-peer-run-3.out
+      assert_file_contains /tmp/reinstall-run-3.out "^reinstall-tool 1.0.0$" \
+        "install --reinstall executable runs from generation 3"
+      assert_file_contains /tmp/reinstall-peer-run-3.out "^reinstall-peer 1.0.0$" \
+        "install --reinstall peer executable runs from generation 3"
+      assert_file_contains "$PROFILE/meta/$TOOL_HASH.json" '"explicit": true' \
+        "apm install --reinstall preserves reinstall-tool explicit metadata"
+      assert_file_contains "$PROFILE/meta/$PEER_HASH.json" '"explicit": true' \
+        "apm install --reinstall preserves reinstall-peer explicit metadata"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"
@@ -1623,7 +2077,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18095 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18095 --bind 127.0.0.1 \
         --directory /tmp/remove-basic-cache > /tmp/remove-basic-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -1644,6 +2098,70 @@ in {
         fail "apm registry add syncs remove-basic registry"
       }
       cat /tmp/remove-basic-registry-add.out
+
+      if $APM remove remove-basic-tool --yes > /tmp/remove-basic-empty-remove.out 2>&1; then
+        cat /tmp/remove-basic-empty-remove.out
+        fail "remove should fail when no profile is installed"
+      else
+        cat /tmp/remove-basic-empty-remove.out
+        pass "remove fails before any package is installed"
+      fi
+      assert_file_contains /tmp/remove-basic-empty-remove.out "nothing installed" \
+        "empty remove reports no current generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty remove leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty remove should not initialize profile state"
+      fi
+
+      if $APM autoremove --yes > /tmp/remove-basic-empty-autoremove.out 2>&1; then
+        cat /tmp/remove-basic-empty-autoremove.out
+        fail "autoremove should fail when no profile is installed"
+      else
+        cat /tmp/remove-basic-empty-autoremove.out
+        pass "autoremove fails before any package is installed"
+      fi
+      assert_file_contains /tmp/remove-basic-empty-autoremove.out "nothing installed" \
+        "empty autoremove reports no current generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty autoremove leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty autoremove should not initialize profile state"
+      fi
+
+      if $APM remove remove-basic-tool --dry-run > /tmp/remove-basic-empty-dry-run.out 2>&1; then
+        cat /tmp/remove-basic-empty-dry-run.out
+        fail "remove dry-run should fail when no profile is installed"
+      else
+        cat /tmp/remove-basic-empty-dry-run.out
+        pass "remove dry-run fails before any package is installed"
+      fi
+      assert_file_contains /tmp/remove-basic-empty-dry-run.out "nothing installed" \
+        "empty remove dry-run reports no current generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty remove dry-run leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty remove dry-run should not initialize profile state"
+      fi
+
+      if $APM autoremove --dry-run > /tmp/remove-basic-empty-autoremove-dry-run.out 2>&1; then
+        cat /tmp/remove-basic-empty-autoremove-dry-run.out
+        fail "autoremove dry-run should fail when no profile is installed"
+      else
+        cat /tmp/remove-basic-empty-autoremove-dry-run.out
+        pass "autoremove dry-run fails before any package is installed"
+      fi
+      assert_file_contains /tmp/remove-basic-empty-autoremove-dry-run.out "nothing installed" \
+        "empty autoremove dry-run reports no current generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty autoremove dry-run leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty autoremove dry-run should not initialize profile state"
+      fi
 
       delete_store_path "$REMOVE_STORE" "remove-basic-tool"
       rm -rf "$HOME/.cache/apm"
@@ -1666,6 +2184,28 @@ in {
         pass "remove-basic install creates generation 1"
       else
         fail "remove-basic install should create gen-1"
+      fi
+
+      $APM remove remove-basic-tool --dry-run > /tmp/remove-basic-remove-dry-run.out 2>&1 || {
+        cat /tmp/remove-basic-remove-dry-run.out
+        fail "apm remove --dry-run remove-basic-tool succeeds"
+      }
+      cat /tmp/remove-basic-remove-dry-run.out
+      assert_file_contains /tmp/remove-basic-remove-dry-run.out "will be REMOVED" \
+        "remove dry-run prints removal plan"
+      assert_file_contains /tmp/remove-basic-remove-dry-run.out "Dry run -- no changes made" \
+        "remove dry-run reports no mutation"
+      assert_file_not_contains /tmp/remove-basic-remove-dry-run.out "Creating new generation" \
+        "remove dry-run does not create a generation"
+      assert_file_exists "$PROFILE/meta/$REMOVE_HASH.json" \
+        "remove dry-run preserves installed metadata"
+      "$REMOVE_BIN" > /tmp/remove-basic-run-after-dry-run.out
+      assert_file_contains /tmp/remove-basic-run-after-dry-run.out "^remove-basic-tool 1.0.0$" \
+        "remove dry-run leaves executable active"
+      if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
+        pass "remove dry-run keeps generation 1 active"
+      else
+        fail "remove dry-run should keep gen-1"
       fi
 
       $APM remove remove-basic-tool --yes > /tmp/remove-basic-remove.out 2>&1 || {
@@ -1721,7 +2261,265 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 8. remove-autoremove — Remove with --autoremove flag
+  # 8. registry-readd-heals-orphans — Re-add registry after orphaning packages
+  # -------------------------------------------------------------------------
+  registry-readd-heals-orphans = testing.mkVMTest {
+    name = "apm-registry-readd-heals-orphans";
+    rootfsDeps = realInstallDeps;
+    memory = 1024;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixEnv}
+
+      echo "==> Test: registry re-add heals orphaned installed packages"
+
+      TOOL_STORE="${installBasicTool}"
+      TOOL_HASH=$(basename "$TOOL_STORE" | cut -d- -f1)
+      PROFILE="/var/lib/profiles/per-user/readduser"
+      TOOL_BIN="$PROFILE/current/bin/install-basic-tool"
+
+      assert_dir_not_exists() {
+        if [ ! -d "$1" ]; then
+          pass "$2"
+        else
+          fail "$2 (directory should not exist: $1)"
+        fi
+      }
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/readd-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/readd-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/readd-missing-$label.out" 2>&1; then
+          cat "/tmp/readd-missing-$label.out"
+          fail "$label should be missing from store"
+        else
+          pass "$label missing from store"
+        fi
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if nix-store --delete --ignore-liveness "$path" > "/tmp/readd-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/readd-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
+
+      wait_for_cache_server() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18124/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
+
+      run_ok() {
+        label="$1"
+        shift
+        if "$@" > "/tmp/readd-$label.out" 2>&1; then
+          pass "$label exits 0"
+        else
+          cat "/tmp/readd-$label.out"
+          fail "$label should exit 0"
+        fi
+      }
+
+      mount -o remount,rw / || true
+      assert_store_valid "$TOOL_STORE" "readd-tool"
+
+      echo "==> Maintainer: publish readd-tool and static cache"
+      $APR create readd-reg
+      REG_DIR="$REG_STORAGE/readd-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+      $APR publish "$TOOL_STORE" \
+        --name readd-tool \
+        --version 1.0.0 \
+        --description "Registry re-add recovery fixture" \
+        --license MIT \
+        --maintainer readd@example.invalid \
+        --registry readd-reg \
+        --no-commit
+      assert_file_contains "$REG_DIR/packages/r/readd-tool.toml" \
+        "$TOOL_HASH" "published readd-tool metadata records store hash"
+
+      $APR cache generate \
+        --registry readd-reg \
+        --output /tmp/readd-cache \
+        --cache-url http://127.0.0.1:18124 \
+        --priority 54 \
+        --no-commit
+      assert_file_exists "/tmp/readd-cache/$TOOL_HASH.narinfo" \
+        "static cache has readd-tool narinfo"
+      assert_file_contains "$REG_DIR/registry.toml" \
+        "http://127.0.0.1:18124" "registry records readd cache URL"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "release: readd-tool 1.0.0"
+      git init --bare --object-format=sha256 /tmp/readd-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/readd-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      PYTHONUNBUFFERED=1 python3 -m http.server 18124 --bind 127.0.0.1 \
+        --directory /tmp/readd-cache > /tmp/readd-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      if wait_for_cache_server; then
+        pass "static cache HTTP server started"
+      else
+        cat /tmp/readd-cache-http.log || true
+        fail "static cache HTTP server started"
+      fi
+
+      echo "==> Consumer: install readd-tool"
+      export HOME=/tmp/readd-consumer
+      export USER=readduser
+      mkdir -p "$HOME"
+      $APM registry add file:///tmp/readd-origin.git \
+        --name readd-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/readd-registry-add.out 2>&1 || {
+        cat /tmp/readd-registry-add.out
+        fail "apm registry add syncs readd registry"
+      }
+      cat /tmp/readd-registry-add.out
+
+      delete_store_path "$TOOL_STORE" "readd-tool"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install readd-tool --registry readd-reg --yes > /tmp/readd-install.out 2>&1 || {
+        cat /tmp/readd-install.out
+        fail "apm install downloads readd-tool"
+      }
+      cat /tmp/readd-install.out
+      assert_file_contains /tmp/readd-install.out "Downloading 1 NAR" \
+        "readd-tool install downloads package NAR"
+      assert_file_contains /tmp/readd-install.out "Installed 1 package" \
+        "readd-tool install creates profile generation"
+      "$TOOL_BIN" > /tmp/readd-run.out
+      assert_file_contains /tmp/readd-run.out "^install-basic-tool 1.0.0$" \
+        "installed readd-tool executable runs from profile"
+
+      echo "==> Consumer: disable registry without orphaning installed package"
+      REG_CONFIG="$HOME/.config/apm/registries.d/readd-reg.toml"
+      python3 -c 'from pathlib import Path; p = Path("/tmp/readd-consumer/.config/apm/registries.d/readd-reg.toml"); text = p.read_text(); assert "enabled = true" in text, "registry config was not enabled before disable"; p.write_text(text.replace("enabled = true", "enabled = false", 1))'
+      assert_file_contains "$REG_CONFIG" "enabled = false" \
+        "registry config can be disabled by maintainer policy"
+      run_ok list-disabled "$APM" registry list
+      assert_file_contains /tmp/readd-list-disabled.out "disabled" \
+        "apm registry list reports disabled registry state"
+      if $APM update --registry readd-reg > /tmp/readd-update-disabled.out 2>&1; then
+        cat /tmp/readd-update-disabled.out
+        fail "apm update should skip explicitly disabled registry"
+      else
+        cat /tmp/readd-update-disabled.out
+        pass "apm update rejects explicitly disabled registry"
+      fi
+      assert_file_contains /tmp/readd-update-disabled.out "not enabled" \
+        "disabled registry update failure explains disabled state"
+      run_ok orphans-disabled "$APM" orphans
+      assert_file_contains /tmp/readd-orphans-disabled.out "No orphaned packages" \
+        "disabled configured registry does not orphan installed packages"
+      if $APM verify readd-tool > /tmp/readd-verify-disabled.out 2>&1; then
+        cat /tmp/readd-verify-disabled.out
+        fail "apm verify should not resolve disabled registry"
+      else
+        cat /tmp/readd-verify-disabled.out
+        pass "apm verify skips disabled registry metadata"
+      fi
+      assert_file_contains /tmp/readd-verify-disabled.out "not present in registry 'readd-reg'" \
+        "verify failure identifies disabled source registry"
+      "$TOOL_BIN" > /tmp/readd-run-disabled.out
+      assert_file_contains /tmp/readd-run-disabled.out "^install-basic-tool 1.0.0$" \
+        "installed executable still runs while registry is disabled"
+
+      echo "==> Consumer: re-enable registry and verify installed package"
+      python3 -c 'from pathlib import Path; p = Path("/tmp/readd-consumer/.config/apm/registries.d/readd-reg.toml"); text = p.read_text(); assert "enabled = false" in text, "registry config was not disabled before re-enable"; p.write_text(text.replace("enabled = false", "enabled = true", 1))'
+      assert_file_contains "$REG_CONFIG" "enabled = true" \
+        "registry config can be re-enabled"
+      run_ok verify-before-remove "$APM" verify readd-tool
+      assert_file_contains /tmp/readd-verify-before-remove.out "integrity verified" \
+        "apm verify validates readd-tool after registry re-enable"
+
+      echo "==> Consumer: remove registry and observe orphaned package"
+      $APM registry remove readd-reg > /tmp/readd-remove-registry.out 2>&1 || {
+        cat /tmp/readd-remove-registry.out
+        fail "apm registry remove readd-reg succeeds"
+      }
+      cat /tmp/readd-remove-registry.out
+      assert_file_contains /tmp/readd-remove-registry.out "Registry 'readd-reg' removed" \
+        "registry remove reports removal"
+      assert_file_not_exists "$HOME/.config/apm/registries.d/readd-reg.toml" \
+        "registry remove deletes config"
+      assert_dir_not_exists "$HOME/.local/share/apm/registries/readd-reg" \
+        "registry remove deletes local clone"
+
+      run_ok orphans-after-remove "$APM" orphans
+      assert_file_contains /tmp/readd-orphans-after-remove.out "readd-tool" \
+        "apm orphans lists installed package after registry removal"
+      assert_file_contains /tmp/readd-orphans-after-remove.out "removed registry 'readd-reg'" \
+        "apm orphans names removed registry"
+      if $APM verify readd-tool > /tmp/readd-verify-orphan.out 2>&1; then
+        cat /tmp/readd-verify-orphan.out
+        fail "apm verify should fail while source registry is absent"
+      else
+        cat /tmp/readd-verify-orphan.out
+        pass "apm verify fails while source registry is absent"
+      fi
+      assert_file_contains /tmp/readd-verify-orphan.out "not present in registry 'readd-reg'" \
+        "orphaned verify error points at missing source registry"
+
+      echo "==> Consumer: re-add registry and verify package recovery"
+      $APM registry add file:///tmp/readd-origin.git \
+        --name readd-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/readd-registry-readd.out 2>&1 || {
+        cat /tmp/readd-registry-readd.out
+        fail "apm registry add re-adds removed registry"
+      }
+      cat /tmp/readd-registry-readd.out
+      assert_file_contains /tmp/readd-registry-readd.out "Registry 'readd-reg' added" \
+        "registry re-add reports success"
+      assert_dir_exists "$HOME/.local/share/apm/registries/readd-reg" \
+        "registry re-add reclones local registry"
+
+      run_ok orphans-after-readd "$APM" orphans
+      assert_file_contains /tmp/readd-orphans-after-readd.out "No orphaned packages" \
+        "apm orphans clears after registry re-add"
+      run_ok verify-after-readd "$APM" verify readd-tool
+      assert_file_contains /tmp/readd-verify-after-readd.out "integrity verified" \
+        "apm verify works again after registry re-add"
+      "$TOOL_BIN" > /tmp/readd-run-after-readd.out
+      assert_file_contains /tmp/readd-run-after-readd.out "^install-basic-tool 1.0.0$" \
+        "installed executable still runs after registry re-add"
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 9. remove-autoremove — Remove with configured autoremove/gc
   # -------------------------------------------------------------------------
   remove-autoremove = testing.mkVMTest {
     name = "apm-remove-autoremove";
@@ -1731,7 +2529,7 @@ in {
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
-      echo "==> Test: real apm remove --autoremove keeps shared deps"
+      echo "==> Test: real apm remove honors apm.conf autoremove settings"
 
       DEP_STORE="${idempotentTool}"
       LEFT_STORE="${removeLeftTool}"
@@ -1868,7 +2666,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18087 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18087 --bind 127.0.0.1 \
         --directory /tmp/remove-cache > /tmp/remove-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -1878,10 +2676,111 @@ in {
         fail "static cache HTTP server started"
       fi
 
+      echo "==> Consumer: remove two explicit packages and their shared auto dep in one transaction"
+      export HOME=/tmp/remove-multi-consumer
+      export USER=removemultiuser
+      PROFILE="/var/lib/profiles/per-user/removemultiuser"
+      mkdir -p "$HOME/.config/apm"
+      cat > "$HOME/.config/apm/apm.conf" << 'APMCONF'
+      [settings]
+      assume_yes = true
+      auto_autoremove = true
+      auto_gc = false
+      APMCONF
+      $APM registry add --no-verify file:///tmp/remove-origin.git \
+        --name remove-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/remove-multi-registry-add.out 2>&1 || {
+        cat /tmp/remove-multi-registry-add.out
+        fail "apm registry add syncs remove registry for multi-remove"
+      }
+      cat /tmp/remove-multi-registry-add.out
+
+      delete_store_path "$LEFT_STORE" "remove-left"
+      delete_store_path "$RIGHT_STORE" "remove-right"
+      delete_store_path "$DEP_STORE" "idempkg"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM install remove-left remove-right --registry remove-reg > /tmp/remove-multi-install.out 2>&1 || {
+        cat /tmp/remove-multi-install.out
+        fail "apm install shared remove workflow succeeds for multi-remove"
+      }
+      cat /tmp/remove-multi-install.out
+      assert_file_not_contains /tmp/remove-multi-install.out "Do you want to continue" \
+        "configured assume_yes suppresses multi-remove install prompt"
+      assert_file_contains /tmp/remove-multi-install.out "Downloading 3 NAR" \
+        "multi-remove install downloads both roots and shared dependency"
+      assert_file_contains /tmp/remove-multi-install.out "Installed 2 package" \
+        "multi-remove install creates profile generation for both roots"
+      "$PROFILE/current/bin/remove-left" > /tmp/remove-multi-left-run.out
+      "$PROFILE/current/bin/remove-right" > /tmp/remove-multi-right-run.out
+      "$PROFILE/current/bin/idempkg" > /tmp/remove-multi-dep-run.out
+      assert_file_contains /tmp/remove-multi-left-run.out "^idempkg 1.0.0$" \
+        "multi-remove left executable runs before removal"
+      assert_file_contains /tmp/remove-multi-right-run.out "^idempkg 1.0.0$" \
+        "multi-remove right executable runs before removal"
+      assert_file_contains /tmp/remove-multi-dep-run.out "^idempkg 1.0.0$" \
+        "multi-remove shared dependency executable is active"
+      assert_file_contains "$PROFILE/meta/$LEFT_HASH.json" '"explicit": true' \
+        "multi-remove left metadata is explicit"
+      assert_file_contains "$PROFILE/meta/$RIGHT_HASH.json" '"explicit": true' \
+        "multi-remove right metadata is explicit"
+      assert_file_contains "$PROFILE/meta/$DEP_HASH.json" '"explicit": false' \
+        "multi-remove shared dependency metadata is automatic"
+      if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
+        pass "multi-remove install creates exactly generation 1"
+      else
+        fail "multi-remove install should create only gen-1"
+      fi
+
+      $APM remove remove-left remove-right > /tmp/remove-multi.out 2>&1 || {
+        cat /tmp/remove-multi.out
+        fail "apm remove removes both explicit packages in one transaction"
+      }
+      cat /tmp/remove-multi.out
+      assert_file_not_contains /tmp/remove-multi.out "Do you want to continue" \
+        "configured assume_yes suppresses multi-remove prompt"
+      assert_file_contains /tmp/remove-multi.out "remove-left" \
+        "multi-remove plan lists first explicit package"
+      assert_file_contains /tmp/remove-multi.out "remove-right" \
+        "multi-remove plan lists second explicit package"
+      assert_file_contains /tmp/remove-multi.out "idempkg" \
+        "multi-remove plan lists shared dependency as orphan"
+      assert_file_contains /tmp/remove-multi.out "Removed 3 package" \
+        "multi-remove removes both roots and their shared dependency"
+      assert_file_not_contains /tmp/remove-multi.out "Running garbage collection" \
+        "multi-remove honors configured auto_gc false"
+      assert_file_not_exists "$PROFILE/meta/$LEFT_HASH.json" \
+        "multi-remove deletes first explicit package metadata"
+      assert_file_not_exists "$PROFILE/meta/$RIGHT_HASH.json" \
+        "multi-remove deletes second explicit package metadata"
+      assert_file_not_exists "$PROFILE/meta/$DEP_HASH.json" \
+        "multi-remove deletes shared dependency metadata"
+      if [ -e "$PROFILE/current/bin/remove-left" ] || [ -e "$PROFILE/current/bin/remove-right" ] || [ -e "$PROFILE/current/bin/idempkg" ]; then
+        fail "multi-remove should drop all removed executables from active profile"
+      else
+        pass "multi-remove drops all removed executables from active profile"
+      fi
+      if [ "$(readlink "$PROFILE/current")" = "gen-2" ] && [ "$(generation_count)" = "2" ]; then
+        pass "multi-remove creates generation 2"
+      else
+        fail "multi-remove should create gen-2"
+      fi
+      assert_store_valid "$DEP_STORE" "idempkg remains in store after multi-remove without GC"
+      assert_store_valid "$LEFT_STORE" "remove-left remains in store after multi-remove without GC"
+      assert_store_valid "$RIGHT_STORE" "remove-right remains in store after multi-remove without GC"
+      rm -rf "$PROFILE"
+
       echo "==> Consumer: install two explicit packages with one shared auto dep"
       export HOME=/tmp/remove-consumer
       export USER=removeuser
-      mkdir -p "$HOME"
+      PROFILE="/var/lib/profiles/per-user/removeuser"
+      mkdir -p "$HOME/.config/apm"
+      cat > "$HOME/.config/apm/apm.conf" << 'APMCONF'
+      [settings]
+      assume_yes = true
+      auto_autoremove = true
+      auto_gc = true
+      APMCONF
       $APM registry add --no-verify file:///tmp/remove-origin.git \
         --name remove-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/remove-registry-add.out 2>&1 || {
@@ -1895,11 +2794,13 @@ in {
       delete_store_path "$DEP_STORE" "idempkg"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM install remove-left remove-right --registry remove-reg --yes > /tmp/remove-install.out 2>&1 || {
+      $APM install remove-left remove-right --registry remove-reg > /tmp/remove-install.out 2>&1 || {
         cat /tmp/remove-install.out
-        fail "apm install shared remove workflow succeeds"
+        fail "apm install shared remove workflow succeeds with configured assume_yes"
       }
       cat /tmp/remove-install.out
+      assert_file_not_contains /tmp/remove-install.out "Do you want to continue" \
+        "configured assume_yes suppresses install prompt"
       assert_file_contains /tmp/remove-install.out "Downloading" \
         "install downloads shared remove workflow closure"
       assert_file_contains /tmp/remove-install.out "Installed 2 package" \
@@ -1929,16 +2830,20 @@ in {
         fail "initial install should create only gen-1"
       fi
 
-      echo "==> Consumer: remove one explicit package with autoremove"
-      $APM remove remove-left --autoremove --yes > /tmp/remove-left.out 2>&1 || {
+      echo "==> Consumer: remove one explicit package with configured autoremove"
+      $APM remove remove-left > /tmp/remove-left.out 2>&1 || {
         cat /tmp/remove-left.out
-        fail "apm remove --autoremove remove-left succeeds"
+        fail "apm remove remove-left succeeds with configured autoremove"
       }
       cat /tmp/remove-left.out
+      assert_file_not_contains /tmp/remove-left.out "Do you want to continue" \
+        "configured assume_yes suppresses remove prompt"
       assert_file_contains /tmp/remove-left.out "Removed 1 package" \
-        "remove-left autoremove removes only requested explicit package"
+        "configured autoremove removes only requested explicit package"
       assert_file_not_contains /tmp/remove-left.out "idempkg" \
         "shared dependency is not listed as orphan while remove-right remains"
+      assert_file_not_contains /tmp/remove-left.out "Running garbage collection" \
+        "configured auto_gc does not run when autoremove finds no orphan"
       assert_file_not_exists "$PROFILE/meta/$LEFT_HASH.json" \
         "remove-left metadata removed"
       assert_file_exists "$PROFILE/meta/$RIGHT_HASH.json" \
@@ -1963,29 +2868,82 @@ in {
         fail "remove-left should create gen-2"
       fi
 
-      echo "==> Consumer: remove final explicit package and standalone autoremove"
-      $APM remove remove-right --yes > /tmp/remove-right.out 2>&1 || {
+      echo "==> Consumer: remove final explicit package without automatic autoremove"
+      export AOS_ROOT=/tmp/remove-auto-gc-root
+      export AOS_NIX_STORE_DIR=/tmp/remove-auto-gc-store
+      export AOS_NIX_STATE_DIR=/tmp/remove-auto-gc-root/var/nix
+      mkdir -p "$AOS_NIX_STORE_DIR" "$AOS_NIX_STATE_DIR/db" "$AOS_NIX_STATE_DIR/gcroots"
+      NIX_STORE_DIR="$AOS_NIX_STORE_DIR" NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
+        nix-store --init || true
+      cat > "$HOME/.config/apm/apm.conf" << 'APMCONF'
+      [settings]
+      assume_yes = true
+      auto_autoremove = false
+      auto_gc = true
+      APMCONF
+      $APM remove remove-right > /tmp/remove-right.out 2>&1 || {
         cat /tmp/remove-right.out
-        fail "apm remove remove-right succeeds"
+        fail "apm remove remove-right succeeds without configured autoremove"
       }
       cat /tmp/remove-right.out
+      assert_file_not_contains /tmp/remove-right.out "Do you want to continue" \
+        "configured assume_yes suppresses final remove prompt"
       assert_file_contains /tmp/remove-right.out "Removed 1 package" \
-        "remove-right removal succeeds"
+        "plain remove deletes only requested explicit package"
+      assert_file_not_contains /tmp/remove-right.out "idempkg" \
+        "plain remove leaves orphaned shared dependency for standalone autoremove"
+      assert_file_not_contains /tmp/remove-right.out "Running garbage collection" \
+        "configured auto_gc does not run when autoremove is disabled"
       assert_file_not_exists "$PROFILE/meta/$RIGHT_HASH.json" \
         "remove-right metadata removed"
       assert_file_exists "$PROFILE/meta/$DEP_HASH.json" \
-        "shared dependency remains orphaned without --autoremove"
-      "$PROFILE/current/bin/idempkg" > /tmp/remove-dep-run-3.out
-      assert_file_contains /tmp/remove-dep-run-3.out "^idempkg 1.0.0$" \
-        "orphaned dependency executable remains before standalone autoremove"
+        "shared dependency metadata remains until standalone autoremove"
+      if [ -x "$PROFILE/current/bin/remove-right" ]; then
+        fail "remove-right executable should be absent after removal"
+      else
+        pass "remove-right executable absent after removal"
+      fi
+      "$PROFILE/current/bin/idempkg" > /tmp/remove-dep-run-orphan.out
+      assert_file_contains /tmp/remove-dep-run-orphan.out "^idempkg 1.0.0$" \
+        "orphaned shared dependency remains active before standalone autoremove"
 
-      $APM autoremove --yes > /tmp/remove-autoremove.out 2>&1 || {
+      if [ "$(readlink "$PROFILE/current")" = "gen-3" ] && [ "$(generation_count)" = "3" ]; then
+        pass "plain remove creates generation 3 with orphaned dependency"
+      else
+        fail "plain remove should end at gen-3"
+      fi
+
+      echo "==> Consumer: dry-run then execute standalone autoremove with configured GC"
+      $APM autoremove --dry-run > /tmp/remove-autoremove-dry-run.out 2>&1 || {
+        cat /tmp/remove-autoremove-dry-run.out
+        fail "apm autoremove --dry-run reports orphaned dependency"
+      }
+      cat /tmp/remove-autoremove-dry-run.out
+      assert_file_contains /tmp/remove-autoremove-dry-run.out "idempkg" \
+        "standalone autoremove dry-run lists orphaned dependency"
+      assert_file_contains /tmp/remove-autoremove-dry-run.out "Dry run -- no changes made" \
+        "standalone autoremove dry-run reports no mutation"
+      assert_file_exists "$PROFILE/meta/$DEP_HASH.json" \
+        "standalone autoremove dry-run preserves dependency metadata"
+      "$PROFILE/current/bin/idempkg" > /tmp/remove-dep-run-after-dry-run.out
+      assert_file_contains /tmp/remove-dep-run-after-dry-run.out "^idempkg 1.0.0$" \
+        "standalone autoremove dry-run preserves executable"
+
+      $APM autoremove > /tmp/remove-autoremove.out 2>&1 || {
         cat /tmp/remove-autoremove.out
-        fail "apm autoremove succeeds"
+        fail "apm autoremove removes orphaned dependency"
       }
       cat /tmp/remove-autoremove.out
+      assert_file_not_contains /tmp/remove-autoremove.out "Do you want to continue" \
+        "configured assume_yes suppresses standalone autoremove prompt"
       assert_file_contains /tmp/remove-autoremove.out "Removed 1 orphaned package" \
         "standalone autoremove removes orphaned shared dependency"
+      assert_file_contains /tmp/remove-autoremove.out "idempkg" \
+        "standalone autoremove lists orphaned shared dependency"
+      assert_file_contains /tmp/remove-autoremove.out "Running garbage collection" \
+        "configured auto_gc runs after standalone autoremove removes an orphan"
+      assert_file_contains /tmp/remove-autoremove.out "Garbage collection complete" \
+        "configured auto_gc completes after standalone autoremove"
       assert_file_not_exists "$PROFILE/meta/$DEP_HASH.json" \
         "shared dependency metadata removed by standalone autoremove"
       if [ -e "$PROFILE/current/bin/idempkg" ]; then
@@ -1995,9 +2953,9 @@ in {
       fi
 
       if [ "$(readlink "$PROFILE/current")" = "gen-4" ] && [ "$(generation_count)" = "4" ]; then
-        pass "remove and autoremove workflow creates four generations"
+        pass "standalone autoremove creates generation 4"
       else
-        fail "remove and autoremove workflow should end at gen-4"
+        fail "standalone autoremove should end at gen-4"
       fi
 
       if kill "$CACHE_PID" 2>/dev/null; then
@@ -2010,7 +2968,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 9. upgrade-package — Upgrade package to newer version
+  # 10. upgrade-package — Upgrade package to newer version
   # -------------------------------------------------------------------------
   upgrade-package = testing.mkVMTest {
     name = "apm-upgrade-package";
@@ -2092,7 +3050,15 @@ in {
       }
 
       generation_count() {
-        find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        if [ -d "$PROFILE" ]; then
+          find "$PROFILE" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+        else
+          printf '0'
+        fi
+      }
+
+      cache_nar_count() {
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' 2>/dev/null | wc -l | tr -d ' '
       }
 
       wait_for_cache_server() {
@@ -2167,7 +3133,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18092 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18092 --bind 127.0.0.1 \
         --directory /tmp/upgrade-cache > /tmp/upgrade-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -2186,6 +3152,52 @@ in {
         fail "apm registry add syncs upgrade registry"
       }
       cat /tmp/upgrade-registry-add.out
+
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM upgrade --dry-run > /tmp/upgrade-empty-dry-run.out 2>&1 || {
+        cat /tmp/upgrade-empty-dry-run.out
+        fail "apm upgrade --dry-run succeeds before any package is installed"
+      }
+      cat /tmp/upgrade-empty-dry-run.out
+      assert_file_contains /tmp/upgrade-empty-dry-run.out "All packages are up to date" \
+        "empty upgrade dry-run reports no candidates"
+      assert_file_not_contains /tmp/upgrade-empty-dry-run.out "Updating profile" \
+        "empty upgrade dry-run does not update profile"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty upgrade dry-run leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty upgrade dry-run should not initialize profile state"
+      fi
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "empty upgrade dry-run leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "empty upgrade dry-run should not download NAR bodies"
+      fi
+
+      $APM upgrade --yes > /tmp/upgrade-empty.out 2>&1 || {
+        cat /tmp/upgrade-empty.out
+        fail "apm upgrade succeeds before any package is installed"
+      }
+      cat /tmp/upgrade-empty.out
+      assert_file_contains /tmp/upgrade-empty.out "All packages are up to date" \
+        "empty upgrade reports no candidates"
+      assert_file_not_contains /tmp/upgrade-empty.out "Updating profile" \
+        "empty upgrade does not update profile"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty upgrade leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty upgrade should not initialize profile state"
+      fi
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "empty upgrade leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "empty upgrade should not download NAR bodies"
+      fi
 
       delete_store_path "$ALPHA_V1_STORE" "upgrade-alpha-v1"
       delete_store_path "$BETA_V1_STORE" "upgrade-beta-v1"
@@ -2239,6 +3251,48 @@ in {
         "upgradable list includes upgrade-alpha"
       assert_file_contains /tmp/upgrade-list.out "upgrade-beta" \
         "upgradable list includes upgrade-beta"
+
+      echo "==> Consumer: targeted upgrade dry-run leaves profile and store untouched"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM upgrade upgrade-alpha --dry-run > /tmp/upgrade-alpha-dry-run.out 2>&1 || {
+        cat /tmp/upgrade-alpha-dry-run.out
+        fail "targeted apm upgrade --dry-run upgrade-alpha succeeds"
+      }
+      cat /tmp/upgrade-alpha-dry-run.out
+      assert_file_contains /tmp/upgrade-alpha-dry-run.out "upgrade-alpha (1.0.0 -> 2.0.0)" \
+        "targeted upgrade dry-run plans upgrade-alpha"
+      assert_file_not_contains /tmp/upgrade-alpha-dry-run.out "upgrade-beta (1.0.0 -> 2.0.0)" \
+        "targeted upgrade dry-run does not plan upgrade-beta"
+      assert_file_contains /tmp/upgrade-alpha-dry-run.out "Dry run -- no changes made" \
+        "targeted upgrade dry-run reports no mutation"
+      assert_file_not_contains /tmp/upgrade-alpha-dry-run.out "Downloading" \
+        "targeted upgrade dry-run does not download package bodies"
+      assert_file_not_contains /tmp/upgrade-alpha-dry-run.out "Updating profile" \
+        "targeted upgrade dry-run does not update profile"
+      assert_store_missing "$ALPHA_V2_STORE" "upgrade-alpha-v2"
+      assert_store_missing "$BETA_V2_STORE" "upgrade-beta-v2"
+      if [ "$(cache_nar_count)" = "0" ]; then
+        pass "targeted upgrade dry-run leaves NAR cache empty"
+      else
+        find "$HOME/.cache/apm" -type f -name '*.nar.zst' -print
+        fail "targeted upgrade dry-run should not download NAR bodies"
+      fi
+      "$ALPHA_BIN" > /tmp/upgrade-alpha-v1-run-after-dry-run.out
+      assert_file_contains /tmp/upgrade-alpha-v1-run-after-dry-run.out "^upgrade-alpha 1.0.0$" \
+        "targeted upgrade dry-run leaves upgrade-alpha at v1"
+      "$BETA_BIN" > /tmp/upgrade-beta-v1-run-after-dry-run.out
+      assert_file_contains /tmp/upgrade-beta-v1-run-after-dry-run.out "^upgrade-beta 1.0.0$" \
+        "targeted upgrade dry-run leaves upgrade-beta at v1"
+      assert_file_contains "$PROFILE/meta/$ALPHA_V1_HASH.json" '"explicit": true' \
+        "targeted upgrade dry-run preserves alpha v1 metadata"
+      assert_file_not_exists "$PROFILE/meta/$ALPHA_V2_HASH.json" \
+        "targeted upgrade dry-run does not write alpha v2 metadata"
+      if [ "$(readlink "$PROFILE/current")" = "gen-1" ] && [ "$(generation_count)" = "1" ]; then
+        pass "targeted upgrade dry-run keeps generation 1 active"
+      else
+        fail "targeted upgrade dry-run should keep gen-1"
+      fi
 
       echo "==> Consumer: targeted upgrade changes only upgrade-alpha"
       rm -rf "$HOME/.cache/apm"
@@ -2337,7 +3391,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 10. rollback-package — Roll back to previous generation
+  # 11. rollback-package — Roll back to previous generation
   # -------------------------------------------------------------------------
   rollback-package = testing.mkVMTest {
     name = "apm-rollback-package";
@@ -2356,6 +3410,7 @@ in {
       ROLLBACK_V2_HASH=$(basename "$ROLLBACK_V2_STORE" | cut -d- -f1)
       ROLLBACK_V3_HASH=$(basename "$ROLLBACK_V3_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/rollbackuser"
+      JQ="${pkgs.jq}/bin/jq"
       PROFILE_BIN="$PROFILE/current/bin/rollback-tool"
 
       assert_file_not_contains() {
@@ -2410,6 +3465,26 @@ in {
           pass "$label"
         else
           fail "$label (current=$current)"
+        fi
+      }
+
+      assert_generation_exists() {
+        generation="$1"
+        label="$2"
+        if [ -d "$PROFILE/gen-$generation" ]; then
+          pass "$label"
+        else
+          fail "$label (missing $PROFILE/gen-$generation)"
+        fi
+      }
+
+      assert_generation_missing() {
+        generation="$1"
+        label="$2"
+        if [ ! -e "$PROFILE/gen-$generation" ]; then
+          pass "$label"
+        else
+          fail "$label ($PROFILE/gen-$generation should be pruned)"
         fi
       }
 
@@ -2494,7 +3569,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18104 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18104 --bind 127.0.0.1 \
         --directory /tmp/rollback-cache > /tmp/rollback-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -2515,6 +3590,52 @@ in {
         fail "apm registry add syncs rollback registry"
       }
       cat /tmp/rollback-registry-add.out
+
+      $APM clean --generations --keep 1 > /tmp/rollback-empty-clean-generations.out 2>&1 || {
+        cat /tmp/rollback-empty-clean-generations.out
+        fail "clean generations succeeds before any package is installed"
+      }
+      cat /tmp/rollback-empty-clean-generations.out
+      assert_file_contains /tmp/rollback-empty-clean-generations.out "No old generations to remove" \
+        "empty clean generations reports no stale generations"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty clean generations leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty clean generations should not initialize profile state"
+      fi
+
+      if $APM rollback > /tmp/rollback-empty.out 2>&1; then
+        cat /tmp/rollback-empty.out
+        fail "rollback should fail when no profile generation is active"
+      else
+        cat /tmp/rollback-empty.out
+        pass "rollback fails before any package is installed"
+      fi
+      assert_file_contains /tmp/rollback-empty.out "no active generation" \
+        "empty rollback reports missing active generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty rollback leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty rollback should not initialize profile state"
+      fi
+
+      if $APM rollback --dry-run > /tmp/rollback-empty-dry-run.out 2>&1; then
+        cat /tmp/rollback-empty-dry-run.out
+        fail "rollback dry-run should fail when no profile generation is active"
+      else
+        cat /tmp/rollback-empty-dry-run.out
+        pass "rollback dry-run fails before any package is installed"
+      fi
+      assert_file_contains /tmp/rollback-empty-dry-run.out "no active generation" \
+        "empty rollback dry-run reports missing active generation"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty rollback dry-run leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty rollback dry-run should not initialize profile state"
+      fi
 
       delete_store_path "$ROLLBACK_V1_STORE" "rollback-tool-v1"
       rm -rf "$HOME/.cache/apm"
@@ -2626,16 +3747,40 @@ in {
       assert_list_marks_current 3 /tmp/rollback-list-v3.out
 
       echo "==> Consumer: rollback explicitly to generation 1"
-      $APM rollback --generation 1 > /tmp/rollback-to-gen1.out 2>&1 || {
-        cat /tmp/rollback-to-gen1.out
+      $APM --json rollback --generation 1 > /tmp/rollback-to-gen1.json 2>&1 || {
+        cat /tmp/rollback-to-gen1.json
         fail "apm rollback --generation 1 succeeds"
       }
-      cat /tmp/rollback-to-gen1.out
-      assert_file_contains /tmp/rollback-to-gen1.out \
-        "Rolling back from generation 3 to generation 1" \
-        "rollback reports explicit generation target"
-      assert_file_contains /tmp/rollback-to-gen1.out "Rolled back to generation 1" \
-        "rollback switches to generation 1"
+      "$JQ" -e \
+        --arg restored "$ROLLBACK_V1_STORE" \
+        --arg removed "$ROLLBACK_V3_STORE" \
+        '.action == "rollback"
+          and .status == "rolled_back"
+          and .requested_generation == 1
+          and .from_generation == 3
+          and .to_generation == 1
+          and .dry_run == false
+          and .generation == 1
+          and (.restored | length == 1)
+          and .restored[0].store_path == $restored
+          and .restored[0].registry == "rollback-reg"
+          and .restored[0].package.name == "rollback-tool"
+          and .restored[0].package.version == "1.0.0"
+          and (.removed | length == 1)
+          and .removed[0].store_path == $removed
+          and .removed[0].registry == "rollback-reg"
+          and .removed[0].package.name == "rollback-tool"
+          and .removed[0].package.version == "3.0.0"
+          and (.current_roots | any(.store_path == $removed
+            and .package.name == "rollback-tool"
+            and .package.version == "3.0.0"))
+          and (.target_roots | any(.store_path == $restored
+            and .package.name == "rollback-tool"
+            and .package.version == "1.0.0"))' \
+        /tmp/rollback-to-gen1.json >/dev/null || {
+        cat /tmp/rollback-to-gen1.json
+        fail "apm --json rollback reports explicit generation transition"
+      }
       assert_current_generation 1 "rollback profile current is generation 1 after explicit rollback"
       assert_current_tool_version 1.0.0
       $APM list --installed > /tmp/rollback-installed-gen1.out 2>&1 || {
@@ -2665,29 +3810,125 @@ in {
       assert_current_tool_version 3.0.0
 
       echo "==> Consumer: dry-run rollback does not switch generation"
-      $APM rollback --dry-run > /tmp/rollback-dry-run.out 2>&1 || {
-        cat /tmp/rollback-dry-run.out
+      $APM --json rollback --dry-run > /tmp/rollback-dry-run.json 2>&1 || {
+        cat /tmp/rollback-dry-run.json
         fail "apm rollback --dry-run succeeds"
       }
-      cat /tmp/rollback-dry-run.out
-      assert_file_contains /tmp/rollback-dry-run.out "Dry run" \
-        "rollback dry-run reports no changes"
+      "$JQ" -e \
+        --arg restored "$ROLLBACK_V2_STORE" \
+        --arg removed "$ROLLBACK_V3_STORE" \
+        '.action == "rollback"
+          and .status == "planned"
+          and .requested_generation == null
+          and .from_generation == 3
+          and .to_generation == 2
+          and .dry_run == true
+          and .generation == null
+          and (.restored | length == 1)
+          and .restored[0].store_path == $restored
+          and .restored[0].registry == "rollback-reg"
+          and .restored[0].package.name == "rollback-tool"
+          and .restored[0].package.version == "2.0.0"
+          and (.removed | length == 1)
+          and .removed[0].store_path == $removed
+          and .removed[0].registry == "rollback-reg"
+          and .removed[0].package.name == "rollback-tool"
+          and .removed[0].package.version == "3.0.0"
+          and (.current_roots | any(.store_path == $removed
+            and .package.name == "rollback-tool"
+            and .package.version == "3.0.0"))
+          and (.target_roots | any(.store_path == $restored
+            and .package.name == "rollback-tool"
+            and .package.version == "2.0.0"))' \
+        /tmp/rollback-dry-run.json >/dev/null || {
+        cat /tmp/rollback-dry-run.json
+        fail "apm --json rollback --dry-run reports planned previous-generation transition"
+      }
       assert_current_generation 3 "rollback dry-run keeps generation 3 active"
       assert_current_tool_version 3.0.0
 
       echo "==> Consumer: plain rollback selects previous generation"
-      $APM rollback > /tmp/rollback-plain.out 2>&1 || {
-        cat /tmp/rollback-plain.out
+      $APM --json rollback > /tmp/rollback-plain.json 2>&1 || {
+        cat /tmp/rollback-plain.json
         fail "plain apm rollback succeeds"
       }
-      cat /tmp/rollback-plain.out
-      assert_file_contains /tmp/rollback-plain.out \
-        "Rolling back from generation 3 to generation 2" \
-        "plain rollback targets previous generation"
-      assert_file_contains /tmp/rollback-plain.out "Rolled back to generation 2" \
-        "plain rollback switches to generation 2"
+      "$JQ" -e \
+        --arg restored "$ROLLBACK_V2_STORE" \
+        --arg removed "$ROLLBACK_V3_STORE" \
+        '.action == "rollback"
+          and .status == "rolled_back"
+          and .requested_generation == null
+          and .from_generation == 3
+          and .to_generation == 2
+          and .dry_run == false
+          and .generation == 2
+          and (.restored | length == 1)
+          and .restored[0].store_path == $restored
+          and .restored[0].registry == "rollback-reg"
+          and .restored[0].package.name == "rollback-tool"
+          and .restored[0].package.version == "2.0.0"
+          and (.removed | length == 1)
+          and .removed[0].store_path == $removed
+          and .removed[0].registry == "rollback-reg"
+          and .removed[0].package.name == "rollback-tool"
+          and .removed[0].package.version == "3.0.0"
+          and (.current_roots | any(.store_path == $removed
+            and .package.name == "rollback-tool"
+            and .package.version == "3.0.0"))
+          and (.target_roots | any(.store_path == $restored
+            and .package.name == "rollback-tool"
+            and .package.version == "2.0.0"))' \
+        /tmp/rollback-plain.json >/dev/null || {
+        cat /tmp/rollback-plain.json
+        fail "apm --json rollback reports previous-generation transition"
+      }
       assert_current_generation 2 "rollback profile current is generation 2 after plain rollback"
       assert_current_tool_version 2.0.0
+
+      echo "==> Consumer: clean generations keeps rolled-back current generation"
+      $APM --json clean --generations --keep 1 > /tmp/rollback-clean-generations.json 2>&1 || {
+        cat /tmp/rollback-clean-generations.json
+        fail "apm clean --generations succeeds after rollback"
+      }
+      "$JQ" -e \
+        '.action == "clean"
+          and .mode == "generations"
+          and .status == "cleaned"
+          and .keep == 1
+          and .current_generation == 2
+          and .generations_before == [1, 2, 3]
+          and .generations_after == [2, 3]
+          and .removed_generations == [1]
+          and .removed == 1' \
+        /tmp/rollback-clean-generations.json >/dev/null || {
+        cat /tmp/rollback-clean-generations.json
+        fail "apm --json clean --generations reports pruned rollback generation"
+      }
+      assert_generation_missing 1 "clean generations prunes generation 1"
+      assert_generation_exists 2 "clean generations keeps rolled-back current generation"
+      assert_generation_exists 3 "clean generations keeps latest generation"
+      assert_current_generation 2 "clean generations leaves generation 2 current"
+      assert_current_tool_version 2.0.0
+      $APM rollback --list > /tmp/rollback-list-after-clean.out 2>&1 || {
+        cat /tmp/rollback-list-after-clean.out
+        fail "apm rollback --list works after generation cleanup"
+      }
+      cat /tmp/rollback-list-after-clean.out
+      assert_file_not_contains /tmp/rollback-list-after-clean.out "gen-1:" \
+        "rollback list no longer shows pruned generation"
+      assert_file_contains /tmp/rollback-list-after-clean.out "gen-2: rollback-tool 2.0.0" \
+        "rollback list keeps current generation after cleanup"
+      assert_file_contains /tmp/rollback-list-after-clean.out "gen-3: rollback-tool 3.0.0" \
+        "rollback list keeps latest generation after cleanup"
+      assert_list_marks_current 2 /tmp/rollback-list-after-clean.out
+      $APM list --installed > /tmp/rollback-installed-after-clean.out 2>&1 || {
+        cat /tmp/rollback-installed-after-clean.out
+        fail "apm list --installed works after generation cleanup"
+      }
+      assert_file_contains /tmp/rollback-installed-after-clean.out "rollback-tool" \
+        "installed list names rollback-tool after generation cleanup"
+      assert_file_contains /tmp/rollback-installed-after-clean.out "2.0.0" \
+        "installed metadata follows rolled-back current generation after cleanup"
 
       if $APM rollback --generation 99 > /tmp/rollback-missing.out 2>&1; then
         cat /tmp/rollback-missing.out
@@ -2707,7 +3948,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 11. package-real-closure-lifecycle — Install/upgrade/rollback real closure
+  # 12. package-real-closure-lifecycle — Install/upgrade/rollback real closure
   # -------------------------------------------------------------------------
   package-real-closure-lifecycle = testing.mkVMTest {
     name = "apm-package-real-closure-lifecycle";
@@ -2837,7 +4078,7 @@ in {
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
 
-      python3 -m http.server 18083 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18083 --bind 127.0.0.1 \
         --directory /tmp/lifecycle-cache > /tmp/lifecycle-cache-http.log 2>&1 &
       CACHE_PID=$!
       for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -2981,7 +4222,10 @@ in {
       else
         pass "upgraded profile removes v1 jq executable"
       fi
-      $APM list --installed > /tmp/lifecycle-installed-v2.out 2>&1
+      $APM list --installed > /tmp/lifecycle-installed-v2.out 2>&1 || {
+        cat /tmp/lifecycle-installed-v2.out
+        fail "apm list --installed succeeds after upgrading lifecycle tool"
+      }
       assert_file_contains /tmp/lifecycle-installed-v2.out "lifecycle-tool" \
         "apm list --installed reports lifecycle tool after upgrade"
       assert_file_contains "$PROFILE/meta/$TOOL_V2_HASH.json" '"explicit": true' \
@@ -3026,7 +4270,10 @@ in {
       else
         pass "rolled-back profile removes v2 git executable"
       fi
-      $APM list --installed > /tmp/lifecycle-installed-rollback.out 2>&1
+      $APM list --installed > /tmp/lifecycle-installed-rollback.out 2>&1 || {
+        cat /tmp/lifecycle-installed-rollback.out
+        fail "apm list --installed succeeds after rolling back lifecycle tool"
+      }
       assert_file_contains /tmp/lifecycle-installed-rollback.out "lifecycle-tool" \
         "apm list --installed reports lifecycle tool after rollback"
       assert_file_contains /tmp/lifecycle-installed-rollback.out "1.0.0" \
@@ -3057,7 +4304,10 @@ in {
       else
         pass "removed lifecycle executable is absent from current profile"
       fi
-      $APM list --installed > /tmp/lifecycle-installed-removed.out 2>&1 || true
+      $APM list --installed > /tmp/lifecycle-installed-removed.out 2>&1 || {
+        cat /tmp/lifecycle-installed-removed.out
+        fail "apm list --installed succeeds after removing lifecycle tool"
+      }
       if grep -q "lifecycle-tool" /tmp/lifecycle-installed-removed.out; then
         cat /tmp/lifecycle-installed-removed.out
         fail "apm list --installed should not show removed lifecycle tool"
@@ -3072,7 +4322,236 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 12. command-surface — Real APM command surface workflow
+  # 13. source-verify-alt-nix-state — Source and verify with re-rooted Nix state
+  # -------------------------------------------------------------------------
+  source-verify-alt-nix-state = testing.mkVMTest {
+    name = "apm-source-verify-alt-nix-state";
+    rootfsDeps = sourceVerifyAltDeps;
+    memory = 1024;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupAltNixEnv}
+
+      echo "==> Test: apm source and verify honor alternate Nix state DB"
+
+      SOURCE_STORE="${sourcefulV1}"
+      SOURCE_HASH=$(basename "$SOURCE_STORE" | cut -d- -f1)
+      PROFILE="/var/lib/profiles/per-user/sourcealt"
+      SOURCE_BIN="$PROFILE/current/bin/sourceful"
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if alt_nix_store --check-validity "$path" > "/tmp/source-alt-valid-$label.out" 2>&1; then
+          pass "$label valid in alternate Nix state"
+        else
+          cat "/tmp/source-alt-valid-$label.out"
+          fail "$label should be valid in alternate Nix state"
+        fi
+      }
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if alt_nix_store --check-validity "$path" > "/tmp/source-alt-missing-$label.out" 2>&1; then
+          cat "/tmp/source-alt-missing-$label.out"
+          fail "$label should be missing from alternate Nix state"
+        else
+          pass "$label missing from alternate Nix state"
+        fi
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if alt_nix_store --delete --ignore-liveness "$path" > "/tmp/source-alt-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/source-alt-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
+
+      wait_for_cache_server() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18123/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
+
+      record_source_metadata() {
+        toml="$REG_DIR/packages/s/source-alt.toml"
+        python3 -c 'from pathlib import Path; import sys; p = Path(sys.argv[1]); store = sys.argv[2]; text = p.read_text(); marker = "nar_hash = \""; pos = text.rfind(marker); assert pos >= 0, "nar_hash not found"; start = pos + len(marker); end = text.find("\"", start); nar_hash = text[start:end]; text = text.replace("source_drv = \"\"", f"source_drv = \"{store}\"", 1); text = text.replace("source_nar_hash = \"\"", f"source_nar_hash = \"{nar_hash}\"", 1); p.write_text(text)' "$toml" "$SOURCE_STORE" > /tmp/source-alt-record-source.out 2>&1 || {
+          cat /tmp/source-alt-record-source.out
+          fail "record source metadata for alternate-state source package"
+          return 1
+        }
+      }
+
+      run_ok() {
+        label="$1"
+        shift
+        if "$@" > "/tmp/source-alt-$label.out" 2>&1; then
+          pass "$label exits 0"
+        else
+          cat "/tmp/source-alt-$label.out"
+          fail "$label should exit 0"
+        fi
+      }
+
+      mount -o remount,rw / || true
+      assert_store_valid "$SOURCE_STORE" "sourceful"
+
+      $APR create source-alt-reg
+      REG_DIR="$REG_STORAGE/source-alt-reg"
+      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
+
+      $APR publish "$SOURCE_STORE" \
+        --name source-alt \
+        --version 1.0.0 \
+        --description "Alternate-state source verification fixture" \
+        --license MIT \
+        --maintainer source-alt@example.invalid \
+        --registry source-alt-reg \
+        --no-commit > /tmp/source-alt-publish.out 2>&1 || {
+        cat /tmp/source-alt-publish.out
+        fail "apr publish source-alt succeeds"
+      }
+      cat /tmp/source-alt-publish.out
+      record_source_metadata
+      assert_file_contains "$REG_DIR/packages/s/source-alt.toml" \
+        "$SOURCE_HASH" "published metadata records source-alt store hash"
+      assert_file_contains "$REG_DIR/packages/s/source-alt.toml" \
+        "$SOURCE_STORE" "published metadata records source drv path"
+
+      $APR cache generate \
+        --registry source-alt-reg \
+        --output /tmp/source-alt-cache \
+        --cache-url http://127.0.0.1:18123 \
+        --priority 25 \
+        --no-commit > /tmp/source-alt-cache-generate.out 2>&1 || {
+        cat /tmp/source-alt-cache-generate.out
+        fail "apr cache generate source-alt succeeds"
+      }
+      cat /tmp/source-alt-cache-generate.out
+      assert_file_exists "/tmp/source-alt-cache/$SOURCE_HASH.narinfo" \
+        "static cache has source-alt narinfo"
+
+      git -C "$REG_DIR" add -A
+      git -C "$REG_DIR" commit -m "release: source-alt 1.0.0"
+      git init --bare --object-format=sha256 /tmp/source-alt-origin.git
+      git -C "$REG_DIR" remote add origin /tmp/source-alt-origin.git
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      PYTHONUNBUFFERED=1 python3 -m http.server 18123 --bind 127.0.0.1 \
+        --directory /tmp/source-alt-cache > /tmp/source-alt-cache-http.log 2>&1 &
+      CACHE_PID=$!
+      if wait_for_cache_server; then
+        pass "static cache HTTP server started"
+      else
+        cat /tmp/source-alt-cache-http.log || true
+        fail "static cache HTTP server started"
+      fi
+
+      export HOME=/tmp/source-alt-consumer
+      export USER=sourcealt
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
+
+      $APM registry add file:///tmp/source-alt-origin.git \
+        --name source-alt-reg \
+        --branch "$DEFAULT_BRANCH" > /tmp/source-alt-registry-add.out 2>&1 || {
+        cat /tmp/source-alt-registry-add.out
+        fail "apm registry add syncs source-alt registry"
+      }
+      cat /tmp/source-alt-registry-add.out
+
+      delete_store_path "$SOURCE_STORE" "sourceful"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install source-alt --registry source-alt-reg --yes > /tmp/source-alt-install.out 2>&1 || {
+        cat /tmp/source-alt-install.out
+        fail "apm install downloads source-alt"
+      }
+      cat /tmp/source-alt-install.out
+      assert_file_contains /tmp/source-alt-install.out "Downloading 1 NAR" \
+        "source-alt install downloads the package NAR"
+      assert_file_contains /tmp/source-alt-install.out "Installed 1 package" \
+        "source-alt install creates profile generation"
+      assert_store_valid "$SOURCE_STORE" "sourceful"
+      "$SOURCE_BIN" > /tmp/source-alt-run.out
+      assert_file_contains /tmp/source-alt-run.out "^sourceful 1.0.0$" \
+        "installed source-alt executable runs from profile"
+
+      run_ok source-fetch "$APM" source source-alt --fetch
+      assert_file_contains /tmp/source-alt-source-fetch.out "Source realised: $SOURCE_STORE" \
+        "apm source --fetch realises source path through alternate Nix state"
+
+      run_ok source-verify "$APM" source source-alt --verify
+      assert_file_contains /tmp/source-alt-source-verify.out "$SOURCE_STORE" \
+        "apm source --verify uses installed source path"
+      assert_file_contains /tmp/source-alt-source-verify.out "matches installed binary" \
+        "apm source --verify compares rebuilt source with installed package"
+
+      run_ok verify "$APM" verify source-alt
+      assert_file_contains /tmp/source-alt-verify.out "integrity verified" \
+        "apm verify validates installed NAR hash through alternate Nix state"
+
+      if kill "$CACHE_PID" 2>/dev/null; then
+        pass "static cache HTTP server stopped"
+      fi
+      wait "$CACHE_PID" 2>/dev/null || true
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 14. gc-alt-nix-state — GC with re-rooted Nix state
+  # -------------------------------------------------------------------------
+  gc-alt-nix-state = testing.mkVMTest {
+    name = "apm-gc-alt-nix-state";
+    rootfsDeps = gcAltDeps;
+    memory = 512;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupEmptyAltNixGcEnv}
+
+      echo "==> Test: apm gc honors alternate Nix state DB"
+
+      $APM --json gc > /tmp/gc-alt.json 2>&1 || {
+        cat /tmp/gc-alt.json
+        fail "apm gc succeeds using AOS_NIX_STATE_DIR"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        --arg store "$AOS_NIX_STORE_DIR" \
+        --arg state "$AOS_NIX_STATE_DIR" \
+        '.action == "gc"
+          and .status == "completed"
+          and .success == true
+          and .nix_store_dir == $store
+          and .nix_state_dir == $state
+          and (.stdout | type == "string")
+          and (.stderr | type == "string")' \
+        /tmp/gc-alt.json >/dev/null || {
+        cat /tmp/gc-alt.json
+        fail "apm --json gc reports alternate Nix state"
+      }
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # 15. command-surface — Real APM command surface workflow
   # -------------------------------------------------------------------------
   command-surface = testing.mkVMTest {
     name = "apm-command-surface";
@@ -3090,17 +4569,22 @@ in {
       UPGRADE_V2_STORE="${surfaceUpgradeV2}"
       SOURCE_V1_STORE="${sourcefulV1}"
       SOURCE_V2_STORE="${sourcefulV2}"
+      SOURCE_V1_SRC_STORE="${sourcefulSourceV1}"
+      SOURCE_V2_SRC_STORE="${sourcefulSourceV2}"
       SURFACE_HASH=$(basename "$SURFACE_STORE" | cut -d- -f1)
       LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
       UPGRADE_V1_HASH=$(basename "$UPGRADE_V1_STORE" | cut -d- -f1)
       UPGRADE_V2_HASH=$(basename "$UPGRADE_V2_STORE" | cut -d- -f1)
       SOURCE_V1_HASH=$(basename "$SOURCE_V1_STORE" | cut -d- -f1)
       SOURCE_V2_HASH=$(basename "$SOURCE_V2_STORE" | cut -d- -f1)
+      SOURCE_V1_SRC_HASH=$(basename "$SOURCE_V1_SRC_STORE" | cut -d- -f1)
+      SOURCE_V2_SRC_HASH=$(basename "$SOURCE_V2_SRC_STORE" | cut -d- -f1)
       PROFILE="/var/lib/profiles/per-user/surfaceuser"
       SURFACE_BIN="$PROFILE/current/bin/surfacepkg"
       LEAF_BIN="$PROFILE/current/bin/surface-leaf"
       UPGRADE_BIN="$PROFILE/current/bin/upgradeface"
       SOURCE_BIN="$PROFILE/current/bin/sourceful"
+      JQ="${pkgs.jq}/bin/jq"
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -3108,6 +4592,22 @@ in {
           cat "$1" 2>/dev/null || true
         else
           pass "$3"
+        fi
+      }
+
+      assert_symlink_exists() {
+        if [ -L "$1" ]; then
+          pass "$2"
+        else
+          fail "$2 (symlink not found: $1)"
+        fi
+      }
+
+      assert_symlink_not_exists() {
+        if [ -L "$1" ]; then
+          fail "$2 (symlink should not exist: $1)"
+        else
+          pass "$2"
         fi
       }
 
@@ -3226,7 +4726,8 @@ in {
       publish_sourceful() {
         version="$1"
         store="$2"
-        label="$3"
+        source_store="$3"
+        label="$4"
         $APR publish "$store" \
           --name sourceful \
           --version "$version" \
@@ -3240,7 +4741,7 @@ in {
           return 1
         }
         cat "/tmp/surface-publish-sourceful-$label.out"
-        record_source_metadata "$store" "$label"
+        record_source_metadata "$source_store" "$label"
       }
 
       generate_surface_cache() {
@@ -3298,6 +4799,8 @@ in {
       assert_store_valid "$UPGRADE_V2_STORE" "upgradeface-v2"
       assert_store_valid "$SOURCE_V1_STORE" "sourceful-v1"
       assert_store_valid "$SOURCE_V2_STORE" "sourceful-v2"
+      assert_store_valid "$SOURCE_V1_SRC_STORE" "sourceful-source-v1"
+      assert_store_valid "$SOURCE_V2_SRC_STORE" "sourceful-source-v2"
       nix-store -q --references "$SURFACE_STORE" > /tmp/surface-refs.out
       assert_file_contains /tmp/surface-refs.out "$LEAF_STORE" \
         "surfacepkg has a real Nix reference to surface-leaf"
@@ -3309,7 +4812,7 @@ in {
       publish_leaf_package
       publish_surface_package
       publish_upgradeface 1.0.0 "$UPGRADE_V1_STORE" v1
-      publish_sourceful 1.0.0 "$SOURCE_V1_STORE" v1
+      publish_sourceful 1.0.0 "$SOURCE_V1_STORE" "$SOURCE_V1_SRC_STORE" v1
       assert_file_contains "$REG_DIR/packages/s/surfacepkg.toml" \
         "$SURFACE_HASH" "published surfacepkg metadata records store hash"
       assert_file_contains "$REG_DIR/packages/s/surface-leaf.toml" \
@@ -3317,7 +4820,7 @@ in {
       assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
         "$SOURCE_V1_HASH" "published sourceful metadata records store hash"
       assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
-        "$SOURCE_V1_STORE" "published sourceful metadata records source path"
+        "$SOURCE_V1_SRC_STORE" "published sourceful metadata records distinct source path"
       assert_file_contains "$REG_DIR/closures/$SURFACE_HASH" \
         "$LEAF_HASH" "published surfacepkg closure records dependency"
 
@@ -3340,7 +4843,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18105 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18105 --bind 127.0.0.1 \
         --directory /tmp/surface-cache > /tmp/surface-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -3370,15 +4873,36 @@ in {
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
-      $APM install surfacepkg --registry surface-reg --yes > /tmp/surface-install.out 2>&1 || {
-        cat /tmp/surface-install.out
+      $APM --json install surfacepkg --registry surface-reg --yes > /tmp/surface-install.json 2>&1 || {
+        cat /tmp/surface-install.json
         fail "apm install downloads surfacepkg closure"
       }
-      cat /tmp/surface-install.out
-      assert_file_contains /tmp/surface-install.out "Downloading" \
-        "surfacepkg install downloads closure NARs"
-      assert_file_contains /tmp/surface-install.out "Installed 1 package" \
-        "surfacepkg install creates profile generation"
+      "$JQ" -e \
+        --arg surface "$SURFACE_STORE" \
+        --arg leaf "$LEAF_STORE" \
+        '.action == "install"
+          and .status == "installed"
+          and .requested == ["surfacepkg"]
+          and .reinstall == false
+          and .download_only == false
+          and .no_deps == false
+          and .dry_run == false
+          and .generation == 1
+          and (.roots | length == 1)
+          and .roots[0].name == "surfacepkg"
+          and .roots[0].registry == "surface-reg"
+          and .roots[0].store_path == $surface
+          and .roots[0].explicit == true
+          and (.closure | any(.name == "surfacepkg" and .store_path == $surface and .explicit == true))
+          and (.closure | any(.name == "surface-leaf" and .store_path == $leaf and .explicit == false))
+          and (.downloads.planned >= 2)
+          and (.downloads.downloaded >= 2)
+          and (.downloads.imported >= 2)' \
+        /tmp/surface-install.json >/dev/null || {
+        cat /tmp/surface-install.json
+        fail "apm --json install reports real dependency install"
+      }
+      pass "apm --json install reports real dependency install"
       assert_store_valid "$SURFACE_STORE" "surfacepkg"
       assert_store_valid "$LEAF_STORE" "surface-leaf"
       "$SURFACE_BIN" > /tmp/surface-run.out
@@ -3415,6 +4939,10 @@ in {
       "$SOURCE_BIN" > /tmp/surface-sourceful-v1-run.out
       assert_file_contains /tmp/surface-sourceful-v1-run.out "^sourceful 1.0.0$" \
         "installed sourceful v1 executable runs from profile"
+      assert_file_contains "$PROFILE/meta/$SOURCE_V1_HASH.json" \
+        "$SOURCE_V1_SRC_STORE" "sourceful metadata records v1 source root"
+      assert_symlink_exists "$PROFILE/current/src/$SOURCE_V1_SRC_HASH" \
+        "sourceful v1 source root is active after install"
       assert_file_contains "$PROFILE/meta/$SOURCE_V1_HASH.json" '"explicit": true' \
         "sourceful metadata is explicit"
 
@@ -3424,11 +4952,24 @@ in {
       assert_file_contains /tmp/surface-search-names.out "surfacepkg" "apm search --names-only finds package names"
       run_ok search-installed "$APM" search surface --installed
       assert_file_contains /tmp/surface-search-installed.out "surfacepkg" "apm search --installed filters through profile metadata"
+      run_ok search-installed-json "$APM" --json search surface --installed
+      "$JQ" -e \
+        'map(select(.name == "surfacepkg" and .registry == "surface-reg" and .version == "1.0.0")) | length == 1' \
+        /tmp/surface-search-installed-json.out >/dev/null
 
       run_ok show "$APM" show surfacepkg
       assert_file_contains /tmp/surface-show.out "Surface command fixture" "apm show prints package details"
       assert_file_contains /tmp/surface-show.out "Installed.*yes" "apm show sees installed profile metadata"
       assert_file_contains /tmp/surface-show.out "surface-leaf" "apm show resolves real dependency names"
+      run_ok show-json "$APM" --json show surfacepkg
+      "$JQ" -e --arg store "$SURFACE_STORE" \
+        '.name == "surfacepkg"
+          and .registry == "surface-reg"
+          and .version == "1.0.0"
+          and .installed == true
+          and .store_path == $store
+          and (.dependencies | index("surface-leaf"))' \
+        /tmp/surface-show-json.out >/dev/null
       run_ok list "$APM" list
       assert_file_contains /tmp/surface-list.out "surfacepkg/surface-reg" "apm list includes registry package"
       run_ok list-installed "$APM" list --installed
@@ -3438,33 +4979,92 @@ in {
         "apm list --installed reports upgradeface"
       assert_file_contains /tmp/surface-list-installed.out "sourceful/surface-reg" \
         "apm list --installed reports sourceful"
+      run_ok list-installed-json "$APM" --json list --installed
+      "$JQ" -e \
+        'map(.name) as $names
+          | ($names | index("surfacepkg"))
+          and ($names | index("surface-leaf"))
+          and ($names | index("upgradeface"))
+          and ($names | index("sourceful"))
+          and (map(select(.name == "surfacepkg" and .status == "installed")) | length == 1)' \
+        /tmp/surface-list-installed-json.out >/dev/null
 
-      $APM hold surfacepkg > /tmp/surface-hold.out 2>&1 || {
-        cat /tmp/surface-hold.out
+      $APM --json hold surfacepkg > /tmp/surface-hold.json 2>&1 || {
+        cat /tmp/surface-hold.json
         fail "apm hold succeeds for real installed package"
       }
-      cat /tmp/surface-hold.out
-      assert_file_contains /tmp/surface-hold.out "set on hold" \
-        "apm hold marks real installed package held"
+      "$JQ" -e --arg store "$SURFACE_STORE" \
+        '.action == "hold"
+          and .status == "held"
+          and .package == "surfacepkg"
+          and .name == "surfacepkg"
+          and .version == "1.0.0"
+          and .registry == "surface-reg"
+          and .store_path == $store
+          and .held == true' \
+        /tmp/surface-hold.json >/dev/null || {
+        cat /tmp/surface-hold.json
+        fail "apm --json hold reports real installed package"
+      }
       run_ok list-held "$APM" list --held
       assert_file_contains /tmp/surface-list-held.out "surfacepkg/surface-reg" \
         "apm list --held reports held package"
+      run_ok list-held-json "$APM" --json list --held
+      "$JQ" -e \
+        'length == 1
+          and .[0].name == "surfacepkg"
+          and .[0].registry == "surface-reg"
+          and (.[0].status | contains("installed"))
+          and (.[0].status | contains("held"))' \
+        /tmp/surface-list-held-json.out >/dev/null
+      run_ok held-json "$APM" --json held
+      "$JQ" -e \
+        'length == 1
+          and .[0].name == "surfacepkg"
+          and .[0].registry == "surface-reg"
+          and .[0].version == "1.0.0"
+          and (.[0].store_path | contains("surfacepkg-1.0.0"))' \
+        /tmp/surface-held-json.out >/dev/null
 
       run_ok depends "$APM" depends surfacepkg
       assert_file_contains /tmp/surface-depends.out "surface-leaf" \
         "apm depends resolves real published dependency"
+      run_ok depends-json "$APM" --json depends surfacepkg
+      "$JQ" -e \
+        '.package == "surfacepkg"
+          and .installed == true
+          and .registry == "surface-reg"
+          and .tree.name == "surfacepkg"
+          and (.tree.children | any(.name == "surface-leaf"))' \
+        /tmp/surface-depends-json.out >/dev/null
       run_ok rdepends "$APM" rdepends surface-leaf
       assert_file_contains /tmp/surface-rdepends.out "surfacepkg" \
         "apm rdepends finds real installed reverse dependency"
+      run_ok rdepends-json "$APM" --json rdepends surface-leaf
+      "$JQ" -e \
+        '.package == "surface-leaf"
+          and .target_versions == "1.0.0"
+          and (.dependents | any(.name == "surfacepkg" and .version == "1.0.0"))' \
+        /tmp/surface-rdepends-json.out >/dev/null
       run_ok policy-surface "$APM" policy surfacepkg
       assert_file_contains /tmp/surface-policy-surface.out "Candidate: 1.0.0" \
         "apm policy reports current surfacepkg candidate"
       assert_file_contains /tmp/surface-policy-surface.out "Installed: 1.0.0" \
         "apm policy reports installed surfacepkg version"
+      run_ok policy-surface-json "$APM" --json policy surfacepkg
+      "$JQ" -e \
+        '.package == "surfacepkg"
+          and .installed == "1.0.0"
+          and .candidate == "1.0.0"
+          and (.versions | any(.version == "1.0.0" and .registry == "surface-reg" and .installed == true))' \
+        /tmp/surface-policy-surface-json.out >/dev/null
 
       run_ok files "$APM" files surfacepkg
       assert_file_contains /tmp/surface-files.out "bin/surfacepkg" \
         "apm files walks installed store path"
+      run_ok files-json "$APM" --json files surfacepkg
+      "$JQ" -e 'index("bin/surfacepkg") != null' \
+        /tmp/surface-files-json.out >/dev/null
       run_fail source-default "$APM" source surfacepkg
       assert_file_contains /tmp/surface-source-default.out "no source derivation recorded" \
         "apm source reports APR-published packages without source drv"
@@ -3472,24 +5072,92 @@ in {
       assert_file_contains /tmp/surface-source-fetch.out "no source derivation recorded" \
         "apm source --fetch reports missing source drv"
       run_ok source-sourceful "$APM" source sourceful
-      assert_file_contains /tmp/surface-source-sourceful.out "$SOURCE_V1_STORE" \
+      assert_file_contains /tmp/surface-source-sourceful.out "$SOURCE_V1_SRC_STORE" \
         "apm source reports sourceful v1 source path"
       assert_file_contains /tmp/surface-source-sourceful.out "Source NAR hash" \
         "apm source reports sourceful source NAR hash"
+      run_ok source-sourceful-json "$APM" --json source sourceful
+      "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
+        '.package == "sourceful"
+          and .registry == "surface-reg"
+          and .source_drv == $source
+          and .installed == true
+          and .installed_store_path == $store
+          and (.source_nar_hash | startswith("sha256-"))' \
+        /tmp/surface-source-sourceful-json.out >/dev/null
       run_ok source-sourceful-show-drv "$APM" source sourceful --show-drv
-      assert_file_contains /tmp/surface-source-sourceful-show-drv.out "$SOURCE_V1_STORE" \
+      assert_file_contains /tmp/surface-source-sourceful-show-drv.out "$SOURCE_V1_SRC_STORE" \
         "apm source --show-drv reports sourceful v1 source path"
+      run_ok source-sourceful-show-drv-json "$APM" --json source sourceful --show-drv
+      "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
+        '.package == "sourceful"
+          and .registry == "surface-reg"
+          and .source_drv == $source
+          and .installed == true
+          and .installed_store_path == $store
+          and (.source_nar_hash | startswith("sha256-"))' \
+        /tmp/surface-source-sourceful-show-drv-json.out >/dev/null
       run_ok source-sourceful-fetch "$APM" source sourceful --fetch
-      assert_file_contains /tmp/surface-source-sourceful-fetch.out "Source realised: $SOURCE_V1_STORE" \
+      assert_file_contains /tmp/surface-source-sourceful-fetch.out "Source realised: $SOURCE_V1_SRC_STORE" \
         "apm source --fetch realises sourceful v1 derivation"
+      run_ok source-sourceful-fetch-json "$APM" --json source sourceful --fetch
+      "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
+        '.package == "sourceful"
+          and .registry == "surface-reg"
+          and .source_drv == $source
+          and .installed == true
+          and .installed_store_path == $store
+          and .realised_path == $source
+          and (.source_nar_hash | startswith("sha256-"))' \
+        /tmp/surface-source-sourceful-fetch-json.out >/dev/null
       run_ok source-sourceful-verify "$APM" source sourceful --verify
-      assert_file_contains /tmp/surface-source-sourceful-verify.out "$SOURCE_V1_STORE" \
+      assert_file_contains /tmp/surface-source-sourceful-verify.out "$SOURCE_V1_SRC_STORE" \
         "apm source --verify uses sourceful v1 source path"
       assert_file_contains /tmp/surface-source-sourceful-verify.out "matches installed binary" \
         "apm source --verify compares sourceful rebuild with installed binary"
+      run_ok source-sourceful-verify-json "$APM" --json source sourceful --verify
+      "$JQ" -e --arg source "$SOURCE_V1_SRC_STORE" --arg store "$SOURCE_V1_STORE" \
+        '.package == "sourceful"
+          and .registry == "surface-reg"
+          and .source_drv == $source
+          and .installed == true
+          and .installed_store_path == $store
+          and .built_path == $source
+          and .verified == true
+          and (.expected_nar_hash | startswith("sha256:"))
+          and (.actual_nar_hash | startswith("sha256:"))' \
+        /tmp/surface-source-sourceful-verify-json.out >/dev/null
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM reinstall sourceful --yes > /tmp/surface-reinstall-sourceful.out 2>&1 || {
+        cat /tmp/surface-reinstall-sourceful.out
+        fail "apm reinstall downloads and rewrites sourceful v1"
+      }
+      cat /tmp/surface-reinstall-sourceful.out
+      assert_file_contains /tmp/surface-reinstall-sourceful.out "Downloading 1 NAR" \
+        "sourceful reinstall downloads v1 NAR"
+      assert_file_contains /tmp/surface-reinstall-sourceful.out "Reinstalled 1 package" \
+        "sourceful reinstall creates profile generation"
+      "$SOURCE_BIN" > /tmp/surface-sourceful-v1-run-after-reinstall.out
+      assert_file_contains /tmp/surface-sourceful-v1-run-after-reinstall.out "^sourceful 1.0.0$" \
+        "sourceful v1 executable runs after reinstall"
+      assert_symlink_exists "$PROFILE/current/src/$SOURCE_V1_SRC_HASH" \
+        "sourceful reinstall keeps v1 source root active"
+      assert_file_contains "$PROFILE/meta/$SOURCE_V1_HASH.json" \
+        "$SOURCE_V1_SRC_STORE" "sourceful reinstall preserves v1 source metadata"
       run_ok verify "$APM" verify surfacepkg
       assert_file_contains /tmp/surface-verify.out "integrity verified" \
         "apm verify validates real installed NAR hash"
+      run_ok verify-json "$APM" --json verify surfacepkg
+      "$JQ" -e --arg store "$SURFACE_STORE" \
+        '.package == "surfacepkg"
+          and .registry == "surface-reg"
+          and .version == "1.0.0"
+          and .store_path == $store
+          and .verified == true
+          and (.expected_nar_hash | startswith("sha256-"))
+          and (.actual_nar_hash | startswith("sha256:"))' \
+        /tmp/surface-verify-json.out >/dev/null
 
       echo "==> Maintainer: publish command-surface upgrade candidate"
       export HOME=/tmp
@@ -3510,11 +5178,26 @@ in {
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$UPGRADE_V2_STORE" "upgradeface-v2"
 
-      $APM update --registry surface-reg > /tmp/surface-update.out 2>&1 || {
-        cat /tmp/surface-update.out
+      $APM --json update --registry surface-reg > /tmp/surface-update.json 2>&1 || {
+        cat /tmp/surface-update.json
         fail "apm update fetches command-surface upgrade"
       }
-      cat /tmp/surface-update.out
+      "$JQ" -e \
+        '.registry == "surface-reg"
+          and .updated == 1
+          and (.registries | length == 1)
+          and .registries[0].registry == "surface-reg"
+          and .registries[0].status == "updated"
+          and .registries[0].packages >= 1
+          and .registries[0].updated >= 1
+          and .registries[0].added == 0
+          and .registries[0].removed == 0
+          and (.registries[0].commit | length == 64)' \
+        /tmp/surface-update.json >/dev/null || {
+        cat /tmp/surface-update.json
+        fail "apm --json update reports command-surface upgrade sync"
+      }
+      pass "apm --json update reports command-surface upgrade sync"
       run_ok list-upgradable "$APM" list --upgradable
       assert_file_contains /tmp/surface-list-upgradable.out "upgradeface/surface-reg" \
         "apm list --upgradable includes upgradable package"
@@ -3522,6 +5205,15 @@ in {
         "apm list --upgradable reports candidate"
       assert_file_not_contains /tmp/surface-list-upgradable.out "surface-leaf" \
         "apm list --upgradable does not advertise automatic dependency"
+      run_ok list-upgradable-json "$APM" --json list --upgradable
+      "$JQ" -e \
+        'length == 1
+          and .[0].name == "upgradeface"
+          and .[0].registry == "surface-reg"
+          and .[0].version == "1.0.0"
+          and (.[0].status | contains("installed"))
+          and (.[0].status | contains("upgradable: 2.0.0"))' \
+        /tmp/surface-list-upgradable-json.out >/dev/null
       run_ok policy-upgrade "$APM" policy upgradeface
       assert_file_contains /tmp/surface-policy-upgrade.out "Candidate: 2.0.0" \
         "apm policy reports upgrade candidate"
@@ -3533,38 +5225,83 @@ in {
         "apm reinstall dry-run resolves installed real package"
       assert_file_contains /tmp/surface-reinstall-dry-run.out "Dry run -- no changes made" \
         "apm reinstall dry-run avoids profile mutation"
-      run_ok full-upgrade-dry-run "$APM" full-upgrade --dry-run
-      assert_file_contains /tmp/surface-full-upgrade-dry-run.out "Dry run -- no changes made" \
-        "apm full-upgrade dry-run dispatches upgrade path"
+      run_ok full-upgrade-dry-run "$APM" --json full-upgrade --dry-run
+      "$JQ" -e --arg store "$UPGRADE_V2_STORE" \
+        '.action == "upgrade"
+          and .status == "planned"
+          and .requested == []
+          and .exclude == []
+          and .dry_run == true
+          and .generation == null
+          and .upgraded == 1
+          and .held_back == []
+          and (.upgrades | length == 1)
+          and .upgrades[0].name == "upgradeface"
+          and .upgrades[0].registry == "surface-reg"
+          and .upgrades[0].old_version == "1.0.0"
+          and .upgrades[0].new_version == "2.0.0"
+          and .upgrades[0].new_store_path == $store
+          and .downloads.planned == 0
+          and .downloads.downloaded == 0
+          and .downloads.imported == 0' \
+        /tmp/surface-full-upgrade-dry-run.out >/dev/null || {
+        cat /tmp/surface-full-upgrade-dry-run.out
+        fail "apm --json full-upgrade dry-run reports planned upgrade"
+      }
       "$UPGRADE_BIN" > /tmp/surface-upgradeface-before-full-upgrade.out
       assert_file_contains /tmp/surface-upgradeface-before-full-upgrade.out "^upgradeface 1.0.0$" \
         "dry-run leaves upgradeface v1 active"
 
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
-      $APM full-upgrade --yes > /tmp/surface-full-upgrade.out 2>&1 || {
+      $APM --json full-upgrade --yes > /tmp/surface-full-upgrade.out 2>&1 || {
         cat /tmp/surface-full-upgrade.out
         fail "apm full-upgrade downloads and activates upgradeface v2"
       }
-      cat /tmp/surface-full-upgrade.out
-      assert_file_contains /tmp/surface-full-upgrade.out "Downloading" \
-        "apm full-upgrade downloads upgradeface v2"
-      assert_file_contains /tmp/surface-full-upgrade.out "Upgraded 1 package" \
-        "apm full-upgrade activates upgradeface v2"
+      "$JQ" -e --arg store "$UPGRADE_V2_STORE" \
+        '.action == "upgrade"
+          and .status == "upgraded"
+          and .requested == []
+          and .exclude == []
+          and .dry_run == false
+          and .generation == 5
+          and .upgraded == 1
+          and .held_back == []
+          and (.upgrades | length == 1)
+          and .upgrades[0].name == "upgradeface"
+          and .upgrades[0].registry == "surface-reg"
+          and .upgrades[0].old_version == "1.0.0"
+          and .upgrades[0].new_version == "2.0.0"
+          and .upgrades[0].new_store_path == $store
+          and (.downloads.planned >= 1)
+          and (.downloads.downloaded >= 1)
+          and (.downloads.imported >= 1)' \
+        /tmp/surface-full-upgrade.out >/dev/null || {
+        cat /tmp/surface-full-upgrade.out
+        fail "apm --json full-upgrade reports activated upgrade"
+      }
       assert_store_valid "$UPGRADE_V2_STORE" "upgradeface-v2"
       "$UPGRADE_BIN" > /tmp/surface-upgradeface-v2-run.out
       assert_file_contains /tmp/surface-upgradeface-v2-run.out "^upgradeface 2.0.0$" \
         "full-upgraded executable runs from profile"
+      run_ok rollback-list-json "$APM" --json rollback --list
+      "$JQ" -e \
+        'map(select(.current == true)) as $current
+          | ($current | length == 1)
+          and ($current[0].roots | map(.package.name) | index("surfacepkg"))
+          and ($current[0].roots | map(.package.name) | index("upgradeface"))
+          and ($current[0].roots | map(.package.name) | index("sourceful"))' \
+        /tmp/surface-rollback-list-json.out >/dev/null
 
       echo "==> Maintainer: publish newer sourceful candidate"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      publish_sourceful 2.0.0 "$SOURCE_V2_STORE" v2
+      publish_sourceful 2.0.0 "$SOURCE_V2_STORE" "$SOURCE_V2_SRC_STORE" v2
       assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
         "$SOURCE_V2_HASH" "published sourceful v2 metadata records store hash"
       assert_file_contains "$REG_DIR/packages/s/sourceful.toml" \
-        "$SOURCE_V2_STORE" "published sourceful v2 metadata records source path"
+        "$SOURCE_V2_SRC_STORE" "published sourceful v2 metadata records distinct source path"
       generate_surface_cache source-v2
       assert_file_exists "/tmp/surface-cache/$SOURCE_V2_HASH.narinfo" \
         "static cache has sourceful v2 narinfo"
@@ -3586,10 +5323,25 @@ in {
         "apm list --upgradable includes sourceful v2 candidate"
       assert_file_contains /tmp/surface-list-upgradable-sourceful.out "upgradable: 2.0.0" \
         "apm list --upgradable reports sourceful candidate version"
+      run_ok source-sourceful-installed "$APM" source sourceful
+      assert_file_contains /tmp/surface-source-sourceful-installed.out "$SOURCE_V1_SRC_STORE" \
+        "apm source uses installed sourceful v1 source path after v2 appears"
+      assert_file_not_contains /tmp/surface-source-sourceful-installed.out "$SOURCE_V2_SRC_STORE" \
+        "apm source does not use latest uninstalled sourceful v2 source path"
+      run_ok source-sourceful-show-drv-installed "$APM" source sourceful --show-drv
+      assert_file_contains /tmp/surface-source-sourceful-show-drv-installed.out "$SOURCE_V1_SRC_STORE" \
+        "apm source --show-drv uses installed sourceful v1 source path after v2 appears"
+      assert_file_not_contains /tmp/surface-source-sourceful-show-drv-installed.out "$SOURCE_V2_SRC_STORE" \
+        "apm source --show-drv does not use latest uninstalled sourceful v2 source path"
+      run_ok source-sourceful-fetch-installed "$APM" source sourceful --fetch
+      assert_file_contains /tmp/surface-source-sourceful-fetch-installed.out "Source realised: $SOURCE_V1_SRC_STORE" \
+        "apm source --fetch realises installed sourceful v1 source path after v2 appears"
+      assert_file_not_contains /tmp/surface-source-sourceful-fetch-installed.out "$SOURCE_V2_SRC_STORE" \
+        "apm source --fetch does not realise latest uninstalled sourceful v2 source path"
       run_ok source-sourceful-verify-installed "$APM" source sourceful --verify
-      assert_file_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V1_STORE" \
+      assert_file_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V1_SRC_STORE" \
         "apm source --verify uses installed sourceful v1 source path after v2 appears"
-      assert_file_not_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V2_STORE" \
+      assert_file_not_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V2_SRC_STORE" \
         "apm source --verify does not use latest uninstalled sourceful v2 source path"
       assert_file_contains /tmp/surface-source-sourceful-verify-installed.out "matches installed binary" \
         "apm source --verify still validates installed sourceful v1"
@@ -3597,16 +5349,57 @@ in {
       assert_file_contains /tmp/surface-sourceful-still-v1-run.out "^sourceful 1.0.0$" \
         "sourceful remains v1 until explicitly upgraded"
 
-      run_ok clean "$APM" clean
-      assert_file_contains /tmp/surface-clean.out "Cleared NAR cache" "apm clean clears NAR cache"
+      echo "==> Consumer: upgrade sourceful and replace source roots"
+      $APM upgrade sourceful --yes > /tmp/surface-upgrade-sourceful.out 2>&1 || {
+        cat /tmp/surface-upgrade-sourceful.out
+        fail "apm upgrade downloads and activates sourceful v2"
+      }
+      cat /tmp/surface-upgrade-sourceful.out
+      assert_file_contains /tmp/surface-upgrade-sourceful.out "Downloading" \
+        "sourceful upgrade downloads v2 NAR"
+      assert_file_contains /tmp/surface-upgrade-sourceful.out "Upgraded 1 package" \
+        "sourceful upgrade creates profile generation"
+      assert_store_valid "$SOURCE_V2_STORE" "sourceful-v2"
+      "$SOURCE_BIN" > /tmp/surface-sourceful-v2-run.out
+      assert_file_contains /tmp/surface-sourceful-v2-run.out "^sourceful 2.0.0$" \
+        "sourceful v2 executable runs after upgrade"
+      assert_symlink_not_exists "$PROFILE/current/src/$SOURCE_V1_SRC_HASH" \
+        "sourceful upgrade removes old v1 source root from current generation"
+      assert_symlink_exists "$PROFILE/current/src/$SOURCE_V2_SRC_HASH" \
+        "sourceful upgrade activates v2 source root"
+      assert_file_contains "$PROFILE/meta/$SOURCE_V2_HASH.json" \
+        "$SOURCE_V2_SRC_STORE" "sourceful metadata records v2 source root"
+
+      run_ok clean "$APM" --json clean
+      "$JQ" -e \
+        '.action == "clean"
+          and .mode == "cache"
+          and .status == "cleaned"
+          and .files_removed >= 1
+          and .freed_bytes > 0
+          and (.freed | length > 0)' \
+        /tmp/surface-clean.out >/dev/null || {
+        cat /tmp/surface-clean.out
+        fail "apm --json clean reports removed NAR cache files"
+      }
       if find "$HOME/.cache/apm" -name '*.nar.zst' | grep -q .; then
         fail "apm clean should remove cached NAR files"
       else
         pass "apm clean removed cached NAR files"
       fi
-      run_ok clean-generations "$APM" clean --generations --keep 1
-      assert_file_contains /tmp/surface-clean-generations.out "No old generations\\|Removed" \
-        "apm clean --generations handles real profile generations"
+      run_ok clean-generations "$APM" --json clean --generations --keep 1
+      "$JQ" -e \
+        '.action == "clean"
+          and .mode == "generations"
+          and .status == "cleaned"
+          and .keep == 1
+          and .removed >= 1
+          and (.removed_generations | length >= 1)
+          and .generations_after_count <= 1' \
+        /tmp/surface-clean-generations.out >/dev/null || {
+        cat /tmp/surface-clean-generations.out
+        fail "apm --json clean --generations reports pruned command-surface generations"
+      }
       if [ "$(generation_count)" -le 1 ]; then
         pass "apm clean --generations keeps at most one old generation"
       else
@@ -3645,6 +5438,42 @@ in {
         "apm orphans lists sourceful package from removed registry"
       assert_file_contains /tmp/surface-orphans-removed.out "removed registry 'surface-reg'" \
         "apm orphans names the removed registry"
+      run_ok orphans-removed-json "$APM" --json orphans
+      "$JQ" -e \
+        'map(.name) as $names
+          | ($names | index("surfacepkg"))
+          and ($names | index("surface-leaf"))
+          and ($names | index("upgradeface"))
+          and ($names | index("sourceful"))
+          and (map(select(.name == "surface-leaf" and .explicit == false)) | length == 1)
+          and (map(select(.registry == "surface-reg")) | length == 4)' \
+        /tmp/surface-orphans-removed-json.out >/dev/null
+
+      run_ok source-sourceful-verify-after-registry-remove "$APM" source sourceful --verify
+      assert_file_contains /tmp/surface-source-sourceful-verify-after-registry-remove.out \
+        "$SOURCE_V2_SRC_STORE" \
+        "apm source --verify uses installed source metadata after registry removal"
+      assert_file_contains /tmp/surface-source-sourceful-verify-after-registry-remove.out \
+        "matches installed binary" \
+        "apm source --verify validates orphaned installed sourceful package"
+
+      echo "==> Consumer: remove orphaned sourceful package and source root"
+      $APM remove sourceful --yes > /tmp/surface-remove-sourceful.out 2>&1 || {
+        cat /tmp/surface-remove-sourceful.out
+        fail "apm remove sourceful succeeds after registry removal"
+      }
+      cat /tmp/surface-remove-sourceful.out
+      assert_file_contains /tmp/surface-remove-sourceful.out "Removed 1 package" \
+        "apm remove reports sourceful removal"
+      if [ -e "$SOURCE_BIN" ]; then
+        fail "sourceful executable should be absent after removal"
+      else
+        pass "sourceful executable absent after removal"
+      fi
+      assert_symlink_not_exists "$PROFILE/current/src/$SOURCE_V2_SRC_HASH" \
+        "sourceful remove drops v2 source root from current generation"
+      assert_file_not_exists "$PROFILE/meta/$SOURCE_V2_HASH.json" \
+        "sourceful metadata removed after sourceful removal"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"
@@ -3655,7 +5484,7 @@ in {
   };
 
   # -------------------------------------------------------------------------
-  # 13. hold-prevent-upgrade — Hold/unhold prevents/allows upgrades
+  # 16. hold-prevent-upgrade — Hold/unhold prevents/allows upgrades
   # -------------------------------------------------------------------------
   hold-prevent-upgrade = testing.mkVMTest {
     name = "apm-hold-prevent-upgrade";
@@ -3671,7 +5500,9 @@ in {
       HOLD_V2_STORE="${holdToolV2}"
       HOLD_V1_HASH=$(basename "$HOLD_V1_STORE" | cut -d- -f1)
       HOLD_V2_HASH=$(basename "$HOLD_V2_STORE" | cut -d- -f1)
-      PROFILE_BIN="/var/lib/profiles/per-user/holduser/current/bin/hold-tool"
+      PROFILE="/var/lib/profiles/per-user/holduser"
+      PROFILE_BIN="$PROFILE/current/bin/hold-tool"
+      JQ="${pkgs.jq}/bin/jq"
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -3771,7 +5602,7 @@ in {
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
-      python3 -m http.server 18085 --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server 18085 --bind 127.0.0.1 \
         --directory /tmp/hold-cache > /tmp/hold-cache-http.log 2>&1 &
       CACHE_PID=$!
       if wait_for_cache_server; then
@@ -3793,6 +5624,38 @@ in {
       }
       cat /tmp/hold-registry-add.out
 
+      if $APM hold hold-tool > /tmp/hold-empty.out 2>&1; then
+        cat /tmp/hold-empty.out
+        fail "hold should fail before hold-tool is installed"
+      else
+        cat /tmp/hold-empty.out
+        pass "hold fails before hold-tool is installed"
+      fi
+      assert_file_contains /tmp/hold-empty.out "package not found" \
+        "empty hold reports missing installed package"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty hold leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty hold should not initialize profile state"
+      fi
+
+      if $APM unhold hold-tool > /tmp/unhold-empty.out 2>&1; then
+        cat /tmp/unhold-empty.out
+        fail "unhold should fail before hold-tool is installed"
+      else
+        cat /tmp/unhold-empty.out
+        pass "unhold fails before hold-tool is installed"
+      fi
+      assert_file_contains /tmp/unhold-empty.out "package not found" \
+        "empty unhold reports missing installed package"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty unhold leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty unhold should not initialize profile state"
+      fi
+
       delete_store_path "$HOLD_V1_STORE" "hold-tool-v1"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
@@ -3809,13 +5672,23 @@ in {
       assert_file_contains /tmp/hold-tool-v1.out "^hold-tool 1.0.0$" \
         "profile executable runs hold-tool v1"
 
-      $APM hold hold-tool > /tmp/hold.out 2>&1 || {
-        cat /tmp/hold.out
+      $APM --json hold hold-tool > /tmp/hold.json 2>&1 || {
+        cat /tmp/hold.json
         fail "apm hold succeeds for installed hold-tool"
       }
-      cat /tmp/hold.out
-      assert_file_contains /tmp/hold.out "set on hold" \
-        "apm hold marks installed package held"
+      "$JQ" -e --arg store "$HOLD_V1_STORE" \
+        '.action == "hold"
+          and .status == "held"
+          and .package == "hold-tool"
+          and .name == "hold-tool"
+          and .version == "1.0.0"
+          and .registry == "hold-reg"
+          and .store_path == $store
+          and .held == true' \
+        /tmp/hold.json >/dev/null || {
+        cat /tmp/hold.json
+        fail "apm --json hold reports installed hold-tool"
+      }
 
       $APM held > /tmp/held.out 2>&1 || {
         cat /tmp/held.out
@@ -3824,6 +5697,32 @@ in {
       cat /tmp/held.out
       assert_file_contains /tmp/held.out "hold-tool 1.0.0 (hold-reg)" \
         "apm held lists installed held package"
+
+      echo "==> Consumer: reinstall held package preserves held metadata"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM reinstall hold-tool --yes > /tmp/hold-reinstall-held.out 2>&1 || {
+        cat /tmp/hold-reinstall-held.out
+        fail "apm reinstall succeeds for installed held package"
+      }
+      cat /tmp/hold-reinstall-held.out
+      assert_file_contains /tmp/hold-reinstall-held.out "Downloading" \
+        "apm reinstall downloads held package"
+      assert_file_contains /tmp/hold-reinstall-held.out "Reinstalled 1 package" \
+        "apm reinstall recreates held package generation"
+      assert_file_contains \
+        "/var/lib/profiles/per-user/holduser/current/meta/$HOLD_V1_HASH.json" \
+        '"held": true' "apm reinstall preserves held metadata"
+      $APM held > /tmp/held-after-reinstall.out 2>&1 || {
+        cat /tmp/held-after-reinstall.out
+        fail "apm held succeeds after reinstall"
+      }
+      cat /tmp/held-after-reinstall.out
+      assert_file_contains /tmp/held-after-reinstall.out "hold-tool 1.0.0 (hold-reg)" \
+        "apm held still lists package after reinstall"
+      "$PROFILE_BIN" > /tmp/hold-tool-after-held-reinstall.out
+      assert_file_contains /tmp/hold-tool-after-held-reinstall.out "^hold-tool 1.0.0$" \
+        "reinstalled held executable still runs hold-tool v1"
 
       echo "==> Maintainer: publish hold-tool 2.0.0"
       export HOME=/tmp
@@ -3858,29 +5757,54 @@ in {
       assert_file_contains /tmp/hold-update.out "done" \
         "apm update completes for hold registry"
 
-      $APM upgrade hold-tool --yes > /tmp/hold-upgrade-held.out 2>&1 || {
+      $APM --json upgrade hold-tool --yes > /tmp/hold-upgrade-held.out 2>&1 || {
         cat /tmp/hold-upgrade-held.out
         fail "held apm upgrade exits successfully"
       }
-      cat /tmp/hold-upgrade-held.out
-      assert_file_contains /tmp/hold-upgrade-held.out "held back" \
-        "apm upgrade reports held-back package"
-      assert_file_contains /tmp/hold-upgrade-held.out "All packages are up to date" \
-        "apm upgrade performs no held upgrade"
-      assert_file_not_contains /tmp/hold-upgrade-held.out "Downloading" \
-        "held upgrade does not download v2"
+      "$JQ" -e --arg store "$HOLD_V2_STORE" \
+        '.action == "upgrade"
+          and .status == "held_back"
+          and .requested == ["hold-tool"]
+          and .exclude == []
+          and .dry_run == false
+          and .generation == null
+          and .upgraded == 0
+          and .upgrades == []
+          and (.held_back | length == 1)
+          and .held_back[0].name == "hold-tool"
+          and .held_back[0].registry == "hold-reg"
+          and .held_back[0].old_version == "1.0.0"
+          and .held_back[0].new_version == "2.0.0"
+          and .held_back[0].new_store_path == $store
+          and .downloads.planned == 0
+          and .downloads.downloaded == 0
+          and .downloads.imported == 0' \
+        /tmp/hold-upgrade-held.out >/dev/null || {
+        cat /tmp/hold-upgrade-held.out
+        fail "apm --json upgrade reports held-back package"
+      }
       assert_store_missing "$HOLD_V2_STORE" "hold-tool-v2"
       "$PROFILE_BIN" > /tmp/hold-tool-after-held-upgrade.out
       assert_file_contains /tmp/hold-tool-after-held-upgrade.out "^hold-tool 1.0.0$" \
         "profile executable remains hold-tool v1 while held"
 
-      $APM unhold hold-tool > /tmp/unhold.out 2>&1 || {
-        cat /tmp/unhold.out
+      $APM --json unhold hold-tool > /tmp/unhold.json 2>&1 || {
+        cat /tmp/unhold.json
         fail "apm unhold succeeds for installed hold-tool"
       }
-      cat /tmp/unhold.out
-      assert_file_contains /tmp/unhold.out "released from hold" \
-        "apm unhold clears hold flag"
+      "$JQ" -e --arg store "$HOLD_V1_STORE" \
+        '.action == "unhold"
+          and .status == "unheld"
+          and .package == "hold-tool"
+          and .name == "hold-tool"
+          and .version == "1.0.0"
+          and .registry == "hold-reg"
+          and .store_path == $store
+          and .held == false' \
+        /tmp/unhold.json >/dev/null || {
+        cat /tmp/unhold.json
+        fail "apm --json unhold reports installed hold-tool"
+      }
 
       $APM held > /tmp/held-after-unhold.out 2>&1 || {
         cat /tmp/held-after-unhold.out
@@ -3891,15 +5815,32 @@ in {
         "apm held is empty after unhold"
 
       echo "==> Consumer: unheld upgrade downloads and activates v2"
-      $APM upgrade hold-tool --yes > /tmp/hold-upgrade-unheld.out 2>&1 || {
+      $APM --json upgrade hold-tool --yes > /tmp/hold-upgrade-unheld.out 2>&1 || {
         cat /tmp/hold-upgrade-unheld.out
         fail "unheld apm upgrade installs v2"
       }
-      cat /tmp/hold-upgrade-unheld.out
-      assert_file_contains /tmp/hold-upgrade-unheld.out "Downloading" \
-        "unheld upgrade downloads v2"
-      assert_file_contains /tmp/hold-upgrade-unheld.out "Upgraded 1 package" \
-        "unheld upgrade switches profile generation"
+      "$JQ" -e --arg store "$HOLD_V2_STORE" \
+        '.action == "upgrade"
+          and .status == "upgraded"
+          and .requested == ["hold-tool"]
+          and .exclude == []
+          and .dry_run == false
+          and .generation == 3
+          and .upgraded == 1
+          and .held_back == []
+          and (.upgrades | length == 1)
+          and .upgrades[0].name == "hold-tool"
+          and .upgrades[0].registry == "hold-reg"
+          and .upgrades[0].old_version == "1.0.0"
+          and .upgrades[0].new_version == "2.0.0"
+          and .upgrades[0].new_store_path == $store
+          and (.downloads.planned >= 1)
+          and (.downloads.downloaded >= 1)
+          and (.downloads.imported >= 1)' \
+        /tmp/hold-upgrade-unheld.out >/dev/null || {
+        cat /tmp/hold-upgrade-unheld.out
+        fail "apm --json upgrade reports unheld package upgrade"
+      }
       assert_store_valid "$HOLD_V2_STORE" "hold-tool-v2"
       "$PROFILE_BIN" > /tmp/hold-tool-v2.out
       assert_file_contains /tmp/hold-tool-v2.out "^hold-tool 2.0.0$" \

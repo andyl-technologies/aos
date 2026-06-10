@@ -1,14 +1,15 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::{RegistrySet, store_path_hash};
+use super::store;
 use super::types::{InstalledMeta, PackageMeta};
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Dependency tree node
@@ -22,6 +23,25 @@ struct DepNode {
     children: Vec<DepNode>,
 }
 
+impl DepNode {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "name": &self.name,
+            "version": &self.version,
+            "store_hash": &self.store_hash,
+            "children": self.children.iter().map(DepNode::to_json).collect::<Vec<_>>(),
+        })
+    }
+}
+
+#[derive(Clone)]
+struct InstalledPackageRef {
+    name: String,
+    version: String,
+    registry: String,
+    store_path: String,
+}
+
 // ---------------------------------------------------------------------------
 // Public commands
 // ---------------------------------------------------------------------------
@@ -32,12 +52,18 @@ struct DepNode {
 /// Falls back to walking `references` fields when no closure file exists.
 pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
+    let profile = Profile::open_readonly(config.scope);
+    let installed = meta::list_meta(&profile)?;
 
-    let (reg, meta) = registries
-        .resolve(package)
-        .ok_or_else(|| anyhow::anyhow!("package not found in any registry: {package}"))?;
+    if has_installed_package(package, &installed) {
+        return depends_installed(package, &installed, printer).await;
+    }
+
+    let Some((reg, meta)) = registries.resolve(package) else {
+        return depends_installed(package, &installed, printer).await;
+    };
+
     let registry_name = reg.config.name.clone();
-
     let hash = store_path_hash(&meta.store_path);
     let closure_meta = registries.get_closure_in(&registry_name, hash);
 
@@ -51,6 +77,18 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
         &mut visited,
         &mut ancestors,
     );
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "package": package,
+            "registry": registry_name,
+            "installed": false,
+            "tree": root.to_json(),
+            "unique_store_paths": visited.len(),
+            "closure_size": meta.closure_size,
+        }));
+        return Ok(());
+    }
 
     // Print root line.
     printer.plain(&format!(
@@ -87,7 +125,7 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
 pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
 
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let installed = meta::list_meta(&profile)?;
     let (target_hashes, target_versions) =
         rdepends_target_hashes(package, &registries, &installed)?;
@@ -120,7 +158,37 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
             if closure_contains_any(pkg_meta, &apm.registry, &registries, &target_hashes) {
                 dependents.push((apm.name.clone(), apm.version.clone()));
             }
+            continue;
         }
+
+        if installed_closure_contains_any(inst, &target_hashes)
+            .await
+            .unwrap_or(false)
+        {
+            dependents.push((apm.name.clone(), apm.version.clone()));
+        }
+    }
+    dependents.sort();
+
+    if printer.mode() == OutputMode::Json {
+        let dependents_json = dependents
+            .iter()
+            .map(|(name, version)| {
+                serde_json::json!({
+                    "name": name,
+                    "version": version,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut target_hashes = target_hashes.into_iter().collect::<Vec<_>>();
+        target_hashes.sort();
+        printer.json(&serde_json::json!({
+            "package": package,
+            "target_versions": target_versions,
+            "target_hashes": target_hashes,
+            "dependents": dependents_json,
+        }));
+        return Ok(());
     }
 
     if dependents.is_empty() {
@@ -141,18 +209,57 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
 pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
 
-    let versions = registries.all_versions(package);
-    if versions.is_empty() {
-        bail!("package not found in any registry: {package}");
-    }
-
     // Check installed version.
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let installed = meta::list_meta(&profile)?;
     let installed_version = policy_installed_versions(package, &installed);
+    let versions = registries.all_versions(package);
+    if versions.is_empty() && installed_version.is_none() {
+        bail!("package not found in any registry: {package}");
+    }
+    let unavailable_installed = policy_unavailable_installed(package, &installed, &versions);
 
     // Candidate = first entry (highest priority).
-    let candidate_version = &versions[0].1.version;
+    let candidate_version = versions.first().map(|(_, meta)| meta.version.as_str());
+
+    if printer.mode() == OutputMode::Json {
+        let versions_json = versions
+            .iter()
+            .map(|(reg, meta)| {
+                serde_json::json!({
+                    "version": &meta.version,
+                    "priority": reg.config.priority,
+                    "registry": &reg.config.name,
+                    "installed": policy_candidate_is_installed(
+                        package,
+                        &reg.config.name,
+                        meta,
+                        &installed,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+        let unavailable_json = unavailable_installed
+            .iter()
+            .map(|(version, registry)| {
+                serde_json::json!({
+                    "version": version,
+                    "registry": registry,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        printer.json(&serde_json::json!({
+            "package": package,
+            "installed": installed_version,
+            "candidate": candidate_version,
+            "versions": versions_json,
+            "unavailable_installed": unavailable_json,
+        }));
+        return Ok(());
+    }
+
+    let candidate_version = candidate_version.unwrap_or("(none)");
 
     printer.plain(&format!("{package}:"));
     match &installed_version {
@@ -174,12 +281,18 @@ pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Res
         ));
     }
 
+    for (version, registry_name) in &unavailable_installed {
+        printer.plain(&format!(
+            " *** {version}  -  {registry_name} (installed, unavailable)"
+        ));
+    }
+
     Ok(())
 }
 
 /// `apm files <package>` -- list files in the package's store path.
 pub async fn files(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
-    let profile = Profile::open(config.scope)?;
+    let profile = Profile::open_readonly(config.scope);
     let installed = meta::list_meta(&profile)?;
 
     let store_path = installed
@@ -204,6 +317,11 @@ pub async fn files(config: &ApmConfig, package: &str, printer: &Printer) -> Resu
     let mut file_list = Vec::new();
     walk_dir(path, path, &mut file_list)?;
     file_list.sort();
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!(file_list));
+        return Ok(());
+    }
 
     for f in &file_list {
         printer.plain(f);
@@ -253,6 +371,133 @@ fn rdepends_target_hashes(
     Ok((hashes, target_meta.version.clone()))
 }
 
+async fn depends_installed(
+    package: &str,
+    installed: &[InstalledMeta],
+    printer: &Printer,
+) -> Result<()> {
+    let installed_by_hash = installed_apm_by_hash(installed);
+    let root = installed_by_hash
+        .values()
+        .find(|entry| entry.name == package)
+        .cloned()
+        .with_context(|| {
+            format!("package not found in any registry or installed profile: {package}")
+        })?;
+    let root_hash = store_path_hash(&root.store_path).to_string();
+    let refs_by_hash = installed_direct_refs(&root_hash, &installed_by_hash).await?;
+
+    let mut visited = HashSet::new();
+    let mut ancestors = HashSet::new();
+    let tree = build_installed_dep_tree(
+        &root_hash,
+        &refs_by_hash,
+        &installed_by_hash,
+        &mut visited,
+        &mut ancestors,
+    );
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "package": package,
+            "registry": &root.registry,
+            "installed": true,
+            "tree": tree.to_json(),
+            "unique_store_paths": visited.len(),
+        }));
+        return Ok(());
+    }
+
+    printer.plain(&format!(
+        "{} ({}){}",
+        tree.name,
+        tree.version,
+        format_installed_registry_ref(&root.registry)
+    ));
+
+    let child_count = tree.children.len();
+    for (i, child) in tree.children.iter().enumerate() {
+        let is_last = i == child_count - 1;
+        print_tree(child, "", is_last, printer);
+    }
+
+    printer.plain(&format!(
+        "\n{} unique store paths in installed dependency tree.",
+        visited.len(),
+    ));
+
+    Ok(())
+}
+
+async fn installed_direct_refs(
+    root_hash: &str,
+    installed_by_hash: &HashMap<String, InstalledPackageRef>,
+) -> Result<HashMap<String, Vec<String>>> {
+    let mut refs_by_hash = HashMap::new();
+    let mut queued = HashSet::from([root_hash.to_string()]);
+    let mut queue = VecDeque::from([root_hash.to_string()]);
+
+    while let Some(hash) = queue.pop_front() {
+        let Some(installed) = installed_by_hash.get(&hash) else {
+            continue;
+        };
+
+        let refs = store::direct_references(&installed.store_path).await?;
+        let mut ref_hashes = Vec::new();
+        for ref_hash in refs
+            .iter()
+            .map(|path| store_path_hash(path).to_string())
+            .filter(|ref_hash| ref_hash != &hash)
+        {
+            if installed_by_hash.contains_key(&ref_hash) && queued.insert(ref_hash.clone()) {
+                queue.push_back(ref_hash.clone());
+            }
+            ref_hashes.push(ref_hash);
+        }
+        refs_by_hash.insert(hash.clone(), ref_hashes);
+    }
+
+    Ok(refs_by_hash)
+}
+
+async fn installed_closure_contains_any(
+    installed: &InstalledMeta,
+    target_hashes: &HashSet<String>,
+) -> Result<bool> {
+    let paths = store::closure_paths(&installed.store_path).await?;
+    Ok(paths
+        .iter()
+        .map(|path| store_path_hash(path))
+        .any(|hash| target_hashes.contains(hash)))
+}
+
+fn installed_apm_by_hash(installed: &[InstalledMeta]) -> HashMap<String, InstalledPackageRef> {
+    installed
+        .iter()
+        .filter_map(|inst| {
+            let apm = inst.apm.as_ref()?;
+            Some((
+                store_path_hash(&inst.store_path).to_string(),
+                InstalledPackageRef {
+                    name: apm.name.clone(),
+                    version: apm.version.clone(),
+                    registry: apm.registry.clone(),
+                    store_path: inst.store_path.clone(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn has_installed_package(package: &str, installed: &[InstalledMeta]) -> bool {
+    installed.iter().any(|inst| {
+        inst.apm
+            .as_ref()
+            .map(|apm| apm.name == package)
+            .unwrap_or(false)
+    })
+}
+
 fn policy_installed_versions(package: &str, installed: &[InstalledMeta]) -> Option<String> {
     let mut versions = BTreeSet::new();
 
@@ -272,6 +517,79 @@ fn policy_installed_versions(package: &str, installed: &[InstalledMeta]) -> Opti
     }
 }
 
+fn build_installed_dep_tree(
+    hash: &str,
+    refs_by_hash: &HashMap<String, Vec<String>>,
+    installed_by_hash: &HashMap<String, InstalledPackageRef>,
+    visited: &mut HashSet<String>,
+    ancestors: &mut HashSet<String>,
+) -> DepNode {
+    visited.insert(hash.to_string());
+    ancestors.insert(hash.to_string());
+
+    let mut children = Vec::new();
+    for ref_hash in refs_by_hash.get(hash).into_iter().flatten() {
+        visited.insert(ref_hash.clone());
+        if ancestors.contains(ref_hash) {
+            children.push(installed_dep_leaf(ref_hash, installed_by_hash));
+        } else if installed_by_hash.contains_key(ref_hash) {
+            children.push(build_installed_dep_tree(
+                ref_hash,
+                refs_by_hash,
+                installed_by_hash,
+                visited,
+                ancestors,
+            ));
+        } else {
+            children.push(DepNode {
+                name: "unknown".to_string(),
+                version: String::new(),
+                store_hash: ref_hash.clone(),
+                children: Vec::new(),
+            });
+        }
+    }
+
+    ancestors.remove(hash);
+
+    let Some(installed) = installed_by_hash.get(hash) else {
+        return DepNode {
+            name: "unknown".to_string(),
+            version: String::new(),
+            store_hash: hash.to_string(),
+            children,
+        };
+    };
+
+    DepNode {
+        name: installed.name.clone(),
+        version: installed.version.clone(),
+        store_hash: hash.to_string(),
+        children,
+    }
+}
+
+fn installed_dep_leaf(
+    hash: &str,
+    installed_by_hash: &HashMap<String, InstalledPackageRef>,
+) -> DepNode {
+    if let Some(installed) = installed_by_hash.get(hash) {
+        DepNode {
+            name: installed.name.clone(),
+            version: installed.version.clone(),
+            store_hash: hash.to_string(),
+            children: Vec::new(),
+        }
+    } else {
+        DepNode {
+            name: "unknown".to_string(),
+            version: String::new(),
+            store_hash: hash.to_string(),
+            children: Vec::new(),
+        }
+    }
+}
+
 fn policy_candidate_is_installed(
     package: &str,
     registry_name: &str,
@@ -288,6 +606,42 @@ fn policy_candidate_is_installed(
             && apm.registry == registry_name
             && store_path_hash(&inst.store_path) == candidate_hash
     })
+}
+
+fn policy_unavailable_installed(
+    package: &str,
+    installed: &[InstalledMeta],
+    versions: &[(&super::registry::Registry, &PackageMeta)],
+) -> Vec<(String, String)> {
+    let available_sources: HashSet<(String, String)> = versions
+        .iter()
+        .map(|(reg, meta)| {
+            (
+                reg.config.name.clone(),
+                store_path_hash(&meta.store_path).to_string(),
+            )
+        })
+        .collect();
+    let mut unavailable = BTreeSet::new();
+
+    for inst in installed {
+        let Some(apm) = inst.apm.as_ref() else {
+            continue;
+        };
+        if apm.name != package {
+            continue;
+        }
+
+        let installed_source = (
+            apm.registry.clone(),
+            store_path_hash(&inst.store_path).to_string(),
+        );
+        if !available_sources.contains(&installed_source) {
+            unavailable.insert((apm.version.clone(), apm.registry.clone()));
+        }
+    }
+
+    unavailable.into_iter().collect()
 }
 
 /// Build a dependency tree recursively.
@@ -403,6 +757,10 @@ fn format_registry_or_ref(registry_name: &str, _hash: &str) -> String {
     format!("                     [{registry_name}]")
 }
 
+fn format_installed_registry_ref(registry_name: &str) -> String {
+    format!("                     [{registry_name}, installed]")
+}
+
 /// Check whether a package's transitive closure contains a target hash.
 fn closure_contains_any(
     meta: &PackageMeta,
@@ -459,7 +817,11 @@ fn walk_dir(root: &Path, current: &Path, files: &mut Vec<String>) -> Result<()> 
             .to_string_lossy()
             .to_string();
 
-        if path.is_dir() {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("reading file type for {}", path.display()))?;
+
+        if file_type.is_dir() {
             walk_dir(root, &path, files)?;
         } else {
             files.push(relative);
@@ -764,6 +1126,8 @@ references = ["llllllllllllllllllllllllllllllll"]
                 registry: "low-priority".into(),
                 installed_at: "2026-06-09T00:00:00Z".into(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }];
 
@@ -785,6 +1149,32 @@ references = ["llllllllllllllllllllllllllllllll"]
     }
 
     #[test]
+    fn depends_prefers_installed_package_name() {
+        let installed = vec![InstalledMeta {
+            store_path: "/nix/store/llllllllllllllllllllllllllllllll-priority-tool-9.0.0".into(),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(crate::types::ApmMeta {
+                name: "priority-tool".into(),
+                version: "9.0.0".into(),
+                explicit: true,
+                registry: "low-priority".into(),
+                installed_at: "2026-06-09T00:00:00Z".into(),
+                held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
+            }),
+        }];
+
+        assert!(has_installed_package("priority-tool", &installed));
+        assert!(!has_installed_package("other-tool", &installed));
+    }
+
+    #[test]
     fn policy_marker_uses_installed_registry_and_hash_for_same_version_duplicates() {
         let installed = vec![InstalledMeta {
             store_path: "/nix/store/llllllllllllllllllllllllllllllll-same-version-tool-1.0.0"
@@ -802,6 +1192,8 @@ references = ["llllllllllllllllllllllllllllllll"]
                 registry: "low-priority".into(),
                 installed_at: "2026-06-09T00:00:00Z".into(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }];
         let high_candidate = PackageMeta {
@@ -861,6 +1253,133 @@ references = ["llllllllllllllllllllllllllllllll"]
             &low_candidate,
             &installed,
         ));
+    }
+
+    #[test]
+    fn policy_lists_installed_versions_missing_from_registry() {
+        let tmp = TempDir::new().unwrap();
+        let tool_toml = r#"
+[package]
+name = "retired-tool"
+description = "tool with retired old version"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn-retired-tool-2.0.0"
+nar_hash = "sha256:new"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+        let registry = make_registry(&tmp, "test-reg", 500, &[("retired-tool", tool_toml)]);
+        let set = RegistrySet::new(vec![registry]);
+        let versions = set.all_versions("retired-tool");
+        let installed = vec![
+            InstalledMeta {
+                store_path: "/nix/store/oooooooooooooooooooooooooooooooo-retired-tool-1.0.0".into(),
+                pushed_at: 1707800000,
+                pushed_by: "apm".into(),
+                expires_at: None,
+                is_root: true,
+                last_accessed: 1707800000,
+                access_count: 0,
+                apm: Some(crate::types::ApmMeta {
+                    name: "retired-tool".into(),
+                    version: "1.0.0".into(),
+                    explicit: true,
+                    registry: "test-reg".into(),
+                    installed_at: "2026-06-09T00:00:00Z".into(),
+                    held: false,
+                    source_drv: String::new(),
+                    source_nar_hash: String::new(),
+                }),
+            },
+            InstalledMeta {
+                store_path: "/nix/store/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn-retired-tool-2.0.0".into(),
+                pushed_at: 1707800001,
+                pushed_by: "apm".into(),
+                expires_at: None,
+                is_root: true,
+                last_accessed: 1707800001,
+                access_count: 0,
+                apm: Some(crate::types::ApmMeta {
+                    name: "retired-tool".into(),
+                    version: "2.0.0".into(),
+                    explicit: true,
+                    registry: "test-reg".into(),
+                    installed_at: "2026-06-09T00:00:01Z".into(),
+                    held: false,
+                    source_drv: String::new(),
+                    source_nar_hash: String::new(),
+                }),
+            },
+        ];
+
+        assert_eq!(
+            policy_unavailable_installed("retired-tool", &installed, &versions),
+            vec![("1.0.0".to_string(), "test-reg".to_string())]
+        );
+    }
+
+    #[test]
+    fn installed_dep_tree_uses_profile_names_for_known_refs() {
+        let root_hash = "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr".to_string();
+        let dep_hash = "dddddddddddddddddddddddddddddddd".to_string();
+        let unknown_hash = "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu".to_string();
+
+        let installed_by_hash = HashMap::from([
+            (
+                root_hash.clone(),
+                InstalledPackageRef {
+                    name: "retired-tool".into(),
+                    version: "1.0.0".into(),
+                    registry: "test-reg".into(),
+                    store_path: format!("/nix/store/{root_hash}-retired-tool-1.0.0"),
+                },
+            ),
+            (
+                dep_hash.clone(),
+                InstalledPackageRef {
+                    name: "retired-dep".into(),
+                    version: "1.0.0".into(),
+                    registry: "test-reg".into(),
+                    store_path: format!("/nix/store/{dep_hash}-retired-dep-1.0.0"),
+                },
+            ),
+        ]);
+        let refs_by_hash = HashMap::from([
+            (
+                root_hash.clone(),
+                vec![dep_hash.clone(), unknown_hash.clone()],
+            ),
+            (dep_hash.clone(), Vec::new()),
+        ]);
+        let mut visited = HashSet::new();
+        let mut ancestors = HashSet::new();
+
+        let tree = build_installed_dep_tree(
+            &root_hash,
+            &refs_by_hash,
+            &installed_by_hash,
+            &mut visited,
+            &mut ancestors,
+        );
+
+        assert_eq!(tree.name, "retired-tool");
+        assert_eq!(tree.children.len(), 2);
+        assert_eq!(tree.children[0].name, "retired-dep");
+        assert_eq!(tree.children[0].version, "1.0.0");
+        assert_eq!(tree.children[1].name, "unknown");
+        assert!(visited.contains(&root_hash));
+        assert!(visited.contains(&dep_hash));
+        assert!(visited.contains(&unknown_hash));
+        assert!(ancestors.is_empty());
     }
 
     // 8. Highest priority first in policy output.
@@ -933,5 +1452,34 @@ references = ["llllllllllllllllllllllllllllllll"]
         assert_eq!(file_list[0], "bin/curl");
         assert_eq!(file_list[1], "lib/libcurl.a");
         assert_eq!(file_list[2], "lib/libcurl.so");
+    }
+
+    #[test]
+    fn files_lists_symlinks_without_following_directory_targets() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("share/tool")).unwrap();
+        fs::write(root.join("bin/tool"), b"binary").unwrap();
+        fs::write(root.join("share/tool/payload.txt"), b"payload").unwrap();
+        symlink("tool", root.join("bin/tool-link")).unwrap();
+        symlink(".", root.join("share/tool/current")).unwrap();
+
+        let mut file_list = Vec::new();
+        walk_dir(root, root, &mut file_list).unwrap();
+        file_list.sort();
+
+        assert_eq!(
+            file_list,
+            vec![
+                "bin/tool",
+                "bin/tool-link",
+                "share/tool/current",
+                "share/tool/payload.txt",
+            ]
+        );
     }
 }

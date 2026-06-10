@@ -113,7 +113,7 @@
       port="$1"
       directory="$2"
       log="$3"
-      python3 -m http.server "$port" --bind 127.0.0.1 \
+      PYTHONUNBUFFERED=1 python3 -m http.server "$port" --bind 127.0.0.1 \
         --directory "$directory" > "$log" 2>&1 &
       CACHE_PID=$!
 
@@ -142,6 +142,8 @@
     version,
     program,
     message,
+    extraCommands ? "",
+    extraRuntimeDeps ? [],
   }:
     pkgs.mkDerivation {
       inherit pname version;
@@ -150,6 +152,7 @@
         pkgs.bash
         pkgs.coreutils
       ];
+      runtimeDeps = extraRuntimeDeps;
       phases = [
         {
           name = "build";
@@ -158,6 +161,7 @@
             cat > "$out/bin/${program}" << 'TOOLEOF'
             #!${pkgs.bash}/bin/bash
             set -euo pipefail
+            ${extraCommands}
             printf '%s\n' '${message}'
             TOOLEOF
             chmod +x "$out/bin/${program}"
@@ -167,11 +171,29 @@
       ];
     };
 
+  e2eHelperV1 = mkProfileTool {
+    pname = "e2e-helper";
+    version = "1.0.0";
+    program = "e2e-helper";
+    message = "e2e-helper 1.0.0 executed";
+  };
+
+  e2eHelperV2 = mkProfileTool {
+    pname = "e2e-helper";
+    version = "2.0.0";
+    program = "e2e-helper";
+    message = "e2e-helper 2.0.0 executed";
+  };
+
   e2eToolV1 = mkProfileTool {
     pname = "e2e-tool";
     version = "1.0.0";
     program = "e2e-tool";
     message = "e2e-tool 1.0.0 executed";
+    extraCommands = ''
+      "${e2eHelperV1}/bin/e2e-helper"
+    '';
+    extraRuntimeDeps = [e2eHelperV1];
   };
 
   e2eToolV2 = mkProfileTool {
@@ -179,6 +201,24 @@
     version = "2.0.0";
     program = "e2e-tool";
     message = "e2e-tool 2.0.0 executed";
+    extraCommands = ''
+      "${e2eHelperV2}/bin/e2e-helper"
+    '';
+    extraRuntimeDeps = [e2eHelperV2];
+  };
+
+  fleetHelperV1 = mkProfileTool {
+    pname = "fleet-helper";
+    version = "1.0.0";
+    program = "fleet-helper";
+    message = "fleet-helper 1.0.0 executed";
+  };
+
+  fleetHelperV2 = mkProfileTool {
+    pname = "fleet-helper";
+    version = "2.0.0";
+    program = "fleet-helper";
+    message = "fleet-helper 2.0.0 executed";
   };
 
   fleetToolV1 = mkProfileTool {
@@ -186,6 +226,10 @@
     version = "1.0.0";
     program = "fleet-tool";
     message = "fleet-tool 1.0.0 executed";
+    extraCommands = ''
+      "${fleetHelperV1}/bin/fleet-helper"
+    '';
+    extraRuntimeDeps = [fleetHelperV1];
   };
 
   fleetToolV2 = mkProfileTool {
@@ -193,6 +237,10 @@
     version = "2.0.0";
     program = "fleet-tool";
     message = "fleet-tool 2.0.0 executed";
+    extraCommands = ''
+      "${fleetHelperV2}/bin/fleet-helper"
+    '';
+    extraRuntimeDeps = [fleetHelperV2];
   };
 
   mkSystemToplevel = {
@@ -272,8 +320,12 @@
       pkgs.jq
       pkgs.python3
       pkgs.zstd
+      e2eHelperV1
+      e2eHelperV2
       e2eToolV1
       e2eToolV2
+      fleetHelperV1
+      fleetHelperV2
       fleetToolV1
       fleetToolV2
     ];
@@ -308,12 +360,28 @@ in {
 
       TOOL_V1_STORE="${e2eToolV1}"
       TOOL_V2_STORE="${e2eToolV2}"
+      TOOL_V1_DEP_STORE="${e2eHelperV1}"
+      TOOL_V2_DEP_STORE="${e2eHelperV2}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
 
       publish_e2e_tool() {
         version="$1"
         store_path="$2"
+        dep_store_path="$3"
+        run_logged "/tmp/e2e-publish-helper-$version.out" "$APR" publish "$dep_store_path" \
+          --name e2e-helper \
+          --version "$version" \
+          --description "End-to-end package lifecycle dependency" \
+          --license MIT \
+          --maintainer e2e@example.invalid \
+          --registry e2e-reg \
+          --no-commit || {
+          fail "apr publish e2e-helper $version"
+        }
+
         run_logged "/tmp/e2e-publish-$version.out" "$APR" publish "$store_path" \
           --name e2e-tool \
           --version "$version" \
@@ -350,9 +418,11 @@ in {
       git -C "$REG_DIR" remote add origin /tmp/e2e-origin.git
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
-      publish_e2e_tool 1.0.0 "$TOOL_V1_STORE"
+      publish_e2e_tool 1.0.0 "$TOOL_V1_STORE" "$TOOL_V1_DEP_STORE"
       assert_file_exists "/tmp/e2e-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has e2e-tool v1 narinfo"
+      assert_file_exists "/tmp/e2e-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has e2e-helper v1 narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
@@ -382,35 +452,54 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_V1_STORE" "e2e-tool-v1"
+      delete_store_path "$TOOL_V1_DEP_STORE" "e2e-helper-v1"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
       run_logged /tmp/e2e-install-v1.out "$APM" install e2e-tool --registry e2e-reg --yes || {
         fail "apm install downloads e2e-tool v1"
       }
-      assert_file_contains /tmp/e2e-install-v1.out "Downloading" \
-        "apm install downloads e2e-tool v1"
+      assert_file_contains /tmp/e2e-install-v1.out "Downloading 2 NAR" \
+        "apm install downloads e2e-tool v1 closure"
       assert_file_contains /tmp/e2e-install-v1.out "Installed 1 package" \
         "apm install creates e2e profile generation"
       assert_store_valid "$TOOL_V1_STORE" "e2e-tool-v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "e2e-helper-v1"
       "$PROFILE/current/bin/e2e-tool" > /tmp/e2e-run-v1.out
+      assert_file_contains /tmp/e2e-run-v1.out "e2e-helper 1.0.0 executed" \
+        "installed e2e-tool v1 executes dependency"
       assert_file_contains /tmp/e2e-run-v1.out "e2e-tool 1.0.0 executed" \
         "installed e2e-tool v1 executes from profile"
+      "$PROFILE/current/bin/e2e-helper" > /tmp/e2e-helper-run-v1.out
+      assert_file_contains /tmp/e2e-helper-run-v1.out "e2e-helper 1.0.0 executed" \
+        "installed e2e-helper v1 executes from profile"
       run_logged /tmp/e2e-verify-installed-v1.out "$APM" verify e2e-tool || {
         fail "apm verify succeeds for installed e2e-tool v1"
       }
+      run_logged /tmp/e2e-installed-v1.out "$APM" list --installed || {
+        fail "apm list --installed succeeds after installing e2e-tool v1"
+      }
+      assert_file_contains /tmp/e2e-installed-v1.out "e2e-tool/e2e-reg" \
+        "apm list --installed reports e2e-tool v1"
+      assert_file_contains /tmp/e2e-installed-v1.out "1.0.0" \
+        "apm list --installed reports e2e-tool v1 version"
+      assert_file_contains /tmp/e2e-installed-v1.out "e2e-helper/e2e-reg" \
+        "apm list --installed reports e2e-helper dependency v1"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
-      publish_e2e_tool 2.0.0 "$TOOL_V2_STORE"
+      publish_e2e_tool 2.0.0 "$TOOL_V2_STORE" "$TOOL_V2_DEP_STORE"
       assert_file_exists "/tmp/e2e-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has e2e-tool v2 narinfo"
+      assert_file_exists "/tmp/e2e-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has e2e-helper v2 narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       export HOME=/tmp/e2e-consumer
       export USER=e2euser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_V2_STORE" "e2e-tool-v2"
+      delete_store_path "$TOOL_V2_DEP_STORE" "e2e-helper-v2"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -428,14 +517,31 @@ in {
       run_logged /tmp/e2e-upgrade.out "$APM" upgrade --yes || {
         fail "apm upgrade downloads e2e-tool v2"
       }
-      assert_file_contains /tmp/e2e-upgrade.out "Downloading" \
-        "apm upgrade downloads e2e-tool v2"
+      assert_file_contains /tmp/e2e-upgrade.out "Downloading 2 NAR" \
+        "apm upgrade downloads e2e-tool v2 closure"
       assert_file_contains /tmp/e2e-upgrade.out "Upgraded 1 package" \
         "apm upgrade creates e2e v2 generation"
       assert_store_valid "$TOOL_V2_STORE" "e2e-tool-v2"
+      assert_store_valid "$TOOL_V2_DEP_STORE" "e2e-helper-v2"
       "$PROFILE/current/bin/e2e-tool" > /tmp/e2e-run-v2.out
+      assert_file_contains /tmp/e2e-run-v2.out "e2e-helper 2.0.0 executed" \
+        "upgraded e2e-tool v2 executes dependency"
       assert_file_contains /tmp/e2e-run-v2.out "e2e-tool 2.0.0 executed" \
         "upgraded e2e-tool v2 executes from profile"
+      "$PROFILE/current/bin/e2e-helper" > /tmp/e2e-helper-run-v2.out
+      assert_file_contains /tmp/e2e-helper-run-v2.out "e2e-helper 2.0.0 executed" \
+        "upgraded e2e-helper v2 executes from profile"
+      run_logged /tmp/e2e-installed-v2.out "$APM" list --installed || {
+        fail "apm list --installed succeeds after upgrading e2e-tool v2"
+      }
+      assert_file_contains /tmp/e2e-installed-v2.out "e2e-tool/e2e-reg" \
+        "apm list --installed reports e2e-tool v2"
+      assert_file_contains /tmp/e2e-installed-v2.out "2.0.0" \
+        "apm list --installed reports e2e-tool v2 version"
+      assert_file_not_contains /tmp/e2e-installed-v2.out "1.0.0" \
+        "apm list --installed drops e2e-tool v1 after upgrade"
+      assert_file_contains /tmp/e2e-installed-v2.out "e2e-helper/e2e-reg" \
+        "apm list --installed reports e2e-helper dependency v2"
 
       run_logged /tmp/e2e-rollback.out "$APM" rollback || {
         fail "apm rollback returns e2e-tool to v1"
@@ -443,11 +549,25 @@ in {
       assert_file_contains /tmp/e2e-rollback.out "Rolled back to generation 1" \
         "apm rollback selects e2e v1 generation"
       "$PROFILE/current/bin/e2e-tool" > /tmp/e2e-run-rollback.out
+      assert_file_contains /tmp/e2e-run-rollback.out "e2e-helper 1.0.0 executed" \
+        "rolled-back e2e-tool v1 executes dependency"
       assert_file_contains /tmp/e2e-run-rollback.out "e2e-tool 1.0.0 executed" \
         "rolled-back e2e-tool v1 executes from profile"
+      "$PROFILE/current/bin/e2e-helper" > /tmp/e2e-helper-run-rollback.out
+      assert_file_contains /tmp/e2e-helper-run-rollback.out "e2e-helper 1.0.0 executed" \
+        "rolled-back e2e-helper v1 executes from profile"
       run_logged /tmp/e2e-verify-rollback.out "$APM" verify e2e-tool || {
         fail "apm verify succeeds after e2e rollback"
       }
+      run_logged /tmp/e2e-installed-rollback.out "$APM" list --installed || {
+        fail "apm list --installed succeeds after rolling back e2e-tool"
+      }
+      assert_file_contains /tmp/e2e-installed-rollback.out "e2e-tool/e2e-reg" \
+        "apm list --installed reports rolled-back e2e-tool"
+      assert_file_contains /tmp/e2e-installed-rollback.out "1.0.0" \
+        "apm list --installed reports rolled-back e2e-tool v1"
+      assert_file_contains /tmp/e2e-installed-rollback.out "e2e-helper/e2e-reg" \
+        "apm list --installed reports rolled-back e2e-helper v1"
 
       run_logged /tmp/e2e-remove.out "$APM" remove e2e-tool --yes || {
         fail "apm remove deletes e2e-tool"
@@ -459,9 +579,24 @@ in {
       else
         pass "removed e2e-tool executable is absent from current profile"
       fi
-      run_logged /tmp/e2e-installed-after-remove.out "$APM" list --installed || true
+      run_logged /tmp/e2e-installed-after-remove.out "$APM" list --installed || {
+        fail "apm list --installed succeeds after removing e2e-tool"
+      }
       assert_file_not_contains /tmp/e2e-installed-after-remove.out "e2e-tool" \
         "apm list --installed omits removed e2e-tool"
+      assert_file_contains /tmp/e2e-installed-after-remove.out "e2e-helper/e2e-reg" \
+        "apm list --installed keeps orphaned e2e-helper before autoremove"
+
+      run_logged /tmp/e2e-autoremove.out "$APM" autoremove --yes || {
+        fail "apm autoremove deletes orphaned e2e-helper"
+      }
+      assert_file_contains /tmp/e2e-autoremove.out "Removed" \
+        "apm autoremove reports orphaned e2e-helper removal"
+      run_logged /tmp/e2e-installed-after-autoremove.out "$APM" list --installed || {
+        fail "apm list --installed succeeds after autoremoving e2e-helper"
+      }
+      assert_file_not_contains /tmp/e2e-installed-after-autoremove.out "e2e-helper" \
+        "apm list --installed omits autoremoved e2e-helper"
 
       stop_static_cache
       check_fail
@@ -643,12 +778,27 @@ in {
 
       FLEET_V1_STORE="${fleetToolV1}"
       FLEET_V2_STORE="${fleetToolV2}"
+      FLEET_V1_DEP_STORE="${fleetHelperV1}"
+      FLEET_V2_DEP_STORE="${fleetHelperV2}"
       FLEET_V1_HASH=$(basename "$FLEET_V1_STORE" | cut -d- -f1)
       FLEET_V2_HASH=$(basename "$FLEET_V2_STORE" | cut -d- -f1)
+      FLEET_V1_DEP_HASH=$(basename "$FLEET_V1_DEP_STORE" | cut -d- -f1)
+      FLEET_V2_DEP_HASH=$(basename "$FLEET_V2_DEP_STORE" | cut -d- -f1)
 
       publish_fleet_tool() {
         version="$1"
         store_path="$2"
+        dep_store_path="$3"
+        run_logged "/tmp/fleet-publish-helper-$version.out" "$APR" publish "$dep_store_path" \
+          --name fleet-helper \
+          --version "$version" \
+          --description "Fleet rolling update dependency" \
+          --license MIT \
+          --maintainer fleet@example.invalid \
+          --registry fleet-reg \
+          --no-commit || {
+          fail "apr publish fleet-helper $version"
+        }
         run_logged "/tmp/fleet-publish-$version.out" "$APR" publish "$store_path" \
           --name fleet-tool \
           --version "$version" \
@@ -673,11 +823,18 @@ in {
 
       run_fleet_profile() {
         user="$1"
-        expected="$2"
+        expected_helper="$2"
+        expected_tool="$3"
         "/var/lib/profiles/per-user/$user/current/bin/fleet-tool" \
           > "/tmp/fleet-run-$user.out"
-        assert_file_contains "/tmp/fleet-run-$user.out" "$expected" \
-          "fleet profile $user runs $expected"
+        assert_file_contains "/tmp/fleet-run-$user.out" "$expected_helper" \
+          "fleet profile $user runs dependency $expected_helper"
+        assert_file_contains "/tmp/fleet-run-$user.out" "$expected_tool" \
+          "fleet profile $user runs root $expected_tool"
+        "/var/lib/profiles/per-user/$user/current/bin/fleet-helper" \
+          > "/tmp/fleet-helper-run-$user.out"
+        assert_file_contains "/tmp/fleet-helper-run-$user.out" "$expected_helper" \
+          "fleet profile $user exposes dependency $expected_helper"
       }
 
       $APR create fleet-reg
@@ -688,9 +845,11 @@ in {
       git -C "$REG_DIR" remote add origin /tmp/fleet-origin.git
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
-      publish_fleet_tool 1.0.0 "$FLEET_V1_STORE"
+      publish_fleet_tool 1.0.0 "$FLEET_V1_STORE" "$FLEET_V1_DEP_STORE"
       assert_file_exists "/tmp/fleet-cache/$FLEET_V1_HASH.narinfo" \
         "static cache has fleet-tool v1 narinfo"
+      assert_file_exists "/tmp/fleet-cache/$FLEET_V1_DEP_HASH.narinfo" \
+        "static cache has fleet-helper v1 narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
@@ -699,6 +858,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$FLEET_V1_STORE" "fleet-tool-v1"
+      delete_store_path "$FLEET_V1_DEP_STORE" "fleet-helper-v1"
 
       export HOME=/tmp/fleet-a
       export USER=fleet_a
@@ -711,13 +871,17 @@ in {
       run_logged /tmp/fleet-a-install-v1.out "$APM" install fleet-tool --registry fleet-reg --yes || {
         fail "fleet A installs v1"
       }
-      assert_file_contains /tmp/fleet-a-install-v1.out "Downloading" \
-        "fleet A downloads v1"
-      run_fleet_profile fleet_a "fleet-tool 1.0.0 executed"
+      assert_file_contains /tmp/fleet-a-install-v1.out "Downloading 2 NAR" \
+        "fleet A downloads v1 closure"
+      run_fleet_profile fleet_a \
+        "fleet-helper 1.0.0 executed" \
+        "fleet-tool 1.0.0 executed"
 
       export HOME=/tmp/fleet-b
       export USER=fleet_b
       mkdir -p "$HOME"
+      delete_store_path "$FLEET_V1_STORE" "fleet-tool-v1-fleet-b"
+      delete_store_path "$FLEET_V1_DEP_STORE" "fleet-helper-v1-fleet-b"
       run_logged /tmp/fleet-b-add.out "$APM" registry add --no-verify file:///tmp/fleet-origin.git \
         --name fleet-reg \
         --branch "$DEFAULT_BRANCH" || {
@@ -726,19 +890,29 @@ in {
       run_logged /tmp/fleet-b-install-v1.out "$APM" install fleet-tool --registry fleet-reg --yes || {
         fail "fleet B installs v1"
       }
-      run_fleet_profile fleet_b "fleet-tool 1.0.0 executed"
+      assert_file_contains /tmp/fleet-b-install-v1.out "Downloading 2 NAR" \
+        "fleet B downloads v1 closure"
+      run_fleet_profile fleet_a \
+        "fleet-helper 1.0.0 executed" \
+        "fleet-tool 1.0.0 executed"
+      run_fleet_profile fleet_b \
+        "fleet-helper 1.0.0 executed" \
+        "fleet-tool 1.0.0 executed"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
-      publish_fleet_tool 2.0.0 "$FLEET_V2_STORE"
+      publish_fleet_tool 2.0.0 "$FLEET_V2_STORE" "$FLEET_V2_DEP_STORE"
       assert_file_exists "/tmp/fleet-cache/$FLEET_V2_HASH.narinfo" \
         "static cache has fleet-tool v2 narinfo"
+      assert_file_exists "/tmp/fleet-cache/$FLEET_V2_DEP_HASH.narinfo" \
+        "static cache has fleet-helper v2 narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       export HOME=/tmp/fleet-a
       export USER=fleet_a
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$FLEET_V2_STORE" "fleet-tool-v2"
+      delete_store_path "$FLEET_V2_DEP_STORE" "fleet-helper-v2"
       run_logged /tmp/fleet-a-update-v2.out "$APM" update --registry fleet-reg || {
         fail "fleet A update syncs v2"
       }
@@ -747,20 +921,35 @@ in {
       }
       assert_file_contains /tmp/fleet-a-upgrade-v2.out "Upgraded 1 package" \
         "fleet A upgrade creates v2 generation"
-      run_fleet_profile fleet_a "fleet-tool 2.0.0 executed"
+      assert_file_contains /tmp/fleet-a-upgrade-v2.out "Downloading 2 NAR" \
+        "fleet A downloads v2 closure"
+      run_fleet_profile fleet_a \
+        "fleet-helper 2.0.0 executed" \
+        "fleet-tool 2.0.0 executed"
 
       export HOME=/tmp/fleet-b
       export USER=fleet_b
       APM_CONFIG="$HOME/.config/apm"
-      run_fleet_profile fleet_b "fleet-tool 1.0.0 executed"
+      run_fleet_profile fleet_b \
+        "fleet-helper 1.0.0 executed" \
+        "fleet-tool 1.0.0 executed"
 
+      delete_store_path "$FLEET_V2_STORE" "fleet-tool-v2-fleet-b"
+      delete_store_path "$FLEET_V2_DEP_STORE" "fleet-helper-v2-fleet-b"
       run_logged /tmp/fleet-b-update-v2.out "$APM" update --registry fleet-reg || {
         fail "fleet B update syncs v2"
       }
       run_logged /tmp/fleet-b-upgrade-v2.out "$APM" upgrade --yes || {
         fail "fleet B upgrades to v2"
       }
-      run_fleet_profile fleet_b "fleet-tool 2.0.0 executed"
+      assert_file_contains /tmp/fleet-b-upgrade-v2.out "Downloading 2 NAR" \
+        "fleet B downloads v2 closure"
+      run_fleet_profile fleet_a \
+        "fleet-helper 2.0.0 executed" \
+        "fleet-tool 2.0.0 executed"
+      run_fleet_profile fleet_b \
+        "fleet-helper 2.0.0 executed" \
+        "fleet-tool 2.0.0 executed"
 
       export HOME=/tmp/fleet-a
       export USER=fleet_a
@@ -770,12 +959,16 @@ in {
       }
       assert_file_contains /tmp/fleet-a-rollback.out "Rolled back to generation 1" \
         "fleet A rollback selects v1 generation"
-      run_fleet_profile fleet_a "fleet-tool 1.0.0 executed"
+      run_fleet_profile fleet_a \
+        "fleet-helper 1.0.0 executed" \
+        "fleet-tool 1.0.0 executed"
 
       export HOME=/tmp/fleet-b
       export USER=fleet_b
       APM_CONFIG="$HOME/.config/apm"
-      run_fleet_profile fleet_b "fleet-tool 2.0.0 executed"
+      run_fleet_profile fleet_b \
+        "fleet-helper 2.0.0 executed" \
+        "fleet-tool 2.0.0 executed"
 
       stop_static_cache
       check_fail

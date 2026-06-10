@@ -28,6 +28,8 @@ use aos_core::output::Printer;
 pub struct SyncResult {
     /// The new HEAD commit SHA after sync.
     pub new_commit: String,
+    /// Total number of packages in the registry after sync.
+    pub packages_count: usize,
     /// Number of new packages added.
     pub packages_added: usize,
     /// Number of packages with updated metadata.
@@ -281,6 +283,7 @@ pub async fn sync_git(
 
     Ok(SyncResult {
         new_commit,
+        packages_count: new_packages,
         packages_added: added,
         packages_updated: updated,
         packages_removed: removed,
@@ -947,11 +950,6 @@ fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
     semver::Version::parse(&semver_str).ok()
 }
 
-/// Verify the commit signature using `git verify-commit`.
-///
-/// This checks that the commit was signed and that the signature is valid.
-/// The actual key verification depends on the user's git configuration
-/// (gpg.ssh.allowedSignersFile or gpg keyring).
 /// Enforce that `new_commit` is a descendant of `old_commit` (fast-forward).
 ///
 /// Uses `git merge-base --is-ancestor` to check the relationship.

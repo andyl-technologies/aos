@@ -6,16 +6,23 @@ use anyhow::{Context, Result};
 use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
-use super::profile::meta::{delete_meta, list_meta};
+use super::profile::meta::{delete_meta, list_meta, snapshot_profile_meta_to_generation};
 use super::registry::store_path_hash;
 use super::store::closure_paths;
 use super::types::InstalledMeta;
 use aos_core::error::AosError;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/// Summary of what a remove-style operation selected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RemoveOutcome {
+    /// Number of orphaned auto-installed packages selected for removal.
+    pub orphan_count: usize,
+}
 
 /// Run `apm remove <packages>`.
 ///
@@ -30,52 +37,61 @@ pub async fn run(
     dry_run: bool,
     yes: bool,
     printer: &Printer,
-) -> Result<()> {
+) -> Result<RemoveOutcome> {
     if packages.is_empty() {
         printer.info("No packages specified.");
-        return Ok(());
+        return Ok(RemoveOutcome::default());
     }
 
-    // Step 1: Open profile and get current generation.
-    let profile = Profile::open(config.scope)?;
-    let current_gen = profile
+    // Step 1: Inspect profile and get current generation.
+    let inspect_profile = Profile::open_readonly(config.scope);
+    let current_gen = inspect_profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
 
     // Step 2: Find installed packages matching the requested names.
-    let to_remove = find_installed(&profile, packages)?;
+    let to_remove = find_installed(&inspect_profile, packages)?;
 
     // Step 3: Collect hashes to remove.
-    let mut remove_hashes: HashSet<String> = HashSet::new();
-    for meta in &to_remove {
-        let hash = store_path_hash(&meta.store_path).to_string();
-        remove_hashes.insert(hash);
-    }
+    let mut remove_hashes = root_hashes_for_installed(&to_remove);
 
     // Step 4: If --autoremove, also find orphaned auto-installed deps.
     let orphans = if auto_remove {
-        find_orphans(&profile, &remove_hashes).await?
+        find_orphans(&inspect_profile, &remove_hashes).await?
     } else {
         Vec::new()
     };
 
-    for meta in &orphans {
-        let hash = store_path_hash(&meta.store_path).to_string();
-        remove_hashes.insert(hash);
-    }
+    remove_hashes.extend(root_hashes_for_installed(&orphans));
 
     // Step 5: Print removal summary.
     print_removal_summary(&to_remove, &orphans, printer);
 
     if dry_run {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&remove_result_json(
+                "remove",
+                "planned",
+                packages,
+                auto_remove,
+                true,
+                &to_remove,
+                &orphans,
+                None,
+            ));
+        }
         printer.info("Dry run -- no changes made.");
-        return Ok(());
+        return Ok(RemoveOutcome {
+            orphan_count: orphans.len(),
+        });
     }
 
     // Step 6: Confirm unless --yes.
     if !yes && !config.settings.assume_yes {
         confirm(printer)?;
     }
+
+    let profile = Profile::open(config.scope)?;
 
     // Step 7: Create new generation, copying roots except removed ones.
     printer.step(1, 3, "Creating new generation...");
@@ -87,6 +103,7 @@ pub async fn run(
         let hash = store_path_hash(&meta.store_path).to_string();
         delete_meta(&profile, &hash)?;
     }
+    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
 
     // Step 9: Rebuild FHS tree on the new generation.
     printer.step(2, 3, "Rebuilding file tree...");
@@ -103,8 +120,22 @@ pub async fn run(
         "Removed {total_removed} package(s) in generation {}.",
         new_gen.number,
     ));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&remove_result_json(
+            "remove",
+            "removed",
+            packages,
+            auto_remove,
+            false,
+            &to_remove,
+            &orphans,
+            Some(new_gen.number),
+        ));
+    }
 
-    Ok(())
+    Ok(RemoveOutcome {
+        orphan_count: orphans.len(),
+    })
 }
 
 /// Run `apm autoremove`.
@@ -116,40 +147,65 @@ pub async fn run_autoremove(
     dry_run: bool,
     yes: bool,
     printer: &Printer,
-) -> Result<()> {
-    // Step 1: Open profile.
-    let profile = Profile::open(config.scope)?;
-    let current_gen = profile
+) -> Result<RemoveOutcome> {
+    // Step 1: Inspect profile.
+    let inspect_profile = Profile::open_readonly(config.scope);
+    let current_gen = inspect_profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
 
     // Step 2: Find orphaned packages.
     let empty_exclude: HashSet<String> = HashSet::new();
-    let orphans = find_orphans(&profile, &empty_exclude).await?;
+    let orphans = find_orphans(&inspect_profile, &empty_exclude).await?;
 
     if orphans.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&remove_result_json(
+                "autoremove",
+                "current",
+                &[],
+                true,
+                false,
+                &[],
+                &[],
+                None,
+            ));
+        }
         printer.info("No orphaned packages to remove.");
-        return Ok(());
+        return Ok(RemoveOutcome::default());
     }
 
     // Step 3: Collect hashes.
-    let remove_hashes: HashSet<String> = orphans
-        .iter()
-        .map(|m| store_path_hash(&m.store_path).to_string())
-        .collect();
+    let remove_hashes = root_hashes_for_installed(&orphans);
 
     // Step 4: Print summary.
     print_removal_summary(&[], &orphans, printer);
 
     if dry_run {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&remove_result_json(
+                "autoremove",
+                "planned",
+                &[],
+                true,
+                true,
+                &[],
+                &orphans,
+                None,
+            ));
+        }
         printer.info("Dry run -- no changes made.");
-        return Ok(());
+        return Ok(RemoveOutcome {
+            orphan_count: orphans.len(),
+        });
     }
 
     // Step 5: Confirm.
     if !yes && !config.settings.assume_yes {
         confirm(printer)?;
     }
+
+    let profile = Profile::open(config.scope)?;
 
     // Step 6: Create new generation without orphans.
     printer.step(1, 3, "Creating new generation...");
@@ -161,6 +217,7 @@ pub async fn run_autoremove(
         let hash = store_path_hash(&meta.store_path).to_string();
         delete_meta(&profile, &hash)?;
     }
+    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
 
     // Step 7: Rebuild FHS tree.
     printer.step(2, 3, "Rebuilding file tree...");
@@ -176,13 +233,80 @@ pub async fn run_autoremove(
         orphans.len(),
         new_gen.number,
     ));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&remove_result_json(
+            "autoremove",
+            "removed",
+            &[],
+            true,
+            false,
+            &[],
+            &orphans,
+            Some(new_gen.number),
+        ));
+    }
 
-    Ok(())
+    Ok(RemoveOutcome {
+        orphan_count: orphans.len(),
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
+
+fn remove_result_json(
+    action: &str,
+    status: &str,
+    packages: &[String],
+    auto_remove: bool,
+    dry_run: bool,
+    explicit_removals: &[InstalledMeta],
+    orphan_removals: &[InstalledMeta],
+    generation: Option<u32>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "action": action,
+        "status": status,
+        "requested": packages,
+        "autoremove": auto_remove,
+        "dry_run": dry_run,
+        "generation": generation,
+        "removed": explicit_removals.len() + orphan_removals.len(),
+        "explicit_removed": explicit_removals.len(),
+        "orphan_removed": orphan_removals.len(),
+        "packages": explicit_removals
+            .iter()
+            .map(installed_meta_json)
+            .collect::<Vec<_>>(),
+        "orphans": orphan_removals
+            .iter()
+            .map(installed_meta_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn installed_meta_json(meta: &InstalledMeta) -> serde_json::Value {
+    let Some(apm) = &meta.apm else {
+        return serde_json::json!({
+            "store_path": meta.store_path.as_str(),
+            "name": null,
+            "version": null,
+            "registry": null,
+            "explicit": null,
+            "held": null,
+        });
+    };
+
+    serde_json::json!({
+        "name": apm.name.as_str(),
+        "version": apm.version.as_str(),
+        "registry": apm.registry.as_str(),
+        "store_path": meta.store_path.as_str(),
+        "explicit": apm.explicit,
+        "held": apm.held,
+    })
+}
 
 /// Find installed metadata entries matching package names.
 ///
@@ -274,6 +398,19 @@ fn find_orphans_from_meta(
         })
         .cloned()
         .collect()
+}
+
+fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
+    let mut hashes = HashSet::new();
+    for meta in installed {
+        hashes.insert(store_path_hash(&meta.store_path).to_string());
+        if let Some(apm) = &meta.apm {
+            if !apm.source_drv.is_empty() {
+                hashes.insert(store_path_hash(&apm.source_drv).to_string());
+            }
+        }
+    }
+    hashes
 }
 
 /// Copy roots from one generation to another, EXCLUDING specific hashes.
@@ -419,6 +556,8 @@ mod tests {
                 registry: "aos-core".into(),
                 installed_at: "2026-02-16T00:00:00Z".into(),
                 held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
             }),
         }
     }
@@ -687,6 +826,18 @@ mod tests {
 
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].apm.as_ref().unwrap().name, "shared");
+    }
+
+    #[test]
+    fn root_hashes_for_installed_includes_source_roots() {
+        let mut installed = sample_installed("sourceful", "aaa111", true);
+        installed.apm.as_mut().unwrap().source_drv =
+            "/var/lib/store/src222-sourceful-src.drv".to_string();
+
+        let hashes = root_hashes_for_installed(&[installed]);
+
+        assert!(hashes.contains("aaa111"));
+        assert!(hashes.contains("src222"));
     }
 
     // 10. copy_roots_except also handles src/ roots

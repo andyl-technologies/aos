@@ -13,9 +13,10 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use aos_cache::AuthOptions;
 use aos_core::nar::info as narinfo;
+use aos_core::nix::aos_nix_env;
 use serde_json::Value;
 
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
 use crate::gitcmd;
@@ -151,6 +152,12 @@ fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     }
 
     Ok(output.stdout)
+}
+
+fn nix_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command.envs(aos_nix_env());
+    command
 }
 
 /// Run a git command that is allowed to fail, returning (success, stdout, stderr).
@@ -361,7 +368,7 @@ fn default_platform() -> String {
 
 /// Introspect a store path using `nix path-info --json --closure-size`.
 fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
-    let output = Command::new("nix")
+    let output = nix_command("nix")
         .args(["path-info", "--json", "--closure-size", store_path])
         .output()
         .with_context(|| format!("running nix path-info on {store_path}"))?;
@@ -435,7 +442,7 @@ fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
 
 /// Return metadata for the derivation that produced `store_path`, if known.
 fn introspect_deriver(store_path: &str) -> Result<Option<StorePathInfo>> {
-    let output = Command::new("nix-store")
+    let output = nix_command("nix-store")
         .args(["-q", "--deriver", store_path])
         .output()
         .with_context(|| format!("querying deriver for {store_path}"))?;
@@ -476,7 +483,7 @@ struct StorePathInfo {
 /// enumerate the closure and `nix-store -q --references` for each member.
 fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
     // Get the full closure via nix-store -qR.
-    let output = Command::new("nix-store")
+    let output = nix_command("nix-store")
         .args(["-qR", store_path])
         .output()
         .with_context(|| format!("running nix-store -qR {store_path}"))?;
@@ -495,7 +502,7 @@ fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
     // For each path in the closure, get its direct references.
     let mut result = Vec::with_capacity(closure_paths.len());
     for path in &closure_paths {
-        let ref_output = Command::new("nix-store")
+        let ref_output = nix_command("nix-store")
             .args(["-q", "--references", path])
             .output()
             .with_context(|| format!("running nix-store -q --references {path}"))?;
@@ -596,13 +603,6 @@ fn extract_hash(store_path: &str) -> &str {
     basename.split('-').next().unwrap_or(basename)
 }
 
-/// Create a git commit in the registry directory.
-///
-/// When `signing_key` is the path to an OpenSSH Ed25519 private key, the
-/// commit is SSH-signed (`gpg.format=ssh`), matching the tag-signing setup
-/// in [`sign_tag`]. Clients verify head-commit signatures during sync, so
-/// commits on registries with a non-empty trust roster should always be
-/// signed.
 /// Whether the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` environment variables fully
 /// specify a commit identity. They take precedence over any git config and
 /// are how hermetic environments (VM tests, build sandboxes) provide one.
@@ -668,9 +668,16 @@ fn ensure_commit_identity(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
-    ensure_commit_identity(dir)?;
-    git(dir, &["add", "-A"])?;
+fn registry_relative_path(dir: &Path, path: &Path) -> Result<String> {
+    let rel = path
+        .strip_prefix(dir)
+        .with_context(|| format!("{} is not under {}", path.display(), dir.display()))?;
+    rel.to_str()
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("registry path is not UTF-8: {}", path.display()))
+}
+
+fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
     match signing_key {
         Some(key) => {
             let signing_key_config = format!("user.signingkey={key}");
@@ -693,6 +700,59 @@ fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Resu
         }
     }
     Ok(())
+}
+
+/// Create a git commit for a constrained set of registry paths.
+fn commit_registry_paths(
+    dir: &Path,
+    message: &str,
+    paths: &[PathBuf],
+    signing_key: Option<&str>,
+) -> Result<()> {
+    if paths.is_empty() {
+        bail!("no registry paths supplied for commit");
+    }
+
+    ensure_commit_identity(dir)?;
+
+    let relative_paths = paths
+        .iter()
+        .map(|path| registry_relative_path(dir, path))
+        .collect::<Result<Vec<_>>>()?;
+
+    let output = gitcmd::hermetic()
+        .arg("add")
+        .arg("-A")
+        .arg("--")
+        .args(&relative_paths)
+        .current_dir(dir)
+        .output()
+        .with_context(|| {
+            format!(
+                "running git add for {} constrained path(s) in {}",
+                relative_paths.len(),
+                dir.display()
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git add failed: {}", stderr.trim());
+    }
+
+    commit_staged_registry(dir, message, signing_key)
+}
+
+/// Create a git commit in the registry directory.
+///
+/// When `signing_key` is the path to an OpenSSH Ed25519 private key, the
+/// commit is SSH-signed (`gpg.format=ssh`), matching the tag-signing setup
+/// in [`sign_tag`]. Clients verify head-commit signatures during sync, so
+/// commits on registries with a non-empty trust roster should always be
+/// signed.
+fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
+    ensure_commit_identity(dir)?;
+    git(dir, &["add", "-A"])?;
+    commit_staged_registry(dir, message, signing_key)
 }
 
 /// Refresh the static dumb-HTTP object indexes after refs or commits change.
@@ -879,6 +939,20 @@ description = ""
         printer.kv("Remote", url);
     }
 
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "create",
+            "registry": name,
+            "path": dir.display().to_string(),
+            "remote": remote,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "trust_key_id": trust_key.map(|_| trust_key_id.unwrap_or("initial")),
+        }));
+        return Ok(());
+    }
+
     printer.success(&format!("Registry '{name}' created at {}", dir.display()));
 
     Ok(())
@@ -913,16 +987,7 @@ pub async fn publish(
 ) -> Result<()> {
     let name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&name);
-    if !dir.exists() {
-        bail!(
-            "registry '{name}' has no local clone at {path}.\n\
-             If you added it with `{reg} add <url>`, sync it first with `{pkg} update {name}`.\n\
-             To author a new local registry instead, run `{reg} create {name}`.",
-            path = dir.display(),
-            reg = aos_core::invocation::package_registry_command(),
-            pkg = aos_core::invocation::package_manager_command(),
-        );
-    }
+    ensure_writable_registry_clone(&name, &dir)?;
     let signing_key = if key.is_some() || key_id.is_some() {
         Some(resolve_producer_signing_key(
             config, &dir, &name, key, key_id,
@@ -993,6 +1058,8 @@ pub async fn publish(
     printer.step(3, 4, "Computing closure...");
     write_closure_files(&dir, &info.path)
         .with_context(|| format!("writing closure files for {}", info.path))?;
+    let closure_hash = extract_hash(&info.path).to_string();
+    let closure_path = dir.join("closures").join(&closure_hash);
 
     printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
@@ -1015,18 +1082,96 @@ pub async fn publish(
         printer.kv(&format!("Image ({fmt})"), &img_info.path);
     }
 
+    let mut committed = false;
+    let mut commit_message = None;
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
-        commit_registry(&dir, msg, signing_key.as_deref())?;
+        let staged_paths = [
+            toml_path.clone(),
+            closure_path.clone(),
+            dir.join(".gitattributes"),
+        ];
+        commit_registry_paths(&dir, msg, &staged_paths, signing_key.as_deref())?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after publish")?;
+        committed = true;
+        commit_message = Some(msg.to_string());
         printer.success(&format!("Committed: {msg}"));
     } else {
         printer.info("Skipped commit (--no-commit).");
     }
 
+    if printer.mode() == OutputMode::Json {
+        let source = source_info.as_ref().map(|source| {
+            serde_json::json!({
+                "store_path": source.path.as_str(),
+                "nar_hash": source.nar_hash.as_str(),
+                "nar_size": source.nar_size,
+            })
+        });
+        let images = image_infos
+            .iter()
+            .map(|(format, image)| {
+                serde_json::json!({
+                    "format": format.as_str(),
+                    "store_path": image.path.as_str(),
+                    "nar_hash": image.nar_hash.as_str(),
+                    "nar_size": image.nar_size,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!({
+            "action": "publish",
+            "registry": name,
+            "package": pkg_name,
+            "version": pkg_version,
+            "platform": platform,
+            "store_path": info.path,
+            "nar_hash": info.nar_hash,
+            "nar_size": info.nar_size,
+            "closure_size": info.closure_size,
+            "references": info.references,
+            "source": source,
+            "sysroot": sysroot,
+            "previous": previous,
+            "images": images,
+            "package_file": toml_path
+                .strip_prefix(&dir)
+                .unwrap_or(&toml_path)
+                .display()
+                .to_string(),
+            "closure_file": closure_path
+                .strip_prefix(&dir)
+                .unwrap_or(&closure_path)
+                .display()
+                .to_string(),
+            "committed": committed,
+            "commit_message": commit_message,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+        }));
+    }
+
     Ok(())
+}
+
+fn ensure_writable_registry_clone(name: &str, dir: &Path) -> Result<()> {
+    if dir.join(".git").is_dir() {
+        return Ok(());
+    }
+
+    bail!(
+        "registry '{name}' has no writable local clone at {path}.\n\
+         `{pkg} update --registry {name}` only syncs consumer metadata; it cannot create an \
+         APR publishing worktree.\n\
+         To publish, remove and re-add the registry without `--no-clone`, or author a new \
+         local registry with `{reg} create {name}`.",
+        path = dir.display(),
+        reg = aos_core::invocation::package_registry_command(),
+        pkg = aos_core::invocation::package_manager_command(),
+    );
 }
 
 /// Build package TOML content, merging with existing content if present.
@@ -1264,9 +1409,13 @@ pub async fn unpublish(
         bail!("package '{package}' not found in registry");
     }
 
+    let mut package_file_removed = false;
+    let mut status = "updated";
     if version.is_none() && platform.is_none() {
         // Remove the entire file.
         std::fs::remove_file(&toml_path)?;
+        package_file_removed = true;
+        status = "removed";
         printer.info(&format!("Removed package '{package}' entirely."));
     } else {
         // Parse and selectively remove.
@@ -1334,6 +1483,8 @@ pub async fn unpublish(
 
             if versions.is_empty() {
                 std::fs::remove_file(&toml_path)?;
+                package_file_removed = true;
+                status = "removed";
                 printer.info(&format!(
                     "Removed package '{package}' (no versions remaining)."
                 ));
@@ -1344,13 +1495,39 @@ pub async fn unpublish(
         }
     }
 
+    let mut committed = false;
+    let mut commit_message = None;
     if !no_commit {
         let default_msg = format!("unpublish {package}");
         let msg = message.unwrap_or(&default_msg);
         commit_registry(&dir, msg, signing_key.as_deref())?;
         refresh_registry_object_store(&dir)
             .context("refreshing dumb-HTTP object store after unpublish")?;
+        committed = true;
+        commit_message = Some(msg.to_string());
         printer.success(&format!("Committed: {msg}"));
+    }
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "unpublish",
+            "registry": registry_name,
+            "package": package,
+            "version": version,
+            "platform": platform,
+            "status": status,
+            "package_file": toml_path
+                .strip_prefix(&dir)
+                .unwrap_or(&toml_path)
+                .display()
+                .to_string(),
+            "package_file_removed": package_file_removed,
+            "committed": committed,
+            "commit_message": commit_message,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+        }));
     }
 
     Ok(())
@@ -1458,6 +1635,16 @@ pub async fn show(
     let toml_val: toml::Value = toml::from_str(&content)?;
     let selected_versions = selected_package_versions(&toml_val, version)?;
 
+    if printer.mode() == OutputMode::Json {
+        let value = if version.is_some() {
+            package_toml_with_versions(&toml_val, &selected_versions)?
+        } else {
+            toml_val.clone()
+        };
+        printer.json(&serde_json::to_value(&value)?);
+        return Ok(());
+    }
+
     if raw {
         if version.is_some() {
             let filtered = package_toml_with_versions(&toml_val, &selected_versions)?;
@@ -1544,6 +1731,10 @@ pub async fn packages(
     let packages_dir = dir.join("packages");
 
     if !packages_dir.is_dir() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!([]));
+            return Ok(());
+        }
         printer.info("No packages found.");
         return Ok(());
     }
@@ -1576,6 +1767,20 @@ pub async fn packages(
     }
 
     pkgs.sort();
+
+    if printer.mode() == OutputMode::Json {
+        let packages_json = pkgs
+            .iter()
+            .map(|(name, version)| {
+                serde_json::json!({
+                    "name": name,
+                    "version": version,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!(packages_json));
+        return Ok(());
+    }
 
     if pkgs.is_empty() {
         printer.info("No packages found.");
@@ -1827,6 +2032,17 @@ pub async fn diff(
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "remote": true,
+                "base": base,
+                "stat": stat,
+                "clean": output.is_empty(),
+                "changed_files": diff_name_status_entries(&dir, Some((&base, "HEAD")))?,
+                "output": output,
+            }));
+            return Ok(());
+        }
         if output.is_empty() {
             printer.info("No pending changes.");
         } else {
@@ -1838,6 +2054,17 @@ pub async fn diff(
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "remote": false,
+                "base": serde_json::Value::Null,
+                "stat": stat,
+                "clean": output.is_empty(),
+                "changed_files": diff_name_status_entries(&dir, None)?,
+                "output": output,
+            }));
+            return Ok(());
+        }
         if output.is_empty() {
             printer.info("No pending changes.");
         } else {
@@ -1902,6 +2129,22 @@ pub async fn validate(
     }
 
     if mirrors.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "status": "no_caches",
+                "package": package,
+                "platform": platform,
+                "fix": fix,
+                "jobs": jobs,
+                "caches": 0,
+                "checked": 0,
+                "found": 0,
+                "missing": 0,
+                "missing_entries": [],
+                "removed": 0,
+            }));
+            return Ok(());
+        }
         printer.warning("No caches configured in registry.toml. Cannot validate.");
         return Ok(());
     }
@@ -1909,6 +2152,22 @@ pub async fn validate(
     let entries = collect_cache_validation_entries(&dir, package, platform)?;
 
     if entries.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({
+                "status": "no_entries",
+                "package": package,
+                "platform": platform,
+                "fix": fix,
+                "jobs": jobs,
+                "caches": mirrors.len(),
+                "checked": 0,
+                "found": 0,
+                "missing": 0,
+                "missing_entries": [],
+                "removed": 0,
+            }));
+            return Ok(());
+        }
         printer.info("No entries to validate.");
         return Ok(());
     }
@@ -1940,6 +2199,7 @@ pub async fn validate(
     let mut missing = 0u32;
     let mut ok = 0u32;
     let mut missing_store_paths = HashSet::new();
+    let mut results = Vec::new();
     for handle in handles {
         let result = handle.await?;
         if result.found {
@@ -1957,20 +2217,60 @@ pub async fn validate(
                 result.entry.name, result.entry.store_path, detail
             ));
         }
+        results.push(result);
     }
 
     if missing == 0 {
+        if printer.mode() == OutputMode::Json {
+            printer.json(&cache_validation_summary_json(
+                "ok",
+                package,
+                platform,
+                fix,
+                jobs,
+                mirrors.len(),
+                ok,
+                missing,
+                0,
+                &results,
+            ));
+            return Ok(());
+        }
         printer.success(&format!("All {ok} entries found in caches."));
     } else if fix {
         let removed = remove_missing_cache_entries(&dir, &missing_store_paths)?;
         if removed == 0 {
+            if printer.mode() == OutputMode::Json {
+                bail!(
+                    "{}; no matching registry entries removed.",
+                    cache_validation_missing_error(ok, missing, &results)
+                );
+            }
             bail!("{ok} found, {missing} missing; no matching registry entries removed.");
+        }
+        if printer.mode() == OutputMode::Json {
+            printer.json(&cache_validation_summary_json(
+                "fixed",
+                package,
+                platform,
+                fix,
+                jobs,
+                mirrors.len(),
+                ok,
+                missing,
+                removed,
+                &results,
+            ));
+            return Ok(());
         }
         let noun = if removed == 1 { "entry" } else { "entries" };
         printer.success(&format!(
             "Removed {removed} missing cache {noun} from registry metadata."
         ));
     } else {
+        if printer.mode() == OutputMode::Json {
+            bail!("{}", cache_validation_missing_error(ok, missing, &results));
+        }
         bail!("{ok} found, {missing} missing.");
     }
 
@@ -1991,6 +2291,77 @@ struct CacheValidationResult {
     entry: CacheValidationEntry,
     found: bool,
     details: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cache_validation_summary_json(
+    status: &str,
+    package: Option<&str>,
+    platform: Option<&str>,
+    fix: bool,
+    jobs: u32,
+    caches: usize,
+    found: u32,
+    missing: u32,
+    removed: usize,
+    results: &[CacheValidationResult],
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": status,
+        "package": package,
+        "platform": platform,
+        "fix": fix,
+        "jobs": jobs,
+        "caches": caches,
+        "checked": found + missing,
+        "found": found,
+        "missing": missing,
+        "missing_entries": results
+            .iter()
+            .filter(|result| !result.found)
+            .map(cache_validation_result_json)
+            .collect::<Vec<_>>(),
+        "removed": removed,
+    })
+}
+
+fn cache_validation_result_json(result: &CacheValidationResult) -> serde_json::Value {
+    serde_json::json!({
+        "name": &result.entry.name,
+        "platform": &result.entry.platform,
+        "store_path": &result.entry.store_path,
+        "store_hash": &result.entry.store_hash,
+        "nar_hash": &result.entry.nar_hash,
+        "details": &result.details,
+    })
+}
+
+fn cache_validation_missing_error(
+    found: u32,
+    missing: u32,
+    results: &[CacheValidationResult],
+) -> String {
+    let missing_entries = results
+        .iter()
+        .filter(|result| !result.found)
+        .map(|result| {
+            let detail = result
+                .details
+                .first()
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default();
+            format!(
+                "{}: {} not found in any cache{}",
+                result.entry.name, result.entry.store_path, detail
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    if missing_entries.is_empty() {
+        format!("{found} found, {missing} missing")
+    } else {
+        format!("{found} found, {missing} missing: {missing_entries}")
+    }
 }
 
 fn collect_cache_validation_entries(
@@ -2315,8 +2686,17 @@ async fn validate_cache_entry(
 /// `apr status`
 pub async fn status(config: &ApmConfig, registry: Option<&str>, printer: &Printer) -> Result<()> {
     let dir = registry_dir(config, registry)?;
-    let output = git(&dir, &["status", "--short", "--untracked-files=all"])?;
-    printer.plain(&output);
+    let raw_output = git_raw(&dir, &["status", "--short", "--untracked-files=all"])?;
+    let output = String::from_utf8_lossy(&raw_output);
+    if printer.mode() == OutputMode::Json {
+        let entries = parse_status_short(&output);
+        printer.json(&serde_json::json!({
+            "clean": entries.is_empty(),
+            "entries": entries,
+        }));
+        return Ok(());
+    }
+    printer.plain(output.trim());
     Ok(())
 }
 
@@ -2342,6 +2722,14 @@ pub async fn log(
     }
 
     let output = git(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "package": package,
+            "limit": n,
+            "commits": git_log_entries(&dir, package, n)?,
+        }));
+        return Ok(());
+    }
     if output.is_empty() {
         printer.info("No commits found.");
     } else {
@@ -2349,6 +2737,95 @@ pub async fn log(
     }
 
     Ok(())
+}
+
+fn parse_status_short(output: &str) -> Vec<serde_json::Value> {
+    output
+        .lines()
+        .filter_map(|line| {
+            if line.len() < 3 {
+                return None;
+            }
+            let bytes = line.as_bytes();
+            let index = bytes[0] as char;
+            let worktree = bytes[1] as char;
+            let path = line[3..].to_string();
+            Some(serde_json::json!({
+                "index": index.to_string(),
+                "worktree": worktree.to_string(),
+                "status": line[..2].to_string(),
+                "path": path,
+            }))
+        })
+        .collect()
+}
+
+fn diff_name_status_entries(
+    dir: &Path,
+    range: Option<(&str, &str)>,
+) -> Result<Vec<serde_json::Value>> {
+    let output = match range {
+        Some((base, head)) => git(dir, &["diff", "--name-status", base, head])?,
+        None => git(dir, &["diff", "--name-status"])?,
+    };
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let status = fields.next()?;
+            let path = fields.next()?;
+            let new_path = fields.next();
+            let mut entry = serde_json::json!({
+                "status": status,
+                "path": path,
+            });
+            if let Some(new_path) = new_path {
+                entry["new_path"] = serde_json::json!(new_path);
+            }
+            Some(entry)
+        })
+        .collect())
+}
+
+fn git_log_entries(dir: &Path, package: Option<&str>, n: u32) -> Result<Vec<serde_json::Value>> {
+    let n_str = format!("-{n}");
+    let pretty = "%H%x1f%h%x1f%s%x1f%ct%x1e";
+    let pretty_arg = format!("--pretty=format:{pretty}");
+    let mut args = vec!["log", &n_str, &pretty_arg];
+
+    let path_filter;
+    if let Some(pkg) = package {
+        let letter = first_letter(pkg);
+        path_filter = format!("packages/{letter}/{pkg}.toml");
+        args.push("--");
+        args.push(&path_filter);
+    }
+
+    let output = git_raw(dir, &args)?;
+    let text = String::from_utf8_lossy(&output);
+    Ok(text
+        .split('\x1e')
+        .filter_map(|record| {
+            let record = record.trim_matches('\n');
+            if record.is_empty() {
+                return None;
+            }
+            let mut fields = record.split('\x1f');
+            let hash = fields.next()?;
+            let short_hash = fields.next()?;
+            let subject = fields.next()?;
+            let timestamp = fields
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_default();
+            Some(serde_json::json!({
+                "hash": hash,
+                "short_hash": short_hash,
+                "subject": subject,
+                "timestamp": timestamp,
+            }))
+        })
+        .collect())
 }
 
 /// Branch subcommands.
@@ -2360,6 +2837,12 @@ pub async fn run_branch(
     match command {
         BranchCommand::List { registry } => {
             let dir = registry_dir(config, registry.as_deref())?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             let output = git(&dir, &["branch", "-a"])?;
             printer.plain(&output);
             Ok(())
@@ -2367,22 +2850,87 @@ pub async fn run_branch(
         BranchCommand::Create { name, registry } => {
             let dir = registry_dir(config, registry.as_deref())?;
             git(&dir, &["branch", name])?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "create",
+                    "branch": name,
+                    "current": current_git_branch(&dir)?,
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             printer.success(&format!("Created branch '{name}'."));
             Ok(())
         }
         BranchCommand::Switch { name, registry } => {
             let dir = registry_dir(config, registry.as_deref())?;
             git(&dir, &["checkout", name])?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "switch",
+                    "branch": name,
+                    "current": current_git_branch(&dir)?,
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             printer.success(&format!("Switched to branch '{name}'."));
             Ok(())
         }
         BranchCommand::Delete { name, registry } => {
             let dir = registry_dir(config, registry.as_deref())?;
             git(&dir, &["branch", "-d", name])?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "delete",
+                    "branch": name,
+                    "current": current_git_branch(&dir)?,
+                    "branches": git_branch_entries(&dir)?,
+                }));
+                return Ok(());
+            }
             printer.success(&format!("Deleted branch '{name}'."));
             Ok(())
         }
     }
+}
+
+fn current_git_branch(dir: &Path) -> Result<String> {
+    git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+}
+
+fn git_branch_entries(dir: &Path) -> Result<Vec<serde_json::Value>> {
+    let current = current_git_branch(dir)?;
+    let output = git_raw(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(refname:short)%00%(objectname)%00",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    let text = String::from_utf8_lossy(&output);
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            let refname = fields.next()?;
+            let short = fields.next()?;
+            let commit = fields.next()?;
+            if refname.is_empty() || short.is_empty() {
+                return None;
+            }
+            let remote = refname.starts_with("refs/remotes/");
+            Some(serde_json::json!({
+                "name": short,
+                "ref": refname,
+                "commit": commit,
+                "remote": remote,
+                "current": !remote && short == current,
+            }))
+        })
+        .collect())
 }
 
 /// Channel rollout subcommands.
@@ -2478,15 +3026,36 @@ pub async fn run_cache(
                 nixcache::upload_static_cache_to_all(output, upload_urls, &auth, printer).await?;
             }
 
+            let mut cache_pointer_updated = false;
+            let mut committed = false;
             if let Some(cache_url) = cache_url {
                 if nixcache::upsert_registry_cache(&dir, cache_url, *priority)? {
+                    cache_pointer_updated = true;
                     printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
                     if !*no_commit {
                         commit_registry(&dir, "registry: update static cache pointer", None)?;
                         refresh_registry_object_store(&dir)
                             .context("refreshing dumb-HTTP object store after cache update")?;
+                        committed = true;
                     }
                 }
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "cache_generate",
+                    "registry": registry_name,
+                    "output_dir": report.output_dir.to_string_lossy().to_string(),
+                    "paths": report.paths,
+                    "narinfos": report.narinfos,
+                    "nars": report.nars,
+                    "cache_url": cache_url.as_deref(),
+                    "priority": priority,
+                    "upload_urls": upload_urls,
+                    "uploaded": !upload_urls.is_empty(),
+                    "cache_pointer_updated": cache_pointer_updated,
+                    "committed": committed,
+                }));
             }
 
             Ok(())
@@ -2530,6 +3099,17 @@ pub async fn run_origin(
                 report.files,
                 format_size(report.bytes),
             ));
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "origin_upload",
+                    "registry": registry_name,
+                    "upload_urls": upload_urls,
+                    "cache_dir": cache_dir.as_ref().map(|path| path.to_string_lossy().to_string()),
+                    "files": report.files,
+                    "bytes": report.bytes,
+                    "bytes_human": format_size(report.bytes),
+                }));
+            }
             Ok(())
         }
     }
@@ -2561,6 +3141,30 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
                 Some(name) => vec![name.clone()],
                 None => configured_registry_names(config),
             };
+            if printer.mode() == OutputMode::Json {
+                let entries = registries
+                    .iter()
+                    .map(|name| {
+                        let keys = store
+                            .lookup_all(name)
+                            .iter()
+                            .map(|key| {
+                                serde_json::json!({
+                                    "algorithm": &key.algorithm,
+                                    "fingerprint": &key.fingerprint,
+                                    "source": format!("{:?}", key.source),
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        serde_json::json!({
+                            "registry": name,
+                            "keys": keys,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                printer.json(&serde_json::json!(entries));
+                return Ok(());
+            }
             if registries.is_empty() {
                 printer.info("No configured registries to inspect.");
                 return Ok(());
@@ -2602,6 +3206,38 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let roster = load_committed_roster(&dir)?;
+            if printer.mode() == OutputMode::Json {
+                let active = roster
+                    .active
+                    .iter()
+                    .map(|entry| {
+                        let (_registry, algorithm, public_key) = parse_signing_key(&entry.key)
+                            .with_context(|| format!("invalid active key '{}'", entry.id))?;
+                        Ok(serde_json::json!({
+                            "id": &entry.id,
+                            "algorithm": algorithm,
+                            "fingerprint": key_fingerprint(&public_key),
+                            "key": &entry.key,
+                        }))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let revoked = roster
+                    .revoked
+                    .iter()
+                    .map(|entry| {
+                        serde_json::json!({
+                            "id": &entry.id,
+                            "reason": &entry.reason,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                printer.json(&serde_json::json!({
+                    "registry": registry_name,
+                    "active": active,
+                    "revoked": revoked,
+                }));
+                return Ok(());
+            }
             if roster.active.is_empty() && roster.revoked.is_empty() {
                 printer.info(&format!(
                     "Registry '{registry_name}' has no keys in keys.toml."
@@ -3355,6 +3991,18 @@ async fn channel_init(
     }
     update_channel_frontier(&dir, channel_name, &map)?;
 
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "channel_init",
+            "registry": registry_name,
+            "channel": channel_name,
+            "version": version.to_string(),
+            "partitions": 256,
+            "frontier": version.to_string(),
+        }));
+        return Ok(());
+    }
+
     printer.success(&format!(
         "Initialized channel '{channel_name}' with 256/256 partitions on {version}."
     ));
@@ -3382,6 +4030,20 @@ async fn channel_advance(
     channel::assert_full_partition_set(&map)?;
     let selected = select_partitions_for_advance(count, partitions, &map, version)?;
     if selected.is_empty() {
+        if printer.mode() == OutputMode::Json {
+            let frontier = channel::compute_frontier(&map);
+            printer.json(&serde_json::json!({
+                "action": "channel_advance",
+                "registry": registry_name,
+                "channel": channel_name,
+                "version": version.to_string(),
+                "partitions": [],
+                "partition_count": 0,
+                "frontier": frontier.as_ref().map(ToString::to_string),
+                "status": "current",
+            }));
+            return Ok(());
+        }
         printer.info("No partitions selected for advancement.");
         return Ok(());
     }
@@ -3391,6 +4053,22 @@ async fn channel_advance(
         map.set(*bucket as usize, version.clone())?;
     }
     update_channel_frontier(&dir, channel_name, &map)?;
+
+    if printer.mode() == OutputMode::Json {
+        let frontier = channel::compute_frontier(&map);
+        let partition_count = selected.len();
+        printer.json(&serde_json::json!({
+            "action": "channel_advance",
+            "registry": registry_name,
+            "channel": channel_name,
+            "version": version.to_string(),
+            "partitions": &selected,
+            "partition_count": partition_count,
+            "frontier": frontier.as_ref().map(ToString::to_string),
+            "status": "advanced",
+        }));
+        return Ok(());
+    }
 
     printer.success(&format!(
         "Advanced channel '{channel_name}' {} partition(s) to {version}.",
@@ -3417,6 +4095,26 @@ async fn channel_status(
         }
     }
 
+    if printer.mode() == OutputMode::Json {
+        let versions = counts
+            .iter()
+            .rev()
+            .map(|(version, count)| {
+                serde_json::json!({
+                    "version": version.to_string(),
+                    "partitions": count,
+                })
+            })
+            .collect::<Vec<_>>();
+        printer.json(&serde_json::json!({
+            "channel": channel_name,
+            "frontier": frontier.as_ref().map(ToString::to_string),
+            "missing_partitions": missing,
+            "versions": versions,
+        }));
+        return Ok(());
+    }
+
     printer.header(&format!("Channel: {channel_name}"));
     if let Some(frontier) = frontier {
         printer.kv("Frontier", &frontier.to_string());
@@ -3440,6 +4138,10 @@ pub async fn push(
     printer: &Printer,
 ) -> Result<()> {
     let dir = registry_dir(config, registry)?;
+    let current = current_git_branch(&dir)?;
+    let pushed_branch = branch
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| current.clone());
 
     let mut args = vec!["push"];
     if set_upstream {
@@ -3457,6 +4159,19 @@ pub async fn push(
     }
 
     let output = git_transport(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "push",
+            "branch": pushed_branch,
+            "set_upstream": set_upstream,
+            "force": force,
+            "current": current,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "output": output,
+        }));
+        return Ok(());
+    }
     if !output.is_empty() {
         printer.plain(&output);
     }
@@ -3480,6 +4195,17 @@ pub async fn pull(
     }
 
     let output = git_transport(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "pull",
+            "rebase": rebase,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "output": output,
+        }));
+        return Ok(());
+    }
     printer.plain(&output);
 
     Ok(())
@@ -3506,10 +4232,27 @@ pub async fn merge(
     args.push(branch);
 
     let output = git(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "merge",
+            "branch": branch,
+            "no_ff": no_ff,
+            "squash": squash,
+            "current": current_git_branch(&dir)?,
+            "head": current_git_head(&dir)?,
+            "branches": git_branch_entries(&dir)?,
+            "output": output,
+        }));
+        return Ok(());
+    }
     printer.plain(&output);
     printer.success(&format!("Merged '{branch}'."));
 
     Ok(())
+}
+
+fn current_git_head(dir: &Path) -> Result<String> {
+    git(dir, &["rev-parse", "HEAD"])
 }
 
 // ---------------------------------------------------------------------------
@@ -3538,7 +4281,11 @@ pub struct ReleaseTreeOptions {
 pub struct ReleaseReport {
     pub full_pack: Option<String>,
     pub deltas: Vec<String>,
+    pub cache: Option<nixcache::StaticCacheReport>,
+    pub cache_pointer_updated: bool,
+    pub channel_partitions: Option<usize>,
     pub uploaded_files: Option<usize>,
+    pub uploaded_bytes: Option<u64>,
 }
 
 struct ReleaseLock {
@@ -3620,6 +4367,7 @@ pub async fn release(
                 "Would publish {store_path} into release metadata for {version}."
             ));
         } else {
+            ensure_release_worktree_clean(&dir)?;
             let release_version = version.to_string();
             publish(
                 config,
@@ -3677,7 +4425,17 @@ pub async fn release_registry_tree(
 ) -> Result<ReleaseReport> {
     validate_release_options(options)?;
     if options.dry_run {
-        print_release_plan(dir, registry_name, options, printer);
+        if printer.mode() == OutputMode::Json {
+            printer.json(&release_result_json(
+                "planned",
+                registry_name,
+                dir,
+                options,
+                &ReleaseReport::default(),
+            ));
+        } else {
+            print_release_plan(dir, registry_name, options, printer);
+        }
         return Ok(ReleaseReport::default());
     }
 
@@ -3685,8 +4443,10 @@ pub async fn release_registry_tree(
     objectstore::assert_sha256(dir)?;
     ensure_release_worktree_clean(dir)?;
 
+    let mut cache_pointer_updated = false;
     if let Some(cache_url) = &options.cache_url {
         if nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)? {
+            cache_pointer_updated = true;
             printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
             commit_registry(
                 dir,
@@ -3709,8 +4469,9 @@ pub async fn release_registry_tree(
     refresh_registry_object_store(dir)
         .context("refreshing dumb-HTTP object store after release artifacts")?;
 
+    let mut cache_report = None;
     if let Some(output) = &options.cache_output {
-        let report = nixcache::generate_static_cache(
+        let generated = nixcache::generate_static_cache(
             dir,
             output,
             options.cache_key.as_deref(),
@@ -3720,23 +4481,29 @@ pub async fn release_registry_tree(
         .await?;
         printer.success(&format!(
             "Generated static cache: {} narinfos, {} NARs in {}",
-            report.narinfos,
-            report.nars,
-            report.output_dir.display(),
+            generated.narinfos,
+            generated.nars,
+            generated.output_dir.display(),
         ));
+        cache_report = Some(generated);
     }
+
+    let mut report = artifacts;
+    report.cache_pointer_updated = cache_pointer_updated;
+    report.cache = cache_report;
 
     if let Some(channel) = &options.channel {
         if options.init_channel {
-            channel_init_dir(
+            let partitions = channel_init_dir(
                 dir,
                 channel,
                 &options.version,
                 &options.signing_key,
                 printer,
             )?;
+            report.channel_partitions = Some(partitions);
         } else {
-            channel_advance_dir(
+            let partitions = channel_advance_dir(
                 dir,
                 channel,
                 &options.version,
@@ -3745,10 +4512,10 @@ pub async fn release_registry_tree(
                 &options.signing_key,
                 printer,
             )?;
+            report.channel_partitions = Some(partitions);
         }
     }
 
-    let mut report = artifacts;
     if !options.upload_urls.is_empty() {
         let upload = static_upload::upload_static_origin_to_all(
             dir,
@@ -3759,6 +4526,7 @@ pub async fn release_registry_tree(
         )
         .await?;
         report.uploaded_files = Some(upload.files);
+        report.uploaded_bytes = Some(upload.bytes);
         printer.success(&format!(
             "Uploaded {} static origin file(s) ({}).",
             upload.files,
@@ -3767,6 +4535,15 @@ pub async fn release_registry_tree(
     }
 
     printer.success(&format!("Released {registry_name} {}.", options.version));
+    if printer.mode() == OutputMode::Json {
+        printer.json(&release_result_json(
+            "released",
+            registry_name,
+            dir,
+            options,
+            &report,
+        ));
+    }
     Ok(report)
 }
 
@@ -3798,6 +4575,83 @@ fn validate_release_options(options: &ReleaseTreeOptions) -> Result<()> {
         bail!("--cache-key requires --cache-output");
     }
     Ok(())
+}
+
+fn release_result_json(
+    status: &str,
+    registry_name: &str,
+    dir: &Path,
+    options: &ReleaseTreeOptions,
+    report: &ReleaseReport,
+) -> serde_json::Value {
+    let channel = options.channel.as_ref().map(|channel| {
+        serde_json::json!({
+            "name": channel,
+            "action": if options.init_channel { "init" } else { "advance" },
+            "count": options.count,
+            "partitions": options.partitions.as_deref(),
+            "touched_partitions": report.channel_partitions,
+        })
+    });
+    serde_json::json!({
+        "action": "release",
+        "status": status,
+        "registry": registry_name,
+        "directory": dir.to_string_lossy().to_string(),
+        "version": options.version.to_string(),
+        "dry_run": options.dry_run,
+        "resume": options.resume,
+        "cache_output": options
+            .cache_output
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        "cache_url": options.cache_url.as_deref(),
+        "cache_priority": options.cache_priority,
+        "cache": report.cache.as_ref().map(static_cache_report_json),
+        "cache_pointer_updated": report.cache_pointer_updated,
+        "upload_urls": &options.upload_urls,
+        "uploaded_files": report.uploaded_files,
+        "uploaded_bytes": report.uploaded_bytes,
+        "uploaded_bytes_human": report.uploaded_bytes.map(format_size),
+        "channel": channel,
+        "full_pack": report.full_pack.as_deref(),
+        "deltas": &report.deltas,
+        "planned_steps": release_plan_steps_json(options),
+    })
+}
+
+fn static_cache_report_json(report: &nixcache::StaticCacheReport) -> serde_json::Value {
+    serde_json::json!({
+        "paths": report.paths,
+        "narinfos": report.narinfos,
+        "nars": report.nars,
+        "output_dir": report.output_dir.to_string_lossy().to_string(),
+    })
+}
+
+fn release_plan_steps_json(options: &ReleaseTreeOptions) -> Vec<&'static str> {
+    let mut steps = vec![
+        "ensure_clean_worktree",
+        "create_signed_release_tag",
+        "generate_release_packs",
+    ];
+    if options.cache_url.is_some() {
+        steps.insert(1, "commit_cache_pointer");
+    }
+    if options.cache_output.is_some() {
+        steps.push("generate_static_cache");
+    }
+    if options.channel.is_some() {
+        steps.push(if options.init_channel {
+            "initialize_channel"
+        } else {
+            "advance_channel"
+        });
+    }
+    if !options.upload_urls.is_empty() {
+        steps.push("upload_static_origin");
+    }
+    steps
 }
 
 fn print_release_plan(
@@ -3950,7 +4804,7 @@ async fn write_release_artifacts(
     Ok(ReleaseReport {
         full_pack,
         deltas,
-        uploaded_files: None,
+        ..ReleaseReport::default()
     })
 }
 
@@ -3969,7 +4823,10 @@ async fn write_full_pack_artifact(
         bail!("full pack {existing} already exists; pass --resume to reuse it");
     }
 
-    let tmp = tempfile::TempDir::new().context("creating full-pack tempdir")?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".tmp-full-pack-")
+        .tempdir_in(pack_dir)
+        .with_context(|| format!("creating full-pack tempdir in {}", pack_dir.display()))?;
     let pack_path = pack::full_pack(dir, commit, tmp.path()).await?;
     let pack_name = file_name_string(&pack_path)?;
     fs::copy(&pack_path, pack_dir.join(&pack_name))
@@ -4005,7 +4862,10 @@ async fn write_delta_artifact(
         bail!("delta pack {artifact_name} already exists; pass --resume to reuse it");
     }
 
-    let tmp = tempfile::TempDir::new().context("creating delta-pack tempdir")?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".tmp-delta-pack-")
+        .tempdir_in(pack_dir)
+        .with_context(|| format!("creating delta-pack tempdir in {}", pack_dir.display()))?;
     let delta = pack::thin_delta(dir, base_commit, target_commit, base, tmp.path()).await?;
     let compressed = pack::zstd_compress(&delta, None).await?;
     fs::copy(&compressed, &dest).with_context(|| format!("copying {}", compressed.display()))?;
@@ -4054,7 +4914,7 @@ fn channel_init_dir(
     version: &semver::Version,
     signing_key: &str,
     printer: &Printer,
-) -> Result<()> {
+) -> Result<usize> {
     validate_channel_name(channel_name)?;
     assert_release_tag_exists(dir, version)?;
     let mut map = PartitionMap::new();
@@ -4066,7 +4926,7 @@ fn channel_init_dir(
     printer.success(&format!(
         "Initialized channel '{channel_name}' with 256/256 partitions on {version}."
     ));
-    Ok(())
+    Ok(256)
 }
 
 fn channel_advance_dir(
@@ -4077,7 +4937,7 @@ fn channel_advance_dir(
     partitions: Option<&str>,
     signing_key: &str,
     printer: &Printer,
-) -> Result<()> {
+) -> Result<usize> {
     validate_channel_name(channel_name)?;
     assert_release_tag_exists(dir, version)?;
     let mut map = read_channel_partition_map(dir, channel_name)?;
@@ -4085,7 +4945,7 @@ fn channel_advance_dir(
     let selected = select_partitions_for_advance(count, partitions, &map, version)?;
     if selected.is_empty() {
         printer.info("No partitions selected for advancement.");
-        return Ok(());
+        return Ok(0);
     }
     for bucket in &selected {
         write_channel_partition_tag(dir, channel_name, *bucket, version, signing_key)?;
@@ -4096,7 +4956,7 @@ fn channel_advance_dir(
         "Advanced channel '{channel_name}' {} partition(s) to {version}.",
         selected.len()
     ));
-    Ok(())
+    Ok(selected.len())
 }
 
 /// `apr tag <NAME>`

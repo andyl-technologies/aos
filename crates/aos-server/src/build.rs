@@ -8,6 +8,8 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{Notify, Semaphore, broadcast};
 
+use aos_core::nix::aos_nix_env;
+
 use crate::drain::BuildState;
 use crate::routes::AppState;
 
@@ -354,6 +356,12 @@ where
     Ok(())
 }
 
+fn nix_store_command() -> Command {
+    let mut command = Command::new("nix-store");
+    command.envs(aos_nix_env());
+    command
+}
+
 /// Manages active builds with deduplication and per-view concurrency limits.
 pub struct BuildManager {
     /// drv_path -> active build handle.
@@ -539,7 +547,7 @@ async fn run_build(
 
     let status = 'build: {
         for attempt in 1..=MAX_DAEMON_RETRIES {
-            let mut child = match Command::new("nix-store")
+            let mut child = match nix_store_command()
                 .args(["--realise", drv_path])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -767,7 +775,7 @@ fn schedule_cleanup(mgr: &Arc<BuildManager>, drv_path: &str) {
 
 /// Query the output paths of a derivation via `nix-store -q --outputs`.
 async fn query_outputs(drv_path: &str) -> Result<Vec<String>, String> {
-    let output = Command::new("nix-store")
+    let output = nix_store_command()
         .args(["-q", "--outputs", drv_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -789,7 +797,7 @@ async fn query_outputs(drv_path: &str) -> Result<Vec<String>, String> {
 
 /// Query the runtime closure of a store path via `nix-store -qR`.
 async fn query_closure(store_path: &str) -> Result<Vec<String>, String> {
-    let output = Command::new("nix-store")
+    let output = nix_store_command()
         .args(["-qR", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
