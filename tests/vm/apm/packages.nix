@@ -4500,6 +4500,32 @@ in {
       assert_file_contains /tmp/held.out "hold-tool 1.0.0 (hold-reg)" \
         "apm held lists installed held package"
 
+      echo "==> Consumer: reinstall held package preserves held metadata"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM reinstall hold-tool --yes > /tmp/hold-reinstall-held.out 2>&1 || {
+        cat /tmp/hold-reinstall-held.out
+        fail "apm reinstall succeeds for installed held package"
+      }
+      cat /tmp/hold-reinstall-held.out
+      assert_file_contains /tmp/hold-reinstall-held.out "Downloading" \
+        "apm reinstall downloads held package"
+      assert_file_contains /tmp/hold-reinstall-held.out "Reinstalled 1 package" \
+        "apm reinstall recreates held package generation"
+      assert_file_contains \
+        "/var/lib/profiles/per-user/holduser/current/meta/$HOLD_V1_HASH.json" \
+        '"held": true' "apm reinstall preserves held metadata"
+      $APM held > /tmp/held-after-reinstall.out 2>&1 || {
+        cat /tmp/held-after-reinstall.out
+        fail "apm held succeeds after reinstall"
+      }
+      cat /tmp/held-after-reinstall.out
+      assert_file_contains /tmp/held-after-reinstall.out "hold-tool 1.0.0 (hold-reg)" \
+        "apm held still lists package after reinstall"
+      "$PROFILE_BIN" > /tmp/hold-tool-after-held-reinstall.out
+      assert_file_contains /tmp/hold-tool-after-held-reinstall.out "^hold-tool 1.0.0$" \
+        "reinstalled held executable still runs hold-tool v1"
+
       echo "==> Maintainer: publish hold-tool 2.0.0"
       export HOME=/tmp
       export USER=root
