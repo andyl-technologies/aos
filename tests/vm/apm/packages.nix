@@ -4884,14 +4884,35 @@ in {
       run_ok depends "$APM" depends surfacepkg
       assert_file_contains /tmp/surface-depends.out "surface-leaf" \
         "apm depends resolves real published dependency"
+      run_ok depends-json "$APM" --json depends surfacepkg
+      "$JQ" -e \
+        '.package == "surfacepkg"
+          and .installed == true
+          and .registry == "surface-reg"
+          and .tree.name == "surfacepkg"
+          and (.tree.children | any(.name == "surface-leaf"))' \
+        /tmp/surface-depends-json.out >/dev/null
       run_ok rdepends "$APM" rdepends surface-leaf
       assert_file_contains /tmp/surface-rdepends.out "surfacepkg" \
         "apm rdepends finds real installed reverse dependency"
+      run_ok rdepends-json "$APM" --json rdepends surface-leaf
+      "$JQ" -e \
+        '.package == "surface-leaf"
+          and .target_versions == "1.0.0"
+          and (.dependents | any(.name == "surfacepkg" and .version == "1.0.0"))' \
+        /tmp/surface-rdepends-json.out >/dev/null
       run_ok policy-surface "$APM" policy surfacepkg
       assert_file_contains /tmp/surface-policy-surface.out "Candidate: 1.0.0" \
         "apm policy reports current surfacepkg candidate"
       assert_file_contains /tmp/surface-policy-surface.out "Installed: 1.0.0" \
         "apm policy reports installed surfacepkg version"
+      run_ok policy-surface-json "$APM" --json policy surfacepkg
+      "$JQ" -e \
+        '.package == "surfacepkg"
+          and .installed == "1.0.0"
+          and .candidate == "1.0.0"
+          and (.versions | any(.version == "1.0.0" and .registry == "surface-reg" and .installed == true))' \
+        /tmp/surface-policy-surface-json.out >/dev/null
 
       run_ok files "$APM" files surfacepkg
       assert_file_contains /tmp/surface-files.out "bin/surfacepkg" \
