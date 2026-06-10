@@ -131,10 +131,23 @@ pub async fn run(
 /// Delegates to the system's `nix-store --gc` to reclaim unreachable
 /// store paths.
 pub async fn run_gc(printer: &Printer) -> Result<()> {
+    run_gc_impl(printer, true).await
+}
+
+/// Run automatic GC after another mutating command.
+///
+/// Text output is preserved for normal mode, but JSON mode stays silent so the
+/// parent command remains a single JSON document.
+pub async fn run_gc_after_mutation(printer: &Printer) -> Result<()> {
+    run_gc_impl(printer, false).await
+}
+
+async fn run_gc_impl(printer: &Printer, emit_json: bool) -> Result<()> {
     printer.info("Running garbage collection...");
 
+    let nix_env = aos_nix_env();
     let output = tokio::process::Command::new("nix-store")
-        .envs(aos_nix_env())
+        .envs(nix_env.iter().cloned())
         .arg("--gc")
         .output()
         .await
@@ -146,12 +159,31 @@ pub async fn run_gc(printer: &Printer) -> Result<()> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if emit_json && printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "gc",
+            "status": "completed",
+            "success": true,
+            "nix_store_dir": nix_env_value(&nix_env, "NIX_STORE_DIR"),
+            "nix_state_dir": nix_env_value(&nix_env, "NIX_STATE_DIR"),
+            "stdout": stdout.trim_end(),
+            "stderr": stderr.trim_end(),
+        }));
+        return Ok(());
+    }
+
     if !stdout.is_empty() {
         printer.plain(stdout.trim_end());
     }
 
     printer.success("Garbage collection complete.");
     Ok(())
+}
+
+fn nix_env_value(env: &[(&'static str, String)], key: &str) -> Option<String> {
+    env.iter()
+        .find_map(|(name, value)| (*name == key).then(|| value.clone()))
 }
 
 /// Clear the NAR cache directory and return the number of bytes freed.
