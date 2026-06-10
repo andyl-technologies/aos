@@ -260,6 +260,12 @@ in {
           run_clean ${self}/bin/apr status --registry host-reg \
             > "$work/apr-status-keys-no-commit.out" 2>&1
           grep -q "keys.toml" "$work/apr-status-keys-no-commit.out"
+          run_clean ${self}/bin/apr --json status --registry host-reg \
+            > "$work/apr-status-keys-no-commit.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.clean == false
+              and (.entries | any(.status == " M" and .path == "keys.toml"))' \
+            "$work/apr-status-keys-no-commit.json" >/dev/null
           if git -C "$reg" log --oneline --grep "registry: add signing key root" \
             | grep -q .; then
             cat "$work/apr-status-keys-no-commit.out"
@@ -365,6 +371,11 @@ in {
             cat "$work/apr-status.out"
             exit 1
           fi
+          run_clean ${self}/bin/apr --json status --registry host-reg \
+            > "$work/apr-status-clean.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.clean == true and .entries == []' \
+            "$work/apr-status-clean.json" >/dev/null
           run_clean ${self}/bin/apr --json packages --registry host-reg > "$work/apr-packages-empty.json"
           ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apr-packages-empty.json" >/dev/null
           pkg_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -401,9 +412,26 @@ in {
           grep -q "registry.toml" "$work/apr-status-dirty.out"
           grep -q "packages/h/hostpkg.toml" "$work/apr-status-dirty.out"
           grep -q "closures/$pkg_hash" "$work/apr-status-dirty.out"
+          run_clean ${self}/bin/apr --json status --registry host-reg \
+            > "$work/apr-status-dirty.json"
+          ${pkgs.jq}/bin/jq -e --arg closure "closures/$pkg_hash" \
+            '.clean == false
+              and (.entries | any(.path == "registry.toml"))
+              and (.entries | any(.path == "packages/h/hostpkg.toml"))
+              and (.entries | any(.path == $closure))' \
+            "$work/apr-status-dirty.json" >/dev/null
 
           run_clean ${self}/bin/apr diff --registry host-reg --stat > "$work/apr-diff-stat.out" 2>&1
           grep -q "registry.toml" "$work/apr-diff-stat.out"
+          run_clean ${self}/bin/apr --json diff --registry host-reg --stat \
+            > "$work/apr-diff-stat.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.remote == false
+              and .stat == true
+              and .clean == false
+              and (.changed_files | any(.status == "M" and .path == "registry.toml"))
+              and (.output | contains("registry.toml"))' \
+            "$work/apr-diff-stat.json" >/dev/null
 
           git -C "$reg" add -A
           git -C "$reg" commit -m "release: hostpkg 1.0.0" > "$work/git-commit-package.out" 2>&1
@@ -470,6 +498,16 @@ in {
           grep -q "Verified 1 package(s), 1 closure(s), no errors" "$work/apr-verify.out"
           run_clean ${self}/bin/apr log --registry host-reg --package hostpkg -n 1 > "$work/apr-log-package.out" 2>&1
           grep -q "release: hostpkg 1.0.0" "$work/apr-log-package.out"
+          run_clean ${self}/bin/apr --json log --registry host-reg --package hostpkg -n 1 \
+            > "$work/apr-log-package.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.package == "hostpkg"
+              and .limit == 1
+              and (.commits | length == 1)
+              and (.commits[0].subject | contains("release: hostpkg 1.0.0"))
+              and (.commits[0].hash | length == 64)
+              and (.commits[0].timestamp > 0)' \
+            "$work/apr-log-package.json" >/dev/null
 
           git init --bare --object-format=sha256 "$work/host-origin.git" > "$work/git-init-origin.out" 2>&1
           git -C "$reg" remote add origin "$work/host-origin.git"
@@ -477,6 +515,15 @@ in {
           grep -q "Pushed." "$work/apr-push.out"
           run_clean ${self}/bin/apr diff --registry host-reg --remote --stat > "$work/apr-diff-remote.out" 2>&1
           grep -q "No pending changes" "$work/apr-diff-remote.out"
+          run_clean ${self}/bin/apr --json diff --registry host-reg --remote --stat \
+            > "$work/apr-diff-remote.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.remote == true
+              and .stat == true
+              and .clean == true
+              and .changed_files == []
+              and (.base | length > 0)' \
+            "$work/apr-diff-remote.json" >/dev/null
 
           run_clean ${self}/bin/apm registry add "file://$reg" --name host-reg-client > "$work/apm-registry-add.out" 2>&1
           grep -q "Registry 'host-reg-client' added" "$work/apm-registry-add.out"

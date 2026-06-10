@@ -1329,7 +1329,7 @@ in {
   # -------------------------------------------------------------------------
   registry-maintainer-workflow = testing.mkVMTest {
     name = "apm-registry-maintainer-workflow";
-    rootfsDeps = maintainerWorkflowDeps;
+    rootfsDeps = maintainerWorkflowDeps ++ [pkgs.jq];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -1418,6 +1418,21 @@ in {
         "apr status shows runner package metadata"
       assert_file_contains /tmp/maint-status.out "registry.toml" \
         "apr status shows cache pointer update"
+      $APR --json status --registry maint-reg > /tmp/maint-status.json 2>&1 || {
+        cat /tmp/maint-status.json
+        fail "apr --json status reports pending maintainer changes"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        '.clean == false
+          and (.entries | any(.path == "packages/m/maint-git.toml"))
+          and (.entries | any(.path == "packages/m/maint-curl.toml"))
+          and (.entries | any(.path == "packages/m/maint-runner.toml"))
+          and (.entries | any(.path == "registry.toml"))' \
+        /tmp/maint-status.json >/dev/null || {
+        cat /tmp/maint-status.json
+        fail "apr --json status reports real changeset paths"
+      }
+      pass "apr --json status reports real changeset paths"
 
       $APR diff --registry maint-reg --stat > /tmp/maint-diff-stat.out 2>&1 || {
         cat /tmp/maint-diff-stat.out
@@ -1426,6 +1441,22 @@ in {
       cat /tmp/maint-diff-stat.out
       assert_file_contains /tmp/maint-diff-stat.out "registry.toml" \
         "apr diff --stat shows tracked cache pointer update"
+      $APR --json diff --registry maint-reg --stat \
+        > /tmp/maint-diff-stat.json 2>&1 || {
+        cat /tmp/maint-diff-stat.json
+        fail "apr --json diff --stat reports tracked maintainer changes"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        '.remote == false
+          and .stat == true
+          and .clean == false
+          and (.changed_files | any(.status == "M" and .path == "registry.toml"))
+          and (.output | contains("registry.toml"))' \
+        /tmp/maint-diff-stat.json >/dev/null || {
+        cat /tmp/maint-diff-stat.json
+        fail "apr --json diff --stat reports tracked cache pointer update"
+      }
+      pass "apr --json diff --stat reports tracked cache pointer update"
 
       git -C "$REG_DIR" status --short --untracked-files=all \
         > /tmp/changeset.status
@@ -1466,6 +1497,24 @@ in {
       assert_file_contains /tmp/maint-log-runner.out \
         "release: publish maintainer tools" \
         "apr log --package shows maintainer package commit"
+      $APR --json log --registry maint-reg --package maint-runner -n 1 \
+        > /tmp/maint-log-runner.json 2>&1 || {
+        cat /tmp/maint-log-runner.json
+        fail "apr --json log --package reports package history"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        '.package == "maint-runner"
+          and .limit == 1
+          and (.commits | length == 1)
+          and .commits[0].subject == "release: publish maintainer tools"
+          and (.commits[0].hash | length > 0)
+          and (.commits[0].short_hash | length > 0)
+          and (.commits[0].timestamp > 0)' \
+        /tmp/maint-log-runner.json >/dev/null || {
+        cat /tmp/maint-log-runner.json
+        fail "apr --json log --package reports maintainer package commit"
+      }
+      pass "apr --json log --package reports maintainer package commit"
 
       $APR packages --registry maint-reg > /tmp/maint-packages.out 2>&1
       assert_file_contains /tmp/maint-packages.out "maint-git" \
@@ -1609,6 +1658,23 @@ in {
       cat /tmp/maint-remote-diff.out
       assert_file_contains /tmp/maint-remote-diff.out "No pending changes" \
         "apr diff --remote is clean after pushing branch"
+      $APR --json diff --registry maint-reg --remote --stat \
+        > /tmp/maint-remote-diff.json 2>&1 || {
+        cat /tmp/maint-remote-diff.json
+        fail "apr --json diff --remote compares against pushed branch"
+      }
+      ${pkgs.jq}/bin/jq -e \
+        '.remote == true
+          and .stat == true
+          and .clean == true
+          and (.changed_files | length == 0)
+          and (.base | length > 0)
+          and .output == ""' \
+        /tmp/maint-remote-diff.json >/dev/null || {
+        cat /tmp/maint-remote-diff.json
+        fail "apr --json diff --remote is clean after pushing branch"
+      }
+      pass "apr --json diff --remote is clean after pushing branch"
       git -C "$REG_DIR" push origin 1.0.0
 
       assert_file_exists "/tmp/maint-cache/$GIT_HASH.narinfo" \
