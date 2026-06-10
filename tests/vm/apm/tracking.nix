@@ -125,6 +125,24 @@
     version = "9.0.0";
     leaf = branchLeafToolV9;
   };
+  tagLeafToolV1 = mkTrackingLeafTool {
+    rootName = "tag-tool";
+    version = "1.0.0";
+  };
+  tagToolV1 = mkTrackingRootTool {
+    pname = "tag-tool";
+    version = "1.0.0";
+    leaf = tagLeafToolV1;
+  };
+  tagLeafToolV2 = mkTrackingLeafTool {
+    rootName = "tag-tool";
+    version = "2.0.0";
+  };
+  tagToolV2 = mkTrackingRootTool {
+    pname = "tag-tool";
+    version = "2.0.0";
+    leaf = tagLeafToolV2;
+  };
   trackingWorkflowDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -391,28 +409,20 @@ in {
   # -------------------------------------------------------------------------
   tracking-tag = testing.mkVMTest {
     name = "apm-tracking-tag";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        tagLeafToolV1
+        tagToolV1
+        tagLeafToolV2
+        tagToolV2
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: tag tracking stays pinned to selected tag"
-
-      make_tag_tool() {
-        version="$1"
-        src="/tmp/tag-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/tag-tool"
-        cat > "$src/bin/tag-tool" << EOF
-      #!/bin/sh
-      echo "tag-tool $version executed"
-      EOF
-        chmod +x "$src/bin/tag-tool"
-        printf "tag-tool payload %s\n" "$version" \
-          > "$src/share/tag-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -498,10 +508,21 @@ in {
         cat "/tmp/tag-commit-$version.out"
       }
 
-      TOOL_V1_STORE=$(make_tag_tool 1.0.0)
-      TOOL_V2_STORE=$(make_tag_tool 2.0.0)
+      TOOL_V1_STORE="${tagToolV1}"
+      TOOL_V1_DEP_STORE="${tagLeafToolV1}"
+      TOOL_V2_STORE="${tagToolV2}"
+      TOOL_V2_DEP_STORE="${tagLeafToolV2}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_V1_STORE" > /tmp/tag-v1-refs.out
+      assert_file_contains /tmp/tag-v1-refs.out "$TOOL_V1_DEP_STORE" \
+        "tag-tool v1 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V2_STORE" > /tmp/tag-v2-refs.out
+      assert_file_contains /tmp/tag-v2-refs.out "$TOOL_V2_DEP_STORE" \
+        "tag-tool v2 root has a real dependency closure"
 
       $APR create tag-reg
       REG_DIR="$REG_STORAGE/tag-reg"
@@ -510,6 +531,8 @@ in {
       git -C "$REG_DIR" tag v1.0.0
       assert_file_exists "/tmp/tag-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has tag-tool v1 narinfo"
+      assert_file_exists "/tmp/tag-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has tag-tool v1 dependency narinfo"
 
       git init --bare --object-format=sha256 /tmp/tag-origin.git
       git -C /tmp/tag-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -565,6 +588,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_V1_STORE" "tag-tool-v1"
+      delete_store_path "$TOOL_V1_DEP_STORE" "tag-tool-v1-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -574,25 +598,30 @@ in {
         fail "apm install downloads selected tag v1"
       }
       cat /tmp/tag-install-v1.out
-      assert_file_contains /tmp/tag-install-v1.out "Downloading" \
-        "apm install downloads tag v1 NAR"
+      assert_file_contains /tmp/tag-install-v1.out "Downloading 2 NAR" \
+        "apm install downloads tag v1 closure"
       assert_store_valid "$TOOL_V1_STORE" "tag-tool v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "tag-tool v1 dependency"
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/tag-tool"
       "$PROFILE_TOOL" > /tmp/tag-run-v1.out
       assert_file_contains /tmp/tag-run-v1.out \
-        "tag-tool 1.0.0 executed" "installed tag v1 tool executes"
+        "^tag-tool 1.0.0 via tag-tool-leaf 1.0.0$" \
+        "installed tag v1 tool executes through dependency"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
       publish_tag_version 2.0.0 "$TOOL_V2_STORE"
       assert_file_exists "/tmp/tag-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has tag-tool v2 narinfo on default branch"
+      assert_file_exists "/tmp/tag-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has tag-tool v2 dependency narinfo on default branch"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       export HOME=/tmp/tag-consumer
       export USER=taguser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_V2_STORE" "tag-tool-v2"
+      delete_store_path "$TOOL_V2_DEP_STORE" "tag-tool-v2-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -627,9 +656,11 @@ in {
       assert_file_not_contains /tmp/tag-upgrade.out "Downloading" \
         "tag-pinned upgrade does not download default branch v2"
       assert_store_missing "$TOOL_V2_STORE" "tag-tool v2"
+      assert_store_missing "$TOOL_V2_DEP_STORE" "tag-tool v2 dependency"
       "$PROFILE_TOOL" > /tmp/tag-run-still-v1.out
       assert_file_contains /tmp/tag-run-still-v1.out \
-        "tag-tool 1.0.0 executed" "tag-pinned profile remains on v1"
+        "^tag-tool 1.0.0 via tag-tool-leaf 1.0.0$" \
+        "tag-pinned profile remains on v1"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
