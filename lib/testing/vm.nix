@@ -69,10 +69,9 @@
   # production roles must use the `environment.etc` route through the
   # EROFS image.
   #
-  # `mkTestDisk` is a function of `system` only — two callers passing
-  # the same system reference the same Nix derivation, which is what
-  # lets fleet tests share one disk across every machine of a given
-  # variant.
+  # `mkTestDisk` is a function of `{system, extraClosures, varSizeMiB}`:
+  # two callers passing identical inputs reference the same Nix derivation,
+  # which lets fleet tests share disks where their machine images match.
   mkTestDisk = {
     system,
     name ? "aos-disk",
@@ -83,6 +82,10 @@
     # lib/build/rootfs.nix's `extraClosures` and tests/fleet/
     # apm-system-upgrade.nix.
     extraClosures ? [],
+    # Size of the /var partition (partition 4) in MiB. Raise for tests
+    # whose guests stage large payloads under /var (e.g. a fleet registry
+    # peer writing a static binary cache of a full system closure).
+    varSizeMiB ? 256,
   }: let
     systemPackages = system.config.environment.systemPackages;
 
@@ -512,7 +515,7 @@
           name = "assemble";
           script = ''
             set -eu
-            VAR_SIZE_MIB=256
+            VAR_SIZE_MIB=${builtins.toString varSizeMiB}
 
             # ── /var partition staging ──────────────────────────────────
             mkdir -p var

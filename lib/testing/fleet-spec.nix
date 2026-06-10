@@ -38,6 +38,8 @@
     description = "any value";
   };
 
+  positiveInt = types.addCheck types.int (v: v > 0);
+
   fleetMachineType = types.submodule ({config, ...}: {
     options = {
       system = mkOption {
@@ -90,6 +92,18 @@
           doesn't have to traverse the network for store paths (the
           pre-staged path is registered valid in the Nix DB at test time;
           see tests/fleet/apm-system-upgrade.nix).
+        '';
+      };
+
+      varSizeMiB = mkOption {
+        type = positiveInt;
+        default = 256;
+        description = ''
+          Size of this machine's /var partition in MiB. The default fits
+          per-test state; raise it for machines that stage large payloads
+          under /var, e.g. a registry peer generating a static binary
+          cache of a full system closure (tests/fleet/
+          apm-registry-upgrade.nix).
         '';
       };
 
