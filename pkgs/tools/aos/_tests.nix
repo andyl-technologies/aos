@@ -1481,6 +1481,65 @@ in {
               and (.branches | any(.name == "origin/stable" and .remote == true))' \
             "$work/apr-push-host-install-v1.json" >/dev/null
 
+          run_clean ${self}/bin/apr create host-direct-release \
+            > "$work/apr-create-host-direct-release.out" 2>&1
+          direct_reg="$data/apm/registries/host-direct-release"
+          direct_release_url="http://127.0.0.1:$install_cache_port/direct-release"
+          run_clean ${self}/bin/apr --json release 1.0.0 \
+            --registry host-direct-release \
+            --store-path "$install_store" \
+            --name hostdirect \
+            --description "Host direct release fixture" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --key "$work/host-install-release-key" \
+            --cache-output "$work/direct-release-cache" \
+            --cache-url "$direct_release_url" \
+            --cache-priority 66 \
+            --upload-url "file://$work/install-static-cache-upload/direct-release" \
+            > "$work/apr-release-host-direct.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg cache "$work/direct-release-cache" \
+            --arg cache_url "$direct_release_url" \
+            --arg upload_url "file://$work/install-static-cache-upload/direct-release" \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-direct-release"
+              and .version == "1.0.0"
+              and .dry_run == false
+              and .cache_output == $cache
+              and .cache_url == $cache_url
+              and .cache_priority == 66
+              and .cache_pointer_updated == true
+              and .upload_urls == [$upload_url]
+              and (.cache.paths >= 2)
+              and (.cache.narinfos >= 2)
+              and (.cache.nars >= 2)
+              and .cache.output_dir == $cache
+              and (.full_pack | startswith("pack-") and endswith(".pack"))
+              and .deltas == []
+              and (.uploaded_files > 0)
+              and (.uploaded_bytes > 0)' \
+            "$work/apr-release-host-direct.json" >/dev/null
+          test -f "$direct_reg/packages/h/hostdirect.toml"
+          grep -q "$direct_release_url" "$direct_reg/registry.toml"
+          git -C "$direct_reg" rev-parse --verify '1.0.0^{tag}' \
+            > "$work/apr-release-host-direct-tag.out"
+          git -C "$direct_reg" cat-file -p 1.0.0 \
+            > "$work/apr-release-host-direct-tag-object.out"
+          grep -q "BEGIN SSH SIGNATURE" \
+            "$work/apr-release-host-direct-tag-object.out"
+          test -f "$work/direct-release-cache/$install_leaf_hash.narinfo"
+          test -f "$work/direct-release-cache/$install_hash.narinfo"
+          test -f "$work/install-static-cache-upload/direct-release/HEAD"
+          test -f "$work/install-static-cache-upload/direct-release/info/refs"
+          test -f "$work/install-static-cache-upload/direct-release/releases/1/0/0/objects/info/packs"
+          test -f "$work/install-static-cache-upload/direct-release/nix-cache-info"
+          test -f "$work/install-static-cache-upload/direct-release/$install_leaf_hash.narinfo"
+          test -f "$work/install-static-cache-upload/direct-release/$install_hash.narinfo"
+          find "$work/install-static-cache-upload/direct-release/releases/1/0/0/objects/pack" \
+            -name 'pack-*.pack' | grep -q .
+
           PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$install_cache_port" \
             --bind 127.0.0.1 --directory "$work/install-static-cache-upload" \
             > "$work/install-cache-server.log" 2>&1 &
@@ -1496,6 +1555,63 @@ in {
           main_cache="$cache"
           main_profile_root="$profile_root"
           main_profile="$profile"
+          home="$work/direct-home"
+          config="$work/direct-config"
+          data="$work/direct-share"
+          cache="$work/direct-cache"
+          profile_root="$work/direct-profiles"
+          profile="$profile_root/per-user/unknown"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add --no-verify "$direct_release_url" \
+            --name host-direct-release \
+            --tag 1.0.0 > "$work/apm-add-host-direct-release.out" 2>&1
+          grep -q "Registry 'host-direct-release' added" \
+            "$work/apm-add-host-direct-release.out"
+          grep -q 'tag = "1.0.0"' \
+            "$config/apm/registries.d/host-direct-release.toml"
+          run_clean ${self}/bin/apm search hostdirect \
+            --registry host-direct-release \
+            > "$work/apm-search-host-direct-release.out" 2>&1
+          grep -q "hostdirect/host-direct-release 1.0.0" \
+            "$work/apm-search-host-direct-release.out"
+          nix_store --delete --ignore-liveness "$install_store" \
+            > "$work/nix-delete-host-direct-install.out" 2>&1
+          nix_store --delete --ignore-liveness "$install_leaf_store" \
+            > "$work/nix-delete-host-direct-leaf.out" 2>&1
+          if nix_store --check-validity "$install_store" \
+            > "$work/nix-valid-host-direct-install-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-direct-install-deleted.out"
+            exit 1
+          fi
+          if nix_store --check-validity "$install_leaf_store" \
+            > "$work/nix-valid-host-direct-leaf-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-direct-leaf-deleted.out"
+            exit 1
+          fi
+          run_clean ${self}/bin/apm --json install hostdirect \
+            --registry host-direct-release \
+            --yes > "$work/apm-install-host-direct-release.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+            '.action == "install"
+              and .status == "installed"
+              and .requested == ["hostdirect"]
+              and .generation == 1
+              and (.roots | length == 1)
+              and .roots[0].name == "hostdirect"
+              and .roots[0].registry == "host-direct-release"
+              and .roots[0].version == "1.0.0"
+              and .roots[0].store_path == $store
+              and (.closure | any(.name == "hostdirect" and .store_path == $store and .explicit == true))
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
+            "$work/apm-install-host-direct-release.json" >/dev/null
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-direct-release-run.out"
+          grep -q "host leaf package executed" "$work/host-direct-release-run.out"
+          grep -q "host install package executed" "$work/host-direct-release-run.out"
+          assert_default_profile_absent
+          rm -rf "$profile_root"
           home="$work/channel-home"
           config="$work/channel-config"
           data="$work/channel-share"
