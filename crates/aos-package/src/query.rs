@@ -253,6 +253,7 @@ pub async fn list(
 
     // Collect entries: (name, registry_name, version, status).
     let mut entries: Vec<(String, String, String, String)> = Vec::new();
+    let mut listed_installed_sources: HashSet<(String, String)> = HashSet::new();
 
     for reg in registries.registries() {
         if let Some(filter) = registry_filter {
@@ -274,6 +275,9 @@ pub async fn list(
                 .get(&(name.to_string(), reg.config.name.clone()))
                 .copied();
             let is_installed = installed.is_some();
+            if is_installed {
+                listed_installed_sources.insert((name.to_string(), reg.config.name.clone()));
+            }
 
             // Determine held status.
             let is_held = installed
@@ -366,6 +370,38 @@ pub async fn list(
                 name.to_string(),
                 reg.config.name.clone(),
                 display_version,
+                status,
+            ));
+        }
+    }
+
+    if (installed_only || held_only) && !upgradable_only {
+        for meta in &meta_list {
+            let Some(apm) = meta.apm.as_ref() else {
+                continue;
+            };
+            if let Some(filter) = registry_filter {
+                if apm.registry != filter {
+                    continue;
+                }
+            }
+            if held_only && !apm.held {
+                continue;
+            }
+            if listed_installed_sources.contains(&(apm.name.clone(), apm.registry.clone())) {
+                continue;
+            }
+
+            let mut status = build_status_string(true, false, apm.held, None);
+            if !status.is_empty() {
+                status.push(',');
+            }
+            status.push_str("unavailable");
+
+            entries.push((
+                apm.name.clone(),
+                apm.registry.clone(),
+                apm.version.clone(),
                 status,
             ));
         }
