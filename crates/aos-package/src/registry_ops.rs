@@ -2662,6 +2662,30 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
                 Some(name) => vec![name.clone()],
                 None => configured_registry_names(config),
             };
+            if printer.mode() == OutputMode::Json {
+                let entries = registries
+                    .iter()
+                    .map(|name| {
+                        let keys = store
+                            .lookup_all(name)
+                            .iter()
+                            .map(|key| {
+                                serde_json::json!({
+                                    "algorithm": &key.algorithm,
+                                    "fingerprint": &key.fingerprint,
+                                    "source": format!("{:?}", key.source),
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        serde_json::json!({
+                            "registry": name,
+                            "keys": keys,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                printer.json(&serde_json::json!(entries));
+                return Ok(());
+            }
             if registries.is_empty() {
                 printer.info("No configured registries to inspect.");
                 return Ok(());
@@ -2703,6 +2727,38 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let roster = load_committed_roster(&dir)?;
+            if printer.mode() == OutputMode::Json {
+                let active = roster
+                    .active
+                    .iter()
+                    .map(|entry| {
+                        let (_registry, algorithm, public_key) = parse_signing_key(&entry.key)
+                            .with_context(|| format!("invalid active key '{}'", entry.id))?;
+                        Ok(serde_json::json!({
+                            "id": &entry.id,
+                            "algorithm": algorithm,
+                            "fingerprint": key_fingerprint(&public_key),
+                            "key": &entry.key,
+                        }))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let revoked = roster
+                    .revoked
+                    .iter()
+                    .map(|entry| {
+                        serde_json::json!({
+                            "id": &entry.id,
+                            "reason": &entry.reason,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                printer.json(&serde_json::json!({
+                    "registry": registry_name,
+                    "active": active,
+                    "revoked": revoked,
+                }));
+                return Ok(());
+            }
             if roster.active.is_empty() && roster.revoked.is_empty() {
                 printer.info(&format!(
                     "Registry '{registry_name}' has no keys in keys.toml."

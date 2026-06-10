@@ -243,6 +243,11 @@ in {
             > "$work/apr-keys-list-empty.out" 2>&1
           grep -q "Registry 'host-reg' has no keys in keys.toml" \
             "$work/apr-keys-list-empty.out"
+          run_clean ${self}/bin/apr --json keys list --registry host-reg \
+            > "$work/apr-keys-list-empty.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.registry == "host-reg" and .active == [] and .revoked == []' \
+            "$work/apr-keys-list-empty.json" >/dev/null
           assert_no_profile
 
           run_clean ${self}/bin/apr keys add root "$host_key_root" \
@@ -292,6 +297,14 @@ in {
             > "$work/apr-keys-list-rotated.out" 2>&1
           grep -q "backup:" "$work/apr-keys-list-rotated.out"
           grep -q "root: host rotation" "$work/apr-keys-list-rotated.out"
+          run_clean ${self}/bin/apr --json keys list --registry host-reg \
+            > "$work/apr-keys-list-rotated.json"
+          ${pkgs.jq}/bin/jq -e \
+            --arg backup "$host_key_backup" \
+            '.registry == "host-reg"
+              and (.active | any(.id == "backup" and .key == $backup))
+              and (.revoked | any(.id == "root" and .reason == "host rotation"))' \
+            "$work/apr-keys-list-rotated.json" >/dev/null
           git -C "$reg" log --oneline > "$work/apr-keys-log.out"
           grep -q "registry: add signing key backup" "$work/apr-keys-log.out"
           grep -q "registry: retire signing key root" "$work/apr-keys-log.out"
@@ -300,6 +313,11 @@ in {
           run_clean ${self}/bin/apr trust list host-reg \
             > "$work/apr-trust-list-empty.out" 2>&1
           grep -q "host-reg: no pinned keys" "$work/apr-trust-list-empty.out"
+          run_clean ${self}/bin/apr --json trust list host-reg \
+            > "$work/apr-trust-list-empty.json"
+          ${pkgs.jq}/bin/jq -e \
+            'length == 1 and .[0].registry == "host-reg" and .[0].keys == []' \
+            "$work/apr-trust-list-empty.json" >/dev/null
           run_clean ${self}/bin/apr trust pin host-reg "$host_key_root" \
             > "$work/apr-trust-pin-root.out" 2>&1
           grep -q "Pinned trust key for registry 'host-reg'" \
@@ -312,6 +330,14 @@ in {
           run_clean ${self}/bin/apr trust list host-reg \
             > "$work/apr-trust-list-pinned.out" 2>&1
           grep -q "host-reg: Ed25519" "$work/apr-trust-list-pinned.out"
+          run_clean ${self}/bin/apr --json trust list host-reg \
+            > "$work/apr-trust-list-pinned.json"
+          ${pkgs.jq}/bin/jq -e \
+            'length == 1
+              and .[0].registry == "host-reg"
+              and (.[0].keys | length == 2)
+              and (.[0].keys | all(.algorithm == "Ed25519" and .source == "Tofu"))' \
+            "$work/apr-trust-list-pinned.json" >/dev/null
           if run_clean ${self}/bin/apr trust pin host-reg "$host_key_foreign" \
             > "$work/apr-trust-pin-foreign.out" 2>&1; then
             cat "$work/apr-trust-pin-foreign.out"
@@ -456,6 +482,15 @@ in {
           grep -q "Registry 'host-reg-client' added" "$work/apm-registry-add.out"
           run_clean ${self}/bin/apm registry list > "$work/apm-registry-list.out" 2>&1
           grep -q "host-reg-client" "$work/apm-registry-list.out"
+          run_clean ${self}/bin/apm --json registry list > "$work/apm-registry-list.json"
+          ${pkgs.jq}/bin/jq -e \
+            'length == 1
+              and .[0].name == "host-reg-client"
+              and .[0].enabled == true
+              and .[0].status == "enabled"
+              and .[0].packages == 1' \
+            "$work/apm-registry-list.json" >/dev/null
+          assert_no_profile
           run_clean ${self}/bin/apm search hostpkg --registry host-reg-client > "$work/apm-search.out" 2>&1
           grep -q "hostpkg/host-reg-client 1.0.0" "$work/apm-search.out"
           run_clean ${self}/bin/apm --json search hostpkg --registry host-reg-client > "$work/apm-search.json"
@@ -864,6 +899,17 @@ in {
 
           run_clean ${self}/bin/apm verify hostinstall > "$work/apm-verify-host-install.out" 2>&1
           grep -q "integrity verified" "$work/apm-verify-host-install.out"
+          run_clean ${self}/bin/apm --json verify hostinstall > "$work/apm-verify-host-install.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store" \
+            '.package == "hostinstall"
+              and .registry == "host-install-client"
+              and .version == "1.0.0"
+              and .store_path == $store
+              and .verified == true
+              and (.expected_nar_hash | startswith("sha256-"))
+              and (.actual_nar_hash | startswith("sha256:"))' \
+            "$work/apm-verify-host-install.json" >/dev/null
+          assert_default_profile_absent
           run_clean ${self}/bin/apm files hostinstall > "$work/apm-files-host-install.out" 2>&1
           grep -q "bin/host-install-tool" "$work/apm-files-host-install.out"
 
@@ -930,6 +976,17 @@ in {
 
           run_clean ${self}/bin/apm verify hostinstall > "$work/apm-verify-host-install-v2.out" 2>&1
           grep -q "integrity verified" "$work/apm-verify-host-install-v2.out"
+          run_clean ${self}/bin/apm --json verify hostinstall > "$work/apm-verify-host-install-v2.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store_v2" \
+            '.package == "hostinstall"
+              and .registry == "host-install-client"
+              and .version == "2.0.0"
+              and .store_path == $store
+              and .verified == true
+              and (.expected_nar_hash | startswith("sha256-"))
+              and (.actual_nar_hash | startswith("sha256:"))' \
+            "$work/apm-verify-host-install-v2.json" >/dev/null
+          assert_default_profile_absent
           run_clean ${self}/bin/apm files hostinstall > "$work/apm-files-host-install-v2.out" 2>&1
           grep -q "bin/host-install-tool" "$work/apm-files-host-install-v2.out"
           run_clean ${self}/bin/apm --json files hostinstall > "$work/apm-files-host-install-v2.json"
