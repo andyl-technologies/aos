@@ -1,3 +1,6 @@
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
 use anyhow::{Result, bail};
 
 use super::config::ApmConfig;
@@ -99,6 +102,7 @@ pub async fn run(
     dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
+    let json_mode = printer.mode() == OutputMode::Json;
     let inspect_profile = Profile::open_readonly(config.scope);
 
     // Must have a current generation to roll back from.
@@ -125,24 +129,48 @@ pub async fn run(
     };
 
     // Show what we are about to do.
-    printer.info(&format!(
-        "Rolling back from generation {} to generation {}.",
-        current.number, target.number
-    ));
+    if !json_mode {
+        printer.info(&format!(
+            "Rolling back from generation {} to generation {}.",
+            current.number, target.number
+        ));
+    }
 
     // Optionally show package differences.
-    let current_roots = current.roots().unwrap_or_default();
-    let target_roots = target.roots().unwrap_or_default();
+    let current_roots = current.roots()?;
+    let target_roots = target.roots()?;
 
-    let current_hashes: std::collections::HashSet<&str> =
-        current_roots.iter().map(|(h, _)| h.as_str()).collect();
-    let target_hashes: std::collections::HashSet<&str> =
-        target_roots.iter().map(|(h, _)| h.as_str()).collect();
+    let current_hashes: HashSet<&str> = current_roots.iter().map(|(h, _)| h.as_str()).collect();
+    let target_hashes: HashSet<&str> = target_roots.iter().map(|(h, _)| h.as_str()).collect();
 
-    let added: Vec<_> = target_hashes.difference(&current_hashes).collect();
-    let removed: Vec<_> = current_hashes.difference(&target_hashes).collect();
+    let added: Vec<_> = target_hashes.difference(&current_hashes).copied().collect();
+    let removed: Vec<_> = current_hashes.difference(&target_hashes).copied().collect();
+    let current_by_hash = roots_by_hash(&current_roots);
+    let target_by_hash = roots_by_hash(&target_roots);
 
-    if !added.is_empty() || !removed.is_empty() {
+    if json_mode {
+        if dry_run {
+            let registries = load_registries(config)?;
+            printer.json(&rollback_result_json(
+                "planned",
+                generation,
+                current.number,
+                target.number,
+                dry_run,
+                None,
+                &added,
+                &removed,
+                &target_by_hash,
+                &current_by_hash,
+                &current_roots,
+                &target_roots,
+                &registries,
+            ));
+            return Ok(());
+        }
+    }
+
+    if printer.mode() != OutputMode::Json && (!added.is_empty() || !removed.is_empty()) {
         if !added.is_empty() {
             printer.plain(&format!("  Restoring {} path(s).", added.len()));
         }
@@ -157,18 +185,136 @@ pub async fn run(
     }
 
     let profile = Profile::open(config.scope)?;
+    let registries = load_registries(config)?;
 
     // Switch to the target generation.
     profile.switch_to(target)?;
 
     // Rebuild metadata from the target generation's roots.
-    let reg_configs = config.enabled_registries();
-    let registries = RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")?;
     meta::rebuild_meta(&profile, target, &registries)?;
 
-    printer.success(&format!("Rolled back to generation {}.", target.number));
+    if json_mode {
+        printer.json(&rollback_result_json(
+            "rolled_back",
+            generation,
+            current.number,
+            target.number,
+            dry_run,
+            Some(target.number),
+            &added,
+            &removed,
+            &target_by_hash,
+            &current_by_hash,
+            &current_roots,
+            &target_roots,
+            &registries,
+        ));
+    } else {
+        printer.success(&format!("Rolled back to generation {}.", target.number));
+    }
 
     Ok(())
+}
+
+fn rollback_result_json(
+    status: &str,
+    requested_generation: Option<u32>,
+    from_generation: u32,
+    to_generation: u32,
+    dry_run: bool,
+    generation: Option<u32>,
+    restored: &[&str],
+    removed: &[&str],
+    restored_roots: &HashMap<&str, &PathBuf>,
+    removed_roots: &HashMap<&str, &PathBuf>,
+    current_roots: &[(String, PathBuf)],
+    target_roots: &[(String, PathBuf)],
+    registries: &RegistrySet,
+) -> serde_json::Value {
+    serde_json::json!({
+        "action": "rollback",
+        "status": status,
+        "requested_generation": requested_generation,
+        "from_generation": from_generation,
+        "to_generation": to_generation,
+        "dry_run": dry_run,
+        "generation": generation,
+        "restored": roots_json(restored, restored_roots, registries),
+        "removed": roots_json(removed, removed_roots, registries),
+        "current_roots": all_roots_json(current_roots, registries),
+        "target_roots": all_roots_json(target_roots, registries),
+    })
+}
+
+fn roots_by_hash(roots: &[(String, PathBuf)]) -> HashMap<&str, &PathBuf> {
+    roots
+        .iter()
+        .map(|(hash, path)| (hash.as_str(), path))
+        .collect()
+}
+
+fn roots_json(
+    hashes: &[&str],
+    roots: &HashMap<&str, &PathBuf>,
+    registries: &RegistrySet,
+) -> Vec<serde_json::Value> {
+    let mut sorted = hashes.to_vec();
+    sorted.sort_unstable();
+    sorted
+        .iter()
+        .filter_map(|hash| {
+            roots
+                .get(*hash)
+                .map(|path| root_json(hash, path, registries))
+        })
+        .collect()
+}
+
+fn all_roots_json(roots: &[(String, PathBuf)], registries: &RegistrySet) -> Vec<serde_json::Value> {
+    let mut entries = roots
+        .iter()
+        .map(|(hash, path)| root_json(hash, path, registries))
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        let left_hash = left
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let right_hash = right
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        left_hash.cmp(right_hash)
+    });
+    entries
+}
+
+fn root_json(hash: &str, path: &PathBuf, registries: &RegistrySet) -> serde_json::Value {
+    for registry in registries.registries() {
+        if let Some(package) = registry.get_by_hash(hash) {
+            return serde_json::json!({
+                "hash": hash,
+                "store_path": path.to_string_lossy(),
+                "registry": registry.config.name.as_str(),
+                "package": {
+                    "name": package.name.as_str(),
+                    "version": package.version.as_str(),
+                },
+            });
+        }
+    }
+
+    serde_json::json!({
+        "hash": hash,
+        "store_path": path.to_string_lossy(),
+        "registry": null,
+        "package": null,
+    })
+}
+
+fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
+    let reg_configs = config.enabled_registries();
+    RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
 }
 
 fn describe_root(registries: &RegistrySet, hash: &str, target: &std::path::Path) -> String {
