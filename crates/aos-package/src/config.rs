@@ -340,11 +340,11 @@ last_update = "2026-02-13T10:30:00Z"
         assert_eq!(config.name, "aos-core");
         assert!(config.signing.is_some());
         assert_eq!(
-            config.signing_keys.get("initial").map(String::as_str),
+            config.signing_keys.get("initial").and_then(|s| s.path()),
             Some("/run/keys/aos-core-initial"),
         );
         assert_eq!(
-            config.signing_keys.get("next").map(String::as_str),
+            config.signing_keys.get("next").and_then(|s| s.path()),
             Some("/run/keys/aos-core-next"),
         );
         let upload_auth = config.upload_auth.unwrap();
