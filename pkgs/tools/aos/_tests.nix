@@ -1971,6 +1971,90 @@ in {
           profile_root="$main_profile_root"
           profile="$main_profile"
 
+          git -C "$install_reg" push origin 1.0.0 2.0.0 \
+            > "$work/git-push-host-install-tags.out" 2>&1
+          main_home="$home"
+          main_config="$config"
+          main_data="$data"
+          main_cache="$cache"
+          main_profile_root="$profile_root"
+          main_profile="$profile"
+          home="$work/tagged-home"
+          config="$work/tagged-config"
+          data="$work/tagged-share"
+          cache="$work/tagged-cache"
+          profile_root="$work/tagged-profiles"
+          profile="$profile_root/per-user/unknown"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
+          run_clean ${self}/bin/apm registry add --no-verify "file://$install_origin" \
+            --name host-install-tag \
+            --tag 1.0.0 > "$work/apm-add-host-install-tag.out" 2>&1
+          grep -q "Registry 'host-install-tag' added" \
+            "$work/apm-add-host-install-tag.out"
+          tag_config="$config/apm/registries.d/host-install-tag.toml"
+          grep -q 'tag = "1.0.0"' "$tag_config"
+          run_clean ${self}/bin/apm search hostinstall \
+            --registry host-install-tag \
+            > "$work/apm-search-host-install-tag.out" 2>&1
+          grep -q "hostinstall/host-install-tag 1.0.0" \
+            "$work/apm-search-host-install-tag.out"
+          if grep -q "2.0.0" "$work/apm-search-host-install-tag.out"; then
+            cat "$work/apm-search-host-install-tag.out"
+            exit 1
+          fi
+          if nix_store --check-validity "$install_store" \
+            > "$work/nix-valid-host-install-before-tag.out" 2>&1; then
+            nix_store --delete --ignore-liveness "$install_store" \
+              > "$work/nix-delete-host-install-before-tag.out" 2>&1
+          fi
+          if nix_store --check-validity "$install_leaf_store" \
+            > "$work/nix-valid-host-leaf-before-tag.out" 2>&1; then
+            nix_store --delete --ignore-liveness "$install_leaf_store" \
+              > "$work/nix-delete-host-leaf-before-tag.out" 2>&1
+          fi
+          run_clean ${self}/bin/apm --json install hostinstall \
+            --registry host-install-tag \
+            --yes > "$work/apm-install-host-install-tag.json"
+          ${pkgs.jq}/bin/jq -e --arg store "$install_store" --arg leaf "$install_leaf_store" \
+            '.action == "install"
+              and .status == "installed"
+              and .requested == ["hostinstall"]
+              and .generation == 1
+              and (.roots | length == 1)
+              and .roots[0].name == "hostinstall"
+              and .roots[0].registry == "host-install-tag"
+              and .roots[0].version == "1.0.0"
+              and .roots[0].store_path == $store
+              and (.closure | any(.name == "hostinstall" and .store_path == $store and .explicit == true))
+              and (.closure | any(.name == "hostleaf" and .store_path == $leaf and .explicit == false))
+              and (.downloads.planned >= 2)
+              and (.downloads.downloaded >= 2)
+              and (.downloads.imported >= 2)' \
+            "$work/apm-install-host-install-tag.json" >/dev/null
+          "$profile/current/bin/host-install-tool" \
+            > "$work/host-install-tag-run.out"
+          grep -q "host leaf package executed" "$work/host-install-tag-run.out"
+          grep -q "host install package executed" "$work/host-install-tag-run.out"
+          if grep -q "v2 executed" "$work/host-install-tag-run.out"; then
+            cat "$work/host-install-tag-run.out"
+            exit 1
+          fi
+          run_clean ${self}/bin/apm list --upgradable \
+            > "$work/apm-upgradable-host-install-tag.out" 2>&1
+          if grep -q "hostinstall/host-install-tag" \
+            "$work/apm-upgradable-host-install-tag.out"; then
+            cat "$work/apm-upgradable-host-install-tag.out"
+            exit 1
+          fi
+          assert_default_profile_absent
+          rm -rf "$profile_root"
+          home="$main_home"
+          config="$main_config"
+          data="$main_data"
+          cache="$main_cache"
+          profile_root="$main_profile_root"
+          profile="$main_profile"
+
           run_clean ${self}/bin/apm --json update --registry host-install-client \
             > "$work/apm-update-host-install-v2-before-push.json" 2>&1 || {
             cat "$work/apm-update-host-install-v2-before-push.json"
