@@ -923,7 +923,7 @@ pub async fn publish(
     if !dir.exists() {
         bail!(
             "registry '{name}' has no local clone at {path}.\n\
-             If you added it with `{reg} add <url>`, sync it first with `{pkg} update {name}`.\n\
+             If you added it with `{reg} add <url>`, sync it first with `{pkg} update --registry {name}`.\n\
              To author a new local registry instead, run `{reg} create {name}`.",
             path = dir.display(),
             reg = aos_core::invocation::package_registry_command(),

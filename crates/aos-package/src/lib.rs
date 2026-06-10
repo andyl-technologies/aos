@@ -1964,7 +1964,7 @@ enabled = true
 
     if !clone {
         printer.success(&format!(
-            "Registry '{name}' added. Run `{pkg_cmd} update {name}` to sync package metadata."
+            "Registry '{name}' added. Run `{pkg_cmd} update --registry {name}` to sync package metadata."
         ));
         return Ok(());
     }
@@ -1980,7 +1980,7 @@ enabled = true
     if let Err(e) = update::run(&synced, Some(&name), printer).await {
         printer.warning(&format!(
             "Registry '{name}' was added, but the initial sync failed: {e}\n\
-             Retry with `{pkg_cmd} update {name}`."
+             Retry with `{pkg_cmd} update --registry {name}`."
         ));
     }
 
