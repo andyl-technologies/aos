@@ -183,6 +183,69 @@
       }
     ];
   };
+  mkSignedLeafTool = version:
+    mkRegistryTool {
+      pname = "signed-leaf";
+      inherit version;
+      program = "signed-leaf";
+    };
+  mkSignedRootTool = {
+    version,
+    leaf,
+  }:
+    pkgs.mkDerivation {
+      pname = "signed-tool";
+      inherit version;
+      src = null;
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.bash
+      ];
+      runtimeDeps = [
+        leaf
+      ];
+      phases = [
+        {
+          name = "build";
+          script = ''
+            mkdir -p "$out/bin" "$out/share/signed-tool"
+            printf '%s\n' \
+              '#!${pkgs.bash}/bin/bash' \
+              'leaf_output="$(${leaf}/bin/signed-leaf)"' \
+              'printf "signed-tool ${version} via %s\n" "$leaf_output"' \
+              > "$out/bin/signed-tool"
+            chmod +x "$out/bin/signed-tool"
+            printf '%s\n' "signed-tool payload ${version}" \
+              > "$out/share/signed-tool/payload.txt"
+          '';
+        }
+      ];
+    };
+  signedLeafToolV1 = mkSignedLeafTool "1.0.0";
+  signedToolV1 = mkSignedRootTool {
+    version = "1.0.0";
+    leaf = signedLeafToolV1;
+  };
+  signedLeafToolV2 = mkSignedLeafTool "2.0.0";
+  signedToolV2 = mkSignedRootTool {
+    version = "2.0.0";
+    leaf = signedLeafToolV2;
+  };
+  signedLeafToolV3 = mkSignedLeafTool "3.0.0";
+  signedToolV3 = mkSignedRootTool {
+    version = "3.0.0";
+    leaf = signedLeafToolV3;
+  };
+  signedLeafToolV4 = mkSignedLeafTool "4.0.0";
+  signedToolV4 = mkSignedRootTool {
+    version = "4.0.0";
+    leaf = signedLeafToolV4;
+  };
+  signedLeafToolV5 = mkSignedLeafTool "5.0.0";
+  signedToolV5 = mkSignedRootTool {
+    version = "5.0.0";
+    leaf = signedLeafToolV5;
+  };
   retireDepTool = mkRegistryTool {
     pname = "retire-dep";
     version = "1.0.0";
@@ -3876,7 +3939,20 @@ in {
   # -------------------------------------------------------------------------
   registry-signed-commit-trust = testing.mkVMTest {
     name = "apm-registry-signed-commit-trust";
-    rootfsDeps = maintainerWorkflowDeps;
+    rootfsDeps =
+      maintainerWorkflowDeps
+      ++ [
+        signedLeafToolV1
+        signedToolV1
+        signedLeafToolV2
+        signedToolV2
+        signedLeafToolV3
+        signedToolV3
+        signedLeafToolV4
+        signedToolV4
+        signedLeafToolV5
+        signedToolV5
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
@@ -3887,21 +3963,6 @@ in {
       export GIT_CONFIG_NOSYSTEM=1
       export GIT_CONFIG_GLOBAL=/tmp/empty-gitconfig
       : > "$GIT_CONFIG_GLOBAL"
-
-      make_signed_tool() {
-        version="$1"
-        src="/tmp/signed-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/signed-tool"
-        cat > "$src/bin/signed-tool" << EOF
-      #!/bin/sh
-      echo "signed-tool $version executed"
-      EOF
-        chmod +x "$src/bin/signed-tool"
-        printf "signed-tool payload %s\n" "$version" \
-          > "$src/share/signed-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -4017,22 +4078,53 @@ in {
       TRUST_KEY="signed-reg:Ed25519:$GOOD_PUBLIC"
       NEXT_TRUST_KEY="signed-reg:Ed25519:$NEXT_PUBLIC"
 
-      TOOL_V1_STORE=$(make_signed_tool 1.0.0)
-      TOOL_V2_STORE=$(make_signed_tool 2.0.0)
-      TOOL_V3_STORE=$(make_signed_tool 3.0.0)
-      TOOL_V4_STORE=$(make_signed_tool 4.0.0)
-      TOOL_V5_STORE=$(make_signed_tool 5.0.0)
+      TOOL_V1_STORE="${signedToolV1}"
+      TOOL_V1_DEP_STORE="${signedLeafToolV1}"
+      TOOL_V2_STORE="${signedToolV2}"
+      TOOL_V2_DEP_STORE="${signedLeafToolV2}"
+      TOOL_V3_STORE="${signedToolV3}"
+      TOOL_V3_DEP_STORE="${signedLeafToolV3}"
+      TOOL_V4_STORE="${signedToolV4}"
+      TOOL_V4_DEP_STORE="${signedLeafToolV4}"
+      TOOL_V5_STORE="${signedToolV5}"
+      TOOL_V5_DEP_STORE="${signedLeafToolV5}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
+      TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
       TOOL_V3_HASH=$(basename "$TOOL_V3_STORE" | cut -d- -f1)
+      TOOL_V3_DEP_HASH=$(basename "$TOOL_V3_DEP_STORE" | cut -d- -f1)
       TOOL_V4_HASH=$(basename "$TOOL_V4_STORE" | cut -d- -f1)
+      TOOL_V4_DEP_HASH=$(basename "$TOOL_V4_DEP_STORE" | cut -d- -f1)
       TOOL_V5_HASH=$(basename "$TOOL_V5_STORE" | cut -d- -f1)
+      TOOL_V5_DEP_HASH=$(basename "$TOOL_V5_DEP_STORE" | cut -d- -f1)
 
       mount -o remount,rw / || true
+      nix-store -q --references "$TOOL_V1_STORE" > /tmp/signed-v1-refs.out
+      assert_file_contains /tmp/signed-v1-refs.out "$TOOL_V1_DEP_STORE" \
+        "signed-tool v1 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V2_STORE" > /tmp/signed-v2-refs.out
+      assert_file_contains /tmp/signed-v2-refs.out "$TOOL_V2_DEP_STORE" \
+        "signed-tool v2 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V3_STORE" > /tmp/signed-v3-refs.out
+      assert_file_contains /tmp/signed-v3-refs.out "$TOOL_V3_DEP_STORE" \
+        "signed-tool v3 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V4_STORE" > /tmp/signed-v4-refs.out
+      assert_file_contains /tmp/signed-v4-refs.out "$TOOL_V4_DEP_STORE" \
+        "signed-tool v4 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V5_STORE" > /tmp/signed-v5-refs.out
+      assert_file_contains /tmp/signed-v5-refs.out "$TOOL_V5_DEP_STORE" \
+        "signed-tool v5 root has a real dependency closure"
       assert_store_valid "$TOOL_V1_STORE" "signed-tool-v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "signed-leaf-v1"
       assert_store_valid "$TOOL_V2_STORE" "signed-tool-v2"
+      assert_store_valid "$TOOL_V2_DEP_STORE" "signed-leaf-v2"
       assert_store_valid "$TOOL_V3_STORE" "signed-tool-v3"
+      assert_store_valid "$TOOL_V3_DEP_STORE" "signed-leaf-v3"
       assert_store_valid "$TOOL_V4_STORE" "signed-tool-v4"
+      assert_store_valid "$TOOL_V4_DEP_STORE" "signed-leaf-v4"
       assert_store_valid "$TOOL_V5_STORE" "signed-tool-v5"
+      assert_store_valid "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
 
       echo "==> Maintainer: publish signed-tool 1.0.0 with trusted commit key"
       $APR create signed-reg --trust-key "$TRUST_KEY" --trust-key-id initial
@@ -4045,6 +4137,8 @@ in {
       publish_signed_tool 1.0.0 "$TOOL_V1_STORE" v1
       assert_file_exists "/tmp/signed-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has signed-tool v1 narinfo"
+      assert_file_exists "/tmp/signed-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has signed-tool v1 dependency narinfo"
       assert_file_contains "$REG_DIR/registry.toml" \
         "http://127.0.0.1:18106" "registry records signed cache URL"
       commit_signed "$GOOD_KEY" v1 "release: signed-tool 1.0.0"
@@ -4102,6 +4196,7 @@ in {
         "trusted signed registry exposes v1"
 
       delete_store_path "$TOOL_V1_STORE" "signed-tool-v1"
+      delete_store_path "$TOOL_V1_DEP_STORE" "signed-leaf-v1"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
       $APM install signed-tool --registry signed-reg --yes \
@@ -4110,19 +4205,25 @@ in {
         fail "apm install downloads trusted signed v1"
       }
       cat /tmp/signed-install-v1.out
-      assert_file_contains /tmp/signed-install-v1.out "Downloading" \
-        "apm install downloads signed v1 NAR"
+      assert_file_contains /tmp/signed-install-v1.out "Downloading 2 NAR" \
+        "apm install downloads signed v1 closure"
       assert_store_valid "$TOOL_V1_STORE" "signed-tool-v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "signed-leaf-v1"
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/signed-tool"
       "$PROFILE_TOOL" > /tmp/signed-run-v1.out
       assert_file_contains /tmp/signed-run-v1.out \
-        "signed-tool 1.0.0 executed" "trusted signed v1 executable runs"
+        "^signed-tool 1.0.0 via signed-leaf 1.0.0$" \
+        "trusted signed v1 executable runs through dependency"
 
       echo "==> Maintainer: publish v2 signed by the wrong key"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
       publish_signed_tool 2.0.0 "$TOOL_V2_STORE" v2-bad
+      assert_file_exists "/tmp/signed-cache/$TOOL_V2_HASH.narinfo" \
+        "static cache has wrong-key signed-tool v2 narinfo"
+      assert_file_exists "/tmp/signed-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has wrong-key signed-tool v2 dependency narinfo"
       commit_signed "$BAD_KEY" v2-bad "release: signed-tool 2.0.0"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
@@ -4150,7 +4251,8 @@ in {
         "rejected signed update does not expose wrong-key v2"
       "$PROFILE_TOOL" > /tmp/signed-run-after-bad.out
       assert_file_contains /tmp/signed-run-after-bad.out \
-        "signed-tool 1.0.0 executed" "wrong-key update leaves installed v1 active"
+        "^signed-tool 1.0.0 via signed-leaf 1.0.0$" \
+        "wrong-key update leaves installed v1 active"
 
       echo "==> Maintainer: publish v3 signed by the trusted key"
       export HOME=/tmp
@@ -4159,6 +4261,8 @@ in {
       publish_signed_tool 3.0.0 "$TOOL_V3_STORE" v3-good
       assert_file_exists "/tmp/signed-cache/$TOOL_V3_HASH.narinfo" \
         "static cache has signed-tool v3 narinfo"
+      assert_file_exists "/tmp/signed-cache/$TOOL_V3_DEP_HASH.narinfo" \
+        "static cache has signed-tool v3 dependency narinfo"
       commit_signed "$GOOD_KEY" v3-good "release: signed-tool 3.0.0"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
@@ -4167,6 +4271,7 @@ in {
       export USER=signeduser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_V3_STORE" "signed-tool-v3"
+      delete_store_path "$TOOL_V3_DEP_STORE" "signed-leaf-v3"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
       $APM update --registry signed-reg > /tmp/signed-update-good.out 2>&1 || {
@@ -4188,12 +4293,14 @@ in {
         fail "apm upgrade downloads trusted signed v3"
       }
       cat /tmp/signed-upgrade-v3.out
-      assert_file_contains /tmp/signed-upgrade-v3.out "Downloading" \
-        "apm upgrade downloads signed v3 NAR"
+      assert_file_contains /tmp/signed-upgrade-v3.out "Downloading 2 NAR" \
+        "apm upgrade downloads signed v3 closure"
       assert_store_valid "$TOOL_V3_STORE" "signed-tool-v3"
+      assert_store_valid "$TOOL_V3_DEP_STORE" "signed-leaf-v3"
       "$PROFILE_TOOL" > /tmp/signed-run-v3.out
       assert_file_contains /tmp/signed-run-v3.out \
-        "signed-tool 3.0.0 executed" "trusted signed v3 executable runs"
+        "^signed-tool 3.0.0 via signed-leaf 3.0.0$" \
+        "trusted signed v3 executable runs through dependency"
 
       echo "==> Maintainer: rotate trust roster to a new signing key"
       export HOME=/tmp
@@ -4233,6 +4340,8 @@ in {
       publish_signed_tool 4.0.0 "$TOOL_V4_STORE" v4-next
       assert_file_exists "/tmp/signed-cache/$TOOL_V4_HASH.narinfo" \
         "static cache has signed-tool v4 narinfo"
+      assert_file_exists "/tmp/signed-cache/$TOOL_V4_DEP_HASH.narinfo" \
+        "static cache has signed-tool v4 dependency narinfo"
       commit_signed "$NEXT_KEY" v4-next "release: signed-tool 4.0.0"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
@@ -4241,6 +4350,7 @@ in {
       export USER=signeduser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_V4_STORE" "signed-tool-v4"
+      delete_store_path "$TOOL_V4_DEP_STORE" "signed-leaf-v4"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
       $APM update --registry signed-reg > /tmp/signed-update-v4.out 2>&1 || {
@@ -4253,12 +4363,14 @@ in {
         fail "apm upgrade downloads rotated-key signed v4"
       }
       cat /tmp/signed-upgrade-v4.out
-      assert_file_contains /tmp/signed-upgrade-v4.out "Downloading" \
-        "apm upgrade downloads signed v4 NAR"
+      assert_file_contains /tmp/signed-upgrade-v4.out "Downloading 2 NAR" \
+        "apm upgrade downloads signed v4 closure"
       assert_store_valid "$TOOL_V4_STORE" "signed-tool-v4"
+      assert_store_valid "$TOOL_V4_DEP_STORE" "signed-leaf-v4"
       "$PROFILE_TOOL" > /tmp/signed-run-v4.out
       assert_file_contains /tmp/signed-run-v4.out \
-        "signed-tool 4.0.0 executed" "rotated-key signed v4 executable runs"
+        "^signed-tool 4.0.0 via signed-leaf 4.0.0$" \
+        "rotated-key signed v4 executable runs through dependency"
 
       echo "==> Maintainer: retire the original signing key"
       export HOME=/tmp
@@ -4298,6 +4410,8 @@ in {
       publish_signed_tool 5.0.0 "$TOOL_V5_STORE" v5-retired
       assert_file_exists "/tmp/signed-cache/$TOOL_V5_HASH.narinfo" \
         "static cache has signed-tool v5 narinfo"
+      assert_file_exists "/tmp/signed-cache/$TOOL_V5_DEP_HASH.narinfo" \
+        "static cache has signed-tool v5 dependency narinfo"
       commit_signed "$GOOD_KEY" v5-retired "release: signed-tool 5.0.0"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
@@ -4305,6 +4419,8 @@ in {
       export HOME=/tmp/signed-consumer
       export USER=signeduser
       APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_V5_STORE" "signed-tool-v5"
+      delete_store_path "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
       if $APM update --registry signed-reg > /tmp/signed-update-retired.out 2>&1; then
         cat /tmp/signed-update-retired.out
         fail "apm update should reject commit signed by retired key"
@@ -4323,9 +4439,12 @@ in {
         "rejected retired-key update leaves v4 metadata active"
       assert_file_not_contains /tmp/signed-search-after-retired.out "5.0.0" \
         "rejected retired-key update does not expose v5"
+      assert_store_missing "$TOOL_V5_STORE" "signed-tool-v5"
+      assert_store_missing "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
       "$PROFILE_TOOL" > /tmp/signed-run-after-retired.out
       assert_file_contains /tmp/signed-run-after-retired.out \
-        "signed-tool 4.0.0 executed" "retired-key update leaves installed v4 active"
+        "^signed-tool 4.0.0 via signed-leaf 4.0.0$" \
+        "retired-key update leaves installed v4 active"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "signed static cache HTTP server stopped"
