@@ -242,6 +242,69 @@
     version = "2.1.0";
     leaf = vcaretLeafTool210;
   };
+  commitLeafToolV1 = mkTrackingLeafTool {
+    rootName = "commit-tool";
+    version = "1.0.0";
+  };
+  commitToolV1 = mkTrackingRootTool {
+    pname = "commit-tool";
+    version = "1.0.0";
+    leaf = commitLeafToolV1;
+  };
+  commitLeafToolV2 = mkTrackingLeafTool {
+    rootName = "commit-tool";
+    version = "2.0.0";
+  };
+  commitToolV2 = mkTrackingRootTool {
+    pname = "commit-tool";
+    version = "2.0.0";
+    leaf = commitLeafToolV2;
+  };
+  defaultLeafToolV1 = mkTrackingLeafTool {
+    rootName = "default-tool";
+    version = "1.0.0";
+  };
+  defaultToolV1 = mkTrackingRootTool {
+    pname = "default-tool";
+    version = "1.0.0";
+    leaf = defaultLeafToolV1;
+  };
+  defaultLeafToolV2 = mkTrackingLeafTool {
+    rootName = "default-tool";
+    version = "2.0.0";
+  };
+  defaultToolV2 = mkTrackingRootTool {
+    pname = "default-tool";
+    version = "2.0.0";
+    leaf = defaultLeafToolV2;
+  };
+  gitNativeLeafTool100 = mkTrackingLeafTool {
+    rootName = "git-native-tool";
+    version = "1.0.0";
+  };
+  gitNativeTool100 = mkTrackingRootTool {
+    pname = "git-native-tool";
+    version = "1.0.0";
+    leaf = gitNativeLeafTool100;
+  };
+  gitNativeLeafTool110 = mkTrackingLeafTool {
+    rootName = "git-native-tool";
+    version = "1.1.0";
+  };
+  gitNativeTool110 = mkTrackingRootTool {
+    pname = "git-native-tool";
+    version = "1.1.0";
+    leaf = gitNativeLeafTool110;
+  };
+  gitNativeLeafTool200 = mkTrackingLeafTool {
+    rootName = "git-native-tool";
+    version = "2.0.0";
+  };
+  gitNativeTool200 = mkTrackingRootTool {
+    pname = "git-native-tool";
+    version = "2.0.0";
+    leaf = gitNativeLeafTool200;
+  };
   trackingWorkflowDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -1401,28 +1464,20 @@ in {
   # -------------------------------------------------------------------------
   tracking-commit = testing.mkVMTest {
     name = "apm-tracking-commit";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        commitLeafToolV1
+        commitToolV1
+        commitLeafToolV2
+        commitToolV2
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: commit tracking stays pinned to selected commit"
-
-      make_commit_tool() {
-        version="$1"
-        src="/tmp/commit-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/commit-tool"
-        cat > "$src/bin/commit-tool" << EOF
-      #!/bin/sh
-      echo "commit-tool $version executed"
-      EOF
-        chmod +x "$src/bin/commit-tool"
-        printf "commit-tool payload %s\n" "$version" \
-          > "$src/share/commit-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -1508,10 +1563,21 @@ in {
         cat "/tmp/commit-commit-$version.out"
       }
 
-      TOOL_V1_STORE=$(make_commit_tool 1.0.0)
-      TOOL_V2_STORE=$(make_commit_tool 2.0.0)
+      TOOL_V1_STORE="${commitToolV1}"
+      TOOL_V1_DEP_STORE="${commitLeafToolV1}"
+      TOOL_V2_STORE="${commitToolV2}"
+      TOOL_V2_DEP_STORE="${commitLeafToolV2}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_V1_STORE" > /tmp/commit-v1-refs.out
+      assert_file_contains /tmp/commit-v1-refs.out "$TOOL_V1_DEP_STORE" \
+        "commit-tool v1 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V2_STORE" > /tmp/commit-v2-refs.out
+      assert_file_contains /tmp/commit-v2-refs.out "$TOOL_V2_DEP_STORE" \
+        "commit-tool v2 root has a real dependency closure"
 
       $APR create commit-reg
       REG_DIR="$REG_STORAGE/commit-reg"
@@ -1522,11 +1588,15 @@ in {
       echo "Pinned commit: $PINNED_COMMIT"
       assert_file_exists "/tmp/commit-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has commit-tool v1 narinfo"
+      assert_file_exists "/tmp/commit-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has commit-tool v1 dependency narinfo"
 
       publish_commit_version 2.0.0 "$TOOL_V2_STORE"
       ADVANCED_COMMIT=$(git -C "$REG_DIR" rev-parse HEAD)
       assert_file_exists "/tmp/commit-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has commit-tool v2 narinfo"
+      assert_file_exists "/tmp/commit-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has commit-tool v2 dependency narinfo"
       if [ "$PINNED_COMMIT" = "$ADVANCED_COMMIT" ]; then
         fail "advanced commit should differ from pinned commit"
       else
@@ -1586,7 +1656,9 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_V1_STORE" "commit-tool-v1"
+      delete_store_path "$TOOL_V1_DEP_STORE" "commit-tool-v1-dep"
       delete_store_path "$TOOL_V2_STORE" "commit-tool-v2"
+      delete_store_path "$TOOL_V2_DEP_STORE" "commit-tool-v2-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1596,17 +1668,20 @@ in {
         fail "apm install downloads pinned commit v1"
       }
       cat /tmp/commit-install.out
-      assert_file_contains /tmp/commit-install.out "Downloading" \
-        "apm install downloads pinned commit NAR"
+      assert_file_contains /tmp/commit-install.out "Downloading 2 NAR" \
+        "apm install downloads pinned commit closure"
       assert_store_valid "$TOOL_V1_STORE" "commit-tool v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "commit-tool v1 dependency"
       assert_store_missing "$TOOL_V2_STORE" "commit-tool v2"
+      assert_store_missing "$TOOL_V2_DEP_STORE" "commit-tool v2 dependency"
       PROFILE="/var/lib/profiles/per-user/$USER"
       assert_file_not_exists "$PROFILE/meta/$TOOL_V2_HASH.json" \
         "commit-pinned install does not record later v2 metadata"
       PROFILE_TOOL="$PROFILE/current/bin/commit-tool"
       "$PROFILE_TOOL" > /tmp/commit-run-v1.out
       assert_file_contains /tmp/commit-run-v1.out \
-        "commit-tool 1.0.0 executed" "installed commit-pinned v1 tool executes"
+        "^commit-tool 1.0.0 via commit-tool-leaf 1.0.0$" \
+        "installed commit-pinned v1 tool executes through dependency"
 
       $APM update --registry commit-reg > /tmp/commit-update.out 2>&1 || {
         cat /tmp/commit-update.out
@@ -1639,9 +1714,11 @@ in {
       assert_file_not_contains /tmp/commit-upgrade.out "Downloading" \
         "commit-pinned upgrade does not download later v2"
       assert_store_missing "$TOOL_V2_STORE" "commit-tool v2"
+      assert_store_missing "$TOOL_V2_DEP_STORE" "commit-tool v2 dependency"
       "$PROFILE_TOOL" > /tmp/commit-run-still-v1.out
       assert_file_contains /tmp/commit-run-still-v1.out \
-        "commit-tool 1.0.0 executed" "commit-pinned profile remains on v1"
+        "^commit-tool 1.0.0 via commit-tool-leaf 1.0.0$" \
+        "commit-pinned profile remains on v1"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
@@ -1654,28 +1731,20 @@ in {
   # -------------------------------------------------------------------------
   tracking-default = testing.mkVMTest {
     name = "apm-tracking-default";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        defaultLeafToolV1
+        defaultToolV1
+        defaultLeafToolV2
+        defaultToolV2
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: default tracking follows default branch HEAD"
-
-      make_default_tool() {
-        version="$1"
-        src="/tmp/default-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/default-tool"
-        cat > "$src/bin/default-tool" << EOF
-      #!/bin/sh
-      echo "default-tool $version executed"
-      EOF
-        chmod +x "$src/bin/default-tool"
-        printf "default-tool payload %s\n" "$version" \
-          > "$src/share/default-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       delete_store_path() {
         path="$1"
@@ -1725,10 +1794,21 @@ in {
         git -C "$REG_DIR" commit -m "release: default-tool $version"
       }
 
-      TOOL_V1_STORE=$(make_default_tool 1.0.0)
-      TOOL_V2_STORE=$(make_default_tool 2.0.0)
+      TOOL_V1_STORE="${defaultToolV1}"
+      TOOL_V1_DEP_STORE="${defaultLeafToolV1}"
+      TOOL_V2_STORE="${defaultToolV2}"
+      TOOL_V2_DEP_STORE="${defaultLeafToolV2}"
       TOOL_V1_HASH=$(basename "$TOOL_V1_STORE" | cut -d- -f1)
+      TOOL_V1_DEP_HASH=$(basename "$TOOL_V1_DEP_STORE" | cut -d- -f1)
       TOOL_V2_HASH=$(basename "$TOOL_V2_STORE" | cut -d- -f1)
+      TOOL_V2_DEP_HASH=$(basename "$TOOL_V2_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_V1_STORE" > /tmp/default-v1-refs.out
+      assert_file_contains /tmp/default-v1-refs.out "$TOOL_V1_DEP_STORE" \
+        "default-tool v1 root has a real dependency closure"
+      nix-store -q --references "$TOOL_V2_STORE" > /tmp/default-v2-refs.out
+      assert_file_contains /tmp/default-v2-refs.out "$TOOL_V2_DEP_STORE" \
+        "default-tool v2 root has a real dependency closure"
 
       $APR create default-reg
       REG_DIR="$REG_STORAGE/default-reg"
@@ -1742,6 +1822,8 @@ in {
       fi
       assert_file_exists "/tmp/default-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has default-tool v1 narinfo"
+      assert_file_exists "/tmp/default-cache/$TOOL_V1_DEP_HASH.narinfo" \
+        "static cache has default-tool v1 dependency narinfo"
 
       git init --bare --object-format=sha256 /tmp/default-origin.git
       git -C /tmp/default-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -1822,6 +1904,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_V1_STORE" "default-tool-v1"
+      delete_store_path "$TOOL_V1_DEP_STORE" "default-tool-v1-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1831,25 +1914,30 @@ in {
         fail "apm install downloads default branch v1"
       }
       cat /tmp/default-install-v1.out
-      assert_file_contains /tmp/default-install-v1.out "Downloading" \
-        "apm install downloads default v1 NAR"
+      assert_file_contains /tmp/default-install-v1.out "Downloading 2 NAR" \
+        "apm install downloads default v1 closure"
       assert_store_valid "$TOOL_V1_STORE" "default-tool v1"
+      assert_store_valid "$TOOL_V1_DEP_STORE" "default-tool v1 dependency"
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/default-tool"
       "$PROFILE_TOOL" > /tmp/default-run-v1.out
       assert_file_contains /tmp/default-run-v1.out \
-        "default-tool 1.0.0 executed" "installed default v1 tool executes"
+        "^default-tool 1.0.0 via default-tool-leaf 1.0.0$" \
+        "installed default v1 tool executes through dependency"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
       publish_default_version 2.0.0 "$TOOL_V2_STORE"
       assert_file_exists "/tmp/default-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has default-tool v2 narinfo"
+      assert_file_exists "/tmp/default-cache/$TOOL_V2_DEP_HASH.narinfo" \
+        "static cache has default-tool v2 dependency narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       export HOME=/tmp/default-consumer
       export USER=defaultuser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_V2_STORE" "default-tool-v2"
+      delete_store_path "$TOOL_V2_DEP_STORE" "default-tool-v2-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1872,14 +1960,16 @@ in {
         fail "apm upgrade downloads default branch v2"
       }
       cat /tmp/default-upgrade.out
-      assert_file_contains /tmp/default-upgrade.out "Downloading" \
-        "apm upgrade downloads default v2 NAR"
+      assert_file_contains /tmp/default-upgrade.out "Downloading 2 NAR" \
+        "apm upgrade downloads default v2 closure"
       assert_file_contains /tmp/default-upgrade.out "Upgraded 1 package" \
         "apm upgrade activates default v2"
       assert_store_valid "$TOOL_V2_STORE" "default-tool v2"
+      assert_store_valid "$TOOL_V2_DEP_STORE" "default-tool v2 dependency"
       "$PROFILE_TOOL" > /tmp/default-run-v2.out
       assert_file_contains /tmp/default-run-v2.out \
-        "default-tool 2.0.0 executed" "upgraded default v2 tool executes"
+        "^default-tool 2.0.0 via default-tool-leaf 2.0.0$" \
+        "upgraded default v2 tool executes through dependency"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
@@ -1892,28 +1982,22 @@ in {
   # -------------------------------------------------------------------------
   tracking-bundle-sync = testing.mkVMTest {
     name = "apm-tracking-git-native-clean-break";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        gitNativeLeafTool100
+        gitNativeTool100
+        gitNativeLeafTool110
+        gitNativeTool110
+        gitNativeLeafTool200
+        gitNativeTool200
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: real git-native version tracking after bundle cutover"
-
-      make_git_native_tool() {
-        version="$1"
-        src="/tmp/git-native-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/git-native-tool"
-        cat > "$src/bin/git-native-tool" << EOF
-      #!/bin/sh
-      echo "git-native-tool $version executed"
-      EOF
-        chmod +x "$src/bin/git-native-tool"
-        printf "git-native-tool payload %s\n" "$version" \
-          > "$src/share/git-native-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -2005,11 +2089,23 @@ in {
         }
       }
 
-      TOOL_100_STORE=$(make_git_native_tool 1.0.0)
-      TOOL_110_STORE=$(make_git_native_tool 1.1.0)
-      TOOL_200_STORE=$(make_git_native_tool 2.0.0)
+      TOOL_100_STORE="${gitNativeTool100}"
+      TOOL_100_DEP_STORE="${gitNativeLeafTool100}"
+      TOOL_110_STORE="${gitNativeTool110}"
+      TOOL_110_DEP_STORE="${gitNativeLeafTool110}"
+      TOOL_200_STORE="${gitNativeTool200}"
+      TOOL_200_DEP_STORE="${gitNativeLeafTool200}"
       TOOL_110_HASH=$(basename "$TOOL_110_STORE" | cut -d- -f1)
+      TOOL_110_DEP_HASH=$(basename "$TOOL_110_DEP_STORE" | cut -d- -f1)
       TOOL_200_HASH=$(basename "$TOOL_200_STORE" | cut -d- -f1)
+      TOOL_200_DEP_HASH=$(basename "$TOOL_200_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_110_STORE" > /tmp/git-native-110-refs.out
+      assert_file_contains /tmp/git-native-110-refs.out "$TOOL_110_DEP_STORE" \
+        "git-native-tool 1.1.0 root has a real dependency closure"
+      nix-store -q --references "$TOOL_200_STORE" > /tmp/git-native-200-refs.out
+      assert_file_contains /tmp/git-native-200-refs.out "$TOOL_200_DEP_STORE" \
+        "out-of-range git-native-tool 2.0.0 root has a real dependency closure"
 
       $APR create git-native-reg
       REG_DIR="$REG_STORAGE/git-native-reg"
@@ -2019,8 +2115,12 @@ in {
       publish_git_native_version 2.0.0 "$TOOL_200_STORE"
       assert_file_exists "/tmp/git-native-cache/$TOOL_110_HASH.narinfo" \
         "static cache has git-native-tool 1.1.0 narinfo"
+      assert_file_exists "/tmp/git-native-cache/$TOOL_110_DEP_HASH.narinfo" \
+        "static cache has git-native-tool 1.1.0 dependency narinfo"
       assert_file_exists "/tmp/git-native-cache/$TOOL_200_HASH.narinfo" \
         "static cache has out-of-range git-native-tool 2.0.0 narinfo"
+      assert_file_exists "/tmp/git-native-cache/$TOOL_200_DEP_HASH.narinfo" \
+        "static cache has out-of-range git-native-tool 2.0.0 dependency narinfo"
 
       git init --bare --object-format=sha256 /tmp/git-native-origin.git
       git -C /tmp/git-native-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -2082,7 +2182,9 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_110_STORE" "git-native-tool-1.1.0"
+      delete_store_path "$TOOL_110_DEP_STORE" "git-native-tool-1.1.0-dep"
       delete_store_path "$TOOL_200_STORE" "git-native-tool-2.0.0"
+      delete_store_path "$TOOL_200_DEP_STORE" "git-native-tool-2.0.0-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -2092,14 +2194,17 @@ in {
         fail "apm install downloads best git-native package"
       }
       cat /tmp/git-native-install.out
-      assert_file_contains /tmp/git-native-install.out "Downloading" \
-        "apm install downloads git-native NAR"
+      assert_file_contains /tmp/git-native-install.out "Downloading 2 NAR" \
+        "apm install downloads git-native closure"
       assert_store_valid "$TOOL_110_STORE" "git-native-tool 1.1.0"
+      assert_store_valid "$TOOL_110_DEP_STORE" "git-native-tool 1.1.0 dependency"
       assert_store_missing "$TOOL_200_STORE" "git-native-tool 2.0.0"
+      assert_store_missing "$TOOL_200_DEP_STORE" "git-native-tool 2.0.0 dependency"
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/git-native-tool"
       "$PROFILE_TOOL" > /tmp/git-native-run.out
       assert_file_contains /tmp/git-native-run.out \
-        "git-native-tool 1.1.0 executed" "installed git-native tool executes"
+        "^git-native-tool 1.1.0 via git-native-tool-leaf 1.1.0$" \
+        "installed git-native tool executes through dependency"
 
       if $APR bundle --tag v1.1.0 --output /tmp/bundles --registry git-native-reg \
         > /tmp/bundle-out 2>&1; then
