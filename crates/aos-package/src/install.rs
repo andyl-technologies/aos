@@ -273,15 +273,28 @@ pub async fn run(
         .unwrap_or_default()
         .as_secs() as i64;
     let now_iso = chrono_iso8601(now);
-    let installed_flags = installed_flags_by_hash(&installed);
+    let installed_flags_by_hash = installed_flags_by_hash(&installed);
+    let installed_flags_by_name = installed_flags_by_name(&installed);
 
     for closure in &closures {
         for meta in &closure.closure {
             let hash = store_path_hash(&meta.store_path).to_string();
-            let existing_flags = installed_flags
+            let hash_flags = installed_flags_by_hash
                 .get(hash.as_str())
                 .copied()
                 .unwrap_or_default();
+            let name_flags = if explicit_names.contains(meta.name.as_str()) {
+                installed_flags_by_name
+                    .get(meta.name.as_str())
+                    .copied()
+                    .unwrap_or_default()
+            } else {
+                InstalledFlags::default()
+            };
+            let existing_flags = InstalledFlags {
+                explicit: hash_flags.explicit || name_flags.explicit,
+                held: hash_flags.held || name_flags.held,
+            };
             let is_explicit =
                 explicit_names.contains(meta.name.as_str()) || existing_flags.explicit;
 
@@ -444,6 +457,22 @@ fn installed_flags_by_hash(installed: &[InstalledMeta]) -> HashMap<&str, Install
             let apm = meta.apm.as_ref()?;
             Some((
                 store_path_hash(&meta.store_path),
+                InstalledFlags {
+                    explicit: apm.explicit,
+                    held: apm.held,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn installed_flags_by_name(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
+    installed
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            Some((
+                apm.name.as_str(),
                 InstalledFlags {
                     explicit: apm.explicit,
                     held: apm.held,
@@ -1155,6 +1184,22 @@ source_nar_hash = ""
 
         let flags = installed_flags_by_hash(&installed);
         let entry = flags.get("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        assert!(entry.explicit);
+        assert!(entry.held);
+    }
+
+    #[test]
+    fn installed_flags_by_name_preserves_explicit_and_held_state() {
+        let installed = vec![sample_installed_with_flags(
+            "switch-tool",
+            "1.0.0",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-switch-tool-1.0.0",
+            true,
+            true,
+        )];
+
+        let flags = installed_flags_by_name(&installed);
+        let entry = flags.get("switch-tool").unwrap();
         assert!(entry.explicit);
         assert!(entry.held);
     }
