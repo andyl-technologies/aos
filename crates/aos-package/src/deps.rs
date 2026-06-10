@@ -141,18 +141,21 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
 pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
 
-    let versions = registries.all_versions(package);
-    if versions.is_empty() {
-        bail!("package not found in any registry: {package}");
-    }
-
     // Check installed version.
     let profile = Profile::open_readonly(config.scope);
     let installed = meta::list_meta(&profile)?;
     let installed_version = policy_installed_versions(package, &installed);
+    let versions = registries.all_versions(package);
+    if versions.is_empty() && installed_version.is_none() {
+        bail!("package not found in any registry: {package}");
+    }
+    let unavailable_installed = policy_unavailable_installed(package, &installed, &versions);
 
     // Candidate = first entry (highest priority).
-    let candidate_version = &versions[0].1.version;
+    let candidate_version = versions
+        .first()
+        .map(|(_, meta)| meta.version.as_str())
+        .unwrap_or("(none)");
 
     printer.plain(&format!("{package}:"));
     match &installed_version {
@@ -171,6 +174,12 @@ pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Res
         printer.plain(&format!(
             "{} {}  {}  {}",
             marker, meta.version, reg.config.priority, reg.config.name,
+        ));
+    }
+
+    for (version, registry_name) in &unavailable_installed {
+        printer.plain(&format!(
+            " *** {version}  -  {registry_name} (installed, unavailable)"
         ));
     }
 
@@ -288,6 +297,42 @@ fn policy_candidate_is_installed(
             && apm.registry == registry_name
             && store_path_hash(&inst.store_path) == candidate_hash
     })
+}
+
+fn policy_unavailable_installed(
+    package: &str,
+    installed: &[InstalledMeta],
+    versions: &[(&super::registry::Registry, &PackageMeta)],
+) -> Vec<(String, String)> {
+    let available_sources: HashSet<(String, String)> = versions
+        .iter()
+        .map(|(reg, meta)| {
+            (
+                reg.config.name.clone(),
+                store_path_hash(&meta.store_path).to_string(),
+            )
+        })
+        .collect();
+    let mut unavailable = BTreeSet::new();
+
+    for inst in installed {
+        let Some(apm) = inst.apm.as_ref() else {
+            continue;
+        };
+        if apm.name != package {
+            continue;
+        }
+
+        let installed_source = (
+            apm.registry.clone(),
+            store_path_hash(&inst.store_path).to_string(),
+        );
+        if !available_sources.contains(&installed_source) {
+            unavailable.insert((apm.version.clone(), apm.registry.clone()));
+        }
+    }
+
+    unavailable.into_iter().collect()
 }
 
 /// Build a dependency tree recursively.
@@ -861,6 +906,74 @@ references = ["llllllllllllllllllllllllllllllll"]
             &low_candidate,
             &installed,
         ));
+    }
+
+    #[test]
+    fn policy_lists_installed_versions_missing_from_registry() {
+        let tmp = TempDir::new().unwrap();
+        let tool_toml = r#"
+[package]
+name = "retired-tool"
+description = "tool with retired old version"
+license = "MIT"
+maintainer = "test"
+
+[[versions]]
+version = "2.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn-retired-tool-2.0.0"
+nar_hash = "sha256:new"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+        let registry = make_registry(&tmp, "test-reg", 500, &[("retired-tool", tool_toml)]);
+        let set = RegistrySet::new(vec![registry]);
+        let versions = set.all_versions("retired-tool");
+        let installed = vec![
+            InstalledMeta {
+                store_path: "/nix/store/oooooooooooooooooooooooooooooooo-retired-tool-1.0.0".into(),
+                pushed_at: 1707800000,
+                pushed_by: "apm".into(),
+                expires_at: None,
+                is_root: true,
+                last_accessed: 1707800000,
+                access_count: 0,
+                apm: Some(crate::types::ApmMeta {
+                    name: "retired-tool".into(),
+                    version: "1.0.0".into(),
+                    explicit: true,
+                    registry: "test-reg".into(),
+                    installed_at: "2026-06-09T00:00:00Z".into(),
+                    held: false,
+                }),
+            },
+            InstalledMeta {
+                store_path: "/nix/store/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn-retired-tool-2.0.0".into(),
+                pushed_at: 1707800001,
+                pushed_by: "apm".into(),
+                expires_at: None,
+                is_root: true,
+                last_accessed: 1707800001,
+                access_count: 0,
+                apm: Some(crate::types::ApmMeta {
+                    name: "retired-tool".into(),
+                    version: "2.0.0".into(),
+                    explicit: true,
+                    registry: "test-reg".into(),
+                    installed_at: "2026-06-09T00:00:01Z".into(),
+                    held: false,
+                }),
+            },
+        ];
+
+        assert_eq!(
+            policy_unavailable_installed("retired-tool", &installed, &versions),
+            vec![("1.0.0".to_string(), "test-reg".to_string())]
+        );
     }
 
     // 8. Highest priority first in policy output.

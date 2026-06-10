@@ -1093,6 +1093,17 @@ in {
         "installed search JSON keeps unpublished package"
       assert_file_contains /tmp/unpublish-search-installed-after.json "unavailable" \
         "installed search JSON marks unpublished package unavailable"
+      $APM policy retire-tool > /tmp/unpublish-policy-after.out 2>&1 || {
+        cat /tmp/unpublish-policy-after.out
+        fail "apm policy succeeds after installed package is unpublished"
+      }
+      cat /tmp/unpublish-policy-after.out
+      assert_file_contains /tmp/unpublish-policy-after.out "Installed: 1.0.0" \
+        "policy reports installed version after registry unpublish"
+      assert_file_contains /tmp/unpublish-policy-after.out "Candidate: (none)" \
+        "policy reports no candidate after registry unpublish"
+      assert_file_contains /tmp/unpublish-policy-after.out "test-reg (installed, unavailable)" \
+        "policy marks unpublished installed version unavailable"
       "$PROFILE/current/bin/retire-tool" > /tmp/unpublish-retire-tool-run-after.out
       assert_file_contains /tmp/unpublish-retire-tool-run-after.out \
         "^retire-tool 1.0.0 via retire-dep 1.0.0$" \
