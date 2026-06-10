@@ -23,6 +23,17 @@ struct DepNode {
     children: Vec<DepNode>,
 }
 
+impl DepNode {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "name": &self.name,
+            "version": &self.version,
+            "store_hash": &self.store_hash,
+            "children": self.children.iter().map(DepNode::to_json).collect::<Vec<_>>(),
+        })
+    }
+}
+
 #[derive(Clone)]
 struct InstalledPackageRef {
     name: String,
@@ -66,6 +77,18 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
         &mut visited,
         &mut ancestors,
     );
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "package": package,
+            "registry": registry_name,
+            "installed": false,
+            "tree": root.to_json(),
+            "unique_store_paths": visited.len(),
+            "closure_size": meta.closure_size,
+        }));
+        return Ok(());
+    }
 
     // Print root line.
     printer.plain(&format!(
@@ -145,6 +168,28 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
             dependents.push((apm.name.clone(), apm.version.clone()));
         }
     }
+    dependents.sort();
+
+    if printer.mode() == OutputMode::Json {
+        let dependents_json = dependents
+            .iter()
+            .map(|(name, version)| {
+                serde_json::json!({
+                    "name": name,
+                    "version": version,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut target_hashes = target_hashes.into_iter().collect::<Vec<_>>();
+        target_hashes.sort();
+        printer.json(&serde_json::json!({
+            "package": package,
+            "target_versions": target_versions,
+            "target_hashes": target_hashes,
+            "dependents": dependents_json,
+        }));
+        return Ok(());
+    }
 
     if dependents.is_empty() {
         printer.info(&format!(
@@ -175,10 +220,46 @@ pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Res
     let unavailable_installed = policy_unavailable_installed(package, &installed, &versions);
 
     // Candidate = first entry (highest priority).
-    let candidate_version = versions
-        .first()
-        .map(|(_, meta)| meta.version.as_str())
-        .unwrap_or("(none)");
+    let candidate_version = versions.first().map(|(_, meta)| meta.version.as_str());
+
+    if printer.mode() == OutputMode::Json {
+        let versions_json = versions
+            .iter()
+            .map(|(reg, meta)| {
+                serde_json::json!({
+                    "version": &meta.version,
+                    "priority": reg.config.priority,
+                    "registry": &reg.config.name,
+                    "installed": policy_candidate_is_installed(
+                        package,
+                        &reg.config.name,
+                        meta,
+                        &installed,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+        let unavailable_json = unavailable_installed
+            .iter()
+            .map(|(version, registry)| {
+                serde_json::json!({
+                    "version": version,
+                    "registry": registry,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        printer.json(&serde_json::json!({
+            "package": package,
+            "installed": installed_version,
+            "candidate": candidate_version,
+            "versions": versions_json,
+            "unavailable_installed": unavailable_json,
+        }));
+        return Ok(());
+    }
+
+    let candidate_version = candidate_version.unwrap_or("(none)");
 
     printer.plain(&format!("{package}:"));
     match &installed_version {
@@ -315,6 +396,17 @@ async fn depends_installed(
         &mut visited,
         &mut ancestors,
     );
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "package": package,
+            "registry": &root.registry,
+            "installed": true,
+            "tree": tree.to_json(),
+            "unique_store_paths": visited.len(),
+        }));
+        return Ok(());
+    }
 
     printer.plain(&format!(
         "{} ({}){}",

@@ -468,6 +468,31 @@ in {
             "$work/apm-list.json" >/dev/null
           run_clean ${self}/bin/apm policy hostpkg > "$work/apm-policy.out" 2>&1
           grep -q "Candidate: 1.0.0" "$work/apm-policy.out"
+          run_clean ${self}/bin/apm --json policy hostpkg > "$work/apm-policy.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.package == "hostpkg"
+              and .installed == null
+              and .candidate == "1.0.0"
+              and (.versions | length == 1)
+              and .versions[0].registry == "host-reg-client"' \
+            "$work/apm-policy.json" >/dev/null
+          assert_no_profile
+          run_clean ${self}/bin/apm --json depends hostpkg > "$work/apm-depends.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.package == "hostpkg"
+              and .installed == false
+              and .registry == "host-reg-client"
+              and .tree.name == "hostpkg"
+              and .tree.children == []' \
+            "$work/apm-depends.json" >/dev/null
+          assert_no_profile
+          run_clean ${self}/bin/apm --json rdepends hostpkg > "$work/apm-rdepends.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.package == "hostpkg"
+              and .target_versions == "1.0.0"
+              and .dependents == []' \
+            "$work/apm-rdepends.json" >/dev/null
+          assert_no_profile
           run_clean ${self}/bin/apm held > "$work/apm-held.out" 2>&1
           grep -q "No packages are held" "$work/apm-held.out"
           assert_no_profile
