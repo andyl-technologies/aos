@@ -1,3 +1,11 @@
+//! Data model for the documentation index.
+//!
+//! The index is a flat list of [`DocEntry`] records, each identified by a
+//! dotted path (`functions.lists.head`, `options.security.ssh.port`,
+//! `packages.openssl`, ...) and tagged with a [`DocCategory`]. The whole
+//! [`DocIndex`] serializes to JSON via serde so it can be cached on disk
+//! between runs (see [`crate::cache`]).
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -11,6 +19,12 @@ pub struct DocIndex {
 }
 
 /// A single documented item (function, option, package, type, or language ref).
+///
+/// Entries are produced by [`crate::extract::build_index`] from Nix doc
+/// comments and compiled-in reference data. Most optional fields are only
+/// populated when the corresponding markdown section (`# Type`,
+/// `# Examples`, ...) is present in the source doc comment, or when the
+/// module system could be evaluated for option metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocEntry {
     /// Dotted path, e.g. "functions.lists.head" or "options.aos.services.ssh.port".
@@ -42,6 +56,9 @@ pub struct DocEntry {
 }
 
 /// The kind of documented item.
+///
+/// The `Display` impl renders the short lowercase form used in CLI output
+/// and JSON (`function`, `type`, `option`, `package`, `language`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DocCategory {
     /// Nix builtins and lib.* functions.

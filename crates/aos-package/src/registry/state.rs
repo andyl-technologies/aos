@@ -4,6 +4,22 @@
 //! `[registry.state]` section that is written by `apm update` to track
 //! the last-synced commit and channel rollout state.  User-edited fields
 //! (name, url, signing, etc.) are preserved on every save.
+//!
+//! Because the rest of the file is user-owned, saving works by textual
+//! section surgery rather than full-file re-serialization: the existing
+//! `[registry.state]` (or `[registry.signing_keys]`) block is located by its
+//! header line and replaced in place, leaving all other bytes untouched.
+//!
+//! A fully populated state section looks like:
+//!
+//! ```toml
+//! [registry.state]
+//! last_commit = "abc123def456"
+//! floor = "1.4.2"
+//! bucket = 183
+//! retained = ["1.0.0", "1.4.0", "1.4.2"]
+//! last_update = "2026-02-13T10:30:00Z"
+//! ```
 
 use std::path::Path;
 
@@ -18,6 +34,11 @@ use crate::types::{RegistryFile, RegistryState, SigningKeySource};
 /// Load state from a registry config file's `[registry.state]` section.
 ///
 /// Returns `Ok(None)` if the file has no state section or does not exist.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but cannot be read or is not valid
+/// registry TOML.
 pub fn load_state(path: &Path) -> Result<Option<RegistryState>> {
     if !path.exists() {
         return Ok(None);
@@ -33,7 +54,14 @@ pub fn load_state(path: &Path) -> Result<Option<RegistryState>> {
 
 /// Save/update the `[registry.state]` section in a registry config file.
 ///
-/// Preserves user-edited fields — only appends or replaces the state section.
+/// Preserves user-edited fields — only appends or replaces the state
+/// section. Unset state fields are omitted from the rendered section
+/// entirely.
+///
+/// # Errors
+///
+/// Returns an error when the config file does not exist, cannot be read, or
+/// cannot be rewritten.
 pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -157,6 +185,7 @@ fn render_signing_key_source(source: &SigningKeySource) -> String {
     }
 }
 
+/// Escape backslashes and double quotes for a basic TOML string literal.
 fn escape_toml_string(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
 }

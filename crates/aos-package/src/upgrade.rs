@@ -1,3 +1,18 @@
+//! `apm upgrade` — move installed packages to their registry candidates.
+//!
+//! A package is *upgradable* when it was explicitly installed via apm and
+//! its source registry now offers the same name at a different store-path
+//! hash (a new version or a rebuild). Held packages and `--exclude`d names
+//! are reported as held back instead of upgraded.
+//!
+//! The upgrade itself follows the same pipeline as install: resolve the new
+//! closures, enforce the sysroot lock, download/verify/import only the
+//! missing NARs, then create a new profile generation that carries forward
+//! the untouched roots, drops roots made obsolete by the upgrade (those not
+//! needed by any remaining package's closure), adds the new GC roots,
+//! rewrites the package metadata, rebuilds the merged FHS tree, and switches
+//! atomically. The previous generation remains intact for `apm rollback`.
+
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
@@ -28,11 +43,17 @@ use aos_core::output::{OutputMode, Printer};
 
 /// An upgrade candidate: a package with a different version in the registry.
 pub struct UpgradeCandidate {
+    /// Package name.
     pub name: String,
+    /// Currently installed version.
     pub old_version: String,
+    /// Version offered by the registry.
     pub new_version: String,
+    /// Store-path hash of the installed package.
     pub old_store_hash: String,
+    /// The registry's current metadata for the package.
     pub new_meta: PackageMeta,
+    /// Name of the registry the package was installed from.
     pub registry: String,
 }
 
@@ -44,6 +65,19 @@ pub struct UpgradeCandidate {
 ///
 /// Compares installed packages against the registry to find upgradable ones,
 /// then downloads, verifies, imports, and switches to a new generation.
+///
+/// With `packages` non-empty, only those names are considered; `exclude`
+/// names are held back; `dry_run` stops after printing the plan; `yes`
+/// skips the confirmation prompt; `ignore_lock` selectively waives sysroot
+/// lock violations.
+///
+/// # Errors
+///
+/// Returns an error if the profile or registry caches cannot be loaded, the
+/// user declines the confirmation prompt
+/// ([`AosError::UserCancelled`]), a sysroot-lock violation is not waived,
+/// closure resolution / download / hash verification / NAR import fails, or
+/// the new generation cannot be created, populated, or switched to.
 pub async fn run(
     config: &ApmConfig,
     packages: &[String],
@@ -396,12 +430,15 @@ pub fn find_upgradable(
     candidates
 }
 
+/// The per-package flags carried forward across an upgrade.
 #[derive(Clone, Copy, Default)]
 struct InstalledFlags {
     explicit: bool,
     held: bool,
 }
 
+/// Index the explicit/held flags of installed packages by name, so upgraded
+/// entries keep their previous flags.
 fn installed_flags_by_name(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
     installed
         .iter()
@@ -418,6 +455,9 @@ fn installed_flags_by_name(installed: &[InstalledMeta]) -> HashMap<&str, Install
         .collect()
 }
 
+/// Compute the set of store-path hashes the profile still needs after the
+/// upgrade: every new closure member plus the live closures of all explicit
+/// packages that are not being upgraded.
 async fn needed_hashes_after_upgrade(
     installed: &[InstalledMeta],
     to_upgrade: &[UpgradeCandidate],
@@ -448,6 +488,9 @@ async fn needed_hashes_after_upgrade(
     Ok(needed)
 }
 
+/// Hashes of installed entries (and their source derivations) not in the
+/// needed set — their GC roots and metadata are dropped from the new
+/// generation.
 fn obsolete_installed_hashes(
     installed: &[InstalledMeta],
     needed_hashes: &HashSet<String>,
@@ -507,6 +550,8 @@ pub fn filter_held_and_excluded(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Build the JSON document for `apm upgrade` (planned, held_back, current,
+/// or upgraded).
 fn upgrade_result_json(
     status: &str,
     packages: &[String],
@@ -537,6 +582,7 @@ fn upgrade_result_json(
     })
 }
 
+/// Render one upgrade candidate for JSON output.
 fn upgrade_candidate_json(candidate: &UpgradeCandidate) -> serde_json::Value {
     serde_json::json!({
         "name": candidate.name.as_str(),

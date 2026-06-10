@@ -1,4 +1,12 @@
 //! ConnectRPC implementation of `BuildService`.
+//!
+//! Server-streaming twins of the REST SSE endpoints: `Build` mirrors
+//! `POST /{view}/build` and `BuildClosure` mirrors
+//! `POST /{view}/build-closure`. Both delegate to the shared
+//! [`crate::build::BuildManager`] (so REST and RPC clients deduplicate
+//! onto the same underlying builds) and translate the internal
+//! [`BuildEventKind`] variants into flat proto `BuildEvent` messages via
+//! `internal_to_proto`.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -13,14 +21,23 @@ use crate::build::{BuildEvent as InternalBuildEvent, BuildEventKind};
 use crate::routes::AppState;
 use crate::services;
 
+/// Boxed server-streaming response used by the generated service traits.
 type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
 
-/// ConnectRPC build service backed by the shared `AppState`.
+/// ConnectRPC build service backed by the shared [`AppState`].
 pub struct BuildServiceImpl {
+    /// Shared server state (store, views, build manager, drain).
     pub state: Arc<AppState>,
 }
 
 impl BuildService for BuildServiceImpl {
+    /// `Build` — realises one derivation and streams its build events.
+    ///
+    /// Requires a JWT with the `build` permission on the view; rejects
+    /// unknown views (`not_found`), missing `.drv`s (`invalid_argument`),
+    /// and requests during drain (`unavailable`). Joins an existing build
+    /// for the same derivation when one is running, replaying its buffered
+    /// events before switching to live ones.
     async fn build(
         &self,
         ctx: Context,
@@ -96,6 +113,14 @@ impl BuildService for BuildServiceImpl {
         Ok((Box::pin(combined), ctx))
     }
 
+    /// `BuildClosure` — realises multiple derivations and streams a merged
+    /// event stream.
+    ///
+    /// Same auth and drain rules as [`build`](Self::build); the derivation
+    /// list must be non-empty and every `.drv` must already exist. Events
+    /// from all builds are multiplexed into one stream, each tagged with
+    /// its derivation; the stream ends after every build reaches a
+    /// terminal event.
     async fn build_closure(
         &self,
         ctx: Context,
@@ -195,7 +220,11 @@ impl BuildService for BuildServiceImpl {
     }
 }
 
-/// Convert an internal `BuildEvent` to the proto `BuildEvent` message.
+/// Converts an internal build event to the flat proto `BuildEvent`
+/// message, stamping the current time.
+///
+/// A non-empty `drv_override` (used by closure streams) replaces the
+/// event's own derivation so clients can attribute multiplexed events.
 fn internal_to_proto(event: &InternalBuildEvent, drv_override: &str) -> BuildEvent {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

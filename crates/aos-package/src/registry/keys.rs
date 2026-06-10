@@ -1,4 +1,27 @@
 //! Committed `keys.toml` trust-roster helpers.
+//!
+//! A registry commits its signing-key roster as a `keys.toml` file at the
+//! repository root, enabling *in-band key rotation*: when a sync verifies a
+//! head commit signed by a currently trusted key and delivered as a
+//! fast-forward, the roster in that commit becomes the new trusted set (see
+//! [`pin_rotated_keys`]). The file lists active keys and planned
+//! revocations:
+//!
+//! ```toml
+//! schema = 1
+//!
+//! [[keys]]
+//! id = "release-2026"
+//! key = "aos-core:Ed25519:base64..."
+//!
+//! [[revoked]]
+//! id = "release-2024"
+//! reason = "planned retirement"
+//! ```
+//!
+//! Revocations are only honoured when vouched for by a *different* active
+//! key ([`effective_revocations`]) so a compromised key cannot revoke the
+//! keys that would supersede it.
 
 use std::fs;
 use std::path::Path;
@@ -8,11 +31,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
 
+/// The `keys.toml` schema version this build reads and writes.
 pub const KEYS_TOML_SCHEMA: u32 = 1;
 
 /// A currently active registry signing key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RosterKey {
+    /// Human-chosen stable identifier used by revocation entries.
     pub id: String,
     /// Key in `registry:Ed25519:<base64>` form.
     pub key: String,
@@ -21,7 +46,9 @@ pub struct RosterKey {
 /// A planned retired key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevokedKey {
+    /// Identifier of the roster key being revoked.
     pub id: String,
+    /// Optional human-readable revocation reason.
     #[serde(default)]
     pub reason: Option<String>,
 }
@@ -29,10 +56,13 @@ pub struct RevokedKey {
 /// Trust roster stored as the committed tree file `keys.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysToml {
+    /// Schema version; must equal [`KEYS_TOML_SCHEMA`].
     #[serde(default = "default_schema")]
     pub schema: u32,
+    /// Currently active signing keys (`[[keys]]` in the file).
     #[serde(default, rename = "keys")]
     pub active: Vec<RosterKey>,
+    /// Keys declared revoked (`[[revoked]]` in the file).
     #[serde(default)]
     pub revoked: Vec<RevokedKey>,
 }
@@ -49,10 +79,13 @@ impl Default for KeysToml {
 
 /// Load and validate `keys.toml` from a checked-out registry tree.
 ///
+/// Returns `Ok(None)` when the tree has no `keys.toml`.
+///
 /// # Errors
 ///
-/// Returns an error if the file exists but cannot be parsed or contains a key
-/// outside the expected `registry:Ed25519:<base64>` form.
+/// Returns an error if the file exists but cannot be read or parsed,
+/// declares an unsupported schema, or contains a key outside the expected
+/// `registry:Ed25519:<base64>` form.
 pub fn load_keys_toml(root: &Path) -> Result<Option<KeysToml>> {
     let path = root.join("keys.toml");
     if !path.exists() {
@@ -98,6 +131,11 @@ pub fn load_keys_toml_at_commit(repo_dir: &Path, commit: &str) -> Result<Option<
 }
 
 /// Write `keys.toml` after validating every key entry.
+///
+/// # Errors
+///
+/// Returns an error if the roster fails validation or the file cannot be
+/// serialized or written.
 pub fn write_keys_toml(root: &Path, roster: &KeysToml) -> Result<()> {
     validate_roster(roster)?;
     let content = toml::to_string_pretty(roster).context("serializing keys.toml")?;
@@ -106,12 +144,12 @@ pub fn write_keys_toml(root: &Path, roster: &KeysToml) -> Result<()> {
     Ok(())
 }
 
-/// Return an active roster key by id.
+/// Return the active roster key with the given id, if any.
 pub fn active_key_by_id<'a>(roster: &'a KeysToml, id: &str) -> Option<&'a RosterKey> {
     roster.active.iter().find(|entry| entry.id == id)
 }
 
-/// Return true if the roster declares `id` revoked.
+/// Return `true` if the roster declares `id` revoked.
 pub fn is_revoked(roster: &KeysToml, id: &str) -> bool {
     roster.revoked.iter().any(|entry| entry.id == id)
 }
@@ -176,6 +214,8 @@ pub fn effective_revocations(roster: &KeysToml, vouching_key_id: &str) -> Vec<St
         .collect()
 }
 
+/// Validate the schema version, every active key's format, and every
+/// revoked entry's id.
 fn validate_roster(roster: &KeysToml) -> Result<()> {
     if roster.schema != KEYS_TOML_SCHEMA {
         bail!(

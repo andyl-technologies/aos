@@ -5,12 +5,22 @@ use std::path::PathBuf;
 use tokio::io::AsyncRead;
 
 /// HTTP-like method for transfers.
+///
+/// Non-HTTP protocols map these onto their closest native operation
+/// (e.g. for SFTP, `Get` is a remote read, `Head` is a `stat`, and
+/// `Delete` is an `unlink`). Not every protocol supports every method;
+/// unsupported combinations produce an error at execution time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
+    /// Download data (HTTP GET, S3 GetObject, SFTP read, file read).
     Get,
+    /// Upload data (HTTP PUT, S3 PutObject, SFTP write, file write).
     Put,
+    /// Check existence and size without transferring the body.
     Head,
+    /// Delete the remote object or file.
     Delete,
+    /// Submit data (HTTP only; other protocols reject POST).
     Post,
 }
 
@@ -20,7 +30,10 @@ pub enum TransferBody {
     File(PathBuf),
     /// Upload raw bytes.
     Bytes(Vec<u8>),
-    /// Upload from an async stream.
+    /// Upload from an async stream. Not all protocols accept a stream
+    /// body via [`Protocol::execute`](crate::protocol::Protocol::execute);
+    /// prefer [`TransferBody::File`] or [`TransferBody::Bytes`] where
+    /// possible.
     Stream(Box<dyn AsyncRead + Send + Sync + Unpin>),
 }
 
@@ -57,7 +70,9 @@ impl std::fmt::Debug for TransferOutput {
 /// Hash algorithm for verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashAlgorithm {
+    /// SHA-256 (32-byte digest, 64 hex characters).
     Sha256,
+    /// SHA-512 (64-byte digest, 128 hex characters).
     Sha512,
 }
 
@@ -66,11 +81,24 @@ pub enum HashAlgorithm {
 pub struct HashSpec {
     /// The hash algorithm to use.
     pub algorithm: HashAlgorithm,
-    /// Hex-encoded expected hash value.
+    /// Hex-encoded expected hash value. A `"sha256:"` or `"sha512:"`
+    /// prefix is accepted and stripped before comparison.
     pub expected: String,
 }
 
 /// A request to transfer data.
+///
+/// Construct one with the convenience constructors ([`get`],
+/// [`get_to_file`], [`put`], [`put_file`], [`post`], [`head`]) and
+/// refine it with the builder-style `with_*` methods, or build the
+/// struct literally for full control.
+///
+/// [`get`]: TransferRequest::get
+/// [`get_to_file`]: TransferRequest::get_to_file
+/// [`put`]: TransferRequest::put
+/// [`put_file`]: TransferRequest::put_file
+/// [`post`]: TransferRequest::post
+/// [`head`]: TransferRequest::head
 #[derive(Debug)]
 pub struct TransferRequest {
     /// The URL to transfer to/from.
@@ -83,7 +111,10 @@ pub struct TransferRequest {
     pub body: Option<TransferBody>,
     /// Expected hash for download verification.
     pub hash: Option<HashSpec>,
-    /// Whether to attempt resuming a partial download.
+    /// Whether to attempt resuming a partial download. Only effective
+    /// for protocols that support ranged reads and when `output` is
+    /// [`TransferOutput::File`]; the existing file's size is used as
+    /// the resume offset.
     pub resume: bool,
     /// Where to write the output.
     pub output: TransferOutput,
@@ -211,6 +242,9 @@ pub struct TransferResult {
 
 impl TransferResult {
     /// Get the body as a UTF-8 string, if available.
+    ///
+    /// Returns `None` when no body was buffered (the output was not
+    /// [`TransferOutput::Memory`]) or when the body is not valid UTF-8.
     pub fn body_string(&self) -> Option<String> {
         self.body
             .as_ref()
@@ -218,6 +252,8 @@ impl TransferResult {
     }
 
     /// Get a response header value by name (case-insensitive).
+    ///
+    /// Returns the first matching header, or `None` if absent.
     pub fn header(&self, name: &str) -> Option<&str> {
         let lower = name.to_lowercase();
         self.headers

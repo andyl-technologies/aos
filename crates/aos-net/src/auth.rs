@@ -10,30 +10,48 @@ use std::sync::RwLock;
 use anyhow::{Context, Result};
 
 /// A credential for authenticating to a remote service.
+///
+/// HTTP-style credentials (`Bearer`, `Basic`, `Header`) are applied as
+/// request headers by [`AuthStore::apply`]. Protocol-specific
+/// credentials (`AwsSigV4`, `SshKey`, `SshPassword`) are consumed by
+/// the S3 and SFTP protocol implementations instead.
 #[derive(Debug, Clone)]
 pub enum Credential {
     /// Bearer token (OAuth2, API key, etc.)
     Bearer {
+        /// The token sent as `Authorization: Bearer <token>`.
         token: String,
+        /// Optional refresh configuration; enables automatic token
+        /// refresh on 401 responses via [`AuthStore::refresh_token`].
         refresh: Option<RefreshConfig>,
     },
     /// HTTP Basic authentication.
     Basic { username: String, password: String },
     /// AWS Signature V4 (for S3-compatible services).
     AwsSigV4 {
+        /// AWS region (e.g. `"us-east-1"`) used for signing.
         region: String,
+        /// Optional named AWS profile to load credentials from.
         profile: Option<String>,
+        /// Optional custom endpoint URL for S3-compatible services
+        /// (MinIO, B2, Wasabi). Forces path-style addressing.
         endpoint: Option<String>,
     },
     /// SSH key authentication (for SFTP).
     SshKey {
+        /// Path to the private key file. If `None`, only the agent
+        /// and default key locations (`~/.ssh/id_ed25519`,
+        /// `~/.ssh/id_rsa`) are tried.
         key_path: Option<PathBuf>,
+        /// Passphrase for the private key, if encrypted.
         password: Option<String>,
+        /// Whether to try the SSH agent (`SSH_AUTH_SOCK`) first.
         use_agent: bool,
     },
     /// SSH password authentication.
     SshPassword { username: String, password: String },
-    /// Arbitrary HTTP header.
+    /// Arbitrary HTTP header, sent as `<name>: <value>`
+    /// (e.g. an `X-Api-Key` header).
     Header { name: String, value: String },
 }
 
@@ -75,6 +93,9 @@ impl AuthStore {
 
     /// Set credentials for a domain pattern.
     ///
+    /// Replaces any existing credential registered under the same
+    /// pattern.
+    ///
     /// # Examples
     ///
     /// ```ignore
@@ -87,6 +108,9 @@ impl AuthStore {
     }
 
     /// Remove credentials for a domain pattern.
+    ///
+    /// Returns the removed credential, or `None` if the pattern was
+    /// not registered.
     pub fn remove(&self, domain_pattern: &str) -> Option<Credential> {
         let mut creds = self.credentials.write().unwrap();
         creds.remove(domain_pattern)
@@ -94,8 +118,10 @@ impl AuthStore {
 
     /// Get credentials matching a URL's domain.
     ///
-    /// Returns `None` if no matching credentials are found.
-    /// Exact matches take priority over wildcard matches.
+    /// Returns `None` if the URL cannot be parsed or no matching
+    /// credentials are found. Exact matches take priority over
+    /// wildcard matches; among wildcard matches the longest (most
+    /// specific) pattern wins.
     pub fn get(&self, url: &str) -> Option<Credential> {
         let host = extract_host(url)?;
         let creds = self.credentials.read().unwrap();
@@ -128,7 +154,17 @@ impl AuthStore {
     /// Apply credentials to a reqwest request builder.
     ///
     /// This modifies the request in-place to add authentication headers
-    /// based on the credential type.
+    /// based on the credential type. Credentials that are not
+    /// HTTP-header based (`AwsSigV4`, `SshKey`, `SshPassword`) are
+    /// ignored here -- they are consumed by their protocol
+    /// implementations. If no credential matches the URL, the builder
+    /// is returned unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible; the `Result` return type is reserved for
+    /// credential types that may require asynchronous work (e.g.
+    /// request signing) in the future.
     pub async fn apply(
         &self,
         url: &str,
@@ -167,8 +203,19 @@ impl AuthStore {
 
     /// Refresh a bearer token using the refresh config, if available.
     ///
+    /// Performs an OAuth2 `client_credentials` exchange: the
+    /// provisioning token is POSTed to the configured token URL, and
+    /// the returned `access_token` replaces the stored bearer token
+    /// for `domain_pattern`.
+    ///
     /// Returns `true` if the token was refreshed, `false` if no refresh
     /// config was available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the refresh request fails to send, the
+    /// server responds with a non-success status, or the response body
+    /// is not JSON containing an `access_token` string.
     pub async fn refresh_token(
         &self,
         domain_pattern: &str,
@@ -225,7 +272,10 @@ impl Default for AuthStore {
     }
 }
 
-/// Extract the host (domain) from a URL string.
+/// Extract the host (domain) from a URL string, lowercased.
+///
+/// For `s3://` URLs the bucket name is treated as the host, which
+/// allows per-bucket credential patterns.
 fn extract_host(url: &str) -> Option<String> {
     // Handle s3:// URLs which url::Url treats the bucket as host.
     if let Ok(parsed) = url::Url::parse(url) {

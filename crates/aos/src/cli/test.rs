@@ -1,3 +1,14 @@
+//! Arguments for `aos test` — the test-layer runner.
+//!
+//! `TestCmd` selects one of the four test layers (`eval`, `build`, `vm`,
+//! `fleet`), each mapping to a `checks.*` attribute in the Nix tree; with
+//! no subcommand, `aos test` runs all layers in sequence. The `fleet`
+//! layer additionally supports `--interactive` for booting the fleet VMs
+//! outside the Nix sandbox with SSH access.
+//!
+//! Doc comments here are clap `--help` text; the implementation lives in
+//! `commands::test`.
+
 use clap::Subcommand;
 
 #[derive(Subcommand)]
@@ -17,7 +28,7 @@ pub enum TestCmd {
         suite: Option<String>,
         /// Boot the fleet outside the Nix sandbox for interactive
         /// debugging. Each VM gets a second NIC with QEMU user-mode
-        /// networking and a hostfwd to 127.0.0.1:<port> for SSH.
+        /// networking and a hostfwd to a local 127.0.0.1 port for SSH.
         /// Requires --ssh-authorized-key and a specific suite name.
         #[arg(long)]
         interactive: bool,

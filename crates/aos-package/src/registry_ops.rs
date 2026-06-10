@@ -1,8 +1,45 @@
 //! Registry management operations (`apr` / `apm registry`).
 //!
-//! This module implements producer-side tooling for maintaining AOS package
-//! registries. It operates on local git clones stored at
+//! This module implements the producer-side `apr` command surface for
+//! maintaining AOS package registries. A registry is a git repository
+//! (SHA-256 object format) whose working tree holds `registry.toml`,
+//! per-package metadata under `packages/<letter>/<name>.toml`, closure
+//! adjacency lists under `closures/`, and the committed signing-key roster
+//! `keys.toml`. Commands operate on local authoring clones stored at
 //! `~/.local/share/apm/registries/<name>/`.
+//!
+//! The subcommand families map onto the registry git workflow as follows:
+//!
+//! - **Lifecycle**: [`create`] initializes a new authoring clone;
+//!   [`local_registries`] and [`authoring_clone_precious`] support
+//!   `apr list`/`apr remove` over clones that have no consumer config.
+//! - **Publishing**: [`publish`] introspects a Nix store path and records it
+//!   in package TOML plus closure files; [`unpublish`] removes packages,
+//!   versions, or platform entries. Both commit the change (optionally
+//!   SSH-signed) unless `--no-commit` is given.
+//! - **Query and integrity**: [`show`], [`packages`], [`verify`] (closure
+//!   consistency), and [`validate`] (cache reachability over HTTP).
+//! - **Git workflow**: [`status`], [`log`], [`diff`], [`run_branch`],
+//!   [`push`], [`pull`], and [`merge`] wrap git in the registry clone.
+//!   Network transports keep the host git configuration visible while all
+//!   other invocations run hermetically (see `crate::gitcmd`).
+//! - **Releases**: [`release`] / [`release_registry_tree`] create the signed
+//!   semver release tag and generate full/delta pack artifacts for the
+//!   static dumb-HTTP origin; [`tag`] and [`sign`] manage signed tags
+//!   directly.
+//! - **Channels**: [`run_channel`] initializes and advances 256-partition
+//!   rollout channels whose partitions are signed tag payloads stored under
+//!   `.git/channels/`.
+//! - **Keys and trust**: [`run_keys`] manages the committed `keys.toml`
+//!   roster (generate/register/add/retire, including re-signing tags after
+//!   a retirement); [`run_trust`] manages the consumer-side pinned trust
+//!   store.
+//! - **Distribution**: [`run_cache`] generates and uploads the static Nix
+//!   binary cache; [`run_origin`] uploads the static git origin files.
+//!
+//! After any operation that adds commits or moves refs, the static
+//! dumb-HTTP object store metadata is refreshed so plain-file origins stay
+//! cloneable.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -156,6 +193,7 @@ fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+/// Build a `nix`/`nix-store` command with the AOS Nix environment applied.
 fn nix_command(program: &str) -> Command {
     let mut command = Command::new(program);
     command.envs(aos_nix_env());
@@ -470,6 +508,7 @@ fn introspect_deriver(store_path: &str) -> Result<Option<StorePathInfo>> {
         .map(Some)
 }
 
+/// Metadata returned by `nix path-info` for a single store path.
 struct StorePathInfo {
     path: String,
     nar_hash: String,
@@ -670,6 +709,8 @@ fn ensure_commit_identity(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Render `path` relative to the registry root as a UTF-8 string suitable
+/// for `git add -- <path>`.
 fn registry_relative_path(dir: &Path, path: &Path) -> Result<String> {
     let rel = path
         .strip_prefix(dir)
@@ -679,6 +720,8 @@ fn registry_relative_path(dir: &Path, path: &Path) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("registry path is not UTF-8: {}", path.display()))
 }
 
+/// Commit whatever is currently staged, SSH-signing the commit when
+/// `signing_key` points at an OpenSSH private key.
 fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
     match signing_key {
         Some(key) => {
@@ -771,6 +814,8 @@ fn refresh_registry_object_store(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// List the registry's release versions: every git tag whose name parses
+/// as semver, sorted ascending and deduplicated.
 fn semver_tag_versions(dir: &Path) -> Result<Vec<semver::Version>> {
     let tags = git(dir, &["tag", "--list"])?;
     Ok(semver_versions_from_tag_list(&tags))
@@ -799,7 +844,10 @@ fn read_registry_toml(dir: &Path) -> Result<Option<RegistryRootConfig>> {
     Ok(Some(config))
 }
 
-/// Resolve mirror URLs for a registry by reading its registry.toml.
+/// Resolves the mirror cache URLs committed in a registry's `registry.toml`.
+///
+/// Returns the `[[caches]]` entries sorted by descending priority, or an
+/// empty list when the file is missing, unparsable, or lists no caches.
 pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
     match read_registry_toml(dir) {
         Ok(Some(config)) if !config.caches.is_empty() => {
@@ -811,7 +859,12 @@ pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
     }
 }
 
-/// Resolve mirror URLs from committed registry.toml plus client-side overrides.
+/// Resolves mirror cache URLs from the committed `registry.toml` plus the
+/// consumer's client-side cache overrides.
+///
+/// The client-configured caches from `registries.d` are merged with the
+/// committed entries and the combined list is sorted by descending
+/// priority.
 pub fn resolve_mirrors_for_registry(
     dir: &Path,
     registry: &crate::types::RegistryConfig,
@@ -822,6 +875,10 @@ pub fn resolve_mirrors_for_registry(
     caches
 }
 
+/// Build the initial `keys.toml` roster for `apr create`.
+///
+/// Without `--trust-key` the roster is empty. A provided trust key must
+/// belong to `registry_name`; its roster id defaults to `"initial"`.
 fn initial_keys_roster(
     registry_name: &str,
     trust_key: Option<&str>,
@@ -861,7 +918,22 @@ fn initial_keys_roster(
 // Registry Lifecycle
 // ---------------------------------------------------------------------------
 
-/// `apr create <NAME>`
+/// `apr create <NAME>` — initializes a new registry authoring clone.
+///
+/// Creates a SHA-256 git repository at `<registries>/<NAME>` with `stable`
+/// as the default branch, containing a skeleton `registry.toml`, an empty
+/// `packages/` tree, and a `keys.toml` roster (seeded from `--trust-key` /
+/// `--trust-key-id` when given). The initial commit is SSH-signed when a
+/// `--key` or `--key-id` is supplied, the static dumb-HTTP object store is
+/// refreshed, and `--remote` configures an `origin` remote on the clone.
+///
+/// # Errors
+///
+/// Fails when the registry directory already exists; when `--trust-key` is
+/// given without a signing key (clients verify head-commit signatures from
+/// first contact, so a seeded roster requires a signed root commit); when
+/// no git commit identity is configured; when the trust key belongs to a
+/// different registry; or when a git invocation or file write fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn create(
     config: &ApmConfig,
@@ -964,7 +1036,33 @@ description = ""
 // Publish / Unpublish
 // ---------------------------------------------------------------------------
 
-/// `apr publish <STORE_PATH>`
+/// `apr publish <STORE_PATH>` — records a built Nix store path in the
+/// registry.
+///
+/// Introspects the store path (NAR hash and size, closure size, direct
+/// references, and the source derivation when known), writes or merges the
+/// entry in `packages/<letter>/<name>.toml`, and regenerates the closure
+/// adjacency file under `closures/`. Unless `--no-commit` is set, the
+/// touched paths are committed (SSH-signed when `--key`/`--key-id` is
+/// given) and the dumb-HTTP object store is refreshed.
+///
+/// Package name, version, and platform are parsed from the store path
+/// basename and can each be overridden. `--image`/`--image-format` pairs
+/// attach disk-image artifacts to the platform entry, `--sysroot` marks
+/// the package as a system root, and `--previous` records the predecessor
+/// version for delta upgrades.
+///
+/// # Errors
+///
+/// Fails when the registry has no writable authoring clone, when
+/// `--image` and `--image-format` are not given in pairs, when the
+/// `nix path-info`/`nix-store` queries fail for the store path, or when a
+/// file write, the commit, or the object-store refresh fails.
+///
+/// # Panics
+///
+/// Panics if an existing package TOML contains a `versions` array whose
+/// entries are not tables (cannot occur for files written by this tool).
 #[allow(clippy::too_many_arguments)]
 pub async fn publish(
     config: &ApmConfig,
@@ -1159,6 +1257,9 @@ pub async fn publish(
     Ok(())
 }
 
+/// Require `dir` to be a git authoring clone; consumer-extracted registry
+/// trees (plain files synced by `apm update`) cannot host publish commits
+/// and are rejected with remediation steps.
 fn ensure_writable_registry_clone(name: &str, dir: &Path) -> Result<()> {
     if dir.join(".git").is_dir() {
         return Ok(());
@@ -1177,6 +1278,10 @@ fn ensure_writable_registry_clone(name: &str, dir: &Path) -> Result<()> {
 }
 
 /// Build package TOML content, merging with existing content if present.
+///
+/// A fresh file is rendered directly; an existing file is parsed and the
+/// version/platform entry is upserted, preserving unrelated versions and
+/// platforms. Panics if an existing `versions` array entry is not a table.
 #[allow(clippy::too_many_arguments)]
 fn build_package_toml(
     existing: &str,
@@ -1374,7 +1479,22 @@ fn build_package_toml(
     }
 }
 
-/// `apr unpublish <PACKAGE> [VERSION]`
+/// `apr unpublish <PACKAGE> [VERSION]` — removes package metadata from the
+/// registry.
+///
+/// With neither a version nor `--platform`, the whole package file is
+/// deleted. With a version (and optionally a platform) only the matching
+/// entries are removed; specifying only `--platform` removes that platform
+/// from every version. The file is deleted once no versions remain.
+/// Unless `--no-commit` is set, the change is committed (SSH-signed when
+/// `--key`/`--key-id` is given) and the dumb-HTTP object store is
+/// refreshed. Closure files are left in place.
+///
+/// # Errors
+///
+/// Fails when the package, the requested version, or the requested
+/// platform does not exist in the registry, or when a file write, the
+/// commit, or the object-store refresh fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn unpublish(
     config: &ApmConfig,
@@ -1589,6 +1709,9 @@ fn latest_version_string(versions: &[toml::Value]) -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// Order version strings semver-first: a parsable semver always beats a
+/// non-semver string, and two non-semver strings fall back to lexicographic
+/// comparison.
 fn compare_registry_versions(left: &str, right: &str) -> std::cmp::Ordering {
     match (semver::Version::parse(left), semver::Version::parse(right)) {
         (Ok(left), Ok(right)) => left.cmp(&right),
@@ -1613,7 +1736,17 @@ fn package_toml_with_versions(
     Ok(filtered)
 }
 
-/// `apr show <PACKAGE>`
+/// `apr show <PACKAGE>` — prints a package's registry metadata.
+///
+/// Shows the `[package]` header fields plus each version's per-platform
+/// store paths, NAR sizes, and image artifacts. A version argument filters
+/// the output to that version; `--raw` prints the package TOML verbatim
+/// instead of the formatted view.
+///
+/// # Errors
+///
+/// Fails when the package file does not exist in the registry, cannot be
+/// parsed, or does not contain the requested version.
 pub async fn show(
     config: &ApmConfig,
     package: &str,
@@ -1721,7 +1854,17 @@ pub async fn show(
     Ok(())
 }
 
-/// `apr packages`
+/// `apr packages` — lists every package in the registry with its latest
+/// version.
+///
+/// `--platform` restricts the version selection to versions published for
+/// that platform; `--outdated` shows only packages that carry more than
+/// one matching version (i.e. that have superseded entries).
+///
+/// # Errors
+///
+/// Fails when the registry cannot be resolved or a package metadata file
+/// cannot be read or parsed.
 pub async fn packages(
     config: &ApmConfig,
     platform: Option<&str>,
@@ -1796,6 +1939,8 @@ pub async fn packages(
     Ok(())
 }
 
+/// One published store path discovered while scanning package TOMLs for
+/// `apr verify`.
 #[derive(Debug, Clone)]
 struct RegistryVerifyStoreEntry {
     store_hash: String,
@@ -1803,7 +1948,20 @@ struct RegistryVerifyStoreEntry {
     package_name: String,
 }
 
-/// `apr verify`
+/// `apr verify` — checks registry-internal metadata consistency.
+///
+/// Verifies that every package TOML parses and has a `[package]` section,
+/// that every published store path has a closure file whose first line is
+/// the root hash, that all direct references recorded in the package TOML
+/// appear in the closure, and that the closure adjacency list is
+/// internally closed (members only reference other members). With `--fix`,
+/// closure files are regenerated from the local Nix store before checking,
+/// which requires the published store paths to be present locally.
+///
+/// # Errors
+///
+/// Fails when a `--package` filter matches no package, when `--fix` cannot
+/// recompute a closure, or when any verification error was found.
 pub async fn verify(
     config: &ApmConfig,
     package: Option<&str>,
@@ -2017,7 +2175,18 @@ pub async fn verify(
     Ok(())
 }
 
-/// `apr diff`
+/// `apr diff` — shows pending changes in the registry clone.
+///
+/// By default diffs the working tree against the index. With `--remote`,
+/// diffs the remote tracking base (the configured upstream, then
+/// `origin/<current-branch>`, then `origin/HEAD`) against `HEAD`, showing
+/// committed work that has not been pushed. `--stat` prints a diffstat
+/// instead of the patch.
+///
+/// # Errors
+///
+/// Fails when `--remote` is given but no remote tracking ref can be
+/// determined, or when git fails.
 pub async fn diff(
     config: &ApmConfig,
     stat: bool,
@@ -2077,6 +2246,9 @@ pub async fn diff(
     Ok(())
 }
 
+/// Pick the remote ref `apr diff --remote` compares against: the
+/// configured upstream first, then `origin/<current-branch>`, then
+/// `origin/HEAD`.
 fn remote_diff_base(dir: &Path) -> Result<String> {
     let (has_upstream, upstream, _) = git_try(
         dir,
@@ -2113,7 +2285,23 @@ fn git_ref_exists(dir: &Path, reference: &str) -> Result<bool> {
     Ok(exists)
 }
 
-/// `apr validate`
+/// `apr validate` — checks that published artifacts are downloadable from
+/// the registry's caches.
+///
+/// For every published store path and image artifact (optionally filtered
+/// by `--package` and `--platform`), fetches the `.narinfo` from each
+/// cache listed in `registry.toml`, cross-checks its store path and NAR
+/// hash against the registry metadata, and probes the referenced NAR with
+/// an HTTP `HEAD`. An entry counts as found when any cache passes all
+/// checks. Requests run with up to `--jobs` in parallel. With `--fix`,
+/// entries missing from every cache are pruned from the registry metadata
+/// on disk (the prune is not committed).
+///
+/// # Errors
+///
+/// Fails when `--jobs` is zero, when entries are missing and `--fix` was
+/// not given (or pruned nothing), or when reading registry metadata or
+/// running the validation tasks fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn validate(
     config: &ApmConfig,
@@ -2279,6 +2467,8 @@ pub async fn validate(
     Ok(())
 }
 
+/// One (store path, NAR hash) pair that `apr validate` checks against the
+/// caches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CacheValidationEntry {
     name: String,
@@ -2288,6 +2478,8 @@ struct CacheValidationEntry {
     nar_hash: String,
 }
 
+/// Outcome of probing the caches for one entry; `details` collects the
+/// per-cache failure reasons.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CacheValidationResult {
     entry: CacheValidationEntry,
@@ -2366,6 +2558,9 @@ fn cache_validation_missing_error(
     }
 }
 
+/// Gather every published (store path, NAR hash) pair from the registry's
+/// package TOMLs — including image artifacts — honoring optional package
+/// and platform filters. The result is sorted and deduplicated.
 fn collect_cache_validation_entries(
     dir: &Path,
     package_filter: Option<&str>,
@@ -2478,6 +2673,13 @@ fn collect_cache_validation_entries_from_package(
     Ok(())
 }
 
+/// Prune registry metadata entries whose store paths are in
+/// `missing_store_paths` (`apr validate --fix`).
+///
+/// Removes matching platform entries and image artifacts, then drops
+/// versions left without platforms and deletes package files left without
+/// versions. Returns the number of entries removed. Changes are written to
+/// the working tree only — nothing is committed.
 fn remove_missing_cache_entries(
     dir: &Path,
     missing_store_paths: &HashSet<String>,
@@ -2606,6 +2808,10 @@ fn remove_missing_cache_entries_from_package(
     Ok(removed)
 }
 
+/// Probe each mirror for one entry: fetch the `.narinfo`, cross-check its
+/// store path and NAR hash against the registry metadata, then `HEAD` the
+/// NAR it references. The first cache that fully matches wins; every
+/// per-cache failure is accumulated as a detail string for diagnostics.
 async fn validate_cache_entry(
     client: &reqwest::Client,
     mirrors: &[CacheEntry],
@@ -2685,7 +2891,12 @@ async fn validate_cache_entry(
 // Git Workflow
 // ---------------------------------------------------------------------------
 
-/// `apr status`
+/// `apr status` — prints `git status --short` for the registry clone,
+/// including untracked files.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be resolved or git fails.
 pub async fn status(config: &ApmConfig, registry: Option<&str>, printer: &Printer) -> Result<()> {
     let dir = registry_dir(config, registry)?;
     let raw_output = git_raw(&dir, &["status", "--short", "--untracked-files=all"])?;
@@ -2702,7 +2913,13 @@ pub async fn status(config: &ApmConfig, registry: Option<&str>, printer: &Printe
     Ok(())
 }
 
-/// `apr log`
+/// `apr log` — prints the last `n` commits of the registry clone, one line
+/// each, optionally restricted to the history of a single package's TOML
+/// file.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be resolved or git fails.
 pub async fn log(
     config: &ApmConfig,
     package: Option<&str>,
@@ -2741,6 +2958,8 @@ pub async fn log(
     Ok(())
 }
 
+/// Parse `git status --short` lines into structured entries (index and
+/// worktree status characters plus the path).
 fn parse_status_short(output: &str) -> Vec<serde_json::Value> {
     output
         .lines()
@@ -2789,6 +3008,9 @@ fn diff_name_status_entries(
         .collect())
 }
 
+/// Collect structured commit records for JSON output, using ASCII
+/// unit/record separators (`%x1f`/`%x1e`) so subjects containing newlines
+/// or tabs cannot corrupt the framing.
 fn git_log_entries(dir: &Path, package: Option<&str>, n: u32) -> Result<Vec<serde_json::Value>> {
     let n_str = format!("-{n}");
     let pretty = "%H%x1f%h%x1f%s%x1f%ct%x1e";
@@ -2830,7 +3052,14 @@ fn git_log_entries(dir: &Path, package: Option<&str>, n: u32) -> Result<Vec<serd
         .collect())
 }
 
-/// Branch subcommands.
+/// `apr branch` subcommands: list, create, switch to, and delete branches
+/// in the registry clone.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be resolved or when the underlying git
+/// command fails (e.g. deleting an unmerged branch or switching with a
+/// dirty working tree).
 pub async fn run_branch(
     config: &ApmConfig,
     command: &BranchCommand,
@@ -2901,6 +3130,8 @@ fn current_git_branch(dir: &Path) -> Result<String> {
     git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
 }
 
+/// Collect local and remote branch records (name, ref, commit, flags) for
+/// JSON output.
 fn git_branch_entries(dir: &Path) -> Result<Vec<serde_json::Value>> {
     let current = current_git_branch(dir)?;
     let output = git_raw(
@@ -2935,7 +3166,20 @@ fn git_branch_entries(dir: &Path) -> Result<Vec<serde_json::Value>> {
         .collect())
 }
 
-/// Channel rollout subcommands.
+/// `apr channel` subcommands for staged rollouts.
+///
+/// `init` points all 256 partitions of a channel at one release;
+/// `advance` moves a subset (`--count` for an ascending fill, or an
+/// explicit `--partitions` list) to a newer release; `status` summarizes
+/// per-version partition counts and the channel frontier. Partition
+/// updates write signed tag payloads under `.git/channels/<channel>/` and
+/// move the channel branch head to the frontier release.
+///
+/// # Errors
+///
+/// Fails when the semver argument does not parse, when the release tag
+/// does not exist, when the signing key cannot be resolved, or when
+/// partition payloads are missing or fail verification.
 pub async fn run_channel(
     config: &ApmConfig,
     command: &ChannelCommand,
@@ -2992,7 +3236,18 @@ pub async fn run_channel(
     }
 }
 
-/// Static Nix-cache subcommands.
+/// `apr cache` subcommands for the static Nix binary cache.
+///
+/// `generate` renders the registry's published store paths into a static
+/// cache directory (narinfos plus compressed NARs, signed with `--key`
+/// when given), optionally uploads it to each `--upload-url`, and with
+/// `--cache-url` upserts the `[[caches]]` pointer in `registry.toml`,
+/// committing the pointer change unless `--no-commit` is set.
+///
+/// # Errors
+///
+/// Fails when cache generation, an upload, the pointer commit, or the
+/// object-store refresh fails.
 pub async fn run_cache(
     config: &ApmConfig,
     command: &CacheCommand,
@@ -3065,7 +3320,16 @@ pub async fn run_cache(
     }
 }
 
-/// Static git-origin subcommands.
+/// `apr origin` subcommands for the static dumb-HTTP git origin.
+///
+/// `upload` refreshes the static object store indexes and uploads the
+/// registry's git origin files (objects, packs, refs, channel payloads)
+/// to each `--upload-url` so consumers can sync from a plain file server.
+///
+/// # Errors
+///
+/// Fails when no `--upload-url` is given, or when the object-store refresh
+/// or any upload fails.
 pub async fn run_origin(
     config: &ApmConfig,
     command: &OriginCommand,
@@ -3117,7 +3381,16 @@ pub async fn run_origin(
     }
 }
 
-/// Registry trust-store subcommands.
+/// `apr trust` subcommands for the consumer-side pinned trust store.
+///
+/// `pin` stores a `registry:Ed25519:<base64>` public key for a registry
+/// (`--replace` drops existing pins first), `list` shows the pinned keys
+/// per registry, and `remove` deletes a registry's pins.
+///
+/// # Errors
+///
+/// Fails when the key line does not parse or names a different registry,
+/// or when the trust store cannot be read or written.
 pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) -> Result<()> {
     let store = KeyStore::new(config.scope.trusted_keys_dirs());
     match command {
@@ -3201,7 +3474,26 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
     }
 }
 
-/// Committed keys.toml roster subcommands.
+/// `apr keys` subcommands for the committed `keys.toml` signing roster.
+///
+/// `list` prints active and revoked keys with fingerprints; `generate`
+/// creates a new maintainer keypair; `register` adopts an externally-held
+/// key without persisting key material; `add` appends a public key to the
+/// active roster; `retire` moves a key to the revoked list and re-signs
+/// every release tag and channel partition the retired key still covered
+/// (the vouching survivor signs by default; `--no-resign` prints the plan
+/// instead of executing it).
+///
+/// Roster-changing commits must be signed by an active maintainer key
+/// whenever the roster was already non-empty, because clients verify
+/// head-commit signatures against the keys they currently trust.
+///
+/// # Errors
+///
+/// Fails when a key id is invalid, duplicated, or revoked; when a
+/// retirement would leave no active survivor key; when the commit signing
+/// key cannot be resolved; or when the roster write, commit, re-signing,
+/// or object-store refresh fails.
 pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) -> Result<()> {
     match command {
         KeysCommand::List { registry } => {
@@ -3607,6 +3899,8 @@ fn hash_tag_object(dir: &Path, payload: &[u8]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Load the committed `keys.toml` roster, defaulting to an empty roster
+/// when the file does not exist yet.
 fn load_committed_roster(dir: &Path) -> Result<KeysToml> {
     if !dir.exists() {
         bail!("registry directory does not exist: {}", dir.display());
@@ -3845,6 +4139,8 @@ fn derive_trust_key(registry_name: &str, key_path: &str) -> Result<String> {
     Ok(format!("{registry_name}:Ed25519:{blob}"))
 }
 
+/// Write `keys.toml` back and, unless `no_commit`, commit it and refresh
+/// the dumb-HTTP object store.
 fn persist_committed_roster(
     dir: &Path,
     roster: &KeysToml,
@@ -3888,6 +4184,9 @@ fn resolve_roster_commit_key(
     )
 }
 
+/// Append an active key to the roster after validating that the id is
+/// well-formed and unused, the key is not already present or revoked, and
+/// the key's registry binding matches.
 fn add_roster_key(roster: &mut KeysToml, registry_name: &str, id: &str, key: &str) -> Result<()> {
     validate_roster_key_id(id)?;
     if roster.active.iter().any(|entry| entry.id == id) {
@@ -3916,6 +4215,12 @@ fn add_roster_key(roster: &mut KeysToml, registry_name: &str, id: &str, key: &st
     Ok(())
 }
 
+/// Move key `id` from the active to the revoked roster, returning the id
+/// of the vouching survivor key.
+///
+/// At least one active key must remain. `--vouched-by` is required when
+/// more than one survivor exists and defaults to the sole survivor
+/// otherwise; the voucher must itself be a surviving active key.
 fn retire_roster_key(
     roster: &mut KeysToml,
     id: &str,
@@ -3963,6 +4268,8 @@ fn retire_roster_key(
     Ok(vouching_id)
 }
 
+/// Record `id` in the revoked list, updating the reason if it is already
+/// there.
 fn upsert_revoked_key(roster: &mut KeysToml, id: &str, reason: Option<&str>) {
     let reason = reason.map(str::to_string);
     if let Some(entry) = roster.revoked.iter_mut().find(|entry| entry.id == id) {
@@ -4008,6 +4315,8 @@ fn registry_upload_auth_config<'a>(
         .and_then(|(registry, _state)| registry.upload_auth.as_ref())
 }
 
+/// Parse a `registry:Algorithm:<base64>` line into a [`TrustedKey`] pinned
+/// via TOFU, verifying it belongs to `expected_registry`.
 fn trusted_key_from_line(expected_registry: &str, key: &str) -> Result<TrustedKey> {
     let (registry, algorithm, public_key) = parse_signing_key(key)?;
     if registry != expected_registry {
@@ -4200,6 +4509,13 @@ fn resolve_signing_key_source(
     }
 }
 
+/// Resolve the maintainer signing key for tag and commit signing.
+///
+/// `--key` names a private key file used as-is. `--key-id` is looked up in
+/// the committed `keys.toml` roster — rejecting revoked ids and keys bound
+/// to another registry — and resolved to local key material through the
+/// registry config's `[registry.signing_keys]` table (a path or a
+/// command). Exactly one of the two must be provided.
 fn resolve_producer_signing_key(
     config: &ApmConfig,
     dir: &Path,
@@ -4260,6 +4576,8 @@ fn registry_config_by_name<'a>(
         .map(|(registry, _state)| registry)
 }
 
+/// `apr channel init`: point all 256 partitions of a channel at one
+/// release and set the channel branch to it.
 async fn channel_init(
     config: &ApmConfig,
     channel_name: &str,
@@ -4300,6 +4618,8 @@ async fn channel_init(
     Ok(())
 }
 
+/// `apr channel advance`: re-sign the selected partitions of an existing
+/// channel against a newer release and recompute the frontier.
 async fn channel_advance(
     config: &ApmConfig,
     channel_name: &str,
@@ -4368,6 +4688,8 @@ async fn channel_advance(
     Ok(())
 }
 
+/// `apr channel status`: summarize partition versions, missing partitions,
+/// and the channel frontier.
 async fn channel_status(
     config: &ApmConfig,
     channel_name: &str,
@@ -4419,7 +4741,17 @@ async fn channel_status(
     Ok(())
 }
 
-/// `apr push`
+/// `apr push` — pushes the current (or named) branch of the registry clone
+/// to `origin`.
+///
+/// Runs as a network transport, so the host git configuration (credential
+/// helpers, proxies) stays visible. `--set-upstream` passes `-u origin`;
+/// `--force` force-pushes.
+///
+/// # Errors
+///
+/// Fails when no remote or upstream is configured for the branch, or when
+/// the remote rejects the push.
 pub async fn push(
     config: &ApmConfig,
     branch: Option<&str>,
@@ -4471,7 +4803,14 @@ pub async fn push(
     Ok(())
 }
 
-/// `apr pull`
+/// `apr pull` — pulls the current branch of the registry clone from its
+/// upstream, rebasing local commits instead of merging when `--rebase` is
+/// given.
+///
+/// # Errors
+///
+/// Fails when no upstream is configured or the pull cannot complete
+/// cleanly (e.g. merge conflicts).
 pub async fn pull(
     config: &ApmConfig,
     rebase: bool,
@@ -4502,7 +4841,15 @@ pub async fn pull(
     Ok(())
 }
 
-/// `apr merge <BRANCH>`
+/// `apr merge <BRANCH>` — merges `branch` into the current branch of the
+/// registry clone.
+///
+/// `--no-ff` always creates a merge commit; `--squash` stages the combined
+/// changes without committing them.
+///
+/// # Errors
+///
+/// Fails when the branch does not exist or the merge conflicts.
 pub async fn merge(
     config: &ApmConfig,
     branch: &str,
@@ -4550,35 +4897,64 @@ fn current_git_head(dir: &Path) -> Result<String> {
 // Release
 // ---------------------------------------------------------------------------
 
+/// Options controlling [`release_registry_tree`].
+///
+/// Mirrors the flags of `apr release` once the optional `--store-path`
+/// publish step has been handled by [`release`].
 #[derive(Debug, Clone)]
 pub struct ReleaseTreeOptions {
+    /// Release version; doubles as the git tag name.
     pub version: semver::Version,
+    /// Path to the OpenSSH Ed25519 private key used for tags and commits.
     pub signing_key: String,
+    /// Channel to initialize or advance after tagging, if any.
     pub channel: Option<String>,
+    /// Initialize all 256 channel partitions instead of advancing a subset.
     pub init_channel: bool,
+    /// Number of partitions to advance (ascending fill).
     pub count: Option<usize>,
+    /// Explicit partition list to advance (decimal or hex buckets).
     pub partitions: Option<String>,
+    /// Directory to generate the static Nix cache into, if any.
     pub cache_output: Option<PathBuf>,
+    /// Nix cache signing key for the generated narinfos.
     pub cache_key: Option<PathBuf>,
+    /// Public cache URL to upsert into `registry.toml` `[[caches]]`.
     pub cache_url: Option<String>,
+    /// Priority recorded for the cache pointer.
     pub cache_priority: u32,
+    /// Static-origin upload destinations.
     pub upload_urls: Vec<String>,
+    /// Authentication used for cache and origin uploads.
     pub upload_auth: AuthOptions,
+    /// Print the release plan without executing it.
     pub dry_run: bool,
+    /// Reuse an existing tag and pack artifacts at HEAD instead of failing.
     pub resume: bool,
 }
 
+/// Summary of the artifacts produced by [`release_registry_tree`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReleaseReport {
+    /// Filename of the generated full pack, when the release kind needs one.
     pub full_pack: Option<String>,
+    /// Filenames of the generated compressed thin-delta packs.
     pub deltas: Vec<String>,
+    /// Static Nix cache generation report, when one was requested.
     pub cache: Option<nixcache::StaticCacheReport>,
+    /// Whether the `registry.toml` cache pointer was updated and committed.
     pub cache_pointer_updated: bool,
+    /// Number of channel partitions touched, when a channel was given.
     pub channel_partitions: Option<usize>,
+    /// Files uploaded to the static origin, when uploads ran.
     pub uploaded_files: Option<usize>,
+    /// Bytes uploaded to the static origin, when uploads ran.
     pub uploaded_bytes: Option<u64>,
 }
 
+/// Exclusive on-disk lock (`.git/apr-release.lock`) serializing release
+/// publishers against one registry clone; the lock file records the
+/// holder's pid and is removed on drop.
 struct ReleaseLock {
     path: PathBuf,
 }
@@ -4609,7 +4985,21 @@ impl Drop for ReleaseLock {
     }
 }
 
-/// `apr release <SEMVER>`
+/// `apr release <SEMVER>` — runs the end-to-end registry release workflow.
+///
+/// When `--store-path` is given, first publishes that store path into the
+/// release metadata under the release version (committed and SSH-signed),
+/// then delegates to [`release_registry_tree`] to create the signed
+/// release tag, generate pack artifacts, and run the optional cache,
+/// channel, and upload steps. `--dry-run` prints the plan without changing
+/// anything.
+///
+/// # Errors
+///
+/// Fails when the semver does not parse, the registry directory is
+/// missing, the signing key cannot be resolved, the working tree is dirty,
+/// the publish step fails, or any delegated release step fails (see
+/// [`release_registry_tree`]).
 #[allow(clippy::too_many_arguments)]
 pub async fn release(
     config: &ApmConfig,
@@ -4708,6 +5098,29 @@ pub async fn release(
     Ok(())
 }
 
+/// Executes the release workflow against a registry directory.
+///
+/// Under an exclusive release lock, this: optionally commits a
+/// `registry.toml` cache pointer; creates the signed semver release tag at
+/// HEAD (or reuses an existing tag there when `resume` is set); generates
+/// the release pack artifacts under `.git/releases/<version>/` — a full
+/// pack for major/minor releases plus zstd-compressed thin deltas from the
+/// prior releases selected by the delta scheme; optionally generates the
+/// static Nix cache; initializes or advances the rollout channel; and
+/// uploads the static origin files. The dumb-HTTP object store is
+/// refreshed after each ref-moving step. With `dry_run`, the plan is
+/// printed and nothing is modified.
+///
+/// Returns a [`ReleaseReport`] describing the produced artifacts.
+///
+/// # Errors
+///
+/// Fails when the option combination is invalid (`--init-channel` or
+/// partition selectors without `--channel`, `--cache-key` without
+/// `--cache-output`); when another publisher holds the release lock; when
+/// the working tree is dirty; when the tag or pack artifacts already exist
+/// without `resume` (or the tag exists at a different commit); or when
+/// pack generation, cache generation, channel updates, or uploads fail.
 pub async fn release_registry_tree(
     dir: &Path,
     registry_name: &str,
@@ -4838,6 +5251,7 @@ pub async fn release_registry_tree(
     Ok(report)
 }
 
+/// Reject invalid `apr release` flag combinations before any work happens.
 fn validate_release_options(options: &ReleaseTreeOptions) -> Result<()> {
     match (&options.channel, options.init_channel) {
         (None, true) => bail!("--init-channel requires --channel"),
@@ -4979,6 +5393,8 @@ fn print_release_plan(
     }
 }
 
+/// Require a clean working tree before releasing; bare repositories pass
+/// trivially.
 fn ensure_release_worktree_clean(dir: &Path) -> Result<()> {
     let is_bare = git(dir, &["rev-parse", "--is-bare-repository"])? == "true";
     if is_bare {
@@ -4991,6 +5407,8 @@ fn ensure_release_worktree_clean(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create the signed release tag at `head`, or accept an existing tag that
+/// already points at `head` when resuming.
 fn ensure_release_tag(
     dir: &Path,
     options: &ReleaseTreeOptions,
@@ -5031,6 +5449,8 @@ fn ensure_release_tag(
     Ok(())
 }
 
+/// Return the commit an existing release tag points at, or `None` when no
+/// tag exists; a non-tag ref carrying the release name is an error.
 fn existing_release_tag_commit(dir: &Path, version: &semver::Version) -> Result<Option<String>> {
     let tag = version.to_string();
     let (tag_ok, _, tag_stderr) = git_try(dir, &["rev-parse", &format!("{tag}^{{tag}}")])?;
@@ -5048,6 +5468,14 @@ fn existing_release_tag_commit(dir: &Path, version: &semver::Version) -> Result<
     Ok(Some(commit))
 }
 
+/// Generate the pack artifacts for a release under
+/// `.git/releases/<version>/`.
+///
+/// Major and minor releases get a self-contained full pack, recorded in
+/// `info/packs` for dumb-HTTP fetchers. Every release also gets a
+/// zstd-compressed thin delta from each prior release selected by the
+/// delta scheme, so consumers on a supported base version can fetch a
+/// compact incremental pack instead of the full history.
 async fn write_release_artifacts(
     dir: &Path,
     published_before: &[semver::Version],
@@ -5099,6 +5527,9 @@ async fn write_release_artifacts(
     })
 }
 
+/// Generate (or, with `resume`, reuse) the full `pack-*.pack` for a
+/// release commit, staging it in a tempdir before copying it and its
+/// `.idx` into place.
 async fn write_full_pack_artifact(
     dir: &Path,
     commit: &str,
@@ -5132,6 +5563,9 @@ async fn write_full_pack_artifact(
     Ok(pack_name)
 }
 
+/// Generate (or, with `resume`, reuse) the `delta-<base>.pack.zst` thin
+/// pack carrying the objects needed to go from `base_commit` to
+/// `target_commit`.
 async fn write_delta_artifact(
     dir: &Path,
     base: &semver::Version,
@@ -5164,6 +5598,8 @@ async fn write_delta_artifact(
     Ok(artifact_name)
 }
 
+/// Find an already-generated full pack in `pack_dir`; more than one is an
+/// error because `info/packs` records exactly one.
 fn existing_full_pack(pack_dir: &Path) -> Result<Option<String>> {
     if !pack_dir.exists() {
         return Ok(None);
@@ -5199,6 +5635,8 @@ fn file_name_string(path: &Path) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("path has no UTF-8 filename: {}", path.display()))
 }
 
+/// Point all 256 partitions of a channel at `version` and move the channel
+/// branch to the new frontier. Returns the partition count (always 256).
 fn channel_init_dir(
     dir: &Path,
     channel_name: &str,
@@ -5220,6 +5658,8 @@ fn channel_init_dir(
     Ok(256)
 }
 
+/// Advance the selected partitions of an existing channel to `version` and
+/// update the frontier. Returns how many partitions were touched.
 fn channel_advance_dir(
     dir: &Path,
     channel_name: &str,
@@ -5250,7 +5690,15 @@ fn channel_advance_dir(
     Ok(selected.len())
 }
 
-/// `apr tag <NAME>`
+/// `apr tag <NAME>` — creates an SSH-signed annotated tag at HEAD in the
+/// registry clone and refreshes the dumb-HTTP object store.
+///
+/// The tag message defaults to `AOS registry release`.
+///
+/// # Errors
+///
+/// Fails when the signing key cannot be resolved, when the tag already
+/// exists, or when git tag signing fails.
 pub async fn tag(
     config: &ApmConfig,
     name: &str,
@@ -5278,7 +5726,15 @@ pub async fn tag(
     Ok(())
 }
 
-/// `apr sign <TAG>`
+/// `apr sign <TAG>` — re-signs an existing tag in place.
+///
+/// The tag is force-recreated against its current target commit with a
+/// fresh SSH signature, and the dumb-HTTP object store is refreshed.
+///
+/// # Errors
+///
+/// Fails when no tag name is given, when the tag cannot be resolved, when
+/// the signing key cannot be resolved, or when git tag signing fails.
 pub async fn sign(
     config: &ApmConfig,
     tag: Option<&str>,
@@ -5321,18 +5777,25 @@ fn validate_channel_name(channel_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Require the signed release tag for `version` to exist, returning the
+/// tag object id.
 fn assert_release_tag_exists(dir: &Path, version: &semver::Version) -> Result<String> {
     let tag = version.to_string();
     git(dir, &["rev-parse", &format!("{tag}^{{tag}}")])
         .with_context(|| format!("resolving signed release tag '{tag}'"))
 }
 
+/// Resolve the commit a release tag points at.
 fn release_commit(dir: &Path, version: &semver::Version) -> Result<String> {
     let tag = version.to_string();
     git(dir, &["rev-parse", &format!("{tag}^{{commit}}")])
         .with_context(|| format!("resolving release tag '{tag}' commit"))
 }
 
+/// Resolve which partitions a channel advance should touch: `--count`
+/// picks the lowest-numbered partitions not yet on the target version
+/// (ascending fill), while `--partitions` names buckets explicitly.
+/// Exactly one of the two must be given.
 fn select_partitions_for_advance(
     count: Option<usize>,
     partitions: Option<&str>,
@@ -5370,6 +5833,8 @@ fn parse_partition_list(spec: &str) -> Result<Vec<u8>> {
     Ok(buckets)
 }
 
+/// Parse a single partition bucket: `0x`-prefixed or letter-containing
+/// strings are hex, everything else is decimal.
 fn parse_partition(raw: &str) -> Result<u8> {
     if let Some(hex) = raw.strip_prefix("0x") {
         return u8::from_str_radix(hex, 16)
@@ -5383,6 +5848,9 @@ fn parse_partition(raw: &str) -> Result<u8> {
         .with_context(|| format!("invalid decimal partition '{raw}'"))
 }
 
+/// Reconstruct a channel's partition map from the signed tag payloads
+/// under `.git/channels/<name>/`, verifying each payload's channel-name
+/// binding and resolving its target tag object to a release version.
 fn read_channel_partition_map(dir: &Path, channel_name: &str) -> Result<PartitionMap> {
     let release_tags = semver_tag_object_map(dir)?;
     let git_dir = objectstore::repo_git_dir(dir)?;
@@ -5418,6 +5886,7 @@ fn read_channel_partition_map(dir: &Path, channel_name: &str) -> Result<Partitio
     Ok(map)
 }
 
+/// Map each release tag's object id to its release version.
 fn semver_tag_object_map(dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
     let mut map = BTreeMap::new();
     for version in semver_tag_versions(dir)? {
@@ -5427,6 +5896,13 @@ fn semver_tag_object_map(dir: &Path) -> Result<BTreeMap<String, semver::Version>
     Ok(map)
 }
 
+/// Sign and store the payload for one channel partition.
+///
+/// Git can only sign tags through refs, so a temporary tag named after the
+/// channel is force-created against the release tag object, its signed
+/// payload is copied into `.git/channels/<channel>/<bucket>`, and the
+/// temporary ref is deleted. The payload file is the durable artifact
+/// consumers fetch and verify.
 fn write_channel_partition_tag(
     dir: &Path,
     channel_name: &str,
@@ -5464,6 +5940,9 @@ fn write_channel_partition_tag(
     Ok(())
 }
 
+/// Recompute the channel frontier from the partition map, point
+/// `refs/heads/<channel>` at the frontier release's commit, and refresh
+/// the dumb-HTTP object store.
 fn update_channel_frontier(dir: &Path, channel_name: &str, map: &PartitionMap) -> Result<()> {
     channel::assert_full_partition_set(map)?;
     let frontier = channel::compute_frontier(map)

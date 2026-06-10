@@ -1,9 +1,24 @@
+//! `aos fmt` — format Nix files with the embedded alejandra formatter.
+//!
+//! With no file arguments, walks the repository tree (respecting
+//! `.gitignore`, so symlinks into `/nix/store` are skipped) and formats
+//! every `.nix` file in place. `--check` verifies formatting without
+//! modifying anything and fails if any file would change. The formatter
+//! is linked in as a library — no external `alejandra` binary is run.
+
 use anyhow::{Result, bail};
 use ignore::WalkBuilder;
 
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 
+/// `aos fmt [--check] [files...]` — format (or verify) Nix files.
+///
+/// # Errors
+///
+/// Returns an error if any file fails to parse/format, or — in `--check`
+/// mode — if any file is not already formatted (so the exit code is
+/// non-zero for CI).
 pub fn run(nix: &NixRunner, printer: &Printer, check: bool, files: &[String]) -> Result<()> {
     let nix_files: Vec<String> = if files.is_empty() {
         // Walk project tree respecting .gitignore (skips symlinks into /nix/store)

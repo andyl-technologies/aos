@@ -156,6 +156,11 @@ impl KeyStore {
     /// lines already present in the file are preserved — except an
     /// exclusion naming the key being pinned, which is dropped (explicitly
     /// pinning a key un-revokes it).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no writable directory is configured, or the
+    /// directory or key file cannot be created, read, or written.
     pub fn store(&self, key: &TrustedKey) -> Result<()> {
         let dir = self
             .trusted_dirs
@@ -312,6 +317,10 @@ impl KeyStore {
     /// Searches all writable directories (index 0) and read-only
     /// directories for the key file.  Returns `true` if a file was
     /// found and removed; `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an existing key file cannot be deleted.
     pub fn remove(&self, registry: &str) -> Result<bool> {
         for dir in &self.trusted_dirs {
             let path = dir.join(format!("{registry}.pub"));
@@ -364,12 +373,16 @@ pub enum TofuDecision {
     AlreadyTrusted(TrustedKey),
     /// No key is on file — the caller should prompt the user.
     NewKey {
+        /// The received key, ready to persist once the user accepts it.
         key: TrustedKey,
+        /// Whether the caller must obtain confirmation before trusting.
         needs_confirmation: bool,
     },
     /// A different key is already trusted for this registry.
     KeyMismatch {
+        /// The key currently on file.
         stored: TrustedKey,
+        /// The conflicting key received from the registry.
         received: TrustedKey,
     },
 }
@@ -379,6 +392,11 @@ pub enum TofuDecision {
 /// 1. Parse the `received_key` string (`registry:algorithm:base64key`).
 /// 2. Look up any existing key in `key_store`.
 /// 3. Return the appropriate [`TofuDecision`].
+///
+/// # Errors
+///
+/// Returns an error if `received_key` is malformed or uses an algorithm
+/// other than Ed25519 (see [`parse_signing_key`]).
 pub fn tofu_check(
     key_store: &KeyStore,
     registry: &str,
@@ -526,6 +544,11 @@ pub enum DowngradeStatus {
 ///
 /// Uses `git merge-base --is-ancestor` to determine whether the
 /// transition is a fast-forward, downgrade, divergence, or no-op.
+///
+/// # Errors
+///
+/// Returns an error only when git itself cannot be executed; ancestry
+/// outcomes (including divergence) are encoded in [`DowngradeStatus`].
 pub fn check_downgrade(
     current_commit: &str,
     new_commit: &str,
@@ -572,6 +595,12 @@ pub fn check_downgrade(
 ///
 /// Returns `(registry, algorithm, public_key)`.
 /// Rejects any algorithm other than `"Ed25519"`.
+///
+/// # Errors
+///
+/// Returns an error when the string does not have three colon-separated
+/// fields, the registry or key field is empty, or the algorithm is not
+/// `"Ed25519"`.
 pub fn parse_signing_key(key_str: &str) -> Result<(String, String, String)> {
     let parts: Vec<&str> = key_str.splitn(3, ':').collect();
     if parts.len() != 3 {

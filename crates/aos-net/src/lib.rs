@@ -13,6 +13,25 @@
 //! - Bandwidth limiting
 //! - Retry with exponential backoff
 //!
+//! # Architecture
+//!
+//! The crate is organized in layers:
+//!
+//! - [`transfer`] -- the [`TransferEngine`], which orchestrates every
+//!   transfer: it picks a protocol from the URL scheme, acquires a
+//!   connection-pool permit, applies credentials, retries on transient
+//!   failures, and runs the streaming pipeline (per-chunk hashing,
+//!   bandwidth limiting, and progress callbacks).
+//! - [`protocol`] -- the [`protocol::Protocol`] trait plus per-scheme
+//!   implementations for HTTP(S), S3, SFTP/SSH, and `file://`.
+//! - [`types`] -- request/response types ([`TransferRequest`],
+//!   [`TransferResult`], [`TransferOutput`], ...).
+//! - Supporting services: [`auth`] (per-domain [`AuthStore`]), [`pool`]
+//!   (per-host/global concurrency limits), [`retry`] (backoff with
+//!   jitter and error classification), [`bandwidth`] (token-bucket
+//!   [`BandwidthLimiter`]), [`hash`] (streaming SHA-256/SHA-512
+//!   verification), and [`progress`] (callback traits).
+//!
 //! # Usage
 //!
 //! The primary API is [`TransferEngine`], which orchestrates all transfers:

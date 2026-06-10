@@ -1,3 +1,22 @@
+//! Content-hash verification for downloads, NARs, and installed packages.
+//!
+//! apm verifies package integrity at several layers of the install pipeline,
+//! each catching a different failure mode:
+//!
+//! - **Layer 4a** ([`verify_download_hash`]): SHA-256 of the compressed
+//!   `.nar.zst` as downloaded — catches corrupted or tampered transfers.
+//! - **Layer 4b** ([`verify_nar_hash`]): SHA-256 of the *decompressed* NAR
+//!   stream — catches a valid-zstd-but-wrong-content substitution.
+//! - **Layer 5** ([`verify_store_path`]): the path reported by
+//!   `nix-store --import` must equal the path the registry promised.
+//! - **Post-install** ([`verify_installed`]): re-dump an installed store
+//!   path with `nix-store --dump` and compare its NAR hash against the
+//!   registry — catches on-disk modification after install (`apm verify`).
+//!
+//! Hashes are canonically `sha256:<hex>`, but comparison helpers also accept
+//! the Nix SRI form `sha256-<base64>` (see [`sha256_digest_hex`]). All
+//! hashing is streaming, so arbitrarily large NARs never reside in memory.
+
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -18,6 +37,10 @@ use aos_core::nix::aos_nix_env;
 const HASH_BUF_SIZE: usize = 64 * 1024;
 
 /// Compute SHA-256 of a file, returning `"sha256:<hex>"` format.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened or read.
 pub fn sha256_file(path: &Path) -> Result<String> {
     let file =
         File::open(path).with_context(|| format!("opening {} for hashing", path.display()))?;
@@ -28,6 +51,10 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 /// Compute SHA-256 of a `Read` stream, returning `"sha256:<hex>"` format.
 ///
 /// Reads in 64 KiB chunks to avoid loading the full content into memory.
+///
+/// # Errors
+///
+/// Returns an error if reading from the stream fails.
 pub fn sha256_stream(mut reader: impl Read) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; HASH_BUF_SIZE];
@@ -50,7 +77,14 @@ pub fn sha256_stream(mut reader: impl Read) -> Result<String> {
 /// Convert a SHA-256 hash into a lowercase hex digest.
 ///
 /// Accepts the AOS internal `sha256:<hex>` form and the Nix SRI
-/// `sha256-<base64>` form emitted by `nix path-info --json`.
+/// `sha256-<base64>` form emitted by `nix path-info --json`. A bare value
+/// with neither prefix is assumed to already be hex and is lowercased
+/// unchecked.
+///
+/// # Errors
+///
+/// Returns an error if an SRI hash's base64 payload does not decode or does
+/// not decode to exactly 32 bytes.
 pub fn sha256_digest_hex(hash: &str) -> Result<String> {
     let hash = hash.trim();
 
@@ -75,6 +109,13 @@ pub fn sha256_digest_hex(hash: &str) -> Result<String> {
 }
 
 /// Return whether two SHA-256 hashes identify the same digest.
+///
+/// Both sides are normalized with [`sha256_digest_hex`], so the `sha256:`
+/// hex and `sha256-` SRI forms compare equal when they name the same digest.
+///
+/// # Errors
+///
+/// Returns an error if either hash is a malformed SRI value.
 pub fn sha256_hashes_equal(left: &str, right: &str) -> Result<bool> {
     Ok(sha256_digest_hex(left)? == sha256_digest_hex(right)?)
 }
@@ -87,6 +128,11 @@ pub fn sha256_hashes_equal(left: &str, right: &str) -> Result<bool> {
 ///
 /// Computes SHA-256 of the file at `path` and compares against `expected`.
 /// The expected hash may be `sha256:<hex>` or Nix SRI `sha256-<base64>`.
+///
+/// # Errors
+///
+/// Returns [`AosError::HashMismatch`] if the digests differ, or an error if
+/// the file cannot be read or `expected` is a malformed SRI hash.
 pub fn verify_download_hash(path: &Path, expected: &str) -> Result<()> {
     let actual = sha256_file(path)?;
     if !sha256_hashes_equal(&actual, expected)? {
@@ -111,6 +157,12 @@ pub fn verify_download_hash(path: &Path, expected: &str) -> Result<()> {
 ///
 /// Uses `zstd::stream::read::Decoder` so the full decompressed NAR is never
 /// loaded into memory.
+///
+/// # Errors
+///
+/// Returns [`AosError::HashMismatch`] if the digests differ, or an error if
+/// the file cannot be opened, is not valid zstd, or `expected` is a
+/// malformed SRI hash.
 pub fn verify_nar_hash(path: &Path, expected: &str) -> Result<()> {
     let file = File::open(path)
         .with_context(|| format!("opening {} for NAR hash verification", path.display()))?;
@@ -136,7 +188,13 @@ pub fn verify_nar_hash(path: &Path, expected: &str) -> Result<()> {
 /// Verify the store path after import (Layer 5).
 ///
 /// Checks that the actual store path returned by `nix-store --import`
-/// matches the expected store path from the package TOML.
+/// matches the expected store path from the package TOML. Both sides are
+/// compared after trimming surrounding whitespace (the import output ends
+/// with a newline).
+///
+/// # Errors
+///
+/// Returns [`AosError::HashMismatch`] if the trimmed paths differ.
 pub fn verify_store_path(actual: &str, expected: &str) -> Result<()> {
     let actual_trimmed = actual.trim();
     let expected_trimmed = expected.trim();
@@ -155,6 +213,11 @@ pub fn verify_store_path(actual: &str, expected: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Compute the NAR hash for a store path by streaming `nix-store --dump`.
+///
+/// # Errors
+///
+/// Returns an error if `nix-store` cannot be spawned or exits with a
+/// non-zero status (e.g. the store path does not exist).
 pub async fn store_path_nar_hash(store_path: &str) -> Result<String> {
     let output = tokio::process::Command::new("nix-store")
         .envs(aos_nix_env())
@@ -182,6 +245,14 @@ pub async fn store_path_nar_hash(store_path: &str) -> Result<String> {
 /// 1. Run `nix-store --dump <store_path>` to get the current NAR.
 /// 2. Compute SHA-256 of the NAR stream.
 /// 3. Compare against `expected_nar_hash` from the registry.
+///
+/// On success, returns the freshly computed `sha256:<hex>` hash.
+///
+/// # Errors
+///
+/// Returns [`AosError::HashMismatch`] if the on-disk contents no longer
+/// match the registry hash, or an error if `nix-store --dump` fails or
+/// `expected_nar_hash` is a malformed SRI hash.
 pub async fn verify_installed(store_path: &str, expected_nar_hash: &str) -> Result<String> {
     let actual = store_path_nar_hash(store_path).await?;
     if !sha256_hashes_equal(&actual, expected_nar_hash)? {

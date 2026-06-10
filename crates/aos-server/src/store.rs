@@ -1,3 +1,12 @@
+//! Read-only access to the Nix store SQLite database.
+//!
+//! The Nix daemon owns the store database (`var/nix/db/db.sqlite` under the
+//! AOS root) and is its only writer. [`NixStore`] opens that database in
+//! read-only mode and answers the queries the server needs: full path
+//! metadata for narinfo responses ([`NixStore::path_info`]) and validity
+//! checks for `query-missing` and build preflight
+//! ([`NixStore::is_valid_path`], [`NixStore::is_valid_path_or_hash`]).
+
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -5,21 +14,30 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 /// Metadata about a store path from the Nix SQLite DB.
+///
 /// This is distinct from `aos_core::nix::PathInfo` — it includes
 /// `id` (DB primary key) and uses `sigs`/`refs` field names.
 #[derive(Debug, Clone)]
 pub struct DbPathInfo {
+    /// Primary key of the row in the `ValidPaths` table.
     pub id: i64,
+    /// Full store path (e.g. `/var/lib/aos/store/{hash}-{name}`).
     pub path: String,
+    /// NAR hash of the uncompressed archive, stored as `sha256:{base16}`.
     pub nar_hash: String,
+    /// Size of the uncompressed NAR in bytes.
     pub nar_size: i64,
+    /// Store path of the deriver (`.drv`), if recorded.
     pub deriver: Option<String>,
+    /// Narinfo signatures (`key-name:base64`) attached to this path.
     pub sigs: Vec<String>,
+    /// Store paths this path references at runtime.
     pub refs: Vec<String>,
 }
 
 impl DbPathInfo {
-    /// Convert to the canonical `aos_core::nix::PathInfo` type.
+    /// Converts to the canonical `aos_core::nix::PathInfo` type, dropping
+    /// the DB-specific `id`.
     pub fn to_path_info(&self) -> aos_core::nix::PathInfo {
         aos_core::nix::PathInfo {
             path: self.path.clone(),
@@ -33,13 +51,25 @@ impl DbPathInfo {
 }
 
 /// Read-only handle to the Nix store SQLite database.
-/// Wrapped in a Mutex because rusqlite::Connection is not Sync.
+///
+/// The connection is wrapped in a `Mutex` because `rusqlite::Connection` is
+/// not `Sync`; queries serialize on that lock.
 pub struct NixStore {
     conn: Mutex<Connection>,
 }
 
 impl NixStore {
-    /// Open the Nix SQLite DB in read-only WAL mode.
+    /// Opens the Nix SQLite DB in read-only mode.
+    ///
+    /// The writer side (the Nix daemon) creates the database in WAL mode;
+    /// this handle merely reads the `journal_mode` pragma and never
+    /// attempts to change it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database cannot be opened (e.g. the file
+    /// does not exist or is not readable) or the journal-mode pragma query
+    /// fails.
     pub fn open(db_path: &Path) -> Result<Self> {
         let conn = Connection::open_with_flags(
             db_path,
@@ -57,7 +87,16 @@ impl NixStore {
         })
     }
 
-    /// Look up a store path by its full path string.
+    /// Looks up a store path by its full path string.
+    ///
+    /// Returns `Ok(None)` if the path is not registered. On a hit, the
+    /// `refs` list is populated with a second query against the `Refs`
+    /// table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection lock is poisoned or either SQL
+    /// query fails.
     pub fn path_info(&self, store_path: &str) -> Result<Option<DbPathInfo>> {
         let conn = self
             .conn
@@ -109,7 +148,16 @@ impl NixStore {
         Ok(Some(info))
     }
 
-    /// Check if a store path is valid (exists in the DB).
+    /// Checks if a store path is valid (registered in the database).
+    ///
+    /// Matches on the exact full path string only; see
+    /// [`is_valid_path_or_hash`](Self::is_valid_path_or_hash) for the more
+    /// forgiving variant used by cache clients.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection lock is poisoned or the SQL query
+    /// fails.
     pub fn is_valid_path(&self, store_path: &str) -> Result<bool> {
         let conn = self
             .conn
@@ -123,12 +171,19 @@ impl NixStore {
         Ok(exists)
     }
 
-    /// Check if a store path or store-path hash is valid locally.
+    /// Checks if a store path or store-path hash is valid locally.
     ///
     /// Cache clients identify paths by the hash prefix in narinfo and mass-query
     /// requests. A client and server may use different store roots, so accepting
     /// only an exact full path would make already-imported paths look missing
-    /// whenever the root differs.
+    /// whenever the root differs. This first tries an exact path match, then
+    /// falls back to matching any registered path whose basename starts with
+    /// the same store hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection lock is poisoned or a SQL query
+    /// fails.
     pub fn is_valid_path_or_hash(&self, path_or_hash: &str) -> Result<bool> {
         if self.is_valid_path(path_or_hash)? {
             return Ok(true);
@@ -153,6 +208,11 @@ impl NixStore {
     }
 }
 
+/// Extracts the store hash from either a full store path or a bare hash.
+///
+/// Takes the basename (after the last `/`) and the leading segment before
+/// the first `-`, so `/root/store/abc-foo-1.0`, `abc-foo-1.0`, and `abc`
+/// all yield `abc`. Returns `None` for empty input.
 fn store_hash_from_path_or_hash(path_or_hash: &str) -> Option<&str> {
     let basename = path_or_hash.rsplit('/').next()?;
     let hash = basename.split('-').next().unwrap_or(basename);

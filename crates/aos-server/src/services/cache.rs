@@ -1,4 +1,11 @@
 //! ConnectRPC implementation of `CacheService`.
+//!
+//! RPC twins of the REST cache endpoints in [`crate::routes`]:
+//! `GetCacheInfo`, `GetNarInfo`, and `QueryMissing` are unary;
+//! `Upload`/`UploadPack` are client-streaming (chunks are buffered, then
+//! imported via `nix-store --import` with the same `.drv`-or-CA safety
+//! check as REST uploads); `Download` is server-streaming, chunking the
+//! same compressed NAR pipeline used by `GET /{view}/nar/{filename}`.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -18,16 +25,23 @@ use crate::routes::AppState;
 use crate::services;
 use crate::views::ViewManager;
 
+/// Boxed server-streaming response used by the generated service traits.
 type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
+/// Boxed client-streaming request used by the generated service traits.
 type RequestStream<V> =
     Pin<Box<dyn Stream<Item = Result<buffa::view::OwnedView<V>, ConnectError>> + Send>>;
 
-/// ConnectRPC cache service backed by the shared `AppState`.
+/// ConnectRPC cache service backed by the shared [`AppState`].
 pub struct CacheServiceImpl {
+    /// Shared server state (store, views, signer, config).
     pub state: Arc<AppState>,
 }
 
 impl CacheService for CacheServiceImpl {
+    /// `GetCacheInfo` — cache metadata and capability list for a view.
+    ///
+    /// Allowed anonymously when the view has `anonymous_read = true`,
+    /// otherwise requires a JWT with the `read` permission on the view.
     async fn get_cache_info(
         &self,
         ctx: Context,
@@ -60,6 +74,13 @@ impl CacheService for CacheServiceImpl {
         Ok((response, ctx))
     }
 
+    /// `GetNarInfo` — structured narinfo for a store hash.
+    ///
+    /// Same read-access rules as `GetCacheInfo`. The hash must be visible
+    /// in the view (`not_found` otherwise). Serving the info bumps the
+    /// path's access metadata for eviction scoring. Internally the narinfo
+    /// text is rendered (and signed) exactly as for REST, then parsed back
+    /// into the proto message.
     async fn get_nar_info(
         &self,
         ctx: Context,
@@ -105,6 +126,12 @@ impl CacheService for CacheServiceImpl {
         Ok((response, ctx))
     }
 
+    /// `QueryMissing` — reports which of the given store paths the server
+    /// lacks.
+    ///
+    /// Requires a JWT authorized for the view. Paths are matched by store
+    /// hash as well as exact path, so client and server store roots may
+    /// differ.
     async fn query_missing(
         &self,
         ctx: Context,
@@ -142,6 +169,13 @@ impl CacheService for CacheServiceImpl {
         ))
     }
 
+    /// `Upload` — client-streamed NAR upload of a single store path.
+    ///
+    /// The view name is taken from the first chunk; all chunk data is
+    /// buffered, then imported via `nix-store --import`. Requires a JWT
+    /// with the `build` permission on the view (checked after the stream
+    /// is consumed). The imported path must pass the `.drv`-or-CA safety
+    /// check and receives a temporary GC root.
     async fn upload(
         &self,
         ctx: Context,
@@ -193,6 +227,13 @@ impl CacheService for CacheServiceImpl {
         ))
     }
 
+    /// `Download` — server-streamed NAR download.
+    ///
+    /// Same read-access rules as `GetCacheInfo`. The filename's extension
+    /// selects the compression (`.nar`, `.nar.zst`, `.nar.xz`) and its
+    /// leading hash must be visible in the view. Chunks carry a running
+    /// byte offset; `total_size` is `0` because the compressed length is
+    /// unknown while streaming.
     async fn download(
         &self,
         ctx: Context,
@@ -267,6 +308,13 @@ impl CacheService for CacheServiceImpl {
         Ok((Box::pin(chunk_stream), ctx))
     }
 
+    /// `UploadPack` — client-streamed batched upload in the AOSP pack
+    /// format.
+    ///
+    /// Chunks are buffered into the full pack, which is checksum-verified
+    /// and parsed ([`pack::parse_pack`]) before its entries are imported.
+    /// Requires a JWT with the `build` permission on the view (from the
+    /// first chunk). Every imported path gets a temporary GC root.
     async fn upload_pack(
         &self,
         ctx: Context,
@@ -325,7 +373,7 @@ impl CacheService for CacheServiceImpl {
     }
 }
 
-/// Parse structured narinfo text into a proto `NarInfo` message.
+/// Parses rendered narinfo text into a proto `NarInfo` message.
 fn parse_narinfo_to_proto(narinfo_text: &str) -> Result<NarInfo, ConnectError> {
     let parsed = core_narinfo::parse(narinfo_text)
         .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("narinfo parse: {e}")))?;
@@ -345,7 +393,8 @@ fn parse_narinfo_to_proto(narinfo_text: &str) -> Result<NarInfo, ConnectError> {
     })
 }
 
-/// Import NAR data via `nix-store --import`, return the imported store path.
+/// Imports NAR data via `nix-store --import` and returns the imported
+/// store path, after vetting it with [`pack::validate_imported_path`].
 async fn import_nar_data(data: &[u8]) -> Result<String, String> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;

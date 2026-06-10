@@ -1,3 +1,19 @@
+//! The `nix-store --export` / `--import` stream format.
+//!
+//! A Nix export wraps a NAR with a trailer carrying the path's identity:
+//! the store path itself, its references, its deriver, and (in this
+//! implementation, always empty) signatures. Strings are encoded in the
+//! Nix wire convention -- a little-endian `u64` length, the raw bytes,
+//! and zero padding to an 8-byte boundary.
+//!
+//! Two entry points are provided:
+//!
+//! - [`build_export`] assembles a complete export for an in-memory NAR.
+//! - [`ExportTrailer`] supports streaming: write the NAR through any
+//!   writer first, then append the trailer (and, via
+//!   [`ExportTrailer::write_import_stream`], the framing words that
+//!   `nix-store --import` expects around each path).
+
 use std::io::Write;
 
 use anyhow::{Context, Result};
@@ -8,12 +24,12 @@ use anyhow::{Context, Result};
 /// `4e 49 58 45 00 00 00 00`.
 const EXPORT_MAGIC: u64 = 0x4558494e;
 
-/// Build a Nix export stream from a NAR + metadata.
+/// Builds a complete Nix export stream from a NAR plus its metadata.
 ///
 /// The Nix export format is:
 /// ```text
 /// [NAR bytes]
-/// u64: EXPORT_MAGIC (0x4558504f52540000)
+/// u64: EXPORT_MAGIC (0x4558494e)
 /// nix-string: store_path
 /// u64: reference count
 /// nix-string[]: reference paths
@@ -22,6 +38,15 @@ const EXPORT_MAGIC: u64 = 0x4558494e;
 /// ```
 ///
 /// Where nix-string = `u64 length + bytes + \0 padding to 8-byte boundary`.
+///
+/// Note that this produces a single bare export; to feed the result to
+/// `nix-store --import`, use [`ExportTrailer::write_import_stream`],
+/// which adds the required per-path framing words.
+///
+/// # Errors
+///
+/// Currently infallible (the output is assembled in memory); the
+/// `Result` mirrors the streaming [`ExportTrailer`] API.
 pub fn build_export(
     nar_data: &[u8],
     store_path: &str,
@@ -56,7 +81,8 @@ pub fn build_export(
     Ok(buf)
 }
 
-/// Write a Nix-format string (length-prefixed, null-padded to 8-byte alignment).
+/// Writes a Nix-format string (length-prefixed, null-padded to 8-byte
+/// alignment) into an in-memory buffer.
 fn write_nix_string(buf: &mut Vec<u8>, s: &str) -> Result<()> {
     let bytes = s.as_bytes();
     let len = bytes.len() as u64;
@@ -76,8 +102,15 @@ fn write_nix_string(buf: &mut Vec<u8>, s: &str) -> Result<()> {
     Ok(())
 }
 
-/// Build a Nix export stream incrementally — writes the trailer after NAR data
+/// Builds a Nix export stream incrementally — writes the trailer after NAR data
 /// has been streamed through a writer.
+///
+/// This is the streaming counterpart to [`build_export`]: stream the NAR
+/// bytes through the writer yourself, then call
+/// [`write_to`](Self::write_to) to append the metadata trailer. For a
+/// stream destined for `nix-store --import`, use
+/// [`write_import_stream`](Self::write_import_stream) instead, which
+/// also emits the surrounding framing words.
 pub struct ExportTrailer {
     store_path: String,
     references: Vec<String>,
@@ -85,6 +118,8 @@ pub struct ExportTrailer {
 }
 
 impl ExportTrailer {
+    /// Creates a trailer for the given store path, its references, and
+    /// optional deriver.
     pub fn new(store_path: &str, references: Vec<String>, deriver: Option<String>) -> Self {
         Self {
             store_path: store_path.to_string(),
@@ -93,7 +128,13 @@ impl ExportTrailer {
         }
     }
 
-    /// Write the export trailer (everything after the NAR data) to the writer.
+    /// Writes the export trailer (everything after the NAR data) to the
+    /// writer: export magic, store path, references, deriver, and a zero
+    /// signature count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any write to `w` fails.
     pub fn write_to<W: Write>(&self, w: &mut W) -> Result<()> {
         // Export magic
         w.write_all(&EXPORT_MAGIC.to_le_bytes())
@@ -121,7 +162,7 @@ impl ExportTrailer {
         Ok(())
     }
 
-    /// Write a complete single-path `nix-store --import` stream: the
+    /// Writes a complete single-path `nix-store --import` stream: the
     /// path-follows marker, the NAR, this trailer, and the end marker.
     ///
     /// `nix-store --import` reads a `u64` framing word before each path
@@ -129,6 +170,10 @@ impl ExportTrailer {
     /// the importer read the NAR's leading bytes as the framing word and
     /// reject the input with "doesn't look like something created by
     /// 'nix-store --export'".
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any write to `w` fails.
     pub fn write_import_stream<W: Write>(&self, w: &mut W, nar_data: &[u8]) -> Result<()> {
         // Path-follows marker.
         w.write_all(&1u64.to_le_bytes())
@@ -144,7 +189,8 @@ impl ExportTrailer {
     }
 }
 
-/// Write a Nix-format string to a generic writer.
+/// Writes a Nix-format string (length-prefixed, null-padded) to a
+/// generic writer.
 fn write_nix_string_to<W: Write>(w: &mut W, s: &str) -> Result<()> {
     let bytes = s.as_bytes();
     let len = bytes.len() as u64;

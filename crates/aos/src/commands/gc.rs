@@ -1,3 +1,18 @@
+//! `aos gc` — garbage collection across local, view, and remote stores.
+//!
+//! One command, several modes selected by the flags:
+//!
+//! - **Default** — local `nix-store` GC, deleting generations older than
+//!   the 7-day retention window.
+//! - **`--list-generations`** — list system generations instead of
+//!   collecting.
+//! - **`--view NAME`** — server-style view GC on the local AOS store:
+//!   expire TTL roots, score and report eviction candidates, and (with
+//!   `--collect`) run `nix-store --gc`. `--all` removes every root for
+//!   the view (decommission); `--pin PATH` creates a permanent root.
+//! - **`--remote URL`** — delegate GC to a remote AOS server over
+//!   ConnectRPC (requires `--token`/`AOS_TOKEN`).
+
 use anyhow::{Context, Result, bail};
 
 use aos_core::nix::NixRunner;
@@ -8,6 +23,16 @@ use aos_remote::AosClient;
 const DEFAULT_GC_RETENTION: &str = "7d";
 
 /// `aos gc` — garbage collection with local, view-based, or remote modes.
+///
+/// Dispatches to one of the modes described in the module docs based on
+/// which flags are set.
+///
+/// # Errors
+///
+/// Returns an error if mutually-dependent flags are missing (`--pin`
+/// without `--view`, remote mode without a token), if the local store
+/// database is absent in view mode, or if the underlying GC operation
+/// (local `nix-store`, view eviction, or remote RPC) fails.
 pub async fn run(
     nix: &NixRunner,
     printer: &Printer,
@@ -46,7 +71,8 @@ pub async fn run(
     collect_default(nix, printer)
 }
 
-/// Remote GC: call the server's GC endpoint.
+/// Remote GC: call the server's GC endpoint and report the results
+/// (expired roots, eviction candidates, bytes freed).
 async fn run_remote(
     printer: &Printer,
     url: &str,
@@ -97,7 +123,9 @@ async fn run_remote(
     Ok(())
 }
 
-/// View-local GC: expire TTL roots, run eviction if needed.
+/// View-local GC: expire TTL roots, then either remove all roots
+/// (`--all`, decommission mode) or score and report eviction candidates;
+/// finally run `nix-store --gc` if `--collect` was given.
 fn run_view_gc(
     nix: &NixRunner,
     printer: &Printer,
@@ -219,6 +247,7 @@ fn run_view_gc(
     Ok(())
 }
 
+/// Default mode: local `nix-store` GC with the standard retention window.
 fn collect_default(nix: &NixRunner, printer: &Printer) -> Result<()> {
     printer.info(&format!(
         "Collecting garbage (deleting generations older than {DEFAULT_GC_RETENTION})..."
@@ -287,6 +316,7 @@ fn pin_root(_nix: &NixRunner, printer: &Printer, view: &str, store_path: &str) -
     Ok(())
 }
 
+/// `--list-generations` mode: print the system generation list.
 fn show_generations(nix: &NixRunner, printer: &Printer) -> Result<()> {
     printer.info("Listing system generations...");
 

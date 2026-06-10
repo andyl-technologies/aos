@@ -1,9 +1,21 @@
+//! `aos lint` — validate package definitions.
+//!
+//! The lint rules are implemented in Nix: this command simply builds the
+//! `checks.lint` attribute (or `checks.lint.<package>` for a single
+//! package) and reports pass/fail. A failed lint derivation surfaces as
+//! a build error with the rule output in the build log.
+
 use anyhow::{Context, Result};
 
 use aos_core::nix::NixRunner;
 use aos_core::output::{Printer, create_spinner};
 
 /// `aos lint [package]` — validate package definitions.
+///
+/// # Errors
+///
+/// Returns an error if the lint check derivation fails to build, i.e.
+/// when a lint rule is violated (or the evaluation itself fails).
 pub fn run(nix: &NixRunner, printer: &Printer, package: Option<&str>) -> Result<()> {
     let (attr, label) = match package {
         Some(pkg) => (
