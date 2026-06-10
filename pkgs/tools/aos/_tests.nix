@@ -120,6 +120,7 @@ in {
       pkgs.git
       pkgs.grep
       pkgs.jq
+      pkgs.python3
     ];
 
     phases = [
@@ -133,8 +134,18 @@ in {
           config="$work/config"
           data="$work/share"
           cache="$work/cache"
+          cache_port="18137"
           mkdir -p "$home" "$config" "$data" "$cache"
           profile="/var/lib/profiles/per-user/unknown"
+          cache_server_pid=""
+
+          cleanup() {
+            if test -n "$cache_server_pid"; then
+              kill "$cache_server_pid" 2>/dev/null || true
+              wait "$cache_server_pid" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
 
           run_clean() {
             env -i \
@@ -211,7 +222,7 @@ in {
           printf '%s\n' \
             "" \
             '[[caches]]' \
-            'url = "https://cache.example.invalid/host"' \
+            "url = \"http://127.0.0.1:$cache_port/cache\"" \
             'priority = 42' \
             >> "$reg/registry.toml"
 
@@ -333,6 +344,74 @@ in {
           run_clean ${self}/bin/apm registry remove host-reg-client --keep-local > "$work/apm-registry-remove.out" 2>&1
           grep -q "Registry 'host-reg-client' removed" "$work/apm-registry-remove.out"
           test -d "$data/apm/registries/host-reg-client"
+
+          cache_root="$work/static-cache"
+          mkdir -p "$cache_root/cache/nar" "$reg/packages/m"
+          printf '%s\n' "hostpkg NAR payload" > "$cache_root/cache/nar/$pkg_hash-hostpkg.nar"
+          printf '%s\n' \
+            "StorePath: /nix/store/$pkg_hash-hostpkg-1.0.0" \
+            "URL: nar/$pkg_hash-hostpkg.nar" \
+            "Compression: none" \
+            'NarHash: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
+            'NarSize: 1234' \
+            'References:' \
+            > "$cache_root/cache/$pkg_hash.narinfo"
+
+          missing_hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          printf '%s\n' \
+            '[package]' \
+            'name = "missingpkg"' \
+            'description = "Package metadata for a missing cache entry"' \
+            'homepage = "https://example.invalid/missingpkg"' \
+            'license = "MIT"' \
+            'maintainer = "host@example.invalid"' \
+            "" \
+            '[[versions]]' \
+            'version = "1.0.0"' \
+            "" \
+            '[versions.platforms.x86_64-linux]' \
+            "store_path = \"/nix/store/$missing_hash-missingpkg-1.0.0\"" \
+            'nar_hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="' \
+            'nar_size = 4321' \
+            'closure_size = 4321' \
+            'source_drv = ""' \
+            'source_nar_hash = ""' \
+            'references = []' \
+            > "$reg/packages/m/missingpkg.toml"
+          git -C "$reg" add packages/m/missingpkg.toml
+          git -C "$reg" commit -m "release: missingpkg 1.0.0" > "$work/git-commit-missing-package.out" 2>&1
+
+          PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$cache_port" \
+            --bind 127.0.0.1 --directory "$cache_root" \
+            > "$work/cache-server.log" 2>&1 &
+          cache_server_pid=$!
+          ${pkgs.coreutils}/bin/sleep 1
+          if ! kill -0 "$cache_server_pid" 2>/dev/null; then
+            cat "$work/cache-server.log"
+            exit 1
+          fi
+
+          if run_clean ${self}/bin/apr validate --registry host-reg --jobs 2 > "$work/apr-validate-missing.out" 2>&1; then
+            cat "$work/apr-validate-missing.out"
+            exit 1
+          fi
+          grep -q "hostpkg: /nix/store/$pkg_hash-hostpkg-1.0.0" "$work/apr-validate-missing.out" && {
+            cat "$work/apr-validate-missing.out"
+            exit 1
+          }
+          grep -q "missingpkg: /nix/store/$missing_hash-missingpkg-1.0.0 not found in any cache" "$work/apr-validate-missing.out"
+          grep -q "1 found, 1 missing" "$work/apr-validate-missing.out"
+          test -f "$reg/packages/m/missingpkg.toml"
+          assert_no_profile
+
+          run_clean ${self}/bin/apr validate --registry host-reg --jobs 2 --fix > "$work/apr-validate-fix.out" 2>&1
+          grep -q "Removed 1 missing cache entry from registry metadata" "$work/apr-validate-fix.out"
+          test ! -e "$reg/packages/m/missingpkg.toml"
+          assert_no_profile
+
+          run_clean ${self}/bin/apr validate --registry host-reg --package hostpkg --jobs 2 > "$work/apr-validate-hostpkg.out" 2>&1
+          grep -q "All 1 entries found in caches" "$work/apr-validate-hostpkg.out"
+          assert_no_profile
 
           mkdir -p "$out"
           echo "PASS" > "$out/result"
