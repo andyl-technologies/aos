@@ -19,6 +19,25 @@ pub async fn run(
     printer: &Printer,
 ) -> Result<()> {
     if generations {
+        let profile = Profile::open_readonly(config.scope);
+        let all_generations = profile.list_generations()?;
+        let current_generation = profile.current_generation()?.map(|g| g.number);
+
+        if all_generations.len() <= keep as usize {
+            printer.info("No old generations to remove.");
+            return Ok(());
+        }
+
+        let cutoff = all_generations.len() - keep as usize;
+        let has_prunable_generation = all_generations[..cutoff]
+            .iter()
+            .any(|generation| Some(generation.number) != current_generation);
+
+        if !has_prunable_generation {
+            printer.info("No old generations to remove.");
+            return Ok(());
+        }
+
         let profile = Profile::open(config.scope)?;
         let removed = profile.prune_generations(keep)?;
         if removed.is_empty() {

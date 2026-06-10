@@ -3464,6 +3464,20 @@ in {
       }
       cat /tmp/rollback-registry-add.out
 
+      $APM clean --generations --keep 1 > /tmp/rollback-empty-clean-generations.out 2>&1 || {
+        cat /tmp/rollback-empty-clean-generations.out
+        fail "clean generations succeeds before any package is installed"
+      }
+      cat /tmp/rollback-empty-clean-generations.out
+      assert_file_contains /tmp/rollback-empty-clean-generations.out "No old generations to remove" \
+        "empty clean generations reports no stale generations"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty clean generations leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty clean generations should not initialize profile state"
+      fi
+
       if $APM rollback --dry-run > /tmp/rollback-empty-dry-run.out 2>&1; then
         cat /tmp/rollback-empty-dry-run.out
         fail "rollback dry-run should fail when no profile generation is active"
