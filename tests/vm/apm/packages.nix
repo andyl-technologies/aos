@@ -4410,6 +4410,14 @@ in {
           and (map(select(.registry == "surface-reg")) | length == 4)' \
         /tmp/surface-orphans-removed-json.out >/dev/null
 
+      run_ok source-sourceful-verify-after-registry-remove "$APM" source sourceful --verify
+      assert_file_contains /tmp/surface-source-sourceful-verify-after-registry-remove.out \
+        "$SOURCE_V2_SRC_STORE" \
+        "apm source --verify uses installed source metadata after registry removal"
+      assert_file_contains /tmp/surface-source-sourceful-verify-after-registry-remove.out \
+        "matches installed binary" \
+        "apm source --verify validates orphaned installed sourceful package"
+
       echo "==> Consumer: remove orphaned sourceful package and source root"
       $APM remove sourceful --yes > /tmp/surface-remove-sourceful.out 2>&1 || {
         cat /tmp/surface-remove-sourceful.out
