@@ -1926,9 +1926,46 @@ in {
       assert_file_contains /tmp/readd-run.out "^install-basic-tool 1.0.0$" \
         "installed readd-tool executable runs from profile"
 
+      echo "==> Consumer: disable registry without orphaning installed package"
+      REG_CONFIG="$HOME/.config/apm/registries.d/readd-reg.toml"
+      python3 -c 'from pathlib import Path; p = Path("/tmp/readd-consumer/.config/apm/registries.d/readd-reg.toml"); text = p.read_text(); assert "enabled = true" in text, "registry config was not enabled before disable"; p.write_text(text.replace("enabled = true", "enabled = false", 1))'
+      assert_file_contains "$REG_CONFIG" "enabled = false" \
+        "registry config can be disabled by maintainer policy"
+      run_ok list-disabled "$APM" registry list
+      assert_file_contains /tmp/readd-list-disabled.out "disabled" \
+        "apm registry list reports disabled registry state"
+      if $APM update --registry readd-reg > /tmp/readd-update-disabled.out 2>&1; then
+        cat /tmp/readd-update-disabled.out
+        fail "apm update should skip explicitly disabled registry"
+      else
+        cat /tmp/readd-update-disabled.out
+        pass "apm update rejects explicitly disabled registry"
+      fi
+      assert_file_contains /tmp/readd-update-disabled.out "not enabled" \
+        "disabled registry update failure explains disabled state"
+      run_ok orphans-disabled "$APM" orphans
+      assert_file_contains /tmp/readd-orphans-disabled.out "No orphaned packages" \
+        "disabled configured registry does not orphan installed packages"
+      if $APM verify readd-tool > /tmp/readd-verify-disabled.out 2>&1; then
+        cat /tmp/readd-verify-disabled.out
+        fail "apm verify should not resolve disabled registry"
+      else
+        cat /tmp/readd-verify-disabled.out
+        pass "apm verify skips disabled registry metadata"
+      fi
+      assert_file_contains /tmp/readd-verify-disabled.out "not present in registry 'readd-reg'" \
+        "verify failure identifies disabled source registry"
+      "$TOOL_BIN" > /tmp/readd-run-disabled.out
+      assert_file_contains /tmp/readd-run-disabled.out "^install-basic-tool 1.0.0$" \
+        "installed executable still runs while registry is disabled"
+
+      echo "==> Consumer: re-enable registry and verify installed package"
+      python3 -c 'from pathlib import Path; p = Path("/tmp/readd-consumer/.config/apm/registries.d/readd-reg.toml"); text = p.read_text(); assert "enabled = false" in text, "registry config was not disabled before re-enable"; p.write_text(text.replace("enabled = false", "enabled = true", 1))'
+      assert_file_contains "$REG_CONFIG" "enabled = true" \
+        "registry config can be re-enabled"
       run_ok verify-before-remove "$APM" verify readd-tool
       assert_file_contains /tmp/readd-verify-before-remove.out "integrity verified" \
-        "apm verify validates readd-tool before registry removal"
+        "apm verify validates readd-tool after registry re-enable"
 
       echo "==> Consumer: remove registry and observe orphaned package"
       $APM registry remove readd-reg > /tmp/readd-remove-registry.out 2>&1 || {
