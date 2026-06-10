@@ -147,6 +147,9 @@
       pkgs.bash
       priorityLowTool
     ];
+    runtimeDeps = [
+      priorityLowTool
+    ];
     phases = [
       {
         name = "build";
@@ -603,6 +606,74 @@ in {
         "show reports the high priority registry"
       assert_file_contains /tmp/priority-show.out "2.0.0" \
         "show reports the high priority version"
+
+      export HOME=/tmp/priority-client-consumer
+      export USER=priorityclient
+      mkdir -p "$HOME"
+      APM_CONFIG="$HOME/.config/apm"
+
+      $APM registry add file:///tmp/low-priority-origin.git \
+        --name low-priority \
+        --branch "$LOW_BRANCH" \
+        --priority 100
+      $APM registry add file:///tmp/high-priority-origin.git \
+        --name high-priority \
+        --branch "$HIGH_BRANCH" \
+        --priority 900
+
+      mount -o remount,rw / || true
+      delete_store_path "$LOW_CLIENT_STORE" "low-priority-client-fresh"
+      delete_store_path "$LOW_STORE" "low-priority-tool-client-dep"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install priority-client --registry low-priority --yes \
+        > /tmp/priority-install-client-fresh.out 2>&1 || {
+        cat /tmp/priority-install-client-fresh.out
+        fail "apm install priority-client downloads selected-registry dependency"
+      }
+      cat /tmp/priority-install-client-fresh.out
+      assert_file_contains /tmp/priority-install-client-fresh.out \
+        "Additional dependencies" \
+        "client install plans selected-registry priority-tool dependency"
+      assert_file_contains /tmp/priority-install-client-fresh.out \
+        "Downloading 2 NAR" \
+        "client install downloads root and selected-registry dependency"
+      assert_store_valid "$LOW_CLIENT_STORE" "fresh low priority client"
+      assert_store_valid "$LOW_STORE" "fresh low priority client dependency"
+      PROFILE_CLIENT="/var/lib/profiles/per-user/$USER/current/bin/priority-client"
+      PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/priority-tool"
+      "$PROFILE_CLIENT" > /tmp/priority-run-client-fresh.out
+      assert_file_contains /tmp/priority-run-client-fresh.out \
+        "priority-tool 9.0.0 from low-priority" \
+        "fresh client executes low-priority dependency"
+      "$PROFILE_TOOL" > /tmp/priority-run-client-dep-fresh.out
+      assert_file_contains /tmp/priority-run-client-dep-fresh.out \
+        "priority-tool 9.0.0 from low-priority" \
+        "fresh client exposes low-priority dependency executable"
+      CURRENT_PROFILE="/var/lib/profiles/per-user/$USER/current"
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_CLIENT_HASH.json" \
+        '"explicit": true' "client metadata is explicit"
+      assert_file_contains "$CURRENT_PROFILE/meta/$LOW_HASH.json" \
+        '"explicit": false' "selected-registry dependency metadata is automatic"
+      $APM list --installed > /tmp/priority-installed-client-fresh.out 2>&1
+      assert_file_contains /tmp/priority-installed-client-fresh.out \
+        "priority-client/low-priority 1.0.0" \
+        "fresh client install records low-priority client"
+      assert_file_contains /tmp/priority-installed-client-fresh.out \
+        "priority-tool/low-priority 9.0.0" \
+        "fresh client install records low-priority dependency"
+      if ${grepBin} -q "priority-tool/high-priority" \
+        /tmp/priority-installed-client-fresh.out; then
+        cat /tmp/priority-installed-client-fresh.out
+        fail "fresh client install should not pull high-priority duplicate dependency"
+      else
+        pass "fresh client install excludes high-priority duplicate dependency"
+      fi
+
+      export HOME=/tmp/priority-consumer
+      export USER=priorityuser
+      APM_CONFIG="$HOME/.config/apm"
 
       mount -o remount,rw / || true
       delete_store_path "$HIGH_STORE" "high-priority-tool"
