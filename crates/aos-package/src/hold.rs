@@ -4,7 +4,7 @@ use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::store_path_hash;
-use aos_core::output::Printer;
+use aos_core::output::{OutputMode, Printer};
 
 /// Run `apm hold <package>` -- prevent a package from being upgraded.
 pub async fn run_hold(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
@@ -35,6 +35,23 @@ pub async fn run_held(config: &ApmConfig, printer: &Printer) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
 
     let held = meta::held_packages(&profile)?;
+
+    if printer.mode() == OutputMode::Json {
+        let json: Vec<serde_json::Value> = held
+            .iter()
+            .filter_map(|m| {
+                let apm = m.apm.as_ref()?;
+                Some(serde_json::json!({
+                    "name": apm.name,
+                    "version": apm.version,
+                    "registry": apm.registry,
+                    "store_path": m.store_path,
+                }))
+            })
+            .collect();
+        printer.json(&serde_json::json!(json));
+        return Ok(());
+    }
 
     if held.is_empty() {
         printer.info("No packages are held.");
