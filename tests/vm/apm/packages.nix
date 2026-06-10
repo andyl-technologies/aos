@@ -4872,6 +4872,14 @@ in {
           and (.[0].status | contains("installed"))
           and (.[0].status | contains("held"))' \
         /tmp/surface-list-held-json.out >/dev/null
+      run_ok held-json "$APM" --json held
+      "$JQ" -e \
+        'length == 1
+          and .[0].name == "surfacepkg"
+          and .[0].registry == "surface-reg"
+          and .[0].version == "1.0.0"
+          and (.[0].store_path | contains("surfacepkg-1.0.0"))' \
+        /tmp/surface-held-json.out >/dev/null
 
       run_ok depends "$APM" depends surfacepkg
       assert_file_contains /tmp/surface-depends.out "surface-leaf" \
@@ -5044,6 +5052,21 @@ in {
         "apm list --upgradable includes sourceful v2 candidate"
       assert_file_contains /tmp/surface-list-upgradable-sourceful.out "upgradable: 2.0.0" \
         "apm list --upgradable reports sourceful candidate version"
+      run_ok source-sourceful-installed "$APM" source sourceful
+      assert_file_contains /tmp/surface-source-sourceful-installed.out "$SOURCE_V1_SRC_STORE" \
+        "apm source uses installed sourceful v1 source path after v2 appears"
+      assert_file_not_contains /tmp/surface-source-sourceful-installed.out "$SOURCE_V2_SRC_STORE" \
+        "apm source does not use latest uninstalled sourceful v2 source path"
+      run_ok source-sourceful-show-drv-installed "$APM" source sourceful --show-drv
+      assert_file_contains /tmp/surface-source-sourceful-show-drv-installed.out "$SOURCE_V1_SRC_STORE" \
+        "apm source --show-drv uses installed sourceful v1 source path after v2 appears"
+      assert_file_not_contains /tmp/surface-source-sourceful-show-drv-installed.out "$SOURCE_V2_SRC_STORE" \
+        "apm source --show-drv does not use latest uninstalled sourceful v2 source path"
+      run_ok source-sourceful-fetch-installed "$APM" source sourceful --fetch
+      assert_file_contains /tmp/surface-source-sourceful-fetch-installed.out "Source realised: $SOURCE_V1_SRC_STORE" \
+        "apm source --fetch realises installed sourceful v1 source path after v2 appears"
+      assert_file_not_contains /tmp/surface-source-sourceful-fetch-installed.out "$SOURCE_V2_SRC_STORE" \
+        "apm source --fetch does not realise latest uninstalled sourceful v2 source path"
       run_ok source-sourceful-verify-installed "$APM" source sourceful --verify
       assert_file_contains /tmp/surface-source-sourceful-verify-installed.out "$SOURCE_V1_SRC_STORE" \
         "apm source --verify uses installed sourceful v1 source path after v2 appears"

@@ -471,6 +471,9 @@ in {
           run_clean ${self}/bin/apm held > "$work/apm-held.out" 2>&1
           grep -q "No packages are held" "$work/apm-held.out"
           assert_no_profile
+          run_clean ${self}/bin/apm --json held > "$work/apm-held.json"
+          ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apm-held.json" >/dev/null
+          assert_no_profile
           if run_clean ${self}/bin/apm hold hostpkg > "$work/apm-hold-missing.out" 2>&1; then
             cat "$work/apm-hold-missing.out"
             exit 1
