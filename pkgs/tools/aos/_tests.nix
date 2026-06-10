@@ -134,6 +134,7 @@ in {
           data="$work/share"
           cache="$work/cache"
           mkdir -p "$home" "$config" "$data" "$cache"
+          profile="/var/lib/profiles/per-user/unknown"
 
           run_clean() {
             env -i \
@@ -148,6 +149,13 @@ in {
               GIT_COMMITTER_EMAIL="host-command@example.invalid" \
               PATH="${pkgs.coreutils}/bin:${pkgs.git}/bin" \
               "$@"
+          }
+
+          assert_no_profile() {
+            if test -e "$profile"; then
+              find "$profile" -maxdepth 2 -print
+              exit 1
+            fi
           }
 
           run_clean ${self}/bin/apr --help > "$work/apr-help.out"
@@ -267,19 +275,61 @@ in {
           grep -q "Candidate: 1.0.0" "$work/apm-policy.out"
           run_clean ${self}/bin/apm held > "$work/apm-held.out" 2>&1
           grep -q "No packages are held" "$work/apm-held.out"
+          assert_no_profile
+          if run_clean ${self}/bin/apm hold hostpkg > "$work/apm-hold-missing.out" 2>&1; then
+            cat "$work/apm-hold-missing.out"
+            exit 1
+          fi
+          grep -q "package not found: hostpkg" "$work/apm-hold-missing.out"
+          assert_no_profile
+          if run_clean ${self}/bin/apm unhold hostpkg > "$work/apm-unhold-missing.out" 2>&1; then
+            cat "$work/apm-unhold-missing.out"
+            exit 1
+          fi
+          grep -q "package not found: hostpkg" "$work/apm-unhold-missing.out"
+          assert_no_profile
+          run_clean ${self}/bin/apm upgrade --yes > "$work/apm-upgrade-empty.out" 2>&1
+          grep -q "All packages are up to date" "$work/apm-upgrade-empty.out"
+          assert_no_profile
+          run_clean ${self}/bin/apm clean --generations --keep 1 > "$work/apm-clean-generations-empty.out" 2>&1
+          grep -q "No old generations to remove" "$work/apm-clean-generations-empty.out"
+          assert_no_profile
+          if run_clean ${self}/bin/apm remove hostpkg --yes > "$work/apm-remove-missing.out" 2>&1; then
+            cat "$work/apm-remove-missing.out"
+            exit 1
+          fi
+          grep -q "nothing installed" "$work/apm-remove-missing.out"
+          assert_no_profile
+          if run_clean ${self}/bin/apm autoremove --yes > "$work/apm-autoremove-empty.out" 2>&1; then
+            cat "$work/apm-autoremove-empty.out"
+            exit 1
+          fi
+          grep -q "nothing installed" "$work/apm-autoremove-empty.out"
+          assert_no_profile
+          if run_clean ${self}/bin/apm rollback > "$work/apm-rollback-empty.out" 2>&1; then
+            cat "$work/apm-rollback-empty.out"
+            exit 1
+          fi
+          grep -q "no active generation" "$work/apm-rollback-empty.out"
+          assert_no_profile
           run_clean ${self}/bin/apm rollback --list > "$work/apm-rollback-list.out" 2>&1
           grep -q "No profile generations" "$work/apm-rollback-list.out"
+          assert_no_profile
           run_clean ${self}/bin/apm --json rollback --list > "$work/apm-rollback-list.json"
           ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apm-rollback-list.json" >/dev/null
+          assert_no_profile
           if run_clean ${self}/bin/apm files hostpkg > "$work/apm-files.out" 2>&1; then
             cat "$work/apm-files.out"
             exit 1
           fi
           grep -q "package not installed: hostpkg" "$work/apm-files.out"
+          assert_no_profile
           run_clean ${self}/bin/apm orphans > "$work/apm-orphans.out" 2>&1
           grep -q "No orphaned packages" "$work/apm-orphans.out"
+          assert_no_profile
           run_clean ${self}/bin/apm --json orphans > "$work/apm-orphans.json"
           ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apm-orphans.json" >/dev/null
+          assert_no_profile
           run_clean ${self}/bin/apm registry remove host-reg-client --keep-local > "$work/apm-registry-remove.out" 2>&1
           grep -q "Registry 'host-reg-client' removed" "$work/apm-registry-remove.out"
           test -d "$data/apm/registries/host-reg-client"
