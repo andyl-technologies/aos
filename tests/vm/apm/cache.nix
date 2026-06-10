@@ -79,6 +79,16 @@
             "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs, ca) VALUES ('$store_path', 'sha256:$nar_hash', 1000000, $nar_size, 1, NULL, 'fixed:r:sha256:$nar_hash');"
         }
 
+        register_store_reference() {
+          referrer="$1"
+          reference="$2"
+          root="$3"
+          ${sqliteBin} "$root/var/nix/db/db.sqlite" \
+            "INSERT OR IGNORE INTO Refs (referrer, reference)
+             SELECT referrer.id, reference.id FROM ValidPaths referrer, ValidPaths reference
+             WHERE referrer.path = '$referrer' AND reference.path = '$reference';"
+        }
+
         promote_view_path() {
           root="$1"
           view="$2"
@@ -383,41 +393,120 @@ in {
     memory = 1024;
     testScript = ''
       ${serverPreamble}
+      CLIENT_STATE_ROOT=/tmp/aos-registry-cache-client-state
+      SERVER_AOS_ROOT=/tmp/aos-registry-cache-server
+      init_mock_nix_db "$CLIENT_STATE_ROOT"
+      init_mock_nix_db "$SERVER_AOS_ROOT"
       ${serverConfig}
       ${startServer}
       ${getAuthToken}
 
       FAIL=0
 
-      echo "==> Step 1: Create test package"
-      TEST_PKG="/tmp/aos/store/cccccccccccccccccccccccccccccccccc-reg-test-1.0"
-      mkdir -p "$TEST_PKG/bin" "$TEST_PKG/lib"
+      echo "==> Step 1: Create registry package closure"
+      PKG_HASH="cccccccccccccccccccccccccccccccc"
+      LIB_HASH="dddddddddddddddddddddddddddddddd"
+      TEST_PKG="$SERVER_AOS_ROOT/store/$PKG_HASH-reg-test-1.0"
+      TEST_LIB="$SERVER_AOS_ROOT/store/$LIB_HASH-libregtest-1.0"
+      mkdir -p "$TEST_PKG/bin" "$TEST_PKG/share/reg-test" "$TEST_LIB/lib"
+      echo "libregtest fixture" > "$TEST_LIB/lib/libregtest.so"
       echo '#!/bin/sh' > "$TEST_PKG/bin/reg-test"
-      echo 'echo "registry test v1.0"' >> "$TEST_PKG/bin/reg-test"
+      echo 'echo "registry test v1.0 using libregtest"' >> "$TEST_PKG/bin/reg-test"
       chmod +x "$TEST_PKG/bin/reg-test"
-      echo "libregtest.so stub" > "$TEST_PKG/lib/libregtest.so"
-      ${sqliteBin} $AOS_ROOT/var/nix/db/db.sqlite \
-        "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs) VALUES ('$TEST_PKG', 'sha256:0003', 1000000, 8192, 1, '''''');"
+      echo "$TEST_LIB/lib/libregtest.so" > "$TEST_PKG/share/reg-test/lib-path"
+      dd if=/dev/urandom of="$TEST_PKG/share/reg-test/large-payload.bin" bs=1024 count=1536 2>/dev/null
+      register_ca_store_path "$TEST_LIB" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
+      register_ca_store_path "$TEST_PKG" "$CLIENT_STATE_ROOT" "$SERVER_AOS_ROOT/store"
+      register_store_reference "$TEST_PKG" "$TEST_LIB" "$CLIENT_STATE_ROOT"
 
-      echo "==> Step 2: Push to cache"
-      ${aosBin} cache push "$TEST_PKG" \
+      echo "==> Step 2: Push registry package closure to HTTP cache"
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$TEST_PKG" \
         --to "http://127.0.0.1:15000/default" \
-        --token "$ACCESS_TOKEN" 2>&1 || echo "WARN: push returned non-zero"
+        --compression zstd \
+        --token "$PROV_TOKEN" > /tmp/cache-registry-push.out 2>&1; then
+        cat /tmp/cache-registry-push.out
+        echo "FAIL: registry package cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-registry-push.out
+      ${grepBin} -F -q "2/2 paths need uploading" /tmp/cache-registry-push.out || \
+        { echo "FAIL: registry closure was not uploaded from a single root path"; FAIL=1; }
+      test -d "$TEST_PKG" || { echo "FAIL: server package path missing after upload"; FAIL=1; }
+      test -d "$TEST_LIB" || { echo "FAIL: server library path missing after upload"; FAIL=1; }
+      promote_view_path "$SERVER_AOS_ROOT" default bin "$TEST_PKG"
+      promote_view_path "$SERVER_AOS_ROOT" default src "$TEST_LIB"
 
       echo "==> Step 3: Verify in cache"
-      HASH="cccccccccccccccccccccccccccccccccc"
-      HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
-        "http://127.0.0.1:15000/default/$HASH.narinfo")
-      echo "narinfo: HTTP $HTTP_CODE"
+      QUERY=$(${curlBin} -s \
+        -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"paths\":[\"$PKG_HASH\",\"$LIB_HASH\"]}" \
+        http://127.0.0.1:15000/default/query-missing)
+      echo "query-missing: $QUERY"
+      echo "$QUERY" | ${jqBin} -e '.missing == []' >/dev/null || \
+        { echo "FAIL: pushed registry closure still reported missing"; FAIL=1; }
 
-      echo "==> Step 4: Verify package structure"
+      for hash in "$PKG_HASH" "$LIB_HASH"; do
+        HTTP_CODE=$(${curlBin} -s -o /dev/null -w '%{http_code}' \
+          "http://127.0.0.1:15000/default/$hash.narinfo")
+        echo "narinfo $hash: HTTP $HTTP_CODE"
+        test "$HTTP_CODE" = "200" || { echo "FAIL: expected narinfo HTTP 200 for $hash"; FAIL=1; }
+      done
+
+      PKG_NARINFO=$(${curlBin} -sf "http://127.0.0.1:15000/default/$PKG_HASH.narinfo")
+      LIB_NARINFO=$(${curlBin} -sf "http://127.0.0.1:15000/default/$LIB_HASH.narinfo")
+      echo "$PKG_NARINFO" > /tmp/cache-registry-pkg.narinfo
+      echo "$LIB_NARINFO" > /tmp/cache-registry-lib.narinfo
+      echo "$PKG_NARINFO" | ${grepBin} -F -q "StorePath: $TEST_PKG" || \
+        { echo "FAIL: package narinfo missing store path"; FAIL=1; }
+      echo "$PKG_NARINFO" | ${grepBin} -F -q "$LIB_HASH-libregtest-1.0" || \
+        { echo "FAIL: package narinfo missing library reference"; cat /tmp/cache-registry-pkg.narinfo; FAIL=1; }
+      echo "$LIB_NARINFO" | ${grepBin} -F -q "StorePath: $TEST_LIB" || \
+        { echo "FAIL: library narinfo missing store path"; FAIL=1; }
+
+      PKG_NAR_URL=$(echo "$PKG_NARINFO" | ${grepBin} "^URL:" | ${cutBin} -d' ' -f2)
+      LIB_NAR_URL=$(echo "$LIB_NARINFO" | ${grepBin} "^URL:" | ${cutBin} -d' ' -f2)
+      test -n "$PKG_NAR_URL" || { echo "FAIL: package narinfo missing NAR URL"; FAIL=1; }
+      test -n "$LIB_NAR_URL" || { echo "FAIL: library narinfo missing NAR URL"; FAIL=1; }
+      ${curlBin} -sf "http://127.0.0.1:15000/default/$PKG_NAR_URL" \
+        -o /tmp/cache-registry-pkg.nar
+      ${curlBin} -sf "http://127.0.0.1:15000/default/$LIB_NAR_URL" \
+        -o /tmp/cache-registry-lib.nar
+      PKG_NAR_SIZE=$(${statBin} -c%s /tmp/cache-registry-pkg.nar)
+      LIB_NAR_SIZE=$(${statBin} -c%s /tmp/cache-registry-lib.nar)
+      test "$PKG_NAR_SIZE" -gt 0 || { echo "FAIL: downloaded package NAR is empty"; FAIL=1; }
+      test "$PKG_NAR_SIZE" -gt 1048576 || { echo "FAIL: package NAR did not exercise large upload path"; FAIL=1; }
+      test "$LIB_NAR_SIZE" -gt 0 || { echo "FAIL: downloaded library NAR is empty"; FAIL=1; }
+
+      echo "==> Step 4: Repeat push is a no-op"
+      if ! AOS_ROOT="$SERVER_AOS_ROOT" \
+        AOS_NIX_STORE_DIR="$SERVER_AOS_ROOT/store" \
+        AOS_NIX_STATE_DIR="$CLIENT_STATE_ROOT/var/nix" \
+        ${aosBin} cache push "$TEST_PKG" \
+        --to "http://127.0.0.1:15000/default" \
+        --compression zstd \
+        --token "$PROV_TOKEN" > /tmp/cache-registry-repeat.out 2>&1; then
+        cat /tmp/cache-registry-repeat.out
+        echo "FAIL: repeat registry cache push failed"
+        exit 1
+      fi
+      cat /tmp/cache-registry-repeat.out
+      ${grepBin} -F -q "All paths already cached." /tmp/cache-registry-repeat.out || \
+        { echo "FAIL: repeat registry push did not detect cached closure"; FAIL=1; }
+
+      echo "==> Step 5: Verify package structure"
       test -d "$TEST_PKG/bin" || { echo "FAIL: missing bin/"; FAIL=1; }
-      test -d "$TEST_PKG/lib" || { echo "FAIL: missing lib/"; FAIL=1; }
+      test -f "$TEST_LIB/lib/libregtest.so" || { echo "FAIL: missing library payload"; FAIL=1; }
+      ${grepBin} -F -q "$TEST_LIB/lib/libregtest.so" "$TEST_PKG/share/reg-test/lib-path" || \
+        { echo "FAIL: package payload does not point at library payload"; FAIL=1; }
       test -x "$TEST_PKG/bin/reg-test" || { echo "FAIL: not executable"; FAIL=1; }
 
-      echo "==> Step 5: Verify execution"
+      echo "==> Step 6: Verify execution"
       OUTPUT=$("$TEST_PKG/bin/reg-test")
-      echo "$OUTPUT" | ${grepBin} -q "registry test v1.0" || \
+      echo "$OUTPUT" | ${grepBin} -q "registry test v1.0 using libregtest" || \
         { echo "FAIL: unexpected output: $OUTPUT"; FAIL=1; }
 
       ${stopServer}
