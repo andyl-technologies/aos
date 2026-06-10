@@ -143,6 +143,105 @@
     version = "2.0.0";
     leaf = tagLeafToolV2;
   };
+  vtildeLeafTool100 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.0.0";
+  };
+  vtildeTool100 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.0.0";
+    leaf = vtildeLeafTool100;
+  };
+  vtildeLeafTool101 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.0.1";
+  };
+  vtildeTool101 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.0.1";
+    leaf = vtildeLeafTool101;
+  };
+  vtildeLeafTool102 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.0.2";
+  };
+  vtildeTool102 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.0.2";
+    leaf = vtildeLeafTool102;
+  };
+  vtildeLeafTool103 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.0.3";
+  };
+  vtildeTool103 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.0.3";
+    leaf = vtildeLeafTool103;
+  };
+  vtildeLeafTool110 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.1.0";
+  };
+  vtildeTool110 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.1.0";
+    leaf = vtildeLeafTool110;
+  };
+  vtildeLeafTool111 = mkTrackingLeafTool {
+    rootName = "vtilde-tool";
+    version = "1.1.1";
+  };
+  vtildeTool111 = mkTrackingRootTool {
+    pname = "vtilde-tool";
+    version = "1.1.1";
+    leaf = vtildeLeafTool111;
+  };
+  vcaretLeafTool100 = mkTrackingLeafTool {
+    rootName = "vcaret-tool";
+    version = "1.0.0";
+  };
+  vcaretTool100 = mkTrackingRootTool {
+    pname = "vcaret-tool";
+    version = "1.0.0";
+    leaf = vcaretLeafTool100;
+  };
+  vcaretLeafTool120 = mkTrackingLeafTool {
+    rootName = "vcaret-tool";
+    version = "1.2.0";
+  };
+  vcaretTool120 = mkTrackingRootTool {
+    pname = "vcaret-tool";
+    version = "1.2.0";
+    leaf = vcaretLeafTool120;
+  };
+  vcaretLeafTool130 = mkTrackingLeafTool {
+    rootName = "vcaret-tool";
+    version = "1.3.0";
+  };
+  vcaretTool130 = mkTrackingRootTool {
+    pname = "vcaret-tool";
+    version = "1.3.0";
+    leaf = vcaretLeafTool130;
+  };
+  vcaretLeafTool200 = mkTrackingLeafTool {
+    rootName = "vcaret-tool";
+    version = "2.0.0";
+  };
+  vcaretTool200 = mkTrackingRootTool {
+    pname = "vcaret-tool";
+    version = "2.0.0";
+    leaf = vcaretLeafTool200;
+  };
+  vcaretLeafTool210 = mkTrackingLeafTool {
+    rootName = "vcaret-tool";
+    version = "2.1.0";
+  };
+  vcaretTool210 = mkTrackingRootTool {
+    pname = "vcaret-tool";
+    version = "2.1.0";
+    leaf = vcaretLeafTool210;
+  };
   trackingWorkflowDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -673,28 +772,28 @@ in {
   # -------------------------------------------------------------------------
   tracking-version-tilde = testing.mkVMTest {
     name = "apm-tracking-version-tilde";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        vtildeLeafTool100
+        vtildeTool100
+        vtildeLeafTool101
+        vtildeTool101
+        vtildeLeafTool102
+        vtildeTool102
+        vtildeLeafTool103
+        vtildeTool103
+        vtildeLeafTool110
+        vtildeTool110
+        vtildeLeafTool111
+        vtildeTool111
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: version tilde tracking follows best matching tag"
-
-      make_vtilde_tool() {
-        version="$1"
-        src="/tmp/vtilde-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/vtilde-tool"
-        cat > "$src/bin/vtilde-tool" << EOF
-      #!/bin/sh
-      echo "vtilde-tool $version executed"
-      EOF
-        chmod +x "$src/bin/vtilde-tool"
-        printf "vtilde-tool payload %s\n" "$version" \
-          > "$src/share/vtilde-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -786,16 +885,36 @@ in {
         }
       }
 
-      TOOL_100_STORE=$(make_vtilde_tool 1.0.0)
-      TOOL_101_STORE=$(make_vtilde_tool 1.0.1)
-      TOOL_102_STORE=$(make_vtilde_tool 1.0.2)
-      TOOL_110_STORE=$(make_vtilde_tool 1.1.0)
-      TOOL_103_STORE=$(make_vtilde_tool 1.0.3)
-      TOOL_111_STORE=$(make_vtilde_tool 1.1.1)
+      TOOL_100_STORE="${vtildeTool100}"
+      TOOL_100_DEP_STORE="${vtildeLeafTool100}"
+      TOOL_101_STORE="${vtildeTool101}"
+      TOOL_101_DEP_STORE="${vtildeLeafTool101}"
+      TOOL_102_STORE="${vtildeTool102}"
+      TOOL_102_DEP_STORE="${vtildeLeafTool102}"
+      TOOL_103_STORE="${vtildeTool103}"
+      TOOL_103_DEP_STORE="${vtildeLeafTool103}"
+      TOOL_110_STORE="${vtildeTool110}"
+      TOOL_110_DEP_STORE="${vtildeLeafTool110}"
+      TOOL_111_STORE="${vtildeTool111}"
+      TOOL_111_DEP_STORE="${vtildeLeafTool111}"
       TOOL_102_HASH=$(basename "$TOOL_102_STORE" | cut -d- -f1)
+      TOOL_102_DEP_HASH=$(basename "$TOOL_102_DEP_STORE" | cut -d- -f1)
       TOOL_103_HASH=$(basename "$TOOL_103_STORE" | cut -d- -f1)
+      TOOL_103_DEP_HASH=$(basename "$TOOL_103_DEP_STORE" | cut -d- -f1)
       TOOL_110_HASH=$(basename "$TOOL_110_STORE" | cut -d- -f1)
+      TOOL_110_DEP_HASH=$(basename "$TOOL_110_DEP_STORE" | cut -d- -f1)
       TOOL_111_HASH=$(basename "$TOOL_111_STORE" | cut -d- -f1)
+      TOOL_111_DEP_HASH=$(basename "$TOOL_111_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_102_STORE" > /tmp/vtilde-102-refs.out
+      assert_file_contains /tmp/vtilde-102-refs.out "$TOOL_102_DEP_STORE" \
+        "vtilde-tool 1.0.2 root has a real dependency closure"
+      nix-store -q --references "$TOOL_103_STORE" > /tmp/vtilde-103-refs.out
+      assert_file_contains /tmp/vtilde-103-refs.out "$TOOL_103_DEP_STORE" \
+        "vtilde-tool 1.0.3 root has a real dependency closure"
+      nix-store -q --references "$TOOL_111_STORE" > /tmp/vtilde-111-refs.out
+      assert_file_contains /tmp/vtilde-111-refs.out "$TOOL_111_DEP_STORE" \
+        "out-of-range vtilde-tool 1.1.1 root has a real dependency closure"
 
       $APR create vtilde-reg
       REG_DIR="$REG_STORAGE/vtilde-reg"
@@ -806,8 +925,12 @@ in {
       publish_vtilde_version 1.1.0 "$TOOL_110_STORE"
       assert_file_exists "/tmp/vtilde-cache/$TOOL_102_HASH.narinfo" \
         "static cache has vtilde-tool 1.0.2 narinfo"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_102_DEP_HASH.narinfo" \
+        "static cache has vtilde-tool 1.0.2 dependency narinfo"
       assert_file_exists "/tmp/vtilde-cache/$TOOL_110_HASH.narinfo" \
         "static cache has out-of-range 1.1.0 narinfo"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_110_DEP_HASH.narinfo" \
+        "static cache has out-of-range 1.1.0 dependency narinfo"
 
       git init --bare --object-format=sha256 /tmp/vtilde-origin.git
       git -C /tmp/vtilde-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -863,6 +986,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_102_STORE" "vtilde-tool-1.0.2"
+      delete_store_path "$TOOL_102_DEP_STORE" "vtilde-tool-1.0.2-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -872,9 +996,10 @@ in {
         fail "apm install downloads initial best tilde package"
       }
       cat /tmp/vtilde-install.out
-      assert_file_contains /tmp/vtilde-install.out "Downloading" \
-        "apm install downloads initial tilde NAR"
+      assert_file_contains /tmp/vtilde-install.out "Downloading 2 NAR" \
+        "apm install downloads initial tilde closure"
       assert_store_valid "$TOOL_102_STORE" "vtilde-tool 1.0.2"
+      assert_store_valid "$TOOL_102_DEP_STORE" "vtilde-tool 1.0.2 dependency"
       PROFILE="/var/lib/profiles/per-user/$USER"
       assert_file_not_exists "$PROFILE/meta/$TOOL_110_HASH.json" \
         "initial tilde install does not record out-of-range 1.1.0 metadata"
@@ -886,7 +1011,8 @@ in {
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/vtilde-tool"
       "$PROFILE_TOOL" > /tmp/vtilde-run-initial.out
       assert_file_contains /tmp/vtilde-run-initial.out \
-        "vtilde-tool 1.0.2 executed" "installed initial tilde tool executes"
+        "^vtilde-tool 1.0.2 via vtilde-tool-leaf 1.0.2$" \
+        "installed initial tilde tool executes through dependency"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
@@ -896,8 +1022,12 @@ in {
       publish_vtilde_version 1.1.1 "$TOOL_111_STORE"
       assert_file_exists "/tmp/vtilde-cache/$TOOL_103_HASH.narinfo" \
         "static cache has in-range vtilde-tool 1.0.3 narinfo"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_103_DEP_HASH.narinfo" \
+        "static cache has in-range vtilde-tool 1.0.3 dependency narinfo"
       assert_file_exists "/tmp/vtilde-cache/$TOOL_111_HASH.narinfo" \
         "static cache has out-of-range vtilde-tool 1.1.1 narinfo"
+      assert_file_exists "/tmp/vtilde-cache/$TOOL_111_DEP_HASH.narinfo" \
+        "static cache has out-of-range vtilde-tool 1.1.1 dependency narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
       git -C "$REG_DIR" push origin maintenance-1.0
       git -C "$REG_DIR" push origin --tags
@@ -906,7 +1036,9 @@ in {
       export USER=vtildeuser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_103_STORE" "vtilde-tool-1.0.3"
+      delete_store_path "$TOOL_103_DEP_STORE" "vtilde-tool-1.0.3-dep"
       delete_store_path "$TOOL_111_STORE" "vtilde-tool-1.1.1"
+      delete_store_path "$TOOL_111_DEP_STORE" "vtilde-tool-1.1.1-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -935,13 +1067,16 @@ in {
         "tilde upgrade plans in-range update"
       assert_file_not_contains /tmp/vtilde-upgrade.out "1.1.1" \
         "tilde upgrade does not plan out-of-range update"
-      assert_file_contains /tmp/vtilde-upgrade.out "Downloading" \
-        "tilde upgrade downloads in-range NAR"
+      assert_file_contains /tmp/vtilde-upgrade.out "Downloading 2 NAR" \
+        "tilde upgrade downloads in-range closure"
       assert_store_valid "$TOOL_103_STORE" "vtilde-tool 1.0.3"
+      assert_store_valid "$TOOL_103_DEP_STORE" "vtilde-tool 1.0.3 dependency"
       assert_store_missing "$TOOL_111_STORE" "vtilde-tool 1.1.1"
+      assert_store_missing "$TOOL_111_DEP_STORE" "vtilde-tool 1.1.1 dependency"
       "$PROFILE_TOOL" > /tmp/vtilde-run-upgraded.out
       assert_file_contains /tmp/vtilde-run-upgraded.out \
-        "vtilde-tool 1.0.3 executed" "upgraded tilde tool executes"
+        "^vtilde-tool 1.0.3 via vtilde-tool-leaf 1.0.3$" \
+        "upgraded tilde tool executes through dependency"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
@@ -954,28 +1089,26 @@ in {
   # -------------------------------------------------------------------------
   tracking-version-caret = testing.mkVMTest {
     name = "apm-tracking-version-caret";
-    rootfsDeps = trackingWorkflowDeps;
+    rootfsDeps =
+      trackingWorkflowDeps
+      ++ [
+        vcaretLeafTool100
+        vcaretTool100
+        vcaretLeafTool120
+        vcaretTool120
+        vcaretLeafTool130
+        vcaretTool130
+        vcaretLeafTool200
+        vcaretTool200
+        vcaretLeafTool210
+        vcaretTool210
+      ];
     memory = 2048;
     testScript = ''
       ${fixtures.setupPreamble}
       ${setupNixEnv}
 
       echo "==> Test: version caret tracking follows best matching tag"
-
-      make_vcaret_tool() {
-        version="$1"
-        src="/tmp/vcaret-tool-$version-src"
-        rm -rf "$src"
-        mkdir -p "$src/bin" "$src/share/vcaret-tool"
-        cat > "$src/bin/vcaret-tool" << EOF
-      #!/bin/sh
-      echo "vcaret-tool $version executed"
-      EOF
-        chmod +x "$src/bin/vcaret-tool"
-        printf "vcaret-tool payload %s\n" "$version" \
-          > "$src/share/vcaret-tool/payload.txt"
-        nix-store --add "$src"
-      }
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -1067,15 +1200,34 @@ in {
         }
       }
 
-      TOOL_100_STORE=$(make_vcaret_tool 1.0.0)
-      TOOL_120_STORE=$(make_vcaret_tool 1.2.0)
-      TOOL_200_STORE=$(make_vcaret_tool 2.0.0)
-      TOOL_130_STORE=$(make_vcaret_tool 1.3.0)
-      TOOL_210_STORE=$(make_vcaret_tool 2.1.0)
+      TOOL_100_STORE="${vcaretTool100}"
+      TOOL_100_DEP_STORE="${vcaretLeafTool100}"
+      TOOL_120_STORE="${vcaretTool120}"
+      TOOL_120_DEP_STORE="${vcaretLeafTool120}"
+      TOOL_130_STORE="${vcaretTool130}"
+      TOOL_130_DEP_STORE="${vcaretLeafTool130}"
+      TOOL_200_STORE="${vcaretTool200}"
+      TOOL_200_DEP_STORE="${vcaretLeafTool200}"
+      TOOL_210_STORE="${vcaretTool210}"
+      TOOL_210_DEP_STORE="${vcaretLeafTool210}"
       TOOL_120_HASH=$(basename "$TOOL_120_STORE" | cut -d- -f1)
+      TOOL_120_DEP_HASH=$(basename "$TOOL_120_DEP_STORE" | cut -d- -f1)
       TOOL_130_HASH=$(basename "$TOOL_130_STORE" | cut -d- -f1)
+      TOOL_130_DEP_HASH=$(basename "$TOOL_130_DEP_STORE" | cut -d- -f1)
       TOOL_200_HASH=$(basename "$TOOL_200_STORE" | cut -d- -f1)
+      TOOL_200_DEP_HASH=$(basename "$TOOL_200_DEP_STORE" | cut -d- -f1)
       TOOL_210_HASH=$(basename "$TOOL_210_STORE" | cut -d- -f1)
+      TOOL_210_DEP_HASH=$(basename "$TOOL_210_DEP_STORE" | cut -d- -f1)
+
+      nix-store -q --references "$TOOL_120_STORE" > /tmp/vcaret-120-refs.out
+      assert_file_contains /tmp/vcaret-120-refs.out "$TOOL_120_DEP_STORE" \
+        "vcaret-tool 1.2.0 root has a real dependency closure"
+      nix-store -q --references "$TOOL_130_STORE" > /tmp/vcaret-130-refs.out
+      assert_file_contains /tmp/vcaret-130-refs.out "$TOOL_130_DEP_STORE" \
+        "vcaret-tool 1.3.0 root has a real dependency closure"
+      nix-store -q --references "$TOOL_210_STORE" > /tmp/vcaret-210-refs.out
+      assert_file_contains /tmp/vcaret-210-refs.out "$TOOL_210_DEP_STORE" \
+        "out-of-range vcaret-tool 2.1.0 root has a real dependency closure"
 
       $APR create vcaret-reg
       REG_DIR="$REG_STORAGE/vcaret-reg"
@@ -1085,8 +1237,12 @@ in {
       publish_vcaret_version 2.0.0 "$TOOL_200_STORE"
       assert_file_exists "/tmp/vcaret-cache/$TOOL_120_HASH.narinfo" \
         "static cache has vcaret-tool 1.2.0 narinfo"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_120_DEP_HASH.narinfo" \
+        "static cache has vcaret-tool 1.2.0 dependency narinfo"
       assert_file_exists "/tmp/vcaret-cache/$TOOL_200_HASH.narinfo" \
         "static cache has out-of-range 2.0.0 narinfo"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_200_DEP_HASH.narinfo" \
+        "static cache has out-of-range 2.0.0 dependency narinfo"
 
       git init --bare --object-format=sha256 /tmp/vcaret-origin.git
       git -C /tmp/vcaret-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -1142,6 +1298,7 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$TOOL_120_STORE" "vcaret-tool-1.2.0"
+      delete_store_path "$TOOL_120_DEP_STORE" "vcaret-tool-1.2.0-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1151,9 +1308,10 @@ in {
         fail "apm install downloads initial best caret package"
       }
       cat /tmp/vcaret-install.out
-      assert_file_contains /tmp/vcaret-install.out "Downloading" \
-        "apm install downloads initial caret NAR"
+      assert_file_contains /tmp/vcaret-install.out "Downloading 2 NAR" \
+        "apm install downloads initial caret closure"
       assert_store_valid "$TOOL_120_STORE" "vcaret-tool 1.2.0"
+      assert_store_valid "$TOOL_120_DEP_STORE" "vcaret-tool 1.2.0 dependency"
       PROFILE="/var/lib/profiles/per-user/$USER"
       assert_file_not_exists "$PROFILE/meta/$TOOL_200_HASH.json" \
         "initial caret install does not record out-of-range 2.0.0 metadata"
@@ -1165,7 +1323,8 @@ in {
       PROFILE_TOOL="/var/lib/profiles/per-user/$USER/current/bin/vcaret-tool"
       "$PROFILE_TOOL" > /tmp/vcaret-run-initial.out
       assert_file_contains /tmp/vcaret-run-initial.out \
-        "vcaret-tool 1.2.0 executed" "installed initial caret tool executes"
+        "^vcaret-tool 1.2.0 via vcaret-tool-leaf 1.2.0$" \
+        "installed initial caret tool executes through dependency"
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
@@ -1175,8 +1334,12 @@ in {
       publish_vcaret_version 2.1.0 "$TOOL_210_STORE"
       assert_file_exists "/tmp/vcaret-cache/$TOOL_130_HASH.narinfo" \
         "static cache has in-range vcaret-tool 1.3.0 narinfo"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_130_DEP_HASH.narinfo" \
+        "static cache has in-range vcaret-tool 1.3.0 dependency narinfo"
       assert_file_exists "/tmp/vcaret-cache/$TOOL_210_HASH.narinfo" \
         "static cache has out-of-range vcaret-tool 2.1.0 narinfo"
+      assert_file_exists "/tmp/vcaret-cache/$TOOL_210_DEP_HASH.narinfo" \
+        "static cache has out-of-range vcaret-tool 2.1.0 dependency narinfo"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
       git -C "$REG_DIR" push origin maintenance-1
       git -C "$REG_DIR" push origin --tags
@@ -1185,7 +1348,9 @@ in {
       export USER=vcaretuser
       APM_CONFIG="$HOME/.config/apm"
       delete_store_path "$TOOL_130_STORE" "vcaret-tool-1.3.0"
+      delete_store_path "$TOOL_130_DEP_STORE" "vcaret-tool-1.3.0-dep"
       delete_store_path "$TOOL_210_STORE" "vcaret-tool-2.1.0"
+      delete_store_path "$TOOL_210_DEP_STORE" "vcaret-tool-2.1.0-dep"
       rm -rf "$HOME/.cache/apm"
       mkdir -p "$HOME/.cache/apm"
 
@@ -1214,13 +1379,16 @@ in {
         "caret upgrade plans in-range update"
       assert_file_not_contains /tmp/vcaret-upgrade.out "2.1.0" \
         "caret upgrade does not plan out-of-range update"
-      assert_file_contains /tmp/vcaret-upgrade.out "Downloading" \
-        "caret upgrade downloads in-range NAR"
+      assert_file_contains /tmp/vcaret-upgrade.out "Downloading 2 NAR" \
+        "caret upgrade downloads in-range closure"
       assert_store_valid "$TOOL_130_STORE" "vcaret-tool 1.3.0"
+      assert_store_valid "$TOOL_130_DEP_STORE" "vcaret-tool 1.3.0 dependency"
       assert_store_missing "$TOOL_210_STORE" "vcaret-tool 2.1.0"
+      assert_store_missing "$TOOL_210_DEP_STORE" "vcaret-tool 2.1.0 dependency"
       "$PROFILE_TOOL" > /tmp/vcaret-run-upgraded.out
       assert_file_contains /tmp/vcaret-run-upgraded.out \
-        "vcaret-tool 1.3.0 executed" "upgraded caret tool executes"
+        "^vcaret-tool 1.3.0 via vcaret-tool-leaf 1.3.0$" \
+        "upgraded caret tool executes through dependency"
 
       kill "$CACHE_PID" 2>/dev/null || true
       wait "$CACHE_PID" 2>/dev/null || true
