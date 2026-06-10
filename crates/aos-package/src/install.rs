@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use super::config::ApmConfig;
 use super::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
-    resolve_mirror,
+    fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror,
 };
 use super::profile::Profile;
 use super::profile::merge::build_fhs_tree;
@@ -20,6 +20,7 @@ use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::{verify_download_hash, verify_nar_hash};
 use aos_core::error::AosError;
+use aos_core::nar::info as narinfo;
 use aos_core::output::Printer;
 
 // ---------------------------------------------------------------------------
@@ -136,6 +137,16 @@ pub async fn run(
     let engine = std::sync::Arc::new(default_engine());
     let resolved: Vec<ResolvedDownload> = if requests.is_empty() {
         Vec::new()
+    } else if no_deps {
+        let resolved = fetch_narinfos(
+            std::sync::Arc::clone(&engine),
+            &requests,
+            config.settings.parallel_downloads,
+            printer,
+        )
+        .await?;
+        ensure_narinfo_references_present(&resolved).await?;
+        order_resolved_downloads(&requests, resolved)?
     } else {
         fetch_narinfo_closure(
             std::sync::Arc::clone(&engine),
@@ -459,6 +470,45 @@ async fn ensure_skipped_dependencies_present(closures: &[ResolvedClosure]) -> Re
     anyhow::bail!(
         "--no-deps requested but dependency store path(s) are missing: {}",
         labels.join(", ")
+    );
+}
+
+async fn ensure_narinfo_references_present(resolved: &[ResolvedDownload]) -> Result<()> {
+    let requested_hashes: HashSet<String> = resolved
+        .iter()
+        .map(|item| narinfo::store_hash(&item.narinfo.store_path).to_string())
+        .collect();
+    let mut seen = HashSet::new();
+    let mut references = Vec::new();
+
+    for item in resolved {
+        let parent_hash = narinfo::store_hash(&item.narinfo.store_path);
+
+        for reference in &item.narinfo.references {
+            let reference_hash = narinfo::store_hash(reference);
+            if reference_hash == parent_hash
+                || requested_hashes.contains(reference_hash)
+                || !seen.insert(reference_hash.to_string())
+            {
+                continue;
+            }
+
+            references.push(reference_store_path(reference, &item.narinfo.store_path));
+        }
+    }
+
+    if references.is_empty() {
+        return Ok(());
+    }
+
+    let missing = filter_missing(&references).await?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "--no-deps requested but dependency store path(s) are missing: {}",
+        missing.join(", ")
     );
 }
 
