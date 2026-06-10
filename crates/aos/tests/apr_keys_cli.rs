@@ -4,12 +4,15 @@ use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
 use aos_package::registry::keys;
+use aos_package::security::verify_commit_signature;
+use aos_package::sshkey::Ed25519Keypair;
 
 #[test]
 fn apr_keys_cli_manages_committed_roster() -> Result<()> {
     let tmp = tempfile::TempDir::new()?;
     let home = tmp.path().join("home");
-    let Some(registry_dir) = init_registry(&home, "core")? else {
+    let initial = TestKey::write(&home, "core", [11_u8; 32], "initial")?;
+    let Some(registry_dir) = init_registry(&home, "core", Some(&initial))? else {
         eprintln!("skipping apr keys CLI e2e: git cannot initialize a sha256 repository");
         return Ok(());
     };
@@ -20,13 +23,32 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
     assert!(list.contains("initial"));
     assert!(list.contains("active:"));
 
-    run_apr(
+    // Roster changes on a non-empty roster must be signed: without a key
+    // the command refuses rather than producing an unsigned commit.
+    let unsigned = run_apr_err(
         &home,
         &[
             "keys",
             "add",
             "next",
             "core:Ed25519:ZWZnaA==",
+            "--registry",
+            "core",
+        ],
+    )?;
+    assert!(output_text(&unsigned).contains("must be signed"));
+    assert_eq!(git(&registry_dir, &["rev-list", "--count", "HEAD"])?, "1");
+
+    let next = TestKey::write(&home, "core", [12_u8; 32], "next")?;
+    run_apr(
+        &home,
+        &[
+            "keys",
+            "add",
+            "next",
+            &next.trust_key,
+            "--key",
+            initial.path_str(),
             "--registry",
             "core",
         ],
@@ -41,6 +63,17 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
         vec!["initial", "next"],
     );
     assert_eq!(git(&registry_dir, &["rev-list", "--count", "HEAD"])?, "2");
+    // The enrolling commit is signed by the existing maintainer key.
+    assert!(verify_commit_signature(
+        &registry_dir,
+        "HEAD",
+        &[initial.trust_key.clone()],
+    )?);
+    assert!(!verify_commit_signature(
+        &registry_dir,
+        "HEAD",
+        &[next.trust_key.clone()],
+    )?);
 
     let duplicate = run_apr_err(
         &home,
@@ -49,12 +82,17 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
             "add",
             "next",
             "core:Ed25519:aGlqa2w=",
+            "--key",
+            initial.path_str(),
             "--registry",
             "core",
         ],
     )?;
     assert!(output_text(&duplicate).contains("already exists"));
 
+    // Retirement defaults to signing with the vouching survivor's key,
+    // resolved through [registry.signing_keys].
+    write_registry_config(&home, "core", &[("next", &next)])?;
     run_apr(
         &home,
         &[
@@ -83,8 +121,24 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
         Some("planned rotation")
     );
     assert_eq!(git(&registry_dir, &["rev-list", "--count", "HEAD"])?, "3");
+    assert!(verify_commit_signature(
+        &registry_dir,
+        "HEAD",
+        &[next.trust_key.clone()],
+    )?);
 
-    let last_key = run_apr_err(&home, &["keys", "retire", "next", "--registry", "core"])?;
+    let last_key = run_apr_err(
+        &home,
+        &[
+            "keys",
+            "retire",
+            "next",
+            "--key",
+            next.path_str(),
+            "--registry",
+            "core",
+        ],
+    )?;
     assert!(output_text(&last_key).contains("must keep an active survivor key"));
 
     let wrong_registry = run_apr_err(
@@ -94,19 +148,24 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
             "add",
             "foreign",
             "other:Ed25519:bW5vcA==",
+            "--key",
+            next.path_str(),
             "--registry",
             "core",
         ],
     )?;
     assert!(output_text(&wrong_registry).contains("expected 'core'"));
 
+    let third = TestKey::write(&home, "core", [13_u8; 32], "third")?;
     run_apr(
         &home,
         &[
             "keys",
             "add",
             "third",
-            "core:Ed25519:bW5vcA==",
+            &third.trust_key,
+            "--key",
+            next.path_str(),
             "--registry",
             "core",
         ],
@@ -119,6 +178,8 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
             "next",
             "--vouched-by",
             "third",
+            "--key",
+            third.path_str(),
             "--registry",
             "core",
         ],
@@ -137,7 +198,127 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
     Ok(())
 }
 
-fn init_registry(home: &Path, name: &str) -> Result<Option<PathBuf>> {
+#[test]
+fn apr_keys_add_on_empty_roster_may_commit_unsigned() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let Some(registry_dir) = init_registry(&home, "boot", None)? else {
+        eprintln!("skipping apr keys CLI e2e: git cannot initialize a sha256 repository");
+        return Ok(());
+    };
+
+    // Bootstrap: the first key may be added without a signing key, since
+    // no client can verify the registry yet.
+    let first = TestKey::write(&home, "boot", [21_u8; 32], "first")?;
+    run_apr(
+        &home,
+        &[
+            "keys",
+            "add",
+            "first",
+            &first.trust_key,
+            "--registry",
+            "boot",
+        ],
+    )?;
+    let roster = keys::load_keys_toml(&registry_dir)?.expect("keys.toml exists");
+    assert_eq!(roster.active.len(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn apr_create_with_trust_key_requires_and_signs_initial_commit() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    if !git_supports_sha256(&home)? {
+        eprintln!("skipping apr create e2e: git cannot initialize a sha256 repository");
+        return Ok(());
+    }
+    let key = TestKey::write(&home, "fresh", [31_u8; 32], "initial")?;
+
+    // --trust-key without a signing key is refused.
+    let missing = run_apr_err(&home, &["create", "fresh", "--trust-key", &key.trust_key])?;
+    assert!(output_text(&missing).contains("must be signed"));
+
+    run_apr(
+        &home,
+        &[
+            "create",
+            "fresh",
+            "--trust-key",
+            &key.trust_key,
+            "--key",
+            key.path_str(),
+        ],
+    )?;
+    let registry_dir = home.join(".local/share/apm/registries").join("fresh");
+    assert!(verify_commit_signature(
+        &registry_dir,
+        "HEAD",
+        &[key.trust_key.clone()],
+    )?);
+
+    Ok(())
+}
+
+struct TestKey {
+    trust_key: String,
+    path: PathBuf,
+}
+
+impl TestKey {
+    /// Write a deterministic OpenSSH keypair under `home` and return its
+    /// trust-key line and private key path.
+    fn write(home: &Path, registry: &str, seed: [u8; 32], name: &str) -> Result<Self> {
+        let keypair = Ed25519Keypair::from_seed(seed);
+        let dir = home.join("keys");
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{registry}-{name}.key"));
+        fs::write(&path, keypair.to_openssh_private_key(name))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(Self {
+            trust_key: keypair.trust_key_line(registry),
+            path,
+        })
+    }
+
+    fn path_str(&self) -> &str {
+        self.path.to_str().unwrap_or_default()
+    }
+}
+
+/// Write a user-scope registry config mapping key ids to private key paths.
+fn write_registry_config(home: &Path, name: &str, keys: &[(&str, &TestKey)]) -> Result<()> {
+    let dir = home.join(".config/apm/registries.d");
+    fs::create_dir_all(&dir)?;
+    let mut content = format!("[registry]\nname = \"{name}\"\nurl = \"file:///dev/null\"\n");
+    if !keys.is_empty() {
+        content.push_str("\n[registry.signing_keys]\n");
+        for (id, key) in keys {
+            content.push_str(&format!("\"{id}\" = \"{}\"\n", key.path.display()));
+        }
+    }
+    fs::write(dir.join(format!("{name}.toml")), content)?;
+    Ok(())
+}
+
+fn git_supports_sha256(home: &Path) -> Result<bool> {
+    let probe = home.join(".sha256-probe");
+    fs::create_dir_all(&probe)?;
+    let init = Command::new("git")
+        .args(["init", "--object-format=sha256"])
+        .current_dir(&probe)
+        .output()
+        .context("running git init --object-format=sha256")?;
+    Ok(init.status.success())
+}
+
+fn init_registry(home: &Path, name: &str, initial: Option<&TestKey>) -> Result<Option<PathBuf>> {
     let registry_dir = home
         .join(".local")
         .join("share")
@@ -169,17 +350,19 @@ name = "{name}"
 "#,
         ),
     )?;
-    fs::write(
-        registry_dir.join("keys.toml"),
-        format!(
+    let keys_toml = match initial {
+        Some(key) => format!(
             r#"schema = 1
 
 [[keys]]
 id = "initial"
-key = "{name}:Ed25519:YWJjZA=="
+key = "{}"
 "#,
+            key.trust_key,
         ),
-    )?;
+        None => "schema = 1\n".to_string(),
+    };
+    fs::write(registry_dir.join("keys.toml"), keys_toml)?;
     git(&registry_dir, &["add", "-A"])?;
     git(&registry_dir, &["commit", "-m", "initial registry"])?;
     Ok(Some(registry_dir))
