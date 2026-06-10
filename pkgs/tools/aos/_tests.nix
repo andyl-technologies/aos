@@ -116,12 +116,16 @@ in {
 
     buildDeps = [
       self
+      pkgs.bash
       pkgs.coreutils
+      pkgs.findutils
       pkgs.git
       pkgs.grep
       pkgs.jq
+      pkgs.nix
       pkgs.openssh
       pkgs.python3
+      pkgs.zstd
     ];
 
     phases = [
@@ -135,15 +139,31 @@ in {
           config="$work/config"
           data="$work/share"
           cache="$work/cache"
+          profile_root="$work/profiles"
+          aos_root="$work/aos-root"
+          store_dir="$aos_root/store"
+          state_dir="$aos_root/var/nix"
+          nix_conf="$work/nix-conf"
           cache_port="18137"
-          mkdir -p "$home" "$config" "$data" "$cache"
-          profile="/var/lib/profiles/per-user/unknown"
+          install_cache_port="18138"
+          mkdir -p "$home" "$config" "$data" "$cache" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$nix_conf"
+          profile="$profile_root/per-user/unknown"
+          default_profile="/var/lib/profiles/per-user/unknown"
           cache_server_pid=""
+          install_cache_server_pid=""
+          cat > "$nix_conf/nix.conf" << 'NIXCONF'
+          experimental-features = nix-command
+          sandbox = false
+          NIXCONF
 
           cleanup() {
             if test -n "$cache_server_pid"; then
               kill "$cache_server_pid" 2>/dev/null || true
               wait "$cache_server_pid" 2>/dev/null || true
+            fi
+            if test -n "$install_cache_server_pid"; then
+              kill "$install_cache_server_pid" 2>/dev/null || true
+              wait "$install_cache_server_pid" 2>/dev/null || true
             fi
           }
           trap cleanup EXIT
@@ -154,21 +174,49 @@ in {
               XDG_CONFIG_HOME="$config" \
               XDG_DATA_HOME="$data" \
               XDG_CACHE_HOME="$cache" \
+              AOS_PROFILE_ROOT="$profile_root" \
+              AOS_ROOT="$aos_root" \
+              AOS_NIX_STORE_DIR="$store_dir" \
+              AOS_NIX_STATE_DIR="$state_dir" \
+              NIX_REMOTE="" \
+              NIX_CONF_DIR="$nix_conf" \
               GIT_CONFIG_NOSYSTEM=1 \
               GIT_AUTHOR_NAME="Host Command Test" \
               GIT_AUTHOR_EMAIL="host-command@example.invalid" \
               GIT_COMMITTER_NAME="Host Command Test" \
               GIT_COMMITTER_EMAIL="host-command@example.invalid" \
-              PATH="${pkgs.coreutils}/bin:${pkgs.git}/bin" \
+              PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
               "$@"
           }
 
-          assert_no_profile() {
-            if test -e "$profile"; then
-              find "$profile" -maxdepth 2 -print
+          assert_path_absent() {
+            path="$1"
+            if test -e "$path"; then
+              find "$path" -maxdepth 2 -print
               exit 1
             fi
           }
+
+          assert_no_profile() {
+            assert_path_absent "$profile"
+            assert_path_absent "$default_profile"
+          }
+
+          assert_default_profile_absent() {
+            assert_path_absent "$default_profile"
+          }
+
+          nix_store() {
+            env \
+              NIX_REMOTE="" \
+              NIX_CONF_DIR="$nix_conf" \
+              NIX_STORE_DIR="$store_dir" \
+              NIX_STATE_DIR="$state_dir" \
+              PATH="${pkgs.coreutils}/bin:${pkgs.findutils}/bin:${pkgs.nix}/bin:${pkgs.zstd}/bin" \
+              nix-store "$@"
+          }
+
+          nix_store --init > "$work/nix-store-init.out" 2>&1
 
           run_clean ${self}/bin/apr --help > "$work/apr-help.out"
           grep -q "Usage:" "$work/apr-help.out"
@@ -547,7 +595,105 @@ in {
           grep -q "Frontier: 2.0.0" "$work/apr-channel-status-v2.out"
           grep -q "2.0.0: 2/256" "$work/apr-channel-status-v2.out"
           grep -q "1.0.0: 254/256" "$work/apr-channel-status-v2.out"
+
+          upload_root="$work/uploaded-origin"
+          run_clean ${self}/bin/apr origin upload \
+            --registry host-reg \
+            --cache-dir "$cache_root/cache" \
+            --upload-url "file://$upload_root" \
+            > "$work/apr-origin-upload.out" 2>&1
+          grep -q "Uploaded static registry origin files to file://$upload_root" "$work/apr-origin-upload.out"
+          grep -q "Uploaded .* static origin file" "$work/apr-origin-upload.out"
+          test -f "$upload_root/HEAD"
+          test -f "$upload_root/info/refs"
+          test -f "$upload_root/releases/1/0/0/objects/info/packs"
+          test -f "$upload_root/releases/2/0/0/objects/info/packs"
+          find "$upload_root/releases/2/0/0/objects/pack" -name 'pack-*.pack' | grep -q .
+          test -f "$upload_root/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
+          test -f "$upload_root/channels/canary/00"
+          test -f "$upload_root/$pkg_hash.narinfo"
+          test -f "$upload_root/nar/$pkg_hash-hostpkg.nar"
           assert_no_profile
+
+          install_src="$work/host-install-src"
+          mkdir -p "$install_src/bin" "$install_src/share/host-install"
+          printf '%s\n' \
+            '#!${pkgs.bash}/bin/bash' \
+            'printf "host install package executed\n"' \
+            > "$install_src/bin/host-install-tool"
+          chmod +x "$install_src/bin/host-install-tool"
+          printf '%s\n' "host install payload" > "$install_src/share/host-install/payload.txt"
+          install_store=$(nix_store --add "$install_src")
+          install_hash=$(basename "$install_store" | cut -d- -f1)
+
+          run_clean ${self}/bin/apr create host-install-reg > "$work/apr-create-host-install.out" 2>&1
+          install_reg="$data/apm/registries/host-install-reg"
+          run_clean ${self}/bin/apr publish "$install_store" \
+            --name hostinstall \
+            --version 1.0.0 \
+            --description "Host APM install fixture" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --registry host-install-reg \
+            --no-commit > "$work/apr-publish-host-install.out" 2>&1
+          run_clean ${self}/bin/apr cache generate \
+            --registry host-install-reg \
+            --output "$work/install-static-cache/cache" \
+            --cache-url "http://127.0.0.1:$install_cache_port/cache" \
+            --priority 77 \
+            --no-commit > "$work/apr-cache-host-install.out" 2>&1
+          test -f "$work/install-static-cache/cache/$install_hash.narinfo"
+          git -C "$install_reg" add -A
+          git -C "$install_reg" commit -m "release: hostinstall 1.0.0" \
+            > "$work/git-commit-host-install.out" 2>&1
+
+          PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$install_cache_port" \
+            --bind 127.0.0.1 --directory "$work/install-static-cache" \
+            > "$work/install-cache-server.log" 2>&1 &
+          install_cache_server_pid=$!
+          ${pkgs.coreutils}/bin/sleep 1
+          if ! kill -0 "$install_cache_server_pid" 2>/dev/null; then
+            cat "$work/install-cache-server.log"
+            exit 1
+          fi
+
+          run_clean ${self}/bin/apm registry add "file://$install_reg" \
+            --name host-install-client > "$work/apm-add-host-install.out" 2>&1
+          grep -q "Registry 'host-install-client' added" "$work/apm-add-host-install.out"
+
+          nix_store --delete --ignore-liveness "$install_store" \
+            > "$work/nix-delete-host-install.out" 2>&1
+          if nix_store --check-validity "$install_store" \
+            > "$work/nix-valid-host-install-deleted.out" 2>&1; then
+            cat "$work/nix-valid-host-install-deleted.out"
+            exit 1
+          fi
+
+          run_clean ${self}/bin/apm install hostinstall \
+            --registry host-install-client \
+            --yes > "$work/apm-install-host-install.out" 2>&1
+          grep -q "Downloading" "$work/apm-install-host-install.out"
+          grep -q "Installed 1 package" "$work/apm-install-host-install.out"
+          nix_store --check-validity "$install_store" \
+            > "$work/nix-valid-host-install-imported.out" 2>&1
+          "$profile/current/bin/host-install-tool" > "$work/host-install-run.out"
+          grep -q "host install package executed" "$work/host-install-run.out"
+          assert_default_profile_absent
+
+          run_clean ${self}/bin/apm verify hostinstall > "$work/apm-verify-host-install.out" 2>&1
+          grep -q "integrity verified" "$work/apm-verify-host-install.out"
+          run_clean ${self}/bin/apm files hostinstall > "$work/apm-files-host-install.out" 2>&1
+          grep -q "bin/host-install-tool" "$work/apm-files-host-install.out"
+
+          run_clean ${self}/bin/apm remove hostinstall --yes \
+            > "$work/apm-remove-host-install.out" 2>&1
+          grep -q "Removed 1 package" "$work/apm-remove-host-install.out"
+          run_clean ${self}/bin/apm list --installed > "$work/apm-installed-after-host-remove.out" 2>&1
+          if grep -q "hostinstall" "$work/apm-installed-after-host-remove.out"; then
+            cat "$work/apm-installed-after-host-remove.out"
+            exit 1
+          fi
+          assert_default_profile_absent
 
           mkdir -p "$out"
           echo "PASS" > "$out/result"
