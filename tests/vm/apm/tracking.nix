@@ -187,7 +187,7 @@ in {
       mkdir -p "$HOME"
       APM_CONFIG="$HOME/.config/apm"
 
-      $APM registry add file:///tmp/branch-origin.git \
+      $APM registry add --no-verify file:///tmp/branch-origin.git \
         --name branch-reg \
         --branch release > /tmp/branch-add.out 2>&1 || {
         cat /tmp/branch-add.out
@@ -434,7 +434,7 @@ in {
       mkdir -p "$HOME"
       APM_CONFIG="$HOME/.config/apm"
 
-      $APM registry add file:///tmp/tag-origin.git \
+      $APM registry add --no-verify file:///tmp/tag-origin.git \
         --name tag-reg \
         --tag v1.0.0 > /tmp/tag-add.out 2>&1 || {
         cat /tmp/tag-add.out
@@ -701,7 +701,7 @@ in {
       mkdir -p "$HOME"
       APM_CONFIG="$HOME/.config/apm"
 
-      $APM registry add file:///tmp/vtilde-origin.git \
+      $APM registry add --no-verify file:///tmp/vtilde-origin.git \
         --name vtilde-reg \
         --version "~1.0" > /tmp/vtilde-add.out 2>&1 || {
         cat /tmp/vtilde-add.out
@@ -980,7 +980,7 @@ in {
       mkdir -p "$HOME"
       APM_CONFIG="$HOME/.config/apm"
 
-      $APM registry add file:///tmp/vcaret-origin.git \
+      $APM registry add --no-verify file:///tmp/vcaret-origin.git \
         --name vcaret-reg \
         --version "^1" > /tmp/vcaret-add.out 2>&1 || {
         cat /tmp/vcaret-add.out
@@ -1256,7 +1256,7 @@ in {
       mkdir -p "$HOME"
       APM_CONFIG="$HOME/.config/apm"
 
-      $APM registry add file:///tmp/commit-origin.git \
+      $APM registry add --no-verify file:///tmp/commit-origin.git \
         --name commit-reg \
         --commit "$PINNED_COMMIT" > /tmp/commit-add.out 2>&1 || {
         cat /tmp/commit-add.out
@@ -1467,7 +1467,7 @@ in {
       APM_CONFIG="$HOME/.config/apm"
 
       # Add registry with NO tracking flags
-      $APM registry add file:///tmp/default-origin.git --name default-reg \
+      $APM registry add --no-verify file:///tmp/default-origin.git --name default-reg \
         > /tmp/default-add.out 2>&1 || {
         cat /tmp/default-add.out
         fail "apm registry add syncs default branch"
@@ -1746,7 +1746,7 @@ in {
       mkdir -p "$HOME"
       APM_CONFIG="$HOME/.config/apm"
 
-      $APM registry add file:///tmp/git-native-origin.git \
+      $APM registry add --no-verify file:///tmp/git-native-origin.git \
         --name git-native-reg --version "~1" > /tmp/git-native-add.out 2>&1 || {
         cat /tmp/git-native-add.out
         fail "apm registry add resolves best git-native version tag"

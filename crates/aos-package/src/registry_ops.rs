@@ -628,6 +628,16 @@ pub async fn create(
     git(&dir, &["symbolic-ref", "HEAD", "refs/heads/stable"])?;
     objectstore::assert_sha256(&dir)?;
 
+    // Registry commits need a committer identity even on hosts without a
+    // global git config (e.g. hermetic build sandboxes); only fill in
+    // repo-local defaults when the maintainer has none configured.
+    if git(&dir, &["config", "user.email"]).is_err() {
+        git(&dir, &["config", "user.email", "registry@localhost"])?;
+    }
+    if git(&dir, &["config", "user.name"]).is_err() {
+        git(&dir, &["config", "user.name", "AOS Registry"])?;
+    }
+
     // Create initial directory structure.
     std::fs::create_dir_all(dir.join("packages"))?;
 

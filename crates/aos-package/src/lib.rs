@@ -414,8 +414,13 @@ pub enum RegistryCommand {
         #[arg(long, group = "tracking")]
         version: Option<String>,
         /// Trusted registry signing key in `registry:Ed25519:<base64>` form
-        #[arg(long = "trust-key")]
+        #[arg(long = "trust-key", conflicts_with = "no_verify")]
         trust_key: Option<String>,
+        /// Disable signature verification for this registry (writes
+        /// `[registry.signing] required = false`; unverified syncs are
+        /// intended for local development registries only)
+        #[arg(long = "no-verify")]
+        no_verify: bool,
         /// Register the config only; skip cloning the registry into local storage
         #[arg(long = "no-clone")]
         no_clone: bool,
@@ -1385,6 +1390,7 @@ async fn run_registry(
             tag,
             version,
             trust_key,
+            no_verify,
             no_clone,
         } => {
             registry_add(
@@ -1398,6 +1404,7 @@ async fn run_registry(
                 tag.as_deref(),
                 version.as_deref(),
                 trust_key.as_deref(),
+                *no_verify,
                 !no_clone,
                 printer,
             )
@@ -1784,6 +1791,7 @@ async fn registry_list(config: &config::ApmConfig, printer: &Printer) -> Result<
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn registry_add(
     config: &config::ApmConfig,
     url: &str,
@@ -1795,6 +1803,7 @@ async fn registry_add(
     tag: Option<&str>,
     version: Option<&str>,
     trust_key: Option<&str>,
+    no_verify: bool,
     clone: bool,
     printer: &Printer,
 ) -> Result<()> {
@@ -1877,6 +1886,11 @@ enabled = true
             "\n[registry.signing]\nrequired = true\npublic_key = \"{}:{}:{}\"\n",
             key.registry, key.algorithm, key.public_key,
         ));
+    } else if no_verify {
+        // Verification is fail-closed by default; the explicit opt-out is
+        // recorded in the config so the choice is visible and auditable.
+        toml_content.push_str("\n[registry.signing]\nrequired = false\n");
+        printer.kv("Signing", "verification disabled (--no-verify)");
     }
 
     fs::write(&toml_path, &toml_content)
@@ -2163,6 +2177,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
             &printer,
         )

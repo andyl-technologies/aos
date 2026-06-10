@@ -175,7 +175,7 @@ in {
       rm -rf /tmp/remote-registry-tag
 
       # Use apm registry add to add the remote
-      $APM registry add file:///tmp/remote-registry.git --name test-remote
+      $APM registry add --no-verify file:///tmp/remote-registry.git --name test-remote
 
       # Verify config file was created
       assert_file_exists "$APM_CONFIG/registries.d/test-remote.toml" \
@@ -215,7 +215,7 @@ in {
 
       create_remote_registry /tmp/no-clone-registry.git
 
-      $APM registry add file:///tmp/no-clone-registry.git \
+      $APM registry add --no-verify file:///tmp/no-clone-registry.git \
         --name no-clone-reg --no-clone
 
       assert_file_exists "$APM_CONFIG/registries.d/no-clone-reg.toml" \
@@ -258,7 +258,7 @@ in {
       echo "==> Test: apr remove"
 
       # Add a registry first
-      $APM registry add file:///tmp/fake-remote --name removable-reg
+      $APM registry add --no-verify file:///tmp/fake-remote --name removable-reg
 
       # Verify it exists
       assert_file_exists "$APM_CONFIG/registries.d/removable-reg.toml" \
@@ -1052,7 +1052,7 @@ in {
       export HOME=/tmp/consumer
       export USER=maintconsumer
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/maint-origin.git --name maint-reg --tag 1.0.0
+      $APM registry add --no-verify file:///tmp/maint-origin.git --name maint-reg --tag 1.0.0
       $APM search maint-runner --registry maint-reg > /tmp/consumer-search.out 2>&1
       assert_file_contains /tmp/consumer-search.out "maint-runner" \
         "consumer registry exposes runner package"
@@ -1146,7 +1146,8 @@ in {
       CHANNEL_PUBLIC=$(cut -d ' ' -f2 < /tmp/channel-release-key.pub)
       CHANNEL_TRUST_KEY="chan-reg:Ed25519:$CHANNEL_PUBLIC"
 
-      $APR create chan-reg --trust-key "$CHANNEL_TRUST_KEY"
+      $APR create chan-reg --trust-key "$CHANNEL_TRUST_KEY" \
+        --key /tmp/channel-release-key
       REG_DIR="$REG_STORAGE/chan-reg"
       assert_file_contains "$REG_DIR/keys.toml" "chan-reg:Ed25519" \
         "registry records initial channel trust key"
@@ -2195,12 +2196,36 @@ in {
 
       echo "==> Test: APR committed key roster and local trust store workflow"
 
-      KEY_ROOT="trust-reg:Ed25519:YWJjZA=="
-      KEY_BACKUP="trust-reg:Ed25519:ZWZnaA=="
-      KEY_CANARY="trust-reg:Ed25519:aGlqaA=="
+      # Real keypairs from `apr keys generate` so roster commits can be
+      # signed (required whenever the roster is non-empty).
+      $APR keys generate root --registry trust-reg > /tmp/keys-generate-root.out 2>&1 || {
+        cat /tmp/keys-generate-root.out
+        fail "apr keys generate creates root key"
+      }
+      cat /tmp/keys-generate-root.out
+      KEY_ROOT=$(grep -o 'trust-reg:Ed25519:[A-Za-z0-9+/=]*' /tmp/keys-generate-root.out | head -1)
+      KEY_ROOT_PATH="$HOME/.config/apm/keys/trust-reg-root.key"
+      assert_file_exists "$KEY_ROOT_PATH" "apr keys generate writes private key file"
+
+      $APR keys generate backup --registry trust-reg > /tmp/keys-generate-backup.out 2>&1
+      KEY_BACKUP=$(grep -o 'trust-reg:Ed25519:[A-Za-z0-9+/=]*' /tmp/keys-generate-backup.out | head -1)
+      KEY_BACKUP_PATH="$HOME/.config/apm/keys/trust-reg-backup.key"
+
+      $APR keys generate canary --registry trust-reg > /tmp/keys-generate-canary.out 2>&1
+      KEY_CANARY=$(grep -o 'trust-reg:Ed25519:[A-Za-z0-9+/=]*' /tmp/keys-generate-canary.out | head -1)
+
+      if $APR keys generate root --registry trust-reg \
+        > /tmp/keys-generate-overwrite.out 2>&1; then
+        cat /tmp/keys-generate-overwrite.out
+        fail "apr keys generate should refuse to overwrite an existing key"
+      else
+        pass "apr keys generate refuses to overwrite an existing key"
+      fi
+
       KEY_FOREIGN="other-reg:Ed25519:bWlzbWF0Y2g="
 
-      $APR create trust-reg --trust-key "$KEY_ROOT" --trust-key-id root
+      $APR create trust-reg --trust-key "$KEY_ROOT" --trust-key-id root \
+        --key "$KEY_ROOT_PATH"
       REG_DIR="$REG_STORAGE/trust-reg"
       TRUST_FILE="$HOME/.config/apm/trusted-keys.d/trust-reg.pub"
 
@@ -2221,7 +2246,7 @@ in {
       assert_file_contains /tmp/keys-list-initial.out "revoked: none" \
         "apr keys list reports empty revocation set"
 
-      $APR keys add backup "$KEY_BACKUP" --registry trust-reg \
+      $APR keys add backup "$KEY_BACKUP" --key "$KEY_ROOT_PATH" --registry trust-reg \
         > /tmp/keys-add-backup.out 2>&1 || {
         cat /tmp/keys-add-backup.out
         fail "apr keys add commits backup key"
@@ -2234,7 +2259,7 @@ in {
       assert_file_contains "$REG_DIR/keys.toml" "$KEY_BACKUP" \
         "backup key value is written to keys.toml"
 
-      $APR keys add canary "$KEY_CANARY" --registry trust-reg \
+      $APR keys add canary "$KEY_CANARY" --key "$KEY_ROOT_PATH" --registry trust-reg \
         > /tmp/keys-add-canary.out 2>&1 || {
         cat /tmp/keys-add-canary.out
         fail "apr keys add commits canary key"
@@ -2243,7 +2268,7 @@ in {
       assert_file_contains "$REG_DIR/keys.toml" 'id = "canary"' \
         "canary key is written to keys.toml"
 
-      if $APR keys add foreign "$KEY_FOREIGN" --registry trust-reg \
+      if $APR keys add foreign "$KEY_FOREIGN" --key "$KEY_ROOT_PATH" --registry trust-reg \
         > /tmp/keys-add-foreign.out 2>&1; then
         cat /tmp/keys-add-foreign.out
         fail "apr keys add should reject foreign registry key"
@@ -2268,6 +2293,7 @@ in {
         "retire error explains required vouching key"
 
       $APR keys retire root --vouched-by backup --reason "key rotation" \
+        --key "$KEY_BACKUP_PATH" \
         --registry trust-reg > /tmp/keys-retire-root.out 2>&1 || {
         cat /tmp/keys-retire-root.out
         fail "apr keys retire commits revoked root key"

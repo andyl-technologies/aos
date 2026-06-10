@@ -363,7 +363,7 @@ in {
       export USER=e2euser
       PROFILE="/var/lib/profiles/per-user/$USER"
       mkdir -p "$HOME"
-      run_logged /tmp/e2e-registry-add.out "$APM" registry add file:///tmp/e2e-origin.git \
+      run_logged /tmp/e2e-registry-add.out "$APM" registry add --no-verify file:///tmp/e2e-origin.git \
         --name e2e-reg \
         --branch "$DEFAULT_BRANCH" || {
         fail "apm registry add syncs e2e registry"
@@ -703,7 +703,7 @@ in {
       export HOME=/tmp/fleet-a
       export USER=fleet_a
       mkdir -p "$HOME"
-      run_logged /tmp/fleet-a-add.out "$APM" registry add file:///tmp/fleet-origin.git \
+      run_logged /tmp/fleet-a-add.out "$APM" registry add --no-verify file:///tmp/fleet-origin.git \
         --name fleet-reg \
         --branch "$DEFAULT_BRANCH" || {
         fail "fleet A registry add succeeds"
@@ -718,7 +718,7 @@ in {
       export HOME=/tmp/fleet-b
       export USER=fleet_b
       mkdir -p "$HOME"
-      run_logged /tmp/fleet-b-add.out "$APM" registry add file:///tmp/fleet-origin.git \
+      run_logged /tmp/fleet-b-add.out "$APM" registry add --no-verify file:///tmp/fleet-origin.git \
         --name fleet-reg \
         --branch "$DEFAULT_BRANCH" || {
         fail "fleet B registry add succeeds"

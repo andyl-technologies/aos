@@ -63,6 +63,7 @@
     inherit testing pkgs;
     self = aosPkg;
   };
+  trustAnchorTests = import ./trust_anchor.nix {inherit testing pkgs aosPkg;};
 in
   registryTests
   // registryValidationTests
@@ -76,3 +77,4 @@ in
   // multiRegistryTests
   // rpcTests
   // e2eTests
+  // trustAnchorTests

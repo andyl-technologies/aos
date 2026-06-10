@@ -366,7 +366,7 @@ in {
       # agent doesn't spawn a login shell, so without this every
       # command would see a fresh empty $HOME.
       client.succeed(
-          "HOME=/tmp ${pkgs.aos}/bin/apm registry add git://server:9418/test-reg --name test-reg",
+          "HOME=/tmp ${pkgs.aos}/bin/apm registry add --no-verify git://server:9418/test-reg --name test-reg",
           timeout=120,
       )
       # `apm update` walks `git fetch` + `git archive | tar -x` over

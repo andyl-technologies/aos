@@ -221,6 +221,9 @@ in {
           'url = "file:///var/lib/apm/remote/test-reg"\n'
           "priority = 500\n"
           "enabled = true\n"
+          "\n"
+          "[registry.signing]\n"
+          "required = false\n"
           "EOF\n"
           f"echo {package_toml_b64} | base64 -d > /var/lib/apm/remote/test-reg/packages/a/aos.toml\n"
       )
