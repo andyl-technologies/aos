@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::{Context, Result};
@@ -249,11 +249,17 @@ pub async fn run(
         .unwrap_or_default()
         .as_secs() as i64;
     let now_iso = chrono_iso8601(now);
+    let installed_flags = installed_flags_by_hash(&installed);
 
     for closure in &closures {
         for meta in &closure.closure {
             let hash = store_path_hash(&meta.store_path).to_string();
-            let is_explicit = explicit_names.contains(meta.name.as_str());
+            let existing_flags = installed_flags
+                .get(hash.as_str())
+                .copied()
+                .unwrap_or_default();
+            let is_explicit =
+                explicit_names.contains(meta.name.as_str()) || existing_flags.explicit;
 
             let installed = InstalledMeta {
                 store_path: meta.store_path.clone(),
@@ -269,7 +275,7 @@ pub async fn run(
                     explicit: is_explicit,
                     registry: closure.registry_name.clone(),
                     installed_at: now_iso.clone(),
-                    held: false,
+                    held: existing_flags.held,
                 }),
             };
 
@@ -347,6 +353,28 @@ fn installed_apm_for_hash<'a>(installed: &'a [InstalledMeta], hash: &str) -> Opt
             None
         }
     })
+}
+
+#[derive(Clone, Copy, Default)]
+struct InstalledFlags {
+    explicit: bool,
+    held: bool,
+}
+
+fn installed_flags_by_hash(installed: &[InstalledMeta]) -> HashMap<&str, InstalledFlags> {
+    installed
+        .iter()
+        .filter_map(|meta| {
+            let apm = meta.apm.as_ref()?;
+            Some((
+                store_path_hash(&meta.store_path),
+                InstalledFlags {
+                    explicit: apm.explicit,
+                    held: apm.held,
+                },
+            ))
+        })
+        .collect()
 }
 
 fn prune_dependency_members(closures: &mut [ResolvedClosure]) {
@@ -803,6 +831,18 @@ mod tests {
         }
     }
 
+    fn sample_installed_with_flags(
+        name: &str,
+        version: &str,
+        store_path: &str,
+        explicit: bool,
+        held: bool,
+    ) -> InstalledMeta {
+        let mut meta = sample_installed_with_explicit(name, version, store_path, explicit);
+        meta.apm.as_mut().unwrap().held = held;
+        meta
+    }
+
     fn sample_closure(root: PackageMeta, closure: Vec<PackageMeta>) -> ResolvedClosure {
         ResolvedClosure {
             registry_name: "test-reg".to_string(),
@@ -869,6 +909,22 @@ mod tests {
             &[closure],
             &installed
         ));
+    }
+
+    #[test]
+    fn installed_flags_by_hash_preserves_explicit_and_held_state() {
+        let installed = vec![sample_installed_with_flags(
+            "idempkg",
+            "1.0.0",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-idempkg-1.0.0",
+            true,
+            true,
+        )];
+
+        let flags = installed_flags_by_hash(&installed);
+        let entry = flags.get("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        assert!(entry.explicit);
+        assert!(entry.held);
     }
 
     #[test]
