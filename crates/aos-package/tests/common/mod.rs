@@ -10,7 +10,6 @@ use aos_core::output::Printer;
 use aos_package::registry::channel;
 use aos_package::registry::objectstore;
 use aos_package::types::{RegistryConfig, RegistryState, SigningConfig};
-use base64::Engine as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
@@ -361,18 +360,13 @@ impl SigningFixture {
             .with_context(|| format!("creating {}", signing_dir.display()))?;
 
         let seed = [7u8; 32];
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-        let raw_public_key = signing_key.verifying_key().to_bytes();
-        let public_blob = ssh_ed25519_public_key_blob(&raw_public_key);
-        let public_blob_b64 = base64::engine::general_purpose::STANDARD.encode(public_blob);
+        let keypair = aos_package::sshkey::Ed25519Keypair::from_seed(seed);
+        let public_blob_b64 = keypair.public_key_base64();
         let private_key = signing_dir.join("registry_ed25519");
         let allowed_signers = signing_dir.join("allowed_signers");
 
-        fs::write(
-            &private_key,
-            openssh_ed25519_private_key(&seed, &raw_public_key, registry),
-        )
-        .with_context(|| format!("writing {}", private_key.display()))?;
+        fs::write(&private_key, keypair.to_openssh_private_key(registry))
+            .with_context(|| format!("writing {}", private_key.display()))?;
         restrict_private_key_permissions(&private_key)?;
         fs::write(
             &allowed_signers,
@@ -613,60 +607,6 @@ enabled = {}
         }
     }
     out
-}
-
-fn ssh_ed25519_public_key_blob(public_key: &[u8; 32]) -> Vec<u8> {
-    let mut blob = Vec::new();
-    push_ssh_string(&mut blob, b"ssh-ed25519");
-    push_ssh_string(&mut blob, public_key);
-    blob
-}
-
-fn openssh_ed25519_private_key(seed: &[u8; 32], public_key: &[u8; 32], comment: &str) -> String {
-    let public_blob = ssh_ed25519_public_key_blob(public_key);
-    let mut private_key = Vec::new();
-    private_key.extend_from_slice(seed);
-    private_key.extend_from_slice(public_key);
-
-    let mut private = Vec::new();
-    push_u32(&mut private, 0x1234_5678);
-    push_u32(&mut private, 0x1234_5678);
-    push_ssh_string(&mut private, b"ssh-ed25519");
-    push_ssh_string(&mut private, public_key);
-    push_ssh_string(&mut private, &private_key);
-    push_ssh_string(&mut private, comment.as_bytes());
-    for pad in 1..=(8 - private.len() % 8) {
-        if private.len() % 8 == 0 {
-            break;
-        }
-        private.push(pad as u8);
-    }
-
-    let mut blob = b"openssh-key-v1\0".to_vec();
-    push_ssh_string(&mut blob, b"none");
-    push_ssh_string(&mut blob, b"none");
-    push_ssh_string(&mut blob, b"");
-    push_u32(&mut blob, 1);
-    push_ssh_string(&mut blob, &public_blob);
-    push_ssh_string(&mut blob, &private);
-
-    let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
-    let mut out = "-----BEGIN OPENSSH PRIVATE KEY-----\n".to_string();
-    for chunk in encoded.as_bytes().chunks(70) {
-        out.push_str(std::str::from_utf8(chunk).expect("base64 is UTF-8"));
-        out.push('\n');
-    }
-    out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
-    out
-}
-
-fn push_ssh_string(out: &mut Vec<u8>, value: &[u8]) {
-    push_u32(out, value.len() as u32);
-    out.extend_from_slice(value);
-}
-
-fn push_u32(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_be_bytes());
 }
 
 #[cfg(unix)]

@@ -657,13 +657,13 @@ mod tests {
     fn same_ed25519_key_material_verifies_git_tag_and_narinfo_sig() {
         let registry = "registry";
         let seed = [7_u8; 32];
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed(seed);
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
         let raw_public_key = signing_key.verifying_key().to_bytes();
-        let ssh_public_blob = ssh_ed25519_public_key_blob(&raw_public_key);
-        let ssh_public_b64 = base64::engine::general_purpose::STANDARD.encode(&ssh_public_blob);
+        let ssh_public_b64 = keypair.public_key_base64();
         let nix_public_b64 = base64::engine::general_purpose::STANDARD.encode(raw_public_key);
 
-        let aos_trust_key = format!("{registry}:Ed25519:{ssh_public_b64}");
+        let aos_trust_key = keypair.trust_key_line(registry);
         let nix_trusted_public_key = format!("{registry}:{nix_public_b64}");
         let (parsed_registry, algorithm, parsed_ssh_public_b64) =
             parse_signing_key(&aos_trust_key).unwrap();
@@ -689,11 +689,7 @@ mod tests {
         git(&repo, &["commit", "-m", "init"]);
 
         let private_key_path = temp.path().join("registry_signing_key");
-        fs::write(
-            &private_key_path,
-            openssh_ed25519_private_key(&seed, &raw_public_key, registry),
-        )
-        .unwrap();
+        fs::write(&private_key_path, keypair.to_openssh_private_key(registry)).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -928,18 +924,11 @@ mod tests {
     /// Build a `registry:Ed25519:<base64>` trust key line and write the
     /// matching OpenSSH private key file, returning `(trust_key, key_path)`.
     fn test_keypair(dir: &Path, registry: &str, seed: [u8; 32], name: &str) -> (String, PathBuf) {
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-        let raw_public_key = signing_key.verifying_key().to_bytes();
-        let blob = ssh_ed25519_public_key_blob(&raw_public_key);
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&blob);
-        let trust_key = format!("{registry}:Ed25519:{b64}");
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed(seed);
+        let trust_key = keypair.trust_key_line(registry);
 
         let key_path = dir.join(name);
-        fs::write(
-            &key_path,
-            openssh_ed25519_private_key(&seed, &raw_public_key, registry),
-        )
-        .unwrap();
+        fs::write(&key_path, keypair.to_openssh_private_key(registry)).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -1143,63 +1132,5 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
-    }
-
-    fn ssh_ed25519_public_key_blob(public_key: &[u8; 32]) -> Vec<u8> {
-        let mut blob = Vec::new();
-        push_ssh_string(&mut blob, b"ssh-ed25519");
-        push_ssh_string(&mut blob, public_key);
-        blob
-    }
-
-    fn openssh_ed25519_private_key(
-        seed: &[u8; 32],
-        public_key: &[u8; 32],
-        comment: &str,
-    ) -> String {
-        let public_blob = ssh_ed25519_public_key_blob(public_key);
-        let mut private_key = Vec::new();
-        private_key.extend_from_slice(seed);
-        private_key.extend_from_slice(public_key);
-
-        let mut private = Vec::new();
-        push_u32(&mut private, 0x1234_5678);
-        push_u32(&mut private, 0x1234_5678);
-        push_ssh_string(&mut private, b"ssh-ed25519");
-        push_ssh_string(&mut private, public_key);
-        push_ssh_string(&mut private, &private_key);
-        push_ssh_string(&mut private, comment.as_bytes());
-        for pad in 1..=(8 - private.len() % 8) {
-            if private.len() % 8 == 0 {
-                break;
-            }
-            private.push(pad as u8);
-        }
-
-        let mut blob = b"openssh-key-v1\0".to_vec();
-        push_ssh_string(&mut blob, b"none");
-        push_ssh_string(&mut blob, b"none");
-        push_ssh_string(&mut blob, b"");
-        push_u32(&mut blob, 1);
-        push_ssh_string(&mut blob, &public_blob);
-        push_ssh_string(&mut blob, &private);
-
-        let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
-        let mut out = "-----BEGIN OPENSSH PRIVATE KEY-----\n".to_string();
-        for chunk in encoded.as_bytes().chunks(70) {
-            out.push_str(std::str::from_utf8(chunk).unwrap());
-            out.push('\n');
-        }
-        out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
-        out
-    }
-
-    fn push_ssh_string(out: &mut Vec<u8>, value: &[u8]) {
-        push_u32(out, value.len() as u32);
-        out.extend_from_slice(value);
-    }
-
-    fn push_u32(out: &mut Vec<u8>, value: u32) {
-        out.extend_from_slice(&value.to_be_bytes());
     }
 }

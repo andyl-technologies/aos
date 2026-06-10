@@ -23,9 +23,11 @@ use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::pack;
+use crate::registry::state;
 use crate::registry::static_upload;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
 use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
+use crate::sshkey;
 use crate::types::{CacheEntry, RegistryConfig, RegistryRootConfig};
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -2423,6 +2425,23 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             }
             Ok(())
         }
+        KeysCommand::Generate {
+            id,
+            add,
+            no_commit,
+            signing_key,
+            signing_key_id,
+            registry,
+        } => generate_roster_key(
+            config,
+            id,
+            *add,
+            *no_commit,
+            signing_key.as_deref(),
+            signing_key_id.as_deref(),
+            registry.as_deref(),
+            printer,
+        ),
         KeysCommand::Add {
             id,
             key,
@@ -2516,6 +2535,130 @@ fn load_committed_roster(dir: &Path) -> Result<KeysToml> {
         bail!("registry directory does not exist: {}", dir.display());
     }
     Ok(keys::load_keys_toml(dir)?.unwrap_or_default())
+}
+
+/// `apr keys generate <id>`
+///
+/// Generates an OpenSSH Ed25519 maintainer keypair: the private key is
+/// written under the per-scope config directory (mode `0600`, never
+/// overwriting an existing file), its path is recorded in
+/// `[registry.signing_keys]` so `--key-id <id>` resolves, and the public
+/// half is printed in `registry:Ed25519:<base64>` form. With `--add` the
+/// public key is also appended to the committed `keys.toml` roster via a
+/// signed commit.
+#[allow(clippy::too_many_arguments)]
+fn generate_roster_key(
+    config: &ApmConfig,
+    id: &str,
+    add: bool,
+    no_commit: bool,
+    signing_key: Option<&str>,
+    signing_key_id: Option<&str>,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    validate_roster_key_id(id)?;
+    let registry_name = resolve_registry_name(config, registry)?;
+
+    let keys_dir = config.scope.config_dir().join("keys");
+    {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&keys_dir)
+            .with_context(|| format!("creating key directory {}", keys_dir.display()))?;
+    }
+
+    let key_path = keys_dir.join(format!("{registry_name}-{id}.key"));
+    let keypair = sshkey::Ed25519Keypair::generate();
+    let pem = keypair.to_openssh_private_key(&format!("{registry_name}-{id}"));
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&key_path).with_context(|| {
+            format!(
+                "creating private key file {} (refusing to overwrite an existing key)",
+                key_path.display(),
+            )
+        })?;
+        std::io::Write::write_all(&mut file, pem.as_bytes())
+            .with_context(|| format!("writing {}", key_path.display()))?;
+    }
+
+    let trust_key = keypair.trust_key_line(&registry_name);
+    let key_path_str = key_path.display().to_string();
+
+    // Record the private key path so `--key-id <id>` resolves (§2.6).
+    let config_path = config
+        .scope
+        .config_dir()
+        .join("registries.d")
+        .join(format!("{registry_name}.toml"));
+    if config_path.exists() {
+        state::upsert_signing_key(&config_path, id, &key_path_str)?;
+        printer.kv("Config", &config_path.display().to_string());
+    } else {
+        printer.warning(&format!(
+            "registry '{registry_name}' has no config at {}; to use --key-id {id}, add:\n\
+             [registry.signing_keys]\n\"{id}\" = \"{key_path_str}\"",
+            config_path.display(),
+        ));
+    }
+
+    printer.kv("Key id", id);
+    printer.kv("Private key", &key_path_str);
+    printer.kv("Public key", &trust_key);
+    printer.kv(
+        "Fingerprint",
+        &key_fingerprint(&keypair.public_key_base64()),
+    );
+
+    if add {
+        let dir = config.scope.registries_path().join(&registry_name);
+        let mut roster = load_committed_roster(&dir)?;
+        if roster.active.is_empty() {
+            bail!(
+                "registry '{registry_name}' has an empty trust roster; seed the first key with \
+                 `apr create {registry_name} --trust-key {trust_key} --key {key_path_str}` instead \
+                 of --add"
+            );
+        }
+        let commit_key = if no_commit {
+            None
+        } else {
+            resolve_roster_commit_key(
+                config,
+                &dir,
+                &registry_name,
+                &roster,
+                signing_key,
+                signing_key_id,
+            )?
+        };
+        add_roster_key(&mut roster, &registry_name, id, &trust_key)?;
+        persist_committed_roster(
+            &dir,
+            &roster,
+            no_commit,
+            &format!("registry: add signing key {id}"),
+            commit_key.as_deref(),
+        )?;
+        printer.success(&format!(
+            "Added active signing key '{id}' to registry '{registry_name}'."
+        ));
+    }
+
+    Ok(())
 }
 
 fn persist_committed_roster(
@@ -3836,7 +3979,6 @@ mod tests {
     use super::*;
     use crate::security::verify_tag_signature;
     use crate::types::{ApmSettings, ProfileScope, RegistryConfig, RegistryUploadAuthConfig};
-    use base64::Engine as _;
     use std::fs;
     use tempfile::TempDir;
 
@@ -4196,81 +4338,16 @@ mod tests {
         fs::create_dir_all(&signing_dir).unwrap();
 
         let seed = [9u8; 32];
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-        let raw_public_key = signing_key.verifying_key().to_bytes();
-        let public_blob = ssh_ed25519_public_key_blob(&raw_public_key);
-        let public_blob_b64 = base64::engine::general_purpose::STANDARD.encode(public_blob);
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed(seed);
         let private_key = signing_dir.join("registry_ed25519");
 
-        fs::write(
-            &private_key,
-            openssh_ed25519_private_key(&seed, &raw_public_key, registry),
-        )
-        .unwrap();
+        fs::write(&private_key, keypair.to_openssh_private_key(registry)).unwrap();
         restrict_private_key_permissions(&private_key).unwrap();
 
         TestSigningFixture {
-            trusted_key: format!("{registry}:Ed25519:{public_blob_b64}"),
+            trusted_key: keypair.trust_key_line(registry),
             private_key,
         }
-    }
-
-    fn ssh_ed25519_public_key_blob(public_key: &[u8; 32]) -> Vec<u8> {
-        let mut blob = Vec::new();
-        push_ssh_string(&mut blob, b"ssh-ed25519");
-        push_ssh_string(&mut blob, public_key);
-        blob
-    }
-
-    fn openssh_ed25519_private_key(
-        seed: &[u8; 32],
-        public_key: &[u8; 32],
-        comment: &str,
-    ) -> String {
-        let public_blob = ssh_ed25519_public_key_blob(public_key);
-        let mut private_key = Vec::new();
-        private_key.extend_from_slice(seed);
-        private_key.extend_from_slice(public_key);
-
-        let mut private = Vec::new();
-        push_u32(&mut private, 0x1234_5678);
-        push_u32(&mut private, 0x1234_5678);
-        push_ssh_string(&mut private, b"ssh-ed25519");
-        push_ssh_string(&mut private, public_key);
-        push_ssh_string(&mut private, &private_key);
-        push_ssh_string(&mut private, comment.as_bytes());
-        for pad in 1..=(8 - private.len() % 8) {
-            if private.len() % 8 == 0 {
-                break;
-            }
-            private.push(pad as u8);
-        }
-
-        let mut blob = b"openssh-key-v1\0".to_vec();
-        push_ssh_string(&mut blob, b"none");
-        push_ssh_string(&mut blob, b"none");
-        push_ssh_string(&mut blob, b"");
-        push_u32(&mut blob, 1);
-        push_ssh_string(&mut blob, &public_blob);
-        push_ssh_string(&mut blob, &private);
-
-        let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
-        let mut out = "-----BEGIN OPENSSH PRIVATE KEY-----\n".to_string();
-        for chunk in encoded.as_bytes().chunks(70) {
-            out.push_str(std::str::from_utf8(chunk).unwrap());
-            out.push('\n');
-        }
-        out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
-        out
-    }
-
-    fn push_ssh_string(out: &mut Vec<u8>, value: &[u8]) {
-        push_u32(out, value.len() as u32);
-        out.extend_from_slice(value);
-    }
-
-    fn push_u32(out: &mut Vec<u8>, value: u32) {
-        out.extend_from_slice(&value.to_be_bytes());
     }
 
     #[cfg(unix)]
