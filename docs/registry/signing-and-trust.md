@@ -1,8 +1,10 @@
 # Signing & Trust
 
-> **Status:** TARGET reference. Grounded in
+> **Status:** Reference. Grounded in
 > [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md) §11 and §5
-> (the authoritative target intent). Where this doc cites current code, the code wins
+> and the **Registry PKI v1** work (multi-maintainer signing keys, the baked image
+> trust anchor, and in-band roster distribution), which is now **implemented** — see
+> §2.5–§2.7 and the §9 status table. Where this doc cites current code, the code wins
 > for *current state*; the brief wins for *target intent*.
 >
 > **Audience:** implementers, architects, engineers.
@@ -61,13 +63,12 @@ instead of relying on signed commits for release authority.
 
 A signing key is a single line, `registry:algorithm:base64key`, parsed by
 `parse_signing_key` in
-[`crates/aos-package/src/security.rs:306`](../../crates/aos-package/src/security.rs).
+[`crates/aos-package/src/security.rs:575`](../../crates/aos-package/src/security.rs).
 The parser is strict:
 
-- splits on `:` into exactly three fields (`security.rs:307`);
-- rejects an empty registry name (`security.rs:318`) or empty key (`security.rs:321`);
-- **rejects any algorithm other than `Ed25519`** (`security.rs:324`) — the only
-  supported algorithm today and in the target.
+- splits on `:` into exactly three fields;
+- rejects an empty registry name or empty key;
+- **rejects any algorithm other than `Ed25519`** — the only supported algorithm.
 
 ```
 aos-core:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI...base64...
@@ -76,7 +77,17 @@ registry  algo            base64 public key
 ```
 
 The short display **fingerprint** is the first 8 hex chars of the SHA-256 of the
-decoded key bytes (`key_fingerprint`, `security.rs:338`).
+decoded key bytes (`key_fingerprint`, `security.rs:603`).
+
+Maintainers generate keys with **`apr keys generate <id>`** rather than calling
+`ssh-keygen`: it builds an Ed25519 keypair in-process via the hermetic `sshkey`
+module ([`crates/aos-package/src/sshkey.rs`](../../crates/aos-package/src/sshkey.rs),
+`Ed25519Keypair::generate`), writes the OpenSSH private key to
+`$XDG_CONFIG_HOME/apm/keys/<registry>-<id>.key` (mode `0600`, dir `0700`, refusing
+to overwrite), records the path in `[registry.signing_keys]` so `--key-id <id>`
+resolves it, and prints the public key in `registry:Ed25519:<base64>` form plus its
+fingerprint. The private key never leaves the maintainer's machine. See §7.1 of
+the PKI design and [`publishing.md`](publishing.md).
 
 ### 2.2 SSH-format Ed25519 git signatures
 
@@ -107,123 +118,152 @@ Because registry repositories use Git's sha256 object format, clients need
 `git --version` and probing `git init --bare --object-format=sha256`; stock
 `git verify-tag` / `git clone` users need the same floor.
 
-### 2.3 Verification — `git verify-*` + a temporary `allowed_signers`
+### 2.3 Verification — `git verify-*` against a **key set**
 
-Commit signature verification is `verify_commit_signature` in
-[`security.rs:199`](../../crates/aos-package/src/security.rs). It:
+Verification takes a **non-empty set of trusted keys**, not a single key — this is
+what lets any of several overlapping maintainer keys (the `keys.toml` roster, §2.5)
+satisfy the chain. Both
+`verify_commit_signature`
+([`security.rs:455`](../../crates/aos-package/src/security.rs)) and
+`verify_tag_signature` ([`security.rs:490`](../../crates/aos-package/src/security.rs))
+take `trusted_keys: &[String]` (each in `registry:Ed25519:<base64>` form). They:
 
-1. parses the expected key (`security.rs:204`);
-2. writes a temporary allowed-signers file of the form
-   `registry ssh-ed25519 <base64>` (`security.rs:208`);
-3. runs `git -c gpg.ssh.allowedSignersFile=<tmp> verify-commit <commit>`
-   (`security.rs:217`) and returns `Ok(true)` iff the process exits zero
-   (`security.rs:232`).
+1. write a temporary allowed-signers file with **one line per trusted key**
+   (`write_allowed_signers`, `security.rs:424`), each of the form
+   `registry ssh-ed25519 <base64>`;
+2. run `git -c gpg.ssh.allowedSignersFile=<tmp> verify-commit <commit>` /
+   `verify-tag <tag>` and return `Ok(true)` iff the process exits zero — i.e. the
+   signature matches **any** listed key.
 
-Tag-object verification is `verify_tag_signature` in
-[`security.rs:273`](../../crates/aos-package/src/security.rs). It runs
-`git -c gpg.ssh.allowedSignersFile=<tmp> verify-tag <tag>` with the same
-allowed-signers mechanism, the same Ed25519 key, and the same temp-file pattern.
-The principal in the allowed-signers line is the literal token `registry`, not
-the registry's name. Stock git users run `git verify-tag` themselves with the
-trusted key in their own allowed-signers file.
+An **empty key set is a hard error, never a pass** (`write_allowed_signers`,
+`security.rs:424`). A signature is therefore valid iff it was made by a key the
+caller currently trusts; because the caller supplies only the post-pin trusted set
+(§2.6), signatures by a revoked key **fail closed**. The principal in each
+allowed-signers line is the literal token `registry`, not the registry's name.
+Stock git users run `git verify-tag` themselves with the trusted key in their own
+allowed-signers file.
 
-### 2.4 Trust store — TOFU + `trusted-keys.d`
+### 2.4 Trust store — `trusted-keys.d` (writable pins + read-only anchor)
 
-Trusted keys live on disk as `<registry>.pub` files inside a search path of
-directories, managed by `KeyStore` ([`security.rs:52`](../../crates/aos-package/src/security.rs)):
+Trusted keys live on disk as `<registry>.pub` files inside a **search path** of
+directories, managed by `KeyStore`
+([`security.rs:74`](../../crates/aos-package/src/security.rs)). The **first**
+directory in the path is the **writable** store (where roster pins and `apr trust`
+land); the rest are **read-only**, including the image-baked anchor (§2.6). The
+path depends on the profile scope (`ProfileScope::trusted_keys_dirs`,
+[`types.rs:665`](../../crates/aos-package/src/types.rs)):
 
-- `lookup` reads `<dir>/<registry>.pub`, parses the `name:Ed25519:<base64>` line, and
-  tags the first directory as the writable TOFU store, the rest as
-  `PreInstalled` (`security.rs:70`).
-- `store` persists a TOFU-accepted key to the first (writable) directory
-  (`security.rs:97`), writing the canonical `registry:algorithm:public_key` line
-  (`security.rs:107`).
-- Pre-installed keys ship in `/etc/apm/trusted-keys.d/` (`KeySource::PreInstalled`,
-  `security.rs:23`).
+- **User scope:** `$XDG_CONFIG_HOME/apm/trusted-keys.d` (writable), then
+  `/etc/apm/trusted-keys.d` (read-only anchor).
+- **System scope:** `/etc/apm/trusted-keys.d` (writable), then
+  `/var/lib/apm/trusted-keys.d` (read-only).
 
-`apr trust` is the supported local trust-store CLI:
+The `/etc/apm` root is the value of `APM_SYSTEM_CONFIG_DIR` (§2.7), so both scopes
+can be redirected for development on non-AOS hosts.
+
+`KeyStore` reads keys with:
+
+- `lookup_all` ([`security.rs:103`](../../crates/aos-package/src/security.rs)) —
+  returns **every** key for a registry across **all** directories (the multi-line
+  rotation-overlap format), applying the `# revoked:` exclusions described below.
+- `lookup` (`security.rs:88`) — the first key only.
+- `store` (`security.rs:159`) — persists a key to the writable directory, writing
+  the canonical `registry:Ed25519:<base64>` line.
+- `sync_registry_keys` (`security.rs:225`) — rewrites the writable store to match a
+  freshly-verified roster (used by roster pinning, §2.6).
+
+`apr trust` is the supported manual trust-store CLI:
 
 - `apr trust pin <registry> <registry:Ed25519:<base64>>` writes the key to the
   writable `trusted-keys.d` directory. Re-running `pin` with a distinct key
   appends it, which supports overlap during key rotation.
 - `apr trust pin <registry> <key> --replace` removes existing local pins first,
-  which is the explicit out-of-band re-pin path for compromised-key recovery.
+  the explicit out-of-band re-pin path for compromised-key recovery.
 - `apr trust list [registry]` prints pinned keys and fingerprints.
 - `apr trust remove <registry>` (alias: `unpin`) removes local pinned keys.
 
-**Trust-On-First-Use** is `tofu_check` ([`security.rs:159`](../../crates/aos-package/src/security.rs)),
-which returns one of three decisions:
+**Masking read-only anchor keys (`# revoked:`).** Keys in read-only directories
+(notably the image-baked `/etc/apm/trusted-keys.d` anchor) are **never modified**
+by sync. To stop trusting a key that still appears in a read-only anchor file, the
+writable store records a `# revoked: <key>` comment line; `lookup_all`
+(`security.rs:103`) filters any key matching such a line out of its result
+(`parse_revoked_line`, `security.rs:350`; `REVOKED_LINE_PREFIX`, `security.rs:59`).
+Files with no such comment are parsed exactly as before, so the format is
+backward-compatible.
 
-| Decision | Meaning | Action |
-|---|---|---|
-| `AlreadyTrusted` | received key == stored key (`security.rs:179`) | proceed |
-| `NewKey { needs_confirmation }` | no key on file (`security.rs:175`) | prompt the user, then `store` |
-| `KeyMismatch { stored, received }` | a *different* key is already trusted (`security.rs:182`) | **reject** — possible key substitution |
+**No silent Trust-On-First-Use during sync.** A `tofu_check`
+([`security.rs:382`](../../crates/aos-package/src/security.rs)) primitive still
+exists (and is exercised by tests), but the registry **sync path no longer accepts
+a key on first use**: if signing is enforced and the assembled trusted set is empty,
+`sync_git` **aborts** with an instruction to pin a key or configure an anchor
+(§2.6). Bootstrap trust must arrive out-of-band — the image-baked anchor (§2.6), an
+explicit `apr trust pin`, or the `[registry.signing] public_key` config anchor —
+never from blindly trusting whatever the first sync returns.
 
-This store and TOFU flow is **unchanged** in the target. The same `<registry>.pub`
-key that anchors release/channels tag verification is the key used everywhere below.
+### 2.5 The trust roster — `keys.toml` (consumed by clients)
 
-### 2.5 The trust roster — `keys.toml` (TARGET)
-
-Bootstrap trust is **client-side**: the `<registry>.pub` pinned in `trusted-keys.d`
-via TOFU (§2.4) is the anchor and the **only** thing that is true before any object is
-fetched. The signing pubkey is therefore **removed** from the committed
-`registry.toml` — a key stored inside a file that is authenticated *by* that key is
-circular for bootstrap (it can attest to nothing the consumer doesn't already have to
-trust out of band). See [`repo-layout.md`](repo-layout.md) §2 for the
-`registry.toml` shape (which now carries only `[registry]` + `[[caches]]`).
-
-Instead the registry publishes a **`keys.toml` trust roster** — a committed tree file
-listing the **active signing key(s)** and a **revoked list**, authenticated like every
-other tree file by the signed tag (tag → commit → tree → file). It does **not**
-bootstrap trust; it *evolves* a trust the consumer already holds. The on-disk shape and
-fields live in [`repo-layout.md`](repo-layout.md) §3.
+The committed **`keys.toml` trust roster** is the **authoritative trusted-key set**.
+It is a committed tree file listing the **active signing key(s)** and a **revoked
+list**, authenticated like every other tree file by the signed tag
+(tag → commit → tree → file). Clients now **read it during sync** and pin its active
+set (§2.6) — a release or channel tag is valid when signed by **any active roster
+key** (§2.3). The signing pubkey is **removed** from the committed `registry.toml` —
+a key stored inside a file that is authenticated *by* that key is circular for
+bootstrap. The on-disk shape and fields live in
+[`repo-layout.md`](repo-layout.md) §3.
 
 ```
-  trusted-keys.d/<registry>.pub          keys.toml (in the committed tree)
+  baked anchor (out of band, §2.6)       keys.toml (in the committed tree)
   ┌──────────────────────────┐           ┌─────────────────────────────────┐
-  │ TOFU-pinned ANCHOR (§2.4) │           │ active keys + revoked list      │
-  │ client-side, out of band  │ ──verify──▶ authenticated by the signed tag │
+  │ /etc/apm/trusted-keys.d   │           │ active keys + revoked list      │
+  │ (image) or `apr trust pin`│ ──verify──▶ authenticated by the signed tag │
   │ THE bootstrap root        │  the tag  │ (tag → commit → tree → file)    │
   └──────────────────────────┘           └─────────────────────────────────┘
         trust starts here                  trust EVOLVES here (rotate/revoke)
 ```
 
-**Rotation (overlap window).** To roll the signing key forward, publish a `keys.toml`
-that lists **both** the old and the new key in a tag **signed by the currently-trusted
-key**. A consumer that already trusts the old key verifies that tag, reads `keys.toml`,
-and **pins the new key** (updating its TOFU store). A later release can then drop the
-old key from the roster and sign with the new key alone. The overlap window is what
-makes the handoff seamless: no consumer is ever asked to trust a key it cannot reach
-through a key it already trusts.
-
-Producer maintenance for the committed roster is available through `apr keys`:
-`apr keys add <id> <registry:Ed25519:<base64>>` appends an active overlap key,
-`apr keys retire <id> [--vouched-by <survivor-id>] [--reason <text>]` moves an
-active id to `[[revoked]]`, and `apr keys list` reports active/revoked ids. The
-commands validate key ids and registry binding, reject duplicate/revoked ids,
-keep an active survivor during retirement, and commit + refresh the git-static
-indexes unless `--no-commit` is passed.
-Release and channel signing can select a committed active roster id with
-`--key-id <id>`. The selected id must exist in `keys.toml`, must not be revoked,
-must belong to the selected registry, and must have a local private-key path in
-`[registry.signing_keys]`; direct `--key <private-key-path>` remains available
-for one-off signing.
-
 **The trust model: ≥2 overlapping active keys.** There is no offline-root /
 operational two-tier and no TUF-style root role. The **git lineage** (signed tag →
-commit → parent chain) provides continuity, so a separate root tier is unnecessary.
-`keys.toml` lists the **active signing key(s)** — `id` + `key`, with **no role field**
-and **no `root` entry** — plus a **revoked** list. Two cases:
+commit → parent chain), plus the continuity rule of §2.6, provides the continuity, so
+a separate root tier is unnecessary. `keys.toml` lists the **active signing key(s)** —
+`id` + `key`, with **no role field** and **no `root` entry** — plus a **revoked** list.
 
-- **Planned retirement (in-repo).** To retire a key on purpose, list it under the
-  roster's revoked entries in a `keys.toml` **signed by one of the *other* overlapping
-  active keys** — a key cannot credibly revoke itself, so retirement always rides on a
-  second still-trusted active key.
-- **Compromise (out-of-band).** A compromised key is handled **out of band**: the
-  consumer **re-pins** via `trusted-keys.d` (`apr trust`). An in-repo key cannot
-  credibly revoke itself, and compromise is rare enough that the out-of-band re-pin is
-  acceptable rather than maintaining a dedicated offline root.
+**Rotation (overlap window).** To roll a signing key forward, publish a `keys.toml`
+that lists **both** the old and the new key, in a commit **signed by a currently-
+trusted key**. A client that already trusts the old key verifies that commit, reads
+`keys.toml`, and **pins the new key** (§2.6). A later release can then drop the old
+key from the roster and sign with the new key alone. The overlap window makes the
+handoff seamless: no client is ever asked to trust a key it cannot reach through a
+key it already trusts.
+
+**Planned retirement.** `apr keys retire <id> [--vouched-by <survivor-id>]` moves a
+key to `[[revoked]]` in a commit **signed by one of the *other* overlapping active
+keys** — a key cannot credibly revoke itself, so retirement always rides on a second
+still-trusted active key. Because signatures by a revoked key are invalid (§2.3),
+`retire` also **re-signs** the channel partition tags and the release tags they
+reference whose only valid signer was the retired key, using the vouching key
+(§2.6); `--no-resign` skips this and prints the affected tag list instead. The
+revocation propagates to clients on their **next sync**, not a package upgrade.
+
+**Compromise.** Revocation is the same `apr keys retire` operation with `--reason`.
+For local recovery — e.g. if a client must drop a key that still appears in a
+**read-only** baked anchor — the operator **re-pins** the writable store with
+`apr trust pin --replace`, and the `# revoked:` masking (§2.4) excludes the bad key
+even though the read-only anchor file is untouched.
+
+Producer maintenance for the committed roster is `apr keys`:
+`apr keys generate <id>` mints a keypair (§2.2), `apr keys add <id> <key>` appends an
+active overlap key, `apr keys retire <id> …` revokes one, and `apr keys list` reports
+active/revoked ids. `add` and `retire` modify `keys.toml`, so they require
+`--key-id`/`--key` and produce a **signed** commit (an unsigned roster commit is
+rejected by clients at §2.6); the only exception is the very first key of an empty
+roster, seeded by `apr registry create --trust-key`. The commands validate key ids and
+registry binding, reject duplicate/revoked ids, keep an active survivor during
+retirement, and commit + refresh the git-static indexes unless `--no-commit` is
+passed. Release and channel signing select a committed active roster id with
+`--key-id <id>` (must exist, not be revoked, belong to the registry, and have a local
+private-key path in `[registry.signing_keys]`); direct `--key <private-key-path>`
+remains available for one-off signing.
 
 This is **decided** — see [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md)
 §14 (and that the roster is a standalone `keys.toml`, not a `[keys]` block in
@@ -236,6 +276,77 @@ This is **decided** — see [`../plans/registry/design-brief.md`](../plans/regis
 > mismatch and a rejected fetch, not a compromised closure. See
 > [`repo-layout.md`](repo-layout.md) §3 and
 > [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
+
+### 2.6 Roster consumption during sync — continuity enforcement + the baked anchor
+
+`sync_git` ([`registry/git.rs:85`](../../crates/aos-package/src/registry/git.rs))
+consumes the roster on every sync. Signing is **enforced by default**: an absent
+`[registry.signing]` section verifies (`signing_enforced`, `git.rs:299`); only
+`required = false` opts out. The steps, in order:
+
+1. **Assemble the prior trusted set `T`** (`assemble_trusted_set`, `git.rs:314`):
+   every key from `KeyStore::lookup_all(registry)` (all dirs, `# revoked:`
+   exclusions applied). Only when that is **empty** is the `[registry.signing]
+   public_key` config entry consulted as a **bootstrap anchor**. (Unioning it
+   unconditionally would keep a revoked config key trusted forever.)
+2. **Fail closed on no anchor.** If signing is enforced and `T` is empty, abort with
+   an instruction to `apr trust pin` or configure an anchor — there is no silent TOFU.
+3. **Fetch** refs and resolve the new head commit.
+4. **Verify the new head commit** against `T` (any-active-key, §2.3;
+   `verify_head_commit`, `git.rs:329`). Failure aborts; the previously synced state
+   stays in use.
+5. **Enforce fast-forward** from the recorded previous head (existing anti-rollback).
+6. **Load + validate the roster** at the verified head (`apply_roster`, `git.rs:358`):
+   schema is 1, `active` is non-empty, keys parse and their embedded registry name
+   matches. A missing/empty roster under enforcement is a misconfigured registry, not
+   a pass.
+7. **Pin the roster** (`pin_rotated_keys`,
+   [`registry/keys.rs:134`](../../crates/aos-package/src/registry/keys.rs)): write all
+   active keys into the **writable** `trusted-keys.d`, drop pins absent from the new
+   active set, and mask any now-revoked key still present in a **read-only** anchor via
+   a `# revoked:` line (§2.4).
+8. **Re-verify the channel/release tag chain** (§3) against the **post-pin** trusted
+   set, so a roster change takes effect within the same sync.
+
+**Continuity** is the conjunction of steps 4 and 5: a roster change is accepted only
+when it extends the history the client already verified **and** is signed by a key the
+client already trusted — even if the new active set is entirely disjoint from `T`,
+because the *introducing* commit was signed by a key in `T`. A replayed older history
+fails step 5; a forged roster fails step 4.
+
+**The baked image anchor.** First contact is verified out of the box because the
+out-of-band anchor is **baked into the AOS image**. The module
+[`modules/base/apm-registries.nix`](../../modules/base/apm-registries.nix) defines
+`aos.apm.registries.<name>` with `url`, a non-empty `trustKeys` list, `required`
+(default `true`), and `priority`. For each entry it emits two `environment.etc`
+files:
+
+- `/etc/apm/registries.d/<name>.toml` — the registry config, with
+  `[registry.signing]` `required` and `public_key` set to the **first** `trustKeys`
+  entry (the bootstrap anchor of step 1);
+- `/etc/apm/trusted-keys.d/<name>.pub` — **all** `trustKeys`, one per line (the
+  read-only anchor file `lookup_all` reads, supporting rotation overlap).
+
+An eval-time assertion requires every `trustKeys` entry to parse as
+`<name>:Ed25519:<base64>` with the prefix equal to the attribute name. Updating the
+baked anchor is an ordinary image rebuild; **day-to-day rotation reaches deployed
+machines in-band (steps 1–8) without an image change**. `apm registry add --no-verify`
+is the inverse for local development: it writes `[registry.signing] required = false`
+so an unsigned/dev registry syncs without an anchor.
+
+### 2.7 `APM_SYSTEM_CONFIG_DIR`
+
+The system config root defaults to `/etc/apm` but honors the
+`APM_SYSTEM_CONFIG_DIR` environment variable when it is set to a **non-empty
+absolute path** (`resolve_system_config_dir`,
+[`types.rs:31`](../../crates/aos-package/src/types.rs); resolved once per process and
+cached, `apm_system_config_dir`, `types.rs:52`). Relative or empty values are
+ignored so a stray `APM_SYSTEM_CONFIG_DIR=` cannot redirect trust to an unexpected
+place. It affects **every** derived system path — `registries.d`, `trusted-keys.d`,
+and the rest — in **both** profile scopes, and is the supported way to point
+`apm`/`apr` at a writable fixture tree when developing on NixOS or macOS. User-scope
+paths continue to honor `XDG_CONFIG_HOME`. The variable is documented in the
+`apm`/`apr` `--help` output.
 
 ---
 
@@ -261,8 +372,8 @@ deterministically-selected channel partition (see
 Each hop performs **two** checks; both must pass:
 
 1. **Signature check** — the tag object's SSH-format Ed25519 signature verifies
-   against the trusted `<registry>.pub` key (the `git verify-tag` /
-   `allowed_signers` mechanism of §2.3).
+   against **any key in the trusted set** (the post-pin roster set, §2.6) via the
+   `git verify-tag` / `allowed_signers` mechanism of §2.3.
 2. **Name-binding check** — the **embedded tag-name field** inside the tag object
    equals the **expected name for its serving path**:
    - under `/channels/<name>/<00..ff>`, every one of the 256 partition tags must have an
@@ -288,17 +399,17 @@ This prevents **cross-serving** of one signed object as another.
 
 ```
 fn verify_channel(registry, channel, bucket) -> Result<Semver> {
-    key   = key_store.lookup(registry)?            // trusted <registry>.pub  (§2.4)
+    keys  = assemble_trusted_set(registry)?        // post-pin roster set  (§2.6)
 
     # hop 1: the channel partition tag
     ptag  = fetch("/channels/{channel}/{bucket}")   # signed tag object
-    require verify_tag_signature(ptag, key)        # §2.3
+    require verify_tag_signature(ptag, keys)       # §2.3 (any active key)
     require ptag.embedded_tag_name == channel      # NAME-BINDING (channel)
     semver = ptag.target_semver                    # tag → tag
 
     # hop 2: the release (semver) tag
     rtag  = fetch_tag("refs/tags/{semver}")        # signed tag object
-    require verify_tag_signature(rtag, key)        # §2.3
+    require verify_tag_signature(rtag, keys)       # §2.3 (any active key)
     require rtag.embedded_tag_name == semver       # NAME-BINDING (semver)
     commit = rtag.target_commit                    # tag → commit
 
@@ -441,8 +552,8 @@ These are **separate signature objects** (a git SSH-format tag signature vs. a N
 narinfo `Sig:` line) produced by the **same** key material. A consumer that already
 trusts `<registry>.pub` for git tag verification can verify NAR substitution from the
 same origin without provisioning a second key. The key-management surface
-(TOFU, `trusted-keys.d`, fingerprinting) is shared; only the verification *call site*
-differs (git tag vs. narinfo).
+(`trusted-keys.d` anchoring/pinning, the `keys.toml` roster, fingerprinting) is
+shared; only the verification *call site* differs (git tag vs. narinfo).
 
 The public-key encodings are format-specific projections of that same key: git
 verification stores an SSH `ssh-ed25519` public-key blob in the
@@ -456,9 +567,9 @@ bytes.
 
 | Concern | Mechanism | Authority? |
 |---|---|---|
-| Is this the registry's key? | TOFU + `trusted-keys.d/<registry>.pub` (`security.rs` `KeyStore`/`tofu_check`) | root of trust |
-| How do keys rotate / get revoked? | committed `keys.toml` trust roster (§2.5), signed by an already-trusted (non-revoked) key | yes — evolves an anchored trust |
-| Is this tag genuinely signed? | `git verify-tag` + temp `allowed_signers` (Ed25519) | yes |
+| Is this the registry's bootstrap key? | image-baked anchor in `/etc/apm/trusted-keys.d` (`aos.apm.registries`) or `apr trust pin` / `[registry.signing] public_key` — no silent TOFU (§2.4, §2.6) | root of trust |
+| How do keys rotate / get revoked? | committed `keys.toml` trust roster (§2.5), consumed in-band under continuity enforcement (§2.6) | yes — evolves an anchored trust |
+| Is this tag genuinely signed? | `git verify-tag` + temp `allowed_signers` against the **trusted set** (any active key, §2.3) | yes |
 | Is this tag at the *right* path? | embedded tag-name == expected path name (channel / semver) | yes — closes cross-serving |
 | Which release does my bucket get? | signed `/channels/<name>/<bucket>` partition tag (hop 1) | yes |
 | Which commit is that release? | signed `refs/tags/<semver>` release tag (hop 2) | yes |
@@ -489,19 +600,23 @@ ways:
 
 ## 9. Implementation status
 
-| Capability | CURRENT (code today) | TARGET |
-|---|---|---|
-| Key format `name:Ed25519:<base64>` | `parse_signing_key` (`security.rs:306`) | unchanged |
-| Trust store TOFU + `trusted-keys.d` | `KeyStore` / `tofu_check` (`security.rs:52`,`:159`) plus `apr trust pin/list/remove` | unchanged (the bootstrap anchor) |
-| Signing pubkey location | removed from in-repo `registry.toml`; bootstrap trust is client-side TOFU | trust = `keys.toml` roster + TOFU |
-| Key rotation / revocation | `apr create` emits schema-1 `keys.toml`; `apr keys list/add/retire` maintains active and revoked roster entries with survivor checks; parser plus rotation-pin/revocation helpers exist | committed `keys.toml` roster (≥2 overlapping active keys): overlap rotation; planned retirement via a 2nd overlapping key; compromise = out-of-band re-pin (§2.5) |
-| Signature *production* | `apr tag` / `apr sign <tag>` create signed release tag objects; `apr channel init/advance` writes signed channel partition tag files; all accept direct `--key` or roster-backed `--key-id` | implemented |
-| Tag creation | `apr tag` runs `git tag -s`; `apr channel` creates raw signed partition tag files | implemented |
-| Signature *verification* | channel sync verifies the partition tag, semver tag, and commit chain | `git verify-tag` (same allowed-signers mechanism) |
-| What is signed | **`tag → tag → commit`** chain (partition + release tags) | implemented |
-| Name-binding | embedded tag-name == expected path name (channel / semver) | implemented |
-| Anti-rollback | semver monotonic floor + fix-forward | implemented |
-| Nix narinfo `Sig:` | `NarInfoSigner` signs static narinfos during cache generation; tests cover the same-key projection from git SSH tag signing to Nix narinfo signing | reuse the one Ed25519 key |
+| Capability | Status (code today) |
+|---|---|
+| Key format `name:Ed25519:<base64>` | `parse_signing_key` (`security.rs:575`) |
+| Key generation | `apr keys generate` mints OpenSSH Ed25519 keys via the hermetic `sshkey` module — no `ssh-keygen` shellout (`registry_ops.rs:2922`, `sshkey.rs`) |
+| Trust store | `KeyStore` writable-pin + read-only-anchor search path with `# revoked:` masking (`security.rs:74`, `lookup_all` `:103`), plus `apr trust pin/list/remove` |
+| Bootstrap anchor | image-baked `aos.apm.registries` → `/etc/apm/{registries.d,trusted-keys.d}` (`modules/base/apm-registries.nix`); or `apr trust pin`; or `[registry.signing] public_key` when the store is empty. **No silent TOFU during sync** |
+| Any-active-key verification | `verify_commit_signature`/`verify_tag_signature` take `trusted_keys: &[String]`; empty set is an error (`security.rs:455`,`:490`,`write_allowed_signers` `:424`) |
+| Roster consumption (client) | `sync_git` assembles `T`, verifies the head commit, fast-forwards, validates + pins the roster, masks revoked anchor keys, re-verifies the chain post-pin (`registry/git.rs:85`,`:314`,`:329`,`:358`; `pin_rotated_keys` `registry/keys.rs:134`) |
+| Strict-by-default signing | absent `[registry.signing]` enforces verification; `required = false` (or `apm registry add --no-verify`) is the only opt-out (`signing_enforced` `git.rs:299`) |
+| Key rotation / revocation | `apr keys add/retire` with survivor + vouching checks; retirement re-signs affected channel/release tags via the vouching key (`--no-resign` to skip) (`registry_ops.rs:2551`,`2742`,`2815`) |
+| Signed roster commits | `apr keys add/retire` require `--key`/`--key-id` and produce signed `keys.toml` commits (`resolve_roster_commit_key` `registry_ops.rs:3059`) |
+| Signature *production* | `apr tag` / `apr sign <tag>` create signed release tag objects; `apr channel init/advance` writes signed partition tag files; all accept `--key` or roster-backed `--key-id` |
+| What is signed | **`tag → tag → commit`** chain (partition + release tags), plus signed `keys.toml` commits |
+| Name-binding | embedded tag-name == expected path name (channel / semver) |
+| Anti-rollback | semver monotonic floor + fix-forward |
+| Dev config root | `APM_SYSTEM_CONFIG_DIR` redirects `/etc/apm` for both scopes (`types.rs:31`,`:52`) |
+| Nix narinfo `Sig:` | `NarInfoSigner` signs static narinfos during cache generation; the same Ed25519 key projects from git SSH tag signing to Nix narinfo signing |
 
 The full implementation plan for this surface is
 [`../plans/registry/workstream-04-signing-trust.md`](../plans/registry/workstream-04-signing-trust.md).
