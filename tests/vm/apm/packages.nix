@@ -5051,7 +5051,8 @@ in {
       HOLD_V2_STORE="${holdToolV2}"
       HOLD_V1_HASH=$(basename "$HOLD_V1_STORE" | cut -d- -f1)
       HOLD_V2_HASH=$(basename "$HOLD_V2_STORE" | cut -d- -f1)
-      PROFILE_BIN="/var/lib/profiles/per-user/holduser/current/bin/hold-tool"
+      PROFILE="/var/lib/profiles/per-user/holduser"
+      PROFILE_BIN="$PROFILE/current/bin/hold-tool"
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
@@ -5172,6 +5173,38 @@ in {
         fail "apm registry add syncs hold registry"
       }
       cat /tmp/hold-registry-add.out
+
+      if $APM hold hold-tool > /tmp/hold-empty.out 2>&1; then
+        cat /tmp/hold-empty.out
+        fail "hold should fail before hold-tool is installed"
+      else
+        cat /tmp/hold-empty.out
+        pass "hold fails before hold-tool is installed"
+      fi
+      assert_file_contains /tmp/hold-empty.out "package not found" \
+        "empty hold reports missing installed package"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty hold leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty hold should not initialize profile state"
+      fi
+
+      if $APM unhold hold-tool > /tmp/unhold-empty.out 2>&1; then
+        cat /tmp/unhold-empty.out
+        fail "unhold should fail before hold-tool is installed"
+      else
+        cat /tmp/unhold-empty.out
+        pass "unhold fails before hold-tool is installed"
+      fi
+      assert_file_contains /tmp/unhold-empty.out "package not found" \
+        "empty unhold reports missing installed package"
+      if [ ! -e "$PROFILE" ]; then
+        pass "empty unhold leaves profile directory absent"
+      else
+        find "$PROFILE" -maxdepth 2 -print
+        fail "empty unhold should not initialize profile state"
+      fi
 
       delete_store_path "$HOLD_V1_STORE" "hold-tool-v1"
       rm -rf "$HOME/.cache/apm"
