@@ -2940,13 +2940,24 @@ in {
       }
       pass "apr --json packages hides feature package before merge"
 
-      $APR merge feature-1 --registry test-reg > /tmp/branch-merge.out 2>&1 || {
-        cat /tmp/branch-merge.out
+      $APR --json merge feature-1 --registry test-reg > /tmp/branch-merge.json 2>&1 || {
+        cat /tmp/branch-merge.json
         fail "apr merge feature branch succeeds"
       }
-      cat /tmp/branch-merge.out
-      assert_file_contains /tmp/branch-merge.out "Merged 'feature-1'" \
-        "apr merge reports merged branch"
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.action == "merge"
+          and .branch == "feature-1"
+          and .no_ff == false
+          and .squash == false
+          and .current == $default
+          and (.head | length == 64)
+          and (.output | contains("Fast-forward"))
+          and (.branches | any(.name == $default and .current == true))' \
+        /tmp/branch-merge.json >/dev/null || {
+        cat /tmp/branch-merge.json
+        fail "apr --json merge reports merged branch"
+      }
+      pass "apr --json merge reports merged branch"
 
       assert_file_exists "$REG_DIR/packages/f/featurepkg.toml" \
         "package exists on default branch after merge"
@@ -3067,14 +3078,24 @@ in {
       }
       cat /tmp/branch-noff-switch-default.out
 
-      $APR merge noff-branch --no-ff --registry test-reg \
-        > /tmp/branch-noff-merge.out 2>&1 || {
-        cat /tmp/branch-noff-merge.out
+      $APR --json merge noff-branch --no-ff --registry test-reg \
+        > /tmp/branch-noff-merge.json 2>&1 || {
+        cat /tmp/branch-noff-merge.json
         fail "apr merge --no-ff succeeds"
       }
-      cat /tmp/branch-noff-merge.out
-      assert_file_contains /tmp/branch-noff-merge.out "Merged 'noff-branch'" \
-        "apr merge --no-ff reports merged branch"
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.action == "merge"
+          and .branch == "noff-branch"
+          and .no_ff == true
+          and .squash == false
+          and .current == $default
+          and (.head | length == 64)
+          and (.branches | any(.name == $default and .current == true))' \
+        /tmp/branch-noff-merge.json >/dev/null || {
+        cat /tmp/branch-noff-merge.json
+        fail "apr --json merge --no-ff reports merged branch"
+      }
+      pass "apr --json merge --no-ff reports merged branch"
       NOFF_HEAD_PARENTS=$(git -C "$REG_DIR" rev-list --parents -n 1 HEAD | wc -w)
       if [ "$NOFF_HEAD_PARENTS" = "3" ]; then
         pass "apr merge --no-ff creates a two-parent merge commit"
@@ -3139,14 +3160,26 @@ in {
       cat /tmp/branch-squash-switch-default.out
       DEFAULT_BEFORE_SQUASH=$(git -C "$REG_DIR" rev-parse HEAD)
 
-      $APR merge squash-branch --squash --registry test-reg \
-        > /tmp/branch-squash-merge.out 2>&1 || {
-        cat /tmp/branch-squash-merge.out
+      $APR --json merge squash-branch --squash --registry test-reg \
+        > /tmp/branch-squash-merge.json 2>&1 || {
+        cat /tmp/branch-squash-merge.json
         fail "apr merge --squash stages changes"
       }
-      cat /tmp/branch-squash-merge.out
-      assert_file_contains /tmp/branch-squash-merge.out "Merged 'squash-branch'" \
-        "apr merge --squash reports merged branch"
+      ${pkgs.jq}/bin/jq -e \
+        --arg default "$DEFAULT_BRANCH" \
+        --arg before "$DEFAULT_BEFORE_SQUASH" \
+        '.action == "merge"
+          and .branch == "squash-branch"
+          and .no_ff == false
+          and .squash == true
+          and .current == $default
+          and .head == $before
+          and (.branches | any(.name == $default and .current == true))' \
+        /tmp/branch-squash-merge.json >/dev/null || {
+        cat /tmp/branch-squash-merge.json
+        fail "apr --json merge --squash reports staged branch"
+      }
+      pass "apr --json merge --squash reports staged branch"
       CURRENT_AFTER_SQUASH=$(git -C "$REG_DIR" rev-parse HEAD)
       if [ "$CURRENT_AFTER_SQUASH" = "$DEFAULT_BEFORE_SQUASH" ]; then
         pass "apr merge --squash does not advance HEAD before maintainer commit"
@@ -3220,14 +3253,26 @@ in {
       git init --bare --object-format=sha256 /tmp/branch-origin.git
       git -C "$REG_DIR" remote add origin /tmp/branch-origin.git
       git --git-dir=/tmp/branch-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
-      $APR push --registry test-reg --branch "$DEFAULT_BRANCH" --set-upstream \
-        > /tmp/branch-initial-push.out 2>&1 || {
-        cat /tmp/branch-initial-push.out
+      $APR --json push --registry test-reg --branch "$DEFAULT_BRANCH" --set-upstream \
+        > /tmp/branch-initial-push.json 2>&1 || {
+        cat /tmp/branch-initial-push.json
         fail "apr push publishes merged default branch"
       }
-      cat /tmp/branch-initial-push.out
-      assert_file_contains /tmp/branch-initial-push.out "Pushed." \
-        "apr push reports initial default branch push"
+      ${pkgs.jq}/bin/jq -e \
+        --arg default "$DEFAULT_BRANCH" \
+        --arg remote "origin/$DEFAULT_BRANCH" \
+        '.action == "push"
+          and .branch == $default
+          and .set_upstream == true
+          and .force == false
+          and .current == $default
+          and (.head | length == 64)
+          and (.branches | any(.name == $remote and .remote == true))' \
+        /tmp/branch-initial-push.json >/dev/null || {
+        cat /tmp/branch-initial-push.json
+        fail "apr --json push reports initial default branch push"
+      }
+      pass "apr --json push reports initial default branch push"
       $APR --json branch list --registry test-reg \
         > /tmp/branch-list-after-push.json 2>&1 || {
         cat /tmp/branch-list-after-push.json
@@ -3316,11 +3361,21 @@ in {
       assert_file_not_contains /tmp/branch-collab-before-rebase.out "remote-added" \
         "second maintainer does not see remote package before pull --rebase"
 
-      $APR pull --registry collab-reg --rebase > /tmp/branch-collab-rebase.out 2>&1 || {
-        cat /tmp/branch-collab-rebase.out
+      $APR --json pull --registry collab-reg --rebase > /tmp/branch-collab-rebase.json 2>&1 || {
+        cat /tmp/branch-collab-rebase.json
         fail "apr pull --rebase updates second maintainer clone"
       }
-      cat /tmp/branch-collab-rebase.out
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.action == "pull"
+          and .rebase == true
+          and .current == $default
+          and (.head | length == 64)
+          and (.branches | any(.name == $default and .current == true))' \
+        /tmp/branch-collab-rebase.json >/dev/null || {
+        cat /tmp/branch-collab-rebase.json
+        fail "apr --json pull --rebase reports rebased maintainer clone"
+      }
+      pass "apr --json pull --rebase reports rebased maintainer clone"
       $APR packages --registry collab-reg > /tmp/branch-collab-after-rebase.out 2>&1 || {
         cat /tmp/branch-collab-after-rebase.out
         fail "second maintainer lists packages after pull --rebase"
@@ -3343,17 +3398,38 @@ in {
         git -C "$COLLAB_DIR" log --oneline --graph -5
       fi
 
-      $APR push --registry collab-reg --branch "$DEFAULT_BRANCH" \
-        > /tmp/branch-collab-push.out 2>&1 || {
-        cat /tmp/branch-collab-push.out
+      $APR --json push --registry collab-reg --branch "$DEFAULT_BRANCH" \
+        > /tmp/branch-collab-push.json 2>&1 || {
+        cat /tmp/branch-collab-push.json
         fail "second maintainer pushes rebased package"
       }
-      cat /tmp/branch-collab-push.out
-      $APR pull --registry test-reg > /tmp/branch-primary-pull.out 2>&1 || {
-        cat /tmp/branch-primary-pull.out
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.action == "push"
+          and .branch == $default
+          and .set_upstream == false
+          and .force == false
+          and .current == $default
+          and (.head | length == 64)' \
+        /tmp/branch-collab-push.json >/dev/null || {
+        cat /tmp/branch-collab-push.json
+        fail "apr --json push reports rebased package push"
+      }
+      pass "apr --json push reports rebased package push"
+      $APR --json pull --registry test-reg > /tmp/branch-primary-pull.json 2>&1 || {
+        cat /tmp/branch-primary-pull.json
         fail "first maintainer pulls collaborator package"
       }
-      cat /tmp/branch-primary-pull.out
+      ${pkgs.jq}/bin/jq -e --arg default "$DEFAULT_BRANCH" \
+        '.action == "pull"
+          and .rebase == false
+          and .current == $default
+          and (.head | length == 64)
+          and (.output | contains("Fast-forward"))' \
+        /tmp/branch-primary-pull.json >/dev/null || {
+        cat /tmp/branch-primary-pull.json
+        fail "apr --json pull reports collaborator package import"
+      }
+      pass "apr --json pull reports collaborator package import"
       $APR show collab-local --registry test-reg \
         > /tmp/branch-primary-show-collab.out 2>&1 || {
         cat /tmp/branch-primary-show-collab.out
