@@ -6,6 +6,8 @@ use std::sync::Arc;
 use connectrpc::{ConnectError, Context, ErrorCode};
 use futures_util::{Stream, StreamExt};
 
+use aos_core::nar::info as core_narinfo;
+use aos_core::nix::aos_nix_env;
 use aos_proto::aos::cache::v1::*;
 
 use crate::access;
@@ -13,6 +15,7 @@ use crate::compress::{self, Compression};
 use crate::narinfo;
 use crate::pack;
 use crate::routes::AppState;
+use crate::services;
 use crate::views::ViewManager;
 
 type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
@@ -32,11 +35,12 @@ impl CacheService for CacheServiceImpl {
     ) -> Result<(CacheInfo, Context), ConnectError> {
         let view: &str = req.view;
 
-        let _view_config = self
+        let view_config = self
             .state
             .views
             .get_view(view)
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "unknown view"))?;
+        services::require_rpc_read_access(&ctx, &self.state, view, view_config.anonymous_read)?;
 
         let response = CacheInfo {
             store_dir: self.state.store_dir.clone(),
@@ -64,9 +68,12 @@ impl CacheService for CacheServiceImpl {
         let view: &str = req.view;
         let store_hash: &str = req.store_hash;
 
-        if self.state.views.get_view(view).is_none() {
-            return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
-        }
+        let view_config = self
+            .state
+            .views
+            .get_view(view)
+            .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "unknown view"))?;
+        services::require_rpc_read_access(&ctx, &self.state, view, view_config.anonymous_read)?;
 
         let store_path = self
             .state
@@ -93,7 +100,7 @@ impl CacheService for CacheServiceImpl {
         );
 
         // Parse the narinfo text back into structured fields.
-        let response = parse_narinfo_to_proto(&narinfo_text, &info);
+        let response = parse_narinfo_to_proto(&narinfo_text)?;
 
         Ok((response, ctx))
     }
@@ -108,6 +115,7 @@ impl CacheService for CacheServiceImpl {
         if self.state.views.get_view(view).is_none() {
             return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
         }
+        services::require_rpc_view(&ctx, &self.state, view)?;
 
         let store_paths: Vec<String> = req.store_paths.iter().map(|s| s.to_string()).collect();
         let mut missing = Vec::new();
@@ -161,6 +169,7 @@ impl CacheService for CacheServiceImpl {
         if self.state.views.get_view(&view_name).is_none() {
             return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
         }
+        services::require_rpc_permission(&ctx, &self.state, &view_name, "build")?;
 
         // Import via nix-store --import.
         let imported = import_nar_data(&all_data)
@@ -192,9 +201,12 @@ impl CacheService for CacheServiceImpl {
         let view: &str = req.view;
         let filename: &str = req.filename;
 
-        if self.state.views.get_view(view).is_none() {
-            return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
-        }
+        let view_config = self
+            .state
+            .views
+            .get_view(view)
+            .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "unknown view"))?;
+        services::require_rpc_read_access(&ctx, &self.state, view, view_config.anonymous_read)?;
 
         let zstd_level = self.state.config.compression.level;
         let (name, compression) = if let Some(name) = filename.strip_suffix(".nar.zst") {
@@ -282,6 +294,7 @@ impl CacheService for CacheServiceImpl {
         if self.state.views.get_view(&view_name).is_none() {
             return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
         }
+        services::require_rpc_permission(&ctx, &self.state, &view_name, "build")?;
 
         let entries = pack::parse_pack(&all_data).map_err(|e| {
             ConnectError::new(ErrorCode::InvalidArgument, format!("invalid pack: {e}"))
@@ -312,18 +325,24 @@ impl CacheService for CacheServiceImpl {
     }
 }
 
-/// Parse structured narinfo text + DB info into proto NarInfo message.
-fn parse_narinfo_to_proto(_narinfo_text: &str, info: &crate::store::DbPathInfo) -> NarInfo {
-    NarInfo {
-        store_path: info.path.clone(),
-        nar_hash: info.nar_hash.clone(),
-        nar_size: info.nar_size,
-        compression: String::new(), // filled by caller if needed
-        references: info.refs.clone(),
-        deriver: info.deriver.clone().unwrap_or_default(),
-        signatures: info.sigs.clone(),
+/// Parse structured narinfo text into a proto `NarInfo` message.
+fn parse_narinfo_to_proto(narinfo_text: &str) -> Result<NarInfo, ConnectError> {
+    let parsed = core_narinfo::parse(narinfo_text)
+        .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("narinfo parse: {e}")))?;
+
+    Ok(NarInfo {
+        store_path: parsed.store_path,
+        url: parsed.url,
+        compression: parsed.compression,
+        file_hash: parsed.file_hash.unwrap_or_default(),
+        file_size: parsed.file_size.unwrap_or_default() as i64,
+        nar_hash: parsed.nar_hash,
+        nar_size: parsed.nar_size as i64,
+        references: parsed.references,
+        deriver: parsed.deriver.unwrap_or_default(),
+        signatures: parsed.signatures,
         ..Default::default()
-    }
+    })
 }
 
 /// Import NAR data via `nix-store --import`, return the imported store path.
@@ -333,6 +352,7 @@ async fn import_nar_data(data: &[u8]) -> Result<String, String> {
     use tokio::process::Command;
 
     let mut child = Command::new("nix-store")
+        .envs(aos_nix_env())
         .arg("--import")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -365,4 +385,38 @@ async fn import_nar_data(data: &[u8]) -> Result<String, String> {
     }
 
     Ok(imported)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_narinfo_to_proto;
+
+    #[test]
+    fn narinfo_proto_preserves_download_metadata() {
+        let narinfo = "\
+StorePath: /nix/store/abc123-tool-1.0
+URL: nar/abc123-sha256-deadbeef.nar.zst
+Compression: zstd
+FileHash: sha256:feedface
+FileSize: 42
+NarHash: sha256:deadbeef
+NarSize: 24
+References: dep456-lib-1.0
+Deriver: drv789-tool.drv
+Sig: cache.example:signature
+";
+
+        let parsed = parse_narinfo_to_proto(narinfo).unwrap();
+
+        assert_eq!(parsed.store_path, "/nix/store/abc123-tool-1.0");
+        assert_eq!(parsed.url, "nar/abc123-sha256-deadbeef.nar.zst");
+        assert_eq!(parsed.compression, "zstd");
+        assert_eq!(parsed.file_hash, "sha256:feedface");
+        assert_eq!(parsed.file_size, 42);
+        assert_eq!(parsed.nar_hash, "sha256:deadbeef");
+        assert_eq!(parsed.nar_size, 24);
+        assert_eq!(parsed.references, vec!["dep456-lib-1.0"]);
+        assert_eq!(parsed.deriver, "drv789-tool.drv");
+        assert_eq!(parsed.signatures, vec!["cache.example:signature"]);
+    }
 }
