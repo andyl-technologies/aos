@@ -584,6 +584,7 @@ in {
 
       $APR create alt-state-reg
       REG_DIR="$REG_STORAGE/alt-state-reg"
+      echo "local maintainer note" > "$REG_DIR/maintainer-notes.txt"
 
       $APR publish ${aosPkg} \
         --name alt-state-pkg \
@@ -610,6 +611,17 @@ in {
         "alternate-state publish writes closure metadata"
       assert_file_contains "$REG_DIR/closures/$STORE_HASH" "$STORE_HASH" \
         "alternate-state closure metadata contains root hash"
+      if git -C "$REG_DIR" ls-tree -r --name-only HEAD | grep -q "maintainer-notes.txt"; then
+        fail "apr publish should not commit unrelated maintainer scratch files"
+      else
+        pass "apr publish leaves unrelated maintainer scratch files out of HEAD"
+      fi
+      git -C "$REG_DIR" status --short --untracked-files=all \
+        > /tmp/alt-state-publish-status.out
+      assert_file_contains /tmp/alt-state-publish-status.out \
+        "maintainer-notes.txt" \
+        "apr publish leaves unrelated maintainer scratch file untracked"
+      rm -f "$REG_DIR/maintainer-notes.txt"
 
       $APR verify --registry alt-state-reg > /tmp/alt-state-verify.out 2>&1 || {
         cat /tmp/alt-state-verify.out
@@ -1729,6 +1741,192 @@ in {
   };
 
   # -------------------------------------------------------------------------
+  # registry-release-static-origin-closure — Release-uploaded origin + closure
+  # -------------------------------------------------------------------------
+  registry-release-static-origin-closure = testing.mkVMTest {
+    name = "apm-registry-release-static-origin-closure";
+    rootfsDeps = maintainerWorkflowDeps ++ [closureLeafTool closureRootTool];
+    memory = 2048;
+    testScript = ''
+      ${fixtures.setupPreamble}
+      ${setupNixPublishEnv}
+
+      echo "==> Test: release upload serves a complete closure to a fresh consumer"
+
+      LEAF_STORE="${closureLeafTool}"
+      ROOT_STORE="${closureRootTool}"
+      LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
+      ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
+      PROFILE="/var/lib/profiles/per-user/staticreleaseuser"
+
+      assert_store_valid() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/static-release-valid-$label.out" 2>&1; then
+          pass "$label valid in store"
+        else
+          cat "/tmp/static-release-valid-$label.out"
+          fail "$label should be valid in store"
+        fi
+      }
+
+      assert_store_missing() {
+        path="$1"
+        label="$2"
+        if nix-store --check-validity "$path" > "/tmp/static-release-missing-$label.out" 2>&1; then
+          cat "/tmp/static-release-missing-$label.out"
+          fail "$label should be missing from store"
+        else
+          pass "$label missing from store"
+        fi
+      }
+
+      delete_store_path() {
+        path="$1"
+        label="$2"
+        if nix-store --delete --ignore-liveness "$path" > "/tmp/static-release-delete-$label.out" 2>&1; then
+          pass "$label deleted before apm download"
+        else
+          cat "/tmp/static-release-delete-$label.out"
+          fail "$label should be deletable before apm download"
+          return 1
+        fi
+        assert_store_missing "$path" "$label"
+      }
+
+      wait_for_static_origin() {
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://127.0.0.1:18120/HEAD >/dev/null \
+            && curl -sf http://127.0.0.1:18120/nix-cache-info >/dev/null; then
+            return 0
+          fi
+          sleep 1
+        done
+        return 1
+      }
+
+      mount -o remount,rw / || true
+      assert_store_valid "$LEAF_STORE" "closure-leaf"
+      assert_store_valid "$ROOT_STORE" "closure-root"
+      nix-store -q --references "$ROOT_STORE" > /tmp/static-release-root-refs.out
+      assert_file_contains /tmp/static-release-root-refs.out "$LEAF_STORE" \
+        "release root has a real Nix reference to closure-leaf"
+
+      $APR create static-release-reg
+      REG_DIR="$REG_STORAGE/static-release-reg"
+      ssh-keygen -q -t ed25519 -N "" -f /tmp/static-release-key
+
+      $APR release 1.0.0 \
+        --registry static-release-reg \
+        --store-path "$ROOT_STORE" \
+        --name static-closure \
+        --description "Static release closure fixture" \
+        --license MIT \
+        --maintainer static-release@example.invalid \
+        --key /tmp/static-release-key \
+        --cache-output /tmp/static-release-cache \
+        --cache-url http://127.0.0.1:18120 \
+        --upload-url file:///tmp/static-release-origin \
+        > /tmp/static-release.out 2>&1 || {
+        cat /tmp/static-release.out
+        fail "apr release uploads static origin and cache"
+      }
+      cat /tmp/static-release.out
+      assert_file_contains /tmp/static-release.out "Created signed tag '1.0.0'" \
+        "apr release creates signed tag for uploaded origin"
+      assert_file_contains /tmp/static-release.out "Generated static cache" \
+        "apr release generates a static cache"
+      assert_file_contains /tmp/static-release.out "Uploaded" \
+        "apr release uploads static origin files"
+      assert_file_contains /tmp/static-release.out "Released static-release-reg 1.0.0" \
+        "apr release completes uploaded static origin workflow"
+
+      assert_file_exists "/tmp/static-release-cache/$ROOT_HASH.narinfo" \
+        "release cache has root narinfo"
+      assert_file_exists "/tmp/static-release-cache/$LEAF_HASH.narinfo" \
+        "release cache has unpublished dependency narinfo"
+      assert_file_exists "/tmp/static-release-origin/HEAD" \
+        "uploaded static origin has HEAD"
+      assert_file_exists "/tmp/static-release-origin/info/refs" \
+        "uploaded static origin has dumb HTTP refs"
+      assert_file_exists "/tmp/static-release-origin/releases/1/0/0/objects/info/packs" \
+        "uploaded static origin has release pack metadata"
+      assert_file_exists "/tmp/static-release-origin/nix-cache-info" \
+        "uploaded static origin includes cache info"
+      assert_file_exists "/tmp/static-release-origin/$ROOT_HASH.narinfo" \
+        "uploaded static origin has root narinfo"
+      assert_file_exists "/tmp/static-release-origin/$LEAF_HASH.narinfo" \
+        "uploaded static origin has dependency narinfo"
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+      PYTHONUNBUFFERED=1 python3 -m http.server 18120 --bind 127.0.0.1 \
+        --directory /tmp/static-release-origin > /tmp/static-release-http.log 2>&1 &
+      ORIGIN_PID=$!
+      if wait_for_static_origin; then
+        pass "uploaded static origin HTTP server started"
+      else
+        cat /tmp/static-release-http.log || true
+        fail "uploaded static origin HTTP server started"
+      fi
+
+      export HOME=/tmp/static-release-consumer
+      export USER=staticreleaseuser
+      mkdir -p "$HOME"
+      $APM registry add http://127.0.0.1:18120 \
+        --name static-release-reg \
+        --tag 1.0.0 > /tmp/static-release-add.out 2>&1 || {
+        cat /tmp/static-release-add.out
+        fail "apm registry add syncs uploaded static origin"
+      }
+      cat /tmp/static-release-add.out
+      assert_file_contains "$HOME/.local/share/apm/registries/static-release-reg/registry.toml" \
+        "http://127.0.0.1:18120" \
+        "consumer synced cache endpoint from uploaded origin"
+      $APM search static-closure --registry static-release-reg \
+        > /tmp/static-release-search.out 2>&1 || {
+        cat /tmp/static-release-search.out
+        fail "apm search sees uploaded release package"
+      }
+      assert_file_contains /tmp/static-release-search.out "static-closure" \
+        "consumer sees package from uploaded static origin"
+
+      delete_store_path "$ROOT_STORE" "closure-root"
+      delete_store_path "$LEAF_STORE" "closure-leaf"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+
+      $APM install static-closure --registry static-release-reg --yes \
+        > /tmp/static-release-install.out 2>&1 || {
+        cat /tmp/static-release-install.out
+        fail "apm install downloads anonymous closure from uploaded origin"
+      }
+      cat /tmp/static-release-install.out
+      assert_file_contains /tmp/static-release-install.out "Downloading" \
+        "apm install downloads release closure NARs"
+      assert_file_contains /tmp/static-release-install.out "Installed 1 package" \
+        "apm install activates static release package"
+      NAR_COUNT=$(find "$HOME/.cache/apm" -name '*.nar.zst' | wc -l | tr -d ' ')
+      if [ "$NAR_COUNT" -ge 2 ]; then
+        pass "download cache contains the root and dependency NARs"
+      else
+        fail "download cache should contain at least two NARs, got $NAR_COUNT"
+      fi
+      assert_store_valid "$ROOT_STORE" "closure-root"
+      assert_store_valid "$LEAF_STORE" "closure-leaf"
+
+      "$PROFILE/current/bin/closure-root" > /tmp/static-release-run.out
+      assert_file_contains /tmp/static-release-run.out \
+        "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
+        "installed release closure executes with its dependency"
+
+      kill "$ORIGIN_PID" 2>/dev/null || true
+      wait "$ORIGIN_PID" 2>/dev/null || true
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
   # registry-channel-workflow — Signed channel rollout and consumer upgrade
   # -------------------------------------------------------------------------
   registry-channel-workflow = testing.mkVMTest {
@@ -1779,6 +1977,43 @@ in {
         printf '[registry.signing_keys]\n'
         printf 'initial = "/tmp/channel-release-key"\n'
       } > "$APM_CONFIG/registries.d/chan-reg.toml"
+
+      echo "local maintainer note" > "$REG_DIR/maintainer-notes.txt"
+      if $APR release 1.0.0 \
+        --registry chan-reg \
+        --store-path "$TOOL_V1_STORE" \
+        --name channel-tool \
+        --description "Channel workflow tool" \
+        --license MIT \
+        --maintainer channel@example.invalid \
+        --key /tmp/channel-release-key \
+        --cache-output /tmp/channel-cache \
+        --cache-url http://127.0.0.1:18091 \
+        --channel stable \
+        --init-channel \
+        > /tmp/channel-release-dirty.out 2>&1; then
+        cat /tmp/channel-release-dirty.out
+        fail "apr release --store-path should refuse a dirty registry before publishing"
+      else
+        cat /tmp/channel-release-dirty.out
+        assert_file_contains /tmp/channel-release-dirty.out \
+          "uncommitted changes" \
+          "apr release --store-path reports dirty registry preflight"
+      fi
+      assert_file_not_exists "$REG_DIR/packages/c/channel-tool.toml" \
+        "dirty release does not write package metadata"
+      if git -C "$REG_DIR" rev-parse "1.0.0^{tag}" >/tmp/channel-release-dirty-tag.out 2>&1; then
+        cat /tmp/channel-release-dirty-tag.out
+        fail "dirty release should not create a release tag"
+      else
+        pass "dirty release does not create a release tag"
+      fi
+      if git -C "$REG_DIR" ls-tree -r --name-only HEAD | grep -q "maintainer-notes.txt"; then
+        fail "dirty release should not commit unrelated maintainer scratch files"
+      else
+        pass "dirty release leaves unrelated maintainer scratch files out of HEAD"
+      fi
+      rm -f "$REG_DIR/maintainer-notes.txt"
 
       $APR release 1.0.0 \
         --registry chan-reg \

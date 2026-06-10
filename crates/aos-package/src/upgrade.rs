@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::download::{
-    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfos,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     resolve_mirror,
 };
 use super::profile::Profile;
@@ -153,7 +153,7 @@ pub async fn run(
 
         let requests = build_download_requests(&upgrade_closures, &to_download, config)?;
         let engine = std::sync::Arc::new(default_engine());
-        let resolved: Vec<ResolvedDownload> = fetch_narinfos(
+        let resolved: Vec<ResolvedDownload> = fetch_narinfo_closure(
             std::sync::Arc::clone(&engine),
             &requests,
             config.settings.parallel_downloads,
