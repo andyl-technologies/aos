@@ -3881,13 +3881,24 @@ in {
       assert_current_tool_version 2.0.0
 
       echo "==> Consumer: clean generations keeps rolled-back current generation"
-      $APM clean --generations --keep 1 > /tmp/rollback-clean-generations.out 2>&1 || {
-        cat /tmp/rollback-clean-generations.out
+      $APM --json clean --generations --keep 1 > /tmp/rollback-clean-generations.json 2>&1 || {
+        cat /tmp/rollback-clean-generations.json
         fail "apm clean --generations succeeds after rollback"
       }
-      cat /tmp/rollback-clean-generations.out
-      assert_file_contains /tmp/rollback-clean-generations.out "Removed 1 old generation" \
-        "clean generations prunes only non-current old generation"
+      "$JQ" -e \
+        '.action == "clean"
+          and .mode == "generations"
+          and .status == "cleaned"
+          and .keep == 1
+          and .current_generation == 2
+          and .generations_before == [1, 2, 3]
+          and .generations_after == [2, 3]
+          and .removed_generations == [1]
+          and .removed == 1' \
+        /tmp/rollback-clean-generations.json >/dev/null || {
+        cat /tmp/rollback-clean-generations.json
+        fail "apm --json clean --generations reports pruned rollback generation"
+      }
       assert_generation_missing 1 "clean generations prunes generation 1"
       assert_generation_exists 2 "clean generations keeps rolled-back current generation"
       assert_generation_exists 3 "clean generations keeps latest generation"
@@ -5324,16 +5335,36 @@ in {
       assert_file_contains "$PROFILE/meta/$SOURCE_V2_HASH.json" \
         "$SOURCE_V2_SRC_STORE" "sourceful metadata records v2 source root"
 
-      run_ok clean "$APM" clean
-      assert_file_contains /tmp/surface-clean.out "Cleared NAR cache" "apm clean clears NAR cache"
+      run_ok clean "$APM" --json clean
+      "$JQ" -e \
+        '.action == "clean"
+          and .mode == "cache"
+          and .status == "cleaned"
+          and .files_removed >= 1
+          and .freed_bytes > 0
+          and (.freed | length > 0)' \
+        /tmp/surface-clean.out >/dev/null || {
+        cat /tmp/surface-clean.out
+        fail "apm --json clean reports removed NAR cache files"
+      }
       if find "$HOME/.cache/apm" -name '*.nar.zst' | grep -q .; then
         fail "apm clean should remove cached NAR files"
       else
         pass "apm clean removed cached NAR files"
       fi
-      run_ok clean-generations "$APM" clean --generations --keep 1
-      assert_file_contains /tmp/surface-clean-generations.out "No old generations\\|Removed" \
-        "apm clean --generations handles real profile generations"
+      run_ok clean-generations "$APM" --json clean --generations --keep 1
+      "$JQ" -e \
+        '.action == "clean"
+          and .mode == "generations"
+          and .status == "cleaned"
+          and .keep == 1
+          and .removed >= 1
+          and (.removed_generations | length >= 1)
+          and .generations_after_count <= 1' \
+        /tmp/surface-clean-generations.out >/dev/null || {
+        cat /tmp/surface-clean-generations.out
+        fail "apm --json clean --generations reports pruned command-surface generations"
+      }
       if [ "$(generation_count)" -le 1 ]; then
         pass "apm clean --generations keeps at most one old generation"
       else

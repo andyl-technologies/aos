@@ -206,6 +206,14 @@ in {
             assert_path_absent "$default_profile"
           }
 
+          profile_generation_count() {
+            if test -d "$profile"; then
+              find "$profile" -maxdepth 1 -type d -name 'gen-*' | wc -l | tr -d ' '
+            else
+              printf '0'
+            fi
+          }
+
           nix_store() {
             env \
               NIX_REMOTE="" \
@@ -691,8 +699,19 @@ in {
           run_clean ${self}/bin/apm upgrade --yes > "$work/apm-upgrade-empty.out" 2>&1
           grep -q "All packages are up to date" "$work/apm-upgrade-empty.out"
           assert_no_profile
-          run_clean ${self}/bin/apm clean --generations --keep 1 > "$work/apm-clean-generations-empty.out" 2>&1
-          grep -q "No old generations to remove" "$work/apm-clean-generations-empty.out"
+          run_clean ${self}/bin/apm --json clean --generations --keep 1 \
+            > "$work/apm-clean-generations-empty.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "clean"
+              and .mode == "generations"
+              and .status == "current"
+              and .keep == 1
+              and .current_generation == null
+              and .generations_before == []
+              and .generations_after == []
+              and .removed_generations == []
+              and .removed == 0' \
+            "$work/apm-clean-generations-empty.json" >/dev/null
           assert_no_profile
           if run_clean ${self}/bin/apm remove hostpkg --yes > "$work/apm-remove-missing.out" 2>&1; then
             cat "$work/apm-remove-missing.out"
@@ -1397,6 +1416,25 @@ in {
             "$work/apm-held-host-install-after-reinstall.json" >/dev/null
           assert_default_profile_absent
 
+          if ! find "$cache/apm" -name '*.nar.zst' | grep -q .; then
+            find "$cache/apm" -maxdepth 2 -print 2>/dev/null || true
+            exit 1
+          fi
+          run_clean ${self}/bin/apm --json clean > "$work/apm-clean-host-install-cache.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "clean"
+              and .mode == "cache"
+              and .status == "cleaned"
+              and .files_removed >= 1
+              and .freed_bytes > 0
+              and (.freed | length > 0)' \
+            "$work/apm-clean-host-install-cache.json" >/dev/null
+          if find "$cache/apm" -name '*.nar.zst' | grep -q .; then
+            find "$cache/apm" -maxdepth 2 -print
+            exit 1
+          fi
+          assert_default_profile_absent
+
           run_clean ${self}/bin/apm unhold hostinstall > "$work/apm-unhold-host-install.out" 2>&1
           grep -q "hostinstall released from hold" "$work/apm-unhold-host-install.out"
           run_clean ${self}/bin/apm --json held > "$work/apm-held-host-install-after-unhold.json"
@@ -1429,6 +1467,28 @@ in {
             cat "$work/apm-installed-after-host-remove.out"
             exit 1
           fi
+          assert_default_profile_absent
+
+          test "$(profile_generation_count)" = "5"
+          run_clean ${self}/bin/apm --json clean --generations --keep 1 \
+            > "$work/apm-clean-host-install-generations.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "clean"
+              and .mode == "generations"
+              and .status == "cleaned"
+              and .keep == 1
+              and .current_generation == 5
+              and .generations_before == [1, 2, 3, 4, 5]
+              and .generations_after == [5]
+              and .removed_generations == [1, 2, 3, 4]
+              and .removed == 4' \
+            "$work/apm-clean-host-install-generations.json" >/dev/null
+          test "$(profile_generation_count)" = "1"
+          test -d "$profile/gen-5"
+          test ! -e "$profile/gen-1"
+          test ! -e "$profile/gen-2"
+          test ! -e "$profile/gen-3"
+          test ! -e "$profile/gen-4"
           assert_default_profile_absent
 
           run_clean ${self}/bin/apm gc > "$work/apm-gc-host-install.out" 2>&1
