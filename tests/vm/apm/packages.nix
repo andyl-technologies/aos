@@ -4255,6 +4255,24 @@ in {
         "apm source --verify uses sourceful v1 source path"
       assert_file_contains /tmp/surface-source-sourceful-verify.out "matches installed binary" \
         "apm source --verify compares sourceful rebuild with installed binary"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM reinstall sourceful --yes > /tmp/surface-reinstall-sourceful.out 2>&1 || {
+        cat /tmp/surface-reinstall-sourceful.out
+        fail "apm reinstall downloads and rewrites sourceful v1"
+      }
+      cat /tmp/surface-reinstall-sourceful.out
+      assert_file_contains /tmp/surface-reinstall-sourceful.out "Downloading 1 NAR" \
+        "sourceful reinstall downloads v1 NAR"
+      assert_file_contains /tmp/surface-reinstall-sourceful.out "Reinstalled 1 package" \
+        "sourceful reinstall creates profile generation"
+      "$SOURCE_BIN" > /tmp/surface-sourceful-v1-run-after-reinstall.out
+      assert_file_contains /tmp/surface-sourceful-v1-run-after-reinstall.out "^sourceful 1.0.0$" \
+        "sourceful v1 executable runs after reinstall"
+      assert_symlink_exists "$PROFILE/current/src/$SOURCE_V1_SRC_HASH" \
+        "sourceful reinstall keeps v1 source root active"
+      assert_file_contains "$PROFILE/meta/$SOURCE_V1_HASH.json" \
+        "$SOURCE_V1_SRC_STORE" "sourceful reinstall preserves v1 source metadata"
       run_ok verify "$APM" verify surfacepkg
       assert_file_contains /tmp/surface-verify.out "integrity verified" \
         "apm verify validates real installed NAR hash"
