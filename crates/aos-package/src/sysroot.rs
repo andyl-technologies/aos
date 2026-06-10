@@ -290,8 +290,13 @@ pub async fn install_system(
     }
     commit_current_generation(&profile_path, &mut state, gen_num)?;
 
-    // Handle kernel upgrade according to the chosen mode.
-    let old_kernel_path = old_gen.as_ref().and_then(|g| g.kernel_path.clone());
+    // Handle kernel upgrade according to the chosen mode. Both sides are
+    // canonicalized so a seeded generation's `<toplevel>/kernel` symlink
+    // form compares equal to the resolved form `resolve_kernel_path`
+    // stores.
+    let old_kernel_path =
+        canonicalize_kernel_path(&old_gen.as_ref().and_then(|g| g.kernel_path.clone()));
+    let kernel_path = canonicalize_kernel_path(&kernel_path);
     handle_kernel_upgrade(
         &old_kernel_path,
         &kernel_path,
@@ -508,10 +513,12 @@ pub async fn rollback_system(
     }
     commit_current_generation(&profile_path, &mut state, target.number)?;
 
-    // Handle kernel upgrade according to the chosen mode.
+    // Handle kernel upgrade according to the chosen mode (canonicalized
+    // for the same reason as the upgrade path: the seeded generation
+    // records the `kernel` symlink, not its target).
     handle_kernel_upgrade(
-        &current.kernel_path,
-        &target.kernel_path,
+        &canonicalize_kernel_path(&current.kernel_path),
+        &canonicalize_kernel_path(&target.kernel_path),
         &target.toplevel,
         kernel_mode,
         drain,
@@ -1197,6 +1204,25 @@ fn print_diff(diff: &UnitDiff, printer: &Printer) {
 // Kernel / boot loader
 // ---------------------------------------------------------------------------
 
+/// Canonicalize a stored kernel path to the form [`resolve_kernel_path`]
+/// produces (the `kernel` symlink's target).
+///
+/// Generations seeded at first boot historically recorded the
+/// `<toplevel>/kernel` symlink itself rather than its target. Comparing
+/// that form against a resolved path reports a spurious kernel change on
+/// every upgrade or rollback involving the seeded generation — rewriting
+/// the boot loader needlessly and rendering the old version as the
+/// literal string "kernel". Resolving the symlink (when it still exists
+/// on disk) restores exact-string comparability; paths that cannot be
+/// resolved are returned unchanged.
+fn canonicalize_kernel_path(path: &Option<String>) -> Option<String> {
+    let p = path.as_deref()?;
+    match std::fs::read_link(p) {
+        Ok(target) => Some(target.to_string_lossy().to_string()),
+        Err(_) => Some(p.to_string()),
+    }
+}
+
 /// Resolve the kernel path from a toplevel store path.
 fn resolve_kernel_path(toplevel: &str) -> Option<String> {
     let kernel_link = PathBuf::from(toplevel).join("kernel");
@@ -1710,6 +1736,45 @@ mod tests {
     #[test]
     fn extract_kernel_version_none() {
         assert_eq!(extract_kernel_version(&None), "unknown");
+    }
+
+    #[test]
+    fn canonicalize_kernel_path_resolves_seeded_symlink_form() {
+        // A seeded generation records `<toplevel>/kernel` (the symlink),
+        // not its target. Canonicalizing must yield the target so it
+        // compares equal to what resolve_kernel_path stores.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("01234567890123456789012345678901-linux-6.12.1");
+        std::fs::create_dir(&target).unwrap();
+        let link = dir.path().join("kernel");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let seeded = Some(link.to_string_lossy().to_string());
+        assert_eq!(
+            canonicalize_kernel_path(&seeded),
+            Some(target.to_string_lossy().to_string())
+        );
+    }
+
+    #[test]
+    fn canonicalize_kernel_path_keeps_resolved_and_missing_paths() {
+        // Already-resolved paths (not symlinks) and paths that no longer
+        // exist pass through unchanged; None stays None.
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("linux-6.12.1");
+        std::fs::create_dir(&plain).unwrap();
+        let plain_str = plain.to_string_lossy().to_string();
+        assert_eq!(
+            canonicalize_kernel_path(&Some(plain_str.clone())),
+            Some(plain_str)
+        );
+
+        let gone = "/nix/store/gcd-toplevel/kernel".to_string();
+        assert_eq!(
+            canonicalize_kernel_path(&Some(gone.clone())),
+            Some(gone)
+        );
+        assert_eq!(canonicalize_kernel_path(&None), None);
     }
 
     #[test]
