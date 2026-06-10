@@ -339,13 +339,6 @@ in {
             cat "$work/apr-status.out"
             exit 1
           fi
-          run_clean ${self}/bin/apr branch create host-feature --registry host-reg > "$work/apr-branch-create.out" 2>&1
-          grep -q "Created branch 'host-feature'" "$work/apr-branch-create.out"
-          run_clean ${self}/bin/apr branch switch host-feature --registry host-reg > "$work/apr-branch-switch.out" 2>&1
-          grep -q "Switched to branch 'host-feature'" "$work/apr-branch-switch.out"
-          run_clean ${self}/bin/apr branch switch stable --registry host-reg > "$work/apr-branch-switch-stable.out" 2>&1
-          grep -q "Switched to branch 'stable'" "$work/apr-branch-switch-stable.out"
-
           pkg_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           mkdir -p "$reg/packages/h" "$reg/closures"
           printf '%s\n' \
@@ -386,6 +379,47 @@ in {
 
           git -C "$reg" add -A
           git -C "$reg" commit -m "release: hostpkg 1.0.0" > "$work/git-commit-package.out" 2>&1
+
+          run_clean ${self}/bin/apr branch create host-feature --registry host-reg > "$work/apr-branch-create.out" 2>&1
+          grep -q "Created branch 'host-feature'" "$work/apr-branch-create.out"
+          run_clean ${self}/bin/apr branch switch host-feature --registry host-reg > "$work/apr-branch-switch.out" 2>&1
+          grep -q "Switched to branch 'host-feature'" "$work/apr-branch-switch.out"
+          printf '%s\n' \
+            '[package]' \
+            'name = "hostpkg"' \
+            'description = "Host-authored package metadata from feature branch"' \
+            'homepage = "https://example.invalid/hostpkg"' \
+            'license = "MIT"' \
+            'maintainer = "host@example.invalid"' \
+            "" \
+            '[[versions]]' \
+            'version = "1.0.0"' \
+            "" \
+            '[versions.platforms.x86_64-linux]' \
+            "store_path = \"/nix/store/$pkg_hash-hostpkg-1.0.0\"" \
+            'nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="' \
+            'nar_size = 1234' \
+            'closure_size = 1234' \
+            'source_drv = ""' \
+            'source_nar_hash = ""' \
+            'references = []' \
+            > "$reg/packages/h/hostpkg.toml"
+          git -C "$reg" add packages/h/hostpkg.toml
+          git -C "$reg" commit -m "release: hostpkg 1.0.0 feature metadata" \
+            > "$work/git-commit-host-feature.out" 2>&1
+          run_clean ${self}/bin/apr branch switch stable --registry host-reg > "$work/apr-branch-switch-stable.out" 2>&1
+          grep -q "Switched to branch 'stable'" "$work/apr-branch-switch-stable.out"
+          run_clean ${self}/bin/apr branch list --registry host-reg > "$work/apr-branch-list.out" 2>&1
+          grep -q "host-feature" "$work/apr-branch-list.out"
+          run_clean ${self}/bin/apr merge host-feature --registry host-reg > "$work/apr-merge-feature.out" 2>&1
+          grep -q "Merged 'host-feature'" "$work/apr-merge-feature.out"
+          run_clean ${self}/bin/apr branch delete host-feature --registry host-reg > "$work/apr-branch-delete-feature.out" 2>&1
+          grep -q "Deleted branch 'host-feature'" "$work/apr-branch-delete-feature.out"
+          run_clean ${self}/bin/apr branch list --registry host-reg > "$work/apr-branch-list-after-delete.out" 2>&1
+          if grep -q "host-feature" "$work/apr-branch-list-after-delete.out"; then
+            cat "$work/apr-branch-list-after-delete.out"
+            exit 1
+          fi
 
           run_clean ${self}/bin/apr packages --registry host-reg > "$work/apr-packages.out" 2>&1
           grep -q "hostpkg 1.0.0" "$work/apr-packages.out"
