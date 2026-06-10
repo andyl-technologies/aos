@@ -119,6 +119,7 @@ in {
       pkgs.coreutils
       pkgs.git
       pkgs.grep
+      pkgs.jq
     ];
 
     phases = [
@@ -241,6 +242,10 @@ in {
           grep -q "host-reg-client" "$work/apm-registry-list.out"
           run_clean ${self}/bin/apm search hostpkg --registry host-reg-client > "$work/apm-search.out" 2>&1
           grep -q "hostpkg/host-reg-client 1.0.0" "$work/apm-search.out"
+          run_clean ${self}/bin/apm --json search hostpkg --registry host-reg-client > "$work/apm-search.json"
+          ${pkgs.jq}/bin/jq -e \
+            'length == 1 and .[0].name == "hostpkg" and .[0].registry == "host-reg-client" and .[0].version == "1.0.0"' \
+            "$work/apm-search.json" >/dev/null
           run_clean ${self}/bin/apm search hostpkg --installed > "$work/apm-search-installed.out" 2>&1
           if grep -q "hostpkg" "$work/apm-search-installed.out"; then
             cat "$work/apm-search-installed.out"
@@ -248,14 +253,24 @@ in {
           fi
           run_clean ${self}/bin/apm show hostpkg --registry host-reg-client > "$work/apm-show.out" 2>&1
           grep -q "Host-authored package metadata" "$work/apm-show.out"
+          run_clean ${self}/bin/apm --json show hostpkg --registry host-reg-client > "$work/apm-show.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.name == "hostpkg" and .registry == "host-reg-client" and .installed == false and .store_path == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hostpkg-1.0.0"' \
+            "$work/apm-show.json" >/dev/null
           run_clean ${self}/bin/apm list --registry host-reg-client > "$work/apm-list.out" 2>&1
           grep -q "hostpkg/host-reg-client 1.0.0" "$work/apm-list.out"
+          run_clean ${self}/bin/apm --json list --registry host-reg-client > "$work/apm-list.json"
+          ${pkgs.jq}/bin/jq -e \
+            'length == 1 and .[0].name == "hostpkg" and .[0].status == ""' \
+            "$work/apm-list.json" >/dev/null
           run_clean ${self}/bin/apm policy hostpkg > "$work/apm-policy.out" 2>&1
           grep -q "Candidate: 1.0.0" "$work/apm-policy.out"
           run_clean ${self}/bin/apm held > "$work/apm-held.out" 2>&1
           grep -q "No packages are held" "$work/apm-held.out"
           run_clean ${self}/bin/apm rollback --list > "$work/apm-rollback-list.out" 2>&1
           grep -q "No profile generations" "$work/apm-rollback-list.out"
+          run_clean ${self}/bin/apm --json rollback --list > "$work/apm-rollback-list.json"
+          ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apm-rollback-list.json" >/dev/null
           if run_clean ${self}/bin/apm files hostpkg > "$work/apm-files.out" 2>&1; then
             cat "$work/apm-files.out"
             exit 1
@@ -263,6 +278,8 @@ in {
           grep -q "package not installed: hostpkg" "$work/apm-files.out"
           run_clean ${self}/bin/apm orphans > "$work/apm-orphans.out" 2>&1
           grep -q "No orphaned packages" "$work/apm-orphans.out"
+          run_clean ${self}/bin/apm --json orphans > "$work/apm-orphans.json"
+          ${pkgs.jq}/bin/jq -e 'length == 0' "$work/apm-orphans.json" >/dev/null
           run_clean ${self}/bin/apm registry remove host-reg-client --keep-local > "$work/apm-registry-remove.out" 2>&1
           grep -q "Registry 'host-reg-client' removed" "$work/apm-registry-remove.out"
           test -d "$data/apm/registries/host-reg-client"
